@@ -14,7 +14,7 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 
-extern fn exit(code: Int)
+public extern fn exit(code: Int)
 
 // --- structured control-flow analysis ---------------------------------------
 //

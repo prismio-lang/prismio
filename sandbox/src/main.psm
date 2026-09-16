@@ -1,6 +1,16 @@
 import std.io
+import std.process
+import std.platform
+import stack_placement
 
 fn main() -> Int {
-    print("Hello")
+//    let h = process.args[2]
+    println("Hello World!")
+    print("Bubble World!")
+
+    let x = sumLocal()
+    print(x)
+
+
     return 0
 }

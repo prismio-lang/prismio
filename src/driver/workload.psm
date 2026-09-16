@@ -21,7 +21,7 @@ import std.string
 import std.option
 import driver.imports
 
-extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
+public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
 extern fn compiler_publish_file(fromPath: String, toPath: String) -> Int
 // LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
 // "times out" is a case that can actually occur rather than a clause nothing
@@ -30,7 +30,7 @@ extern fn compiler_run_workload(exeFile: String, timeoutSeconds: Int) -> Int
 // SPEC 7.3. Tells the build to compile the runtime with its own allocator
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
-extern fn compiler_set_verify_mode(on: Int)
+public extern fn compiler_set_verify_mode(on: Int)
 // Forces the driver's link to compile the runtime rather than take an installed
 // runtime.lib, which may predate rt_profile_*. See the note at g_workload_mode.
 extern fn compiler_set_workload_mode(on: Int)
@@ -43,10 +43,10 @@ extern fn compiler_temp_path_for(sourcePath: String, suffix: String) -> String p
 // load. `compiler_publish_file` is how the one artifact that *is* supposed to
 // have a predictable name gets there afterwards.
 extern fn compiler_temp_private_path(sourcePath: String, suffix: String) -> String produce(free)
-extern fn delete_file(path: String) -> Int
-extern fn file_exists(path: String) -> Int
+public extern fn delete_file(path: String) -> Int
+public extern fn file_exists(path: String) -> Int
 
-fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> String {
+public fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> String {
     let count = moduleWorkloadCount(module)
     if (count == 0) { return "" }
 
@@ -163,7 +163,7 @@ fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> 
 // durable artifact; this one exists only so the read cannot race, and it carries
 // this process's pid -- so no later build will ever clean it up and every
 // consumer of the path runWorkloadProfile returns has to.
-fn discardWorkloadProfile(profilePath: String) {
+public fn discardWorkloadProfile(profilePath: String) {
     if (profilePath.equals("") == false) {
         delete_file(profilePath)
     }

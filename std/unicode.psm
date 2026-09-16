@@ -68,7 +68,7 @@ private fn unicodeInTable(table: String, scalar: Int) -> Bool {
 // A control character is 0 rather than -1: `wcwidth` reports failure that way
 // and every caller here is measuring a column, where "contributes nothing" is
 // both true and useful. Refusing to answer would only move the decision.
-fn scalarWidth(scalar: Int) -> Int {
+public fn scalarWidth(scalar: Int) -> Int {
     if (scalar <= 0) { return 0 }
     if (unicodeInTable(unicodeZeroTable(), scalar)) { return 0 }
     if (unicodeInTable(unicodeWideTable(), scalar)) { return 2 }
@@ -79,7 +79,7 @@ fn scalarWidth(scalar: Int) -> Int {
 //
 // `strScalarCount` is the wrong measure for one and `length` is wronger: the
 // three-column string `"日本"` is 6 bytes, 2 scalars and 4 columns.
-fn strDisplayWidth(s: String) -> Int {
+public fn strDisplayWidth(s: String) -> Int {
     let slen = __builtin_string_len(s)
     let mut total = 0
     let mut i = 0
@@ -150,7 +150,7 @@ private fn unicodeContinuesCluster(previous: Int, next: Int, sawZwj: Bool,
 //
 // Walking a string by grapheme is this in a loop, exactly as
 // `strScalarWidthAt` is for scalars. Returns 0 when `at` is past the end.
-fn strGraphemeWidthAt(s: String, at: Int) -> Int {
+public fn strGraphemeWidthAt(s: String, at: Int) -> Int {
     let slen = __builtin_string_len(s)
     if (at < 0 or at >= slen) { return 0 }
 
@@ -181,7 +181,7 @@ fn strGraphemeWidthAt(s: String, at: Int) -> Int {
 //
 // `"é"` typed as `e` and a combining acute is two scalars and one of these;
 // a flag is two scalars and one; a family emoji can be seven.
-fn strGraphemeCount(s: String) -> Int {
+public fn strGraphemeCount(s: String) -> Int {
     let slen = __builtin_string_len(s)
     let mut count = 0
     let mut i = 0
@@ -194,7 +194,7 @@ fn strGraphemeCount(s: String) -> Int {
     return count
 }
 
-fn strGraphemes(s: String) -> List<String> {
+public fn strGraphemes(s: String) -> List<String> {
     let slen = __builtin_string_len(s)
     let out: List<String> = list_new()
     let mut i = 0
@@ -212,7 +212,7 @@ fn strGraphemes(s: String) -> List<String> {
 // The operation a table needs when a value is too long for its column, and the
 // one every naive implementation gets wrong twice: by cutting mid-character, and
 // by counting a CJK ideograph as one column and overflowing the row.
-fn strTruncateToWidth(s: String, columns: Int) -> String {
+public fn strTruncateToWidth(s: String, columns: Int) -> String {
     // Owned rather than a view of `s`, for the reason `strScalarSubstring` in
     // std/string.psm gives: the "returns a view of parameter 0" fact does not
     // survive a function that hands that parameter to another one, and a view
@@ -268,7 +268,7 @@ private fn unicodeWidthPrefix(s: String, columns: Int) -> Int {
 //
 // `std.string`'s `padStart` counts characters, which lines up every alphabet
 // whose characters are one column wide. These are for the ones that are not.
-fn strPadStartDisplay(s: String, columns: Int, pad: Char) -> String {
+public fn strPadStartDisplay(s: String, columns: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
     let mut padLen = columns - strDisplayWidth(s)
     if (padLen < 0) { padLen = 0 }
@@ -286,7 +286,7 @@ fn strPadStartDisplay(s: String, columns: Int, pad: Char) -> String {
     return out
 }
 
-fn strPadEndDisplay(s: String, columns: Int, pad: Char) -> String {
+public fn strPadEndDisplay(s: String, columns: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
     let mut padLen = columns - strDisplayWidth(s)
     if (padLen < 0) { padLen = 0 }
@@ -543,7 +543,7 @@ private fn unicodeDecomposedScalars(s: String) -> List<Int> {
 }
 
 // Canonical decomposition: `é` becomes `e` and a combining acute.
-fn strNormalizeNfd(s: String) -> String {
+public fn strNormalizeNfd(s: String) -> String {
     let scalars = unicodeDecomposedScalars(s)
     let out = str_with_capacity(unicodeEncodedLength(scalars))
     unicodeWriteScalars(out, scalars)
@@ -555,7 +555,7 @@ fn strNormalizeNfd(s: String) -> String {
 // Decompose first, then compose -- which is not a detour. Composing the input
 // directly would keep whatever order its marks were typed in, and two spellings
 // that decompose alike have to come back identical or this is not a normal form.
-fn strNormalizeNfc(s: String) -> String {
+public fn strNormalizeNfc(s: String) -> String {
     let decomposed = unicodeDecomposedScalars(s)
     let n = list_len(decomposed)
     if (n == 0) { return str_with_capacity(0) }
@@ -606,30 +606,30 @@ fn strNormalizeNfc(s: String) -> String {
 // `é` have different ones. Normalizing both is the whole implementation, and
 // naming it is what stops every caller writing that out and half of them
 // forgetting.
-fn strEqualsNormalized(a: String, b: String) -> Bool {
+public fn strEqualsNormalized(a: String, b: String) -> Bool {
     let left = strNormalizeNfc(a)
     let right = strNormalizeNfc(b)
     return left.equals(right)
 }
 
 impl String {
-    fn displayWidth(self) -> Int { return strDisplayWidth(self) }
-    fn graphemeCount(self) -> Int { return strGraphemeCount(self) }
-    fn graphemes(self) -> List<String> { return strGraphemes(self) }
-    fn graphemeWidthAt(self, at: Int) -> Int { return strGraphemeWidthAt(self, at) }
-    fn truncateToWidth(self, columns: Int) -> String {
+    public fn displayWidth(self) -> Int { return strDisplayWidth(self) }
+    public fn graphemeCount(self) -> Int { return strGraphemeCount(self) }
+    public fn graphemes(self) -> List<String> { return strGraphemes(self) }
+    public fn graphemeWidthAt(self, at: Int) -> Int { return strGraphemeWidthAt(self, at) }
+    public fn truncateToWidth(self, columns: Int) -> String {
         return strTruncateToWidth(self, columns)
     }
-    fn padStartDisplay(self, columns: Int, pad: Char) -> String {
+    public fn padStartDisplay(self, columns: Int, pad: Char) -> String {
         return strPadStartDisplay(self, columns, pad)
     }
-    fn padEndDisplay(self, columns: Int, pad: Char) -> String {
+    public fn padEndDisplay(self, columns: Int, pad: Char) -> String {
         return strPadEndDisplay(self, columns, pad)
     }
 
-    fn normalizeNfc(self) -> String { return strNormalizeNfc(self) }
-    fn normalizeNfd(self) -> String { return strNormalizeNfd(self) }
-    fn equalsNormalized(self, other: String) -> Bool {
+    public fn normalizeNfc(self) -> String { return strNormalizeNfc(self) }
+    public fn normalizeNfd(self) -> String { return strNormalizeNfd(self) }
+    public fn equalsNormalized(self, other: String) -> Bool {
         return strEqualsNormalized(self, other)
     }
 }

@@ -1,0 +1,18 @@
+// The positive half of neg_55: naming the module makes the same call legal, and
+// a module in between neither helps nor hinders.
+import std.io
+import visibility.alpha
+import visibility.gamma
+
+fn main() -> Int {
+    if (visibilityUsesOwnPrivate(1) != 2) {
+        println("FAIL: direct import")
+        return 1
+    }
+    if (visibilityThroughMiddle(1) != 2) {
+        println("FAIL: through the middle module")
+        return 1
+    }
+    println("PASS: explicit imports")
+    return 0
+}

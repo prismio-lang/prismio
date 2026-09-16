@@ -668,6 +668,43 @@ shape over `strTrim` or `strClone`; `concat` is special-cased in codegen's
 argument-release gate and does not. Bind the intermediate, which RUNTIME.md 3.1
 asks for anyway.
 
+## The AIF oracle
+
+**`tools/aif_differential.py` reports one disagreement on `src/main.psm`, and the
+compiler is the one that is right.** T1 282 vs 281, T3 384 vs 385: a single site,
+`ownedTypes` at `src/ir/expr.psm:556`, which the in-compiler engine tiers T1 and
+the Python oracle tiers T3.
+
+It is a local `List<String>`. It is created with `list_new()`, pushed into, and
+passed once to `generateOwnedTemporaryReleases` — which takes it as a parameter,
+and a parameter is a borrow. It is never returned and never stored. T1 is what
+that lifetime is.
+
+The oracle's own answer is the evidence against the oracle. `ownedVals`,
+`ownedKinds` and `ownedTypes` are declared on three consecutive lines, pushed to
+in the same `if`, and passed to the same call. The oracle tiers the first two T1
+and only the third T3.
+
+**What moved, and when.** Splitting `generateExpression`'s sixteen kind arms into
+their own functions (2026-09-16) made the compiler *more* precise here: before the
+split it agreed with the oracle at T3, after it says T1. The oracle's numbers did
+not move at all — T1 281, T3 385, before and after. A per-arm return provenance
+is a narrower thing to union than one 1,783-line body, which is the whole reason
+the site got a better answer.
+
+**Why this is filed rather than fixed.** The gap is the prototype's, in
+`aif/prototype/aif.py`, and closing it means finding which transfer function
+keeps A=Shared on a container whose only escape is a borrowed parameter. Until
+then the differential fails on `src/main.psm` and passes on the other 18 sources,
+so run it and read the one line rather than the exit status.
+
+What rules out the other reading — that the compiler now frees something still
+live: the suite is green including `aif_verify`, whose ledger balances a real
+run rather than an analysis; the compiler self-hosts to a byte-identical
+two-generation fixpoint; and `tools/ir_snapshot.py` reports byte-identical IR for
+all 196 programs across the change, so nothing about what the compiler emits for
+a *program* moved with it.
+
 ## Measurement, if you are benchmarking this
 
 **The historical g5 benchmark was not measurable at its original granularity.**

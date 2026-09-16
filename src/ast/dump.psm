@@ -18,7 +18,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import std.string
-
+import std.io
 
 private fn hexDigit(v: Int) -> String {
     if (v == 0) { return "0" }
@@ -217,7 +217,7 @@ private fn dumpFileTable() {
     print("]")
 }
 
-fn dumpAstJson(root: ASTNode, sourcePath: String, compilerVersion: String) {
+public fn dumpAstJson(root: ASTNode, sourcePath: String, compilerVersion: String) {
     print("{")
     jsonFieldStr("format", "aif-ast")
     print(",")

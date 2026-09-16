@@ -15,6 +15,7 @@
 import std.io
 import diamond_left
 import diamond_right
+import diamond_shared
 import std.string
 
 fn fail(message: String) -> Int {

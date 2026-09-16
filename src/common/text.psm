@@ -13,15 +13,15 @@ import std.option
 // is an ambiguous overload at best; at worst the scanner silently resolves to the
 // std one and identifiers stop starting with an underscore. The names below say
 // what the scanner actually asks, and cannot collide with a classification.
-fn isIdentStart(c: Char) -> Bool {
+public fn isIdentStart(c: Char) -> Bool {
     return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_'
 }
 
-fn isIdentPart(c: Char) -> Bool {
+public fn isIdentPart(c: Char) -> Bool {
     return isIdentStart(c) or isDigit(c)
 }
 
-fn isSeparator(c: Char) -> Bool {
+public fn isSeparator(c: Char) -> Bool {
     if (c == '(') { return true }
     if (c == ')') { return true }
     if (c == '{') { return true }
@@ -37,7 +37,7 @@ fn isSeparator(c: Char) -> Bool {
     return false
 }
 
-fn isOperator(c: Char) -> Bool {
+public fn isOperator(c: Char) -> Bool {
     if (c == '+') { return true }
     if (c == '-') { return true }
     if (c == '*') { return true }
@@ -63,6 +63,6 @@ fn isOperator(c: Char) -> Bool {
 //
 // `as` makes the whole thing a zero-extension. Kept as a named function because
 // it reads better at the call sites and is the documented spelling.
-fn charCode(c: Char) -> Int {
+public fn charCode(c: Char) -> Int {
     return c as Int
 }

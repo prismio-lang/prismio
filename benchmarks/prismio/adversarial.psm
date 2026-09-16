@@ -15,11 +15,11 @@ struct BenchLayoutParticle {
     mass: Int
 }
 
-fn benchAdversarialNext(seed: I64) -> I64 {
+public fn benchAdversarialNext(seed: I64) -> I64 {
     return (seed * 48271) % 2147483647
 }
 
-fn benchPointerChase(scale: Int) -> Int {
+public fn benchPointerChase(scale: Int) -> Int {
     let n = 131072 * scale
     let mut nodes: List<Int> = list_new_with_capacity(n)
     let mut values: List<Int> = list_new_with_capacity(n)
@@ -62,7 +62,7 @@ fn benchPointerChase(scale: Int) -> Int {
     return sum
 }
 
-fn benchRandomGather(scale: Int) -> Int {
+public fn benchRandomGather(scale: Int) -> Int {
     let n = 262144 * scale
     let mut values: List<Int> = list_new_with_capacity(n)
     let mut indices: List<Int> = list_new_with_capacity(n)
@@ -88,7 +88,7 @@ fn benchRandomGather(scale: Int) -> Int {
     return sum
 }
 
-fn benchBranchMispredict(scale: Int) -> Int {
+public fn benchBranchMispredict(scale: Int) -> Int {
     let n = 500000 * scale
     let mut conditions: List<Bool> = list_new_with_capacity(n)
     let mut a: List<Int> = list_new_with_capacity(n)
@@ -120,7 +120,7 @@ fn benchBranchMispredict(scale: Int) -> Int {
     return sum
 }
 
-fn benchStridedMemory(scale: Int) -> Int {
+public fn benchStridedMemory(scale: Int) -> Int {
     let n = 1048576 * scale
     let mut data: List<Int> = list_new_with_capacity(n)
     let mut strides: List<Int> = list_new_with_capacity(8)
@@ -158,7 +158,7 @@ fn benchStridedMemory(scale: Int) -> Int {
     return sum
 }
 
-fn benchMakeAdversarialObject(value: Int) -> BenchAdversarialObject {
+public fn benchMakeAdversarialObject(value: Int) -> BenchAdversarialObject {
     return BenchAdversarialObject {
         a: value,
         b: value + 1,
@@ -167,11 +167,11 @@ fn benchMakeAdversarialObject(value: Int) -> BenchAdversarialObject {
     }
 }
 
-fn benchConsumeAdversarialObject(value: BenchAdversarialObject) -> Int {
+public fn benchConsumeAdversarialObject(value: BenchAdversarialObject) -> Int {
     return (value.a * 3 + value.b * 5 + value.c * 7 + value.d * 11) % 1009
 }
 
-fn benchAllocationEscape(scale: Int) -> Int {
+public fn benchAllocationEscape(scale: Int) -> Int {
     let n = 1000000 * scale
     let mut sum = 0
     let mut i = 0
@@ -183,11 +183,11 @@ fn benchAllocationEscape(scale: Int) -> Int {
     return sum
 }
 
-fn benchTinyAdd(a: Int, b: Int) -> Int {
+public fn benchTinyAdd(a: Int, b: Int) -> Int {
     return a + b
 }
 
-fn benchFunctionCallOverhead(scale: Int) -> Int {
+public fn benchFunctionCallOverhead(scale: Int) -> Int {
     let n = 5000000 * scale
     let mut state = 0
     let mut i = 0
@@ -199,19 +199,19 @@ fn benchFunctionCallOverhead(scale: Int) -> Int {
     return state
 }
 
-fn benchIndirectAdd(value: Int) -> Int { return value + 3 }
-fn benchIndirectMul(value: Int) -> Int { return value * 3 + 1 }
-fn benchIndirectXor(value: Int) -> Int { return value ^ 341 }
-fn benchIndirectMix(value: Int) -> Int { return (value * 17 + 23) % 1009 }
+public fn benchIndirectAdd(value: Int) -> Int { return value + 3 }
+public fn benchIndirectMul(value: Int) -> Int { return value * 3 + 1 }
+public fn benchIndirectXor(value: Int) -> Int { return value ^ 341 }
+public fn benchIndirectMix(value: Int) -> Int { return (value * 17 + 23) % 1009 }
 
-fn benchIndirectDispatch(operation: Int, value: Int) -> Int {
+public fn benchIndirectDispatch(operation: Int, value: Int) -> Int {
     if (operation == 0) { return benchIndirectAdd(value) }
     if (operation == 1) { return benchIndirectMul(value) }
     if (operation == 2) { return benchIndirectXor(value) }
     return benchIndirectMix(value)
 }
 
-fn benchIndirectCalls(scale: Int) -> Int {
+public fn benchIndirectCalls(scale: Int) -> Int {
     let n = 262144 * scale
     let mut operations: List<Int> = list_new_with_capacity(n)
     let mut seed: I64 = 37
@@ -235,7 +235,7 @@ fn benchIndirectCalls(scale: Int) -> Int {
     return sum
 }
 
-fn benchDependencyChain(scale: Int) -> Int {
+public fn benchDependencyChain(scale: Int) -> Int {
     let n = 5000000 * scale
     let mut state: U32 = 123456789 as U32
     let mut i = 0
@@ -246,7 +246,7 @@ fn benchDependencyChain(scale: Int) -> Int {
     return (state & (2147483647 as U32)) as Int
 }
 
-fn benchAosVsSoa(scale: Int) -> Int {
+public fn benchAosVsSoa(scale: Int) -> Int {
     let n = 100000 * scale
     let rounds = 20
     let mut particles: List<BenchLayoutParticle> = list_new_with_capacity(n)
@@ -320,7 +320,7 @@ fn benchAosVsSoa(scale: Int) -> Int {
     return aos
 }
 
-fn benchSwitchCase(operation: Int, value: Int) -> Int {
+public fn benchSwitchCase(operation: Int, value: Int) -> Int {
     match (operation) {
         0 => { return (value + 19) % 1009 }
         1 => { return (value + 92) % 1009 }
@@ -583,7 +583,7 @@ fn benchSwitchCase(operation: Int, value: Int) -> Int {
     return 0
 }
 
-fn benchSwitchDispatch(scale: Int) -> Int {
+public fn benchSwitchDispatch(scale: Int) -> Int {
     let n = 250000 * scale
     let mut sequential: List<Int> = list_new_with_capacity(n)
     let mut randomized: List<Int> = list_new_with_capacity(n)
@@ -617,7 +617,7 @@ fn benchSwitchDispatch(scale: Int) -> Int {
     return sum
 }
 
-fn benchMemcpyMix(scale: Int) -> Int {
+public fn benchMemcpyMix(scale: Int) -> Int {
     let mut sizes: List<Int> = list_new_with_capacity(7)
     list_push(sizes, 2)
     list_push(sizes, 4)
@@ -671,7 +671,7 @@ fn benchMemcpyMix(scale: Int) -> Int {
     return checksum
 }
 
-fn benchDeadKernel(value: Int) -> Int {
+public fn benchDeadKernel(value: Int) -> Int {
     let mut x = (value * 17 + 3) % 1009
     x = (x * x + 11) % 1009
     x = (x * 37 + 19) % 1009
@@ -679,7 +679,7 @@ fn benchDeadKernel(value: Int) -> Int {
     return x
 }
 
-fn benchDeadCodeElimination(scale: Int) -> Int {
+public fn benchDeadCodeElimination(scale: Int) -> Int {
     let n = 5000000 * scale
     let mut i = 0
     while (i < n) {

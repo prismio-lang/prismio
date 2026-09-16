@@ -4,7 +4,7 @@ import std.map
 import std.math
 import std.string
 
-fn benchGcd(a0: Int, b0: Int) -> Int {
+public fn benchGcd(a0: Int, b0: Int) -> Int {
     let mut a = a0
     let mut b = b0
     while (b != 0) {
@@ -15,7 +15,7 @@ fn benchGcd(a0: Int, b0: Int) -> Int {
     return a
 }
 
-fn benchFibonacci(scale: Int) -> Int {
+public fn benchFibonacci(scale: Int) -> Int {
     let limit = 1000000 * scale
     let mut a = 1
     let mut b = 1
@@ -31,7 +31,7 @@ fn benchFibonacci(scale: Int) -> Int {
     return checksum
 }
 
-fn benchPrimeSieve(scale: Int) -> Int {
+public fn benchPrimeSieve(scale: Int) -> Int {
     let n = 100000 * scale
     let mut prime: List<Bool> = list_new_with_capacity(n + 1)
     let mut i = 0
@@ -65,7 +65,7 @@ fn benchPrimeSieve(scale: Int) -> Int {
     return (sum + count) % 1000000007
 }
 
-fn benchGcdLcm(scale: Int) -> Int {
+public fn benchGcdLcm(scale: Int) -> Int {
     let limit = 300000 * scale
     let mut checksum = 0
     let mut i = 1
@@ -80,7 +80,7 @@ fn benchGcdLcm(scale: Int) -> Int {
     return checksum
 }
 
-fn benchBinarySearch(scale: Int) -> Int {
+public fn benchBinarySearch(scale: Int) -> Int {
     let n = 100000 * scale
     let queries = 500000 * scale
     let mut values: List<Int> = list_new_with_capacity(n)
@@ -116,14 +116,14 @@ fn benchBinarySearch(scale: Int) -> Int {
     return found
 }
 
-fn benchSwap(values: List<Int>, a: Int, b: Int) {
+public fn benchSwap(values: List<Int>, a: Int, b: Int) {
     let x = list_get(values, a)
     let y = list_get(values, b)
     list_set(values, a, y)
     list_set(values, b, x)
 }
 
-fn benchQuickRange(values: List<Int>, low: Int, high: Int) {
+public fn benchQuickRange(values: List<Int>, low: Int, high: Int) {
     if (low >= high) { return }
     let pivot = list_get(values, low + (high - low) / 2)
     let mut i = low
@@ -141,7 +141,7 @@ fn benchQuickRange(values: List<Int>, low: Int, high: Int) {
     if (i < high) { benchQuickRange(values, i, high) }
 }
 
-fn benchQuicksort(scale: Int) -> Int {
+public fn benchQuicksort(scale: Int) -> Int {
     let n = 25000 * scale
     let mut values: List<Int> = list_new_with_capacity(n)
     let mut seed = 19
@@ -161,7 +161,7 @@ fn benchQuicksort(scale: Int) -> Int {
     return checksum + list_get(values, n - 1)
 }
 
-fn benchMergeRange(values: List<Int>, scratch: List<Int>, low: Int, high: Int) {
+public fn benchMergeRange(values: List<Int>, scratch: List<Int>, low: Int, high: Int) {
     if (high - low <= 1) { return }
     let mid = low + (high - low) / 2
     benchMergeRange(values, scratch, low, mid)
@@ -196,7 +196,7 @@ fn benchMergeRange(values: List<Int>, scratch: List<Int>, low: Int, high: Int) {
     }
 }
 
-fn benchMergesort(scale: Int) -> Int {
+public fn benchMergesort(scale: Int) -> Int {
     let n = 25000 * scale
     let mut values: List<Int> = list_new_with_capacity(n)
     let mut scratch: List<Int> = list_new_with_capacity(n)
@@ -218,7 +218,7 @@ fn benchMergesort(scale: Int) -> Int {
     return checksum + list_get(values, n - 1)
 }
 
-fn benchStringSearch(scale: Int) -> Int {
+public fn benchStringSearch(scale: Int) -> Int {
     let text = "alpha beta gamma delta needle omega ".repeat(2000 * scale)
     let mut from = 0
     let mut count = 0
@@ -233,7 +233,7 @@ fn benchStringSearch(scale: Int) -> Int {
     return positions + count
 }
 
-fn benchGraphBfs(scale: Int) -> Int {
+public fn benchGraphBfs(scale: Int) -> Int {
     let width = 120 * scale
     let total = width * width
     let mut seen: List<Bool> = list_new_with_capacity(total)
@@ -285,7 +285,7 @@ fn benchGraphBfs(scale: Int) -> Int {
     return checksum + head
 }
 
-fn benchKnapsack(scale: Int) -> Int {
+public fn benchKnapsack(scale: Int) -> Int {
     let capacity = 800 * scale
     let items = 180
     let mut best: List<Int> = list_new_with_capacity(capacity + 1)
@@ -320,13 +320,13 @@ fn benchKnapsack(scale: Int) -> Int {
     return list_get(best, capacity)
 }
 
-fn benchBuildTree(depth: Int, seed: Int) -> BenchTree {
+public fn benchBuildTree(depth: Int, seed: Int) -> BenchTree {
     if (depth == 0) { return BenchTree.Empty }
     return BenchTree.Node(benchBuildTree(depth - 1, seed * 2), seed,
                           benchBuildTree(depth - 1, seed * 2 + 1))
 }
 
-fn benchTreeSum(tree: BenchTree) -> Int {
+public fn benchTreeSum(tree: BenchTree) -> Int {
     match (tree) {
         BenchTree.Empty => { return 0 }
         BenchTree.Node(left, value, right) => {
@@ -336,7 +336,7 @@ fn benchTreeSum(tree: BenchTree) -> Int {
     return 0
 }
 
-fn benchTreeTraversal(scale: Int) -> Int {
+public fn benchTreeTraversal(scale: Int) -> Int {
     let depth = 13 + scale / 4
     let tree = benchBuildTree(depth, 1)
     let mut checksum = 0
@@ -352,7 +352,7 @@ struct BenchHeapHandle {
     size: Int
 }
 
-fn benchHeapPush(data: List<I64>, h: BenchHeapHandle, val: I64) {
+public fn benchHeapPush(data: List<I64>, h: BenchHeapHandle, val: I64) {
     if (h.size < list_len(data)) {
         list_set(data, h.size, val)
     } else {
@@ -374,7 +374,7 @@ fn benchHeapPush(data: List<I64>, h: BenchHeapHandle, val: I64) {
     }
 }
 
-fn benchHeapPop(data: List<I64>, h: BenchHeapHandle) -> I64 {
+public fn benchHeapPop(data: List<I64>, h: BenchHeapHandle) -> I64 {
     let top = list_get(data, 0)
     h.size = h.size - 1
     list_set(data, 0, list_get(data, h.size))
@@ -402,7 +402,7 @@ fn benchHeapPop(data: List<I64>, h: BenchHeapHandle) -> I64 {
     return top
 }
 
-fn benchDijkstraShortestPath(scale: Int) -> Int {
+public fn benchDijkstraShortestPath(scale: Int) -> Int {
     let vCount = 1000 * scale
     let eCount = vCount + 5000 * scale
 
@@ -498,7 +498,7 @@ fn benchDijkstraShortestPath(scale: Int) -> Int {
     return checksum as Int
 }
 
-fn benchLz4Compress(scale: Int) -> Int {
+public fn benchLz4Compress(scale: Int) -> Int {
     let n = 20000 * scale
     let mut input: List<Int> = list_new_with_capacity(n)
 
@@ -570,7 +570,7 @@ struct BenchPosHolder {
     val: Int
 }
 
-fn benchBuildOneExpr(depth: Int, s: BenchSeedHolder) -> String {
+public fn benchBuildOneExpr(depth: Int, s: BenchSeedHolder) -> String {
     if (depth <= 0) {
         s.val = benchRandom(s.val)
         return ((s.val % 100) + 1).toString()
@@ -586,7 +586,7 @@ fn benchBuildOneExpr(depth: Int, s: BenchSeedHolder) -> String {
     return inner + " " + right + ")"
 }
 
-fn benchParseSExpr(text: String, p: BenchPosHolder, nodes: List<Int>) -> Int {
+public fn benchParseSExpr(text: String, p: BenchPosHolder, nodes: List<Int>) -> Int {
     let n = text.length()
     while (p.val < n and (text.byteAt(p.val) == 32 or text.byteAt(p.val) == 10)) {
         p.val = p.val + 1
@@ -626,7 +626,7 @@ fn benchParseSExpr(text: String, p: BenchPosHolder, nodes: List<Int>) -> Int {
     }
 }
 
-fn benchEvalNode(nodes: List<Int>, idx: Int) -> Int {
+public fn benchEvalNode(nodes: List<Int>, idx: Int) -> Int {
     let val = list_get(nodes, idx * 3)
     let leftIdx = list_get(nodes, idx * 3 + 1)
     if (leftIdx == -1) {
@@ -641,7 +641,7 @@ fn benchEvalNode(nodes: List<Int>, idx: Int) -> Int {
     return 0
 }
 
-fn benchSExprParse(scale: Int) -> Int {
+public fn benchSExprParse(scale: Int) -> Int {
     let count = 400 * scale
     let s = BenchSeedHolder { val: 42 }
     let mut allText = ""
@@ -675,7 +675,7 @@ fn benchSExprParse(scale: Int) -> Int {
 // iteration order is a property of its hash function, and the three arms do not
 // share one. Sorting the counts restores a total order the checksum can depend
 // on.
-fn benchWordFrequency(scale: Int) -> Int {
+public fn benchWordFrequency(scale: Int) -> Int {
     let text = "the quick brown fox jumps over the lazy dog while the fox naps ".repeat(400 * scale)
     let words = text.splitWhitespace()
     let counts: Map<String, Int> = mapNew<String, Int>()
@@ -711,7 +711,7 @@ fn benchWordFrequency(scale: Int) -> Int {
 // subtraction. `quicksort` and `mergesort` sort `Int`, where the comparison
 // vectorises and the element move is a word; here neither is true, and each arm
 // uses the unstable sort its own standard library ships.
-fn benchSortStrings(scale: Int) -> Int {
+public fn benchSortStrings(scale: Int) -> Int {
     let n = 20000 * scale
     let mut items: List<String> = list_new_with_capacity(n)
     let mut seed = 7
@@ -738,7 +738,7 @@ fn benchSortStrings(scale: Int) -> Int {
 // `knapsack` is one-dimensional over one array; this indexes two different
 // buffers and a third source string per iteration, which is the shape a
 // bounds-check hoist has to survive.
-fn benchEditDistance(scale: Int) -> Int {
+public fn benchEditDistance(scale: Int) -> Int {
     let left = "kitten_sitting_flitting_knitting_".repeat(6 * scale)
     let right = "sitting_kitten_blitting_knotting_".repeat(6 * scale)
     let rows = left.length()

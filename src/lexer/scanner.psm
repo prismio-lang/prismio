@@ -9,8 +9,9 @@ import lexer.token
 import common.text
 import common.diagnostics
 import std.string
+import ast.nodes
 
-extern fn exit(code: Int)
+public extern fn exit(code: Int)
 
 // `length` is the input's size, measured once. Every character read used to go
 // through str_char_at, which calls strlen -- so scanning a file cost O(n) per
@@ -34,7 +35,7 @@ struct Lexer {
     interpBrace: Int
 }
 
-fn createLexer(input: String, file: Int) -> Lexer {
+public fn createLexer(input: String, file: Int) -> Lexer {
     // Skip a UTF-8 byte order mark. Most Windows editors write one by default
     // (PowerShell's -Encoding utf8 among them), and without this the first token
     // is garbage and the file fails with "Unknown declaration" -- a baffling
@@ -359,12 +360,7 @@ private fn lexNumber(lex: Lexer) -> Token {
 }
 
 // One run of literal text, ending at the closing quote or at an unescaped `${`.
-//
-// Two passes, as before: the scan steps over backslash pairs so an escaped quote
-// does not end the literal, and escapes are decoded only if there is one, which
-// keeps the common case on the cheap str_slice path instead of concatenating per
-// character. `lex.pos` is left *on* the `"` or the `$`, so the caller decides
-// what kind of token this chunk belongs to.
+// Single-line strings cannot span across newlines; multiline strings use `"""..."""`.
 private fn lexStringChunk(lex: Lexer) -> String {
     let bodyStart = lex.pos
     let bodyCol = lex.col
@@ -374,12 +370,19 @@ private fn lexStringChunk(lex: Lexer) -> String {
     while (lex.pos < lex.length) {
         let c = lexerCurrent(lex)
         if (c == '"') { break }
+        if (c == '\n' or c == '\r') {
+            lexerFatal(lex, startLine, bodyCol,
+                "unterminated string literal; multiline strings require triple quotes \"\"\"...\"\"\"")
+        }
         if (c == '$' and lexerPeek(lex, 1) == '{') { break }
         if (c == '\\') {
             hasEscape = true
             lexerAdvance(lex) // consume the backslash; the pair is skipped below
+            if (lexerCurrent(lex) == '\n' or lexerCurrent(lex) == '\r') {
+                lexerFatal(lex, startLine, bodyCol,
+                    "unterminated string literal; multiline strings require triple quotes \"\"\"...\"\"\"")
+            }
         }
-        if (lexerCurrent(lex) == '\n') { lexerNewline(lex) }
         lexerAdvance(lex)
     }
 
@@ -429,6 +432,65 @@ private fn lexString(lex: Lexer) -> Token {
     return lexerToken(lex, TokenType.STRING_LITERAL, value, line, col, start)
 }
 
+// One run of literal text inside a triple-quoted string, ending at the closing
+// """ or at an unescaped `${`.
+private fn lexTripleStringChunk(lex: Lexer) -> String {
+    let bodyStart = lex.pos
+
+    while (lex.pos < lex.length) {
+        let c = lexerCurrent(lex)
+        if (c == '"' and lexerPeek(lex, 1) == '"' and lexerPeek(lex, 2) == '"') {
+            break
+        }
+        if (c == '$' and lexerPeek(lex, 1) == '{') {
+            break
+        }
+        if (c == '\n') {
+            lexerNewline(lex)
+        }
+        lexerAdvance(lex)
+    }
+
+    return strSubstring(lex.input, bodyStart, lex.pos - bodyStart)
+}
+
+// Kotlin-style triple-quoted multiline strings: `"""..."""`.
+// May span newlines; single and double quotes inside are preserved verbatim.
+private fn lexTripleString(lex: Lexer) -> Token {
+    let line = lex.line
+    let col = lex.col
+    let start = lex.pos
+
+    // Consume the opening """
+    lexerAdvance(lex)
+    lexerAdvance(lex)
+    lexerAdvance(lex)
+
+    let value = lexTripleStringChunk(lex)
+
+    if (lexerCurrent(lex) == '$') {
+        if (lex.interpOpen > 0) {
+            lexerFatal(lex, line, col,
+                "an interpolated string cannot contain another interpolated string")
+        }
+        lexerAdvance(lex)
+        lexerAdvance(lex)
+        lex.interpOpen = 2
+        lex.interpBrace = 0
+        return lexerToken(lex, TokenType.INTERP_BEGIN, value, line, col, start)
+    }
+
+    if (lexerCurrent(lex) == '"' and lexerPeek(lex, 1) == '"' and lexerPeek(lex, 2) == '"') {
+        lexerAdvance(lex)
+        lexerAdvance(lex)
+        lexerAdvance(lex)
+    } else {
+        lexerFatal(lex, line, col, "unterminated triple-quoted string literal")
+    }
+
+    return lexerToken(lex, TokenType.STRING_LITERAL, value, line, col, start)
+}
+
 // The `}` that closes an interpolation, and the literal run after it. Reached
 // from lexerNextToken when the brace depth inside the interpolation is zero --
 // so a struct literal or an `if` in there closes its own braces first.
@@ -438,7 +500,13 @@ private fn lexInterpolationResume(lex: Lexer) -> Token {
     let start = lex.pos
 
     lexerAdvance(lex)
-    let value = lexStringChunk(lex)
+    let isTriple = lex.interpOpen == 2
+    let mut value = ""
+    if (isTriple) {
+        value = lexTripleStringChunk(lex)
+    } else {
+        value = lexStringChunk(lex)
+    }
 
     if (lexerCurrent(lex) == '$') {
         lexerAdvance(lex)
@@ -446,10 +514,20 @@ private fn lexInterpolationResume(lex: Lexer) -> Token {
         return lexerToken(lex, TokenType.INTERP_PART, value, line, col, start)
     }
 
-    if (lexerCurrent(lex) == '"') {
-        lexerAdvance(lex)
+    if (isTriple) {
+        if (lexerCurrent(lex) == '"' and lexerPeek(lex, 1) == '"' and lexerPeek(lex, 2) == '"') {
+            lexerAdvance(lex)
+            lexerAdvance(lex)
+            lexerAdvance(lex)
+        } else {
+            lexerFatal(lex, line, col, "unterminated triple-quoted string literal")
+        }
     } else {
-        lexerFatal(lex, line, col, "unterminated string literal")
+        if (lexerCurrent(lex) == '"') {
+            lexerAdvance(lex)
+        } else {
+            lexerFatal(lex, line, col, "unterminated string literal")
+        }
     }
     lex.interpOpen = 0
     return lexerToken(lex, TokenType.INTERP_END, value, line, col, start)
@@ -605,7 +683,12 @@ private fn lexerNextToken(lex: Lexer) -> Token {
 
     if (isIdentStart(c)) { return lexIdentifier(lex) }
     if (isDigit(c)) { return lexNumber(lex) }
-    if (c == '"') { return lexString(lex) }
+    if (c == '"') {
+        if (lexerPeek(lex, 1) == '"' and lexerPeek(lex, 2) == '"') {
+            return lexTripleString(lex)
+        }
+        return lexString(lex)
+    }
     if (c == '\'') { return lexChar(lex) }
     // Before the separator check, and after the operator check, because '.' is a
     // separator but ".." is not.
@@ -624,14 +707,14 @@ private fn lexerNextToken(lex: Lexer) -> Token {
 
 // Both are `void* f(void* p) { return p; }` in lang_runtime.c, so the result is
 // the argument; without the contracts every Token reads as an opaque extern.
-extern fn ptr_to_token(ptr: Ptr) -> Token alias
-extern fn token_to_ptr(tok: Token borrow) -> Ptr alias
+public extern fn ptr_to_token(ptr: Ptr) -> Token alias
+public extern fn token_to_ptr(tok: Token borrow) -> Ptr alias
 
 // Token is a struct and therefore move-only, so walking the list with a second
 // Token binding (`let current = head`) would move `head` and make the final
 // `return head` a use-after-move. Thread the list through pointers instead: the
 // bindings stay local to one iteration and the chain itself is built the same way.
-fn lexAllTokens(lex: Lexer) -> Token {
+public fn lexAllTokens(lex: Lexer) -> Token {
     // The head stays a Token rather than a second pointer binding. Pointers are
     // Strings here, and AIF Level 4 made those affine too, so
     // `let mut currentPtr = head_ptr` moved the head and the return read a

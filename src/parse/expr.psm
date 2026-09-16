@@ -5,6 +5,7 @@
 // parsePrimary the atoms plus the call/index/member suffixes that bind tightest.
 
 import lexer.token
+import lexer.scanner
 import common.text
 import ast.nodes
 import common.diagnostics

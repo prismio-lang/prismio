@@ -9,15 +9,20 @@ import std.string
 import std.option
 
 internal fn parseDeclaration(p: Parser) -> ASTNode {
-    // v0.1 3.5. `priv fn helper(...)` -- visible only inside the file that
-    // declares it.
+    // v0.1 3.5. `public fn helper(...)` -- part of this module's surface;
+    // anything unmarked is visible only inside the file that declares it.
     //
-    // **Contextual, and opt-in**, for the two reasons `workload` gives one screen
-    // down: reserving the word would break a program that uses it as a name, and
-    // an identifier cannot begin a declaration anyway, so `priv fn` is
-    // unambiguous. Opt-in rather than private-by-default because every
-    // cross-module call in `src/` and every `std` function is public today -- a
-    // private default would have made this a rename of the whole tree.
+    // **Contextual**, for the reason `workload` gives one screen down: reserving
+    // the word would break a program that uses it as a name, and an identifier
+    // cannot begin a declaration anyway, so `public fn` is unambiguous either
+    // way.
+    //
+    // **Private by default**, which is the opposite of what this started as. The
+    // opt-in spelling meant a module's surface was every declaration in it and a
+    // helper widened that surface by existing; nothing had to be decided, so
+    // nothing was. Flipping it cost a rename of the tree once -- see the
+    // `public` markers through `src/`, `std/` and `ums/` -- and buys a surface
+    // that is the part someone wrote down.
     let visibility = p.visibilityLevel()
     if (visibility >= 0) {
         let marker = p.current()
@@ -63,9 +68,13 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
 // The visibility a marker before a declaration keyword asks for, or -1 when the
 // token is not a marker at all. The levels are the values stored in `i2`:
 //
-//   0  public    -- everywhere, and the default, so the marker is redundant
-//   1  private   -- the declaring file
+//   0  public    -- everywhere
+//   1  private   -- the declaring file, and the default an unmarked `fn` keeps
 //   2  internal  -- the declaring package
+//
+// parseFunctionDecl and parseExternFnDecl stamp 1 and parseDeclaration overwrites
+// it when a marker asked for something else, so the default lives at the two
+// places a function is built rather than in every reader of `i2`.
 //
 // Recognising every declaration kind and rejecting all but `fn` in
 // parseDeclaration keeps the marker consumed either way, so a misplaced one is a
@@ -800,6 +809,7 @@ private fn parseExternFnDecl(p: Parser) -> ASTNode {
     p.expectVal(TokenType.KEYWORD, "fn", "extern fn")
 
     let extNode = p.node(NodeKind.EXTERN_FUNCTION)
+    extNode.i2 = 1
     let name = p.current()
     extNode.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "function name")
@@ -818,6 +828,7 @@ private fn parseFunctionDecl(p: Parser) -> ASTNode {
     p.expectVal(TokenType.KEYWORD, "fn", "function")
 
     let fnNode = p.node(NodeKind.FUNCTION)
+    fnNode.i2 = 1
     let name = p.current()
     fnNode.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "function name")
@@ -934,7 +945,18 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
         let method = parseFunctionDecl(p)
         method.s2 = parseImplMethodParams(p, header.s1, method.s2)
         parseImplMethodGenericInfo(header, method)
-        if (methodVisibility >= 0) { method.i2 = methodVisibility }
+        // A trait's method is public unless it says otherwise, and an inherent
+        // one takes the private default like any other `fn`. `impl Eq for Key`
+        // is a promise made to everyone who can see the trait: a private `eq`
+        // would satisfy the conformance check and then be unreachable from the
+        // generic code the conformance exists to serve, which is a declaration
+        // whose only possible use is already denied. `implNode.s2` is the trait
+        // name, set above and empty for an inherent block.
+        if (methodVisibility >= 0) {
+            method.i2 = methodVisibility
+        } else if (implNode.s2.equals("") == false) {
+            method.i2 = 0
+        }
         parseImplCheckReceiver(p, method)
 
         // The method itself is moved into the module's declaration chain after

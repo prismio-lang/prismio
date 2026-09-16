@@ -46,7 +46,7 @@ LIBC_SYMBOLS = {
 # pick, from the target triple. A builtin carries no declaration, so there is
 # nothing for this check to see and the hole closed with it.
 
-DECL = re.compile(r"^\s*extern\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
+DECL = re.compile(r"^\s*(?:public\s+|internal\s+|private\s+)?extern\s+fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
 
 # `nm` prints "<addr> <type> <name>" for a defined symbol and "<type> <name>"
 # for one with no address. Lowercase types are file-local; a curated body copied

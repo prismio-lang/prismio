@@ -44,7 +44,7 @@ struct UmsCommand {
     len: Int
 }
 
-fn umsCommand(name: String, line: Int, col: Int, len: Int) -> UmsCommand {
+public fn umsCommand(name: String, line: Int, col: Int, len: Int) -> UmsCommand {
     return UmsCommand {
         name: strClone(name),
         description: strClone(""),
@@ -55,7 +55,7 @@ fn umsCommand(name: String, line: Int, col: Int, len: Int) -> UmsCommand {
     }
 }
 
-fn umsCommandStep(kind: UmsCommandStepKind, subject: String,
+public fn umsCommandStep(kind: UmsCommandStepKind, subject: String,
                   line: Int, col: Int, len: Int) -> UmsCommandStep {
     return UmsCommandStep {
         kind: kind,
@@ -67,7 +67,7 @@ fn umsCommandStep(kind: UmsCommandStepKind, subject: String,
     }
 }
 
-fn umsCommandArgument(forwarded: Bool, text: String,
+public fn umsCommandArgument(forwarded: Bool, text: String,
                       line: Int, col: Int, len: Int) -> UmsCommandArgument {
     return UmsCommandArgument {
         forwarded: forwarded,
@@ -78,7 +78,7 @@ fn umsCommandArgument(forwarded: Bool, text: String,
     }
 }
 
-fn umsCommandFind(commands: List<UmsCommand>, name: String) -> Int {
+public fn umsCommandFind(commands: List<UmsCommand>, name: String) -> Int {
     let mut i = 0
     while (i < list_len(commands)) {
         if (list_get(commands, i).name.equals(name)) { return i }

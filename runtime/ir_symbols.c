@@ -416,6 +416,274 @@ void ir_reset_selections(void) {
     selection_count = 0;
 }
 
+// Explicit imports: which modules a file explicitly imported.
+// A file may only resolve declarations from modules it explicitly imported,
+// avoiding implicit transitive leakage across module boundaries.
+typedef struct {
+    int file;
+    const char* module;
+} ImportRecord;
+
+static ImportRecord* imports = NULL;
+static int import_count = 0;
+static int import_capacity = 0;
+
+void ir_import_record(int file, const char* module) {
+    if (import_count == import_capacity) {
+        int next = import_capacity ? import_capacity * 2 : 32;
+        imports = (ImportRecord*)xrealloc(imports, (size_t)next * sizeof(ImportRecord),
+                                          "the explicit-import table");
+        import_capacity = next;
+    }
+    imports[import_count].file = file;
+    imports[import_count].module = ir_intern(module);
+    import_count++;
+}
+
+int ir_file_imports_module(int file, const char* module) {
+    if (import_count == 0) return 0;
+    const char* interned = ir_intern(module);
+    for (int i = 0; i < import_count; i++) {
+        if (imports[i].file == file && imports[i].module == interned) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void ir_reset_imports(void) {
+    import_count = 0;
+}
+
+// Import aliases: `import std.io as io` binds `io` to `std.io` for one file.
+//
+// A second name for the module, not a replacement -- the alias never reaches the
+// import table above, so the gate and every diagnostic go on naming `std.io`.
+// Sema resolves the alias to that path before it asks any other question, which
+// is what keeps this one lookup rather than a second spelling threaded through
+// module resolution.
+typedef struct {
+    int file;
+    const char* alias;
+    const char* module;
+} ImportAlias;
+
+static ImportAlias* import_aliases = NULL;
+static int import_alias_count = 0;
+static int import_alias_capacity = 0;
+
+// Answers "" when this file already bound the alias, so the caller can report a
+// duplicate against the module it already names rather than silently keeping the
+// first or the last.
+const char* ir_import_alias_target(int file, const char* alias) {
+    if (import_alias_count == 0) return "";
+    const char* interned = ir_intern(alias);
+    for (int i = 0; i < import_alias_count; i++) {
+        if (import_aliases[i].file == file && import_aliases[i].alias == interned) {
+            return import_aliases[i].module;
+        }
+    }
+    return "";
+}
+
+void ir_import_alias_record(int file, const char* alias, const char* module) {
+    if (import_alias_count == import_alias_capacity) {
+        int next = import_alias_capacity ? import_alias_capacity * 2 : 16;
+        import_aliases = (ImportAlias*)xrealloc(import_aliases,
+                                                (size_t)next * sizeof(ImportAlias),
+                                                "the import-alias table");
+        import_alias_capacity = next;
+    }
+    import_aliases[import_alias_count].file = file;
+    import_aliases[import_alias_count].alias = ir_intern(alias);
+    import_aliases[import_alias_count].module = ir_intern(module);
+    import_alias_count++;
+}
+
+void ir_reset_import_aliases(void) {
+    import_alias_count = 0;
+}
+
+// Tracks which files declared an extern function, so deduplicated EXTERN_FUNCTION
+// nodes remain callable by any file that explicitly declared them, or imported
+// the module that declared them as public.
+const char* diag_file_module(int file);
+
+static const char* package_of(const char* module) {
+    if (!module || !*module) return "";
+    const char* last_dot = strrchr(module, '.');
+    if (!last_dot) return "";
+    size_t len = (size_t)(last_dot - module);
+    char buf[256];
+    if (len < sizeof(buf)) {
+        memcpy(buf, module, len);
+        buf[len] = '\0';
+        return ir_intern(buf);
+    }
+    char* dyn = (char*)malloc(len + 1);
+    if (!dyn) symbols_oom("package string");
+    memcpy(dyn, module, len);
+    dyn[len] = '\0';
+    const char* res = ir_intern(dyn);
+    free(dyn);
+    return res;
+}
+
+typedef struct {
+    int file;
+    const char* name;
+    int visibility;
+    const char* module;
+} ExternDeclRecord;
+
+static ExternDeclRecord* extern_decls = NULL;
+static int extern_decl_count = 0;
+static int extern_decl_capacity = 0;
+
+void ir_extern_decl_record(int file, const char* name, int visibility) {
+    const char* interned = ir_intern(name);
+    for (int i = 0; i < extern_decl_count; i++) {
+        if (extern_decls[i].file == file && extern_decls[i].name == interned) {
+            if (visibility < extern_decls[i].visibility) {
+                extern_decls[i].visibility = visibility;
+            }
+            return;
+        }
+    }
+    if (extern_decl_count == extern_decl_capacity) {
+        int next = extern_decl_capacity ? extern_decl_capacity * 2 : 32;
+        extern_decls = (ExternDeclRecord*)xrealloc(extern_decls, (size_t)next * sizeof(ExternDeclRecord),
+                                                   "the extern-declaration table");
+        extern_decl_capacity = next;
+    }
+    extern_decls[extern_decl_count].file = file;
+    extern_decls[extern_decl_count].name = interned;
+    extern_decls[extern_decl_count].visibility = visibility;
+    const char* mod = diag_file_module(file);
+    extern_decls[extern_decl_count].module = (mod && *mod) ? ir_intern(mod) : "";
+    extern_decl_count++;
+}
+
+int ir_file_declares_extern(int file, const char* name) {
+    if (extern_decl_count == 0) return 0;
+    const char* interned = ir_intern(name);
+    for (int i = 0; i < extern_decl_count; i++) {
+        if (extern_decls[i].file == file && extern_decls[i].name == interned) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int ir_caller_can_access_extern(int caller_file, const char* qualifier, const char* name) {
+    if (extern_decl_count == 0) return 0;
+    const char* interned_name = ir_intern(name);
+    const char* interned_qual = (qualifier && *qualifier) ? ir_intern(qualifier) : NULL;
+    const char* caller_mod = diag_file_module(caller_file);
+    const char* caller_pkg = package_of(caller_mod);
+
+    for (int i = 0; i < extern_decl_count; i++) {
+        if (extern_decls[i].name != interned_name) continue;
+
+        const char* decl_mod = extern_decls[i].module;
+        if (!decl_mod || !*decl_mod) {
+            const char* live = diag_file_module(extern_decls[i].file);
+            if (live && *live) {
+                decl_mod = ir_intern(live);
+                extern_decls[i].module = decl_mod;
+            } else {
+                decl_mod = "";
+            }
+        }
+
+        if (interned_qual != NULL) {
+            if (decl_mod != interned_qual) {
+                continue;
+            }
+        }
+
+        // Rule 1: Declared in caller's own file
+        if (extern_decls[i].file == caller_file) {
+            return 1;
+        }
+
+        // Rule 2 & 3: Declared in another file
+        int vis = extern_decls[i].visibility;
+        if (vis == 1) {
+            // Private to declaring file: invisible from other files
+            continue;
+        }
+
+        const char* decl_pkg = package_of(decl_mod);
+        int is_same_pkg = (decl_pkg[0] != '\0' && caller_pkg[0] != '\0' && decl_pkg == caller_pkg);
+
+        // Package internal access
+        if (is_same_pkg) {
+            return 1;
+        }
+
+        // Public access via explicit import
+        if (vis == 0 && decl_mod[0] != '\0') {
+            if (ir_file_imports_module(caller_file, decl_mod)) {
+                if (ir_select_any(caller_file, decl_mod) == 1
+                    && ir_select_has(caller_file, decl_mod, interned_name) == 0) {
+                    continue;
+                }
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+int ir_caller_extern_hidden_level(int caller_file, const char* qualifier, const char* name) {
+    if (extern_decl_count == 0) return 0;
+    const char* interned_name = ir_intern(name);
+    const char* interned_qual = (qualifier && *qualifier) ? ir_intern(qualifier) : NULL;
+    const char* caller_mod = diag_file_module(caller_file);
+    const char* caller_pkg = package_of(caller_mod);
+
+    int found_hidden = 0;
+    for (int i = 0; i < extern_decl_count; i++) {
+        if (extern_decls[i].name != interned_name) continue;
+
+        const char* decl_mod = extern_decls[i].module;
+        if (!decl_mod || !*decl_mod) {
+            const char* live = diag_file_module(extern_decls[i].file);
+            if (live && *live) {
+                decl_mod = ir_intern(live);
+                extern_decls[i].module = decl_mod;
+            } else {
+                decl_mod = "";
+            }
+        }
+
+        if (interned_qual != NULL) {
+            if (decl_mod != interned_qual) continue;
+        }
+
+        if (extern_decls[i].file == caller_file) continue;
+
+        int vis = extern_decls[i].visibility;
+        const char* decl_pkg = package_of(decl_mod);
+        int is_same_pkg = (decl_pkg[0] != '\0' && caller_pkg[0] != '\0' && decl_pkg == caller_pkg);
+        int is_imported = (decl_mod[0] != '\0' && ir_file_imports_module(caller_file, decl_mod));
+
+        if (vis == 1 && (is_imported || is_same_pkg)) {
+            return 1;
+        }
+        if (vis == 2 && is_imported && !is_same_pkg) {
+            found_hidden = 2;
+        }
+    }
+    return found_hidden;
+}
+
+void ir_reset_extern_decls(void) {
+    extern_decl_count = 0;
+}
+
+
 // Function return types, by mangled symbol
 // This was a binding in the table below, under a "$fn$" key that could not
 // collide with a variable name. That made every one of them permanent -- they

@@ -1,0 +1,36 @@
+// `import <path> as <name>` -- a second name for a module, usable as a qualifier.
+//
+// The point of the feature is the case in `main` below: this file declares its
+// own `print`, which takes the unqualified name, and the alias is how std.io's
+// is still reachable without spelling out `std.io.` at every call.
+import std.io as io
+import std.string as str
+import visibility.alpha as alpha
+
+// Shadows std.io's `print` for unqualified calls in this file.
+fn print(value: String) -> Int {
+    return str.strLength(value)
+}
+
+fn main() -> Int {
+    if (print("abcd") != 4) {
+        io.println("FAIL: the local `print` should win unqualified")
+        return 1
+    }
+    if (str.strLength("abcde") != 5) {
+        io.println("FAIL: alias qualifier")
+        return 1
+    }
+    // The real import path keeps working: an alias adds a name, it does not
+    // take one away.
+    if (std.string.strLength("ab") != 2) {
+        io.println("FAIL: full path still qualifies")
+        return 1
+    }
+    if (alpha.visibilityPublic(3) != 6) {
+        io.println("FAIL: alias of a non-std module")
+        return 1
+    }
+    io.println("PASS: import alias")
+    return 0
+}

@@ -1,5 +1,13 @@
 import std.io
 import ums.ums
+// `ums.ums` is a composition root, and an import of it no longer carries what
+// *it* imports -- v0.1 3.5 stops a module's dependencies leaking into its
+// importers. The two modules whose names this test actually calls are named
+// here, which is the whole of the rule: what a file uses, a file imports.
+import ums.model.workspace
+import ums.model.diagnostic
+import ums.model.manifest_writer
+import ums.targets.target
 import std.string
 import std.fs
 import std.list

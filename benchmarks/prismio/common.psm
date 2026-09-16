@@ -1,4 +1,5 @@
 import std.string
+import std.io
 
 extern fn clock_gettime(clk: Int, stamp: BenchTimespec) -> Int
 
@@ -6,22 +7,21 @@ extern fn clock_gettime(clk: Int, stamp: BenchTimespec) -> Int
 // sites enter this program's AIF analysis whether or not they ever run. So it
 // reaches the descriptor the same way std/io.psm does, with the same
 // declaration -- the fd is a C `int`, the count and the result are 64-bit.
-extern fn write(fd: Int, buffer: String borrow, count: I64) -> I64
 
 private fn benchWrite(text: String) {
-    write(1, text, __builtin_string_len(text) as I64)
+    print(text)
 }
 
-fn benchPrint(text: String) { benchWrite(text) }
-fn benchPrintln(text: String) { benchWrite(text) benchWrite("\n") }
-fn benchPrintln(value: Int) { benchWrite(value.toString()) benchWrite("\n") }
+public fn benchPrint(text: String) { benchWrite(text) }
+public fn benchPrintln(text: String) { benchWrite(text) benchWrite("\n") }
+public fn benchPrintln(value: Int) { benchWrite(value.toString()) benchWrite("\n") }
 
 struct BenchTimespec {
     seconds: I64,
     nanoseconds: I64
 }
 
-fn benchNow() -> I64 {
+public fn benchNow() -> I64 {
     let stamp = BenchTimespec { seconds: 0, nanoseconds: 0 }
     clock_gettime(4, stamp)
     return stamp.seconds * 1000000000 + stamp.nanoseconds
@@ -41,6 +41,6 @@ enum BenchTree {
     Node(BenchTree, Int, BenchTree)
 }
 
-fn benchRandom(seed: Int) -> Int {
+public fn benchRandom(seed: Int) -> Int {
     return (seed * 25173 + 13849) % 65521
 }

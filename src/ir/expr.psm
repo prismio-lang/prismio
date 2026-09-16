@@ -6,6 +6,7 @@ import common.text
 import common.diagnostics
 import common.target
 import std.string
+import aif.model
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
 // answer. Previously both operands were generated unconditionally and combined
@@ -2592,459 +2593,468 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
     }
 }
 
-internal fn generateExpression(expr: ASTNode) -> String {
-    if (expr.kind == NodeKind.LITERAL_EXPR) {
-        if (expr.i1 == TokenType.NUMBER_LITERAL) {
-            return expr.s1
-        }
-        if (expr.i1 == TokenType.FLOAT_LITERAL) {
-            return expr.s1
-        }
-        if (expr.i1 == TokenType.BOOL_LITERAL) {
-            if (expr.s1.equals("true")) { return "1" }
-            return "0"
-        }
-        if (expr.i1 == TokenType.CHAR_LITERAL) {
-            return expr.s1
-        }
-        if (expr.i1 == TokenType.STRING_LITERAL) {
-            // The literal's global was named by the collect_strings pre-pass.
-            //
-            // Named by the collect_strings pre-pass -- unless that pass has no
-            // case for the node this literal sits under. It enumerates node
-            // kinds, and `spawn`'s argument subtree is not among them, so
-            // `spawn f("x")` reached here with no global and the backend failed
-            // with `unknown string global ()`. That predates the fat String; the
-            // thin path handed the same empty name to `ir_string_ptr`.
-            //
-            // Naming it here makes the pre-pass an optimisation (it batches the
-            // globals) rather than a correctness requirement, so the next node
-            // kind nobody adds cannot reintroduce this.
-            if (expr.s2.equals("")) {
-                collectStringsExpr(expr)
-            }
-            // A constant pair -- `{ @.strN, <len> }` -- so a literal costs no
-            // instructions at all, which is why literals do not go through the
-            // insertvalue pair that `fatFromPtr` builds for an FFI return.
-            //
-            // `__builtin_string_len` here runs in the *compiler*, on the literal's own
-            // text, so it is a compile-time count and not a call in the program.
-            return ir_get_temp_name(ir_const_str(expr.s2, __builtin_string_len(expr.s1)))
-        }
+
+private fn generateLiteral(expr: ASTNode) -> String {
+    if (expr.i1 == TokenType.NUMBER_LITERAL) {
+        return expr.s1
     }
-
-    if (expr.kind == NodeKind.DYN_MAKE) { return generateDynMake(expr) }
-    if (expr.kind == NodeKind.DYN_CALL) { return generateDynCall(expr) }
-
-    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) {
-        let structName = expr.s1
-
-        // A boxed binary enum's empty variant owns no payload and needs no
-        // allocation. Keep this before reuse: an empty consuming match may
-        // offer a null reuse token, which must never be written through.
-        let nullTag = ir_enum_null_tag(structName)
-        if (nullTag > 0 and nodeExists(expr.child1)) {
-            let tagField = ptr_to_node(expr.child1)
-            if (tagField.s1.equals("$tag") and nodeExists(tagField.child1)) {
-                let tag = ptr_to_node(tagField.child1)
-                if (tag.kind == NodeKind.LITERAL_EXPR
-                    and tag.s1.equals(strFromInt(nullTag))) {
-                    return "null"
-                }
-            }
-        }
-
-        // M2.1b. A consuming payload match may pair its dead constructor with
-        // the same-tag constructor returned by this branch. The eligibility
-        // proof and the token's frame limit live in stmt.psm; the expression
-        // lowering only consumes the token instead of allocating a new block.
-        // i3 is otherwise unused on STRUCT_LITERAL_EXPR.
-        if (expr.i3 == 2 and irReuseValue.equals("") == false) {
-            let reused = irReuseValue
-            irReuseValue = ""
-            generateStructLiteralFields(expr, structName, reused, false)
-            return reused
-        }
-
-        // AIF decides where this value lives. T0 means the analysis proved it
-        // does not outlive the frame that creates it, so it gets a stack slot
-        // and no allocation call at all; every other tier still goes through the
-        // backend's allocator hook, which is what it did before AIF existed.
+    if (expr.i1 == TokenType.FLOAT_LITERAL) {
+        return expr.s1
+    }
+    if (expr.i1 == TokenType.BOOL_LITERAL) {
+        if (expr.s1.equals("true")) { return "1" }
+        return "0"
+    }
+    if (expr.i1 == TokenType.CHAR_LITERAL) {
+        return expr.s1
+    }
+    if (expr.i1 == TokenType.STRING_LITERAL) {
+        // The literal's global was named by the collect_strings pre-pass.
         //
-        // A tier of -1 is "no information" -- a build that ran no inference, or
-        // an expression the walk never reached. That has to keep the old
-        // behaviour exactly, because it is what makes SPEC 7.1's zero-analysis
-        // mode behaviourally identical rather than merely intended to be.
-        let mut allocTemp = 0
-        if (aif_arena_at_node(node_to_ptr(expr)) == 1) {
-            // T1 inside a `region` it cannot outlive: bump from the arena, and
-            // the whole block goes back at the region's exit rather than one
-            // object at a time.
-            allocTemp = ir_alloc_region(structName)
-        } else if (aif_tier_at_node(node_to_ptr(expr)) == AIF_TIER_T0) {
-            allocTemp = ir_alloc_stack(structName)
-        } else if (aif_rc_at_node(node_to_ptr(expr)) == 1) {
-            // AIF Level 5. T3, held by more than one container, so no single
-            // teardown can decide when it dies. The count goes in a prefix header,
-            // which leaves the struct's own layout -- and therefore every field
-            // index below -- exactly as it was.
-            allocTemp = ir_alloc_rc(structName)
-        } else if (aif_cycle_at_node(node_to_ptr(expr)) == 1) {
-            // AIF T4b. Shared, fully escaping, and of a type that lies in a
-            // non-trivial SCC -- so a count alone cannot reclaim it and the
-            // collector has to be able to walk it. Header in front, as for T3.
-            allocTemp = ir_alloc_cycle(structName)
+        // Named by the collect_strings pre-pass -- unless that pass has no
+        // case for the node this literal sits under. It enumerates node
+        // kinds, and `spawn`'s argument subtree is not among them, so
+        // `spawn f("x")` reached here with no global and the backend failed
+        // with `unknown string global ()`. That predates the fat String; the
+        // thin path handed the same empty name to `ir_string_ptr`.
+        //
+        // Naming it here makes the pre-pass an optimisation (it batches the
+        // globals) rather than a correctness requirement, so the next node
+        // kind nobody adds cannot reintroduce this.
+        if (expr.s2.equals("")) {
+            collectStringsExpr(expr)
+        }
+        // A constant pair -- `{ @.strN, <len> }` -- so a literal costs no
+        // instructions at all, which is why literals do not go through the
+        // insertvalue pair that `fatFromPtr` builds for an FFI return.
+        //
+        // `__builtin_string_len` here runs in the *compiler*, on the literal's own
+        // text, so it is a compile-time count and not a call in the program.
+        return ir_get_temp_name(ir_const_str(expr.s2, __builtin_string_len(expr.s1)))
+    }
+
+    // This kind, but no shape within it. `0` is what falling out of
+    // the arm reached when it was inline: the kinds are mutually
+    // exclusive, so the dispatcher's own fallback was the only place
+    // left to land.
+    return "0"
+}
+
+private fn generateStructLiteral(expr: ASTNode) -> String {
+    let structName = expr.s1
+
+    // A boxed binary enum's empty variant owns no payload and needs no
+    // allocation. Keep this before reuse: an empty consuming match may
+    // offer a null reuse token, which must never be written through.
+    let nullTag = ir_enum_null_tag(structName)
+    if (nullTag > 0 and nodeExists(expr.child1)) {
+        let tagField = ptr_to_node(expr.child1)
+        if (tagField.s1.equals("$tag") and nodeExists(tagField.child1)) {
+            let tag = ptr_to_node(tagField.child1)
+            if (tag.kind == NodeKind.LITERAL_EXPR
+                and tag.s1.equals(strFromInt(nullTag))) {
+                return "null"
+            }
+        }
+    }
+
+    // M2.1b. A consuming payload match may pair its dead constructor with
+    // the same-tag constructor returned by this branch. The eligibility
+    // proof and the token's frame limit live in stmt.psm; the expression
+    // lowering only consumes the token instead of allocating a new block.
+    // i3 is otherwise unused on STRUCT_LITERAL_EXPR.
+    if (expr.i3 == 2 and irReuseValue.equals("") == false) {
+        let reused = irReuseValue
+        irReuseValue = ""
+        generateStructLiteralFields(expr, structName, reused, false)
+        return reused
+    }
+
+    // AIF decides where this value lives. T0 means the analysis proved it
+    // does not outlive the frame that creates it, so it gets a stack slot
+    // and no allocation call at all; every other tier still goes through the
+    // backend's allocator hook, which is what it did before AIF existed.
+    //
+    // A tier of -1 is "no information" -- a build that ran no inference, or
+    // an expression the walk never reached. That has to keep the old
+    // behaviour exactly, because it is what makes SPEC 7.1's zero-analysis
+    // mode behaviourally identical rather than merely intended to be.
+    let mut allocTemp = 0
+    if (aif_arena_at_node(node_to_ptr(expr)) == 1) {
+        // T1 inside a `region` it cannot outlive: bump from the arena, and
+        // the whole block goes back at the region's exit rather than one
+        // object at a time.
+        allocTemp = ir_alloc_region(structName)
+    } else if (aif_tier_at_node(node_to_ptr(expr)) == AIF_TIER_T0) {
+        allocTemp = ir_alloc_stack(structName)
+    } else if (aif_rc_at_node(node_to_ptr(expr)) == 1) {
+        // AIF Level 5. T3, held by more than one container, so no single
+        // teardown can decide when it dies. The count goes in a prefix header,
+        // which leaves the struct's own layout -- and therefore every field
+        // index below -- exactly as it was.
+        allocTemp = ir_alloc_rc(structName)
+    } else if (aif_cycle_at_node(node_to_ptr(expr)) == 1) {
+        // AIF T4b. Shared, fully escaping, and of a type that lies in a
+        // non-trivial SCC -- so a count alone cannot reclaim it and the
+        // collector has to be able to walk it. Header in front, as for T3.
+        allocTemp = ir_alloc_cycle(structName)
+    } else {
+        allocTemp = ir_alloc_object(structName)
+    }
+    let memName = ir_get_temp_name(allocTemp)
+    // LAYOUT 2.1's alloc(tau). Counted after the tier has chosen an allocator
+    // rather than inside one of the five hooks, because the profile is about
+    // how many instances the program makes, not about which arena served them
+    // -- and a T0 site takes an alloca and calls no hook at all, so counting
+    // in the hooks would miss exactly the instances that are cheapest and
+    // most numerous.
+    irProfileAlloc(structName)
+
+    // CYCLES 3. The object is told how to find its cyclic children and how
+    // to release itself, for the same reason a container is told its element
+    // disposition: at collection time it is a bare pointer, and reading a
+    // descriptor out of it would be reading memory we did not put there.
+    if (aif_cycle_at_node(node_to_ptr(expr)) == 1) {
+        let childrenPtr = ir_func_addr(cyclicChildrenFnName(structName))
+        ir_call_begin()
+        ir_call_arg("ptr", memName)
+        ir_call_arg("ptr", ir_get_temp_name(childrenPtr))
+        if (aif_type_releases(structName) == 1) {
+            let releasePtr = ir_func_addr(releaseFnName(structName))
+            ir_call_arg("ptr", ir_get_temp_name(releasePtr))
         } else {
-            allocTemp = ir_alloc_object(structName)
+            ir_call_arg("ptr", "null")
         }
-        let memName = ir_get_temp_name(allocTemp)
-        // LAYOUT 2.1's alloc(tau). Counted after the tier has chosen an allocator
-        // rather than inside one of the five hooks, because the profile is about
-        // how many instances the program makes, not about which arena served them
-        // -- and a T0 site takes an alloca and calls no hook at all, so counting
-        // in the hooks would miss exactly the instances that are cheapest and
-        // most numerous.
-        irProfileAlloc(structName)
-
-        // CYCLES 3. The object is told how to find its cyclic children and how
-        // to release itself, for the same reason a container is told its element
-        // disposition: at collection time it is a bare pointer, and reading a
-        // descriptor out of it would be reading memory we did not put there.
-        if (aif_cycle_at_node(node_to_ptr(expr)) == 1) {
-            let childrenPtr = ir_func_addr(cyclicChildrenFnName(structName))
-            ir_call_begin()
-            ir_call_arg("ptr", memName)
-            ir_call_arg("ptr", ir_get_temp_name(childrenPtr))
-            if (aif_type_releases(structName) == 1) {
-                let releasePtr = ir_func_addr(releaseFnName(structName))
-                ir_call_arg("ptr", ir_get_temp_name(releasePtr))
-            } else {
-                ir_call_arg("ptr", "null")
-            }
-            ir_call_end("void", "cyc_set_type")
-        }
-
-        generateStructLiteralFields(expr, structName, memName, false)
-        return memName
+        ir_call_end("void", "cyc_set_type")
     }
 
-    if (expr.kind == NodeKind.IDENTIFIER_EXPR) {
-        let valType = ir_get_var_type(expr.s1)
-        let loadType = storageType(valType)
-        // Shadowing-aware: a local named the same as a global must read from
-        // the local's slot. Asking a flat "is this name a global?" registry
-        // instead meant writes went to the local and reads came from the global.
-        if (ir_var_is_global(expr.s1) == 1) {
-            return ir_get_temp_name(ir_load_global(loadType, expr.s1))
+    generateStructLiteralFields(expr, structName, memName, false)
+    return memName
+}
+
+private fn generateIdentifier(expr: ASTNode) -> String {
+    let valType = ir_get_var_type(expr.s1)
+    let loadType = storageType(valType)
+    // Shadowing-aware: a local named the same as a global must read from
+    // the local's slot. Asking a flat "is this name a global?" registry
+    // instead meant writes went to the local and reads came from the global.
+    if (ir_var_is_global(expr.s1) == 1) {
+        return ir_get_temp_name(ir_load_global(loadType, expr.s1))
+    }
+    return ir_get_temp_name(ir_load(loadType, ir_get_var_slot(expr.s1)))
+}
+
+private fn generateMemberAccess(expr: ASTNode) -> String {
+    let objectNode = ptr_to_node(expr.child1)
+    if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
+        let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
+        if (enumVal >= 0) {
+            return strFromInt(enumVal)
         }
-        return ir_get_temp_name(ir_load(loadType, ir_get_var_slot(expr.s1)))
     }
 
-    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) {
-        let objectNode = ptr_to_node(expr.child1)
-        if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
-            let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
-            if (enumVal >= 0) {
-                return strFromInt(enumVal)
-            }
-        }
-
-        // M4.3b. A DataElement is the stable `(view handle, index)` pair. Resolve
-        // the requested column only at the field access; no interior pointer is
-        // stored in the descriptor, so copying it cannot be stranded by layout
-        // conversion or column allocation details.
-        if (nodeHasType(objectNode) and nodeGetType(objectNode).kind == TypeKind.DATAELEMENT) {
-            let elemT = nodeGetType(objectNode)
-            let rowT = ptr_to_type(elemT.child)
-            let structName = rowT.name
-            let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
-            let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
-            let descriptor = generateExpression(objectNode)
-            let view = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
-                                                         descriptor, 0))
-            let index = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
-                                                          descriptor, 1))
-            ir_call_begin()
-            ir_call_arg("ptr", view)
-            ir_call_arg("i32", strFromInt(fieldIndex))
-            let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
-            // The row type makes the stride a compile-time LLVM type rather
-            // than the runtime column's dynamic byte size. That is what lets a
-            // column scan vectorise instead of remaining a scalar multiply.
-            let slot = ir_get_temp_name(ir_elem_ptr(fieldType, column, index))
-            irProfileField(structName, expr.s1, false)
-            if (isValueStructKey(fieldType)) {
-                return ir_get_temp_name(ir_data_load_ptr(fieldType, slot, structName, fieldIndex))
-            }
-            if (isStructTypeKey(fieldType)) { return slot }
-            return ir_get_temp_name(ir_data_load_ptr(fieldType, slot, structName, fieldIndex))
-        }
-
-        let objectVal = generateExpression(objectNode)
-        let objectType = getExprType(objectNode)
-        let structName = structTypeName(objectType)
+    // M4.3b. A DataElement is the stable `(view handle, index)` pair. Resolve
+    // the requested column only at the field access; no interior pointer is
+    // stored in the descriptor, so copying it cannot be stranded by layout
+    // conversion or column allocation details.
+    if (nodeHasType(objectNode) and nodeGetType(objectNode).kind == TypeKind.DATAELEMENT) {
+        let elemT = nodeGetType(objectNode)
+        let rowT = ptr_to_type(elemT.child)
+        let structName = rowT.name
         let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
         let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
-
-        let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+        let descriptor = generateExpression(objectNode)
+        let view = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                     descriptor, 0))
+        let index = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                      descriptor, 1))
+        ir_call_begin()
+        ir_call_arg("ptr", view)
+        ir_call_arg("i32", strFromInt(fieldIndex))
+        let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
+        // The row type makes the stride a compile-time LLVM type rather
+        // than the runtime column's dynamic byte size. That is what lets a
+        // column scan vectorise instead of remaining a scalar multiply.
+        let slot = ir_get_temp_name(ir_elem_ptr(fieldType, column, index))
         irProfileField(structName, expr.s1, false)
-        // An inline field *is* the storage, so the GEP already is the value and
-        // loading would read the struct rather than address it. This is where the
-        // interior pointer SPEC 11 item 5 forbids escaping is created, and it
-        // does escape: references are raw `ptr`, so nothing downstream can tell
-        // this apart from an address the allocator returned. Handles are the fix
-        // and are not built -- see KNOWN_ISSUES.md.
-        // A String field is a value, not storage reached by GEP, so it loads
-        // like a scalar even though its key names a struct.
         if (isValueStructKey(fieldType)) {
-            return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
-                                                       structName, fieldIndex))
+            return ir_get_temp_name(ir_data_load_ptr(fieldType, slot, structName, fieldIndex))
         }
-        if (isStructTypeKey(fieldType)) {
-            return ir_get_temp_name(slot)
-        }
+        if (isStructTypeKey(fieldType)) { return slot }
+        return ir_get_temp_name(ir_data_load_ptr(fieldType, slot, structName, fieldIndex))
+    }
+
+    let objectVal = generateExpression(objectNode)
+    let objectType = getExprType(objectNode)
+    let structName = structTypeName(objectType)
+    let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
+    let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
+
+    let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+    irProfileField(structName, expr.s1, false)
+    // An inline field *is* the storage, so the GEP already is the value and
+    // loading would read the struct rather than address it. This is where the
+    // interior pointer SPEC 11 item 5 forbids escaping is created, and it
+    // does escape: references are raw `ptr`, so nothing downstream can tell
+    // this apart from an address the allocator returned. Handles are the fix
+    // and are not built -- see KNOWN_ISSUES.md.
+    // A String field is a value, not storage reached by GEP, so it loads
+    // like a scalar even though its key names a struct.
+    if (isValueStructKey(fieldType)) {
         return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
                                                    structName, fieldIndex))
     }
+    if (isStructTypeKey(fieldType)) {
+        return ir_get_temp_name(slot)
+    }
+    return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
+                                               structName, fieldIndex))
+}
 
-    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) {
-        let elemCount = countListNodes(expr.child1)
-        let firstElem = ptr_to_node(expr.child1)
+private fn generateArrayLiteral(expr: ASTNode) -> String {
+    let elemCount = countListNodes(expr.child1)
+    let firstElem = ptr_to_node(expr.child1)
 
-        // The element type comes from sema, which knows what the elements
-        // actually are. It used to be hardcoded to i32 (or ptr for an array of
-        // arrays), so ["a", "b"] stored pointers into i32 slots -- truncating
-        // them -- and [1.5, 2.5] stored doubles into i32 slots.
-        let arrT = nodeGetType(expr)
-        let mut elemType = "i32"
-        if (nodeExists(arrT.child)) {
-            elemType = storageType(typeIrKey(ptr_to_type(arrT.child)))
-        } else if (firstElem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
-            elemType = "ptr"
-        }
-
-        let base = ir_get_temp_name(ir_array_alloca(elemType, elemCount))
-
-        let mut elemPtr = expr.child1
-        let mut elemIndex = 0
-        while (nodeExists(elemPtr)) {
-            let elemNode = ptr_to_node(elemPtr)
-            let elemVal = generateExpression(elemNode)
-            let slot = ir_elem_ptr(elemType, base, strFromInt(elemIndex))
-            ir_store_ptr(elemType, elemVal, ir_get_temp_name(slot))
-            elemIndex = elemIndex + 1
-            elemPtr = elemNode.next
-        }
-
-        return base
+    // The element type comes from sema, which knows what the elements
+    // actually are. It used to be hardcoded to i32 (or ptr for an array of
+    // arrays), so ["a", "b"] stored pointers into i32 slots -- truncating
+    // them -- and [1.5, 2.5] stored doubles into i32 slots.
+    let arrT = nodeGetType(expr)
+    let mut elemType = "i32"
+    if (nodeExists(arrT.child)) {
+        elemType = storageType(typeIrKey(ptr_to_type(arrT.child)))
+    } else if (firstElem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
+        elemType = "ptr"
     }
 
-    if (expr.kind == NodeKind.SLICE_EXPR) {
-        let baseNode = ptr_to_node(expr.child1)
-        let baseType = nodeGetType(baseNode)
-        // A temp name is a String and therefore affine. Park it on the AST node
-        // so extracting three fields reborrows one generated value instead of
-        // looking like three moves from a local binding.
-        expr.s1 = generateExpression(baseNode)
+    let base = ir_get_temp_name(ir_array_alloca(elemType, elemCount))
 
-        let mut handle = expr.s1
-        let mut origin = "0"
-        let mut available = "0"
-        if (baseType.kind == TypeKind.SLICE) {
-            handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
-            origin = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
-            available = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
-        } else {
-            ir_call_begin()
-            ir_call_arg("ptr", handle)
-            available = ir_get_temp_name(ir_call_end("i32", "list_len"))
-        }
+    let mut elemPtr = expr.child1
+    let mut elemIndex = 0
+    while (nodeExists(elemPtr)) {
+        let elemNode = ptr_to_node(elemPtr)
+        let elemVal = generateExpression(elemNode)
+        let slot = ir_elem_ptr(elemType, base, strFromInt(elemIndex))
+        ir_store_ptr(elemType, elemVal, ir_get_temp_name(slot))
+        elemIndex = elemIndex + 1
+        elemPtr = elemNode.next
+    }
 
-        let start = generateExpression(ptr_to_node(expr.child2))
-        let end = generateExpression(ptr_to_node(expr.child3))
+    return base
+}
+
+private fn generateSlice(expr: ASTNode) -> String {
+    let baseNode = ptr_to_node(expr.child1)
+    let baseType = nodeGetType(baseNode)
+    // A temp name is a String and therefore affine. Park it on the AST node
+    // so extracting three fields reborrows one generated value instead of
+    // looking like three moves from a local binding.
+    expr.s1 = generateExpression(baseNode)
+
+    let mut handle = expr.s1
+    let mut origin = "0"
+    let mut available = "0"
+    if (baseType.kind == TypeKind.SLICE) {
+        handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
+        origin = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
+        available = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
+    } else {
         ir_call_begin()
-        ir_call_arg("i32", available)
-        ir_call_arg("i32", start)
-        ir_call_arg("i32", end)
-        ir_call_end("void", "prismio_slice_check")
-
-        let offset = ir_get_temp_name(ir_add("i32", origin, start))
-        let length = ir_get_temp_name(ir_sub("i32", end, start))
-        let empty = ir_get_temp_name(ir_undef("struct:prismio.slice"))
-        let withHandle = ir_get_temp_name(ir_insert_value("struct:prismio.slice", empty,
-                                                           handle, "ptr", 0))
-        let withOffset = ir_get_temp_name(ir_insert_value("struct:prismio.slice", withHandle,
-                                                           offset, "i32", 1))
-        return ir_get_temp_name(ir_insert_value("struct:prismio.slice", withOffset,
-                                                 length, "i32", 2))
+        ir_call_arg("ptr", handle)
+        available = ir_get_temp_name(ir_call_end("i32", "list_len"))
     }
 
-    if (expr.kind == NodeKind.INDEX_EXPR) {
-        let baseNode = ptr_to_node(expr.child1)
-        let baseType = nodeGetType(baseNode)
+    let start = generateExpression(ptr_to_node(expr.child2))
+    let end = generateExpression(ptr_to_node(expr.child3))
+    ir_call_begin()
+    ir_call_arg("i32", available)
+    ir_call_arg("i32", start)
+    ir_call_arg("i32", end)
+    ir_call_end("void", "prismio_slice_check")
 
-        if (baseType.kind == TypeKind.LIST) {
-            let arrayVal = generateExpression(baseNode)
-            let indexVal = generateExpression(ptr_to_node(expr.child2))
-            if (listHoldsStrings(baseNode)) { return generateStringListElement(arrayVal, indexVal) }
-            ir_call_begin()
-            ir_call_arg("ptr", arrayVal)
-            ir_call_arg("i32", indexVal)
-            let listInline = inlineElemSizeOfList(baseNode)
-            let retType = storageType(getExprType(expr))
-            // A scalar element goes by value, through the entry point that
-            // resolves the representation itself. See list_get_inline_scalar:
-            // `list_get_inline` returns an address for an inline list and the
-            // slot's contents for a boxed one, and only a scalar can tell those
-            // apart -- so the branch belongs where `elem_size` is, not here.
-            if (listInline > 0 and scalarInlineBytes(retType) > 0) {
-                ir_call_arg("i32", strFromInt(listInline))
-                let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
-                return scalarFromInlineBits(retType, bits)
-            }
-            let mut getName = "list_get"
-            if (listInline > 0) { getName = "list_get_inline" }
-            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
-            if (isFatStringKey(retType)) { return fatFromPtr(raw) }
-            if (retType.equals("ptr") == false) { return slotToScalar(retType, raw) }
-            return raw
-        }
+    let offset = ir_get_temp_name(ir_add("i32", origin, start))
+    let length = ir_get_temp_name(ir_sub("i32", end, start))
+    let empty = ir_get_temp_name(ir_undef("struct:prismio.slice"))
+    let withHandle = ir_get_temp_name(ir_insert_value("struct:prismio.slice", empty,
+                                                       handle, "ptr", 0))
+    let withOffset = ir_get_temp_name(ir_insert_value("struct:prismio.slice", withHandle,
+                                                       offset, "i32", 1))
+    return ir_get_temp_name(ir_insert_value("struct:prismio.slice", withOffset,
+                                             length, "i32", 2))
+}
 
-        if (baseType.kind == TypeKind.SLICE) {
-            expr.s1 = generateExpression(baseNode)
-            let indexVal = generateExpression(ptr_to_node(expr.child2))
-            let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
-            let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
-            let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
-            if (sliceHoldsStrings(baseNode)) {
-                return generateStringSliceElement(handle, offset, length, indexVal)
-            }
-            ir_call_begin()
-            ir_call_arg("ptr", handle)
-            ir_call_arg("i32", offset)
-            ir_call_arg("i32", length)
-            ir_call_arg("i32", indexVal)
-            let sliceInline = inlineElemSizeOfSlice(baseNode)
-            let retType = storageType(getExprType(expr))
-            // The same by-value resolution as `l[i]` above, one indirection out.
-            if (sliceInline > 0 and scalarInlineBytes(retType) > 0) {
-                ir_call_arg("i32", strFromInt(sliceInline))
-                let bits = ir_get_temp_name(
-                    ir_call_end("i64", "list_slice_get_inline_scalar"))
-                return scalarFromInlineBits(retType, bits)
-            }
-            let mut getName = "list_slice_get"
-            if (sliceInline > 0) { getName = "list_slice_get_inline" }
-            let raw = ir_get_temp_name(ir_call_end("ptr", getName))
-            if (isFatStringKey(retType)) { return fatFromPtr(raw) }
-            if (retType.equals("ptr") == false) { return slotToScalar(retType, raw) }
-            return raw
-        }
+private fn generateIndex(expr: ASTNode) -> String {
+    let baseNode = ptr_to_node(expr.child1)
+    let baseType = nodeGetType(baseNode)
 
-        if (baseType.kind == TypeKind.DATAVIEW) {
-            let view = generateExpression(baseNode)
-            let index = generateExpression(ptr_to_node(expr.child2))
-            ir_call_begin()
-            ir_call_arg("ptr", view)
-            ir_call_arg("i32", index)
-            ir_call_end("void", "data_view_check_index")
-            let empty = ir_get_temp_name(ir_undef("struct:prismio.data_element"))
-            let withView = ir_get_temp_name(ir_insert_value("struct:prismio.data_element",
-                                                            empty, view, "ptr", 0))
-            return ir_get_temp_name(ir_insert_value("struct:prismio.data_element",
-                                                    withView, index, "i32", 1))
-        }
-
+    if (baseType.kind == TypeKind.LIST) {
         let arrayVal = generateExpression(baseNode)
         let indexVal = generateExpression(ptr_to_node(expr.child2))
-
-        // sema types the index expression as the array's element type, so this
-        // reads the right width and stride. Hardcoding i32 here loaded four
-        // bytes out of an array of pointers or doubles.
-        let mut elemType = storageType(getExprType(expr))
-        if (elemType.equals("")) {
-            elemType = "i32"
+        if (listHoldsStrings(baseNode)) { return generateStringListElement(arrayVal, indexVal) }
+        ir_call_begin()
+        ir_call_arg("ptr", arrayVal)
+        ir_call_arg("i32", indexVal)
+        let listInline = inlineElemSizeOfList(baseNode)
+        let retType = storageType(getExprType(expr))
+        // A scalar element goes by value, through the entry point that
+        // resolves the representation itself. See list_get_inline_scalar:
+        // `list_get_inline` returns an address for an inline list and the
+        // slot's contents for a boxed one, and only a scalar can tell those
+        // apart -- so the branch belongs where `elem_size` is, not here.
+        if (listInline > 0 and scalarInlineBytes(retType) > 0) {
+            ir_call_arg("i32", strFromInt(listInline))
+            let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
+            return scalarFromInlineBits(retType, bits)
         }
-
-        let slot = ir_elem_ptr(elemType, arrayVal, indexVal)
-        return ir_get_temp_name(ir_load_ptr(elemType, ir_get_temp_name(slot)))
+        let mut getName = "list_get"
+        if (listInline > 0) { getName = "list_get_inline" }
+        let raw = ir_get_temp_name(ir_call_end("ptr", getName))
+        if (isFatStringKey(retType)) { return fatFromPtr(raw) }
+        if (retType.equals("ptr") == false) { return slotToScalar(retType, raw) }
+        return raw
     }
 
-    if (expr.kind == NodeKind.CAST_EXPR) {
-        let source = ptr_to_node(expr.child1)
-        let val = generateExpression(source)
-
-        let fromT = nodeGetType(source)
-        let toT = nodeGetType(expr)
-        let fromKey = typeIrKey(fromT)
-        let toKey = typeIrKey(toT)
-
-        // Same representation: Enum to Int, or between same-width integer types
-        // of different signedness. Nothing to emit.
-        if (fromKey.equals(toKey)) {
-            return val
+    if (baseType.kind == TypeKind.SLICE) {
+        expr.s1 = generateExpression(baseNode)
+        let indexVal = generateExpression(ptr_to_node(expr.child2))
+        let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
+        let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
+        let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
+        if (sliceHoldsStrings(baseNode)) {
+            return generateStringSliceElement(handle, offset, length, indexVal)
         }
-
-        if (toKey.equals("double")) {
-            if (typeIntIsUnsigned(fromT)) {
-                return ir_get_temp_name(ir_uitofp(fromKey, val, toKey))
-            }
-            return ir_get_temp_name(ir_sitofp(fromKey, val, toKey))
+        ir_call_begin()
+        ir_call_arg("ptr", handle)
+        ir_call_arg("i32", offset)
+        ir_call_arg("i32", length)
+        ir_call_arg("i32", indexVal)
+        let sliceInline = inlineElemSizeOfSlice(baseNode)
+        let retType = storageType(getExprType(expr))
+        // The same by-value resolution as `l[i]` above, one indirection out.
+        if (sliceInline > 0 and scalarInlineBytes(retType) > 0) {
+            ir_call_arg("i32", strFromInt(sliceInline))
+            let bits = ir_get_temp_name(
+                ir_call_end("i64", "list_slice_get_inline_scalar"))
+            return scalarFromInlineBits(retType, bits)
         }
-
-        if (fromKey.equals("double")) {
-            if (typeIntIsUnsigned(toT)) {
-                return ir_get_temp_name(ir_fptoui(fromKey, val, toKey))
-            }
-            return ir_get_temp_name(ir_fptosi(fromKey, val, toKey))
-        }
-
-        // Integer-shaped on both sides, so the only question is width.
-        if (typeIntBits(fromT) > typeIntBits(toT)) {
-            return ir_get_temp_name(ir_trunc(fromKey, val, toKey))
-        }
-
-        // Widening. Char and Bool are zero-extended: a Char is a byte value, so
-        // 'A' as Int must be 65 and never a negative number.
-        let zeroExtend = typeIntIsUnsigned(fromT)
-                          or fromT.kind == TypeKind.CHAR
-                          or fromT.kind == TypeKind.BOOL
-        if (zeroExtend) {
-            return ir_get_temp_name(ir_zext(fromKey, val, toKey))
-        }
-        return ir_get_temp_name(ir_sext(fromKey, val, toKey))
+        let mut getName = "list_slice_get"
+        if (sliceInline > 0) { getName = "list_slice_get_inline" }
+        let raw = ir_get_temp_name(ir_call_end("ptr", getName))
+        if (isFatStringKey(retType)) { return fatFromPtr(raw) }
+        if (retType.equals("ptr") == false) { return slotToScalar(retType, raw) }
+        return raw
     }
 
-    if (expr.kind == NodeKind.UNARY_EXPR) {
-        let operandNode = ptr_to_node(expr.child1)
-        let operandVal = generateExpression(operandNode)
-        let uop = expr.s1
-
-        if (uop.equals("!")) {
-            // Logical not. Comparing against 0 rather than xor-ing with true:
-            // the bridge has an icmp primitive and no xor, and the two are
-            // equivalent for i1.
-            let notId = ir_icmp_eq("i1", operandVal, "0")
-            return ir_get_temp_name(notId)
-        }
-
-        if (uop.equals("~")) {
-            let intType = getExprType(operandNode)
-            return ir_get_temp_name(ir_not(intType, operandVal))
-        }
-
-        if (uop.equals("-")) {
-            let operandType = getExprType(operandNode)
-            // ir_neg emits an integer `sub 0, x`, which is not valid for a
-            // double -- floats need fsub.
-            if (operandType.equals("double")) {
-                let fnegId = ir_fsub("double", "0.0", operandVal)
-                return ir_get_temp_name(fnegId)
-            }
-            let negId = ir_neg(operandType, operandVal)
-            return ir_get_temp_name(negId)
-        }
+    if (baseType.kind == TypeKind.DATAVIEW) {
+        let view = generateExpression(baseNode)
+        let index = generateExpression(ptr_to_node(expr.child2))
+        ir_call_begin()
+        ir_call_arg("ptr", view)
+        ir_call_arg("i32", index)
+        ir_call_end("void", "data_view_check_index")
+        let empty = ir_get_temp_name(ir_undef("struct:prismio.data_element"))
+        let withView = ir_get_temp_name(ir_insert_value("struct:prismio.data_element",
+                                                        empty, view, "ptr", 0))
+        return ir_get_temp_name(ir_insert_value("struct:prismio.data_element",
+                                                withView, index, "i32", 1))
     }
+
+    let arrayVal = generateExpression(baseNode)
+    let indexVal = generateExpression(ptr_to_node(expr.child2))
+
+    // sema types the index expression as the array's element type, so this
+    // reads the right width and stride. Hardcoding i32 here loaded four
+    // bytes out of an array of pointers or doubles.
+    let mut elemType = storageType(getExprType(expr))
+    if (elemType.equals("")) {
+        elemType = "i32"
+    }
+
+    let slot = ir_elem_ptr(elemType, arrayVal, indexVal)
+    return ir_get_temp_name(ir_load_ptr(elemType, ir_get_temp_name(slot)))
+}
+
+private fn generateCast(expr: ASTNode) -> String {
+    let source = ptr_to_node(expr.child1)
+    let val = generateExpression(source)
+
+    let fromT = nodeGetType(source)
+    let toT = nodeGetType(expr)
+    let fromKey = typeIrKey(fromT)
+    let toKey = typeIrKey(toT)
+
+    // Same representation: Enum to Int, or between same-width integer types
+    // of different signedness. Nothing to emit.
+    if (fromKey.equals(toKey)) {
+        return val
+    }
+
+    if (toKey.equals("double")) {
+        if (typeIntIsUnsigned(fromT)) {
+            return ir_get_temp_name(ir_uitofp(fromKey, val, toKey))
+        }
+        return ir_get_temp_name(ir_sitofp(fromKey, val, toKey))
+    }
+
+    if (fromKey.equals("double")) {
+        if (typeIntIsUnsigned(toT)) {
+            return ir_get_temp_name(ir_fptoui(fromKey, val, toKey))
+        }
+        return ir_get_temp_name(ir_fptosi(fromKey, val, toKey))
+    }
+
+    // Integer-shaped on both sides, so the only question is width.
+    if (typeIntBits(fromT) > typeIntBits(toT)) {
+        return ir_get_temp_name(ir_trunc(fromKey, val, toKey))
+    }
+
+    // Widening. Char and Bool are zero-extended: a Char is a byte value, so
+    // 'A' as Int must be 65 and never a negative number.
+    let zeroExtend = typeIntIsUnsigned(fromT)
+                      or fromT.kind == TypeKind.CHAR
+                      or fromT.kind == TypeKind.BOOL
+    if (zeroExtend) {
+        return ir_get_temp_name(ir_zext(fromKey, val, toKey))
+    }
+    return ir_get_temp_name(ir_sext(fromKey, val, toKey))
+}
+
+private fn generateUnary(expr: ASTNode) -> String {
+    let operandNode = ptr_to_node(expr.child1)
+    let operandVal = generateExpression(operandNode)
+    let uop = expr.s1
+
+    if (uop.equals("!")) {
+        // Logical not. Comparing against 0 rather than xor-ing with true:
+        // the bridge has an icmp primitive and no xor, and the two are
+        // equivalent for i1.
+        let notId = ir_icmp_eq("i1", operandVal, "0")
+        return ir_get_temp_name(notId)
+    }
+
+    if (uop.equals("~")) {
+        let intType = getExprType(operandNode)
+        return ir_get_temp_name(ir_not(intType, operandVal))
+    }
+
+    if (uop.equals("-")) {
+        let operandType = getExprType(operandNode)
+        // ir_neg emits an integer `sub 0, x`, which is not valid for a
+        // double -- floats need fsub.
+        if (operandType.equals("double")) {
+            let fnegId = ir_fsub("double", "0.0", operandVal)
+            return ir_get_temp_name(fnegId)
+        }
+        let negId = ir_neg(operandType, operandVal)
+        return ir_get_temp_name(negId)
+    }
+
+    // This kind, but no shape within it. `0` is what falling out of
+    // the arm reached when it was inline: the kinds are mutually
+    // exclusive, so the dispatcher's own fallback was the only place
+    // left to land.
+    return "0"
+}
 
     // REQUIREMENTS 4. `none` is a null pointer, and that is the choice the
     // punned-slot hazard forces. This compiler already spells "empty slot" as a
@@ -3053,9 +3063,9 @@ internal fn generateExpression(expr: ASTNode) -> String {
     // empty slot (test_41, and the reason the layout search pins field 0). A
     // null comparison reads no byte of any object, so nothing can collide with
     // it. See typeOptional in types.psm.
-    if (expr.kind == NodeKind.NONE_LITERAL_EXPR) {
-        return "null"
-    }
+private fn generateNoneLiteral(expr: ASTNode) -> String {
+    return "null"
+}
 
     // REQUIREMENTS 15. `spawn f(a, b)` -> prismio_task_spawn(&f, n, a, b, null).
     //
@@ -3070,1308 +3080,1336 @@ internal fn generateExpression(expr: ASTNode) -> String {
     // argument that landed T3 gets T3's non-atomic count and a static that
     // landed T4a gets an atomic one -- which is the entire point of putting the
     // distinction in the solver rather than in the lowering.
-    if (expr.kind == NodeKind.SPAWN_EXPR) {
-        let call = ptr_to_node(expr.child1)
-        let callee = ptr_to_node(call.child1)
-        let mut target = callee.s1
-        if (call.s2.equals("") == false) { target = call.s2 }
-        let taskFunc = taskFunctionForCall(call)
-        if (nodeExists(taskFunc)) {
-            let func = ptr_to_node(taskFunc)
-            if (functionNeedsTaskThunk(func)) { target = taskThunkName(func) }
-        }
-
-        // Which of prismio_task_invoke's three families the runtime must call
-        // through. Decided from the callee's declared return type, which is
-        // known statically -- so the type the task produces and the type read
-        // back out of the join agree by construction.
-        let resultT = typeTaskResult(nodeGetType(expr))
-        let mut rkind = 0
-        if (resultT.kind == TypeKind.VOID) { rkind = 2 }
-        else if (resultT.kind != TypeKind.INT) { rkind = 1 }
-
-        ir_call_begin()
-        ir_call_arg("ptr", ir_get_temp_name(ir_func_addr(target)))
-        ir_call_arg("i32", strFromInt(rkind))
-
-        // The arity is counted before the arguments are emitted, because
-        // ir_call_arg wants them in order and the count comes first.
-        let mut countPtr = call.child2
-        let mut argc = 0
-        while (nodeExists(countPtr)) {
-            argc = argc + 1
-            countPtr = ptr_to_node(countPtr).next
-        }
-        ir_call_arg("i32", strFromInt(argc))
-
-        // An owned temporary handed straight to `spawn` had no owner at all:
-        // `spawn f(g(x))` leaks what `g` produced, which is 80 of
-        // g9_helper_leak.psm's 107 allocations, one per spawn per frame. The
-        // ordinary call's argument-position release cannot be reused, and the
-        // note above says why -- a spawned task may still be running, so a
-        // release after `prismio_task_spawn` returns would free memory the task
-        // is reading.
-        //
-        // **The release point is the scope exit, and the licence is the one the
-        // task handle already uses.** `i1` is set only when INFERENCE 4.1's
-        // E-SPAWN-J proved the task is joined on every path before this scope
-        // exits, so at the exit the thread has finished and the argument is
-        // dead. A spawn that was not proved joined keeps leaking, which is the
-        // conservative direction -- exactly as `IR_DROP_TASK` in src/ir/stmt.psm
-        // is gated, and for the same failure.
-        //
-        // Spilling to a slot rather than releasing here is what lets the
-        // existing drop list do the work: it is keyed on bindings, and a binding
-        // in a loop body is dropped once per iteration, which is what g9's four
-        // spawns per frame need.
-        let spawnJoined = expr.i1 == 1
-        let mut argPtr = call.child2
-        let mut emitted = 0
-        while (nodeExists(argPtr)) {
-            let argNode = ptr_to_node(argPtr)
-            let argVal = generateExpression(argNode)
-            if (spawnJoined and irArgumentIsOwnedTemporary(argNode)) {
-                let declType = getExprType(argNode)
-                let store = storageType(declType)
-                let name = "spawnarg.".concat(strFromInt(irSpawnArgCounter))
-                irSpawnArgCounter = irSpawnArgCounter + 1
-                // Same order as an ordinary binding in src/ir/stmt.psm, and it
-                // is load-bearing: the binding is what assigns the slot its
-                // serial, so an alloca made before this one is named `x` where
-                // the drop list will look for `x.N`.
-                ir_set_var_type(name, declType)
-                let slot = ir_get_var_slot(name)
-                ir_alloca(store, slot)
-                ir_store(store, argVal, slot)
-                ir_mark_droppable(name, irOwnedTemporaryKind(argNode))
-                ir_call_arg("ptr", ir_get_temp_name(ir_load(store, slot)))
-            } else {
-                ir_call_arg("ptr", argVal)
-            }
-            emitted = emitted + 1
-            argPtr = argNode.next
-        }
-        // The unused slots are still passed. prismio_task_spawn has one
-        // signature, and a call that supplied fewer arguments than the
-        // declaration would fail module verification -- the backend synthesises
-        // the declaration from the *first* call site it sees, so two spawns of
-        // different arity in one module would otherwise disagree about the
-        // callee's type.
-        while (emitted < 3) {
-            ir_call_arg("ptr", "null")
-            emitted = emitted + 1
-        }
-
-        return ir_get_temp_name(ir_call_end("ptr", "prismio_task_spawn"))
+private fn generateSpawn(expr: ASTNode) -> String {
+    let call = ptr_to_node(expr.child1)
+    let callee = ptr_to_node(call.child1)
+    let mut target = callee.s1
+    if (call.s2.equals("") == false) { target = call.s2 }
+    let taskFunc = taskFunctionForCall(call)
+    if (nodeExists(taskFunc)) {
+        let func = ptr_to_node(taskFunc)
+        if (functionNeedsTaskThunk(func)) { target = taskThunkName(func) }
     }
 
-    if (expr.kind == NodeKind.JOIN_EXPR) {
-        let handle = generateExpression(ptr_to_node(expr.child1))
-        let resultT = nodeGetType(expr)
-        ir_call_begin()
-        ir_call_arg("ptr", handle)
-        if (resultT.kind == TypeKind.VOID) {
-            return ir_get_temp_name(ir_call_end("void", "prismio_task_join_v"))
-        }
-        if (resultT.kind == TypeKind.INT) {
-            return ir_get_temp_name(ir_call_end("i32", "prismio_task_join"))
-        }
-        // A task's result crosses back through `void*`, so a `Task<String>`
-        // yields a bare pointer that has to be given a length -- the same
-        // boundary as any other value arriving from the runtime.
-        if (typeIrKey(resultT).equals("struct:prismio.str")) {
-            return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p")))
-        }
-        return ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p"))
+    // Which of prismio_task_invoke's three families the runtime must call
+    // through. Decided from the callee's declared return type, which is
+    // known statically -- so the type the task produces and the type read
+    // back out of the join agree by construction.
+    let resultT = typeTaskResult(nodeGetType(expr))
+    let mut rkind = 0
+    if (resultT.kind == TypeKind.VOID) { rkind = 2 }
+    else if (resultT.kind != TypeKind.INT) { rkind = 1 }
+
+    ir_call_begin()
+    ir_call_arg("ptr", ir_get_temp_name(ir_func_addr(target)))
+    ir_call_arg("i32", strFromInt(rkind))
+
+    // The arity is counted before the arguments are emitted, because
+    // ir_call_arg wants them in order and the count comes first.
+    let mut countPtr = call.child2
+    let mut argc = 0
+    while (nodeExists(countPtr)) {
+        argc = argc + 1
+        countPtr = ptr_to_node(countPtr).next
     }
+    ir_call_arg("i32", strFromInt(argc))
 
-    if (expr.kind == NodeKind.BINARY_EXPR) {
-        // Handled before either operand is generated -- that is the whole point.
-        if (expr.s1.equals("and") or expr.s1.equals("or")) {
-            return generateShortCircuit(expr)
-        }
-
-        let leftVal = generateExpression(ptr_to_node(expr.child1))
-        let rightVal = generateExpression(ptr_to_node(expr.child2))
-
-        let op = expr.s1
-        let mut tempId = 0
-        let leftNode = ptr_to_node(expr.child1)
-        let opType = getExprType(leftNode)
-        let mut isUnsigned = false
-        if (nodeHasType(leftNode)) {
-            isUnsigned = typeIntIsUnsigned(nodeGetType(leftNode))
-        }
-        if (opType.equals("double")) {
-            if (op.equals("+")) { tempId = ir_fadd(opType, leftVal, rightVal) }
-            if (op.equals("-")) { tempId = ir_fsub(opType, leftVal, rightVal) }
-            if (op.equals("*")) { tempId = ir_fmul(opType, leftVal, rightVal) }
-            if (op.equals("/")) { tempId = ir_fdiv(opType, leftVal, rightVal) }
-            if (op.equals("==")) { tempId = ir_fcmp_oeq(opType, leftVal, rightVal) }
-            if (op.equals("!=")) { tempId = ir_fcmp_one(opType, leftVal, rightVal) }
-            if (op.equals("<")) { tempId = ir_fcmp_olt(opType, leftVal, rightVal) }
-            if (op.equals("<=")) { tempId = ir_fcmp_ole(opType, leftVal, rightVal) }
-            if (op.equals(">")) { tempId = ir_fcmp_ogt(opType, leftVal, rightVal) }
-            if (op.equals(">=")) { tempId = ir_fcmp_oge(opType, leftVal, rightVal) }
+    // An owned temporary handed straight to `spawn` had no owner at all:
+    // `spawn f(g(x))` leaks what `g` produced, which is 80 of
+    // g9_helper_leak.psm's 107 allocations, one per spawn per frame. The
+    // ordinary call's argument-position release cannot be reused, and the
+    // note above says why -- a spawned task may still be running, so a
+    // release after `prismio_task_spawn` returns would free memory the task
+    // is reading.
+    //
+    // **The release point is the scope exit, and the licence is the one the
+    // task handle already uses.** `i1` is set only when INFERENCE 4.1's
+    // E-SPAWN-J proved the task is joined on every path before this scope
+    // exits, so at the exit the thread has finished and the argument is
+    // dead. A spawn that was not proved joined keeps leaking, which is the
+    // conservative direction -- exactly as `IR_DROP_TASK` in src/ir/stmt.psm
+    // is gated, and for the same failure.
+    //
+    // Spilling to a slot rather than releasing here is what lets the
+    // existing drop list do the work: it is keyed on bindings, and a binding
+    // in a loop body is dropped once per iteration, which is what g9's four
+    // spawns per frame need.
+    let spawnJoined = expr.i1 == 1
+    let mut argPtr = call.child2
+    let mut emitted = 0
+    while (nodeExists(argPtr)) {
+        let argNode = ptr_to_node(argPtr)
+        let argVal = generateExpression(argNode)
+        if (spawnJoined and irArgumentIsOwnedTemporary(argNode)) {
+            let declType = getExprType(argNode)
+            let store = storageType(declType)
+            let name = "spawnarg.".concat(strFromInt(irSpawnArgCounter))
+            irSpawnArgCounter = irSpawnArgCounter + 1
+            // Same order as an ordinary binding in src/ir/stmt.psm, and it
+            // is load-bearing: the binding is what assigns the slot its
+            // serial, so an alloca made before this one is named `x` where
+            // the drop list will look for `x.N`.
+            ir_set_var_type(name, declType)
+            let slot = ir_get_var_slot(name)
+            ir_alloca(store, slot)
+            ir_store(store, argVal, slot)
+            ir_mark_droppable(name, irOwnedTemporaryKind(argNode))
+            ir_call_arg("ptr", ir_get_temp_name(ir_load(store, slot)))
         } else {
-            // RFC 0560, the debug half. `+ - *` are the three that can overflow;
-            // `/` cannot except at INT_MIN/-1, which is a different trap and is
-            // not this item. Comparisons and bitwise ops never can.
-            //
-            // Gated on the whole-build bit rather than on anything about this
-            // expression, because "check in debug, wrap in release" is a build
-            // mode and not a property of an operand. A checked op is 5.4x-6.0x
-            // the plain one -- it defeats vectorization -- so the default is off
-            // and the flag is what turns it on.
-            let checked = ir_overflow_checks() == 1 and isIntegerStorageKey(opType)
-            if (checked) {
-                let file = diag_file_path(expr.file)
-                if (isUnsigned) {
-                    if (op.equals("+")) { tempId = ir_uadd_checked(opType, leftVal, rightVal, file, expr.line) }
-                    if (op.equals("-")) { tempId = ir_usub_checked(opType, leftVal, rightVal, file, expr.line) }
-                    if (op.equals("*")) { tempId = ir_umul_checked(opType, leftVal, rightVal, file, expr.line) }
-                } else {
-                    if (op.equals("+")) { tempId = ir_add_checked(opType, leftVal, rightVal, file, expr.line) }
-                    if (op.equals("-")) { tempId = ir_sub_checked(opType, leftVal, rightVal, file, expr.line) }
-                    if (op.equals("*")) { tempId = ir_mul_checked(opType, leftVal, rightVal, file, expr.line) }
-                }
-            } else {
-                if (op.equals("+")) { tempId = ir_add(opType, leftVal, rightVal) }
-                if (op.equals("-")) { tempId = ir_sub(opType, leftVal, rightVal) }
-                if (op.equals("*")) { tempId = ir_mul(opType, leftVal, rightVal) }
-            }
-            if (op.equals("==")) { tempId = ir_icmp_eq(opType, leftVal, rightVal) }
-            if (op.equals("!=")) { tempId = ir_icmp_ne(opType, leftVal, rightVal) }
-            if (isUnsigned) {
-                if (op.equals("/")) { tempId = ir_udiv(opType, leftVal, rightVal) }
-                if (op.equals("<")) { tempId = ir_icmp_ult(opType, leftVal, rightVal) }
-                if (op.equals("<=")) { tempId = ir_icmp_ule(opType, leftVal, rightVal) }
-                if (op.equals(">")) { tempId = ir_icmp_ugt(opType, leftVal, rightVal) }
-                if (op.equals(">=")) { tempId = ir_icmp_uge(opType, leftVal, rightVal) }
-            } else {
-                if (op.equals("/")) { tempId = ir_sdiv(opType, leftVal, rightVal) }
-                if (op.equals("<")) { tempId = ir_icmp_slt(opType, leftVal, rightVal) }
-                if (op.equals("<=")) { tempId = ir_icmp_sle(opType, leftVal, rightVal) }
-                if (op.equals(">")) { tempId = ir_icmp_sgt(opType, leftVal, rightVal) }
-                if (op.equals(">=")) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
-            }
+            ir_call_arg("ptr", argVal)
         }
-        if (op.equals("%")) {
-            if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
-            else { tempId = ir_srem(opType, leftVal, rightVal) }
-        }
-
-        if (op.equals("&")) { tempId = ir_and(opType, leftVal, rightVal) }
-        if (op.equals("|")) { tempId = ir_or(opType, leftVal, rightVal) }
-        if (op.equals("^")) { tempId = ir_xor(opType, leftVal, rightVal) }
-        if (op.equals("<<")) { tempId = ir_shl(opType, leftVal, rightVal) }
-        // Right shift follows the left operand's signedness: logical for
-        // unsigned so the sign bit is not smeared, arithmetic for signed.
-        if (op.equals(">>")) {
-            if (isUnsigned) { tempId = ir_lshr(opType, leftVal, rightVal) }
-            else { tempId = ir_ashr(opType, leftVal, rightVal) }
-        }
-        // `and`/`or` never reach here -- generateShortCircuit handles them
-        // above, before either operand has been evaluated.
-
-        return ir_get_temp_name(tempId)
+        emitted = emitted + 1
+        argPtr = argNode.next
+    }
+    // The unused slots are still passed. prismio_task_spawn has one
+    // signature, and a call that supplied fewer arguments than the
+    // declaration would fail module verification -- the backend synthesises
+    // the declaration from the *first* call site it sees, so two spawns of
+    // different arity in one module would otherwise disagree about the
+    // callee's type.
+    while (emitted < 3) {
+        ir_call_arg("ptr", "null")
+        emitted = emitted + 1
     }
 
-    if (expr.kind == NodeKind.CALL_EXPR) {
-        let callee = ptr_to_node(expr.child1)
-        let funcName = callee.s1
+    return ir_get_temp_name(ir_call_end("ptr", "prismio_task_spawn"))
+}
 
-        // drop(x): release the owned heap value. Ownership/move checking in sema
-        // guarantees this runs at most once per value.
+private fn generateJoin(expr: ASTNode) -> String {
+    let handle = generateExpression(ptr_to_node(expr.child1))
+    let resultT = nodeGetType(expr)
+    ir_call_begin()
+    ir_call_arg("ptr", handle)
+    if (resultT.kind == TypeKind.VOID) {
+        return ir_get_temp_name(ir_call_end("void", "prismio_task_join_v"))
+    }
+    if (resultT.kind == TypeKind.INT) {
+        return ir_get_temp_name(ir_call_end("i32", "prismio_task_join"))
+    }
+    // A task's result crosses back through `void*`, so a `Task<String>`
+    // yields a bare pointer that has to be given a length -- the same
+    // boundary as any other value arriving from the runtime.
+    if (typeIrKey(resultT).equals("struct:prismio.str")) {
+        return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p")))
+    }
+    return ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p"))
+}
+
+private fn generateBinary(expr: ASTNode) -> String {
+    // Handled before either operand is generated -- that is the whole point.
+    if (expr.s1.equals("and") or expr.s1.equals("or")) {
+        return generateShortCircuit(expr)
+    }
+
+    let leftVal = generateExpression(ptr_to_node(expr.child1))
+    let rightVal = generateExpression(ptr_to_node(expr.child2))
+
+    let op = expr.s1
+    let mut tempId = 0
+    let leftNode = ptr_to_node(expr.child1)
+    let opType = getExprType(leftNode)
+    let mut isUnsigned = false
+    if (nodeHasType(leftNode)) {
+        isUnsigned = typeIntIsUnsigned(nodeGetType(leftNode))
+    }
+    if (opType.equals("double")) {
+        if (op.equals("+")) { tempId = ir_fadd(opType, leftVal, rightVal) }
+        if (op.equals("-")) { tempId = ir_fsub(opType, leftVal, rightVal) }
+        if (op.equals("*")) { tempId = ir_fmul(opType, leftVal, rightVal) }
+        if (op.equals("/")) { tempId = ir_fdiv(opType, leftVal, rightVal) }
+        if (op.equals("==")) { tempId = ir_fcmp_oeq(opType, leftVal, rightVal) }
+        if (op.equals("!=")) { tempId = ir_fcmp_one(opType, leftVal, rightVal) }
+        if (op.equals("<")) { tempId = ir_fcmp_olt(opType, leftVal, rightVal) }
+        if (op.equals("<=")) { tempId = ir_fcmp_ole(opType, leftVal, rightVal) }
+        if (op.equals(">")) { tempId = ir_fcmp_ogt(opType, leftVal, rightVal) }
+        if (op.equals(">=")) { tempId = ir_fcmp_oge(opType, leftVal, rightVal) }
+    } else {
+        // RFC 0560, the debug half. `+ - *` are the three that can overflow;
+        // `/` cannot except at INT_MIN/-1, which is a different trap and is
+        // not this item. Comparisons and bitwise ops never can.
         //
-        // Through ir_free_object rather than a call to `free` by name, because
-        // the deallocator is policy: a verify build routes it to a shim that
-        // checks the value was live, and an arena build will not be able to use
-        // libc free at all. Calling `free` directly here made explicit drops
-        // invisible to both.
-        if (funcName.equals("drop")) {
-            let dropArg = expr.child2
-            if (nodeExists(dropArg)) {
-                let argNode = ptr_to_node(dropArg)
-                let value = generateExpression(argNode)
-                let kind = dropKindOf(argNode)
-                if (kind == IR_DROP_LIST) {
-                    ir_free_list(value)
-                } else if (kind == IR_DROP_DATAVIEW) {
-                    ir_free_data_view(value)
-                } else if (kind == IR_DROP_TYPED) {
-                    ir_free_typed(value, releaseFnName(structTypeName(getExprType(argNode))))
-                } else {
-                    ir_free_object(value)
-                }
+        // Gated on the whole-build bit rather than on anything about this
+        // expression, because "check in debug, wrap in release" is a build
+        // mode and not a property of an operand. A checked op is 5.4x-6.0x
+        // the plain one -- it defeats vectorization -- so the default is off
+        // and the flag is what turns it on.
+        let checked = ir_overflow_checks() == 1 and isIntegerStorageKey(opType)
+        if (checked) {
+            let file = diag_file_path(expr.file)
+            if (isUnsigned) {
+                if (op.equals("+")) { tempId = ir_uadd_checked(opType, leftVal, rightVal, file, expr.line) }
+                if (op.equals("-")) { tempId = ir_usub_checked(opType, leftVal, rightVal, file, expr.line) }
+                if (op.equals("*")) { tempId = ir_umul_checked(opType, leftVal, rightVal, file, expr.line) }
+            } else {
+                if (op.equals("+")) { tempId = ir_add_checked(opType, leftVal, rightVal, file, expr.line) }
+                if (op.equals("-")) { tempId = ir_sub_checked(opType, leftVal, rightVal, file, expr.line) }
+                if (op.equals("*")) { tempId = ir_mul_checked(opType, leftVal, rightVal, file, expr.line) }
             }
-            return ""
+        } else {
+            if (op.equals("+")) { tempId = ir_add(opType, leftVal, rightVal) }
+            if (op.equals("-")) { tempId = ir_sub(opType, leftVal, rightVal) }
+            if (op.equals("*")) { tempId = ir_mul(opType, leftVal, rightVal) }
         }
+        if (op.equals("==")) { tempId = ir_icmp_eq(opType, leftVal, rightVal) }
+        if (op.equals("!=")) { tempId = ir_icmp_ne(opType, leftVal, rightVal) }
+        if (isUnsigned) {
+            if (op.equals("/")) { tempId = ir_udiv(opType, leftVal, rightVal) }
+            if (op.equals("<")) { tempId = ir_icmp_ult(opType, leftVal, rightVal) }
+            if (op.equals("<=")) { tempId = ir_icmp_ule(opType, leftVal, rightVal) }
+            if (op.equals(">")) { tempId = ir_icmp_ugt(opType, leftVal, rightVal) }
+            if (op.equals(">=")) { tempId = ir_icmp_uge(opType, leftVal, rightVal) }
+        } else {
+            if (op.equals("/")) { tempId = ir_sdiv(opType, leftVal, rightVal) }
+            if (op.equals("<")) { tempId = ir_icmp_slt(opType, leftVal, rightVal) }
+            if (op.equals("<=")) { tempId = ir_icmp_sle(opType, leftVal, rightVal) }
+            if (op.equals(">")) { tempId = ir_icmp_sgt(opType, leftVal, rightVal) }
+            if (op.equals(">=")) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
+        }
+    }
+    if (op.equals("%")) {
+        if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
+        else { tempId = ir_srem(opType, leftVal, rightVal) }
+    }
 
-        // M4.3a. Build real per-field storage from an ordinary AoS list. The
-        // layout queries are target-aware constants, so padding and nested flat
-        // fields are copied exactly as LLVM laid the row out.
-        if (funcName.equals("soa") and nodeExists(expr.child2)) {
-            let sourceNode = ptr_to_node(expr.child2)
-            if (nodeIsNull(sourceNode.next)) {
-                let sourceT = nodeGetType(sourceNode)
-                let elemT = ptr_to_type(sourceT.child)
-                let structName = elemT.name
-                let fieldCount = ir_get_struct_field_count(structName)
-                let elemSize = ir_struct_size(structName)
-                let source = generateExpression(sourceNode)
+    if (op.equals("&")) { tempId = ir_and(opType, leftVal, rightVal) }
+    if (op.equals("|")) { tempId = ir_or(opType, leftVal, rightVal) }
+    if (op.equals("^")) { tempId = ir_xor(opType, leftVal, rightVal) }
+    if (op.equals("<<")) { tempId = ir_shl(opType, leftVal, rightVal) }
+    // Right shift follows the left operand's signedness: logical for
+    // unsigned so the sign bit is not smeared, arithmetic for signed.
+    if (op.equals(">>")) {
+        if (isUnsigned) { tempId = ir_lshr(opType, leftVal, rightVal) }
+        else { tempId = ir_ashr(opType, leftVal, rightVal) }
+    }
+    // `and`/`or` never reach here -- generateShortCircuit handles them
+    // above, before either operand has been evaluated.
 
-                ir_call_begin()
-                ir_call_arg("ptr", source)
-                ir_call_arg("i32", strFromInt(fieldCount))
-                ir_call_arg("i32", strFromInt(elemSize))
-                expr.s1 = ir_get_temp_name(ir_call_end("ptr", "data_view_begin"))
+    return ir_get_temp_name(tempId)
+}
 
-                let mut field = 0
-                while (field < fieldCount) {
-                    ir_call_begin()
-                    ir_call_arg("ptr", expr.s1)
-                    ir_call_arg("i32", strFromInt(field))
-                    ir_call_arg("i32", strFromInt(ir_struct_field_offset(structName, field)))
-                    ir_call_arg("i32", strFromInt(ir_struct_field_size(structName, field)))
-                    ir_call_end("void", "data_view_add_column")
-                    field = field + 1
-                }
+private fn generateCall(expr: ASTNode) -> String {
+    let callee = ptr_to_node(expr.child1)
+    let funcName = callee.s1
+
+    // drop(x): release the owned heap value. Ownership/move checking in sema
+    // guarantees this runs at most once per value.
+    //
+    // Through ir_free_object rather than a call to `free` by name, because
+    // the deallocator is policy: a verify build routes it to a shim that
+    // checks the value was live, and an arena build will not be able to use
+    // libc free at all. Calling `free` directly here made explicit drops
+    // invisible to both.
+    if (funcName.equals("drop")) {
+        let dropArg = expr.child2
+        if (nodeExists(dropArg)) {
+            let argNode = ptr_to_node(dropArg)
+            let value = generateExpression(argNode)
+            let kind = dropKindOf(argNode)
+            if (kind == IR_DROP_LIST) {
+                ir_free_list(value)
+            } else if (kind == IR_DROP_DATAVIEW) {
+                ir_free_data_view(value)
+            } else if (kind == IR_DROP_TYPED) {
+                ir_free_typed(value, releaseFnName(structTypeName(getExprType(argNode))))
+            } else {
+                ir_free_object(value)
+            }
+        }
+        return ""
+    }
+
+    // M4.3a. Build real per-field storage from an ordinary AoS list. The
+    // layout queries are target-aware constants, so padding and nested flat
+    // fields are copied exactly as LLVM laid the row out.
+    if (funcName.equals("soa") and nodeExists(expr.child2)) {
+        let sourceNode = ptr_to_node(expr.child2)
+        if (nodeIsNull(sourceNode.next)) {
+            let sourceT = nodeGetType(sourceNode)
+            let elemT = ptr_to_type(sourceT.child)
+            let structName = elemT.name
+            let fieldCount = ir_get_struct_field_count(structName)
+            let elemSize = ir_struct_size(structName)
+            let source = generateExpression(sourceNode)
+
+            ir_call_begin()
+            ir_call_arg("ptr", source)
+            ir_call_arg("i32", strFromInt(fieldCount))
+            ir_call_arg("i32", strFromInt(elemSize))
+            expr.s1 = ir_get_temp_name(ir_call_end("ptr", "data_view_begin"))
+
+            let mut field = 0
+            while (field < fieldCount) {
                 ir_call_begin()
                 ir_call_arg("ptr", expr.s1)
-                ir_call_end("void", "data_view_finish")
-                return expr.s1
+                ir_call_arg("i32", strFromInt(field))
+                ir_call_arg("i32", strFromInt(ir_struct_field_offset(structName, field)))
+                ir_call_arg("i32", strFromInt(ir_struct_field_size(structName, field)))
+                ir_call_end("void", "data_view_add_column")
+                field = field + 1
             }
-        }
-
-        if (funcName.equals("aos") and nodeExists(expr.child2)) {
-            let viewNode = ptr_to_node(expr.child2)
-            if (nodeIsNull(viewNode.next)) {
-                let view = generateExpression(viewNode)
-                ir_call_begin()
-                ir_call_arg("ptr", view)
-                return ir_get_temp_name(ir_call_end("ptr", "data_view_to_list"))
-            }
-        }
-
-        if (funcName.equals("data_len") and nodeExists(expr.child2)) {
-            let viewNode = ptr_to_node(expr.child2)
-            if (nodeIsNull(viewNode.next)) {
-                let view = generateExpression(viewNode)
-                ir_call_begin()
-                ir_call_arg("ptr", view)
-                return ir_get_temp_name(ir_call_end("i32", "data_view_len"))
-            }
-        }
-
-        if (funcName.equals("slice_len") and nodeExists(expr.child2)) {
-            let sliceNode = ptr_to_node(expr.child2)
-            if (nodeIsNull(sliceNode.next)) {
-                let slice = generateExpression(sliceNode)
-                return ir_get_temp_name(ir_extract_value("struct:prismio.slice", slice, 2))
-            }
-        }
-
-        if (funcName.equals("slice_set") and nodeExists(expr.child2)) {
-            let sliceNode = ptr_to_node(expr.child2)
-            if (nodeExists(sliceNode.next)) {
-                let indexNode = ptr_to_node(sliceNode.next)
-                if (nodeExists(indexNode.next)) {
-                    let valueNode = ptr_to_node(indexNode.next)
-                    expr.s1 = generateExpression(sliceNode)
-                    let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
-                    let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
-                    let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
-                    let index = generateExpression(indexNode)
-                    let valueType = storageType(getExprType(valueNode))
-                    let sliceSetInline = inlineElemSizeOfSlice(sliceNode)
-                    let mut passed = ""
-                    if (isFatStringKey(valueType)) {
-                        let mut value = generateExpression(valueNode)
-                        // A literal is static storage and the slot is released
-                        // with the list, so the slot gets an owned copy.
-                        if (nodeIsStringLiteralExpr(node_to_ptr(valueNode))) {
-                            value = generateOwnedStringLiteral(value, node_to_ptr(valueNode))
-                        }
-                        if (sliceHoldsStrings(sliceNode)) {
-                            ir_call_begin()
-                            ir_call_arg("ptr", handle)
-                            ir_call_arg("i32", offset)
-                            ir_call_arg("i32", length)
-                            ir_call_arg("i32", index)
-                            ir_call_arg("ptr", ir_get_temp_name(
-                                ir_extract_value("struct:prismio.str", value, 0)))
-                            ir_call_arg("i64", ir_get_temp_name(
-                                ir_extract_value("struct:prismio.str", value, 1)))
-                            ir_call_end("void", "list_slice_set_str")
-                            return ""
-                        }
-                        // A slice slot owns its word for the same reason a list
-                        // element does, so this is `scalarToSlot` on the pair.
-                        passed = scalarToSlot("struct:prismio.str", value)
-                    } else if (valueType.equals("ptr") == false) {
-                        let value = generateExpression(valueNode)
-                        // Widened for the by-value setter, punned for the boxed
-                        // one. `value` is affine, so exactly one of these runs.
-                        if (sliceSetInline > 0 and scalarInlineBytes(valueType) > 0) {
-                            passed = scalarToInlineBits(valueType, value)
-                        } else {
-                            passed = scalarToSlot(valueType, value)
-                        }
-                    } else {
-                        passed = generateExpression(valueNode)
-                    }
-
-                    ir_call_begin()
-                    ir_call_arg("ptr", handle)
-                    ir_call_arg("i32", offset)
-                    ir_call_arg("i32", length)
-                    ir_call_arg("i32", index)
-                    // A scalar goes by value here too. Reaching
-                    // `list_slice_set_inline` with an address means
-                    // `list_set_inline` stores that address as the element when
-                    // the list turns out boxed -- a stack pointer written where
-                    // an Int belongs, which is the write-direction twin of what
-                    // list_get_inline_scalar exists to prevent.
-                    let mut setName = "list_slice_set"
-                    if (sliceSetInline > 0 and scalarInlineBytes(valueType) > 0) {
-                        ir_call_arg("i64", passed)
-                        ir_call_arg("i32", strFromInt(sliceSetInline))
-                        setName = "list_slice_set_inline_scalar"
-                    } else {
-                        ir_call_arg("ptr", passed)
-                        if (sliceSetInline > 0) { setName = "list_slice_set_inline" }
-                    }
-                    ir_call_end("void", setName)
-                    return ""
-                }
-            }
-        }
-
-        // M4.2, destination passing. `list_push(l, Thing { ... })` where the
-        // element type is stored inline builds the element **in the list**: the
-        // runtime reserves the slot and the literal's field stores are emitted
-        // against that address, so the push allocates nothing and copies
-        // nothing.
-        //
-        // The whole of inline storage's cost on the frame-loop programs was
-        // here -- a temporary object per push, memcpy'd in and freed -- and this
-        // is the shape five of the six corpus programs push in.
-        if (generatePushInPlace(expr, funcName)) { return "" }
-        if (generateGuardedScalarPush(expr, funcName)) { return "" }
-
-        // M4.2, the read end. `list_get` on a flat element type is address
-        // arithmetic from a stride this compiler already knows, so it is emitted
-        // here rather than called for -- see ir_list_flat_elem in
-        // runtime/llvm-api-backend.c for why the guard is `== stride` and why
-        // the boxed arm is still the runtime's.
-        //
-        // The `ptr` test is not belt and braces: a flat, uncounted element type
-        // is a value struct, whose storage type is `ptr`, and every other
-        // element reaches the slot-to-scalar conversion below instead. Making
-        // that a condition rather than an assumption is what keeps a future
-        // flat-but-scalar element from silently taking an address where it
-        // wants a value.
-        // Only inside a loop whose guard was proved, which is what makes this
-        // pay. A single `list_get` outside one is left on `list_get_inline`: the
-        // three blocks this expands into are worth their code only when a loop
-        // amortises them, and emitting them everywhere cost g2 and g6 +58%
-        // compile time and +34% binary for 4.9% and 2.0%.
-        // A `List<String>` element is a pair in the list's own block, which no
-        // boxed or flat read below knows how to take.
-        if (isTypedListGet(expr, funcName) and listHoldsStrings(ptr_to_node(expr.child2))) {
-            let stringList = ptr_to_node(expr.child2)
-            let stringListVal = generateExpression(stringList)
-            let stringIndexVal = generateExpression(ptr_to_node(stringList.next))
-            return generateStringListElement(stringListVal, stringIndexVal)
-        }
-        let flatStride = flatGetStride(expr, funcName)
-        if (flatStride == 0 and isStaticBoxedListGet(expr, funcName)
-                and irLoopDepth > 0) {
-            let listNode = ptr_to_node(expr.child2)
-            let listVal = generateExpression(listNode)
-            let indexVal = generateExpression(ptr_to_node(listNode.next))
-            let raw = ir_get_temp_name(ir_list_boxed_elem(listVal, indexVal))
-            let retType = storageType(getExprType(expr))
-            if (isFatStringKey(retType)) { return fatFromPtr(raw) }
-            if (retType.equals("ptr") == false) {
-                return slotToScalar(retType, raw)
-            }
-            return raw
-        }
-        // **A scalar element belongs here too, and leaving it out was a real
-        // regression.** Putting scalars inline takes them out of
-        // `isStaticBoxedListGet` above; falling through to the curated
-        // `list_get_inline_scalar` call measured 2.31x slower on a 20M-read loop
-        // because the old ir_list_boxed_elem body was visible and vectorised.
-        //
-        // The pointer and scalar intrinsics stay separate because their result
-        // conventions differ. ir_list_flat_elem joins two addresses: the flat
-        // row address and list_get_inline's result. Its scalar twin joins two
-        // values: a typed load from the flat row and list_get_inline_scalar's
-        // i64 carrier converted back to the element type. Merging first and
-        // loading afterwards would load through a boxed scalar value as though
-        // it were an address whenever inline storage is disabled.
-        //
-        // The fat String stays out, and not by accident: it is a `struct:` key
-        // that is a pair in a register rather than storage reached by GEP, so it
-        // has neither a scalar load type nor an address to load from here.
-        let flatRet = storageType(getExprType(expr))
-        if (flatStride > 0 and irLoopFlatGuard.equals("") == false) {
-            let listNode = ptr_to_node(expr.child2)
-            let listVal = generateExpression(listNode)
-            let indexVal = generateExpression(ptr_to_node(listNode.next))
-            let mut guard = "1"
-            if (irLoopFlatGuard.equals("1") == false) {
-                guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
-            }
-            let mut checkBounds = 1
-            if (irLoopRangeProved) {
-                checkBounds = 0
-            } else if (irLoopHeaderBoundActive
-                    and listNode.kind == NodeKind.IDENTIFIER_EXPR
-                    and ptr_to_node(listNode.next).kind == NodeKind.IDENTIFIER_EXPR
-                    and listNode.s1.equals(irLoopHeaderBoundList)
-                    and ptr_to_node(listNode.next).s1.equals(irLoopHeaderBoundIndex)) {
-                checkBounds = 0
-            }
-            if (flatRet.equals("ptr")) {
-                return ir_get_temp_name(ir_list_flat_elem(
-                    listVal, indexVal, flatStride, guard, checkBounds))
-            }
-            if (scalarInlineBytes(flatRet) > 0) {
-                let mut hoistedBound = ""
-                let mut hoistedData = ""
-                if (listNode.kind == NodeKind.IDENTIFIER_EXPR
-                        and listNode.s1.equals(irLoopHoistedBoundList)) {
-                    hoistedBound = strClone(irLoopHoistedBoundValue)
-                    hoistedData = strClone(irLoopHoistedDataValue)
-                }
-                return ir_get_temp_name(ir_list_flat_scalar_elem(
-                    listVal, indexVal, flatRet, flatStride, guard, checkBounds,
-                    hoistedBound, hoistedData))
-            }
-        }
-
-        // The write half, and only once the range is proved. Unlike the read,
-        // there is nothing to win here from the guard alone: `list_set_inline_scalar`
-        // is curated and inlines, so a merely representation-guarded store is the
-        // same code by another route. What pays is dropping the bounds branch,
-        // which is the last one left in a copy loop.
-        let flatSetStride = flatSetScalarStride(expr, funcName)
-        if (flatSetStride > 0 and irLoopFlatGuard.equals("") == false) {
-            let setList = ptr_to_node(expr.child2)
-            let setIndex = ptr_to_node(setList.next)
-            let setValue = ptr_to_node(setIndex.next)
-            let setType = nodeGetType(setList)
-            let elemKey = typeIrKey(ptr_to_type(setType.child))
-            let listVal2 = generateExpression(setList)
-            let indexVal2 = generateExpression(setIndex)
-            let valueVal2 = generateExpression(setValue)
-            let mut guard2 = "1"
-            if (irLoopFlatGuard.equals("1") == false) {
-                guard2 = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
-            }
-            let mut checkBounds2 = 1
-            if (irLoopRangeProved) { checkBounds2 = 0 }
-            let mut hoistedBound2 = ""
-            let mut hoistedData2 = ""
-            if (setList.kind == NodeKind.IDENTIFIER_EXPR
-                    and setList.s1.equals(irLoopHoistedBoundList)) {
-                hoistedBound2 = strClone(irLoopHoistedBoundValue)
-                hoistedData2 = strClone(irLoopHoistedDataValue)
-            }
-            ir_list_flat_scalar_set(listVal2, indexVal2, valueVal2, elemKey,
-                                    flatSetStride, guard2, checkBounds2,
-                                    hoistedBound2, hoistedData2)
-            return ""
-        }
-
-        // Integer min/max/abs, straight onto LLVM's intrinsics. No runtime symbol
-        // and no branch: `llvm.smax.i32` becomes one `smax` on this target, and
-        // it is one of the intrinsics LLVM will widen into a vector loop.
-        if (funcName.equals("__builtin_max") or funcName.equals("__builtin_min")) {
-            let m0 = ptr_to_node(expr.child2)
-            let lhsVal = generateExpression(m0)
-            let rhsVal = generateExpression(ptr_to_node(m0.next))
-            let mut intrinsic = "llvm.smax.i32"
-            if (funcName.equals("__builtin_min")) { intrinsic = "llvm.smin.i32" }
             ir_call_begin()
-            ir_call_arg("i32", lhsVal)
-            ir_call_arg("i32", rhsVal)
-            return ir_get_temp_name(ir_call_end("i32", intrinsic))
+            ir_call_arg("ptr", expr.s1)
+            ir_call_end("void", "data_view_finish")
+            return expr.s1
         }
+    }
 
-        if (funcName.equals("__builtin_abs")) {
-            let absVal = generateExpression(ptr_to_node(expr.child2))
+    if (funcName.equals("aos") and nodeExists(expr.child2)) {
+        let viewNode = ptr_to_node(expr.child2)
+        if (nodeIsNull(viewNode.next)) {
+            let view = generateExpression(viewNode)
             ir_call_begin()
-            ir_call_arg("i32", absVal)
-            ir_call_arg("i1", "false")
-            return ir_get_temp_name(ir_call_end("i32", "llvm.abs.i32"))
+            ir_call_arg("ptr", view)
+            return ir_get_temp_name(ir_call_end("ptr", "data_view_to_list"))
         }
+    }
 
-        // errno, and the two numbers worth comparing it against. Builtins rather
-        // than externs because `errno` has no symbol to declare: it is a macro
-        // for a dereference of a per-thread location, and the accessor's name is
-        // the platform's. The backend picks that name from the target triple and
-        // emits the call inline, so the program links libc directly and the
-        // runtime gains nothing.
-        // The console write. A builtin rather than an `extern fn write` for the
-        // reason errno is one: the symbol's *name* is the platform's. POSIX has
-        // `write`, the Windows CRT has `_write` and no `write` at all, so the
-        // extern spelling linked on two platforms of three and put an undefined
-        // symbol into every Windows program that printed.
-        //
-        // The count and the result follow the same triple: `ssize_t`/`size_t` on
-        // POSIX, `int`/`unsigned int` on Windows. Prismio passes an `Int` -- a
-        // String's length is an i32 -- so the widening and the narrowing here are
-        // both exact.
-        //
-        // `ir_call_arg_borrow` and not `ir_call_arg_cstr` is the `bytes`
-        // contract the extern used to carry: the callee has the count and never
-        // reads to a terminator, so the String's own pointer crosses and a view
-        // of the remainder is not copied on every iteration of the retry loop.
-        if (funcName.equals("__builtin_console_write") and nodeExists(expr.child2)) {
-            let fdNode = ptr_to_node(expr.child2)
-            let textNode = ptr_to_node(fdNode.next)
-            let countNode = ptr_to_node(textNode.next)
-
-            let fdVal = generateExpression(fdNode)
-            let textVal = generateExpression(textNode)
-            let countVal = generateExpression(countNode)
-
-            let word = ir_console_write_word()
+    if (funcName.equals("data_len") and nodeExists(expr.child2)) {
+        let viewNode = ptr_to_node(expr.child2)
+        if (nodeIsNull(viewNode.next)) {
+            let view = generateExpression(viewNode)
             ir_call_begin()
-            ir_call_arg("i32", fdVal)
-            ir_call_arg_borrow("ptr", textVal)
-            // Each arm builds its own result rather than sharing one binding: a
-            // value name is a String, and binding it once to narrow it in one
-            // branch would be a move the other branch reads back.
-            if (word.equals("i64")) {
-                ir_call_arg("i64", ir_get_temp_name(ir_sext("i32", countVal, "i64")))
-                let wide = ir_get_temp_name(ir_call_end("i64", ir_console_write_symbol()))
-                return ir_get_temp_name(ir_trunc("i64", wide, "i32"))
-            }
-            ir_call_arg("i32", countVal)
-            return ir_get_temp_name(ir_call_end("i32", ir_console_write_symbol()))
+            ir_call_arg("ptr", view)
+            return ir_get_temp_name(ir_call_end("i32", "data_view_len"))
         }
+    }
 
-        if (funcName.equals("__builtin_errno")) {
-            return ir_get_temp_name(ir_errno_load())
+    if (funcName.equals("slice_len") and nodeExists(expr.child2)) {
+        let sliceNode = ptr_to_node(expr.child2)
+        if (nodeIsNull(sliceNode.next)) {
+            let slice = generateExpression(sliceNode)
+            return ir_get_temp_name(ir_extract_value("struct:prismio.slice", slice, 2))
         }
-        if (funcName.equals("__builtin_errno_intr")) {
-            return ir_get_temp_name(ir_errno_constant("EINTR"))
-        }
-        if (funcName.equals("__builtin_errno_again")) {
-            return ir_get_temp_name(ir_errno_constant("EAGAIN"))
-        }
+    }
 
-        // The compile target, as a constant. std.platform's answers are fixed when
-        // a program is compiled, for the target it is compiled for; the codes are
-        // targetOsCode's and its siblings' in src/common/target.psm.
-        if (funcName.equals("__builtin_target_os")) { return targetOsCode().toString() }
-        if (funcName.equals("__builtin_target_arch")) { return targetArchCode().toString() }
-        if (funcName.equals("__builtin_target_env")) { return targetEnvCode().toString() }
-
-        // Byte length is the pair's second field. This is a reserved compiler
-        // builtin, not an extern: its source spelling carries no declaration,
-        // LLVM symbol or link requirement.
-        if (funcName.equals("__builtin_string_len")
-            and nodeExists(expr.child2)) {
-            let a0 = ptr_to_node(expr.child2)
-            if (nodeExists(a0.next) == false) {
-                let value = generateExpression(a0)
-                let wide = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 1))
-                let narrow = ir_get_temp_name(ir_trunc("i64", wide, "i32"))
-                // Bit 31 is the inline tag, not part of the length. This `and` is
-                // the entire per-read cost of the German-string representation --
-                // see the layout note over `str_data_ptr` in
-                // runtime/llvm-api-backend.c for why the tag sits there rather
-                // than at bit 63, where it would have cost an inline byte instead.
-                return ir_get_temp_name(ir_and("i32", narrow, "2147483647"))
-            }
-        }
-
-        // List length is the header's second field (RT_LIST_FIELD_LEN).
-        // Emitted inline with tag_list_header range metadata so loops can
-        // hoist the bound and eliminate per-iteration function call overhead.
-        if (funcName.equals("list_len") and nodeExists(expr.child2)) {
-            let a0 = ptr_to_node(expr.child2)
-            if (nodeExists(a0.next) == false) {
-                let listVal = generateExpression(a0)
-                return ir_get_temp_name(ir_list_len(listVal))
-            }
-        }
-
-        // The one allocation whose length the caller states rather than the
-        // buffer carrying it.
-        //
-        // Intercepted here because the general path would build the pair with
-        // `fatFromPtr`, and measuring this buffer is meaningless: the C writes
-        // only the terminator and leaves the interior uninitialised. Every other
-        // String arriving from C is already filled, which is what makes
-        // `fatFromPtr` right for those and wrong for this one.
-        //
-        // This is also what makes the length builtin above sound. The pair is
-        // only worth reading if every producer puts a true length in it, and
-        // this is the one producer that could not.
-        //
-        // The arena bracket is repeated rather than shared: this returns before
-        // the general path's copy of it, and this call allocates.
-        if (funcName.equals("str_with_capacity") and nodeExists(expr.child2)) {
-            let a0 = ptr_to_node(expr.child2)
-            if (nodeExists(a0.next) == false) {
-                let n = generateExpression(a0)
-                let placed = aif_arena_at_node(node_to_ptr(expr)) == 1
-                if (placed) { ir_arena_hint_begin() }
-                ir_call_begin()
-                ir_call_arg("i32", n)
-                let raw = ir_get_temp_name(ir_call_end("ptr", "str_with_capacity"))
-                if (placed) { ir_arena_hint_end() }
-                return fatWithLength(raw, n)
-            }
-        }
-
-        // Byte access, emitted rather than called.
-        //
-        // A string loop runs each byte operation once per byte. When the old
-        // spellings were ordinary externs, each iteration paid a call LLVM could
-        // not inline -- lang_runtime.c is a separate translation unit and user
-        // programs do not link with LTO. Measured on 40 000 searches of a
-        // 40 000-byte string: 1.85s calling out per byte against 0.38s for the
-        // identical loop in C at -O2, so **4.9x of that gap was call overhead
-        // alone**.
-        //
-        // The lowering is the same GEP-plus-load the array index above emits;
-        // String's data field is a machine pointer and a byte is an `i8`, so
-        // there is nothing string-specific about it beyond the element type.
-        //
-        // **No bounds check, deliberately.** Checking the upper bound by calling
-        // `strlen` on every access is what made `str_char_at` loops quadratic.
-        // The builtin's contract is "the
-        // index is in [0, len)" and std/string.psm establishes that bound before
-        // every use. `String.charAt` remains the checked accessor for callers who
-        // want one.
-        if (funcName.equals("__builtin_string_byte_at")
-            and nodeExists(expr.child2)) {
-            let a0 = ptr_to_node(expr.child2)
-            if (nodeExists(a0.next)) {
-                let base = generateExpression(a0)
-                let idx = generateExpression(ptr_to_node(a0.next))
-                // **The resolved pointer first, if this operand is a binding
-                // that has one.** A String's bytes are behind its pointer or
-                // inside the pair, and `ir_str_byte_at` answers that per access
-                // -- five instructions per character, which the tokenizer paid
-                // 204 000 times because its loop is too large for LLVM to
-                // unswitch. A binding resolves it once where it is made
-                // (stmt.psm, module.psm), and then this is the GEP and load it
-                // has always been.
-                //
-                // Only for a plain variable reference: anything else has no
-                // binding to have resolved, and the per-access form is correct
-                // for all of them.
-                let a0node = ptr_to_node(expr.child2)
-                if (a0node.kind == NodeKind.IDENTIFIER_EXPR) {
-                    let resolved = ir_get_var_data(a0node.s1)
-                    if (resolved >= 0) {
-                        let slot = ir_elem_ptr("i8", ir_get_temp_name(resolved), idx)
-                        return ir_get_temp_name(ir_load_ptr("i8", ir_get_temp_name(slot)))
+    if (funcName.equals("slice_set") and nodeExists(expr.child2)) {
+        let sliceNode = ptr_to_node(expr.child2)
+        if (nodeExists(sliceNode.next)) {
+            let indexNode = ptr_to_node(sliceNode.next)
+            if (nodeExists(indexNode.next)) {
+                let valueNode = ptr_to_node(indexNode.next)
+                expr.s1 = generateExpression(sliceNode)
+                let handle = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 0))
+                let offset = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 1))
+                let length = ir_get_temp_name(ir_extract_value("struct:prismio.slice", expr.s1, 2))
+                let index = generateExpression(indexNode)
+                let valueType = storageType(getExprType(valueNode))
+                let sliceSetInline = inlineElemSizeOfSlice(sliceNode)
+                let mut passed = ""
+                if (isFatStringKey(valueType)) {
+                    let mut value = generateExpression(valueNode)
+                    // A literal is static storage and the slot is released
+                    // with the list, so the slot gets an owned copy.
+                    if (nodeIsStringLiteralExpr(node_to_ptr(valueNode))) {
+                        value = generateOwnedStringLiteral(value, node_to_ptr(valueNode))
                     }
-                }
-                return ir_get_temp_name(ir_str_byte_at(base, idx))
-            }
-        }
-
-        // The German short form, built from a range of another string.
-        //
-        // This is the producer the whole representation exists for. `strSubstring`
-        // takes it whenever the result is twelve bytes or fewer, which on the
-        // tokenizer benchmark is every token and across `prismio check src/main.psm`
-        // is 81.3% of every string allocated -- and it allocates nothing, frees
-        // nothing, and hands back sixteen bytes of value.
-        //
-        // Straight-line by construction: the size test lives in std/string.psm, so
-        // there is no branch here and nothing for the caller's loop to mispredict.
-        if (funcName.equals("__builtin_string_inline")
-            and nodeExists(expr.child2)) {
-            let a0 = ptr_to_node(expr.child2)
-            if (nodeExists(a0.next)) {
-                let a1 = ptr_to_node(a0.next)
-                if (nodeExists(a1.next)) {
-                    let base = generateExpression(a0)
-                    let from = generateExpression(a1)
-                    let count = generateExpression(ptr_to_node(a1.next))
-                    return ir_get_temp_name(ir_str_inline(base, from, count))
-                }
-            }
-        }
-
-        // A concatenation whose complete result fits inside the String pair.
-        // The size branch is in std/string.psm; this side only evaluates each
-        // operand once and asks the backend to emit the straight-line copies.
-        if (funcName.equals("__builtin_string_concat_inline2")
-            and nodeExists(expr.child2)) {
-            let c0 = ptr_to_node(expr.child2)
-            let c1 = ptr_to_node(c0.next)
-            return ir_get_temp_name(ir_str_inline_concat2(
-                generateExpression(c0), generateExpression(c1)))
-        }
-        if (funcName.equals("__builtin_string_concat_inline3")
-            and nodeExists(expr.child2)) {
-            let c0 = ptr_to_node(expr.child2)
-            let c1 = ptr_to_node(c0.next)
-            let c2 = ptr_to_node(c1.next)
-            return ir_get_temp_name(ir_str_inline_concat3(
-                generateExpression(c0), generateExpression(c1), generateExpression(c2)))
-        }
-        if (funcName.equals("__builtin_string_concat_inline4")
-            and nodeExists(expr.child2)) {
-            let c0 = ptr_to_node(expr.child2)
-            let c1 = ptr_to_node(c0.next)
-            let c2 = ptr_to_node(c1.next)
-            let c3 = ptr_to_node(c2.next)
-            return ir_get_temp_name(ir_str_inline_concat4(
-                generateExpression(c0), generateExpression(c1), generateExpression(c2),
-                generateExpression(c3)))
-        }
-        if (funcName.equals("__builtin_string_concat_inline5")
-            and nodeExists(expr.child2)) {
-            let c0 = ptr_to_node(expr.child2)
-            let c1 = ptr_to_node(c0.next)
-            let c2 = ptr_to_node(c1.next)
-            let c3 = ptr_to_node(c2.next)
-            let c4 = ptr_to_node(c3.next)
-            return ir_get_temp_name(ir_str_inline_concat5(
-                generateExpression(c0), generateExpression(c1), generateExpression(c2),
-                generateExpression(c3), generateExpression(c4)))
-        }
-        if (funcName.equals("__builtin_string_concat_inline6")
-            and nodeExists(expr.child2)) {
-            let c0 = ptr_to_node(expr.child2)
-            let c1 = ptr_to_node(c0.next)
-            let c2 = ptr_to_node(c1.next)
-            let c3 = ptr_to_node(c2.next)
-            let c4 = ptr_to_node(c3.next)
-            let c5 = ptr_to_node(c4.next)
-            return ir_get_temp_name(ir_str_inline_concat6(
-                generateExpression(c0), generateExpression(c1), generateExpression(c2),
-                generateExpression(c3), generateExpression(c4), generateExpression(c5)))
-        }
-
-        // A Prismio Int needs at most eleven decimal bytes, including the sign,
-        // so its complete text fits in the existing inline String payload. The
-        // backend formats into one reusable stack scratch and captures the two
-        // words immediately: no heap allocation and no temporary owner.
-        if (funcName.equals("__builtin_string_from_int")
-            and nodeExists(expr.child2)) {
-            let a0 = ptr_to_node(expr.child2)
-            if (nodeExists(a0.next) == false) {
-                return ir_get_temp_name(ir_str_from_int(generateExpression(a0)))
-            }
-        }
-
-        // A view of another string: no allocation, no copy, nothing to release.
-        //
-        // `strSubstring` takes this whenever the result is longer than the twelve
-        // bytes the pair can hold, which is exactly when the alternative was a
-        // `str_with_capacity` and a byte copy. The lifetime is not a promise the
-        // programmer makes here as it is in Umbra: the builtin is declared an
-        // alias of its first argument, so AIF holds the base alive.
-        if (funcName.equals("__builtin_string_view")
-            and nodeExists(expr.child2)) {
-            let v0 = ptr_to_node(expr.child2)
-            if (nodeExists(v0.next)) {
-                let v1 = ptr_to_node(v0.next)
-                if (nodeExists(v1.next)) {
-                    let vbase = generateExpression(v0)
-                    let vfrom = generateExpression(v1)
-                    let vcount = generateExpression(ptr_to_node(v1.next))
-                    return ir_get_temp_name(ir_str_view(vbase, vfrom, vcount))
-                }
-            }
-        }
-
-        // `a == b` on String. The pointer half of each fat pair goes to the
-        // runtime's str_equals, whose strcmp the C library vectorises; the i32 it
-        // answers becomes the i1 the language wants.
-        if (funcName.equals("__builtin_string_eq")
-            and nodeExists(expr.child2)) {
-            let e0 = ptr_to_node(expr.child2)
-            if (nodeExists(e0.next)) {
-                let rhs = ptr_to_node(e0.next)
-                let lhsVal = generateExpression(e0)
-                let rhsVal = generateExpression(rhs)
-                // The backend compares the pairs first. Two short strings are
-                // equal exactly when their sixteen bytes match, which the layout
-                // guarantees and which costs two register compares; `str_equals`
-                // is reached only when the lengths agree and at least one side
-                // keeps its bytes behind a pointer.
-                let answer = ir_get_temp_name(ir_str_eq(lhsVal, rhsVal))
-
-                // **An owned operand is dropped here, because nothing else will.**
-                // `a.concat(b) == "x"` allocates a String that is never bound, and
-                // an ordinary call releases exactly that shape in its argument
-                // loop below -- `irArgumentIsOwnedTemporary`. Lowering `==` to a
-                // builtin skipped the loop and with it the drop, so the operator
-                // leaked where the `.equals()` method it is a spelling of did not:
-                // 1 allocated, 0 released. The comparison reads the bytes and
-                // retains nothing, so the release is unconditional once the
-                // answer is in hand.
-                if (irArgumentIsOwnedTemporary(e0)) {
-                    generateOwnedTemporaryRelease(lhsVal, irOwnedTemporaryKind(e0),
-                                                  irOwnedTemporaryDeclType(e0))
-                }
-                if (irArgumentIsOwnedTemporary(rhs)) {
-                    generateOwnedTemporaryRelease(rhsVal, irOwnedTemporaryKind(rhs),
-                                                  irOwnedTemporaryDeclType(rhs))
-                }
-                return answer
-            }
-        }
-
-        // `a.compare(b)` on String, which `cmp` and so every String sort reach.
-        // Two short strings order as one integer key in registers; see
-        // `ir_str_compare`. An owned operand is dropped here for the reason the
-        // `==` lowering above drops one.
-        if (funcName.equals("__builtin_string_compare")
-            and nodeExists(expr.child2)) {
-            let c0 = ptr_to_node(expr.child2)
-            if (nodeExists(c0.next)) {
-                let crhs = ptr_to_node(c0.next)
-                let clhsVal = generateExpression(c0)
-                let crhsVal = generateExpression(crhs)
-                let order = ir_get_temp_name(ir_str_compare(clhsVal, crhsVal))
-                if (irArgumentIsOwnedTemporary(c0)) {
-                    generateOwnedTemporaryRelease(clhsVal, irOwnedTemporaryKind(c0),
-                                                  irOwnedTemporaryDeclType(c0))
-                }
-                if (irArgumentIsOwnedTemporary(crhs)) {
-                    generateOwnedTemporaryRelease(crhsVal, irOwnedTemporaryKind(crhs),
-                                                  irOwnedTemporaryDeclType(crhs))
-                }
-                return order
-            }
-        }
-
-        // `keyHashBytes`, which every `Map<String, V>` probe reaches. A short
-        // key's twelve bytes are mixed where they sit and nothing is called; see
-        // `ir_str_hash`. An owned operand is dropped here for the reason the
-        // `==` lowering above drops one.
-        if (funcName.equals("__builtin_string_hash")
-            and nodeExists(expr.child2)) {
-            let h0 = ptr_to_node(expr.child2)
-            if (nodeExists(h0.next) == false) {
-                let hashed = generateExpression(h0)
-                let answer = ir_get_temp_name(ir_str_hash(hashed))
-                if (irArgumentIsOwnedTemporary(h0)) {
-                    generateOwnedTemporaryRelease(hashed, irOwnedTemporaryKind(h0),
-                                                  irOwnedTemporaryDeclType(h0))
-                }
-                return answer
-            }
-        }
-
-        // **Writes go to the long form only, and every caller obeys that.** Every
-        // `__builtin_string_put_byte` in std/string.psm writes into a buffer that
-        // came from `str_with_capacity` two lines above, which always allocates;
-        // the short form is built whole by `__builtin_string_inline` and never
-        // written into. A write to a short string would land in the scratch copy
-        // the coercion makes and be lost, so the rule is the same one the index
-        // has: established at the call site, not checked here.
-        if (funcName.equals("__builtin_string_put_byte")
-            and nodeExists(expr.child2)) {
-            let a0 = ptr_to_node(expr.child2)
-            if (nodeExists(a0.next)) {
-                let a1 = ptr_to_node(a0.next)
-                if (nodeExists(a1.next)) {
-                    let base = generateExpression(a0)
-                    let idx = generateExpression(a1)
-                    let value = generateExpression(ptr_to_node(a1.next))
-                    let slot = ir_elem_ptr("i8", base, idx)
-                    ir_store_ptr("i8", value, ir_get_temp_name(slot))
-                    return ""
-                }
-            }
-        }
-
-        // Regular function call
-        let inlineSize = inlineElemSizeOfCall(expr)
-        // Foreign iff Prismio does not define a function of this name.
-        //
-        // One test for both directions, and it has to be this one. Asking "is
-        // there an extern called this" is not the same question: a program may
-        // declare `extern fn print(s: String)` while std.io also defines `print`,
-        // and both are true at once. Overload resolution then picks the Prismio
-        // one, so extracting the pointer half on the argument side handed a bare
-        // pointer to `@print__String`, which wants the pair.
-        let isForeign = callIsPrismioFn(funcName) == false
-        ir_call_begin()
-        // REQUIREMENTS 20. `list_push` and `list_set` take the element as `ptr`,
-        // so a scalar has to reach the slot as one -- without this the call
-        // disagrees with its own declaration and the module fails verification.
-        let elemArg = listElementArgIndex(funcName)
-        // `list_push`/`list_set` into a `List<String>` take the pair's two halves
-        // rather than a slot word; see list_push_str.
-        let mut stringListOp = false
-        if (elemArg >= 0 and isForeign and nodeExists(expr.child2)) {
-            stringListOp = listHoldsStrings(ptr_to_node(expr.child2))
-        }
-
-        // The owned temporaries this call is about to consume, released once it
-        // returns. Collected here because this is the only point where the
-        // generated value and the argument node are both in hand.
-        let mut ownedTempVals: List<String> = list_new()
-        let mut ownedTempKinds: List<Int> = list_new()
-        let mut ownedTempTypes: List<String> = list_new()
-
-        // Which storage key the element argument carried, so the entry-point
-        // choice below can tell a scalar from a struct without re-deriving it.
-        let mut elemStoreKey = ""
-        let mut argPtr = expr.child2
-        let mut argIndex = 0
-        while (nodeExists(argPtr)) {
-            let argNode = ptr_to_node(argPtr)
-            // Query ownership before generateExpression: regular call lowering
-            // consumes CALL_EXPR.s2 when it takes the resolved symbol name.
-            let releaseOwnedTemp = irArgumentIsOwnedTemporary(argNode)
-            let ownedTempKind = irOwnedTemporaryKind(argNode)
-            let ownedTempType = getExprType(argNode)
-            let argVal = generateExpression(argNode)
-            let argStore = storageType(getExprType(argNode))
-            // Cloned: `argStore` is affine and the branches below still name it.
-            if (argIndex == elemArg) { elemStoreKey = strClone(argStore) }
-            // Cloned because `argVal` is affine and the argument itself still
-            // has to consume it below -- the same reason the two branches under
-            // this one each name it exactly once.
-            if (releaseOwnedTemp) {
-                list_push(ownedTempVals, strClone(argVal))
-                list_push(ownedTempKinds, ownedTempKind)
-                list_push(ownedTempTypes, ownedTempType)
-            }
-            // Crossing into C: a String is `{ptr, i64}` here and `const char*`
-            // there, so the pointer half goes and the length stays. The buffer is
-            // NUL-terminated (FFI 7.1), which is what keeps this a field read
-            // rather than a copy.
-            //
-            // The two branches each name `argVal` once and never both -- a String
-            // is affine, so hoisting the common tail out would move it twice.
-            if (isForeign and argStore.equals("struct:prismio.str")) {
-                if (argIndex == elemArg) {
-                    // Into a container slot, which owns one word and frees it
-                    // later -- so `scalarToSlot` is handed the *pair*, not the
-                    // pointer half, and copies a short string out to the heap on
-                    // the way in. Handing it the coerced pointer instead stored
-                    // the scratch buffer's address in the list, and the release at
-                    // teardown was a free of the stack.
-                    //
-                    // A literal is static storage, and a container releases what
-                    // it holds -- a literal stored as it was is `.rodata` freed at
-                    // teardown -- so it goes in as an owned copy. Cloned:
-                    // `argVal` is affine and the branches below still name it.
-                    let mut element = strClone(argVal)
-                    if (nodeIsStringLiteralExpr(argPtr)) {
-                        element = generateOwnedStringLiteral(element, argPtr)
-                    }
-                    if (stringListOp) {
-                        // A `List<String>` keeps the pair itself; list_push_str.
+                    if (sliceHoldsStrings(sliceNode)) {
+                        ir_call_begin()
+                        ir_call_arg("ptr", handle)
+                        ir_call_arg("i32", offset)
+                        ir_call_arg("i32", length)
+                        ir_call_arg("i32", index)
                         ir_call_arg("ptr", ir_get_temp_name(
-                            ir_extract_value("struct:prismio.str", element, 0)))
+                            ir_extract_value("struct:prismio.str", value, 0)))
                         ir_call_arg("i64", ir_get_temp_name(
-                            ir_extract_value("struct:prismio.str", element, 1)))
-                    } else {
-                        ir_call_arg("ptr", scalarToSlot("struct:prismio.str", element))
+                            ir_extract_value("struct:prismio.str", value, 1)))
+                        ir_call_end("void", "list_slice_set_str")
+                        return ""
                     }
-                } else if (irCallReturnsAlias(expr)) {
-                    // An alias return may outlive this expression or even this
-                    // frame. Inline String bytes live in a stack pair, and a
-                    // view may point inside another owner, so neither scratch
-                    // pointer is a valid physical implementation of that
-                    // contract. Materialise a stable owned buffer before the
-                    // call. Long owned strings pass through unchanged; short
-                    // and view forms copy. With the contract's intentionally
-                    // broad "any argument or static" meaning, copying every
-                    // candidate is the conservative direction: an unchosen
-                    // candidate can leak, but the chosen alias cannot dangle.
-                    ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
-                } else if (aif_extern_contract(funcName, argIndex).equals("bytes")) {
-                    // **The one contract that changes what crosses, not who
-                    // owns it.** The default hands a callee a `char*` it can
-                    // read to a NUL, which for a view means materialising a
-                    // terminated copy first. `bytes` is the declaration saying
-                    // the callee was given the count separately and never looks
-                    // for a terminator, so the String's own pointer goes
-                    // through: no branch, no copy, no release afterwards.
-                    //
-                    // This is what lets a retry loop over `write` be written in
-                    // Prismio. Advancing the buffer produces a view of the
-                    // remainder, and under the default that view would be copied
-                    // -- the whole remainder, on every iteration.
-                    ir_call_arg_borrow("ptr", argVal)
-                } else if (aif_extern_contract(funcName, argIndex).equals("borrow")) {
-                    // **The contract, spent rather than merely checked.**
-                    // RUNTIME.md defines `borrow` as "the callee reads the
-                    // argument and does not retain it", which is what LLVM
-                    // spells `readonly nocapture`. Without saying so, LLVM must
-                    // assume the callee writes through the pointer, and the
-                    // materialisation of a short String cannot be lifted out of
-                    // a loop that calls one: `strIndexOfFrom` calls
-                    // `str_find_byte_pair` per candidate, and `string_search`
-                    // measured 0.90x with those stores stuck in the loop.
-                    ir_call_arg_cstr(argVal, 1)
+                    // A slice slot owns its word for the same reason a list
+                    // element does, so this is `scalarToSlot` on the pair.
+                    passed = scalarToSlot("struct:prismio.str", value)
+                } else if (valueType.equals("ptr") == false) {
+                    let value = generateExpression(valueNode)
+                    // Widened for the by-value setter, punned for the boxed
+                    // one. `value` is affine, so exactly one of these runs.
+                    if (sliceSetInline > 0 and scalarInlineBytes(valueType) > 0) {
+                        passed = scalarToInlineBits(valueType, value)
+                    } else {
+                        passed = scalarToSlot(valueType, value)
+                    }
                 } else {
-                    ir_call_arg_cstr(argVal, 0)
+                    passed = generateExpression(valueNode)
+                }
+
+                ir_call_begin()
+                ir_call_arg("ptr", handle)
+                ir_call_arg("i32", offset)
+                ir_call_arg("i32", length)
+                ir_call_arg("i32", index)
+                // A scalar goes by value here too. Reaching
+                // `list_slice_set_inline` with an address means
+                // `list_set_inline` stores that address as the element when
+                // the list turns out boxed -- a stack pointer written where
+                // an Int belongs, which is the write-direction twin of what
+                // list_get_inline_scalar exists to prevent.
+                let mut setName = "list_slice_set"
+                if (sliceSetInline > 0 and scalarInlineBytes(valueType) > 0) {
+                    ir_call_arg("i64", passed)
+                    ir_call_arg("i32", strFromInt(sliceSetInline))
+                    setName = "list_slice_set_inline_scalar"
+                } else {
+                    ir_call_arg("ptr", passed)
+                    if (sliceSetInline > 0) { setName = "list_slice_set_inline" }
+                }
+                ir_call_end("void", setName)
+                return ""
+            }
+        }
+    }
+
+    // M4.2, destination passing. `list_push(l, Thing { ... })` where the
+    // element type is stored inline builds the element **in the list**: the
+    // runtime reserves the slot and the literal's field stores are emitted
+    // against that address, so the push allocates nothing and copies
+    // nothing.
+    //
+    // The whole of inline storage's cost on the frame-loop programs was
+    // here -- a temporary object per push, memcpy'd in and freed -- and this
+    // is the shape five of the six corpus programs push in.
+    if (generatePushInPlace(expr, funcName)) { return "" }
+    if (generateGuardedScalarPush(expr, funcName)) { return "" }
+
+    // M4.2, the read end. `list_get` on a flat element type is address
+    // arithmetic from a stride this compiler already knows, so it is emitted
+    // here rather than called for -- see ir_list_flat_elem in
+    // runtime/llvm-api-backend.c for why the guard is `== stride` and why
+    // the boxed arm is still the runtime's.
+    //
+    // The `ptr` test is not belt and braces: a flat, uncounted element type
+    // is a value struct, whose storage type is `ptr`, and every other
+    // element reaches the slot-to-scalar conversion below instead. Making
+    // that a condition rather than an assumption is what keeps a future
+    // flat-but-scalar element from silently taking an address where it
+    // wants a value.
+    // Only inside a loop whose guard was proved, which is what makes this
+    // pay. A single `list_get` outside one is left on `list_get_inline`: the
+    // three blocks this expands into are worth their code only when a loop
+    // amortises them, and emitting them everywhere cost g2 and g6 +58%
+    // compile time and +34% binary for 4.9% and 2.0%.
+    // A `List<String>` element is a pair in the list's own block, which no
+    // boxed or flat read below knows how to take.
+    if (isTypedListGet(expr, funcName) and listHoldsStrings(ptr_to_node(expr.child2))) {
+        let stringList = ptr_to_node(expr.child2)
+        let stringListVal = generateExpression(stringList)
+        let stringIndexVal = generateExpression(ptr_to_node(stringList.next))
+        return generateStringListElement(stringListVal, stringIndexVal)
+    }
+    let flatStride = flatGetStride(expr, funcName)
+    if (flatStride == 0 and isStaticBoxedListGet(expr, funcName)
+            and irLoopDepth > 0) {
+        let listNode = ptr_to_node(expr.child2)
+        let listVal = generateExpression(listNode)
+        let indexVal = generateExpression(ptr_to_node(listNode.next))
+        let raw = ir_get_temp_name(ir_list_boxed_elem(listVal, indexVal))
+        let retType = storageType(getExprType(expr))
+        if (isFatStringKey(retType)) { return fatFromPtr(raw) }
+        if (retType.equals("ptr") == false) {
+            return slotToScalar(retType, raw)
+        }
+        return raw
+    }
+    // **A scalar element belongs here too, and leaving it out was a real
+    // regression.** Putting scalars inline takes them out of
+    // `isStaticBoxedListGet` above; falling through to the curated
+    // `list_get_inline_scalar` call measured 2.31x slower on a 20M-read loop
+    // because the old ir_list_boxed_elem body was visible and vectorised.
+    //
+    // The pointer and scalar intrinsics stay separate because their result
+    // conventions differ. ir_list_flat_elem joins two addresses: the flat
+    // row address and list_get_inline's result. Its scalar twin joins two
+    // values: a typed load from the flat row and list_get_inline_scalar's
+    // i64 carrier converted back to the element type. Merging first and
+    // loading afterwards would load through a boxed scalar value as though
+    // it were an address whenever inline storage is disabled.
+    //
+    // The fat String stays out, and not by accident: it is a `struct:` key
+    // that is a pair in a register rather than storage reached by GEP, so it
+    // has neither a scalar load type nor an address to load from here.
+    let flatRet = storageType(getExprType(expr))
+    if (flatStride > 0 and irLoopFlatGuard.equals("") == false) {
+        let listNode = ptr_to_node(expr.child2)
+        let listVal = generateExpression(listNode)
+        let indexVal = generateExpression(ptr_to_node(listNode.next))
+        let mut guard = "1"
+        if (irLoopFlatGuard.equals("1") == false) {
+            guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
+        }
+        let mut checkBounds = 1
+        if (irLoopRangeProved) {
+            checkBounds = 0
+        } else if (irLoopHeaderBoundActive
+                and listNode.kind == NodeKind.IDENTIFIER_EXPR
+                and ptr_to_node(listNode.next).kind == NodeKind.IDENTIFIER_EXPR
+                and listNode.s1.equals(irLoopHeaderBoundList)
+                and ptr_to_node(listNode.next).s1.equals(irLoopHeaderBoundIndex)) {
+            checkBounds = 0
+        }
+        if (flatRet.equals("ptr")) {
+            return ir_get_temp_name(ir_list_flat_elem(
+                listVal, indexVal, flatStride, guard, checkBounds))
+        }
+        if (scalarInlineBytes(flatRet) > 0) {
+            let mut hoistedBound = ""
+            let mut hoistedData = ""
+            if (listNode.kind == NodeKind.IDENTIFIER_EXPR
+                    and listNode.s1.equals(irLoopHoistedBoundList)) {
+                hoistedBound = strClone(irLoopHoistedBoundValue)
+                hoistedData = strClone(irLoopHoistedDataValue)
+            }
+            return ir_get_temp_name(ir_list_flat_scalar_elem(
+                listVal, indexVal, flatRet, flatStride, guard, checkBounds,
+                hoistedBound, hoistedData))
+        }
+    }
+
+    // The write half, and only once the range is proved. Unlike the read,
+    // there is nothing to win here from the guard alone: `list_set_inline_scalar`
+    // is curated and inlines, so a merely representation-guarded store is the
+    // same code by another route. What pays is dropping the bounds branch,
+    // which is the last one left in a copy loop.
+    let flatSetStride = flatSetScalarStride(expr, funcName)
+    if (flatSetStride > 0 and irLoopFlatGuard.equals("") == false) {
+        let setList = ptr_to_node(expr.child2)
+        let setIndex = ptr_to_node(setList.next)
+        let setValue = ptr_to_node(setIndex.next)
+        let setType = nodeGetType(setList)
+        let elemKey = typeIrKey(ptr_to_type(setType.child))
+        let listVal2 = generateExpression(setList)
+        let indexVal2 = generateExpression(setIndex)
+        let valueVal2 = generateExpression(setValue)
+        let mut guard2 = "1"
+        if (irLoopFlatGuard.equals("1") == false) {
+            guard2 = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
+        }
+        let mut checkBounds2 = 1
+        if (irLoopRangeProved) { checkBounds2 = 0 }
+        let mut hoistedBound2 = ""
+        let mut hoistedData2 = ""
+        if (setList.kind == NodeKind.IDENTIFIER_EXPR
+                and setList.s1.equals(irLoopHoistedBoundList)) {
+            hoistedBound2 = strClone(irLoopHoistedBoundValue)
+            hoistedData2 = strClone(irLoopHoistedDataValue)
+        }
+        ir_list_flat_scalar_set(listVal2, indexVal2, valueVal2, elemKey,
+                                flatSetStride, guard2, checkBounds2,
+                                hoistedBound2, hoistedData2)
+        return ""
+    }
+
+    // Integer min/max/abs, straight onto LLVM's intrinsics. No runtime symbol
+    // and no branch: `llvm.smax.i32` becomes one `smax` on this target, and
+    // it is one of the intrinsics LLVM will widen into a vector loop.
+    if (funcName.equals("__builtin_max") or funcName.equals("__builtin_min")) {
+        let m0 = ptr_to_node(expr.child2)
+        let lhsVal = generateExpression(m0)
+        let rhsVal = generateExpression(ptr_to_node(m0.next))
+        let mut intrinsic = "llvm.smax.i32"
+        if (funcName.equals("__builtin_min")) { intrinsic = "llvm.smin.i32" }
+        ir_call_begin()
+        ir_call_arg("i32", lhsVal)
+        ir_call_arg("i32", rhsVal)
+        return ir_get_temp_name(ir_call_end("i32", intrinsic))
+    }
+
+    if (funcName.equals("__builtin_abs")) {
+        let absVal = generateExpression(ptr_to_node(expr.child2))
+        ir_call_begin()
+        ir_call_arg("i32", absVal)
+        ir_call_arg("i1", "false")
+        return ir_get_temp_name(ir_call_end("i32", "llvm.abs.i32"))
+    }
+
+    // errno, and the two numbers worth comparing it against. Builtins rather
+    // than externs because `errno` has no symbol to declare: it is a macro
+    // for a dereference of a per-thread location, and the accessor's name is
+    // the platform's. The backend picks that name from the target triple and
+    // emits the call inline, so the program links libc directly and the
+    // runtime gains nothing.
+    // The console write. A builtin rather than an `extern fn write` for the
+    // reason errno is one: the symbol's *name* is the platform's. POSIX has
+    // `write`, the Windows CRT has `_write` and no `write` at all, so the
+    // extern spelling linked on two platforms of three and put an undefined
+    // symbol into every Windows program that printed.
+    //
+    // The count and the result follow the same triple: `ssize_t`/`size_t` on
+    // POSIX, `int`/`unsigned int` on Windows. Prismio passes an `Int` -- a
+    // String's length is an i32 -- so the widening and the narrowing here are
+    // both exact.
+    //
+    // `ir_call_arg_borrow` and not `ir_call_arg_cstr` is the `bytes`
+    // contract the extern used to carry: the callee has the count and never
+    // reads to a terminator, so the String's own pointer crosses and a view
+    // of the remainder is not copied on every iteration of the retry loop.
+    if (funcName.equals("__builtin_console_write") and nodeExists(expr.child2)) {
+        let fdNode = ptr_to_node(expr.child2)
+        let textNode = ptr_to_node(fdNode.next)
+        let countNode = ptr_to_node(textNode.next)
+
+        let fdVal = generateExpression(fdNode)
+        let textVal = generateExpression(textNode)
+        let countVal = generateExpression(countNode)
+
+        let word = ir_console_write_word()
+        ir_call_begin()
+        ir_call_arg("i32", fdVal)
+        ir_call_arg_borrow("ptr", textVal)
+        // Each arm builds its own result rather than sharing one binding: a
+        // value name is a String, and binding it once to narrow it in one
+        // branch would be a move the other branch reads back.
+        if (word.equals("i64")) {
+            ir_call_arg("i64", ir_get_temp_name(ir_sext("i32", countVal, "i64")))
+            let wide = ir_get_temp_name(ir_call_end("i64", ir_console_write_symbol()))
+            return ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+        }
+        ir_call_arg("i32", countVal)
+        return ir_get_temp_name(ir_call_end("i32", ir_console_write_symbol()))
+    }
+
+    if (funcName.equals("__builtin_errno")) {
+        return ir_get_temp_name(ir_errno_load())
+    }
+    if (funcName.equals("__builtin_errno_intr")) {
+        return ir_get_temp_name(ir_errno_constant("EINTR"))
+    }
+    if (funcName.equals("__builtin_errno_again")) {
+        return ir_get_temp_name(ir_errno_constant("EAGAIN"))
+    }
+
+    // The compile target, as a constant. std.platform's answers are fixed when
+    // a program is compiled, for the target it is compiled for; the codes are
+    // targetOsCode's and its siblings' in src/common/target.psm.
+    if (funcName.equals("__builtin_target_os")) { return targetOsCode().toString() }
+    if (funcName.equals("__builtin_target_arch")) { return targetArchCode().toString() }
+    if (funcName.equals("__builtin_target_env")) { return targetEnvCode().toString() }
+
+    // Byte length is the pair's second field. This is a reserved compiler
+    // builtin, not an extern: its source spelling carries no declaration,
+    // LLVM symbol or link requirement.
+    if (funcName.equals("__builtin_string_len")
+        and nodeExists(expr.child2)) {
+        let a0 = ptr_to_node(expr.child2)
+        if (nodeExists(a0.next) == false) {
+            let value = generateExpression(a0)
+            let wide = ir_get_temp_name(ir_extract_value("struct:prismio.str", value, 1))
+            let narrow = ir_get_temp_name(ir_trunc("i64", wide, "i32"))
+            // Bit 31 is the inline tag, not part of the length. This `and` is
+            // the entire per-read cost of the German-string representation --
+            // see the layout note over `str_data_ptr` in
+            // runtime/llvm-api-backend.c for why the tag sits there rather
+            // than at bit 63, where it would have cost an inline byte instead.
+            return ir_get_temp_name(ir_and("i32", narrow, "2147483647"))
+        }
+    }
+
+    // List length is the header's second field (RT_LIST_FIELD_LEN).
+    // Emitted inline with tag_list_header range metadata so loops can
+    // hoist the bound and eliminate per-iteration function call overhead.
+    if (funcName.equals("list_len") and nodeExists(expr.child2)) {
+        let a0 = ptr_to_node(expr.child2)
+        if (nodeExists(a0.next) == false) {
+            let listVal = generateExpression(a0)
+            return ir_get_temp_name(ir_list_len(listVal))
+        }
+    }
+
+    // The one allocation whose length the caller states rather than the
+    // buffer carrying it.
+    //
+    // Intercepted here because the general path would build the pair with
+    // `fatFromPtr`, and measuring this buffer is meaningless: the C writes
+    // only the terminator and leaves the interior uninitialised. Every other
+    // String arriving from C is already filled, which is what makes
+    // `fatFromPtr` right for those and wrong for this one.
+    //
+    // This is also what makes the length builtin above sound. The pair is
+    // only worth reading if every producer puts a true length in it, and
+    // this is the one producer that could not.
+    //
+    // The arena bracket is repeated rather than shared: this returns before
+    // the general path's copy of it, and this call allocates.
+    if (funcName.equals("str_with_capacity") and nodeExists(expr.child2)) {
+        let a0 = ptr_to_node(expr.child2)
+        if (nodeExists(a0.next) == false) {
+            let n = generateExpression(a0)
+            let placed = aif_arena_at_node(node_to_ptr(expr)) == 1
+            if (placed) { ir_arena_hint_begin() }
+            ir_call_begin()
+            ir_call_arg("i32", n)
+            let raw = ir_get_temp_name(ir_call_end("ptr", "str_with_capacity"))
+            if (placed) { ir_arena_hint_end() }
+            return fatWithLength(raw, n)
+        }
+    }
+
+    // Byte access, emitted rather than called.
+    //
+    // A string loop runs each byte operation once per byte. When the old
+    // spellings were ordinary externs, each iteration paid a call LLVM could
+    // not inline -- lang_runtime.c is a separate translation unit and user
+    // programs do not link with LTO. Measured on 40 000 searches of a
+    // 40 000-byte string: 1.85s calling out per byte against 0.38s for the
+    // identical loop in C at -O2, so **4.9x of that gap was call overhead
+    // alone**.
+    //
+    // The lowering is the same GEP-plus-load the array index above emits;
+    // String's data field is a machine pointer and a byte is an `i8`, so
+    // there is nothing string-specific about it beyond the element type.
+    //
+    // **No bounds check, deliberately.** Checking the upper bound by calling
+    // `strlen` on every access is what made `str_char_at` loops quadratic.
+    // The builtin's contract is "the
+    // index is in [0, len)" and std/string.psm establishes that bound before
+    // every use. `String.charAt` remains the checked accessor for callers who
+    // want one.
+    if (funcName.equals("__builtin_string_byte_at")
+        and nodeExists(expr.child2)) {
+        let a0 = ptr_to_node(expr.child2)
+        if (nodeExists(a0.next)) {
+            let base = generateExpression(a0)
+            let idx = generateExpression(ptr_to_node(a0.next))
+            // **The resolved pointer first, if this operand is a binding
+            // that has one.** A String's bytes are behind its pointer or
+            // inside the pair, and `ir_str_byte_at` answers that per access
+            // -- five instructions per character, which the tokenizer paid
+            // 204 000 times because its loop is too large for LLVM to
+            // unswitch. A binding resolves it once where it is made
+            // (stmt.psm, module.psm), and then this is the GEP and load it
+            // has always been.
+            //
+            // Only for a plain variable reference: anything else has no
+            // binding to have resolved, and the per-access form is correct
+            // for all of them.
+            let a0node = ptr_to_node(expr.child2)
+            if (a0node.kind == NodeKind.IDENTIFIER_EXPR) {
+                let resolved = ir_get_var_data(a0node.s1)
+                if (resolved >= 0) {
+                    let slot = ir_elem_ptr("i8", ir_get_temp_name(resolved), idx)
+                    return ir_get_temp_name(ir_load_ptr("i8", ir_get_temp_name(slot)))
+                }
+            }
+            return ir_get_temp_name(ir_str_byte_at(base, idx))
+        }
+    }
+
+    // The German short form, built from a range of another string.
+    //
+    // This is the producer the whole representation exists for. `strSubstring`
+    // takes it whenever the result is twelve bytes or fewer, which on the
+    // tokenizer benchmark is every token and across `prismio check src/main.psm`
+    // is 81.3% of every string allocated -- and it allocates nothing, frees
+    // nothing, and hands back sixteen bytes of value.
+    //
+    // Straight-line by construction: the size test lives in std/string.psm, so
+    // there is no branch here and nothing for the caller's loop to mispredict.
+    if (funcName.equals("__builtin_string_inline")
+        and nodeExists(expr.child2)) {
+        let a0 = ptr_to_node(expr.child2)
+        if (nodeExists(a0.next)) {
+            let a1 = ptr_to_node(a0.next)
+            if (nodeExists(a1.next)) {
+                let base = generateExpression(a0)
+                let from = generateExpression(a1)
+                let count = generateExpression(ptr_to_node(a1.next))
+                return ir_get_temp_name(ir_str_inline(base, from, count))
+            }
+        }
+    }
+
+    // A concatenation whose complete result fits inside the String pair.
+    // The size branch is in std/string.psm; this side only evaluates each
+    // operand once and asks the backend to emit the straight-line copies.
+    if (funcName.equals("__builtin_string_concat_inline2")
+        and nodeExists(expr.child2)) {
+        let c0 = ptr_to_node(expr.child2)
+        let c1 = ptr_to_node(c0.next)
+        return ir_get_temp_name(ir_str_inline_concat2(
+            generateExpression(c0), generateExpression(c1)))
+    }
+    if (funcName.equals("__builtin_string_concat_inline3")
+        and nodeExists(expr.child2)) {
+        let c0 = ptr_to_node(expr.child2)
+        let c1 = ptr_to_node(c0.next)
+        let c2 = ptr_to_node(c1.next)
+        return ir_get_temp_name(ir_str_inline_concat3(
+            generateExpression(c0), generateExpression(c1), generateExpression(c2)))
+    }
+    if (funcName.equals("__builtin_string_concat_inline4")
+        and nodeExists(expr.child2)) {
+        let c0 = ptr_to_node(expr.child2)
+        let c1 = ptr_to_node(c0.next)
+        let c2 = ptr_to_node(c1.next)
+        let c3 = ptr_to_node(c2.next)
+        return ir_get_temp_name(ir_str_inline_concat4(
+            generateExpression(c0), generateExpression(c1), generateExpression(c2),
+            generateExpression(c3)))
+    }
+    if (funcName.equals("__builtin_string_concat_inline5")
+        and nodeExists(expr.child2)) {
+        let c0 = ptr_to_node(expr.child2)
+        let c1 = ptr_to_node(c0.next)
+        let c2 = ptr_to_node(c1.next)
+        let c3 = ptr_to_node(c2.next)
+        let c4 = ptr_to_node(c3.next)
+        return ir_get_temp_name(ir_str_inline_concat5(
+            generateExpression(c0), generateExpression(c1), generateExpression(c2),
+            generateExpression(c3), generateExpression(c4)))
+    }
+    if (funcName.equals("__builtin_string_concat_inline6")
+        and nodeExists(expr.child2)) {
+        let c0 = ptr_to_node(expr.child2)
+        let c1 = ptr_to_node(c0.next)
+        let c2 = ptr_to_node(c1.next)
+        let c3 = ptr_to_node(c2.next)
+        let c4 = ptr_to_node(c3.next)
+        let c5 = ptr_to_node(c4.next)
+        return ir_get_temp_name(ir_str_inline_concat6(
+            generateExpression(c0), generateExpression(c1), generateExpression(c2),
+            generateExpression(c3), generateExpression(c4), generateExpression(c5)))
+    }
+
+    // A Prismio Int needs at most eleven decimal bytes, including the sign,
+    // so its complete text fits in the existing inline String payload. The
+    // backend formats into one reusable stack scratch and captures the two
+    // words immediately: no heap allocation and no temporary owner.
+    if (funcName.equals("__builtin_string_from_int")
+        and nodeExists(expr.child2)) {
+        let a0 = ptr_to_node(expr.child2)
+        if (nodeExists(a0.next) == false) {
+            return ir_get_temp_name(ir_str_from_int(generateExpression(a0)))
+        }
+    }
+
+    // A view of another string: no allocation, no copy, nothing to release.
+    //
+    // `strSubstring` takes this whenever the result is longer than the twelve
+    // bytes the pair can hold, which is exactly when the alternative was a
+    // `str_with_capacity` and a byte copy. The lifetime is not a promise the
+    // programmer makes here as it is in Umbra: the builtin is declared an
+    // alias of its first argument, so AIF holds the base alive.
+    if (funcName.equals("__builtin_string_view")
+        and nodeExists(expr.child2)) {
+        let v0 = ptr_to_node(expr.child2)
+        if (nodeExists(v0.next)) {
+            let v1 = ptr_to_node(v0.next)
+            if (nodeExists(v1.next)) {
+                let vbase = generateExpression(v0)
+                let vfrom = generateExpression(v1)
+                let vcount = generateExpression(ptr_to_node(v1.next))
+                return ir_get_temp_name(ir_str_view(vbase, vfrom, vcount))
+            }
+        }
+    }
+
+    // `a == b` on String. The pointer half of each fat pair goes to the
+    // runtime's str_equals, whose strcmp the C library vectorises; the i32 it
+    // answers becomes the i1 the language wants.
+    if (funcName.equals("__builtin_string_eq")
+        and nodeExists(expr.child2)) {
+        let e0 = ptr_to_node(expr.child2)
+        if (nodeExists(e0.next)) {
+            let rhs = ptr_to_node(e0.next)
+            let lhsVal = generateExpression(e0)
+            let rhsVal = generateExpression(rhs)
+            // The backend compares the pairs first. Two short strings are
+            // equal exactly when their sixteen bytes match, which the layout
+            // guarantees and which costs two register compares; `str_equals`
+            // is reached only when the lengths agree and at least one side
+            // keeps its bytes behind a pointer.
+            let answer = ir_get_temp_name(ir_str_eq(lhsVal, rhsVal))
+
+            // **An owned operand is dropped here, because nothing else will.**
+            // `a.concat(b) == "x"` allocates a String that is never bound, and
+            // an ordinary call releases exactly that shape in its argument
+            // loop below -- `irArgumentIsOwnedTemporary`. Lowering `==` to a
+            // builtin skipped the loop and with it the drop, so the operator
+            // leaked where the `.equals()` method it is a spelling of did not:
+            // 1 allocated, 0 released. The comparison reads the bytes and
+            // retains nothing, so the release is unconditional once the
+            // answer is in hand.
+            if (irArgumentIsOwnedTemporary(e0)) {
+                generateOwnedTemporaryRelease(lhsVal, irOwnedTemporaryKind(e0),
+                                              irOwnedTemporaryDeclType(e0))
+            }
+            if (irArgumentIsOwnedTemporary(rhs)) {
+                generateOwnedTemporaryRelease(rhsVal, irOwnedTemporaryKind(rhs),
+                                              irOwnedTemporaryDeclType(rhs))
+            }
+            return answer
+        }
+    }
+
+    // `a.compare(b)` on String, which `cmp` and so every String sort reach.
+    // Two short strings order as one integer key in registers; see
+    // `ir_str_compare`. An owned operand is dropped here for the reason the
+    // `==` lowering above drops one.
+    if (funcName.equals("__builtin_string_compare")
+        and nodeExists(expr.child2)) {
+        let c0 = ptr_to_node(expr.child2)
+        if (nodeExists(c0.next)) {
+            let crhs = ptr_to_node(c0.next)
+            let clhsVal = generateExpression(c0)
+            let crhsVal = generateExpression(crhs)
+            let order = ir_get_temp_name(ir_str_compare(clhsVal, crhsVal))
+            if (irArgumentIsOwnedTemporary(c0)) {
+                generateOwnedTemporaryRelease(clhsVal, irOwnedTemporaryKind(c0),
+                                              irOwnedTemporaryDeclType(c0))
+            }
+            if (irArgumentIsOwnedTemporary(crhs)) {
+                generateOwnedTemporaryRelease(crhsVal, irOwnedTemporaryKind(crhs),
+                                              irOwnedTemporaryDeclType(crhs))
+            }
+            return order
+        }
+    }
+
+    // `keyHashBytes`, which every `Map<String, V>` probe reaches. A short
+    // key's twelve bytes are mixed where they sit and nothing is called; see
+    // `ir_str_hash`. An owned operand is dropped here for the reason the
+    // `==` lowering above drops one.
+    if (funcName.equals("__builtin_string_hash")
+        and nodeExists(expr.child2)) {
+        let h0 = ptr_to_node(expr.child2)
+        if (nodeExists(h0.next) == false) {
+            let hashed = generateExpression(h0)
+            let answer = ir_get_temp_name(ir_str_hash(hashed))
+            if (irArgumentIsOwnedTemporary(h0)) {
+                generateOwnedTemporaryRelease(hashed, irOwnedTemporaryKind(h0),
+                                              irOwnedTemporaryDeclType(h0))
+            }
+            return answer
+        }
+    }
+
+    // **Writes go to the long form only, and every caller obeys that.** Every
+    // `__builtin_string_put_byte` in std/string.psm writes into a buffer that
+    // came from `str_with_capacity` two lines above, which always allocates;
+    // the short form is built whole by `__builtin_string_inline` and never
+    // written into. A write to a short string would land in the scratch copy
+    // the coercion makes and be lost, so the rule is the same one the index
+    // has: established at the call site, not checked here.
+    if (funcName.equals("__builtin_string_put_byte")
+        and nodeExists(expr.child2)) {
+        let a0 = ptr_to_node(expr.child2)
+        if (nodeExists(a0.next)) {
+            let a1 = ptr_to_node(a0.next)
+            if (nodeExists(a1.next)) {
+                let base = generateExpression(a0)
+                let idx = generateExpression(a1)
+                let value = generateExpression(ptr_to_node(a1.next))
+                let slot = ir_elem_ptr("i8", base, idx)
+                ir_store_ptr("i8", value, ir_get_temp_name(slot))
+                return ""
+            }
+        }
+    }
+
+    // Regular function call
+    let inlineSize = inlineElemSizeOfCall(expr)
+    // Foreign iff Prismio does not define a function of this name.
+    //
+    // One test for both directions, and it has to be this one. Asking "is
+    // there an extern called this" is not the same question: a program may
+    // declare `extern fn print(s: String)` while std.io also defines `print`,
+    // and both are true at once. Overload resolution then picks the Prismio
+    // one, so extracting the pointer half on the argument side handed a bare
+    // pointer to `@print__String`, which wants the pair.
+    let isForeign = callIsPrismioFn(funcName) == false
+    ir_call_begin()
+    // REQUIREMENTS 20. `list_push` and `list_set` take the element as `ptr`,
+    // so a scalar has to reach the slot as one -- without this the call
+    // disagrees with its own declaration and the module fails verification.
+    let elemArg = listElementArgIndex(funcName)
+    // `list_push`/`list_set` into a `List<String>` take the pair's two halves
+    // rather than a slot word; see list_push_str.
+    let mut stringListOp = false
+    if (elemArg >= 0 and isForeign and nodeExists(expr.child2)) {
+        stringListOp = listHoldsStrings(ptr_to_node(expr.child2))
+    }
+
+    // The owned temporaries this call is about to consume, released once it
+    // returns. Collected here because this is the only point where the
+    // generated value and the argument node are both in hand.
+    let mut ownedTempVals: List<String> = list_new()
+    let mut ownedTempKinds: List<Int> = list_new()
+    let mut ownedTempTypes: List<String> = list_new()
+
+    // Which storage key the element argument carried, so the entry-point
+    // choice below can tell a scalar from a struct without re-deriving it.
+    let mut elemStoreKey = ""
+    let mut argPtr = expr.child2
+    let mut argIndex = 0
+    while (nodeExists(argPtr)) {
+        let argNode = ptr_to_node(argPtr)
+        // Query ownership before generateExpression: regular call lowering
+        // consumes CALL_EXPR.s2 when it takes the resolved symbol name.
+        let releaseOwnedTemp = irArgumentIsOwnedTemporary(argNode)
+        let ownedTempKind = irOwnedTemporaryKind(argNode)
+        let ownedTempType = getExprType(argNode)
+        let argVal = generateExpression(argNode)
+        let argStore = storageType(getExprType(argNode))
+        // Cloned: `argStore` is affine and the branches below still name it.
+        if (argIndex == elemArg) { elemStoreKey = strClone(argStore) }
+        // Cloned because `argVal` is affine and the argument itself still
+        // has to consume it below -- the same reason the two branches under
+        // this one each name it exactly once.
+        if (releaseOwnedTemp) {
+            list_push(ownedTempVals, strClone(argVal))
+            list_push(ownedTempKinds, ownedTempKind)
+            list_push(ownedTempTypes, ownedTempType)
+        }
+        // Crossing into C: a String is `{ptr, i64}` here and `const char*`
+        // there, so the pointer half goes and the length stays. The buffer is
+        // NUL-terminated (FFI 7.1), which is what keeps this a field read
+        // rather than a copy.
+        //
+        // The two branches each name `argVal` once and never both -- a String
+        // is affine, so hoisting the common tail out would move it twice.
+        if (isForeign and argStore.equals("struct:prismio.str")) {
+            if (argIndex == elemArg) {
+                // Into a container slot, which owns one word and frees it
+                // later -- so `scalarToSlot` is handed the *pair*, not the
+                // pointer half, and copies a short string out to the heap on
+                // the way in. Handing it the coerced pointer instead stored
+                // the scratch buffer's address in the list, and the release at
+                // teardown was a free of the stack.
+                //
+                // A literal is static storage, and a container releases what
+                // it holds -- a literal stored as it was is `.rodata` freed at
+                // teardown -- so it goes in as an owned copy. Cloned:
+                // `argVal` is affine and the branches below still name it.
+                let mut element = strClone(argVal)
+                if (nodeIsStringLiteralExpr(argPtr)) {
+                    element = generateOwnedStringLiteral(element, argPtr)
+                }
+                if (stringListOp) {
+                    // A `List<String>` keeps the pair itself; list_push_str.
+                    ir_call_arg("ptr", ir_get_temp_name(
+                        ir_extract_value("struct:prismio.str", element, 0)))
+                    ir_call_arg("i64", ir_get_temp_name(
+                        ir_extract_value("struct:prismio.str", element, 1)))
+                } else {
+                    ir_call_arg("ptr", scalarToSlot("struct:prismio.str", element))
+                }
+            } else if (irCallReturnsAlias(expr)) {
+                // An alias return may outlive this expression or even this
+                // frame. Inline String bytes live in a stack pair, and a
+                // view may point inside another owner, so neither scratch
+                // pointer is a valid physical implementation of that
+                // contract. Materialise a stable owned buffer before the
+                // call. Long owned strings pass through unchanged; short
+                // and view forms copy. With the contract's intentionally
+                // broad "any argument or static" meaning, copying every
+                // candidate is the conservative direction: an unchosen
+                // candidate can leak, but the chosen alias cannot dangle.
+                ir_call_arg("ptr", scalarToSlot("struct:prismio.str", argVal))
+            } else if (aif_extern_contract(funcName, argIndex).equals("bytes")) {
+                // **The one contract that changes what crosses, not who
+                // owns it.** The default hands a callee a `char*` it can
+                // read to a NUL, which for a view means materialising a
+                // terminated copy first. `bytes` is the declaration saying
+                // the callee was given the count separately and never looks
+                // for a terminator, so the String's own pointer goes
+                // through: no branch, no copy, no release afterwards.
+                //
+                // This is what lets a retry loop over `write` be written in
+                // Prismio. Advancing the buffer produces a view of the
+                // remainder, and under the default that view would be copied
+                // -- the whole remainder, on every iteration.
+                ir_call_arg_borrow("ptr", argVal)
+            } else if (aif_extern_contract(funcName, argIndex).equals("borrow")) {
+                // **The contract, spent rather than merely checked.**
+                // RUNTIME.md defines `borrow` as "the callee reads the
+                // argument and does not retain it", which is what LLVM
+                // spells `readonly nocapture`. Without saying so, LLVM must
+                // assume the callee writes through the pointer, and the
+                // materialisation of a short String cannot be lifted out of
+                // a loop that calls one: `strIndexOfFrom` calls
+                // `str_find_byte_pair` per candidate, and `string_search`
+                // measured 0.90x with those stores stuck in the loop.
+                ir_call_arg_cstr(argVal, 1)
+            } else {
+                ir_call_arg_cstr(argVal, 0)
+            }
+        } else {
+            if (argIndex == elemArg) {
+                // **Two conventions, and they are not interchangeable.**
+                // `list_push`/`list_set` take the element *punned into* a
+                // pointer slot; `list_push_inline`/`list_set_inline` take a
+                // pointer to the bytes and memcpy `elem_size` of them. Give
+                // the inline pair a punned scalar and it copies from the
+                // address numerically equal to the value -- which is the
+                // "read a body as a pointer" the notes on inlineElemSize
+                // warn about, and it is a wild read rather than a wrong
+                // answer. A struct element needs nothing here: it already
+                // *is* the address of its bytes.
+                // **`scalarInlineBytes`, not "is it a struct key".** A
+                // struct element reaches here as a bare `ptr` for a generic
+                // or a boxed layout, which is not a struct key and is not a
+                // scalar either -- and `zext ptr to i64` fails module
+                // verification. Asking for the width answers 0 for `ptr` and
+                // for anything else this does not know how to widen.
+                if (inlineSize > 0 and scalarInlineBytes(argStore) > 0) {
+                    ir_call_arg("i64", scalarToInlineBits(argStore, argVal))
+                } else {
+                    ir_call_arg("ptr", scalarToSlot(argStore, argVal))
                 }
             } else {
-                if (argIndex == elemArg) {
-                    // **Two conventions, and they are not interchangeable.**
-                    // `list_push`/`list_set` take the element *punned into* a
-                    // pointer slot; `list_push_inline`/`list_set_inline` take a
-                    // pointer to the bytes and memcpy `elem_size` of them. Give
-                    // the inline pair a punned scalar and it copies from the
-                    // address numerically equal to the value -- which is the
-                    // "read a body as a pointer" the notes on inlineElemSize
-                    // warn about, and it is a wild read rather than a wrong
-                    // answer. A struct element needs nothing here: it already
-                    // *is* the address of its bytes.
-                    // **`scalarInlineBytes`, not "is it a struct key".** A
-                    // struct element reaches here as a bare `ptr` for a generic
-                    // or a boxed layout, which is not a struct key and is not a
-                    // scalar either -- and `zext ptr to i64` fails module
-                    // verification. Asking for the width answers 0 for `ptr` and
-                    // for anything else this does not know how to widen.
-                    if (inlineSize > 0 and scalarInlineBytes(argStore) > 0) {
-                        ir_call_arg("i64", scalarToInlineBits(argStore, argVal))
-                    } else {
-                        ir_call_arg("ptr", scalarToSlot(argStore, argVal))
-                    }
-                } else {
-                    ir_call_arg(argStore, argVal)
-                }
-            }
-            argPtr = argNode.next
-            argIndex = argIndex + 1
-        }
-
-        let mut callName = funcName
-        if (expr.s2.equals("") == false) {
-            callName = expr.s2
-        }
-        // M4.2. The inline family, chosen from the list's static element type.
-        // `list_push_inline` takes the size as well so it can reject a mismatched
-        // representation safely. A `let mut xs = list_new()` with no annotation
-        // is `List<Invalid>` at every site and stays boxed; a typed flat list is
-        // born inline through `list_new_inline` below.
-        if (inlineSize > 0) {
-            let mut inlineName = inlineOpName(funcName)
-            // A scalar element takes the by-value pair. `list_get` is unaffected:
-            // it returns the slot's address either way and the load above is what
-            // reads it.
-            let mut scalarElem = false
-            if (scalarInlineBytes(elemStoreKey) > 0) {
-                scalarElem = true
-                if (funcName.equals("list_push")) { inlineName = "list_push_inline_scalar" }
-                if (funcName.equals("list_set")) { inlineName = "list_set_inline_scalar" }
-            }
-            if (inlineName.equals("") == false) {
-                callName = inlineName
-                // The push and scalar operations carry the size as a defensive
-                // representation check. `list_set_inline` -- the struct one --
-                // still does not need it.
-                if (funcName.equals("list_push")
-                        or (scalarElem and funcName.equals("list_set"))) {
-                    ir_call_arg("i32", strFromInt(inlineSize))
-                }
+                ir_call_arg(argStore, argVal)
             }
         }
-        if (stringListOp) {
-            if (funcName.equals("list_push")) { callName = "list_push_str" }
-            if (funcName.equals("list_set")) { callName = "list_set_str" }
-        }
-        if (funcName.equals("list_new")) {
-            let newInlineSize = inlineElemSizeOfList(expr)
-            if (newInlineSize > 0) {
-                callName = "list_new_inline"
-                ir_call_arg("i32", strFromInt(newInlineSize))
-            } else if (listHoldsStrings(expr)) {
-                callName = "list_new_inline"
-                ir_call_arg("i32", strFromInt(stringPairBytes()))
-            }
-        }
-        if (funcName.equals("list_new_with_capacity")) {
-            let newCapInlineSize = inlineElemSizeOfList(expr)
-            if (newCapInlineSize > 0) {
-                callName = "list_new_with_capacity_inline"
-                ir_call_arg("i32", strFromInt(newCapInlineSize))
-            } else if (listHoldsStrings(expr)) {
-                callName = "list_new_with_capacity_inline"
-                ir_call_arg("i32", strFromInt(stringPairBytes()))
-            }
-        }
-        // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
-        // its argument, which is why it needs no new control flow here: the
-        // runtime aborts on a null rather than codegen branching around one.
-        if (funcName.equals("expect")) {
-            callName = "prismio_expect"
-        }
+        argPtr = argNode.next
+        argIndex = argIndex + 1
+    }
 
-        let mut retType = storageType(getExprType(expr))
-
-        // Whether the temporaries above may be released once this call returns.
-        //
-        // Ordinary calls need three conditions, and each one is a hazard that
-        // was reachable. String.concat has the explicit copy/no-retain effect
-        // described below and is the deliberately narrow exception:
-        //
-        //  * **A known Prismio callee.** An extern's result is described by its
-        //    FFI contract and `alias` hands an argument back; aif_fn_may_return_param
-        //    answers no for a symbol it does not know, so widening here would be
-        //    reading that answer as a fact when it is an abstention.
-        //  * **The callee does not return one of its parameters.** Otherwise the
-        //    result aliases the temporary and freeing it here is a use-after-free
-        //    in the expression that still reads it -- the same defect as
-        //    tests/test_85_passthrough_escape.psm, one scope earlier.
-        //  * **The result carries no pointer.** A scalar cannot alias the
-        //    argument at all, which closes the case the fact above can miss: a
-        //    callee returning a *view* of a parameter carries provenance rather
-        //    than the parameter's sites (SPEC 8.4), so the set intersection is
-        //    silent about it.
-        //
-        // `spawn` needs no clause and gets none: SPEC's spawn lowers through its
-        // own path in this function, which emits its arguments itself and never
-        // reaches here. That matters -- a spawned task may still be running, so
-        // this release point would be wrong for it, and
-        // aif/evidence/xlang/prismio/g9_helper_leak.psm is exactly that shape.
-        // **The third clause used to be the return's kind, and it was far too
-        // wide.** "Any pointer or struct result may alias an argument" withheld
-        // the release from every call that returns anything reference-shaped:
-        // `wrap(make())` returning a fresh `Box` cannot be the `String` it was
-        // handed, and leaked 100 of 100 allocations for it. The kind was standing
-        // in for the case the points-to fact genuinely misses -- a callee
-        // returning a *view* of a parameter, which carries provenance rather than
-        // sites -- and that case now has its own fact, so the stand-in can go.
-        // concat is a stronger, local contract than the context-insensitive
-        // may-return summaries: every overload allocates its own result and
-        // byte-copies every argument. A shared allocation site elsewhere can
-        // conservatively make those summaries say "may alias", but it cannot
-        // make this particular call retain an argument.
-        let releaseTemps = funcName.equals("concat")
-            or (isForeign == false
-                and aif_fn_may_return_param(callName) == 0
-                and aif_fn_may_return_view_of_param(callName) == 0)
-
-        if (retType.equals("void")) {
-            ir_call_end("void", callName)
-            if (releaseTemps) {
-                generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
-            }
-            return ""
+    let mut callName = funcName
+    if (expr.s2.equals("") == false) {
+        callName = expr.s2
+    }
+    // M4.2. The inline family, chosen from the list's static element type.
+    // `list_push_inline` takes the size as well so it can reject a mismatched
+    // representation safely. A `let mut xs = list_new()` with no annotation
+    // is `List<Invalid>` at every site and stays boxed; a typed flat list is
+    // born inline through `list_new_inline` below.
+    if (inlineSize > 0) {
+        let mut inlineName = inlineOpName(funcName)
+        // A scalar element takes the by-value pair. `list_get` is unaffected:
+        // it returns the slot's address either way and the load above is what
+        // reads it.
+        let mut scalarElem = false
+        if (scalarInlineBytes(elemStoreKey) > 0) {
+            scalarElem = true
+            if (funcName.equals("list_push")) { inlineName = "list_push_inline_scalar" }
+            if (funcName.equals("list_set")) { inlineName = "list_set_inline_scalar" }
         }
-
-        // AIF Level 4. The value this call produces may belong to an enclosing
-        // `region`, and it is allocated inside the runtime rather than through
-        // ir_alloc_region -- so the arena is chosen here, around the call, and
-        // the runtime bumps instead of calling malloc.
-        //
-        // aif_arena_at_node is the whole gate, and it is sufficient rather than
-        // merely convenient. A site exists on a call node only when the callee is
-        // opaque to this compilation; the analysis raised it to T1 with an escape
-        // at or below the region, which an `alias` return or an undeclared one
-        // never gets. So this fires exactly on FFI `produce` calls inside a region
-        // whose result cannot outlive it.
-        //
-        // Bound here rather than at its second use below, because the String
-        // return just underneath is an *early* one and needs the same bracket.
-        let arenaPlaced = aif_arena_at_node(node_to_ptr(expr)) == 1
-
-        // Crossing back in from C. The callee is declared to return `ptr`, so the
-        // length has to be supplied here -- one `strlen` at the boundary, where
-        // the thin representation used to pay one per access.
-        //
-        // `prismio_cstr_len` rather than `__builtin_string_len`, which requires a
-        // fat String while this boundary has only the raw pointer.
-        //
-        // The bracket goes around the *call*, not around the pair built from its
-        // result: the hint steers an allocation, and `prismio_cstr_len` makes
-        // none. Returning above the gate is what made every `str_concat` inside a
-        // `region` come from malloc -- the arena served nothing, silently, and
-        // the program still printed the right answer.
-        if (isForeign and retType.equals("struct:prismio.str")) {
-            if (arenaPlaced) { ir_arena_hint_begin() }
-            let raw = ir_get_temp_name(ir_call_end("ptr", callName))
-            if (arenaPlaced) { ir_arena_hint_end() }
-            return fatFromPtr(raw)
-        }
-
-        // REQUIREMENTS 20, the other end. `list_get` is declared to return `ptr`
-        // and sema types it as the element type, so for a scalar element the two
-        // disagree and the value has to come back out of the slot. Handled here
-        // rather than below because the call's own type is `ptr` whatever the
-        // element is -- and a scalar element is never arena-placed or refcounted,
-        // since it registers no site to place or count.
-        if (funcName.equals("list_get") and retType.equals("ptr") == false
-            and retType.equals("struct:prismio.str") == false) {
-            // Resolved by value, for the reason list_get_inline_scalar gives:
-            // the inline entry point returns an address and the boxed one the
-            // slot's contents, and only a scalar can tell them apart.
-            if (inlineSize > 0 and scalarInlineBytes(retType) > 0) {
+        if (inlineName.equals("") == false) {
+            callName = inlineName
+            // The push and scalar operations carry the size as a defensive
+            // representation check. `list_set_inline` -- the struct one --
+            // still does not need it.
+            if (funcName.equals("list_push")
+                    or (scalarElem and funcName.equals("list_set"))) {
                 ir_call_arg("i32", strFromInt(inlineSize))
-                let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
-                return scalarFromInlineBits(retType, bits)
             }
-            let slot = ir_get_temp_name(ir_call_end("ptr", callName))
-            return slotToScalar(retType, slot)
         }
+    }
+    if (stringListOp) {
+        if (funcName.equals("list_push")) { callName = "list_push_str" }
+        if (funcName.equals("list_set")) { callName = "list_set_str" }
+    }
+    if (funcName.equals("list_new")) {
+        let newInlineSize = inlineElemSizeOfList(expr)
+        if (newInlineSize > 0) {
+            callName = "list_new_inline"
+            ir_call_arg("i32", strFromInt(newInlineSize))
+        } else if (listHoldsStrings(expr)) {
+            callName = "list_new_inline"
+            ir_call_arg("i32", strFromInt(stringPairBytes()))
+        }
+    }
+    if (funcName.equals("list_new_with_capacity")) {
+        let newCapInlineSize = inlineElemSizeOfList(expr)
+        if (newCapInlineSize > 0) {
+            callName = "list_new_with_capacity_inline"
+            ir_call_arg("i32", strFromInt(newCapInlineSize))
+        } else if (listHoldsStrings(expr)) {
+            callName = "list_new_with_capacity_inline"
+            ir_call_arg("i32", strFromInt(stringPairBytes()))
+        }
+    }
+    // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
+    // its argument, which is why it needs no new control flow here: the
+    // runtime aborts on a null rather than codegen branching around one.
+    if (funcName.equals("expect")) {
+        callName = "prismio_expect"
+    }
 
-        if (arenaPlaced) { ir_arena_hint_begin() }
-        let mut tempId = ir_call_end(retType, callName)
-        if (arenaPlaced) { ir_arena_hint_end() }
-        let result = ir_get_temp_name(tempId)
+    let mut retType = storageType(getExprType(expr))
 
-        // After the call and before anything reads `result`, which is the whole
-        // of the ordering requirement: the callee borrowed these for the call's
-        // duration and `releaseTemps` has already established that none of them
-        // is what came back.
+    // Whether the temporaries above may be released once this call returns.
+    //
+    // Ordinary calls need three conditions, and each one is a hazard that
+    // was reachable. String.concat has the explicit copy/no-retain effect
+    // described below and is the deliberately narrow exception:
+    //
+    //  * **A known Prismio callee.** An extern's result is described by its
+    //    FFI contract and `alias` hands an argument back; aif_fn_may_return_param
+    //    answers no for a symbol it does not know, so widening here would be
+    //    reading that answer as a fact when it is an abstention.
+    //  * **The callee does not return one of its parameters.** Otherwise the
+    //    result aliases the temporary and freeing it here is a use-after-free
+    //    in the expression that still reads it -- the same defect as
+    //    tests/test_85_passthrough_escape.psm, one scope earlier.
+    //  * **The result carries no pointer.** A scalar cannot alias the
+    //    argument at all, which closes the case the fact above can miss: a
+    //    callee returning a *view* of a parameter carries provenance rather
+    //    than the parameter's sites (SPEC 8.4), so the set intersection is
+    //    silent about it.
+    //
+    // `spawn` needs no clause and gets none: SPEC's spawn lowers through its
+    // own path in this function, which emits its arguments itself and never
+    // reaches here. That matters -- a spawned task may still be running, so
+    // this release point would be wrong for it, and
+    // aif/evidence/xlang/prismio/g9_helper_leak.psm is exactly that shape.
+    // **The third clause used to be the return's kind, and it was far too
+    // wide.** "Any pointer or struct result may alias an argument" withheld
+    // the release from every call that returns anything reference-shaped:
+    // `wrap(make())` returning a fresh `Box` cannot be the `String` it was
+    // handed, and leaked 100 of 100 allocations for it. The kind was standing
+    // in for the case the points-to fact genuinely misses -- a callee
+    // returning a *view* of a parameter, which carries provenance rather than
+    // sites -- and that case now has its own fact, so the stand-in can go.
+    // concat is a stronger, local contract than the context-insensitive
+    // may-return summaries: every overload allocates its own result and
+    // byte-copies every argument. A shared allocation site elsewhere can
+    // conservatively make those summaries say "may alias", but it cannot
+    // make this particular call retain an argument.
+    let releaseTemps = funcName.equals("concat")
+        or (isForeign == false
+            and aif_fn_may_return_param(callName) == 0
+            and aif_fn_may_return_view_of_param(callName) == 0)
+
+    if (retType.equals("void")) {
+        ir_call_end("void", callName)
         if (releaseTemps) {
             generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
         }
+        return ""
+    }
 
-        // AIF item 3. A container is told what it owns at construction, because
-        // at teardown its elements are bare pointers and reading a header in
-        // front of one would be reading memory this compilation did not allocate.
-        // Stamped on the allocating call, which is the only place the site -- and
-        // therefore the disposition -- is named.
-        let elemOwn = aif_elem_owner_at_node(node_to_ptr(expr))
-        if (elemOwn != AIF_ELEM_NONE) {
-            // A `List<String>` owns pairs rather than pointers: AIF_ELEM_STRING.
-            let mut stampedOwn = elemOwn
-            if (elemOwn == AIF_ELEM_OBJECT and listHoldsStrings(expr)) {
-                stampedOwn = AIF_ELEM_STRING
-            }
-            ir_call_begin()
-            ir_call_arg("ptr", result)
-            ir_call_arg("i32", strFromInt(stampedOwn))
-            ir_call_end("void", "list_set_elem_owner")
+    // AIF Level 4. The value this call produces may belong to an enclosing
+    // `region`, and it is allocated inside the runtime rather than through
+    // ir_alloc_region -- so the arena is chosen here, around the call, and
+    // the runtime bumps instead of calling malloc.
+    //
+    // aif_arena_at_node is the whole gate, and it is sufficient rather than
+    // merely convenient. A site exists on a call node only when the callee is
+    // opaque to this compilation; the analysis raised it to T1 with an escape
+    // at or below the region, which an `alias` return or an undeclared one
+    // never gets. So this fires exactly on FFI `produce` calls inside a region
+    // whose result cannot outlive it.
+    //
+    // Bound here rather than at its second use below, because the String
+    // return just underneath is an *early* one and needs the same bracket.
+    let arenaPlaced = aif_arena_at_node(node_to_ptr(expr)) == 1
 
-            // Struct-field ownership. An int cannot name a type, and a container
-            // of structs that own their fields needs one release per element
-            // type -- so this one is told the function as well as the mode.
-            if (elemOwn == AIF_ELEM_TYPED) {
-                let etype = aif_elem_type_at_node(node_to_ptr(expr))
-                if (etype.equals("") == false) {
-                    let fnPtr = ir_func_addr(releaseFnName(etype))
-                    ir_call_begin()
-                    ir_call_arg("ptr", result)
-                    ir_call_arg("ptr", ir_get_temp_name(fnPtr))
-                    ir_call_end("void", "list_set_elem_releaser")
-                }
+    // Crossing back in from C. The callee is declared to return `ptr`, so the
+    // length has to be supplied here -- one `strlen` at the boundary, where
+    // the thin representation used to pay one per access.
+    //
+    // `prismio_cstr_len` rather than `__builtin_string_len`, which requires a
+    // fat String while this boundary has only the raw pointer.
+    //
+    // The bracket goes around the *call*, not around the pair built from its
+    // result: the hint steers an allocation, and `prismio_cstr_len` makes
+    // none. Returning above the gate is what made every `str_concat` inside a
+    // `region` come from malloc -- the arena served nothing, silently, and
+    // the program still printed the right answer.
+    if (isForeign and retType.equals("struct:prismio.str")) {
+        if (arenaPlaced) { ir_arena_hint_begin() }
+        let raw = ir_get_temp_name(ir_call_end("ptr", callName))
+        if (arenaPlaced) { ir_arena_hint_end() }
+        return fatFromPtr(raw)
+    }
+
+    // REQUIREMENTS 20, the other end. `list_get` is declared to return `ptr`
+    // and sema types it as the element type, so for a scalar element the two
+    // disagree and the value has to come back out of the slot. Handled here
+    // rather than below because the call's own type is `ptr` whatever the
+    // element is -- and a scalar element is never arena-placed or refcounted,
+    // since it registers no site to place or count.
+    if (funcName.equals("list_get") and retType.equals("ptr") == false
+        and retType.equals("struct:prismio.str") == false) {
+        // Resolved by value, for the reason list_get_inline_scalar gives:
+        // the inline entry point returns an address and the boxed one the
+        // slot's contents, and only a scalar can tell them apart.
+        if (inlineSize > 0 and scalarInlineBytes(retType) > 0) {
+            ir_call_arg("i32", strFromInt(inlineSize))
+            let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
+            return scalarFromInlineBits(retType, bits)
+        }
+        let slot = ir_get_temp_name(ir_call_end("ptr", callName))
+        return slotToScalar(retType, slot)
+    }
+
+    if (arenaPlaced) { ir_arena_hint_begin() }
+    let mut tempId = ir_call_end(retType, callName)
+    if (arenaPlaced) { ir_arena_hint_end() }
+    let result = ir_get_temp_name(tempId)
+
+    // After the call and before anything reads `result`, which is the whole
+    // of the ordering requirement: the callee borrowed these for the call's
+    // duration and `releaseTemps` has already established that none of them
+    // is what came back.
+    if (releaseTemps) {
+        generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
+    }
+
+    // AIF item 3. A container is told what it owns at construction, because
+    // at teardown its elements are bare pointers and reading a header in
+    // front of one would be reading memory this compilation did not allocate.
+    // Stamped on the allocating call, which is the only place the site -- and
+    // therefore the disposition -- is named.
+    let elemOwn = aif_elem_owner_at_node(node_to_ptr(expr))
+    if (elemOwn != AIF_ELEM_NONE) {
+        // A `List<String>` owns pairs rather than pointers: AIF_ELEM_STRING.
+        let mut stampedOwn = elemOwn
+        if (elemOwn == AIF_ELEM_OBJECT and listHoldsStrings(expr)) {
+            stampedOwn = AIF_ELEM_STRING
+        }
+        ir_call_begin()
+        ir_call_arg("ptr", result)
+        ir_call_arg("i32", strFromInt(stampedOwn))
+        ir_call_end("void", "list_set_elem_owner")
+
+        // Struct-field ownership. An int cannot name a type, and a container
+        // of structs that own their fields needs one release per element
+        // type -- so this one is told the function as well as the mode.
+        if (elemOwn == AIF_ELEM_TYPED) {
+            let etype = aif_elem_type_at_node(node_to_ptr(expr))
+            if (etype.equals("") == false) {
+                let fnPtr = ir_func_addr(releaseFnName(etype))
+                ir_call_begin()
+                ir_call_arg("ptr", result)
+                ir_call_arg("ptr", ir_get_temp_name(fnPtr))
+                ir_call_end("void", "list_set_elem_releaser")
             }
         }
-
-        // M4.2's representation was selected by the constructor above. Keeping
-        // that decision a function of the static element type makes two lists
-        // of the same type agree, without a mutable post-construction stamp.
-        return result
     }
+
+    // M4.2's representation was selected by the constructor above. Keeping
+    // that decision a function of the static element type makes two lists
+    // of the same type agree, without a mutable post-construction stamp.
+    return result
+}
+
+// Every expression kind, one line each. Each arm is the `generate*` function
+// named beside it, defined directly above in the order dispatched here -- so
+// "how is a cast lowered" opens generateCast instead of scrolling past the
+// thirteen kinds that are not casts.
+//
+// The kinds are mutually exclusive, which is what makes the split exact: an arm
+// that matched its kind but no shape within it used to fall out of the chain,
+// and the only thing below it was this function's `0`. Each extracted arm ends
+// on that same `0` where it can be reached.
+internal fn generateExpression(expr: ASTNode) -> String {
+    if (expr.kind == NodeKind.LITERAL_EXPR) { return generateLiteral(expr) }
+
+    if (expr.kind == NodeKind.DYN_MAKE) { return generateDynMake(expr) }
+    if (expr.kind == NodeKind.DYN_CALL) { return generateDynCall(expr) }
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) { return generateStructLiteral(expr) }
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) { return generateIdentifier(expr) }
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR) { return generateMemberAccess(expr) }
+    if (expr.kind == NodeKind.ARRAY_LITERAL_EXPR) { return generateArrayLiteral(expr) }
+    if (expr.kind == NodeKind.SLICE_EXPR) { return generateSlice(expr) }
+    if (expr.kind == NodeKind.INDEX_EXPR) { return generateIndex(expr) }
+    if (expr.kind == NodeKind.CAST_EXPR) { return generateCast(expr) }
+    if (expr.kind == NodeKind.UNARY_EXPR) { return generateUnary(expr) }
+    if (expr.kind == NodeKind.NONE_LITERAL_EXPR) { return generateNoneLiteral(expr) }
+    if (expr.kind == NodeKind.SPAWN_EXPR) { return generateSpawn(expr) }
+    if (expr.kind == NodeKind.JOIN_EXPR) { return generateJoin(expr) }
+    if (expr.kind == NodeKind.BINARY_EXPR) { return generateBinary(expr) }
+    if (expr.kind == NodeKind.CALL_EXPR) { return generateCall(expr) }
 
     return "0"
 }

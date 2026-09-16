@@ -1,0 +1,8 @@
+// expect-error: is already bound to
+// expect-error: one `as` name per file
+import std.io as dup
+import std.string as dup
+
+fn main() -> Int {
+    return 0
+}

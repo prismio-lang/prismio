@@ -36,7 +36,10 @@ impl Copy for ProbeKey {
 }
 struct CountUpdate { calls: Int }
 impl CountUpdate {
-    fn call(self, value: Int) -> Int {
+    // `public` because std.map calls it. An inherent method takes the private
+    // default, and `mapUpdate` is duck-typed -- there is no trait here whose
+    // conformance would publish it, so the callback has to say so itself.
+    public fn call(self, value: Int) -> Int {
         self.calls = self.calls + 1
         return value + 1
     }

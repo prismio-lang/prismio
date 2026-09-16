@@ -21,30 +21,31 @@ import std.option
 import driver.imports
 import driver.workload
 
-extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
-extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
-extern fn compiler_installed_runtime_hash() -> String produce(free)
-extern fn compiler_run_executable(exeFile: String) -> Int
+public extern fn compiler_bootstrap_executable(irFile: String, exeFile: String) -> Int
+public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
+public extern fn compiler_installed_runtime_hash() -> String produce(free)
+public extern fn compiler_run_executable(exeFile: String) -> Int
+public extern fn compiler_library_emission_module() -> String produce(free)
 // Every path through both mallocs, including the failure paths, which allocate a
 // one-byte empty string rather than returning a literal. That is the same
 // invariant Level 4 had to give str_substring and str_trim -- anything declared
 // to return String returns something a release can take -- and it is what makes
 // `produce` true here rather than nearly true.
-extern fn compiler_runtime_source_hash() -> String produce(free)
+public extern fn compiler_runtime_source_hash() -> String produce(free)
 // `-g`. Two things the driver does differently once the module carries debug
 // info: the object step drops to -O0, and on Darwin a .dSYM is written before
 // the object -- which is where Mach-O keeps the DWARF -- is deleted.
-extern fn compiler_set_debug_info(on: Int)
+public extern fn compiler_set_debug_info(on: Int)
 // SPEC 7.3. Tells the build to compile the runtime with its own allocator
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
-extern fn compiler_set_verify_mode(on: Int)
-extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(free)
-extern fn delete_file(path: String) -> Int
-extern fn file_exists(path: String) -> Int
-extern fn get_directory(path: String) -> String
-extern fn ir_jit_run_main(programName: String) -> Int
-extern fn read_file(path: String) -> String
+public extern fn compiler_set_verify_mode(on: Int)
+public extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(free)
+public extern fn delete_file(path: String) -> Int
+public extern fn file_exists(path: String) -> Int
+public extern fn get_directory(path: String) -> String
+public extern fn ir_jit_run_main(programName: String) -> Int
+public extern fn read_file(path: String) -> String
 
 private fn reportForcedLayouts() {
     let mut i = 0
@@ -115,6 +116,10 @@ private fn analyzedModule(path: String) -> ASTNode {
     }
 
     let rootFile = diag_add_file(path, content)
+    let emissionMod = compiler_library_emission_module()
+    if (emissionMod.equals("") == false) {
+        diag_set_file_module(rootFile, emissionMod)
+    }
     let lex = createLexer(content, rootFile)
     let headToken = lexAllTokens(lex)
     let p = parserCreate(headToken)
@@ -142,7 +147,7 @@ private fn analyzedModule(path: String) -> ASTNode {
 // Emits the post-sema AST as JSON. Sema has to have run: the dump carries each
 // node's resolved type, and without it the `ty` field would be empty on every
 // node.
-fn dumpAstCommand(path: String) -> Int {
+public fn dumpAstCommand(path: String) -> Int {
     let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
         return 1
@@ -155,7 +160,7 @@ fn dumpAstCommand(path: String) -> Int {
 // The IDE-facing compile boundary: the complete frontend, with no AIF, IR,
 // native toolchain or output file. A successful JSON run still emits a summary,
 // which gives a long-lived client an explicit signal to clear stale diagnostics.
-fn checkCommand(path: String) -> Int {
+public fn checkCommand(path: String) -> Int {
     analyzedModule(path)
     diag_finish()
     if (diag_error_count() > 0) {
@@ -168,7 +173,7 @@ fn checkCommand(path: String) -> Int {
 // Produces no IR and touches no codegen, so it cannot change what `build`
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.
-fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
+public fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
                budget: Int, why: String, layout: Bool, manifest: Bool) -> Int {
     let merged = analyzedModule(path)
     if (diag_error_count() > 0) {
@@ -228,7 +233,7 @@ fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: 
 // produces -- so the baseline is the absence of an input rather than a second
 // code path that has to be kept in step with the first.
 
-fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
+public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstrapMode: Bool,
                   verifyMode: Bool, debugMode: Bool, debugInfo: Bool, optimized: Bool,
                   jitMode: Bool) -> Int {
     let mut outFile = ""
@@ -259,6 +264,10 @@ fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, bootstra
     }
 
     let rootFile = diag_add_file(path, content)
+    let emissionMod = compiler_library_emission_module()
+    if (emissionMod.equals("") == false) {
+        diag_set_file_module(rootFile, emissionMod)
+    }
     let lex = createLexer(content, rootFile)
     let headToken = lexAllTokens(lex)
     let p = parserCreate(headToken)

@@ -30,23 +30,23 @@
 import std.option
 import std.string
 
-extern fn file_exists(path: String borrow) -> Int
-extern fn read_file(path: String borrow) -> String produce(free)
-extern fn delete_file(path: String borrow) -> Int
+public extern fn file_exists(path: String borrow) -> Int
+public extern fn read_file(path: String borrow) -> String produce(free)
+public extern fn delete_file(path: String borrow) -> Int
 // Both return a status rather than a pointer, so neither carries `produce` or
 // `alias`: there is nothing for a deallocator to take. `borrow` on the arguments
 // is the real contract -- the runtime reads them during the call and retains
 // neither.
-extern fn write_file(path: String borrow, content: String borrow) -> Int
-extern fn make_directory(path: String borrow) -> Int
-extern fn directory_exists(path: String borrow) -> Int
-extern fn get_directory(path: String borrow) -> String produce(free)
-extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(free)
-extern fn current_directory() -> String produce(free)
-extern fn executable_directory() -> String produce(free)
-extern fn list_modules(directory: String borrow) -> String produce(free)
+public extern fn write_file(path: String borrow, content: String borrow) -> Int
+public extern fn make_directory(path: String borrow) -> Int
+public extern fn directory_exists(path: String borrow) -> Int
+public extern fn get_directory(path: String borrow) -> String produce(free)
+public extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(free)
+public extern fn current_directory() -> String produce(free)
+public extern fn executable_directory() -> String produce(free)
+public extern fn list_modules(directory: String borrow) -> String produce(free)
 
-fn fileExists(path: String) -> Bool {
+public fn fileExists(path: String) -> Bool {
     return file_exists(path) == 1
 }
 
@@ -56,11 +56,11 @@ fn fileExists(path: String) -> Bool {
 // the C returns a one-byte allocation for both. `tryReadFile` is the one that
 // can tell them apart, and it does it by asking `file_exists` first rather than
 // by inspecting the result, because the result cannot answer.
-fn readFile(path: String) -> String {
+public fn readFile(path: String) -> String {
     return read_file(path)
 }
 
-fn tryReadFile(path: String) -> Option<String> {
+public fn tryReadFile(path: String) -> Option<String> {
     if (file_exists(path) == 0) { return Option<String>.None }
     return Option<String>.Some(read_file(path))
 }
@@ -68,46 +68,46 @@ fn tryReadFile(path: String) -> Option<String> {
 // Writes `content` over `path`, creating the file if it is absent. The parent
 // directory must exist -- call `makeDirectory` first -- because silently creating
 // one would make a mistyped path succeed.
-fn writeFile(path: String, content: String) -> Bool {
+public fn writeFile(path: String, content: String) -> Bool {
     return write_file(path, content) == 0
 }
 
 // Creates `path` and every missing parent. A directory that already exists is
 // success, which is what makes this callable unconditionally.
-fn makeDirectory(path: String) -> Bool {
+public fn makeDirectory(path: String) -> Bool {
     return make_directory(path) == 0
 }
 
 // Whether `path` is an existing directory. Distinct from `fileExists`, which
 // opens the path -- and opening a directory succeeds on some hosts and fails on
 // others, so it cannot answer this.
-fn directoryExists(path: String) -> Bool {
+public fn directoryExists(path: String) -> Bool {
     return directory_exists(path) == 1
 }
 
 // True when the file is gone afterwards. Note the inversion against the C,
 // which returns 0 for success.
-fn deleteFile(path: String) -> Bool {
+public fn deleteFile(path: String) -> Bool {
     return delete_file(path) == 0
 }
 
 // The directory part of a path, without the trailing separator. `"."` when the
 // path has no directory part.
-fn directoryOf(path: String) -> String {
+public fn directoryOf(path: String) -> String {
     return get_directory(path)
 }
 
-fn joinPath(directory: String, filename: String) -> String {
+public fn joinPath(directory: String, filename: String) -> String {
     return join_path(directory, filename)
 }
 
-fn currentDirectory() -> String {
+public fn currentDirectory() -> String {
     return current_directory()
 }
 
 // The directory holding the running executable, which is what a toolchain uses
 // to find files shipped beside it. `"."` when the platform cannot answer.
-fn executableDirectory() -> String {
+public fn executableDirectory() -> String {
     return executable_directory()
 }
 
@@ -120,7 +120,7 @@ fn executableDirectory() -> String {
 //
 // An empty directory yields an empty list rather than a list holding one empty
 // string, which is the case a plain `strSplit` gets wrong.
-fn listModules(directory: String) -> List<String> {
+public fn listModules(directory: String) -> List<String> {
     let listing = list_modules(directory)
     let out: List<String> = list_new()
     if (strLength(listing) == 0) { return out }
@@ -151,6 +151,6 @@ fn listModules(directory: String) -> List<String> {
 // Whether `path` names a `.psm` source file. Spelled out rather than left to
 // each caller because the extension is part of the module-resolution contract
 // in src/main.psm, not a convention.
-fn isSourcePath(path: String) -> Bool {
+public fn isSourcePath(path: String) -> Bool {
     return strEndsWith(path, ".psm")
 }

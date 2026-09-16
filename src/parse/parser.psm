@@ -16,7 +16,7 @@ import ast.nodes
 import common.diagnostics
 import std.string
 
-extern fn exit(code: Int)
+public extern fn exit(code: Int)
 
 // `allowStructLit` is off while reading the bounds of a `for`, so that
 // `for i in 0..n { ... }` reads the body as a block rather than `n { ... }` as a
@@ -51,7 +51,7 @@ struct Parser {
     implPosition: Int
 }
 
-fn parserCreate(tokens: Token) -> Parser {
+public fn parserCreate(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null(),
                     implParams: ptr_null(), implParamSeq: 0, implPosition: 0 }
 }
@@ -264,11 +264,42 @@ impl Parser {
             importNode.s1 = importNode.s1.concat(".", parseModuleSegment(self))
         }
 
+        // `import std.io as io` -- a second name for the module, usable wherever
+        // its import path is: `io.println(x)` rather than `std.io.println(x)`.
+        //
+        // A **second** name, not a replacement. `import std.io` already brings
+        // this module's names in unqualified, and an alias that switched that off
+        // would make `as` two features wearing one spelling. What it adds is a
+        // short qualifier, which is the thing you reach for exactly when the
+        // unqualified name is taken -- by a local `print`, or by another import.
+        //
+        // The alias lands in `s2`; `s1` stays the real import path, so the merge,
+        // the import gate and every diagnostic keep naming the module the reader
+        // would find on disk.
+        if (self.matchVal(TokenType.KEYWORD, "as")) {
+            if (importNode.i1 == 1) {
+                self.fatal("`import <package>.* as <name>` has no meaning: the wildcard brings in every module in the package, and an alias can only name one")
+            }
+            let aliasToken = self.current()
+            if (aliasToken.type != TokenType.IDENTIFIER) {
+                self.fatal("expected a name after `as`, found ".concat(parserDescribe(aliasToken)))
+            }
+            importNode.s2 = aliasToken.value
+            endCol = aliasToken.col + aliasToken.len
+            self.advance()
+            // An alias is one name, not a path. `import std.io as std.io` would
+            // otherwise stop at `std` and report the `.` as a stray declaration,
+            // which points at the line after the mistake.
+            if (self.checkVal(TokenType.SEPARATOR, ".")) {
+                self.fatal("an `as` name is a single identifier, not a dotted path")
+            }
+        }
+
         importNode.len = endCol - importNode.col
         return importNode
     }
 
-    fn parseModule(self) -> ASTNode {
+    public fn parseModule(self) -> ASTNode {
         let module = self.node(NodeKind.MODULE)
         let declarations = nodeList()
 

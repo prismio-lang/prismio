@@ -91,7 +91,7 @@ struct Map<K: Key + Copy, V> {
 // is right from the start.
 private fn mapInitialCapacity() -> Int { return 8 }
 
-fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
+public fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
     let k: List<K> = list_new()
     let v: List<V> = list_new()
     let s: List<Int> = list_new_with_capacity(mapInitialCapacity())
@@ -104,7 +104,7 @@ fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
                        strong: false }
 }
 
-fn mapLen<K: Key + Copy, V>(m: Map<K, V>) -> Int {
+public fn mapLen<K: Key + Copy, V>(m: Map<K, V>) -> Int {
     return list_len(m.keys)
 }
 
@@ -156,7 +156,7 @@ private fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> I
 }
 
 // The insertion-order entry index of `key`, or -1.
-fn mapIndexOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
+public fn mapIndexOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
     return mapProbe(m, key, false)
 }
 
@@ -227,7 +227,7 @@ private fn mapPlaceAll<K: Key + Copy, V>(m: Map<K, V>) -> Int {
     return displacement
 }
 
-fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
+public fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
     return mapIndexOf(m, key) >= 0
 }
 
@@ -236,7 +236,7 @@ fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
 // This is the lookup that can distinguish "absent" from "present and equal to
 // the fallback", which mapGetOr cannot. It is what the earlier version of this
 // file said would arrive with REQUIREMENTS 14, and it did.
-fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
+public fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
     let at = mapIndexOf(m, key)
     if (at < 0) { return Option<V>.None }
     return Option.Some(list_get(m.values, at))
@@ -244,7 +244,7 @@ fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
 
 // Absence answered with a caller-supplied value. Kept alongside mapGet for the
 // many callers that have a sensible default and do not want to match on one.
-fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
+public fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
     let at = mapIndexOf(m, key)
     if (at < 0) { return fallback }
     return list_get(m.values, at)
@@ -254,7 +254,7 @@ fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
 // value and returns its replacement; it runs exactly once on a hit and never
 // on a miss. Returns whether the key existed. The update itself does not insert
 // or reorder entries. Example: mapUpdate(counts, key, |value: Int| value + 1).
-fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Bool {
+public fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Bool {
     let at = mapIndexOf(m, key)
     if (at < 0) { return false }
     let value = update.call(list_get(m.values, at))
@@ -269,7 +269,7 @@ fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Bool {
 // keeping probe chains short is worth that space on lookup/update workloads.
 // Keys and values remain dense, so lowering occupancy only grows the index.
 // Comparing with capacity / 2 also avoids overflowing count * 4 at large sizes.
-fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
+public fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
     let found = mapProbe(m, key, true)
     if (found >= 0) {
         list_set(m.values, found, value)
@@ -309,10 +309,10 @@ private fn mapInsert<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V, at: Int) 
 
 // The key at a position, for iterating a map. Positions are insertion order and
 // stay valid until the next mapSet that inserts.
-fn mapKeyAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> K {
+public fn mapKeyAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> K {
     return list_get(m.keys, index)
 }
 
-fn mapValueAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> V {
+public fn mapValueAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> V {
     return list_get(m.values, index)
 }

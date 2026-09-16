@@ -12,7 +12,7 @@ internal fn visibilityPackageOnly(x: Int) -> Int { return x + 100 }
 
 // `private` is visible inside its own file, which is what distinguishes it from
 // being unreachable everywhere.
-fn visibilityUsesOwnPrivate(x: Int) -> Int { return visibilityFileOnly(x) }
+public fn visibilityUsesOwnPrivate(x: Int) -> Int { return visibilityFileOnly(x) }
 
 // Visibility inside an `impl` block. Before this, the two features did not
 // compose: `impl` is the natural home for the helpers most worth marking
@@ -24,7 +24,7 @@ struct Counter {
 }
 
 impl Counter {
-    fn value(self) -> Int { return self.n }
+    public fn value(self) -> Int { return self.n }
 
     // Reachable from this file only.
     private fn doubled(self) -> Int { return self.n * 2 }
@@ -34,5 +34,5 @@ impl Counter {
 
     // Uses its own private method, which is what makes `private` different from
     // unreachable.
-    fn quadrupled(self) -> Int { return self.doubled() + self.doubled() }
+    public fn quadrupled(self) -> Int { return self.doubled() + self.doubled() }
 }

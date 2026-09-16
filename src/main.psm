@@ -13,16 +13,17 @@ import ums.ums
 import std.string
 import std.option
 import driver.compile
+import driver.imports
+import common.target
 import project.ums_cli
-
 // argv, which the C runtime owns and outlives every use of it. Not an
 // allocation, and freeing one would be a free of memory this program never got.
-extern fn cli_arg(index: Int) -> String alias
-extern fn cli_arg_count() -> Int
+public extern fn cli_arg(index: Int) -> String alias
+public extern fn cli_arg_count() -> Int
 // Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
 // a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
 // does the same. The caller owns them.
-extern fn compiler_default_exe_path(sourcePath: String) -> String produce (free )
+public extern fn compiler_default_exe_path(sourcePath: String) -> String produce (free )
 
 /** Every path through both mallocs, including the failure paths, which allocate a
  one-byte empty string rather than returning a literal. That is the same
@@ -30,7 +31,7 @@ extern fn compiler_default_exe_path(sourcePath: String) -> String produce (free 
 to return String returns something a release can take -- and it is what makes
  `produce` true here rather than nearly true.
 */
-extern fn compiler_runtime_source_hash() -> String produce(free)
+public extern fn compiler_runtime_source_hash() -> String produce(free)
 
 /** `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
  property of the triple, which is why it is not in the target record: two hosts
@@ -41,13 +42,11 @@ error someone spends an afternoon on.
 extern fn compiler_set_sysroot(path: String borrow )
 // A `static const char*` in C, so the caller borrows it. See PRISMIO_HOST_ABI in
 // runtime/prismio_runtime.h for what the token means and when it moves.
-extern fn compiler_host_abi() -> String alias
-extern fn executable_directory() -> String produce (free )
-extern fn get_directory(path: String) -> String
+public extern fn compiler_host_abi() -> String alias
+public extern fn executable_directory() -> String produce (free )
+public extern fn get_directory(path: String) -> String
 // A `static char buf[32]` the next call overwrites.
-extern fn ir_llvm_version() -> String alias
-
-extern fn ir_llvm_version() -> String alias
+public extern fn ir_llvm_version() -> String alias
 
 // Bumped per release. The LLVM major version is part of the identity: a given
 // Prismio targets one LLVM major, and the C API is not stable across them.

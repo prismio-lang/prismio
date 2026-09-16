@@ -12,7 +12,7 @@ struct BenchParticle {
     life: Int
 }
 
-fn benchMatrixMultiply(scale: Int) -> Int {
+public fn benchMatrixMultiply(scale: Int) -> Int {
     let n = 32 * scale
     let count = n * n
     let mut a: List<Int> = list_new_with_capacity(count)
@@ -49,7 +49,7 @@ fn benchMatrixMultiply(scale: Int) -> Int {
     return checksum
 }
 
-fn benchMandelbrot(scale: Int) -> Int {
+public fn benchMandelbrot(scale: Int) -> Int {
     let side = 96 * scale
     let mut inside = 0
     let mut py = 0
@@ -75,7 +75,7 @@ fn benchMandelbrot(scale: Int) -> Int {
     return inside
 }
 
-fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
+public fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
     let mut j = 0
     let mut i = 1
     while (i < n) {
@@ -131,7 +131,7 @@ fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
     }
 }
 
-fn benchFft(scale: Int) -> Int {
+public fn benchFft(scale: Int) -> Int {
     let mut n = 1024 * scale
     if (scale == 12) { n = 16384 }
     let mut real: List<Float> = list_new_with_capacity(n)
@@ -159,7 +159,7 @@ fn benchFft(scale: Int) -> Int {
     return checksum
 }
 
-fn benchNumericalIntegration(scale: Int) -> Int {
+public fn benchNumericalIntegration(scale: Int) -> Int {
     let steps = 1000000 * scale
     let width = 1.0 / (steps as Float)
     let mut sum = 0.0
@@ -172,7 +172,7 @@ fn benchNumericalIntegration(scale: Int) -> Int {
     return (sum * width * 100000000.0) as Int
 }
 
-fn benchVectorDot(scale: Int) -> Int {
+public fn benchVectorDot(scale: Int) -> Int {
     let n = 1000000 * scale
     let mut a: List<Int> = list_new_with_capacity(n)
     let mut b: List<Int> = list_new_with_capacity(n)
@@ -191,7 +191,7 @@ fn benchVectorDot(scale: Int) -> Int {
     return sum
 }
 
-fn benchConvolution(scale: Int) -> Int {
+public fn benchConvolution(scale: Int) -> Int {
     let n = 300000 * scale
     let mut input: List<Int> = list_new_with_capacity(n)
     let mut output: List<Int> = list_new_with_capacity(n)
@@ -219,7 +219,7 @@ fn benchConvolution(scale: Int) -> Int {
     return checksum
 }
 
-fn benchMonteCarlo(scale: Int) -> Int {
+public fn benchMonteCarlo(scale: Int) -> Int {
     let samples = 2000000 * scale
     let mut seed = 31
     let mut inside = 0
@@ -235,7 +235,7 @@ fn benchMonteCarlo(scale: Int) -> Int {
     return inside
 }
 
-fn benchPolynomial(scale: Int) -> Int {
+public fn benchPolynomial(scale: Int) -> Int {
     let evaluations = 2000000 * scale
     let mut checksum = 0
     let mut i = 0
@@ -253,7 +253,7 @@ fn benchPolynomial(scale: Int) -> Int {
     return checksum
 }
 
-fn benchEcsUpdate(scale: Int) -> Int {
+public fn benchEcsUpdate(scale: Int) -> Int {
     let n = 50000 * scale
     let rounds = 20
     let mut particles: List<BenchParticle> = list_new_with_capacity(n)
@@ -288,7 +288,7 @@ fn benchEcsUpdate(scale: Int) -> Int {
     return checksum
 }
 
-fn benchBandSum(band: BenchBand) -> Int {
+public fn benchBandSum(band: BenchBand) -> Int {
     let mut state = band.seed
     let mut sum = 0
     let mut i = 0
@@ -300,7 +300,7 @@ fn benchBandSum(band: BenchBand) -> Int {
     return sum
 }
 
-fn benchParallelReduction(scale: Int) -> Int {
+public fn benchParallelReduction(scale: Int) -> Int {
     let steps = 500000 * scale
     let w0 = spawn benchBandSum(BenchBand { seed: 1, steps: steps })
     let w1 = spawn benchBandSum(BenchBand { seed: 101, steps: steps })
@@ -309,11 +309,11 @@ fn benchParallelReduction(scale: Int) -> Int {
     return (((join w0 + join w1) % 1000000007) + ((join w2 + join w3) % 1000000007)) % 1000000007
 }
 
-fn rotR(x: U32, n: Int) -> U32 {
+public fn rotR(x: U32, n: Int) -> U32 {
     return (x >> n) | (x << (32 - n))
 }
 
-fn makeSha256K() -> List<U32> {
+public fn makeSha256K() -> List<U32> {
     let mut k: List<U32> = list_new_with_capacity(64)
     list_push(k, 1116352408 as U32)
     list_push(k, 1899447441 as U32)
@@ -382,7 +382,7 @@ fn makeSha256K() -> List<U32> {
     return k
 }
 
-fn benchSha256(scale: Int) -> Int {
+public fn benchSha256(scale: Int) -> Int {
     let mut h0: U32 = 1779033703 as U32
     let mut h1: U32 = 3144134277 as U32
     let mut h2: U32 = 1013904242 as U32
@@ -472,7 +472,7 @@ fn benchSha256(scale: Int) -> Int {
     return checksum
 }
 
-fn benchBlake3Chunk(scale: Int) -> Int {
+public fn benchBlake3Chunk(scale: Int) -> Int {
     let totalChunks = 300 * scale
     let mut seed = 99
 
@@ -719,7 +719,7 @@ fn benchBlake3Chunk(scale: Int) -> Int {
     return totalChecksum as Int
 }
 
-fn benchRaytracerSphere(scale: Int) -> Int {
+public fn benchRaytracerSphere(scale: Int) -> Int {
     let width = 50 * scale
     let height = 50 * scale
 
@@ -896,7 +896,7 @@ struct Msg {
     val: Int
 }
 
-fn stage1(ch: Channel<Msg>, cfg: WorkConfig) -> Int {
+public fn stage1(ch: Channel<Msg>, cfg: WorkConfig) -> Int {
     let mut i = 0
     let total = cfg.count
     while (i < total) {
@@ -908,7 +908,7 @@ fn stage1(ch: Channel<Msg>, cfg: WorkConfig) -> Int {
     return i
 }
 
-fn stage2(in_ch: Channel<Msg>, out_ch: Channel<Msg>) -> Int {
+public fn stage2(in_ch: Channel<Msg>, out_ch: Channel<Msg>) -> Int {
     let mut count = 0
     loop {
         let taken = chan_recv(in_ch)
@@ -923,7 +923,7 @@ fn stage2(in_ch: Channel<Msg>, out_ch: Channel<Msg>) -> Int {
     return count
 }
 
-fn benchChannelPipeline(scale: Int) -> Int {
+public fn benchChannelPipeline(scale: Int) -> Int {
     let count = 5000 * scale
     let cfg = WorkConfig { count: count }
     let ch1: Channel<Msg> = chan_new(64)
@@ -964,7 +964,7 @@ fn benchChannelPipeline(scale: Int) -> Int {
 // the three arms have to be the same program: an enum with payloads, a
 // `std::variant` and a tagged struct have three different representations, and
 // the difference would be measured instead of the interpreter.
-fn benchBytecodeInterpreter(scale: Int) -> Int {
+public fn benchBytecodeInterpreter(scale: Int) -> Int {
     let program = 4096
     let mut ops: List<Int> = list_new_with_capacity(program)
     let mut args: List<Int> = list_new_with_capacity(program)

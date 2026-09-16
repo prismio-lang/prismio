@@ -9,7 +9,7 @@ struct BenchMemoryParticle {
     life: Int
 }
 
-fn benchBuildMemoryTree(depth: Int, seed: Int) -> BenchTree {
+public fn benchBuildMemoryTree(depth: Int, seed: Int) -> BenchTree {
     if (depth == 0) { return BenchTree.Empty }
     return BenchTree.Node(
         benchBuildMemoryTree(depth - 1, (seed * 3 + 1) % 1009),
@@ -18,7 +18,7 @@ fn benchBuildMemoryTree(depth: Int, seed: Int) -> BenchTree {
     )
 }
 
-fn benchMemoryTreeSum(tree: BenchTree) -> Int {
+public fn benchMemoryTreeSum(tree: BenchTree) -> Int {
     match (tree) {
         BenchTree.Empty => { return 0 }
         BenchTree.Node(left, value, right) => {
@@ -28,7 +28,7 @@ fn benchMemoryTreeSum(tree: BenchTree) -> Int {
     return 0
 }
 
-fn benchTransientAllocation(scale: Int) -> Int {
+public fn benchTransientAllocation(scale: Int) -> Int {
     let rounds = 200 * scale
     let mut checksum = 0
     let mut r = 0
@@ -46,7 +46,7 @@ fn benchTransientAllocation(scale: Int) -> Int {
     return checksum
 }
 
-fn benchStructCreation(scale: Int) -> Int {
+public fn benchStructCreation(scale: Int) -> Int {
     let n = 250000 * scale
     let mut particles: List<BenchMemoryParticle> = list_new_with_capacity(n)
     let mut i = 0
@@ -66,7 +66,7 @@ fn benchStructCreation(scale: Int) -> Int {
     return checksum
 }
 
-fn benchAllocationMutation(scale: Int) -> Int {
+public fn benchAllocationMutation(scale: Int) -> Int {
     let n = 100000 * scale
     let mut particles: List<BenchMemoryParticle> = list_new_with_capacity(n)
     let mut i = 0
@@ -96,7 +96,7 @@ fn benchAllocationMutation(scale: Int) -> Int {
     return checksum
 }
 
-fn benchNestedCollection(scale: Int) -> Int {
+public fn benchNestedCollection(scale: Int) -> Int {
     let bucketsCount = 200 * scale
     let mut buckets: List<BenchBucket> = list_new_with_capacity(bucketsCount)
     let mut b = 0
@@ -124,7 +124,7 @@ fn benchNestedCollection(scale: Int) -> Int {
     return checksum
 }
 
-fn benchLargeBufferCopy(scale: Int) -> Int {
+public fn benchLargeBufferCopy(scale: Int) -> Int {
     let n = 500000 * scale
     let mut source: List<Int> = list_new_with_capacity(n)
     let mut target: List<Int> = list_new_with_capacity(n)
@@ -152,7 +152,7 @@ fn benchLargeBufferCopy(scale: Int) -> Int {
     return checksum
 }
 
-fn benchTreeAdd(sink tree: BenchTree, amount: Int) -> BenchTree {
+public fn benchTreeAdd(sink tree: BenchTree, amount: Int) -> BenchTree {
     match (tree) {
         BenchTree.Empty => { return BenchTree.Empty }
         BenchTree.Node(left, value, right) => {
@@ -163,12 +163,12 @@ fn benchTreeAdd(sink tree: BenchTree, amount: Int) -> BenchTree {
     return BenchTree.Empty
 }
 
-fn benchTreePasses(sink tree: BenchTree, passes: Int) -> BenchTree {
+public fn benchTreePasses(sink tree: BenchTree, passes: Int) -> BenchTree {
     if (passes == 0) { return tree }
     return benchTreePasses(benchTreeAdd(tree, 1), passes - 1)
 }
 
-fn benchRecursiveTreeRebuild(scale: Int) -> Int {
+public fn benchRecursiveTreeRebuild(scale: Int) -> Int {
     let tree = benchBuildMemoryTree(12 + scale / 4, 1)
     let done = benchTreePasses(tree, 4 * scale)
     return benchMemoryTreeSum(done)
@@ -184,7 +184,7 @@ fn benchRecursiveTreeRebuild(scale: Int) -> Int {
 // one -- quadratic in all three languages, and unavailable in Prismio, which
 // ships no string builder. Collecting pieces and joining once is what each
 // language's library is actually for.
-fn benchStringJoin(scale: Int) -> Int {
+public fn benchStringJoin(scale: Int) -> Int {
     let n = 60000 * scale
     let mut parts: List<String> = list_new_with_capacity(n)
     let mut i = 0

@@ -120,7 +120,7 @@ impl UmsProjectModel {
     // Resolves every declared dependency, in manifest order, and answers the list.
     // Order is the manifest's rather than sorted, so the lockfile reads against the
     // file that produced it.
-         fn resolveDependencies(self, diagnostics: List<UmsDiagnostic>) -> List<UmsResolution> {
+         public fn resolveDependencies(self, diagnostics: List<UmsDiagnostic>) -> List<UmsResolution> {
         let resolutions: List<UmsResolution> = list_new()
         let mut i = 0
         while (i < list_len(self.dependencies)) {
@@ -139,7 +139,7 @@ impl UmsProjectModel {
     // it resolved to. Tab-separated with a header, because the file exists to be
     // diffed in review -- a format that reorders or reflows on write produces a diff
     // nobody can read, which is how a lockfile stops being checked.
-         fn lockfileContents(self, resolutions: List<UmsResolution>) -> String {
+         public fn lockfileContents(self, resolutions: List<UmsResolution>) -> String {
         let mut out = "# prismio lockfile v".concat(umsLockfileVersion(), "\n# generated from ")
         out = out.concat(self.manifestPath)
         out = out.concat("\n# scope\tname\tconstraint\tsource\tresolved\n")
@@ -168,7 +168,7 @@ impl UmsProjectModel {
     // Writes the lockfile beside the build state, creating `.prismio/` if needed.
     // Answers false only when the write itself failed; an unresolved dependency is
     // recorded rather than suppressed, because the file has to describe the attempt.
-         fn writeLockfile(self, resolutions: List<UmsResolution>) -> Bool {
+         public fn writeLockfile(self, resolutions: List<UmsResolution>) -> Bool {
         let stateDir = joinPath(self.root, self.build.stateDirectory)
         if (makeDirectory(stateDir) == false) { return false }
         return writeFile(self.lockfilePath(), self.lockfileContents(resolutions))

@@ -219,10 +219,10 @@ struct ASTNode {
 // return of unknown provenance, which means Shared, which A-STORE then spreads
 // to everything stored through the resulting node. That single omission was
 // most of the compiler's own T3 population.
-extern fn ptr_null() -> Ptr
-extern fn ptr_is_null(p: Ptr) -> Int
-extern fn ptr_to_node(ptr: Ptr) -> ASTNode alias
-extern fn node_to_ptr(node: ASTNode borrow) -> Ptr alias
+public extern fn ptr_null() -> Ptr
+public extern fn ptr_is_null(p: Ptr) -> Int
+public extern fn ptr_to_node(ptr: Ptr) -> ASTNode alias
+public extern fn node_to_ptr(node: ASTNode borrow) -> Ptr alias
 
 
 // Is there a node here?
@@ -253,11 +253,11 @@ extern fn node_to_ptr(node: ASTNode borrow) -> Ptr alias
 // this. Moving pointer slots from "" to a real null pointer would fix both and
 // is the right eventual answer; it touches every slot assignment in the frontend
 // and is not this change.
-fn nodeExists(ptr: Ptr) -> Bool {
+public fn nodeExists(ptr: Ptr) -> Bool {
     return ptr_is_null(ptr) == 0
 }
 
-fn nodeIsNull(ptr: Ptr) -> Bool {
+public fn nodeIsNull(ptr: Ptr) -> Bool {
     return ptr_is_null(ptr) == 1
 }
 
@@ -265,7 +265,7 @@ fn nodeIsNull(ptr: Ptr) -> Bool {
 // parserNode() instead, which stamps the current token; a zero span here means
 // "synthesised, no source to point at", and the renderer degrades to a message
 // with no snippet rather than pointing somewhere wrong.
-fn createNode(kind: NodeKind) -> ASTNode {
+public fn createNode(kind: NodeKind) -> ASTNode {
     return ASTNode {
         kind: kind,
         s1: "",
@@ -289,7 +289,7 @@ fn createNode(kind: NodeKind) -> ASTNode {
 // Copies a span from one node to another. Used where a node is built from
 // another's position -- desugaring `x += 1`, or attributing a synthesised node to
 // the construct that implied it.
-fn nodeSpanFrom(target: ASTNode, source: ASTNode) {
+public fn nodeSpanFrom(target: ASTNode, source: ASTNode) {
     target.line = source.line
     target.col = source.col
     target.len = source.len
@@ -310,13 +310,13 @@ struct NodeList {
     tail: Ptr
 }
 
-fn nodeList() -> NodeList {
+public fn nodeList() -> NodeList {
     return NodeList { head: ptr_null(), tail: ptr_null() }
 }
 
 // node_to_ptr is the identity on a borrow, so naming it three times costs
 // nothing and avoids moving a pointer that both slots need.
-fn nodeListPush(list: NodeList, node: ASTNode) {
+public fn nodeListPush(list: NodeList, node: ASTNode) {
     if (nodeIsNull(list.head)) {
         list.head = node_to_ptr(node)
     } else {

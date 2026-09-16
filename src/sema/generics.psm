@@ -41,7 +41,7 @@ private fn monoIsTemplate(stmt: ASTNode) -> Bool {
 
 // Unlinks every generic declaration from the module chain and parks it on
 // `module.child2`. Runs after import resolution and before sema.
-fn monoCollectTemplates(module: ASTNode) {
+public fn monoCollectTemplates(module: ASTNode) {
     let kept = nodeList()
     let templates = nodeList()
 
@@ -1016,7 +1016,7 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
 //
 // Appending while walking is safe: what is appended is a FUNCTION, and the walk
 // only descends into IMPL_DECL.
-fn monoExpandDefaultMethods(module: ASTNode) {
+public fn monoExpandDefaultMethods(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)

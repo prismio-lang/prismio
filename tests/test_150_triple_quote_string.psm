@@ -1,0 +1,28 @@
+import std.io
+import std.string
+
+fn main() -> Int {
+    let s = """Line 1
+Line 2 with "double" and 'single' quotes
+Line 3"""
+
+    if (s.equals("Line 1\nLine 2 with \"double\" and 'single' quotes\nLine 3") == false) {
+        println("FAIL: triple quote string content mismatch")
+        return 1
+    }
+
+    let empty = """"""
+    if (empty.equals("") == false) {
+        println("FAIL: empty triple quote string")
+        return 1
+    }
+
+    let withQuotes = """say "hello" or ""world"" inside"""
+    if (withQuotes.equals("say \"hello\" or \"\"world\"\" inside") == false) {
+        println("FAIL: embedded quotes in triple quote string")
+        return 1
+    }
+
+    println("PASS: triple quote string")
+    return 0
+}

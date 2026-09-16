@@ -44,7 +44,7 @@ struct UmsTarget {
     len: Int
 }
 
-fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
+public fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
              line: Int, col: Int, len: Int) -> UmsTarget {
     return UmsTarget {
         kind: kind,
@@ -59,7 +59,7 @@ fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
     }
 }
 
-fn umsLinkInput(kind: UmsLinkKind, value: String,
+public fn umsLinkInput(kind: UmsLinkKind, value: String,
                 line: Int, col: Int, len: Int) -> UmsLinkInput {
     return UmsLinkInput {
         kind: kind,
@@ -70,7 +70,7 @@ fn umsLinkInput(kind: UmsLinkKind, value: String,
     }
 }
 
-fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
+public fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
     let mut i = 0
     while (i < list_len(target.links)) {
         let input = list_get(target.links, i)
@@ -82,7 +82,7 @@ fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
     return false
 }
 
-fn umsTargetFind(targets: List<UmsTarget>, name: String) -> Int {
+public fn umsTargetFind(targets: List<UmsTarget>, name: String) -> Int {
     let mut i = 0
     while (i < list_len(targets)) {
         if (list_get(targets, i).name.equals(name)) { return i }

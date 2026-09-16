@@ -1,7 +1,7 @@
 import common
 import std.map
 
-fn benchHashMap(scale: Int) -> Int {
+public fn benchHashMap(scale: Int) -> Int {
     let n = 50000 * scale
     let map: Map<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
@@ -21,7 +21,7 @@ fn benchHashMap(scale: Int) -> Int {
     return checksum + mapLen(map)
 }
 
-fn benchVectorGrowth(scale: Int) -> Int {
+public fn benchVectorGrowth(scale: Int) -> Int {
     let n = 1000000 * scale
     let mut values: List<Int> = list_new()
     let mut checksum = 0
@@ -35,7 +35,7 @@ fn benchVectorGrowth(scale: Int) -> Int {
     return checksum + list_len(values)
 }
 
-fn benchVectorIteration(scale: Int) -> Int {
+public fn benchVectorIteration(scale: Int) -> Int {
     let n = 1000000 * scale
     let mut values: List<Int> = list_new_with_capacity(n)
     let mut i = 0
@@ -56,7 +56,7 @@ fn benchVectorIteration(scale: Int) -> Int {
     return checksum
 }
 
-fn benchKeyValueUpdate(scale: Int) -> Int {
+public fn benchKeyValueUpdate(scale: Int) -> Int {
     let n = 20000 * scale
     let map: Map<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
@@ -82,7 +82,7 @@ fn benchKeyValueUpdate(scale: Int) -> Int {
     return checksum
 }
 
-fn popcount64(val: I64) -> Int {
+public fn popcount64(val: I64) -> Int {
     let mut x = val
     let m1: I64 = 6148914691236517205
     let m2: I64 = 3689348814741910323
@@ -95,7 +95,7 @@ fn popcount64(val: I64) -> Int {
     return (((x * h01) >> (56 as I64)) & (255 as I64)) as Int
 }
 
-fn benchFlatBitset(scale: Int) -> Int {
+public fn benchFlatBitset(scale: Int) -> Int {
     let n = 50000 * scale
     let words = (n + 63) / 64
 
@@ -160,7 +160,7 @@ fn benchFlatBitset(scale: Int) -> Int {
     return checksum as Int
 }
 
-fn benchTrieSearch(scale: Int) -> Int {
+public fn benchTrieSearch(scale: Int) -> Int {
     let numKeys = 8000 * scale
     let numQueries = 15000 * scale
 

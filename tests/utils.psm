@@ -1,8 +1,8 @@
-fn add(a: Int, b: Int) -> Int {
+public fn add(a: Int, b: Int) -> Int {
     return a + b
 }
 
-fn multiply(x: Int, y: Int) -> Int {
+public fn multiply(x: Int, y: Int) -> Int {
     return x * y
 }
 
@@ -12,6 +12,6 @@ private fn hiddenScale(x: Int) -> Int {
     return x * 3
 }
 
-fn visibleScale(x: Int) -> Int {
+public fn visibleScale(x: Int) -> Int {
     return hiddenScale(x)
 }

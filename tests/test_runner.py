@@ -591,6 +591,42 @@ def run_cli_test():
     return False
 
 
+def run_cli_usage_test():
+    """CLI usage text presentation and exit codes across help and error paths."""
+    print(f"\n{BLUE}--- Running cli_usage ---{RESET}")
+
+    # 1. `prismio --help` exits 0 and prints usage text
+    res_help = run_command([str(PRISMIO_EXE), "--help"])
+    if res_help.returncode != 0:
+        print(f"{RED}[FAIL] `prismio --help` returned non-zero exit code: {res_help.returncode}{RESET}")
+        return False
+    if "Usage:" not in res_help.stdout or "Project commands" not in res_help.stdout or "Single-file commands" not in res_help.stdout:
+        print(f"{RED}[FAIL] `prismio --help` output missing expected sections{RESET}")
+        print(res_help.stdout)
+        return False
+
+    # 2. `prismio -h` exits 0 and produces identical stdout
+    res_h = run_command([str(PRISMIO_EXE), "-h"])
+    if res_h.returncode != 0 or res_h.stdout != res_help.stdout:
+        print(f"{RED}[FAIL] `prismio -h` output does not match `prismio --help`{RESET}")
+        return False
+
+    # 3. Invocation with no arguments exits 1 and prints usage
+    res_empty = run_command([str(PRISMIO_EXE)])
+    if res_empty.returncode != 1 or res_empty.stdout != res_help.stdout:
+        print(f"{RED}[FAIL] `prismio` with no args did not exit 1 or print usage{RESET}")
+        return False
+
+    # 4. Command with missing required source prints diagnostic to stderr and usage to stdout
+    res_missing = run_command([str(PRISMIO_EXE), "check"])
+    if res_missing.returncode != 1 or "P1025" not in res_missing.stderr or res_missing.stdout != res_help.stdout:
+        print(f"{RED}[FAIL] `prismio check` without source did not print diagnostic and usage{RESET}")
+        return False
+
+    print(f"{GREEN}[PASS] CLI usage and help formatting verified{RESET}")
+    return True
+
+
 def run_corpus_test():
     """Build and *run* every benchmark corpus program.
 
@@ -7522,6 +7558,7 @@ def main():
     PROGRAMMATIC_TESTS = [
         ("cli_run_forward_slash", run_cli_test),
         ("cli_check_protocol", run_check_command_test),
+        ("cli_usage", run_cli_usage_test),
         ("ums", run_ums_test),
         ("corpus", run_corpus_test),
         ("aif_tiers", run_aif_test),

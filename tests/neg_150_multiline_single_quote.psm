@@ -1,0 +1,10 @@
+// expect-error: unterminated string literal
+// expect-error: aborting due to 1 previous error
+import std.io
+
+fn main() -> Int {
+    let s = "Hello
+World"
+    println(s)
+    return 0
+}

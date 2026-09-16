@@ -11,17 +11,17 @@
 // looks through callees that call nothing and index nothing, and these qualify
 // through their builtins -- see aif/evidence/RESULTS-min-max.md.
 
-fn max(a: Int, b: Int) -> Int {
+public fn max(a: Int, b: Int) -> Int {
     return __builtin_max(a, b)
 }
 
-fn min(a: Int, b: Int) -> Int {
+public fn min(a: Int, b: Int) -> Int {
     return __builtin_min(a, b)
 }
 
 // `abs(Int.min)` is `Int.min`. Int is signed 32-bit and wraps in release builds
 // (RESULTS-int-width.md), so this is the same answer the rest of the language's
 // arithmetic gives rather than a special case.
-fn abs(value: Int) -> Int {
+public fn abs(value: Int) -> Int {
     return __builtin_abs(value)
 }

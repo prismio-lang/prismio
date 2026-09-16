@@ -21,6 +21,31 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+
+def under_neutral_name(compiler):
+    """A copy of `compiler` whose basename is not `prismio`, beside the original.
+
+    A compiler *called* `prismio` is a launcher: run inside a project it hands the
+    command to `.prismio/build/debug/<host>` instead of compiling anything itself,
+    so a tool pointed at `build/gN/bin/prismio` silently measures whichever host
+    that project last built. Two snapshots taken that way agree perfectly and mean
+    nothing -- which is the failure this exists to make impossible.
+
+    Copied beside the original rather than into a temporary directory, because
+    both the runtime bitcode and the standard library are found relative to the
+    executable: `<exe_dir>/../lib` and `<exe_dir>/../stdlib`. A copy anywhere else
+    is a compiler with no toolchain.
+    """
+    import os, shutil
+    compiler = os.path.abspath(compiler)
+    if os.path.basename(compiler) not in ("prismio", "prismio.exe"):
+        return compiler, None
+    root, ext = os.path.splitext(compiler)
+    neutral = f"{root}-probe-{os.getpid()}{ext}"
+    shutil.copy2(compiler, neutral)
+    return neutral, neutral
+
+
 def programs():
     found = []
     for pat in ("tests/*.psm",
@@ -36,7 +61,7 @@ def main():
     ap.add_argument("--compiler", required=True)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
-    cc = os.path.abspath(args.compiler)
+    cc, cc_copy = under_neutral_name(args.compiler)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
 
@@ -54,6 +79,9 @@ def main():
             skipped.append(rel)
             continue
         built += 1
+
+    if cc_copy:
+        os.remove(cc_copy)
 
     with open(os.path.join(out, "SKIPPED"), "w") as f:
         f.write("\n".join(skipped) + "\n")

@@ -1,0 +1,12 @@
+// expect-error: `visibilityUsesOwnPrivate` is declared in `visibility.alpha`, which this file does not import
+// expect-error: an import is not transitive
+// `visibility.gamma` imports `visibility.alpha`, and before v0.1 3.5 that was
+// enough: the merge puts every reachable declaration into one flat module, so a
+// name two imports away was as callable as one this file asked for. What a file
+// can see is now what it wrote down.
+import std.io
+import visibility.gamma
+
+fn main() -> Int {
+    return visibilityUsesOwnPrivate(1)
+}

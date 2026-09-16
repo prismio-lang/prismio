@@ -14,6 +14,7 @@ import lexer.scanner
 import lexer.token
 import common.text
 import ast.nodes
+import ast.types
 import parse.*
 import ir.*
 import sema.*
@@ -23,13 +24,14 @@ import std.string
 // Declared here as well as in the modules that share them: the merge keeps the
 // first EXTERN_FUNCTION of a given name and drops the rest, which is what lets
 // each module name the externs it actually uses.
-extern fn read_file(path: String) -> String
-extern fn get_directory(path: String) -> String
-extern fn join_path(directory: String, filename: String) -> String
-extern fn file_exists(path: String) -> Int
-extern fn list_modules(directory: String) -> String produce(free)
-extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(free)
-extern fn compiler_plib_error() -> String produce(free)
+public extern fn read_file(path: String) -> String
+public extern fn get_directory(path: String) -> String
+public extern fn join_path(directory: String, filename: String) -> String
+public extern fn file_exists(path: String) -> Int
+public extern fn list_modules(directory: String) -> String produce(free)
+public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(free)
+public extern fn compiler_plib_error() -> String produce(free)
+public extern fn executable_directory() -> String produce(free)
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -93,6 +95,9 @@ private fn parseSource(content: String, file: Int) -> ASTNode {
 }
 
 private fn appendStatement(module: ASTNode, stmt: ASTNode) {
+    if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+        ir_extern_decl_record(stmt.file, stmt.s1, stmt.i2)
+    }
     if (hasNamedTopLevel(module, stmt)) {
         return
     }
@@ -219,6 +224,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
         if (cut > 0) {
             let parent = strSubstring(moduleName, 0, cut)
             if (file_exists(resolveImportPath(baseDir, parent)) == 1) {
+                ir_import_record(site.file, parent)
                 ir_select_record(site.file, parent,
                     strSubstring(moduleName, cut + 1,
                                  __builtin_string_len(moduleName) - cut - 1))
@@ -238,7 +244,13 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     if (strEndsWith(importPath, ".plib")) {
         content = compiler_plib_interface(importPath, moduleName)
         if (content.equals("")) {
-            diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
+            // Its own code, not P1001's. A `.plib` that will not open is a
+            // broken *installation* and the note below says to reinstall; a
+            // P1001 next to it is a source file the program named and does not
+            // have, which the programmer fixes in their own tree. One code for
+            // both sent every "reinstall Prismio" reader looking for a typo in
+            // an import they wrote correctly.
+            diag_error_at_code("P1068", site.file, site.line, site.col, site.len,
                 "compiled standard-library module ".concat(diagQuote(moduleName),
                     " is missing, incompatible, or corrupted: ", compiler_plib_error()))
             diag_note("reinstall Prismio and try again")
@@ -299,6 +311,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
         let c = listing.charAt(i)
         if (c == '\n') {
             let qualified = site.s1.concat(".", name)
+            ir_import_record(site.file, qualified)
             seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
             name = ""
         } else {
@@ -308,6 +321,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     }
 
     let last = site.s1.concat(".", name)
+    ir_import_record(site.file, last)
     return mergeNamedModule(merged, site, last, baseDir, seen)
 }
 
@@ -315,6 +329,54 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
 // accumulator and resolving each import it carries. `visited` threads the set of
 // already-resolved paths through the recursion and is returned so sibling
 // imports see what earlier ones resolved.
+// `import std.io as io`, checked once here because this is the only place that
+// knows whether the path names a module at all.
+//
+// Two shapes are rejected rather than accepted and ignored. A **duplicate** alias
+// in one file would otherwise resolve to whichever import the merge happened to
+// reach first, which is a rule nobody can read off the source. A **selective**
+// import -- `import std.string.strTrim`, whose path is a function inside a module
+// -- would bind the alias to something that is not a module, and every later
+// `trim.f(x)` would report "no module `trim`" pointing at the call rather than at
+// the import that could not work.
+private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
+    if (stmt.s2.equals("")) { return }
+
+    let existing = ir_import_alias_target(stmt.file, stmt.s2)
+    if (existing.equals("") == false) {
+        diag_error_at_code("P1069", stmt.file, stmt.line, stmt.col, stmt.len,
+            "the name ".concat(diagQuote(stmt.s2), " is already bound to ",
+                               diagQuote(existing), " in this file"))
+        diag_note("one `as` name per file: give this import a different one")
+        return
+    }
+
+    if (file_exists(resolveImportPath(baseDir, stmt.s1)) == 0) {
+        diag_error_at_code("P1070", stmt.file, stmt.line, stmt.col, stmt.len,
+            "`as` names a module, and ".concat(diagQuote(stmt.s1), " is not one"))
+        diag_note("a selective import names one declaration inside a module; drop the `as`, or alias the module it comes from")
+        return
+    }
+
+    // An alias that is *itself* a module name in this project makes every
+    // `name.f(x)` ambiguous, and the alias would win silently -- leaving the real
+    // module unreachable by its own name and reporting the mismatch at the call,
+    // which is the one place the cause is not.
+    //
+    // Tested against the tree rather than against what this file imports, so the
+    // answer does not depend on which import the merge reached first. Rejecting a
+    // name the file could have imported and did not is the conservative half of
+    // that trade, and the fix is to pick another name.
+    if (file_exists(resolveImportPath(baseDir, stmt.s2)) == 1) {
+        diag_error_at_code("P1071", stmt.file, stmt.line, stmt.col, stmt.len,
+            diagQuote(stmt.s2).concat(" is already the name of a module, so it cannot also be an alias"))
+        diag_note("`".concat(stmt.s2, ".f(x)` would have two meanings here; choose a name no module in this project has"))
+        return
+    }
+
+    ir_import_alias_record(stmt.file, stmt.s2, stmt.s1)
+}
+
 private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
     let mut seen = visited
 
@@ -328,6 +390,8 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
             if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
             } else {
+                ir_import_record(stmt.file, stmt.s1)
+                recordImportAlias(stmt, baseDir)
                 seen = mergeNamedModule(merged, stmt, stmt.s1, baseDir, seen)
             }
         } else {
@@ -354,7 +418,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
 //
 // `leaf` is the file name, because the installed layout flattens the package:
 // `std/map.psm` in a checkout is `stdlib/map.plib` once installed.
-fn standardModulePath(baseDir: String, leaf: String) -> String {
+public fn standardModulePath(baseDir: String, leaf: String) -> String {
     let besideEntry = join_path(baseDir, "std/".concat(leaf))
     if (file_exists(besideEntry) == 1) { return besideEntry }
 
@@ -425,7 +489,7 @@ private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
 // The entry file is marked resolved before the walk begins, so that a package
 // import naming the package it lives in cannot pull it in a second time and
 // duplicate every function it defines.
-fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
+public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNode {
     let merged = createNode(NodeKind.MODULE)
     // The index and the tail cache describe `merged`, so both start empty with
     // it. analyzeModule and generateModule rebuild the index from the finished
@@ -435,6 +499,9 @@ fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) -> ASTNod
     // the one point where the previous run's are gone and this run's are not
     // yet made.
     ir_reset_selections()
+    ir_reset_imports()
+    ir_reset_import_aliases()
+    ir_reset_extern_decls()
     mergeTailPtr = ptr_null()
     // No prelude. `std.io` is an ordinary import, so a program that names no I/O
     // carries none -- which is what lets a target with no stdout link at all.

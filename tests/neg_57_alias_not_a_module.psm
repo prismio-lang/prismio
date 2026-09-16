@@ -1,0 +1,7 @@
+// expect-error: `as` names a module, and `std.string.strLength` is not one
+// expect-error: a selective import names one declaration inside a module
+import std.string.strLength as len
+
+fn main() -> Int {
+    return 0
+}

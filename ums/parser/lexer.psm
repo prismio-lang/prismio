@@ -15,7 +15,7 @@ struct UmsLexer {
     diagnostics: List<UmsDiagnostic>
 }
 
-fn umsIsDigit(value: Char) -> Bool {
+public fn umsIsDigit(value: Char) -> Bool {
     return value >= '0' and value <= '9'
 }
 
@@ -24,7 +24,7 @@ private fn umsIsAlpha(value: Char) -> Bool {
            (value >= 'A' and value <= 'Z') or value == '_'
 }
 
-fn umsIsAlnum(value: Char) -> Bool {
+public fn umsIsAlnum(value: Char) -> Bool {
     return umsIsAlpha(value) or umsIsDigit(value)
 }
 
@@ -159,7 +159,7 @@ impl UmsLexer {
     }
 }
 
-fn umsLex(source: String, path: String,
+public fn umsLex(source: String, path: String,
           diagnostics: List<UmsDiagnostic>) -> List<UmsToken> {
     let lexer = UmsLexer {
         source: source,

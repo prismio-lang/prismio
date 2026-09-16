@@ -10,7 +10,7 @@ import std.map
 import std.process
 import std.string
 
-fn benchRun(name: String, scale: Int, inputPath: String, outputPath: String) -> Int {
+public fn benchRun(name: String, scale: Int, inputPath: String, outputPath: String) -> Int {
     if (name.equals("fibonacci")) { return benchFibonacci(scale) }
     if (name.equals("prime_sieve")) { return benchPrimeSieve(scale) }
     if (name.equals("gcd_lcm")) { return benchGcdLcm(scale) }

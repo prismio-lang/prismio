@@ -23,7 +23,7 @@ enum Option<T> {
     Some(T)
 }
 
-fn optionIsSome<T>(o: Option<T>) -> Bool {
+public fn optionIsSome<T>(o: Option<T>) -> Bool {
     match (o) {
         Option.Some(v) => { return true }
         Option.None => { return false }
@@ -31,7 +31,7 @@ fn optionIsSome<T>(o: Option<T>) -> Bool {
     return false
 }
 
-fn optionIsNone<T>(o: Option<T>) -> Bool {
+public fn optionIsNone<T>(o: Option<T>) -> Bool {
     match (o) {
         Option.Some(v) => { return false }
         Option.None => { return true }
@@ -42,7 +42,7 @@ fn optionIsNone<T>(o: Option<T>) -> Bool {
 // The value, or the caller's default. The only way to read an `Option` here:
 // there is deliberately no unchecked `unwrap`, because the whole point of the
 // type is that the absent case is unavoidable at the use site.
-fn optionOr<T>(o: Option<T>, fallback: T) -> T {
+public fn optionOr<T>(o: Option<T>, fallback: T) -> T {
     match (o) {
         Option.Some(v) => { return v }
         Option.None => { return fallback }
@@ -55,7 +55,7 @@ enum Result<T, E> {
     Ok(T)
 }
 
-fn resultIsOk<T, E>(r: Result<T, E>) -> Bool {
+public fn resultIsOk<T, E>(r: Result<T, E>) -> Bool {
     match (r) {
         Result.Ok(v) => { return true }
         Result.Err(e) => { return false }
@@ -63,7 +63,7 @@ fn resultIsOk<T, E>(r: Result<T, E>) -> Bool {
     return false
 }
 
-fn resultIsErr<T, E>(r: Result<T, E>) -> Bool {
+public fn resultIsErr<T, E>(r: Result<T, E>) -> Bool {
     match (r) {
         Result.Ok(v) => { return false }
         Result.Err(e) => { return true }
@@ -71,7 +71,7 @@ fn resultIsErr<T, E>(r: Result<T, E>) -> Bool {
     return true
 }
 
-fn resultOr<T, E>(r: Result<T, E>, fallback: T) -> T {
+public fn resultOr<T, E>(r: Result<T, E>, fallback: T) -> T {
     match (r) {
         Result.Ok(v) => { return v }
         Result.Err(e) => { return fallback }
@@ -79,7 +79,7 @@ fn resultOr<T, E>(r: Result<T, E>, fallback: T) -> T {
     return fallback
 }
 
-fn resultErrOr<T, E>(r: Result<T, E>, fallback: E) -> E {
+public fn resultErrOr<T, E>(r: Result<T, E>, fallback: E) -> E {
     match (r) {
         Result.Ok(v) => { return fallback }
         Result.Err(e) => { return e }

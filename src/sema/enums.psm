@@ -35,7 +35,7 @@ import std.string
 // with the payload enum's own variant names.
 private fn enumTagField() -> String { return "$tag" }
 
-fn enumPayloadField(variantName: String, index: Int) -> String {
+public fn enumPayloadField(variantName: String, index: Int) -> String {
     return variantName.concat("$", strFromInt(index))
 }
 
@@ -84,7 +84,7 @@ internal fn enumIsPayloadType(module: ASTNode, t: TypeInfo) -> Bool {
 // in this pass; broadening to them changed unrelated hot-loop alignment and
 // regressed knapsack in the cross-language suite. See RESULTS-enum-null.md.
 // The backend separately checks boxing and whether null is already reserved.
-fn enumNullVariantTag(module: ASTNode, name: String) -> Int {
+public fn enumNullVariantTag(module: ASTNode, name: String) -> Int {
     let shadow = enumShadowFind(module, name)
     if (nodeIsNull(node_to_ptr(shadow))) { return 0 }
     let mut p = shadow.child1
@@ -215,7 +215,7 @@ internal fn enumDesugarToStruct(enumDecl: ASTNode) -> ASTNode {
 //
 // Runs after monoCollectTemplates, so the generic ones are not here -- those are
 // desugared per instantiation instead, by monoInstantiateType.
-fn enumDesugarModule(module: ASTNode) {
+public fn enumDesugarModule(module: ASTNode) {
     let kept = nodeList()
     let mut p = module.child1
     while (nodeExists(p)) {

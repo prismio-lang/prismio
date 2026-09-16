@@ -1,0 +1,9 @@
+struct Point {
+    x: Int,
+    y: Int
+}
+
+public fn sumLocal() -> Int {
+    let point = Point { x: 3, y: 4 }
+    return point.x + point.y
+}

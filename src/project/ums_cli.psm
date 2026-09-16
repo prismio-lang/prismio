@@ -23,60 +23,65 @@ import std.string
 import std.option
 import driver.compile
 import ums.ums
+import ums.model.workspace
+import ums.model.diagnostic
+import ums.model.validation
+import ums.targets.target
+import ums.dependency.resolve
 
 // argv, which the C runtime owns and outlives every use of it. Not an
 // allocation, and freeing one would be a free of memory this program never got.
-extern fn cli_arg(index: Int) -> String alias
-extern fn cli_arg_count() -> Int
-extern fn command_quote_arg(argument: String borrow) -> String produce(free)
+public extern fn cli_arg(index: Int) -> String alias
+public extern fn cli_arg_count() -> Int
+public extern fn command_quote_arg(argument: String borrow) -> String produce(free)
 // Project-host executables are built beside their active local generation. The
 // candidate has to start before it can replace that generation, and promotion
 // is a binary rename rather than compiler_publish_file's text copy.
-extern fn compiler_check_executable(exeFile: String borrow) -> Int
-extern fn compiler_check_host_abi(exeFile: String borrow, abi: String borrow) -> Int
-extern fn compiler_host_abi() -> String alias
+public extern fn compiler_check_executable(exeFile: String borrow) -> Int
+public extern fn compiler_check_host_abi(exeFile: String borrow, abi: String borrow) -> Int
+public extern fn compiler_host_abi() -> String alias
 // Builds `<root>/lib/runtime/*.bc` and `<root>/stdlib/*.plib` with `compiler`,
 // from the Prismio checkout that compiler was found in. Returns how many
 // standard-library modules the toolchain now has -- rebuilt here or reused from
 // `<root>/lib/toolchain.stamp`, which records what each artifact was built from
 // so an unchanged input is not built twice -- 0 when there is no checkout to
 // build them from, and -1 on failure. Reads both paths and keeps neither.
-extern fn compiler_emit_local_toolchain(root: String borrow,
+public extern fn compiler_emit_local_toolchain(root: String borrow,
                                         compiler: String borrow) -> Int
-extern fn compiler_forward_cli(host: String borrow) -> Int
-extern fn compiler_is_current_executable(path: String borrow) -> Int
-extern fn compiler_is_hosted() -> Int
-extern fn compiler_link_file(path: String borrow) -> Int
-extern fn compiler_link_framework(name: String borrow) -> Int
-extern fn compiler_link_library(name: String borrow) -> Int
+public extern fn compiler_forward_cli(host: String borrow) -> Int
+public extern fn compiler_is_current_executable(path: String borrow) -> Int
+public extern fn compiler_is_hosted() -> Int
+public extern fn compiler_link_file(path: String borrow) -> Int
+public extern fn compiler_link_framework(name: String borrow) -> Int
+public extern fn compiler_link_library(name: String borrow) -> Int
 // Ordered native inputs for one UMS target. Paths reach this boundary already
 // resolved against the manifest root; the C driver quotes every argument before
 // it constructs the clang command.
-extern fn compiler_link_reset()
-extern fn compiler_link_search(path: String borrow) -> Int
-extern fn compiler_promote_executable(candidateFile: String borrow,
+public extern fn compiler_link_reset()
+public extern fn compiler_link_search(path: String borrow) -> Int
+public extern fn compiler_promote_executable(candidateFile: String borrow,
                                       activeFile: String borrow) -> Int
-extern fn compiler_run_executable(exeFile: String) -> Int
+public extern fn compiler_run_executable(exeFile: String) -> Int
 // The same, with an already-quoted argument tail. Only the command position
 // needs the driver's separator fix, so the tail is appended rather than requoted.
-extern fn compiler_run_executable_with(exeFile: String, arguments: String borrow) -> Int
-extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
-extern fn host_is_windows() -> Int
-extern fn current_directory() -> String produce(free)
-extern fn delete_file(path: String) -> Int
-extern fn executable_directory() -> String produce(free)
+public extern fn compiler_run_executable_with(exeFile: String, arguments: String borrow) -> Int
+public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
+public extern fn host_is_windows() -> Int
+public extern fn current_directory() -> String produce(free)
+public extern fn delete_file(path: String) -> Int
+public extern fn executable_directory() -> String produce(free)
 // A project command's `shell` step. `command_quote_arg` mallocs and hands the
 // buffer over; `execute_command` only reads. Both contracts are std/process.psm's,
 // which is where they were worked out.
-extern fn execute_command(command: String borrow) -> Int
-extern fn file_exists(path: String) -> Int
-extern fn join_path(directory: String, filename: String) -> String
-extern fn make_directory(path: String borrow) -> Int
+public extern fn execute_command(command: String borrow) -> Int
+public extern fn file_exists(path: String) -> Int
+public extern fn join_path(directory: String, filename: String) -> String
+public extern fn make_directory(path: String borrow) -> Int
 // The writer half of the filesystem surface, for `init`. Both return 0 for
 // success, which is the C convention here and the opposite of `file_exists`;
 // std/fs.psm normalises that for applications, and this file cannot import it
 // because the two would declare the same symbols twice.
-extern fn write_file(path: String borrow, content: String borrow) -> Int
+public extern fn write_file(path: String borrow, content: String borrow) -> Int
 
 private fn pathLeaf(path: String) -> String {
     let mut cut = strLastIndexOfChar(path, '/')
@@ -96,7 +101,7 @@ private fn pathLeaf(path: String) -> String {
 // **Nothing is written if anything would be overwritten.** The manifest is
 // checked for first, and its presence ends the command -- re-running `init` in a
 // project is a mistake, not a request to reset it.
-fn initUmsProject(nameArg: String) -> Int {
+public fn initUmsProject(nameArg: String) -> Int {
     let mut root = "."
     let mut name = ""
     if (nameArg.equals("")) {
@@ -229,7 +234,7 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
 // Every test is built before any is run, and every test runs even after one
 // fails -- a run that stops at the first failure tells you about one test when
 // you asked about all of them.
-fn testUmsProject(profile: String) -> Int {
+public fn testUmsProject(profile: String) -> Int {
     let workspace = umsLoadProject(".", profile)
     if (workspace.valid == false) {
         umsDiagnosticsPrint(workspace.diagnostics)
@@ -295,7 +300,7 @@ fn testUmsProject(profile: String) -> Int {
 // The profile a project command was asked for. `--release` is the only one with
 // a spelling of its own; anything else is a flag this command does not take, and
 // is reported as that rather than taken for a source path.
-fn projectProfile(startIndex: Int) -> String {
+public fn projectProfile(startIndex: Int) -> String {
     let mut profile = "debug"
     let mut i = startIndex
     while (i < cli_arg_count()) {
@@ -325,7 +330,7 @@ fn projectProfile(startIndex: Int) -> String {
 //
 // The lockfile is deliberately left alone. It records what was resolved, not
 // what was built, and `cargo clean` does not remove `Cargo.lock` either.
-fn cleanUmsProject(profile: String) -> Int {
+public fn cleanUmsProject(profile: String) -> Int {
     let workspace = umsLoadProject(".", profile)
     if (workspace.valid == false) {
         umsDiagnosticsPrint(workspace.diagnostics)
@@ -541,7 +546,7 @@ private fn repairUmsProjectHost() -> Int {
 // Returns -1 when the current compiler should process the command itself.
 // Otherwise the return value is the hosted command's result and `main` returns
 // it immediately; a failed hosted command is never replayed under stage 0.
-fn dispatchToUmsHost() -> Int {
+public fn dispatchToUmsHost() -> Int {
     if (isGlobalLauncher() == false or compiler_is_hosted() == 1) { return -1 }
 
     let host = umsProjectHost(".")
@@ -664,7 +669,7 @@ private fn buildUmsTarget(workspace: UmsWorkspace, target: UmsTarget) -> Int {
                          false, includesBackend, false, false, false, false, false)
 }
 
-fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
+public fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
     let workspace = umsLoadProject(".", profile)
     if (workspace.valid == false) {
         umsDiagnosticsPrint(workspace.diagnostics)
@@ -898,7 +903,7 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
 // unknown-command diagnostic it would have reported anyway. Every built-in verb
 // has already declined the name by the time this runs, and that ordering is the
 // whole of the "built-ins win" rule -- there is no second check enforcing it.
-fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
+public fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
     let workspace = umsLoadProject(".", umsCommandProfile(forwardFrom))
     if (__builtin_string_len(workspace.project.manifestPath) == 0) { return -1 }
 
@@ -925,7 +930,7 @@ fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
 
 // Listed when a command is not recognised, because the built-in list on its own
 // sends a reader hunting for a typo in a name their project does define.
-fn listUmsProjectCommands() {
+public fn listUmsProjectCommands() {
     let workspace = umsLoadProject(".", "debug")
     if (workspace.commandCount() == 0) { return }
     println("")

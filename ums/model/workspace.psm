@@ -30,7 +30,7 @@ private fn umsEmptyWorkspace(diagnostics: List<UmsDiagnostic>) -> UmsWorkspace {
     }
 }
 
-fn umsLoadText(source: String, manifestPath: String, root: String,
+public fn umsLoadText(source: String, manifestPath: String, root: String,
                profile: String) -> UmsWorkspace {
     let diagnostics = umsDiagnostics()
     let tokens = umsLex(source, manifestPath, diagnostics)
@@ -50,7 +50,7 @@ fn umsLoadText(source: String, manifestPath: String, root: String,
     }
 }
 
-fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
+public fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
     let diagnostics = umsDiagnostics()
     let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
     if (__builtin_string_len(manifestPath) == 0) { return umsEmptyWorkspace(diagnostics) }
@@ -123,7 +123,7 @@ private fn umsBootstrapPrefixLength(source: String) -> Int {
 // The installed compiler calls this before it parses any command. It deliberately
 // reads only the first `toolchain { host = "..." }` block: all remaining syntax
 // belongs to the selected host, which may implement a newer UMS.
-fn umsProjectHost(startDirectory: String) -> String {
+public fn umsProjectHost(startDirectory: String) -> String {
     let diagnostics = umsDiagnostics()
     let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
     if (__builtin_string_len(manifestPath) == 0) { return "" }
@@ -163,23 +163,23 @@ fn umsProjectHost(startDirectory: String) -> String {
 // `workspace.targetCount()` and `workspace.target(i)`.
 impl UmsWorkspace {
 
-         fn targetCount(self) -> Int {
+    public fn targetCount(self) -> Int {
         return list_len(self.project.targets)
     }
 
-         fn target(self, index: Int) -> UmsTarget {
+    public fn target(self, index: Int) -> UmsTarget {
         return list_get(self.project.targets, index)
     }
 
-    fn commandCount(self) -> Int {
+    public fn commandCount(self) -> Int {
         return list_len(self.project.commands)
     }
 
-    fn command(self, index: Int) -> UmsCommand {
+    public fn command(self, index: Int) -> UmsCommand {
         return list_get(self.project.commands, index)
     }
 
-    fn findCommand(self, name: String) -> Int {
+    public fn findCommand(self, name: String) -> Int {
         return umsCommandFind(self.project.commands, name)
     }
 }

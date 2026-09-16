@@ -6,7 +6,11 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.target
+import sema.enums
+import aif.model
 import std.string
+import std.io
 
 extern fn compiler_library_emission_module() -> String produce(free)
 extern fn compiler_plib_module_registered(module: String borrow) -> Int
@@ -32,7 +36,16 @@ private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
         // PLIBs own concrete definitions from their entry module only. Generic
         // instantiations depend on the importing program's concrete type graph
         // and are emitted there from the interface template.
-        if (qualifier.equals("") == false or nodeExists(func.genericInfo)) { return false }
+        //
+        // Two spellings of "the entry file", because the driver stamps it with
+        // the module being emitted so that v0.1 3.5's import gate can see which
+        // package it is in -- and an unstamped entry still reads "". An imported
+        // dependency is neither: it carries the name the import named it by.
+        // Testing only for "" here is what emptied every PLIB once the stamp
+        // arrived: the whole module became "not the entry" and nothing was
+        // emitted, so `println` linked against a declaration with no definition.
+        let isEntryModule = qualifier.equals("") or qualifier.equals(emissionModule)
+        if (isEntryModule == false or nodeExists(func.genericInfo)) { return false }
         return functionAsksTarget(func) == false
     }
     if (qualifier.equals("") == false
@@ -928,7 +941,7 @@ private fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_function_end()
 }
 
-fn findWorkload(module: ASTNode) -> ASTNode {
+public fn findWorkload(module: ASTNode) -> ASTNode {
     let mut p = module.child1
     while (nodeExists(p)) {
         let d = ptr_to_node(p)
@@ -938,7 +951,7 @@ fn findWorkload(module: ASTNode) -> ASTNode {
     return ptr_to_node(ptr_null())
 }
 
-fn moduleWorkloadCount(module: ASTNode) -> Int {
+public fn moduleWorkloadCount(module: ASTNode) -> Int {
     let mut n = 0
     let mut p = module.child1
     while (nodeExists(p)) {
@@ -1401,16 +1414,6 @@ private fn irFieldCountOf(structNode: ASTNode) -> Int {
     return n
 }
 
-fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
-    let mut p = structNode.child1
-    while (nodeExists(p)) {
-        let f = ptr_to_node(p)
-        if (f.s1.equals(name)) { return f }
-        p = f.next
-    }
-    return ptr_to_node(ptr_null())
-}
-
 // Walks every child of `stmt` that can contain an expression, so each string
 // literal gets an @.str global allocated before codegen needs its name.
 //
@@ -1507,7 +1510,7 @@ private fn collectStringsFunction(func: ASTNode) {
     }
 }
 
-fn generateModule(module: ASTNode) {
+public fn generateModule(module: ASTNode) {
     ir_reset_globals()
     ir_reset_types()
     ir_clear_var_types()

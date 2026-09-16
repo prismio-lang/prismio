@@ -27,12 +27,12 @@
 // Mixing `printf` with the writes below is safe only because both of these
 // flush stdout before they return: nothing is left in a stdio buffer for a
 // later `write` to get in front of.
-extern fn prismio_rt_print_float(value: Float)
-extern fn prismio_rt_println_float(value: Float)
-extern fn prismio_rt_eprint_float(value: Float)
-extern fn prismio_rt_eprintln_float(value: Float)
+private extern fn prismio_rt_print_float(value: Float)
+private extern fn prismio_rt_println_float(value: Float)
+private extern fn prismio_rt_eprint_float(value: Float)
+private extern fn prismio_rt_eprintln_float(value: Float)
 
-extern fn str_with_capacity(length: Int) -> String produce(free)
+public extern fn str_with_capacity(length: Int) -> String produce(free)
 
 // A String of twelve bytes or fewer is the inline form: the bytes live in the
 // pair rather than behind the pointer, so there is nothing to offset and
@@ -171,65 +171,65 @@ private fn prismioStdIoChar(value: Char, terminator: Char) -> String {
     return out
 }
 
-fn print(value: String) {
+public fn print(value: String) {
     prismioStdIoOut(value)
 }
 
-fn print(value: Int) {
+public fn print(value: Int) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: I8) {
+public fn print(value: I8) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: I16) {
+public fn print(value: I16) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: I64) {
+public fn print(value: I64) {
     let text = prismioStdIoSignedInteger(value, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: Isize) {
+public fn print(value: Isize) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: U8) {
+public fn print(value: U8) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: U16) {
+public fn print(value: U16) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: U32) {
+public fn print(value: U32) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: U64) {
+public fn print(value: U64) {
     let text = prismioStdIoUnsignedInteger(value, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: Usize) {
+public fn print(value: Usize) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoOut(text)
 }
 
-fn print(value: Float) {
+public fn print(value: Float) {
     prismio_rt_print_float(value)
 }
 
-fn print(value: Bool) {
+public fn print(value: Bool) {
     if (value) {
         prismioStdIoOut("true")
     } else {
@@ -237,7 +237,7 @@ fn print(value: Bool) {
     }
 }
 
-fn print(value: Char) {
+public fn print(value: Char) {
     let text = prismioStdIoChar(value, '\0')
     prismioStdIoOut(text)
 }
@@ -245,7 +245,7 @@ fn print(value: Char) {
 // Python's `print()` -- the line break on its own, and the obvious way to end a
 // line a `print` began. A literal rather than a formatter, so it is one write
 // that allocates nothing: no site to number, and none of the IDs below move.
-fn println() {
+public fn println() {
     prismioStdIoOut("\n")
 }
 
@@ -253,7 +253,7 @@ fn println() {
 // argument is borrowed, so the line must be copied before it can carry one.
 // The copy is the cheap half. Over 300k lines to /dev/null, against the
 // `printf("%s\n")` this replaces: copy and one write 0.93x, two writes 1.80x.
-fn println(value: String) {
+public fn println(value: String) {
     let width = __builtin_string_len(value)
     let out = str_with_capacity(width + 1)
     let mut at = 0
@@ -276,65 +276,65 @@ fn println(value: String) {
 // hole rather than a gap -- `eprintln("count: ", n)` splits into `eprint` of the
 // text and `eprintln` of the value, so a missing stderr overload turned a
 // working stdout line into a diagnostic the moment it moved to stderr.
-fn eprint(value: String) {
+public fn eprint(value: String) {
     prismioStdIoErr(value)
 }
 
-fn eprint(value: Int) {
+public fn eprint(value: Int) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: I8) {
+public fn eprint(value: I8) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: I16) {
+public fn eprint(value: I16) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: I64) {
+public fn eprint(value: I64) {
     let text = prismioStdIoSignedInteger(value, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: Isize) {
+public fn eprint(value: Isize) {
     let text = prismioStdIoSignedInteger(value as I64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: U8) {
+public fn eprint(value: U8) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: U16) {
+public fn eprint(value: U16) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: U32) {
+public fn eprint(value: U32) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: U64) {
+public fn eprint(value: U64) {
     let text = prismioStdIoUnsignedInteger(value, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: Usize) {
+public fn eprint(value: Usize) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprint(value: Float) {
+public fn eprint(value: Float) {
     prismio_rt_eprint_float(value)
 }
 
-fn eprint(value: Bool) {
+public fn eprint(value: Bool) {
     if (value) {
         prismioStdIoErr("true")
     } else {
@@ -342,16 +342,16 @@ fn eprint(value: Bool) {
     }
 }
 
-fn eprint(value: Char) {
+public fn eprint(value: Char) {
     let text = prismioStdIoChar(value, '\0')
     prismioStdIoErr(text)
 }
 
-fn eprintln() {
+public fn eprintln() {
     prismioStdIoErr("\n")
 }
 
-fn eprintln(value: String) {
+public fn eprintln(value: String) {
     let width = __builtin_string_len(value)
     let out = str_with_capacity(width + 1)
     let mut at = 0
@@ -363,61 +363,61 @@ fn eprintln(value: String) {
     prismioStdIoErr(out)
 }
 
-fn eprintln(value: Int) {
+public fn eprintln(value: Int) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: I8) {
+public fn eprintln(value: I8) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: I16) {
+public fn eprintln(value: I16) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: I64) {
+public fn eprintln(value: I64) {
     let text = prismioStdIoSignedInteger(value, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: Isize) {
+public fn eprintln(value: Isize) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: U8) {
+public fn eprintln(value: U8) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: U16) {
+public fn eprintln(value: U16) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: U32) {
+public fn eprintln(value: U32) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: U64) {
+public fn eprintln(value: U64) {
     let text = prismioStdIoUnsignedInteger(value, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: Usize) {
+public fn eprintln(value: Usize) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoErr(text)
 }
 
-fn eprintln(value: Float) {
+public fn eprintln(value: Float) {
     prismio_rt_eprintln_float(value)
 }
 
-fn eprintln(value: Bool) {
+public fn eprintln(value: Bool) {
     if (value) {
         prismioStdIoErr("true\n")
     } else {
@@ -425,66 +425,66 @@ fn eprintln(value: Bool) {
     }
 }
 
-fn eprintln(value: Char) {
+public fn eprintln(value: Char) {
     let text = prismioStdIoChar(value, '\n')
     prismioStdIoErr(text)
 }
 
-fn println(value: Int) {
+public fn println(value: Int) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: I8) {
+public fn println(value: I8) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: I16) {
+public fn println(value: I16) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: I64) {
+public fn println(value: I64) {
     let text = prismioStdIoSignedInteger(value, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: Isize) {
+public fn println(value: Isize) {
     let text = prismioStdIoSignedInteger(value as I64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: U8) {
+public fn println(value: U8) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: U16) {
+public fn println(value: U16) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: U32) {
+public fn println(value: U32) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: U64) {
+public fn println(value: U64) {
     let text = prismioStdIoUnsignedInteger(value, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: Usize) {
+public fn println(value: Usize) {
     let text = prismioStdIoUnsignedInteger(value as U64, '\n')
     prismioStdIoOut(text)
 }
 
-fn println(value: Float) {
+public fn println(value: Float) {
     prismio_rt_println_float(value)
 }
 
-fn println(value: Bool) {
+public fn println(value: Bool) {
     if (value) {
         prismioStdIoOut("true\n")
     } else {
@@ -492,7 +492,7 @@ fn println(value: Bool) {
     }
 }
 
-fn println(value: Char) {
+public fn println(value: Char) {
     let text = prismioStdIoChar(value, '\n')
     prismioStdIoOut(text)
 }

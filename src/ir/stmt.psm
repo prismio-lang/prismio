@@ -5,6 +5,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import std.string
+import sema.enums
 
 // Whether this match is over an enum with payloads. Sema stamps the variant name
 // on every non-wildcard arm of one and on no other kind of match, so one arm
@@ -406,461 +407,396 @@ private fn generateStringDispatch(firstPtr: Ptr, count: Int) -> Ptr {
     return scan
 }
 
-private fn generateStatement(stmt: ASTNode) {
-    // The line table, in one place. Every instruction this statement and its
-    // subexpressions build inherits this location, including the calls codegen
-    // inserts on its own -- an arena bracket, a drop, a release. Column as well
-    // as line, because a `for` header and its body start on the same line and a
-    // breakpoint on one should not stop on the other.
-    debugAt(stmt)
 
-    if (stmt.kind == NodeKind.VARIABLE_DECL) {
-        let varName = stmt.s1
-        let mut varType = "i32"
-        if (nodeExists(stmt.child1)) {
-            let typeNode = ptr_to_node(stmt.child1)
-            varType = mapTypeNode(typeNode)
+private fn generateVariableDecl(stmt: ASTNode) {
+    let varName = stmt.s1
+    let mut varType = "i32"
+    if (nodeExists(stmt.child1)) {
+        let typeNode = ptr_to_node(stmt.child1)
+        varType = mapTypeNode(typeNode)
+    } else {
+        if (nodeExists(stmt.child2)) {
+            varType = getExprType(ptr_to_node(stmt.child2))
+        }
+    }
+
+    // The initializer is generated before the binding is declared, so that
+    // `let x = x + 1` reads the *outer* x rather than the one being defined.
+    let mut initVal = ""
+    let hasInit = nodeExists(stmt.child2)
+    if (hasInit) {
+        initVal = generateExpression(ptr_to_node(stmt.child2))
+    }
+
+    // A fresh binding with its own slot. Two `let x` in sibling blocks get
+    // separate stack slots, so they can hold different types without one
+    // being written through a slot sized for the other.
+    ir_set_var_type(varName, varType)
+    let slot = ir_get_var_slot(varName)
+    let storeType = storageType(varType)
+    ir_alloca(storeType, slot)
+
+    // Declared here rather than after the store: the alloca is what the
+    // variable *is*, and a debugger stopped between the two should report the
+    // slot with whatever is in it, not report the name as unknown. The slot
+    // is uninitialised until the store lands, which is the same window C has
+    // and the same one it does not describe either.
+    debugLocal(varName, slot, varType, debugTypeName(stmt.child1, stmt.child2), stmt, 0)
+
+    if (hasInit) {
+        // AIF Level 4, the reassignment half. An owning accumulator's slot
+        // holds memory the binding owns at *every* point, not only at the
+        // scope exit, and that is what licenses the release in the assignment
+        // below. A literal initialiser is the one thing that would break the
+        // invariant on the binding's first line -- `let mut s = ""` must not
+        // put a borrowed .rodata pointer in a slot whose next assignment
+        // releases it. Short literals use the value-owned inline form;
+        // longer ones need one heap clone per binding, not per iteration.
+        let accumulates = irOwningAccumulator(varName)
+            and nodeProducesOwnedValue(stmt.child2)
+        if (accumulates and nodeIsStringLiteralExpr(stmt.child2)) {
+            initVal = generateOwnedStringLiteral(initVal, stmt.child2)
+        }
+
+        ir_store(storeType, initVal, slot)
+
+        // Resolve the German-string representation once, here, where the
+        // binding is made and therefore where it dominates every use. A byte
+        // loop over this string then indexes a pointer instead of asking per
+        // character which half of the pair holds the byte -- five
+        // instructions the tokenizer used to pay 204 000 times. Immutable
+        // bindings only: see `data_ptr` in runtime/ir_symbols.c.
+        if (isFatStringKey(storeType) and stmt.i1 == 0) {
+            ir_set_var_data(varName, ir_str_data(initVal))
+        }
+
+        // Every accumulator owns what its slot holds. Whether the *last*
+        // value is this scope's to drop is the separate question below.
+        if (accumulates) { ir_mark_owns_slot(varName) }
+
+        // REQUIREMENTS 15. The task handle is the runtime's own struct and
+        // it had no owner at all: `prismio_task_release` existed and codegen
+        // never emitted it, so every `spawn` leaked one handle. g9 made that
+        // visible -- 8,201 allocations against 23 frees under allocount --
+        // because it is the first corpus program that spawns in a loop.
+        //
+        // **Released at the scope exit and not at the join**, which is the
+        // difference between this being sound and not. A handle is copyable
+        // and the language does not stop a program joining twice; the
+        // runtime guards the second *wait* but could not guard a second read
+        // of freed memory. The scope exit runs once however many joins there
+        // were, and after all of them.
+        //
+        // The premise is AIF's, not a new one: `i1` is set only when
+        // INFERENCE 4.1's E-SPAWN-J proved the task is joined on every path
+        // before this scope exits, so at the exit the thread has finished and
+        // the handle is dead. A spawn that was not proved joined keeps the
+        // old behaviour and leaks, which is the conservative direction --
+        // freeing a handle a running task still writes its result into is
+        // the failure this must not have.
+        if (nodeExists(stmt.child2)
+                and ptr_to_node(stmt.child2).kind == NodeKind.SPAWN_EXPR
+            and ptr_to_node(stmt.child2).i1 == 1
+            and chainAssignsName(irFunctionBody, varName) == false
+            and chainReturnsName(irFunctionBody, varName) == false
+            and chainCopiesName(irFunctionBody, varName) == false) {
+            ir_mark_droppable(varName, IR_DROP_TASK)
+        } else if (aif_frees_at_scope_node(stmt.child2) == 1
+            and chainAssignsName(irFunctionBody, varName) == false
+            and chainDropsName(irFunctionBody, varName) == false) {
+            // `drop(x)` already freed it, so a scope release as well is a
+            // double free. Asked of the binding rather than of the site,
+            // because one site backs every `concat` in the program and
+            // answering it there suppressed the release of every other
+            // binding too -- see aif_frees_at_scope_node.
+            ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
+        } else if (accumulates and chainReturnsName(irFunctionBody, varName) == false) {
+            // The last value an accumulator holds needs an owner too, and the
+            // assignments only ever release what they displace. A returned
+            // binding hands that one to the caller -- the same reason the
+            // branch above declines a returned value -- so this is every
+            // other case.
+            ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
         } else {
-            if (nodeExists(stmt.child2)) {
-                varType = getExprType(ptr_to_node(stmt.child2))
-            }
-        }
-
-        // The initializer is generated before the binding is declared, so that
-        // `let x = x + 1` reads the *outer* x rather than the one being defined.
-        let mut initVal = ""
-        let hasInit = nodeExists(stmt.child2)
-        if (hasInit) {
-            initVal = generateExpression(ptr_to_node(stmt.child2))
-        }
-
-        // A fresh binding with its own slot. Two `let x` in sibling blocks get
-        // separate stack slots, so they can hold different types without one
-        // being written through a slot sized for the other.
-        ir_set_var_type(varName, varType)
-        let slot = ir_get_var_slot(varName)
-        let storeType = storageType(varType)
-        ir_alloca(storeType, slot)
-
-        // Declared here rather than after the store: the alloca is what the
-        // variable *is*, and a debugger stopped between the two should report the
-        // slot with whatever is in it, not report the name as unknown. The slot
-        // is uninitialised until the store lands, which is the same window C has
-        // and the same one it does not describe either.
-        debugLocal(varName, slot, varType, debugTypeName(stmt.child1, stmt.child2), stmt, 0)
-
-        if (hasInit) {
-            // AIF Level 4, the reassignment half. An owning accumulator's slot
-            // holds memory the binding owns at *every* point, not only at the
-            // scope exit, and that is what licenses the release in the assignment
-            // below. A literal initialiser is the one thing that would break the
-            // invariant on the binding's first line -- `let mut s = ""` must not
-            // put a borrowed .rodata pointer in a slot whose next assignment
-            // releases it. Short literals use the value-owned inline form;
-            // longer ones need one heap clone per binding, not per iteration.
-            let accumulates = irOwningAccumulator(varName)
-                and nodeProducesOwnedValue(stmt.child2)
-            if (accumulates and nodeIsStringLiteralExpr(stmt.child2)) {
-                initVal = generateOwnedStringLiteral(initVal, stmt.child2)
-            }
-
-            ir_store(storeType, initVal, slot)
-
-            // Resolve the German-string representation once, here, where the
-            // binding is made and therefore where it dominates every use. A byte
-            // loop over this string then indexes a pointer instead of asking per
-            // character which half of the pair holds the byte -- five
-            // instructions the tokenizer used to pay 204 000 times. Immutable
-            // bindings only: see `data_ptr` in runtime/ir_symbols.c.
-            if (isFatStringKey(storeType) and stmt.i1 == 0) {
-                ir_set_var_data(varName, ir_str_data(initVal))
-            }
-
-            // Every accumulator owns what its slot holds. Whether the *last*
-            // value is this scope's to drop is the separate question below.
-            if (accumulates) { ir_mark_owns_slot(varName) }
-
-            // REQUIREMENTS 15. The task handle is the runtime's own struct and
-            // it had no owner at all: `prismio_task_release` existed and codegen
-            // never emitted it, so every `spawn` leaked one handle. g9 made that
-            // visible -- 8,201 allocations against 23 frees under allocount --
-            // because it is the first corpus program that spawns in a loop.
-            //
-            // **Released at the scope exit and not at the join**, which is the
-            // difference between this being sound and not. A handle is copyable
-            // and the language does not stop a program joining twice; the
-            // runtime guards the second *wait* but could not guard a second read
-            // of freed memory. The scope exit runs once however many joins there
-            // were, and after all of them.
-            //
-            // The premise is AIF's, not a new one: `i1` is set only when
-            // INFERENCE 4.1's E-SPAWN-J proved the task is joined on every path
-            // before this scope exits, so at the exit the thread has finished and
-            // the handle is dead. A spawn that was not proved joined keeps the
-            // old behaviour and leaks, which is the conservative direction --
-            // freeing a handle a running task still writes its result into is
-            // the failure this must not have.
-            if (nodeExists(stmt.child2)
-                    and ptr_to_node(stmt.child2).kind == NodeKind.SPAWN_EXPR
-                and ptr_to_node(stmt.child2).i1 == 1
-                and chainAssignsName(irFunctionBody, varName) == false
+            // AIF item 3. The initialiser is not an allocation here -- it is a
+            // call to a function that made one and handed it over. That is the
+            // ownership the escape lattice cannot express, so it is asked of
+            // the converged facts (the callee kept nothing, and allocated what
+            // it returned) plus the two syntactic guards the facts leave open.
+            let owned = aif_owns_call_result_at_node(stmt.child2)
+            if (owned != AIF_ELEM_NONE
+                    and chainAssignsName(irFunctionBody, varName) == false
                 and chainReturnsName(irFunctionBody, varName) == false
-                and chainCopiesName(irFunctionBody, varName) == false) {
-                ir_mark_droppable(varName, IR_DROP_TASK)
-            } else if (aif_frees_at_scope_node(stmt.child2) == 1
-                and chainAssignsName(irFunctionBody, varName) == false
-                and chainDropsName(irFunctionBody, varName) == false) {
-                // `drop(x)` already freed it, so a scope release as well is a
-                // double free. Asked of the binding rather than of the site,
-                // because one site backs every `concat` in the program and
-                // answering it there suppressed the release of every other
-                // binding too -- see aif_frees_at_scope_node.
-                ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
-            } else if (accumulates and chainReturnsName(irFunctionBody, varName) == false) {
-                // The last value an accumulator holds needs an owner too, and the
-                // assignments only ever release what they displace. A returned
-                // binding hands that one to the caller -- the same reason the
-                // branch above declines a returned value -- so this is every
-                // other case.
-                ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
-            } else {
-                // AIF item 3. The initialiser is not an allocation here -- it is a
-                // call to a function that made one and handed it over. That is the
-                // ownership the escape lattice cannot express, so it is asked of
-                // the converged facts (the callee kept nothing, and allocated what
-                // it returned) plus the two syntactic guards the facts leave open.
-                let owned = aif_owns_call_result_at_node(stmt.child2)
-                if (owned != AIF_ELEM_NONE
-                        and chainAssignsName(irFunctionBody, varName) == false
-                    and chainReturnsName(irFunctionBody, varName) == false
-                    and chainDropsName(irFunctionBody, varName) == false
-                    and chainEscapesThroughCall(irFunctionBody, varName) == false) {
-                    if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
-                        ir_mark_droppable(varName, IR_DROP_DATAVIEW)
-                    } else if (owned == AIF_ELEM_LIST) {
-                        ir_mark_droppable(varName, IR_DROP_LIST)
-                    } else if (owned == AIF_ELEM_TYPED) {
-                        ir_mark_droppable(varName, IR_DROP_TYPED)
-                    } else {
-                        ir_mark_droppable(varName, IR_DROP_OBJECT)
-                    }
+                and chainDropsName(irFunctionBody, varName) == false
+                and chainEscapesThroughCall(irFunctionBody, varName) == false) {
+                if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
+                    ir_mark_droppable(varName, IR_DROP_DATAVIEW)
+                } else if (owned == AIF_ELEM_LIST) {
+                    ir_mark_droppable(varName, IR_DROP_LIST)
+                } else if (owned == AIF_ELEM_TYPED) {
+                    ir_mark_droppable(varName, IR_DROP_TYPED)
+                } else {
+                    ir_mark_droppable(varName, IR_DROP_OBJECT)
                 }
             }
         }
     }
+}
 
-    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
-        let targetNode = ptr_to_node(stmt.child1)
-        if (targetNode.kind == NodeKind.IDENTIFIER_EXPR) {
-            let varName = targetNode.s1
-            let mut varType = ir_get_var_type(varName)
-            let storeType = storageType(varType)
+private fn generateAssignment(stmt: ASTNode) {
+    let targetNode = ptr_to_node(stmt.child1)
+    if (targetNode.kind == NodeKind.IDENTIFIER_EXPR) {
+        let varName = targetNode.s1
+        let mut varType = ir_get_var_type(varName)
+        let storeType = storageType(varType)
 
-            // AIF Level 4, the reassignment half. Droppable means the slot owns
-            // its contents, so a store into it displaces a value with no other
-            // owner -- and until this existed, that value had none at all. It is
-            // the same fact the scope exit reads, asked through the binding rather
-            // than recomputed from the declaration's reasoning, because two
-            // answers to "does this binding own what it holds" is exactly how a
-            // value ends up unowned.
-            //
-            // The old pointer is read before the right-hand side is generated,
-            // and freed after: `out = out.concat(x)` passes the displaced
-            // value *into* the call that replaces it, so releasing it any earlier
-            // frees the argument being read.
-            let releasesOld = ir_var_is_global(varName) == 0
-                and ir_binding_owns_slot(varName) == 1
-            let mut old = ""
-            if (releasesOld) {
-                old = ir_get_temp_name(ir_load(storeType, ir_get_var_slot(varName)))
-            }
-
-            // A uniquely-owned String accumulator can hand its old buffer to
-            // the replacement concat. The helper returns empty for every other
-            // expression shape, which then takes the ordinary immutable path.
-            let mut consumedOld = false
-            let mut val = ""
-            if (releasesOld and storeType.equals("struct:prismio.str")) {
-                val = generateStringReinitConcat(stmt.child2, varName, old)
-                consumedOld = val.equals("") == false
-            }
-            if (consumedOld == false) {
-                val = generateExpression(ptr_to_node(stmt.child2))
-            }
-            // The same clone the declaration makes, for the same reason and it
-            // was not obvious that both needed it: a literal stored here leaves
-            // .rodata in a slot the *next* assignment frees. That is what aborted
-            // the compiler's own --verify build, one generation after the
-            // declaration alone looked sufficient.
-            if (releasesOld and nodeIsStringLiteralExpr(stmt.child2)) {
-                val = generateOwnedStringLiteral(val, stmt.child2)
-            }
-            if (ir_var_is_global(varName) == 1) {
-                ir_store_global(storeType, val, varName)
-            } else {
-                if (releasesOld and consumedOld == false) {
-                    generateDisplacedRelease(old, val, dropKindOf(ptr_to_node(stmt.child2)), varType)
-                }
-                ir_store(storeType, val, ir_get_var_slot(varName))
-            }
+        // AIF Level 4, the reassignment half. Droppable means the slot owns
+        // its contents, so a store into it displaces a value with no other
+        // owner -- and until this existed, that value had none at all. It is
+        // the same fact the scope exit reads, asked through the binding rather
+        // than recomputed from the declaration's reasoning, because two
+        // answers to "does this binding own what it holds" is exactly how a
+        // value ends up unowned.
+        //
+        // The old pointer is read before the right-hand side is generated,
+        // and freed after: `out = out.concat(x)` passes the displaced
+        // value *into* the call that replaces it, so releasing it any earlier
+        // frees the argument being read.
+        let releasesOld = ir_var_is_global(varName) == 0
+            and ir_binding_owns_slot(varName) == 1
+        let mut old = ""
+        if (releasesOld) {
+            old = ir_get_temp_name(ir_load(storeType, ir_get_var_slot(varName)))
         }
-        if (targetNode.kind == NodeKind.MEMBER_ACCESS_EXPR) {
-            let objectNode = ptr_to_node(targetNode.child1)
 
-            // M4.3c. A DataElement assignment follows the same late column
-            // resolution as a read. The descriptor remains `(view, index)`;
-            // only this store obtains an interior pointer, and it is consumed
-            // immediately. Nested writes such as `row.pair.low = value` use
-            // the ordinary struct-field path below after the `row.pair` read
-            // returns that column element's inline storage.
-            if (nodeHasType(objectNode) and nodeGetType(objectNode).kind == TypeKind.DATAELEMENT) {
-                let elemT = nodeGetType(objectNode)
-                let rowT = ptr_to_type(elemT.child)
-                let structName = rowT.name
-                let fieldIndex = ir_get_struct_field_index(structName, targetNode.s1)
-                let fieldType = fieldStorageType(ir_get_struct_field_type(structName, targetNode.s1))
-                let descriptor = generateExpression(objectNode)
-                let view = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
-                                                             descriptor, 0))
-                let index = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
-                                                              descriptor, 1))
-                ir_call_begin()
-                ir_call_arg("ptr", view)
-                ir_call_arg("i32", strFromInt(fieldIndex))
-                let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
-                let slot = ir_get_temp_name(ir_elem_ptr(fieldType, column, index))
-                let val = generateExpression(ptr_to_node(stmt.child2))
-
-                irProfileField(structName, targetNode.s1, true)
-                irProfileRange(structName, targetNode.s1, fieldType, val)
-                // DataView eligibility rejects counted fields, so there is no
-                // retain/release path here. Flat nested structs occupy the
-                // column element itself and therefore need a value copy.
-                if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
-                    ir_copy_struct(structTypeName(fieldType), slot, val)
-                } else {
-                    ir_data_store_ptr(fieldType, val, slot, structName, fieldIndex)
-                }
-                return
+        // A uniquely-owned String accumulator can hand its old buffer to
+        // the replacement concat. The helper returns empty for every other
+        // expression shape, which then takes the ordinary immutable path.
+        let mut consumedOld = false
+        let mut val = ""
+        if (releasesOld and storeType.equals("struct:prismio.str")) {
+            val = generateStringReinitConcat(stmt.child2, varName, old)
+            consumedOld = val.equals("") == false
+        }
+        if (consumedOld == false) {
+            val = generateExpression(ptr_to_node(stmt.child2))
+        }
+        // The same clone the declaration makes, for the same reason and it
+        // was not obvious that both needed it: a literal stored here leaves
+        // .rodata in a slot the *next* assignment frees. That is what aborted
+        // the compiler's own --verify build, one generation after the
+        // declaration alone looked sufficient.
+        if (releasesOld and nodeIsStringLiteralExpr(stmt.child2)) {
+            val = generateOwnedStringLiteral(val, stmt.child2)
+        }
+        if (ir_var_is_global(varName) == 1) {
+            ir_store_global(storeType, val, varName)
+        } else {
+            if (releasesOld and consumedOld == false) {
+                generateDisplacedRelease(old, val, dropKindOf(ptr_to_node(stmt.child2)), varType)
             }
+            ir_store(storeType, val, ir_get_var_slot(varName))
+        }
+    }
+    if (targetNode.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let objectNode = ptr_to_node(targetNode.child1)
 
-            let objectVal = generateExpression(objectNode)
-            let objectType = getExprType(objectNode)
-            let structName = structTypeName(objectType)
+        // M4.3c. A DataElement assignment follows the same late column
+        // resolution as a read. The descriptor remains `(view, index)`;
+        // only this store obtains an interior pointer, and it is consumed
+        // immediately. Nested writes such as `row.pair.low = value` use
+        // the ordinary struct-field path below after the `row.pair` read
+        // returns that column element's inline storage.
+        if (nodeHasType(objectNode) and nodeGetType(objectNode).kind == TypeKind.DATAELEMENT) {
+            let elemT = nodeGetType(objectNode)
+            let rowT = ptr_to_type(elemT.child)
+            let structName = rowT.name
             let fieldIndex = ir_get_struct_field_index(structName, targetNode.s1)
             let fieldType = fieldStorageType(ir_get_struct_field_type(structName, targetNode.s1))
+            let descriptor = generateExpression(objectNode)
+            let view = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                         descriptor, 0))
+            let index = ir_get_temp_name(ir_extract_value("struct:prismio.data_element",
+                                                          descriptor, 1))
+            ir_call_begin()
+            ir_call_arg("ptr", view)
+            ir_call_arg("i32", strFromInt(fieldIndex))
+            let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
+            let slot = ir_get_temp_name(ir_elem_ptr(fieldType, column, index))
             let val = generateExpression(ptr_to_node(stmt.child2))
 
-            let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
             irProfileField(structName, targetNode.s1, true)
             irProfileRange(structName, targetNode.s1, fieldType, val)
-            // CYCLES 3, the assignment half. Retain before releasing, so a store
-            // of a value into the slot it already occupies does not free it
-            // between the two.
-            if (aif_field_is_counted(structName, targetNode.s1) == 1) {
-                let old = ir_get_temp_name(ir_struct_load_ptr("ptr", ir_get_temp_name(slot),
-                                                              structName, fieldIndex))
-                ir_call_begin()
-                ir_call_arg("ptr", val)
-                ir_call_end("void", "cyc_retain")
-                ir_call_begin()
-                ir_call_arg("ptr", old)
-                ir_call_end("void", "cyc_release")
-            }
-            // Assigning an inline field overwrites storage rather than swapping
-            // an address, so it copies. A counted field is never inline: the
-            // count sits in a header in front of an allocation, and an inline
-            // field has no allocation of its own to put one in front of.
+            // DataView eligibility rejects counted fields, so there is no
+            // retain/release path here. Flat nested structs occupy the
+            // column element itself and therefore need a value copy.
             if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
-                ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
+                ir_copy_struct(structTypeName(fieldType), slot, val)
             } else {
-                ir_struct_store_ptr(fieldType, val, ir_get_temp_name(slot),
-                                    structName, fieldIndex)
+                ir_data_store_ptr(fieldType, val, slot, structName, fieldIndex)
             }
-        }
-        if (targetNode.kind == NodeKind.IDENTIFIER_EXPR
-                and targetNode.s1.equals(irLoopHeaderBoundIndex)) {
-            irLoopHeaderBoundActive = false
-        }
-    }
-
-    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
-        // Every scope in the function unwinds at once, so the floor is 0. The
-        // returned value is never among them: returning it puts its escape at
-        // Caller, and nothing with that escape is droppable here.
-        if (nodeExists(stmt.child1)) {
-            let retVal = generateExpression(ptr_to_node(stmt.child1))
-            let retType = storageType(getExprType(ptr_to_node(stmt.child1)))
-            generateScopeDrops(0)
-            generateRegionExits(ir_region_depth())
-            ir_ret(retType, retVal)
-        } else {
-            generateScopeDrops(0)
-            generateRegionExits(ir_region_depth())
-            ir_ret_void()
-        }
-        ir_set_returned()
-    }
-
-    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
-        if (nodeExists(stmt.child1)) {
-            generateExpression(ptr_to_node(stmt.child1))
-        }
-    }
-
-    if (stmt.kind == NodeKind.IF_STATEMENT) {
-        let thenLabel = ir_get_label()
-        let elseLabel = ir_get_label()
-        let endLabel = ir_get_label()
-
-        let condVal = generateExpression(ptr_to_node(stmt.child1))
-        if (nodeExists(stmt.child3)) {
-            ir_cond_br_numbered(condVal, thenLabel, elseLabel)
-        } else {
-            ir_cond_br_numbered(condVal, thenLabel, endLabel)
-        }
-
-        ir_label_numbered(thenLabel)
-        generateBlock(ptr_to_node(stmt.child2))
-        if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
-        ir_clear_returned()
-
-        if (nodeExists(stmt.child3)) {
-            ir_label_numbered(elseLabel)
-
-            let elseNode = ptr_to_node(stmt.child3)
-            if (elseNode.kind == NodeKind.IF_STATEMENT) {
-                generateStatement(elseNode)
-            } else {
-                generateBlock(elseNode)
-            }
-            if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
-            ir_clear_returned()
-        }
-
-        ir_label_numbered(endLabel)
-    }
-
-    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
-        let condLabel = ir_get_label()
-        let bodyLabel = ir_get_label()
-        let endLabel = ir_get_label()
-
-        // M4.2, the loop half. Emitted here because here is the preheader: the
-        // guard has to dominate the loop and be computed once.
-        let savedGuard = irLoopFlatGuard
-        let savedRange = irLoopRangeProved
-        let savedPush = irLoopPushGuard
-        let savedHeaderList = irLoopHeaderBoundList
-        let savedHeaderIndex = irLoopHeaderBoundIndex
-        let savedHeaderActive = irLoopHeaderBoundActive
-        let savedHoistedBoundList = irLoopHoistedBoundList
-        let savedHoistedBoundValue = irLoopHoistedBoundValue
-        let savedHoistedDataValue = irLoopHoistedDataValue
-        irLoopRangeProved = false
-        irLoopHeaderBoundList = ""
-        irLoopHeaderBoundIndex = ""
-        irLoopHeaderBoundActive = false
-        irLoopHoistedBoundList = ""
-        irLoopHoistedBoundValue = ""
-        irLoopHoistedDataValue = ""
-
-        // A successful bulk zero append bypasses the loop entirely. Emit it
-        // before preparing the ordinary push guard so the fast arm does not
-        // pay the fallback loop's duplicate capacity and representation tests.
-        generateWholeBufferZeroFill(ptr_to_node(stmt.child1), ptr_to_node(stmt.child2),
-                                    endLabel)
-        irLoopPushGuard = generateLoopPushGuard(ptr_to_node(stmt.child1),
-                                                ptr_to_node(stmt.child2))
-
-        // MEM-006, and it has to come first: the block transfer replaces the
-        // whole loop, so it is emitted in the preheader before the loop's own
-        // guard exists. It leaves the builder in the arm the loop belongs to.
-        generateWholeBufferCopy(ptr_to_node(stmt.child1), ptr_to_node(stmt.child2),
-                                endLabel)
-
-        let guardSlot = generateLoopFlatGuard(ptr_to_node(stmt.child1),
-                                              ptr_to_node(stmt.child2))
-
-        if (guardSlot.equals("") == false) {
-            let fastCondLabel = ir_get_label()
-            let fastBodyLabel = ir_get_label()
-            let slowCondLabel = ir_get_label()
-            let slowBodyLabel = ir_get_label()
-
-            let guardVal = ir_get_temp_name(ir_load("i1", guardSlot))
-            ir_cond_br_numbered(guardVal, fastCondLabel, slowCondLabel)
-
-            let provedRange = irLoopRangeProved
-
-            // Specialized fast loop: representation is guaranteed flat and constant-guarded.
-            ir_label_numbered(fastCondLabel)
-            irLoopFlatGuard = "1"
-            irLoopRangeProved = provedRange
-            let fastCondVal = generateExpression(ptr_to_node(stmt.child1))
-            ir_cond_br_numbered(fastCondVal, fastBodyLabel, endLabel)
-
-            ir_label_numbered(fastBodyLabel)
-            irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-            ir_loop_push(fastCondLabel, endLabel)
-            ir_drop_barrier_push()
-            irLoopDepth = irLoopDepth + 1
-            generateBlock(ptr_to_node(stmt.child2))
-            irLoopDepth = irLoopDepth - 1
-            ir_drop_barrier_pop()
-            ir_loop_pop()
-
-            if (ir_has_returned() == 0) { ir_br_numbered(fastCondLabel) }
-            ir_clear_returned()
-
-            // Safe slow loop: standard fallback.
-            ir_label_numbered(slowCondLabel)
-            irLoopFlatGuard = ""
-            irLoopRangeProved = false
-            let slowCondVal = generateExpression(ptr_to_node(stmt.child1))
-            ir_cond_br_numbered(slowCondVal, slowBodyLabel, endLabel)
-
-            ir_label_numbered(slowBodyLabel)
-            irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-            ir_loop_push(slowCondLabel, endLabel)
-            ir_drop_barrier_push()
-            irLoopDepth = irLoopDepth + 1
-            generateBlock(ptr_to_node(stmt.child2))
-            irLoopDepth = irLoopDepth - 1
-            ir_drop_barrier_pop()
-            ir_loop_pop()
-
-            if (ir_has_returned() == 0) { ir_br_numbered(slowCondLabel) }
-            ir_clear_returned()
-
-            irLoopFlatGuard = strClone(savedGuard)
-            irLoopRangeProved = savedRange
-            irLoopPushGuard = strClone(savedPush)
-            irLoopHeaderBoundList = strClone(savedHeaderList)
-            irLoopHeaderBoundIndex = strClone(savedHeaderIndex)
-            irLoopHeaderBoundActive = savedHeaderActive
-            irLoopHoistedBoundList = strClone(savedHoistedBoundList)
-            irLoopHoistedBoundValue = strClone(savedHoistedBoundValue)
-            irLoopHoistedDataValue = strClone(savedHoistedDataValue)
-            ir_label_numbered(endLabel)
             return
         }
 
-        if (savedGuard.equals("1")) {
-            irLoopFlatGuard = "1"
-        } else {
-            irLoopFlatGuard = guardSlot
+        let objectVal = generateExpression(objectNode)
+        let objectType = getExprType(objectNode)
+        let structName = structTypeName(objectType)
+        let fieldIndex = ir_get_struct_field_index(structName, targetNode.s1)
+        let fieldType = fieldStorageType(ir_get_struct_field_type(structName, targetNode.s1))
+        let val = generateExpression(ptr_to_node(stmt.child2))
+
+        let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
+        irProfileField(structName, targetNode.s1, true)
+        irProfileRange(structName, targetNode.s1, fieldType, val)
+        // CYCLES 3, the assignment half. Retain before releasing, so a store
+        // of a value into the slot it already occupies does not free it
+        // between the two.
+        if (aif_field_is_counted(structName, targetNode.s1) == 1) {
+            let old = ir_get_temp_name(ir_struct_load_ptr("ptr", ir_get_temp_name(slot),
+                                                          structName, fieldIndex))
+            ir_call_begin()
+            ir_call_arg("ptr", val)
+            ir_call_end("void", "cyc_retain")
+            ir_call_begin()
+            ir_call_arg("ptr", old)
+            ir_call_end("void", "cyc_release")
         }
+        // Assigning an inline field overwrites storage rather than swapping
+        // an address, so it copies. A counted field is never inline: the
+        // count sits in a header in front of an allocation, and an inline
+        // field has no allocation of its own to put one in front of.
+        if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
+            ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
+        } else {
+            ir_struct_store_ptr(fieldType, val, ir_get_temp_name(slot),
+                                structName, fieldIndex)
+        }
+    }
+    if (targetNode.kind == NodeKind.IDENTIFIER_EXPR
+            and targetNode.s1.equals(irLoopHeaderBoundIndex)) {
+        irLoopHeaderBoundActive = false
+    }
+}
 
-        ir_br_numbered(condLabel)
-        ir_label_numbered(condLabel)
+private fn generateReturn(stmt: ASTNode) {
+    // Every scope in the function unwinds at once, so the floor is 0. The
+    // returned value is never among them: returning it puts its escape at
+    // Caller, and nothing with that escape is droppable here.
+    if (nodeExists(stmt.child1)) {
+        let retVal = generateExpression(ptr_to_node(stmt.child1))
+        let retType = storageType(getExprType(ptr_to_node(stmt.child1)))
+        generateScopeDrops(0)
+        generateRegionExits(ir_region_depth())
+        ir_ret(retType, retVal)
+    } else {
+        generateScopeDrops(0)
+        generateRegionExits(ir_region_depth())
+        ir_ret_void()
+    }
+    ir_set_returned()
+}
 
-        let condVal = generateExpression(ptr_to_node(stmt.child1))
-        ir_cond_br_numbered(condVal, bodyLabel, endLabel)
+private fn generateExpressionStatement(stmt: ASTNode) {
+    if (nodeExists(stmt.child1)) {
+        generateExpression(ptr_to_node(stmt.child1))
+    }
+}
 
-        ir_label_numbered(bodyLabel)
+private fn generateIf(stmt: ASTNode) {
+    let thenLabel = ir_get_label()
+    let elseLabel = ir_get_label()
+    let endLabel = ir_get_label()
+
+    let condVal = generateExpression(ptr_to_node(stmt.child1))
+    if (nodeExists(stmt.child3)) {
+        ir_cond_br_numbered(condVal, thenLabel, elseLabel)
+    } else {
+        ir_cond_br_numbered(condVal, thenLabel, endLabel)
+    }
+
+    ir_label_numbered(thenLabel)
+    generateBlock(ptr_to_node(stmt.child2))
+    if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+    ir_clear_returned()
+
+    if (nodeExists(stmt.child3)) {
+        ir_label_numbered(elseLabel)
+
+        let elseNode = ptr_to_node(stmt.child3)
+        if (elseNode.kind == NodeKind.IF_STATEMENT) {
+            generateStatement(elseNode)
+        } else {
+            generateBlock(elseNode)
+        }
+        if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+        ir_clear_returned()
+    }
+
+    ir_label_numbered(endLabel)
+}
+
+private fn generateWhile(stmt: ASTNode) {
+    let condLabel = ir_get_label()
+    let bodyLabel = ir_get_label()
+    let endLabel = ir_get_label()
+
+    // M4.2, the loop half. Emitted here because here is the preheader: the
+    // guard has to dominate the loop and be computed once.
+    let savedGuard = irLoopFlatGuard
+    let savedRange = irLoopRangeProved
+    let savedPush = irLoopPushGuard
+    let savedHeaderList = irLoopHeaderBoundList
+    let savedHeaderIndex = irLoopHeaderBoundIndex
+    let savedHeaderActive = irLoopHeaderBoundActive
+    let savedHoistedBoundList = irLoopHoistedBoundList
+    let savedHoistedBoundValue = irLoopHoistedBoundValue
+    let savedHoistedDataValue = irLoopHoistedDataValue
+    irLoopRangeProved = false
+    irLoopHeaderBoundList = ""
+    irLoopHeaderBoundIndex = ""
+    irLoopHeaderBoundActive = false
+    irLoopHoistedBoundList = ""
+    irLoopHoistedBoundValue = ""
+    irLoopHoistedDataValue = ""
+
+    // A successful bulk zero append bypasses the loop entirely. Emit it
+    // before preparing the ordinary push guard so the fast arm does not
+    // pay the fallback loop's duplicate capacity and representation tests.
+    generateWholeBufferZeroFill(ptr_to_node(stmt.child1), ptr_to_node(stmt.child2),
+                                endLabel)
+    irLoopPushGuard = generateLoopPushGuard(ptr_to_node(stmt.child1),
+                                            ptr_to_node(stmt.child2))
+
+    // MEM-006, and it has to come first: the block transfer replaces the
+    // whole loop, so it is emitted in the preheader before the loop's own
+    // guard exists. It leaves the builder in the arm the loop belongs to.
+    generateWholeBufferCopy(ptr_to_node(stmt.child1), ptr_to_node(stmt.child2),
+                            endLabel)
+
+    let guardSlot = generateLoopFlatGuard(ptr_to_node(stmt.child1),
+                                          ptr_to_node(stmt.child2))
+
+    if (guardSlot.equals("") == false) {
+        let fastCondLabel = ir_get_label()
+        let fastBodyLabel = ir_get_label()
+        let slowCondLabel = ir_get_label()
+        let slowBodyLabel = ir_get_label()
+
+        let guardVal = ir_get_temp_name(ir_load("i1", guardSlot))
+        ir_cond_br_numbered(guardVal, fastCondLabel, slowCondLabel)
+
+        let provedRange = irLoopRangeProved
+
+        // Specialized fast loop: representation is guaranteed flat and constant-guarded.
+        ir_label_numbered(fastCondLabel)
+        irLoopFlatGuard = "1"
+        irLoopRangeProved = provedRange
+        let fastCondVal = generateExpression(ptr_to_node(stmt.child1))
+        ir_cond_br_numbered(fastCondVal, fastBodyLabel, endLabel)
+
+        ir_label_numbered(fastBodyLabel)
         irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-        ir_loop_push(condLabel, endLabel)
+        ir_loop_push(fastCondLabel, endLabel)
         ir_drop_barrier_push()
         irLoopDepth = irLoopDepth + 1
         generateBlock(ptr_to_node(stmt.child2))
@@ -868,192 +804,275 @@ private fn generateStatement(stmt: ASTNode) {
         ir_drop_barrier_pop()
         ir_loop_pop()
 
-        if (ir_has_returned() == 0) { ir_br_numbered(condLabel) }
+        if (ir_has_returned() == 0) { ir_br_numbered(fastCondLabel) }
         ir_clear_returned()
 
-        irLoopFlatGuard = savedGuard
+        // Safe slow loop: standard fallback.
+        ir_label_numbered(slowCondLabel)
+        irLoopFlatGuard = ""
+        irLoopRangeProved = false
+        let slowCondVal = generateExpression(ptr_to_node(stmt.child1))
+        ir_cond_br_numbered(slowCondVal, slowBodyLabel, endLabel)
+
+        ir_label_numbered(slowBodyLabel)
+        irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
+        ir_loop_push(slowCondLabel, endLabel)
+        ir_drop_barrier_push()
+        irLoopDepth = irLoopDepth + 1
+        generateBlock(ptr_to_node(stmt.child2))
+        irLoopDepth = irLoopDepth - 1
+        ir_drop_barrier_pop()
+        ir_loop_pop()
+
+        if (ir_has_returned() == 0) { ir_br_numbered(slowCondLabel) }
+        ir_clear_returned()
+
+        irLoopFlatGuard = strClone(savedGuard)
         irLoopRangeProved = savedRange
-        irLoopPushGuard = savedPush
-        irLoopHeaderBoundList = savedHeaderList
-        irLoopHeaderBoundIndex = savedHeaderIndex
+        irLoopPushGuard = strClone(savedPush)
+        irLoopHeaderBoundList = strClone(savedHeaderList)
+        irLoopHeaderBoundIndex = strClone(savedHeaderIndex)
         irLoopHeaderBoundActive = savedHeaderActive
-        irLoopHoistedBoundList = savedHoistedBoundList
-        irLoopHoistedBoundValue = savedHoistedBoundValue
-        irLoopHoistedDataValue = savedHoistedDataValue
+        irLoopHoistedBoundList = strClone(savedHoistedBoundList)
+        irLoopHoistedBoundValue = strClone(savedHoistedBoundValue)
+        irLoopHoistedDataValue = strClone(savedHoistedDataValue)
         ir_label_numbered(endLabel)
+        return
     }
 
-    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
-        let bodyLabel = ir_get_label()
-        let endLabel = ir_get_label()
-
-        ir_br_numbered(bodyLabel)
-        ir_label_numbered(bodyLabel)
-        ir_loop_push(bodyLabel, endLabel)
-        ir_drop_barrier_push()
-        generateBlock(ptr_to_node(stmt.child1))
-        ir_drop_barrier_pop()
-        ir_loop_pop()
-
-        if (ir_has_returned() == 0) { ir_br_numbered(bodyLabel) }
-        ir_clear_returned()
-
-        ir_label_numbered(endLabel)
+    if (savedGuard.equals("1")) {
+        irLoopFlatGuard = "1"
+    } else {
+        irLoopFlatGuard = guardSlot
     }
 
-    if (stmt.kind == NodeKind.FOR_STATEMENT) {
-        // Scoped to the loop, matching sema.
-        ir_scope_push()
-        ir_set_var_type(stmt.s1, "i32")
-        let loopVar = ir_get_var_slot(stmt.s1)
-        ir_alloca("i32", loopVar)
+    ir_br_numbered(condLabel)
+    ir_label_numbered(condLabel)
 
-        let startVal = generateExpression(ptr_to_node(stmt.child1))
-        ir_store("i32", startVal, loopVar)
+    let condVal = generateExpression(ptr_to_node(stmt.child1))
+    ir_cond_br_numbered(condVal, bodyLabel, endLabel)
 
-        let condLabel = ir_get_label()
-        let bodyLabel = ir_get_label()
-        let incrLabel = ir_get_label()
-        let endLabel = ir_get_label()
+    ir_label_numbered(bodyLabel)
+    irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
+    ir_loop_push(condLabel, endLabel)
+    ir_drop_barrier_push()
+    irLoopDepth = irLoopDepth + 1
+    generateBlock(ptr_to_node(stmt.child2))
+    irLoopDepth = irLoopDepth - 1
+    ir_drop_barrier_pop()
+    ir_loop_pop()
 
-        ir_br_numbered(condLabel)
-        ir_label_numbered(condLabel)
-        let iv = ir_load("i32", loopVar)
-        let endVal = generateExpression(ptr_to_node(stmt.child2))
-        let cmp = ir_icmp_slt("i32", ir_get_temp_name(iv), endVal)
-        ir_cond_br_numbered(ir_get_temp_name(cmp), bodyLabel, endLabel)
+    if (ir_has_returned() == 0) { ir_br_numbered(condLabel) }
+    ir_clear_returned()
 
-        ir_label_numbered(bodyLabel)
-        ir_loop_push(incrLabel, endLabel)   // continue jumps to the increment step
-        ir_drop_barrier_push()
-        generateBlock(ptr_to_node(stmt.child3))
-        ir_drop_barrier_pop()
-        ir_loop_pop()
-        if (ir_has_returned() == 0) { ir_br_numbered(incrLabel) }
-        ir_clear_returned()
+    irLoopFlatGuard = savedGuard
+    irLoopRangeProved = savedRange
+    irLoopPushGuard = savedPush
+    irLoopHeaderBoundList = savedHeaderList
+    irLoopHeaderBoundIndex = savedHeaderIndex
+    irLoopHeaderBoundActive = savedHeaderActive
+    irLoopHoistedBoundList = savedHoistedBoundList
+    irLoopHoistedBoundValue = savedHoistedBoundValue
+    irLoopHoistedDataValue = savedHoistedDataValue
+    ir_label_numbered(endLabel)
+}
 
-        ir_label_numbered(incrLabel)
-        let iv2 = ir_load("i32", loopVar)
-        let next = ir_add("i32", ir_get_temp_name(iv2), "1")
-        ir_store("i32", ir_get_temp_name(next), loopVar)
-        ir_br_numbered(condLabel)
+private fn generateLoop(stmt: ASTNode) {
+    let bodyLabel = ir_get_label()
+    let endLabel = ir_get_label()
 
-        ir_label_numbered(endLabel)
-        ir_scope_pop()
-    }
+    ir_br_numbered(bodyLabel)
+    ir_label_numbered(bodyLabel)
+    ir_loop_push(bodyLabel, endLabel)
+    ir_drop_barrier_push()
+    generateBlock(ptr_to_node(stmt.child1))
+    ir_drop_barrier_pop()
+    ir_loop_pop()
+
+    if (ir_has_returned() == 0) { ir_br_numbered(bodyLabel) }
+    ir_clear_returned()
+
+    ir_label_numbered(endLabel)
+}
+
+private fn generateFor(stmt: ASTNode) {
+    // Scoped to the loop, matching sema.
+    ir_scope_push()
+    ir_set_var_type(stmt.s1, "i32")
+    let loopVar = ir_get_var_slot(stmt.s1)
+    ir_alloca("i32", loopVar)
+
+    let startVal = generateExpression(ptr_to_node(stmt.child1))
+    ir_store("i32", startVal, loopVar)
+
+    let condLabel = ir_get_label()
+    let bodyLabel = ir_get_label()
+    let incrLabel = ir_get_label()
+    let endLabel = ir_get_label()
+
+    ir_br_numbered(condLabel)
+    ir_label_numbered(condLabel)
+    let iv = ir_load("i32", loopVar)
+    let endVal = generateExpression(ptr_to_node(stmt.child2))
+    let cmp = ir_icmp_slt("i32", ir_get_temp_name(iv), endVal)
+    ir_cond_br_numbered(ir_get_temp_name(cmp), bodyLabel, endLabel)
+
+    ir_label_numbered(bodyLabel)
+    ir_loop_push(incrLabel, endLabel)   // continue jumps to the increment step
+    ir_drop_barrier_push()
+    generateBlock(ptr_to_node(stmt.child3))
+    ir_drop_barrier_pop()
+    ir_loop_pop()
+    if (ir_has_returned() == 0) { ir_br_numbered(incrLabel) }
+    ir_clear_returned()
+
+    ir_label_numbered(incrLabel)
+    let iv2 = ir_load("i32", loopVar)
+    let next = ir_add("i32", ir_get_temp_name(iv2), "1")
+    ir_store("i32", ir_get_temp_name(next), loopVar)
+    ir_br_numbered(condLabel)
+
+    ir_label_numbered(endLabel)
+    ir_scope_pop()
+}
 
     // SPEC 5.2. The arena is pushed on entry and popped on every exit; the
     // block inside is otherwise ordinary, and the escape facts that decide what
     // it serves were the same before the keyword was written.
-    if (stmt.kind == NodeKind.REGION_STATEMENT) {
-        ir_region_begin()
-        ir_region_enter()
-        generateBlock(ptr_to_node(stmt.child1))
-        // Only on fall-through -- a `return` or `break` inside already popped it
-        // on its way out, and popping twice releases the caller's arena.
-        if (ir_has_returned() == 0) { ir_region_end() }
-        ir_region_exit()
-    }
+private fn generateRegion(stmt: ASTNode) {
+    ir_region_begin()
+    ir_region_enter()
+    generateBlock(ptr_to_node(stmt.child1))
+    // Only on fall-through -- a `return` or `break` inside already popped it
+    // on its way out, and popping twice releases the caller's arena.
+    if (ir_has_returned() == 0) { ir_region_end() }
+    ir_region_exit()
+}
 
     // Both leave every scope between here and the loop body, so the loop's
     // watermark is the floor. Bindings the loop inherited are above it and stay.
-    if (stmt.kind == NodeKind.BREAK_STATEMENT) {
-        let target = ir_loop_break_label()
-        if (target >= 0) {
-            generateScopeDrops(ir_loop_drop_floor())
-            generateRegionExits(ir_region_depth() - ir_loop_region_depth())
-            ir_br_numbered(target)
-            ir_set_returned()
-        }
+private fn generateBreak(stmt: ASTNode) {
+    let target = ir_loop_break_label()
+    if (target >= 0) {
+        generateScopeDrops(ir_loop_drop_floor())
+        generateRegionExits(ir_region_depth() - ir_loop_region_depth())
+        ir_br_numbered(target)
+        ir_set_returned()
+    }
+}
+
+private fn generateContinue(stmt: ASTNode) {
+    let target = ir_loop_continue_label()
+    if (target >= 0) {
+        generateScopeDrops(ir_loop_drop_floor())
+        generateRegionExits(ir_region_depth() - ir_loop_region_depth())
+        ir_br_numbered(target)
+        ir_set_returned()
+    }
+}
+
+private fn generateMatch(stmt: ASTNode) {
+    // Parked on the statement so it can be read once per arm. A temp name is
+    // a String and Strings are affine, so a `let` holding it may be named
+    // exactly once, while a field read is a reborrow. The scrutinee is still
+    // generated exactly once, which is the property that matters.
+    stmt.s1 = generateExpression(ptr_to_node(stmt.child1))
+    let scrutType = getExprType(ptr_to_node(stmt.child1))
+    let endLabel = ir_get_label()
+    let mut needsFinalBr = true
+
+    // A payload enum's arms compare the tag, not the value, and bind names
+    // out of the payload fields. Sema left the tag on `i1` and the variant on
+    // `s2`, so nothing here needs to know what an enum is.
+    //
+    // The scrutinee is generated exactly once, above. That is the reason this
+    // is done in codegen rather than desugared into `let r = c.Circle$0` in
+    // the arm body: the desugaring would re-evaluate the scrutinee expression
+    // once per arm, which for anything but a bare name is wrong.
+    let payloadMatch = matchBindsPayload(stmt)
+    if (payloadMatch) {
+        stmt.s2 = ir_get_temp_name(ir_enum_tag(structTypeName(scrutType), stmt.s1))
+    } else {
+        stmt.s2 = stmt.s1
     }
 
-    if (stmt.kind == NodeKind.CONTINUE_STATEMENT) {
-        let target = ir_loop_continue_label()
-        if (target >= 0) {
-            generateScopeDrops(ir_loop_drop_floor())
-            generateRegionExits(ir_region_depth() - ir_loop_region_depth())
-            ir_br_numbered(target)
-            ir_set_returned()
-        }
-    }
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (payloadMatch and arm.s1.equals("_") == false) {
+            let cmp = ir_icmp_eq("i32", stmt.s2, strFromInt(arm.i1))
+            let armLabel = ir_get_label()
+            let nextLabel = ir_get_label()
+            ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
 
-    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
-        // Parked on the statement so it can be read once per arm. A temp name is
-        // a String and Strings are affine, so a `let` holding it may be named
-        // exactly once, while a field read is a reborrow. The scrutinee is still
-        // generated exactly once, which is the property that matters.
-        stmt.s1 = generateExpression(ptr_to_node(stmt.child1))
-        let scrutType = getExprType(ptr_to_node(stmt.child1))
-        let endLabel = ir_get_label()
-        let mut needsFinalBr = true
+            ir_label_numbered(armLabel)
+            generatePayloadBinders(arm, structTypeName(scrutType), stmt.s1)
+            beginArmReuse(stmt, arm, structTypeName(scrutType))
+            generateBlock(ptr_to_node(arm.child2))
+            irReuseValue = ""
+            if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+            ir_clear_returned()
 
-        // A payload enum's arms compare the tag, not the value, and bind names
-        // out of the payload fields. Sema left the tag on `i1` and the variant on
-        // `s2`, so nothing here needs to know what an enum is.
-        //
-        // The scrutinee is generated exactly once, above. That is the reason this
-        // is done in codegen rather than desugared into `let r = c.Circle$0` in
-        // the arm body: the desugaring would re-evaluate the scrutinee expression
-        // once per arm, which for anything but a bare name is wrong.
-        let payloadMatch = matchBindsPayload(stmt)
-        if (payloadMatch) {
-            stmt.s2 = ir_get_temp_name(ir_enum_tag(structTypeName(scrutType), stmt.s1))
-        } else {
-            stmt.s2 = stmt.s1
-        }
-
-        let mut armPtr = stmt.child2
-        while (nodeExists(armPtr)) {
-            let arm = ptr_to_node(armPtr)
-            if (payloadMatch and arm.s1.equals("_") == false) {
-                let cmp = ir_icmp_eq("i32", stmt.s2, strFromInt(arm.i1))
-                let armLabel = ir_get_label()
-                let nextLabel = ir_get_label()
-                ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
-
-                ir_label_numbered(armLabel)
-                generatePayloadBinders(arm, structTypeName(scrutType), stmt.s1)
+            ir_label_numbered(nextLabel)
+            needsFinalBr = true
+            armPtr = arm.next
+        } else if (arm.s1.equals("_")) {
+            // wildcard: runs in the current fall-through block
+            if (payloadMatch) {
                 beginArmReuse(stmt, arm, structTypeName(scrutType))
-                generateBlock(ptr_to_node(arm.child2))
-                irReuseValue = ""
-                if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
-                ir_clear_returned()
-
-                ir_label_numbered(nextLabel)
-                needsFinalBr = true
-                armPtr = arm.next
-            } else if (arm.s1.equals("_")) {
-                // wildcard: runs in the current fall-through block
-                if (payloadMatch) {
-                    beginArmReuse(stmt, arm, structTypeName(scrutType))
-                }
-                generateBlock(ptr_to_node(arm.child2))
-                irReuseValue = ""
-                if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
-                ir_clear_returned()
-                needsFinalBr = false
-                armPtr = arm.next
-            } else {
-                let patVal = generateExpression(ptr_to_node(arm.child1))
-                let cmp = ir_icmp_eq(scrutType, stmt.s2, patVal)
-                let armLabel = ir_get_label()
-                let nextLabel = ir_get_label()
-                ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
-
-                ir_label_numbered(armLabel)
-                generateBlock(ptr_to_node(arm.child2))
-                if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
-                ir_clear_returned()
-
-                ir_label_numbered(nextLabel)
-                needsFinalBr = true
-                armPtr = arm.next
             }
-        }
+            generateBlock(ptr_to_node(arm.child2))
+            irReuseValue = ""
+            if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+            ir_clear_returned()
+            needsFinalBr = false
+            armPtr = arm.next
+        } else {
+            let patVal = generateExpression(ptr_to_node(arm.child1))
+            let cmp = ir_icmp_eq(scrutType, stmt.s2, patVal)
+            let armLabel = ir_get_label()
+            let nextLabel = ir_get_label()
+            ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
 
-        if (needsFinalBr) { ir_br_numbered(endLabel) }
-        ir_label_numbered(endLabel)
+            ir_label_numbered(armLabel)
+            generateBlock(ptr_to_node(arm.child2))
+            if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+            ir_clear_returned()
+
+            ir_label_numbered(nextLabel)
+            needsFinalBr = true
+            armPtr = arm.next
+        }
     }
+
+    if (needsFinalBr) { ir_br_numbered(endLabel) }
+    ir_label_numbered(endLabel)
+}
+
+// One statement kind per line. Each lowering is the function named beside it,
+// defined directly above in this order.
+//
+// No `return` after a call and none needed: the kinds are mutually exclusive, so
+// the tests below a match cannot also match.
+private fn generateStatement(stmt: ASTNode) {
+    // The line table, in one place. Every instruction this statement and its
+    // subexpressions build inherits this location, including the calls codegen
+    // inserts on its own -- an arena bracket, a drop, a release. Column as well
+    // as line, because a `for` header and its body start on the same line and a
+    // breakpoint on one should not stop on the other.
+    debugAt(stmt)
+    if (stmt.kind == NodeKind.VARIABLE_DECL) { generateVariableDecl(stmt) }
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) { generateAssignment(stmt) }
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) { generateReturn(stmt) }
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) { generateExpressionStatement(stmt) }
+    if (stmt.kind == NodeKind.IF_STATEMENT) { generateIf(stmt) }
+    if (stmt.kind == NodeKind.WHILE_STATEMENT) { generateWhile(stmt) }
+    if (stmt.kind == NodeKind.LOOP_STATEMENT) { generateLoop(stmt) }
+    if (stmt.kind == NodeKind.FOR_STATEMENT) { generateFor(stmt) }
+    if (stmt.kind == NodeKind.REGION_STATEMENT) { generateRegion(stmt) }
+    if (stmt.kind == NodeKind.BREAK_STATEMENT) { generateBreak(stmt) }
+    if (stmt.kind == NodeKind.CONTINUE_STATEMENT) { generateContinue(stmt) }
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) { generateMatch(stmt) }
 }
 
 // AIF Level 2. Frees every droppable binding at or above `floor`, newest first.

@@ -1,11 +1,14 @@
 // Everything the `aif` subcommand prints: the manifest, the summary tables, the
 // minimal-cause derivation, and the pin and budget reports.
 
+import std.io
 import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
 import std.string
+import std.option
+import aif.model
 
 // ---------------------------------------------------------------------------
 // Reporting
@@ -977,7 +980,7 @@ private fn aifEmitBracketing() {
 // makes giving up a performance outcome, and aif_widen has already raised the
 // unproven facts to the conservative end, so every tier that follows is at or
 // above the true one.
-fn aifRun(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
+public fn aifRun(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
            budget: Int) -> Bool {
     return aifRunProfiled(module, ownedCollections, thetaFields, budget, "")
 }
@@ -985,7 +988,7 @@ fn aifRun(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
 // LAYOUT 2's two paths into one profile. `profilePath` empty is the static
 // estimate -- what every caller but the build path wants, and what the build
 // path itself gets when no workload is declared or the run failed (W2).
-fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
+public fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: Bool,
                    budget: Int, profilePath: String) -> Bool {
     aif_reset()
     aifLiteralStrings = 0
@@ -1449,7 +1452,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
 
 // Accepts the short numeric id from the interactive report as well as the
 // stable symbol from a manifest diff. Returns 1 when it found one.
-fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> Int {
+public fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> Int {
     aifPrepareOrder()
     let numeric = optionOr(strParseInt(selector), -1)
     if (numeric > 0) {
@@ -1488,7 +1491,7 @@ fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> Int {
 // distinction out and makes this one an error.
 //
 // Returns the number of errors reported, so the caller can stop before codegen.
-fn aifReportPins() -> Int {
+public fn aifReportPins() -> Int {
     let n = aif_site_count()
     let mut i = 0
     let mut errors = 0
@@ -1615,7 +1618,7 @@ private fn aifReportPlacementPin(i: Int) -> Int {
 // unproven facts to the conservative end, which *lowers* the arena's estimated
 // load -- fewer sites stay T1 -- so a budget could pass for want of analysis and
 // fail on the next build. Silence is the honest answer there.
-fn aifReportBudgets(converged: Bool) -> Int {
+public fn aifReportBudgets(converged: Bool) -> Int {
     if (converged == false) { return 0 }
 
     let n = aif_budget_count()
@@ -1658,7 +1661,7 @@ fn aifReportBudgets(converged: Bool) -> Int {
 // than the cost model's estimate. Those two disagreed until 2026-08-14, and the
 // estimate is the wrong one to warn from: it counts container elements that
 // codegen will not place, so a region serving nothing would have looked busy.
-fn aifReportInertRegions() {
+public fn aifReportInertRegions() {
     // aif_budget_count() is scope_count under a name it outgrew -- aifReportBudgets
     // above walks the same range for the same reason. Kept rather than renamed
     // because the name is on the FFI surface the committed seed links against.
@@ -1774,7 +1777,7 @@ private fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
                         thetaFields, budget, "", false, false)
 }
 
-fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
+public fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,
                        ownedCollections: Bool, summary: Bool, thetaFields: Bool,
                        budget: Int, profilePath: String, layout: Bool,
                        manifest: Bool) {

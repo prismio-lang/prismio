@@ -1,0 +1,8 @@
+// expect-error: is already the name of a module, so it cannot also be an alias
+// `tests/utils.psm` is a module named `utils`, so `utils.f(x)` would have two
+// meanings in this file: the module's, and the alias's.
+import std.string as utils
+
+fn main() -> Int {
+    return 0
+}

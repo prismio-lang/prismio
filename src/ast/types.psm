@@ -1,4 +1,5 @@
 import ast.nodes
+import ir.bridge
 import common.text
 import common.target
 import std.string
@@ -60,8 +61,8 @@ struct TypeInfo {
 
 // The identity on a pointer, like ptr_to_node -- see ast.psm for why declaring
 // it matters.
-extern fn ptr_to_type(ptr: Ptr) -> TypeInfo alias
-extern fn type_to_ptr(t: TypeInfo borrow) -> Ptr alias
+public extern fn ptr_to_type(ptr: Ptr) -> TypeInfo alias
+public extern fn type_to_ptr(t: TypeInfo borrow) -> Ptr alias
 
 private fn typeMake(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
     return TypeInfo {
@@ -77,21 +78,21 @@ private fn typeMake(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
 // ownership and makes the original unusable. A TypeInfo is a descriptor, not an owned
 // resource: where the intent is "these two names describe the same type", take an
 // independent copy instead of aliasing.
-fn typeCopy(t: TypeInfo) -> TypeInfo {
+public fn typeCopy(t: TypeInfo) -> TypeInfo {
     let dup = typeMake(t.kind, t.name, t.llvm)
     dup.child = t.child
     dup.next = t.next
     return dup
 }
 
-fn typeInvalid() -> TypeInfo { return typeMake(TypeKind.INVALID, "Invalid", "") }
-fn typeVoid() -> TypeInfo { return typeMake(TypeKind.VOID, "Void", "void") }
-fn typeInt() -> TypeInfo { return typeMake(TypeKind.INT, "Int", "i32") }
-fn typeFloat() -> TypeInfo { return typeMake(TypeKind.FLOAT, "Float", "double") }
-fn typeBool() -> TypeInfo { return typeMake(TypeKind.BOOL, "Bool", "i1") }
-fn typeChar() -> TypeInfo { return typeMake(TypeKind.CHAR, "Char", "i8") }
-fn typeString() -> TypeInfo { return typeMake(TypeKind.STRING, "String", "ptr") }
-fn typePtr() -> TypeInfo { return typeMake(TypeKind.PTR, "Ptr", "ptr") }
+public fn typeInvalid() -> TypeInfo { return typeMake(TypeKind.INVALID, "Invalid", "") }
+public fn typeVoid() -> TypeInfo { return typeMake(TypeKind.VOID, "Void", "void") }
+public fn typeInt() -> TypeInfo { return typeMake(TypeKind.INT, "Int", "i32") }
+public fn typeFloat() -> TypeInfo { return typeMake(TypeKind.FLOAT, "Float", "double") }
+public fn typeBool() -> TypeInfo { return typeMake(TypeKind.BOOL, "Bool", "i1") }
+public fn typeChar() -> TypeInfo { return typeMake(TypeKind.CHAR, "Char", "i8") }
+public fn typeString() -> TypeInfo { return typeMake(TypeKind.STRING, "String", "ptr") }
+public fn typePtr() -> TypeInfo { return typeMake(TypeKind.PTR, "Ptr", "ptr") }
 
 // Sized integers. `Int` is the 32-bit signed default. Unsigned names start with "U".
 //
@@ -101,19 +102,19 @@ fn typePtr() -> TypeInfo { return typeMake(TypeKind.PTR, "Ptr", "ptr") }
 // i32, `value as I64` in std/io would be a no-op cast (equal keys) and the
 // verifier would see a 32-bit value passed to a 64-bit parameter. That is the
 // whole reason `--target wasm32-unknown-unknown` used to build nothing at all.
-fn typeI8() -> TypeInfo { return typeMake(TypeKind.INT, "I8", "i8") }
-fn typeI16() -> TypeInfo { return typeMake(TypeKind.INT, "I16", "i16") }
-fn typeI64() -> TypeInfo { return typeMake(TypeKind.INT, "I64", "i64") }
-fn typeIsize() -> TypeInfo { return typeMake(TypeKind.INT, "Isize", targetPtrIntType(targetCurrent())) }
-fn typeU8() -> TypeInfo { return typeMake(TypeKind.INT, "U8", "i8") }
-fn typeU16() -> TypeInfo { return typeMake(TypeKind.INT, "U16", "i16") }
-fn typeU32() -> TypeInfo { return typeMake(TypeKind.INT, "U32", "i32") }
-fn typeU64() -> TypeInfo { return typeMake(TypeKind.INT, "U64", "i64") }
-fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", targetPtrIntType(targetCurrent())) }
+public fn typeI8() -> TypeInfo { return typeMake(TypeKind.INT, "I8", "i8") }
+public fn typeI16() -> TypeInfo { return typeMake(TypeKind.INT, "I16", "i16") }
+public fn typeI64() -> TypeInfo { return typeMake(TypeKind.INT, "I64", "i64") }
+public fn typeIsize() -> TypeInfo { return typeMake(TypeKind.INT, "Isize", targetPtrIntType(targetCurrent())) }
+public fn typeU8() -> TypeInfo { return typeMake(TypeKind.INT, "U8", "i8") }
+public fn typeU16() -> TypeInfo { return typeMake(TypeKind.INT, "U16", "i16") }
+public fn typeU32() -> TypeInfo { return typeMake(TypeKind.INT, "U32", "i32") }
+public fn typeU64() -> TypeInfo { return typeMake(TypeKind.INT, "U64", "i64") }
+public fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", targetPtrIntType(targetCurrent())) }
 
 // Bit width of an integer type, from its LLVM spelling. Casting needs it to
 // choose between truncation and extension.
-fn typeIntBits(t: TypeInfo) -> Int {
+public fn typeIntBits(t: TypeInfo) -> Int {
     if (t.llvm.equals("i1")) { return 1 }
     if (t.llvm.equals("i8")) { return 8 }
     if (t.llvm.equals("i16")) { return 16 }
@@ -148,7 +149,7 @@ private fn typeTwoToThe(k: Int) -> U64 {
 // type is caught by the parse rather than by arithmetic that would itself wrap.
 // The asymmetric negative bound is deliberate: two's complement reaches one
 // further down than up, so `-2147483648` fits `Int` and `2147483648` does not.
-fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
+public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
     let bits = typeIntBits(t)
     if (bits == 0 or bits > 64) { return true }
     if (bits == 1) { return true }
@@ -188,12 +189,12 @@ fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
 // Whether any 64-bit integer type could hold this literal: `I64` when it is
 // negative, `U64` otherwise. The question `semaExpr` can answer about a literal
 // before anything has told it what type it is.
-fn typeIntLiteralFitsAnyInt(text: String) -> Bool {
+public fn typeIntLiteralFitsAnyInt(text: String) -> Bool {
     if (strStartsWith(text, "-")) { return typeIntLiteralFits(text, typeI64()) }
     return typeIntLiteralFits(text, typeU64())
 }
 
-fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
+public fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.INT) { return false }
     return strStartsWith(t.name, "U")
 }
@@ -210,7 +211,7 @@ fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
 // is frame storage: there is no allocation to own, nothing for a drop to
 // reclaim, and `drop(arr)` would hand a stack pointer to the deallocator.
 // Making them affine would buy the aliasing rule and cost that hazard.
-fn typeIsMoveOnly(t: TypeInfo) -> Bool {
+public fn typeIsMoveOnly(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
     // REQUIREMENTS 4. `T?` owns whatever `T` owns; being absent is a state of
@@ -222,7 +223,7 @@ fn typeIsMoveOnly(t: TypeInfo) -> Bool {
     return t.kind == TypeKind.LIST or t.kind == TypeKind.DATAVIEW
 }
 
-fn typeStruct(name: String) -> TypeInfo {
+public fn typeStruct(name: String) -> TypeInfo {
     return typeMake(TypeKind.STRUCT, name, "ptr")
 }
 
@@ -251,9 +252,9 @@ fn typeStruct(name: String) -> TypeInfo {
 // The type of a bare `none`: optional, with no inner type to speak of. Its empty
 // `child` is what makes typeEquals match it against any `T?`, which is how the
 // literal reaches a typed slot without an inference pass to give it one.
-fn typeNone() -> TypeInfo { return typeMake(TypeKind.OPTIONAL, "none", "ptr") }
+public fn typeNone() -> TypeInfo { return typeMake(TypeKind.OPTIONAL, "none", "ptr") }
 
-fn typeOptional(inner: TypeInfo) -> TypeInfo {
+public fn typeOptional(inner: TypeInfo) -> TypeInfo {
     let t = typeMake(TypeKind.OPTIONAL, inner.name.concat("?"), "ptr")
     t.child = type_to_ptr(inner)
     return t
@@ -267,17 +268,17 @@ fn typeOptional(inner: TypeInfo) -> TypeInfo {
 // kind would have to be added to all of them to arrive at the same behaviour.
 // What the name and the `child` add is the one thing a bare `Ptr` could not
 // carry -- what comes back out of the join.
-fn typeTask(result: TypeInfo) -> TypeInfo {
+public fn typeTask(result: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.PTR, "Task<".concat(result.name, ">"), "ptr")
     t.child = type_to_ptr(result)
     return t
 }
 
-fn typeIsTask(t: TypeInfo) -> Bool {
+public fn typeIsTask(t: TypeInfo) -> Bool {
     return t.kind == TypeKind.PTR and strStartsWith(t.name, "Task<")
 }
 
-fn typeTaskResult(t: TypeInfo) -> TypeInfo {
+public fn typeTaskResult(t: TypeInfo) -> TypeInfo {
     if (typeIsTask(t) and nodeExists(t.child)) { return ptr_to_type(t.child) }
     return typeInvalid()
 }
@@ -295,22 +296,22 @@ fn typeTaskResult(t: TypeInfo) -> TypeInfo {
 // **The element type must be reference-shaped.** The runtime moves one `void*`
 // per message and `chan_recv` answers `T?`, which REQUIREMENTS 4 defines only for
 // a reference. `Channel<Int>` is refused in sema rather than boxed silently.
-fn typeChannel(elem: TypeInfo) -> TypeInfo {
+public fn typeChannel(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.PTR, "Channel<".concat(elem.name, ">"), "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn typeIsChannel(t: TypeInfo) -> Bool {
+public fn typeIsChannel(t: TypeInfo) -> Bool {
     return t.kind == TypeKind.PTR and strStartsWith(t.name, "Channel<")
 }
 
-fn typeChannelElem(t: TypeInfo) -> TypeInfo {
+public fn typeChannelElem(t: TypeInfo) -> TypeInfo {
     if (typeIsChannel(t) and nodeExists(t.child)) { return ptr_to_type(t.child) }
     return typeInvalid()
 }
 
-fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
+public fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
     if (t.kind == TypeKind.OPTIONAL and nodeExists(t.child)) {
         return ptr_to_type(t.child)
     }
@@ -320,52 +321,52 @@ fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
 // Only a reference can be absent. A scalar has no spare representation -- 0 is a
 // perfectly good Int -- so `Int?` would need a second word and is refused rather
 // than silently given one.
-fn typeCanBeOptional(t: TypeInfo) -> Bool {
+public fn typeCanBeOptional(t: TypeInfo) -> Bool {
     if (t.kind == TypeKind.STRUCT) { return true }
     if (t.kind == TypeKind.STRING) { return true }
     if (t.kind == TypeKind.LIST) { return true }
     return t.kind == TypeKind.PTR
 }
 
-fn typeEnum(name: String) -> TypeInfo {
+public fn typeEnum(name: String) -> TypeInfo {
     return typeMake(TypeKind.ENUM, name, "i32")
 }
 
-fn typeArray(elem: TypeInfo) -> TypeInfo {
+public fn typeArray(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.ARRAY, "Array", "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn typeList(elem: TypeInfo) -> TypeInfo {
+public fn typeList(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.LIST, "List", "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn typeSlice(elem: TypeInfo) -> TypeInfo {
+public fn typeSlice(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.SLICE, "Slice", "struct:prismio.slice")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn typeDataView(elem: TypeInfo) -> TypeInfo {
+public fn typeDataView(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.DATAVIEW, "DataView", "ptr")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn typeDataElement(elem: TypeInfo) -> TypeInfo {
+public fn typeDataElement(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.DATAELEMENT, "DataElement", "struct:prismio.data_element")
     t.child = type_to_ptr(elem)
     return t
 }
 
-fn typeIsValid(t: TypeInfo) -> Bool {
+public fn typeIsValid(t: TypeInfo) -> Bool {
     return t.kind != TypeKind.INVALID
 }
 
-fn typeDisplay(t: TypeInfo) -> String {
+public fn typeDisplay(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRUCT) {
         // A trait object is a synthesised struct named `dyn$Show`, and `$` cannot
         // occur in a source identifier -- so printing the internal name shows the
@@ -415,7 +416,7 @@ fn typeDisplay(t: TypeInfo) -> String {
     return t.name
 }
 
-fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
+public fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
     if (a.kind != b.kind) { return false }
     if (a.kind == TypeKind.STRUCT or a.kind == TypeKind.ENUM) {
         return a.name.equals(b.name)
@@ -483,11 +484,11 @@ fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
     return true
 }
 
-fn typeIsNumeric(t: TypeInfo) -> Bool {
+public fn typeIsNumeric(t: TypeInfo) -> Bool {
     return t.kind == TypeKind.INT or t.kind == TypeKind.FLOAT
 }
 
-fn typeIrKey(t: TypeInfo) -> String {
+public fn typeIrKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.VOID) { return "void" }
     if (t.kind == TypeKind.INT) { return t.llvm }
     if (t.kind == TypeKind.FLOAT) { return "double" }
@@ -521,7 +522,7 @@ fn typeIrKey(t: TypeInfo) -> String {
     return ""
 }
 
-fn typeSemKey(t: TypeInfo) -> String {
+public fn typeSemKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.VOID) { return "Void" }
     if (t.kind == TypeKind.INT) { return t.name }
     if (t.kind == TypeKind.FLOAT) { return "Float" }
@@ -673,7 +674,7 @@ private fn typeFromIrKey(key: String) -> TypeInfo {
     return typeInvalid()
 }
 
-fn typeFromSemKey(key: String) -> TypeInfo {
+public fn typeFromSemKey(key: String) -> TypeInfo {
     if (key.equals("Int")) { return typeInt() }
     if (key.equals("Float")) { return typeFloat() }
     if (key.equals("Bool")) { return typeBool() }
@@ -742,7 +743,7 @@ fn typeFromSemKey(key: String) -> TypeInfo {
     return typeInvalid()
 }
 
-fn nodeSetType(node: ASTNode, t: TypeInfo) {
+public fn nodeSetType(node: ASTNode, t: TypeInfo) {
     node.typeInfo = type_to_ptr(t)
 }
 
@@ -752,11 +753,11 @@ fn nodeSetType(node: ASTNode, t: TypeInfo) {
 // returns typeInvalid() on both paths -- but it was the same latent bug as the
 // module root, and "wrong in a way that currently cancels out" is not a state to
 // leave a predicate in. See ptr_is_null in ast.psm.
-fn nodeHasType(node: ASTNode) -> Bool {
+public fn nodeHasType(node: ASTNode) -> Bool {
     return nodeExists(node.typeInfo)
 }
 
-fn nodeGetType(node: ASTNode) -> TypeInfo {
+public fn nodeGetType(node: ASTNode) -> TypeInfo {
     if (nodeHasType(node)) {
         return ptr_to_type(node.typeInfo)
     }
@@ -787,24 +788,25 @@ fn nodeGetType(node: ASTNode) -> TypeInfo {
 // than containment ones. That distinction is what lets a recursive type be
 // spelled `T?` -- the only spelling for one -- and therefore what lets
 // containment be required acyclic without rejecting any program.
-extern fn ir_is_struct_type_name(name: String) -> Int
+public extern fn ir_is_struct_type_name(name: String) -> Int
 
 // REQUIREMENTS 16. Every lookup of a declaration by name goes through the index
 // these four declare, and the index is a cache of exactly what a walk of the
 // module's statement list would have found, in the same order. The walk itself
 // is here once, in indexModuleDeclarations(), instead of once per pass that
 // wanted an answer from it.
-extern fn ir_reset_decl_index()
-extern fn ir_index_decl(name: String, node: Ptr)
-extern fn ir_decl_count(name: String) -> Int
-extern fn ir_decl_at(name: String, index: Int) -> String alias
+public extern fn ir_reset_decl_index()
+public extern fn ir_index_decl(name: String, node: Ptr)
+public extern fn ir_decl_count(name: String) -> Int
+public extern fn ir_decl_at(name: String, index: Int) -> String alias
+public extern fn ir_extern_decl_record(file: Int, name: String, visibility: Int)
 
 // Which top-level statements have a name worth indexing. Also the import
 // merge's duplicate rule (main.psm), and it has to be the same predicate: the
 // merge fills the index as it goes and every later pass rebuilds it, so a kind
 // one of them thought named and the other did not would give the two different
 // answers to the same question.
-fn isNamedTopLevel(stmt: ASTNode) -> Bool {
+public fn isNamedTopLevel(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.EXTERN_FUNCTION) { return true }
     if (stmt.kind == NodeKind.VARIABLE_DECL) { return true }
     if (stmt.kind == NodeKind.FUNCTION) { return true }
@@ -818,16 +820,19 @@ fn isNamedTopLevel(stmt: ASTNode) -> Bool {
     return false
 }
 
-fn indexTopLevel(stmt: ASTNode) {
+public fn indexTopLevel(stmt: ASTNode) {
     if (isNamedTopLevel(stmt)) {
         ir_index_decl(stmt.s1, node_to_ptr(stmt))
+        if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            ir_extern_decl_record(stmt.file, stmt.s1, stmt.i2)
+        }
     }
 }
 
 // Called by analyzeModule() and again by generateModule(), so neither depends on
 // the other having run. Rebuilding it is one walk of the top level; asking it a
 // question was the thing that cost.
-fn indexModuleDeclarations(module: ASTNode) {
+public fn indexModuleDeclarations(module: ASTNode) {
     ir_reset_decl_index()
     let mut p = module.child1
     while (nodeExists(p)) {
@@ -837,7 +842,7 @@ fn indexModuleDeclarations(module: ASTNode) {
     }
 }
 
-fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
+public fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
     let n = ir_decl_count(name)
     let mut i = 0
     while (i < n) {
@@ -849,7 +854,17 @@ fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
     return ptr_to_node(ptr_null())
 }
 
-fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
+public fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
+    let mut p = structNode.child1
+    while (nodeExists(p)) {
+        let f = ptr_to_node(p)
+        if (f.s1.equals(name)) { return f }
+        p = f.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+public fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
     return typeAnnIsPodIn(module, ann, depth, false)
 }
 
@@ -871,7 +886,7 @@ private fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
 // still points at. So the ownership reading passes `byDecl` and asks
 // `findStructDeclNamed` -- the AST the registry is built from, and therefore an
 // answer that agrees with it by construction in both phases.
-fn typeAnnIsPodIn(module: ASTNode, ann: ASTNode, depth: Int, byDecl: Bool) -> Bool {
+public fn typeAnnIsPodIn(module: ASTNode, ann: ASTNode, depth: Int, byDecl: Bool) -> Bool {
     // A containment cycle would not terminate. semaCheckStructContainment
     // rejects one before this runs, so the cap is reached only by a program that
     // has already failed, and answering false keeps that path on the old layout.
@@ -891,7 +906,7 @@ fn typeAnnIsPodIn(module: ASTNode, ann: ASTNode, depth: Int, byDecl: Bool) -> Bo
     return true
 }
 
-fn structDeclIsPodIn(module: ASTNode, name: String, depth: Int, byDecl: Bool) -> Bool {
+public fn structDeclIsPodIn(module: ASTNode, name: String, depth: Int, byDecl: Bool) -> Bool {
     if (depth > 16) { return false }
     let decl = findStructDeclNamed(module, name)
     if (nodeExists(node_to_ptr(decl)) == false) { return false }

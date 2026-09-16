@@ -1,7 +1,9 @@
 import std.io
 import ums.model.project
 import ums.commands.command
+import ums.parser.lexer
 import ums.model.diagnostic
+import ums.targets.target
 import std.string
 
 extern fn file_exists(path: String borrow) -> Int
@@ -11,7 +13,7 @@ extern fn join_path(directory: String borrow, child: String borrow) -> String pr
 // reject it by the *same* rule this validates it by. A second copy of the rule in
 // the writer is a second thing to keep in step -- the mistake src/ir/stmt.psm
 // names about `enumPayloadField`.
-fn umsValidName(value: String) -> Bool {
+public fn umsValidName(value: String) -> Bool {
     if (__builtin_string_len(value) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(value)) {

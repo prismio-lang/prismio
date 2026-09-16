@@ -102,7 +102,7 @@ import std.option
 // because the loop form leaks -- which capped these functions at 150 000
 // characters. The write builtin does not check its upper bound; every use below
 // is immediately after a `str_with_capacity` whose length bounds the loop.
-extern fn str_with_capacity(length: Int) -> String produce (free )
+public extern fn str_with_capacity(length: Int) -> String produce (free )
 
 // Optional search accelerators, not part of the irreducible String core.
 // `str_find_byte` delegates a one-byte scan to libc. `str_find_byte_pair` is a
@@ -111,20 +111,20 @@ extern fn str_with_capacity(length: Int) -> String produce (free )
 // a needle of 2..32 bytes -- pair selection, the scan and verification -- because
 // doing those here cost a runtime crossing per candidate. Two-Way factorisation
 // and the long-needle policy stay in Prismio.
-extern fn str_find_byte(s: String borrow , from: Int, b: Char) -> Int
-extern fn str_find_byte_pair(s: String borrow , from: Int, last: Int,
+private extern fn str_find_byte(s: String borrow , from: Int, b: Char) -> Int
+private extern fn str_find_byte_pair(s: String borrow , from: Int, last: Int,
 offset1: Int, byte1: Char,
 offset2: Int, byte2: Char) -> Int
-extern fn str_find_needle(s: String bytes , from: Int, length: Int,
+private extern fn str_find_needle(s: String bytes , from: Int, length: Int,
 needle: String bytes , needleLength: Int) -> Int
 
 // Byte length, not character count. `Char` is a byte here and there is no
 // Unicode scalar type yet, so a multi-byte UTF-8 character counts as its bytes.
-fn strLength(s: String) -> Int {
+public fn strLength(s: String) -> Int {
     return __builtin_string_len(s)
 }
 
-fn strByteAt(s: String, index: Int) -> Int {
+public fn strByteAt(s: String, index: Int) -> Int {
     return __builtin_string_byte_at(s, index) as U8 as Int
 }
 
@@ -141,7 +141,7 @@ private fn strCopyRangeInto(out: String, outStart: Int, source: String, sourceSt
 
 // `length` bytes from `start`. A range reaching past the end is clamped rather
 // than refused.
-fn strSubstring(s: String, start: Int, length: Int) -> String {
+public fn strSubstring(s: String, start: Int, length: Int) -> String {
     let slen = __builtin_string_len(s)
     let mut first = start
     let mut count = length
@@ -165,7 +165,7 @@ fn strSubstring(s: String, start: Int, length: Int) -> String {
     return __builtin_string_view(s, first, count)
 }
 
-fn strFromChar(c: Char) -> String {
+public fn strFromChar(c: Char) -> String {
     // Prismio Strings cannot contain NUL, so a NUL Char maps to empty text.
     if (c == '\0') { return str_with_capacity(0) }
     let out = str_with_capacity(1)
@@ -179,7 +179,7 @@ fn strFromChar(c: Char) -> String {
 // storage, and one such return makes every result of that function unowned --
 // so the callers that *did* allocate leak too. This is how the empty case stays
 // an allocation like any other.
-fn strEmpty() -> String {
+public fn strEmpty() -> String {
     return str_with_capacity(0)
 }
 
@@ -191,7 +191,7 @@ fn strEmpty() -> String {
 // `Map<String, V>` stores its keys through this (`copyOf`), and a heap copy of a
 // short key made every successful probe a `memcmp` against the inline key it was
 // looked up with -- 47,992 of them in `word_frequency`.
-fn strClone(s: String) -> String {
+public fn strClone(s: String) -> String {
     let n = __builtin_string_len(s)
     if (n <= 12) { return __builtin_string_inline(s, 0, n) }
     let out = str_with_capacity(n)
@@ -199,7 +199,7 @@ fn strClone(s: String) -> String {
     return out
 }
 
-fn strIsEmpty(s: String) -> Bool {
+public fn strIsEmpty(s: String) -> Bool {
     return __builtin_string_len(s) == 0
 }
 
@@ -210,46 +210,46 @@ fn strIsEmpty(s: String) -> Bool {
 // they test rather than as arithmetic on character codes.
 // ---------------------------------------------------------------------------
 
-fn charIsDigit(c: Char) -> Bool {
+public fn charIsDigit(c: Char) -> Bool {
     return c >= '0' and c <= '9'
 }
 
-fn charIsLower(c: Char) -> Bool {
+public fn charIsLower(c: Char) -> Bool {
     return c >= 'a' and c <= 'z'
 }
 
-fn charIsUpper(c: Char) -> Bool {
+public fn charIsUpper(c: Char) -> Bool {
     return c >= 'A' and c <= 'Z'
 }
 
-fn charIsAlpha(c: Char) -> Bool {
+public fn charIsAlpha(c: Char) -> Bool {
     return charIsLower(c) or charIsUpper(c)
 }
 
-fn charIsAlnum(c: Char) -> Bool {
+public fn charIsAlnum(c: Char) -> Bool {
     return charIsAlpha(c) or charIsDigit(c)
 }
 
 // Space, tab, newline, carriage return. The same four bytes the C `str_trim`
 // recognised, kept identical so that porting it changed no behaviour.
-fn charIsSpace(c: Char) -> Bool {
+public fn charIsSpace(c: Char) -> Bool {
     if (c == ' ') { return true }
     if (c == '\t') { return true }
     if (c == '\n') { return true }
     return c == '\r'
 }
 
-fn charToUpper(c: Char) -> Char {
+public fn charToUpper(c: Char) -> Char {
     if (charIsLower(c) == false) { return c }
     return ((c as U8) - 32) as Char
 }
 
-fn charToLower(c: Char) -> Char {
+public fn charToLower(c: Char) -> Char {
     if (charIsUpper(c) == false) { return c }
     return ((c as U8) + 32) as Char
 }
 
-fn charDigitValue(c: Char) -> Int {
+public fn charDigitValue(c: Char) -> Int {
     return (c as U8 as Int) - 48
 }
 
@@ -279,15 +279,15 @@ private fn strMatchesAtIn(s: String, needle: String, at: Int, slen: Int, nlen: I
 // `str_index_of`'s 0.50s on 200 scans of 40 000 characters; hoisting them brought
 // it to 0.65s. Keeping the bound explicit still documents why unchecked
 // the unchecked byte read is safe here.
-fn strMatchesAt(s: String, needle: String, at: Int) -> Bool {
+public fn strMatchesAt(s: String, needle: String, at: Int) -> Bool {
     return strMatchesAtIn(s, needle, at, __builtin_string_len(s), __builtin_string_len(needle))
 }
 
-fn strStartsWith(s: String, prefix: String) -> Bool {
+public fn strStartsWith(s: String, prefix: String) -> Bool {
     return strMatchesAt(s, prefix, 0)
 }
 
-fn strEndsWith(s: String, suffix: String) -> Bool {
+public fn strEndsWith(s: String, suffix: String) -> Bool {
     return strMatchesAt(s, suffix, __builtin_string_len(s) - __builtin_string_len(suffix))
 }
 
@@ -640,7 +640,7 @@ slen: Int, nlen: Int) -> Int {
 // One-byte needles use libc's vectorised byte search, and needles up to 32 bytes
 // the runtime's packed-pair search (`str_find_needle`). Native Two-Way is the
 // linear fallback for both dense short-needle inputs and the long-needle core.
-fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
+public fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
     let slen = __builtin_string_len(s)
     let nlen = __builtin_string_len(needle)
     let mut i = from
@@ -707,11 +707,11 @@ fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
     index1, byte1, index2, byte2)
 }
 
-fn strIndexOf(s: String, needle: String) -> Int {
+public fn strIndexOf(s: String, needle: String) -> Int {
     return strIndexOfFrom(s, needle, 0)
 }
 
-fn strLastIndexOf(s: String, needle: String) -> Int {
+public fn strLastIndexOf(s: String, needle: String) -> Int {
     let slen = __builtin_string_len(s)
     let nlen = __builtin_string_len(needle)
     let mut i = slen - nlen
@@ -722,11 +722,11 @@ fn strLastIndexOf(s: String, needle: String) -> Int {
     return - 1
 }
 
-fn strContains(s: String, needle: String) -> Bool {
+public fn strContains(s: String, needle: String) -> Bool {
     return strIndexOf(s, needle) >= 0
 }
 
-fn strCountOf(s: String, needle: String) -> Int {
+public fn strCountOf(s: String, needle: String) -> Int {
     if (__builtin_string_len(needle) == 0) { return 0 }
     let mut n = 0
     let mut at = strIndexOf(s, needle)
@@ -741,7 +741,7 @@ fn strCountOf(s: String, needle: String) -> Int {
 // Trimming
 // ---------------------------------------------------------------------------
 
-fn strTrimStart(s: String) -> String {
+public fn strTrimStart(s: String) -> String {
     let slen = __builtin_string_len(s)
     let mut i = 0
     while (i < slen and charIsSpace(__builtin_string_byte_at(s, i))) {
@@ -753,7 +753,7 @@ fn strTrimStart(s: String) -> String {
     return out
 }
 
-fn strTrimEnd(s: String) -> String {
+public fn strTrimEnd(s: String) -> String {
     let mut n = __builtin_string_len(s)
     while (n > 0 and charIsSpace(__builtin_string_byte_at(s, n - 1))) {
         n = n - 1
@@ -763,7 +763,7 @@ fn strTrimEnd(s: String) -> String {
     return out
 }
 
-fn strTrim(s: String) -> String {
+public fn strTrim(s: String) -> String {
     let slen = __builtin_string_len(s)
     let mut start = 0
     while (start < slen and charIsSpace(__builtin_string_byte_at(s, start))) {
@@ -787,7 +787,7 @@ fn strTrim(s: String) -> String {
 // accumulator still leaks every intermediate under today's ownership analysis.
 // ---------------------------------------------------------------------------
 
-fn strRepeat(s: String, times: Int) -> String {
+public fn strRepeat(s: String, times: Int) -> String {
     let slen = __builtin_string_len(s)
     let mut n = times
     if (n < 0) { n = 0 }
@@ -817,7 +817,7 @@ fn strRepeat(s: String, times: Int) -> String {
 // the answer; for CJK, measure with your own table and pad by bytes.
 //
 // `pad` is a `Char` and therefore one byte, so the padding itself is ASCII.
-fn strPadStart(s: String, width: Int, pad: Char) -> String {
+public fn strPadStart(s: String, width: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
     let mut padLen = width - strScalarCount(s)
     if (padLen < 0) { padLen = 0 }
@@ -831,7 +831,7 @@ fn strPadStart(s: String, width: Int, pad: Char) -> String {
     return out
 }
 
-fn strPadEnd(s: String, width: Int, pad: Char) -> String {
+public fn strPadEnd(s: String, width: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
     let mut padLen = width - strScalarCount(s)
     if (padLen < 0) { padLen = 0 }
@@ -858,7 +858,7 @@ fn strPadEnd(s: String, width: Int, pad: Char) -> String {
 // drop. Measured in exactly that shape: 1 allocated, 0 released. Every other
 // builder here returns its own `str_with_capacity`, which is what makes them
 // 1/1. The duplication is eight lines and it also drops a branch from the loop.
-fn strToUpper(s: String) -> String {
+public fn strToUpper(s: String) -> String {
     let slen = __builtin_string_len(s)
     let out = str_with_capacity(slen)
     let mut i = 0
@@ -869,7 +869,7 @@ fn strToUpper(s: String) -> String {
     return out
 }
 
-fn strToLower(s: String) -> String {
+public fn strToLower(s: String) -> String {
     let slen = __builtin_string_len(s)
     let out = str_with_capacity(slen)
     let mut i = 0
@@ -889,7 +889,7 @@ fn strToLower(s: String) -> String {
 // A byte that is not part of a well-formed sequence moves on its own and
 // unchanged, which makes this exact for ASCII and for binary held in a String,
 // and leaves invalid input no worse than it arrived.
-fn strReverse(s: String) -> String {
+public fn strReverse(s: String) -> String {
     let slen = __builtin_string_len(s)
     let out = str_with_capacity(slen)
     let mut read = 0
@@ -910,7 +910,7 @@ fn strReverse(s: String) -> String {
 
 // The first occurrence only. An absent or empty pattern returns a copy, so the
 // result is owned on every path.
-fn strReplaceFirst(s: String, old: String, new: String) -> String {
+public fn strReplaceFirst(s: String, old: String, new: String) -> String {
     let slen = __builtin_string_len(s)
     let oldLen = __builtin_string_len(old)
     let mut at = 0 - 1
@@ -934,7 +934,7 @@ fn strReplaceFirst(s: String, old: String, new: String) -> String {
 
 // Every occurrence, left to right, without rescanning what the replacement
 // inserted -- so replacing "a" with "aa" terminates.
-fn strReplaceAll(s: String, old: String, new: String) -> String {
+public fn strReplaceAll(s: String, old: String, new: String) -> String {
     let slen = __builtin_string_len(s)
     let oldLen = __builtin_string_len(old)
     if (oldLen == 0) {
@@ -972,7 +972,7 @@ fn strReplaceAll(s: String, old: String, new: String) -> String {
 // owned container the analysis already understands.
 // ---------------------------------------------------------------------------
 
-fn strSplit(s: String, sep: Char) -> List<String> {
+public fn strSplit(s: String, sep: Char) -> List<String> {
     let slen = __builtin_string_len(s)
     let out: List<String> = list_new()
     let mut start = 0
@@ -1006,7 +1006,7 @@ fn strSplit(s: String, sep: Char) -> List<String> {
 // Split on a multi-character separator. An empty separator yields the whole
 // string as one part rather than exploding it into characters, because the
 // alternative is an empty part between every pair of bytes.
-fn strSplitOn(s: String, sep: String) -> List<String> {
+public fn strSplitOn(s: String, sep: String) -> List<String> {
     let out: List<String> = list_new()
     if (__builtin_string_len(sep) == 0) {
         let wholeLen = __builtin_string_len(s)
@@ -1045,7 +1045,7 @@ fn strSplitOn(s: String, sep: String) -> List<String> {
 
 // Split on runs of whitespace, discarding empty parts. What a command line or a
 // column-aligned file wants, and what `strSplit(s, ' ')` is not.
-fn strSplitWhitespace(s: String) -> List<String> {
+public fn strSplitWhitespace(s: String) -> List<String> {
     let slen = __builtin_string_len(s)
     let out: List<String> = list_new()
     let mut i = 0
@@ -1077,7 +1077,7 @@ fn strSplitWhitespace(s: String) -> List<String> {
 // One pass to size the result, one to fill it. Two traversals of the list beat
 // the recursion this replaced, which allocated once per part and copied the
 // whole accumulated tail each time.
-fn strJoin(parts: List<String>, sep: String) -> String {
+public fn strJoin(parts: List<String>, sep: String) -> String {
     let n = list_len(parts)
     let seplen = __builtin_string_len(sep)
     let mut total = 0
@@ -1119,7 +1119,7 @@ fn strJoin(parts: List<String>, sep: String) -> String {
 // which returns 0 for "0" and 0 for "banana" and gives the caller no way to tell
 // them apart. REQUIREMENTS 14's whole argument against sentinels is this
 // function.
-fn strParseInt(s: String) -> Option<Int> {
+public fn strParseInt(s: String) -> Option<Int> {
     return strParseIntRadix(s, 10)
 }
 
@@ -1168,7 +1168,7 @@ private fn strTwoDigitTable() -> String {
     return "00010203040506070809101112131415161718192021222324252627282930313233343536373839404142434445464748495051525354555657585960616263646566676869707172737475767778798081828384858687888990919293949596979899"
 }
 
-fn strFromUnsigned(value: U64) -> String {
+public fn strFromUnsigned(value: U64) -> String {
     let digits = strDigitCount(value)
     let out = str_with_capacity(digits)
     let table = strTwoDigitTable()
@@ -1193,7 +1193,7 @@ fn strFromUnsigned(value: U64) -> String {
 // Decimal text for an Int. Every 32-bit result is at most eleven bytes including
 // the sign, so the compiler formats it directly into String's twelve-byte inline
 // payload. U64 keeps the allocating builder above because it may need 20 bytes.
-fn strFromInt(value: Int) -> String {
+public fn strFromInt(value: Int) -> String {
     return __builtin_string_from_int(value)
 }
 
@@ -1211,7 +1211,7 @@ fn strFromInt(value: Int) -> String {
 
 // Empty, or nothing but the four space bytes. Distinct from `strIsEmpty`, which
 // is a length test: "   " is blank and is not empty.
-fn strIsBlank(s: String) -> Bool {
+public fn strIsBlank(s: String) -> Bool {
     let slen = __builtin_string_len(s)
     let mut i = 0
     while (i < slen) {
@@ -1224,7 +1224,7 @@ fn strIsBlank(s: String) -> Bool {
 // ASCII-folded equality. Not a Unicode case fold: `charToLower` maps A-Z and
 // nothing else, so this answers the question a flag or a header name asks and
 // not the one a natural-language comparison does.
-fn strEqualsIgnoreCase(a: String, b: String) -> Bool {
+public fn strEqualsIgnoreCase(a: String, b: String) -> Bool {
     let alen = __builtin_string_len(a)
     if (alen != __builtin_string_len(b)) { return false }
     let mut i = 0
@@ -1237,31 +1237,31 @@ fn strEqualsIgnoreCase(a: String, b: String) -> Bool {
     return true
 }
 
-fn strGet(s: String, index: Int) -> Option<Char> {
+public fn strGet(s: String, index: Int) -> Option<Char> {
     if (index < 0 or index >= __builtin_string_len(s)) { return Option<Char>.None }
     return Option<Char>.Some(__builtin_string_byte_at(s, index))
 }
 
 // NUL on an empty string, for the same reason `charAt` answers NUL out of
 // range: a Prismio String cannot contain one, so the answer is unambiguous.
-fn strFirst(s: String) -> Char {
+public fn strFirst(s: String) -> Char {
     if (__builtin_string_len(s) == 0) { return '\0' }
     return __builtin_string_byte_at(s, 0)
 }
 
-fn strLast(s: String) -> Char {
+public fn strLast(s: String) -> Char {
     let slen = __builtin_string_len(s)
     if (slen == 0) { return '\0' }
     return __builtin_string_byte_at(s, slen - 1)
 }
 
-fn strFind(s: String, needle: String) -> Option<Int> {
+public fn strFind(s: String, needle: String) -> Option<Int> {
     let at = strIndexOf(s, needle)
     if (at < 0) { return Option<Int>.None }
     return Option<Int>.Some(at)
 }
 
-fn strFindFrom(s: String, needle: String, from: Int) -> Option<Int> {
+public fn strFindFrom(s: String, needle: String, from: Int) -> Option<Int> {
     let at = strIndexOfFrom(s, needle, from)
     if (at < 0) { return Option<Int>.None }
     return Option<Int>.Some(at)
@@ -1276,7 +1276,7 @@ fn strFindFrom(s: String, needle: String, from: Int) -> Option<Int> {
 // is libc's vectorised scan.
 // ---------------------------------------------------------------------------
 
-fn strIndexOfCharFrom(s: String, needle: Char, from: Int) -> Int {
+public fn strIndexOfCharFrom(s: String, needle: Char, from: Int) -> Int {
     let slen = __builtin_string_len(s)
     let mut start = from
     if (start < 0) { start = 0 }
@@ -1284,11 +1284,11 @@ fn strIndexOfCharFrom(s: String, needle: Char, from: Int) -> Int {
     return str_find_byte(s, start, needle)
 }
 
-fn strIndexOfChar(s: String, needle: Char) -> Int {
+public fn strIndexOfChar(s: String, needle: Char) -> Int {
     return strIndexOfCharFrom(s, needle, 0)
 }
 
-fn strLastIndexOfChar(s: String, needle: Char) -> Int {
+public fn strLastIndexOfChar(s: String, needle: Char) -> Int {
     let mut i = __builtin_string_len(s)
     while (i > 0) {
         if (__builtin_string_byte_at(s, i - 1) == needle) { return i - 1 }
@@ -1297,22 +1297,22 @@ fn strLastIndexOfChar(s: String, needle: Char) -> Int {
     return 0 - 1
 }
 
-fn strContainsChar(s: String, needle: Char) -> Bool {
+public fn strContainsChar(s: String, needle: Char) -> Bool {
     return strIndexOfChar(s, needle) >= 0
 }
 
-fn strStartsWithChar(s: String, prefix: Char) -> Bool {
+public fn strStartsWithChar(s: String, prefix: Char) -> Bool {
     if (__builtin_string_len(s) == 0) { return false }
     return __builtin_string_byte_at(s, 0) == prefix
 }
 
-fn strEndsWithChar(s: String, suffix: Char) -> Bool {
+public fn strEndsWithChar(s: String, suffix: Char) -> Bool {
     let slen = __builtin_string_len(s)
     if (slen == 0) { return false }
     return __builtin_string_byte_at(s, slen - 1) == suffix
 }
 
-fn strCountOfChar(s: String, needle: Char) -> Int {
+public fn strCountOfChar(s: String, needle: Char) -> Int {
     let slen = __builtin_string_len(s)
     let mut hits = 0
     let mut i = 0
@@ -1333,7 +1333,7 @@ fn strCountOfChar(s: String, needle: Char) -> Int {
 // The first byte uppercased, the rest untouched. Deliberately not "the rest
 // lowercased": that is a different operation, it destroys `"McDonald"`, and a
 // caller who wants it can spell `s.toLower().capitalize()`.
-fn strCapitalize(s: String) -> String {
+public fn strCapitalize(s: String) -> String {
     let slen = __builtin_string_len(s)
     let out = str_with_capacity(slen)
     strCopyRangeInto(out, 0, s, 0, slen)
@@ -1347,7 +1347,7 @@ fn strCapitalize(s: String) -> String {
 // run of strings to the same width keeps their left edges aligned.
 // Characters either side, for the reason `strPadStart` gives. An odd remainder
 // goes to the right, so `strPadCenter("ab", 5, '-')` is `-ab--`.
-fn strPadCenter(s: String, width: Int, pad: Char) -> String {
+public fn strPadCenter(s: String, width: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
     let mut total = width - strScalarCount(s)
     if (total < 0) { total = 0 }
@@ -1371,7 +1371,7 @@ fn strPadCenter(s: String, width: Int, pad: Char) -> String {
 // Trim any byte that appears in `set`, from both ends. `strTrim` is this with
 // the four space bytes, kept separate because it is the common case and needs no
 // inner scan per byte.
-fn strTrimChars(s: String, set: String) -> String {
+public fn strTrimChars(s: String, set: String) -> String {
     let slen = __builtin_string_len(s)
     let mut start = 0
     while (start < slen and strContainsChar(set, __builtin_string_byte_at(s, start))) {
@@ -1389,7 +1389,7 @@ fn strTrimChars(s: String, set: String) -> String {
 
 // `at` past the end appends rather than failing, matching how every range in
 // this file is clamped rather than refused.
-fn strInsert(s: String, at: Int, other: String) -> String {
+public fn strInsert(s: String, at: Int, other: String) -> String {
     let slen = __builtin_string_len(s)
     let olen = __builtin_string_len(other)
     let mut cut = at
@@ -1402,7 +1402,7 @@ fn strInsert(s: String, at: Int, other: String) -> String {
     return out
 }
 
-fn strRemoveRange(s: String, start: Int, length: Int) -> String {
+public fn strRemoveRange(s: String, start: Int, length: Int) -> String {
     let slen = __builtin_string_len(s)
     let mut first = start
     if (first < 0) { first = 0 }
@@ -1419,7 +1419,7 @@ fn strRemoveRange(s: String, start: Int, length: Int) -> String {
 // `None` when the prefix is absent -- which is the difference from
 // `strStartsWith` plus `strSubstring`, where the caller has to remember to test
 // first and gets a silently wrong slice if they do not.
-fn strStripPrefix(s: String, prefix: String) -> Option<String> {
+public fn strStripPrefix(s: String, prefix: String) -> Option<String> {
     if (strStartsWith(s, prefix) == false) { return Option<String>.None }
     let slen = __builtin_string_len(s)
     let plen = __builtin_string_len(prefix)
@@ -1428,7 +1428,7 @@ fn strStripPrefix(s: String, prefix: String) -> Option<String> {
     return Option<String>.Some(out)
 }
 
-fn strStripSuffix(s: String, suffix: String) -> Option<String> {
+public fn strStripSuffix(s: String, suffix: String) -> Option<String> {
     if (strEndsWith(s, suffix) == false) { return Option<String>.None }
     let slen = __builtin_string_len(s)
     let sufLen = __builtin_string_len(suffix)
@@ -1440,7 +1440,7 @@ fn strStripSuffix(s: String, suffix: String) -> Option<String> {
 // Not `strSplit(s, '\n')`, and the two differences are the ones that bite when
 // reading a file: a trailing newline *ends* the last line rather than starting
 // an empty one, and a CRLF file does not leave a '\r' on every element.
-fn strLines(s: String) -> List<String> {
+public fn strLines(s: String) -> List<String> {
     let slen = __builtin_string_len(s)
     let out: List<String> = list_new()
     let mut start = 0
@@ -1480,7 +1480,7 @@ fn strLines(s: String) -> List<String> {
 // One `Char` per **byte**, because a `Char` is a byte. For text that may not be
 // ASCII this is not the character list its name suggests -- `strScalars` is,
 // and returns `List<Int>` because a code point does not fit a `Char`.
-fn strChars(s: String) -> List<Char> {
+public fn strChars(s: String) -> List<Char> {
     let slen = __builtin_string_len(s)
     let out: List<Char> = list_new()
     let mut i = 0
@@ -1491,7 +1491,7 @@ fn strChars(s: String) -> List<Char> {
     return out
 }
 
-fn strBytes(s: String) -> List<Int> {
+public fn strBytes(s: String) -> List<Int> {
     let slen = __builtin_string_len(s)
     let out: List<Int> = list_new()
     let mut i = 0
@@ -1510,7 +1510,7 @@ fn strBytes(s: String) -> List<Int> {
 // `for c in s` instead, which is the form that needs no closure at all.
 // ---------------------------------------------------------------------------
 
-fn strCountIf<F>(s: String, keep: F) -> Int {
+public fn strCountIf<F>(s: String, keep: F) -> Int {
     let slen = __builtin_string_len(s)
     let mut hits = 0
     let mut i = 0
@@ -1521,7 +1521,7 @@ fn strCountIf<F>(s: String, keep: F) -> Int {
     return hits
 }
 
-fn strIndexWhere<F>(s: String, keep: F) -> Int {
+public fn strIndexWhere<F>(s: String, keep: F) -> Int {
     let slen = __builtin_string_len(s)
     let mut i = 0
     while (i < slen) {
@@ -1531,7 +1531,7 @@ fn strIndexWhere<F>(s: String, keep: F) -> Int {
     return 0 - 1
 }
 
-fn strAllChars<F>(s: String, keep: F) -> Bool {
+public fn strAllChars<F>(s: String, keep: F) -> Bool {
     let slen = __builtin_string_len(s)
     let mut i = 0
     while (i < slen) {
@@ -1541,7 +1541,7 @@ fn strAllChars<F>(s: String, keep: F) -> Bool {
     return true
 }
 
-fn strAnyChars<F>(s: String, keep: F) -> Bool {
+public fn strAnyChars<F>(s: String, keep: F) -> Bool {
     return strIndexWhere(s, keep) >= 0
 }
 
@@ -1549,7 +1549,7 @@ fn strAnyChars<F>(s: String, keep: F) -> Bool {
 // Formatting and parsing
 // ---------------------------------------------------------------------------
 
-fn strFromBool(value: Bool) -> String {
+public fn strFromBool(value: Bool) -> String {
     if (value) {
         let yes = str_with_capacity(4)
         __builtin_string_put_byte(yes, 0, 't')
@@ -1570,7 +1570,7 @@ fn strFromBool(value: Bool) -> String {
 // Exactly the two spellings `strFromBool` produces, case-insensitively. Not
 // "1"/"0" and not "yes"/"no": a parser that accepts more than its printer emits
 // is a parser whose round trip is untestable.
-fn strParseBool(s: String) -> Option<Bool> {
+public fn strParseBool(s: String) -> Option<Bool> {
     if (strEqualsIgnoreCase(s, "true")) { return Option<Bool>.Some(true) }
     if (strEqualsIgnoreCase(s, "false")) { return Option<Bool>.Some(false) }
     return Option<Bool>.None
@@ -1586,8 +1586,8 @@ fn strParseBool(s: String) -> Option<Bool> {
 //
 // Rejects what it cannot represent rather than guessing: empty text, a lone
 // sign, a lone dot, any non-digit, and more than 18 significant digits.
-extern fn str_double_valid(text: String borrow) -> Int
-extern fn str_double_value(text: String borrow) -> Float
+private extern fn str_double_valid(text: String borrow) -> Int
+private extern fn str_double_value(text: String borrow) -> Float
 
 // **Reads back what `strFromFloat` writes, and nothing else.**
 //
@@ -1603,14 +1603,14 @@ extern fn str_double_value(text: String borrow) -> Float
 // Stricter than C: the whole string must be a number, so `"1.5kg"` and `" 1.5"`
 // are `None` rather than 1.5. `"inf"`, `"-inf"` and `"nan"` parse, because
 // `strFromFloat` writes them.
-fn strParseFloat(s: String) -> Option<Float> {
+public fn strParseFloat(s: String) -> Option<Float> {
     if (str_double_valid(s) == 0) { return Option<Float>.None }
     return Option<Float>.Some(str_double_value(s))
 }
 
 // The parse, or the caller's number. For the very common case where a bad value
 // means "use the default" and the `Option` would only ever be fed to `optionOr`.
-fn strParseIntOr(s: String, fallback: Int) -> Int {
+public fn strParseIntOr(s: String, fallback: Int) -> Int {
     return optionOr(strParseInt(s), fallback)
 }
 
@@ -1623,7 +1623,7 @@ fn strParseIntOr(s: String, fallback: Int) -> Int {
 // `parts.join(", ")` resolves to this with no new machinery at all.
 // ---------------------------------------------------------------------------
 
-fn join(parts: List<String>, sep: String) -> String {
+public fn join(parts: List<String>, sep: String) -> String {
     return strJoin(parts, sep)
 }
 
@@ -1680,10 +1680,10 @@ fn join(parts: List<String>, sep: String) -> String {
 // is the argument: the leak needs the callee's allocation to be in both the
 // return's points-to set and a parameter's, and a `Float` parameter has no
 // points-to set at all. `tests/test_135_string_production.psm` measures it.
-extern fn str_from_double(value: Float) -> String produce(free)
-extern fn str_from_double_fixed(value: Float, decimals: Int) -> String produce(free)
+private extern fn str_from_double(value: Float) -> String produce(free)
+private extern fn str_from_double_fixed(value: Float, decimals: Int) -> String produce(free)
 
-fn strFromFloat(value: Float) -> String {
+public fn strFromFloat(value: Float) -> String {
     return str_from_double(value)
 }
 
@@ -1691,7 +1691,7 @@ fn strFromFloat(value: Float) -> String {
 // percentages, a table of timings. Not required to round-trip, which is the
 // difference: `strFromFloatFixed(1.0 / 3.0, 2)` is `0.33` and means it.
 // `decimals` is clamped to 0..30.
-fn strFromFloatFixed(value: Float, decimals: Int) -> String {
+public fn strFromFloatFixed(value: Float, decimals: Int) -> String {
     return str_from_double_fixed(value, decimals)
 }
 
@@ -1745,7 +1745,7 @@ private fn strUtf8ContinuationsOk(s: String, at: Int, slen: Int, count: Int) -> 
 // scalar at all -- it is half of a UTF-16 pair and has no business in UTF-8.
 // And nothing above U+10FFFF is Unicode. Each answers -1 rather than a number no
 // caller can act on.
-fn strScalarAt(s: String, at: Int) -> Int {
+public fn strScalarAt(s: String, at: Int) -> Int {
     let slen = __builtin_string_len(s)
     if (at < 0 or at >= slen) { return 0 - 1 }
 
@@ -1774,14 +1774,14 @@ fn strScalarAt(s: String, at: Int) -> Int {
 
 // The width in bytes of the scalar at `at`, or 0 when there is not one there.
 // Walking a String by scalar is this in a loop: `i = i + strScalarWidthAt(s, i)`.
-fn strScalarWidthAt(s: String, at: Int) -> Int {
+public fn strScalarWidthAt(s: String, at: Int) -> Int {
     if (strScalarAt(s, at) < 0) { return 0 }
     return strUtf8LeadWidth(strByteAt(s, at))
 }
 
 // Whether a byte index falls between characters rather than inside one. The
 // question to ask before `substring`, whose indices are bytes.
-fn strIsCharBoundary(s: String, at: Int) -> Bool {
+public fn strIsCharBoundary(s: String, at: Int) -> Bool {
     let slen = __builtin_string_len(s)
     if (at == 0 or at == slen) { return true }
     if (at < 0 or at > slen) { return false }
@@ -1789,7 +1789,7 @@ fn strIsCharBoundary(s: String, at: Int) -> Bool {
     return b < 128 or b > 191
 }
 
-fn strIsAscii(s: String) -> Bool {
+public fn strIsAscii(s: String) -> Bool {
     let slen = __builtin_string_len(s)
     let mut i = 0
     while (i < slen) {
@@ -1802,7 +1802,7 @@ fn strIsAscii(s: String) -> Bool {
 // Whether every byte is part of a well-formed sequence. Worth asking once at the
 // boundary where text enters a program -- a file, an argument, a socket -- after
 // which the rest of this section can be used without checking again.
-fn strIsValidUtf8(s: String) -> Bool {
+public fn strIsValidUtf8(s: String) -> Bool {
     let slen = __builtin_string_len(s)
     let mut i = 0
     while (i < slen) {
@@ -1819,7 +1819,7 @@ fn strIsValidUtf8(s: String) -> Bool {
 // and answers for invalid input too: a byte that is not a continuation counts as
 // one character. That is what makes it usable for padding, where refusing to
 // answer would be worse than approximating.
-fn strScalarCount(s: String) -> Int {
+public fn strScalarCount(s: String) -> Int {
     let slen = __builtin_string_len(s)
     let mut count = 0
     let mut i = 0
@@ -1834,7 +1834,7 @@ fn strScalarCount(s: String) -> Int {
 // Every scalar, in order. An ill-formed byte becomes U+FFFD, the replacement
 // character, and advances one byte -- the substitution the Unicode standard
 // specifies, so that decoding never fails and never silently drops input.
-fn strScalars(s: String) -> List<Int> {
+public fn strScalars(s: String) -> List<Int> {
     let slen = __builtin_string_len(s)
     let out: List<Int> = list_new()
     let mut i = 0
@@ -1854,7 +1854,7 @@ fn strScalars(s: String) -> List<Int> {
 // One scalar as its UTF-8 bytes. A value that is not a scalar -- negative, a
 // surrogate, or above U+10FFFF -- encodes as U+FFFD rather than as bytes no
 // reader could decode.
-fn strFromScalar(scalar: Int) -> String {
+public fn strFromScalar(scalar: Int) -> String {
     let mut value = scalar
     if (value < 0 or value > 1114111) { value = 65533 }
     if (value >= 55296 and value <= 57343) { value = 65533 }
@@ -1911,7 +1911,7 @@ private fn strScalarOffset(s: String, index: Int) -> Int {
     return at
 }
 
-fn strScalarSubstring(s: String, start: Int, count: Int) -> String {
+public fn strScalarSubstring(s: String, start: Int, count: Int) -> String {
     let first = strScalarOffset(s, start)
     let last = strScalarOffset(s, start + count)
 
@@ -1941,7 +1941,7 @@ private fn strRadixDigits() -> String {
 // Base 2 through 36, lowercase, no prefix -- a caller wanting `0x` writes it.
 // A radix outside that range is a programming error rather than a runtime one,
 // and is clamped rather than made every call site handle an `Option`.
-fn strFromU64Radix(value: U64, radix: Int) -> String {
+public fn strFromU64Radix(value: U64, radix: Int) -> String {
     let mut base = radix
     if (base < 2) { base = 2 }
     if (base > 36) { base = 36 }
@@ -1967,7 +1967,7 @@ fn strFromU64Radix(value: U64, radix: Int) -> String {
     return out
 }
 
-fn strFromIntRadix(value: Int, radix: Int) -> String {
+public fn strFromIntRadix(value: Int, radix: Int) -> String {
     if (value >= 0) { return strFromU64Radix(value as U64, radix) }
 
     // The magnitude through U64, so that the most negative Int -- whose positive
@@ -1981,9 +1981,9 @@ fn strFromIntRadix(value: Int, radix: Int) -> String {
     return out
 }
 
-fn strHex(value: U64) -> String { return strFromU64Radix(value, 16) }
-fn strOctal(value: U64) -> String { return strFromU64Radix(value, 8) }
-fn strBinary(value: U64) -> String { return strFromU64Radix(value, 2) }
+public fn strHex(value: U64) -> String { return strFromU64Radix(value, 16) }
+public fn strOctal(value: U64) -> String { return strFromU64Radix(value, 8) }
+public fn strBinary(value: U64) -> String { return strFromU64Radix(value, 2) }
 
 // ---------------------------------------------------------------------------
 // Parsing, with the range checked
@@ -2033,7 +2033,7 @@ private fn strParseU64Body(s: String, at: Int, slen: Int, radix: Int) -> Option<
 // A leading `+` is accepted and a leading `-` is not: an unsigned parse of a
 // negative number has no answer, and wrapping to a large positive one is the
 // class of bug this whole section exists to remove.
-fn strParseU64Radix(s: String, radix: Int) -> Option<U64> {
+public fn strParseU64Radix(s: String, radix: Int) -> Option<U64> {
     if (radix < 2 or radix > 36) { return Option<U64>.None }
     let slen = __builtin_string_len(s)
     if (slen == 0) { return Option<U64>.None }
@@ -2041,7 +2041,7 @@ fn strParseU64Radix(s: String, radix: Int) -> Option<U64> {
     return strParseU64Body(s, 0, slen, radix)
 }
 
-fn strParseU64(s: String) -> Option<U64> {
+public fn strParseU64(s: String) -> Option<U64> {
     return strParseU64Radix(s, 10)
 }
 
@@ -2049,7 +2049,7 @@ private fn strMaxI64Magnitude() -> U64 {
     return strMaxU64() / (2 as U64)
 }
 
-fn strParseI64Radix(s: String, radix: Int) -> Option<I64> {
+public fn strParseI64Radix(s: String, radix: Int) -> Option<I64> {
     if (radix < 2 or radix > 36) { return Option<I64>.None }
     let slen = __builtin_string_len(s)
     if (slen == 0) { return Option<I64>.None }
@@ -2077,11 +2077,11 @@ fn strParseI64Radix(s: String, radix: Int) -> Option<I64> {
     return Option<I64>.Some((0 as I64) - (value as I64))
 }
 
-fn strParseI64(s: String) -> Option<I64> {
+public fn strParseI64(s: String) -> Option<I64> {
     return strParseI64Radix(s, 10)
 }
 
-fn strParseIntRadix(s: String, radix: Int) -> Option<Int> {
+public fn strParseIntRadix(s: String, radix: Int) -> Option<Int> {
     let wide = strParseI64Radix(s, radix)
     if (optionIsNone(wide)) { return Option<Int>.None }
     let value = optionOr(wide, 0 as I64)
@@ -2119,7 +2119,7 @@ impl String {
     // to one call rather than a nested join whose intermediate nothing names;
     // RUNTIME.md 3.1 is that a value nothing names is a value nothing frees. Six
     // is where it stops because `strJoin` is the right answer past that.
-    fn concat(self, other: String) -> String {
+    public fn concat(self, other: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(other)
         let total = alen + blen
@@ -2130,7 +2130,7 @@ impl String {
         return out
     }
 
-    fn concat(self, b: String, c: String) -> String {
+    public fn concat(self, b: String, c: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(b)
         let clen = __builtin_string_len(c)
@@ -2143,7 +2143,7 @@ impl String {
         return out
     }
 
-    fn concat(self, b: String, c: String, d: String) -> String {
+    public fn concat(self, b: String, c: String, d: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(b)
         let clen = __builtin_string_len(c)
@@ -2158,7 +2158,7 @@ impl String {
         return out
     }
 
-    fn concat(self, b: String, c: String, d: String, e: String) -> String {
+    public fn concat(self, b: String, c: String, d: String, e: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(b)
         let clen = __builtin_string_len(c)
@@ -2175,7 +2175,7 @@ impl String {
         return out
     }
 
-    fn concat(self, b: String, c: String, d: String, e: String, f: String) -> String {
+    public fn concat(self, b: String, c: String, d: String, e: String, f: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(b)
         let clen = __builtin_string_len(c)
@@ -2197,7 +2197,7 @@ impl String {
     // `[start, end)`. The half-open twin of `substring`, which takes a *length*.
     // Both exist because `s[a..b]` is end-exclusive and reading a range operator
     // as a length is the mistake this pair is meant to stop.
-    fn slice(self, start: Int, end: Int) -> String {
+    public fn slice(self, start: Int, end: Int) -> String {
         let slen = __builtin_string_len(self)
         let mut first = start
         if (first < 0) { first = 0 }
@@ -2215,7 +2215,7 @@ impl String {
     // error because the range check the caller would write is the one this
     // already does; NUL is distinguishable because a Prismio string cannot
     // contain one. `self.get(index)` is the Option form.
-    fn charAt(self, index: Int) -> Char {
+    public fn charAt(self, index: Int) -> Char {
         if (index < 0 or index >= __builtin_string_len(self)) { return '\0' }
         return __builtin_string_byte_at(self, index)
     }
@@ -2228,25 +2228,25 @@ impl String {
     // `memcmp`. Over the `sort_strings` keys it costs 1.13 ns a call, against
     // 3.28 ns for the byte loop it replaced and 1.53 ns for libc++'s
     // `std::string::compare`. See `ir_str_compare`.
-    fn compare(self, other: String) -> Int {
+    public fn compare(self, other: String) -> Int {
         return __builtin_string_compare(self, other)
     }
 
     // -----------------------------------------------------------------------
     // The rest, which delegate
     // -----------------------------------------------------------------------
-    fn length(self) -> Int { return strLength(self) }
-    fn isEmpty(self) -> Bool { return strIsEmpty(self) }
-    fn isNotEmpty(self) -> Bool { return strIsEmpty(self) == false }
-    fn isBlank(self) -> Bool { return strIsBlank(self) }
-    fn clone(self) -> String { return strClone(self) }
+    public fn length(self) -> Int { return strLength(self) }
+    public fn isEmpty(self) -> Bool { return strIsEmpty(self) }
+    public fn isNotEmpty(self) -> Bool { return strIsEmpty(self) == false }
+    public fn isBlank(self) -> Bool { return strIsBlank(self) }
+    public fn clone(self) -> String { return strClone(self) }
 
-    fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
-    fn get(self, index: Int) -> Option<Char> { return strGet(self, index) }
-    fn first(self) -> Char { return strFirst(self) }
-    fn last(self) -> Char { return strLast(self) }
+    public fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
+    public fn get(self, index: Int) -> Option<Char> { return strGet(self, index) }
+    public fn first(self) -> Char { return strFirst(self) }
+    public fn last(self) -> Char { return strLast(self) }
 
-    fn substring(self, start: Int, length: Int) -> String {
+    public fn substring(self, start: Int, length: Int) -> String {
         return strSubstring(self, start, length)
     }
 
@@ -2261,125 +2261,125 @@ impl String {
     // "which the builtin's strcmp cannot do"; the lowering compares lengths out
     // of the pair now, and for two short strings answers from the pairs alone
     // without touching memory at all.
-    fn equals(self, other: String) -> Bool {
+    public fn equals(self, other: String) -> Bool {
         return __builtin_string_eq(self, other)
     }
-    fn equalsIgnoreCase(self, other: String) -> Bool {
+    public fn equalsIgnoreCase(self, other: String) -> Bool {
         return strEqualsIgnoreCase(self, other)
     }
 
-    fn repeat(self, times: Int) -> String { return strRepeat(self, times) }
+    public fn repeat(self, times: Int) -> String { return strRepeat(self, times) }
 
-    fn contains(self, needle: String) -> Bool { return strContains(self, needle) }
-    fn contains(self, needle: Char) -> Bool { return strContainsChar(self, needle) }
-    fn startsWith(self, prefix: String) -> Bool { return strStartsWith(self, prefix) }
-    fn startsWith(self, prefix: Char) -> Bool { return strStartsWithChar(self, prefix) }
-    fn endsWith(self, suffix: String) -> Bool { return strEndsWith(self, suffix) }
-    fn endsWith(self, suffix: Char) -> Bool { return strEndsWithChar(self, suffix) }
-    fn matchesAt(self, needle: String, at: Int) -> Bool {
+    public fn contains(self, needle: String) -> Bool { return strContains(self, needle) }
+    public fn contains(self, needle: Char) -> Bool { return strContainsChar(self, needle) }
+    public fn startsWith(self, prefix: String) -> Bool { return strStartsWith(self, prefix) }
+    public fn startsWith(self, prefix: Char) -> Bool { return strStartsWithChar(self, prefix) }
+    public fn endsWith(self, suffix: String) -> Bool { return strEndsWith(self, suffix) }
+    public fn endsWith(self, suffix: Char) -> Bool { return strEndsWithChar(self, suffix) }
+    public fn matchesAt(self, needle: String, at: Int) -> Bool {
         return strMatchesAt(self, needle, at)
     }
 
-    fn indexOf(self, needle: String) -> Int { return strIndexOf(self, needle) }
-    fn indexOf(self, needle: Char) -> Int { return strIndexOfChar(self, needle) }
-    fn indexOf(self, needle: String, from: Int) -> Int {
+    public fn indexOf(self, needle: String) -> Int { return strIndexOf(self, needle) }
+    public fn indexOf(self, needle: Char) -> Int { return strIndexOfChar(self, needle) }
+    public fn indexOf(self, needle: String, from: Int) -> Int {
         return strIndexOfFrom(self, needle, from)
     }
-    fn indexOf(self, needle: Char, from: Int) -> Int {
+    public fn indexOf(self, needle: Char, from: Int) -> Int {
         return strIndexOfCharFrom(self, needle, from)
     }
-    fn lastIndexOf(self, needle: String) -> Int { return strLastIndexOf(self, needle) }
-    fn lastIndexOf(self, needle: Char) -> Int { return strLastIndexOfChar(self, needle) }
-    fn find(self, needle: String) -> Option<Int> { return strFind(self, needle) }
-    fn find(self, needle: String, from: Int) -> Option<Int> {
+    public fn lastIndexOf(self, needle: String) -> Int { return strLastIndexOf(self, needle) }
+    public fn lastIndexOf(self, needle: Char) -> Int { return strLastIndexOfChar(self, needle) }
+    public fn find(self, needle: String) -> Option<Int> { return strFind(self, needle) }
+    public fn find(self, needle: String, from: Int) -> Option<Int> {
         return strFindFrom(self, needle, from)
     }
-    fn count(self, needle: String) -> Int { return strCountOf(self, needle) }
-    fn count(self, needle: Char) -> Int { return strCountOfChar(self, needle) }
-    fn countOf(self, needle: String) -> Int { return strCountOf(self, needle) }
+    public fn count(self, needle: String) -> Int { return strCountOf(self, needle) }
+    public fn count(self, needle: Char) -> Int { return strCountOfChar(self, needle) }
+    public fn countOf(self, needle: String) -> Int { return strCountOf(self, needle) }
 
-    fn trim(self) -> String { return strTrim(self) }
-    fn trimStart(self) -> String { return strTrimStart(self) }
-    fn trimEnd(self) -> String { return strTrimEnd(self) }
-    fn trimChars(self, set: String) -> String { return strTrimChars(self, set) }
-    fn padStart(self, width: Int, pad: Char) -> String { return strPadStart(self, width, pad) }
-    fn padEnd(self, width: Int, pad: Char) -> String { return strPadEnd(self, width, pad) }
-    fn padCenter(self, width: Int, pad: Char) -> String {
+    public fn trim(self) -> String { return strTrim(self) }
+    public fn trimStart(self) -> String { return strTrimStart(self) }
+    public fn trimEnd(self) -> String { return strTrimEnd(self) }
+    public fn trimChars(self, set: String) -> String { return strTrimChars(self, set) }
+    public fn padStart(self, width: Int, pad: Char) -> String { return strPadStart(self, width, pad) }
+    public fn padEnd(self, width: Int, pad: Char) -> String { return strPadEnd(self, width, pad) }
+    public fn padCenter(self, width: Int, pad: Char) -> String {
         return strPadCenter(self, width, pad)
     }
 
-    fn toUpper(self) -> String { return strToUpper(self) }
-    fn toLower(self) -> String { return strToLower(self) }
-    fn capitalize(self) -> String { return strCapitalize(self) }
-    fn reverse(self) -> String { return strReverse(self) }
+    public fn toUpper(self) -> String { return strToUpper(self) }
+    public fn toLower(self) -> String { return strToLower(self) }
+    public fn capitalize(self) -> String { return strCapitalize(self) }
+    public fn reverse(self) -> String { return strReverse(self) }
 
-    fn replace(self, old: String, new: String) -> String {
+    public fn replace(self, old: String, new: String) -> String {
         return strReplaceAll(self, old, new)
     }
-    fn replaceFirst(self, old: String, new: String) -> String {
+    public fn replaceFirst(self, old: String, new: String) -> String {
         return strReplaceFirst(self, old, new)
     }
-    fn replaceAll(self, old: String, new: String) -> String {
+    public fn replaceAll(self, old: String, new: String) -> String {
         return strReplaceAll(self, old, new)
     }
-    fn insert(self, at: Int, other: String) -> String { return strInsert(self, at, other) }
-    fn removeRange(self, start: Int, length: Int) -> String {
+    public fn insert(self, at: Int, other: String) -> String { return strInsert(self, at, other) }
+    public fn removeRange(self, start: Int, length: Int) -> String {
         return strRemoveRange(self, start, length)
     }
-    fn stripPrefix(self, prefix: String) -> Option<String> {
+    public fn stripPrefix(self, prefix: String) -> Option<String> {
         return strStripPrefix(self, prefix)
     }
-    fn stripSuffix(self, suffix: String) -> Option<String> {
+    public fn stripSuffix(self, suffix: String) -> Option<String> {
         return strStripSuffix(self, suffix)
     }
 
-    fn split(self, sep: Char) -> List<String> { return strSplit(self, sep) }
-    fn split(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
-    fn splitOn(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
-    fn splitWhitespace(self) -> List<String> { return strSplitWhitespace(self) }
-    fn lines(self) -> List<String> { return strLines(self) }
-    fn chars(self) -> List<Char> { return strChars(self) }
-    fn bytes(self) -> List<Int> { return strBytes(self) }
+    public fn split(self, sep: Char) -> List<String> { return strSplit(self, sep) }
+    public fn split(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
+    public fn splitOn(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
+    public fn splitWhitespace(self) -> List<String> { return strSplitWhitespace(self) }
+    public fn lines(self) -> List<String> { return strLines(self) }
+    public fn chars(self) -> List<Char> { return strChars(self) }
+    public fn bytes(self) -> List<Int> { return strBytes(self) }
 
     // Generic in the closure, exactly as the free functions above are. The
     // `impl` target may not be generic (src/parse/decl.psm rejects `impl List<T>`),
     // but a *method* may: it is a free function whose first parameter is the
     // receiver, and nothing about that stops it having type parameters.
-    fn countIf<F>(self, keep: F) -> Int { return strCountIf(self, keep) }
-    fn indexWhere<F>(self, keep: F) -> Int { return strIndexWhere(self, keep) }
+    public fn countIf<F>(self, keep: F) -> Int { return strCountIf(self, keep) }
+    public fn indexWhere<F>(self, keep: F) -> Int { return strIndexWhere(self, keep) }
     // `allChars` and `anyChars`, not `allOf` and `anyOf`. The short names are
     // std/list.psm's, over `List<T>`, and both sides are generic in the closure:
     // an overload set holding `allOf<T, F>(List<T>, F)` and `allOf<F>(String, F)`
     // could not be resolved, and test_89_closures stopped compiling the moment
     // this file claimed the name. A method is a free function, so a method name
     // is a global name -- that is the cost the header of this block is about.
-    fn allChars<F>(self, keep: F) -> Bool { return strAllChars(self, keep) }
-    fn anyChars<F>(self, keep: F) -> Bool { return strAnyChars(self, keep) }
+    public fn allChars<F>(self, keep: F) -> Bool { return strAllChars(self, keep) }
+    public fn anyChars<F>(self, keep: F) -> Bool { return strAnyChars(self, keep) }
 
     // **The second reading of the same bytes.** `length`, `charAt` and
     // `substring` above are byte-indexed and stay that way; these count and cut
     // by character, which is what user text needs. See the UTF-8 section for why
     // both exist.
-    fn isAscii(self) -> Bool { return strIsAscii(self) }
-    fn isValidUtf8(self) -> Bool { return strIsValidUtf8(self) }
-    fn scalarCount(self) -> Int { return strScalarCount(self) }
-    fn scalars(self) -> List<Int> { return strScalars(self) }
-    fn scalarAt(self, at: Int) -> Int { return strScalarAt(self, at) }
-    fn scalarWidthAt(self, at: Int) -> Int { return strScalarWidthAt(self, at) }
-    fn isCharBoundary(self, at: Int) -> Bool { return strIsCharBoundary(self, at) }
-    fn scalarSubstring(self, start: Int, count: Int) -> String {
+    public fn isAscii(self) -> Bool { return strIsAscii(self) }
+    public fn isValidUtf8(self) -> Bool { return strIsValidUtf8(self) }
+    public fn scalarCount(self) -> Int { return strScalarCount(self) }
+    public fn scalars(self) -> List<Int> { return strScalars(self) }
+    public fn scalarAt(self, at: Int) -> Int { return strScalarAt(self, at) }
+    public fn scalarWidthAt(self, at: Int) -> Int { return strScalarWidthAt(self, at) }
+    public fn isCharBoundary(self, at: Int) -> Bool { return strIsCharBoundary(self, at) }
+    public fn scalarSubstring(self, start: Int, count: Int) -> String {
         return strScalarSubstring(self, start, count)
     }
 
-    fn parseInt(self) -> Option<Int> { return strParseInt(self) }
-    fn parseInt(self, radix: Int) -> Option<Int> { return strParseIntRadix(self, radix) }
-    fn parseIntOr(self, fallback: Int) -> Int { return strParseIntOr(self, fallback) }
-    fn parseI64(self) -> Option<I64> { return strParseI64(self) }
-    fn parseI64(self, radix: Int) -> Option<I64> { return strParseI64Radix(self, radix) }
-    fn parseU64(self) -> Option<U64> { return strParseU64(self) }
-    fn parseU64(self, radix: Int) -> Option<U64> { return strParseU64Radix(self, radix) }
-    fn parseFloat(self) -> Option<Float> { return strParseFloat(self) }
-    fn parseBool(self) -> Option<Bool> { return strParseBool(self) }
+    public fn parseInt(self) -> Option<Int> { return strParseInt(self) }
+    public fn parseInt(self, radix: Int) -> Option<Int> { return strParseIntRadix(self, radix) }
+    public fn parseIntOr(self, fallback: Int) -> Int { return strParseIntOr(self, fallback) }
+    public fn parseI64(self) -> Option<I64> { return strParseI64(self) }
+    public fn parseI64(self, radix: Int) -> Option<I64> { return strParseI64Radix(self, radix) }
+    public fn parseU64(self) -> Option<U64> { return strParseU64(self) }
+    public fn parseU64(self, radix: Int) -> Option<U64> { return strParseU64Radix(self, radix) }
+    public fn parseFloat(self) -> Option<Float> { return strParseFloat(self) }
+    public fn parseBool(self) -> Option<Bool> { return strParseBool(self) }
 }
 
 // A `Char` is a byte. These are the `char*` free functions above under the names
@@ -2387,18 +2387,18 @@ impl String {
 // note over `charCode` in src/common/text.psm for why writing that conversion out
 // by hand was once a source of silent wrongness.
 impl Char {
-    fn isDigit(self) -> Bool { return charIsDigit(self) }
-    fn isLower(self) -> Bool { return charIsLower(self) }
-    fn isUpper(self) -> Bool { return charIsUpper(self) }
-    fn isAlpha(self) -> Bool { return charIsAlpha(self) }
-    fn isAlnum(self) -> Bool { return charIsAlnum(self) }
-    fn isSpace(self) -> Bool { return charIsSpace(self) }
+    public fn isDigit(self) -> Bool { return charIsDigit(self) }
+    public fn isLower(self) -> Bool { return charIsLower(self) }
+    public fn isUpper(self) -> Bool { return charIsUpper(self) }
+    public fn isAlpha(self) -> Bool { return charIsAlpha(self) }
+    public fn isAlnum(self) -> Bool { return charIsAlnum(self) }
+    public fn isSpace(self) -> Bool { return charIsSpace(self) }
 
-    fn toUpper(self) -> Char { return charToUpper(self) }
-    fn toLower(self) -> Char { return charToLower(self) }
-    fn digitValue(self) -> Int { return charDigitValue(self) }
-    fn code(self) -> Int { return self as Int }
-    fn toString(self) -> String { return strFromChar(self) }
+    public fn toUpper(self) -> Char { return charToUpper(self) }
+    public fn toLower(self) -> Char { return charToLower(self) }
+    public fn digitValue(self) -> Int { return charDigitValue(self) }
+    public fn code(self) -> Int { return self as Int }
+    public fn toString(self) -> String { return strFromChar(self) }
 }
 
 // `toString` on the numeric types, so that building text out of a number reads
@@ -2406,29 +2406,29 @@ impl Char {
 // every overload set here is: there is no implicit numeric promotion, so
 // `count.toString()` picks the `Int` body and nothing else.
 impl Int {
-    fn toString(self) -> String { return strFromInt(self) }
-    fn toString(self, radix: Int) -> String { return strFromIntRadix(self, radix) }
+    public fn toString(self) -> String { return strFromInt(self) }
+    public fn toString(self, radix: Int) -> String { return strFromIntRadix(self, radix) }
 }
 
 impl I64 {
-    fn toString(self) -> String { return strFromInt(self as Int) }
+    public fn toString(self) -> String { return strFromInt(self as Int) }
 }
 
 impl U64 {
-    fn toString(self) -> String { return strFromUnsigned(self) }
-    fn toString(self, radix: Int) -> String { return strFromU64Radix(self, radix) }
-    fn toHex(self) -> String { return strHex(self) }
-    fn toOctal(self) -> String { return strOctal(self) }
-    fn toBinary(self) -> String { return strBinary(self) }
+    public fn toString(self) -> String { return strFromUnsigned(self) }
+    public fn toString(self, radix: Int) -> String { return strFromU64Radix(self, radix) }
+    public fn toHex(self) -> String { return strHex(self) }
+    public fn toOctal(self) -> String { return strOctal(self) }
+    public fn toBinary(self) -> String { return strBinary(self) }
 }
 
 // The type that had no conversion at all until `strFromFloat`. `toString` is the
 // round-trip text; `toString(decimals)` is the fixed-point presentation form.
 impl Float {
-    fn toString(self) -> String { return strFromFloat(self) }
-    fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self, decimals) }
+    public fn toString(self) -> String { return strFromFloat(self) }
+    public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self, decimals) }
 }
 
 impl Bool {
-    fn toString(self) -> String { return strFromBool(self) }
+    public fn toString(self) -> String { return strFromBool(self) }
 }

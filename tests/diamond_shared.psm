@@ -2,6 +2,6 @@
 // paths. Import resolution must parse and merge this module exactly once.
 import std.string
 
-fn shared_double(x: Int) -> Int {
+public fn shared_double(x: Int) -> Int {
     return x * 2
 }

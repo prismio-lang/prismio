@@ -20,6 +20,7 @@ site in both files. An accidental one fails this script.
 import argparse
 import re
 import subprocess
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -161,6 +162,31 @@ def compare(compiler, source, owned, dumps):
     return None
 
 
+
+def under_neutral_name(compiler):
+    """A copy of `compiler` whose basename is not `prismio`, beside the original.
+
+    A compiler *called* `prismio` is a launcher: run inside a project it hands the
+    command to `.prismio/build/debug/<host>` instead of compiling anything itself,
+    so a tool pointed at `build/gN/bin/prismio` silently measures whichever host
+    that project last built. Two snapshots taken that way agree perfectly and mean
+    nothing -- which is the failure this exists to make impossible.
+
+    Copied beside the original rather than into a temporary directory, because
+    both the runtime bitcode and the standard library are found relative to the
+    executable: `<exe_dir>/../lib` and `<exe_dir>/../stdlib`. A copy anywhere else
+    is a compiler with no toolchain.
+    """
+    import os, shutil
+    compiler = os.path.abspath(compiler)
+    if os.path.basename(compiler) not in ("prismio", "prismio.exe"):
+        return compiler, None
+    root, ext = os.path.splitext(compiler)
+    neutral = f"{root}-probe-{os.getpid()}{ext}"
+    shutil.copy2(compiler, neutral)
+    return neutral, neutral
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--compiler", default="build/aif2.exe")
@@ -176,7 +202,7 @@ def main():
     if not compiler.exists():
         print(f"no such compiler: {compiler}")
         return 1
-    args.compiler = str(compiler)
+    args.compiler, compiler_copy = under_neutral_name(str(compiler))
 
     sources = [Path(s) for s in args.sources]
     if not sources:
@@ -256,6 +282,9 @@ def main():
                 print(f"  DIFFER  {src} [{tag}]")
             else:
                 print(f"  agree   {src} [{tag}]")
+
+    if compiler_copy:
+        os.remove(compiler_copy)
 
     print()
     if failures:

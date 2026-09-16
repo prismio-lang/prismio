@@ -324,7 +324,14 @@ private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
     let mut i = 0
     while (i < count) {
         let scan = ptr_to_node(ir_decl_at(name, i))
-        if (scan.kind == NodeKind.FUNCTION) {
+        // A method is not a definition of the free function with its name. It
+        // takes a receiver, so no call that reaches the extern could reach it
+        // instead -- and treating one as a definition retires the extern for the
+        // whole program. std.process's `Child.write` did exactly that to the
+        // `write` every benchmark module declares for stdout: importing
+        // std.process anywhere left `write(1, text, len)` with no candidate at
+        // all, in a file that declares the extern itself.
+        if (scan.kind == NodeKind.FUNCTION and semaIsReceiverMethod(scan) == false) {
             return true
         }
         i = i + 1
@@ -436,14 +443,14 @@ private fn semaPackageOf(qualifier: String) -> String {
 
 // v0.1 3.5. Whether this declaration is visible from `atFile`.
 //
-// Visibility is **opt-in**: the default is public, which is the opposite of most
-// languages and the only non-breaking spelling available. Every cross-module call
-// in `src/` and every `std` function is public today, so a private default would
-// have made this a rename of the whole tree rather than a feature. The default can
-// be flipped later with a module-level declaration; nothing here precludes it.
+// **A declaration is private unless it says otherwise.** A module's surface is
+// the part of it someone wrote `public` on, so adding a helper cannot widen that
+// surface by accident -- the mistake the opt-in spelling made easy to keep
+// making. The parser stamps 1 on every `fn` and `extern fn` and the marker
+// overwrites it, so "no marker" and "`private`" are the same declaration.
 //
 //   0  public    -- everywhere
-//   1  private   -- the declaring file
+//   1  private   -- the declaring file, and the default
 //   2  internal  -- the declaring package
 //
 // `internal` is the level that only became expressible once qualifiers became
@@ -457,6 +464,32 @@ private fn semaDeclVisibleFrom(decl: ASTNode, atFile: Int) -> Bool {
     return declPackage.equals(atPackage)
 }
 
+// Whether this declaration is reached through a receiver rather than through its
+// module's namespace -- a method.
+//
+// This is the line the explicit-import gate below draws, and it is drawn here
+// rather than at the call because a method **comes with its receiver's type**:
+// `"a".concat(b)` is reachable wherever a `String` is, the way an inherent method
+// is in Rust and a member function is in Kotlin. Only a free function is a name
+// in a module's namespace, and only a name in a namespace needs an import to
+// bring it into another one.
+//
+// Gating a method on an import also gets the dependency backwards, which is the
+// sharper reason. std/map.psm calls the `eq` a *program* implements for its own
+// key type, and no import statement in std/map.psm could ever name that program's
+// file -- the library was compiled before the program existed. The same inversion
+// reaches the `call` sema synthesises for a closure: it lands in whichever file
+// wrote the closure and is invoked from the library that was handed it.
+//
+// "First parameter named `self`" is the test because that is what a method *is*
+// here -- see semaFunctionSymbol above, which says so in as many words.
+private fn semaIsReceiverMethod(fnNode: ASTNode) -> Bool {
+    if (nodeIsNull(fnNode.child1)) { return false }
+    let first = ptr_to_node(fnNode.child1)
+    if (first.kind != NodeKind.FUNCTION_PARAMETER) { return false }
+    return first.s1.equals("self")
+}
+
 internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
@@ -466,6 +499,10 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     let mut nameSeen = false
     // v0.1 3.5. Set when the call was written `module.f(...)`; empty otherwise.
     let qualifier = call.s1
+    // The module of a declaration that matched by name and was reachable except
+    // that this file never imported it; "" when no candidate was turned away for
+    // that reason.
+    let mut unimportedModule = ""
     // The visibility of a declaration that matched by name but was not visible
     // here: 0 none seen, 1 private, 2 internal. Kept as the level rather than a
     // flag so the diagnostic can name the marker the author actually wrote.
@@ -539,11 +576,60 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
                 isCandidate = false
             }
         }
+        // Extern functions are deduplicated by the merge: the first
+        // EXTERN_FUNCTION with a given name wins, so stmt.file is whichever
+        // module was merged first. Access to the extern is allowed when the
+        // calling file declared it itself, or explicitly imported a module
+        // whose declaration is public/internal with the right scope.
+        if (isCandidate and stmt.kind == NodeKind.EXTERN_FUNCTION) {
+            if (ir_caller_can_access_extern(call.file, qualifier, name) == 0) {
+                let hl = ir_caller_extern_hidden_level(call.file, qualifier, name)
+                if (hl > 0) {
+                    hiddenLevel = hl
+                }
+                isCandidate = false
+            }
+        }
+        // v0.1 3.5. **An import is the only way a name crosses a module
+        // boundary.** Merging is transitive -- `import driver.compile` drags in
+        // everything it imports, and everything those import -- and before this
+        // every one of those declarations was callable here. That made the set of
+        // names a file can see a property of its dependencies' dependencies, which
+        // is the thing a reader cannot see from the top of the file.
+        //
+        // Three ways a free function stays reachable: the caller declares it, the
+        // caller imported the module that declares it, or the two share a package
+        // -- the same scope `internal` already means, so sibling modules keep
+        // reaching each other without ceremony.
+        //
+        // Not applied to a method (semaIsReceiverMethod) or to a declaration with
+        // no module of its own, which is either the entry file's or one sema
+        // synthesised. Neither is a name in a namespace, so neither is a name an
+        // import could have brought in -- gating them rejects calls that no
+        // import could ever have made legal.
+        if (isCandidate and stmt.kind == NodeKind.FUNCTION and stmt.file != call.file) {
+            let declModule = semaFileQualifier(stmt.file)
+            if (declModule.equals("") == false
+                    and semaIsReceiverMethod(stmt) == false
+                    and semaOwningTrait(module, stmt).equals("")) {
+                let declPackage = semaPackageOf(declModule)
+                let callPackage = semaPackageOf(semaFileQualifier(call.file))
+                let isSamePackage = declPackage.equals("") == false and declPackage.equals(callPackage)
+                if (isSamePackage == false and ir_file_imports_module(call.file, declModule) == 0) {
+                    isCandidate = false
+                    // Kept so the diagnostic can name the import to add. Without
+                    // it this is "unknown function", which is true and useless:
+                    // the function is right there, one line at the top of the
+                    // file away from being callable.
+                    unimportedModule = strClone(declModule)
+                }
+            }
+        }
         // v0.1 3.5. A `priv` declaration is invisible outside its own file. Noted
         // rather than silently skipped, so the diagnostic can say *private*
         // instead of *unknown* -- an unknown-function error for a function the
         // reader can see is the worst of both.
-        if (isCandidate and semaDeclVisibleFrom(stmt, call.file) == false) {
+        if (isCandidate and stmt.kind == NodeKind.FUNCTION and semaDeclVisibleFrom(stmt, call.file) == false) {
             isCandidate = false
             hiddenLevel = stmt.i2
         }
@@ -589,12 +675,12 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     }
     if (hiddenLevel == 1) {
         semaErrorAt(call, diagQuote(name).concat(" is private to the file that declares it"))
-        diag_note("drop `private` from its declaration, or mark it `internal` to share it within its package")
+        diag_note("mark it `public` to make it part of its module's surface, or `internal` to share it within its package")
         return createNode(NodeKind.MODULE)
     }
     if (hiddenLevel == 2) {
         semaErrorAt(call, diagQuote(name).concat(" is internal to the package that declares it"))
-        diag_note("drop `internal` from its declaration to make it part of that package's surface")
+        diag_note("mark it `public` to make it part of that package's surface")
         return createNode(NodeKind.MODULE)
     }
     if (qualifier.equals("") == false) {
@@ -603,6 +689,14 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         let mut kind = "module "
         if (traitQualified) { kind = "trait " }
         semaErrorAt(call, kind.concat(diagQuote(qualifier), " declares no ", diagQuote(name)))
+        return createNode(NodeKind.MODULE)
+    }
+    if (unimportedModule.equals("") == false) {
+        semaErrorAt(call, diagQuote(name).concat(" is declared in ",
+                                                 diagQuote(unimportedModule),
+                                                 ", which this file does not import"))
+        diag_note("add `import ".concat(unimportedModule,
+                                        "`; an import is not transitive, so importing a module that imports it is not enough"))
         return createNode(NodeKind.MODULE)
     }
     semaErrorAt(call, "unknown function ".concat(diagQuote(name)))

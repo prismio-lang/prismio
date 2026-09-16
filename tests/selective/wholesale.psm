@@ -7,6 +7,6 @@
 // once for both files, so there is no second copy to keep them apart.
 import std.string
 
-fn shoutUpper(s: String) -> String {
+public fn shoutUpper(s: String) -> String {
     return strToUpper(s)
 }

@@ -63,7 +63,7 @@ trait Key {
 // signed Int is arithmetic -- an arithmetic shift feeds sign bits back in. The
 // result is masked to 31 bits so it is non-negative as an Int, which is what
 // lets `hash(k) & mask` be an index without a second correction.
-fn keyMixInt(value: Int) -> Int {
+public fn keyMixInt(value: Int) -> Int {
     let h = value as U32
     return ((h ^ (h >> 16)) & 2147483647) as Int
 }
@@ -79,7 +79,7 @@ fn keyMixInt(value: Int) -> Int {
 //
 // No hex literals in the language yet, so the constants are decimal:
 // 2246822507 is 0x85ebca6b and 3266489909 is 0xc2b2ae35.
-fn keyStrengthen(value: Int) -> Int {
+public fn keyStrengthen(value: Int) -> Int {
     let mut h = value as U32
     h = h ^ (h >> 16)
     h = h * 2246822507
@@ -94,7 +94,7 @@ fn keyStrengthen(value: Int) -> Int {
 // The signed spellings encode 0xff51afd7ed558ccd and 0xc4ceb9fe1a85ec53;
 // arithmetic and shifts are unsigned, including for negative I64 keys.
 // Reference: https://github.com/aappleby/smhasher/blob/master/src/MurmurHash3.cpp
-fn keyMixWide(value: U64) -> Int {
+public fn keyMixWide(value: U64) -> Int {
     let mut h = value
     h = h ^ (h >> 33)
     h = h * ((-49064778989728563 as I64) as U64)
@@ -116,7 +116,7 @@ fn keyMixWide(value: U64) -> Int {
 // words to `str_hash`'s one: the byte loop inlined into `mapProbe` whole and one
 // runtime call made `mapHashOf` too large to. Lowering it removes the call in
 // the shape that pays for it.
-fn keyHashBytes(s: String) -> Int {
+public fn keyHashBytes(s: String) -> Int {
     return __builtin_string_hash(s)
 }
 

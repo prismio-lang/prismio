@@ -2,7 +2,7 @@ import common
 import std.fs
 import std.string
 
-fn benchByteSum(text: String) -> Int {
+public fn benchByteSum(text: String) -> Int {
     let n = text.length()
     let mut checksum = 0
     let mut i = 0
@@ -13,17 +13,17 @@ fn benchByteSum(text: String) -> Int {
     return checksum + n
 }
 
-fn benchFileRead(path: String) -> Int {
+public fn benchFileRead(path: String) -> Int {
     return benchByteSum(readFile(path))
 }
 
-fn benchFileWrite(scale: Int, path: String) -> Int {
+public fn benchFileWrite(scale: Int, path: String) -> Int {
     let content = "0123456789abcdef\n".repeat(4096 * scale)
     if (writeFile(path, content)) { return benchByteSum(content) }
     return -1
 }
 
-fn benchLineProcessing(path: String) -> Int {
+public fn benchLineProcessing(path: String) -> Int {
     let text = readFile(path)
     let lines = text.lines()
     let mut checksum = 0
@@ -36,7 +36,7 @@ fn benchLineProcessing(path: String) -> Int {
     return checksum + list_len(lines)
 }
 
-fn benchTokenization(scale: Int) -> Int {
+public fn benchTokenization(scale: Int) -> Int {
     let text = "let value_17 = alpha + beta * 17;\n".repeat(1500 * scale)
     let n = text.length()
     let mut position = 0
@@ -71,7 +71,7 @@ fn benchTokenization(scale: Int) -> Int {
     return checksum + tokens
 }
 
-fn benchBase64Codec(scale: Int) -> Int {
+public fn benchBase64Codec(scale: Int) -> Int {
     let n = 30000 * scale
     let mut input: List<Int> = list_new_with_capacity(n)
     let mut seed = 17
@@ -156,7 +156,7 @@ fn benchBase64Codec(scale: Int) -> Int {
     return ((checksum + (encodedLen as I64)) % 1000000007) as Int
 }
 
-fn benchCsvParse(scale: Int) -> Int {
+public fn benchCsvParse(scale: Int) -> Int {
     let rows = 2500 * scale
 
     let mut csvData = ""

@@ -7,7 +7,7 @@ import common.diagnostics
 import std.string
 import std.option
 
-extern fn exit(code: Int)
+public extern fn exit(code: Int)
 
 internal fn parseBlock(p: Parser) -> ASTNode {
     let open = p.current()

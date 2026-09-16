@@ -21,11 +21,11 @@ import std.string
 // runtime/llvm-api-backend.c. The record is in `common` rather than `ir` because
 // `ast` needs it too -- Isize and Usize are pointer-width, so what a type *is*
 // depends on the target -- and `common` is the only package both may import.
-extern fn ir_target_select(triple: String borrow) -> Int
-extern fn ir_target_triple() -> String alias
-extern fn ir_target_data_layout() -> String alias
-extern fn ir_target_pointer_bits() -> Int
-extern fn ir_target_is_explicit() -> Int
+public extern fn ir_target_select(triple: String borrow) -> Int
+public extern fn ir_target_triple() -> String alias
+public extern fn ir_target_data_layout() -> String alias
+public extern fn ir_target_pointer_bits() -> Int
+public extern fn ir_target_is_explicit() -> Int
 
 
 struct Target {
@@ -37,7 +37,7 @@ struct Target {
 
 // The target in force, as one value. Resolves the host on first use, so this
 // never answers "unknown".
-fn targetCurrent() -> Target {
+public fn targetCurrent() -> Target {
     return Target {
         triple: ir_target_triple(),
         pointerBits: ir_target_pointer_bits(),
@@ -49,7 +49,7 @@ fn targetCurrent() -> Target {
 // Selects a target by triple. False means LLVM does not know it: either the
 // triple is wrong, or this is a build without real LLVM headers, where the host
 // is the only target that can be named at all.
-fn targetSelect(triple: String) -> Bool {
+public fn targetSelect(triple: String) -> Bool {
     return ir_target_select(triple) == 1
 }
 
@@ -68,7 +68,7 @@ fn targetSelect(triple: String) -> Bool {
 //
 // That list is a comment and not code on purpose: `--target` takes a triple and
 // LLVM validates it, so nothing here has to be kept in step with reality.
-fn targetPtrIntType(t: Target) -> String {
+public fn targetPtrIntType(t: Target) -> String {
     if (t.pointerBits == 32) { return "i32" }
     return "i64"
 }
@@ -77,7 +77,7 @@ fn targetPtrIntType(t: Target) -> String {
 // Bytes in a pointer. AIF's layout model asks it three times over: a String
 // field, a reference edge and an Isize are all one pointer wide, and on wasm32
 // that is four bytes rather than eight.
-fn targetPointerBytes() -> Int {
+public fn targetPointerBytes() -> Int {
     return ir_target_pointer_bits() / 8
 }
 
@@ -96,7 +96,7 @@ fn targetPointerBytes() -> Int {
 // because its triple's OS is, and its environment, `android`, is none of the
 // four. The codes are this compiler's, not the enums' ordinals: std.platform
 // maps each one to a variant by name, so reordering an enum moves no answer.
-fn targetOsCode() -> Int {
+public fn targetOsCode() -> Int {
     let triple = ir_target_triple()
     if (strContains(triple, "windows") or strContains(triple, "mingw")) { return 1 }
     if (strContains(triple, "linux")) { return 2 }
@@ -104,7 +104,7 @@ fn targetOsCode() -> Int {
     return 0
 }
 
-fn targetArchCode() -> Int {
+public fn targetArchCode() -> Int {
     let triple = ir_target_triple()
     if (strStartsWith(triple, "x86_64") or strStartsWith(triple, "amd64")) { return 1 }
     if (strStartsWith(triple, "aarch64") or strStartsWith(triple, "arm64")) { return 2 }
@@ -113,7 +113,7 @@ fn targetArchCode() -> Int {
 
 // MSVC and MinGW before GNU: `x86_64-pc-windows-gnu` is the MinGW ABI, which LLVM
 // also spells `x86_64-w64-mingw32`, and both carry a `gnu` that is not glibc's.
-fn targetEnvCode() -> Int {
+public fn targetEnvCode() -> Int {
     let triple = ir_target_triple()
     if (strContains(triple, "msvc")) { return 3 }
     if (strContains(triple, "mingw")) { return 4 }

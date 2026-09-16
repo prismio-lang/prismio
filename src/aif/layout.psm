@@ -7,6 +7,8 @@ import common.text
 import common.diagnostics
 import common.target
 import std.string
+import aif.model
+import ir.bridge
 
 // ---------------------------------------------------------------------------
 // Building the fact graph

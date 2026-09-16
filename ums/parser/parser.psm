@@ -181,7 +181,7 @@ impl UmsParser {
     }
 }
 
-fn umsParse(tokens: List<UmsToken>, path: String,
+public fn umsParse(tokens: List<UmsToken>, path: String,
             diagnostics: List<UmsDiagnostic>) -> UmsAstDocument {
     let parser = UmsParser {
         tokens: tokens,

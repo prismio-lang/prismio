@@ -20,8 +20,8 @@
 import std.string
 import std.list
 
-extern fn cli_arg_count() -> Int
-extern fn cli_arg(index: Int) -> String alias
+public extern fn cli_arg_count() -> Int
+public extern fn cli_arg(index: Int) -> String alias
 
 // The subprocess capability. `borrow` on every String: each is read, copied by
 // the callee where it has to outlive the call, and never retained.
@@ -34,18 +34,18 @@ extern fn cli_arg(index: Int) -> String alias
 // and does all three in one expression, so the window is a few instructions
 // wide -- but two threads spawning concurrently would interleave into one
 // vector, and that is a real limit rather than an oversight.
-extern fn proc_spawn_begin(program: String borrow)
-extern fn proc_spawn_arg(argument: String borrow)
-extern fn proc_spawn_run(stdinMode: Int, stdoutMode: Int, stderrMode: Int,
+private extern fn proc_spawn_begin(program: String borrow)
+private extern fn proc_spawn_arg(argument: String borrow)
+private extern fn proc_spawn_run(stdinMode: Int, stdoutMode: Int, stderrMode: Int,
                          out: SpawnOut) -> Int
-extern fn proc_wait(handle: I64) -> Int
-extern fn proc_kill(handle: I64) -> Int
-extern fn proc_exec() -> Int
-extern fn proc_read_all(descriptor: Int) -> String produce(free)
+private extern fn proc_wait(handle: I64) -> Int
+private extern fn proc_kill(handle: I64) -> Int
+private extern fn proc_exec() -> Int
+private extern fn proc_read_all(descriptor: Int) -> String produce(free)
 // `bytes`, so a view crosses without a NUL-terminated copy: the count is passed
 // beside it and the callee never looks for a terminator.
-extern fn proc_write(descriptor: Int, text: String bytes, length: Int) -> Int
-extern fn proc_close(descriptor: Int) -> Int
+private extern fn proc_write(descriptor: Int, text: String bytes, length: Int) -> Int
+private extern fn proc_close(descriptor: Int) -> Int
 
 private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
     let mut i = 0
@@ -99,7 +99,7 @@ impl Args {
     // gap: `count` is one property away, so the caller that cares can ask, and
     // the `Option` form this replaced cost every caller a `match` to serve that
     // one.
-    fn at(self, index: Int) -> String {
+    public fn at(self, index: Int) -> String {
         let source = cli_arg(index)
         let length = strLength(source)
         let out = str_with_capacity(length)
@@ -108,7 +108,7 @@ impl Args {
     }
 
     // `argc`, so the program name at 0 is counted.
-    fn count(self) -> Int {
+    public fn count(self) -> Int {
         return cli_arg_count()
     }
 }
@@ -159,23 +159,23 @@ impl Stream {
     // Read after `wait` when the output is small enough to fit the pipe buffer,
     // and before it when it is not -- a child filling the pipe blocks in `write`
     // and never reaches its own exit, which is a deadlock this cannot detect.
-    fn readAll(self) -> String {
+    public fn readAll(self) -> String {
         return proc_read_all(self.descriptor)
     }
 
     // Bytes written, or -1. Partial writes are retried, so a short count means
     // the child closed its end.
-    fn write(self, text: String) -> Int {
+    public fn write(self, text: String) -> Int {
         return proc_write(self.descriptor, text, strLength(text))
     }
 
     // Closing the child's stdin is how it is told there is no more input; a
     // child reading until EOF hangs without it.
-    fn close(self) -> Int {
+    public fn close(self) -> Int {
         return proc_close(self.descriptor)
     }
 
-    fn isOpen(self) -> Bool {
+    public fn isOpen(self) -> Bool {
         return self.descriptor >= 0
     }
 }
@@ -195,14 +195,14 @@ struct Child {
 impl Child {
     // The child's exit status: what it returned from `main`, or 128 + the signal
     // that killed it, or -1 if it could not be waited for.
-    fn wait(self) -> Int {
+    public fn wait(self) -> Int {
         return proc_wait(self.handle)
     }
 
     // Terminate it. The child's status afterwards is the platform's answer for a
     // killed process, not a code it chose -- 128 + SIGKILL on POSIX, 1 on
     // Windows -- so `kill` then `wait` is how the descriptors are reclaimed.
-    fn kill(self) -> Int {
+    public fn kill(self) -> Int {
         return proc_kill(self.handle)
     }
 }
@@ -237,7 +237,7 @@ struct Process {
 // A function rather than an associated one -- there are no associated functions
 // -- and it may carry the struct's own name, so `Process()` is the constructor
 // and `Process { ... }` is still the literal.
-fn Process() -> Process {
+public fn Process() -> Process {
     return Process {
         program: "",
         arguments: [],
@@ -258,7 +258,7 @@ private fn processPushArguments(arguments: List<String>) {
 impl Process {
     // Start it and return immediately. A `Child` whose `handle` is -1 is a spawn
     // that failed; `error` is gone by then, so check the handle.
-    fn spawn(self) -> Child {
+    public fn spawn(self) -> Child {
         // The three modes are read **before** the argument list, because
         // `self.arguments` is a `List<String>` and naming an affine field is a
         // move: read after it, `self.stdout` came back as `Inherit` whatever had
@@ -288,7 +288,7 @@ impl Process {
     // have to choose a size, and the choice that is right for a checksum is
     // wrong for a build log -- `spawn` is one line longer and lets the caller
     // decide.
-    fn run(self) -> Int {
+    public fn run(self) -> Int {
         let child = self.spawn()
         if (child.handle < 0) { return 0 - 1 }
         return child.wait()
@@ -301,7 +301,7 @@ impl Process {
     // starts a new process and exits this one, so the pid changes and a parent
     // waiting on the original sees it finish. Where that matters, spawn and wait
     // instead.
-    fn exec(self) -> Int {
+    public fn exec(self) -> Int {
         proc_spawn_begin(self.program)
         processPushArguments(self.arguments)
         return proc_exec()

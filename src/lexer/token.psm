@@ -70,7 +70,7 @@ struct Token {
 // How a token kind reads inside a diagnostic. Deliberately coarser than the enum:
 // a reader does not care that `<=` is RELATIONAL_OPERATOR rather than
 // ARITHMETIC_OPERATOR, and kinds with no distinct wording fall through to "TOKEN".
-fn typeToString(t: TokenType) -> String {
+public fn typeToString(t: TokenType) -> String {
     if (t == TokenType.STRING_LITERAL) { return "STRING" }
     if (t == TokenType.CHAR_LITERAL) { return "CHAR" }
     if (t == TokenType.NUMBER_LITERAL) { return "NUMBER" }

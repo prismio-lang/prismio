@@ -191,7 +191,7 @@ private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
 // Existing comments, whitespace, quoting and declaration order therefore stay
 // byte-for-byte identical. Syntax/lowering errors and duplicates refuse the edit
 // and leave `source` untouched; diagnostics explain why.
-fn umsManifestAddDependency(source: String, manifestPath: String,
+public fn umsManifestAddDependency(source: String, manifestPath: String,
                             scope: UmsDependencyScope, name: String,
                             constraint: String, localPath: String,
                             diagnostics: List<UmsDiagnostic>) -> UmsManifestEdit {

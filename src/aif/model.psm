@@ -76,25 +76,25 @@ import std.string
 // runtime/aif_support.c
 // ---------------------------------------------------------------------------
 
-extern fn aif_reset()
+internal extern fn aif_reset()
 
-extern fn aif_scope_new(parent: Int, owner: Int) -> Int
-extern fn aif_scope_set_region(scope: Int, name: String borrow)
-extern fn aif_region_name_at_site(id: Int) -> String alias
-extern fn aif_site_arena_is_pinned(id: Int) -> Int
+internal extern fn aif_scope_new(parent: Int, owner: Int) -> Int
+internal extern fn aif_scope_set_region(scope: Int, name: String borrow)
+internal extern fn aif_region_name_at_site(id: Int) -> String alias
+internal extern fn aif_site_arena_is_pinned(id: Int) -> Int
 
 // SPEC 5.2's diagnostic. How many sites the arena at this scope actually serves,
 // by the codegen gate, and where to underline when the answer is zero.
-extern fn aif_scope_set_region_span(scope: Int, file: Int, line: Int, col: Int)
-extern fn aif_region_serves(scope: Int) -> Int
-extern fn aif_scope_region_file(s: Int) -> Int
-extern fn aif_scope_region_line(s: Int) -> Int
-extern fn aif_scope_region_col(s: Int) -> Int
+internal extern fn aif_scope_set_region_span(scope: Int, file: Int, line: Int, col: Int)
+internal extern fn aif_region_serves(scope: Int) -> Int
+internal extern fn aif_scope_region_file(s: Int) -> Int
+internal extern fn aif_scope_region_line(s: Int) -> Int
+internal extern fn aif_scope_region_col(s: Int) -> Int
 
 // SPEC 6.3's witness path for placement. Which clause of the arena gate declined
 // this site, and the region it would otherwise have been served by.
-extern fn aif_arena_blockers(id: Int) -> Int
-extern fn aif_nearest_region_name(id: Int) -> String alias
+internal extern fn aif_arena_blockers(id: Int) -> Int
+internal extern fn aif_nearest_region_name(id: Int) -> String alias
 
 // A mask, not an enum: the gate reports every clause that rejected, because the
 // first one is reliably the wrong thing to act on. See runtime/aif_support.c.
@@ -108,13 +108,13 @@ let AIF_ARENA_B_OUTLIVES = 64
 
 // SPEC 5's annotations. `unique` cuts the aliasing graph at a site; `pin`
 // constrains the tier after convergence, and its verdict is one of AIF_PIN_*.
-extern fn aif_con_unique(vs: Int)
-extern fn aif_con_pin(vs: Int, tier: Int)
-extern fn aif_check_pins(converged: Int)
-extern fn aif_site_pin_verdict(id: Int) -> Int
-extern fn aif_site_pin_tier(id: Int) -> Int
-extern fn aif_site_derived_tier(id: Int) -> Int
-extern fn aif_site_alias_axiom(id: Int) -> Int
+internal extern fn aif_con_unique(vs: Int)
+internal extern fn aif_con_pin(vs: Int, tier: Int)
+internal extern fn aif_check_pins(converged: Int)
+internal extern fn aif_site_pin_verdict(id: Int) -> Int
+internal extern fn aif_site_pin_tier(id: Int) -> Int
+internal extern fn aif_site_derived_tier(id: Int) -> Int
+internal extern fn aif_site_alias_axiom(id: Int) -> Int
 
 // SPEC 5.4 applied to *placement* rather than to the tier: `pin(<region-name>)`
 // asserts that this allocation is served by the arena of the `region` with that
@@ -130,10 +130,10 @@ extern fn aif_site_alias_axiom(id: Int) -> Int
 // It reads `aif_region_name_at_site` and nothing else, which is the one arena
 // gate every other consumer reads. A second copy of that predicate is the defect
 // this file's neighbours have already paid for having four of.
-extern fn aif_con_pin_region(vs: Int, name: String borrow)
-extern fn aif_check_placement_pins(converged: Int)
-extern fn aif_site_pin_region_verdict(id: Int) -> Int
-extern fn aif_site_pin_region(id: Int) -> String alias
+internal extern fn aif_con_pin_region(vs: Int, name: String borrow)
+internal extern fn aif_check_placement_pins(converged: Int)
+internal extern fn aif_site_pin_region_verdict(id: Int) -> Int
+internal extern fn aif_site_pin_region(id: Int) -> String alias
 
 // REQUIREMENTS 15, INFERENCE 4.1 and 4.3. One `spawn`, and both boundary rules
 // ride it: E-SPAWN vs E-SPAWN-J is chosen by `joined`, and T-SPAWN-MOVE vs
@@ -143,77 +143,77 @@ extern fn aif_site_pin_region(id: Int) -> String alias
 // `scope` is what E-SPAWN-J binds the arguments to when the task is joined
 // before that scope exits. It is ignored when `joined` is 0, because E-SPAWN's
 // conclusion is Global and has no scope to name.
-extern fn aif_con_spawn(vs: Int, scope: Int, joined: Int)
+internal extern fn aif_con_spawn(vs: Int, scope: Int, joined: Int)
 
 // INFERENCE 2.3, read back per site: 0 Isolated, 1 Transferred, 2 CrossThread.
 // The manifest prints it and the drop path reads it to choose between a plain
 // decrement and an atomic one.
-extern fn aif_site_thread(id: Int) -> Int
+internal extern fn aif_site_thread(id: Int) -> Int
 
 // INFERENCE 4.3's T-STATIC premise: does this program create any task at all?
 // A whole-program property, so it is asked of the module and not of a site.
-extern fn aif_program_has_tasks() -> Int
+internal extern fn aif_program_has_tasks() -> Int
 
 // INFERENCE 5.6 / SPEC 6.3. The derivation, read back as a witness path.
-extern fn aif_con_at(file: Int, line: Int, col: Int)
+internal extern fn aif_con_at(file: Int, line: Int, col: Int)
 // M3.2. Where in its block a statement sits. A scope is a set of statements and
 // carries no order, so an extent that ends at last use has nothing to end at
 // without this. Set as the walk goes, read by the next site or call edge made.
-extern fn aif_stmt_at(scope: Int, index: Int)
+internal extern fn aif_stmt_at(scope: Int, index: Int)
 // M3.2b. A read of a binding. Recorded against the statement of the binding's
 // *declaring* scope that encloses the read, which is what makes a use inside a
 // nested block still pin the enclosing region's extent open.
-extern fn aif_var_note_use(fnId: Int, name: String, scope: Int)
-extern fn aif_cause_domain_for(id: Int) -> Int
-extern fn aif_cause_build(id: Int, domain: Int) -> Int
-extern fn aif_cause_site(i: Int) -> Int
-extern fn aif_cause_rule(i: Int) -> Int
-extern fn aif_cause_value(i: Int) -> Int
-extern fn aif_cause_file(i: Int) -> Int
-extern fn aif_cause_line(i: Int) -> Int
-extern fn aif_cause_col(i: Int) -> Int
-extern fn aif_rule_name(rule: Int) -> String alias
-extern fn aif_escape_name(value: Int) -> String alias
-extern fn aif_alias_name(value: Int) -> String alias
+internal extern fn aif_var_note_use(fnId: Int, name: String, scope: Int)
+internal extern fn aif_cause_domain_for(id: Int) -> Int
+internal extern fn aif_cause_build(id: Int, domain: Int) -> Int
+internal extern fn aif_cause_site(i: Int) -> Int
+internal extern fn aif_cause_rule(i: Int) -> Int
+internal extern fn aif_cause_value(i: Int) -> Int
+internal extern fn aif_cause_file(i: Int) -> Int
+internal extern fn aif_cause_line(i: Int) -> Int
+internal extern fn aif_cause_col(i: Int) -> Int
+internal extern fn aif_rule_name(rule: Int) -> String alias
+internal extern fn aif_escape_name(value: Int) -> String alias
+internal extern fn aif_alias_name(value: Int) -> String alias
 
 // LAYOUT 7.1. The scope carries the block it came from, so codegen can ask a
 // block whether an arena was placed there, and its loop depth, which is what
 // weights a site's contribution to the benefit.
-extern fn aif_scope_note_node(scope: Int, node: Ptr)
-extern fn aif_scope_set_loop_depth(scope: Int, depth: Int)
-extern fn aif_place_arenas()
+internal extern fn aif_scope_note_node(scope: Int, node: Ptr)
+internal extern fn aif_scope_set_loop_depth(scope: Int, depth: Int)
+internal extern fn aif_place_arenas()
 
-extern fn aif_fn_new(symbol: String, name: String, file: Int) -> Int
-extern fn aif_fn_lookup(symbol: String) -> Int
-extern fn aif_fn_count() -> Int
-extern fn aif_fn_symbol(f: Int) -> String alias
-extern fn aif_fn_name(f: Int) -> String
-extern fn aif_fn_is_sealed(f: Int) -> Int
+internal extern fn aif_fn_new(symbol: String, name: String, file: Int) -> Int
+internal extern fn aif_fn_lookup(symbol: String) -> Int
+internal extern fn aif_fn_count() -> Int
+internal extern fn aif_fn_symbol(f: Int) -> String alias
+internal extern fn aif_fn_name(f: Int) -> String
+internal extern fn aif_fn_is_sealed(f: Int) -> Int
 
 // SPEC 5.2.1's first named repair, in its report-only half. The call graph is
 // recorded here rather than reconstructed later because the walk is the only
 // place that knows which function a call expression sits in *and* which scope --
 // and both are needed: the closure needs the caller, the "calls in a region"
 // count needs the scope.
-extern fn aif_call_edge(caller: Int, callee: Int, scope: Int)
-extern fn aif_call_opaque(caller: Int, scope: Int)
-extern fn aif_note_owner_use(fnId: Int, vs: Int)
-extern fn aif_fn_bracket_blockers(f: Int) -> Int
-extern fn aif_fn_call_sites(f: Int) -> Int
-extern fn aif_fn_calls_in_region(f: Int) -> Int
-extern fn aif_region_call_sites() -> Int
-extern fn aif_bracketable_region_call_sites() -> Int
-extern fn aif_call_edge_count() -> Int
+internal extern fn aif_call_edge(caller: Int, callee: Int, scope: Int)
+internal extern fn aif_call_opaque(caller: Int, scope: Int)
+internal extern fn aif_note_owner_use(fnId: Int, vs: Int)
+internal extern fn aif_fn_bracket_blockers(f: Int) -> Int
+internal extern fn aif_fn_call_sites(f: Int) -> Int
+internal extern fn aif_fn_calls_in_region(f: Int) -> Int
+internal extern fn aif_region_call_sites() -> Int
+internal extern fn aif_bracketable_region_call_sites() -> Int
+internal extern fn aif_call_edge_count() -> Int
 
 // SPEC 5.2.1.1's placement half. One entry per call the compiler bracketed, and
 // the manifest is required to print them: regime (a) is fragile as a language
 // guarantee -- a second call to a bracketed callee silently removes the
 // placement -- so the loss has to appear as a diff rather than as a slowdown.
-extern fn aif_bracket_count() -> Int
-extern fn aif_bracket_callee(i: Int) -> Int
-extern fn aif_bracket_scope(i: Int) -> Int
-extern fn aif_bracket_served(i: Int) -> Int
-extern fn aif_site_is_bracketed(id: Int) -> Int
+internal extern fn aif_bracket_count() -> Int
+internal extern fn aif_bracket_callee(i: Int) -> Int
+internal extern fn aif_bracket_scope(i: Int) -> Int
+internal extern fn aif_bracket_served(i: Int) -> Int
+internal extern fn aif_site_is_bracketed(id: Int) -> Int
 
 // The obligations `aif_fn_bracket_blockers` reports, as a mask. Every failing
 // one is reported, not the first -- the same decision as AIF_ARENA_B_*, for the
@@ -230,45 +230,45 @@ let AIF_BR_B_SHARED_BODY = 16
 // which `bracket_regime_ok` asks and often finds they already do.
 let AIF_BR_B_MULTI_CALL = 32
 
-extern fn aif_struct_new(name: String)
-extern fn aif_enum_new(name: String)
-extern fn aif_struct_add_field(name: String, field: String, type: String, bytes: Int)
+internal extern fn aif_struct_new(name: String)
+internal extern fn aif_enum_new(name: String)
+internal extern fn aif_struct_add_field(name: String, field: String, type: String, bytes: Int)
 // The layout half of a field: 1 when its storage is the object's own -- a struct
 // value copied in rather than a pointer stored. A separate call rather than a
 // fifth argument above, because the committed seed's IR calls the four-argument
 // form and changing an FFI signature is a two-step change.
-extern fn aif_struct_field_inline(name: String, field: String, inlined: Int)
+internal extern fn aif_struct_field_inline(name: String, field: String, inlined: Int)
 
 // LAYOUT 2.1's access profile, statically estimated, and 7.2's search over it.
 // `weight` is AIF_LOOP_ITERS per enclosing loop -- the same estimator automatic
 // arena placement uses for allocs_in(s).
-extern fn aif_field_access(type: String, field: String, weight: Int)
-extern fn aif_layout_select()
+internal extern fn aif_field_access(type: String, field: String, weight: Int)
+internal extern fn aif_layout_select()
 
 // LAYOUT 5's cost model needs which fields are touched *together*, which a
 // per-field count cannot express: two fields with equal counts touched by
 // different loops want opposite sides of a hot/cold cut. These bracket a loop so
 // every aif_field_access inside it lands in the same traversal.
-extern fn aif_traversal_begin()
-extern fn aif_traversal_end()
+internal extern fn aif_traversal_begin()
+internal extern fn aif_traversal_end()
 // `let p = list_get(ps, i)` -- the loop walks a container in order, which is what
 // makes a smaller hot record worth anything. Without this a traversal is treated
 // as a pointer chase.
-extern fn aif_traversal_elem(type: String, sequential: Int)
+internal extern fn aif_traversal_elem(type: String, sequential: Int)
 
 // LAYOUT 7.2's `argmin over candidates(tau)`, and 8's "ranked by modelled cost".
-extern fn aif_layout_rank(type: String) -> Int
-extern fn aif_layout_candidates() -> Int
-extern fn aif_layout_best() -> Int
-extern fn aif_layout_cand_hot(i: Int) -> Int
-extern fn aif_layout_cand_ratio(i: Int) -> Int
-extern fn aif_layout_cand_field_hot(i: Int, f: Int) -> Int
-extern fn aif_layout_cand_bytes(i: Int, cold: Int) -> Int
-extern fn aif_layout_traversals(type: String) -> Int
+internal extern fn aif_layout_rank(type: String) -> Int
+internal extern fn aif_layout_candidates() -> Int
+internal extern fn aif_layout_best() -> Int
+internal extern fn aif_layout_cand_hot(i: Int) -> Int
+internal extern fn aif_layout_cand_ratio(i: Int) -> Int
+internal extern fn aif_layout_cand_field_hot(i: Int, f: Int) -> Int
+internal extern fn aif_layout_cand_bytes(i: Int, cold: Int) -> Int
+internal extern fn aif_layout_traversals(type: String) -> Int
 // 8's top-k, in cost order. `k = 0` is the argmin `aif_layout_best` reports; -1
 // means k is past the last candidate. Ties break on the candidate index, which is
 // 9.1's total order, so the k-th candidate is the same on every host.
-extern fn aif_layout_cand_at_rank(k: Int) -> Int
+internal extern fn aif_layout_cand_at_rank(k: Int) -> Int
 
 // LAYOUT 6's hot/cold split, taken rather than reported.
 //
@@ -282,9 +282,9 @@ extern fn aif_layout_cand_at_rank(k: Int) -> Int
 // after: a type embedded *inline* in another struct is storage inside its owner,
 // so nothing ever calls an allocator for it and its link word would be whatever
 // the owner's allocation left behind.
-extern fn aif_layout_no_split(type: String)
-extern fn aif_layout_split_select()
-extern fn aif_layout_hot_count(type: String) -> Int
+internal extern fn aif_layout_no_split(type: String)
+internal extern fn aif_layout_split_select()
+public extern fn aif_layout_hot_count(type: String) -> Int
 
 // Veto 5, on its own channel because LAYOUT 8 may override this one and must never
 // override `aif_layout_no_split`. Both come from the same discovery -- a struct
@@ -292,14 +292,14 @@ extern fn aif_layout_hot_count(type: String) -> Int
 // while its *owner* is merely unmodellable: `aifTypeBytes` sizes that field as one
 // pointer, so g3's `Node` is modelled at 40 bytes and is really 112. The owner's
 // split is sound, it just has no basis for being chosen.
-extern fn aif_layout_no_split_unmodelled(type: String)
+internal extern fn aif_layout_no_split_unmodelled(type: String)
 
 // A performance guard for a pointer-free List element whose complete row is
 // consumed by one sequential traversal. It stays distinct from the hard
 // soundness veto above so an explicit LAYOUT 8 force can still override it.
-extern fn aif_layout_all_fields_sequential(type: String) -> Int
-extern fn aif_layout_no_split_list_full_scan(type: String)
-extern fn aif_layout_veto_reason(type: String) -> String alias
+internal extern fn aif_layout_all_fields_sequential(type: String) -> Int
+internal extern fn aif_layout_no_split_list_full_scan(type: String)
+internal extern fn aif_layout_veto_reason(type: String) -> String alias
 
 // LAYOUT 8's forced candidate: emit this cut rather than the model's argmin.
 //
@@ -309,146 +309,146 @@ extern fn aif_layout_veto_reason(type: String) -> String alias
 // checked against the enumerated candidates and is *not* silently dropped when it
 // matches nothing: `aif_layout_force_applied` is how this compiler avoids adding
 // another instrument that reports success while matching nothing.
-extern fn aif_layout_force(type: String, hotCount: Int)
-extern fn aif_layout_forced_count() -> Int
-extern fn aif_layout_forced_type(i: Int) -> String alias
-extern fn aif_layout_forced_hot(i: Int) -> Int
-extern fn aif_layout_force_applied(i: Int) -> Int
+public extern fn aif_layout_force(type: String, hotCount: Int)
+public extern fn aif_layout_forced_count() -> Int
+public extern fn aif_layout_forced_type(i: Int) -> String alias
+public extern fn aif_layout_forced_hot(i: Int) -> Int
+public extern fn aif_layout_force_applied(i: Int) -> Int
 
 // LAYOUT 2.2. A measured profile, replacing the static estimate above. Answers 1
 // when it read at least one record; 0 means no file, or a file naming nothing
 // this module declares, and the caller falls back (W2).
-extern fn aif_profile_load(path: String) -> Int
+internal extern fn aif_profile_load(path: String) -> Int
 // `static`, or `workload:NAME`. A `static char*` from the intern table.
-extern fn aif_profile_source() -> String alias
-extern fn aif_profile_is_measured() -> Int
+internal extern fn aif_profile_source() -> String alias
+internal extern fn aif_profile_is_measured() -> Int
 
 // LAYOUT 2.1's `range(f)`. Dynamic only, so these answer 0 under a static
 // profile -- which is why bit-packing declines without a workload rather than
 // packing against a range it invented.
-extern fn aif_field_has_range(type: String, field: String) -> Int
-extern fn aif_field_range_lo(type: String, field: String) -> I64
-extern fn aif_field_range_hi(type: String, field: String) -> I64
+internal extern fn aif_field_has_range(type: String, field: String) -> Int
+internal extern fn aif_field_range_lo(type: String, field: String) -> I64
+internal extern fn aif_field_range_hi(type: String, field: String) -> I64
 // The narrowest signed width that holds the range, in bytes; 8 when there is
 // no range. In C because the comparison needs I64 literals -- see the note at
 // the definition.
-extern fn aif_field_range_bytes(type: String, field: String) -> Int
-extern fn aif_layout_field(type: String, i: Int) -> String alias
-extern fn aif_layout_field_bytes(type: String, i: Int) -> Int
-extern fn aif_layout_reordered(type: String) -> Int
-extern fn aif_struct_set_size(name: String, bytes: Int)
-extern fn aif_struct_size(name: String) -> Int
-extern fn aif_is_struct(name: String) -> Int
-extern fn aif_is_enum(name: String) -> Int
-extern fn aif_struct_nfields(name: String) -> Int
-extern fn aif_type_edge(from: String, to: String)
-extern fn aif_compute_type_acyclic()
-extern fn aif_nominal_count() -> Int
-extern fn aif_nominal_name(i: Int) -> String
-extern fn aif_nominal_is_struct(i: Int) -> Int
-extern fn aif_nominal_acyclic(i: Int) -> Int
+internal extern fn aif_field_range_bytes(type: String, field: String) -> Int
+public extern fn aif_layout_field(type: String, i: Int) -> String alias
+internal extern fn aif_layout_field_bytes(type: String, i: Int) -> Int
+internal extern fn aif_layout_reordered(type: String) -> Int
+internal extern fn aif_struct_set_size(name: String, bytes: Int)
+internal extern fn aif_struct_size(name: String) -> Int
+internal extern fn aif_is_struct(name: String) -> Int
+internal extern fn aif_is_enum(name: String) -> Int
+internal extern fn aif_struct_nfields(name: String) -> Int
+internal extern fn aif_type_edge(from: String, to: String)
+internal extern fn aif_compute_type_acyclic()
+internal extern fn aif_nominal_count() -> Int
+internal extern fn aif_nominal_name(i: Int) -> String
+internal extern fn aif_nominal_is_struct(i: Int) -> Int
+internal extern fn aif_nominal_acyclic(i: Int) -> Int
 
 // CYCLES 2. How many types lie in a non-trivial SCC, and how many sites reach
 // T4b. Zero cyclic types means the collector is omitted from the binary.
 // REQUIREMENTS 19. The arena high-water mark, statically estimated, and the
 // `region name pin(N)` caps that gate on it.
-extern fn aif_scope_set_budget(scope: Int, bytes: Int, file: Int, line: Int, col: Int)
-extern fn aif_arena_high_water() -> Int
-extern fn aif_arena_unsized_sites() -> Int
-extern fn aif_budget_count() -> Int
-extern fn aif_scope_budget(s: Int) -> Int
-extern fn aif_scope_served(s: Int) -> Int
-extern fn aif_scope_region(s: Int) -> String alias
-extern fn aif_scope_budget_file(s: Int) -> Int
-extern fn aif_scope_budget_line(s: Int) -> Int
-extern fn aif_scope_budget_col(s: Int) -> Int
+internal extern fn aif_scope_set_budget(scope: Int, bytes: Int, file: Int, line: Int, col: Int)
+internal extern fn aif_arena_high_water() -> Int
+internal extern fn aif_arena_unsized_sites() -> Int
+internal extern fn aif_budget_count() -> Int
+internal extern fn aif_scope_budget(s: Int) -> Int
+internal extern fn aif_scope_served(s: Int) -> Int
+internal extern fn aif_scope_region(s: Int) -> String alias
+internal extern fn aif_scope_budget_file(s: Int) -> Int
+internal extern fn aif_scope_budget_line(s: Int) -> Int
+internal extern fn aif_scope_budget_col(s: Int) -> Int
 
-extern fn aif_scc_type_count() -> Int
-extern fn aif_t4b_site_count() -> Int
-extern fn aif_site_is_cyclic(id: Int) -> Int
+internal extern fn aif_scc_type_count() -> Int
+internal extern fn aif_t4b_site_count() -> Int
+internal extern fn aif_site_is_cyclic(id: Int) -> Int
 
-extern fn aif_site_new(type: String, kind: Int, fnId: Int, scope: Int,
+internal extern fn aif_site_new(type: String, kind: Int, fnId: Int, scope: Int,
                        file: Int, line: Int, col: Int, nfields: Int) -> Int
-extern fn aif_site_count() -> Int
-extern fn aif_site_type(id: Int) -> String alias
-extern fn aif_site_kind(id: Int) -> Int
-extern fn aif_site_file(id: Int) -> Int
-extern fn aif_site_line(id: Int) -> Int
-extern fn aif_site_col(id: Int) -> Int
-extern fn aif_site_fn(id: Int) -> Int
-extern fn aif_site_ordinal(id: Int) -> Int
+internal extern fn aif_site_count() -> Int
+internal extern fn aif_site_type(id: Int) -> String alias
+internal extern fn aif_site_kind(id: Int) -> Int
+internal extern fn aif_site_file(id: Int) -> Int
+internal extern fn aif_site_line(id: Int) -> Int
+internal extern fn aif_site_col(id: Int) -> Int
+internal extern fn aif_site_fn(id: Int) -> Int
+internal extern fn aif_site_ordinal(id: Int) -> Int
 
-extern fn aif_vs_new() -> Int
-extern fn aif_vs_site(vs: Int, site: Int)
-extern fn aif_vs_key(vs: Int, key: Int)
-extern fn aif_vs_union(a: Int, b: Int) -> Int
-extern fn aif_vs_is_empty(vs: Int) -> Int
+internal extern fn aif_vs_new() -> Int
+internal extern fn aif_vs_site(vs: Int, site: Int)
+internal extern fn aif_vs_key(vs: Int, key: Int)
+internal extern fn aif_vs_union(a: Int, b: Int) -> Int
+internal extern fn aif_vs_is_empty(vs: Int) -> Int
 // SPEC 8.4. Mark a value set as denoting views of a collection. Provenance, not
 // a points-to edge -- see aif_vs_view_of in runtime/aif_support.c.
-extern fn aif_vs_view_of(vs: Int, collection: Int)
+internal extern fn aif_vs_view_of(vs: Int, collection: Int)
 
-extern fn aif_key_var(fnId: Int, name: String) -> Int
-extern fn aif_var_note_scope(fnId: Int, name: String, scope: Int)
-extern fn aif_var_scope(fnId: Int, name: String) -> Int
-extern fn aif_extern_contract_set(fnName: String, index: Int, contract: String)
-extern fn aif_extern_contract(fnName: String, index: Int) -> String alias
-extern fn aif_key_field(type: String, field: String) -> Int
-extern fn aif_elem_key(containerType: String) -> Int
-extern fn aif_key_ret(fnId: Int) -> Int
-extern fn aif_key_param(fnId: Int, index: Int) -> Int
+internal extern fn aif_key_var(fnId: Int, name: String) -> Int
+internal extern fn aif_var_note_scope(fnId: Int, name: String, scope: Int)
+internal extern fn aif_var_scope(fnId: Int, name: String) -> Int
+internal extern fn aif_extern_contract_set(fnName: String, index: Int, contract: String)
+public extern fn aif_extern_contract(fnName: String, index: Int) -> String alias
+internal extern fn aif_key_field(type: String, field: String) -> Int
+internal extern fn aif_elem_key(containerType: String) -> Int
+internal extern fn aif_key_ret(fnId: Int) -> Int
+internal extern fn aif_key_param(fnId: Int, index: Int) -> Int
 // `sink` on a parameter, told to the engine. A move rather than a borrow, which
 // is what lets the pass-through guard allow a callee to hand one back.
-extern fn aif_note_param_consuming(fnId: Int, index: Int)
+internal extern fn aif_note_param_consuming(fnId: Int, index: Int)
 
-extern fn aif_argv_begin() -> Int
-extern fn aif_argv_push(vs: Int)
-extern fn aif_argv_count(base: Int) -> Int
-extern fn aif_argv_get(base: Int, i: Int) -> Int
-extern fn aif_argv_end(base: Int)
+internal extern fn aif_argv_begin() -> Int
+internal extern fn aif_argv_push(vs: Int)
+internal extern fn aif_argv_count(base: Int) -> Int
+internal extern fn aif_argv_get(base: Int, i: Int) -> Int
+internal extern fn aif_argv_end(base: Int)
 
-extern fn aif_con_bind(key: Int, vs: Int)
-extern fn aif_con_arg(key: Int, vs: Int)
-extern fn aif_con_store(key: Int, vs: Int, owners: Int)
-extern fn aif_con_live_in(vs: Int, scope: Int, fnId: Int)
-extern fn aif_con_opaque(vs: Int)
-extern fn aif_con_foreign(vs: Int)
-extern fn aif_con_retain_in(vs: Int, holder: Int)
-extern fn aif_con_borrow(vs: Int)
-extern fn aif_con_escape_caller(vs: Int)
+internal extern fn aif_con_bind(key: Int, vs: Int)
+internal extern fn aif_con_arg(key: Int, vs: Int)
+internal extern fn aif_con_store(key: Int, vs: Int, owners: Int)
+internal extern fn aif_con_live_in(vs: Int, scope: Int, fnId: Int)
+internal extern fn aif_con_opaque(vs: Int)
+internal extern fn aif_con_foreign(vs: Int)
+internal extern fn aif_con_retain_in(vs: Int, holder: Int)
+internal extern fn aif_con_borrow(vs: Int)
+internal extern fn aif_con_escape_caller(vs: Int)
 // E-RETURN with the function that owns the return statement. Ordinary sites
 // still rise to Caller; view provenance uses the function id to distinguish a
 // locally-created collection from one merely borrowed from this function's
 // caller.
-extern fn aif_con_return(vs: Int, fnId: Int)
-extern fn aif_con_escape_global(vs: Int)
-extern fn aif_con_no_stack(vs: Int)
-extern fn aif_con_transferred(vs: Int)
-extern fn aif_con_count() -> Int
+internal extern fn aif_con_return(vs: Int, fnId: Int)
+internal extern fn aif_con_escape_global(vs: Int)
+internal extern fn aif_con_no_stack(vs: Int)
+internal extern fn aif_con_transferred(vs: Int)
+internal extern fn aif_con_count() -> Int
 
-extern fn aif_set_owned_collections(on: Int)
-extern fn aif_solve(maxRounds: Int) -> Int
-extern fn aif_rounds() -> Int
-extern fn aif_widen()
-extern fn aif_site_widened(id: Int) -> Int
-extern fn aif_pt_rounds() -> Int
-extern fn aif_tier_of(site: Int) -> Int
-extern fn aif_theta_stack() -> Int
-extern fn aif_set_theta_mode(mode: Int)
-extern fn aif_theta_mode() -> Int
-extern fn aif_site_note_node(site: Int, node: Ptr)
-extern fn aif_note_call_result(node: Ptr, vs: Int, fnId: Int)
-extern fn aif_site_is_rc(site: Int) -> Int
+internal extern fn aif_set_owned_collections(on: Int)
+internal extern fn aif_solve(maxRounds: Int) -> Int
+internal extern fn aif_rounds() -> Int
+internal extern fn aif_widen()
+internal extern fn aif_site_widened(id: Int) -> Int
+internal extern fn aif_pt_rounds() -> Int
+internal extern fn aif_tier_of(site: Int) -> Int
+internal extern fn aif_theta_stack() -> Int
+internal extern fn aif_set_theta_mode(mode: Int)
+internal extern fn aif_theta_mode() -> Int
+internal extern fn aif_site_note_node(site: Int, node: Ptr)
+internal extern fn aif_note_call_result(node: Ptr, vs: Int, fnId: Int)
+internal extern fn aif_site_is_rc(site: Int) -> Int
 
-extern fn aif_order_add(symbol: String, site: Int)
-extern fn aif_order_sort()
-extern fn aif_order_count() -> Int
-extern fn aif_order_symbol(i: Int) -> String alias
-extern fn aif_order_site(i: Int) -> Int
+internal extern fn aif_order_add(symbol: String, site: Int)
+internal extern fn aif_order_sort()
+internal extern fn aif_order_count() -> Int
+internal extern fn aif_order_symbol(i: Int) -> String alias
+internal extern fn aif_order_site(i: Int) -> Int
 
 // The string surface comes from utils.psm; only what it does not declare is
 // declared here. Redeclaring one with a different signature would be merged
 // away silently by resolveImports -- whichever module was reached first wins.
-extern fn ir_llvm_version() -> String alias
+public extern fn ir_llvm_version() -> String alias
 
 // ---------------------------------------------------------------------------
 // Constants

@@ -1,59 +1,59 @@
 // LLVM Bridge FFI for Prismio
 
 // Global state
-extern fn ir_reset()
-extern fn ir_print()
-extern fn ir_write_file(filename: String) -> Int
-extern fn ir_append(text: String)
-extern fn ir_append_line(text: String)
-extern fn ir_get_temp() -> Int
+public extern fn ir_reset()
+public extern fn ir_print()
+public extern fn ir_write_file(filename: String) -> Int
+public extern fn ir_append(text: String)
+public extern fn ir_append_line(text: String)
+public extern fn ir_get_temp() -> Int
 
 // Module
-extern fn ir_module_start(moduleName: String)
-extern fn ir_module_end()
+public extern fn ir_module_start(moduleName: String)
+public extern fn ir_module_end()
 
 // Stamps the selected target onto the module being built. The target record
 // itself lives in common.target, because a type's width is an `ast` question
 // and `common` is the only package both it and `ir` may import.
-extern fn ir_module_set_target(triple: String borrow, layout: String borrow)
+public extern fn ir_module_set_target(triple: String borrow, layout: String borrow)
 
 // Function Builders
-extern fn ir_declare_function_begin(name: String, retType: String)
-extern fn ir_declare_function_param(paramType: String)
+public extern fn ir_declare_function_begin(name: String, retType: String)
+public extern fn ir_declare_function_param(paramType: String)
 // The declaration returns memory nothing else can reach, so LLVM may treat two
 // calls as two allocations. Only for a constructor: an entry point returning a
 // pointer *into* a block the caller already holds must not carry it.
-extern fn ir_declare_function_fresh()
-extern fn ir_declare_function_end()
+public extern fn ir_declare_function_fresh()
+public extern fn ir_declare_function_end()
 
-extern fn ir_function_begin(name: String, retType: String)
-extern fn ir_function_param(paramType: String, paramName: String)
-extern fn ir_function_param_unique(paramType: String, paramName: String)
-extern fn ir_function_body_start()
-extern fn ir_function_always_inline()
-extern fn ir_function_end()
+public extern fn ir_function_begin(name: String, retType: String)
+public extern fn ir_function_param(paramType: String, paramName: String)
+public extern fn ir_function_param_unique(paramType: String, paramName: String)
+public extern fn ir_function_body_start()
+public extern fn ir_function_always_inline()
+public extern fn ir_function_end()
 
 // Call Builder
-extern fn ir_call_begin()
-extern fn ir_call_arg(argType: String, argValue: String)
-extern fn ir_call_end(retType: String, funcName: String) -> Int
+public extern fn ir_call_begin()
+public extern fn ir_call_arg(argType: String, argValue: String)
+public extern fn ir_call_end(retType: String, funcName: String) -> Int
 
 // Basic Blocks
-extern fn ir_get_label() -> Int
-extern fn ir_label(labelName: String)
-extern fn ir_label_numbered(labelNum: Int)
+public extern fn ir_get_label() -> Int
+public extern fn ir_label(labelName: String)
+public extern fn ir_label_numbered(labelNum: Int)
 
 // Memory
-extern fn ir_alloca(type: String, name: String) -> Int
-extern fn ir_load(type: String, ptrName: String) -> Int
-extern fn ir_store(type: String, value: String, ptrName: String)
-extern fn ir_load_global(type: String, name: String) -> Int
-extern fn ir_store_global(type: String, value: String, name: String)
+public extern fn ir_alloca(type: String, name: String) -> Int
+public extern fn ir_load(type: String, ptrName: String) -> Int
+public extern fn ir_store(type: String, value: String, ptrName: String)
+public extern fn ir_load_global(type: String, name: String) -> Int
+public extern fn ir_store_global(type: String, value: String, name: String)
 
 // Arithmetic
-extern fn ir_add(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_sub(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_mul(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_add(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_sub(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_mul(type: String, lhs: String, rhs: String) -> Int
 
 // RFC 0560's "check in debug, wrap in release", emitted only under
 // `--overflow-checks`. Each one lowers to llvm.s{add,sub,mul}.with.overflow, a
@@ -64,124 +64,124 @@ extern fn ir_mul(type: String, lhs: String, rhs: String) -> Int
 // **Never a default**, and the number is measured rather than feared: the
 // checked form is 5.4x-6.0x the plain one, because a branch per operation
 // defeats vectorization outright. See the note on ir_checked_binop.
-extern fn ir_add_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
-extern fn ir_sub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
-extern fn ir_mul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
-extern fn ir_uadd_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
-extern fn ir_usub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
-extern fn ir_umul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+public extern fn ir_add_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+public extern fn ir_sub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+public extern fn ir_mul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+public extern fn ir_uadd_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+public extern fn ir_usub_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
+public extern fn ir_umul_checked(type: String, lhs: String, rhs: String, file: String, line: Int) -> Int
 
 // One bit, read by every arithmetic site and decided by none of them.
-extern fn ir_set_overflow_checks(on: Int)
-extern fn ir_overflow_checks() -> Int
+public extern fn ir_set_overflow_checks(on: Int)
+public extern fn ir_overflow_checks() -> Int
 
-extern fn ir_sdiv(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_srem(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_udiv(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_urem(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fadd(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fsub(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fmul(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fdiv(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_neg(type: String, value: String) -> Int
+public extern fn ir_sdiv(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_srem(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_udiv(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_urem(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fadd(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fsub(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fmul(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fdiv(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_neg(type: String, value: String) -> Int
 
 // Width conversions
-extern fn ir_zext(fromType: String, value: String, toType: String) -> Int
-extern fn ir_sext(fromType: String, value: String, toType: String) -> Int
-extern fn ir_trunc(fromType: String, value: String, toType: String) -> Int
-extern fn ir_sitofp(fromType: String, value: String, toType: String) -> Int
-extern fn ir_uitofp(fromType: String, value: String, toType: String) -> Int
-extern fn ir_fptosi(fromType: String, value: String, toType: String) -> Int
-extern fn ir_fptoui(fromType: String, value: String, toType: String) -> Int
-extern fn ir_and(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_or(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_xor(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_not(type: String, value: String) -> Int
-extern fn ir_shl(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_lshr(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_ashr(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_zext(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_sext(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_trunc(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_sitofp(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_uitofp(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_fptosi(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_fptoui(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_and(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_or(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_xor(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_not(type: String, value: String) -> Int
+public extern fn ir_shl(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_lshr(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_ashr(type: String, lhs: String, rhs: String) -> Int
 
 // Comparisons
-extern fn ir_icmp_eq(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_ne(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_slt(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_sle(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_sgt(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_sge(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_ult(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_ule(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_ugt(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_icmp_uge(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fcmp_oeq(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fcmp_one(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fcmp_olt(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fcmp_ole(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fcmp_ogt(type: String, lhs: String, rhs: String) -> Int
-extern fn ir_fcmp_oge(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_eq(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_ne(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_slt(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_sle(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_sgt(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_sge(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_ult(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_ule(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_ugt(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_icmp_uge(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fcmp_oeq(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fcmp_one(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fcmp_olt(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fcmp_ole(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fcmp_ogt(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fcmp_oge(type: String, lhs: String, rhs: String) -> Int
 
 // Control Flow
-extern fn ir_ret(type: String, value: String)
-extern fn ir_ret_void()
-extern fn ir_br(label: String)
-extern fn ir_br_numbered(labelNum: Int)
-extern fn ir_cond_br(condition: String, trueLabel: String, falseLabel: String)
-extern fn ir_cond_br_numbered(condition: String, trueLabel: Int, falseLabel: Int)
+public extern fn ir_ret(type: String, value: String)
+public extern fn ir_ret_void()
+public extern fn ir_br(label: String)
+public extern fn ir_br_numbered(labelNum: Int)
+public extern fn ir_cond_br(condition: String, trueLabel: String, falseLabel: String)
+public extern fn ir_cond_br_numbered(condition: String, trueLabel: Int, falseLabel: Int)
 // A dense integer dispatch. Cases may be added after the terminator is built;
 // LLVM owns their final ordering and chooses a jump table when profitable.
-extern fn ir_switch_begin(value: String, defaultLabel: Int, caseCount: Int) -> Int
-extern fn ir_switch_case(switchId: Int, value: Int, label: Int)
+public extern fn ir_switch_begin(value: String, defaultLabel: Int, caseCount: Int) -> Int
+public extern fn ir_switch_case(switchId: Int, value: Int, label: Int)
 
 // Loop context (break/continue targets)
-extern fn ir_loop_push(continueLabel: Int, breakLabel: Int)
-extern fn ir_loop_pop()
-extern fn ir_loop_continue_label() -> Int
-extern fn ir_loop_break_label() -> Int
+public extern fn ir_loop_push(continueLabel: Int, breakLabel: Int)
+public extern fn ir_loop_pop()
+public extern fn ir_loop_continue_label() -> Int
+public extern fn ir_loop_break_label() -> Int
 
 // Move tracking (ownership / MVS)
-extern fn ir_clear_moved()
-extern fn ir_mark_moved(name: String)
-extern fn ir_unmark_moved(name: String)
-extern fn ir_is_moved(name: String) -> Int
+public extern fn ir_clear_moved()
+public extern fn ir_mark_moved(name: String)
+public extern fn ir_unmark_moved(name: String)
+public extern fn ir_is_moved(name: String) -> Int
 // A scoped, conservative capability for `list_set_exclusive`: local list_new
 // starts exclusive; any operation that can expose an element or the handle
 // clears it. Unlike borrowed state this belongs to the List owner, not a value
 // read from it.
-extern fn ir_mark_list_exclusive(name: String)
-extern fn ir_unmark_list_exclusive(name: String)
-extern fn ir_is_list_exclusive(name: String) -> Int
+public extern fn ir_mark_list_exclusive(name: String)
+public extern fn ir_unmark_list_exclusive(name: String)
+public extern fn ir_is_list_exclusive(name: String) -> Int
 
 // Borrow tracking (non-owning bindings: let/inout params)
-extern fn ir_clear_borrowed()
-extern fn ir_mark_borrowed(name: String)
-extern fn ir_unmark_borrowed(name: String)
-extern fn ir_is_borrowed(name: String) -> Int
+public extern fn ir_clear_borrowed()
+public extern fn ir_mark_borrowed(name: String)
+public extern fn ir_unmark_borrowed(name: String)
+public extern fn ir_is_borrowed(name: String) -> Int
 
 // Globals
-extern fn ir_global_string(name: String, strContent: String)
-extern fn ir_global_var(name: String, type: String, initValue: String, isConst: Int)
+public extern fn ir_global_string(name: String, strContent: String)
+public extern fn ir_global_var(name: String, type: String, initValue: String, isConst: Int)
 
 // Makes a global module-private. A module-level `let` is copied into every
 // module that imports it, so external linkage makes those copies collide at
 // link time; see the note in runtime/llvm-api-backend.c.
-extern fn ir_global_set_internal(name: String)
+public extern fn ir_global_set_internal(name: String)
 
 // Typed structural builders.
 // Both backends implement these identically. The frontend must build structs,
 // arrays and field access through them rather than emitting IR text, because
 // the LLVM C API backend has no way to honour raw text.
-extern fn ir_set_pointer_int_type(t: String)
-extern fn ir_set_opt_level(level: Int)
+public extern fn ir_set_pointer_int_type(t: String)
+public extern fn ir_set_opt_level(level: Int)
 
 // The memory-model seam. Every heap allocation and release codegen emits goes
 // through ir_alloc_object/ir_free_object, which call whichever functions these
 // name -- so changing the model is a change here, never a change to codegen.
 // Default to malloc/free, which is exactly today's behaviour.
-extern fn ir_set_alloc_function(name: String)
-extern fn ir_set_free_function(name: String)
-extern fn ir_get_alloc_function() -> String alias
-extern fn ir_get_free_function() -> String alias
-extern fn ir_struct_type_begin(name: String)
-extern fn ir_struct_type_field(fieldType: String)
+public extern fn ir_set_alloc_function(name: String)
+public extern fn ir_set_free_function(name: String)
+public extern fn ir_get_alloc_function() -> String alias
+public extern fn ir_get_free_function() -> String alias
+public extern fn ir_struct_type_begin(name: String)
+public extern fn ir_struct_type_field(fieldType: String)
 
 // LAYOUT 6's hot/cold split, and the only thing codegen has to say about it.
 //
@@ -189,68 +189,68 @@ extern fn ir_struct_type_field(fieldType: String)
 // The backend appends the link word, builds the cold record, and redirects every
 // field access at or above this index through it -- none of which is visible from
 // here, because ir_struct_field_ptr is the single choke point for field access.
-extern fn ir_struct_type_split(hotCount: Int)
-extern fn ir_struct_type_end()
-extern fn ir_enum_set_null_tag(name: String, tag: Int)
-extern fn ir_enum_reserve_null(name: String)
-extern fn ir_enum_null_tag(name: String) -> Int
-extern fn ir_enum_tag(name: String, value: String) -> Int
-extern fn ir_struct_disable_path_tbaa(structName: String)
-extern fn ir_alloc_object(structName: String) -> Int
+public extern fn ir_struct_type_split(hotCount: Int)
+public extern fn ir_struct_type_end()
+public extern fn ir_enum_set_null_tag(name: String, tag: Int)
+public extern fn ir_enum_reserve_null(name: String)
+public extern fn ir_enum_null_tag(name: String) -> Int
+public extern fn ir_enum_tag(name: String, value: String) -> Int
+public extern fn ir_struct_disable_path_tbaa(structName: String)
+public extern fn ir_alloc_object(structName: String) -> Int
 
 // The T0 half of the seam. aif/implementation/COMPILER-AUDIT.md 3 explains why
 // one hook could never express the whole ladder: T0 is an instruction, not a
 // call, and no choice of allocator name produces an `alloca`. T1's arena hook is
 // the third and does not exist yet.
-extern fn ir_alloc_stack(structName: String) -> Int
+public extern fn ir_alloc_stack(structName: String) -> Int
 
 // The third hook, and the one 3 said did not exist. `region r { ... }` brackets
 // the block with ir_region_begin/ir_region_end, and a value the analysis proved
 // cannot outlive r bumps from that arena. The handle is dynamically scoped, so
 // this stays fn(size) -> ptr like the other two.
-extern fn ir_alloc_region(structName: String) -> Int
-extern fn ir_region_begin()
-extern fn ir_region_end()
+public extern fn ir_alloc_region(structName: String) -> Int
+public extern fn ir_region_begin()
+public extern fn ir_region_end()
 
 // The fourth, and the one 3 rated only "partly" expressible -- on the grounds
 // that a count word changes struct layout and every ir_struct_field_ptr index
 // with it. It does not, because the count goes in front of the pointer rather
 // than inside the object, so this really is just another fn(size) -> ptr.
-extern fn ir_alloc_rc(structName: String) -> Int
+public extern fn ir_alloc_rc(structName: String) -> Int
 
 // The fifth, for T4b. Like ir_alloc_rc it is a fn(size) -> ptr: the colour bits
 // and the per-type descriptor go in front of the pointer, so the LLVM struct
 // type is untouched and cyc_set_type fills them in afterwards.
-extern fn ir_alloc_cycle(structName: String) -> Int
+public extern fn ir_alloc_cycle(structName: String) -> Int
 
 // Level 4's arena path for values the runtime allocates. `ir_alloc_region` only
 // serves struct literals; a string comes out of str_concat, which cannot know
 // where it was called from -- so the call site brackets it instead.
-extern fn ir_arena_hint_begin()
-extern fn ir_arena_hint_end()
-extern fn ir_region_enter()
-extern fn ir_region_exit()
-extern fn ir_region_depth() -> Int
-extern fn ir_loop_region_depth() -> Int
-extern fn ir_free_object(value: String)
+public extern fn ir_arena_hint_begin()
+public extern fn ir_arena_hint_end()
+public extern fn ir_region_enter()
+public extern fn ir_region_exit()
+public extern fn ir_region_depth() -> Int
+public extern fn ir_loop_region_depth() -> Int
+public extern fn ir_free_object(value: String)
 
 // AIF Level 4's second deallocator. A List is a handle plus an element block, so
 // the seam's fn(ptr) -> void cannot reclaim it; this routes to the runtime's own
 // list_release, which frees both through the allocator the list came from.
-extern fn ir_free_list(value: String)
-extern fn ir_free_data_view(value: String)
+public extern fn ir_free_list(value: String)
+public extern fn ir_free_data_view(value: String)
 
 // Struct-field ownership. A struct that owns its fields is reclaimed by a
 // function generated for its type, so the deallocator is named rather than
 // fixed. Still behind the seam: the generated body frees through ir_free_object
 // and its siblings, so a verify build sees every one of them.
-extern fn ir_free_typed(value: String, fnName: String)
-extern fn ir_free_rc(value: String)
+public extern fn ir_free_typed(value: String, fnName: String)
+public extern fn ir_free_rc(value: String)
 // AIF T4a. The atomic release, as a separate symbol chosen here rather than a
 // flag the runtime tests -- SPEC 11 item 10 keeps atomics off the common path,
 // and a value proved never to cross a thread boundary should not pay a branch
 // to find that out.
-extern fn ir_free_rc_atomic(value: String)
+public extern fn ir_free_rc_atomic(value: String)
 
 // The release half of the hot/cold split. A split object is two allocations and
 // ir_free_object frees one block without knowing its type, so the cold block is
@@ -258,16 +258,16 @@ extern fn ir_free_rc_atomic(value: String)
 // pointer and the type are both in hand. A no-op for an unsplit type, which is
 // what lets generateReleaseFn call it unconditionally and therefore never get it
 // wrong for a particular type.
-extern fn ir_free_cold(structName: String, value: String)
+public extern fn ir_free_cold(structName: String, value: String)
 
 // The address of a named function, as a value. A container of structs that own
 // their fields cannot be told its disposition with an int -- the release differs
 // per element type and the runtime cannot name a type -- so it is told this.
-extern fn ir_func_addr(name: String) -> Int
+public extern fn ir_func_addr(name: String) -> Int
 
 // An indirect call to a `fn(ptr) -> void`. The collector's visitor differs per
 // traversal phase, so its callee is a value rather than a name.
-extern fn ir_call_indirect_ptr(fnValue: String, arg: String)
+public extern fn ir_call_indirect_ptr(fnValue: String, arg: String)
 
 // T15. Dispatch through a trait object: an indirect call at whatever signature
 // the method was declared with, and the vtables it dispatches through.
@@ -275,81 +275,81 @@ extern fn ir_call_indirect_ptr(fnValue: String, arg: String)
 // `ir_call_end_indirect` closes a call opened with `ir_call_begin` exactly as
 // `ir_call_end` does; the difference is that the callee is a loaded value rather
 // than a name.
-extern fn ir_call_end_indirect(retType: String, fnValue: String) -> Int
-extern fn ir_vtable_declare(name: String, count: Int)
-extern fn ir_vtable_begin()
-extern fn ir_vtable_entry(fnName: String)
-extern fn ir_vtable_end(name: String)
-extern fn ir_vtable_addr(name: String) -> Int
-extern fn ir_ptr_slot(baseValue: String, index: Int) -> Int
+public extern fn ir_call_end_indirect(retType: String, fnValue: String) -> Int
+public extern fn ir_vtable_declare(name: String, count: Int)
+public extern fn ir_vtable_begin()
+public extern fn ir_vtable_entry(fnName: String)
+public extern fn ir_vtable_end(name: String)
+public extern fn ir_vtable_addr(name: String) -> Int
+public extern fn ir_ptr_slot(baseValue: String, index: Int) -> Int
 
 // REQUIREMENTS 20. A `List<T>` stores pointer-sized slots, so a scalar element
 // rides in one. Boxing it would cost an allocation per element and hand the
 // container something to own, which is exactly what a scalar element is not.
-extern fn ir_int_to_ptr(fromType: String, value: String) -> Int
-extern fn ir_ptr_to_int(value: String, toType: String) -> Int
-extern fn ir_bitcast(fromType: String, value: String, toType: String) -> Int
-extern fn ir_struct_field_ptr(structName: String, object: String, fieldIndex: Int) -> Int
-extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
+public extern fn ir_int_to_ptr(fromType: String, value: String) -> Int
+public extern fn ir_ptr_to_int(value: String, toType: String) -> Int
+public extern fn ir_bitcast(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_struct_field_ptr(structName: String, object: String, fieldIndex: Int) -> Int
+public extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
 // M4.2's flat-List access with its representation test hoisted out of the
 // element loop. `stride` is the static element size codegen already computed;
 // the emitted false arm is `list_get_inline` itself, so the boxed representation
 // is answered exactly as it was.
-extern fn ir_list_flat_elem(listValue: String, indexValue: String, stride: Int,
+public extern fn ir_list_flat_elem(listValue: String, indexValue: String, stride: Int,
                             guard: String, checkBounds: Int) -> Int
 // The scalar twin returns a value rather than an address. Its flat arm loads
 // `elemType` directly; its fallback arm converts list_get_inline_scalar's i64
 // bit carrier back to the same type before the two arms join.
-extern fn ir_list_flat_scalar_elem(listValue: String, indexValue: String,
+public extern fn ir_list_flat_scalar_elem(listValue: String, indexValue: String,
                                    elemType: String, stride: Int,
                                    guard: String, checkBounds: Int,
                                    hoistedBound: String, hoistedData: String) -> Int
-extern fn ir_list_flat_scalar_set(listValue: String, indexValue: String,
+public extern fn ir_list_flat_scalar_set(listValue: String, indexValue: String,
                                   value: String, elemType: String, stride: Int,
                                   guard: String, checkBounds: Int,
                                   hoistedBound: String, hoistedData: String)
 // The corresponding typed access for pointer-slot Lists, including scalar
 // values carried in a slot.
-extern fn ir_list_boxed_elem(listValue: String, indexValue: String) -> Int
+public extern fn ir_list_boxed_elem(listValue: String, indexValue: String) -> Int
 // The write end: a flat push that needs no allocator when the list has room.
-extern fn ir_list_flat_push(listValue: String, stride: Int, guard: String) -> Int
+public extern fn ir_list_flat_push(listValue: String, stride: Int, guard: String) -> Int
 // E1. The preheader's capacity conjunct, and the push it licenses: with
 // `cap - len >= trip_count * pushes_per_iteration` proved once, a push in the
 // body is a store and a length bump with no test of any kind.
-extern fn ir_list_has_room(listValue: String, needValue: String) -> Int
-extern fn ir_list_flat_push_scalar(listValue: String, value: String,
+public extern fn ir_list_has_room(listValue: String, needValue: String) -> Int
+public extern fn ir_list_flat_push_scalar(listValue: String, value: String,
                                    elemType: String, stride: Int, guard: String,
                                    checkCapacity: Int)
-extern fn ir_list_len(listValue: String) -> Int
-extern fn ir_list_data(listValue: String) -> Int
+public extern fn ir_list_len(listValue: String) -> Int
+public extern fn ir_list_data(listValue: String) -> Int
 // One receiver's half of a loop's flat guard, for the preheader.
-extern fn ir_list_is_flat(listValue: String, stride: Int) -> Int
+public extern fn ir_list_is_flat(listValue: String, stride: Int) -> Int
 // The whole-buffer copy as one `llvm.memmove`, replacing the loop that wrote it
 // a word at a time. The caller's guard owns every precondition: both containers
 // flat at `stride`, and `[from, count)` inside both lengths.
-extern fn ir_list_flat_copy(dstValue: String, srcValue: String, fromValue: String,
+public extern fn ir_list_flat_copy(dstValue: String, srcValue: String, fromValue: String,
                             countValue: String, stride: Int)
-extern fn ir_list_flat_zero_append(listValue: String, countValue: String, stride: Int)
+public extern fn ir_list_flat_zero_append(listValue: String, countValue: String, stride: Int)
 // The flat-List guard's view of a callee: marked once per module, read at every
 // call site inside a guarded loop.
-extern fn ir_mark_guard_safe_fn(name: String borrow, safe: Int)
-extern fn ir_is_guard_safe_fn(name: String borrow) -> Int
-extern fn ir_array_alloca(elemType: String, count: Int) -> Int
-extern fn ir_string_ptr(globalName: String) -> Int
+public extern fn ir_mark_guard_safe_fn(name: String borrow, safe: Int)
+public extern fn ir_is_guard_safe_fn(name: String borrow) -> Int
+public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
+public extern fn ir_string_ptr(globalName: String) -> Int
 // LAYOUT 2. A constant C string created on demand and interned by content, for
 // the type and field names the profile instrumentation passes. Distinct from
 // ir_string_ptr, which resolves a global the collect_strings pre-pass named:
 // these names are not source literals, so that pre-pass has nothing to find.
-extern fn ir_const_cstring(text: String) -> Int
+public extern fn ir_const_cstring(text: String) -> Int
 // First-class aggregates. Until the fat `String` there was nothing in this
 // language whose *representation* was an aggregate held in a register -- a
 // struct, a list and an optional are all memory reached through a pointer -- so
 // the backend had no way to build one. See the note over `ir_undef` in
 // runtime/llvm-api-backend.c.
-extern fn ir_undef(type: String) -> Int
-extern fn ir_insert_value(aggType: String, agg: String, value: String, valueType: String, index: Int) -> Int
-extern fn ir_extract_value(aggType: String, agg: String, index: Int) -> Int
-extern fn ir_const_str(globalName: String, length: Int) -> Int
+public extern fn ir_undef(type: String) -> Int
+public extern fn ir_insert_value(aggType: String, agg: String, value: String, valueType: String, index: Int) -> Int
+public extern fn ir_extract_value(aggType: String, agg: String, index: Int) -> Int
+public extern fn ir_const_str(globalName: String, length: Int) -> Int
 
 // The German-string pair, read and written.
 //
@@ -362,102 +362,102 @@ extern fn ir_const_str(globalName: String, length: Int) -> Int
 // the pair, with no allocation and nothing to release. **The caller must have
 // established `count <= 12`** -- strSubstring in std/string.psm does, and takes
 // str_with_capacity otherwise.
-extern fn ir_str_data(value: String) -> Int
+public extern fn ir_str_data(value: String) -> Int
 // One byte, read from wherever the pair keeps it. Not `ir_str_data` plus a load:
 // materialising a short string to get a pointer puts three stores in the caller's
 // byte loop that LICM cannot lift, which measured 0.63x on `line_processing`.
-extern fn ir_str_byte_at(base: String, index: String) -> Int
+public extern fn ir_str_byte_at(base: String, index: String) -> Int
 // CSDO calls this only in a length bucket greater than the twelve-byte inline
 // capacity, so field zero is known to be the data pointer.
-extern fn ir_str_byte_at_long(base: String, index: Int) -> Int
+public extern fn ir_str_byte_at_long(base: String, index: Int) -> Int
 // String equality. Two short strings are equal exactly when their pairs are
 // bit-identical, so the common case is two integer compares and no call at all;
 // unequal lengths are rejected from the pair too. See `ir_str_eq` in
 // runtime/llvm-api-backend.c for why there is no four-byte prefix here.
-extern fn ir_str_eq(lhs: String, rhs: String) -> Int
+public extern fn ir_str_eq(lhs: String, rhs: String) -> Int
 // CSDO has already proved the length before asking this question. Passing the
 // literal itself keeps both its bytes and width constant in LLVM IR.
-extern fn ir_str_eq_literal(value: String, literal: String) -> Int
+public extern fn ir_str_eq_literal(value: String, literal: String) -> Int
 // String order, -1, 0 or 1. Two short strings order as one byte-swapped 128-bit
 // key in registers; see `ir_str_compare` in runtime/llvm-api-backend.c.
-extern fn ir_str_compare(lhs: String, rhs: String) -> Int
+public extern fn ir_str_compare(lhs: String, rhs: String) -> Int
 // `Key for String`'s hash. A short string's twelve bytes are mixed in registers
 // and a longer one reaches `str_hash`, which answers the short case identically
 // for the storage classes that have no pair to read -- a view, or a short string
 // on the heap. See `ir_str_hash` in runtime/llvm-api-backend.c.
-extern fn ir_str_hash(value: String) -> Int
+public extern fn ir_str_hash(value: String) -> Int
 
 // An argument whose `extern fn` declares it `borrow`, which RUNTIME.md defines
 // as "the callee reads the argument and does not retain it" -- LLVM's
 // `readonly nocapture`. Saying so is what lets a short String's materialisation
 // leave a loop that calls a foreign function per iteration.
-extern fn ir_call_arg_borrow(argType: String, argValue: String)
+public extern fn ir_call_arg_borrow(argType: String, argValue: String)
 
 // A String argument crossing into C. A **view** has no terminator of its own --
 // it ends where its length says, inside a longer buffer -- so this makes the
 // NUL-terminated copy the callee needs and releases it when the call returns.
 // The other two storage classes reach the callee with the pointer they had.
-extern fn ir_call_arg_cstr(argValue: String, isBorrow: Int)
+public extern fn ir_call_arg_cstr(argValue: String, isBorrow: Int)
 
 // `errno`, as a value. Not a symbol on any modern platform: it is a dereference
 // of a per-thread location whose accessor libc names itself, so the backend picks
 // the name from the *target* triple and emits the call inline. Nothing is added
 // to the runtime -- the program links libc's own entry point, as C does.
 // Both are `static const char*` in C, so the caller borrows them.
-extern fn ir_console_write_symbol() -> String alias
-extern fn ir_console_write_word() -> String alias
-extern fn ir_errno_load() -> Int
+public extern fn ir_console_write_symbol() -> String alias
+public extern fn ir_console_write_word() -> String alias
+public extern fn ir_errno_load() -> Int
 
 // One of the error numbers a retry loop has to recognise, folded to a constant
 // for the target. "EINTR" or "EAGAIN".
-extern fn ir_errno_constant(which: String) -> Int
+public extern fn ir_errno_constant(which: String) -> Int
 
 // A view: `count` bytes of `base` from `start`, owning nothing and copying
 // nothing. **The caller must have established that `base` is not the inline
 // form** -- see `ir_str_view` in runtime/llvm-api-backend.c.
-extern fn ir_str_view(base: String, start: String, count: String) -> Int
-extern fn ir_str_inline(base: String, start: String, count: String) -> Int
-extern fn ir_str_inline_concat2(a: String, b: String) -> Int
-extern fn ir_str_inline_concat3(a: String, b: String, c: String) -> Int
-extern fn ir_str_inline_concat4(a: String, b: String, c: String, d: String) -> Int
-extern fn ir_str_inline_concat5(a: String, b: String, c: String, d: String, e: String) -> Int
-extern fn ir_str_inline_concat6(a: String, b: String, c: String, d: String, e: String, f: String) -> Int
-extern fn ir_str_from_int(value: String) -> Int
-extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
+public extern fn ir_str_view(base: String, start: String, count: String) -> Int
+public extern fn ir_str_inline(base: String, start: String, count: String) -> Int
+public extern fn ir_str_inline_concat2(a: String, b: String) -> Int
+public extern fn ir_str_inline_concat3(a: String, b: String, c: String) -> Int
+public extern fn ir_str_inline_concat4(a: String, b: String, c: String, d: String) -> Int
+public extern fn ir_str_inline_concat5(a: String, b: String, c: String, d: String, e: String) -> Int
+public extern fn ir_str_inline_concat6(a: String, b: String, c: String, d: String, e: String, f: String) -> Int
+public extern fn ir_str_from_int(value: String) -> Int
+public extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 
-extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
-extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
-extern fn ir_list_store_ptr(type: String, value: String, ptrValue: String)
-extern fn ir_list_prepare_fill(list: String, need: String, stride: Int)
-extern fn ir_struct_load_ptr(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
-extern fn ir_struct_store_ptr(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
-extern fn ir_data_load_ptr(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
-extern fn ir_data_store_ptr(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
-extern fn ir_copy_struct(structName: String, dest: String, src: String)
+public extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
+public extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
+public extern fn ir_list_store_ptr(type: String, value: String, ptrValue: String)
+public extern fn ir_list_prepare_fill(list: String, need: String, stride: Int)
+public extern fn ir_struct_load_ptr(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
+public extern fn ir_struct_store_ptr(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
+public extern fn ir_data_load_ptr(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
+public extern fn ir_data_store_ptr(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
+public extern fn ir_copy_struct(structName: String, dest: String, src: String)
 
 // Helpers
-extern fn ir_get_temp_name(tempNum: Int) -> String produce(free)
-extern fn ir_get_label_name(labelNum: Int) -> String produce(free)
-extern fn ir_register_global_name(name: String)
-extern fn ir_is_global_name(name: String) -> Int
-extern fn ir_reset_globals()
-extern fn ir_reset_types()
+public extern fn ir_get_temp_name(tempNum: Int) -> String produce(free)
+public extern fn ir_get_label_name(labelNum: Int) -> String produce(free)
+public extern fn ir_register_global_name(name: String)
+public extern fn ir_is_global_name(name: String) -> Int
+public extern fn ir_reset_globals()
+public extern fn ir_reset_types()
 // Named-type registry, filled by sema before checking begins. Distinct from the
 // struct registry below, which holds field layouts and is filled by codegen:
 // this one only answers "is this identifier a struct, an enum, or neither?",
 // which a type annotation asks for every parameter of every function.
-extern fn ir_declare_named_type(name: String, kind: Int)
-extern fn ir_named_type_kind(name: String) -> Int
-extern fn ir_reset_named_types()
+public extern fn ir_declare_named_type(name: String, kind: Int)
+public extern fn ir_named_type_kind(name: String) -> Int
+public extern fn ir_reset_named_types()
 
 // Top-level declaration index (REQUIREMENTS 16), filled by
 // indexModuleDeclarations() in ast/types.psm before either sema or codegen runs.
 // `ir_decl_at` returns the AST pointer that was indexed -- our own memory, not a
 // fresh allocation.
-extern fn ir_reset_decl_index()
-extern fn ir_index_decl(name: String, node: Ptr)
-extern fn ir_decl_count(name: String) -> Int
-extern fn ir_decl_at(name: String, index: Int) -> Ptr
+public extern fn ir_reset_decl_index()
+public extern fn ir_index_decl(name: String, node: Ptr)
+public extern fn ir_decl_count(name: String) -> Int
+public extern fn ir_decl_at(name: String, index: Int) -> Ptr
 
 // Selective imports (v0.1 3.5): which names a file took from a module, when it
 // took some rather than all. Recorded by the merge, which is the only place that
@@ -465,103 +465,119 @@ extern fn ir_decl_at(name: String, index: Int) -> Ptr
 // record for a module imported it wholesale, so absence means "everything" --
 // `ir_select_active` is the guard that keeps the lookup off the hot path for
 // every program that does not use the syntax.
-extern fn ir_select_record(file: Int, module: String, name: String)
-extern fn ir_select_active(file: Int) -> Int
-extern fn ir_select_any(file: Int, module: String) -> Int
-extern fn ir_select_has(file: Int, module: String, name: String) -> Int
-extern fn ir_reset_selections()
+public extern fn ir_select_record(file: Int, module: String, name: String)
+public extern fn ir_select_active(file: Int) -> Int
+public extern fn ir_select_any(file: Int, module: String) -> Int
+public extern fn ir_select_has(file: Int, module: String, name: String) -> Int
+public extern fn ir_reset_selections()
+
+public extern fn ir_import_record(file: Int, module: String)
+public extern fn ir_file_imports_module(file: Int, module: String) -> Int
+public extern fn ir_reset_imports()
+// `import std.io as io`. The alias is per file and never replaces the module's
+// import path -- ir_import_alias_target answers "" for a name this file did not
+// bind, which is also how a duplicate `as` is detected at the second one.
+public extern fn ir_import_alias_record(file: Int, alias: String, module: String)
+public extern fn ir_import_alias_target(file: Int, alias: String) -> String alias
+public extern fn ir_reset_import_aliases()
+
+public extern fn ir_extern_decl_record(file: Int, name: String, visibility: Int)
+public extern fn ir_file_declares_extern(file: Int, name: String) -> Int
+public extern fn ir_caller_can_access_extern(callerFile: Int, qualifier: String, name: String) -> Int
+public extern fn ir_caller_extern_hidden_level(callerFile: Int, qualifier: String, name: String) -> Int
+public extern fn ir_reset_extern_decls()
 
 // A function's return type, keyed by its mangled symbol. Its own table rather
 // than a "$fn$" binding: those were permanent, so every identifier lookup in
 // every function body scanned past one per function in the module.
-extern fn ir_set_fn_return_type(symbol: String, returnType: String)
-extern fn ir_get_fn_return_type(symbol: String) -> String alias
-extern fn ir_reset_fn_return_types()
+public extern fn ir_set_fn_return_type(symbol: String, returnType: String)
+public extern fn ir_get_fn_return_type(symbol: String) -> String alias
+public extern fn ir_reset_fn_return_types()
 
-extern fn ir_register_struct(name: String)
-extern fn ir_register_struct_field(structName: String, fieldName: String, fieldType: String)
-extern fn ir_is_struct_type_name(name: String) -> Int
-extern fn ir_get_struct_field_index(structName: String, fieldName: String) -> Int
+public extern fn ir_register_struct(name: String)
+public extern fn ir_register_struct_field(structName: String, fieldName: String, fieldType: String)
+public extern fn ir_is_struct_type_name(name: String) -> Int
+public extern fn ir_get_struct_field_index(structName: String, fieldName: String) -> Int
 // M4.2. Whether a container may store elements of this type **inline** -- the
 // element bodies in the list rather than pointers to separately allocated ones
 // -- and how many bytes one of them takes. Both are questions about the layout
 // the backend built, which is why neither is answerable from the AST: `flat`
 // means no pointer anywhere inside the type and no hot/cold split, and the size
 // is the module data layout's, so a --target build sizes for the target.
-extern fn ir_struct_is_flat(name: String) -> Int
-extern fn ir_struct_size(name: String) -> Int
-extern fn ir_get_struct_field_count(name: String) -> Int
-extern fn ir_struct_field_offset(name: String, index: Int) -> Int
-extern fn ir_struct_field_size(name: String, index: Int) -> Int
+public extern fn ir_struct_is_flat(name: String) -> Int
+public extern fn ir_struct_size(name: String) -> Int
+public extern fn ir_get_struct_field_count(name: String) -> Int
+public extern fn ir_struct_field_offset(name: String, index: Int) -> Int
+public extern fn ir_struct_field_size(name: String, index: Int) -> Int
 // Both return an *interned* type name -- ir_add_struct_field and add_binding
 // each store ir_intern(type), and the fallbacks ("i32", "i64") are literals. No
 // branch allocates, so neither is a value the caller could release.
-extern fn ir_get_struct_field_type(structName: String, fieldName: String) -> String alias
-extern fn ir_register_enum_variant(enumName: String, variantName: String, value: Int)
-extern fn ir_get_enum_variant(enumName: String, variantName: String) -> Int
-extern fn ir_set_var_type(name: String, varType: String)
-extern fn ir_set_global_var_type(name: String, varType: String)
-extern fn ir_get_var_type(name: String) -> String alias
-extern fn ir_has_var_type(name: String) -> Int
+public extern fn ir_get_struct_field_type(structName: String, fieldName: String) -> String alias
+public extern fn ir_register_enum_variant(enumName: String, variantName: String, value: Int)
+public extern fn ir_get_enum_variant(enumName: String, variantName: String) -> Int
+public extern fn ir_set_var_type(name: String, varType: String)
+public extern fn ir_set_global_var_type(name: String, varType: String)
+public extern fn ir_get_var_type(name: String) -> String alias
+public extern fn ir_has_var_type(name: String) -> Int
 
 // Lexical scoping. A block pushes on entry and pops on exit; a binding is
 // visible only until its scope is popped, and re-declaring a name shadows the
 // outer one rather than overwriting it.
-extern fn ir_scope_push()
-extern fn ir_scope_pop()
+public extern fn ir_scope_push()
+public extern fn ir_scope_pop()
 
 // Loop barriers, so move checking can tell a binding the loop created from one
 // it inherited. Moving out of the latter inside a loop repeats every iteration.
-extern fn ir_loop_barrier_push()
-extern fn ir_loop_barrier_pop()
-extern fn ir_binding_predates_loop(name: String) -> Int
+public extern fn ir_loop_barrier_push()
+public extern fn ir_loop_barrier_pop()
+public extern fn ir_binding_predates_loop(name: String) -> Int
 // M2.1c. The binding an assignment is re-initialising, while its right-hand side
 // is checked. `acc = f(acc)` moves and immediately rebinds, so the move does not
 // repeat on the next iteration and the loop rule has to make that exception.
-extern fn ir_set_reinit_target(name: String borrow)
-extern fn ir_is_reinit_target(name: String borrow) -> Int
+public extern fn ir_set_reinit_target(name: String borrow)
+public extern fn ir_is_reinit_target(name: String borrow) -> Int
 
 // Scope drop lists (AIF Level 2). A floor is a binding-table watermark: the
 // current scope's for a block exit, the loop's for break/continue, 0 for a
 // return. Enumeration is reverse construction order.
 // `kind` is which deallocator reclaims the binding (IR_DROP_* in ir.psm). The
 // storage type cannot answer it: a String and a List are both `ptr`.
-extern fn ir_mark_droppable(name: String borrow, kind: Int)
+public extern fn ir_mark_droppable(name: String borrow, kind: Int)
 // The reassignment half, and deliberately not is_droppable: a returned
 // accumulator must not be dropped at the scope exit and must still release every
 // value its assignments displace.
-extern fn ir_mark_owns_slot(name: String borrow)
-extern fn ir_binding_owns_slot(name: String borrow) -> Int
-extern fn ir_scope_drop_floor() -> Int
-extern fn ir_drop_barrier_push()
-extern fn ir_drop_barrier_pop()
-extern fn ir_loop_drop_floor() -> Int
-extern fn ir_drop_count(floor: Int) -> Int
-extern fn ir_drop_slot(floor: Int, i: Int) -> String alias
-extern fn ir_drop_type(floor: Int, i: Int) -> String alias
-extern fn ir_drop_kind(floor: Int, i: Int) -> Int
+public extern fn ir_mark_owns_slot(name: String borrow)
+public extern fn ir_binding_owns_slot(name: String borrow) -> Int
+public extern fn ir_scope_drop_floor() -> Int
+public extern fn ir_drop_barrier_push()
+public extern fn ir_drop_barrier_pop()
+public extern fn ir_loop_drop_floor() -> Int
+public extern fn ir_drop_count(floor: Int) -> Int
+public extern fn ir_drop_slot(floor: Int, i: Int) -> String alias
+public extern fn ir_drop_type(floor: Int, i: Int) -> String alias
+public extern fn ir_drop_kind(floor: Int, i: Int) -> Int
 
 // The LLVM-level name of the innermost binding, and whether that binding is
 // module-level. Both are shadowing-aware, which is what codegen needs to pick
 // between @global and %slot and to give sibling blocks separate stack slots.
-extern fn ir_get_var_slot(name: String borrow) -> String alias
-extern fn ir_var_is_global(name: String) -> Int
-extern fn ir_mark_mutable(name: String)
-extern fn ir_var_is_mutable(name: String) -> Int
+public extern fn ir_get_var_slot(name: String borrow) -> String alias
+public extern fn ir_var_is_global(name: String) -> Int
+public extern fn ir_mark_mutable(name: String)
+public extern fn ir_var_is_mutable(name: String) -> Int
 // The resolved byte pointer for a String binding: asked once where the binding
 // is made, so a byte loop does not ask per character. `-1` when the binding has
 // none -- a mutable one never does, because the value replacing it would be
 // defined in a block that need not dominate a later use.
-extern fn ir_set_var_data(name: String borrow , value: Int)
-extern fn ir_get_var_data(name: String borrow ) -> Int
+public extern fn ir_set_var_data(name: String borrow , value: Int)
+public extern fn ir_get_var_data(name: String borrow ) -> Int
 
-extern fn ir_clear_var_types()
-extern fn ir_clear_local_var_types()
-extern fn ir_set_returned()
-extern fn ir_has_returned() -> Int
-extern fn ir_clear_returned()
-extern fn ir_comment(comment: String)
-extern fn ir_blank_line()
+public extern fn ir_clear_var_types()
+public extern fn ir_clear_local_var_types()
+public extern fn ir_set_returned()
+public extern fn ir_has_returned() -> Int
+public extern fn ir_clear_returned()
+public extern fn ir_comment(comment: String)
+public extern fn ir_blank_line()
 
 // ---------------------------------------------------------------------------
 // Debug information (DWARF), off unless `-g`.
@@ -576,55 +592,55 @@ extern fn ir_blank_line()
 // those produces *no* entry rather than a plausible one. See the section header
 // in runtime/llvm-api-backend.c for why that rule is the whole design.
 // ---------------------------------------------------------------------------
-extern fn ir_debug_begin(producer: String, mainPath: String, isOptimized: Int)
-extern fn ir_debug_end()
-extern fn ir_debug_enabled() -> Int
+public extern fn ir_debug_begin(producer: String, mainPath: String, isOptimized: Int)
+public extern fn ir_debug_end()
+public extern fn ir_debug_enabled() -> Int
 
 // A source function. `name` is what the programmer wrote and `linkageName` the
 // mangled symbol, so a debugger can match a frame either way.
-extern fn ir_debug_function_begin(name: String, linkageName: String, fileId: Int, line: Int)
+public extern fn ir_debug_function_begin(name: String, linkageName: String, fileId: Int, line: Int)
 
 // The declared signature, said before the body starts. Without it a signature is
 // read off the LLVM function type, where a String, a List, a Point and an opaque
 // extern return are all `ptr` -- so a debugger prints `void *` four times for
 // four different things. Slot 0 is the return; one call per parameter follows,
 // in order.
-extern fn ir_debug_signature(retKey: String, retName: String)
-extern fn ir_debug_signature_param(typeKey: String, typeName: String)
-extern fn ir_debug_function_end()
+public extern fn ir_debug_signature(retKey: String, retName: String)
+public extern fn ir_debug_signature_param(typeKey: String, typeName: String)
+public extern fn ir_debug_function_end()
 
 // A lexical block, pushed and popped exactly where codegen pushes and pops a
 // binding scope -- so a name is in scope for the debugger over the same span it
 // is in scope for the compiler.
-extern fn ir_debug_scope_push(fileId: Int, line: Int, col: Int)
-extern fn ir_debug_scope_pop()
+public extern fn ir_debug_scope_push(fileId: Int, line: Int, col: Int)
+public extern fn ir_debug_scope_pop()
 
 // The line every instruction built from here on belongs to.
-extern fn ir_debug_location(fileId: Int, line: Int, col: Int)
+public extern fn ir_debug_location(fileId: Int, line: Int, col: Int)
 
 // A binding and the alloca that holds it. `typeKey` is the storage key the rest
 // of this surface already uses; `typeName` is the source-level name sema
 // recorded, which is what turns an anonymous `ptr` into a `String` or a `Point*`.
 // `argNo` is 0 for a local and the 1-based position for a parameter.
-extern fn ir_debug_local(name: String, slot: String, typeKey: String, typeName: String,
+public extern fn ir_debug_local(name: String, slot: String, typeKey: String, typeName: String,
                           fileId: Int, line: Int, argNo: Int)
 
 // A module-level global and the type it was declared with. No slot, because a
 // global *is* its storage -- the description attaches to the global itself, so
 // this is said during the module's global loop rather than inside a function.
-extern fn ir_debug_global(name: String, typeKey: String, typeName: String,
+public extern fn ir_debug_global(name: String, typeKey: String, typeName: String,
                            fileId: Int, line: Int)
 
 // The source-level type of one field, said while the struct is being built.
 // Same reason a local carries one: the registered field type is a storage key,
 // and String, List<T>, [T], `T?` and every struct are all `ptr` there.
-extern fn ir_debug_field_type(owner: String, field: String, typeName: String)
+public extern fn ir_debug_field_type(owner: String, field: String, typeName: String)
 
 // A struct type and where it was declared. Emitted for every declared struct
 // rather than on demand, so `p` can name a type a program only passes around.
-extern fn ir_debug_struct(name: String, fileId: Int, line: Int)
+public extern fn ir_debug_struct(name: String, fileId: Int, line: Int)
 
 // The same for an enum, which becomes a DW_TAG_enumeration_type from the variant
 // map ir_register_enum_variant already holds. Nothing else is needed: the
 // variants are the type.
-extern fn ir_debug_enum(name: String, fileId: Int, line: Int)
+public extern fn ir_debug_enum(name: String, fileId: Int, line: Int)

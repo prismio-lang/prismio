@@ -37,7 +37,7 @@ let mut irDebugProducer = ""
 let mut irDebugMainPath = ""
 let mut irDebugOptimized = false
 
-fn irSetDebugInfo(enabled: Bool, producer: String, mainPath: String, isOptimized: Bool) {
+public fn irSetDebugInfo(enabled: Bool, producer: String, mainPath: String, isOptimized: Bool) {
     irDebugInfo = enabled
     irDebugProducer = producer
     irDebugMainPath = mainPath

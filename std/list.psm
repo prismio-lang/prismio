@@ -37,59 +37,59 @@ import std.copy
 // `sink` does not fix it. The cost is that a list literal is available for the
 // element types that implement `Copy`, which is every scalar, `String`, and any
 // struct that writes the impl.
-fn listOf<T: Copy>(a: T) -> List<T> {
+public fn listOf<T: Copy>(a: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
@@ -97,7 +97,7 @@ fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -> List
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
@@ -105,7 +105,7 @@ fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T) -
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
@@ -113,7 +113,7 @@ fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k
     return xs
 }
 
-fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T, l: T) -> List<T> {
+public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T, l: T) -> List<T> {
     let xs: List<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
@@ -447,7 +447,7 @@ private fn listSortRange<T, F>(items: List<T>, low: Int, end: Int, order: F, bad
 // generic body: substitution rewrites them to the concrete types before sema sees
 // them, and each instantiation lowers its own closure type. Which is a fair test
 // of 3.4's lowering, and it passes.
-fn sort<T: Ord>(items: List<T>) {
+public fn sort<T: Ord>(items: List<T>) {
     sortBy(items, |a: T, b: T| cmp(a, b))
 }
 
@@ -458,7 +458,7 @@ fn sort<T: Ord>(items: List<T>) {
 // type needs nothing. That is the difference between a bounded generic and a
 // higher-order one, and having both is why `sortBy` can sort a type whose author
 // never wrote an `impl Ord`.
-fn sortBy<T, F>(items: List<T>, order: F) {
+public fn sortBy<T, F>(items: List<T>, order: F) {
     let n = list_len(items)
     if (n < listSortInsertionCutoff()) {
         listInsertionSort(items, 0, n, order)
@@ -485,7 +485,7 @@ fn sortBy<T, F>(items: List<T>, order: F) {
     listSortRange(items, 0, n, order, badAllowed, true, offL, offR)
 }
 
-fn isSorted<T: Ord>(items: List<T>) -> Bool {
+public fn isSorted<T: Ord>(items: List<T>) -> Bool {
     let n = list_len(items)
     let mut i = 1
     while (i < n) {
@@ -504,7 +504,7 @@ fn isSorted<T: Ord>(items: List<T>) -> Bool {
 // `low + (high - low) / 2` rather than `(low + high) / 2`: the second overflows
 // once a list is longer than half the Int range, which is the oldest bug in this
 // algorithm and costs nothing to avoid.
-fn binarySearch<T: Ord>(items: List<T>, needle: T) -> Int {
+public fn binarySearch<T: Ord>(items: List<T>, needle: T) -> Int {
     let mut low = 0
     let mut high = list_len(items) - 1
     while (low <= high) {
@@ -530,7 +530,7 @@ fn binarySearch<T: Ord>(items: List<T>, needle: T) -> Int {
 // `T: Copy` because the result owns its elements: `list_push(out, x)` where `x`
 // came from `list_get` is "cannot move out of borrowed value", so the kept
 // elements are duplicated. `copyOf` is the identity for every scalar.
-fn filter<T: Copy, F>(items: List<T>, keep: F) -> List<T> {
+public fn filter<T: Copy, F>(items: List<T>, keep: F) -> List<T> {
     let n = list_len(items)
     let mut out: List<T> = list_new()
     let mut i = 0
@@ -550,7 +550,7 @@ fn filter<T: Copy, F>(items: List<T>, keep: F) -> List<T> {
 // argument types only -- writing it explicitly is no escape either, because the
 // closure's own type has no spelling. Taking the destination as an argument puts
 // `U` in argument position, where it is solvable.
-fn mapInto<T, U, F>(items: List<T>, out: List<U>, f: F) {
+public fn mapInto<T, U, F>(items: List<T>, out: List<U>, f: F) {
     let n = list_len(items)
     let mut i = 0
     while (i < n) {
@@ -559,7 +559,7 @@ fn mapInto<T, U, F>(items: List<T>, out: List<U>, f: F) {
     }
 }
 
-fn countWhere<T, F>(items: List<T>, keep: F) -> Int {
+public fn countWhere<T, F>(items: List<T>, keep: F) -> Int {
     let n = list_len(items)
     let mut found = 0
     let mut i = 0
@@ -570,7 +570,7 @@ fn countWhere<T, F>(items: List<T>, keep: F) -> Int {
     return found
 }
 
-fn anyOf<T, F>(items: List<T>, keep: F) -> Bool {
+public fn anyOf<T, F>(items: List<T>, keep: F) -> Bool {
     let n = list_len(items)
     let mut i = 0
     while (i < n) {
@@ -580,7 +580,7 @@ fn anyOf<T, F>(items: List<T>, keep: F) -> Bool {
     return false
 }
 
-fn allOf<T, F>(items: List<T>, keep: F) -> Bool {
+public fn allOf<T, F>(items: List<T>, keep: F) -> Bool {
     let n = list_len(items)
     let mut i = 0
     while (i < n) {

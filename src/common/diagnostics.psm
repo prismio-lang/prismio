@@ -13,12 +13,13 @@
 // Registers a source file's text and returns the id stamped onto every token and
 // AST node parsed from it. Registering the same path twice returns the first id.
 import std.string
-extern fn diag_add_file(path: String, content: String) -> Int
-extern fn diag_file_path(file: Int) -> String alias
+public extern fn exit(code: Int)
+public extern fn diag_add_file(path: String, content: String) -> Int
+public extern fn diag_file_path(file: Int) -> String alias
 // How many files the registry holds. Used by v0.1 3.5's name resolution to ask
 // "is this identifier a module?" without a module table of its own -- the file
 // registry already is one.
-extern fn diag_file_count() -> Int
+public extern fn diag_file_count() -> Int
 
 // The logical import path a file was reached by -- `std.string`, not `string`
 // and not the directory it happens to sit in. Recorded by the merge rather than
@@ -29,37 +30,37 @@ extern fn diag_file_count() -> Int
 //
 // `alias` for the same reason as diag_file_path: the pointer is into the
 // registry's own storage and the runtime frees it in diag_reset.
-extern fn diag_set_file_module(file: Int, module: String)
-extern fn diag_file_module(file: Int) -> String alias
+public extern fn diag_set_file_module(file: Int, module: String)
+public extern fn diag_file_module(file: Int) -> String alias
 
 // A located diagnostic. `len` is the width of the caret run -- the length of the
 // token the node starts at -- and may be 0 for "just point at the column".
-extern fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String)
-extern fn diag_warning_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String)
-extern fn diag_note_at(file: Int, line: Int, col: Int, len: Int, message: String)
+public extern fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String)
+public extern fn diag_warning_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String)
+public extern fn diag_note_at(file: Int, line: Int, col: Int, len: Int, message: String)
 
 // Unlocated forms, for anything that is not about a particular piece of source:
 // a missing file, a bad command-line argument.
-extern fn diag_error_code(code: String, message: String)
-extern fn diag_warning_code(code: String, message: String)
-extern fn diag_note(message: String)
+public extern fn diag_error_code(code: String, message: String)
+public extern fn diag_warning_code(code: String, message: String)
+public extern fn diag_note(message: String)
 
-extern fn diag_error_count() -> Int
-extern fn diag_warning_count() -> Int
+public extern fn diag_error_count() -> Int
+public extern fn diag_warning_count() -> Int
 
 // Switches the renderer to the versioned JSON Lines protocol consumed by IDEs.
 // This changes presentation only; diagnostic accounting and exit status stay the
 // same as the human renderer.
-extern fn diag_set_json_mode(on: Int)
+public extern fn diag_set_json_mode(on: Int)
 
 // Prints the "aborting due to N previous errors" line. That wording is the
 // contract the negative tests match on: it distinguishes a program the compiler
 // deliberately rejected from one that made it crash.
-extern fn diag_finish()
-extern fn diag_reset()
+public extern fn diag_finish()
+public extern fn diag_reset()
 
 // Quotes a name the way every message in the compiler quotes one, so the style
 // cannot drift between call sites.
-fn diagQuote(name: String) -> String {
+public fn diagQuote(name: String) -> String {
     return "`".concat(name, "`")
 }

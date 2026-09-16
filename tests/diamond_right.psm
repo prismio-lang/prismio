@@ -2,6 +2,6 @@ import diamond_shared
 import std.string
 
 
-fn right_value(x: Int) -> Int {
+public fn right_value(x: Int) -> Int {
     return shared_double(x) + 2
 }

@@ -1,6 +1,8 @@
 import std.io
 import ums.model.project
 import ums.model.diagnostic
+import ums.parser.lexer
+import ums.targets.target
 import std.string
 
 extern fn join_path(directory: String borrow, child: String borrow) -> String produce(free)
@@ -23,7 +25,7 @@ private fn umsBuildProfileValid(profile: String) -> Bool {
     return true
 }
 
-fn umsBuildPlanCreate(project: UmsProjectModel,
+public fn umsBuildPlanCreate(project: UmsProjectModel,
                       diagnostics: List<UmsDiagnostic>) -> UmsBuildPlan {
     if (umsBuildProfileValid(project.build.profile) == false) {
         umsDiagnosticAdd(diagnostics, "UMS3001", project.manifestPath, 0, 0, 0,
