@@ -7508,14 +7508,61 @@ def run_module_artifact_test():
                             + (said.strip()[-300:] if sorted_run is None else
                                f"it ran and printed {(sorted_run.stdout or '').strip()!r}"))
 
+        # A struct crossing a PLIB. `sort` and `std.platform` are functions; this
+        # is the program writing fields of `std.process`'s `Process` and the
+        # PLIB's `spawn` reading them. Each side used to lay the struct out from
+        # its own access profile, and assigning `stdout` -- the one mode this
+        # program writes -- moved it ahead of `stdin` in the program only. Every
+        # mode then arrived one field off: the discarded child printed, the piped
+        # one was not redirected, and `out` was empty. No diagnostic either way,
+        # and nothing under `tests/` can see it, because std resolves from source
+        # there.
+        crossing = wd / "crossing.psm"
+        crossing.write_text('import std.io\nimport std.string\nimport std.list\n'
+                            'import std.platform\nimport std.process\n\n'
+                            'fn echo(word: String) -> Process {\n'
+                            '    let p = Process()\n'
+                            '    if (platform.isWindows()) {\n'
+                            '        p.program = "cmd"\n'
+                            '        p.arguments = ["/c", "echo", word]\n'
+                            '    } else {\n'
+                            '        p.program = "/bin/echo"\n'
+                            '        p.arguments = [word]\n'
+                            '    }\n'
+                            '    return p\n}\n\n'
+                            'fn main() -> Int {\n'
+                            '    let quiet = echo("discarded")\n'
+                            '    quiet.stdout = StreamMode.Discard\n'
+                            '    let status = quiet.run()\n'
+                            '    let loud = echo("piped")\n'
+                            '    loud.stdout = StreamMode.Pipe\n'
+                            '    let child = loud.spawn()\n'
+                            '    let out = child.stdout.readAll()\n'
+                            '    child.wait()\n'
+                            '    println("status=".concat(status.toString(), " out=", out.trim()))\n'
+                            '    return 0\n}\n')
+        crossing_exe = wd / ("crossing" + (".exe" if os.name == "nt" else ""))
+        crossed_build = subprocess.run([str(compiler), "build", str(crossing),
+                                        "-o", str(crossing_exe)],
+                                       capture_output=True, text=True, cwd=str(wd), env=env)
+        crossed = (subprocess.run([str(crossing_exe)], capture_output=True, text=True)
+                   if crossing_exe.exists() else None)
+        if (crossed_build.returncode != 0 or crossed is None
+                or (crossed.stdout or "").strip() != "status=0 out=piped"):
+            said = (crossed_build.stdout or "") + (crossed_build.stderr or "")
+            problems.append("`std.process`'s Process, set by a program and read by the "
+                            "installed stdlib/process.plib, did not arrive field for field: "
+                            + (said.strip()[-300:] if crossed is None else
+                               f"it printed {(crossed.stdout or '').strip()!r}"))
+
     if problems:
         print(f"{RED}[FAIL] module artifacts{RESET}")
         for problem in problems:
             print(f"  - {problem}")
         return False
     print(f"{GREEN}[PASS] per-module PLIB/runtime bitcode, normal + verify, "
-          f"strict reinstall diagnostics, `sort` and std.platform from the "
-          f"installed stdlib{RESET}")
+          f"strict reinstall diagnostics, `sort`, std.platform and a std.process "
+          f"struct from the installed stdlib{RESET}")
     return True
 
 

@@ -476,34 +476,44 @@ at all.
 
 ## Toolchain layout
 
-**A struct crossing a `.plib` reads its fields one slot late, and it is
-unsoundness.** A program built against a packaged `stdlib/process.plib` reads
-every field of `std.process`'s `Process`, `Child` and `SpawnOut` shifted by one:
-a mode assigned to `stdout` arrives in the runtime as `stdin`'s, and a `Child`'s
-`stdout` descriptor comes back holding the `stdin` one. The same program built
-inside the checkout, where `std.process` resolves from source, is correct. No
-diagnostic fires either way -- it is a wrong answer, not a failure.
+**A struct crossing a `.plib` read its fields one slot late, and the cause was
+field order chosen per compilation.** Fixed; what it leaves is below. A program
+built against a packaged `stdlib/process.plib` sent every `Process` mode to the
+wrong stream -- a discarded child printed, a piped one was not redirected -- and
+read a `Child`'s `stdout` descriptor out of its `stdin` slot, with no diagnostic.
 
-`SpawnOut` is five `I64` fields with no padding to disagree about and shifts
-anyway, so this is a field **index** rather than a layout offset.
+LAYOUT 7.2's search (`aif_layout_select`) orders fields by padding, then width,
+then **access count**, and the count is the program's. `Process` has three `i32`
+modes, so the width keys tie: a program that assigns `p.stdout` put `stdout`
+ahead of `stdin`, while the library compile that built the PLIB saw equal counts
+and kept declaration order. The two LLVM bodies printed identically --
+`{ str, ptr, i32, i32, i32 }` both -- and only the name-to-index maps differed,
+which is why it looked like an index shift and not an offset. Inside the
+checkout the same swap happened in one compilation and cancelled out. The five
+probe shapes that did not reproduce it all tied nowhere, or were read only by
+code in the same compilation.
 
-**Five shapes were tried against a probe struct added to `std/platform.psm`,
-packaged, and read from outside the tree. None reproduces it**: three plain
-`Int` fields; a `String` before three enum fields; the same plus a
-`List<String>`, which is `Process`'s exact shape; a constructor carrying the
-struct's own name; and the fields named `stdin`/`stdout`/`stderr` in case of a
-collision. Each answered correctly from `main` and from a method.
+A struct declared in a `std.*` module now keeps declaration order and is never
+split (`aif_layout_fix`, pushed by `aifLayoutFixStandardLibrary`), in the checkout
+as well as installed, so the suite exercises the layout users get. It moved IR
+for 14 of 197 programs: `Map`'s `values`/`slots` stopped swapping (two pointers
+in one 32-byte header), and `Result<Int, String>` grew from 24 to 32 bytes
+because `Result` declares `Err` first. `run_module_artifact_test` builds a
+`std.process` program against the installed stdlib and fails on the old
+compiler with exactly the symptom above.
 
-So the trigger is something else about `std.process`. The one structural feature
-none of the probes shared is an `extern fn` in the same module taking a
-**struct parameter** (`proc_spawn_run(… out: SpawnOut)`). The reproducer is
-`aif/evidence/subprocess-2026-09-12/plib-field-shift.psm`, built from a directory
-with no `std/` above it.
+What is still open:
 
-This is what `run_module_artifact_test` exists to catch and does not: it checks
-that `sort` and `std.platform` behave from an installed stdlib, and both are
-functions. **A struct crossing a PLIB has never been covered**, which is why a
-defect this size was available to find.
+- **A program's own struct handed to C that reads its fields can be permuted.**
+  `ptr_to_node` and `proc_spawn_run` are both "an `extern fn` taking a struct",
+  and only the second reads a field; nothing in a declaration says which. A
+  three-field struct with two fields of equal width is enough. `SpawnOut` is
+  safe only because it is a `std` type.
+- **Other per-compilation decisions about a `std` type are made twice.** Which
+  fields a type releases, and whether a boxed enum is null-tagged, are each
+  decided by the library compile and again by the program. `Option<String>`
+  returned by `stripPrefix` and matched in a program that also reserves null
+  for it answered correctly out of tree; that is one probe, not an argument.
 
 **A compiler is a layout, not a file.** Since the runtime shipped as installed
 bitcode (`lib/runtime/*.bc`) with no toolchain-source fallback, a compiler
@@ -529,9 +539,10 @@ a concrete stdlib function whose body the PLIB supplies, and no PLIB had it. It
 is fixed, and `run_module_artifact_test` builds `sort` against the toolchain it
 packages. **That check was first added to `run_runtime_library_test`, which has
 not been registered since 9bc7d36 -- its `runtime.a` premise is gone -- so for a
-day it guarded nothing.** `std.platform` is checked in `run_module_artifact_test`
-the same way, and `run_ums_test` builds a program outside the checkout.
-Everything else a user reaches only through a `.plib` is still untested.
+day it guarded nothing.** `std.platform` and a `std.process` struct are checked in
+`run_module_artifact_test` the same way, and `run_ums_test` builds a program
+outside the checkout. Everything else a user reaches only through a `.plib` is
+still untested.
 
 **A cross build links the host's standard library.** A `.plib` carries one
 bitcode section, compiled for the host when the toolchain was packaged. The

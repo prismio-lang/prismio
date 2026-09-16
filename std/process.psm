@@ -259,10 +259,8 @@ impl Process {
     // Start it and return immediately. A `Child` whose `handle` is -1 is a spawn
     // that failed; `error` is gone by then, so check the handle.
     public fn spawn(self) -> Child {
-        // The three modes are read **before** the argument list, because
-        // `self.arguments` is a `List<String>` and naming an affine field is a
-        // move: read after it, `self.stdout` came back as `Inherit` whatever had
-        // been assigned, and the child's output went to the terminal.
+        // Read before `begin`, so nothing runs between the first push to the
+        // runtime's argument vector and the spawn that consumes it.
         let inMode = streamModeCode(self.stdin)
         let outMode = streamModeCode(self.stdout)
         let errMode = streamModeCode(self.stderr)

@@ -1122,10 +1122,13 @@ private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     // LLVM body cannot disagree. Every field access in codegen goes through
     // ir_get_struct_field_index, so nothing else has to know a layout was chosen.
     //
-    // Safe to permute at all only because C sees a Prismio struct as an opaque
-    // `void*` -- ptr_to_node and its siblings are the identity on a pointer and
-    // no runtime function reads a field. If that ever stops being true, this is
-    // the line that breaks, silently.
+    // Safe to permute at all only because nothing outside this compilation reads
+    // a field -- ptr_to_node and its siblings are the identity on a pointer. Two
+    // things do, and both are standard-library types: a `.plib`'s bitcode, laid
+    // out when the toolchain was packaged, and `proc_spawn_run`, which writes
+    // `SpawnOut` in declaration order. aifLayoutFixStandardLibrary keeps those in
+    // declaration order. A program's own struct handed to C that reads it has no
+    // such guard; if that ever happens, this is the line that breaks, silently.
     //
     // "" means AIF did not run, which is SPEC 7.1's zero-analysis mode: fall back
     // to declaration order, which is what this did before a layout existed.

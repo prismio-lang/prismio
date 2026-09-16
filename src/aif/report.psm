@@ -1041,6 +1041,7 @@ public fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: B
     }
 
     if (budget > 0) {
+        aifLayoutFixStandardLibrary(module)
         aif_layout_select()
     }
     aifComputeSizes(module)

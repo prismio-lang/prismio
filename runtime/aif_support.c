@@ -378,6 +378,12 @@ typedef struct {
     // into two allocations per element. A force may override this performance
     // guard; unlike no_split, it is not a soundness restriction.
     int no_split_list_full_scan;
+    // The layout is an ABI: declaration order, never split, whatever the profile
+    // says. For a type some other compilation also lays out -- a standard-library
+    // struct, which a `.plib`'s bitcode reads -- because both sides choose
+    // independently and only the declaration is common to them. See
+    // aif_layout_fix.
+    int layout_fixed;
     Bits hot;
 } Nominal;
 
@@ -439,6 +445,7 @@ static int nominal_intern(const char* name, int is_enum) {
     t->no_split = 0;
     t->no_split_unmodelled = 0;
     t->no_split_list_full_scan = 0;
+    t->layout_fixed = 0;
     t->hot.w = NULL;
     t->hot.nwords = 0;
     nominal_index_put(t->name, nominal_count);
@@ -764,10 +771,30 @@ static int layout_pad(int offset, int width) {
     return slack == 0 ? 0 : width - slack;
 }
 
+// **A layout is observable the moment a second compilation reads the type**, and
+// a standard-library struct always has one: a program built against an installed
+// toolchain links `stdlib/*.plib` bitcode that was compiled, and laid out, when the
+// toolchain was packaged. Each side ran this search against its own access
+// profile. `Process` has three `i32` modes, so the width keys tie and the
+// frequency key decides -- a program that assigns `p.stdout` put `stdout` ahead of
+// `stdin`, the library compile saw equal counts and kept declaration order, and
+// every mode the program set reached `proc_spawn_run` one slot off. The two LLVM
+// struct bodies printed identically; only the name -> index maps differed, which
+// is why it read as an index shift and not an offset.
+//
+// So a fixed type keeps declaration order: the one layout both compilations can
+// derive from what they have in common, which is the declaration. It is also the
+// order C sees when a struct crosses an `extern fn` (`SpawnOut`).
+void aif_layout_fix(const char* type) {
+    int id = nominal_find(type);
+    if (id >= 0) nominals[id].layout_fixed = 1;
+}
+
 void aif_layout_select(void) {
     for (int n = 0; n < nominal_count; n++) {
         Nominal* t = &nominals[n];
         if (t->is_enum || t->nfields < 3) continue;   // nothing to permute past field 0
+        if (t->layout_fixed) continue;
 
         // The first field never moves; see above. Everything else is chosen by
         // greedy best-fit from the offset the pinned prefix left.
@@ -1370,6 +1397,10 @@ int aif_layout_cand_bytes(int i, int cold) {
 //      split 4/7 at a modelled 12 and ran at 1.11x, the largest regression in the
 //      corpus. Sizing inline fields correctly would move Theta_stack and therefore
 //      tiers, which is a separate change; declining to choose is not.
+//   6. **A type whose layout is fixed** (aif_layout_fix). Another compilation
+//      reads it without knowing a cut was taken -- a `.plib` built without one
+//      would load a cold field straight out of the hot record. A force cannot
+//      clear it, for the same reason it cannot clear 1 and 2.
 //
 // Field 0 of the chosen order is pinned hot by `aif_layout_rank` and never
 // offered to a cut, because the punned-slot invariant is about the first byte of
@@ -1430,6 +1461,7 @@ const char* aif_layout_veto_reason(const char* type) {
     int id = nominal_find(type);
     if (id < 0) return "";
     Nominal* t = &nominals[id];
+    if (t->layout_fixed) return "layout is fixed: another compilation reads this type";
     if (t->no_split) return "split is unsafe for an inline-contained type";
     if (bits_test(&t->reaches, id)) return "split is unsafe for a cyclic type";
     if (t->no_split_list_full_scan)
@@ -1458,6 +1490,7 @@ static int has_sequential_traversal(int id) {
 static int split_admissible(int id, int forced) {
     Nominal* t = &nominals[id];
     if (t->is_enum || t->nfields < 3) return 0;    // veto 3
+    if (t->layout_fixed) return 0;                 // veto 6
     if (t->no_split) return 0;                     // veto 1, and veto 2 via the frontend
     if (bits_test(&t->reaches, id)) return 0;      // veto 2
     if (forced) return 1;

@@ -244,6 +244,9 @@ internal extern fn aif_struct_field_inline(name: String, field: String, inlined:
 // arena placement uses for allocs_in(s).
 internal extern fn aif_field_access(type: String, field: String, weight: Int)
 internal extern fn aif_layout_select()
+// Declaration order and no split, for a type another compilation lays out too.
+// Pushed in before the search, like the split vetoes below.
+internal extern fn aif_layout_fix(type: String)
 
 // LAYOUT 5's cost model needs which fields are touched *together*, which a
 // per-field count cannot express: two fields with equal counts touched by

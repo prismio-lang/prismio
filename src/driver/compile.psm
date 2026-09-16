@@ -329,7 +329,9 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     //
     // W4 -- "two builds with different profiles SHALL produce behaviourally
     // identical programs." The profile reaches codegen through exactly one
-    // channel, aif_layout_select's field counts, and a layout is not observable.
+    // channel, aif_layout_select's field counts, and a layout is not observable
+    // -- except to another compilation, which is why a standard-library struct
+    // ignores the counts (aifLayoutFixStandardLibrary).
     // Nothing below reads the profile for any other purpose, and irProfileMode is
     // false for the whole of the real build.
     //
