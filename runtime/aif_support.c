@@ -2076,6 +2076,12 @@ typedef struct {
     // Empty for every value set that is not a view, which is nearly all of them.
     int* views;
     int vlen, vcap;
+    // The expression may also denote a value that is no site at all -- a string
+    // literal, or static storage an `alias` extern handed back. Resolving the
+    // items cannot say so: a literal contributes nothing to them, so a set that is
+    // "a literal or an allocation" resolves exactly like "an allocation". See
+    // key_may_be_untracked for the one question that needs the difference.
+    int untracked;
 } ValueSet;
 
 static ValueSet* vsets;
@@ -2093,6 +2099,7 @@ int aif_vs_new(void) {
     v->views = NULL;
     v->vlen = 0;
     v->vcap = 0;
+    v->untracked = 0;
     return vs_count++;
 }
 
@@ -2135,6 +2142,10 @@ static void vs_push_view(int vs, int cvs) {
 // cannot: *how long the container must live* for the reference to be legal.
 void aif_vs_view_of(int vs, int container_vs) { vs_push_view(vs, container_vs); }
 
+void aif_vs_mark_untracked(int vs) {
+    if (vs >= 0 && vs < vs_count) vsets[vs].untracked = 1;
+}
+
 int aif_vs_is_empty(int vs) {
     return (vs < 0 || vs >= vs_count) ? 1 : (vsets[vs].len == 0);
 }
@@ -2144,10 +2155,12 @@ int aif_vs_union(int a, int b) {
     if (a >= 0 && a < vs_count) {
         for (int i = 0; i < vsets[a].len; i++) vs_push(out, vsets[a].items[i]);
         for (int i = 0; i < vsets[a].vlen; i++) vs_push_view(out, vsets[a].views[i]);
+        if (vsets[a].untracked) vsets[out].untracked = 1;
     }
     if (b >= 0 && b < vs_count) {
         for (int i = 0; i < vsets[b].len; i++) vs_push(out, vsets[b].items[i]);
         for (int i = 0; i < vsets[b].vlen; i++) vs_push_view(out, vsets[b].views[i]);
+        if (vsets[b].untracked) vsets[out].untracked = 1;
     }
     return out;
 }
@@ -6065,9 +6078,65 @@ static int field_closes_cycle(int owner, int declared_type) {
     return bits_test(&nominals[fid].reaches, owner);
 }
 
+// Whether a key may hold a value that is no site: a string literal, or static
+// storage, stored into it directly or through any chain of bindings, arguments,
+// returns and field reads.
+//
+// **A field's points-to set cannot answer this, and the gap is a free of
+// `.rodata`.** `fn blank() -> Named { return Named { name: "" } }` stores a
+// literal, which contributes no site; `n.name = word.concat("!")` elsewhere
+// stores one that does. The field's set is then that one owned site, the
+// agreement below says OBJECT, and the generated release frees whichever value
+// the object holds -- for `blank()`'s, the literal. `std.process` is the shape:
+// `Process()` defaults `program` to "" and a program assigns it an owned copy.
+// A literal passed as an argument that some other caller passes an allocation
+// for is the same thing one hop further away, which is why this is a closure
+// over the constraints and not a test of each store's own value set.
+//
+// Read from the constraints rather than raised by the solver, for the reason
+// fn_ret_partial is: the edges are already there. Monotone, so a build that
+// finds more constraints than last time extends the answer rather than
+// replacing it.
+static Bits key_untracked;
+static int key_untracked_cons = -1;
+
+static int vs_may_be_untracked(int vs) {
+    if (vs < 0 || vs >= vs_count) return 0;
+    const ValueSet* v = &vsets[vs];
+    if (v->untracked) return 1;
+    for (int i = 0; i < v->len; i++) {
+        int item = v->items[i];
+        if ((item & 1) && bits_test(&key_untracked, item >> 1)) return 1;
+    }
+    return 0;
+}
+
+static int key_may_be_untracked(int key) {
+    if (key_untracked_cons != con_count) {
+        key_untracked_cons = con_count;
+        for (int changed = 1; changed; ) {
+            changed = 0;
+            for (int i = 0; i < con_count; i++) {
+                int kind = cons[i].kind;
+                if (kind != AIF_CON_BIND && kind != AIF_CON_STORE && kind != AIF_CON_ARG) continue;
+                int into = cons[i].a;
+                if (into < 0 || bits_test(&key_untracked, into)) continue;
+                if (!vs_may_be_untracked(cons[i].b)) continue;
+                bits_set(&key_untracked, into, "AIF untracked keys");
+                changed = 1;
+            }
+        }
+    }
+    return bits_test(&key_untracked, key);
+}
+
 static int field_release_of(int type_name, int field_name, int declared_type) {
     int key = key_find(AIF_KEY_FIELD, type_name, field_name);
     if (key < 0 || key >= pt_len) return AIF_ELEM_NONE;
+    // Before the agreement over the sites, because a value that is no site is
+    // invisible to it. Declining leaks what the field's owned values would have
+    // returned; the alternative is freeing a literal. See key_may_be_untracked.
+    if (key_may_be_untracked(key)) return AIF_ELEM_NONE;
     // M2.1a. A field that re-enters its owner's type used to decline here, on the
     // grounds that releasing it could run around a cycle and back to a block
     // already freed. **The type graph cannot tell a cycle from a tree** -- `Tree`
@@ -7001,6 +7070,8 @@ void aif_reset(void) {
     free(fn_ret_partial);
     fn_ret_partial = NULL;
     ret_partial_ready = 0;
+    bits_free(&key_untracked);
+    key_untracked_cons = -1;
     for (int i = 0; i < pt_len; i++) bits_free(&pt[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&holders[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&container_of[i]);

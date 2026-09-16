@@ -89,6 +89,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         // visible in the manifest rather than silent.
         if (ty.equals("String")) {
             aifLiteralStrings = aifLiteralStrings + 1
+            return aifVsUntracked()
         }
         return aifVsEmpty()
     }
@@ -99,7 +100,15 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
             // makes this the one place a last use can be counted without a second
             // traversal disagreeing with this one about what a use is.
             aif_var_note_use(fnId, e.s1, scope)
-            return aifVsOfKey(aif_key_var(fnId, e.s1))
+            let read = aifVsOfKey(aif_key_var(fnId, e.s1))
+            // A module-level `let` this function never declared. Its
+            // initialiser is a constant, so what it holds may be static storage,
+            // and a field it is stored into must not free that. Function -1 is
+            // where aifDeclare records the globals.
+            if (aif_var_scope(fnId, e.s1) < 0 and aif_var_scope(0 - 1, e.s1) >= 0) {
+                return aif_vs_union(read, aifVsUntracked())
+            }
+            return read
         }
         return aifVsEmpty()
     }
@@ -464,7 +473,7 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
             // twice, which is the direction FFI 5.4 chooses deliberately.
             // Counted so the exclusion is visible rather than silent.
             aifStaticReturns = aifStaticReturns + 1
-            return aifVsEmpty()
+            return aifVsUntracked()
         }
 
         aifExternAlloc = aifExternAlloc + 1
@@ -1080,6 +1089,10 @@ internal fn aifDeclare(module: ASTNode) {
             }
         } else if (d.kind == NodeKind.ENUM_DECL) {
             aif_enum_new(d.s1)
+        } else if (d.kind == NodeKind.VARIABLE_DECL) {
+            // A global, recorded under function -1 so a read can tell one from a
+            // local the walk has not declared (aifSitesOf).
+            aif_var_note_scope(0 - 1, d.s1, 0)
         } else if (d.kind == NodeKind.EXTERN_FUNCTION) {
             // Contracts live on each type annotation's s2 (see parser.psm). The
             // return's is filed under index -1.

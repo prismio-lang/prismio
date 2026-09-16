@@ -8,7 +8,7 @@
 //
 // The property worth pinning is the one the wrappers exist for: the raw C
 // disagrees with itself about what an `Int` return means. `file_exists` returns
-// 1 for yes, while `delete_file` and `execute_command` return **0** for success.
+// 1 for yes, while `delete_file` returns **0** for success.
 // Every predicate here is a `Bool`, and a regression that let the raw convention
 // leak back through would invert one of them.
 
@@ -96,7 +96,7 @@ fn main() -> Int {
 
     // The subprocess half of this module has no assertion here any more.
     // `runCommand` and `quoteArg` are gone -- an argument vector needs no shell
-    // quoting -- and what replaced them is covered by `test_150_subprocess`,
+    // quoting -- and what replaced them is covered by `test_153_subprocess`,
     // which needs a child process and so does not belong in a filesystem test.
 
     println("std.fs and std.process tests passed")

@@ -389,6 +389,8 @@ internal extern fn aif_vs_is_empty(vs: Int) -> Int
 // SPEC 8.4. Mark a value set as denoting views of a collection. Provenance, not
 // a points-to edge -- see aif_vs_view_of in runtime/aif_support.c.
 internal extern fn aif_vs_view_of(vs: Int, collection: Int)
+// The value may be no site at all. See key_may_be_untracked.
+internal extern fn aif_vs_mark_untracked(vs: Int)
 
 internal extern fn aif_key_var(fnId: Int, name: String) -> Int
 internal extern fn aif_var_note_scope(fnId: Int, name: String, scope: Int)
@@ -540,6 +542,16 @@ let mut aifFfiDefault = 0
 // a great many of these.
 internal fn aifVsEmpty() -> Int {
     return 0 - 1
+}
+
+// Empty, and saying so: a string literal or static storage. It resolves to no
+// site like aifVsEmpty, and a field that may be handed one is released by
+// nobody -- the generated release would otherwise free the literal. Allocated,
+// unlike aifVsEmpty, because the flag has to live somewhere.
+internal fn aifVsUntracked() -> Int {
+    let vs = aif_vs_new()
+    aif_vs_mark_untracked(vs)
+    return vs
 }
 
 // ---------------------------------------------------------------------------

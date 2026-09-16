@@ -153,6 +153,40 @@ contract on `fn` — frontend syntax, so a seed refresh — or narrowing
 this predicate is what stops a caller freeing a value it does not own, so a wrong
 narrowing is a double free rather than a leak.
 
+**A struct field that could hold a string literal was freed as if it owned it.
+This was unsoundness, and it is fixed at the cost of a leak.**
+`fn blank() -> Named { return Named { name: "" } }` plus
+`n.name = word.concat("!")` anywhere else aborted at the release with "pointer
+being freed was not allocated": a literal is not a site, so the field's
+points-to set held only the owned one, `field_release_of` agreed on OBJECT, and
+`__aif_release_Named` freed `.rodata`. `std.process` has exactly that shape --
+`Process()` defaults `program` to `""` -- so any program that also stored an
+owned program name crashed dropping a `Process`. The same held for a literal
+reaching the field through a parameter, and for a module-level `let` read into
+one.
+
+A value set now carries "may also be no site" (`aif_vs_mark_untracked`, from a
+string literal, an `alias` extern's static return, or a global read), a key
+inherits it through every BIND, STORE and ARG (`key_may_be_untracked`), and a
+field that may hold one releases nothing. It moved IR for one test program and
+for two release functions in the compiler (`UmsLexer`, `UmsParser`, whose
+`source` and `path` are parameters some caller passes a literal).
+
+The cost is what the declined release would have reclaimed. `Process.program`
+never frees an owned name, and neither does any field a program ever stores a
+literal into. Promoting the literal at the store instead would reclaim it, and
+is not sound across a PLIB: `Process()` is in `process.plib`'s bitcode, compiled
+before any program decided the field is released. Each `Process` given an owned
+program name leaks that one string.
+
+**Assigning a struct field does not release the value it replaces.**
+`p.arguments = ["x"]` on a `Process()` leaks the empty list the constructor put
+there, one allocation per assignment. A variable assignment releases the
+displaced value (`generateDisplacedRelease`, promoting a literal first); the
+member-access branch of the same function stores and stops, except for a
+counted field. `test_153_subprocess` under `--verify` reads 0 violations with
+this and the leak above as its only unreleased allocations.
+
 **UMS resolution releases nothing it allocates.** Not unsoundness — `violations`
 is 0 either side — but a real regression in allocation hygiene. The recorded fix
 moves the ledger by zero; the real shape is about eight lines, and the clause to
@@ -684,7 +718,10 @@ asks for anyway.
 **`tools/aif_differential.py` reports one disagreement on `src/main.psm`, and the
 compiler is the one that is right.** T1 282 vs 281, T3 384 vs 385: a single site,
 `ownedTypes` at `src/ir/expr.psm:556`, which the in-compiler engine tiers T1 and
-the Python oracle tiers T3.
+the Python oracle tiers T3. The run prints a second line, for the `owned=True`
+pass -- T1 282 vs 281, T2 171 vs 172 -- which is also T1 one site too high on the
+compiler's side and has not been traced to a site. Both lines were byte-identical
+before and after the struct-layout and literal-field changes.
 
 It is a local `List<String>`. It is created with `list_new()`, pushed into, and
 passed once to `generateOwnedTemporaryReleases` — which takes it as a parameter,

@@ -15,14 +15,14 @@ first. This file records only *where the work is*.
 | Stage | What | State |
 |---|---|---|
 | S0 | Feasibility settled | **done** |
-| S1 | Capability in `runtime/program_support.c` | **done, POSIX verified / Windows written but unbuilt here** |
-| S2 | `std/process.psm` surface, and the old API removed | **done** — works in-tree, blocked out-of-tree by B1 |
-| S3 | AIF contracts, both copies | **done** — one entry each, see below |
-| S4 | `tests/test_150_subprocess.psm` | **blocked on B1** |
+| S1 | Capability in `runtime/program_support.c` | **done** -- and S4 found the stdin pipe never delivered EOF; fixed |
+| S2 | `std/process.psm` surface, and the old API removed | **done** |
+| S3 | AIF contracts, both copies | **done** -- one entry each, see below |
+| S4 | `tests/test_153_subprocess.psm` | **done** -- found two defects, both fixed (below) |
 | S5 | Windows half | **written with S1**; unverifiable locally, see below |
-| S6 | Validation loop | not started |
-| S7 | Docs — RUNTIME.md, KNOWN_ISSUES, ../website, evidence | not started |
-| **B1** | **A struct crossing a PLIB reads its fields one slot late** | **open, blocks S4** |
+| S6 | Validation loop | **done for B1 + S4**; re-run before the final commit |
+| S7 | Docs -- RUNTIME.md, KNOWN_ISSUES, ../website, evidence | RUNTIME.md and KNOWN_ISSUES done; website and evidence next |
+| B1 | A struct crossing a PLIB read its fields one slot late | **fixed** -- per-compilation field order |
 
 ---
 
@@ -158,66 +158,55 @@ producing return:
 - [x] `src/aif/contracts.psm` — `proc_read_all` in `aifFfiProduces`.
 - [x] `aif/prototype/aif.py` — `proc_read_all` in `FFI_RETURNS_PRODUCE`.
 
-## B1 · A struct crossing a PLIB reads its fields one slot late
+## B1 · A struct crossing a PLIB -- fixed
 
-**This blocks S4 and it is not in this feature's code.** Everything works when
-`std.process` is resolved from source; the same program built against a packaged
-`stdlib/process.plib` reads every field of `Process`, `Child` and `SpawnOut`
-shifted by one.
+**Cause: LAYOUT 7.2 orders fields by access count, and the count is the
+compilation's.** `Process`'s three `i32` modes tie on width, so a program that
+assigns `p.stdout` put `stdout` ahead of `stdin` while the library compile kept
+declaration order. The LLVM bodies were identical; only the name-to-index maps
+differed. In the checkout both halves were one compilation, so the swap
+cancelled. The lead in the brief (an `extern fn` taking a struct) was not it --
+though `SpawnOut` reaching C is the same premise broken a second way.
 
-Measured, with the modes printed from C:
+**Fix:** `aif_layout_fix` -- a `std.*` struct keeps declaration order and is never
+split, in the checkout too (`aifLayoutFixStandardLibrary`). Guard: the
+`std.process` case in `run_module_artifact_test`, which prints
+`'discarded\npiped\nstatus=0 out='` on the pre-fix compiler.
 
-| built | `p.stdout = Discard` reaches C as | `p.stdout = Pipe` |
-|---|---|---|
-| in the checkout (std from source) | `in=0 out=2 err=0`, output suppressed | `out=[piped]`, correct |
-| outside it (std from `process.plib`) | `in=2 out=0 err=0`, output on the terminal | `out=[]`, child not redirected |
+**Also wrong in the old notes:** the comment in `Process.spawn` that the modes had
+to be read before `self.arguments` "or `self.stdout` came back as `Inherit`" was
+this bug, misattributed. Reading them after works in and out of tree.
 
-`in=2` is `stdout`'s value arriving in the `stdin` parameter: the read of
-`self.stdin` answered the next field. `child.stdout.descriptor` shows it too —
-it comes back holding the *stdin* descriptor. `SpawnOut` is five `I64` fields
-with no padding to disagree about and shifts anyway, so this is a **field index**
-and not a layout offset.
+## What S4 found
 
-**Five hypotheses were tried against a probe struct added to `std/platform.psm`,
-packaged, and read out of tree. None reproduces it** — each printed the right
-answer from `main` and from a method:
+1. **A stdin pipe never delivered EOF.** `posix_spawn` passes every descriptor
+   not marked close-on-exec, so the child held its own copy of the write end of
+   its stdin. `FD_CLOEXEC` on the parent's end fixes it. The Windows half already
+   cleared inheritance there.
+2. **A struct field that could hold a string literal was freed as if it owned
+   it** -- unsoundness, not specific to this feature. `Process()` stores `""` in
+   `program`; any owned value stored there anywhere made the generated release
+   free `.rodata`. Fixed by carrying "may be no site" through value sets
+   (`aif_vs_mark_untracked`, `key_may_be_untracked`); such a field releases
+   nothing. KNOWN_ISSUES, Ownership, has the cost.
 
-1. three plain `Int` fields;
-2. a `String` field before three enum fields;
-3. the same plus a `List<String>` field — `Process`'s exact shape;
-4. the constructor carrying the struct's own name (`fn ShiftProbe() -> ShiftProbe`);
-5. the fields named `stdin` / `stdout` / `stderr`, in case of a collision with
-   something `std.io` declares.
+## S4 · The fixture -- done
 
-So the trigger is something else about `std.process` specifically. Two threads
-worth pulling before writing any code: whether it needs a **method that calls a
-private free function in the same module** (`streamModeCode`, which the probe's
-`probeCode` also did — so probably not), and whether it needs the module to
-declare **`extern fn`s taking a struct** (`proc_spawn_run(… out: SpawnOut)`),
-which no probe had and which is the one structural feature of `std.process` that
-none of them shared.
+`tests/test_153_subprocess.psm` (150-152 were taken by the time it landed). **The
+child is the fixture itself**, run with a mode argument through
+`process.args[0]`, so no system command and no working directory is involved.
 
-Reproduce in one command from a directory with no `std/` above it:
-
-```
-PRISMIO_INTERNAL_HOSTED=1 <dist>/bin/prismio build sp4.psm -o sp4 && ./sp4
-```
-
-`sp4.psm` is in this session's scratchpad; it is fifteen lines and is worth
-re-typing from the S2 example rather than hunting for.
-
-## S4 · The fixture
-
-`tests/test_150_subprocess.psm`. It must not depend on the working directory —
-`test_76`'s header explains why. Candidates that exist everywhere the suite runs:
-`/bin/echo` on POSIX, `cmd /c echo` on Windows; gate with `platform.isWindows()`.
-
-- [ ] `run` returns the child's exit status, and a non-zero one is visible.
-- [ ] `Pipe` on stdout reads back exactly what the child wrote.
-- [ ] `Discard` produces no output and does not hang.
-- [ ] `spawn` + `wait` agree with `run`.
-- [ ] `kill` on a sleeping child returns and `wait` does not hang.
-- [ ] `--verify` ledger: 0 violations, and the pipe path releases what it reads.
+- [x] `run` returns the child's exit status, and a non-zero one is visible.
+- [x] `Pipe` on stdout reads back exactly what the child wrote; stderr too.
+- [x] `Discard` produces no output and does not hang -- checked one level down.
+- [x] `spawn` + `wait` agree with `run`.
+- [x] `kill` on a blocked child returns and `wait` does not hang.
+- [x] stdin: write, close, read back.
+- [x] `exec` replaces the child (POSIX only), and fails cleanly on a missing program.
+- [x] `--verify`: 0 violations; every pipe buffer released. The unreleased
+      allocations are `Process.program` (the literal-field fix declines it) and
+      the constructor's list displaced by `p.arguments = [...]` (field
+      assignment never releases -- KNOWN_ISSUES).
 
 ## S5 · Windows
 
@@ -232,19 +221,21 @@ Document it rather than hiding it.
 
 ## S6 · Validation
 
-The full loop, in this order. Nothing here is optional for a runtime change.
+Toolchain for the record: fixpoint `125efe1e928003a3476f3ff74581840a` (the brief's
+`d196553...` predates de1e910), packaged as `build/dist-glob`.
 
-- [ ] `python3 tools/check_source_lists.py`
-- [ ] two generations to a fixpoint, IR of `src/main.psm` equal
-- [ ] `python3 tools/run_suite.py --compiler <packaged>`
-- [ ] `python3 tools/aif_differential.py --compiler <packaged>`
-- [ ] `python3 tools/check_externs.py --dist <packaged>` — needs the dist, not
-      the tree
-- [ ] `tools/ir_snapshot.py` before and after; only std.process programs may move
-- [ ] the committed seed still builds the tree (probably no refresh: `src/` does
-      not import `std.process`)
-- [ ] re-promote `.prismio/build/debug/prismio`, or the user's `prismio build`
-      fails naming the feature rather than the host
+- [x] `python3 tools/check_source_lists.py`
+- [x] two generations to a fixpoint, IR of `src/main.psm` equal
+- [x] `python3 tools/run_suite.py --compiler <packaged>` -- 337/337
+- [x] `python3 tools/aif_differential.py --compiler <packaged>` -- two lines on
+      `src/main.psm`, byte-identical to the pre-change compiler's
+- [x] `python3 tools/check_externs.py --dist <packaged>`
+- [x] `tools/ir_snapshot.py` before and after -- 14 programs moved by B1 (`Map`
+      index swap, `Result<Int, String>` padding), one more by the literal fix
+      (`test_67`, which stores a literal `Some`)
+- [x] the committed seed still builds the tree to the same fixpoint
+- [ ] re-promote `.prismio/build/debug/prismio` -- it refuses to build now that
+      `program_support.c` changed ("runtime library is stale")
 
 ## S7 · Docs
 
@@ -273,3 +264,7 @@ The full loop, in this order. Nothing here is optional for a runtime change.
   same cwd.
 - Runner patterns select file fixtures only; call a programmatic test directly.
 - Commit with explicit paths. `sandbox/` is the user's and is never committed.
+- After a `runtime/*.c` edit the project host refuses to build ("the installed
+  Prismio runtime library is stale"). Bootstrap from a bare generation instead.
+- A string of twelve bytes or fewer is inline and allocates nothing, so a leak
+  probe built on short literals reads clean whatever it is probing.

@@ -531,6 +531,21 @@ static int spawn_stream(int mode, int target, int writable,
     // one the child reads is the other way round.
     *child_end = writable ? ends[1] : ends[0];
     *parent_end = writable ? ends[0] : ends[1];
+    // **The parent's end must not reach any child**, this one included. A spawned
+    // process inherits every descriptor not marked close-on-exec, so without this
+    // the child holds its own copy of the write end of its stdin, and
+    // `stdin.close()` in the parent never delivers EOF: a child reading to the end
+    // of its input hangs, and so does the parent reading its output. The same copy
+    // leaks into every later child for as long as this one runs. `pipe2` would
+    // set it atomically, and macOS does not have it.
+    if (fcntl(*parent_end, F_SETFD, FD_CLOEXEC) != 0) {
+        int failure = errno;
+        close(ends[0]);
+        close(ends[1]);
+        *child_end = -1;
+        *parent_end = -1;
+        return failure;
+    }
     return posix_spawn_file_actions_adddup2(actions, *child_end, target);
 }
 

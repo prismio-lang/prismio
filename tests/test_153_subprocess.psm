@@ -1,0 +1,204 @@
+// std.process: starting a child, its three streams, and its exit status.
+//
+// **The child is this program.** With no arguments it is the parent; given one,
+// it is a child doing what the argument names. That keeps the fixture free of
+// system commands -- `echo` and `cat` are not the same program on every host the
+// suite runs on, and `cmd /c` re-parses the quotes the Windows spawn writes -- and
+// free of the working directory, because the runner starts it by absolute path
+// and `process.args[0]` is that path.
+//
+// `Discard` is the one mode a child cannot observe about itself, so it is checked
+// one level down: a child that discards its own child's output is spawned with a
+// pipe, and the pipe must come back empty.
+
+import std.io
+import std.string
+import std.list
+import std.platform
+import std.process
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn again(mode: String) -> Process {
+    let p = Process()
+    p.program = process.args[0]
+    p.arguments = [mode]
+    return p
+}
+
+// Descriptor 0 is this process's own stdin, and a `Stream` is only a descriptor,
+// so this is `readAll` on whatever the parent connected.
+fn readStdin() -> String {
+    let stdin = Stream { descriptor: 0 }
+    return stdin.readAll()
+}
+
+fn runChild(mode: String) -> Int {
+    if (mode.equals("echo")) {
+        println("piped")
+        return 0
+    }
+    if (mode.equals("stderr")) {
+        eprintln("to stderr")
+        return 0
+    }
+    if (mode.equals("exit")) {
+        return 3
+    }
+    if (mode.equals("cat")) {
+        print(readStdin())
+        return 0
+    }
+    if (mode.equals("block")) {
+        // Waits for an EOF the parent never sends; only `kill` ends it.
+        let ignored = readStdin()
+        return 0
+    }
+    if (mode.equals("discard")) {
+        let inner = again("echo")
+        inner.stdout = StreamMode.Discard
+        return inner.run()
+    }
+    if (mode.equals("exec")) {
+        let replacement = again("exit")
+        return replacement.exec()
+    }
+    return 99
+}
+
+fn main() -> Int {
+    if (process.args.count > 1) {
+        return runChild(process.args[1])
+    }
+
+    // --- run: the child's own status, zero and not ---------------------------
+    let quiet = again("echo")
+    quiet.stdout = StreamMode.Discard
+    if (quiet.run() != 0) {
+        return fail("run should return 0 for a child that exited 0")
+    }
+    let three = again("exit")
+    if (three.run() != 3) {
+        return fail("run should return the child's non-zero status")
+    }
+
+    // --- a program that cannot be started ------------------------------------
+    let missing = Process()
+    missing.program = "/nonexistent/prismio-no-such-program"
+    if (missing.run() != 0 - 1) {
+        return fail("run should return -1 when the program cannot be started")
+    }
+    let never = missing.spawn()
+    if (never.handle >= 0) {
+        return fail("spawn of a missing program should answer a negative handle")
+    }
+    if (never.stdout.isOpen()) {
+        return fail("a spawn that failed should hold no descriptors")
+    }
+    if (missing.exec() != 0 - 1) {
+        return fail("exec of a missing program should return -1 and not replace us")
+    }
+
+    // --- Pipe on stdout reads back what the child wrote ----------------------
+    let echo = again("echo")
+    echo.stdout = StreamMode.Pipe
+    let child = echo.spawn()
+    if (child.handle < 0) {
+        return fail("spawn of this program should succeed")
+    }
+    if (child.stdin.isOpen()) {
+        return fail("an inherited stdin should have no descriptor")
+    }
+    if (child.stdin.write("x") != 0 - 1) {
+        return fail("writing a stream that is not a pipe should answer -1")
+    }
+    let out = child.stdout.readAll()
+    if (child.wait() != 0) {
+        return fail("the echoing child should exit 0")
+    }
+    if (out.trim().equals("piped") == false) {
+        return fail("the piped stdout should hold exactly what the child printed")
+    }
+
+    // --- Pipe on stderr, independently of stdout -----------------------------
+    let noisy = again("stderr")
+    noisy.stdout = StreamMode.Pipe
+    noisy.stderr = StreamMode.Pipe
+    let noisyChild = noisy.spawn()
+    let errText = noisyChild.stderr.readAll()
+    let outText = noisyChild.stdout.readAll()
+    noisyChild.wait()
+    // A prefix, because a `--verify` build of the child prints its ledger to
+    // stderr at exit, after what it wrote.
+    if (errText.startsWith("to stderr") == false) {
+        return fail("the piped stderr should hold what the child wrote there")
+    }
+    if (outText.equals("") == false) {
+        return fail("stdout should be empty when the child wrote only to stderr")
+    }
+
+    // --- Discard sends output nowhere, and does not hang ---------------------
+    let outer = again("discard")
+    outer.stdout = StreamMode.Pipe
+    let outerChild = outer.spawn()
+    let leaked = outerChild.stdout.readAll()
+    if (outerChild.wait() != 0) {
+        return fail("a child whose output was discarded should still exit 0")
+    }
+    if (leaked.equals("") == false) {
+        return fail("Discard should not pass the child's output through")
+    }
+
+    // --- stdin: write, close, and the child sees exactly that ----------------
+    let cat = again("cat")
+    cat.stdin = StreamMode.Pipe
+    cat.stdout = StreamMode.Pipe
+    let catChild = cat.spawn()
+    if (catChild.stdin.write("fed through a pipe") != 18) {
+        return fail("write should report every byte it wrote")
+    }
+    // Without the close the child never sees EOF, and neither read returns.
+    catChild.stdin.close()
+    let echoed = catChild.stdout.readAll()
+    catChild.wait()
+    if (echoed.equals("fed through a pipe") == false) {
+        return fail("the child should read back exactly what was written to its stdin")
+    }
+
+    // --- spawn + wait agrees with run ----------------------------------------
+    let exiting = again("exit")
+    let spawned = exiting.spawn()
+    if (spawned.wait() != exiting.run()) {
+        return fail("spawn then wait should report what run reports")
+    }
+
+    // --- kill ends a blocked child, and wait then returns --------------------
+    let blocker = again("block")
+    blocker.stdin = StreamMode.Pipe
+    let blocked = blocker.spawn()
+    if (blocked.kill() != 0) {
+        return fail("kill should succeed on a running child")
+    }
+    let killed = blocked.wait()
+    blocked.stdin.close()
+    if (killed == 0 or killed == 0 - 1) {
+        return fail("a killed child should report a failure status, not success or -1")
+    }
+
+    // --- exec replaces the process, so the parent sees the new program's status.
+    // Not on Windows: `_execvp` starts a new process and ends this one, and what
+    // the original handle then reports is not the replacement's status.
+    if (platform.isWindows() == false) {
+        let execer = again("exec")
+        if (execer.run() != 3) {
+            return fail("a child that execs should finish with the new program's status")
+        }
+    }
+
+    println("PASS: std.process spawns, pipes, discards, kills and execs")
+    return 0
+}
