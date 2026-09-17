@@ -1504,6 +1504,24 @@ def run_aif_human_report_test():
         if "prismioStdIo" not in manifest.stdout:
             problems.append("--manifest lost stable allocation symbols")
 
+    # The report shows a vector as `Vec`; the manifest keeps the `List` key the
+    # oracle and the manifest diff compare against (COLLECTIONS.md).
+    vec_fixture = TEST_DIR / "aif_vec_display.psm"
+    vec_human = run_command([str(PRISMIO_EXE), "aif", str(vec_fixture)])
+    vec_row = re.search(r"^(\d+)\s+aif_vec_display\.psm:\S+\s+(\S+)", vec_human.stdout, re.M)
+    if vec_human.returncode != 0 or not vec_row:
+        problems.append("the Vec fixture's report lists no site of its own")
+    else:
+        if vec_row.group(2) != "Vec<Vec<Int>>":
+            problems.append(f"the report spells a vector type {vec_row.group(2)!r}, not 'Vec<Vec<Int>>'")
+        vec_why = run_command([str(PRISMIO_EXE), "aif", str(vec_fixture),
+                               f"--why={vec_row.group(1)}"])
+        if "Type       Vec<Vec<Int>>" not in vec_why.stdout:
+            problems.append("--why does not spell the vector type `Vec<Vec<Int>>`")
+    vec_manifest = run_command([str(PRISMIO_EXE), "aif", str(vec_fixture), "--manifest"])
+    if "List<List<Int>>" not in vec_manifest.stdout:
+        problems.append("--manifest no longer carries the `List<List<Int>>` key")
+
     if problems:
         print(f"{RED}[FAIL] the AIF interactive and manifest surfaces are not separated{RESET}")
         for problem in problems:
@@ -7193,9 +7211,17 @@ def run_curated_emits_test():
     #
     # So: do not re-attempt this expecting a win. Re-attempt it only with a
     # program whose *hot loop* pushes, and check that program exists first.
+    #
+    # The insert pair (2026-09-17) is waived on cost shape, not on a measurement:
+    # an insert is a push followed by an O(n) memmove through lang_runtime.c's
+    # static `list_move_last`, so the call is not what an insert costs, and no
+    # benchmark or corpus program inserts at all. Curating them would also need
+    # the push_inline closure work above.
     waived = {
         "list_set_inline": "curating it measured 0.999x for +3.1% compile time (2026-08-29)",
         "list_push_inline": "curating it measured 0.999x for +3.1% compile time (2026-08-29)",
+        "list_insert_inline": "an O(n) shift behind a static helper; no program inserts in a hot loop (2026-09-17)",
+        "list_insert_inline_scalar": "an O(n) shift behind a static helper; no program inserts in a hot loop (2026-09-17)",
     }
 
     problems = []

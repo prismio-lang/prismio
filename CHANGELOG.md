@@ -4,6 +4,26 @@
 
 ### Added
 
+- **`List<T>` is `Vec<T>`, and it has methods.** The growable vector is spelled
+  `Vec<T>`; writing `List<` is `P3005`, naming the replacement. `std.list` is
+  `std.vec`, and the literal `[a, b, c]` lowers to `vecOf`. The rename is
+  surface-only -- the type key, `RtList`, the `list_*` entry points, mangled
+  symbols and AIF's keys keep the old name, so every program's IR is unchanged
+  by it -- and diagnostics and the `aif` report say `Vec`, while `--manifest`
+  keeps the `List<...>` key. The methods, per COLLECTIONS.md:
+  `push`, `set`, `swap`, `insert`, `reserve`, `truncate`, `clear` and the
+  properties `length`, `capacity`, `first`, `last`, `isEmpty`, `isNotEmpty` are
+  sema rewrites onto the runtime (no import); `Vec<T>.withCapacity(n)`, `get`,
+  `contains`, `indexOf`, `lastIndexOf`, `countOf`, `extend`, `reverse`, `clone`,
+  `pop` and `removeAt` are `std.vec` functions. New runtime entries:
+  `list_capacity`, `list_reserve`, `list_truncate`, `list_remove_at` and the
+  `list_insert` family, with AIF contracts in the compiler and the oracle. An
+  `insert` or `removeAt` index out of range is a runtime error.
+- **A removed element is released with its Vec.** `pop`, `removeAt`, `truncate`
+  and `clear` park an element that owns memory and `list_release` frees it, so a
+  removal cannot free what a view taken earlier (`let first = v[0]`) still reads.
+  A Vec that keeps removing `String`s holds their memory until it is released;
+  releasing at the removal where no view can be live is the next step.
 - **`extern let` -- a global variable foreign code defines.** `extern let
   optind: Int` names the storage and every read loads it; `extern let mut` also
   allows assignment. The type is required and an initializer is refused (`P3004`),

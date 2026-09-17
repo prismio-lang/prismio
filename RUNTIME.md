@@ -137,7 +137,7 @@ violations.
 | `std/process.psm` | `import std.process` | arguments, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>` |
 | `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>` |
-| `std/list.psm` | `import std.list` | `sort`, `sortBy`, `filter`, `binarySearch` — **and the list literal**, `[a, b, c]` |
+| `std/vec.psm` | `import std.vec` | `Vec<T>`'s library methods — `get`, `contains`, `indexOf`, `pop`, `removeAt`, `extend`, `reverse`, `clone`, `sort`, `sortBy`, `filter`, `binarySearch` — **and the Vec literal** `[a, b, c]` and `Vec<T>.withCapacity(n)` |
 | `std/key.psm` | `import std.key` | the `Key` bound `Map` needs |
 | `std/ord.psm` | `import std.ord` | the `Ord` bound `sort` needs |
 | `std/copy.psm` | `import std.copy` | the `Copy` bound |
@@ -242,7 +242,7 @@ nothing names it is nothing frees it. Measured on a 13-call program: 70 allocate
 / 57 released unbound, 58 / 58 bound.
 
 The same applies to containers: `strJoin(strSplit(s, ','), "-")` leaks the
-temporary list, and binding it does not.
+temporary Vec, and binding it does not.
 
 **It stays a leak when the temporary owns what the callee hands back**, and that
 is a property the analysis has to earn rather than one that comes for free.
@@ -259,7 +259,7 @@ at it, so the release is withheld and the Option leaks instead. That is the
 conservative direction, and it is the direction the caller can survive.
 
 The mechanism is view provenance (SPEC 8.4). A reference-shaped value read out of
-a container — a `List` element, a struct field, a payload bound by a match arm —
+a container — a `Vec` element, a struct field, a payload bound by a match arm —
 is recorded as a *view* of that container, and `aif_fn_may_return_view_of_param`
 is what codegen asks before releasing an argument-position temporary. A scalar
 read is a copy and carries no view, so `Option<Int>` is released normally.
@@ -276,17 +276,27 @@ reason.
 `a.concat(b, c)` rather than to nested calls, precisely so that it has no
 unbound intermediate to lose. The pairwise form reads 2 allocated / 1 released.
 
-### 3.2 Do not bind a container's element
+### 3.2 A container's element is a view
 
 ```prismio
-let name = list_get(names, i)     // a second owner of the list's string
-if (strLength(list_get(names, i)) > 0) { … }   // correct
+let name = names[i]               // a view of the Vec's string, not a second owner
+names.clear()
+println(name)                     // still readable: the removal parked it
 ```
 
-Binding an element makes the analysis treat it as separately owned, and both the
-binding and the list release it. Measured in `std/fs.psm` while it was written
-this way: three `release of a pointer that is not live` violations — a double
-free, not a leak.
+This section used to say the opposite. On 2026-08-24, binding `list_get`'s result
+made the analysis treat it as separately owned, and both the binding and the list
+released it -- three `release of a pointer that is not live` violations in
+`std/fs.psm`. View provenance (§3.1) closed that: the binding is recorded as a
+view of `names`, releases nothing, and keeps `names` alive. Re-measured
+2026-09-17 with a `String` element and with a struct holding one, each bound and
+read: `0 leaked, 0 violation(s)`.
+
+**A removal cannot free what a view reads.** `pop`, `removeAt`, `truncate` and
+`clear` park a removed element that owns memory in the Vec's `grave`, and
+`list_release` releases it with the Vec -- exactly what the Vec would have
+released had the element stayed. Releasing at the removal where no view can be
+live is COLLECTIONS.md step 1e.
 
 ### 3.3 If you must write `extern fn`, write the contract
 
@@ -420,13 +430,16 @@ formatter checks its own candidates against.
 |---|---|---|
 | `str_with_capacity` | internal allocation seam for `std.string` | `produce(free)` |
 | `str_own` | codegen-only: a String on its way into a boxed container slot or out through an `alias` return | — |
-| `list_str_data` `list_str_word` `list_push_str` `list_set_str` | codegen-only: `List<String>` element access, where the element is the 16-byte pair | — |
+| `list_str_data` `list_str_word` `list_push_str` `list_set_str` | codegen-only: `Vec<String>` element access, where the element is the 16-byte pair | — |
+| `list_capacity` `list_reserve` | codegen-only: `v.capacity`, `v.reserve(n)` | — |
+| `list_insert` `list_insert_inline` `list_insert_inline_scalar` `list_insert_str` | codegen-only: `v.insert(i, x)`, one per push entry point; a bad index exits before the value is taken | — |
+| `list_truncate` `list_remove_at` | codegen-only: `v.truncate(n)`, `v.clear()`; `pop` and `removeAt` in `std.vec`. The trailing `now` argument is codegen's, and is `0` (park) everywhere today | — |
 | `str_find_byte` `str_find_byte_pair` | internal bounded search accelerators | `borrow` |
 | `str_find_needle` | internal short-needle search behind `strIndexOfFrom` | `bytes` |
 | `str_hash` | codegen-only: the half of `__builtin_string_hash` a pair cannot answer -- a key past twelve bytes, a view, or a short string on the heap | — |
 | `read_file` `get_directory` `join_path` | `readFile` `directoryOf` `joinPath` | `produce(free)` |
 | `current_directory` `executable_directory` | `currentDirectory` `executableDirectory` | `produce(free)` |
-| `list_modules` | `listModules` → `List<String>` | `produce(free)` |
+| `list_modules` | `listModules` → `Vec<String>` | `produce(free)` |
 | `file_exists` `delete_file` | `fileExists` `deleteFile` | → `Bool` |
 | `proc_spawn_begin` `proc_spawn_arg` `proc_spawn_run` | `Process.spawn`, `Process.run` | `borrow`; `SpawnOut` written through its pointer |
 | `proc_exec` | `Process.exec` | returns only on failure, then -1 |
@@ -439,7 +452,7 @@ other: `file_exists` returns 1 for yes, while `delete_file` returns **0** for
 success. Two adjacent functions in one file where 0 means opposite things
 belongs behind a wrapper.
 
-**The argument vector crosses one element at a time.** No `List<T>` crosses the
+**The argument vector crosses one element at a time.** No `Vec<T>` crosses the
 FFI boundary, and joining argv with a separator is wrong because an argument may
 contain any byte, so `Process.spawn` calls `proc_spawn_begin`, then
 `proc_spawn_arg` per argument, then `proc_spawn_run` -- the shape
@@ -477,7 +490,7 @@ shell steps still declare both, in `src/project/ums_cli.psm`.
 `str_split`, `str_split_free`. Use `std.string`. `str_split` in particular returned a
 `StringArray*` — a struct with no Prismio type, whose two allocations had to be
 released by calling `str_split_free`, which the ownership analysis knew nothing
-about. `strSplit` returns a `List<String>`, which is an owned container the
+about. `strSplit` returns a `Vec<String>`, which is an owned container the
 analysis already understands.
 
 **Deleted, not superseded:** `prismio_rt_print`, `prismio_rt_println`,
@@ -515,7 +528,7 @@ The `chan_*` family is **no longer in this group.** It is `Channel<T>`, in §4.
 ## 4.1 · `Channel<T>` — the one runtime object with source-level syntax
 
 v0.1's concurrency addition. Seven compiler builtins in the same category as
-`list_get` and `list_push`: sema owns their types, codegen emits the existing C
+a Vec's `push` and indexing: sema owns their types, codegen emits the existing C
 call by name, and there is no `std` module to import because there is no wrapper
 to write. `Channel<T>` itself is a type the compiler builds in, exactly as
 `Task<R>` is.

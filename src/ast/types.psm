@@ -380,6 +380,24 @@ public fn typeKeyName(t: TypeInfo) -> String {
     return typeSpelling(t, "List")
 }
 
+// A key back as a person writes it, for a report that has only the key: AIF's
+// site types are strings by the time they are printed, and `List<Int>` is a
+// spelling the parser now refuses. Only a `List<` that starts a name moves, so
+// `FreeList<Int>` stays what it is.
+public fn typeKeyDisplay(key: String) -> String {
+    let mut out = ""
+    let mut from = 0
+    let mut at = key.indexOf("List<", 0)
+    while (at >= 0) {
+        if (at == 0 or isIdentPart(key.charAt(at - 1)) == false) {
+            out = out.concat(key.slice(from, at), "Vec<")
+            from = at + 5
+        }
+        at = key.indexOf("List<", at + 5)
+    }
+    return out.concat(key.slice(from, key.length))
+}
+
 private fn typeSpelling(t: TypeInfo, vecName: String) -> String {
     if (t.kind == TypeKind.STRUCT) {
         // A trait object is a synthesised struct named `dyn$Show`, and `$` cannot

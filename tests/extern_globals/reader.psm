@@ -1,0 +1,8 @@
+// A second, read-only declaration of the symbol test_154 assigns. `mut` belongs
+// to each declaration, so this one does not stop that file writing, and that
+// file's `mut` does not let neg_151 write through this one.
+public extern let prismio_argc: Int
+
+public fn readerArgc() -> Int {
+    return prismio_argc
+}

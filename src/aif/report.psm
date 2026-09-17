@@ -362,7 +362,7 @@ private fn aifHumanIdOf(sourcePath: String, wantedSite: Int) -> Int {
 private fn aifEmitHumanRow(site: Int, id: Int) {
     print(aifPad(strFromInt(id), 5))
     print(aifPad(aifFriendlyPosition(site), 25))
-    print(aifPad(aif_site_type(site), 16))
+    print(aifPad(typeKeyDisplay(aif_site_type(site)), 16))
     print(aifPad(aifHumanStorage(site), 34))
     println(aifShortReason(site))
 }
@@ -1362,7 +1362,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
     print("  Location   ")
     println(aifFriendlyPosition(site))
     print("  Type       ")
-    println(aif_site_type(site))
+    println(typeKeyDisplay(aif_site_type(site)))
     print("  Storage    ")
     println(aifHumanStorage(site))
     print("  Reason     ")

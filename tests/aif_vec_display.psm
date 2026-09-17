@@ -1,0 +1,13 @@
+// The AIF report names a vector type as a program writes it. Its site types are
+// keys, and a key keeps the compiler's own name `List`; the human report must
+// still say `Vec`, because `List<Int>` is a spelling the parser refuses.
+
+fn nested() -> Vec<Vec<Int>> {
+    let outer: Vec<Vec<Int>> = []
+    return outer
+}
+
+fn main() -> Int {
+    let a = nested()
+    return a.length
+}
