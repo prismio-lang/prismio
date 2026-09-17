@@ -1,0 +1,21 @@
+// expect-error: cannot infer the element type of an empty literal
+// expect-error: write the type: `let v: Vec<Int> = []` or `let v: [Int] = []`
+// expect-error: aborting due to 6 previous errors
+// An empty literal with nothing around it to name its type. It used to type as
+// `[Invalid]`, which counted as a valid array: a binding reached codegen as
+// `alloca [0 x void]` (an LLVM verifier error under 22, a crash under 23), and a
+// call reported that no overload -- or, for a generic, no function -- existed.
+// Each of the six is now exactly one error, which the count above holds.
+
+fn count(xs: [Int]) -> Int { return 0 }
+
+fn countAny<T>(xs: Vec<T>) -> Int { return xs.length }
+
+fn main() -> Int {
+    let bare = []
+    let viaConcrete = count([])
+    let viaGeneric = countAny([])
+    let make = |n: Int| []
+    let nested = [[], [1]]
+    return [][0]
+}

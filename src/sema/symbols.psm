@@ -490,6 +490,20 @@ private fn semaIsReceiverMethod(fnNode: ASTNode) -> Bool {
     return first.s1.equals("self")
 }
 
+// Whether an argument already carries the invalid type -- typed, and typed as
+// the result of an error. An argument not yet typed is not one.
+private fn semaAnyArgumentInvalid(argPtr: Ptr) -> Bool {
+    let mut arg = argPtr
+    while (nodeExists(arg)) {
+        let argNode = ptr_to_node(arg)
+        if (nodeHasType(argNode) and typeIsValid(nodeGetType(argNode)) == false) {
+            return true
+        }
+        arg = argNode.next
+    }
+    return false
+}
+
 internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
@@ -667,6 +681,13 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     }
     if (matchCount == 1) {
         return ptr_to_node(bestPtr)
+    }
+    // An argument that failed to type has been reported where it failed. No
+    // overload can accept it, and a generic cannot be instantiated from it, so
+    // each message below would blame the call for that argument's mistake --
+    // "unknown function" for a generic the file plainly declares.
+    if (semaAnyArgumentInvalid(argPtr)) {
+        return createNode(NodeKind.MODULE)
     }
     if (nameSeen) {
         semaErrorAt(call, "no overload of ".concat(diagQuote(name),

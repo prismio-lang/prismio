@@ -1232,6 +1232,14 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     let fnNode = semaFindFunctionOverload(module, expr, name, expr.child2)
+    // Nothing resolved, and either semaFindFunctionOverload or an argument has
+    // said why. The call has no return type to give, and Void was a wrong one:
+    // `let n: Int = f(...)` then added "expected Int, found Void" to the real
+    // error. Invalid is the type every consumer already stays quiet about.
+    if (fnNode.kind != NodeKind.FUNCTION and fnNode.kind != NodeKind.EXTERN_FUNCTION) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
 
     let mut argPtr = expr.child2
     let mut paramPtr = fnNode.child1
@@ -1462,10 +1470,22 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
 private fn semaArrayLiteralExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let mut elemPtr = expr.child1
+    // An empty literal gets here only when nothing around it names a type. An
+    // annotation, a struct field and a return each type it before it is looked
+    // at (semaCheckValue, semaListLiteral); an argument does not, because an
+    // overload is chosen from its arguments' types.
+    //
+    // This used to answer `[Invalid]`, which is an *array* and so a valid type:
+    // nothing downstream suppressed on it, a call reported that no overload
+    // accepted it, and a binding reached codegen as `alloca [0 x void]` --
+    // rejected by LLVM 22's verifier, a crash under 23. Invalid itself is the
+    // type that means "already reported". The node keeps it, so trying one
+    // overload after another reports this once.
     if (nodeIsNull(elemPtr)) {
-        let arrT = typeArray(typeInvalid())
-        nodeSetType(expr, arrT)
-        return arrT
+        semaErrorAt(expr, "cannot infer the element type of an empty literal")
+        diag_note("write the type: `let v: Vec<Int> = []` or `let v: [Int] = []`")
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
     }
 
     let firstT = semaExpr(module, ptr_to_node(elemPtr))
@@ -1525,6 +1545,12 @@ private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     if (collectionT.kind != TypeKind.ARRAY and collectionT.kind != TypeKind.LIST
         and collectionT.kind != TypeKind.SLICE and collectionT.kind != TypeKind.DATAVIEW) {
+        // An invalid collection has been reported already; "found Invalid"
+        // would blame the index for it.
+        if (typeIsValid(collectionT) == false) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
         semaErrorAt(expr, "indexing requires a String, array, Vec, Slice, or DataView, found ".concat(typeDisplay(collectionT)))
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
@@ -1571,6 +1597,10 @@ private fn semaSliceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (baseT.kind != TypeKind.LIST and baseT.kind != TypeKind.SLICE) {
+        if (typeIsValid(baseT) == false) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
         semaErrorAt(expr, "slicing requires a String, Vec, or Slice, found ".concat(typeDisplay(baseT)))
         nodeSetType(expr, typeInvalid())
         return typeInvalid()

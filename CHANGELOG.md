@@ -133,6 +133,18 @@
 
 ### Fixed
 
+- **`let v = []` crashed the backend instead of being refused.** An empty
+  literal with nothing to take a type from typed as `[Invalid]`, which counted
+  as a valid array: codegen emitted `alloca [0 x void]` (a verifier error under
+  LLVM 22, a crash under 23), and a call reported that no overload -- or for a
+  generic, no function -- existed. It is now `cannot infer the element type of
+  an empty literal`, with a note showing both spellings, once per literal.
+  Annotations, struct fields and return types still type `[]` as before.
+- **A call that failed to resolve typed as Void**, so its real error came with a
+  second one -- `expected Int, found Void`, or `expected Vec<String>, found
+  Void` after a missing `import std.vec`. It is Invalid now, and resolution no
+  longer reports a call whose argument already failed; indexing and slicing an
+  invalid value are quiet too. `neg_160` holds all six shapes to six errors.
 - **A float add, subtract or multiply of two constants crashed the compiler on
   LLVM 23.** Such an operation folds to a constant, and `contract` was set on
   it through `LLVMSetFastMathFlags`, which assumes an instruction. LLVM 22 wrote
