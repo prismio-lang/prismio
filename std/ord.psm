@@ -1,6 +1,6 @@
 // `Ord` -- a total order, and the types that have one.
 //
-// The trait a bounded generic reaches for first: `fn sort<T: Ord>(items: List<T>)`
+// The trait a bounded generic reaches for first: `fn sort<T: Ord>(items: Vec<T>)`
 // is the whole reason bounds exist, and this is what makes it writable for
 // anything but a single hardcoded element type.
 //

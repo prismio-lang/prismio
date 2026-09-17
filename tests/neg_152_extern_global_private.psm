@@ -1,0 +1,9 @@
+// expect-error: `prismio_argv` is private to the file that declares it
+// std.process names the runtime's argument vector with `extern let`, privately.
+// Importing the module brings `process.args`, not the symbol behind it.
+import std.process
+
+fn main() -> Int {
+    let argv = prismio_argv
+    return process.args.count
+}

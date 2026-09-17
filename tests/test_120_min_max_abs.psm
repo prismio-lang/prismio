@@ -25,7 +25,7 @@ fn check(label: String, got: Int, want: Int) -> Int {
 // A loop whose body calls a guard-safe function. The guard may look through it;
 // the answer may not change.
 fn clampSum(n: Int, lo: Int, hi: Int) -> Int {
-    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(xs, i - 4)
@@ -42,7 +42,7 @@ fn clampSum(n: Int, lo: Int, hi: Int) -> Int {
 
 // The same thing written without a call, as the control.
 fn clampSumInline(n: Int, lo: Int, hi: Int) -> Int {
-    let mut xs: List<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(xs, i - 4)

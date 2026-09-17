@@ -1167,7 +1167,7 @@ private fn aifArenaBlockerText(bit: Int) -> String {
         return "a container owns this value and tears it down through the deallocator"
     }
     if (bit == AIF_ARENA_B_IS_LIST) {
-        return "a List reallocates its element block after this site returned"
+        return "a Vec reallocates its element block after this site returned"
     }
     if (bit == AIF_ARENA_B_NO_REGION) {
         return "no `region` encloses this allocation *in its own function*"

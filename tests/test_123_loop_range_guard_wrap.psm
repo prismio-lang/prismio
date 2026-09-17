@@ -19,8 +19,8 @@
 
 import std.io
 
-fn filled(n: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(n)
+fn filled(n: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(xs, i + 1)

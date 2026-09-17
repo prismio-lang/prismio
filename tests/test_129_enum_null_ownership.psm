@@ -30,8 +30,8 @@ fn isEmpty(t: SharedEmpty) -> Bool {
 fn main() -> Int {
     let tree = build(10)
     if (total(tree) != 1023) { return 1 }
-    let a: List<SharedEmpty> = list_new()
-    let b: List<SharedEmpty> = list_new()
+    let a: Vec<SharedEmpty> = list_new()
+    let b: Vec<SharedEmpty> = list_new()
     list_push(a, SharedEmpty.Empty)
     list_push(b, list_get(a, 0))
     if (isEmpty(list_get(a, 0)) == false or isEmpty(list_get(b, 0)) == false) { return 2 }

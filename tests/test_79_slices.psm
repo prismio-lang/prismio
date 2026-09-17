@@ -24,7 +24,7 @@ fn fail(message: String) -> Int {
     return 1
 }
 
-fn middle(points: List<Point>) -> Slice<Point> {
+fn middle(points: Vec<Point>) -> Slice<Point> {
     return points[1..4]
 }
 
@@ -44,7 +44,7 @@ fn pointSum(items: Slice<Point>) -> Int {
 }
 
 fn main() -> Int {
-    let mut points: List<Point> = list_new()
+    let mut points: Vec<Point> = list_new()
     list_push(points, Point { x: 0, y: 10 })
     list_push(points, Point { x: 1, y: 11 })
     list_push(points, Point { x: 2, y: 12 })
@@ -78,7 +78,7 @@ fn main() -> Int {
         return fail("overlapping mutable views")
     }
 
-    let mut nums: List<Int> = list_new()
+    let mut nums: Vec<Int> = list_new()
     list_push(nums, 7)
     list_push(nums, 8)
     list_push(nums, 9)
@@ -88,7 +88,7 @@ fn main() -> Int {
         return fail("scalar slice read/write")
     }
 
-    let mut words: List<String> = list_new()
+    let mut words: Vec<String> = list_new()
     list_push(words, "zero")
     list_push(words, "one")
     list_push(words, "two")
@@ -105,7 +105,7 @@ fn main() -> Int {
 
     // A struct holding a String is not flat, so its list stays boxed: the one
     // slice read left on `list_slice_get` now that String elements are pairs.
-    let mut tags: List<Tagged> = list_new()
+    let mut tags: Vec<Tagged> = list_new()
     let mut t = 0
     while (t < 3) {
         list_push(tags, Tagged { name: t.toString(), rank: t })

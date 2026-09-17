@@ -49,9 +49,9 @@ struct Texture {
 }
 
 struct AssetCache {
-    meshes: List<Mesh>,
-    materials: List<Material>,
-    textures: List<Texture>,
+    meshes: Vec<Mesh>,
+    materials: Vec<Material>,
+    textures: Vec<Texture>,
     resident_bytes: Int,
     budget_bytes: Int
 }
@@ -67,16 +67,16 @@ struct Entity {
 }
 
 struct Scene {
-    entities: List<Entity>,
+    entities: Vec<Entity>,
     cache: AssetCache,
     draw_calls: Int,
     batches: Int
 }
 
 fn make_cache(budget: Int) -> AssetCache {
-    let m: List<Mesh> = list_new()
-    let mt: List<Material> = list_new()
-    let tx: List<Texture> = list_new()
+    let m: Vec<Mesh> = list_new()
+    let mt: Vec<Material> = list_new()
+    let tx: Vec<Texture> = list_new()
     return AssetCache {
         meshes: m,
         materials: mt,
@@ -255,7 +255,7 @@ fn main() -> Int {
     let cache = make_cache(64 * 1024 * 1024)
     build_assets(cache)
 
-    let ents: List<Entity> = list_new()
+    let ents: Vec<Entity> = list_new()
     let scene = Scene {
         entities: ents,
         cache: cache,

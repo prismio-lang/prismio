@@ -15,9 +15,9 @@ struct BenchParticle {
 public fn benchMatrixMultiply(scale: Int) -> Int {
     let n = 32 * scale
     let count = n * n
-    let mut a: List<Int> = list_new_with_capacity(count)
-    let mut b: List<Int> = list_new_with_capacity(count)
-    let mut c: List<Int> = list_new_with_capacity(count)
+    let mut a: Vec<Int> = list_new_with_capacity(count)
+    let mut b: Vec<Int> = list_new_with_capacity(count)
+    let mut c: Vec<Int> = list_new_with_capacity(count)
     let mut i = 0
     while (i < count) {
         list_push(a, (i * 17) % 101)
@@ -75,7 +75,7 @@ public fn benchMandelbrot(scale: Int) -> Int {
     return inside
 }
 
-public fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
+public fn benchFftTransform(real: Vec<Float>, imag: Vec<Float>, n: Int) {
     let mut j = 0
     let mut i = 1
     while (i < n) {
@@ -134,8 +134,8 @@ public fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
 public fn benchFft(scale: Int) -> Int {
     let mut n = 1024 * scale
     if (scale == 12) { n = 16384 }
-    let mut real: List<Float> = list_new_with_capacity(n)
-    let mut imag: List<Float> = list_new_with_capacity(n)
+    let mut real: Vec<Float> = list_new_with_capacity(n)
+    let mut imag: Vec<Float> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(real, 1.0)
@@ -174,8 +174,8 @@ public fn benchNumericalIntegration(scale: Int) -> Int {
 
 public fn benchVectorDot(scale: Int) -> Int {
     let n = 1000000 * scale
-    let mut a: List<Int> = list_new_with_capacity(n)
-    let mut b: List<Int> = list_new_with_capacity(n)
+    let mut a: Vec<Int> = list_new_with_capacity(n)
+    let mut b: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(a, i % 101)
@@ -193,8 +193,8 @@ public fn benchVectorDot(scale: Int) -> Int {
 
 public fn benchConvolution(scale: Int) -> Int {
     let n = 300000 * scale
-    let mut input: List<Int> = list_new_with_capacity(n)
-    let mut output: List<Int> = list_new_with_capacity(n)
+    let mut input: Vec<Int> = list_new_with_capacity(n)
+    let mut output: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(input, i % 251)
@@ -256,7 +256,7 @@ public fn benchPolynomial(scale: Int) -> Int {
 public fn benchEcsUpdate(scale: Int) -> Int {
     let n = 50000 * scale
     let rounds = 20
-    let mut particles: List<BenchParticle> = list_new_with_capacity(n)
+    let mut particles: Vec<BenchParticle> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(particles, BenchParticle {
@@ -313,8 +313,8 @@ public fn rotR(x: U32, n: Int) -> U32 {
     return (x >> n) | (x << (32 - n))
 }
 
-public fn makeSha256K() -> List<U32> {
-    let mut k: List<U32> = list_new_with_capacity(64)
+public fn makeSha256K() -> Vec<U32> {
+    let mut k: Vec<U32> = list_new_with_capacity(64)
     list_push(k, 1116352408 as U32)
     list_push(k, 1899447441 as U32)
     list_push(k, 3049323471 as U32)
@@ -395,7 +395,7 @@ public fn benchSha256(scale: Int) -> Int {
     let k = makeSha256K()
     let totalBlocks = 200 * scale
     let mut seed = 42
-    let mut w: List<U32> = list_new_with_capacity(64)
+    let mut w: Vec<U32> = list_new_with_capacity(64)
     let mut initI = 0
     while (initI < 64) {
         list_push(w, 0 as U32)
@@ -485,7 +485,7 @@ public fn benchBlake3Chunk(scale: Int) -> Int {
     let iv6: U32 = 528734635 as U32
     let iv7: U32 = 1541459225 as U32
 
-    let mut perm: List<Int> = list_new_with_capacity(16)
+    let mut perm: Vec<Int> = list_new_with_capacity(16)
     list_push(perm, 2)
     list_push(perm, 6)
     list_push(perm, 3)
@@ -505,9 +505,9 @@ public fn benchBlake3Chunk(scale: Int) -> Int {
 
     let mut totalChecksum: U32 = 0 as U32
 
-    let mut m: List<U32> = list_new_with_capacity(16)
-    let mut v: List<U32> = list_new_with_capacity(16)
-    let mut nextM: List<U32> = list_new_with_capacity(16)
+    let mut m: Vec<U32> = list_new_with_capacity(16)
+    let mut v: Vec<U32> = list_new_with_capacity(16)
+    let mut nextM: Vec<U32> = list_new_with_capacity(16)
     let mut initI = 0
     while (initI < 16) {
         list_push(m, 0 as U32)
@@ -723,7 +723,7 @@ public fn benchRaytracerSphere(scale: Int) -> Int {
     let width = 50 * scale
     let height = 50 * scale
 
-    let spheres: List<Float> = list_new()
+    let spheres: Vec<Float> = list_new()
     // Sphere 0
     list_push(spheres, 0.0)
     list_push(spheres, 0.0)
@@ -966,8 +966,8 @@ public fn benchChannelPipeline(scale: Int) -> Int {
 // the difference would be measured instead of the interpreter.
 public fn benchBytecodeInterpreter(scale: Int) -> Int {
     let program = 4096
-    let mut ops: List<Int> = list_new_with_capacity(program)
-    let mut args: List<Int> = list_new_with_capacity(program)
+    let mut ops: Vec<Int> = list_new_with_capacity(program)
+    let mut args: Vec<Int> = list_new_with_capacity(program)
     let mut seed = 11
     let mut p = 0
     while (p < program) {
@@ -977,7 +977,7 @@ public fn benchBytecodeInterpreter(scale: Int) -> Int {
         p = p + 1
     }
 
-    let mut stack: List<Int> = list_new_with_capacity(64)
+    let mut stack: Vec<Int> = list_new_with_capacity(64)
     let mut s = 0
     while (s < 64) {
         list_push(stack, 0)

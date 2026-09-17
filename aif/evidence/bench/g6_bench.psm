@@ -15,7 +15,7 @@ import std.io
 import g6_engine
 
 // Per-member gameplay state. Holds an engine handle plus data the engine knows
-// nothing about -- which is the normal shape, and sidesteps `List<Int>`, which
+// nothing about -- which is the normal shape, and sidesteps `Vec<Int>`, which
 // today's compiler miscompiles (see COMPILER-TODO 20).
 struct Member {
     actor: Int,
@@ -25,7 +25,7 @@ struct Member {
 
 // A gameplay-owned aggregate holding engine handles. Owns no engine storage.
 struct Squad {
-    members: List<Member>,
+    members: Vec<Member>,
     team: Int,
     morale: Int,
     rally_x: Float,
@@ -41,7 +41,7 @@ struct Order {
 }
 
 fn make_squad(team: Int, rx: Float, ry: Float) -> Squad {
-    let m: List<Member> = list_new()
+    let m: Vec<Member> = list_new()
     return Squad {
         members: m,
         team: team,
@@ -65,8 +65,8 @@ fn recruit(w: World, s: Squad, count: Int) {
 
 // Per-tick transient allocation: build an order list, consume it, discard it.
 // Nothing here outlives the tick.
-fn plan_orders(w: World, s: Squad) -> List<Order> {
-    let mut orders: List<Order> = list_new()
+fn plan_orders(w: World, s: Squad) -> Vec<Order> {
+    let mut orders: Vec<Order> = list_new()
     let n = list_len(s.members)
     let mut i = 0
     while (i < n) {
@@ -88,7 +88,7 @@ fn plan_orders(w: World, s: Squad) -> List<Order> {
     return orders
 }
 
-fn apply_orders(w: World, orders: List<Order>, speed: Float) -> Int {
+fn apply_orders(w: World, orders: Vec<Order>, speed: Float) -> Int {
     let n = list_len(orders)
     let mut applied = 0
     let mut i = 0

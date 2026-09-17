@@ -50,7 +50,7 @@ fn mutateColumns(view: DataView<Sample>) {
 }
 
 fn main() -> Int {
-    let mut rows: List<Sample> = list_new()
+    let mut rows: Vec<Sample> = list_new()
     list_push(rows, Sample {
         id: 7,
         weight: 1.5,
@@ -69,7 +69,7 @@ fn main() -> Int {
     if (columnsAreReadable(columns) == false) { return fail("direct column reads") }
     mutateColumns(columns)
 
-    let restored: List<Sample> = aos(columns)
+    let restored: Vec<Sample> = aos(columns)
     if (list_len(restored) != 2) { return fail("row length") }
     let first = restored[0]
     let second = restored[1]

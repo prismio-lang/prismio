@@ -3,7 +3,7 @@
 // `let m: Map<Int, Int> = mapNew<Int, Int>()` did not link. Sema resolved the
 // annotation to the monomorphised `Map$Int$Int`, while codegen's `mapTypeNode`
 // answered `ptr` -- its "a name with type arguments" arm was written for
-// `List<T>` and every user generic fell into it too. The drop kind then came from
+// `Vec<T>` and every user generic fell into it too. The drop kind then came from
 // the initialiser (a typed release) and the type name from the declaration
 // (`ptr`), so the emitted call was `__aif_release_` with an empty type name and
 // the program failed with `Undefined symbols: ___aif_release_`.
@@ -22,11 +22,11 @@ import std.key
 import std.option
 
 struct Bag<T> {
-    items: List<T>
+    items: Vec<T>
 }
 
 fn bagOf<T>() -> Bag<T> {
-    let items: List<T> = list_new()
+    let items: Vec<T> = list_new()
     return Bag<T> { items: items }
 }
 

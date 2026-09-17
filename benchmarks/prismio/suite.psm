@@ -5,7 +5,7 @@ import compute
 import data_structures
 import io
 import memory
-import std.list
+import std.vec
 import std.map
 import std.process
 import std.string

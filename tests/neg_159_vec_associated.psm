@@ -1,0 +1,10 @@
+// expect-error: `Vec` has no associated function `fromSize`
+// expect-error: `Vec<T>.withCapacity(n)` is the one there is
+// The one associated function on Vec is `withCapacity`; everything else a Vec
+// does is a method or a literal.
+import std.vec
+
+fn main() -> Int {
+    let v = Vec<Int>.fromSize(8)
+    return 0
+}

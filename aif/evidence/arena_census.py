@@ -52,7 +52,7 @@ BLOCKERS = [
     ("not_t1",       "the tier is not T1"),
     ("no_stack",     "an explicit `drop` frees this value"),
     ("in_container", "a container owns this value"),
-    ("is_list",      "a List reallocates its element block"),
+    ("is_list",      "a Vec reallocates its element block"),
     ("no_region",    "in its own function"),
     ("escapes",      "escapes to its caller or to static storage"),
     ("outlives",     "outlives the enclosing region"),

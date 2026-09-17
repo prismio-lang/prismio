@@ -194,7 +194,7 @@ private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
 public fn umsManifestAddDependency(source: String, manifestPath: String,
                             scope: UmsDependencyScope, name: String,
                             constraint: String, localPath: String,
-                            diagnostics: List<UmsDiagnostic>) -> UmsManifestEdit {
+                            diagnostics: Vec<UmsDiagnostic>) -> UmsManifestEdit {
     let scopeName = umsManifestScopeName(scope)
     if (__builtin_string_len(scopeName) == 0) {
         umsDiagnosticAdd(diagnostics, "UMS2401", manifestPath, 0, 0, 0,

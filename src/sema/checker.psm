@@ -287,10 +287,11 @@ internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInf
         return true
     }
 
-    // `monoHasTemplate` rather than `semaDeclaresFunction`, because `listOf` is
-    // generic and a template is not in the decl index -- see the note over it.
-    if (monoHasTemplate(module, "listOf", NodeKind.FUNCTION) == false) {
-        semaErrorAt(valNode, "a list literal needs `import std.list`")
+    // `monoHasTemplate` rather than `semaDeclaresFunction`, because the table
+    // is generic and a template is not in the decl index -- see the note over it.
+    let literalTable = semaVecLiteralTable(module)
+    if (literalTable.equals("")) {
+        semaErrorAt(valNode, "a vector literal needs `import std.vec`")
         nodeSetType(valNode, typeInvalid())
         return true
     }
@@ -313,9 +314,16 @@ internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInf
         return true
     }
 
-    semaBecomeCall(valNode, "listOf", args)
+    semaBecomeCall(valNode, literalTable, args)
     semaExpr(module, valNode)
     return true
+}
+
+// The overload table a vector literal lowers to, std.vec's `vecOf`, or empty
+// when that module is not imported.
+private fn semaVecLiteralTable(module: ASTNode) -> String {
+    if (monoHasTemplate(module, "vecOf", NodeKind.FUNCTION)) { return "vecOf" }
+    return ""
 }
 
 // The value's type, building a list literal against `expected` first when that
@@ -438,7 +446,7 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
                and semaTypeImplementsNamedTrait(module, sourceT.name, "Iterator")) {
         return semaForEachIterator(module, stmt, source)
     } else if (sourceT.kind != TypeKind.LIST) {
-        semaErrorAt(source, "`for ... in` needs a String, a List, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
+        semaErrorAt(source, "`for ... in` needs a String, a Vec, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
         diag_note("implement `Iterator` for it, or iterate by index -- `for i in 0..n`")
         return false
     }
@@ -589,7 +597,7 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     if (count > 6) {
         semaErrorAt(expr, "joining more than six Strings with `+` is not supported")
-        diag_note("build a `List<String>` and call `strJoin(parts, \"\")` instead")
+        diag_note("build a `Vec<String>` and call `strJoin(parts, \"\")` instead")
         nodeSetType(expr, typeString())
         return typeString()
     }
@@ -734,6 +742,9 @@ private fn semaIdentifierExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
     if (ir_is_moved(expr.s1) == 1) {
         semaErrorAt(expr, "use of moved value ".concat(diagQuote(expr.s1)))
+    }
+    if (ir_var_is_global(expr.s1) == 1) {
+        semaCheckExternGlobalAccess(expr)
     }
     let mut t = typeFromSemKey(ir_get_var_type(expr.s1))
     nodeSetType(expr, t)
@@ -1136,6 +1147,23 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             }
         }
 
+        // Vec's methods, before the general rewrite: the ones that store or
+        // read an element lower onto the runtime directly (src/sema/vec.psm).
+        // The receiver is typed first only when it can be a value at all, so a
+        // misspelt name is reported once, by the rewrite's own path.
+        if (target.kind == NodeKind.TYPE_ANNOTATION) {
+            let associated = semaVecAssociated(module, expr, target, callee.s1)
+            if (associated == semaVecRewritten()) { return semaExpr(module, expr) }
+            if (associated == semaVecRejected()) { return typeInvalid() }
+        } else if (target.kind != NodeKind.IDENTIFIER_EXPR or ir_has_var_type(target.s1) == 1) {
+            if (semaExpr(module, target).kind == TypeKind.LIST) {
+                let method = strClone(callee.s1)
+                let lowered = semaVecLower(module, expr, method, target, expr.child2)
+                if (lowered == semaVecRewritten()) { return semaExpr(module, expr) }
+                if (lowered == semaVecRejected()) { return typeInvalid() }
+            }
+        }
+
         if (target.kind != NodeKind.TYPE_ANNOTATION) {
             let methodName = createNode(NodeKind.IDENTIFIER_EXPR)
             methodName.s1 = callee.s1
@@ -1387,6 +1415,12 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // and before the failure, so a field always wins and no existing program
     // changes meaning; a struct may still have a property, which is what
     // makes `point.magnitude` available next to `point.x`.
+    if (objectT.kind == TypeKind.LIST and semaVecIsProperty(expr.s1)) {
+        let propertyName = strClone(expr.s1)
+        let loweredProperty = semaVecLower(module, expr, propertyName, objectNode, ptr_null())
+        if (loweredProperty == semaVecRewritten()) { return semaExpr(module, expr) }
+        if (loweredProperty == semaVecRejected()) { return typeInvalid() }
+    }
     if (objectT.kind != TypeKind.STRUCT or semaStructHasField(objectT.name, expr.s1) == false) {
         if (typeIsValid(objectT)) {
             let property = semaPropertyRewrite(module, expr)
@@ -1491,7 +1525,7 @@ private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     if (collectionT.kind != TypeKind.ARRAY and collectionT.kind != TypeKind.LIST
         and collectionT.kind != TypeKind.SLICE and collectionT.kind != TypeKind.DATAVIEW) {
-        semaErrorAt(expr, "indexing requires a String, array, List, Slice, or DataView, found ".concat(typeDisplay(collectionT)))
+        semaErrorAt(expr, "indexing requires a String, array, Vec, Slice, or DataView, found ".concat(typeDisplay(collectionT)))
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
@@ -1537,7 +1571,7 @@ private fn semaSliceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (baseT.kind != TypeKind.LIST and baseT.kind != TypeKind.SLICE) {
-        semaErrorAt(expr, "slicing requires a String, List, or Slice, found ".concat(typeDisplay(baseT)))
+        semaErrorAt(expr, "slicing requires a String, Vec, or Slice, found ".concat(typeDisplay(baseT)))
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
@@ -1963,7 +1997,13 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     // is mutation of a heap object reached by pointer, which is a separate
     // question from whether the binding itself may be reseated.
     if (target.kind == NodeKind.IDENTIFIER_EXPR) {
-        if (ir_var_is_mutable(target.s1) == 0) {
+        if (ir_var_is_global(target.s1) == 1 and semaIsExternGlobal(target.s1)) {
+            if (semaExternGlobalWritable(target.s1, target.file) == false) {
+                semaErrorAt(target, "cannot assign to ".concat(diagQuote(target.s1),
+                                                               ", which is not declared `mut`"))
+                diag_note("change its declaration to `extern let mut`, if the foreign code allows writes")
+            }
+        } else if (ir_var_is_mutable(target.s1) == 0) {
             semaErrorAt(target, "cannot assign to ".concat(diagQuote(target.s1),
                                                            ", which is not declared `mut`"))
             diag_note("change its declaration to `let mut`")
@@ -2280,6 +2320,92 @@ private fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
         ir_mark_mutable(varNode.s1)
     }
     nodeSetType(varNode, varT)
+}
+
+// Registered in the same table a Prismio global is, so a read and a store
+// resolve through ir_var_is_global exactly as they do for `let` -- codegen
+// differs only in declaring the symbol rather than defining it.
+//
+// **Not marked mutable here.** Every file's declaration survives the merge, and
+// whether one may assign is a question about the declarations that file can
+// see; semaExternGlobalWritable answers it at the assignment.
+private fn semaPredeclareExternGlobal(module: ASTNode, extNode: ASTNode) {
+    let mut varT = typeInvalid()
+    if (nodeExists(extNode.child1)) {
+        let annotation = ptr_to_node(extNode.child1)
+        varT = semaAnnotationType(module, annotation)
+        semaCheckExternGlobalType(annotation, extNode.s1, varT)
+    }
+
+    // One symbol is one global in the module, so every declaration of it has to
+    // describe the same storage. A Prismio `let` of the same name would be
+    // silently read in place of the foreign one, or privatised out from under
+    // the foreign code that expects it; a second `extern let` of another type
+    // would read a different width out of the same bytes.
+    //
+    // The first declaration's type is the one registered, so a mismatch is
+    // reported once, here, rather than again at every read the other file makes.
+    let count = ir_decl_count(extNode.s1)
+    let mut registered = false
+    let mut i = 0
+    while (i < count) {
+        let other = ptr_to_node(ir_decl_at(extNode.s1, i))
+        if (other.kind == NodeKind.VARIABLE_DECL) {
+            semaErrorAt(extNode, "extern global ".concat(diagQuote(extNode.s1),
+                                                         " has the same name as a global defined in Prismio"))
+            diag_note_at(other.file, other.line, other.col, other.len, "the Prismio definition is here")
+        }
+        if (other.kind == NodeKind.EXTERN_VARIABLE and semaSamePosition(other, extNode) == false
+            and nodeHasType(other)) {
+            registered = true
+            let otherT = nodeGetType(other)
+            if (typeIsValid(otherT) and typeIsValid(varT)
+                and typeSemKey(otherT).equals(typeSemKey(varT)) == false) {
+                let declared = " is declared as ".concat(typeDisplay(varT), " here and as ", typeDisplay(otherT))
+                semaErrorAt(extNode, "extern global ".concat(diagQuote(extNode.s1), declared, " elsewhere"))
+                diag_note_at(other.file, other.line, other.col, other.len, "the other declaration is here")
+            }
+        }
+        i = i + 1
+    }
+
+    if (registered == false) {
+        ir_register_global_name(extNode.s1)
+        ir_set_global_var_type(extNode.s1, typeSemKey(varT))
+    }
+    nodeSetType(extNode, varT)
+}
+
+// Whether `file` may assign the extern global `name`. Its own declaration
+// decides when it has one; otherwise the ones it could have imported do, and a
+// private declaration is not one of those.
+//
+// A file that can see no declaration at all is answered yes, because reading
+// the target reports that it is private, and "not declared `mut`" beside it
+// would blame a declaration the reader cannot change.
+private fn semaExternGlobalWritable(name: String, file: Int) -> Bool {
+    let count = ir_decl_count(name)
+    let mut ownFound = false
+    let mut ownMutable = false
+    let mut importedFound = false
+    let mut importedMutable = false
+    let mut i = 0
+    while (i < count) {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.EXTERN_VARIABLE) {
+            if (decl.file == file) {
+                ownFound = true
+                if (decl.i1 == 1) { ownMutable = true }
+            } else if (decl.i2 != 1) {
+                importedFound = true
+                if (decl.i1 == 1) { importedMutable = true }
+            }
+        }
+        i = i + 1
+    }
+    if (ownFound) { return ownMutable }
+    if (importedFound == false) { return true }
+    return importedMutable
 }
 
 private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
@@ -4029,6 +4155,9 @@ public fn analyzeModule(module: ASTNode) {
         let stmt2 = ptr_to_node(globalPtr)
         if (stmt2.kind == NodeKind.VARIABLE_DECL) {
             semaPredeclareGlobal(module, stmt2)
+        }
+        if (stmt2.kind == NodeKind.EXTERN_VARIABLE) {
+            semaPredeclareExternGlobal(module, stmt2)
         }
         globalPtr = stmt2.next
     }

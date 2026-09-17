@@ -42,11 +42,11 @@ fn scaleWithBool<U: ScaleBy<Bool>>(value: U) -> Int {
 }
 
 // Nested type arguments exercise `>>` recovery and recursive identity.
-impl Wraps<List<Int>> for Label {
+impl Wraps<Vec<Int>> for Label {
     fn wraps(self) -> Bool { return strLength(self.text) > 0 }
 }
 
-fn acceptsWrapped<U: Wraps<List<Int>>>(value: U) -> Bool {
+fn acceptsWrapped<U: Wraps<Vec<Int>>>(value: U) -> Bool {
     return wraps(value)
 }
 

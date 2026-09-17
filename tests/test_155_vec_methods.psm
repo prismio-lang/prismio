@@ -1,0 +1,152 @@
+// `Vec<T>` used through its methods -- COLLECTIONS.md's approved list.
+//
+// Three element representations, because each lowers differently: `Int` is an
+// inline scalar, `String` is the 16-byte pair, and `Job` is a boxed struct that
+// owns a field. `Pt` is a flat struct stored inline.
+//
+// What is pinned beyond the values:
+//   - a removal parks what it removes, so a view taken before the removal still
+//     reads the element afterwards (`seen` below). aif_verify runs this fixture
+//     and requires zero violations -- a removal that freed at once would show as
+//     a read of freed memory here and a violation there;
+//   - `insert` lands where it is told for every representation, which is four
+//     runtime entry points;
+//   - an out-of-range `get` and an empty `pop` answer `None`.
+
+import std.io
+import std.string
+import std.vec
+import std.copy
+import std.option
+
+struct Job {
+    name: String,
+    weight: Int
+}
+
+impl Copy for Job {
+    fn copyOf(self) -> Self {
+        return Job { name: self.name.clone(), weight: self.weight }
+    }
+}
+
+struct Pt {
+    x: Int,
+    y: Int
+}
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn ints() -> Int {
+    let v: Vec<Int> = [3, 1, 2]
+    v.push(5)
+    v.insert(0, 9)
+    v.set(1, 7)
+    v.swap(0, 4)
+    // [5, 7, 1, 2, 9]
+    if (v.length != 5) { return fail("length") }
+    if (v.first != 5 or v.last != 9) { return fail("first/last") }
+    if (v.isEmpty or v.isNotEmpty == false) { return fail("isEmpty/isNotEmpty") }
+    if (v.capacity < v.length) { return fail("capacity") }
+    if (v.contains(2) == false or v.contains(4)) { return fail("contains") }
+    if (v.indexOf(7) != 1 or v.lastIndexOf(42) != -1) { return fail("indexOf") }
+    if (v.countOf(2) != 1) { return fail("countOf") }
+
+    v.reverse()
+    // [9, 2, 1, 7, 5]
+    if (v[0] != 9 or v[4] != 5) { return fail("reverse") }
+
+    let w = v.clone()
+    w.extend(v)
+    if (w.length != 10) { return fail("clone + extend") }
+
+    let popped = w.pop()
+    let mut last = 0
+    match (popped) {
+        Option.Some(x) => { last = x }
+        Option.None => { return fail("pop on a full Vec") }
+    }
+    if (last != 5) { return fail("pop value") }
+
+    let removed = w.removeAt(0)
+    if (removed != 9 or w[0] != 2) { return fail("removeAt") }
+
+    w.truncate(2)
+    if (w.length != 2) { return fail("truncate") }
+    w.clear()
+    if (w.isNotEmpty) { return fail("clear") }
+
+    let emptied = w.pop()
+    match (emptied) {
+        Option.Some(x) => { return fail("pop on an empty Vec") }
+        Option.None => { }
+    }
+    let outside = v.get(99)
+    match (outside) {
+        Option.Some(x) => { return fail("get out of range") }
+        Option.None => { }
+    }
+
+    let reserved = Vec<Int>.withCapacity(32)
+    reserved.reserve(64)
+    if (reserved.capacity < 64 or reserved.isNotEmpty) { return fail("withCapacity/reserve") }
+    return 0
+}
+
+fn strings() -> Int {
+    let words: Vec<String> = []
+    words.push("a string long enough to live on the heap, number one")
+    words.push("short")
+    words.insert(1, "a string long enough to live on the heap, number two")
+    if (words[1].equals("a string long enough to live on the heap, number two") == false) {
+        return fail("insert String")
+    }
+
+    // A view of element 0, then the element's removal. The view still reads it.
+    let seen = words[0]
+    let taken = words.removeAt(0)
+    if (seen.equals(taken) == false) { return fail("removeAt String") }
+    words.truncate(1)
+    if (seen.length() != 52) { return fail("a view outlived its element") }
+    if (words.first.equals("a string long enough to live on the heap, number two") == false) {
+        return fail("first String")
+    }
+    words.clear()
+    if (words.isNotEmpty) { return fail("clear String") }
+    return 0
+}
+
+fn jobs() -> Int {
+    let queue: Vec<Job> = []
+    queue.push(Job { name: "compile everything in the whole tree please", weight: 3 })
+    queue.push(Job { name: "link", weight: 1 })
+    queue.insert(0, Job { name: "fetch the dependencies from the network", weight: 2 })
+    let top = queue.removeAt(1)
+    if (top.weight != 3) { return fail("removeAt struct") }
+    if (queue.length != 2 or queue.last.weight != 1) { return fail("struct order") }
+    queue.clear()
+    return 0
+}
+
+fn points() -> Int {
+    let pts: Vec<Pt> = []
+    pts.push(Pt { x: 1, y: 2 })
+    pts.push(Pt { x: 3, y: 4 })
+    pts.insert(1, Pt { x: 5, y: 6 })
+    if (pts[1].x != 5 or pts[2].x != 3) { return fail("insert flat struct") }
+    pts.truncate(1)
+    if (pts.length != 1 or pts.last.y != 2) { return fail("truncate flat struct") }
+    return 0
+}
+
+fn main() -> Int {
+    if (ints() != 0) { return 1 }
+    if (strings() != 0) { return 1 }
+    if (jobs() != 0) { return 1 }
+    if (points() != 0) { return 1 }
+    println("PASS: vec methods")
+    return 0
+}

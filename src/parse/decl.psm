@@ -27,10 +27,10 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
     if (visibility >= 0) {
         let marker = p.current()
         let markerText = strClone(marker.value)
-        let onFunction = p.privateTakesFunction()
+        let enforced = p.visibilityIsEnforced()
         p.advance()
         let declaration = parseDeclaration(p)
-        if (onFunction) {
+        if (enforced) {
             declaration.i2 = visibility
         } else {
             // Rejected rather than accepted and ignored, for the reason a `trait`
@@ -38,7 +38,7 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
             // marker on a type or a global would be a promise the compiler does
             // not keep -- which is worse than an error.
             diag_error_at_code("P3001", marker.file, marker.line, marker.col, marker.len,
-                          "`".concat(markerText, "` is only accepted on a function in v0.1"))
+                          "`".concat(markerText, "` is only accepted on a function or an `extern` declaration in v0.1"))
             diag_note("a visibility marker on a type or a global is not enforced yet, and accepting it would promise that it is")
         }
         return declaration
@@ -46,7 +46,7 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
 
     if (p.checkVal(TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
     if (p.checkVal(TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
-    if (p.checkVal(TokenType.KEYWORD, "extern")) { return parseExternFnDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "extern")) { return parseExternDecl(p) }
     if (p.checkVal(TokenType.KEYWORD, "fn")) { return parseFunctionDecl(p) }
     if (p.checkVal(TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
     if (p.checkVal(TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
@@ -72,11 +72,11 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
 //   1  private   -- the declaring file, and the default an unmarked `fn` keeps
 //   2  internal  -- the declaring package
 //
-// parseFunctionDecl and parseExternFnDecl stamp 1 and parseDeclaration overwrites
-// it when a marker asked for something else, so the default lives at the two
-// places a function is built rather than in every reader of `i2`.
+// parseFunctionDecl and parseExternDecl stamp 1 and parseDeclaration overwrites
+// it when a marker asked for something else, so the default lives at the places
+// a declaration is built rather than in every reader of `i2`.
 //
-// Recognising every declaration kind and rejecting all but `fn` in
+// Recognising every declaration kind and rejecting all but `fn` and `extern` in
 // parseDeclaration keeps the marker consumed either way, so a misplaced one is a
 // single error rather than a cascade.
 //
@@ -113,7 +113,10 @@ private fn visibilityLevel(p: Parser) -> Int {
     return -1
 }
 
-private fn privateTakesFunction(p: Parser) -> Bool {
+// Whether the declaration after a marker is one whose visibility is checked:
+// a function, which overload resolution filters, or either `extern` form, which
+// the per-file extern table in runtime/ir_symbols.c filters.
+private fn visibilityIsEnforced(p: Parser) -> Bool {
     let next = p.peek()
     return next.value.equals("fn") or next.value.equals("extern")
 }
@@ -528,6 +531,20 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
             p.fatal("`Self` already denotes the complete impl target and cannot take type arguments")
         }
         parseTypeArgList(p, typeNode)
+        // `Vec<T>` is the spelling; the compiler's own name for the type is still
+        // `List`, so every pass after this one -- type keys, mangled symbols,
+        // AIF, the oracle -- reads what it always read. See COLLECTIONS.md.
+        //
+        // Which is also why a written `List` is refused here rather than later:
+        // this is the last place that can tell the two spellings apart.
+        if (typeNode.s1.equals("List")) {
+            diag_error_at_code("P3005", name.file, name.line, name.col, name.len,
+                               "`List` was renamed to `Vec`")
+            diag_note("write `Vec<...>`; the type and its operations are unchanged")
+        }
+        if (typeNode.s1.equals("Vec")) {
+            typeNode.s1 = "List"
+        }
     }
 
     // `T.Item` -- a projection through a trait's associated type. Its own node
@@ -804,6 +821,14 @@ private fn parseParameterList(p: Parser, isExtern: Bool) -> Ptr {
     return params.head
 }
 
+private fn parseExternDecl(p: Parser) -> ASTNode {
+    let next = p.peek()
+    if (next.type == TokenType.KEYWORD and next.value.equals("let")) {
+        return parseExternVariableDecl(p)
+    }
+    return parseExternFnDecl(p)
+}
+
 private fn parseExternFnDecl(p: Parser) -> ASTNode {
     p.expectVal(TokenType.KEYWORD, "extern", "extern fn")
     p.expectVal(TokenType.KEYWORD, "fn", "extern fn")
@@ -819,6 +844,50 @@ private fn parseExternFnDecl(p: Parser) -> ASTNode {
     if (p.matchVal(TokenType.ARROW, "->")) {
         extNode.child2 = node_to_ptr(parseTypeAnnotation(p))
         parseFfiContract(p, ptr_to_node(extNode.child2))
+    }
+
+    return extNode
+}
+
+// `extern let [mut] name: Type` -- a global some foreign object file defines.
+//
+// **The type is required and an initializer is refused**, both here rather than
+// in sema, because each is a question about what was written: the storage and
+// its initial value belong to the C side, and a Prismio initializer would be a
+// second definition of a symbol the linker already has one of.
+//
+// No FFI contract after the type. A contract describes what a *call* does to
+// ownership, and reading a global is not a call -- sema limits the type to the
+// ones that carry no ownership at all.
+private fn parseExternVariableDecl(p: Parser) -> ASTNode {
+    p.expectVal(TokenType.KEYWORD, "extern", "extern let")
+    p.expectVal(TokenType.KEYWORD, "let", "extern let")
+
+    let extNode = p.node(NodeKind.EXTERN_VARIABLE)
+    extNode.i2 = 1
+    if (p.matchVal(TokenType.KEYWORD, "mut")) {
+        extNode.i1 = 1
+    }
+
+    let name = p.current()
+    extNode.s1 = name.value
+    p.expectToken(TokenType.IDENTIFIER, "variable name")
+
+    if (p.matchVal(TokenType.SEPARATOR, ":") == false) {
+        diag_error_at_code("P3004", name.file, name.line, name.col, name.len,
+            "extern global ".concat(diagQuote(extNode.s1), " needs a type annotation"))
+        diag_note("the definition is in foreign code, so there is no initializer to infer a type from")
+        return extNode
+    }
+    extNode.child1 = node_to_ptr(parseTypeAnnotation(p))
+
+    if (p.checkVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
+        let equals = p.current()
+        diag_error_at_code("P3004", equals.file, equals.line, equals.col, equals.len,
+            "extern global ".concat(diagQuote(extNode.s1), " cannot have an initializer"))
+        diag_note("foreign code defines it and gives it its value; drop `extern` to define it in Prismio instead")
+        p.advance()
+        parseExpression(p, 0)
     }
 
     return extNode

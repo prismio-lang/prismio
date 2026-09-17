@@ -94,12 +94,12 @@ fn main() -> Int {
     for p in parts {
         if (p.isNotEmpty) { seen = seen + 1 }
     }
-    if (seen != 3) { return fail("for p in List<String>") }
+    if (seen != 3) { return fail("for p in Vec<String>") }
 
     let codes = "xyz".bytes()
     let mut total = 0
     for n in codes { total = total + n }
-    if (total != 363) { return fail("for n in List<Int>") }
+    if (total != 363) { return fail("for n in Vec<Int>") }
 
     // The rest of the method surface that has no operator.
     let joined = parts.join("-")

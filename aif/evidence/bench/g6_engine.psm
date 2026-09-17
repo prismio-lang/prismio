@@ -37,18 +37,18 @@ struct Actor {
 }
 
 struct World {
-    actors: List<Actor>,
-    transforms: List<Transform>,
-    velocities: List<Velocity>,
+    actors: Vec<Actor>,
+    transforms: Vec<Transform>,
+    velocities: Vec<Velocity>,
     tick: Int,
     spawned: Int,
     killed: Int
 }
 
 fn world_create() -> World {
-    let a: List<Actor> = list_new()
-    let t: List<Transform> = list_new()
-    let v: List<Velocity> = list_new()
+    let a: Vec<Actor> = list_new()
+    let t: Vec<Transform> = list_new()
+    let v: Vec<Velocity> = list_new()
     return World {
         actors: a,
         transforms: t,

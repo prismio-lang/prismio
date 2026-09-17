@@ -1,0 +1,224 @@
+// Vec's method surface: which spellings are lowered here, and onto what.
+//
+// `v.f(a)` is `f(v, a)` everywhere else, and most of Vec's reading methods are
+// exactly that -- ordinary generic functions in std/vec.psm. **A method that
+// stores an element, or reads one, is lowered here instead**, onto the runtime
+// entry point the old `list_*` spelling called. A wrapper is wrong in both
+// directions: a parameter is a borrow, so a Prismio `push` could not take
+// ownership of what it pushed, and a generic function returning an element
+// stops the escape analysis releasing the container it came from.
+//
+// The size queries are lowered too, for a smaller reason: they are one field
+// read, and `v.length` in a loop condition should not be a call.
+//
+// COLLECTIONS.md has the approved list.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+import std.string
+
+// The runtime entry point a method becomes by prepending the receiver, or "" when
+// the name is not a plain one. The shaped ones -- `clear`, `first`, `last`,
+// `isEmpty`, `isNotEmpty` -- are built by semaVecLower itself.
+private fn semaVecEntryPoint(name: String) -> String {
+    if (name.equals("push")) { return "list_push" }
+    if (name.equals("set")) { return "list_set" }
+    if (name.equals("swap")) { return "list_swap" }
+    if (name.equals("insert")) { return "list_insert" }
+    if (name.equals("reserve")) { return "list_reserve" }
+    if (name.equals("truncate")) { return "list_truncate" }
+    if (name.equals("capacity")) { return "list_capacity" }
+    if (name.equals("length")) { return "list_len" }
+    return ""
+}
+
+// How many arguments the method takes after its receiver, or -1 when this
+// module does not lower it.
+private fn semaVecArity(name: String) -> Int {
+    if (name.equals("push")) { return 1 }
+    if (name.equals("set")) { return 2 }
+    if (name.equals("swap")) { return 2 }
+    if (name.equals("insert")) { return 2 }
+    if (name.equals("reserve")) { return 1 }
+    if (name.equals("truncate")) { return 1 }
+    if (name.equals("capacity")) { return 0 }
+    if (name.equals("length")) { return 0 }
+    if (name.equals("clear")) { return 0 }
+    if (name.equals("first")) { return 0 }
+    if (name.equals("last")) { return 0 }
+    if (name.equals("isEmpty")) { return 0 }
+    if (name.equals("isNotEmpty")) { return 0 }
+    return 0 - 1
+}
+
+// Whether `name` read with no parentheses is one of Vec's properties. The size
+// queries and the two ends; none of them allocates.
+internal fn semaVecIsProperty(name: String) -> Bool {
+    if (name.equals("length")) { return true }
+    if (name.equals("capacity")) { return true }
+    if (name.equals("first")) { return true }
+    if (name.equals("last")) { return true }
+    if (name.equals("isEmpty")) { return true }
+    if (name.equals("isNotEmpty")) { return true }
+    return false
+}
+
+private fn semaVecIntLiteral(text: String, at: ASTNode) -> ASTNode {
+    let literal = createNode(NodeKind.LITERAL_EXPR)
+    literal.i1 = TokenType.NUMBER_LITERAL
+    literal.s1 = strClone(text)
+    nodeSpanFrom(literal, at)
+    return literal
+}
+
+private fn semaVecCall(name: String, args: Ptr, at: ASTNode) -> ASTNode {
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = strClone(name)
+    nodeSpanFrom(callee, at)
+    let call = createNode(NodeKind.CALL_EXPR)
+    call.child1 = node_to_ptr(callee)
+    call.child2 = args
+    nodeSpanFrom(call, at)
+    return call
+}
+
+// A receiver that can be read twice with the same answer and no effect: a
+// name, or a field of one. `last` reads its receiver for the length as well as
+// for the element, and a call there would run twice.
+private fn semaVecIsPath(node: ASTNode) -> Bool {
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) { return true }
+    if (node.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(node.child1)) {
+        return semaVecIsPath(ptr_to_node(node.child1))
+    }
+    return false
+}
+
+// What semaVecLower did, as semaPropertyRewrite answers: 0 when the name is not
+// one of these, 1 when `expr` was rewritten and should be checked again, and 2
+// when a mistake was reported and `expr` is left as it was -- re-entering it
+// would report the mistake again, forever.
+internal fn semaVecNotLowered() -> Int { return 0 }
+internal fn semaVecRewritten() -> Int { return 1 }
+internal fn semaVecRejected() -> Int { return 2 }
+
+// Rewrites `expr` in place into the lowering of `receiver.name(args)`, where
+// `receiver` is already known to be a Vec. `args` is the chain after the
+// receiver.
+internal fn semaVecLower(module: ASTNode, expr: ASTNode, name: String,
+                         receiver: ASTNode, args: Ptr) -> Int {
+    let arity = semaVecArity(name)
+    if (arity < 0) { return semaVecNotLowered() }
+
+    let mut given = 0
+    let mut p = args
+    while (nodeExists(p)) {
+        given = given + 1
+        p = ptr_to_node(p).next
+    }
+    if (given != arity) {
+        let mut noun = " arguments"
+        if (arity == 1) { noun = " argument" }
+        semaErrorAt(expr, diagQuote(name).concat(" takes ", arity.toString(), noun,
+                                                 ", found ", given.toString()))
+        nodeSetType(expr, typeInvalid())
+        return semaVecRejected()
+    }
+
+    receiver.next = args
+    let chain = node_to_ptr(receiver)
+
+    if (name.equals("isEmpty") or name.equals("isNotEmpty")) {
+        receiver.next = ptr_null()
+        let length = semaVecCall("list_len", chain, expr)
+        expr.kind = NodeKind.BINARY_EXPR
+        expr.s1 = "=="
+        if (name.equals("isNotEmpty")) { expr.s1 = "!=" }
+        expr.s2 = ""
+        expr.i1 = 0
+        expr.i3 = 0
+        expr.child1 = node_to_ptr(length)
+        expr.child2 = node_to_ptr(semaVecIntLiteral("0", expr))
+        expr.child3 = ptr_null()
+        return semaVecRewritten()
+    }
+
+    let mut target = semaVecEntryPoint(name)
+    if (name.equals("clear")) {
+        target = "list_truncate"
+        receiver.next = node_to_ptr(semaVecIntLiteral("0", expr))
+    }
+    if (name.equals("first")) {
+        target = "list_get"
+        receiver.next = node_to_ptr(semaVecIntLiteral("0", expr))
+    }
+    if (name.equals("last")) {
+        if (semaVecIsPath(receiver) == false) {
+            semaErrorAt(receiver, "`last` needs a named Vec")
+            diag_note("bind the expression with `let` first; the Vec is read twice, once for its length")
+            nodeSetType(expr, typeInvalid())
+            return semaVecRejected()
+        }
+        target = "list_get"
+        let again = monoCopyOne(chain)
+        let length = semaVecCall("list_len", node_to_ptr(again), expr)
+        let index = createNode(NodeKind.BINARY_EXPR)
+        index.s1 = "-"
+        index.child1 = node_to_ptr(length)
+        index.child2 = node_to_ptr(semaVecIntLiteral("1", expr))
+        nodeSpanFrom(index, expr)
+        receiver.next = node_to_ptr(index)
+    }
+
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = target
+    nodeSpanFrom(callee, expr)
+    expr.kind = NodeKind.CALL_EXPR
+    expr.s1 = ""
+    expr.s2 = ""
+    expr.i1 = 0
+    expr.child1 = node_to_ptr(callee)
+    expr.child2 = chain
+    expr.child3 = ptr_null()
+    return semaVecRewritten()
+}
+
+// `Vec<T>.withCapacity(n)` -- the one associated function. The element type is
+// written, not inferred, so it becomes std.vec's `withCapacity<T>(n)`, which
+// builds the list inside an instantiation that knows `T` and therefore chooses
+// the right storage for it.
+internal fn semaVecAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode,
+                              name: String) -> Int {
+    if (qualifier.s1.equals("Vec") == false) { return semaVecNotLowered() }
+    if (name.equals("withCapacity") == false) {
+        semaErrorAt(expr, "`Vec` has no associated function ".concat(diagQuote(name)))
+        diag_note("`Vec<T>.withCapacity(n)` is the one there is; `[]` is an empty Vec")
+        nodeSetType(expr, typeInvalid())
+        return semaVecRejected()
+    }
+    if (nodeIsNull(qualifier.child1)) {
+        semaErrorAt(expr, "`Vec.withCapacity` needs its element type")
+        diag_note("write `Vec<T>.withCapacity(n)`")
+        nodeSetType(expr, typeInvalid())
+        return semaVecRejected()
+    }
+    if (monoHasTemplate(module, name, NodeKind.FUNCTION) == false) {
+        semaErrorAt(expr, "`Vec<T>.withCapacity` needs `import std.vec`")
+        nodeSetType(expr, typeInvalid())
+        return semaVecRejected()
+    }
+    let written = createNode(NodeKind.TYPE_ANNOTATION)
+    written.s1 = strClone(name)
+    written.i2 = 1
+    written.child1 = qualifier.child1
+    nodeSpanFrom(written, qualifier)
+
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = strClone(name)
+    nodeSpanFrom(callee, expr)
+    expr.child1 = node_to_ptr(callee)
+    expr.child3 = node_to_ptr(written)
+    return semaVecRewritten()
+}

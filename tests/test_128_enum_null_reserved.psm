@@ -14,8 +14,8 @@ fn find(present: Bool) -> OptionalTree? {
     return none
 }
 
-fn findGeneric(present: Bool) -> Generic<List<Int>>? {
-    if (present) { return Generic<List<Int>>.None }
+fn findGeneric(present: Bool) -> Generic<Vec<Int>>? {
+    if (present) { return Generic<Vec<Int>>.None }
     return none
 }
 
@@ -27,7 +27,7 @@ fn empty(t: OptionalTree) -> Bool {
     return false
 }
 
-fn genericEmpty(t: Generic<List<Int>>) -> Bool {
+fn genericEmpty(t: Generic<Vec<Int>>) -> Bool {
     match (t) {
         Generic.None => { return true }
         Generic.Some(xs) => { return false }

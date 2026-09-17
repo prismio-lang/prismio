@@ -1,0 +1,13 @@
+// expect-error: extern global `prismio_argc` is declared as I64 here and as Int elsewhere
+// expect-error: extern global `shadowed` has the same name as a global defined in Prismio
+// One symbol is one global, so every declaration of it has to describe the same
+// storage -- including one in another module, and including a Prismio `let`.
+import extern_globals.reader
+
+extern let prismio_argc: I64
+extern let shadowed: Int
+let shadowed = 3
+
+fn main() -> Int {
+    return readerArgc()
+}

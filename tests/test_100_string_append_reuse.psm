@@ -42,7 +42,7 @@ fn view_append() -> String {
 // Storing one result in a container makes that site globally `in_container`; it
 // must not erase the direct-fresh fact for another owning accumulator invocation.
 fn contaminated_site(n: Int) -> String {
-    let mut saved: List<String> = list_new()
+    let mut saved: Vec<String> = list_new()
     list_push(saved, "left".concat("right"))
 
     let mut out = "abcdefghijklm"

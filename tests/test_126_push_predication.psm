@@ -12,7 +12,7 @@
 
 import std.io
 
-fn digest(xs: List<Int>) -> Int {
+fn digest(xs: Vec<Int>) -> Int {
     let mut acc = 0
     let mut i = 0
     let n = list_len(xs)
@@ -24,8 +24,8 @@ fn digest(xs: List<Int>) -> Int {
 }
 
 // Exactly enough room: the guard holds.
-fn fillExact(n: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(n)
+fn fillExact(n: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(xs, i * 3)
@@ -35,8 +35,8 @@ fn fillExact(n: Int) -> List<Int> {
 }
 
 // No room at all: the guard fails and the loop grows the list as before.
-fn fillGrowing(n: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new()
+fn fillGrowing(n: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(xs, i * 3)
@@ -46,8 +46,8 @@ fn fillGrowing(n: Int) -> List<Int> {
 }
 
 // One short: the guard fails on the last element it would have needed.
-fn fillOneShort(n: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(n - 1)
+fn fillOneShort(n: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(n - 1)
     let mut i = 0
     while (i < n) {
         list_push(xs, i * 3)
@@ -57,8 +57,8 @@ fn fillOneShort(n: Int) -> List<Int> {
 }
 
 // Two pushes a turn into one list: the guard needs twice the trip count.
-fn fillTwice(n: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(2 * n)
+fn fillTwice(n: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(2 * n)
     let mut i = 0
     while (i < n) {
         list_push(xs, i)
@@ -70,8 +70,8 @@ fn fillTwice(n: Int) -> List<Int> {
 
 // Fewer pushes than the static count: the bound is an upper bound, and the guard
 // must not be read as a promise that the list ends up full.
-fn fillSparse(n: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(n)
+fn fillSparse(n: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         if (i % 3 == 0) { list_push(xs, i) }
@@ -83,8 +83,8 @@ fn fillSparse(n: Int) -> List<Int> {
 // Two receivers, different counts, and a read of a third list in the same loop.
 fn fillPair(n: Int) -> Int {
     let src = fillExact(n)
-    let mut a: List<Int> = list_new_with_capacity(n)
-    let mut b: List<Int> = list_new_with_capacity(2 * n)
+    let mut a: Vec<Int> = list_new_with_capacity(n)
+    let mut b: Vec<Int> = list_new_with_capacity(2 * n)
     let mut i = 0
     while (i < n) {
         list_push(a, list_get(src, i))
@@ -96,8 +96,8 @@ fn fillPair(n: Int) -> Int {
 }
 
 // The loop stops early: fewer pushes than the guard allowed for.
-fn fillBreak(n: Int, stop: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(n)
+fn fillBreak(n: Int, stop: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         if (i >= stop) { break }

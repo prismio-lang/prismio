@@ -29,7 +29,7 @@ struct Item {
 // caller instead, so it sinks T1 -> T2 and the scope drop does not happen.
 // ---------------------------------------------------------------------------
 fn view_escapes_by_return(n: Int) -> Item {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: n })
     list_push(items, Item { value: n + 1 })
     return list_get(items, 0)
@@ -39,7 +39,7 @@ fn view_escapes_by_return(n: Int) -> Item {
 // why provenance has to ride the points-to graph: the `return` sees the value
 // set of `e`, not of the `list_get` that produced it.
 fn view_escapes_through_a_binding(n: Int) -> Item {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: n })
     let e = list_get(items, 0)
     return e
@@ -55,7 +55,7 @@ fn view_escapes_through_a_binding(n: Int) -> Item {
 // every list in the file resolved through it and one escaping list demoted all
 // the others.
 fn view_stays_local() -> Int {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: 3 })
     list_push(items, Item { value: 4 })
 
@@ -72,7 +72,7 @@ fn view_stays_local() -> Int {
 // A scalar read out of a container is a copy, not a view: it goes into a
 // register and keeps nothing alive. Returning one must not demote the list.
 fn scalar_read_is_not_a_view() -> Int {
-    let nums: List<Int> = list_new()
+    let nums: Vec<Int> = list_new()
     list_push(nums, 10)
     list_push(nums, 32)
     return list_get(nums, 0) + list_get(nums, 1)
@@ -82,7 +82,7 @@ fn scalar_read_is_not_a_view() -> Int {
 // this activation, which is nested inside the caller's, so the collection needs
 // no constraint from here -- it is already live across the call that passed it
 // down. Bounding it by "the caller" instead cost g5_asset_cache its release.
-fn sum_visible(items: List<Item>) -> Int {
+fn sum_visible(items: Vec<Item>) -> Int {
     let mut total = 0
     let mut i = 0
     while (i < list_len(items)) {
@@ -94,7 +94,7 @@ fn sum_visible(items: List<Item>) -> Int {
 }
 
 fn view_in_a_callee() -> Int {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: 100 })
     list_push(items, Item { value: 23 })
     return sum_visible(items)

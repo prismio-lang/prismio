@@ -80,11 +80,11 @@ fn make(a: Int) -> Point {
     return p
 }
 
-fn keep(box: List<Point>, sink p: Point) {
+fn keep(box: Vec<Point>, sink p: Point) {
     list_push(box, p)
 }
 
-fn local(a: Int, box: List<Point>) -> Int {
+fn local(a: Int, box: Vec<Point>) -> Int {
     let p = Point { x: a, y: a }
     let sum = p.x + p.y
     keep(box, p)

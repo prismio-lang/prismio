@@ -58,6 +58,9 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("__builtin_string_concat_inline6")) { return typeString() }
     if (name.equals("__builtin_string_from_int")) { return typeString() }
     if (name.equals("__builtin_string_view")) { return typeString() }
+    // The `index`th `char*` of a `char**`, as a String. How std.process reads
+    // the argument vector it names with `extern let`.
+    if (name.equals("__builtin_cstring_at")) { return typeString() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
     // is what the type buys -- so there has to be one way across, and this is it.
@@ -113,6 +116,13 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("list_set")) { return typeVoid() }
     if (name.equals("list_set_exclusive")) { return typeVoid() }
     if (name.equals("list_swap")) { return typeVoid() }
+    // Vec's growth and removal entry points, reached through its methods
+    // (src/sema/vec.psm) rather than written.
+    if (name.equals("list_capacity")) { return typeInt() }
+    if (name.equals("list_reserve")) { return typeVoid() }
+    if (name.equals("list_truncate")) { return typeVoid() }
+    if (name.equals("list_remove_at")) { return typeVoid() }
+    if (name.equals("list_insert")) { return typeVoid() }
     if (name.equals("slice_len")) { return typeInt() }
     if (name.equals("slice_set")) { return typeVoid() }
     if (name.equals("data_len")) { return typeInt() }
@@ -321,6 +331,17 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    // **`index` is the caller's obligation**, for the reason the byte read's is:
+    // the one caller bounds it by `prismio_argc` a line above, and an entry past
+    // the end of a `char**` is not a thing this call could detect.
+    if (name.equals("__builtin_cstring_at")) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let c0 = ptr_to_node(argPtr)
+        semaCheckValue(module, c0, typePtr(), "C string array")
+        semaCheckValue(module, ptr_to_node(c0.next), typeInt(), "C string array index")
+        return true
+    }
+
     if (name.equals("list_new")) {
         semaCheckArity(call, name, argPtr, 0)
         return true
@@ -338,7 +359,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, "list_len expects a List, found ".concat(typeDisplay(lt)))
+            semaErrorAt(a0, "list_len expects a Vec, found ".concat(typeDisplay(lt)))
         }
         return true
     }
@@ -352,12 +373,12 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let rows = ptr_to_node(argPtr)
         let lt = semaExpr(module, rows)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(rows, "soa expects a List, found ".concat(typeDisplay(lt)))
+            semaErrorAt(rows, "soa expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
         let elemT = semaListElementType(lt)
         if (elemT.kind != TypeKind.STRUCT) {
-            semaErrorAt(rows, "soa requires a List of flat structs, found ".concat(typeDisplay(lt)))
+            semaErrorAt(rows, "soa requires a Vec of flat structs, found ".concat(typeDisplay(lt)))
             return true
         }
         if (structDeclIsPodIn(module, elemT.name, 0, true) == false) {
@@ -395,7 +416,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, "list_get expects a List, found ".concat(typeDisplay(lt)))
+            semaErrorAt(a0, "list_get expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
         semaCheckValue(module, ptr_to_node(a0.next), typeInt(), "list_get index")
@@ -474,7 +495,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, "list_push expects a List, found ".concat(typeDisplay(lt)))
+            semaErrorAt(a0, "list_push expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
         let valueNode = ptr_to_node(a0.next)
@@ -486,10 +507,10 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         // it must be stored; that representation has an address and preserves
         // E-VIEW through the field store.
         if (elemT.kind == TypeKind.SLICE) {
-            semaErrorAt(valueNode, "a Slice cannot be stored directly in a List; wrap it in a struct")
+            semaErrorAt(valueNode, "a Slice cannot be stored directly in a Vec; wrap it in a struct")
         }
         if (elemT.kind == TypeKind.DATAVIEW) {
-            semaErrorAt(valueNode, "a DataView cannot be stored directly in a List")
+            semaErrorAt(valueNode, "a DataView cannot be stored directly in a Vec")
         }
         // AIF item 3. The list owns what is pushed into it and releases it at
         // teardown, so a push is an ownership transfer and has to be move-checked
@@ -508,7 +529,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, "list_set expects a List, found ".concat(typeDisplay(lt)))
+            semaErrorAt(a0, "list_set expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
         let a1 = ptr_to_node(a0.next)
@@ -517,10 +538,10 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let elemT = semaListElementType(lt)
         semaCheckValue(module, valueNode, elemT, "list_set value")
         if (elemT.kind == TypeKind.SLICE) {
-            semaErrorAt(valueNode, "a Slice cannot be stored directly in a List; wrap it in a struct")
+            semaErrorAt(valueNode, "a Slice cannot be stored directly in a Vec; wrap it in a struct")
         }
         if (elemT.kind == TypeKind.DATAVIEW) {
-            semaErrorAt(valueNode, "a DataView cannot be stored directly in a List")
+            semaErrorAt(valueNode, "a DataView cannot be stored directly in a Vec")
         }
         // Same transfer as list_push. What it does *not* do is release whatever
         // occupied the slot: an overwritten element leaks, and closing that needs
@@ -540,7 +561,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, "list_set_exclusive expects a List, found ".concat(typeDisplay(lt)))
+            semaErrorAt(a0, "list_set_exclusive expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
         let a1 = ptr_to_node(a0.next)
@@ -554,11 +575,11 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         if (elemT.kind != TypeKind.STRUCT
             or structDeclIsPodIn(module, elemT.name, 0, true)) {
             semaErrorAt(a0, "list_set_exclusive requires a boxed struct element type")
-            diag_note("flat List elements are inline; use list_set for them")
+            diag_note("flat Vec elements are inline; use list_set for them")
         }
         if (a0.kind != NodeKind.IDENTIFIER_EXPR
             or ir_is_list_exclusive(a0.s1) == 0) {
-            semaErrorAt(a0, "list_set_exclusive requires an unobserved local List")
+            semaErrorAt(a0, "list_set_exclusive requires an unobserved local Vec")
             diag_note("create it with list_new and replace before list_get, slicing, or passing it to another function")
         }
         semaConsumeOperand(valueNode)
@@ -573,12 +594,61 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let a0 = ptr_to_node(argPtr)
         let lt = semaExpr(module, a0)
         if (lt.kind != TypeKind.LIST) {
-            semaErrorAt(a0, "list_swap expects a List, found ".concat(typeDisplay(lt)))
+            semaErrorAt(a0, "list_swap expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
         let a1 = ptr_to_node(a0.next)
         semaCheckValue(module, a1, typeInt(), "list_swap index")
         semaCheckValue(module, ptr_to_node(a1.next), typeInt(), "list_swap index")
+        return true
+    }
+
+    // `insert(i, x)` is a push that lands at `i`, so it is checked as one: the
+    // value moves in, and a Slice or a DataView cannot be an element.
+    if (name.equals("list_insert")) {
+        if (semaCheckArity(call, name, argPtr, 3) == false) { return true }
+        let a0 = ptr_to_node(argPtr)
+        let lt = semaExpr(module, a0)
+        if (lt.kind != TypeKind.LIST) {
+            semaErrorAt(a0, "insert expects a Vec, found ".concat(typeDisplay(lt)))
+            return true
+        }
+        let a1 = ptr_to_node(a0.next)
+        semaCheckValue(module, a1, typeInt(), "insert index")
+        let valueNode = ptr_to_node(a1.next)
+        let elemT = semaListElementType(lt)
+        semaCheckValue(module, valueNode, elemT, "insert value")
+        if (elemT.kind == TypeKind.SLICE) {
+            semaErrorAt(valueNode, "a Slice cannot be stored directly in a Vec; wrap it in a struct")
+        }
+        if (elemT.kind == TypeKind.DATAVIEW) {
+            semaErrorAt(valueNode, "a DataView cannot be stored directly in a Vec")
+        }
+        semaConsumeOperand(valueNode)
+        return true
+    }
+
+    // The rest take the vector and at most one Int. None of them hands out an
+    // element, so none of them closes the exclusive-replacement capability that
+    // a read does.
+    let mut vecIntOp = ""
+    if (name.equals("list_capacity")) { vecIntOp = "capacity" }
+    if (name.equals("list_reserve")) { vecIntOp = "reserve" }
+    if (name.equals("list_truncate")) { vecIntOp = "truncate" }
+    if (name.equals("list_remove_at")) { vecIntOp = "removeAt" }
+    if (vecIntOp.equals("") == false) {
+        let mut arity = 2
+        if (name.equals("list_capacity")) { arity = 1 }
+        if (semaCheckArity(call, name, argPtr, arity) == false) { return true }
+        let v0 = ptr_to_node(argPtr)
+        let vt = semaExpr(module, v0)
+        if (vt.kind != TypeKind.LIST) {
+            semaErrorAt(v0, vecIntOp.concat(" expects a Vec, found ", typeDisplay(vt)))
+            return true
+        }
+        if (arity == 2) {
+            semaCheckValue(module, ptr_to_node(v0.next), typeInt(), vecIntOp.concat(" argument"))
+        }
         return true
     }
 

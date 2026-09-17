@@ -1,19 +1,19 @@
-// `List<String>` stores the 16-byte pair itself.
+// `Vec<String>` stores the 16-byte pair itself.
 //
 // A slot used to be one word: a short String was copied to the heap on the way
 // in, and every read measured its length back with `strlen`. The list now holds
 // the pair, so the shapes below are the ones where the pair is not obviously the
 // element: a literal (static storage the list must not free -- it used to, at
 // teardown), a view (a borrow the list must copy), a slice of the list, and a
-// list born boxed that reaches code typed `List<String>`.
+// list born boxed that reaches code typed `Vec<String>`.
 
 import std.io
-import std.list
+import std.vec
 import std.map
 import std.string
 
 struct Roster {
-    names: List<String>
+    names: Vec<String>
 }
 
 fn fail(message: String) -> Int {
@@ -22,7 +22,7 @@ fn fail(message: String) -> Int {
     return 1
 }
 
-fn totalLength(names: List<String>) -> Int {
+fn totalLength(names: Vec<String>) -> Int {
     let mut total = 0
     for name in names {
         total = total + name.length()
@@ -32,7 +32,7 @@ fn totalLength(names: List<String>) -> Int {
 
 fn main() -> Int {
     // Short strings built at run time stay in the pair.
-    let mut words: List<String> = list_new()
+    let mut words: Vec<String> = list_new()
     let mut i = 0
     while (i < 100) {
         list_push(words, "w".concat(i.toString()))
@@ -67,11 +67,11 @@ fn main() -> Int {
 
     // Iteration over every element, and a read past the end, which is the empty
     // String it always was.
-    if (totalLength(words) != 426) { return fail("for-in over a List<String>") }
+    if (totalLength(words) != 426) { return fail("for-in over a Vec<String>") }
     if (list_get(words, 1000).length() != 0) { return fail("a read past the end") }
 
     // Sorting moves pairs between slots, inline and owned alike.
-    let mut fruit: List<String> = list_new()
+    let mut fruit: Vec<String> = list_new()
     list_push(fruit, "pear")
     list_push(fruit, "an apple with a much longer name")
     list_push(fruit, "fig")
@@ -84,7 +84,7 @@ fn main() -> Int {
     }
     if (fruit[4].equals("pear") == false) { return fail("sort: last") }
 
-    // A map's keys are a List<String> too.
+    // A map's keys are a Vec<String> too.
     let counts: Map<String, Int> = mapNew<String, Int>()
     let mut k = 0
     while (k < 50) {
@@ -106,7 +106,7 @@ fn main() -> Int {
     if (words[4].equals("tiny") == false) { return fail("a slice write, inline") }
 
     // A list born boxed -- `list_new()` has no element type in a struct literal --
-    // reaching code typed `List<String>`.
+    // reaching code typed `Vec<String>`.
     let roster = Roster { names: list_new() }
     list_push(roster.names, "ann")
     list_push(roster.names, "a long name that has to live on the heap")

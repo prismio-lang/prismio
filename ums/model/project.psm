@@ -11,7 +11,7 @@ struct UmsProjectMetadata {
     description: String,
     license: String,
     licenseFile: String,
-    authors: List<String>,
+    authors: Vec<String>,
     descriptionDeclared: Bool,
     licenseDeclared: Bool,
     licenseFileDeclared: Bool,
@@ -39,9 +39,9 @@ struct UmsProjectModel {
     metadata: UmsProjectMetadata,
     build: UmsBuildConfiguration,
     toolchain: UmsToolchainConfiguration,
-    targets: List<UmsTarget>,
-    commands: List<UmsCommand>,
-    dependencies: List<UmsDependency>
+    targets: Vec<UmsTarget>,
+    commands: Vec<UmsCommand>,
+    dependencies: Vec<UmsDependency>
 }
 
 internal fn umsProjectModel(root: String, manifestPath: String, profile: String) -> UmsProjectModel {

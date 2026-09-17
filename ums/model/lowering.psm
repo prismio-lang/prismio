@@ -13,13 +13,13 @@ import std.string
 // naming construct, so this is the same code with the receiver named as one.
 impl UmsProjectModel {
 
-    private fn lowerError(self, diagnostics: List<UmsDiagnostic>,
+    private fn lowerError(self, diagnostics: Vec<UmsDiagnostic>,
                      statement: UmsAstStatement, code: String, message: String) {
         umsDiagnosticAdd(diagnostics, code, self.manifestPath,
                          statement.line, statement.col, statement.len, message)
     }
 
-    private fn lowerString(self, diagnostics: List<UmsDiagnostic>,
+    private fn lowerString(self, diagnostics: Vec<UmsDiagnostic>,
                       statement: UmsAstStatement, description: String) -> Bool {
         if (statement.value.kind == UmsAstValueKind.STRING) { return true }
         self.lowerError(diagnostics, statement, "UMS2001",
@@ -27,7 +27,7 @@ impl UmsProjectModel {
         return false
     }
 
-    private fn lowerAuthors(self, diagnostics: List<UmsDiagnostic>,
+    private fn lowerAuthors(self, diagnostics: Vec<UmsDiagnostic>,
                        statement: UmsAstStatement) {
         if (statement.value.kind != UmsAstValueKind.ARRAY) {
             self.lowerError(diagnostics, statement, "UMS2011",
@@ -50,7 +50,7 @@ impl UmsProjectModel {
 
     private fn lowerMetadata(self, document: UmsAstDocument,
                         block: UmsAstStatement,
-                        diagnostics: List<UmsDiagnostic>) {
+                        diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
         while (i < list_len(block.children)) {
             let property = list_get(document.statements, list_get(block.children, i))
@@ -132,7 +132,7 @@ impl UmsProjectModel {
 
     private fn lowerToolchain(self, document: UmsAstDocument,
                          block: UmsAstStatement,
-                         diagnostics: List<UmsDiagnostic>) {
+                         diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
         while (i < list_len(block.children)) {
             let property = list_get(document.statements, list_get(block.children, i))
@@ -163,7 +163,7 @@ impl UmsProjectModel {
     private fn lowerLinkBlock(self, document: UmsAstDocument,
                          block: UmsAstStatement,
                          target: UmsTarget,
-                         diagnostics: List<UmsDiagnostic>) {
+                         diagnostics: Vec<UmsDiagnostic>) {
         if (list_len(block.arguments) != 0) {
             self.lowerError(diagnostics, block, "UMS2107",
                           "link takes no arguments")
@@ -202,7 +202,7 @@ impl UmsProjectModel {
     private fn lowerBody(self, document: UmsAstDocument,
                     call: UmsAstStatement,
                     target: UmsTarget,
-                    diagnostics: List<UmsDiagnostic>) -> String {
+                    diagnostics: Vec<UmsDiagnostic>) -> String {
         let mut entry = ""
         let mut linkBlocks = 0
         let mut i = 0
@@ -237,7 +237,7 @@ impl UmsProjectModel {
 
     private fn lowerTarget(self, document: UmsAstDocument,
                       call: UmsAstStatement,
-                      diagnostics: List<UmsDiagnostic>) {
+                      diagnostics: Vec<UmsDiagnostic>) {
         let mut kind = UmsTargetKind.UNKNOWN
         if (call.name.equals("executable")) { kind = UmsTargetKind.EXECUTABLE }
         else if (call.name.equals("library")) { kind = UmsTargetKind.LIBRARY }
@@ -277,7 +277,7 @@ impl UmsProjectModel {
 
     private fn lowerTargets(self, document: UmsAstDocument,
                        block: UmsAstStatement,
-                       diagnostics: List<UmsDiagnostic>) {
+                       diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
         while (i < list_len(block.children)) {
             let call = list_get(document.statements, list_get(block.children, i))
@@ -296,7 +296,7 @@ impl UmsProjectModel {
     // its position in the list, so a command can put forwarded arguments in the
     // middle of a fixed argument list rather than only at the end.
     private fn lowerStepArguments(self, call: UmsAstStatement, step: UmsCommandStep,
-                             diagnostics: List<UmsDiagnostic>) {
+                             diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 1
         while (i < list_len(call.arguments)) {
             let argument = list_get(call.arguments, i)
@@ -321,7 +321,7 @@ impl UmsProjectModel {
     // command whose only step was rejected from *also* being reported as
     // declaring no steps -- one mistake, two errors, two things to go and fix.
     private fn lowerCommandStep(self, call: UmsAstStatement, command: UmsCommand,
-                           diagnostics: List<UmsDiagnostic>) {
+                           diagnostics: Vec<UmsDiagnostic>) {
         let mut kind = UmsCommandStepKind.UNKNOWN
         if (call.name.equals("build")) { kind = UmsCommandStepKind.BUILD }
         else if (call.name.equals("run")) { kind = UmsCommandStepKind.RUN }
@@ -359,7 +359,7 @@ impl UmsProjectModel {
 
     private fn lowerCommand(self, document: UmsAstDocument,
                        call: UmsAstStatement,
-                       diagnostics: List<UmsDiagnostic>) {
+                       diagnostics: Vec<UmsDiagnostic>) {
         if (call.name.equals("command") == false or call.hasBlock == false) {
             self.lowerError(diagnostics, call, "UMS2501",
                 "unknown commands declaration '".concat(call.name,
@@ -410,7 +410,7 @@ impl UmsProjectModel {
 
     private fn lowerCommands(self, document: UmsAstDocument,
                         block: UmsAstStatement,
-                        diagnostics: List<UmsDiagnostic>) {
+                        diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
         while (i < list_len(block.children)) {
             let call = list_get(document.statements, list_get(block.children, i))
@@ -440,7 +440,7 @@ impl UmsProjectModel {
 
     private fn lowerDependencies(self, document: UmsAstDocument,
                             block: UmsAstStatement,
-                            diagnostics: List<UmsDiagnostic>) {
+                            diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
         while (i < list_len(block.children)) {
             let call = list_get(document.statements, list_get(block.children, i))
@@ -495,7 +495,7 @@ impl UmsProjectModel {
 }
 
 internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPath: String,
-                    profile: String, diagnostics: List<UmsDiagnostic>) -> UmsProjectModel {
+                    profile: String, diagnostics: Vec<UmsDiagnostic>) -> UmsProjectModel {
     let project = umsProjectModel(root, manifestPath, profile)
     let mut projectBlocks = 0
     let mut toolchainBlocks = 0

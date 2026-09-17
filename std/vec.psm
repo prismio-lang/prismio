@@ -1,24 +1,32 @@
-// List algorithms that need an order -- which is to say, the ones that could not
-// be written before bounded generics existed.
+// `Vec<T>`: the literal table, the methods that are ordinary functions, and the
+// algorithms that need an order.
 //
-// `sort` is the reason this module exists. It is the shape v0.1's bar names
-// (`list.sort()`), and it is unwritable without a bound: a generic function can
-// only use the operations that typecheck for *every* `T` it is instantiated at,
-// and before `T: Ord` that set did not include comparison.
+// **Not every method is here.** `v.f(a)` is `f(v, a)`, so a method is any
+// function whose first parameter is the Vec -- but the ones that store an
+// element or read one (`push`, `set`, `insert`, `first`, `last` ...) and the
+// size queries are lowered by the compiler instead; src/sema/vec.psm says why.
+// What is here reads the vector, or goes through a copy. COLLECTIONS.md has the
+// whole list.
 //
-// Only `sort`, `isSorted` and `binarySearch` take short names. Every helper is
-// `list*`-prefixed for the reason `std/string.psm` gives at length: there is no
-// module namespacing yet, so a short unprefixed name here is claimed for every
-// program that imports this file, and `listPartition` is not a name a caller
-// should have to work around.
+// **`T: Copy` wherever an element leaves the vector.** A parameter is a borrow,
+// so an element can only come out as a duplicate; `copyOf` is the identity on
+// every scalar. `pop` and `removeAt` hand back the copy and remove the
+// original, which is released with the vector unless the compiler can prove
+// nothing still views it -- see list_truncate in runtime/lang_runtime.c.
+//
+// The private helpers are `list*`-prefixed for the reason `std/string.psm` gives
+// at length: a short name here is claimed for every program that imports this
+// file.
 
 import std.ord
 import std.copy
+import std.eq
+import std.option
 
-// The lowering target for a list literal. `[a, b, c]` written where a `List<T>`
-// is expected becomes `listOf(a, b, c)` -- the same rewrite `s[i]` gets for
+// The lowering target for a list literal. `[a, b, c]` written where a `Vec<T>`
+// is expected becomes `vecOf(a, b, c)` -- the same rewrite `s[i]` gets for
 // `charAt`, and it carries the same obligation: a program that writes a list
-// literal needs `import std.list`, and sema says so when it does not.
+// literal needs `import std.vec`, and sema says so when it does not.
 //
 // **One overload per arity, because there are no varargs**, exactly as
 // `String.concat` has 2..6 and for the same reason. Twelve is the cap; past it
@@ -37,84 +45,84 @@ import std.copy
 // `sink` does not fix it. The cost is that a list literal is available for the
 // element types that implement `Copy`, which is every scalar, `String`, and any
 // struct that writes the impl.
-public fn listOf<T: Copy>(a: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i)) list_push(xs, copyOf(j))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i)) list_push(xs, copyOf(j)) list_push(xs, copyOf(k))
     return xs
 }
 
-public fn listOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T, l: T) -> List<T> {
-    let xs: List<T> = list_new()
+public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T, l: T) -> Vec<T> {
+    let xs: Vec<T> = list_new()
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i)) list_push(xs, copyOf(j)) list_push(xs, copyOf(k)) list_push(xs, copyOf(l))
@@ -154,18 +162,18 @@ private fn listSortBlock() -> Int { return 64 }
 // 0.16 ms. Teaching the guard `list_swap` would version these loops again.
 
 // Order two elements with one comparison.
-private fn listSort2<T, F>(items: List<T>, i: Int, j: Int, order: F) {
+private fn listSort2<T, F>(items: Vec<T>, i: Int, j: Int, order: F) {
     if (order(list_get(items, j), list_get(items, i)) < 0) { list_swap(items, i, j) }
 }
 
-private fn listSort3<T, F>(items: List<T>, i: Int, j: Int, k: Int, order: F) {
+private fn listSort3<T, F>(items: Vec<T>, i: Int, j: Int, k: Int, order: F) {
     listSort2(items, i, j, order)
     listSort2(items, j, k, order)
     listSort2(items, i, j, order)
 }
 
 // `[begin, end)` by adjacent swaps.
-private fn listInsertionSort<T, F>(items: List<T>, begin: Int, end: Int, order: F) {
+private fn listInsertionSort<T, F>(items: Vec<T>, begin: Int, end: Int, order: F) {
     let mut i = begin + 1
     while (i < end) {
         let mut j = i
@@ -180,7 +188,7 @@ private fn listInsertionSort<T, F>(items: List<T>, begin: Int, end: Int, order: 
 // Insertion sort that gives up after eight moves, answering whether it
 // finished. Run on both sides of a partition that needed no swap, which is what
 // makes an already-sorted or reversed input near-linear rather than a quicksort.
-private fn listPartialInsertionSort<T, F>(items: List<T>, begin: Int, end: Int, order: F) -> Bool {
+private fn listPartialInsertionSort<T, F>(items: Vec<T>, begin: Int, end: Int, order: F) -> Bool {
     let mut moves = 0
     let mut i = begin + 1
     while (i < end) {
@@ -196,7 +204,7 @@ private fn listPartialInsertionSort<T, F>(items: List<T>, begin: Int, end: Int, 
     return true
 }
 
-private fn listSiftDown<T, F>(items: List<T>, base: Int, start: Int, count: Int, order: F) {
+private fn listSiftDown<T, F>(items: Vec<T>, base: Int, start: Int, count: Int, order: F) {
     let mut root = start
     loop {
         let mut child = 2 * root + 1
@@ -213,7 +221,7 @@ private fn listSiftDown<T, F>(items: List<T>, base: Int, start: Int, count: Int,
 
 // The fallback that bounds the worst case at O(n log n): taken once a range has
 // produced more badly unbalanced partitions than its size's log2 allows.
-private fn listHeapSort<T, F>(items: List<T>, begin: Int, end: Int, order: F) {
+private fn listHeapSort<T, F>(items: Vec<T>, begin: Int, end: Int, order: F) {
     let count = end - begin
     let mut start = count / 2 - 1
     while (start >= 0) {
@@ -250,8 +258,8 @@ private fn listHeapSort<T, F>(items: List<T>, begin: Int, end: Int, order: F) {
 // stopped by the comparator, and the block indices are arithmetic on `first` and
 // `last` alone, so an ordering that is not a strict weak order yields an
 // unsorted permutation rather than a read past the end.
-private fn listPartitionRight<T, F>(items: List<T>, begin: Int, end: Int, order: F,
-                                    offL: List<Int>, offR: List<Int>) -> Int {
+private fn listPartitionRight<T, F>(items: Vec<T>, begin: Int, end: Int, order: F,
+                                    offL: Vec<Int>, offR: Vec<Int>) -> Int {
     let pivot = list_get(items, begin)
     let mut first = begin + 1
     while (first < end and order(list_get(items, first), pivot) < 0) { first = first + 1 }
@@ -342,7 +350,7 @@ private fn listPartitionRight<T, F>(items: List<T>, begin: Int, end: Int, order:
 
 // The same around a pivot equal to the element just left of the range: equal
 // elements go left of it and are finished. Answers the pivot's final index.
-private fn listPartitionLeft<T, F>(items: List<T>, begin: Int, end: Int, order: F) -> Int {
+private fn listPartitionLeft<T, F>(items: Vec<T>, begin: Int, end: Int, order: F) -> Int {
     let pivot = list_get(items, begin)
     let mut last = end - 1
     while (last > begin and order(pivot, list_get(items, last)) < 0) { last = last - 1 }
@@ -377,8 +385,8 @@ private fn listPartitionLeft<T, F>(items: List<T>, begin: Int, end: Int, order: 
 // Recurses on the left side and loops on the right. Every level either splits
 // at worst 1:7 or spends one of `badAllowed`'s log2(n) allowances, so the depth
 // is O(log n) whatever the input does.
-private fn listSortRange<T, F>(items: List<T>, low: Int, end: Int, order: F, badAllowed: Int,
-                               leftmost: Bool, offL: List<Int>, offR: List<Int>) {
+private fn listSortRange<T, F>(items: Vec<T>, low: Int, end: Int, order: F, badAllowed: Int,
+                               leftmost: Bool, offL: Vec<Int>, offR: Vec<Int>) {
     let mut begin = low
     let mut bad = badAllowed
     let mut atLeft = leftmost
@@ -447,7 +455,7 @@ private fn listSortRange<T, F>(items: List<T>, low: Int, end: Int, order: F, bad
 // generic body: substitution rewrites them to the concrete types before sema sees
 // them, and each instantiation lowers its own closure type. Which is a fair test
 // of 3.4's lowering, and it passes.
-public fn sort<T: Ord>(items: List<T>) {
+public fn sort<T: Ord>(items: Vec<T>) {
     sortBy(items, |a: T, b: T| cmp(a, b))
 }
 
@@ -458,7 +466,7 @@ public fn sort<T: Ord>(items: List<T>) {
 // type needs nothing. That is the difference between a bounded generic and a
 // higher-order one, and having both is why `sortBy` can sort a type whose author
 // never wrote an `impl Ord`.
-public fn sortBy<T, F>(items: List<T>, order: F) {
+public fn sortBy<T, F>(items: Vec<T>, order: F) {
     let n = list_len(items)
     if (n < listSortInsertionCutoff()) {
         listInsertionSort(items, 0, n, order)
@@ -474,8 +482,8 @@ public fn sortBy<T, F>(items: List<T>, order: F) {
     // The partition's offset buffers, once for the whole sort rather than per
     // partition. A list short enough for insertion sort returned above without
     // paying for them.
-    let offL: List<Int> = list_new_with_capacity(listSortBlock())
-    let offR: List<Int> = list_new_with_capacity(listSortBlock())
+    let offL: Vec<Int> = list_new_with_capacity(listSortBlock())
+    let offR: Vec<Int> = list_new_with_capacity(listSortBlock())
     let mut i = 0
     while (i < listSortBlock()) {
         list_push(offL, 0)
@@ -485,7 +493,7 @@ public fn sortBy<T, F>(items: List<T>, order: F) {
     listSortRange(items, 0, n, order, badAllowed, true, offL, offR)
 }
 
-public fn isSorted<T: Ord>(items: List<T>) -> Bool {
+public fn isSorted<T: Ord>(items: Vec<T>) -> Bool {
     let n = list_len(items)
     let mut i = 1
     while (i < n) {
@@ -504,7 +512,7 @@ public fn isSorted<T: Ord>(items: List<T>) -> Bool {
 // `low + (high - low) / 2` rather than `(low + high) / 2`: the second overflows
 // once a list is longer than half the Int range, which is the oldest bug in this
 // algorithm and costs nothing to avoid.
-public fn binarySearch<T: Ord>(items: List<T>, needle: T) -> Int {
+public fn binarySearch<T: Ord>(items: Vec<T>, needle: T) -> Int {
     let mut low = 0
     let mut high = list_len(items) - 1
     while (low <= high) {
@@ -522,6 +530,118 @@ public fn binarySearch<T: Ord>(items: List<T>, needle: T) -> Int {
 }
 
 // ---------------------------------------------------------------------------
+// Methods
+// ---------------------------------------------------------------------------
+
+// `Vec<T>.withCapacity(n)` lowers to this, with `T` written. Room for `n`
+// elements before the first reallocation; growth past it still doubles.
+public fn withCapacity<T>(capacity: Int) -> Vec<T> {
+    let items: Vec<T> = list_new_with_capacity(capacity)
+    return items
+}
+
+// The element at `index`, or `None` outside `[0, length)` -- where `v[i]`
+// answers the element type's zero.
+public fn get<T: Copy>(items: Vec<T>, index: Int) -> Option<T> {
+    if (index < 0 or index >= list_len(items)) { return Option<T>.None }
+    return Option<T>.Some(copyOf(list_get(items, index)))
+}
+
+public fn contains<T: Eq>(items: Vec<T>, needle: T) -> Bool {
+    return indexOf(items, needle) >= 0
+}
+
+// The first position holding `needle`, or -1.
+public fn indexOf<T: Eq>(items: Vec<T>, needle: T) -> Int {
+    let n = list_len(items)
+    let mut i = 0
+    while (i < n) {
+        if (Eq.eq(list_get(items, i), needle)) { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// The last position holding `needle`, or -1.
+public fn lastIndexOf<T: Eq>(items: Vec<T>, needle: T) -> Int {
+    let mut i = list_len(items) - 1
+    while (i >= 0) {
+        if (Eq.eq(list_get(items, i), needle)) { return i }
+        i = i - 1
+    }
+    return 0 - 1
+}
+
+// How many elements equal `needle`. Not `count`, which String spends on the
+// same question about a substring and which a Vec of Strings would make
+// ambiguous at the call.
+public fn countOf<T: Eq>(items: Vec<T>, needle: T) -> Int {
+    let n = list_len(items)
+    let mut found = 0
+    let mut i = 0
+    while (i < n) {
+        if (Eq.eq(list_get(items, i), needle)) { found = found + 1 }
+        i = i + 1
+    }
+    return found
+}
+
+// Appends a copy of every element of `other`, which is left as it was.
+public fn extend<T: Copy>(items: Vec<T>, other: Vec<T>) {
+    let n = list_len(other)
+    list_reserve(items, list_len(items) + n)
+    let mut i = 0
+    while (i < n) {
+        list_push(items, copyOf(list_get(other, i)))
+        i = i + 1
+    }
+}
+
+// In place. A permutation, so nothing is copied and nothing is released.
+public fn reverse<T>(items: Vec<T>) {
+    let mut low = 0
+    let mut high = list_len(items) - 1
+    while (low < high) {
+        list_swap(items, low, high)
+        low = low + 1
+        high = high - 1
+    }
+}
+
+// A new Vec holding a copy of every element.
+public fn clone<T: Copy>(items: Vec<T>) -> Vec<T> {
+    let n = list_len(items)
+    let out: Vec<T> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(out, copyOf(list_get(items, i)))
+        i = i + 1
+    }
+    return out
+}
+
+// The last element, removed, or `None` when there is none.
+public fn pop<T: Copy>(items: Vec<T>) -> Option<T> {
+    let n = list_len(items)
+    if (n == 0) { return Option<T>.None }
+    let taken = copyOf(list_get(items, n - 1))
+    list_truncate(items, n - 1)
+    return Option<T>.Some(taken)
+}
+
+// The element at `index`, removed, with everything after it moved down one. An
+// index outside `[0, length)` is a runtime error, not an empty answer: the
+// caller would otherwise be holding a copy of an element it did not take.
+public fn removeAt<T: Copy>(items: Vec<T>, index: Int) -> T {
+    // Out of range, the runtime reports and exits here, before a boxed element's
+    // read answers a null the copy would follow.
+    if (index < 0 or index >= list_len(items)) { list_remove_at(items, index) }
+    let taken = copyOf(list_get(items, index))
+    list_remove_at(items, index)
+    return taken
+}
+
+// ---------------------------------------------------------------------------
 // v0.1 3.4 -- the higher-order half
 // ---------------------------------------------------------------------------
 
@@ -530,9 +650,9 @@ public fn binarySearch<T: Ord>(items: List<T>, needle: T) -> Int {
 // `T: Copy` because the result owns its elements: `list_push(out, x)` where `x`
 // came from `list_get` is "cannot move out of borrowed value", so the kept
 // elements are duplicated. `copyOf` is the identity for every scalar.
-public fn filter<T: Copy, F>(items: List<T>, keep: F) -> List<T> {
+public fn filter<T: Copy, F>(items: Vec<T>, keep: F) -> Vec<T> {
     let n = list_len(items)
-    let mut out: List<T> = list_new()
+    let mut out: Vec<T> = list_new()
     let mut i = 0
     while (i < n) {
         let element = list_get(items, i)
@@ -545,12 +665,12 @@ public fn filter<T: Copy, F>(items: List<T>, keep: F) -> List<T> {
 // `f` applied to every element, appended to `out`.
 //
 // **The output list is a parameter rather than a return value, and that is
-// forced.** A `map` that returned `List<U>` would have to solve `U` from the
+// forced.** A `map` that returned `Vec<U>` would have to solve `U` from the
 // closure's *return* type, and this compiler solves a type parameter from
 // argument types only -- writing it explicitly is no escape either, because the
 // closure's own type has no spelling. Taking the destination as an argument puts
 // `U` in argument position, where it is solvable.
-public fn mapInto<T, U, F>(items: List<T>, out: List<U>, f: F) {
+public fn mapInto<T, U, F>(items: Vec<T>, out: Vec<U>, f: F) {
     let n = list_len(items)
     let mut i = 0
     while (i < n) {
@@ -559,7 +679,7 @@ public fn mapInto<T, U, F>(items: List<T>, out: List<U>, f: F) {
     }
 }
 
-public fn countWhere<T, F>(items: List<T>, keep: F) -> Int {
+public fn countWhere<T, F>(items: Vec<T>, keep: F) -> Int {
     let n = list_len(items)
     let mut found = 0
     let mut i = 0
@@ -570,7 +690,7 @@ public fn countWhere<T, F>(items: List<T>, keep: F) -> Int {
     return found
 }
 
-public fn anyOf<T, F>(items: List<T>, keep: F) -> Bool {
+public fn anyOf<T, F>(items: Vec<T>, keep: F) -> Bool {
     let n = list_len(items)
     let mut i = 0
     while (i < n) {
@@ -580,7 +700,7 @@ public fn anyOf<T, F>(items: List<T>, keep: F) -> Bool {
     return false
 }
 
-public fn allOf<T, F>(items: List<T>, keep: F) -> Bool {
+public fn allOf<T, F>(items: Vec<T>, keep: F) -> Bool {
     let n = list_len(items)
     let mut i = 0
     while (i < n) {

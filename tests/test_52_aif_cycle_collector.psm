@@ -41,8 +41,8 @@ struct Node {
 // `owner` and the mirror below put every node in two containers, which is what
 // makes them Shared (A-CONTAIN) and therefore T4b rather than T2. The `peer`
 // edges close the value cycle.
-fn build_cycle() -> List<Node> {
-    let owner: List<Node> = list_new()
+fn build_cycle() -> Vec<Node> {
+    let owner: Vec<Node> = list_new()
     list_push(owner, Node { id: 1, peer: none })
     list_push(owner, Node { id: 2, peer: none })
 
@@ -53,7 +53,7 @@ fn build_cycle() -> List<Node> {
     return owner
 }
 
-fn mirror(src: List<Node>, dst: List<Node>) {
+fn mirror(src: Vec<Node>, dst: Vec<Node>) {
     let mut i = 0
     while (i < list_len(src)) {
         list_push(dst, list_get(src, i))
@@ -69,7 +69,7 @@ fn mirror(src: List<Node>, dst: List<Node>) {
 // garbage, and that is the one place a candidate root is born.
 fn collected_when_unreachable() -> Int {
     let primary = build_cycle()
-    let second: List<Node> = list_new()
+    let second: Vec<Node> = list_new()
     mirror(primary, second)
     return list_len(primary) + list_len(second)
 }
@@ -86,7 +86,7 @@ fn live_cycle_survives() -> Int {
     // `temp` dies at the closing brace, so every node's count drops from two to
     // one and each becomes a candidate root -- while `keep` still holds them.
     if (true) {
-        let temp: List<Node> = list_new()
+        let temp: Vec<Node> = list_new()
         mirror(keep, temp)
     }
 

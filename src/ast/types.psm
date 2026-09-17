@@ -366,7 +366,21 @@ public fn typeIsValid(t: TypeInfo) -> Bool {
     return t.kind != TypeKind.INVALID
 }
 
+// How a type is written, for a person reading a diagnostic. The vector type is
+// `Vec`, which is what a program spells.
 public fn typeDisplay(t: TypeInfo) -> String {
+    return typeSpelling(t, "Vec")
+}
+
+// The same spelling under the compiler's own name for the vector type, `List`.
+// This is a key rather than prose: AIF's site types, the AST dump the oracle
+// reads, and impl targets all compare against it, and none of them may move when
+// only the surface name does. See COLLECTIONS.md.
+public fn typeKeyName(t: TypeInfo) -> String {
+    return typeSpelling(t, "List")
+}
+
+private fn typeSpelling(t: TypeInfo, vecName: String) -> String {
     if (t.kind == TypeKind.STRUCT) {
         // A trait object is a synthesised struct named `dyn$Show`, and `$` cannot
         // occur in a source identifier -- so printing the internal name shows the
@@ -379,37 +393,37 @@ public fn typeDisplay(t: TypeInfo) -> String {
     if (t.kind == TypeKind.ENUM) { return t.name }
     if (t.kind == TypeKind.ARRAY) {
         if (nodeExists(t.child)) {
-            return "[".concat(typeDisplay(ptr_to_type(t.child)), "]")
+            return "[".concat(typeSpelling(ptr_to_type(t.child), vecName), "]")
         }
         return "[Invalid]"
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
-            return "List<".concat(typeDisplay(ptr_to_type(t.child)), ">")
+            return vecName.concat("<", typeSpelling(ptr_to_type(t.child), vecName), ">")
         }
-        return "List"
+        return strClone(vecName)
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
-            return "Slice<".concat(typeDisplay(ptr_to_type(t.child)), ">")
+            return "Slice<".concat(typeSpelling(ptr_to_type(t.child), vecName), ">")
         }
         return "Slice"
     }
     if (t.kind == TypeKind.DATAVIEW) {
         if (nodeExists(t.child)) {
-            return "DataView<".concat(typeDisplay(ptr_to_type(t.child)), ">")
+            return "DataView<".concat(typeSpelling(ptr_to_type(t.child), vecName), ">")
         }
         return "DataView"
     }
     if (t.kind == TypeKind.DATAELEMENT) {
         if (nodeExists(t.child)) {
-            return "DataElement<".concat(typeDisplay(ptr_to_type(t.child)), ">")
+            return "DataElement<".concat(typeSpelling(ptr_to_type(t.child), vecName), ">")
         }
         return "DataElement"
     }
     if (t.kind == TypeKind.OPTIONAL) {
         if (nodeExists(t.child)) {
-            return typeDisplay(ptr_to_type(t.child)).concat("?")
+            return typeSpelling(ptr_to_type(t.child), vecName).concat("?")
         }
         return "none"
     }
@@ -808,6 +822,7 @@ public extern fn ir_extern_decl_record(file: Int, name: String, visibility: Int)
 // answers to the same question.
 public fn isNamedTopLevel(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.EXTERN_FUNCTION) { return true }
+    if (stmt.kind == NodeKind.EXTERN_VARIABLE) { return true }
     if (stmt.kind == NodeKind.VARIABLE_DECL) { return true }
     if (stmt.kind == NodeKind.FUNCTION) { return true }
     if (stmt.kind == NodeKind.STRUCT_DECL) { return true }
@@ -820,10 +835,17 @@ public fn isNamedTopLevel(stmt: ASTNode) -> Bool {
     return false
 }
 
+// Either `extern` form. Both are names foreign code defines, and both are
+// filed in the one per-file table runtime/ir_symbols.c checks visibility
+// against -- one table because C has one namespace for the two.
+public fn isExternDecl(stmt: ASTNode) -> Bool {
+    return stmt.kind == NodeKind.EXTERN_FUNCTION or stmt.kind == NodeKind.EXTERN_VARIABLE
+}
+
 public fn indexTopLevel(stmt: ASTNode) {
     if (isNamedTopLevel(stmt)) {
         ir_index_decl(stmt.s1, node_to_ptr(stmt))
-        if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+        if (isExternDecl(stmt)) {
             ir_extern_decl_record(stmt.file, stmt.s1, stmt.i2)
         }
     }

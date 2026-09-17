@@ -56,10 +56,14 @@ let mut mergeTailPtr: Ptr
 // treats them as distinct (and generateModule skips the `declare` when a real
 // `define` exists).
 
+// EXTERN_VARIABLE is exempt too, for a reason of its own: `mut` belongs to
+// each declaration rather than to the symbol. One module may only read `optind`
+// while another assigns it, and keeping whichever merged first would decide
+// that for both. Sema checks that the declarations agree on the type.
 private fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     if (a.kind != b.kind) { return false }
     if (a.s1.equals(b.s1) == false) { return false }
-    if (a.kind == NodeKind.FUNCTION) {
+    if (a.kind == NodeKind.FUNCTION or a.kind == NodeKind.EXTERN_VARIABLE) {
         return false
     }
     return true
@@ -95,7 +99,7 @@ private fn parseSource(content: String, file: Int) -> ASTNode {
 }
 
 private fn appendStatement(module: ASTNode, stmt: ASTNode) {
-    if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
+    if (isExternDecl(stmt)) {
         ir_extern_decl_record(stmt.file, stmt.s1, stmt.i2)
     }
     if (hasNamedTopLevel(module, stmt)) {

@@ -42,8 +42,8 @@ fn fail(what: String) -> Int {
 
 // Bracketable. The container is this function's own, so obligation 2 holds; the
 // list leaves through the return, which obligation 3 checks in the caller.
-fn bracketable(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn bracketable(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i * 2 })
@@ -55,14 +55,14 @@ fn bracketable(n: Int) -> List<Cmd> {
 // Not bracketable: obligation 2. The Cmd is stored into a container this
 // function did not allocate, so it lives exactly as long as the caller's list
 // does -- which is to say, longer than any region the call could sit in.
-fn stores_param(dest: List<Cmd>, id: Int) {
+fn stores_param(dest: Vec<Cmd>, id: Int) {
     list_push(dest, Cmd { id: id, weight: id })
 }
 
 // Not bracketable: the DROP obligation. The value is released explicitly, and an
 // arena reclaims in bulk at its region's exit or not at all.
 fn drops(id: Int) -> Int {
-    let mut tmp: List<Cmd> = list_new()
+    let mut tmp: Vec<Cmd> = list_new()
     list_push(tmp, Cmd { id: id, weight: 0 })
     let n = list_len(tmp)
     drop(tmp)

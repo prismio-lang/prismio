@@ -29,8 +29,8 @@ fn rootValue(t: Tree) -> Int {
 }
 
 fn main() -> Int {
-    let a: List<Tree> = list_new()
-    let b: List<Tree> = list_new()
+    let a: Vec<Tree> = list_new()
+    let b: Vec<Tree> = list_new()
     list_push(a, Tree.Node(Tree.Leaf, 1, Tree.Leaf))
     list_push(b, list_get(a, 0))
 

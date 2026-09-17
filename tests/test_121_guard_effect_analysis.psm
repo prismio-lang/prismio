@@ -21,8 +21,8 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
-fn filled(n: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(2)
+fn filled(n: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(2)
     let mut i = 0
     while (i < n) {
         list_push(xs, i)
@@ -32,23 +32,23 @@ fn filled(n: Int) -> List<Int> {
 }
 
 // Moves the block. Must disqualify any loop that calls it.
-fn growIt(xs: List<Int>) -> Int {
+fn growIt(xs: Vec<Int>) -> Int {
     list_push(xs, 99)
     return 1
 }
 
 // Reaches the grower one call away. Must disqualify transitively.
-fn indirectGrow(xs: List<Int>) -> Int {
+fn indirectGrow(xs: Vec<Int>) -> Int {
     return growIt(xs)
 }
 
 // Reads only. Must stay eligible.
-fn readIt(xs: List<Int>, at: Int) -> Int {
+fn readIt(xs: Vec<Int>, at: Int) -> Int {
     return list_get(xs, at)
 }
 
 // Writes, which cannot move the block either. Must stay eligible.
-fn bumpIt(xs: List<Int>, at: Int) -> Int {
+fn bumpIt(xs: Vec<Int>, at: Int) -> Int {
     list_set(xs, at, list_get(xs, at))
     return 0
 }

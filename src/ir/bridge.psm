@@ -165,6 +165,12 @@ public extern fn ir_global_var(name: String, type: String, initValue: String, is
 // link time; see the note in runtime/llvm-api-backend.c.
 public extern fn ir_global_set_internal(name: String)
 
+// An `extern let`: a declaration of a global foreign code defines, or -- in a
+// workload driver, which W3 sandboxes -- a zero-valued private stand-in. Both
+// keep a global the module already defines.
+public extern fn ir_global_extern(name: String, type: String)
+public extern fn ir_global_stub(name: String, type: String)
+
 // Typed structural builders.
 // Both backends implement these identically. The frontend must build structs,
 // arrays and field access through them rather than emitting IR text, because
@@ -282,6 +288,7 @@ public extern fn ir_vtable_entry(fnName: String)
 public extern fn ir_vtable_end(name: String)
 public extern fn ir_vtable_addr(name: String) -> Int
 public extern fn ir_ptr_slot(baseValue: String, index: Int) -> Int
+public extern fn ir_ptr_load_at(baseValue: String, indexValue: String) -> Int
 
 // REQUIREMENTS 20. A `List<T>` stores pointer-sized slots, so a scalar element
 // rides in one. Boxing it would cost an allocation per element and hand the

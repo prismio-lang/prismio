@@ -85,7 +85,7 @@ fn band(f: Int, i: Int, s: Int) -> Band {
 // otherwise hide the whole question. An extern with no contract has unknown
 // provenance, and that is the property being used -- not anything about `abs`.
 fn drive(bound: Bool) -> Int {
-    let mut samples: List<Int> = list_new()
+    let mut samples: Vec<Int> = list_new()
     let mut g = 0
     while (g < 20) {
         list_push(samples, 0)

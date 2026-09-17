@@ -40,8 +40,8 @@ fn spawn_particle(f: Float) -> Particle {
     }
 }
 
-fn build_system(count: Int) -> List<Particle> {
-    let mut ps: List<Particle> = list_new()
+fn build_system(count: Int) -> Vec<Particle> {
+    let mut ps: Vec<Particle> = list_new()
     let mut i = 0
     let mut f = 0.0
     while (i < count) {
@@ -53,7 +53,7 @@ fn build_system(count: Int) -> List<Particle> {
 }
 
 // Touches 6 of 12 fields: position and velocity only.
-fn integrate(ps: List<Particle>, dt: Float) {
+fn integrate(ps: Vec<Particle>, dt: Float) {
     let n = list_len(ps)
     let mut i = 0
     while (i < n) {
@@ -66,7 +66,7 @@ fn integrate(ps: List<Particle>, dt: Float) {
 }
 
 // Touches 2 of 12 fields. The strongest SoA case in the corpus.
-fn fade(ps: List<Particle>, dt: Float) {
+fn fade(ps: Vec<Particle>, dt: Float) {
     let n = list_len(ps)
     let mut i = 0
     while (i < n) {
@@ -78,7 +78,7 @@ fn fade(ps: List<Particle>, dt: Float) {
 }
 
 // Reads 1 of 12 fields to produce a scalar -- the pure-streaming case.
-fn count_alive(ps: List<Particle>) -> Int {
+fn count_alive(ps: Vec<Particle>) -> Int {
     let n = list_len(ps)
     let mut alive = 0
     let mut i = 0

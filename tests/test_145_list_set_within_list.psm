@@ -23,7 +23,7 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let copies: List<Pt> = list_new()
+    let copies: Vec<Pt> = list_new()
     list_push(copies, Pt { x: 1, y: 10 })
     list_push(copies, Pt { x: 2, y: 20 })
     list_push(copies, Pt { x: 3, y: 30 })

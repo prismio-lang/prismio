@@ -12,7 +12,7 @@ struct Item {
 }
 
 fn main() -> Int {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     let e = Item { value: 1 }
     list_push(items, e)
     list_push(items, e)

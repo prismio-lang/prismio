@@ -19,17 +19,17 @@ struct Named {
     value: Int
 }
 
-fn singleton<T>(sink value: T) -> List<T> {
-    let mut items: List<T> = list_new()
+fn singleton<T>(sink value: T) -> Vec<T> {
+    let mut items: Vec<T> = list_new()
     list_push(items, value)
     return items
 }
 
-fn genericGet<T>(items: List<T>, index: Int) -> T {
+fn genericGet<T>(items: Vec<T>, index: Int) -> T {
     return list_get(items, index)
 }
 
-fn genericSet<T>(items: List<T>, index: Int, sink value: T) {
+fn genericSet<T>(items: Vec<T>, index: Int, sink value: T) {
     list_set(items, index, value)
 }
 
@@ -37,19 +37,19 @@ fn genericSet<T>(items: List<T>, index: Int, sink value: T) {
 // Do not execute it here: replacing an OBJECT element while an untracked
 // element borrow may exist is intentionally conservative today, and is a
 // separate lifetime problem from this test's generic-layout discriminator.
-fn instantiateNamedSet(items: List<Named>, sink value: Named) {
+fn instantiateNamedSet(items: Vec<Named>, sink value: Named) {
     genericSet(items, 0, value)
 }
 
 // Keep each element borrow inside this helper. Holding the borrowed pointer in
 // main across genericSet would deliberately extend the old element's lifetime
 // past replacement and turn the verifier into a borrow-lifetime test instead.
-fn flatMatches(items: List<Flat>, x: Int, weight: Float) -> Bool {
+fn flatMatches(items: Vec<Flat>, x: Int, weight: Float) -> Bool {
     let item = genericGet(items, 0)
     return item.x == x and item.weight == weight
 }
 
-fn namedMatches(items: List<Named>, label: String, value: Int) -> Bool {
+fn namedMatches(items: Vec<Named>, label: String, value: Int) -> Bool {
     let item = genericGet(items, 0)
     return item.label.equals(label) and item.value == value
 }

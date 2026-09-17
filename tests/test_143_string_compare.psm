@@ -53,7 +53,7 @@ fn agrees(a: String, b: String) -> Bool {
 }
 
 fn main() -> Int {
-    let words: List<String> = list_new()
+    let words: Vec<String> = list_new()
     // Inline, built whole: every length the key's two halves split at.
     list_push(words, "")
     list_push(words, "a")

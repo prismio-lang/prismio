@@ -73,7 +73,7 @@ public fn benchTokenization(scale: Int) -> Int {
 
 public fn benchBase64Codec(scale: Int) -> Int {
     let n = 30000 * scale
-    let mut input: List<Int> = list_new_with_capacity(n)
+    let mut input: Vec<Int> = list_new_with_capacity(n)
     let mut seed = 17
     let mut i = 0
     while (i < n) {
@@ -84,7 +84,7 @@ public fn benchBase64Codec(scale: Int) -> Int {
 
     let b64Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     let encodedLen = (n / 3) * 4
-    let mut encoded: List<Int> = list_new_with_capacity(encodedLen)
+    let mut encoded: Vec<Int> = list_new_with_capacity(encodedLen)
     let mut initJ = 0
     while (initJ < encodedLen) {
         list_push(encoded, 0)
@@ -112,7 +112,7 @@ public fn benchBase64Codec(scale: Int) -> Int {
         j = j + 4
     }
 
-    let mut inv: List<Int> = list_new_with_capacity(256)
+    let mut inv: Vec<Int> = list_new_with_capacity(256)
     let mut initInv = 0
     while (initInv < 256) {
         list_push(inv, 0)
@@ -124,7 +124,7 @@ public fn benchBase64Codec(scale: Int) -> Int {
         ti = ti + 1
     }
 
-    let mut decoded: List<Int> = list_new_with_capacity(n)
+    let mut decoded: Vec<Int> = list_new_with_capacity(n)
     let mut initDec = 0
     while (initDec < n) {
         list_push(decoded, 0)

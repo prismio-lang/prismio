@@ -1,6 +1,6 @@
 import std.io
 
-fn fill(xs: List<Int>, start: Int, end: Int) {
+fn fill(xs: Vec<Int>, start: Int, end: Int) {
     let mut i = start
     while (i < end) {
         list_push(xs, (i * 7 - 13) % 997)
@@ -8,7 +8,7 @@ fn fill(xs: List<Int>, start: Int, end: Int) {
     }
 }
 
-fn inclusiveFill(xs: List<Int>, end: Int) {
+fn inclusiveFill(xs: Vec<Int>, end: Int) {
     let mut i = 0
     while (i <= end) {
         list_push(xs, i)
@@ -18,7 +18,7 @@ fn inclusiveFill(xs: List<Int>, end: Int) {
 
 // Compile-only: the induction variable wraps, so this function intentionally
 // has no finite trip count. Its push must never use a finite capacity promise.
-fn wrappingInclusiveFill(xs: List<Int>, start: Int) {
+fn wrappingInclusiveFill(xs: Vec<Int>, start: Int) {
     let mut i = start
     while (i <= 2147483647) {
         list_push(xs, i)
@@ -26,7 +26,7 @@ fn wrappingInclusiveFill(xs: List<Int>, start: Int) {
     }
 }
 
-fn nearLimitFill(xs: List<Int>) {
+fn nearLimitFill(xs: Vec<Int>) {
     let mut i = 2147483583
     while (i <= 2147483646) {
         list_push(xs, i)
@@ -34,7 +34,7 @@ fn nearLimitFill(xs: List<Int>) {
     }
 }
 
-fn interruptedFill(xs: List<Int>, n: Int) {
+fn interruptedFill(xs: Vec<Int>, n: Int) {
     let mut i = 0
     while (i < n) {
         if (i == 70) { break }
@@ -43,9 +43,9 @@ fn interruptedFill(xs: List<Int>, n: Int) {
     }
 }
 
-fn observedValue(xs: List<Int>) -> Int { return list_len(xs) }
+fn observedValue(xs: Vec<Int>) -> Int { return list_len(xs) }
 
-fn observedFill(xs: List<Int>, n: Int) {
+fn observedFill(xs: Vec<Int>, n: Int) {
     let mut i = 0
     while (i < n) {
         list_push(xs, observedValue(xs))
@@ -54,7 +54,7 @@ fn observedFill(xs: List<Int>, n: Int) {
 }
 
 fn checkFill(n: Int) -> Int {
-    let xs: List<Int> = list_new()
+    let xs: Vec<Int> = list_new()
     fill(xs, 3, n + 3)
     if (list_len(xs) != n) { return 1 }
     let mut k = 0
@@ -82,7 +82,7 @@ struct FillPair { x: Int, y: Int }
 struct FillRow { pair: FillPair, life: Int, weight: Float }
 
 fn structFill(n: Int) -> Int {
-    let rows: List<FillRow> = list_new_with_capacity(n)
+    let rows: Vec<FillRow> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(rows, FillRow {
@@ -103,7 +103,7 @@ fn structFill(n: Int) -> Int {
 }
 
 fn queueGrowth(n: Int) -> Int {
-    let queue: List<Int> = list_new()
+    let queue: Vec<Int> = list_new()
     list_push(queue, 0)
     let mut head = 0
     while (head < list_len(queue)) {
@@ -122,20 +122,20 @@ fn main() -> Int {
             or checkFill(128) != 0 or checkFill(129) != 0 or checkFill(4096) != 0) {
         return 11
     }
-    let empty: List<Int> = list_new()
+    let empty: Vec<Int> = list_new()
     fill(empty, 90, -1)
     inclusiveFill(empty, -1)
     if (list_len(empty) != 0) { return 12 }
     inclusiveFill(empty, 128)
     if (list_len(empty) != 129 or list_get(empty, 128) != 128) { return 13 }
-    let stopped: List<Int> = list_new()
+    let stopped: Vec<Int> = list_new()
     interruptedFill(stopped, 200)
     if (list_len(stopped) != 70 or list_get(stopped, 69) != 69) { return 14 }
-    let observed: List<Int> = list_new()
+    let observed: Vec<Int> = list_new()
     observedFill(observed, 129)
     if (list_len(observed) != 129 or list_get(observed, 128) != 128) { return 15 }
     if (structFill(129) != 0 or queueGrowth(4096) != 0) { return 16 }
-    let limit: List<Int> = list_new()
+    let limit: Vec<Int> = list_new()
     nearLimitFill(limit)
     if (list_len(limit) != 64 or list_get(limit, 0) != 2147483583
             or list_get(limit, 63) != 2147483646) { return 17 }

@@ -562,7 +562,7 @@ internal fn aifVsUntracked() -> Int {
 // Empty for nodes sema does not type -- statements and declarations.
 internal fn aifNodeType(node: ASTNode) -> String {
     if (nodeExists(node.typeInfo)) {
-        return typeDisplay(ptr_to_type(node.typeInfo))
+        return typeKeyName(ptr_to_type(node.typeInfo))
     }
     return ""
 }

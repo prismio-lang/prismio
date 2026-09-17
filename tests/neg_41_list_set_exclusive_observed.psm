@@ -1,4 +1,4 @@
-// expect-error: list_set_exclusive requires an unobserved local List
+// expect-error: list_set_exclusive requires an unobserved local Vec
 
 struct Named {
     label: String,
@@ -6,7 +6,7 @@ struct Named {
 }
 
 fn main() -> Int {
-    let items: List<Named> = list_new()
+    let items: Vec<Named> = list_new()
     list_push(items, Named { label: "first", value: 3 })
     let old = list_get(items, 0)
     let n = old.value

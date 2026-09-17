@@ -1,0 +1,12 @@
+// expect-error: extern global `label` cannot have type String
+// expect-error: extern global `flag` cannot have type Bool
+// expect-error: a C `bool` is a byte; declare it `U8`
+// Only a type nobody owns may name foreign storage. A String would be read as a
+// pair C never wrote; a Bool is one bit, and a store leaves the rest of a C
+// `bool` unspecified.
+extern let label: String
+extern let flag: Bool
+
+fn main() -> Int {
+    return 0
+}

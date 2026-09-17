@@ -45,7 +45,7 @@ fn fail(what: String) -> Int {
 
 // 1. Same observable behaviour as list_new(), at the hinted size.
 fn exact_fit() -> Int {
-    let mut xs: List<Item> = list_new_with_capacity(8)
+    let mut xs: Vec<Item> = list_new_with_capacity(8)
     let mut i = 0
     while (i < 8) {
         list_push(xs, Item { id: i, weight: i * 3 })
@@ -67,7 +67,7 @@ fn exact_fit() -> Int {
 //    arrive in order -- this is the assertion a "capacity means limit"
 //    implementation fails and a "capacity means initial size" one passes.
 fn grows_past_the_hint() -> Int {
-    let mut xs: List<Item> = list_new_with_capacity(8)
+    let mut xs: Vec<Item> = list_new_with_capacity(8)
     let mut i = 0
     while (i < 200) {
         list_push(xs, Item { id: i, weight: i })
@@ -88,7 +88,7 @@ fn grows_past_the_hint() -> Int {
 // 3. A non-positive hint is clamped. Without the clamp the first push doubles a
 //    capacity of 0 to 0 and never makes room.
 fn zero_hint_is_clamped() -> Int {
-    let mut xs: List<Item> = list_new_with_capacity(0)
+    let mut xs: Vec<Item> = list_new_with_capacity(0)
     let mut i = 0
     while (i < 10) {
         list_push(xs, Item { id: i, weight: i })
@@ -97,7 +97,7 @@ fn zero_hint_is_clamped() -> Int {
     if (list_len(xs) != 10) { return fail("zero_hint length") }
     if (list_get(xs, 9).id != 9) { return fail("zero_hint last") }
 
-    let mut ys: List<Item> = list_new_with_capacity(0 - 5)
+    let mut ys: Vec<Item> = list_new_with_capacity(0 - 5)
     list_push(ys, Item { id: 42, weight: 1 })
     if (list_get(ys, 0).id != 42) { return fail("negative_hint") }
     return 0
@@ -105,8 +105,8 @@ fn zero_hint_is_clamped() -> Int {
 
 // 4. A computed hint, which is the shape the g2 measurement is about: the caller
 //    knows the count only at run time.
-fn computed_hint(n: Int) -> List<Item> {
-    let mut xs: List<Item> = list_new_with_capacity(n)
+fn computed_hint(n: Int) -> Vec<Item> {
+    let mut xs: Vec<Item> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(xs, Item { id: i, weight: n - i })

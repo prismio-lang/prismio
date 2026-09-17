@@ -21,9 +21,9 @@ public fn benchAdversarialNext(seed: I64) -> I64 {
 
 public fn benchPointerChase(scale: Int) -> Int {
     let n = 131072 * scale
-    let mut nodes: List<Int> = list_new_with_capacity(n)
-    let mut values: List<Int> = list_new_with_capacity(n)
-    let mut permutation: List<Int> = list_new_with_capacity(n)
+    let mut nodes: Vec<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = list_new_with_capacity(n)
+    let mut permutation: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(nodes, 0)
@@ -64,8 +64,8 @@ public fn benchPointerChase(scale: Int) -> Int {
 
 public fn benchRandomGather(scale: Int) -> Int {
     let n = 262144 * scale
-    let mut values: List<Int> = list_new_with_capacity(n)
-    let mut indices: List<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = list_new_with_capacity(n)
+    let mut indices: Vec<Int> = list_new_with_capacity(n)
     let mut seed: I64 = 7
     let mut i = 0
     while (i < n) {
@@ -90,9 +90,9 @@ public fn benchRandomGather(scale: Int) -> Int {
 
 public fn benchBranchMispredict(scale: Int) -> Int {
     let n = 500000 * scale
-    let mut conditions: List<Bool> = list_new_with_capacity(n)
-    let mut a: List<Int> = list_new_with_capacity(n)
-    let mut b: List<Int> = list_new_with_capacity(n)
+    let mut conditions: Vec<Bool> = list_new_with_capacity(n)
+    let mut a: Vec<Int> = list_new_with_capacity(n)
+    let mut b: Vec<Int> = list_new_with_capacity(n)
     let mut seed: I64 = 19
     let mut i = 0
     while (i < n) {
@@ -122,8 +122,8 @@ public fn benchBranchMispredict(scale: Int) -> Int {
 
 public fn benchStridedMemory(scale: Int) -> Int {
     let n = 1048576 * scale
-    let mut data: List<Int> = list_new_with_capacity(n)
-    let mut strides: List<Int> = list_new_with_capacity(8)
+    let mut data: Vec<Int> = list_new_with_capacity(n)
+    let mut strides: Vec<Int> = list_new_with_capacity(8)
     let mut i = 0
     while (i < n) {
         list_push(data, (i * 17 + 23) % 1009)
@@ -213,7 +213,7 @@ public fn benchIndirectDispatch(operation: Int, value: Int) -> Int {
 
 public fn benchIndirectCalls(scale: Int) -> Int {
     let n = 262144 * scale
-    let mut operations: List<Int> = list_new_with_capacity(n)
+    let mut operations: Vec<Int> = list_new_with_capacity(n)
     let mut seed: I64 = 37
     let mut i = 0
     while (i < n) {
@@ -249,7 +249,7 @@ public fn benchDependencyChain(scale: Int) -> Int {
 public fn benchAosVsSoa(scale: Int) -> Int {
     let n = 100000 * scale
     let rounds = 20
-    let mut particles: List<BenchLayoutParticle> = list_new_with_capacity(n)
+    let mut particles: Vec<BenchLayoutParticle> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(particles, BenchLayoutParticle {
@@ -283,11 +283,11 @@ public fn benchAosVsSoa(scale: Int) -> Int {
         a = a + 1
     }
 
-    let mut x: List<Int> = list_new_with_capacity(n)
-    let mut y: List<Int> = list_new_with_capacity(n)
-    let mut z: List<Int> = list_new_with_capacity(n)
-    let mut velocity: List<Int> = list_new_with_capacity(n)
-    let mut mass: List<Int> = list_new_with_capacity(n)
+    let mut x: Vec<Int> = list_new_with_capacity(n)
+    let mut y: Vec<Int> = list_new_with_capacity(n)
+    let mut z: Vec<Int> = list_new_with_capacity(n)
+    let mut velocity: Vec<Int> = list_new_with_capacity(n)
+    let mut mass: Vec<Int> = list_new_with_capacity(n)
     let mut q = 0
     while (q < n) {
         list_push(x, q % 1009)
@@ -585,9 +585,9 @@ public fn benchSwitchCase(operation: Int, value: Int) -> Int {
 
 public fn benchSwitchDispatch(scale: Int) -> Int {
     let n = 250000 * scale
-    let mut sequential: List<Int> = list_new_with_capacity(n)
-    let mut randomized: List<Int> = list_new_with_capacity(n)
-    let mut biased: List<Int> = list_new_with_capacity(n)
+    let mut sequential: Vec<Int> = list_new_with_capacity(n)
+    let mut randomized: Vec<Int> = list_new_with_capacity(n)
+    let mut biased: Vec<Int> = list_new_with_capacity(n)
     let mut seed: I64 = 97
     let mut i = 0
     while (i < n) {
@@ -618,7 +618,7 @@ public fn benchSwitchDispatch(scale: Int) -> Int {
 }
 
 public fn benchMemcpyMix(scale: Int) -> Int {
-    let mut sizes: List<Int> = list_new_with_capacity(7)
+    let mut sizes: Vec<Int> = list_new_with_capacity(7)
     list_push(sizes, 2)
     list_push(sizes, 4)
     list_push(sizes, 8)
@@ -631,8 +631,8 @@ public fn benchMemcpyMix(scale: Int) -> Int {
     let mut s = 0
     while (s < list_len(sizes)) {
         let count = list_get(sizes, s)
-        let mut source: List<Int> = list_new_with_capacity(count)
-        let mut target: List<Int> = list_new_with_capacity(count)
+        let mut source: Vec<Int> = list_new_with_capacity(count)
+        let mut target: Vec<Int> = list_new_with_capacity(count)
         let mut i = 0
         while (i < count) {
             list_push(source, (i * 31 + count) % 4093)

@@ -23,7 +23,7 @@ public fn benchHashMap(scale: Int) -> Int {
 
 public fn benchVectorGrowth(scale: Int) -> Int {
     let n = 1000000 * scale
-    let mut values: List<Int> = list_new()
+    let mut values: Vec<Int> = list_new()
     let mut checksum = 0
     let mut i = 0
     while (i < n) {
@@ -37,7 +37,7 @@ public fn benchVectorGrowth(scale: Int) -> Int {
 
 public fn benchVectorIteration(scale: Int) -> Int {
     let n = 1000000 * scale
-    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(values, i % 1009)
@@ -99,9 +99,9 @@ public fn benchFlatBitset(scale: Int) -> Int {
     let n = 50000 * scale
     let words = (n + 63) / 64
 
-    let mut a: List<I64> = list_new_with_capacity(words)
-    let mut b: List<I64> = list_new_with_capacity(words)
-    let mut c: List<I64> = list_new_with_capacity(words)
+    let mut a: Vec<I64> = list_new_with_capacity(words)
+    let mut b: Vec<I64> = list_new_with_capacity(words)
+    let mut c: Vec<I64> = list_new_with_capacity(words)
 
     let mut initW = 0
     while (initW < words) {
@@ -164,11 +164,11 @@ public fn benchTrieSearch(scale: Int) -> Int {
     let numKeys = 8000 * scale
     let numQueries = 15000 * scale
 
-    let mut c0: List<Int> = list_new()
-    let mut c1: List<Int> = list_new()
-    let mut c2: List<Int> = list_new()
-    let mut c3: List<Int> = list_new()
-    let mut counts: List<Int> = list_new()
+    let mut c0: Vec<Int> = list_new()
+    let mut c1: Vec<Int> = list_new()
+    let mut c2: Vec<Int> = list_new()
+    let mut c3: Vec<Int> = list_new()
+    let mut counts: Vec<Int> = list_new()
 
     list_push(c0, -1)
     list_push(c1, -1)

@@ -18,8 +18,8 @@ struct Row {
     live: Float
 }
 
-fn buildRows(count: Int) -> List<Row> {
-    let mut rows: List<Row> = list_new()
+fn buildRows(count: Int) -> Vec<Row> {
+    let mut rows: Vec<Row> = list_new()
     let mut i = 0
     let mut f = 0.0
     while (i < count) {

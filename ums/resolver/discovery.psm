@@ -7,7 +7,7 @@ extern fn join_path(directory: String borrow, child: String borrow) -> String pr
 extern fn file_exists(path: String borrow) -> Int
 
 public fn umsDiscoverManifest(startDirectory: String,
-                       diagnostics: List<UmsDiagnostic>) -> String {
+                       diagnostics: Vec<UmsDiagnostic>) -> String {
     let mut directory = startDirectory
     if (__builtin_string_len(directory) == 0 or directory.equals(".")) {
         directory = current_directory()

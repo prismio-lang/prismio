@@ -21,7 +21,7 @@
 import std.string
 import std.io
 import std.fs
-import std.list
+import std.vec
 import ums.dependency.dependency
 import ums.model.project
 import ums.model.diagnostic
@@ -64,7 +64,7 @@ impl UmsProjectModel {
     // resolving against the cwd would make the same manifest mean different things
     // depending on where it was invoked.
     private fn resolvePath(self, dependency: UmsDependency,
-                              diagnostics: List<UmsDiagnostic>) -> UmsResolution {
+                              diagnostics: Vec<UmsDiagnostic>) -> UmsResolution {
         let candidate = joinPath(self.root, dependency.path)
         let exists = directoryExists(candidate)
 
@@ -99,7 +99,7 @@ impl UmsProjectModel {
     // row, the diagnostic -- is already correct, so standing a registry up later
     // touches this function and nothing else.
     private fn fetchRegistry(self, dependency: UmsDependency,
-                                diagnostics: List<UmsDiagnostic>) -> UmsResolution {
+                                diagnostics: Vec<UmsDiagnostic>) -> UmsResolution {
         umsDiagnosticAdd(diagnostics, "UMS2211", self.manifestPath,
             dependency.line, dependency.col, dependency.len,
             "no registry is configured, so '".concat(dependency.name,
@@ -120,8 +120,8 @@ impl UmsProjectModel {
     // Resolves every declared dependency, in manifest order, and answers the list.
     // Order is the manifest's rather than sorted, so the lockfile reads against the
     // file that produced it.
-         public fn resolveDependencies(self, diagnostics: List<UmsDiagnostic>) -> List<UmsResolution> {
-        let resolutions: List<UmsResolution> = list_new()
+         public fn resolveDependencies(self, diagnostics: Vec<UmsDiagnostic>) -> Vec<UmsResolution> {
+        let resolutions: Vec<UmsResolution> = list_new()
         let mut i = 0
         while (i < list_len(self.dependencies)) {
             let dependency = list_get(self.dependencies, i)
@@ -139,7 +139,7 @@ impl UmsProjectModel {
     // it resolved to. Tab-separated with a header, because the file exists to be
     // diffed in review -- a format that reorders or reflows on write produces a diff
     // nobody can read, which is how a lockfile stops being checked.
-         public fn lockfileContents(self, resolutions: List<UmsResolution>) -> String {
+         public fn lockfileContents(self, resolutions: Vec<UmsResolution>) -> String {
         let mut out = "# prismio lockfile v".concat(umsLockfileVersion(), "\n# generated from ")
         out = out.concat(self.manifestPath)
         out = out.concat("\n# scope\tname\tconstraint\tsource\tresolved\n")
@@ -168,7 +168,7 @@ impl UmsProjectModel {
     // Writes the lockfile beside the build state, creating `.prismio/` if needed.
     // Answers false only when the write itself failed; an unresolved dependency is
     // recorded rather than suppressed, because the file has to describe the attempt.
-         public fn writeLockfile(self, resolutions: List<UmsResolution>) -> Bool {
+         public fn writeLockfile(self, resolutions: Vec<UmsResolution>) -> Bool {
         let stateDir = joinPath(self.root, self.build.stateDirectory)
         if (makeDirectory(stateDir) == false) { return false }
         return writeFile(self.lockfilePath(), self.lockfileContents(resolutions))

@@ -64,7 +64,7 @@ fn main() -> Int {
     let a = escaping()
     // Allocate across the read: a freed block that is never reused can still
     // hold the right bytes, and a test that passes on that proves nothing.
-    let mut churn: List<Int> = list_new()
+    let mut churn: Vec<Int> = list_new()
     let mut i = 0
     while (i < 64) {
         list_push(churn, i * 3)
@@ -74,7 +74,7 @@ fn main() -> Int {
     if (a.steps != 32) { return fail("escaping(): steps read after free") }
 
     let b = escapingNested()
-    let mut churn2: List<Int> = list_new()
+    let mut churn2: Vec<Int> = list_new()
     let mut j = 0
     while (j < 64) {
         list_push(churn2, j * 5)

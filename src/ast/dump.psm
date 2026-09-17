@@ -87,6 +87,7 @@ private fn nodeKindName(k: NodeKind) -> String {
     if (k == NodeKind.MODULE) { return "MODULE" }
     else if (k == NodeKind.IMPORT_STATEMENT) { return "IMPORT_STATEMENT" }
     else if (k == NodeKind.EXTERN_FUNCTION) { return "EXTERN_FUNCTION" }
+    else if (k == NodeKind.EXTERN_VARIABLE) { return "EXTERN_VARIABLE" }
     else if (k == NodeKind.VARIABLE_DECL) { return "VARIABLE_DECL" }
     else if (k == NodeKind.FUNCTION) { return "FUNCTION" }
     else if (k == NodeKind.STRUCT_DECL) { return "STRUCT_DECL" }
@@ -174,11 +175,13 @@ private fn dumpNode(ptr: Ptr) {
     print(",")
     jsonFieldInt("fi", n.file)
 
-    // The type sema resolved for this node, rendered the way diagnostics render
-    // it. Absent on nodes sema does not type (statements, declarations).
+    // The type sema resolved for this node, spelled as the compiler keys it
+    // (typeKeyName) -- the oracle compares these against its own type names, so
+    // they follow the internal name rather than the surface one. Absent on nodes
+    // sema does not type (statements, declarations).
     print(",")
     if (nodeExists(n.typeInfo)) {
-        jsonFieldStr("ty", typeDisplay(ptr_to_type(n.typeInfo)))
+        jsonFieldStr("ty", typeKeyName(ptr_to_type(n.typeInfo)))
     } else {
         jsonFieldStr("ty", "")
     }

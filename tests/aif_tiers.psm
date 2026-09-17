@@ -43,7 +43,7 @@ struct Wide {
 // Reaches itself only through a `List` element type, which the type-graph walk
 // sees only if it descends past the annotation's own name.
 struct Tree {
-    children: List<Tree>,
+    children: Vec<Tree>,
     value: Int
 }
 

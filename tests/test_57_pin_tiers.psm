@@ -48,7 +48,7 @@ fn fail(what: String) -> Int {
 // Box. Uniquely owned, individually freed, held by a container so the container's
 // teardown is the release point.
 fn boxed_elements() -> Int {
-    let mut nodes: List<Node> = list_new()
+    let mut nodes: Vec<Node> = list_new()
     let mut i = 0
     while (i < 6) {
         let pin(T2) node = Node { id: i, weight: i * 5 }
@@ -70,7 +70,7 @@ fn boxed_elements() -> Int {
 // Rc. The same shape one tier up: pinned T3 and held by a container, so
 // site_is_rc is satisfied and rc_alloc really is emitted.
 fn counted_elements() -> Int {
-    let mut nodes: List<Node> = list_new()
+    let mut nodes: Vec<Node> = list_new()
     let mut i = 0
     while (i < 4) {
         let pin(T3) shared = Node { id: i, weight: i + 100 }
@@ -95,7 +95,7 @@ fn counted_but_uncounted() -> Int {
 // Pessimising deliberately: T3 asked for where T2 was derived. Honoured, because
 // every tier is semantically valid and weakening needs no proof.
 fn deliberate_pessimisation() -> Int {
-    let mut nodes: List<Node> = list_new()
+    let mut nodes: Vec<Node> = list_new()
     let pin(T3) n = Node { id: 1, weight: 2 }
     list_push(nodes, n)
     if (list_get(nodes, 0).id != 1) { return fail("deliberate_pessimisation") }

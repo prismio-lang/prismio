@@ -7,15 +7,6 @@
 #include "prismio_platform.h"
 #include "prismio_runtime.h"
 
-// Defined by generated code, not by this file: generate_module() in src/ir.psm
-// emits them as module-level globals and generate_function() stores main's real
-// argc/argv into them in the entry prologue. Reading them here is what makes
-// cli_arg()/cli_arg_count() behave the same on Windows, Linux and macOS -- the
-// previous version read the Windows-only CRT globals __argc/__argv and returned
-// nothing at all anywhere else.
-extern int prismio_argc;
-extern char** prismio_argv;
-
 // M4.3's common conversion/access failure path. Defined outside
 // lang_runtime.c so its curated bounds-check body does not grow private Clang
 // `.cold` dependencies that cannot be linked from the extracted module.
@@ -892,17 +883,6 @@ char* proc_read_all(int fd) {
     }
     buffer[filled] = '\0';
     return buffer;
-}
-
-int cli_arg_count(void) {
-    return prismio_argc;
-}
-
-char* cli_arg(int index) {
-    if (index < 0 || index >= prismio_argc || prismio_argv == NULL) {
-        return "";
-    }
-    return prismio_argv[index];
 }
 
 //

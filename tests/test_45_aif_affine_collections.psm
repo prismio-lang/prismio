@@ -132,7 +132,7 @@ fn empty_substring_is_owned() -> Int {
 // released through list_release rather than the deallocator seam. Freeing only
 // the handle leaks the block, which a verify build reports.
 fn list_released() -> Int {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: 10 })
     list_push(items, Item { value: 20 })
     list_push(items, Item { value: 30 })

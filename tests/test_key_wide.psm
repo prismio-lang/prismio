@@ -8,7 +8,7 @@ fn main() -> Int {
     let signed = mapNew<I64, Int>()
     let unsigned = mapNew<U64, Int>()
     let sizes = mapNew<Usize, Int>()
-    let buckets: List<Int> = list_new_with_capacity(256)
+    let buckets: Vec<Int> = list_new_with_capacity(256)
     let mut b = 0
     while (b < 256) {
         list_push(buckets, 0)

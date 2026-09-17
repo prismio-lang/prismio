@@ -27,16 +27,16 @@ struct UmsAstStatement {
     kind: UmsAstStatementKind,
     name: String,
     value: UmsAstValue,
-    arguments: List<UmsAstValue>,
+    arguments: Vec<UmsAstValue>,
     // Flat scalar values for an assignment such as `authors = ["A", "B"]`.
     // Kept on the statement rather than recursively inside UmsAstValue: a flat
     // list is the manifest feature UMS needs, and the non-recursive shape keeps
     // value representation as cheap as call arguments.
-    arrayValues: List<UmsAstValue>,
+    arrayValues: Vec<UmsAstValue>,
     // Indices into UmsAstDocument.statements. Keeping syntax edges as indices
     // avoids a recursive nominal type, so a manifest AST never needs runtime
     // reference counting merely because blocks can nest.
-    children: List<Int>,
+    children: Vec<Int>,
     hasBlock: Bool,
     start: Int,
     blockOpen: Int,
@@ -47,8 +47,8 @@ struct UmsAstStatement {
 }
 
 struct UmsAstDocument {
-    statements: List<UmsAstStatement>,
-    roots: List<Int>
+    statements: Vec<UmsAstStatement>,
+    roots: Vec<Int>
 }
 
 private fn umsAstEmptyValue() -> UmsAstValue {

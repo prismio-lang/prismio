@@ -29,7 +29,7 @@ struct UmsCommandArgument {
 struct UmsCommandStep {
     kind: UmsCommandStepKind,
     subject: String,
-    arguments: List<UmsCommandArgument>,
+    arguments: Vec<UmsCommandArgument>,
     line: Int,
     col: Int,
     len: Int
@@ -38,7 +38,7 @@ struct UmsCommandStep {
 struct UmsCommand {
     name: String,
     description: String,
-    steps: List<UmsCommandStep>,
+    steps: Vec<UmsCommandStep>,
     line: Int,
     col: Int,
     len: Int
@@ -78,7 +78,7 @@ public fn umsCommandArgument(forwarded: Bool, text: String,
     }
 }
 
-public fn umsCommandFind(commands: List<UmsCommand>, name: String) -> Int {
+public fn umsCommandFind(commands: Vec<UmsCommand>, name: String) -> Int {
     let mut i = 0
     while (i < list_len(commands)) {
         if (list_get(commands, i).name.equals(name)) { return i }

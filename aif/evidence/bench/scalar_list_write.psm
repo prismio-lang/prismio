@@ -9,7 +9,7 @@ extern fn clock_gettime_nsec_np(clk: Int) -> I64
 
 fn main() -> Int {
     let count = 20000000
-    let values: List<Int> = list_new_with_capacity(count)
+    let values: Vec<Int> = list_new_with_capacity(count)
     let mut i = 0
     while (i < count) {
         list_push(values, 0)

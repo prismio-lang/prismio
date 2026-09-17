@@ -1,32 +1,27 @@
 // Command-line arguments and subprocesses.
 //
-// Two externs behind the arguments, and the interesting one is `cli_arg`.
+// **The arguments are the runtime's globals, read directly.** A program's `main`
+// stores its `argc` and `argv` into `prismio_argc` and `prismio_argv` before
+// anything else runs (generateFunction, src/ir/module.psm), and the two
+// `extern let`s below name them. Private, so neither symbol becomes a name in
+// the programs that import this module.
 //
-// **`cli_arg` allocates nothing.** It returns `prismio_argv[index]` -- a pointer
-// into the block the C runtime was handed at startup -- or the static `""` when
-// the index is out of range. Its contract is `alias`, which in FFI 5.2's
-// vocabulary means the return is an existing value rather than a fresh
-// allocation, and with no argument to alias it resolves to "static, not
-// allocated". src/main.psm has always declared it correctly; every other
-// declaration of it in the tree (tests/aif_tiers.psm, tests/aif_concurrency.psm)
-// leaves the contract off and gets the right answer by luck, because the
-// undeclared default is `borrow` and nothing frees the result either way.
-//
-// A `produce(free)` on it would not leak. It would hand `argv` to the
-// deallocator, which is a different and much worse category of wrong, and it is
-// the mistake the six `produce(free)` externs one module over invite. That is
-// why `process.args[i]` returns a **copy**.
+// **An argument allocates nothing until it is copied.** `__builtin_cstring_at`
+// hands back the bytes where the C runtime put them, and AIF models the result
+// as static storage. That is why `process.args[i]` returns a **copy**: a String
+// the caller owns, which no path can hand to the deallocator while it still
+// points into `argv`.
 
 import std.string
-import std.list
+import std.vec
 
-private extern fn cli_arg_count() -> Int
-private extern fn cli_arg(index: Int) -> String alias
+private extern let prismio_argc: Int
+private extern let prismio_argv: Ptr
 
 // The subprocess capability. `borrow` on every String: each is read, copied by
 // the callee where it has to outlive the call, and never retained.
 //
-// **The argument vector is pushed one element at a time**, because a `List<T>`
+// **The argument vector is pushed one element at a time**, because a `Vec<T>`
 // does not cross the FFI boundary -- nothing in the tree passes or returns one.
 // This is the shape `ir_call_begin` / `ir_call_arg` / the call has in
 // src/ir/bridge.psm, and it carries the same constraint: one spawn may be under
@@ -71,13 +66,13 @@ struct ProcessQuery {
 //     }
 //
 // **`args[0]` is the program name and `count` is `argc`**, which is what the two
-// externs answer and what every other language's `argv` means. There is no
+// globals hold and what every other language's `argv` means. There is no
 // separate "arguments after the program name" accessor to disagree with it.
 //
 // This replaced five functions -- `argCount`, `arg`, `argBorrowed`, `argAt` and
 // `args`. `args[i]` is `at(i)`, which is the index operator's lowering target
 // (src/sema/checker.psm), and `count` is an ordinary property. Both read the two
-// externs directly, so neither builds a list to answer a question about one
+// globals directly, so neither builds a list to answer a question about one
 // element.
 struct Args {
 }
@@ -95,12 +90,21 @@ impl Args {
     // every other owned String and a caller cannot accidentally free `argv`. One
     // small allocation per call, on a path that runs once per program.
     //
-    // **Out of range and empty answer alike**, which is the C contract and not a
-    // gap: `count` is one property away, so the caller that cares can ask, and
+    // **Out of range and empty answer alike**, deliberately and not as a gap:
+    // `count` is one property away, so the caller that cares can ask, and
     // the `Option` form this replaced cost every caller a `match` to serve that
     // one.
+    //
+    // **The bound is checked here** because the builtin reads whatever slot it
+    // is given. `argv` is null only while `argc` is still zero -- main's
+    // prologue stores the two together -- so this one test covers both. The
+    // empty answer is allocated like the other, so every path's result is one
+    // the caller owns.
     public fn at(self, index: Int) -> String {
-        let source = cli_arg(index)
+        if (index < 0 or index >= prismio_argc) {
+            return str_with_capacity(0)
+        }
+        let source = __builtin_cstring_at(prismio_argv, index)
         let length = strLength(source)
         let out = str_with_capacity(length)
         prismioStdProcessCopyInto(out, source, length)
@@ -109,7 +113,7 @@ impl Args {
 
     // `argc`, so the program name at 0 is counted.
     public fn count(self) -> Int {
-        return cli_arg_count()
+        return prismio_argc
     }
 }
 
@@ -226,7 +230,7 @@ impl Child {
 // argument.
 struct Process {
     program: String,
-    arguments: List<String>,
+    arguments: Vec<String>,
     stdin: StreamMode,
     stdout: StreamMode,
     stderr: StreamMode
@@ -247,7 +251,7 @@ public fn Process() -> Process {
     }
 }
 
-private fn processPushArguments(arguments: List<String>) {
+private fn processPushArguments(arguments: Vec<String>) {
     let mut i = 0
     while (i < list_len(arguments)) {
         proc_spawn_arg(list_get(arguments, i))

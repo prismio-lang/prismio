@@ -17,11 +17,11 @@ extern fn join_path(directory: String borrow, child: String borrow) -> String pr
 struct UmsWorkspace {
     project: UmsProjectModel,
     plan: UmsBuildPlan,
-    diagnostics: List<UmsDiagnostic>,
+    diagnostics: Vec<UmsDiagnostic>,
     valid: Bool
 }
 
-private fn umsEmptyWorkspace(diagnostics: List<UmsDiagnostic>) -> UmsWorkspace {
+private fn umsEmptyWorkspace(diagnostics: Vec<UmsDiagnostic>) -> UmsWorkspace {
     return UmsWorkspace {
         project: umsProjectModel("", "", "debug"),
         plan: UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") },

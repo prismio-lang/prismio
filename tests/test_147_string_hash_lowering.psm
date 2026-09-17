@@ -30,7 +30,7 @@ fn fail(message: String) -> Int {
 // an inline pair's field 0 reads them.
 fn degenerateHead() -> String {
     let mut head = ""
-    let bytes: List<Int> = list_new()
+    let bytes: Vec<Int> = list_new()
     list_push(bytes, 185)
     list_push(bytes, 228)
     list_push(bytes, 229)
@@ -67,7 +67,7 @@ fn main() -> Int {
     // 2. Sixty-four twelve-byte keys whose first eight bytes zero the register
     // path's product. Every one of them must still answer differently.
     let head = degenerateHead()
-    let hashes: List<Int> = list_new()
+    let hashes: Vec<Int> = list_new()
     let mut i = 0
     while (i < 64) {
         let key = head.concat(strFromChar((1 + i % 8) as Char),

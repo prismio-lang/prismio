@@ -11,8 +11,8 @@ struct UmsLexer {
     line: Int,
     col: Int,
     length: Int,
-    tokens: List<UmsToken>,
-    diagnostics: List<UmsDiagnostic>
+    tokens: Vec<UmsToken>,
+    diagnostics: Vec<UmsDiagnostic>
 }
 
 public fn umsIsDigit(value: Char) -> Bool {
@@ -160,7 +160,7 @@ impl UmsLexer {
 }
 
 public fn umsLex(source: String, path: String,
-          diagnostics: List<UmsDiagnostic>) -> List<UmsToken> {
+          diagnostics: Vec<UmsDiagnostic>) -> Vec<UmsToken> {
     let lexer = UmsLexer {
         source: source,
         path: path,

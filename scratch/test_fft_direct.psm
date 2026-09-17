@@ -3,7 +3,7 @@ import std.io
 extern fn cos(value: Float) -> Float
 extern fn sin(value: Float) -> Float
 
-fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
+fn benchFftTransform(real: Vec<Float>, imag: Vec<Float>, n: Int) {
     let mut j = 0
     let mut i = 1
     while (i < n) {
@@ -61,8 +61,8 @@ fn benchFftTransform(real: List<Float>, imag: List<Float>, n: Int) {
 fn benchFft(scale: Int) -> Int {
     let mut n = 1024 * scale
     if (scale == 12) { n = 16384 }
-    let mut real: List<Float> = list_new_with_capacity(n)
-    let mut imag: List<Float> = list_new_with_capacity(n)
+    let mut real: Vec<Float> = list_new_with_capacity(n)
+    let mut imag: Vec<Float> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(real, 1.0)

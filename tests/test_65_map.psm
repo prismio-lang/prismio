@@ -1,7 +1,7 @@
 // Map<K, V> from std.map -- the first container written in Prismio rather than C.
 //
 // It is also the load test for generics: a generic struct whose fields are
-// themselves generic (`List<K>`), generic functions over two parameters, and a
+// themselves generic (`Vec<K>`), generic functions over two parameters, and a
 // constructor whose type arguments cannot be inferred from any argument because
 // it has none.
 

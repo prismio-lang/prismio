@@ -1,11 +1,11 @@
 // expect-error: a list literal holds at most 12 elements, found 13
 //
-// `listOf` is an overload per arity because there are no varargs, the same way
+// `vecOf` is an overload per arity because there are no varargs, the same way
 // `String.concat` is 2..6. The cap is a property of that table, so the message
 // names the number and points at the loop a longer list needs.
-import std.list
+import std.vec
 
 fn main() -> Int {
-    let many: List<Int> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    let many: Vec<Int> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     return list_len(many)
 }

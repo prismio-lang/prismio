@@ -86,12 +86,12 @@ private fn umsAbsolutePath(value: String) -> Bool {
 // first.
 impl UmsProjectModel {
 
-    private fn validationError(self, diagnostics: List<UmsDiagnostic>,
+    private fn validationError(self, diagnostics: Vec<UmsDiagnostic>,
                           code: String, message: String) {
         umsDiagnosticAdd(diagnostics, code, self.manifestPath, 0, 0, 0, message)
     }
 
-    internal fn validate(self, diagnostics: List<UmsDiagnostic>) {
+    internal fn validate(self, diagnostics: Vec<UmsDiagnostic>) {
         if (__builtin_string_len(self.metadata.name) == 0) {
             self.validationError(diagnostics, "UMS2301", "project.name is required")
         } else if (umsValidName(self.metadata.name) == false) {

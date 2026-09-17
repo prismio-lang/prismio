@@ -93,6 +93,13 @@ FFI_CONTRACTS = {
     'list_get':       {0: 'borrow'},          # returns an alias into arg 0
     'list_len':       {0: 'borrow'},
     'list_swap':      {0: 'borrow'},          # a permutation: nothing enters or leaves
+    # Vec's `insert` is a push landing at an index: the value is argument 2.
+    # The rest keep nothing. Must match aifRuntimeContract.
+    'list_insert':    {0: 'borrow', 1: 'borrow', 2: ('retain_in', 0)},
+    'list_capacity':  {0: 'borrow'},
+    'list_reserve':   {0: 'borrow'},
+    'list_truncate':  {0: 'borrow'},
+    'list_remove_at': {0: 'borrow'},
     'list_new':       {},                     # produces a fresh container
     # Vec::with_capacity. Its argument is an Int, so there is no site to give a
     # contract to -- but the *return* contract matters, and leaving it out is what
@@ -140,6 +147,9 @@ FFI_CONTRACTS = {
     # The view form. Retains nothing of its own; that the result points into
     # argument 0 is a return contract, not a parameter one.
     '__builtin_string_view': {0: 'borrow'},
+    # One slot of a `char**`, kept by nobody. Its return is static storage; see
+    # FFI_RETURNS_STATIC.
+    '__builtin_cstring_at': {0: 'borrow', 1: 'borrow'},
     # The console write: a descriptor, a pointer and a count, retaining neither
     # the buffer nor anything else. This is `prismioStdIoWriteAll`'s callee, so
     # leaving it out blocks bracketing in every program that prints -- which is
@@ -200,6 +210,12 @@ FFI_RETURNS_ENDPOINT = {'chan_new', 'chan_share'}
 # it as an opaque extern return: a fresh site, escape raised to Caller, and one
 # more `extern-alloc` and `opaque-ret` than the compiler reports.
 FFI_RETURNS_ALIAS_OF = {'expect': 0, '__builtin_string_view': 0}
+
+# Reference returns that are storage the program never allocated, whatever the
+# arguments: FFI 5.2's `alias` with nothing to alias, for a callee with no
+# declaration to say so. Must match `aifFfiReturnsStatic` in
+# src/aif/contracts.psm.
+FFI_RETURNS_STATIC = {'__builtin_cstring_at'}
 
 # Externs that read an element back out of a container: name -> argument index.
 #
@@ -843,6 +859,9 @@ class Engine:
             if alias_of is not None and alias_of < len(argvals):
                 return argvals[alias_of]         # FFI 5.2 `alias`
             if self.m.is_ref(ty):
+                if plain in FFI_RETURNS_STATIC:
+                    self.static_returns += 1
+                    return VS_EMPTY
                 ret_contract = self.m.contracts.get((plain, -1), '')
                 # FFI 5.2 `alias`: not an allocation -- it borrows from an
                 # argument or from static storage. FFI.md names no argument, so
@@ -1687,7 +1706,7 @@ def bracket_masks(model, eng):
                    nothing bounds its lifetime and no region can.
       PARAM_STORE  the extent stores into something it did not allocate:
 
-                       fn add_to(dest: List<Node>, n: Int) {
+                       fn add_to(dest: Vec<Node>, n: Int) {
                            list_push(dest, Node { id: n })
                        }
                        region R { add_to(long_lived_list, 5) }

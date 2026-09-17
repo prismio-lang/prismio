@@ -46,7 +46,7 @@ internal fn umsDependencyScopeName(scope: UmsDependencyScope) -> String {
     return strClone("unknown")
 }
 
-public fn umsDependencyFind(dependencies: List<UmsDependency>, scope: UmsDependencyScope,
+public fn umsDependencyFind(dependencies: Vec<UmsDependency>, scope: UmsDependencyScope,
                      name: String) -> Int {
     let mut i = 0
     while (i < list_len(dependencies)) {

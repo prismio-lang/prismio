@@ -53,20 +53,20 @@ struct Health {
 }
 
 struct World {
-    positions: List<Position>,
-    velocities: List<Velocity>,
-    physics: List<Physics>,
-    sprites: List<Sprite>,
-    health: List<Health>,
+    positions: Vec<Position>,
+    velocities: Vec<Velocity>,
+    physics: Vec<Physics>,
+    sprites: Vec<Sprite>,
+    health: Vec<Health>,
     entity_count: Int
 }
 
 fn make_world() -> World {
-    let p: List<Position> = list_new()
-    let v: List<Velocity> = list_new()
-    let ph: List<Physics> = list_new()
-    let s: List<Sprite> = list_new()
-    let h: List<Health> = list_new()
+    let p: Vec<Position> = list_new()
+    let v: Vec<Velocity> = list_new()
+    let ph: Vec<Physics> = list_new()
+    let s: Vec<Sprite> = list_new()
+    let h: Vec<Health> = list_new()
     return World {
         positions: p,
         velocities: v,

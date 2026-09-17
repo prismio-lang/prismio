@@ -7,7 +7,7 @@
 // loses or duplicates an element can still come out ordered.
 
 import std.io
-import std.list
+import std.vec
 import std.string
 
 fn fail(message: String) -> Int {
@@ -20,8 +20,8 @@ fn rnd(seed: Int) -> Int { return (seed * 25173 + 13849) % 65521 }
 
 // 0 random, 1 sorted, 2 reversed, 3 all equal, 4 few distinct, 5 organ pipe,
 // 6 sawtooth, 7 sorted with a few swaps.
-fn shape(n: Int, kind: Int) -> List<Int> {
-    let mut out: List<Int> = list_new_with_capacity(n)
+fn shape(n: Int, kind: Int) -> Vec<Int> {
+    let mut out: Vec<Int> = list_new_with_capacity(n)
     let mut seed = 3
     let mut i = 0
     while (i < n) {
@@ -90,7 +90,7 @@ fn main() -> Int {
 
     // Strings: pairs that are inline and owned, with shared prefixes, sorted
     // against their own insertion order reversed.
-    let mut words: List<String> = list_new()
+    let mut words: Vec<String> = list_new()
     let mut i = 0
     while (i < 3000) {
         let n = 2999 - i

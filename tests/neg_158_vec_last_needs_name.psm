@@ -1,0 +1,14 @@
+// expect-error: `last` needs a named Vec
+// expect-error: bind the expression with `let` first
+// `last` reads its receiver twice -- once for the length -- so a receiver that
+// is a call would run twice. A name, or a field of one, is read twice for free.
+import std.vec
+
+fn build() -> Vec<Int> {
+    let v: Vec<Int> = [4, 5, 6]
+    return v
+}
+
+fn main() -> Int {
+    return build().last
+}

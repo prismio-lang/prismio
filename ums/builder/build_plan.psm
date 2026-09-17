@@ -26,7 +26,7 @@ private fn umsBuildProfileValid(profile: String) -> Bool {
 }
 
 public fn umsBuildPlanCreate(project: UmsProjectModel,
-                      diagnostics: List<UmsDiagnostic>) -> UmsBuildPlan {
+                      diagnostics: Vec<UmsDiagnostic>) -> UmsBuildPlan {
     if (umsBuildProfileValid(project.build.profile) == false) {
         umsDiagnosticAdd(diagnostics, "UMS3001", project.manifestPath, 0, 0, 0,
             "invalid build profile '".concat(project.build.profile, "'"))
@@ -39,7 +39,7 @@ public fn umsBuildPlanCreate(project: UmsProjectModel,
     let mut i = 0
     while (i < list_len(project.targets)) {
         let target = list_get(project.targets, i)
-        let plannedLinks: List<UmsLinkInput> = list_new()
+        let plannedLinks: Vec<UmsLinkInput> = list_new()
         let mut linkIndex = 0
         while (linkIndex < list_len(target.links)) {
             let input = list_get(target.links, linkIndex)

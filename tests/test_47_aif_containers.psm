@@ -34,7 +34,7 @@ struct Item {
 // regrown too -- reclaiming the elements must not reclaim the block they used to
 // live in.
 fn owned_elements() -> Int {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: 1 })
     list_push(items, Item { value: 2 })
     list_push(items, Item { value: 4 })
@@ -57,7 +57,7 @@ fn owned_elements() -> Int {
 // it would hand the teardown a frame slot. The value is small enough that it
 // would have been promoted before.
 fn small_element_is_not_stack() -> Int {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: 7 })
     let e = list_get(items, 0)
     return e.value
@@ -68,8 +68,8 @@ fn small_element_is_not_stack() -> Int {
 // the list and its elements and cannot say otherwise -- E is per site and a site
 // belongs to one function -- so this is the fact that had to come from somewhere
 // else.
-fn build(n: Int) -> List<Item> {
-    let mut out: List<Item> = list_new()
+fn build(n: Int) -> Vec<Item> {
+    let mut out: Vec<Item> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Item { value: i })
@@ -115,7 +115,7 @@ fn per_iteration() -> Int {
 // would instantiate `build` per call site and put the site where the value
 // actually dies. With flat elements stored inline this is two allocations -- one
 // list handle and its element block. The four Items occupy that block directly.
-fn forwards(n: Int) -> List<Item> {
+fn forwards(n: Int) -> Vec<Item> {
     let items = build(n)
     return items
 }
@@ -124,7 +124,7 @@ fn forwards(n: Int) -> List<Item> {
 // set holds a site belonging to the *caller*, so treating the result as owned
 // here would free a value the caller's own binding still owns. Excluded by
 // requiring every returned site to belong to the callee.
-fn identity(l: List<Item>) -> List<Item> {
+fn identity(l: Vec<Item>) -> Vec<Item> {
     return l
 }
 
@@ -139,7 +139,7 @@ fn pass_through_is_not_owned() -> Int {
 // seam's fn(ptr) -> void leaks the element block. The disposition carries the
 // kind for exactly this.
 //
-// `rows` is unannotated because `List<List<Item>>` does not lex: the closing
+// `rows` is unannotated because `Vec<Vec<Item>>` does not lex: the closing
 // `>>` is one shift token and the parser wants two. Unrelated to this item, and
 // the inference reads the element type off the push either way.
 //
@@ -149,15 +149,15 @@ fn pass_through_is_not_owned() -> Int {
 // one every other caller binds -- so consumes_returned_container and
 // per_iteration would quietly stop releasing. Context-insensitivity, doing
 // exactly what INFERENCE 6 says contexts are for.
-fn build_row() -> List<Item> {
-    let mut row: List<Item> = list_new()
+fn build_row() -> Vec<Item> {
+    let mut row: Vec<Item> = list_new()
     list_push(row, Item { value: 1 })
     list_push(row, Item { value: 2 })
     return row
 }
 
 fn nested_containers() -> Int {
-    let rows: List<List<Item>> = list_new()
+    let rows: Vec<Vec<Item>> = list_new()
     let mut i = 0
     while (i < 3) {
         list_push(rows, build_row())

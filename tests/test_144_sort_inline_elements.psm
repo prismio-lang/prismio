@@ -14,7 +14,7 @@
 // `list_get` at each use, the way RUNTIME.md asks.
 
 import std.io
-import std.list
+import std.vec
 import std.string
 
 struct Pt {
@@ -51,8 +51,8 @@ fn fail(message: String) -> Int {
 
 fn rnd(seed: Int) -> Int { return (seed * 25173 + 13849) % 65521 }
 
-fn freshSeen(n: Int) -> List<Bool> {
-    let seen: List<Bool> = list_new_with_capacity(n)
+fn freshSeen(n: Int) -> Vec<Bool> {
+    let seen: Vec<Bool> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(seen, false)
@@ -65,7 +65,7 @@ fn main() -> Int {
     let n = 500
     let mut seed = 5
 
-    let points: List<Pt> = list_new()
+    let points: Vec<Pt> = list_new()
     let mut i = 0
     while (i < n) {
         seed = rnd(seed)
@@ -85,7 +85,7 @@ fn main() -> Int {
         k = k + 1
     }
 
-    let wides: List<Wide> = list_new()
+    let wides: Vec<Wide> = list_new()
     i = 0
     while (i < n) {
         seed = rnd(seed)
@@ -109,7 +109,7 @@ fn main() -> Int {
         k = k + 1
     }
 
-    let smalls: List<Small> = list_new()
+    let smalls: Vec<Small> = list_new()
     let mut keySum = 0
     i = 0
     while (i < n) {
@@ -131,7 +131,7 @@ fn main() -> Int {
     if (after != keySum) { return fail("Small is not a permutation") }
 
     // 7919 is prime, so `i * 7919 % n` is a permutation of the ranks.
-    let named: List<Named> = list_new()
+    let named: Vec<Named> = list_new()
     i = 0
     while (i < n) {
         list_push(named, Named { name: "item-".concat(i.toString()), rank: (i * 7919) % n, id: i })
@@ -154,7 +154,7 @@ fn main() -> Int {
     // `list_swap` directly, on the representations the sorts above did not
     // exercise by hand: scalars by value, and String pairs -- one inline, one
     // behind a pointer. A swap with itself and one out of range change nothing.
-    let ints: List<Int> = list_new()
+    let ints: Vec<Int> = list_new()
     list_push(ints, 10)
     list_push(ints, 20)
     list_push(ints, 30)
@@ -164,7 +164,7 @@ fn main() -> Int {
     if (list_get(ints, 0) != 30 or list_get(ints, 1) != 20 or list_get(ints, 2) != 10) {
         return fail("list_swap on Int")
     }
-    let words: List<String> = list_new()
+    let words: Vec<String> = list_new()
     list_push(words, "short")
     list_push(words, "a string of more than twelve bytes")
     list_swap(words, 0, 1)

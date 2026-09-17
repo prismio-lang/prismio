@@ -1,0 +1,10 @@
+// expect-error: extern global `seeded` cannot have an initializer
+// expect-error: extern global `untyped` needs a type annotation
+// The storage and its value belong to the object file that defines the global,
+// so neither an initializer nor an inferred type has anywhere to come from.
+extern let seeded: Int = 1
+extern let untyped
+
+fn main() -> Int {
+    return 0
+}

@@ -1,0 +1,49 @@
+// `extern let` -- a global another object file defines, named from Prismio.
+//
+// The storage is `prismio_argc` / `prismio_argv` because they are the one pair
+// of foreign globals every platform has without linking a library: a program's
+// own `main` defines and fills them. std.process names the same two symbols
+// privately, which is what makes the second half of this worth asserting -- a
+// store through one declaration is what every other declaration reads next.
+//
+//   - a read loads the current value, and a store through `extern let mut` is
+//     seen by the next read, here and in std.process;
+//   - `mut` belongs to each declaration: extern_globals.reader declares the
+//     same symbol read-only, and this file may still assign it;
+//   - `__builtin_cstring_at` reads one slot of a `char**` as a String, and the
+//     result is not released. `name` is bound straight from it, so a release
+//     would hand `argv` to the allocator and abort the program.
+
+import std.io
+import std.process
+import extern_globals.reader
+
+extern let mut prismio_argc: Int
+extern let prismio_argv: Ptr
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn main() -> Int {
+    // The runner starts every fixture with no arguments.
+    if (prismio_argc != 1) { return fail("argc is not 1") }
+    if (process.args.count != 1) { return fail("process.args.count is not 1") }
+    if (readerArgc() != 1) { return fail("the read-only declaration disagrees") }
+
+    let name = __builtin_cstring_at(prismio_argv, 0)
+    if (name.length() == 0) { return fail("argv[0] is empty") }
+    if (process.args[0].equals(name) == false) {
+        return fail("process.args[0] is not argv[0]")
+    }
+
+    prismio_argc = 0
+    if (process.args.count != 0) { return fail("std.process did not see the store") }
+    if (readerArgc() != 0) { return fail("the read-only declaration did not see the store") }
+    if (process.args[0].length() != 0) { return fail("an index at argc was not empty") }
+    prismio_argc = 1
+
+    println("PASS: extern globals")
+    return 0
+}

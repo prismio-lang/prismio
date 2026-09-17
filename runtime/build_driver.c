@@ -3208,8 +3208,8 @@ int compiler_promote_executable(const char* candidate_file, const char* active_f
 // rt_workload_stub instead of a link (see generateWorkloadStubs). So by the time
 // a driver runs, the only foreign code it can reach is the Prismio runtime.
 // That leaves what this function owns: argv, the working directory, and time.
-//  - **argv is empty.** cli_arg() reads the prismio_argv global, which a driver
-//    never fills, so a workload cannot branch on the compiler's own command line
+//  - **argv is empty.** `process.args` reads the prismio_argv global, which a
+//    driver never fills, so a workload cannot branch on the compiler's own command line
 //    and produce a profile that depends on how the build was invoked.
 //  - **The working directory is the output directory**, not the user's. A
 //    relative path a workload opens through a stubbed extern goes nowhere, and

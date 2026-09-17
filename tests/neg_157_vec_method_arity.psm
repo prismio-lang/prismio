@@ -1,0 +1,14 @@
+// expect-error: `push` takes 1 argument, found 0
+// expect-error: `insert` takes 2 arguments, found 1
+// expect-error: `clear` takes 0 arguments, found 1
+// Vec's lowered methods check their own arity, so the message names the method
+// that was written rather than the runtime entry point it would have become.
+import std.vec
+
+fn main() -> Int {
+    let v: Vec<Int> = [1, 2]
+    v.push()
+    v.insert(3)
+    v.clear(0)
+    return 0
+}

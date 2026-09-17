@@ -1,4 +1,4 @@
-// expect-error: soa expects a List, found Int
+// expect-error: soa expects a Vec, found Int
 fn main() -> Int {
     let view = soa(42)
     return 0

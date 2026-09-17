@@ -10,7 +10,7 @@ import ums.model.manifest_writer
 import ums.targets.target
 import std.string
 import std.fs
-import std.list
+import std.vec
 
 
 fn umsTestFail(message: String) -> Int {

@@ -1,8 +1,8 @@
 fn benchGraphBfs(scale: Int) -> Int {
     let width = 120 * scale
     let total = width * width
-    let mut seen: List<Bool> = list_new_with_capacity(total)
-    let mut queue: List<Int> = list_new_with_capacity(total)
+    let mut seen: Vec<Bool> = list_new_with_capacity(total)
+    let mut queue: Vec<Int> = list_new_with_capacity(total)
     let mut i = 0
     while (i < total) {
         list_push(seen, false)

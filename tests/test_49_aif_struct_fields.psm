@@ -30,13 +30,13 @@ struct Item {
 // uniformly would have to reclaim nothing here.
 struct Inventory {
     lead: Slot,
-    items: List<Item>,
+    items: Vec<Item>,
     capacity: Int,
     version: Int
 }
 
 fn make_inventory(n: Int) -> Inventory {
-    let contents: List<Item> = list_new()
+    let contents: Vec<Item> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(contents, Item { value: i })
@@ -89,7 +89,7 @@ struct Crate {
 // there. Context-insensitivity, doing exactly what INFERENCE 6 says contexts are
 // for.
 fn make_crate_inventory(n: Int) -> Inventory {
-    let contents: List<Item> = list_new()
+    let contents: Vec<Item> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(contents, Item { value: i })
@@ -129,12 +129,12 @@ fn nested_owner(n: Int) -> Int {
 // type_is_reclaimed existed, and no value test sees it -- the leak count is the
 // detector.
 struct Holder {
-    items: List<Item>,
+    items: Vec<Item>,
     tag: Int
 }
 
 fn stack_owner_does_not_bar_its_field(n: Int) -> Int {
-    let contents: List<Item> = list_new()
+    let contents: Vec<Item> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(contents, Item { value: i })

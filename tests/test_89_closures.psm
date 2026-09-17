@@ -15,7 +15,7 @@
 
 import std.io
 import std.string
-import std.list
+import std.vec
 import std.ord
 import std.copy
 
@@ -52,7 +52,7 @@ fn main() -> Int {
 
     // A capture of a copyable local.
     let threshold = 4
-    let mut xs: List<Int> = list_new()
+    let mut xs: Vec<Int> = list_new()
     let mut i = 0
     while (i < 10) {
         list_push(xs, i)
@@ -63,7 +63,7 @@ fn main() -> Int {
     // A capture of an **owned** local. It is moved into the closure, which is
     // what makes the ownership question ordinary: the struct literal owns it and
     // releases it, and `needle` is dead after this line.
-    let mut names: List<String> = list_new()
+    let mut names: Vec<String> = list_new()
     list_push(names, "apple")
     list_push(names, "apricot")
     list_push(names, "fig")
@@ -79,7 +79,7 @@ fn main() -> Int {
     let big = filter(xs, |v: Int| v > 6)
     if (list_len(big) != 3) { return fail("filter") }
 
-    let mut doubled: List<Int> = list_new()
+    let mut doubled: Vec<Int> = list_new()
     mapInto(xs, doubled, |v: Int| v * 2)
     if (list_len(doubled) != 10 or list_get(doubled, 9) != 18) { return fail("mapInto") }
 
@@ -88,7 +88,7 @@ fn main() -> Int {
     if (anyOf(xs, |v: Int| v > 100)) { return fail("anyOf, absent") }
 
     // `sortBy` with a comparator, on a descending order no `impl Ord` provides.
-    let mut ys: List<Int> = list_new()
+    let mut ys: Vec<Int> = list_new()
     list_push(ys, 3)
     list_push(ys, 9)
     list_push(ys, 1)

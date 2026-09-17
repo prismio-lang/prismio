@@ -32,8 +32,8 @@ fn make_particle(i: Float) -> Particle {
     }
 }
 
-fn build(count: Int) -> List<Particle> {
-    let mut ps: List<Particle> = list_new()
+fn build(count: Int) -> Vec<Particle> {
+    let mut ps: Vec<Particle> = list_new()
     let mut i = 0
     let mut f = 0.0
     while (i < count) {
@@ -47,7 +47,7 @@ fn build(count: Int) -> List<Particle> {
 // Three field reads and three field writes per axis. Every one of them is a
 // getelementptr on the particle when the Vec3 is inline, and a load of a pointer
 // followed by a getelementptr on that when it is not.
-fn step(ps: List<Particle>, dt: Float) {
+fn step(ps: Vec<Particle>, dt: Float) {
     let n = list_len(ps)
     let mut i = 0
     while (i < n) {
@@ -63,7 +63,7 @@ fn step(ps: List<Particle>, dt: Float) {
     }
 }
 
-fn alive(ps: List<Particle>) -> Int {
+fn alive(ps: Vec<Particle>) -> Int {
     let n = list_len(ps)
     let mut count = 0
     let mut i = 0

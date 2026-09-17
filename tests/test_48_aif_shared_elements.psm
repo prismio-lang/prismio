@@ -28,8 +28,8 @@ struct Item {
 // dead -- an argument that does not reach a container, because a container is not
 // a binding. A-CONTAIN counts containers instead.
 fn shared_between_containers() -> Int {
-    let a: List<Item> = list_new()
-    let b: List<Item> = list_new()
+    let a: Vec<Item> = list_new()
+    let b: Vec<Item> = list_new()
     list_push(a, Item { value: 3 })
     list_push(b, list_get(a, 0))
 
@@ -46,15 +46,15 @@ fn shared_between_containers() -> Int {
 // borrowed value -- which is an error, and neg_21 pins that. What is legal is
 // pushing what a *read* returned, which is the shape above; this one goes through
 // two reads of the same source.
-fn spread(src: List<Item>, x: List<Item>, y: List<Item>) {
+fn spread(src: Vec<Item>, x: Vec<Item>, y: Vec<Item>) {
     list_push(x, list_get(src, 0))
     list_push(y, list_get(src, 0))
 }
 
 fn two_hops() -> Int {
-    let src: List<Item> = list_new()
-    let x: List<Item> = list_new()
-    let y: List<Item> = list_new()
+    let src: Vec<Item> = list_new()
+    let x: Vec<Item> = list_new()
+    let y: Vec<Item> = list_new()
     list_push(src, Item { value: 5 })
     spread(src, x, y)
     return list_len(x) + list_len(y) + list_len(src)
@@ -69,14 +69,14 @@ fn two_hops() -> Int {
 // decrement were a free, the read below would be poison under --verify and a wrong
 // value without it, which is what makes the returned 9 an assertion rather than a
 // formality.
-fn borrow_into_temp(src: List<Item>) -> Int {
-    let temp: List<Item> = list_new()
+fn borrow_into_temp(src: Vec<Item>) -> Int {
+    let temp: Vec<Item> = list_new()
     list_push(temp, list_get(src, 0))
     return list_len(temp)
 }
 
 fn survives_first_release() -> Int {
-    let keep: List<Item> = list_new()
+    let keep: Vec<Item> = list_new()
     list_push(keep, Item { value: 9 })
     let n = borrow_into_temp(keep)
     let e = list_get(keep, 0)
@@ -91,11 +91,11 @@ fn survives_first_release() -> Int {
 // Under OBJECT the old element leaks instead, deliberately: the container owns
 // it, but so might the binding it came from, and only a count can tell.
 fn overwrite_releases() -> Int {
-    let items: List<Item> = list_new()
+    let items: Vec<Item> = list_new()
     list_push(items, Item { value: 1 })
     list_push(items, Item { value: 2 })
     // Shared, so counted: also pushed into `other` below.
-    let other: List<Item> = list_new()
+    let other: Vec<Item> = list_new()
     list_push(other, list_get(items, 1))
     list_set(items, 0, Item { value: 40 })
     let a = list_get(items, 0)

@@ -2143,6 +2143,13 @@ typedef struct {
     // It also fits in the padding after `arena`, so the header is the same 40
     // bytes it was.
     int elem_size;
+    // Elements removed while something may still view them, released with the
+    // list rather than at the removal -- see `list_discard_slot`. Appended so the
+    // prefix codegen reads (`rt_list_header_type` in llvm-api-backend.c) does
+    // not move, and on plain malloc because nothing but `list_release` frees it.
+    void** grave;
+    int grave_len;
+    int grave_cap;
 } RtList;
 
 static int list_inline_enabled(void);
@@ -2155,6 +2162,9 @@ static void* list_new_cap(int cap, int elem_size) {
     l->elem_release = 0;
     l->arena = rt_arena_slot();
     l->elem_size = elem_size;
+    l->grave = NULL;
+    l->grave_len = 0;
+    l->grave_cap = 0;
     size_t stride = elem_size > 0 ? (size_t)elem_size : sizeof(void*);
     size_t bytes = cap > 0 ? (size_t)cap * stride : 0;
     l->data = bytes > 0 ? (void**)rt_alloc(bytes) : NULL;
@@ -2362,6 +2372,30 @@ void list_inline_grow(void* lp) {
     l->cap = nc;
 }
 
+// The disposition this list's teardown applies to one element it owns: a boxed
+// element, or -- under AIF_ELEM_STRING -- a String pair's long-form block, which
+// a boxed list releases exactly as OBJECT does. One definition, because teardown,
+// a push that copied its source out, and removal all have to agree on it.
+//
+// SPEC 3's "a value meeting both conditions pays both", and the order in the
+// atomic cycle case is forced: cyc_release is what buffers a candidate root, so
+// it has to see the count *after* this thread's decrement.
+static void list_release_element(RtList* l, void* e) {
+    if (l->elem_own == AIF_ELEM_LIST)              list_release(e);
+    else if (l->elem_own == AIF_ELEM_RC)           rc_release(e);
+    else if (l->elem_own == AIF_ELEM_CYCLE)        cyc_release(e);
+    else if (l->elem_own == AIF_ELEM_RC_ATOMIC)    rc_release_atomic(e);
+    else if (l->elem_own == AIF_ELEM_CYCLE_ATOMIC) { rc_release_atomic(e); cyc_release(e); }
+    else if (l->elem_own == AIF_ELEM_TYPED) {
+        // Struct-field ownership. The element owns fields of its own, so
+        // rt_free(e) here would reclaim the object and leak everything hanging
+        // off it -- which is exactly what g3_scene_graph did with 1365 Nodes and
+        // three owned fields each.
+        if (l->elem_release) l->elem_release(e);
+    }
+    else                                            rt_free(e);
+}
+
 // Fact 2. The disposition `list_release` would have applied to this element at
 // teardown, applied now that its bytes have been copied out of it.
 //
@@ -2383,13 +2417,7 @@ static void list_release_source(RtList* l, void* e) {
             && at < base + (uintptr_t)l->cap * (uintptr_t)l->elem_size) {
         return;
     }
-    if (l->elem_own == AIF_ELEM_LIST)              list_release(e);
-    else if (l->elem_own == AIF_ELEM_RC)           rc_release(e);
-    else if (l->elem_own == AIF_ELEM_CYCLE)        cyc_release(e);
-    else if (l->elem_own == AIF_ELEM_RC_ATOMIC)    rc_release_atomic(e);
-    else if (l->elem_own == AIF_ELEM_CYCLE_ATOMIC) { rc_release_atomic(e); cyc_release(e); }
-    else if (l->elem_own == AIF_ELEM_TYPED) { if (l->elem_release) l->elem_release(e); }
-    else                                            rt_free(e);
+    list_release_element(l, e);
 }
 
 // Fact 1. The address of a freshly reserved element, so a pushed struct literal
@@ -2752,6 +2780,167 @@ void list_set_str(void* lp, int index, void* raw, long long word) {
     slot->word = word;
 }
 
+// ---------------------------------------------------------------------------
+// Vec's removal and insertion -- COLLECTIONS.md
+//
+// **A removed element that owns memory is parked, and released with the list.**
+// `let s = v[2]` is a view of the element, not a copy, and nothing in the
+// language stops `v.clear()` between that binding and its last use. Releasing at
+// the removal would free what `s` still reads. Parking releases exactly the set
+// teardown would have released had the element stayed, so a removal can never
+// free anything that staying could not.
+//
+// **`now` is codegen's proof that no view can exist**, and with it the element
+// is released at once. A flat element owns nothing, and a list whose elements
+// the analysis says it does not own releases nothing, so neither ever parks.
+// ---------------------------------------------------------------------------
+
+static void list_park(RtList* l, void* owned) {
+    if (l->grave_len == l->grave_cap) {
+        int next = l->grave_cap ? l->grave_cap * 2 : 4;
+        void** grown = (void**)realloc(l->grave, sizeof(void*) * (size_t)next);
+        if (!grown) {
+            fprintf(stderr, "runtime error: out of memory removing an element\n");
+            exit(1);
+        }
+        l->grave = grown;
+        l->grave_cap = next;
+    }
+    l->grave[l->grave_len] = owned;
+    l->grave_len = l->grave_len + 1;
+}
+
+// Reverse order, as `list_release` unwinds the live elements: an element may
+// hold a reference to one removed before it, never after.
+static void list_release_parked(RtList* l) {
+    for (int i = l->grave_len - 1; i >= 0; i--) list_release_element(l, l->grave[i]);
+    free(l->grave);
+    l->grave = NULL;
+    l->grave_len = 0;
+    l->grave_cap = 0;
+}
+
+// What slot `index` owns, released or parked before the slot is overwritten.
+static void list_discard_slot(RtList* l, int index, int now) {
+    if (l->arena || l->elem_own == AIF_ELEM_NONE) return;
+    void* owned = 0;
+    if (l->elem_size) {
+        if (l->elem_own != AIF_ELEM_STRING || l->elem_size != (int)sizeof(StrPair)) return;
+        StrPair pair = ((StrPair*)l->data)[index];
+        if (pair.word & (STR_WORD_INLINE | STR_WORD_VIEW)) return;
+        owned = (void*)pair.data;
+    } else {
+        owned = l->data[index];
+    }
+    if (!owned) return;
+    if (now) list_release_element(l, owned);
+    else list_park(l, owned);
+}
+
+static size_t list_stride(RtList* l) {
+    return l->elem_size ? (size_t)l->elem_size : sizeof(void*);
+}
+
+int list_capacity(void* lp) {
+    return ((RtList*)lp)->cap;
+}
+
+// Room for `n` elements without a reallocation. Growth past it still doubles,
+// so the hint is never a bound. The block goes back into the arena the list
+// came from, for `list_push_grow`'s reason.
+void list_reserve(void* lp, int n) {
+    RtList* l = (RtList*)lp;
+    if (n <= l->cap) return;
+    size_t stride = list_stride(l);
+    size_t bytes = (size_t)n * stride;
+    unsigned char* nd = l->arena ? (unsigned char*)arena_alloc_at(l->arena, bytes)
+                                 : (unsigned char*)rt_alloc(bytes);
+    if (l->data) memcpy(nd, l->data, (size_t)l->len * stride);
+    if (l->data && !l->arena) rt_free(l->data);
+    l->data = (void**)nd;
+    l->cap = n;
+}
+
+// `truncate(n)`, and `clear()` as `truncate(0)`. A length at or past the current
+// one changes nothing; a negative one empties the list.
+void list_truncate(void* lp, int n, int now) {
+    RtList* l = (RtList*)lp;
+    if (n < 0) n = 0;
+    if (n >= l->len) return;
+    for (int i = l->len - 1; i >= n; i--) list_discard_slot(l, i, now);
+    l->len = n;
+}
+
+// Out of range is an error rather than `list_set`'s no-op: a removal that did
+// nothing would leave the caller holding a copy of an element it thinks it took.
+void list_remove_at(void* lp, int index, int now) {
+    RtList* l = (RtList*)lp;
+    if ((unsigned)index >= (unsigned)l->len) {
+        fprintf(stderr, "runtime error: removeAt index %d is out of range for length %d\n",
+                index, l->len);
+        exit(1);
+    }
+    list_discard_slot(l, index, now);
+    size_t stride = list_stride(l);
+    unsigned char* base = (unsigned char*)l->data;
+    memmove(base + (size_t)index * stride, base + (size_t)(index + 1) * stride,
+            (size_t)(l->len - index - 1) * stride);
+    l->len = l->len - 1;
+}
+
+// `insert(i, x)` is the push of `x` and then this: the new last element moves to
+// `index` and everything from `index` shifts up one. Checked before the push, so
+// a bad index reports without having taken the value.
+static void list_check_insert_index(RtList* l, int index) {
+    if (index < 0 || index > l->len) {
+        fprintf(stderr, "runtime error: insert index %d is out of range for length %d\n",
+                index, l->len);
+        exit(1);
+    }
+}
+
+static void list_move_last(RtList* l, int index) {
+    if (index >= l->len - 1) return;
+    size_t stride = list_stride(l);
+    unsigned char* base = (unsigned char*)l->data;
+    unsigned char small[64];
+    unsigned char* held = stride <= sizeof(small) ? small : (unsigned char*)malloc(stride);
+    if (!held) {
+        fprintf(stderr, "runtime error: out of memory inserting an element\n");
+        exit(1);
+    }
+    memcpy(held, base + (size_t)(l->len - 1) * stride, stride);
+    memmove(base + (size_t)(index + 1) * stride, base + (size_t)index * stride,
+            (size_t)(l->len - 1 - index) * stride);
+    memcpy(base + (size_t)index * stride, held, stride);
+    if (held != small) free(held);
+}
+
+// One per push entry point, with the same argument conventions plus the index.
+void list_insert(void* lp, int index, void* value) {
+    list_check_insert_index((RtList*)lp, index);
+    list_push(lp, value);
+    list_move_last((RtList*)lp, index);
+}
+
+void list_insert_inline(void* lp, int index, void* value, int elem_size) {
+    list_check_insert_index((RtList*)lp, index);
+    list_push_inline(lp, value, elem_size);
+    list_move_last((RtList*)lp, index);
+}
+
+void list_insert_inline_scalar(void* lp, int index, unsigned long long bits, int elem_size) {
+    list_check_insert_index((RtList*)lp, index);
+    list_push_inline_scalar(lp, bits, elem_size);
+    list_move_last((RtList*)lp, index);
+}
+
+void list_insert_str(void* lp, int index, void* raw, long long word) {
+    list_check_insert_index((RtList*)lp, index);
+    list_push_str(lp, raw, word);
+    list_move_last((RtList*)lp, index);
+}
+
 // The debug-mode overflow check's failure path, RFC 0560's "check in debug".
 //
 // `Int` is signed 32-bit and wraps -- decided by measurement, see
@@ -2876,6 +3065,7 @@ void list_release(void* lp) {
                 }
             }
         }
+        list_release_parked(l);
         if (l->data) rt_free(l->data);
         rt_free(l);
         return;
@@ -2883,25 +3073,10 @@ void list_release(void* lp) {
     if (l->elem_own != AIF_ELEM_NONE) {
         for (int i = l->len - 1; i >= 0; i--) {
             void* e = l->data[i];
-            if (!e) continue;
-            if (l->elem_own == AIF_ELEM_LIST)    list_release(e);
-            else if (l->elem_own == AIF_ELEM_RC) rc_release(e);
-            else if (l->elem_own == AIF_ELEM_CYCLE) cyc_release(e);
-            else if (l->elem_own == AIF_ELEM_RC_ATOMIC) rc_release_atomic(e);
-            // SPEC 3's "a value meeting both conditions pays both", and the
-            // order is forced: cyc_release is what buffers a candidate root, so
-            // it has to see the count *after* this thread's decrement.
-            else if (l->elem_own == AIF_ELEM_CYCLE_ATOMIC) { rc_release_atomic(e); cyc_release(e); }
-            else if (l->elem_own == AIF_ELEM_TYPED) {
-                // Struct-field ownership. The element owns fields of its own, so
-                // rt_free(e) here would reclaim the object and leak everything
-                // hanging off it -- which is exactly what g3_scene_graph did with
-                // 1365 Nodes and three owned fields each.
-                if (l->elem_release) l->elem_release(e);
-            }
-            else                                  rt_free(e);
+            if (e) list_release_element(l, e);
         }
     }
+    list_release_parked(l);
     if (l->data) rt_free(l->data);
     rt_free(l);
 }

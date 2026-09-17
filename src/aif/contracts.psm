@@ -93,6 +93,9 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     // The view retains nothing *of its own*; that its result points into the
     // first argument is the return contract, answered by `aifFfiAliasOf`.
     if (name.equals("__builtin_string_view")) { return AIF_FFI_BORROW }
+    // Reads one slot of a `char**` and keeps nothing. What it returns is the
+    // other half of its contract, answered by `aifFfiReturnsStatic`.
+    if (name.equals("__builtin_cstring_at")) { return AIF_FFI_BORROW }
     // errno and its two comparison constants. They take no arguments, read a
     // per-thread `int` the program does not own, and hand back a copy of it --
     // so there is nothing to retain and nothing to place. Described here rather
@@ -187,6 +190,20 @@ private fn aifRuntimeContract(name: String, index: Int) -> Int {
     if (name.equals("list_len")) { return AIF_FFI_BORROW }
     // Exchanges two of the list's own elements: nothing enters or leaves it.
     if (name.equals("list_swap")) { return AIF_FFI_BORROW }
+    // Vec's `insert` is a push that lands at an index, so the value -- argument
+    // 2, after the index -- is stored into argument 0 exactly as a push stores it.
+    if (name.equals("list_insert")) {
+        if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }
+        return AIF_FFI_BORROW
+    }
+    // The rest take the vector and an Int and keep neither. A removal releases
+    // what the container already owned -- now or with the container, and either
+    // way under the ownership teardown was going to apply -- so it moves no fact
+    // the analysis holds.
+    if (name.equals("list_capacity")) { return AIF_FFI_BORROW }
+    if (name.equals("list_reserve")) { return AIF_FFI_BORROW }
+    if (name.equals("list_truncate")) { return AIF_FFI_BORROW }
+    if (name.equals("list_remove_at")) { return AIF_FFI_BORROW }
     // The C string layer is native Prismio now, so only the calls that are still
     // real runtime boundaries have contracts here. str_char_at, str_contains,
     // str_starts_with, str_ends_with, str_index_of and str_from_char were removed
@@ -277,6 +294,16 @@ internal fn aifFfiAliasOf(name: String) -> Int {
     // analysis already knows how to state.
     if (name.equals("__builtin_string_view")) { return 0 }
     return 0 - 1
+}
+
+// A reference return that is storage this program never allocated, whatever
+// its arguments were: FFI 5.2's `alias` with nothing to alias, for a callee that
+// has no declaration to say so. `__builtin_cstring_at` is the one entry. Its
+// argument is a `char**` global, whose read carries a value set, so the
+// declared-alias path would answer "a view of that global" -- true, and useless,
+// since nothing here allocated either.
+internal fn aifFfiReturnsStatic(name: String) -> Bool {
+    return name.equals("__builtin_cstring_at")
 }
 
 // Which argument's element field a call reads, or -1. The counterpart of

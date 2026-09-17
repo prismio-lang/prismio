@@ -101,6 +101,84 @@ private fn moduleTreeCallsName(nodePtr: Ptr, name: String) -> Bool {
     return moduleTreeCallsName(node.next, name)
 }
 
+// Vec's growth and removal entry points, which reach the tree only through a
+// method (src/sema/vec.psm). Declared as a family, from one walk.
+private fn isVecEntryPoint(name: String) -> Bool {
+    if (name.equals("list_insert")) { return true }
+    if (name.equals("list_capacity")) { return true }
+    if (name.equals("list_reserve")) { return true }
+    if (name.equals("list_truncate")) { return true }
+    if (name.equals("list_remove_at")) { return true }
+    return false
+}
+
+private fn moduleTreeCallsVecEntryPoint(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)
+            and isVecEntryPoint(ptr_to_node(node.child1).s1)) {
+        return true
+    }
+    if (moduleTreeCallsVecEntryPoint(node.child1)) { return true }
+    if (moduleTreeCallsVecEntryPoint(node.child2)) { return true }
+    if (moduleTreeCallsVecEntryPoint(node.child3)) { return true }
+    return moduleTreeCallsVecEntryPoint(node.next)
+}
+
+private fn declareVecEntryPoints() {
+    // `insert`, one per push entry point: the push's arguments with the index
+    // after the list. See list_insert in runtime/lang_runtime.c.
+    ir_declare_function_begin("list_insert", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_insert_inline", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_insert_inline_scalar", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i64")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_insert_str", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i64")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_capacity", "i32")
+    ir_declare_function_param("ptr")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_reserve", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    // The trailing i32 is `now`: whether codegen proved that no view of an
+    // element can outlive the removal, so it may be released at once.
+    ir_declare_function_begin("list_truncate", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_remove_at", "void")
+    ir_declare_function_param("ptr")
+    ir_declare_function_param("i32")
+    ir_declare_function_param("i32")
+    ir_declare_function_end()
+}
+
 private fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
@@ -143,7 +221,8 @@ private fn generateFunction(func: ASTNode) {
     debugSignature(retType, debugTypeName(func.child3, ptr_null()))
 
     if (isMain == 1) {
-        // Real OS argc/argv only reach the C `main` symbol; stash into globals for cli_arg().
+        // Real OS argc/argv only reach the C `main` symbol; stash them into the
+        // globals std.process reads through `extern let`.
         ir_function_param("i32", "p_argc")
         ir_function_param("ptr", "p_argv")
         debugSignatureParam("i32", "Int")
@@ -558,6 +637,15 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
 // can run a user releaser, and a releaser is a body this analysis has not seen.
 private fn irPrimitiveMovesBlock(name: String) -> Bool {
     if (name.equals("list_push")) { return true }
+    // Vec's: an insert is a push, a reserve reallocates, and a removal shortens
+    // the list the guard's range was proved against -- and may run a releaser.
+    if (name.equals("list_insert")) { return true }
+    if (name.equals("list_insert_inline")) { return true }
+    if (name.equals("list_insert_inline_scalar")) { return true }
+    if (name.equals("list_insert_str")) { return true }
+    if (name.equals("list_reserve")) { return true }
+    if (name.equals("list_truncate")) { return true }
+    if (name.equals("list_remove_at")) { return true }
     if (name.equals("list_push_inline")) { return true }
     if (name.equals("list_push_inline_scalar")) { return true }
     if (name.equals("list_push_inline_scalar_slow")) { return true }
@@ -581,6 +669,7 @@ private fn irPrimitiveIsSettled(name: String) -> Bool {
     if (name.equals("list_set_inline_scalar")) { return true }
     if (name.equals("list_swap")) { return true }
     if (name.equals("list_len")) { return true }
+    if (name.equals("list_capacity")) { return true }
     if (name.equals("rc_retain")) { return true }
     return false
 }
@@ -886,8 +975,8 @@ private fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_clear_returned()
 
     // Deliberately *not* stored into prismio_argc/prismio_argv, which is what
-    // generateFunction does for a real main. cli_arg() therefore reads the zero
-    // initialisers and a workload cannot branch on the compiler's own command
+    // generateFunction does for a real main. `process.args` therefore reads the
+    // zero initialisers and a workload cannot branch on the compiler's own command
     // line -- the profile is a function of the program, not of how it was built.
     ir_scope_push()
 
@@ -1603,8 +1692,9 @@ public fn generateModule(module: ASTNode) {
 
     ir_blank_line()
 
-    // Populated from main's real argc/argv (see generateFunction) so cli_arg()/
-    // cli_arg_count() in runtime/program_support.c work the same on every platform.
+    // Populated from main's real argc/argv (see generateFunction), and read by
+    // std.process through `extern let` -- which is what makes `process.args` the
+    // same on every platform. A library module declares them instead.
     if (compiler_library_emission_module().equals("")) {
         ir_global_var("prismio_argc", "i32", "0", 0)
         ir_global_var("prismio_argv", "ptr", "null", 0)
@@ -1999,6 +2089,10 @@ public fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
+    if (moduleTreeCallsVecEntryPoint(module.child1)) {
+        declareVecEntryPoints()
+    }
+
     // LLVM's own integer min/max/abs. Declared, not defined: the names are
     // intrinsics, so a call to one is recognised by the backend rather than
     // linked. They are on LLVM's trivially-vectorisable list, which is the whole
@@ -2090,6 +2184,19 @@ public fn generateModule(module: ASTNode) {
                     declareExternFunction(stmt)
                 }
             }
+        }
+
+        // No debug description: the storage is described, if at all, by the
+        // object file that defines it.
+        if (stmt.kind == NodeKind.EXTERN_VARIABLE) {
+            let externType = mapTypeNode(ptr_to_node(stmt.child1))
+            if (irProfileMode and irRuntimeProvides(stmt.s1) == false) {
+                ir_global_stub(stmt.s1, storageType(externType))
+            } else {
+                ir_global_extern(stmt.s1, storageType(externType))
+            }
+            ir_register_global_name(stmt.s1)
+            ir_set_global_var_type(stmt.s1, externType)
         }
 
         // A workload's blocks hold string literals like any other code, and the

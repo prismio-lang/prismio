@@ -10,7 +10,7 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let mut items: List<Item> = list_new()
+    let mut items: Vec<Item> = list_new()
     list_push(items, Item { value: 10 })
     list_push(items, Item { value: 20 })
     list_push(items, Item { value: 30 })

@@ -167,7 +167,17 @@ enum NodeKind {
     // Its own kind rather than a marked CALL_EXPR, so the one large function
     // that emits calls stays untouched and the whole of dynamic dispatch is one
     // branch that can be read in one place.
-    DYN_CALL
+    DYN_CALL,
+
+    // `extern let [mut] name: Type` -- a global defined by foreign code. `s1` is
+    // the C symbol, child1 the TYPE_ANNOTATION, i1 whether it was written `mut`
+    // and i2 the visibility, as on EXTERN_FUNCTION.
+    //
+    // Its own kind rather than a VARIABLE_DECL with a marker. Every walk that
+    // does not know it skips it, and skipping is the right answer for all but
+    // the few that name a global -- whereas a marker missed by one walk would
+    // quietly emit a zero-initialised *definition* of somebody else's symbol.
+    EXTERN_VARIABLE
 }
 
 // Flat AST Node using String for pointers (type punning)

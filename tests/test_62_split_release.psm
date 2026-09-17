@@ -51,8 +51,8 @@ fn make_body(n: Int) -> Body {
     }
 }
 
-fn build(count: Int) -> List<Body> {
-    let mut bs: List<Body> = list_new()
+fn build(count: Int) -> Vec<Body> {
+    let mut bs: Vec<Body> = list_new()
     let mut i = 0
     while (i < count) {
         list_push(bs, make_body(i))
@@ -64,7 +64,7 @@ fn build(count: Int) -> List<Body> {
 // The hot path: six fields per body, every body, every frame. This is what makes
 // the position and velocity fields hot in the access profile and leaves the five
 // integers below the cut.
-fn step(bs: List<Body>, dt: Float) {
+fn step(bs: Vec<Body>, dt: Float) {
     let n = list_len(bs)
     let mut i = 0
     while (i < n) {
@@ -76,7 +76,7 @@ fn step(bs: List<Body>, dt: Float) {
     }
 }
 
-fn count_ids(bs: List<Body>) -> Int {
+fn count_ids(bs: Vec<Body>) -> Int {
     let n = list_len(bs)
     let mut seen = 0
     let mut i = 0

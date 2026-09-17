@@ -1,5 +1,5 @@
 import common
-import std.list
+import std.vec
 import std.map
 import std.math
 import std.string
@@ -33,7 +33,7 @@ public fn benchFibonacci(scale: Int) -> Int {
 
 public fn benchPrimeSieve(scale: Int) -> Int {
     let n = 100000 * scale
-    let mut prime: List<Bool> = list_new_with_capacity(n + 1)
+    let mut prime: Vec<Bool> = list_new_with_capacity(n + 1)
     let mut i = 0
     while (i <= n) {
         list_push(prime, true)
@@ -83,7 +83,7 @@ public fn benchGcdLcm(scale: Int) -> Int {
 public fn benchBinarySearch(scale: Int) -> Int {
     let n = 100000 * scale
     let queries = 500000 * scale
-    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(values, i * 2)
@@ -116,14 +116,14 @@ public fn benchBinarySearch(scale: Int) -> Int {
     return found
 }
 
-public fn benchSwap(values: List<Int>, a: Int, b: Int) {
+public fn benchSwap(values: Vec<Int>, a: Int, b: Int) {
     let x = list_get(values, a)
     let y = list_get(values, b)
     list_set(values, a, y)
     list_set(values, b, x)
 }
 
-public fn benchQuickRange(values: List<Int>, low: Int, high: Int) {
+public fn benchQuickRange(values: Vec<Int>, low: Int, high: Int) {
     if (low >= high) { return }
     let pivot = list_get(values, low + (high - low) / 2)
     let mut i = low
@@ -143,7 +143,7 @@ public fn benchQuickRange(values: List<Int>, low: Int, high: Int) {
 
 public fn benchQuicksort(scale: Int) -> Int {
     let n = 25000 * scale
-    let mut values: List<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = list_new_with_capacity(n)
     let mut seed = 19
     let mut i = 0
     while (i < n) {
@@ -161,7 +161,7 @@ public fn benchQuicksort(scale: Int) -> Int {
     return checksum + list_get(values, n - 1)
 }
 
-public fn benchMergeRange(values: List<Int>, scratch: List<Int>, low: Int, high: Int) {
+public fn benchMergeRange(values: Vec<Int>, scratch: Vec<Int>, low: Int, high: Int) {
     if (high - low <= 1) { return }
     let mid = low + (high - low) / 2
     benchMergeRange(values, scratch, low, mid)
@@ -198,8 +198,8 @@ public fn benchMergeRange(values: List<Int>, scratch: List<Int>, low: Int, high:
 
 public fn benchMergesort(scale: Int) -> Int {
     let n = 25000 * scale
-    let mut values: List<Int> = list_new_with_capacity(n)
-    let mut scratch: List<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = list_new_with_capacity(n)
+    let mut scratch: Vec<Int> = list_new_with_capacity(n)
     let mut seed = 19
     let mut i = 0
     while (i < n) {
@@ -236,8 +236,8 @@ public fn benchStringSearch(scale: Int) -> Int {
 public fn benchGraphBfs(scale: Int) -> Int {
     let width = 120 * scale
     let total = width * width
-    let mut seen: List<Bool> = list_new_with_capacity(total)
-    let mut queue: List<Int> = list_new_with_capacity(total)
+    let mut seen: Vec<Bool> = list_new_with_capacity(total)
+    let mut queue: Vec<Int> = list_new_with_capacity(total)
     let mut i = 0
     while (i < total) {
         list_push(seen, false)
@@ -288,7 +288,7 @@ public fn benchGraphBfs(scale: Int) -> Int {
 public fn benchKnapsack(scale: Int) -> Int {
     let capacity = 800 * scale
     let items = 180
-    let mut best: List<Int> = list_new_with_capacity(capacity + 1)
+    let mut best: Vec<Int> = list_new_with_capacity(capacity + 1)
     let mut c = 0
     while (c <= capacity) {
         list_push(best, 0)
@@ -352,7 +352,7 @@ struct BenchHeapHandle {
     size: Int
 }
 
-public fn benchHeapPush(data: List<I64>, h: BenchHeapHandle, val: I64) {
+public fn benchHeapPush(data: Vec<I64>, h: BenchHeapHandle, val: I64) {
     if (h.size < list_len(data)) {
         list_set(data, h.size, val)
     } else {
@@ -374,7 +374,7 @@ public fn benchHeapPush(data: List<I64>, h: BenchHeapHandle, val: I64) {
     }
 }
 
-public fn benchHeapPop(data: List<I64>, h: BenchHeapHandle) -> I64 {
+public fn benchHeapPop(data: Vec<I64>, h: BenchHeapHandle) -> I64 {
     let top = list_get(data, 0)
     h.size = h.size - 1
     list_set(data, 0, list_get(data, h.size))
@@ -406,16 +406,16 @@ public fn benchDijkstraShortestPath(scale: Int) -> Int {
     let vCount = 1000 * scale
     let eCount = vCount + 5000 * scale
 
-    let mut head: List<Int> = list_new_with_capacity(vCount)
+    let mut head: Vec<Int> = list_new_with_capacity(vCount)
     let mut vi = 0
     while (vi < vCount) {
         list_push(head, -1)
         vi = vi + 1
     }
 
-    let mut edgeTo: List<Int> = list_new_with_capacity(eCount)
-    let mut edgeWeight: List<Int> = list_new_with_capacity(eCount)
-    let mut edgeNext: List<Int> = list_new_with_capacity(eCount)
+    let mut edgeTo: Vec<Int> = list_new_with_capacity(eCount)
+    let mut edgeWeight: Vec<Int> = list_new_with_capacity(eCount)
+    let mut edgeNext: Vec<Int> = list_new_with_capacity(eCount)
     let mut ei = 0
     while (ei < eCount) {
         list_push(edgeTo, 0)
@@ -452,7 +452,7 @@ public fn benchDijkstraShortestPath(scale: Int) -> Int {
     }
 
     let inf = 1000000000
-    let mut dist: List<Int> = list_new_with_capacity(vCount)
+    let mut dist: Vec<Int> = list_new_with_capacity(vCount)
     let mut di = 0
     while (di < vCount) {
         list_push(dist, inf)
@@ -460,7 +460,7 @@ public fn benchDijkstraShortestPath(scale: Int) -> Int {
     }
     list_set(dist, 0, 0)
 
-    let mut heap: List<I64> = list_new_with_capacity(eCount)
+    let mut heap: Vec<I64> = list_new_with_capacity(eCount)
     let h = BenchHeapHandle { size: 0 }
     benchHeapPush(heap, h, 0 as I64)
 
@@ -500,7 +500,7 @@ public fn benchDijkstraShortestPath(scale: Int) -> Int {
 
 public fn benchLz4Compress(scale: Int) -> Int {
     let n = 20000 * scale
-    let mut input: List<Int> = list_new_with_capacity(n)
+    let mut input: Vec<Int> = list_new_with_capacity(n)
 
     let mut seed = 83
     let mut i = 0
@@ -515,7 +515,7 @@ public fn benchLz4Compress(scale: Int) -> Int {
         i = i + 1
     }
 
-    let mut table: List<Int> = list_new_with_capacity(4096)
+    let mut table: Vec<Int> = list_new_with_capacity(4096)
     let mut ti = 0
     while (ti < 4096) {
         list_push(table, -1)
@@ -586,7 +586,7 @@ public fn benchBuildOneExpr(depth: Int, s: BenchSeedHolder) -> String {
     return inner + " " + right + ")"
 }
 
-public fn benchParseSExpr(text: String, p: BenchPosHolder, nodes: List<Int>) -> Int {
+public fn benchParseSExpr(text: String, p: BenchPosHolder, nodes: Vec<Int>) -> Int {
     let n = text.length()
     while (p.val < n and (text.byteAt(p.val) == 32 or text.byteAt(p.val) == 10)) {
         p.val = p.val + 1
@@ -626,7 +626,7 @@ public fn benchParseSExpr(text: String, p: BenchPosHolder, nodes: List<Int>) -> 
     }
 }
 
-public fn benchEvalNode(nodes: List<Int>, idx: Int) -> Int {
+public fn benchEvalNode(nodes: Vec<Int>, idx: Int) -> Int {
     let val = list_get(nodes, idx * 3)
     let leftIdx = list_get(nodes, idx * 3 + 1)
     if (leftIdx == -1) {
@@ -651,7 +651,7 @@ public fn benchSExprParse(scale: Int) -> Int {
         i = i + 1
     }
 
-    let nodes: List<Int> = list_new()
+    let nodes: Vec<Int> = list_new()
     let p = BenchPosHolder { val: 0 }
     let n = allText.length()
     let mut checksum: I64 = 0
@@ -689,7 +689,7 @@ public fn benchWordFrequency(scale: Int) -> Int {
     }
 
     let vocabulary = "the quick brown fox jumps over lazy dog while naps".splitWhitespace()
-    let mut tally: List<Int> = list_new_with_capacity(list_len(vocabulary))
+    let mut tally: Vec<Int> = list_new_with_capacity(list_len(vocabulary))
     let mut v = 0
     while (v < list_len(vocabulary)) {
         list_push(tally, mapGetOr(counts, list_get(vocabulary, v), 0))
@@ -713,7 +713,7 @@ public fn benchWordFrequency(scale: Int) -> Int {
 // uses the unstable sort its own standard library ships.
 public fn benchSortStrings(scale: Int) -> Int {
     let n = 20000 * scale
-    let mut items: List<String> = list_new_with_capacity(n)
+    let mut items: Vec<String> = list_new_with_capacity(n)
     let mut seed = 7
     let mut i = 0
     while (i < n) {
@@ -749,7 +749,7 @@ public fn benchEditDistance(scale: Int) -> Int {
     // pointer exchange in C++ and Rust and a copy here, and a per-row copy in
     // all three would measure `memcpy` -- which `large_buffer_copy` already
     // does. Toggling an offset is the same program in every arm.
-    let mut table: List<Int> = list_new_with_capacity(2 * stride)
+    let mut table: Vec<Int> = list_new_with_capacity(2 * stride)
     let mut fill = 0
     while (fill < 2 * stride) {
         list_push(table, 0)

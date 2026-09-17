@@ -1027,7 +1027,7 @@ Eight are `alias`, four are `produce(free)`, and the split came from reading the
 
 | | |
 |---|---|
-| `alias` | `aif_extern_contract`, `aif_fn_symbol`, `aif_order_symbol`, `aif_site_type` (all `aif_str` of an interned id); `ir_get_var_type`, `ir_get_struct_field_type` (`ir_intern`, with a literal fallback); `cli_arg` (argv, which the C runtime owns); `ir_llvm_version` (a `static char buf[32]`) |
+| `alias` | `aif_extern_contract`, `aif_fn_symbol`, `aif_order_symbol`, `aif_site_type` (all `aif_str` of an interned id); `ir_get_var_type`, `ir_get_struct_field_type` (`ir_intern`, with a literal fallback); `cli_arg` (argv, which the C runtime owns -- since replaced by `extern let` and `__builtin_cstring_at`); `ir_llvm_version` (a `static char buf[32]`) |
 | `produce(free)` | `compiler_default_exe_path`, `compiler_temp_ir_path`, `compiler_installed_runtime_hash`, `compiler_runtime_source_hash` — all `malloc` and hand over |
 
 The four `produce` declarations needed the check Level 4 had to make for `str_substring`: **every**

@@ -1,8 +1,8 @@
-// REQUIREMENTS 20 -- `List<T>` for scalar element types.
+// REQUIREMENTS 20 -- `Vec<T>` for scalar element types.
 //
 // This was a real miscompile rather than a missing feature: `list_push` on a
-// `List<Int>` emitted `call void @list_push(ptr %1, i32 %2)` against a runtime
-// signature taking `ptr`, and LLVM rejected the module. `List<T>` worked only
+// `Vec<Int>` emitted `call void @list_push(ptr %1, i32 %2)` against a runtime
+// signature taking `ptr`, and LLVM rejected the module. `Vec<T>` worked only
 // for pointer-shaped elements.
 //
 // A scalar rides in the container's pointer-sized slot instead of being boxed.
@@ -21,7 +21,7 @@
 
 import std.io
 fn sum_ints() -> Int {
-    let nums: List<Int> = list_new()
+    let nums: Vec<Int> = list_new()
     list_push(nums, 42)
     list_push(nums, 7)
     list_push(nums, -3)
@@ -38,7 +38,7 @@ fn sum_ints() -> Int {
 // list_set takes the element as its third argument, so the coercion has to be
 // keyed on the position and not on "the last one".
 fn overwrite() -> Int {
-    let nums: List<Int> = list_new()
+    let nums: Vec<Int> = list_new()
     list_push(nums, 1)
     list_push(nums, 2)
     list_set(nums, 0, 100)
@@ -48,7 +48,7 @@ fn overwrite() -> Int {
 // The bit-exactness case. 0.5 and 2.25 are both exactly representable, so a
 // wrong answer here is a wrong *instruction* rather than a rounding difference.
 fn float_round_trip() -> Bool {
-    let fs: List<Float> = list_new()
+    let fs: Vec<Float> = list_new()
     list_push(fs, 0.5)
     list_push(fs, 2.25)
     let got = list_get(fs, 0) + list_get(fs, 1)
@@ -59,7 +59,7 @@ fn float_round_trip() -> Bool {
 // and truncate on the way out, and getting the width wrong reads a neighbouring
 // byte as the flag.
 fn bools_survive() -> Int {
-    let bs: List<Bool> = list_new()
+    let bs: Vec<Bool> = list_new()
     list_push(bs, true)
     list_push(bs, false)
     list_push(bs, true)
@@ -77,7 +77,7 @@ fn bools_survive() -> Int {
 // scalars in it. The regrow copies `void*` slots and must not care what they
 // hold.
 fn grows_past_capacity() -> Int {
-    let nums: List<Int> = list_new()
+    let nums: Vec<Int> = list_new()
     let mut i = 0
     while (i < 10) {
         list_push(nums, i * i)

@@ -32,13 +32,13 @@ struct Item {
 // container field, and two scalars that must be stepped over.
 struct Inventory {
     lead: Slot,
-    items: List<Item>,
+    items: Vec<Item>,
     capacity: Int,
     version: Int
 }
 
 fn make_inventory(n: Int) -> Inventory {
-    let contents: List<Item> = list_new()
+    let contents: Vec<Item> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(contents, Item { value: i })
@@ -90,7 +90,7 @@ struct Crate {
 // into a field here would mark the literal *inside that function* as field-held
 // and this fixture would quietly stop releasing at the site it means to check.
 fn make_crate_inventory(n: Int) -> Inventory {
-    let contents: List<Item> = list_new()
+    let contents: Vec<Item> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(contents, Item { value: i })
@@ -137,12 +137,12 @@ fn nested_owner_again(n: Int) -> Int {
 // binding, and barring that on the strength of `Holder` having a release
 // function would delete the only release there is.
 struct Holder {
-    items: List<Item>,
+    items: Vec<Item>,
     tag: Int
 }
 
 fn stack_owner_does_not_bar_its_field(n: Int) -> Int {
-    let contents: List<Item> = list_new()
+    let contents: Vec<Item> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(contents, Item { value: i })

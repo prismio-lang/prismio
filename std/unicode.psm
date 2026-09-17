@@ -194,9 +194,9 @@ public fn strGraphemeCount(s: String) -> Int {
     return count
 }
 
-public fn strGraphemes(s: String) -> List<String> {
+public fn strGraphemes(s: String) -> Vec<String> {
     let slen = __builtin_string_len(s)
-    let out: List<String> = list_new()
+    let out: Vec<String> = list_new()
     let mut i = 0
     while (i < slen) {
         let step = strGraphemeWidthAt(s, i)
@@ -369,7 +369,7 @@ private fn unicodeDecompositionAt(scalar: Int) -> Int {
 // Hangul is arithmetic rather than a table: eleven thousand syllables that
 // decompose by division and compose by multiplication, which is why Unicode
 // gives them a rule instead of eleven thousand entries.
-private fn unicodeHangulDecompose(scalar: Int, out: List<Int>) -> Bool {
+private fn unicodeHangulDecompose(scalar: Int, out: Vec<Int>) -> Bool {
     if (scalar < 44032 or scalar > 55203) { return false }
     let index = scalar - 44032
     list_push(out, 4352 + index / 588)
@@ -423,7 +423,7 @@ private fn unicodeComposePair(first: Int, second: Int) -> Int {
 // be typed in either order and mean the same thing, so a decomposition that kept
 // the typing order would still have two spellings. Ordering by combining class
 // -- stably, and never across a starter -- is what collapses them to one.
-private fn unicodeCanonicalOrder(scalars: List<Int>) {
+private fn unicodeCanonicalOrder(scalars: Vec<Int>) {
     let n = list_len(scalars)
     let mut i = 1
     while (i < n) {
@@ -450,7 +450,7 @@ private fn unicodeScalarByteLength(scalar: Int) -> Int {
     return 4
 }
 
-private fn unicodeEncodedLength(scalars: List<Int>) -> Int {
+private fn unicodeEncodedLength(scalars: Vec<Int>) -> Int {
     let n = list_len(scalars)
     let mut total = 0
     let mut i = 0
@@ -470,7 +470,7 @@ private fn unicodeEncodedLength(scalars: List<Int>) -> Int {
 // these that returned `unicodeEncodeScalars(...)` read 10 allocated / 8
 // released. Each public producer below allocates its own result and calls this
 // to fill it, which is what makes them 1-for-1.
-private fn unicodeWriteScalars(out: String, scalars: List<Int>) {
+private fn unicodeWriteScalars(out: String, scalars: Vec<Int>) {
     let n = list_len(scalars)
     let mut at = 0
     let mut k = 0
@@ -500,9 +500,9 @@ private fn unicodeWriteScalars(out: String, scalars: List<Int>) {
 }
 
 // The decomposed scalars, canonically ordered. Both public forms start here.
-private fn unicodeDecomposedScalars(s: String) -> List<Int> {
+private fn unicodeDecomposedScalars(s: String) -> Vec<Int> {
     let slen = __builtin_string_len(s)
-    let out: List<Int> = list_new()
+    let out: Vec<Int> = list_new()
     let table = unicodeDecompositionTable()
 
     let mut i = 0
@@ -560,7 +560,7 @@ public fn strNormalizeNfc(s: String) -> String {
     let n = list_len(decomposed)
     if (n == 0) { return str_with_capacity(0) }
 
-    let out: List<Int> = list_new()
+    let out: Vec<Int> = list_new()
     list_push(out, list_get(decomposed, 0))
     let mut starter = 0
     // -1 rather than 0: nothing stands between the starter and the next
@@ -615,7 +615,7 @@ public fn strEqualsNormalized(a: String, b: String) -> Bool {
 impl String {
     public fn displayWidth(self) -> Int { return strDisplayWidth(self) }
     public fn graphemeCount(self) -> Int { return strGraphemeCount(self) }
-    public fn graphemes(self) -> List<String> { return strGraphemes(self) }
+    public fn graphemes(self) -> Vec<String> { return strGraphemes(self) }
     public fn graphemeWidthAt(self, at: Int) -> Int { return strGraphemeWidthAt(self, at) }
     public fn truncateToWidth(self, columns: Int) -> String {
         return strTruncateToWidth(self, columns)

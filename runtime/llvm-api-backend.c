@@ -3728,6 +3728,17 @@ int ir_ptr_slot(const char *base_value, int index) {
     return intern_value(LLVMBuildLoad2(g_builder, ptr, slot, ""));
 }
 
+// `ir_ptr_slot` with the index a value rather than a constant: the Nth pointer of
+// a `char**` the program was handed, which is what `__builtin_cstring_at` reads.
+// The index is an `Int`, and a GEP sign-extends it.
+int ir_ptr_load_at(const char *base_value, const char *index_value) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMValueRef base = resolve_value(base_value, "ptr");
+    LLVMValueRef idx = resolve_value(index_value, "i32");
+    LLVMValueRef slot = LLVMBuildGEP2(g_builder, ptr, base, &idx, 1, "");
+    return intern_value(LLVMBuildLoad2(g_builder, ptr, slot, ""));
+}
+
 void ir_global_var(const char *name, const char *type, const char *init_value,
                    int is_const) {
     LLVMTypeRef ty = type_from_key(type);
@@ -3757,12 +3768,48 @@ void ir_global_var(const char *name, const char *type, const char *init_value,
 // says what was already true -- the copies are per-module and nothing outside
 // names them -- so the duplicates stop colliding.
 //
-// Not applied to `prismio_argc` / `prismio_argv`, which codegen defines for the
-// runtime to find by name; those two are emitted through ir_global_var directly
-// and stay external.
+// Not applied to `prismio_argc` / `prismio_argv`. Codegen defines them in the
+// program's module and std.process names them with `extern let`, from a `.plib`
+// as often as from source, so the definition has to be one a link can find;
+// those two are emitted through ir_global_var directly and stay external.
 void ir_global_set_internal(const char *name) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
     if (!g) backend_fail("cannot privatise an unknown global", name);
+    LLVMSetLinkage(g, LLVMInternalLinkage);
+}
+
+// The global `name` if this module already has one, failing when it holds a
+// different type: the two declarations would read different widths out of the
+// same bytes.
+static LLVMValueRef existing_global_of_type(const char *name, LLVMTypeRef ty) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (g && LLVMGlobalGetValueType(g) != ty)
+        backend_fail("extern global declared with a type its definition does not have", name);
+    return g;
+}
+
+// An `extern let`: a global another object file defines. No initializer is what
+// makes it a declaration, and external linkage is the default.
+//
+// **A global this module already has is left alone.** A program's own module
+// defines `prismio_argc` and `prismio_argv` before any declaration is emitted,
+// and std.process declares both; the definition is the one to keep, and a
+// library module, which does not define them, gets the declaration instead.
+void ir_global_extern(const char *name, const char *type) {
+    LLVMTypeRef ty = type_from_key(type);
+    if (existing_global_of_type(name, ty)) return;
+    LLVMAddGlobal(g_module, ty, name);
+}
+
+// LAYOUT 3.2's W3 for an `extern let`: in a workload driver a foreign global is a
+// zero-valued private stand-in, as a foreign function is a stub that returns
+// zero. A global this module already defines is kept, for the reason
+// ir_global_extern keeps one.
+void ir_global_stub(const char *name, const char *type) {
+    LLVMTypeRef ty = type_from_key(type);
+    if (existing_global_of_type(name, ty)) return;
+    LLVMValueRef g = LLVMAddGlobal(g_module, ty, name);
+    LLVMSetInitializer(g, LLVMConstNull(ty));
     LLVMSetLinkage(g, LLVMInternalLinkage);
 }
 
@@ -5908,9 +5955,10 @@ void ir_print(void) {
 
 #ifdef PRISMIO_LLVM_REAL_HEADERS
 
-// Defined by generated code -- see the note in program_support.c. Referenced,
-// never defined, so this stays a backend-only symbol reference and nothing
-// changes about what a user binary links.
+// Defined by generated code: the compiler's own `main` fills this process's copy
+// (generateFunction, src/ir/module.psm). Referenced, never defined, so this
+// stays a backend-only symbol reference and nothing changes about what a user
+// binary links.
 extern int prismio_argc;
 extern char **prismio_argv;
 
@@ -6792,13 +6840,14 @@ int ir_jit_run_main(const char *program_name) {
                                      err, process_symbols);
     }
 
-    // **The two prismio_argc are not the same variable, and this is the bug this
-    // line exists to prevent.** Generated code *defines* `@prismio_argc`, so the
-    // jitted module gets its own copy and its `main` fills that one. The runtime
-    // shims behind `cli_arg_count()` are the compiler's own, already linked into
-    // this process, and they read the *compiler's* copy -- which holds the
-    // compiler's argv. Without this a jitted program asking for its arguments is
-    // told about `prismio run --jit prog.psm`, quietly and with a straight face.
+    // **There are two prismio_argc, and a jitted program must never read the
+    // compiler's.** Generated code *defines* `@prismio_argc`, so the jitted
+    // module gets its own copy, its `main` fills that one, and std.process's
+    // `extern let` resolves to it. A declaration that resolves out of this
+    // process instead -- a module added without the definition beside it --
+    // would find the *compiler's* copy, which holds `prismio run --jit
+    // prog.psm`. Setting the compiler's copy too makes that case read the
+    // program's arguments rather than quietly reporting the compiler's.
     //
     // One argument, the program's own name: `compiler_run_executable` runs the
     // built binary with no arguments, and `--jit` is a way of running the same

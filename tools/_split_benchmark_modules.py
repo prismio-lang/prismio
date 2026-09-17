@@ -232,7 +232,7 @@ fn benchNow() -> I64 {
 }
 
 struct BenchBucket {
-    values: List<Int>
+    values: Vec<Int>
 }
 
 struct BenchBand {

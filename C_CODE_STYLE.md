@@ -70,7 +70,8 @@ groups, and the answer belongs in a `std/*.psm` wrapper:
 - **allocates** → the wrapper declares `produce(free)`
 - **returns a pointer it does not own** → the wrapper declares `alias`
 
-Getting this backwards on `cli_arg` — which returns a pointer into `argv` — hands
+Getting this backwards on a function that returns a pointer into `argv` — as
+`cli_arg` did, before `std.process` read `argv` through `extern let` — hands
 `argv` to the deallocator. That is a different and much worse category than a
 leak. If a new function's answer is not obvious from three lines of its body, it
 is written wrong.

@@ -4,6 +4,23 @@
 
 ### Added
 
+- **`extern let` -- a global variable foreign code defines.** `extern let
+  optind: Int` names the storage and every read loads it; `extern let mut` also
+  allows assignment. The type is required and an initializer is refused (`P3004`),
+  and only a type nobody owns may name foreign storage -- an integer, `Float`,
+  `Char` or `Ptr` (`P4111`; `Bool` is refused because a C `bool` is a byte).
+  `public`/`internal`/`private` work as on `extern fn`, with the same private
+  default. `mut` belongs to each declaration, so one module may read a symbol
+  another assigns, and declarations of one symbol must agree on its type. A
+  `workload` sees a foreign global as a private zero, as it sees a foreign
+  function as a stub.
+- **`std.process` reads the arguments without C.** `process.args` names the
+  runtime's `prismio_argc`/`prismio_argv` with a private `extern let` and reads
+  a slot with the new `__builtin_cstring_at`; `cli_arg_count` and `cli_arg` are
+  removed from `runtime/program_support.c`. Behaviour is unchanged, including the
+  copy `process.args[i]` returns. The bootstrap seed is refreshed, because
+  `std/` now uses the syntax and the old seed called the removed functions.
+
 - **String interpolation.** `"total: ${count} items"`, with any expression inside
   `${...}` and `\$` for a literal one. A lexer mode and a parser rewrite: by the
   time sema sees one it is a `concat` over `show(...)` of each value, so a user

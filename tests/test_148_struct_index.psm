@@ -64,7 +64,7 @@ fn main() -> Int {
     if (held.letters[4].equals("e") == false) { return fail("`at` through a field, later index") }
 
     // The built-in indexable kinds are untouched by the new arm.
-    let xs: List<Int> = list_new()
+    let xs: Vec<Int> = list_new()
     list_push(xs, 10)
     list_push(xs, 20)
     if (xs[1] != 20) { return fail("List indexing") }

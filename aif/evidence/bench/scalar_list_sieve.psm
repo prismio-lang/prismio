@@ -1,5 +1,5 @@
 // Scalar-inline storage mixed read/write discriminator: Eratosthenes to two
-// million. The full operation is timed, including construction of List<Bool>;
+// million. The full operation is timed, including construction of Vec<Bool>;
 // the answer is 148,933 primes.
 
 import std.io
@@ -9,7 +9,7 @@ fn main() -> Int {
     let limit = 2000000
     let t0 = clock_gettime_nsec_np(4)
 
-    let prime: List<Bool> = list_new_with_capacity(limit + 1)
+    let prime: Vec<Bool> = list_new_with_capacity(limit + 1)
     let mut i = 0
     while (i <= limit) {
         list_push(prime, true)

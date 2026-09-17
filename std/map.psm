@@ -1,7 +1,7 @@
 // Map<K, V> -- an associative container, in Prismio.
 //
 // REQUIREMENTS 13 asked for `Map<K,V>` and a growable `Vec<T>`. Only one of
-// those was missing: `List<T>` **is** the growable vector -- runtime/lang_runtime.c
+// those was missing: `Vec<T>` **is** the growable vector -- runtime/lang_runtime.c
 // stores it as a `void**` that doubles on push, and its own comment calls
 // `list_new_with_capacity` "Vec::with_capacity". This is the half that did not
 // exist.
@@ -77,9 +77,9 @@ import std.option
 // `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
 // always a power of two, so `hash & mask` is the bucket.
 struct Map<K: Key + Copy, V> {
-    keys: List<K>,
-    values: List<V>,
-    slots: List<Int>,
+    keys: Vec<K>,
+    values: Vec<V>,
+    slots: Vec<Int>,
     mask: Int,
     // Whether this map has measured its own probe displacement and found the
     // hashes it is being given bad enough to be worth re-mixing. See mapRehash.
@@ -92,9 +92,9 @@ struct Map<K: Key + Copy, V> {
 private fn mapInitialCapacity() -> Int { return 8 }
 
 public fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
-    let k: List<K> = list_new()
-    let v: List<V> = list_new()
-    let s: List<Int> = list_new_with_capacity(mapInitialCapacity())
+    let k: Vec<K> = list_new()
+    let v: Vec<V> = list_new()
+    let s: Vec<Int> = list_new_with_capacity(mapInitialCapacity())
     let mut i = 0
     while (i < mapInitialCapacity()) {
         list_push(s, -1)
@@ -149,7 +149,9 @@ private fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> I
             return -1
         }
         let existing = list_get(m.keys, entry)
-        if (eq(existing, key)) { return entry }
+        // Trait-qualified: `Eq` spells its method `eq` too, and a program that
+        // imports std.vec has both traits in scope.
+        if (Key.eq(existing, key)) { return entry }
         at = (at + step) & m.mask
         step = step + 1
     }

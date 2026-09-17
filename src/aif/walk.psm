@@ -441,6 +441,10 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     }
 
     if (aifIsRef(ty)) {
+        if (aifFfiReturnsStatic(plain)) {
+            aifStaticReturns = aifStaticReturns + 1
+            return aifVsUntracked()
+        }
         // FFI 5.2 `alias`: the return is not an allocation -- it borrows from an
         // argument or from static storage. Modelling it as a fresh site would
         // invent an allocation that does not exist, which is what makes every
@@ -1089,7 +1093,7 @@ internal fn aifDeclare(module: ASTNode) {
             }
         } else if (d.kind == NodeKind.ENUM_DECL) {
             aif_enum_new(d.s1)
-        } else if (d.kind == NodeKind.VARIABLE_DECL) {
+        } else if (d.kind == NodeKind.VARIABLE_DECL or d.kind == NodeKind.EXTERN_VARIABLE) {
             // A global, recorded under function -1 so a read can tell one from a
             // local the walk has not declared (aifSitesOf).
             aif_var_note_scope(0 - 1, d.s1, 0)

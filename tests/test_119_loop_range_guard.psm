@@ -15,8 +15,8 @@
 
 import std.io
 
-fn filled() -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(4)
+fn filled() -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(4)
     let mut i = 0
     while (i < 4) {
         list_push(xs, i + 1)
@@ -110,7 +110,7 @@ fn main() -> Int {
     bad = bad + check("FAIL: sumDownOffset past end", sumDownOffset(3, 0 - 2), 7)
 
     // An empty list: length 0, so no index is ever in range.
-    let empty: List<Int> = list_new_with_capacity(1)
+    let empty: Vec<Int> = list_new_with_capacity(1)
     let mut acc = 0
     let mut at = 3
     while (at >= 0) {

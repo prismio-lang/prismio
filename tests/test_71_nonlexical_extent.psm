@@ -47,7 +47,7 @@
 //     `list_len`, which reads the list handle and creates no key.
 //
 // Both were measured against this compiler rather than assumed: adding a single
-// unused `consume(cmds: List<Cmd>)` drops the placement from nine arenas to
+// unused `consume(cmds: Vec<Cmd>)` drops the placement from nine arenas to
 // none, and `AIF_BRACKET_TRACE=1` names the site and the binding that blocked it.
 //
 // `run_nonlexical_extent_test` reads the extents out of `AIF_STMT_TRACE` before
@@ -61,8 +61,8 @@ struct Cmd {
     weight: Int
 }
 
-fn build_a(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_a(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -71,8 +71,8 @@ fn build_a(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_b0(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_b0(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -81,8 +81,8 @@ fn build_b0(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_b(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_b(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -91,8 +91,8 @@ fn build_b(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_c0(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_c0(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -101,8 +101,8 @@ fn build_c0(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_c(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_c(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -111,8 +111,8 @@ fn build_c(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_d0(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_d0(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -121,8 +121,8 @@ fn build_d0(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_d(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_d(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -131,8 +131,8 @@ fn build_d(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_g(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_g(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -141,8 +141,8 @@ fn build_g(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_e(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_e(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })
@@ -151,8 +151,8 @@ fn build_e(n: Int) -> List<Cmd> {
     return out
 }
 
-fn build_f(n: Int) -> List<Cmd> {
-    let mut out: List<Cmd> = list_new()
+fn build_f(n: Int) -> Vec<Cmd> {
+    let mut out: Vec<Cmd> = list_new()
     let mut i = 0
     while (i < n) {
         list_push(out, Cmd { id: i, weight: i + 1 })

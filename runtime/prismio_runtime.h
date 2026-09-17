@@ -134,13 +134,6 @@ char* prismio_executable_directory(void);
 char* command_quote_arg(const char* arg);
 int execute_command(const char* command);
 
-// --- command line, as seen by the compiled program ---
-// Backed by the prismio_argc / prismio_argv globals that generated code defines
-// and fills from main's real argc/argv (see generate_module / generate_function in
-// src/ir.psm), which is what makes these work identically on every platform.
-int cli_arg_count(void);
-char* cli_arg(int index);
-
 // --- REQUIREMENTS 15: tasks and channels ---
 // prismio_task_* are compiler-emitted: `spawn f(x)` and `join t` lower to them,
 // so no program declares them by hand. The chan_* set is ordinary FFI surface a

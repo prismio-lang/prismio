@@ -6,8 +6,8 @@ import std.string
 
 
 struct UmsParser {
-    tokens: List<UmsToken>,
-    diagnostics: List<UmsDiagnostic>,
+    tokens: Vec<UmsToken>,
+    diagnostics: Vec<UmsDiagnostic>,
     path: String,
     current: Int
 }
@@ -181,8 +181,8 @@ impl UmsParser {
     }
 }
 
-public fn umsParse(tokens: List<UmsToken>, path: String,
-            diagnostics: List<UmsDiagnostic>) -> UmsAstDocument {
+public fn umsParse(tokens: Vec<UmsToken>, path: String,
+            diagnostics: Vec<UmsDiagnostic>) -> UmsAstDocument {
     let parser = UmsParser {
         tokens: tokens,
         diagnostics: diagnostics,

@@ -965,16 +965,16 @@ public fn strReplaceAll(s: String, old: String, new: String) -> String {
 // ---------------------------------------------------------------------------
 // Splitting and joining
 //
-// `strSplit` returns `List<String>`, which is the reason it is here rather than
+// `strSplit` returns `Vec<String>`, which is the reason it is here rather than
 // in C. The C `str_split` returned a `StringArray*` -- a struct with no Prismio
 // type, whose two allocations had to be released by calling `str_split_free`,
-// which nothing in the ownership analysis knew about. A `List<String>` is an
+// which nothing in the ownership analysis knew about. A `Vec<String>` is an
 // owned container the analysis already understands.
 // ---------------------------------------------------------------------------
 
-public fn strSplit(s: String, sep: Char) -> List<String> {
+public fn strSplit(s: String, sep: Char) -> Vec<String> {
     let slen = __builtin_string_len(s)
-    let out: List<String> = list_new()
+    let out: Vec<String> = list_new()
     let mut start = 0
     let mut i = 0
     while (i < slen) {
@@ -1006,8 +1006,8 @@ public fn strSplit(s: String, sep: Char) -> List<String> {
 // Split on a multi-character separator. An empty separator yields the whole
 // string as one part rather than exploding it into characters, because the
 // alternative is an empty part between every pair of bytes.
-public fn strSplitOn(s: String, sep: String) -> List<String> {
-    let out: List<String> = list_new()
+public fn strSplitOn(s: String, sep: String) -> Vec<String> {
+    let out: Vec<String> = list_new()
     if (__builtin_string_len(sep) == 0) {
         let wholeLen = __builtin_string_len(s)
         let whole = str_with_capacity(wholeLen)
@@ -1045,9 +1045,9 @@ public fn strSplitOn(s: String, sep: String) -> List<String> {
 
 // Split on runs of whitespace, discarding empty parts. What a command line or a
 // column-aligned file wants, and what `strSplit(s, ' ')` is not.
-public fn strSplitWhitespace(s: String) -> List<String> {
+public fn strSplitWhitespace(s: String) -> Vec<String> {
     let slen = __builtin_string_len(s)
-    let out: List<String> = list_new()
+    let out: Vec<String> = list_new()
     let mut i = 0
     while (i < slen) {
         while (i < slen and charIsSpace(__builtin_string_byte_at(s, i))) {
@@ -1060,7 +1060,7 @@ public fn strSplitWhitespace(s: String) -> List<String> {
         if (i > start) {
             let partLen = i - start
             // A word of twelve bytes or fewer lives in the pair itself, and a
-            // `List<String>` keeps the pair: no allocation per word, which is
+            // `Vec<String>` keeps the pair: no allocation per word, which is
             // what libc++'s small strings in a `vector<string>` save C++.
             if (partLen <= 12) {
                 list_push(out, __builtin_string_inline(s, start, partLen))
@@ -1077,7 +1077,7 @@ public fn strSplitWhitespace(s: String) -> List<String> {
 // One pass to size the result, one to fill it. Two traversals of the list beat
 // the recursion this replaced, which allocated once per part and copied the
 // whole accumulated tail each time.
-public fn strJoin(parts: List<String>, sep: String) -> String {
+public fn strJoin(parts: Vec<String>, sep: String) -> String {
     let n = list_len(parts)
     let seplen = __builtin_string_len(sep)
     let mut total = 0
@@ -1440,9 +1440,9 @@ public fn strStripSuffix(s: String, suffix: String) -> Option<String> {
 // Not `strSplit(s, '\n')`, and the two differences are the ones that bite when
 // reading a file: a trailing newline *ends* the last line rather than starting
 // an empty one, and a CRLF file does not leave a '\r' on every element.
-public fn strLines(s: String) -> List<String> {
+public fn strLines(s: String) -> Vec<String> {
     let slen = __builtin_string_len(s)
-    let out: List<String> = list_new()
+    let out: Vec<String> = list_new()
     let mut start = 0
     let mut i = 0
     while (i < slen) {
@@ -1479,10 +1479,10 @@ public fn strLines(s: String) -> List<String> {
 
 // One `Char` per **byte**, because a `Char` is a byte. For text that may not be
 // ASCII this is not the character list its name suggests -- `strScalars` is,
-// and returns `List<Int>` because a code point does not fit a `Char`.
-public fn strChars(s: String) -> List<Char> {
+// and returns `Vec<Int>` because a code point does not fit a `Char`.
+public fn strChars(s: String) -> Vec<Char> {
     let slen = __builtin_string_len(s)
-    let out: List<Char> = list_new()
+    let out: Vec<Char> = list_new()
     let mut i = 0
     while (i < slen) {
         list_push(out, __builtin_string_byte_at(s, i))
@@ -1491,9 +1491,9 @@ public fn strChars(s: String) -> List<Char> {
     return out
 }
 
-public fn strBytes(s: String) -> List<Int> {
+public fn strBytes(s: String) -> Vec<Int> {
     let slen = __builtin_string_len(s)
-    let out: List<Int> = list_new()
+    let out: Vec<Int> = list_new()
     let mut i = 0
     while (i < slen) {
         list_push(out, __builtin_string_byte_at(s, i) as Int)
@@ -1615,15 +1615,15 @@ public fn strParseIntOr(s: String, fallback: Int) -> Int {
 }
 
 // ---------------------------------------------------------------------------
-// `List<String>` receivers
+// `Vec<String>` receivers
 //
-// Free functions rather than an `impl`: `impl List<String>` is a generic `impl`,
+// Free functions rather than an `impl`: `impl Vec<String>` is a generic `impl`,
 // which the parser rejects on purpose (src/parse/decl.psm), and the method
 // rewrite `x.f(a)` -> `f(x, a)` never needed an `impl` block to work. So
 // `parts.join(", ")` resolves to this with no new machinery at all.
 // ---------------------------------------------------------------------------
 
-public fn join(parts: List<String>, sep: String) -> String {
+public fn join(parts: Vec<String>, sep: String) -> String {
     return strJoin(parts, sep)
 }
 
@@ -1834,9 +1834,9 @@ public fn strScalarCount(s: String) -> Int {
 // Every scalar, in order. An ill-formed byte becomes U+FFFD, the replacement
 // character, and advances one byte -- the substitution the Unicode standard
 // specifies, so that decoding never fails and never silently drops input.
-public fn strScalars(s: String) -> List<Int> {
+public fn strScalars(s: String) -> Vec<Int> {
     let slen = __builtin_string_len(s)
-    let out: List<Int> = list_new()
+    let out: Vec<Int> = list_new()
     let mut i = 0
     while (i < slen) {
         let scalar = strScalarAt(s, i)
@@ -2333,23 +2333,23 @@ impl String {
         return strStripSuffix(self, suffix)
     }
 
-    public fn split(self, sep: Char) -> List<String> { return strSplit(self, sep) }
-    public fn split(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
-    public fn splitOn(self, sep: String) -> List<String> { return strSplitOn(self, sep) }
-    public fn splitWhitespace(self) -> List<String> { return strSplitWhitespace(self) }
-    public fn lines(self) -> List<String> { return strLines(self) }
-    public fn chars(self) -> List<Char> { return strChars(self) }
-    public fn bytes(self) -> List<Int> { return strBytes(self) }
+    public fn split(self, sep: Char) -> Vec<String> { return strSplit(self, sep) }
+    public fn split(self, sep: String) -> Vec<String> { return strSplitOn(self, sep) }
+    public fn splitOn(self, sep: String) -> Vec<String> { return strSplitOn(self, sep) }
+    public fn splitWhitespace(self) -> Vec<String> { return strSplitWhitespace(self) }
+    public fn lines(self) -> Vec<String> { return strLines(self) }
+    public fn chars(self) -> Vec<Char> { return strChars(self) }
+    public fn bytes(self) -> Vec<Int> { return strBytes(self) }
 
     // Generic in the closure, exactly as the free functions above are. The
-    // `impl` target may not be generic (src/parse/decl.psm rejects `impl List<T>`),
+    // `impl` target may not be generic (src/parse/decl.psm rejects `impl Vec<T>`),
     // but a *method* may: it is a free function whose first parameter is the
     // receiver, and nothing about that stops it having type parameters.
     public fn countIf<F>(self, keep: F) -> Int { return strCountIf(self, keep) }
     public fn indexWhere<F>(self, keep: F) -> Int { return strIndexWhere(self, keep) }
     // `allChars` and `anyChars`, not `allOf` and `anyOf`. The short names are
-    // std/list.psm's, over `List<T>`, and both sides are generic in the closure:
-    // an overload set holding `allOf<T, F>(List<T>, F)` and `allOf<F>(String, F)`
+    // std/list.psm's, over `Vec<T>`, and both sides are generic in the closure:
+    // an overload set holding `allOf<T, F>(Vec<T>, F)` and `allOf<F>(String, F)`
     // could not be resolved, and test_89_closures stopped compiling the moment
     // this file claimed the name. A method is a free function, so a method name
     // is a global name -- that is the cost the header of this block is about.
@@ -2363,7 +2363,7 @@ impl String {
     public fn isAscii(self) -> Bool { return strIsAscii(self) }
     public fn isValidUtf8(self) -> Bool { return strIsValidUtf8(self) }
     public fn scalarCount(self) -> Int { return strScalarCount(self) }
-    public fn scalars(self) -> List<Int> { return strScalars(self) }
+    public fn scalars(self) -> Vec<Int> { return strScalars(self) }
     public fn scalarAt(self, at: Int) -> Int { return strScalarAt(self, at) }
     public fn scalarWidthAt(self, at: Int) -> Int { return strScalarWidthAt(self, at) }
     public fn isCharBoundary(self, at: Int) -> Bool { return strIsCharBoundary(self, at) }

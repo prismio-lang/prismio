@@ -14,12 +14,12 @@
 // return -- no owner, and a leak per call. Declaring them here means no
 // application has to know which of the six the table happens to cover.
 //
-// **`cli_arg` is `alias`, and getting that one wrong corrupts memory rather
-// than leaking.** It returns a pointer *into* `argv`, or the static `""` -- it
-// allocates nothing. A `produce(free)` on it hands `argv` to the deallocator.
-// It lives in std/process.psm; the warning is here because this is the module
-// whose other six externs all *are* `produce`, which is exactly the habit that
-// would carry over.
+// **A `produce(free)` belongs only on a function that allocates.** A C function
+// returning a pointer into memory it does not own -- the shape `cli_arg` had
+// before std/process.psm read `argv` itself -- is `alias`, and a `produce` on it
+// corrupts memory rather than leaking: it hands that memory to the deallocator.
+// The warning is here because every extern in this module *is* `produce`, which
+// is exactly the habit that would carry over.
 //
 // **Int returns are normalised to `Bool`, and the raw conventions disagree with
 // each other.** `file_exists` returns 1 for yes; `delete_file` returns **0** for
@@ -114,15 +114,15 @@ public fn executableDirectory() -> String {
 // The `.psm` files in `directory`, sorted by name.
 //
 // The C hands back one newline-separated string because it has no way to build
-// a `List<String>` -- the container is a Prismio type. Splitting it here is the
+// a `Vec<String>` -- the container is a Prismio type. Splitting it here is the
 // half of `list_modules` that always belonged in Prismio, and it means callers
 // stop writing the same newline scan.
 //
 // An empty directory yields an empty list rather than a list holding one empty
 // string, which is the case a plain `strSplit` gets wrong.
-public fn listModules(directory: String) -> List<String> {
+public fn listModules(directory: String) -> Vec<String> {
     let listing = list_modules(directory)
-    let out: List<String> = list_new()
+    let out: Vec<String> = list_new()
     if (strLength(listing) == 0) { return out }
     let names = strSplit(listing, '\n')
     // Explicit, because the inferred drop does not fire here: `listing` is a

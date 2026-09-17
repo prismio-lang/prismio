@@ -10,8 +10,9 @@ rather than a leak — corruption, not lost bytes:
 - **An allocation returned to Prismio goes through `rt_base_alloc`**, and an
   internal temporary this runtime frees itself does not. The seam is in
   `runtime/prismio_runtime.h`.
-- **`produce(free)` versus `alias` is not a guess.** `cli_arg` returns a pointer
-  into `argv`; declaring it `produce` hands `argv` to the deallocator.
+- **`produce(free)` versus `alias` is not a guess.** A function returning a
+  pointer into `argv` (as `cli_arg` did) is `alias`; declaring it `produce` hands
+  `argv` to the deallocator.
 
 ## Runtime surface
 

@@ -12,7 +12,7 @@
 import std.io
 import std.string
 
-fn step(log: List<Int>, value: Int) -> Int {
+fn step(log: Vec<Int>, value: Int) -> Int {
     list_push(log, value)
     return value
 }
@@ -24,7 +24,7 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let log: List<Int> = list_new()
+    let log: Vec<Int> = list_new()
 
     println(step(log, 1), step(log, 2), step(log, 3))
     if (list_len(log) != 3) { return fail("three values, three evaluations") }

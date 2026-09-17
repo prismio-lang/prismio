@@ -451,7 +451,7 @@ private fn generateOwnedTemporaryRelease(value: String, kind: Int, declType: Str
 // refuses to let a callee move one into a container ("cannot move out of
 // borrowed value"). So the caller is the last owner and this is its release
 // point.
-private fn generateOwnedTemporaryReleases(vals: List<String>, kinds: List<Int>, types: List<String>) {
+private fn generateOwnedTemporaryReleases(vals: Vec<String>, kinds: Vec<Int>, types: Vec<String>) {
     let mut i = 0
     while (i < list_len(vals)) {
         let value: String = list_get(vals, i)
@@ -549,11 +549,11 @@ private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> Str
         scan = part.next
     }
 
-    let mut datas: List<String> = list_new()
-    let mut lengths: List<String> = list_new()
-    let mut ownedVals: List<String> = list_new()
-    let mut ownedKinds: List<Int> = list_new()
-    let mut ownedTypes: List<String> = list_new()
+    let mut datas: Vec<String> = list_new()
+    let mut lengths: Vec<String> = list_new()
+    let mut ownedVals: Vec<String> = list_new()
+    let mut ownedKinds: Vec<Int> = list_new()
+    let mut ownedTypes: Vec<String> = list_new()
     let oldWide = ir_get_temp_name(ir_extract_value("struct:prismio.str", old, 1))
     let oldNarrow = ir_get_temp_name(ir_trunc("i64", oldWide, "i32"))
     let oldLen = ir_get_temp_name(ir_and("i32", oldNarrow, "2147483647"))
@@ -1110,7 +1110,7 @@ private fn irIsPureReceiver(recv: ASTNode) -> Bool {
     return false
 }
 
-private fn irStringListContains(xs: List<String>, s: String) -> Bool {
+private fn irStringListContains(xs: Vec<String>, s: String) -> Bool {
     let mut i = 0
     let n = list_len(xs)
     while (i < n) {
@@ -1126,11 +1126,11 @@ private fn irStringListContains(xs: List<String>, s: String) -> Bool {
 // the need to hold the receivers anywhere -- mem2reg turns the load/and/store
 // chain back into one `and` tree in the preheader.
 private fn irEmitFlatGuards(nodePtr: Ptr, slot: String, bodyPtr: Ptr) {
-    let mut seen: List<String> = list_new()
+    let mut seen: Vec<String> = list_new()
     irEmitFlatGuardsRec(nodePtr, slot, seen, bodyPtr)
 }
 
-private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: List<String>, bodyPtr: Ptr) {
+private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: Vec<String>, bodyPtr: Ptr) {
     if (nodeIsNull(nodePtr)) { return }
     let n = ptr_to_node(nodePtr)
 
@@ -1169,7 +1169,7 @@ private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: List<String>, b
     irEmitFlatGuardsChain(n.child3, slot, seen, bodyPtr)
 }
 
-private fn irEmitFlatGuardsChain(head: Ptr, slot: String, seen: List<String>, bodyPtr: Ptr) {
+private fn irEmitFlatGuardsChain(head: Ptr, slot: String, seen: Vec<String>, bodyPtr: Ptr) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -1711,12 +1711,12 @@ private fn irEmitOneRangeGuard(n: ASTNode, iv: String, bodyPtr: Ptr,
 
 private fn irEmitRangeGuards(nodePtr: Ptr, iv: String, bodyPtr: Ptr,
                              lo: String, hi: String, slot: String) {
-    let mut seen: List<String> = list_new()
+    let mut seen: Vec<String> = list_new()
     irEmitRangeGuardsRec(nodePtr, iv, bodyPtr, lo, hi, slot, seen)
 }
 
 private fn irEmitRangeGuardsRec(nodePtr: Ptr, iv: String, bodyPtr: Ptr,
-                                lo: String, hi: String, slot: String, seen: List<String>) {
+                                lo: String, hi: String, slot: String, seen: Vec<String>) {
     if (nodeIsNull(nodePtr)) { return }
     let n = ptr_to_node(nodePtr)
     if (n.kind == NodeKind.CALL_EXPR) {
@@ -1745,7 +1745,7 @@ private fn irEmitRangeGuardsRec(nodePtr: Ptr, iv: String, bodyPtr: Ptr,
 }
 
 private fn irEmitRangeChain(head: Ptr, iv: String, bodyPtr: Ptr,
-                            lo: String, hi: String, slot: String, seen: List<String>) {
+                            lo: String, hi: String, slot: String, seen: Vec<String>) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -2457,6 +2457,14 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     return true
 }
 
+// "1" when the removal may release what it removes immediately. Always "0" for
+// now: every removal parks, which is sound whatever else the program holds. The
+// proof that lets a removal skip the parking is COLLECTIONS.md step 1d's second
+// half.
+private fn vecRemovalReleasesNow(expr: ASTNode) -> String {
+    return "0"
+}
+
 // Which runtime op serves this container call. The inline family is a separate
 // set of entry points rather than a branch inside the boxed ones: the element
 // type is static at every site, so the branch belongs here -- and a version that
@@ -2467,6 +2475,7 @@ private fn inlineOpName(funcName: String) -> String {
     if (funcName.equals("list_get")) { return "list_get_inline" }
     if (funcName.equals("list_set")) { return "list_set_inline" }
     if (funcName.equals("list_push")) { return "list_push_inline" }
+    if (funcName.equals("list_insert")) { return "list_insert_inline" }
     return ""
 }
 
@@ -3669,6 +3678,16 @@ private fn generateCall(expr: ASTNode) -> String {
     if (funcName.equals("__builtin_errno")) {
         return ir_get_temp_name(ir_errno_load())
     }
+
+    // One slot of a `char**`, given its length here -- the single `strlen` at
+    // the boundary. The bytes stay where the C runtime put them, which is why
+    // AIF treats the result as static storage and nothing releases it.
+    if (funcName.equals("__builtin_cstring_at") and nodeExists(expr.child2)) {
+        let arrayNode = ptr_to_node(expr.child2)
+        let arrayVal = generateExpression(arrayNode)
+        let indexVal = generateExpression(ptr_to_node(arrayNode.next))
+        return fatFromPtr(ir_get_temp_name(ir_ptr_load_at(arrayVal, indexVal)))
+    }
     if (funcName.equals("__builtin_errno_intr")) {
         return ir_get_temp_name(ir_errno_constant("EINTR"))
     }
@@ -4030,9 +4049,9 @@ private fn generateCall(expr: ASTNode) -> String {
     // The owned temporaries this call is about to consume, released once it
     // returns. Collected here because this is the only point where the
     // generated value and the argument node are both in hand.
-    let mut ownedTempVals: List<String> = list_new()
-    let mut ownedTempKinds: List<Int> = list_new()
-    let mut ownedTempTypes: List<String> = list_new()
+    let mut ownedTempVals: Vec<String> = list_new()
+    let mut ownedTempKinds: Vec<Int> = list_new()
+    let mut ownedTempTypes: Vec<String> = list_new()
 
     // Which storage key the element argument carried, so the entry-point
     // choice below can tell a scalar from a struct without re-deriving it.
@@ -4180,14 +4199,15 @@ private fn generateCall(expr: ASTNode) -> String {
         if (scalarInlineBytes(elemStoreKey) > 0) {
             scalarElem = true
             if (funcName.equals("list_push")) { inlineName = "list_push_inline_scalar" }
+            if (funcName.equals("list_insert")) { inlineName = "list_insert_inline_scalar" }
             if (funcName.equals("list_set")) { inlineName = "list_set_inline_scalar" }
         }
         if (inlineName.equals("") == false) {
             callName = inlineName
             // The push and scalar operations carry the size as a defensive
             // representation check. `list_set_inline` -- the struct one --
-            // still does not need it.
-            if (funcName.equals("list_push")
+            // still does not need it. An insert is a push.
+            if (funcName.equals("list_push") or funcName.equals("list_insert")
                     or (scalarElem and funcName.equals("list_set"))) {
                 ir_call_arg("i32", strFromInt(inlineSize))
             }
@@ -4195,7 +4215,13 @@ private fn generateCall(expr: ASTNode) -> String {
     }
     if (stringListOp) {
         if (funcName.equals("list_push")) { callName = "list_push_str" }
+        if (funcName.equals("list_insert")) { callName = "list_insert_str" }
         if (funcName.equals("list_set")) { callName = "list_set_str" }
+    }
+    // A removal's `now`: whether no view of an element can outlive it, so what
+    // it removes may be released at once rather than parked with the list.
+    if (funcName.equals("list_truncate") or funcName.equals("list_remove_at")) {
+        ir_call_arg("i32", vecRemovalReleasesNow(expr))
     }
     if (funcName.equals("list_new")) {
         let newInlineSize = inlineElemSizeOfList(expr)

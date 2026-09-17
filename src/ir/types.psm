@@ -385,6 +385,7 @@ internal fn slotToScalar(storeType: String, value: String) -> String {
 // index are already the widths the runtime declares.
 internal fn listElementArgIndex(funcName: String) -> Int {
     if (funcName.equals("list_push")) { return 1 }
+    if (funcName.equals("list_insert")) { return 2 }
     if (funcName.equals("list_set")) { return 2 }
     if (funcName.equals("list_set_exclusive")) { return 2 }
     return -1

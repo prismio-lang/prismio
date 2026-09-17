@@ -38,7 +38,7 @@ struct UmsTarget {
     entry: String,
     sourcePath: String,
     outputPath: String,
-    links: List<UmsLinkInput>,
+    links: Vec<UmsLinkInput>,
     line: Int,
     col: Int,
     len: Int
@@ -82,7 +82,7 @@ public fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
     return false
 }
 
-public fn umsTargetFind(targets: List<UmsTarget>, name: String) -> Int {
+public fn umsTargetFind(targets: Vec<UmsTarget>, name: String) -> Int {
     let mut i = 0
     while (i < list_len(targets)) {
         if (list_get(targets, i).name.equals(name)) { return i }

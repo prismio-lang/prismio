@@ -24,10 +24,10 @@ import std.string
 
 extern fn print(s: String)
 extern fn println(s: String)
-extern fn list_new() -> List<Cell>
-extern fn list_push(l: List<Cell>, item: Cell retain_in(0))
-extern fn list_get(l: List<Cell>, i: Int) -> Cell alias
-extern fn list_len(l: List<Cell>) -> Int
+extern fn list_new() -> Vec<Cell>
+extern fn list_push(l: Vec<Cell>, item: Cell retain_in(0))
+extern fn list_get(l: Vec<Cell>, i: Int) -> Cell alias
+extern fn list_len(l: Vec<Cell>) -> Int
 extern fn exit(code: Int)
 
 // **The declaration order is chosen to be discriminating, and that is the point
@@ -60,7 +60,7 @@ fn make_cell(seed: Int) -> Cell {
     }
 }
 
-fn build(n: Int) -> List<Cell> {
+fn build(n: Int) -> Vec<Cell> {
     let cells = list_new()
     let mut i = 0
     while (i < n) {
@@ -71,7 +71,7 @@ fn build(n: Int) -> List<Cell> {
 }
 
 // The hot traversal: touches `hits` and `scratch` only.
-fn hot(cells: List<Cell>) {
+fn hot(cells: Vec<Cell>) {
     let mut i = 0
     while (i < list_len(cells)) {
         let c = list_get(cells, i)
@@ -84,7 +84,7 @@ fn hot(cells: List<Cell>) {
 // The cold traversal: touches `label`, `spare1`, `spare2`. Declared so the
 // fields are read *somewhere* -- a field nothing touches is trivially cold and
 // would not discriminate between a measured profile and a static one.
-fn cold(cells: List<Cell>) {
+fn cold(cells: Vec<Cell>) {
     let mut i = 0
     while (i < list_len(cells)) {
         let c = list_get(cells, i)
@@ -94,7 +94,7 @@ fn cold(cells: List<Cell>) {
     }
 }
 
-fn checksum(cells: List<Cell>) -> Int {
+fn checksum(cells: Vec<Cell>) -> Int {
     let mut total = 0
     let mut i = 0
     while (i < list_len(cells)) {

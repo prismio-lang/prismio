@@ -132,8 +132,8 @@ def main() -> int:
         check("backend library defines the ir_* backend symbols", in_backend > 0,
               f"found {in_backend}")
 
-        check("runtime modules provide cli_arg_count",
-              "cli_arg_count" in runtime_symbols)
+        check("runtime modules provide proc_wait",
+              "proc_wait" in runtime_symbols)
         check("backend library provides compiler_build_executable",
               "compiler_build_executable" in backend_symbols)
         check("runtime modules do NOT provide compiler_build_executable",

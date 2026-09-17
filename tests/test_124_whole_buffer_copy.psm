@@ -12,8 +12,8 @@
 
 import std.io
 
-fn filled(n: Int, base: Int) -> List<Int> {
-    let mut xs: List<Int> = list_new_with_capacity(n)
+fn filled(n: Int, base: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(xs, base + i)
@@ -22,7 +22,7 @@ fn filled(n: Int, base: Int) -> List<Int> {
     return xs
 }
 
-fn digest(xs: List<Int>) -> Int {
+fn digest(xs: Vec<Int>) -> Int {
     let mut acc = 0
     let mut i = 0
     let n = list_len(xs)
@@ -34,7 +34,7 @@ fn digest(xs: List<Int>) -> Int {
 }
 
 // The shape the lowering serves.
-fn copyAll(dst: List<Int>, src: List<Int>, n: Int) -> Int {
+fn copyAll(dst: Vec<Int>, src: Vec<Int>, n: Int) -> Int {
     let mut k = 0
     while (k < n) {
         list_set(dst, k, list_get(src, k))
@@ -44,7 +44,7 @@ fn copyAll(dst: List<Int>, src: List<Int>, n: Int) -> Int {
 }
 
 // The same, from a non-zero start.
-fn copyFrom(dst: List<Int>, src: List<Int>, start: Int, n: Int) -> Int {
+fn copyFrom(dst: Vec<Int>, src: Vec<Int>, start: Int, n: Int) -> Int {
     let mut k = start
     while (k < n) {
         list_set(dst, k, list_get(src, k))

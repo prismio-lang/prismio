@@ -58,8 +58,8 @@ fn make(seed: Float) -> Sample {
     }
 }
 
-fn build(count: Int) -> List<Sample> {
-    let mut xs: List<Sample> = list_new()
+fn build(count: Int) -> Vec<Sample> {
+    let mut xs: Vec<Sample> = list_new()
     let mut n = 0
     let mut seed = 0.0
     while (n < count) {
@@ -71,7 +71,7 @@ fn build(count: Int) -> List<Sample> {
 }
 
 // Six fields, one pass. These must end up hot.
-fn advance(xs: List<Sample>, dt: Float) {
+fn advance(xs: Vec<Sample>, dt: Float) {
     let n = list_len(xs)
     let mut idx = 0
     while (idx < n) {
@@ -85,7 +85,7 @@ fn advance(xs: List<Sample>, dt: Float) {
 
 // Two fields, touched more often each than any single field above -- which is
 // what makes the naive first-boundary cut land here and stop.
-fn settle(xs: List<Sample>) {
+fn settle(xs: Vec<Sample>) {
     let n = list_len(xs)
     let mut idx = 0
     while (idx < n) {

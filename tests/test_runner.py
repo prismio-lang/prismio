@@ -1433,7 +1433,7 @@ def run_aif_test():
     # in --summary, hence the second run.
     summary = run_command([str(PRISMIO_EXE), "aif", str(fixture), "--summary"])
     if "collector needed: 1 of" not in summary.stdout:
-        problems.append("Tree reaches itself through List<Tree>, but the "
+        problems.append("Tree reaches itself through Vec<Tree>, but the "
                         "cyclicity report does not say so")
 
     if problems:
@@ -3431,7 +3431,7 @@ def run_aif_view_test():
       - reading the element key directly makes every read a view of every list
         in the file, because that key is object-insensitive. It demoted three
         untouched containers in test_47.
-      - treating a scalar read as a view demoted a `List<Int>` for returning an
+      - treating a scalar read as a view demoted a `Vec<Int>` for returning an
         `Int`, which is a copy in a register and keeps nothing alive.
       - bounding the collection by "the caller" when the view is bound in
         another function cost g5_asset_cache its list_release, for a view that
@@ -3475,7 +3475,7 @@ def run_aif_view_test():
         ("view_stays_local__Void#0",
          "the view never leaves the scope that owns the list"),
         ("scalar_read_is_not_a_view__Void#0",
-         "an Int read out of a List<Int> is a copy, not a view"),
+         "an Int read out of a Vec<Int> is a copy, not a view"),
         ("view_in_a_callee__Void#0",
          "the view is taken in a callee, so it dies inside this activation"),
     ):
@@ -4075,6 +4075,33 @@ def run_workload_test():
         finally:
             cleanup_files(failing_src, failing_exe)
 
+        # W3 for an `extern let`. The driver is linked, so a foreign global no
+        # object defines would fail that link and fall back to the static
+        # profile; the sandbox gives the driver a private zero instead, as it
+        # gives a foreign function a stub. The shipped program still declares
+        # the real symbol.
+        global_src = TEST_DIR / "workload_foreign_global.psm"
+        global_ll = TEST_DIR / "workload_foreign_global.ll"
+        global_src.write_text(
+            text.replace("struct Cell {",
+                         "extern let prismio_workload_nowhere: Int\n\nstruct Cell {", 1)
+                .replace("    measure {\n        let cells = build(50)",
+                         "    measure {\n        let cells = build(50 + prismio_workload_nowhere)", 1),
+            encoding="utf-8")
+        try:
+            r4 = run_command([str(PRISMIO_EXE), "build", str(global_src), "-o", str(global_ll)])
+            combined4 = (r4.stdout or "") + (r4.stderr or "")
+            if r4.returncode != 0:
+                problems.append("W3: a workload reading a foreign global failed the build")
+            elif "using the static profile" in combined4:
+                problems.append("W3: a workload reading a foreign global fell back "
+                                "instead of reading a stand-in")
+            elif "@prismio_workload_nowhere = external global i32" not in \
+                    global_ll.read_text(encoding="utf-8", errors="replace"):
+                problems.append("W3: the shipped program does not declare the foreign global")
+        finally:
+            cleanup_files(global_src, global_ll)
+
         if problems:
             print(f"{RED}[FAIL] workload{RESET}")
             for p in problems:
@@ -4571,7 +4598,7 @@ def run_target_test():
         probe = Path(tmp) / "widths.psm"
         probe.write_text("import std.io\n"
                          "\n"
-                         "struct OfList { a: List<Int>, b: List<Int>, c: List<Int> }\n"
+                         "struct OfList { a: Vec<Int>, b: Vec<Int>, c: Vec<Int> }\n"
                          "struct OfArray { a: [Int], b: [Int], c: [Int] }\n"
                          "struct OfString { a: String, b: String, c: String }\n"
                          "\n"
@@ -4742,14 +4769,14 @@ def run_jit_test():
       1. *Same output, same status.* `run --jit` and `run` are compared on
          stdout and exit code for one program. A JIT that ran a different module,
          resolved a different runtime, or lost a write would show here.
-      2. *`cli_arg_count()` reports the program's arguments, not the compiler's.*
-         **This is the trap the design note in ir_jit_run_main is about.**
-         Generated code *defines* `@prismio_argc`, so the jitted module holds its
-         own copy while the runtime shims linked into this process read the
-         compiler's -- which holds `prismio run --jit prog.psm`. Without the host
-         globals being set, a jitted program asking for its arguments is quietly
-         told about the compiler's command line. The fixture prints the count and
-         both paths must say 1.
+      2. *`process.args.count` reports the program's arguments, not the
+         compiler's.* **This is the trap the design note in ir_jit_run_main is
+         about.** Generated code *defines* `@prismio_argc`, and this process has
+         a second one -- the compiler's, which holds `prismio run --jit
+         prog.psm`. std.process reads the symbol through `extern let`, so a
+         declaration that resolved to the wrong copy would quietly report the
+         compiler's command line. The fixture prints the count and both paths
+         must say 1.
       3. *A failing program fails the same way.* Same exit status and the same
          diagnostic, so no caller can tell which path ran.
       4. *`--jit` with `--target` is refused, in both orders.* The JIT emits for
@@ -4766,13 +4793,11 @@ def run_jit_test():
     with tempfile.TemporaryDirectory(prefix="prismio-jit-") as tmp:
         wd = Path(tmp)
         prog = wd / "jitted.psm"
-        # cli_arg_count is the compiler's own extern rather than a std.io export,
-        # so the fixture declares it. That is the point: it reaches the runtime
-        # already linked into the compiler process, which is where the two
-        # prismio_argc can differ.
+        # Through std.process, which names `prismio_argc` with `extern let`:
+        # the declaration is where the jitted module's copy and the compiler's
+        # can be confused.
         prog.write_text('import std.io\n'
-                        '\n'
-                        'extern fn cli_arg_count() -> Int\n'
+                        'import std.process\n'
                         '\n'
                         'struct Point { x: Int, y: Int }\n'
                         '\n'
@@ -4787,7 +4812,7 @@ def run_jit_test():
                         '    print("answer: ")\n'
                         '    println(total(p))\n'
                         '    print("argc: ")\n'
-                        '    println(cli_arg_count())\n'
+                        '    println(process.args.count)\n'
                         '    return 0\n'
                         '}\n')
 
@@ -4828,7 +4853,7 @@ def run_jit_test():
                                 "the module a build produces")
             elif "argc: 1" not in jit_out:
                 problems.append(f"a jitted program reported {jit_out!r} rather "
-                                "than `argc: 1`: cli_arg_count is reading the "
+                                "than `argc: 1`: std.process is reading the "
                                 "compiler's prismio_argc, so the program was "
                                 "told about the compiler's command line")
 
@@ -6385,6 +6410,14 @@ def run_aif_verify_test():
         # A flat element copied within its own list, whose release of that
         # interior address aborted in `free`. See list_release_source.
         "test_145_list_set_within_list": 0,
+        # Vec's methods, and the removals above all. What this guards is the 0
+        # violations: `removeAt` takes an element a live view still reads, and a
+        # removal that released it at once would be a free under that view. The
+        # 3 are the known shapes, identical in a control with no removal at all:
+        # the two long Strings in `words`, a Vec that hands out an element and so
+        # is not released, and the name inside the `Job` copy `removeAt` returns
+        # through two generic calls.
+        "test_155_vec_methods": 3,
     }
 
     max_allocations = {
@@ -7593,7 +7626,7 @@ def run_module_artifact_test():
                             "stdlib, `isWindows` is not defined in the program "
                             "answering true: the host-built PLIB supplied it")
 
-        # `sort` from the installed `stdlib/list.plib`, on the two element
+        # `sort` from the installed `stdlib/vec.plib`, on the two element
         # representations it is most used at. `sort` hands `sortBy` a closure,
         # and the closure's `call` is lowered inside the program's instantiation
         # of a `.plib` generic. It was once filtered out as a concrete stdlib
@@ -7601,14 +7634,14 @@ def run_module_artifact_test():
         # failed to link -- and no fixture under `tests/` can see that, because
         # `std.*` resolves from source by walking up from the entry file.
         sorter = wd / "sorter.psm"
-        sorter.write_text('import std.io\nimport std.list\n\n'
+        sorter.write_text('import std.io\nimport std.vec\n\n'
                           'fn main() -> Int {\n'
-                          '    let numbers: List<Int> = list_new()\n'
+                          '    let numbers: Vec<Int> = list_new()\n'
                           '    list_push(numbers, 3)\n'
                           '    list_push(numbers, 1)\n'
                           '    list_push(numbers, 2)\n'
                           '    sort(numbers)\n'
-                          '    let words: List<String> = list_new()\n'
+                          '    let words: Vec<String> = list_new()\n'
                           '    list_push(words, "pear")\n'
                           '    list_push(words, "apple")\n'
                           '    sort(words)\n'
@@ -7623,7 +7656,7 @@ def run_module_artifact_test():
                 or (sorted_run.stdout or "").strip() != "sorted"):
             said = (sorted_build.stdout or "") + (sorted_build.stderr or "")
             problems.append("a program calling `sort` could not be built against "
-                            "the installed stdlib/list.plib: "
+                            "the installed stdlib/vec.plib: "
                             + (said.strip()[-300:] if sorted_run is None else
                                f"it ran and printed {(sorted_run.stdout or '').strip()!r}"))
 
@@ -7637,7 +7670,7 @@ def run_module_artifact_test():
         # and nothing under `tests/` can see it, because std resolves from source
         # there.
         crossing = wd / "crossing.psm"
-        crossing.write_text('import std.io\nimport std.string\nimport std.list\n'
+        crossing.write_text('import std.io\nimport std.string\nimport std.vec\n'
                             'import std.platform\nimport std.process\n\n'
                             'fn echo(word: String) -> Process {\n'
                             '    let p = Process()\n'

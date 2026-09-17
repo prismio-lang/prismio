@@ -302,10 +302,10 @@ which the analysis widens to Shared, and the result gets no owner.
 | `produce(free)` | the return is a fresh allocation the caller must release |
 | `alias` | the return is an existing value, **not** a fresh allocation |
 
-`produce` versus `alias` is the distinction that bites. `cli_arg` returns a
-pointer into `argv`; declaring it `produce(free)` hands `argv` to the
-deallocator. `src/main.psm` declares it `alias`, which is correct, and
-`std/process.psm` wraps it so no application has to know.
+`produce` versus `alias` is the distinction that bites. A C function returning a
+pointer into memory it does not own -- `cli_arg` was one, returning a slot of
+`argv` -- is `alias`; declaring it `produce(free)` hands that memory to the
+deallocator.
 
 `bytes` is the one entry that is about **marshalling rather than ownership**, and
 it exists because a String view has no terminator of its own — it ends where its
@@ -320,6 +320,13 @@ Declare it wherever a C function takes a pointer *and* a length — `write` in
 taking a view of what is left, and under `borrow` that view would be copied in
 full on every iteration. Sema rejects it on a non-String parameter (`P4110`),
 where there is no copy to suppress.
+
+**A foreign global is `extern let`, and it takes no contract.** Reading one is a
+load, not a call, so there is nothing for a contract to describe; instead the type
+is limited to the ones nobody owns -- an integer, `Float`, `Char` or `Ptr`
+(`P4111`). `mut` belongs to each declaration, so one module may read a symbol
+another assigns, and the declarations must agree on the type. Visibility is
+`extern fn`'s: private to the file unless marked.
 
 **A view bound to a local escapes; one built into the call does not.**
 `__builtin_string_view` aliases its argument's storage — deliberately, so the
@@ -421,7 +428,6 @@ formatter checks its own candidates against.
 | `current_directory` `executable_directory` | `currentDirectory` `executableDirectory` | `produce(free)` |
 | `list_modules` | `listModules` → `List<String>` | `produce(free)` |
 | `file_exists` `delete_file` | `fileExists` `deleteFile` | → `Bool` |
-| `cli_arg_count` `cli_arg` | `process.args.count` `process.args[i]` | `alias` |
 | `proc_spawn_begin` `proc_spawn_arg` `proc_spawn_run` | `Process.spawn`, `Process.run` | `borrow`; `SpawnOut` written through its pointer |
 | `proc_exec` | `Process.exec` | returns only on failure, then -1 |
 | `proc_wait` `proc_kill` | `Child.wait` `Child.kill` | → `Int` |
@@ -447,6 +453,15 @@ surface is: every field is `I64` so no padding question arises, and it keeps
 declaration order because it is a standard-library type (`aif_layout_fix`). A
 program's own struct handed to C that reads its fields has no such guard -- see
 KNOWN_ISSUES, Toolchain layout.
+
+### Not C any more: the arguments
+
+`cli_arg_count` and `cli_arg` are gone. Generated code defines `prismio_argc`
+and `prismio_argv` and fills them in `main`'s prologue; `std/process.psm` names
+both with a private `extern let` and reads one `argv` slot with
+`__builtin_cstring_at`, which AIF treats as static storage. `process.args[i]`
+still returns a copy, for the reason `alias` exists: the bytes belong to the C
+runtime.
 
 ### Superseded — still linked, no longer the supported way
 

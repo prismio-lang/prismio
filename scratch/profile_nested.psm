@@ -15,7 +15,7 @@ fn benchNow() -> I64 {
 }
 
 struct BenchBucket {
-    values: List<Int>
+    values: Vec<Int>
 }
 
 fn main() -> Int {
@@ -23,10 +23,10 @@ fn main() -> Int {
     let bucketsCount = 200 * scale
 
     let t0 = benchNow()
-    let mut buckets: List<BenchBucket> = list_new_with_capacity(bucketsCount)
+    let mut buckets: Vec<BenchBucket> = list_new_with_capacity(bucketsCount)
     let mut b = 0
     while (b < bucketsCount) {
-        let mut values: List<Int> = list_new_with_capacity(1000)
+        let mut values: Vec<Int> = list_new_with_capacity(1000)
         let mut i = 0
         while (i < 1000) {
             list_push(values, (b + i) % 1021)

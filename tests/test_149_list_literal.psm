@@ -1,23 +1,23 @@
-// `[a, b, c]` where a `List<T>` is expected.
+// `[a, b, c]` where a `Vec<T>` is expected.
 //
 // An array literal is a frame array with no length, so it cannot be what a
-// `List<T>` means. Where the context writes the type -- an annotation, a struct
-// field, the left of an assignment -- the literal is rewritten to `listOf(...)`,
+// `Vec<T>` means. Where the context writes the type -- an annotation, a struct
+// field, the left of an assignment -- the literal is rewritten to `vecOf(...)`,
 // std/list.psm's overload table, the same way `s[i]` is rewritten to `charAt`.
 //
 // What is pinned here: each of those three contexts, that the element type comes
-// from the context rather than from the elements (`[1, 2]` as a `List<I64>`),
-// that `[]` is an empty list of the annotated type rather than a `List<Invalid>`
+// from the context rather than from the elements (`[1, 2]` as a `Vec<I64>`),
+// that `[]` is an empty list of the annotated type rather than a `Vec<Invalid>`
 // whose element storage codegen has to guess, and that an array literal with no
 // list context is still an array.
 
 import std.io
 import std.string
-import std.list
+import std.vec
 
 struct Job {
     name: String,
-    arguments: List<String>
+    arguments: Vec<String>
 }
 
 fn fail(message: String) -> Int {
@@ -26,7 +26,7 @@ fn fail(message: String) -> Int {
     return 1
 }
 
-fn total(xs: List<I64>) -> I64 {
+fn total(xs: Vec<I64>) -> I64 {
     let mut sum: I64 = 0
     let mut i = 0
     while (i < list_len(xs)) {
@@ -38,12 +38,12 @@ fn total(xs: List<I64>) -> I64 {
 
 fn main() -> Int {
     // 1. An annotation.
-    let names: List<String> = ["ada", "grace", "alan"]
+    let names: Vec<String> = ["ada", "grace", "alan"]
     if (list_len(names) != 3) { return fail("three names") }
     if (names[0].equals("ada") == false) { return fail("the first name") }
     if (names[2].equals("alan") == false) { return fail("the last name") }
 
-    // The list is a real `List<String>`, not something that merely reads like
+    // The list is a real `Vec<String>`, not something that merely reads like
     // one: it is pushed to, sorted, and passed on.
     list_push(names, "hedy")
     sort(names)
@@ -54,12 +54,12 @@ fn main() -> Int {
 
     // 2. The element type is the context's. These are bare integer literals,
     // which infer as Int on their own.
-    let widths: List<I64> = [1, 2, 3]
-    if (total(widths) != 6) { return fail("List<I64> from bare literals") }
+    let widths: Vec<I64> = [1, 2, 3]
+    if (total(widths) != 6) { return fail("Vec<I64> from bare literals") }
 
     // 3. Empty, which becomes `list_new()` and takes the annotation's element
     // type -- the M4.2 rule, which codegen needs to size the element storage.
-    let nothing: List<String> = []
+    let nothing: Vec<String> = []
     if (list_len(nothing) != 0) { return fail("an empty literal") }
     list_push(nothing, "later")
     if (nothing[0].equals("later") == false) { return fail("an empty literal grows") }
@@ -72,7 +72,7 @@ fn main() -> Int {
     if (job.arguments[2].equals("--branch") == false) { return fail("the assigned element") }
 
     // 5. Twelve is the cap, and twelve works.
-    let full: List<Int> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    let full: Vec<Int> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     let mut sum = 0
     let mut i = 0
     while (i < list_len(full)) {

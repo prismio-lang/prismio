@@ -13,11 +13,11 @@ struct UmsDiagnostic {
     message: String
 }
 
-public fn umsDiagnostics() -> List<UmsDiagnostic> {
+public fn umsDiagnostics() -> Vec<UmsDiagnostic> {
     return list_new()
 }
 
-public fn umsDiagnosticAdd(diagnostics: List<UmsDiagnostic>, code: String, path: String,
+public fn umsDiagnosticAdd(diagnostics: Vec<UmsDiagnostic>, code: String, path: String,
                     line: Int, col: Int, len: Int, message: String) {
     list_push(diagnostics, UmsDiagnostic {
         code: strClone(code),
@@ -50,7 +50,7 @@ impl UmsDiagnostic {
         println(self.message)
     }
 }
-public fn umsDiagnosticsPrint(diagnostics: List<UmsDiagnostic>) {
+public fn umsDiagnosticsPrint(diagnostics: Vec<UmsDiagnostic>) {
     let mut i = 0
     while (i < list_len(diagnostics)) {
         list_get(diagnostics, i).print()

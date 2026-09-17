@@ -210,6 +210,28 @@ private fn semaExternTypeIsDataView(annotation: ASTNode) -> Bool {
     return annotation.i2 == 1 and annotation.s1.equals("DataView")
 }
 
+// `extern let`. Only a type that carries no ownership may name foreign storage:
+// an integer, `Float` or `Char` is copied out on every read, and a `Ptr` is
+// opaque. A String would be read as a `{ptr, len}` pair C never wrote, and a
+// struct or a List as a value this program releases at scope exit.
+//
+// `Bool` is refused for a reason of its own. It lowers to `i1`, and a store of
+// one leaves the other seven bits of a C `bool` unspecified.
+internal fn semaCheckExternGlobalType(annotation: ASTNode, name: String, varT: TypeInfo) {
+    if (typeIsValid(varT) == false) { return }
+    let k = varT.kind
+    if (k == TypeKind.INT or k == TypeKind.FLOAT or k == TypeKind.CHAR or k == TypeKind.PTR) {
+        return
+    }
+    diag_error_at_code("P4111", annotation.file, annotation.line, annotation.col, annotation.len,
+        "extern global ".concat(diagQuote(name), " cannot have type ", typeDisplay(varT)))
+    if (k == TypeKind.BOOL) {
+        diag_note("a C `bool` is a byte; declare it `U8` and compare it with 0")
+    } else {
+        diag_note("an extern global is an integer, `Float`, `Char` or `Ptr`; reach anything else through an `extern fn` whose contract says who owns it")
+    }
+}
+
 internal fn semaCheckExternContracts(extNode: ASTNode) {
     // Counted first: `retain_in(k)` names another parameter by index, so the
     // arity has to be known before any of them can be checked.

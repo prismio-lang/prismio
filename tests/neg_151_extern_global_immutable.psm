@@ -1,0 +1,11 @@
+// expect-error: cannot assign to `prismio_argc`, which is not declared `mut`
+// expect-error: change its declaration to `extern let mut`
+// The only declaration this file can see is extern_globals.reader's, which is
+// read-only. test_154 assigns the same symbol through a `mut` declaration of its
+// own; that one is not this file's to borrow.
+import extern_globals.reader
+
+fn main() -> Int {
+    prismio_argc = 0
+    return readerArgc()
+}

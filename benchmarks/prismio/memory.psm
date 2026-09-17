@@ -33,7 +33,7 @@ public fn benchTransientAllocation(scale: Int) -> Int {
     let mut checksum = 0
     let mut r = 0
     while (r < rounds) {
-        let mut values: List<Int> = list_new()
+        let mut values: Vec<Int> = list_new()
         let mut i = 0
         while (i < 4000) {
             list_push(values, (i + r) % 997)
@@ -48,7 +48,7 @@ public fn benchTransientAllocation(scale: Int) -> Int {
 
 public fn benchStructCreation(scale: Int) -> Int {
     let n = 250000 * scale
-    let mut particles: List<BenchMemoryParticle> = list_new_with_capacity(n)
+    let mut particles: Vec<BenchMemoryParticle> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(particles, BenchMemoryParticle {
@@ -68,7 +68,7 @@ public fn benchStructCreation(scale: Int) -> Int {
 
 public fn benchAllocationMutation(scale: Int) -> Int {
     let n = 100000 * scale
-    let mut particles: List<BenchMemoryParticle> = list_new_with_capacity(n)
+    let mut particles: Vec<BenchMemoryParticle> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(particles, BenchMemoryParticle { x: 0.0, y: 0.0, vx: 1.0, vy: 2.0, life: 50 })
@@ -98,10 +98,10 @@ public fn benchAllocationMutation(scale: Int) -> Int {
 
 public fn benchNestedCollection(scale: Int) -> Int {
     let bucketsCount = 200 * scale
-    let mut buckets: List<BenchBucket> = list_new_with_capacity(bucketsCount)
+    let mut buckets: Vec<BenchBucket> = list_new_with_capacity(bucketsCount)
     let mut b = 0
     while (b < bucketsCount) {
-        let mut values: List<Int> = list_new_with_capacity(1000)
+        let mut values: Vec<Int> = list_new_with_capacity(1000)
         let mut i = 0
         while (i < 1000) {
             list_push(values, (b + i) % 1021)
@@ -126,8 +126,8 @@ public fn benchNestedCollection(scale: Int) -> Int {
 
 public fn benchLargeBufferCopy(scale: Int) -> Int {
     let n = 500000 * scale
-    let mut source: List<Int> = list_new_with_capacity(n)
-    let mut target: List<Int> = list_new_with_capacity(n)
+    let mut source: Vec<Int> = list_new_with_capacity(n)
+    let mut target: Vec<Int> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(source, i % 4093)
@@ -186,7 +186,7 @@ public fn benchRecursiveTreeRebuild(scale: Int) -> Int {
 // language's library is actually for.
 public fn benchStringJoin(scale: Int) -> Int {
     let n = 60000 * scale
-    let mut parts: List<String> = list_new_with_capacity(n)
+    let mut parts: Vec<String> = list_new_with_capacity(n)
     let mut i = 0
     while (i < n) {
         list_push(parts, "field".concat((i % 9973).toString()))

@@ -1,0 +1,12 @@
+// expect-error: `List` was renamed to `Vec`
+// expect-error: write `Vec<...>`; the type and its operations are unchanged
+// The contiguous growable vector is `Vec<T>`. The old spelling is refused where
+// it is written, with the replacement named, rather than left to fail as an
+// unknown type.
+fn count(xs: List<Int>) -> Int {
+    return list_len(xs)
+}
+
+fn main() -> Int {
+    return 0
+}
