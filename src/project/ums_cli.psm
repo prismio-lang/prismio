@@ -28,11 +28,8 @@ import ums.model.diagnostic
 import ums.model.validation
 import ums.targets.target
 import ums.dependency.resolve
+import std.process
 
-// argv, which the C runtime owns and outlives every use of it. Not an
-// allocation, and freeing one would be a free of memory this program never got.
-public extern fn cli_arg(index: Int) -> String alias
-public extern fn cli_arg_count() -> Int
 public extern fn command_quote_arg(argument: String borrow) -> String produce(free)
 // Project-host executables are built beside their active local generation. The
 // candidate has to start before it can replace that generation, and promotion
@@ -304,8 +301,8 @@ public fn testUmsProject(profile: String) -> Int {
 public fn projectProfile(startIndex: Int) -> String {
     let mut profile = "debug"
     let mut i = startIndex
-    while (i < cli_arg_count()) {
-        let flag = cli_arg(i)
+    while (i < process.args.count) {
+        let flag = process.args[i]
         if (flag.equals("--release")) {
             profile = "release"
         } else if (flag.equals("--debug-profile")) {
@@ -404,8 +401,8 @@ private fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int
 // when something is going to parse what comes back.
 private fn cliWantsMachineOutput() -> Bool {
     let mut i = 1
-    while (i < cli_arg_count()) {
-        let flag = cli_arg(i)
+    while (i < process.args.count) {
+        let flag = process.args[i]
         if (flag.equals("--manifest")) { return true }
         if (strStartsWith(flag, "--diagnostic-format=")) { return true }
         i = i + 1
@@ -497,7 +494,7 @@ private fn buildUmsHostTarget(target: UmsTarget) -> Int {
 // generations (`build/g1`, `build/g2`, ...) remain exact tools and never
 // redirect, which keeps fixed-point checks and PRISMIO=<path> deterministic.
 private fn isGlobalLauncher() -> Bool {
-    let name = pathLeaf(cli_arg(0))
+    let name = pathLeaf(process.args[0])
     return name.equals("prismio") or name.equals("prismio.exe")
 }
 
@@ -560,7 +557,7 @@ public fn dispatchToUmsHost() -> Int {
         return -1
     }
 
-    let currentPath = join_path(executable_directory(), pathLeaf(cli_arg(0)))
+    let currentPath = join_path(executable_directory(), pathLeaf(process.args[0]))
     if (file_exists(host) == 0) {
         announceToolchain("global", currentPath)
         return -1
@@ -581,7 +578,7 @@ public fn dispatchToUmsHost() -> Int {
     // `clean` is exempt, and that exemption is the whole of the special-casing:
     // it removes this project's artifacts and then the launcher removes the host
     // itself, so rebuilding the binary that is about to be deleted buys nothing.
-    let cleaning = cli_arg_count() > 1 and cli_arg(1).equals("clean")
+    let cleaning = process.args.count > 1 and process.args[1].equals("clean")
     if (cleaning == false and
         compiler_check_host_abi(host, compiler_host_abi()) != 0) {
         diag_warning_code("P1064", "the project compiler is from an older toolchain generation")
@@ -625,7 +622,7 @@ public fn dispatchToUmsHost() -> Int {
     // The hosted process intentionally leaves its running compiler alone. The
     // launcher owns the two operations that require that process to have exited:
     // promoting a successful self-build and deleting the host during `clean`.
-    if (cli_arg_count() > 1 and cli_arg(1).equals("clean")) {
+    if (process.args.count > 1 and process.args[1].equals("clean")) {
         if (file_exists(host) == 1 and delete_file(host) != 0) {
             diag_error_code("P1056", "could not remove the project compiler after clean")
             return 1
@@ -782,8 +779,8 @@ private fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
 // it builds and the script it runs.
 private fn umsCommandProfile(startIndex: Int) -> String {
     let mut i = startIndex
-    while (i < cli_arg_count()) {
-        if (cli_arg(i).equals("--release")) { return "release" }
+    while (i < process.args.count) {
+        if (process.args[i].equals("--release")) { return "release" }
         i = i + 1
     }
     return "debug"
@@ -812,8 +809,8 @@ private fn umsStepArguments(step: UmsCommandStep, forwardFrom: Int) -> String {
         let argument = list_get(step.arguments, index)
         if (argument.forwarded) {
             let mut forwarded = forwardFrom
-            while (forwarded < cli_arg_count()) {
-                tail = tail.concat(" ", command_quote_arg(cli_arg(forwarded)))
+            while (forwarded < process.args.count) {
+                tail = tail.concat(" ", command_quote_arg(process.args[forwarded]))
                 forwarded = forwarded + 1
             }
         } else {

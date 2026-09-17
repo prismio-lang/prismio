@@ -20,8 +20,8 @@
 import std.string
 import std.list
 
-public extern fn cli_arg_count() -> Int
-public extern fn cli_arg(index: Int) -> String alias
+private extern fn cli_arg_count() -> Int
+private extern fn cli_arg(index: Int) -> String alias
 
 // The subprocess capability. `borrow` on every String: each is read, copied by
 // the callee where it has to outlive the call, and never retained.
