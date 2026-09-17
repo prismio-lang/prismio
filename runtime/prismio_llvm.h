@@ -39,7 +39,7 @@
 //
 // Keep this in step with DEFAULT_VERSION in tools/setup_llvm.py.
 #ifndef PRISMIO_LLVM_EXPECTED_MAJOR
-#define PRISMIO_LLVM_EXPECTED_MAJOR 22
+#define PRISMIO_LLVM_EXPECTED_MAJOR 23
 #endif
 
 #ifdef PRISMIO_LLVM_REAL_HEADERS

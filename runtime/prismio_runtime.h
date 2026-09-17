@@ -38,7 +38,11 @@
 //      is gone from packaged runtime bitcode. It survives only under
 //      PRISMIO_BOOTSTRAP_COMPAT, in compilers built from repository sources,
 //      which is what lets generation 1 build generation 2.
-#define PRISMIO_HOST_ABI "2"
+//   3  LLVM 23. A host built for LLVM 22 still answers this question -- it
+//      needs no LLVM to -- but refuses to compile once the loaded LLVM is 23
+//      (check_llvm_version), so the launcher has to rebuild it rather than
+//      forward to it.
+#define PRISMIO_HOST_ABI "3"
 
 // The verify allocator seam.
 //

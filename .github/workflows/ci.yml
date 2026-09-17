@@ -22,7 +22,7 @@ on:
 # PRISMIO_LLVM_EXPECTED_MAJOR in the runtime. The C API is stable within a major
 # and not across them, so "some LLVM" is not good enough.
 env:
-  LLVM_MAJOR: "22"
+  LLVM_MAJOR: "23"
 
 jobs:
   bootstrap:

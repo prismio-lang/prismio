@@ -12145,7 +12145,7 @@ label_489:                                        ; preds = %label_481
   br label %label_478
 }
 
-; Function Attrs: nocallback nofree nounwind willreturn memory(argmem: readwrite)
+; Function Attrs: nocallback nofree nosync nounwind willreturn memory(argmem: readwrite)
 declare void @llvm.memcpy.p0.p0.i64(ptr noalias writeonly captures(none), ptr noalias readonly captures(none), i64, i1 immarg) #4
 
 declare ptr @str_clone_n(ptr, i32)
@@ -269791,7 +269791,7 @@ attributes #0 = { nounwind willreturn allockind("alloc,uninitialized") "alloc-fa
 attributes #1 = { nounwind willreturn allockind("free") "alloc-family"="malloc" }
 attributes #2 = { nocallback nocreateundeforpoison nofree nosync nounwind speculatable willreturn memory(none) }
 attributes #3 = { nocallback nofree nosync nounwind speculatable willreturn memory(none) }
-attributes #4 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }
+attributes #4 = { nocallback nofree nosync nounwind willreturn memory(argmem: readwrite) }
 attributes #5 = { alwaysinline }
 
 !0 = !{!1, !5, i64 8}

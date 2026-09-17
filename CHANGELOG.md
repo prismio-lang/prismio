@@ -4,6 +4,14 @@
 
 ### Added
 
+- **LLVM 23.** The pinned line is 23.1.1 (`PRISMIO_LLVM_EXPECTED_MAJOR`,
+  `tools/setup_llvm.py`, the CI matrix). The seed and every program's IR are
+  unchanged apart from LLVM's own printing -- `f0x` float literals, and `nosync`
+  on the `memory(argmem)` intrinsics -- across all 201 snapshot programs. A
+  compiler built for 22 refuses to run on 23, so re-bootstrap from the seed.
+  `PRISMIO_HOST_ABI` is `3`, so a launcher rebuilds a project host built for 22
+  instead of forwarding to it. Benchmarks: median 0.999x of 22 across the 62
+  programs; see `aif/evidence/RESULTS-llvm-23.md`.
 - **`List<T>` is `Vec<T>`, and it has methods.** The growable vector is spelled
   `Vec<T>`; writing `List<` is `P3005`, naming the replacement. `std.list` is
   `std.vec`, and the literal `[a, b, c]` lowers to `vecOf`. The rename is
@@ -125,6 +133,12 @@
 
 ### Fixed
 
+- **A float add, subtract or multiply of two constants crashed the compiler on
+  LLVM 23.** Such an operation folds to a constant, and `contract` was set on
+  it through `LLVMSetFastMathFlags`, which assumes an instruction. LLVM 22 wrote
+  the bit into the constant and carried on; the flag is now set on instructions
+  only, which changes no IR on either version. `0.0 - 2.5` in
+  `test_33_unary_operators` and `0.0 - 100.0` in `g4_ecs_world` were the cases.
 - **A standard-library struct read its fields one slot late when it came from a
   `.plib`.** A program that set `p.stdout` sent the mode to `stdin`: the layout
   search ordered tied fields by the program's own access counts, and the library

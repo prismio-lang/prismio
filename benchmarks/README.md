@@ -56,7 +56,7 @@ re-derive that.
 **A known difference that is *not* accepted remains in `s_expression_parse`, and
 it favours Prismio.** C++ and Rust allocate a node per expression
 (`std::make_unique`, `Box`) and free every tree; the Prismio arm stores three
-`Int`s per node in one flat `List<Int>`, so it pays for one growing buffer where
+`Int`s per node in one flat `Vec<Int>`, so it pays for one growing buffer where
 the others pay for about 50,000 allocations and frees. Read its ratio as a
 parse-and-evaluate comparison, not an allocation one.
 

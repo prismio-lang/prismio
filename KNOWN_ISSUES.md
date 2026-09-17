@@ -510,6 +510,30 @@ at all.
 
 ## Toolchain layout
 
+**The compiler depends on a global LLVM, and a packaged toolchain does too.**
+Measured 2026-09-17, moving from LLVM 22.1.8 to 23.1.1 with `brew upgrade llvm`:
+
+- Every compiler binary loads `libLLVM-C.dylib` by the install name the dylib
+  carries, `/opt/homebrew/opt/llvm/lib/...`. The upgrade moved that link, and
+  every existing binary -- the installed `prismio`, the project host, every
+  `build/` generation -- then refused to compile (`check_llvm_version`).
+- A packaged `third_party/llvm-paths.json` records the *build machine's*
+  Cellar path, `/opt/homebrew/Cellar/llvm/22.1.8`, for `clang`. The same
+  upgrade also moved `z3`, so that keg's `clang` stopped loading
+  (`libz3.4.16.dylib`), and a 22 build failed at the native step.
+- `tools/release.py` bundles no LLVM, so a release needs Homebrew LLVM at that
+  exact path.
+- `tools/setup_llvm.py`'s download fallback cannot help on macOS or Linux: the
+  official `LLVM-<ver>-<OS>-<ARCH>` archives carry neither `llvm-c/Core.h` nor
+  a shared `libLLVM-C` (the CI matrix, 2026-08-29).
+
+The fix is to ship the pinned LLVM inside the toolchain -- `lib/libLLVM` and
+`clang` beside `bin/prismio`, the compiler linked `@executable_path/../lib` --
+and to have `setup_llvm.py` provision that same artifact into `third_party/`
+for development. Not started. Until then, an old compiler runs against the
+versioned keg: `DYLD_LIBRARY_PATH=/opt/homebrew/opt/llvm@22/lib
+PRISMIO_LLVM_DIR=/opt/homebrew/opt/llvm@22`.
+
 **A struct crossing a `.plib` read its fields one slot late, and the cause was
 field order chosen per compilation.** Fixed; what it leaves is below. A program
 built against a packaged `stdlib/process.plib` sent every `Process` mode to the

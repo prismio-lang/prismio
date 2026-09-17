@@ -23,7 +23,7 @@ Usage:
     python tools/setup_llvm.py --check         # report only, change nothing
     python tools/setup_llvm.py --force         # download even if one was found
     python tools/setup_llvm.py --llvm-dir DIR  # adopt an install you already have
-    python tools/setup_llvm.py --version 22.1.8
+    python tools/setup_llvm.py --version 23.1.1
 """
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ CONFIG_PATH = THIRD_PARTY / "llvm-paths.json"
 # Keep REQUIRED_MAJOR in step with PRISMIO_LLVM_EXPECTED_MAJOR in
 # runtime/prismio_llvm.h -- the backend re-checks it at runtime via
 # LLVMGetVersion(), which is what catches a stray LLVM-C.dll on PATH.
-DEFAULT_VERSION = "22.1.8"
-REQUIRED_MAJOR = 22
+DEFAULT_VERSION = "23.1.1"
+REQUIRED_MAJOR = 23
 
 GITHUB_RELEASE_API = "https://api.github.com/repos/llvm/llvm-project/releases/tags/llvmorg-{version}"
 
@@ -76,8 +76,11 @@ GITHUB_RELEASE_API = "https://api.github.com/repos/llvm/llvm-project/releases/ta
 # failed on macOS and Ubuntu for exactly this -- the release was fetched fine and
 # then no pattern matched, because every entry here predated the rename.
 #
-# Darwin/x86_64 has no asset in 22.1.x at all. Its old pattern is kept so the
-# failure names a missing asset rather than a missing platform.
+# Darwin/x86_64 has no asset in 22.1.x or 23.1.x at all. Its old pattern is
+# kept so the failure names a missing asset rather than a missing platform.
+#
+# From 23.1 every archive is also published as `.tar.zst`. `select_asset` takes
+# only `.tar.xz`/`.tar.gz`, because `tarfile` cannot read zstd before Python 3.14.
 ASSET_PATTERNS = {
     ("Windows", "AMD64"): ["x86_64-pc-windows-msvc"],
     ("Windows", "ARM64"): ["aarch64-pc-windows-msvc", "woa64"],
@@ -204,8 +207,8 @@ def candidate_roots() -> list[Path]:
                 (p for p in downloads.glob("clang+llvm-*") if p.is_dir()), reverse=True
             )
     elif sys.platform == "darwin":
-        # The versioned keg first. Homebrew installs `llvm@22` keg-only at
-        # `opt/llvm@22`, and only the *unversioned* `llvm` formula gets
+        # The versioned keg first. Homebrew installs `llvm@23` keg-only at
+        # `opt/llvm@23`, and only the *unversioned* `llvm` formula gets
         # `opt/llvm` -- which tracks whatever major is current and is therefore
         # the one this pinned check is most likely to reject. Looking for the
         # major we actually want is both more likely to hit and more likely to

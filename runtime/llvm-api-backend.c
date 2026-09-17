@@ -3272,22 +3272,37 @@ BINOP(ir_sdiv, LLVMBuildSDiv)
 BINOP(ir_udiv, LLVMBuildUDiv)
 BINOP(ir_srem, LLVMBuildSRem)
 BINOP(ir_urem, LLVMBuildURem)
+
+// `contract` on a float add, subtract or multiply -- (1 << 5) is
+// LLVMFastMathAllowContract, spelled as a number because the fallback header
+// has no LLVMFastMathFlags.
+//
+// **Only on an instruction.** Two constant operands fold, and the builder hands
+// back a ConstantFP; LLVMSetFastMathFlags casts its argument to Instruction
+// unchecked. LLVM 22 wrote the bit into the uniqued constant and nothing
+// noticed. LLVM 23 faults, on `0.0 - 2.5` in test_33 and `0.0 - 100.0` in
+// g4_ecs_world. A folded constant has no flags to carry, so skipping it
+// changes no IR.
+static void set_fp_contract(LLVMValueRef v) {
+    if (LLVMIsAInstruction(v)) LLVMSetFastMathFlags(v, (1 << 5));
+}
+
 int ir_fadd(const char *type, const char *lhs, const char *rhs) {
     if (block_done()) return 0;
     LLVMValueRef v = LLVMBuildFAdd(g_builder, resolve_value(lhs, type), resolve_value(rhs, type), "");
-    LLVMSetFastMathFlags(v, (1 << 5));
+    set_fp_contract(v);
     return intern_value(v);
 }
 int ir_fsub(const char *type, const char *lhs, const char *rhs) {
     if (block_done()) return 0;
     LLVMValueRef v = LLVMBuildFSub(g_builder, resolve_value(lhs, type), resolve_value(rhs, type), "");
-    LLVMSetFastMathFlags(v, (1 << 5));
+    set_fp_contract(v);
     return intern_value(v);
 }
 int ir_fmul(const char *type, const char *lhs, const char *rhs) {
     if (block_done()) return 0;
     LLVMValueRef v = LLVMBuildFMul(g_builder, resolve_value(lhs, type), resolve_value(rhs, type), "");
-    LLVMSetFastMathFlags(v, (1 << 5));
+    set_fp_contract(v);
     return intern_value(v);
 }
 BINOP(ir_fdiv, LLVMBuildFDiv)

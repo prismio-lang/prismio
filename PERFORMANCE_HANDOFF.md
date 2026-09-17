@@ -634,7 +634,7 @@ or automatic AoS-to-SoA conversion. Existing measurements do not support them.
 
 ## Verification protocol
 
-Use the configured LLVM 22 toolchain from `third_party/llvm-paths.json` (or the
+Use the configured LLVM toolchain (23 since 2026-09-17) from `third_party/llvm-paths.json` (or the
 repository's documented `PRISMIO_LLVM_DIR`). Keep toolchain and thermal state
 stable during A/B runs.
 
