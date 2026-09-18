@@ -523,6 +523,7 @@ private fn generateVariableDecl(stmt: ASTNode) {
             and chainCopiesName(irFunctionBody, varName) == false) {
             ir_mark_droppable(varName, IR_DROP_TASK)
         } else if (aif_frees_at_scope_node(stmt.child2) == 1
+            and nodeGetType(stmt).kind != TypeKind.ARRAY
             and chainAssignsName(irFunctionBody, varName) == false
             and chainDropsName(irFunctionBody, varName) == false) {
             // `drop(x)` already freed it, so a scope release as well is a
@@ -544,8 +545,11 @@ private fn generateVariableDecl(stmt: ASTNode) {
             // ownership the escape lattice cannot express, so it is asked of
             // the converged facts (the callee kept nothing, and allocated what
             // it returned) plus the two syntactic guards the facts leave open.
+            // An array is frame storage -- a returned one was copied into this
+            // frame above -- so nothing here is the deallocator's.
             let owned = aif_owns_call_result_at_node(stmt.child2)
             if (owned != AIF_ELEM_NONE
+                    and nodeGetType(stmt).kind != TypeKind.ARRAY
                     and chainAssignsName(irFunctionBody, varName) == false
                 and chainReturnsName(irFunctionBody, varName) == false
                 and chainDropsName(irFunctionBody, varName) == false
@@ -724,8 +728,17 @@ private fn generateReturn(stmt: ASTNode) {
     // returned value is never among them: returning it puts its escape at
     // Caller, and nothing with that escape is droppable here.
     if (nodeExists(stmt.child1)) {
-        let retVal = generateExpression(ptr_to_node(stmt.child1))
-        let retType = storageType(getExprType(ptr_to_node(stmt.child1)))
+        let mut retVal = generateExpression(ptr_to_node(stmt.child1))
+        let mut retType = storageType(getExprType(ptr_to_node(stmt.child1)))
+        // `-> Array<T, N>`: the elements leave by value, loaded out of a frame
+        // that is about to go.
+        if (nodeExists(irFunctionDecl)) {
+            let arrayReturn = irArrayReturnKey(ptr_to_node(irFunctionDecl))
+            if (arrayReturn.equals("") == false) {
+                retVal = ir_get_temp_name(ir_array_load(arrayReturn, retVal))
+                retType = arrayReturn
+            }
+        }
         generateScopeDrops(0)
         generateRegionExits(ir_region_depth())
         ir_ret(retType, retVal)

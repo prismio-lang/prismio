@@ -345,6 +345,8 @@ public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 public extern fn ir_array_alloca_zeroed(elemType: String, count: Int) -> Int
 public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int
 public extern fn ir_array_copy_into(elemType: String, count: Int, dst: String, src: String)
+public extern fn ir_array_load(key: String, src: String) -> Int
+public extern fn ir_array_from_value(key: String, value: String) -> Int
 public extern fn ir_string_ptr(globalName: String) -> Int
 // LAYOUT 2. A constant C string created on demand and interned by content, for
 // the type and field names the profile instrumentation passes. Distinct from

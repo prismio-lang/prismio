@@ -16,6 +16,15 @@
   known length a value: `let b = a` and `d = c` copy the elements (`memcpy`),
   equal lengths required, while a `[T]` parameter stays a view of the caller's
   array. tests/test_158, neg_162, neg_163.
+- **Arrays return by value: `-> Array<T, N>`.** A local or a literal of that
+  length is loaded out of the returning frame as an `[N x T]` aggregate and
+  stored into a frame slot of the caller's, so `let b = f()` is a copy and
+  `f()[i]` and `g(f())` work without a binding. The elements must own nothing,
+  the length must match, and a `[T]` parameter's unknown length is refused.
+  `-> [T]` is unchanged: only a parameter's view may leave through it. Which
+  functions return by value is read off the declaration everywhere -- a generic
+  `-> T` bound to an array still returns the pointer it was given.
+  tests/test_163, neg_164.
 - **A Vec removal releases at once when no view of an element can be live.**
   `clear`, `truncate` and `removeAt` on a Vec created in the same function,
   whose elements nothing has read, sliced or lent before the removal -- and, in

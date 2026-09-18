@@ -196,6 +196,29 @@ internal fn functionSymbolName(func: ASTNode) -> String {
     return func.s1
 }
 
+// `arr:N:K` -- how an array whose length is known travels by value: out of a
+// `-> Array<T, N>` function, and back into the caller's frame.
+internal fn irArrayValueKey(t: TypeInfo) -> String {
+    let elem = storageType(typeIrKey(ptr_to_type(t.child)))
+    return "arr:".concat(strFromInt(t.length), ":", elem)
+}
+
+// The value key when `func` is declared `-> Array<T, N>`, and "" otherwise. Read
+// off the declaration, as sema's CALL_EXPR.i2 is: the signature, every `return`
+// and every call site have to agree, and a generic `-> T` bound to an array
+// returns a pointer.
+internal fn irArrayReturnKey(func: ASTNode) -> String {
+    if (nodeIsNull(func.child3)) { return "" }
+    let ann = ptr_to_node(func.child3)
+    if (ann.kind != NodeKind.TYPE_ANNOTATION or ann.i1 != 1 or ann.i3 == 1
+            or nodeIsNull(ann.child2)) {
+        return ""
+    }
+    let t = nodeGetType(ann)
+    if (typeArrayCopies(t) == false) { return "" }
+    return irArrayValueKey(t)
+}
+
 internal fn getDeclaredReturnType(node: ASTNode, retChild: Ptr) -> String {
     if (nodeExists(retChild)) {
         let retNode = ptr_to_node(retChild)

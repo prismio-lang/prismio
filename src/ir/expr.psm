@@ -416,6 +416,9 @@ private fn chainBindingAliasesName(head: Ptr, boundName: String, name: String, h
 // no release here even though it is exactly the shape that would double-free.
 private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
     if (argNode.kind != NodeKind.CALL_EXPR) { return false }
+    // An array is frame storage, whatever the analysis says of the literal a
+    // callee built it from: `g(make())` hands `g` a slot of this frame.
+    if (nodeGetType(argNode).kind == TypeKind.ARRAY) { return false }
     return aif_owns_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
 }
 
@@ -4340,6 +4343,10 @@ private fn generateCall(expr: ASTNode) -> String {
     }
 
     let mut retType = storageType(getExprType(expr))
+    // `-> Array<T, N>` (sema's CALL_EXPR.i2): the elements come back by value
+    // and land in a frame slot of this function's, below.
+    let arrayByValue = isForeign == false and expr.i2 == 1
+    if (arrayByValue) { retType = irArrayValueKey(nodeGetType(expr)) }
 
     // Whether the temporaries above may be released once this call returns.
     //
@@ -4458,6 +4465,9 @@ private fn generateCall(expr: ASTNode) -> String {
     // is what came back.
     if (releaseTemps) {
         generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
+    }
+    if (arrayByValue) {
+        return ir_get_temp_name(ir_array_from_value(retType, result))
     }
 
     // AIF item 3. A container is told what it owns at construction, because

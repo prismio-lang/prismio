@@ -1271,6 +1271,16 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (fnNode.kind == NodeKind.FUNCTION) {
         retT = semaDeclaredReturnType(module, fnNode.child3)
         if (name.equals("main")) { retT = typeInt() }
+        // CALL_EXPR.i2 on a call to a Prismio function: 1 when it returns an
+        // array by value, read by codegen for the call's LLVM type. Decided from
+        // the declaration, not from `retT`: a generic `-> T` bound to an array
+        // types as one yet returns the pointer it was given. (On list_truncate
+        // and list_remove_at, i2 is semaRemovalVerdict's.)
+        expr.i2 = 0
+        if (nodeExists(fnNode.child3) and semaIsSizedArrayAnnotation(ptr_to_node(fnNode.child3))
+                and typeArrayCopies(retT)) {
+            expr.i2 = 1
+        }
     } else {
         retT = semaDeclaredReturnType(module, fnNode.child2)
     }
@@ -1943,24 +1953,6 @@ private fn semaSplitPrintStatement(module: ASTNode, stmt: ASTNode) {
 }
 
 
-// `let m: Array<U32, 16>` -- the one place a written length is read. Typed here
-// rather than through semaAnnotationType, which refuses a length everywhere else.
-private fn semaSizedArrayAnnotation(module: ASTNode, ann: ASTNode) -> TypeInfo {
-    let mut elemT = typeInvalid()
-    if (nodeExists(ann.child1)) {
-        elemT = semaAnnotationType(module, ptr_to_node(ann.child1))
-    }
-    let length = ptr_to_node(ann.child2)
-    let count = typeIntLiteralCount(length.s1)
-    if (count < 0) {
-        let shown = diagQuote(length.s1)
-        semaErrorAt(length, "an array's length is a positive whole number that fits `Int`, not ".concat(shown))
-    }
-    let arrT = typeArraySized(elemT, count)
-    nodeSetType(ann, arrT)
-    return arrT
-}
-
 // What a local array's declaration has to supply, and the type it binds. `[T]`
 // and `Array<T>` take the length from the initializer, so without one there is
 // nothing to size the frame storage with -- until 2026-09-18 that compiled to an
@@ -2027,7 +2019,7 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     if (hasAnnotation) {
         let ann = ptr_to_node(stmt.child1)
         if (ann.i1 == 1 and ann.i3 == 0 and nodeExists(ann.child2)) {
-            varT = semaSizedArrayAnnotation(module, ann)
+            varT = semaSizedArrayType(module, ann)
         } else {
             varT = semaAnnotationType(module, ann)
         }
@@ -2275,15 +2267,29 @@ private fn semaReturn(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) 
         // so skipping the mark loses no real diagnostic.
         semaCheckValue(module, ptr_to_node(stmt.child1), expectedReturn, "return")
 
-        // An array is a stack allocation (ir_array_alloca), so returning one
-        // the function itself created hands back a pointer into a frame that
-        // no longer exists. This compiled clean and appeared to work --
-        // reading the dead frame usually still finds the values -- which is
-        // the worst possible failure mode for it.
-        //
-        // Returning an array that came *in* as a borrowed parameter is fine:
-        // the caller owns that storage and it outlives the call.
-        if (expectedReturn.kind == TypeKind.ARRAY) {
+        // `-> Array<T, N>` copies the elements out, so any array of that length
+        // may be returned -- a local, a literal -- and codegen hands back the
+        // value. It has to be of that length, and known to be.
+        if (expectedReturn.kind == TypeKind.ARRAY and expectedReturn.length > 0) {
+            let returned = ptr_to_node(stmt.child1)
+            let actual = nodeGetType(returned)
+            if (actual.kind == TypeKind.ARRAY and actual.length != expectedReturn.length) {
+                let holds = "this function returns ".concat(strFromInt(expectedReturn.length), " elements")
+                if (actual.length <= 0) {
+                    semaErrorAt(returned, holds.concat(", and the length of this array is not known"))
+                    diag_note("a `[T]` parameter takes any length; copy it into an `Array<T, N>` first")
+                } else {
+                    semaErrorAt(returned, holds.concat(", and this array has ", strFromInt(actual.length)))
+                }
+            }
+        } else if (expectedReturn.kind == TypeKind.ARRAY) {
+            // `-> [T]` returns the pointer. An array is a stack allocation
+            // (ir_array_alloca), so returning one the function itself created
+            // hands back a pointer into a frame that no longer exists. This
+            // compiled clean and appeared to work -- reading the dead frame
+            // usually still finds the values -- which is the worst possible
+            // failure mode for it. One that came *in* as a borrowed parameter is
+            // fine: the caller owns that storage and it outlives the call.
             let returned = ptr_to_node(stmt.child1)
             let mut isBorrowedParam = false
             if (returned.kind == NodeKind.IDENTIFIER_EXPR) {
@@ -2291,7 +2297,7 @@ private fn semaReturn(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) 
             }
             if (isBorrowedParam == false) {
                 semaErrorAt(returned, "cannot return an array created in this function; it lives on the stack frame that is about to be discarded")
-                diag_note("return an array that was passed in, or write into one the caller provides")
+                diag_note("declare the return as `Array<T, N>` to return it by value, or write into an array the caller provides")
             }
         }
     } else {
@@ -2622,6 +2628,18 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
 
     let mut expectedReturn = semaDeclaredReturnType(module, fnNode.child3)
     if (fnNode.s1.equals("main")) { expectedReturn = typeInt() }
+    // `-> Array<T, N>` returns the elements by value -- a byte copy out of this
+    // frame -- so, like a copied array, they have to own nothing.
+    if (expectedReturn.kind == TypeKind.ARRAY and expectedReturn.length > 0
+            and nodeExists(expectedReturn.child)) {
+        let elemT = ptr_to_type(expectedReturn.child)
+        if (typeIsValid(elemT) and typeOwnsNothing(elemT) == false) {
+            let shown = typeDisplay(elemT)
+            semaErrorAt(ptr_to_node(fnNode.child3),
+                        "an array is returned by value only when its elements own nothing, and ".concat(shown, " does"))
+            diag_note("return a `Vec`, or fill a caller's array through a `[T]` parameter")
+        }
+    }
 
     let mut paramPtr = fnNode.child1
     while (nodeExists(paramPtr)) {

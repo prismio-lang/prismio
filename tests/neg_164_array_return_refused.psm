@@ -1,0 +1,21 @@
+// expect-error: an array is returned by value only when its elements own nothing, and String does
+// expect-error: this function returns 3 elements, and this array has 2
+// expect-error: this function returns 2 elements, and the length of this array is not known
+// expect-error: cannot return an array created in this function
+// expect-error: aborting due to 4 previous errors
+// `-> Array<T, N>` returns a byte copy, so its elements must own nothing; the
+// returned array has to have that length, and a `[T]` parameter's is unknown.
+// `-> [T]` still returns a pointer, so a local array cannot go out through it.
+
+fn names() -> Array<String, 2> { return ["a", "b"] }
+
+fn short() -> Array<Int, 3> { return [1, 2] }
+
+fn view(xs: [Int]) -> Array<Int, 2> { return xs }
+
+fn local() -> [Int] {
+    let a: Array<Int, 2>
+    return a
+}
+
+fn main() -> Int { return 0 }

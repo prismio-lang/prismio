@@ -251,6 +251,15 @@ static LLVMTypeRef type_from_key(const char *t) {
         return LLVMPointerTypeInContext(g_ctx, 0);
     if (strncmp(t, "struct:", 7) == 0) return named_struct(t + 7);
     if (t[0] == '%') return named_struct(t + 1);
+    // `arr:N:K`, N elements of key K: an array handed back by value from a
+    // `-> Array<T, N>` function (irArrayValueKey in src/ir/types.psm). Every other
+    // array is a `ptr` to its first element.
+    if (strncmp(t, "arr:", 4) == 0) {
+        char *rest = NULL;
+        long n = strtol(t + 4, &rest, 10);
+        if (!rest || *rest != ':' || n <= 0) backend_fail("malformed array key", t);
+        return LLVMArrayType2(type_from_key(rest + 1), (uint64_t)n);
+    }
     backend_fail("unknown type key", t);
     return NULL;
 }
@@ -441,6 +450,11 @@ static LLVMValueRef resolve_value(const char *s, const char *type_key) {
         backend_fail("unknown local name", s);
     }
 
+    // A function falling off its end returns its type's zero, and an array
+    // returned by value has no textual constant to spell one with.
+    if (type_key && strncmp(type_key, "arr:", 4) == 0 && strcmp(s, "0") == 0) {
+        return LLVMConstNull(type_from_key(type_key));
+    }
     return const_from_text(s, type_from_key(type_key));
 }
 
@@ -2186,6 +2200,23 @@ int ir_array_copy(const char *elem_type, int count, const char *src) {
     LLVMTypeRef arr = LLVMArrayType2(ety, (uint64_t)count);
     LLVMValueRef slot = array_slot(arr);
     array_copy_bytes(ety, arr, slot, resolve_value(src, "ptr"));
+    return array_base(arr, slot);
+}
+
+// `-> Array<T, N>`, the callee's half: the elements a local's storage holds, as
+// the aggregate value `ret` hands back. LLVM demotes a large one to a hidden
+// out-pointer itself.
+int ir_array_load(const char *key, const char *src) {
+    return intern_value(LLVMBuildLoad2(g_builder, type_from_key(key),
+                                       resolve_value(src, "ptr"), ""));
+}
+
+// The caller's half: the returned aggregate stored into a frame slot of its
+// own, so the call's value is an address like every other array's.
+int ir_array_from_value(const char *key, const char *value) {
+    LLVMTypeRef arr = type_from_key(key);
+    LLVMValueRef slot = array_slot(arr);
+    LLVMBuildStore(g_builder, resolve_value(value, key), slot);
     return array_base(arr, slot);
 }
 

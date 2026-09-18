@@ -119,13 +119,12 @@ private fn semaAnnotationTypeOf(module: ASTNode, tn: ASTNode) -> TypeInfo {
 
 private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
-        // `Array<T, N>` outside a `let`, which types its own annotation
-        // (semaSizedArrayAnnotation). A parameter already takes any length as
-        // `[T]`; a return or a field needs the length in the type, which is
-        // COLLECTIONS step 3.
+        // `Array<T, N>` where no length is read. A `let` and a return type type
+        // their own annotation (semaSizedArrayType); a parameter already takes
+        // any length as `[T]`, and a field needs COLLECTIONS step 3.
         if (nodeExists(tn.child2)) {
-            semaErrorAt(tn, "an array's length is written only where a local array is declared")
-            diag_note("a parameter takes `[T]` and gets its length from each call; returning an array or storing one in a field is not supported yet")
+            semaErrorAt(tn, "an array's length is written only where a local array is declared, or on a return type")
+            diag_note("a parameter takes `[T]` and gets its length from each call; storing an array in a field is not supported yet")
             // Detached once reported: a signature is typed more than once, and
             // each typing would say it again.
             tn.child2 = ptr_null()
@@ -216,9 +215,36 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     return typeInvalid()
 }
 
+// `Array<T, N>` where a length may be written -- a local `let`, and a return
+// type, which hands the array back by value. semaAnnotationType refuses a
+// length everywhere else.
+internal fn semaSizedArrayType(module: ASTNode, ann: ASTNode) -> TypeInfo {
+    let mut elemT = typeInvalid()
+    if (nodeExists(ann.child1)) {
+        elemT = semaAnnotationType(module, ptr_to_node(ann.child1))
+    }
+    let length = ptr_to_node(ann.child2)
+    let count = typeIntLiteralCount(length.s1)
+    if (count < 0) {
+        let shown = diagQuote(length.s1)
+        semaErrorAt(length, "an array's length is a positive whole number that fits `Int`, not ".concat(shown))
+    }
+    let arrT = typeArraySized(elemT, count)
+    nodeSetType(ann, arrT)
+    return arrT
+}
+
+// Whether a return annotation hands an array back by value: `-> Array<T, N>`.
+internal fn semaIsSizedArrayAnnotation(ann: ASTNode) -> Bool {
+    return ann.kind == NodeKind.TYPE_ANNOTATION and ann.i1 == 1 and ann.i3 == 0
+        and nodeExists(ann.child2)
+}
+
 internal fn semaDeclaredReturnType(module: ASTNode, retChild: Ptr) -> TypeInfo {
     if (nodeExists(retChild)) {
-        return semaAnnotationType(module, ptr_to_node(retChild))
+        let ann = ptr_to_node(retChild)
+        if (semaIsSizedArrayAnnotation(ann)) { return semaSizedArrayType(module, ann) }
+        return semaAnnotationType(module, ann)
     }
     return typeVoid()
 }

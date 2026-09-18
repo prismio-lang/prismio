@@ -1,0 +1,90 @@
+// `-> Array<T, N>`: an array returned by value. The callee loads the elements out
+// of the frame it is leaving and returns the aggregate; the caller stores it in
+// a frame slot of its own, so the call's value is an address like any array's.
+//
+//   - a local, a literal and a generic `Array<T, 2>` all return;
+//   - the result is copied into a binding, indexed directly, and passed to a
+//     `[T]` parameter without a binding;
+//   - 100,000 calls in a loop keep one slot per call site, not one per call;
+//   - a generic `-> T` bound to an array still returns the pointer it was
+//     given -- the declaration decides, not the call's type -- so `id(local)`
+//     is a view of `local`.
+
+import std.io
+
+struct Grid {
+    w: Int
+}
+
+impl Grid {
+    fn corners(self) -> Array<Int, 2> {
+        return [self.w, self.w * 2]
+    }
+}
+
+fn make(seed: Int) -> Array<Int, 3> {
+    let a: Array<Int, 3>
+    a[1] = seed
+    a[2] = seed * 10
+    return a
+}
+
+fn bytes() -> Array<U8, 4> {
+    return [1, 2, 3, 250]
+}
+
+fn pair<T>(x: T, y: T) -> Array<T, 2> {
+    return [x, y]
+}
+
+fn id<T>(x: T) -> T {
+    return x
+}
+
+fn total(xs: [Int], n: Int) -> Int {
+    let mut s = 0
+    let mut i = 0
+    while (i < n) {
+        s = s + xs[i]
+        i = i + 1
+    }
+    return s
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL: ")
+    println(what)
+    return 1
+}
+
+fn main() -> Int {
+    let b = make(7)
+    b[0] = 1
+    if (b[0] + b[1] + b[2] != 78) { return fail("a returned local") }
+    let again = make(7)
+    if (again[0] != 0) { return fail("each call returns its own copy") }
+    if (make(3)[2] != 30) { return fail("indexing a call directly") }
+    if (total(make(4), 3) != 44) { return fail("passing a call to a [T] parameter") }
+
+    let mut sum = 0
+    let mut i = 0
+    while (i < 100000) {
+        let t = make(i)
+        sum = (sum + t[1]) % 1000003
+        i = i + 1
+    }
+    if (sum != 935003) { return fail("100,000 returns in a loop") }
+
+    let bs = bytes()
+    let ps = pair(5, 6)
+    let g = Grid { w: 4 }
+    let k = g.corners()
+    if ((bs[3] as Int) != 250 or ps[1] != 6 or k[1] != 8) { return fail("literal, generic and method returns") }
+
+    let local: [Int] = [9, 8]
+    let same = id(local)
+    same[0] = 90
+    if (local[0] != 90) { return fail("a generic -> T still returns a view") }
+    println("PASS: arrays returned by value")
+    return 0
+}

@@ -214,7 +214,11 @@ private fn generateFunction(func: ASTNode) {
         isMain = 1
     }
 
-    let retSigType = storageType(retType)
+    // `-> Array<T, N>` returns the aggregate. Debug info below keeps the pointer
+    // every other array is described as.
+    let mut retSigType = storageType(retType)
+    let arrayReturn = irArrayReturnKey(func)
+    if (arrayReturn.equals("") == false) { retSigType = arrayReturn }
     ir_function_begin(emittedName, retSigType)
     // The declared return, not the storage one: `struct:Point` and `String` are
     // both `ptr` by the time ir_function_begin sees them.
