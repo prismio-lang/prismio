@@ -1,5 +1,6 @@
 #include "benchmarks.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <condition_variable>

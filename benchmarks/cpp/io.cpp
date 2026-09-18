@@ -1,6 +1,8 @@
 #include "benchmarks.hpp"
 
+#include <cstdint>
 #include <fstream>
+#include <vector>
 
 std::string read_file(const std::string& path) {
     std::ifstream input(path, std::ios::binary);
