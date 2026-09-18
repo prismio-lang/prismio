@@ -1,0 +1,29 @@
+// `I32` is another spelling of `Int`: the parser renames it, so the two are one
+// type and mix without a cast -- in an annotation, a parameter, a return, a
+// field, a cast, a type argument and an array's element type.
+
+import std.io
+import std.vec
+
+struct Point {
+    x: I32,
+    y: Int
+}
+
+fn twice(v: I32) -> I32 {
+    return v * 2
+}
+
+fn main() -> Int {
+    let a: I32 = 2147483647
+    let b: Int = a
+    let c = twice(21) + b - a
+    let d = 300 as I32
+    let xs: Vec<I32> = [1, 2]
+    let arr: Array<I32, 3>
+    arr[1] = 5
+    let p = Point { x: 7, y: 8 }
+    if (c + d + xs[1] + arr[1] + p.x + p.y != 364) { return 1 }
+    println("PASS: I32 is Int")
+    return 0
+}

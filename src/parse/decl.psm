@@ -556,6 +556,13 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
         } else {
             typeNode.s1 = name.value
         }
+        // `I32` is another spelling of `Int`, restored 2026-09-18 so the signed
+        // widths read I8, I16, I32, I64 beside U32. Renamed here, like `Vec`
+        // below, so every later pass -- type keys, IR, AIF, diagnostics -- sees
+        // the one type it always has, and `I32` and `Int` mix without a cast.
+        if (typeNode.s1.equals("I32")) {
+            typeNode.s1 = "Int"
+        }
         p.advance()
     } else {
         p.fatal("expected a type name, found ".concat(parserDescribe(name)))

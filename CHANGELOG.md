@@ -16,6 +16,9 @@
   known length a value: `let b = a` and `d = c` copy the elements (`memcpy`),
   equal lengths required, while a `[T]` parameter stays a view of the caller's
   array. tests/test_158, neg_162, neg_163.
+- **`I32` is `Int`.** The parser renames it, so the two are one type and mix
+  without a cast; the signed widths now read `I8`, `I16`, `I32`, `I64`.
+  tests/test_160.
 - **`let items: Vec<Item>` is an empty Vec.** A `Vec` binding with no
   initializer is given `= []` by sema, so its IR is identical to writing it.
   `Vec<T>?` is unaffected. tests/test_159.
