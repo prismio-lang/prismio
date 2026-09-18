@@ -6436,6 +6436,10 @@ def run_aif_verify_test():
         # is not released, and the name inside the `Job` copy `removeAt` returns
         # through two generic calls.
         "test_155_vec_methods": 3,
+        # `x[i] = v` across arrays, Vec and Slice. An array store is a plain
+        # store with no release, admitted only for elements nobody owns, so a
+        # leak here is an owning element getting through that gate.
+        "test_156_index_store": 0,
     }
 
     max_allocations = {

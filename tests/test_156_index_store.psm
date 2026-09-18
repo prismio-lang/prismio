@@ -1,0 +1,103 @@
+// `x[i] = v` -- the assignment form of a store, which type-checked for every
+// collection and generated nothing for any of them until 2026-09-17.
+//
+// Each collection reaches a different mechanism, so each is here:
+//   - an array stores through the element's address, and only for an element
+//     nobody owns (codegen's INDEX_EXPR branch in generateAssignment);
+//   - a Vec and a Slice have no element lvalue, so sema rewrites the statement
+//     into `list_set` / `slice_set` -- the call `v.set(i, x)` already lowers to;
+//   - a Vec of a flat struct stores inline, and one of a String stores the pair.
+// The widths matter for the array path: the store reads the element type for
+// its stride, and a hardcoded one wrote four bytes into an `[I64]`.
+
+import std.io
+import std.vec
+import std.string
+
+struct Pt {
+    x: Int,
+    y: Int
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn arrays() -> Int {
+    let mut ints: [Int] = [1, 2, 3, 4]
+    ints[2] = 70
+    ints[0] = ints[2] + 1
+    if (ints[2] != 70 or ints[0] != 71 or ints[1] != 2) { return fail("[Int] store") }
+
+    let mut wide: [I64] = [1, 2, 3]
+    wide[1] = 4294967296
+    if (wide[1] != 4294967296 or wide[2] != 3) { return fail("[I64] store") }
+
+    let mut small: [U8] = [1, 2]
+    small[0] = 200
+    if ((small[0] as Int) != 200) { return fail("[U8] store") }
+
+    let mut reals: [Float] = [1.5, 2.5]
+    reals[1] = reals[0] * 4.0
+    if (reals[1] != 6.0) { return fail("[Float] store") }
+
+    let mut flags: [Bool] = [false, false]
+    flags[1] = true
+    if (flags[1] == false or flags[0]) { return fail("[Bool] store") }
+
+    let mut letters: [Char] = ['a', 'b']
+    letters[0] = 'z'
+    if (letters[0] != 'z') { return fail("[Char] store") }
+
+    // The inner array is reached through the outer element, so this is the
+    // store's own base expression rather than a name.
+    let mut grid: [[Int]] = [[1, 2], [3, 4]]
+    grid[1][0] = 30
+    if (grid[1][0] != 30 or grid[0][1] != 2) { return fail("[[Int]] store") }
+    return 0
+}
+
+fn vectors() -> Int {
+    let ints: Vec<Int> = [1, 2, 3]
+    ints[1] = 20
+    ints[2] = ints[1] + 1
+    if (ints[1] != 20 or ints[2] != 21 or ints[0] != 1) { return fail("Vec<Int> store") }
+
+    let pts: Vec<Pt> = []
+    pts.push(Pt { x: 1, y: 2 })
+    pts.push(Pt { x: 3, y: 4 })
+    pts[0] = Pt { x: 5, y: 6 }
+    if (pts[0].x != 5 or pts[1].x != 3) { return fail("Vec<Pt> store") }
+
+    // Through a borrow, so the rewrite has to work on a parameter as well as on
+    // a local.
+    if (throughParameter(ints) != 0) { return 1 }
+    if (ints[0] != 100) { return fail("store through a parameter") }
+
+    let view: Slice<Int> = ints[0..3]
+    view[2] = 9
+    if (ints[2] != 9) { return fail("Slice store") }
+    return 0
+}
+
+fn throughParameter(xs: Vec<Int>) -> Int {
+    xs[0] = 100
+    return 0
+}
+
+fn strings() -> Int {
+    let words: Vec<String> = ["alpha", "beta"]
+    words[1] = "gamma"
+    if (words[1].equals("gamma") == false) { return fail("Vec<String> store") }
+    if (words[0].equals("alpha") == false) { return fail("Vec<String> neighbour") }
+    return 0
+}
+
+fn main() -> Int {
+    if (arrays() != 0) { return 1 }
+    if (vectors() != 0) { return 1 }
+    if (strings() != 0) { return 1 }
+    println("PASS: index store")
+    return 0
+}

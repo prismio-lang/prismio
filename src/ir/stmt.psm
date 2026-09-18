@@ -598,6 +598,17 @@ private fn generateAssignment(stmt: ASTNode) {
             ir_store(storeType, val, ir_get_var_slot(varName))
         }
     }
+    // `a[i] = v` on an array: sema has turned every other collection's store
+    // into a call and admits only elements nobody owns, so this is the address
+    // generateIndex reads through, and a plain store with no release.
+    if (targetNode.kind == NodeKind.INDEX_EXPR) {
+        let arrayVal = generateExpression(ptr_to_node(targetNode.child1))
+        let indexVal = generateExpression(ptr_to_node(targetNode.child2))
+        let elemType = storageType(getExprType(targetNode))
+        let val = generateExpression(ptr_to_node(stmt.child2))
+        let slot = ir_elem_ptr(elemType, arrayVal, indexVal)
+        ir_store_ptr(elemType, val, ir_get_temp_name(slot))
+    }
     if (targetNode.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         let objectNode = ptr_to_node(targetNode.child1)
 

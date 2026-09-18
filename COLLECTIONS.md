@@ -120,7 +120,7 @@ refresh between.
 | 1a | Sema accepts `Vec<T>` as the spelling of the internal List type; diagnostics say `Vec` | done 2026-09-17; IR byte-identical |
 | 1b | Seed refresh; migrate `src/`, `std/` (`std.vec`, `vecOf`), tests, benchmarks, corpus, `ums/`, docs | done 2026-09-17: user and developer docs migrated, both example gates pass; the `aif` report says `Vec` and `--manifest` keeps the key |
 | 1c | `List<T>` is an error naming `Vec<T>`; seed refresh | done 2026-09-17 (P3005, neg_156); seed refreshed |
-| 1d | The method surface above: library tier, sema rewrites, new runtime entries with AIF contracts in both implementations | done 2026-09-17 with removal always parking (`now` = 0); test_155, neg_157..159. Fixpoint, seed build matching, suite 348/348, differential at its known two, separation and externs clean |
+| 1d | The method surface above: library tier, sema rewrites, new runtime entries with AIF contracts in both implementations | done 2026-09-17 with removal always parking (`now` = 0); test_155, neg_157..159. Fixpoint, seed build matching, suite 348/348, differential at its known two, separation and externs clean. `v[i] = x` was not: it type-checked and generated nothing, for every collection, until 2026-09-18 -- sema now rewrites it to `list_set`/`slice_set`, an array of unowned elements stores in place, and the rest are refused (test_156, neg_161) |
 | 1e | A removal releases at once where no element view can be live (`vecRemovalReleasesNow` in src/ir/expr.psm), and `pop` moves the element out instead of copying it | |
 | 2 | Integer type arguments (`Array<T, 3>`, `Vec<U8, 4096>`), `[T; N]` | |
 | 3 | `Array<T, N>` as a sized value: inferred `N`, returnable, field storage, per-length instantiation of `[T]` parameters | |

@@ -1,0 +1,49 @@
+// expect-error: an element of [String] cannot be replaced
+// expect-error: an element of [Vec<Int>] cannot be replaced
+// expect-error: a String cannot be changed in place
+// expect-error: a DataView element is assigned one field at a time
+// expect-error: reads through `at`, and has no assignment form
+// expect-error: aborting due to 5 previous errors
+// `x[i] = v` where the store cannot be made safely, or has no meaning. Each is
+// one error, and the count above holds that: the refusal is reported where the
+// target is checked, so the right-hand side is never typed against it.
+//
+//   - an array stores through the element's address with no release, so an
+//     element that owns something would leak what the store displaces;
+//   - a String is immutable, a DataView column is written one field at a time,
+//     and a struct's `x[i]` is a call to its `at`.
+
+import std.vec
+
+struct Cell {
+    x: Int
+}
+
+struct Squares {
+    scale: Int
+}
+
+impl Squares {
+    fn at(self, index: Int) -> Int { return self.scale * index * index }
+}
+
+fn main() -> Int {
+    let mut names: [String] = ["a", "b"]
+    names[0] = "c"
+
+    let mut nested: [Vec<Int>] = [[1], [2]]
+    nested[0] = [3]
+
+    let text = "abc"
+    text[0] = 'z'
+
+    let rows: Vec<Cell> = []
+    rows.push(Cell { x: 1 })
+    let view: DataView<Cell> = soa(rows)
+    view[0] = Cell { x: 2 }
+
+    let squares = Squares { scale: 2 }
+    squares[1] = 4
+
+    return 0
+}

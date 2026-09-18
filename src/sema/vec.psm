@@ -185,6 +185,25 @@ internal fn semaVecLower(module: ASTNode, expr: ASTNode, name: String,
     return semaVecRewritten()
 }
 
+// `x[i] = v` where `x` is a Vec or a Slice: `stmt` becomes the expression
+// statement `list_set(x, i, v)` or `slice_set(x, i, v)`, and the caller checks
+// the call. Neither container has an element lvalue -- the storage is the
+// runtime's -- so the store is the call `v.set(i, x)` already lowers to, with
+// its checks and its ownership. The target's own collection and index become
+// the arguments; nothing else refers to the target once the statement is a
+// call (`v[i] += 1` is refused by the parser, so no right-hand side shares it).
+internal fn semaVecLowerIndexStore(stmt: ASTNode, target: ASTNode, store: String) -> ASTNode {
+    let base = ptr_to_node(target.child1)
+    let index = ptr_to_node(target.child2)
+    index.next = stmt.child2
+    base.next = target.child2
+    let call = semaVecCall(store, target.child1, target)
+    stmt.kind = NodeKind.EXPRESSION_STATEMENT
+    stmt.child1 = node_to_ptr(call)
+    stmt.child2 = ptr_null()
+    return call
+}
+
 // `Vec<T>.withCapacity(n)` -- the one associated function. The element type is
 // written, not inferred, so it becomes std.vec's `withCapacity<T>(n)`, which
 // builds the list inside an instantiation that knows `T` and therefore chooses

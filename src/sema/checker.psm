@@ -2020,8 +2020,66 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     nodeSetType(stmt, varT)
 }
 
+// `x[i] = v`, which type-checked for every collection and until 2026-09-17
+// generated nothing for any of them: codegen stores only to a name or a field.
+// A Vec or a Slice becomes its store call. An array keeps the assignment and
+// codegen stores through the element's address -- only for an element nobody
+// owns, because nothing would release what the store displaces. Everything
+// else is refused here, with the spelling that does work.
+//
+// Answers true when the statement is finished with: rewritten and checked, or
+// reported. False leaves an array store to the ordinary assignment path.
+private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) -> Bool {
+    let collectionT = semaExpr(module, ptr_to_node(target.child1))
+    if (typeIsValid(collectionT) == false) { return true }
+
+    let mut store = ""
+    if (collectionT.kind == TypeKind.LIST) { store = "list_set" }
+    if (collectionT.kind == TypeKind.SLICE) { store = "slice_set" }
+    if (store.equals("") == false) {
+        let call = semaVecLowerIndexStore(stmt, target, store)
+        semaExpr(module, call)
+        return true
+    }
+
+    if (collectionT.kind == TypeKind.ARRAY) {
+        let elemT = ptr_to_type(collectionT.child)
+        if (typeIsValid(elemT) == false) { return true }
+        let k = elemT.kind
+        if (k == TypeKind.INT or k == TypeKind.FLOAT or k == TypeKind.BOOL
+                or k == TypeKind.CHAR or k == TypeKind.PTR or k == TypeKind.ENUM) {
+            return false
+        }
+        semaErrorAt(target, "an element of ".concat(typeDisplay(collectionT),
+                                                     " cannot be replaced"))
+        diag_note("an array stores only elements nobody owns this way; use a `Vec` and `v[i] = x`, or assign a field -- `a[i].f = x`")
+        return true
+    }
+    if (collectionT.kind == TypeKind.STRING) {
+        semaErrorAt(target, "a String cannot be changed in place")
+        diag_note("build a new String with the character replaced")
+        return true
+    }
+    if (collectionT.kind == TypeKind.DATAVIEW) {
+        semaErrorAt(target, "a DataView element is assigned one field at a time")
+        diag_note("write `view[i].field = value`")
+        return true
+    }
+    if (collectionT.kind == TypeKind.STRUCT) {
+        semaErrorAt(target, "`x[i]` on ".concat(typeDisplay(collectionT),
+                                                 " reads through `at`, and has no assignment form"))
+        diag_note("give the type a method that stores, and call it")
+        return true
+    }
+    // Not indexable at all; the ordinary path reports that.
+    return false
+}
+
 private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     let target = ptr_to_node(stmt.child1)
+    if (target.kind == NodeKind.INDEX_EXPR) {
+        if (semaIndexAssignment(module, stmt, target)) { return }
+    }
 
     // Only a direct rebinding is checked. Assigning through a struct field
     // is mutation of a heap object reached by pointer, which is a separate
@@ -2055,9 +2113,18 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     if (target.kind == NodeKind.IDENTIFIER_EXPR) {
         ir_set_reinit_target(target.s1)
     }
-    let valueT = semaValueTypeAgainst(module, ptr_to_node(stmt.child2), targetT)
-    semaExpectAssignable(ptr_to_node(stmt.child2), "assignment", targetT, valueT)
-    semaMoveOperand(ptr_to_node(stmt.child2))
+    // A bare integer literal adopts the target's type, as it does in a `let`:
+    // `w = 4294967296` into an I64 and `b = 200` into a U8 were refused as
+    // "expected I64, found Int" until 2026-09-18. semaCheckValue is this path
+    // plus the adoption and its range check, so only a literal is sent there.
+    let value = ptr_to_node(stmt.child2)
+    if (semaIsIntLiteral(value)) {
+        semaCheckValue(module, value, targetT, "assignment")
+    } else {
+        let valueT = semaValueTypeAgainst(module, value, targetT)
+        semaExpectAssignable(value, "assignment", targetT, valueT)
+    }
+    semaMoveOperand(value)
     ir_set_reinit_target("")
 
     if (target.kind == NodeKind.IDENTIFIER_EXPR and targetT.kind == TypeKind.LIST) {
