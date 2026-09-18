@@ -472,49 +472,34 @@ public fn benchSha256(scale: Int) -> Int {
     return checksum
 }
 
+// BLAKE3's G mixing step on four words of the state. `v` is the caller's array,
+// written in place, as the Rust arm's `&mut [u32; 16]` and the C++ arm's
+// references are.
+fn blake3G(v: [U32], a: Int, b: Int, c: Int, d: Int, mx: U32, my: U32) {
+    v[a] = v[a] + v[b] + mx
+    v[d] = rotR(v[d] ^ v[a], 16)
+    v[c] = v[c] + v[d]
+    v[b] = rotR(v[b] ^ v[c], 12)
+    v[a] = v[a] + v[b] + my
+    v[d] = rotR(v[d] ^ v[a], 8)
+    v[c] = v[c] + v[d]
+    v[b] = rotR(v[b] ^ v[c], 7)
+}
+
 public fn benchBlake3Chunk(scale: Int) -> Int {
     let totalChunks = 300 * scale
     let mut seed = 99
 
-    let iv0: U32 = 1779033703 as U32
-    let iv1: U32 = 3144134277 as U32
-    let iv2: U32 = 1013904242 as U32
-    let iv3: U32 = 2773480762 as U32
-    let iv4: U32 = 1359893119 as U32
-    let iv5: U32 = 2600822924 as U32
-    let iv6: U32 = 528734635 as U32
-    let iv7: U32 = 1541459225 as U32
+    let IV: [U32] = [
+        0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+        0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19
+    ]
+    let MSG_PERM: [Int] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
 
-    let mut perm: Vec<Int> = list_new_with_capacity(16)
-    list_push(perm, 2)
-    list_push(perm, 6)
-    list_push(perm, 3)
-    list_push(perm, 10)
-    list_push(perm, 7)
-    list_push(perm, 0)
-    list_push(perm, 4)
-    list_push(perm, 13)
-    list_push(perm, 1)
-    list_push(perm, 11)
-    list_push(perm, 12)
-    list_push(perm, 5)
-    list_push(perm, 9)
-    list_push(perm, 14)
-    list_push(perm, 15)
-    list_push(perm, 8)
-
-    let mut totalChecksum: U32 = 0 as U32
-
-    let mut m: Vec<U32> = list_new_with_capacity(16)
-    let mut v: Vec<U32> = list_new_with_capacity(16)
-    let mut nextM: Vec<U32> = list_new_with_capacity(16)
-    let mut initI = 0
-    while (initI < 16) {
-        list_push(m, 0 as U32)
-        list_push(v, 0 as U32)
-        list_push(nextM, 0 as U32)
-        initI = initI + 1
-    }
+    let mut totalChecksum: U32 = 0
+    let mut m: [U32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut v: [U32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let mut nextM: [U32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
     let mut chunk = 0
     while (chunk < totalChunks) {
@@ -524,195 +509,56 @@ public fn benchBlake3Chunk(scale: Int) -> Int {
             let v1 = seed as U32
             seed = benchRandom(seed)
             let v2 = seed as U32
-            list_set(m, i, (v1 << 16) | v2)
+            m[i] = (v1 << 16) | v2
             i = i + 1
         }
 
-        list_set(v, 0, iv0)
-        list_set(v, 1, iv1)
-        list_set(v, 2, iv2)
-        list_set(v, 3, iv3)
-        list_set(v, 4, iv4)
-        list_set(v, 5, iv5)
-        list_set(v, 6, iv6)
-        list_set(v, 7, iv7)
-        list_set(v, 8, iv0)
-        list_set(v, 9, iv1)
-        list_set(v, 10, iv2)
-        list_set(v, 11, iv3)
-        list_set(v, 12, chunk as U32)
-        list_set(v, 13, 0 as U32)
-        list_set(v, 14, 1024 as U32)
-        list_set(v, 15, 0 as U32)
+        i = 0
+        while (i < 8) {
+            v[i] = IV[i]
+            i = i + 1
+        }
+        v[8] = IV[0]
+        v[9] = IV[1]
+        v[10] = IV[2]
+        v[11] = IV[3]
+        v[12] = chunk as U32
+        v[13] = 0
+        v[14] = 1024
+        v[15] = 0
 
         let mut round = 0
         while (round < 7) {
-            // Col 0
-            let mut a0 = list_get(v, 0)
-            let mut b0 = list_get(v, 4)
-            let mut c0 = list_get(v, 8)
-            let mut d0 = list_get(v, 12)
-            a0 = a0 + b0 + list_get(m, 0)
-            d0 = rotR(d0 ^ a0, 16)
-            c0 = c0 + d0
-            b0 = rotR(b0 ^ c0, 12)
-            a0 = a0 + b0 + list_get(m, 1)
-            d0 = rotR(d0 ^ a0, 8)
-            c0 = c0 + d0
-            b0 = rotR(b0 ^ c0, 7)
-            list_set(v, 0, a0)
-            list_set(v, 4, b0)
-            list_set(v, 8, c0)
-            list_set(v, 12, d0)
+            blake3G(v, 0, 4, 8, 12, m[0], m[1])
+            blake3G(v, 1, 5, 9, 13, m[2], m[3])
+            blake3G(v, 2, 6, 10, 14, m[4], m[5])
+            blake3G(v, 3, 7, 11, 15, m[6], m[7])
 
-            // Col 1
-            let mut a1 = list_get(v, 1)
-            let mut b1 = list_get(v, 5)
-            let mut c1 = list_get(v, 9)
-            let mut d1 = list_get(v, 13)
-            a1 = a1 + b1 + list_get(m, 2)
-            d1 = rotR(d1 ^ a1, 16)
-            c1 = c1 + d1
-            b1 = rotR(b1 ^ c1, 12)
-            a1 = a1 + b1 + list_get(m, 3)
-            d1 = rotR(d1 ^ a1, 8)
-            c1 = c1 + d1
-            b1 = rotR(b1 ^ c1, 7)
-            list_set(v, 1, a1)
-            list_set(v, 5, b1)
-            list_set(v, 9, c1)
-            list_set(v, 13, d1)
+            blake3G(v, 0, 5, 10, 15, m[8], m[9])
+            blake3G(v, 1, 6, 11, 12, m[10], m[11])
+            blake3G(v, 2, 7, 8, 13, m[12], m[13])
+            blake3G(v, 3, 4, 9, 14, m[14], m[15])
 
-            // Col 2
-            let mut a2 = list_get(v, 2)
-            let mut b2 = list_get(v, 6)
-            let mut c2 = list_get(v, 10)
-            let mut d2 = list_get(v, 14)
-            a2 = a2 + b2 + list_get(m, 4)
-            d2 = rotR(d2 ^ a2, 16)
-            c2 = c2 + d2
-            b2 = rotR(b2 ^ c2, 12)
-            a2 = a2 + b2 + list_get(m, 5)
-            d2 = rotR(d2 ^ a2, 8)
-            c2 = c2 + d2
-            b2 = rotR(b2 ^ c2, 7)
-            list_set(v, 2, a2)
-            list_set(v, 6, b2)
-            list_set(v, 10, c2)
-            list_set(v, 14, d2)
-
-            // Col 3
-            let mut a3 = list_get(v, 3)
-            let mut b3 = list_get(v, 7)
-            let mut c3 = list_get(v, 11)
-            let mut d3 = list_get(v, 15)
-            a3 = a3 + b3 + list_get(m, 6)
-            d3 = rotR(d3 ^ a3, 16)
-            c3 = c3 + d3
-            b3 = rotR(b3 ^ c3, 12)
-            a3 = a3 + b3 + list_get(m, 7)
-            d3 = rotR(d3 ^ a3, 8)
-            c3 = c3 + d3
-            b3 = rotR(b3 ^ c3, 7)
-            list_set(v, 3, a3)
-            list_set(v, 7, b3)
-            list_set(v, 11, c3)
-            list_set(v, 15, d3)
-
-            // Diag 0
-            let mut da0 = list_get(v, 0)
-            let mut db0 = list_get(v, 5)
-            let mut dc0 = list_get(v, 10)
-            let mut dd0 = list_get(v, 15)
-            da0 = da0 + db0 + list_get(m, 8)
-            dd0 = rotR(dd0 ^ da0, 16)
-            dc0 = dc0 + dd0
-            db0 = rotR(db0 ^ dc0, 12)
-            da0 = da0 + db0 + list_get(m, 9)
-            dd0 = rotR(dd0 ^ da0, 8)
-            dc0 = dc0 + dd0
-            db0 = rotR(db0 ^ dc0, 7)
-            list_set(v, 0, da0)
-            list_set(v, 5, db0)
-            list_set(v, 10, dc0)
-            list_set(v, 15, dd0)
-
-            // Diag 1
-            let mut da1 = list_get(v, 1)
-            let mut db1 = list_get(v, 6)
-            let mut dc1 = list_get(v, 11)
-            let mut dd1 = list_get(v, 12)
-            da1 = da1 + db1 + list_get(m, 10)
-            dd1 = rotR(dd1 ^ da1, 16)
-            dc1 = dc1 + dd1
-            db1 = rotR(db1 ^ dc1, 12)
-            da1 = da1 + db1 + list_get(m, 11)
-            dd1 = rotR(dd1 ^ da1, 8)
-            dc1 = dc1 + dd1
-            db1 = rotR(db1 ^ dc1, 7)
-            list_set(v, 1, da1)
-            list_set(v, 6, db1)
-            list_set(v, 11, dc1)
-            list_set(v, 12, dd1)
-
-            // Diag 2
-            let mut da2 = list_get(v, 2)
-            let mut db2 = list_get(v, 7)
-            let mut dc2 = list_get(v, 8)
-            let mut dd2 = list_get(v, 13)
-            da2 = da2 + db2 + list_get(m, 12)
-            dd2 = rotR(dd2 ^ da2, 16)
-            dc2 = dc2 + dd2
-            db2 = rotR(db2 ^ dc2, 12)
-            da2 = da2 + db2 + list_get(m, 13)
-            dd2 = rotR(dd2 ^ da2, 8)
-            dc2 = dc2 + dd2
-            db2 = rotR(db2 ^ dc2, 7)
-            list_set(v, 2, da2)
-            list_set(v, 7, db2)
-            list_set(v, 8, dc2)
-            list_set(v, 13, dd2)
-
-            // Diag 3
-            let mut da3 = list_get(v, 3)
-            let mut db3 = list_get(v, 4)
-            let mut dc3 = list_get(v, 9)
-            let mut dd3 = list_get(v, 14)
-            da3 = da3 + db3 + list_get(m, 14)
-            dd3 = rotR(dd3 ^ da3, 16)
-            dc3 = dc3 + dd3
-            db3 = rotR(db3 ^ dc3, 12)
-            da3 = da3 + db3 + list_get(m, 15)
-            dd3 = rotR(dd3 ^ da3, 8)
-            dc3 = dc3 + dd3
-            db3 = rotR(db3 ^ dc3, 7)
-            list_set(v, 3, da3)
-            list_set(v, 4, db3)
-            list_set(v, 9, dc3)
-            list_set(v, 14, dd3)
-
-            // Permute m
-            let mut pi = 0
-            while (pi < 16) {
-                list_set(nextM, pi, list_get(m, list_get(perm, pi)))
-                pi = pi + 1
+            i = 0
+            while (i < 16) {
+                nextM[i] = m[MSG_PERM[i]]
+                i = i + 1
             }
-            let mut cpyI = 0
-            while (cpyI < 16) {
-                list_set(m, cpyI, list_get(nextM, cpyI))
-                cpyI = cpyI + 1
+            i = 0
+            while (i < 16) {
+                m[i] = nextM[i]
+                i = i + 1
             }
-
             round = round + 1
         }
 
-        let mut chunkHash: U32 = 0 as U32
-        let mut hi = 0
-        while (hi < 8) {
-            chunkHash = chunkHash ^ (list_get(v, hi) ^ list_get(v, hi + 8))
-            hi = hi + 1
+        let mut chunkHash: U32 = 0
+        i = 0
+        while (i < 8) {
+            chunkHash = chunkHash ^ (v[i] ^ v[i + 8])
+            i = i + 1
         }
-        totalChecksum = ((totalChecksum * (31 as U32) + chunkHash) & (2147483647 as U32))
+        totalChecksum = (totalChecksum * 31 + chunkHash) & 2147483647
         chunk = chunk + 1
     }
 
