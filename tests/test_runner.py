@@ -6440,6 +6440,12 @@ def run_aif_verify_test():
         # store with no release, admitted only for elements nobody owns, so a
         # leak here is an owning element getting through that gate.
         "test_156_index_store": 0,
+        # An element read stored into a container -- another one or its own, as
+        # `v[i] = v[j]`. Every shape was a double free and the flat one a wrong
+        # answer; the violations are what this guards. A leak here would be the
+        # counted tier's teardown missing an element, as a Vec holding both a
+        # counted and an uncounted element of one type still does (KNOWN_ISSUES).
+        "test_157_shared_container_elements": 0,
     }
 
     max_allocations = {

@@ -192,17 +192,61 @@ is 0 either side — but a real regression in allocation hygiene. The recorded f
 moves the ledger by zero; the real shape is about eight lines, and the clause to
 widen can double-free, so it needs the owners enumerated first.
 
-**`list_set(xs, i, list_get(xs, j))` on a boxed list is a double free, and sema
-accepts it. This is unsoundness.** For a struct that owns something -- a
-`String` field -- each slot holds a pointer, and boxed `list_set` stores the
-pointer read from slot `j` into slot `i` without copying or retaining it.
-Teardown then releases that one box twice, and the box slot `i` held leaks, as
-`list_set`'s own comment says it will. `struct Tag { name: String, n: Int }`
-reads `6 allocated, 5 released, 1 leaked, 1 violation(s)`, identically on the
-compiler before `list_swap` and after it. The fix belongs where the store is
-admitted -- refuse moving a `list_get` result into a container for a non-`Copy`
-element, or copy it -- not in the release path, which cannot tell two real
-allocations apart.
+**Replacing a boxed element leaks the box it displaces.** For a struct that owns
+something -- a `String` field -- each slot of a `Vec` holds a pointer, and boxed
+`list_set` stores the new one without releasing the old, as its own comment says
+it will. `v[i] = x`, `v.set(i, x)` and `list_set` are one store:
+`struct Named { label: String }` reads `5 allocated, 4 released, 1 leaked,
+0 violation(s)` for a single `owners.set(0, …)`, on the compiler before the
+index store (2026-09-18) and after it. A counted element displaced from a Vec of
+a recursive enum leaks the same way.
+
+**A Vec holding a counted and an uncounted element of one type leaks the
+uncounted one.** Teardown releases every element one way. `list_push(ys, mk())`
+beside `list_push(ys, Tag { … })`, where `mk`'s site is counted and the literal's
+is not, reads `8 allocated, 6 released, 2 leaked, 0 violation(s)` -- before and
+after 2026-09-18.
+
+**Storing an element read of a flat struct boxes and counts the whole type.**
+Since 2026-09-18 an element read stored into a container is a second holder (see
+below), and for a struct of scalars that is more than it needs: a List would
+store it inline and copy it. What stops it staying inline is the inline store
+itself -- `list_push_inline` releases its source through `list_release_source`,
+which refuses only an address in the destination's own block, so a view into
+*another* list was freed as an allocation. On `c5fff0b`, `ys.push(xs[0])` for
+`struct Pt { x: Int, y: Int }` read `release of a pointer that is not live` and
+the program printed 452 for 152. The shape that pays is a flat element moved
+within its own list, `test_145_list_set_within_list`, which was sound inline and
+is now boxed; no benchmark or corpus program moved. The fix is an inline store
+that copies from a view without releasing it -- a new runtime entry codegen
+chooses when the value is an element read -- after which the solver can exempt
+flat types from both rules below.
+
+**Fixed 2026-09-18: an element read stored into a container was freed twice.**
+`list_push(ys, list_get(xs, 0))`, `list_set(xs, i, list_get(xs, j))`, the insert
+and slice forms, and `v[i] = v[j]` -- for a struct or enum literal built in the
+same function, every one read `release of a pointer that is not live`. Three
+defects, found in order:
+
+- `derived_tier` answered T1 for any site whose escape stayed in scope, without
+  reading A. SPEC 4.2's "region membership dominates aliasing" rests on an arena
+  reset freeing nothing individually, and a container element is never
+  arena-served -- the container frees it -- so a site A-CONTAIN had made Shared
+  was freed once per holder. `--why` said "A rose to Shared <- A-CONTAIN" over a
+  T1 site. It now falls through to T3 (T4b for a recursive type). A value built
+  in a helper had been counted all along, because a returned value lands at
+  Caller -- which is why the same probe written with `mk()` read clean.
+- A-CONTAIN counts containers, not slots, so a move within one list never reached
+  it. An element read (a view, SPEC 8.4) stored into a container is now a second
+  holder; a String is exempt, because storing a view copies it.
+- Once a local value could be T4b, `cyc_release` freed a buffered candidate root
+  whose count reached zero, and the next collection freed it again. It now defers
+  that free to the collection, as Bacon-Rajan's Release does.
+
+Guard: `test_157_shared_container_elements` in `run_aif_verify_test`, which fails
+on `c5fff0b` with a wrong answer and a violation. `test_100_reuse_token` and
+`test_129_enum_null_ownership` move for the same reason -- their shared elements
+are counted now.
 
 The inline case of the same shape is fixed. A flat struct lives in the list's
 block, so `list_get` answers an interior address, and `list_set_inline` released

@@ -1,0 +1,103 @@
+// An element read out of a container and stored into one -- the same one or
+// another. Every shape here freed a box twice until 2026-09-18, and the flat one
+// also computed the wrong answer: `crossFlat` returned 5, not 4.
+//
+// Two AIF facts were right and one tier was not. A-CONTAIN raised the element to
+// Shared, and derived_tier still answered T1, whose "region membership dominates
+// aliasing" holds only in an arena -- and a container element is never
+// arena-served, so each container freed it. It now falls through to a counted
+// tier. A-CONTAIN also counts containers, not slots, so a move within one list
+// never reached it; a stored view is now a second holder. And the recursive
+// enum, once a local value could be T4b, found the collector freeing a buffered
+// root whose count had already reached zero (cyc_unbuffer).
+//
+// Asserted under `--verify` in run_aif_verify_test: zero violations, zero leaks.
+
+import std.io
+import std.vec
+
+struct Tag {
+    name: String,
+    n: Int
+}
+
+struct Pt {
+    x: Int,
+    y: Int
+}
+
+enum Shape { Dot, Box(String, Int) }
+
+enum Tree { Leaf, Node(Tree, Int, Tree) }
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn crossList() -> Int {
+    let xs: Vec<Tag> = []
+    let ys: Vec<Tag> = []
+    xs.push(Tag { name: "alpha-long-enough-name", n: 1 })
+    xs.push(Tag { name: "beta-long-enough-name", n: 2 })
+    ys.push(Tag { name: "gamma-long-enough-name", n: 3 })
+    ys.push(xs[0])
+    list_insert(ys, 0, list_get(xs, 1))
+    ys[2] = xs[1]
+    if (ys[0].n != 2 or ys[1].n != 3 or ys[2].n != 2) { return fail("cross-list values") }
+    return 0
+}
+
+fn withinList() -> Int {
+    let xs: Vec<Tag> = []
+    xs.push(Tag { name: "alpha-long-enough-name", n: 1 })
+    xs.push(Tag { name: "beta-long-enough-name", n: 2 })
+    xs.push(Tag { name: "gamma-long-enough-name", n: 3 })
+    let mut i = 0
+    while (i < 2) {
+        xs[i] = xs[i + 1]
+        i = i + 1
+    }
+    xs.push(xs[0])
+    if (xs[0].n != 2 or xs[1].n != 3 or xs[2].n != 3 or xs[3].n != 2) {
+        return fail("within-list values")
+    }
+    return 0
+}
+
+fn crossFlat() -> Int {
+    let xs: Vec<Pt> = []
+    let ys: Vec<Pt> = []
+    xs.push(Pt { x: 1, y: 2 })
+    xs.push(Pt { x: 3, y: 4 })
+    ys.push(xs[0])
+    xs[0] = xs[1]
+    if (xs[0].x + ys[0].x != 4) { return fail("flat struct values") }
+    return 0
+}
+
+fn enums() -> Int {
+    let shapes: Vec<Shape> = []
+    let others: Vec<Shape> = []
+    shapes.push(Shape.Box("alpha-long-enough-name", 1))
+    others.push(Shape.Box("gamma-long-enough-name", 3))
+    others.push(shapes[0])
+
+    // Recursive, so T4b: the second teardown frees what the first buffered.
+    let trees: Vec<Tree> = []
+    let forest: Vec<Tree> = []
+    trees.push(Tree.Node(Tree.Leaf, 1, Tree.Leaf))
+    forest.push(Tree.Node(Tree.Leaf, 3, Tree.Leaf))
+    forest.push(trees[0])
+    if (others.length + forest.length != 4) { return fail("enum counts") }
+    return 0
+}
+
+fn main() -> Int {
+    if (crossList() != 0) { return 1 }
+    if (withinList() != 0) { return 1 }
+    if (crossFlat() != 0) { return 1 }
+    if (enums() != 0) { return 1 }
+    println("PASS: shared container elements")
+    return 0
+}

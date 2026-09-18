@@ -267,6 +267,12 @@ rather than a restatement:
 - **Region membership dominates aliasing.** The T1 clause tests only `E`. A value that is `Shared`
   within a region is still T1, because a bulk arena reset does not care how many references
   existed — nothing is freed individually. This is why `region` is the highest-leverage annotation.
+
+  *The reference implementation adds one exception (2026-09-18).* It serves most T1 sites from no
+  arena at all (see "a limitation of the model" below), and a container element never has one:
+  the container frees it. For such a site, `Shared` means one free per holder, so a container
+  element that is `Shared` does not take T1 and falls through to T3 or T4. Where an arena does
+  serve the site, the argument above holds unchanged.
 - **Regions collect cycles for free.** The T1 clause does not test `C` either, for the same reason.
   Cyclicity only ever matters for values that escaped every region, which is what keeps the T4b
   population small.

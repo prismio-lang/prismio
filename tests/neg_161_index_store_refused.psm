@@ -12,6 +12,9 @@
 //     element that owns something would leak what the store displaces;
 //   - a String is immutable, a DataView column is written one field at a time,
 //     and a struct's `x[i]` is a call to its `at`.
+//
+// `v[i] = v[j]` on a Vec of owning elements is not here: it is admitted, and the
+// element becomes counted (test_157).
 
 import std.vec
 

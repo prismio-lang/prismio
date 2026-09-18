@@ -1447,6 +1447,15 @@ class Engine:
                         if self.A[s] < BORROWED:
                             self.A[s] = BORROWED
                             changed = self.moved(s)
+                    # A-CONTAIN through a view: a stored element read is still
+                    # held by the container it came from, which A-CONTAIN's
+                    # container count cannot see when both are one container.
+                    # A String is exempt -- storing a view copies it.
+                    if hs and self.resolve_views(val):
+                        for s in self.resolve(val):
+                            if self.m.sites[s].kind != 'string' and self.A[s] < SHARED:
+                                self.A[s] = SHARED
+                                changed = self.moved(s)
                     # E-VIEW: pushing a view into a container makes the viewed
                     # collection live at least as long as that container.
                     for h in hs:
@@ -1678,7 +1687,12 @@ def tier_of(model, eng, sid):
     # what keeps a joined task's arguments there. INFERENCE 4.1's "this single
     # distinction determines whether concurrent code lands at T1 or T4" shows up
     # here as the *absence* of a test.
-    if E != CALLER and E != GLOBAL:
+    #
+    # Nor does it test A, except for a container element: "region membership
+    # dominates aliasing" rests on an arena reset freeing nothing individually,
+    # and a container element is never arena-served -- the container frees it.
+    # Held Shared, T1 was one free per holder; it falls through to T3.
+    if E != CALLER and E != GLOBAL and not (eng.container_of[sid] and A == SHARED):
         return 'T1'
     if A <= BORROWED and T <= TRANSFERRED:
         return 'T2'

@@ -1945,6 +1945,16 @@ static void cyc_collect(int all) {
     // its own `buffered` flag is what would otherwise stop it.
     for (int i = 0; i < take; i++) cyc_hdr(roots[i])->buffered = 0;
 
+    // MarkRoots' other half. A root whose count reached zero while it waited is
+    // garbage by itself -- nothing holds it, so no walk can reach it -- and
+    // cyc_release deferred its free to here.
+    int live = 0;
+    for (int i = 0; i < take; i++) {
+        if (cyc_hdr(roots[i])->rc == 0) cyc_free_object(roots[i]);
+        else roots[live++] = roots[i];
+    }
+    take = live;
+
     for (int i = 0; i < take; i++) cyc_mark_grey(roots[i]);
     for (int i = 0; i < take; i++) cyc_scan(roots[i]);
     for (int i = 0; i < take; i++) cyc_collect_white(roots[i]);
@@ -2016,6 +2026,16 @@ PRISMIO_NOINLINE void cyc_release(void* p) {
         return;                     // never retained: nothing holds it, nothing frees it
     }
     if (--h->rc == 0) {
+        // Bacon-Rajan's Release: a buffered object is left for the collection
+        // that takes it from the buffer, because that collection reads every
+        // root's header. Freed here, it was freed again by cyc_collect_white --
+        // reached once a local value could be T4b: two lists sharing a recursive
+        // enum, the first teardown buffering it and the second reaching zero.
+        if (h->buffered) {
+            h->colour = CYC_BLACK;
+            cyc_leave();
+            return;
+        }
         cyc_free_object(p);
         cyc_leave();
         return;

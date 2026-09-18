@@ -2941,6 +2941,27 @@ int aif_solve(int max_rounds) {
                     }
                     if (raise_alias(s, AIF_A_BORROWED, -1)) changed = moved(s);
                 }
+                // A-CONTAIN through a view. An element read is not a second
+                // holder while it is only read (SPEC 8.4, raise_view_owners), but
+                // storing it makes one: the container it came from still holds
+                // it. A-CONTAIN counts containers, so `list_set(xs, i,
+                // list_get(xs, j))` -- one container, two slots -- never reached
+                // it, and teardown freed that box twice. A String is exempt:
+                // storing a view copies it into a block of its own. A flat struct
+                // is not, although a List would store it inline and copy it:
+                // there the view is released as a source (list_release_source
+                // guards only the list's own block), so counting -- and boxing --
+                // the type is what keeps a cross-list copy sound. KNOWN_ISSUES.
+                resolve_views(k->a, &scratch_views);
+                if (vec_own.len > 0 && !bits_is_empty(&scratch_views)) {
+                    force_rule = AIF_RULE_A_CONTAIN;
+                    for (int i = 0; i < vec_val.len; i++) {
+                        int s = vec_val.v[i];
+                        if (sites[s].kind == AIF_K_STRING) continue;
+                        if (raise_alias(s, AIF_A_SHARED, -1)) changed = moved(s);
+                    }
+                    force_rule = -1;
+                }
                 // E-VIEW: pushing a view into a container makes the viewed
                 // collection live at least as long as that container.
                 for (int j = 0; j < vec_own.len; j++) {
@@ -3366,7 +3387,19 @@ static int derived_tier(const Site* s) {
     // arguments there -- which is INFERENCE 4.1's "this single distinction
     // determines whether concurrent code lands at T1 or T4", visible here as
     // the absence of a test.
-    if (s->E != AIF_E_CALLER && s->E != AIF_E_GLOBAL) return AIF_T1;
+    //
+    // Nor does it test A, because SPEC 4.2's "region membership dominates
+    // aliasing" rests on the arena: a reset frees nothing individually. A
+    // container element is never arena-served -- the container tears it down
+    // through the deallocator (AIF_ARENA_B_IN_CONTAINER) -- so for an element
+    // held Shared, T1 was a free per holder. `list_push(b, list_get(a, 0))` on
+    // a struct literal read `release of a pointer that is not live`, with
+    // --why saying "A rose to Shared <- A-CONTAIN" over a T1 site. Falling
+    // through lands it where A-CONTAIN says it belongs: counted, at T3.
+    if (s->E != AIF_E_CALLER && s->E != AIF_E_GLOBAL
+        && !(s->in_container && s->A == AIF_A_SHARED)) {
+        return AIF_T1;
+    }
     if (s->A <= AIF_A_BORROWED && s->T <= AIF_T_TRANSFERRED) return AIF_T2;
     if (s->T <= AIF_T_TRANSFERRED && s->C == AIF_C_ACYCLIC) return AIF_T3;
     // SPEC 3: "a value meeting both conditions pays both". The sub-class named
