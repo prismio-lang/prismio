@@ -1,0 +1,55 @@
+// COLLECTIONS 1e: a removal releases what it removes at once when no view of an
+// element can be live. `buf` is a fresh local, cleared in a loop it predates and
+// read only through `for` bindings that die with the iteration, so each clear
+// frees the two strings before it. Parked instead, they would all stay until
+// `buf` is released: 35,102 peak live bytes against 208, which
+// run_aif_verify_test holds under a ceiling.
+//
+// Alone in its file on purpose. Allocation sites and container element keys are
+// shared program-wide, so a Vec<String> elsewhere that hands an element out
+// would make this one a non-owner too, and it would release nothing either way
+// (KNOWN_ISSUES). test_162 has the cases that must park.
+
+import std.io
+import std.vec
+import std.string
+
+fn churnWord(i: Int) -> String {
+    return "churned-element-".concat(strFromInt(i), "-long-enough-to-allocate")
+}
+
+fn churn() -> Int {
+    let buf: Vec<String>
+    let mut total = 0
+    let mut i = 0
+    while (i < 400) {
+        buf.clear()
+        buf.push(churnWord(i))
+        buf.push(churnWord(i + 1))
+        for s in buf { total = total + s.length }
+        i = i + 1
+    }
+    return total
+}
+
+// What churn adds up: a churnWord is 40 bytes and its number's digits.
+fn digits(n: Int) -> Int {
+    if (n < 10) { return 1 }
+    if (n < 100) { return 2 }
+    return 3
+}
+
+fn main() -> Int {
+    let mut expected = 0
+    let mut i = 0
+    while (i < 400) {
+        expected = expected + 80 + digits(i) + digits(i + 1)
+        i = i + 1
+    }
+    if (churn() != expected) {
+        println("FAIL: churn")
+        return 1
+    }
+    println("PASS: a removal with no live view releases at once")
+    return 0
+}

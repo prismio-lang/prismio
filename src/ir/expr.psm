@@ -2457,12 +2457,101 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     return true
 }
 
-// "1" when the removal may release what it removes immediately. Always "0" for
-// now: every removal parks, which is sound whatever else the program holds. The
-// proof that lets a removal skip the parking is COLLECTIONS.md step 1d's second
-// half.
+// "1" when the removal may release what it removes at once rather than park it
+// with the Vec (COLLECTIONS 1e). Sema's verdict is on the call (semaRemovalVerdict
+// in src/sema/builtins.psm): 1 is proved already; 2 is proved unless a view of
+// an element can outlive a loop iteration, which is asked of the whole function
+// here because it depends on statements sema has not reached yet.
 private fn vecRemovalReleasesNow(expr: ASTNode) -> String {
+    if (expr.i2 == 1) { return "1" }
+    if (expr.i2 == 2 and nodeExists(expr.child2)) {
+        let list = ptr_to_node(expr.child2)
+        if (irViewMayOutliveIteration(irFunctionBody, list.s1) == false) { return "1" }
+    }
     return "0"
+}
+
+// Whether a view of `listName`'s elements can reach the next iteration of a loop.
+// A view is held by a name, and one declared in the loop body is gone by the
+// next iteration's removal -- `for x in v` and `let s = v[i]` included -- so the
+// only way across the back edge is an assignment into something that outlives
+// the iteration. Blunt on purpose: any assignment whose value is not a scalar
+// and mentions a name that may hold such a view answers yes, whatever its target.
+private fn irViewMayOutliveIteration(body: Ptr, listName: String) -> Bool {
+    let holders: Vec<String> = list_new()
+    list_push(holders, listName.concat(""))
+    loop {
+        let before = list_len(holders)
+        irGrowViewHolders(body, holders)
+        if (list_len(holders) == before) { break }
+    }
+    return irAssignsViewOf(body, holders)
+}
+
+// One pass of the fixed point: every non-scalar binding whose initializer
+// mentions a holder may itself hold a view -- `let t = s`, `let n = s.name`.
+private fn irGrowViewHolders(head: Ptr, holders: Vec<String>) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.VARIABLE_DECL and nodeExists(n.child2)
+                and typeOwnsNothing(nodeGetType(n)) == false
+                and irHoldersContain(holders, n.s1) == false
+                and irMentionsHolder(n.child2, holders)) {
+            list_push(holders, n.s1.concat(""))
+        }
+        irGrowViewHolders(n.child1, holders)
+        irGrowViewHolders(n.child2, holders)
+        irGrowViewHolders(n.child3, holders)
+        p = n.next
+    }
+}
+
+private fn irAssignsViewOf(head: Ptr, holders: Vec<String>) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child2)) {
+            let value = ptr_to_node(n.child2)
+            if (typeOwnsNothing(nodeGetType(value)) == false
+                    and irMentionsHolder(n.child2, holders)) {
+                return true
+            }
+        }
+        if (irAssignsViewOf(n.child1, holders)) { return true }
+        if (irAssignsViewOf(n.child2, holders)) { return true }
+        if (irAssignsViewOf(n.child3, holders)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Whether the expression at `ptr` -- not its siblings -- names a holder.
+private fn irMentionsHolder(ptr: Ptr, holders: Vec<String>) -> Bool {
+    if (nodeIsNull(ptr)) { return false }
+    let n = ptr_to_node(ptr)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR and irHoldersContain(holders, n.s1)) { return true }
+    return irChainMentionsHolder(n.child1, holders)
+        or irChainMentionsHolder(n.child2, holders)
+        or irChainMentionsHolder(n.child3, holders)
+}
+
+private fn irChainMentionsHolder(head: Ptr, holders: Vec<String>) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (irMentionsHolder(p, holders)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+private fn irHoldersContain(holders: Vec<String>, name: String) -> Bool {
+    let mut i = 0
+    while (i < list_len(holders)) {
+        if (list_get(holders, i).equals(name)) { return true }
+        i = i + 1
+    }
+    return false
 }
 
 // Which runtime op serves this container call. The inline family is a separate

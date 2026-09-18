@@ -713,6 +713,20 @@ because a byte copy would put each element under two owners; its elements
 cannot be stored through an index, so that sharing is not observable. Both need
 an element-wise copy. And a `[T]` parameter is a view by design, not a gap.
 
+**`pop` and `removeAt` copy the element out, so they need `T: Copy`.** A moving
+version needs the caller to become the element's owner with the disposition the
+Vec would have used -- a free, a typed release, or a count -- and AIF has no
+rule for ownership leaving a container: modelled as a view the element leaks,
+as a fresh value a counted element is freed twice. Deferred past 0.1
+(COLLECTIONS 1e). They are library functions, so a Vec they are called on is
+also "lent" and its later removals park.
+
+**A removal releases at once only for a Vec no one else's allocation site
+touches.** Element keys are per container *type*, so one `Vec<String>` whose
+element is handed out anywhere in the program makes every Vec of those strings a
+non-owner, releasing nothing either way; test_161 keeps its Vec alone in its
+file for that reason.
+
 **Arrays do not cross function boundaries by value.** A length is accepted only
 on a local `let`: returning an array, an array field, and a parameter of one
 fixed length are COLLECTIONS step 3. A `[T]` parameter compiles once for every

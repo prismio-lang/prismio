@@ -156,6 +156,31 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     return typeInvalid()
 }
 
+// COLLECTIONS 1e. Whether a removal may release what it removes at once rather
+// than park it with the Vec, left on the call as CALL_EXPR.i2 for codegen
+// (vecRemovalReleasesNow). Parking exists because `let s = v[2]` is a view and
+// nothing stops `v.clear()` before its last use. It is unnecessary when no view
+// can be live, and this is the part of that proof sema can see in the order it
+// checks statements:
+//
+//   0  park: the Vec is a parameter, a global, or a local an element of which
+//      has been read, sliced or lent to a function before this point;
+//   1  release: a fresh local nothing has viewed yet, outside any loop it
+//      predates -- a view taken after this call cannot reach back to it;
+//   2  release if codegen finds no view escaping an iteration: the same, but in
+//      a loop the Vec predates, where a view taken later in the body is live
+//      at the next iteration's removal if something outlives the iteration.
+//
+// The exclusive mark is per binding (a shadowing `let` or a parameter starts
+// without it) and is set only for a `list_new` initializer, which `[]` and an
+// uninitialised `let v: Vec<T>` both are.
+private fn semaRemovalVerdict(list: ASTNode) -> Int {
+    if (list.kind != NodeKind.IDENTIFIER_EXPR) { return 0 }
+    if (ir_is_list_exclusive(list.s1) == 0) { return 0 }
+    if (ir_binding_predates_loop(list.s1) == 1) { return 2 }
+    return 1
+}
+
 internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
@@ -648,6 +673,9 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         }
         if (arity == 2) {
             semaCheckValue(module, ptr_to_node(v0.next), typeInt(), vecIntOp.concat(" argument"))
+        }
+        if (name.equals("list_truncate") or name.equals("list_remove_at")) {
+            call.i2 = semaRemovalVerdict(v0)
         }
         return true
     }

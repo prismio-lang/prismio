@@ -6449,10 +6449,23 @@ def run_aif_verify_test():
         # A Vec binding with no initializer is `= []`. A leak here would be the
         # synthesised literal missing the owner an explicit one gets.
         "test_159_vec_binding_empty": 0,
+        # COLLECTIONS 1e. A removal with no live view releases at once; the peak
+        # ceiling below is what says so, since parking balances the ledger too.
+        "test_161_removal_releases_now": 0,
+        # The removals that must park. The 7 are the known shape, identical on
+        # the compiler before 1e: a Vec that hands an element out is not
+        # released (KNOWN_ISSUES). What this guards is the 0 violations.
+        "test_162_removal_parks_under_view": 7,
     }
 
     max_allocations = {
         "test_100_string_append_reuse": 80,
+    }
+
+    # Peak live bytes. test_161 clears and refills one Vec 400 times: released
+    # at once it peaks at 208 bytes, parked at 35,102.
+    max_peak_bytes = {
+        "test_161_removal_releases_now": 2048,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -6481,6 +6494,11 @@ def run_aif_verify_test():
             problems.append(f"{name}: {leaked} leaked, expected {want_leaks} "
                             "(if this dropped, T2 now has a free point and the "
                             "expectation should follow)")
+        peak = re.search(r"(\d+) peak live bytes", ran.stderr or "")
+        if name in max_peak_bytes and (not peak or int(peak.group(1)) > max_peak_bytes[name]):
+            problems.append(f"{name}: peak live bytes {peak.group(1) if peak else '?'}, "
+                            f"expected at most {max_peak_bytes[name]} (a removal parked what "
+                            "it could have released)")
         if name in max_allocations and allocated > max_allocations[name]:
             problems.append(f"{name}: {allocated} allocations, expected at most "
                             f"{max_allocations[name]} (String append is no longer "

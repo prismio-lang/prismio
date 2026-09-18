@@ -1,0 +1,67 @@
+// COLLECTIONS 1e, the other side: where a view of an element may be live, a
+// removal parks what it removes with the Vec, and the view goes on reading it.
+//
+//   kept   -- a view assigned to a name outside the loop crosses the back edge.
+//   early  -- a view taken before the clear, read after it.
+//   lent   -- the Vec went to a function first, which could have kept a view.
+//
+// Each reads its string after the removal. Released instead, that is a read of
+// freed memory, which --verify reports as a violation.
+
+import std.io
+import std.vec
+import std.string
+
+fn word(i: Int) -> String {
+    return "element-number-".concat(strFromInt(i), "-long-enough-to-allocate")
+}
+
+fn kept() -> String {
+    let buf: Vec<String>
+    let mut keep = "start"
+    let mut i = 0
+    while (i < 3) {
+        buf.clear()
+        buf.push(word(i))
+        keep = buf[0]
+        i = i + 1
+    }
+    return keep.concat("")
+}
+
+fn early() -> String {
+    let v: Vec<String>
+    v.push(word(7))
+    let s = v[0]
+    v.clear()
+    return s.concat("")
+}
+
+fn count(xs: Vec<String>) -> Int {
+    return xs.length
+}
+
+fn lent() -> Int {
+    let v: Vec<String>
+    v.push(word(8))
+    let n = count(v)
+    v.clear()
+    return n + v.length
+}
+
+fn main() -> Int {
+    if (kept().equals(word(2)) == false) {
+        println("FAIL: kept")
+        return 1
+    }
+    if (early().equals(word(7)) == false) {
+        println("FAIL: early")
+        return 1
+    }
+    if (lent() != 1) {
+        println("FAIL: lent")
+        return 1
+    }
+    println("PASS: a removal under a live view parks")
+    return 0
+}
