@@ -11,8 +11,8 @@
   they need one; `Array<T, N>` with an initializer must match it. There is no
   `[T; N]`. A number is accepted as a type argument only by `Array` (`P3006`
   otherwise, including `Vec<T, N>` until chunked vectors exist), and a length
-  only on a local `let` -- a parameter, return or field needs step 3 of
-  COLLECTIONS.md. The length is part of the type, which makes an array of a
+  only on a local `let`, a return type or a struct field -- a parameter takes
+  `[T]`. The length is part of the type, which makes an array of a
   known length a value: `let b = a` and `d = c` copy the elements (`memcpy`),
   equal lengths required, while a `[T]` parameter stays a view of the caller's
   array. tests/test_158, neg_162, neg_163.
@@ -25,6 +25,25 @@
   functions return by value is read off the declaration everywhere -- a generic
   `-> T` bound to an array still returns the pointer it was given.
   tests/test_163, neg_164.
+- **Arrays as struct fields: `struct Packet { data: Array<U8, 16> }`.** The
+  field is `[N x T]` in the struct's own body. A literal that leaves it out
+  zero-fills it and one that names it copies the elements in, length checked
+  as an assignment's is; `s.data[i]` reads and writes the struct's bytes;
+  `let d = s.data` and `s.data = other` copy; `s.data` passed to a `[T]`
+  parameter is a view. A struct of plain fields and array fields is flat, so it
+  nests inline in another struct and a `Vec` stores it inline -- one block, not
+  a box per element -- and DWARF describes the field as an array. Refused
+  (neg_165): elements that own something, a generic struct's array field, any
+  array in an enum payload, `soa` of a struct holding one, and a `[T]` field
+  with no length. That last one compiled before and was unsound: the field
+  pointed into the frame of whichever function built the struct, and a struct
+  returned from there read a dead frame. tests/test_164.
+- **A scalar element read from an array is a copy to AIF, as a `Vec` element
+  read already was.** It used to carry the array's own value set, and an array
+  field's is a view of its struct: `sum = sum + t.cells[3]` in a loop sent all
+  100,000 structs to the function's arena. And an array literal no longer
+  justifies an automatic arena -- it is always a frame slot -- so a loop that
+  declares an array stops pushing and popping an empty region per iteration.
 - **A Vec removal releases at once when no view of an element can be live.**
   `clear`, `truncate` and `removeAt` on a Vec created in the same function,
   whose elements nothing has read, sliced or lent before the removal -- and, in

@@ -3772,6 +3772,10 @@ static int arena_would_serve(int site_id, int cand) {
     // arena would take the site off the drop list and free nothing in its place.
     if (s->foreign) return 0;
     if (s->kind == AIF_K_LIST) return 0;            // grows past its site; see below
+    // An array literal lowers to ir_array_alloca whatever its tier, so an arena
+    // would bracket nothing -- and one in a loop body pushes and pops on every
+    // iteration for it.
+    if (s->kind == AIF_K_ARRAY) return 0;
     // The container reclaims it, so codegen will not route it here whatever this
     // model decides -- site_arena_scope declines on the same flag. Counting it as
     // benefit placed arenas whose whole justification was traffic they would never

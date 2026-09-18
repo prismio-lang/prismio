@@ -1663,8 +1663,11 @@ private fn semaStructLiteralExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     while (nodeExists(fieldPtr)) {
         let field = ptr_to_node(fieldPtr)
         let mut expected = semaFindStructFieldType(module, field, expr.s1, field.s1)
-        semaCheckValue(module, ptr_to_node(field.child1), expected, "struct field ".concat(diagQuote(field.s1)))
-        semaMoveOperand(ptr_to_node(field.child1))
+        let value = ptr_to_node(field.child1)
+        let valueT = semaCheckValue(module, value, expected, "struct field ".concat(diagQuote(field.s1)))
+        // An array field is filled by copying, as `s.data = x` is.
+        semaCheckArrayCopy(value, expected, valueT)
+        semaMoveOperand(value)
         fieldPtr = field.next
     }
     semaFillOmittedFields(module, expr, expr.s1)
@@ -2017,12 +2020,7 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     let hasInit = nodeExists(stmt.child2)
 
     if (hasAnnotation) {
-        let ann = ptr_to_node(stmt.child1)
-        if (ann.i1 == 1 and ann.i3 == 0 and nodeExists(ann.child2)) {
-            varT = semaSizedArrayType(module, ann)
-        } else {
-            varT = semaAnnotationType(module, ann)
-        }
+        varT = semaAnnotationType(module, ptr_to_node(stmt.child1))
     }
     if (hasInit) {
         if (hasAnnotation) {
@@ -3137,6 +3135,170 @@ private fn semaDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Type
     expr.child3 = ptr_null()
     nodeSetType(expr, retT)
     return retT
+}
+
+// Where an array's length may be written: at the top of a local `let`'s
+// annotation, a return type and a struct field -- the three places that give
+// the array storage of its own. Everywhere else it is refused here, once: a
+// parameter (a `[T]` already takes any length), a type argument, a nested array,
+// a cast, a closure parameter, an enum payload, an extern, a global.
+// With the positions settled, every path that types an annotation can type a
+// length wherever it meets one (semaAnnotationInner).
+//
+// Syntactic, and first in analyzeModule: typing an annotation can instantiate a
+// generic struct, and an instantiation copies whatever its template still
+// carries. Both chains, because monoCollectTemplates parked every template on
+// `child2`, where a walk of the declarations alone never looks.
+private fn semaCheckArrayLengthPositions(module: ASTNode) {
+    semaArrayLengthsInDecls(module, module.child1)
+    semaArrayLengthsInDecls(module, module.child2)
+}
+
+private fn semaArrayLengthsInDecls(module: ASTNode, head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (decl.kind == NodeKind.FUNCTION) {
+            semaRefuseArrayLengths(decl.child1)
+            semaRefuseArrayLengths(decl.genericInfo)
+            semaArrayLengthOnTop(decl.child3)
+            semaArrayLengthsInBody(decl.child2)
+        } else if (decl.kind == NodeKind.STRUCT_DECL) {
+            semaArrayLengthsInFields(module, decl)
+        } else if (decl.kind == NodeKind.TRAIT_DECL) {
+            // A signature is a function's shape, and a default body is copied
+            // into each `impl` (monoExpandDefaultMethods), where its `let`s are
+            // ordinary locals.
+            semaRefuseArrayLengths(decl.genericInfo)
+            semaRefuseArrayLengths(decl.child2)
+            semaRefuseArrayLengths(decl.child3)
+            semaArrayLengthsInDecls(module, decl.child1)
+        } else {
+            semaRefuseArrayLengthsBelow(decl)
+        }
+        p = decl.next
+    }
+}
+
+// A field holds an array only with its length, and not in a generic struct or
+// an enum payload. A payload enum is a struct by now (enumDesugarModule), and a
+// `match` binds a payload by loading it, which has no form for an array.
+//
+// Without a length it is a pointer to elements stored somewhere else, and the one
+// place a `[T]` value's elements live is the frame that declared them: a struct
+// built from a local array and returned read that dead frame.
+//
+// A generic struct is a template, instantiated while annotations are typed --
+// after this pass and after semaCheckArrayFields -- so nothing would check that
+// an element type written as a parameter owns nothing, and `Box<T>` could be
+// instantiated with `String`.
+private fn semaArrayLengthsInFields(module: ASTNode, decl: ASTNode) {
+    semaRefuseArrayLengths(decl.genericInfo)
+    let generic = decl.s2.equals("") == false
+    let payloads = enumIsPayloadType(module, typeStruct(decl.s1))
+    let mut f = decl.child1
+    while (nodeExists(f)) {
+        let field = ptr_to_node(f)
+        if (nodeExists(field.child1)) {
+            let ann = ptr_to_node(field.child1)
+            if (payloads and ann.i1 == 1 and ann.i3 == 0) {
+                semaErrorAt(ann, "an enum payload cannot hold an array yet")
+                diag_note("carry a `Vec`, or a struct with an `Array<T, N>` field")
+                ann.child2 = ptr_null()
+            } else if (ann.i1 == 1 and ann.i3 == 0 and nodeIsNull(ann.child2)) {
+                semaErrorAt(ann, "an array field is stored in the struct, so it needs a length: `Array<T, N>`")
+                diag_note("a `[T]` field would point into the frame of the function that built the struct")
+            } else if (generic and semaIsSizedArrayAnnotation(ann)) {
+                semaErrorAt(ann, "a generic struct cannot hold an `Array<T, N>` field yet")
+                diag_note("declare the field in a struct without type parameters, or make it a `Vec`")
+                ann.child2 = ptr_null()
+            }
+            semaRefuseArrayLengths(ann.child1)
+        }
+        f = field.next
+    }
+}
+
+// After the named types are registered: an element type may be a struct.
+private fn semaCheckArrayFields(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (decl.kind == NodeKind.STRUCT_DECL) {
+            let mut f = decl.child1
+            while (nodeExists(f)) {
+                let field = ptr_to_node(f)
+                semaCheckArrayField(module, field)
+                f = field.next
+            }
+        }
+        p = decl.next
+    }
+}
+
+// An array field is the struct's own storage, written and copied as bytes, so
+// its elements have to own nothing -- as a copied or zero-filled array's do.
+private fn semaCheckArrayField(module: ASTNode, field: ASTNode) {
+    if (nodeIsNull(field.child1)) { return }
+    let ann = ptr_to_node(field.child1)
+    if (semaIsSizedArrayAnnotation(ann) == false) { return }
+    let t = semaAnnotationType(module, ann)
+    if (t.kind != TypeKind.ARRAY or nodeIsNull(t.child)) { return }
+    let elemT = ptr_to_type(t.child)
+    if (typeIsValid(elemT) and typeOwnsNothing(elemT) == false) {
+        let shown = typeDisplay(elemT)
+        semaErrorAt(ann, "an array field holds elements that own nothing, and ".concat(shown, " does"))
+        diag_note("use a `Vec` field for elements that own memory")
+    }
+}
+
+// The annotation itself may carry a length; anything nested in it may not.
+private fn semaArrayLengthOnTop(annPtr: Ptr) {
+    if (nodeIsNull(annPtr)) { return }
+    let ann = ptr_to_node(annPtr)
+    semaRefuseArrayLengths(ann.child1)
+}
+
+// A function body: a `let` may declare an array with a length, and nothing else
+// in it -- a cast, a closure parameter, a type argument -- may.
+private fn semaArrayLengthsInBody(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.VARIABLE_DECL) {
+            semaArrayLengthOnTop(n.child1)
+            semaArrayLengthsInBody(n.child2)
+            semaArrayLengthsInBody(n.child3)
+        } else if (n.kind == NodeKind.TYPE_ANNOTATION) {
+            semaRefuseArrayLengthsBelow(n)
+        } else {
+            semaArrayLengthsInBody(n.child1)
+            semaArrayLengthsInBody(n.child2)
+            semaArrayLengthsInBody(n.child3)
+        }
+        p = n.next
+    }
+}
+
+private fn semaRefuseArrayLengths(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        semaRefuseArrayLengthsBelow(n)
+        p = n.next
+    }
+}
+
+// One node and everything under it, not its siblings.
+private fn semaRefuseArrayLengthsBelow(n: ASTNode) {
+    if (n.kind == NodeKind.TYPE_ANNOTATION and n.i1 == 1 and nodeExists(n.child2)) {
+        semaErrorAt(n, "an array's length is written only on a local `let`, a return type or a struct field")
+        diag_note("a parameter takes `[T]` and gets its length from each call")
+        n.child2 = ptr_null()
+    }
+    semaRefuseArrayLengths(n.child1)
+    semaRefuseArrayLengths(n.child2)
+    semaRefuseArrayLengths(n.child3)
 }
 
 private fn semaCheckDynPositions(module: ASTNode) {
@@ -4285,6 +4447,7 @@ public fn analyzeModule(module: ASTNode) {
     ir_clear_var_types()
     ir_reset_globals()
     ir_reset_fn_return_types()
+    semaCheckArrayLengthPositions(module)
 
     // All three must run before anything is checked. The first lets a type
     // annotation be resolved without walking the module; the second mangles each
@@ -4332,6 +4495,7 @@ public fn analyzeModule(module: ASTNode) {
     // call arguments and nowhere else, so a return or a binding failed with a
     // type mismatch. A struct field was not blocked at all.
     semaCheckDynPositions(module)
+    semaCheckArrayFields(module)
 
     semaCheckSupertraitCycles(module)
     semaCheckImplBlocks(module)

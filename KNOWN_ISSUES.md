@@ -727,10 +727,20 @@ element is handed out anywhere in the program makes every Vec of those strings a
 non-owner, releasing nothing either way; test_161 keeps its Vec alone in its
 file for that reason.
 
-**Arrays do not cross function boundaries by value.** A length is accepted only
-on a local `let`: returning an array, an array field, and a parameter of one
-fixed length are COLLECTIONS step 3. A `[T]` parameter compiles once for every
-length rather than once per length.
+**An array parameter has no length of its own.** Arrays return by value
+(`-> Array<T, N>`) and are stored in struct fields, but a length is not accepted
+on a parameter: a `[T]` parameter is a view that compiles once for every length
+rather than once per length (COLLECTIONS step 3). A generic struct and an enum
+payload cannot hold an array yet.
+
+**An unsized array reached through a type argument still points into a frame.**
+A `[T]` struct field is refused, because it held the address of a local array
+and a returned struct read the dead frame. The same value can still be stored
+through a type argument -- `Box<[Int]>` with a field `T`, `Option<[Int]>`,
+`Vec<[Int]>` -- and nothing checks that the array outlives the container.
+Measured with each built from a local in a function that returns it: the
+`Box<[Int]>` read 1 where 2 was stored, the `Option<[Int]>` matched `None`, and
+the Vec read correctly only because nothing had reused the frame yet.
 
 **A resolved path dependency is not on the import search.** Vendor source below
 the entry root. Deliberately not part of 0.1.
@@ -833,6 +843,12 @@ the site got a better answer.
 keeps A=Shared on a container whose only escape is a borrowed parameter. Until
 then the differential fails on `src/main.psm` and passes on the other 18 sources,
 so run it and read the one line rather than the exit status.
+
+**A struct pushed into a Vec in a loop disagrees the same way, outside the 19
+sources.** Under `--copyable-collections` the oracle tiers it T3 (A=Shared) and
+the compiler T1, with one more oracle round; `test_164_array_fields` shows it,
+and so does the same shape with scalar fields on 9f45814, so array fields did
+not introduce it. Neither file is a default source of the differential.
 
 What rules out the other reading — that the compiler now frees something still
 live: the suite is green including `aif_verify`, whose ledger balances a real

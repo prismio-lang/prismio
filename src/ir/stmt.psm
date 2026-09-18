@@ -709,8 +709,11 @@ private fn generateAssignment(stmt: ASTNode) {
         // Assigning an inline field overwrites storage rather than swapping
         // an address, so it copies. A counted field is never inline: the
         // count sits in a header in front of an allocation, and an inline
-        // field has no allocation of its own to put one in front of.
-        if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
+        // field has no allocation of its own to put one in front of. An array
+        // field is the same: its elements are copied in.
+        if (isArrayValueKey(fieldType)) {
+            ir_array_copy_key(fieldType, ir_get_temp_name(slot), val)
+        } else if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
             ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
         } else {
             ir_struct_store_ptr(fieldType, val, ir_get_temp_name(slot),

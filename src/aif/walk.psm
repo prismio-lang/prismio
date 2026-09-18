@@ -140,6 +140,15 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
             if (aifIsRef(ty)) { aif_vs_view_of(element, collection) }
             return element
         }
+        // An array's scalar element is a copy as well. The child walk below
+        // handed the read the array's own value set, and an array field's is a
+        // view of its struct: `t.cells[3]` summed into a longer-lived `let`
+        // lifted `t` off the stack and into the function's region (E-VIEW).
+        if (strStartsWith(baseTy, "[") and aifIsRef(ty) == false) {
+            aifSitesOf(e.child1, fnId, scope)
+            aifSitesOf(e.child2, fnId, scope)
+            return aifVsEmpty()
+        }
     }
 
     if (e.kind == NodeKind.MEMBER_ACCESS_EXPR) {

@@ -1096,6 +1096,14 @@ private fn registerStructName(structNode: ASTNode) {
 // depended on the analysis would differ between `--debug` and a release build,
 // and SPEC 7.2 requires a level to change no observable behaviour.
 private fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
+    // `Array<T, N>`: the struct's own storage, `[N x T]` in its body. Read off
+    // the annotation, as irArrayReturnKey is; sema has refused an element that
+    // owns something (semaCheckArrayField).
+    if (typeNode.i1 == 1 and nodeExists(typeNode.child2) and nodeExists(typeNode.child1)) {
+        let count = typeIntLiteralCount(ptr_to_node(typeNode.child2).s1)
+        let elem = storageType(mapTypeNode(ptr_to_node(typeNode.child1)))
+        return "arr:".concat(strFromInt(count), ":", elem)
+    }
     let t = mapTypeNode(typeNode)
     if (isStructTypeKey(t)) {
         if (typeAnnIsPod(module, typeNode, 0)) {

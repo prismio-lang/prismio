@@ -900,6 +900,15 @@ class Engine:
                 return vs_sites(sid)
             return VS_EMPTY
 
+        # An array's scalar element is a copy. Mirrors src/aif/walk.psm: the
+        # child walk below would hand the read the array's own value set, and an
+        # array field's is a view of its struct.
+        if (k == 'INDEX_EXPR' and e['c1'] and (e['c1'][0]['ty'] or '').startswith('[')
+                and not self.m.is_ref(ty or '')):
+            for c in e['c1'] + e['c2']:
+                self.sites_of(c, fn, scope)
+            return VS_EMPTY
+
         out = VS_EMPTY
         for slot in ('c1', 'c2', 'c3'):
             for c in e[slot]:

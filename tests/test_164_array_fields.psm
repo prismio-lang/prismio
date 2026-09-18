@@ -1,0 +1,185 @@
+// `Array<T, N>` as a struct field: the struct's own storage, N elements wide.
+//
+//   - a literal that leaves the field out zeroes it, and one that names it
+//     copies the elements in -- from a literal, a call or another field;
+//   - `s.data[i]` reads and writes the struct's bytes, beside the other fields;
+//   - `let d = s.data` and `s.data = other` copy, so neither side sees the
+//     other's later writes;
+//   - `s.data` passed to a `[T]` parameter is a view: the callee writes through;
+//   - `self.data` in a method, a trait default method with an array of its own,
+//     a struct nested in another, several element types;
+//   - structs pushed into a Vec, returned from a function, passed on, and
+//     carried as an enum payload;
+//   - 100,000 literals in a loop, each read by index. A read of one element is a
+//     copy, so the struct stays in the frame (run_aif_verify_test holds the
+//     arena to that).
+
+import std.io
+
+struct Packet {
+    id: Int
+    data: Array<U8, 16>
+    tag: Int
+}
+
+struct Grid {
+    w: Int
+    cells: Array<Int, 4>
+}
+
+impl Grid {
+    fn sum(self) -> Int {
+        let mut s = 0
+        let mut i = 0
+        while (i < 4) {
+            s = s + self.cells[i]
+            i = i + 1
+        }
+        return s
+    }
+
+    fn bump(self, k: Int) {
+        self.cells[k] = self.cells[k] + 100
+    }
+}
+
+trait Scratch {
+    fn scratch(self) -> Int {
+        let s: Array<Int, 3>
+        s[2] = 5
+        return s[2] + s[0]
+    }
+}
+
+impl Scratch for Grid {}
+
+struct Inner {
+    k: Int
+    xs: Array<I64, 3>
+}
+
+struct Outer {
+    inner: Inner
+    fs: Array<Float, 2>
+    bs: Array<Bool, 3>
+}
+
+enum Shape {
+    Cells(Grid),
+    Empty
+}
+
+fn corners(s: Shape) -> Int {
+    match (s) {
+        Shape.Cells(g) => { return g.cells[0] + g.cells[3] }
+        Shape.Empty => { return 0 }
+    }
+    return 0
+}
+
+fn total(xs: [Int], n: Int) -> Int {
+    let mut s = 0
+    let mut i = 0
+    while (i < n) {
+        s = s + xs[i]
+        i = i + 1
+    }
+    return s
+}
+
+fn setFirst(xs: [Int], v: Int) {
+    xs[0] = v
+}
+
+fn fourDown() -> Array<Int, 4> {
+    return [4, 3, 2, 1]
+}
+
+fn makeGrid(w: Int) -> Grid {
+    return Grid { w: w, cells: [w, w + 1, w + 2, w + 3] }
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL: ")
+    println(what)
+    return 1
+}
+
+fn main() -> Int {
+    let p = Packet { id: 1, tag: 2 }
+    let mut z = 0
+    let mut i = 0
+    while (i < 16) {
+        z = z + (p.data[i] as Int)
+        i = i + 1
+    }
+    if (z != 0 or p.id != 1 or p.tag != 2) { return fail("an omitted field is zeroed") }
+    p.data[15] = 255
+    if ((p.data[15] as Int) != 255 or p.tag != 2) { return fail("a byte write leaves its neighbour") }
+
+    let g = Grid { w: 3, cells: [1, 2, 3, 4] }
+    if (g.cells[0] != 1 or g.cells[3] != 4 or g.w != 3) { return fail("a named field") }
+    g.cells[2] = 30
+    if (g.cells[2] != 30) { return fail("s.data[i] = x") }
+
+    let d = g.cells
+    d[0] = 99
+    if (g.cells[0] != 1 or d[0] != 99 or d[3] != 4) { return fail("let d = s.data copies") }
+
+    let other: Array<Int, 4> = [7, 8, 9, 10]
+    g.cells = other
+    other[0] = 70
+    if (g.cells[0] != 7 or g.cells[3] != 10) { return fail("s.data = other copies") }
+
+    if (total(g.cells, 4) != 34) { return fail("s.data read through a [T] parameter") }
+    setFirst(g.cells, 77)
+    if (g.cells[0] != 77) { return fail("s.data is a view in a [T] parameter") }
+    g.cells[0] = 7
+
+    if (g.sum() != 34) { return fail("self.data read") }
+    g.bump(1)
+    if (g.cells[1] != 108) { return fail("self.data write") }
+    if (g.scratch() != 5) { return fail("a trait default's own array") }
+
+    let fromCall = Grid { w: 0, cells: fourDown() }
+    let fromField = Grid { w: 0, cells: fromCall.cells }
+    fromCall.cells[0] = 40
+    if (fromField.cells[0] != 4 or fromCall.cells[0] != 40) { return fail("initialised from a call and a field") }
+
+    let o = Outer { inner: Inner { k: 2 }, fs: [1.5, 2.5] }
+    if (o.inner.xs[2] != 0 or o.bs[1] != false or o.fs[1] != 2.5) { return fail("nested and typed fields") }
+    o.inner.xs[1] = 7000000000
+    o.bs[2] = true
+    if (o.inner.xs[1] != 7000000000 or o.bs[2] != true or o.bs[0] != false) { return fail("nested writes") }
+
+    let v: Vec<Grid> = []
+    let mut k = 0
+    while (k < 5) {
+        v.push(Grid { w: k, cells: [k, k * 2, k * 3, k * 4] })
+        k = k + 1
+    }
+    let mut vs = 0
+    for q in v {
+        vs = vs + q.cells[3]
+    }
+    if (vs != 40 or v[4].cells[2] != 12) { return fail("structs in a Vec") }
+
+    let r = makeGrid(10)
+    if (r.cells[0] != 10 or r.cells[3] != 13 or r.sum() != 46) { return fail("a returned struct") }
+    if (total(makeGrid(1).cells, 4) != 10) { return fail("a returned struct's field, passed on") }
+    if (corners(Shape.Cells(Grid { w: 0, cells: [5, 0, 0, 6] })) != 11 or corners(Shape.Empty) != 0) {
+        return fail("an enum payload holding a struct with an array field")
+    }
+
+    let mut sum = 0
+    let mut n = 0
+    while (n < 100000) {
+        let t = Grid { w: n, cells: [n, n, n, n] }
+        sum = (sum + t.cells[3]) % 1000003
+        n = n + 1
+    }
+    if (sum != 935003) { return fail("100,000 literals in a loop") }
+
+    println("PASS: array fields")
+    return 0
+}

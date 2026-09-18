@@ -1,0 +1,73 @@
+// expect-error: an array field holds elements that own nothing, and String does
+// expect-error: an array field holds elements that own nothing, and Point does
+// expect-error: a generic struct cannot hold an `Array<T, N>` field yet
+// expect-error: an array's length is written only on a local `let`, a return type or a struct field
+// expect-error: this array holds 4 elements, and the one assigned to it has 3
+// expect-error: this array holds 4 elements, and the length of the one assigned to it is not known
+// expect-error: soa gives each field a column of scalars, and Grid holds an array
+// expect-error: an array field is stored in the struct, so it needs a length: `Array<T, N>`
+// expect-error: an enum payload cannot hold an array yet
+// expect-error: aborting due to 11 previous errors
+// What an `Array<T, N>` field refuses, one error each; the count holds that.
+//
+//   - Its elements are copied as bytes, so they own nothing: no String, and no
+//     struct, which is an allocation of its own.
+//   - A generic struct is instantiated after lengths are checked, so nothing
+//     would check what `T` became.
+//   - A field needs its length: a `[T]` field pointed into the frame of the
+//     function that built the struct, and read it after that frame was gone.
+//   - An enum payload holds no array, sized or not: `match` binds a payload by
+//     loading it.
+//   - A length is written only on the field itself, not inside it, and not on a
+//     generic function's parameter any more than on an ordinary one's.
+//   - A literal fills the field by copying, as an assignment does: the lengths
+//     must match and be known.
+//   - `soa` gives each field a column of scalars, and has no column for one.
+
+struct Point {
+    x: Int
+    y: Int
+}
+
+struct Names {
+    all: Array<String, 2>
+}
+
+struct Points {
+    ps: Array<Point, 2>
+}
+
+struct Box<T> {
+    items: Array<T, 4>
+}
+
+struct Rows {
+    rows: Vec<Array<Int, 4>>
+}
+
+struct Grid {
+    cells: Array<Int, 4>
+}
+
+struct Unsized {
+    xs: [Int]
+}
+
+enum Shape {
+    Quad(Array<Int, 4>),
+    Many([Int]),
+    Dot
+}
+
+fn firstOf<T>(xs: Array<T, 2>) -> T { return xs[0] }
+
+fn fromView(xs: [Int]) -> Grid {
+    return Grid { cells: xs }
+}
+
+fn main() -> Int {
+    let short = Grid { cells: [1, 2, 3] }
+    let rows: Vec<Grid> = []
+    let view = soa(rows)
+    return 0
+}

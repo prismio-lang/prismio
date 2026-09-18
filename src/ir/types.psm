@@ -203,6 +203,10 @@ internal fn irArrayValueKey(t: TypeInfo) -> String {
     return "arr:".concat(strFromInt(t.length), ":", elem)
 }
 
+internal fn isArrayValueKey(key: String) -> Bool {
+    return strStartsWith(key, "arr:")
+}
+
 // The value key when `func` is declared `-> Array<T, N>`, and "" otherwise. Read
 // off the declaration, as sema's CALL_EXPR.i2 is: the signature, every `return`
 // and every call site have to agree, and a generic `-> T` bound to an array

@@ -365,8 +365,8 @@ internal fn parseTypeArgList(p: Parser, node: ASTNode) {
 
 // `Array<T, N>` and `Array<T>` become the node `[T]` parses to -- `i1` set,
 // the element under `child1` -- so every pass after this one reads an array
-// exactly as it always has. A written length rides on `child2`, where only a
-// `let` reads it (semaVariableDecl) and everything else refuses it. `Array<T>`
+// exactly as it always has. A written length rides on `child2`, and sema
+// decides where one may be written (semaCheckArrayLengthPositions). `Array<T>`
 // is `[T]`: the length comes from the initializer. See COLLECTIONS.md.
 private fn parseArrayTypeArgs(p: Parser, typeNode: ASTNode, name: Token) {
     let element = ptr_to_node(typeNode.child1)

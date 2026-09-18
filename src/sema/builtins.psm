@@ -411,6 +411,14 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
                                                                                          " contains non-flat storage"))
             return true
         }
+        // A column holds one scalar per row, and the projection that reads one
+        // has no form for an array's elements.
+        if (semaStructHoldsArray(module, elemT.name, 0)) {
+            semaErrorAt(rows, "soa gives each field a column of scalars, and ".concat(elemT.name,
+                                                                                      " holds an array"))
+            diag_note("keep the rows in a `Vec`")
+            return true
+        }
         semaConsumeOperand(rows)
         return true
     }
@@ -713,5 +721,24 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    return false
+}
+
+// An `Array<T, N>` field anywhere in the struct's inline storage, nested flat
+// structs included.
+private fn semaStructHoldsArray(module: ASTNode, name: String, depth: Int) -> Bool {
+    if (depth > 16) { return false }
+    let decl = findStructDeclNamed(module, name)
+    if (nodeIsNull(node_to_ptr(decl))) { return false }
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let f = ptr_to_node(p)
+        if (nodeExists(f.child1)) {
+            let ann = ptr_to_node(f.child1)
+            if (semaIsSizedArrayAnnotation(ann)) { return true }
+            if (semaStructHoldsArray(module, ann.s1, depth + 1)) { return true }
+        }
+        p = f.next
+    }
     return false
 }

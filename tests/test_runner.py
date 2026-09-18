@@ -4607,7 +4607,8 @@ def run_target_test():
     #
     # The assertion is differential rather than absolute: three `List<T>` fields
     # and three `String` fields are three pointers either way, so the two structs
-    # must model the same size on any one target. String was already correct, so
+    # must model the same size on any one target. A `[T]` field was the third
+    # pointer until array fields had to carry a length; it is refused now. String was already correct, so
     # this compares the suspect path against a known-good one in the same
     # function and needs no magic number of its own. It also requires the wasm32
     # figure to be *smaller* than the host's, which is what stops both paths
@@ -4617,12 +4618,10 @@ def run_target_test():
         probe.write_text("import std.io\n"
                          "\n"
                          "struct OfList { a: Vec<Int>, b: Vec<Int>, c: Vec<Int> }\n"
-                         "struct OfArray { a: [Int], b: [Int], c: [Int] }\n"
                          "struct OfString { a: String, b: String, c: String }\n"
                          "\n"
                          "fn main() -> Int {\n"
                          "    let x = OfList { a: list_new(), b: list_new(), c: list_new() }\n"
-                         "    let y = OfArray { a: [1], b: [2], c: [3] }\n"
                          "    let z = OfString { a: \"p\", b: \"q\", c: \"r\" }\n"
                          "    println(1)\n"
                          "    return 0\n"
@@ -4649,7 +4648,7 @@ def run_target_test():
                             "pointer-width probe, so the layout half of this "
                             "test did not run")
         else:
-            for name in ("OfList", "OfArray"):
+            for name in ("OfList",):
                 if name not in host or name not in wasm or "OfString" not in wasm:
                     problems.append(f"{name} or OfString is missing from the "
                                     "layout table")
@@ -6456,6 +6455,11 @@ def run_aif_verify_test():
         # the compiler before 1e: a Vec that hands an element out is not
         # released (KNOWN_ISSUES). What this guards is the 0 violations.
         "test_162_removal_parks_under_view": 7,
+        # Array fields are the struct's own bytes and release nothing. The 1 is
+        # the known shape, identical with a String field on the compiler before
+        # them: `total(makeGrid(1).cells, 4)` reads a field off an unbound
+        # temporary, and the temporary is kept rather than freed under the read.
+        "test_164_array_fields": 1,
     }
 
     max_allocations = {
@@ -6466,6 +6470,14 @@ def run_aif_verify_test():
     # at once it peaks at 208 bytes, parked at 35,102.
     max_peak_bytes = {
         "test_161_removal_releases_now": 2048,
+    }
+
+    # Objects served by an arena. test_164 builds 100,000 structs with an array
+    # field in a loop and reads one element of each: an element read is a copy,
+    # so each struct stays in the frame. Were the read a view of the struct, all
+    # 100,000 would go to the function's arena and be held until it returns.
+    max_arena_objects = {
+        "test_164_array_fields": 8,
     }
 
     exe = TEST_DIR / "aif_verify_probe.exe"
@@ -6499,6 +6511,11 @@ def run_aif_verify_test():
             problems.append(f"{name}: peak live bytes {peak.group(1) if peak else '?'}, "
                             f"expected at most {max_peak_bytes[name]} (a removal parked what "
                             "it could have released)")
+        arena = re.search(r"aif-arena:\s+(\d+) object", ran.stderr or "")
+        if name in max_arena_objects and (not arena or int(arena.group(1)) > max_arena_objects[name]):
+            problems.append(f"{name}: {arena.group(1) if arena else '?'} arena objects, "
+                            f"expected at most {max_arena_objects[name]} (a struct read by "
+                            "element left the frame)")
         if name in max_allocations and allocated > max_allocations[name]:
             problems.append(f"{name}: {allocated} allocations, expected at most "
                             f"{max_allocations[name]} (String append is no longer "

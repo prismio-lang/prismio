@@ -2619,13 +2619,28 @@ private fn scalarSpillToSlot(storeType: String, value: String) -> String {
 }
 
 private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String, listElement: Bool) {
+    // Every array field starts at zero, as `Array<T, N>` on its own does -- one
+    // the literal names is then copied over, and LLVM drops the zeroing of it.
+    let fieldCount = ir_get_struct_field_count(structName)
+    let mut z = 0
+    while (z < fieldCount) {
+        let key = ir_get_struct_field_type_at(structName, z)
+        if (isArrayValueKey(key)) {
+            ir_array_zero_key(key, ir_get_temp_name(ir_struct_field_ptr(structName, destPtr, z)))
+        }
+        z = z + 1
+    }
     let mut fieldPtr = expr.child1
     while (nodeExists(fieldPtr)) {
         let field = ptr_to_node(fieldPtr)
         let fieldType = fieldStorageType(ir_get_struct_field_type(structName, field.s1))
         let fieldIndex = ir_get_struct_field_index(structName, field.s1)
 
-        if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
+        if (isArrayValueKey(fieldType)) {
+            let src = generateExpression(ptr_to_node(field.child1))
+            let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
+            ir_array_copy_key(fieldType, ir_get_temp_name(slot), src)
+        } else if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
             let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
             let init = ptr_to_node(field.child1)
             let innerName = structTypeName(fieldType)
@@ -2905,7 +2920,9 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
         return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
                                                    structName, fieldIndex))
     }
-    if (isStructTypeKey(fieldType)) {
+    // An array field is storage too: its address is the array, and `s.data[i]`
+    // indexes the struct's own bytes.
+    if (isStructTypeKey(fieldType) or isArrayValueKey(fieldType)) {
         return ir_get_temp_name(slot)
     }
     return ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),

@@ -252,8 +252,8 @@ static LLVMTypeRef type_from_key(const char *t) {
     if (strncmp(t, "struct:", 7) == 0) return named_struct(t + 7);
     if (t[0] == '%') return named_struct(t + 1);
     // `arr:N:K`, N elements of key K: an array handed back by value from a
-    // `-> Array<T, N>` function (irArrayValueKey in src/ir/types.psm). Every other
-    // array is a `ptr` to its first element.
+    // `-> Array<T, N>` function (irArrayValueKey in src/ir/types.psm), or held
+    // in a struct as a field. Every other array is a `ptr` to its first element.
     if (strncmp(t, "arr:", 4) == 0) {
         char *rest = NULL;
         long n = strtol(t + 4, &rest, 10);
@@ -2040,6 +2040,12 @@ static int type_key_is_flat(const char *key, int depth) {
     if (!key || !*key || depth > 16) return 0;
     if (strncmp(key, "struct:", 7) == 0) return struct_is_flat_by_name(key + 7, depth + 1);
     if (key[0] == '%') return struct_is_flat_by_name(key + 1, depth + 1);
+    // An array field is its elements in place, so a Vec of the struct can hold
+    // it inline -- one block, not a box per element.
+    if (strncmp(key, "arr:", 4) == 0) {
+        const char *elem = strchr(key + 4, ':');
+        return elem ? type_key_is_flat(elem + 1, depth + 1) : 0;
+    }
     return strcmp(key, "i1") == 0 || strcmp(key, "i8") == 0 || strcmp(key, "i16") == 0
         || strcmp(key, "i32") == 0 || strcmp(key, "i64") == 0
         || strcmp(key, "float") == 0 || strcmp(key, "double") == 0;
@@ -2218,6 +2224,21 @@ int ir_array_from_value(const char *key, const char *value) {
     LLVMValueRef slot = array_slot(arr);
     LLVMBuildStore(g_builder, resolve_value(value, key), slot);
     return array_base(arr, slot);
+}
+
+// An array field: its elements copied in (a struct literal, an assignment), or
+// zeroed, by its registered key. The alignment is the element's, as above.
+void ir_array_copy_key(const char *key, const char *dst, const char *src) {
+    if (block_done()) return;
+    LLVMTypeRef arr = type_from_key(key);
+    unsigned align = LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), arr);
+    LLVMBuildMemCpy(g_builder, resolve_value(dst, "ptr"), align,
+                    resolve_value(src, "ptr"), align, LLVMSizeOf(arr));
+}
+
+void ir_array_zero_key(const char *key, const char *dst) {
+    if (block_done()) return;
+    LLVMBuildStore(g_builder, LLVMConstNull(type_from_key(key)), resolve_value(dst, "ptr"));
 }
 
 // `d = c` between two arrays of one known length: into `d`'s own storage, so
@@ -5361,6 +5382,22 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
         return di_pointer_to(key + 7, di_struct_type(key + 7));
     }
     if (strcmp(key, "ptrptr") == 0) return di_pointer_to("$ptr", di_opaque_ptr());
+
+    // An array field is the struct's own storage, so it is described as the
+    // elements it holds. The element is named by its storage key alone: a `U8`
+    // shows as `Char`, as an `i8` binding does.
+    if (strncmp(key, "arr:", 4) == 0) {
+        LLVMMetadataRef hit = di_cached(key);
+        if (hit) return hit;
+        LLVMMetadataRef elem = di_type_for(strchr(key + 4, ':') + 1, NULL);
+        if (!elem || !g_di_layout) return NULL;
+        LLVMTypeRef arr = type_from_key(key);
+        LLVMMetadataRef range =
+            LLVMDIBuilderGetOrCreateSubrange(g_di, 0, (int64_t)LLVMGetArrayLength2(arr));
+        return di_cache(key, LLVMDIBuilderCreateArrayType(
+            g_di, LLVMABISizeOfType(g_di_layout, arr) * 8,
+            LLVMABIAlignmentOfType(g_di_layout, arr) * 8, elem, &range, 1));
+    }
 
     if (strcmp(key, "ptr") == 0) {
         // A Prismio String is a NUL-terminated char* -- str_concat, str_equals

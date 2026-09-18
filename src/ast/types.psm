@@ -991,6 +991,13 @@ public fn typeAnnIsPodIn(module: ASTNode, ann: ASTNode, depth: Int, byDecl: Bool
     // rejects one before this runs, so the cap is reached only by a program that
     // has already failed, and answering false keeps that path on the old layout.
     if (depth > 16) { return false }
+    // `Array<T, N>` is N elements in place, and an array field's elements own
+    // nothing (semaCheckArrayField), so it is POD when they are. Answering false
+    // boxed a struct holding one, and a literal leaving that struct out wrote
+    // `none` into a field codegen then read as the struct.
+    if (ann.i1 == 1 and ann.i3 == 0 and nodeExists(ann.child2) and nodeExists(ann.child1)) {
+        return typeAnnIsPodIn(module, ptr_to_node(ann.child1), depth + 1, byDecl)
+    }
     if (ann.i1 == 1) { return false }
     if (ann.i2 == 1) { return false }
     if (ann.i3 == 1) { return false }

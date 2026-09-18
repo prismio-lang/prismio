@@ -347,6 +347,8 @@ public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int
 public extern fn ir_array_copy_into(elemType: String, count: Int, dst: String, src: String)
 public extern fn ir_array_load(key: String, src: String) -> Int
 public extern fn ir_array_from_value(key: String, value: String) -> Int
+public extern fn ir_array_copy_key(key: String, dst: String, src: String)
+public extern fn ir_array_zero_key(key: String, dst: String)
 public extern fn ir_string_ptr(globalName: String) -> Int
 // LAYOUT 2. A constant C string created on demand and interned by content, for
 // the type and field names the profile instrumentation passes. Distinct from
@@ -519,6 +521,7 @@ public extern fn ir_get_struct_field_index(structName: String, fieldName: String
 public extern fn ir_struct_is_flat(name: String) -> Int
 public extern fn ir_struct_size(name: String) -> Int
 public extern fn ir_get_struct_field_count(name: String) -> Int
+public extern fn ir_get_struct_field_type_at(structName: String, index: Int) -> String alias
 public extern fn ir_struct_field_offset(name: String, index: Int) -> Int
 public extern fn ir_struct_field_size(name: String, index: Int) -> Int
 // Both return an *interned* type name -- ir_add_struct_field and add_binding

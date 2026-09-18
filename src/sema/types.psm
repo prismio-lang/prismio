@@ -119,16 +119,9 @@ private fn semaAnnotationTypeOf(module: ASTNode, tn: ASTNode) -> TypeInfo {
 
 private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
-        // `Array<T, N>` where no length is read. A `let` and a return type type
-        // their own annotation (semaSizedArrayType); a parameter already takes
-        // any length as `[T]`, and a field needs COLLECTIONS step 3.
-        if (nodeExists(tn.child2)) {
-            semaErrorAt(tn, "an array's length is written only where a local array is declared, or on a return type")
-            diag_note("a parameter takes `[T]` and gets its length from each call; storing an array in a field is not supported yet")
-            // Detached once reported: a signature is typed more than once, and
-            // each typing would say it again.
-            tn.child2 = ptr_null()
-        }
+        // `Array<T, N>`. Where a length may be written was settled once, by
+        // semaCheckArrayLengthPositions, so any path typing this meets it here.
+        if (nodeExists(tn.child2)) { return semaSizedArrayType(module, tn) }
         if (nodeExists(tn.child1)) {
             return typeArray(semaAnnotationType(module, ptr_to_node(tn.child1)))
         }
@@ -215,9 +208,7 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     return typeInvalid()
 }
 
-// `Array<T, N>` where a length may be written -- a local `let`, and a return
-// type, which hands the array back by value. semaAnnotationType refuses a
-// length everywhere else.
+// `Array<T, N>`, the length read off the annotation.
 internal fn semaSizedArrayType(module: ASTNode, ann: ASTNode) -> TypeInfo {
     let mut elemT = typeInvalid()
     if (nodeExists(ann.child1)) {
@@ -225,7 +216,9 @@ internal fn semaSizedArrayType(module: ASTNode, ann: ASTNode) -> TypeInfo {
     }
     let length = ptr_to_node(ann.child2)
     let count = typeIntLiteralCount(length.s1)
-    if (count < 0) {
+    // `i2` marks it reported: an annotation is typed once per path that meets it.
+    if (count < 0 and length.i2 == 0) {
+        length.i2 = 1
         let shown = diagQuote(length.s1)
         semaErrorAt(length, "an array's length is a positive whole number that fits `Int`, not ".concat(shown))
     }
@@ -242,9 +235,7 @@ internal fn semaIsSizedArrayAnnotation(ann: ASTNode) -> Bool {
 
 internal fn semaDeclaredReturnType(module: ASTNode, retChild: Ptr) -> TypeInfo {
     if (nodeExists(retChild)) {
-        let ann = ptr_to_node(retChild)
-        if (semaIsSizedArrayAnnotation(ann)) { return semaSizedArrayType(module, ann) }
-        return semaAnnotationType(module, ann)
+        return semaAnnotationType(module, ptr_to_node(retChild))
     }
     return typeVoid()
 }
@@ -502,7 +493,12 @@ internal fn semaFillOmittedFields(module: ASTNode, expr: ASTNode, structName: St
     let mut declField = decl.child1
     while (nodeExists(declField)) {
         let field = ptr_to_node(declField)
-        if (semaLiteralHasField(expr, field.s1) == false) {
+        // An array field has no zero to write as an expression, and needs none:
+        // codegen zeroes every one before the literal's initializers run
+        // (generateStructLiteralFields). A `none` here was copied from null.
+        let arrayField = nodeExists(field.child1)
+            and semaIsSizedArrayAnnotation(ptr_to_node(field.child1))
+        if (arrayField == false and semaLiteralHasField(expr, field.s1) == false) {
             nodeListPush(additions, semaOmittedField(module, expr, field))
         }
         declField = field.next

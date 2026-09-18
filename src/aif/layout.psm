@@ -57,6 +57,11 @@ internal fn aifTypeBytes(ann: ASTNode) -> Int {
     // the String/Ptr case three lines below already asked the target -- the same
     // shape as the `Isize` bug, a table that disagreed with the target, in the
     // one place a comment saying "a pointer" sat directly above a literal.
+    // `Array<T, N>` as a field is the struct's own storage: N elements wide.
+    if (ann.i1 == 1 and nodeExists(ann.child2) and nodeExists(ann.child1)) {
+        let count = typeIntLiteralCount(ptr_to_node(ann.child2).s1)
+        if (count > 0) { return count * aifTypeBytes(ptr_to_node(ann.child1)) }
+    }
     if (ann.i1 == 1) { return targetPointerBytes() }
     if (ann.i2 == 1) { return targetPointerBytes() }
 
@@ -109,6 +114,10 @@ private fn aifStructFieldBytes(module: ASTNode, ann: ASTNode) -> Int {
 // bytes aligned to 4, and the next field lands at 12. Using the size as the
 // alignment would put it at 16 and disagree with what LLVM lays out.
 private fn aifTypeAlign(module: ASTNode, ann: ASTNode) -> Int {
+    // `Array<T, N>` aligns to its element, as LLVM lays out `[N x T]`.
+    if (ann.i1 == 1 and nodeExists(ann.child2) and nodeExists(ann.child1)) {
+        return aifTypeAlign(module, ptr_to_node(ann.child1))
+    }
     if (typeAnnIsPod(module, ann, 0)) {
         if (ir_is_struct_type_name(ann.s1) == 1) {
             let decl = findStructDeclNamed(module, ann.s1)
@@ -327,6 +336,9 @@ private fn aifFieldIsInlineStruct(module: ASTNode, ann: ASTNode) -> Bool {
 // through the AST the way codegen's `fieldTypeFor` recurses through the filled
 // registry, so the two agree in both phases -- see `typeAnnIsPodIn`.
 internal fn aifFieldIsInlineExact(module: ASTNode, ann: ASTNode) -> Bool {
+    // `Array<T, N>` is the object's own bytes, and its elements own nothing
+    // (semaCheckArrayField): nothing to release, nothing a caller must keep.
+    if (ann.i1 == 1 and nodeExists(ann.child2)) { return true }
     if (ann.i1 == 1) { return false }
     if (ann.i2 == 1) { return false }
     if (ann.i3 == 1) { return false }
@@ -347,6 +359,12 @@ internal fn aifLayoutVetoInline(module: ASTNode) {
                 if (f.kind == NodeKind.STRUCT_FIELD) {
                     if (nodeExists(f.child1)) {
                         let ann = ptr_to_node(f.child1)
+                        // A struct holding an array keeps its fields together:
+                        // the split's cost model has never sized an array, and
+                        // a cold block is a second place its bytes could be.
+                        if (ann.i1 == 1 and nodeExists(ann.child2)) {
+                            aif_layout_no_split(d.s1)
+                        }
                         if (aifFieldIsInlineStruct(module, ann)) {
                             // The field's type: it is storage inside `d`, so no
                             // allocator hook ever writes its link word.
