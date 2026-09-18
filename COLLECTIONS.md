@@ -5,7 +5,7 @@ below were settled with the project owner on 2026-09-17; the status column is th
 part that moves.
 
 ```text
-[T] / [T; N] / Array<T, N>   fixed length, contiguous, owned
+Array<T, N> / [T]            fixed length, contiguous, owned
 Vec<T>                       growable, contiguous, owned -- the default vector
 Vec<T, N>                    growable, chunked, owned -- N elements per chunk
 Vec<T, Chunk>                growable, chunked, owned -- N chosen from sizeof(T)
@@ -41,6 +41,7 @@ releasing the container.
 | Group | Method | How |
 |---|---|---|
 | Build | `[]`, `[a, b, c]` | literal, lowered to `vecOf` |
+| | `let v: Vec<T>` with no initializer | sema gives it `[]` (2026-09-18) |
 | | `Vec<T>.withCapacity(n)` | rewrite → `list_new_with_capacity` |
 | Size | `length`, `isEmpty`, `isNotEmpty` | library |
 | | `capacity` | new runtime entry |
@@ -61,20 +62,24 @@ releasing the container.
 The `list_*` functions remain as the runtime layer, as `str_*` do under String;
 documentation shows the methods.
 
-### `[T]` is an array whose length is part of its type
+### `Array<T, N>` is an array whose length is part of its type
 
-`[T]` and `Array<T>` are `Array<T, N>` with `N` inferred; `[T; N]` and
-`Array<T, N>` write it.
+**Revised with the project owner on 2026-09-18.** `Array<T, N>` is the one
+spelling that carries a length. `[T]` is shorthand for it when the variable is
+initialised with values, and so is `Array<T>`. **There is no `[T; N]`.**
 
-- **With an initializer, `N` comes from it.** `let x: [Int] = [2, 3, 4]` is
-  `Array<Int, 3>`.
-- **Without one, `N` must be written.** `let x: [Int; 8]` reserves eight slots
-  to fill later.
-- **In a parameter, `N` is taken from each call.** `fn f(xs: [Int])` is generic
-  over the length and is compiled once per length it is called with.
+- **With an initializer, `N` comes from it.** `let x: [Int] = [2, 3, 4]` and
+  `let x: Array<Int> = [2, 3, 4]` are `Array<Int, 3>`; `Array<Int, 3>` with an
+  initializer must match it.
+- **Without one, `N` must be written.** `let x: Array<Int, 8>` reserves eight
+  slots, each the element type's zero. `let x: [Int]` alone is an error.
+- **In a parameter, `N` is taken from each call.** `fn f(xs: [Int])` takes any
+  length. Today it is a view of the caller's array; compiling it once per length
+  is still step 3.
 
-An array is a value of known size -- `[N x T]` in LLVM -- so, unlike today's
-`[T]`, it can be returned and stored in a field.
+An array of a known length is a value of known size -- `[N x T]` in LLVM.
+`let b = a` and `d = c` copy it. Returning one and storing one in a field are
+step 3.
 
 ### `Vec<T, N>` and `Vec<T, Chunk>` are chunked
 
@@ -122,7 +127,7 @@ refresh between.
 | 1c | `List<T>` is an error naming `Vec<T>`; seed refresh | done 2026-09-17 (P3005, neg_156); seed refreshed |
 | 1d | The method surface above: library tier, sema rewrites, new runtime entries with AIF contracts in both implementations | done 2026-09-17 with removal always parking (`now` = 0); test_155, neg_157..159. Fixpoint, seed build matching, suite 348/348, differential at its known two, separation and externs clean. `v[i] = x` was not: it type-checked and generated nothing, for every collection, until 2026-09-18 -- sema now rewrites it to `list_set`/`slice_set`, an array of unowned elements stores in place, and the rest are refused (test_156, neg_161) |
 | 1e | A removal releases at once where no element view can be live (`vecRemovalReleasesNow` in src/ir/expr.psm), and `pop` moves the element out instead of copying it | |
-| 2 | Integer type arguments (`Array<T, 3>`, `Vec<U8, 4096>`), `[T; N]` | |
-| 3 | `Array<T, N>` as a sized value: inferred `N`, returnable, field storage, per-length instantiation of `[T]` parameters | |
-| 4 | `Vec<T, N>` runtime and codegen; `Vec<T, Chunk>`; chunk-size benchmark | |
+| 2 | Integer type arguments (`Array<T, 3>`, `Vec<U8, 4096>`) | `Array<T, N>` done 2026-09-18: a number is a type argument of `Array` only (P3006 elsewhere); normalised into the `[T]` node with the length on `child2`, read only by a local `let` (zero-filled without an initializer). `Vec<T, N>` waits for step 4. test_158, neg_162, neg_163 |
+| 3 | `Array<T, N>` as a sized value: inferred `N`, returnable, field storage, per-length instantiation of `[T]` parameters | partly done 2026-09-18: `TypeInfo.length` carries `N` (inferred from literals and through the sem key); a known-length array of unowned elements copies on `let` and assignment, a `[T]` parameter is a view; every array slot is in the entry block. Left: returning, fields, per-length parameters, copying arrays of arrays and of owning elements |
+| 4 | `Vec<T, N>` runtime and codegen; `Vec<T, Chunk>`; chunk-size benchmark | **deferred past 0.1** (2026-09-18, owner's call): not started, listed as Coming Soon in both doc apps; `Vec<T, N>` is P3006 until then. Settle fixed-N chunks (std::deque) against geometric segments (Zig's SegmentedList) by measurement before building |
 | 5 | `Slice<T>` layouts: raw `(ptr, len)` where growth is provably absent; slices of arrays and chunked vectors | |

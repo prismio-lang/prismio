@@ -1,5 +1,5 @@
 // expect-error: cannot infer the element type of an empty literal
-// expect-error: write the type: `let v: Vec<Int> = []` or `let v: [Int] = []`
+// expect-error: write the type: `let v: Vec<Int>`, or reserve an array: `let a: Array<Int, 4>`
 // expect-error: aborting due to 6 previous errors
 // An empty literal with nothing around it to name its type. It used to type as
 // `[Invalid]`, which counted as a valid array: a binding reached codegen as

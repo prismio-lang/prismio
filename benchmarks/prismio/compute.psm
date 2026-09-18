@@ -497,9 +497,9 @@ public fn benchBlake3Chunk(scale: Int) -> Int {
     let MSG_PERM: [Int] = [2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]
 
     let mut totalChecksum: U32 = 0
-    let mut m: [U32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    let mut v: [U32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    let mut nextM: [U32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let m: Array<U32, 16>
+    let v: Array<U32, 16>
+    let nextM: Array<U32, 16>
 
     let mut chunk = 0
     while (chunk < totalChunks) {

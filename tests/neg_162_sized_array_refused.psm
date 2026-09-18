@@ -1,0 +1,39 @@
+// expect-error: an array's length is written only where a local array is declared
+// expect-error: has no initializer to take its length from
+// expect-error: an array without an initializer starts at zero, and String has no zero
+// expect-error: `Array<Int, 3>` holds 3 elements, and this has 2
+// expect-error: an array's length is a positive whole number that fits `Int`, not `0`
+// expect-error: is filled by copying, and this array's length is not known
+// expect-error: the length of the one assigned to it is not known
+// expect-error: and the one assigned to it has 3
+// expect-error: aborting due to 9 previous errors
+// What `Array<T, N>` refuses, one error each; the count holds that.
+//
+//   - A length is read only by a local `let`. A parameter already takes any
+//     length as `[T]`; a return or a field needs step 3 of COLLECTIONS.md.
+//   - `[T]` and `Array<T>` take their length from an initializer, so without one
+//     there is nothing to size them by (it compiled to an uninitialised pointer).
+//   - Zeroed slots need a zero: no String.
+//   - A written length has to match the initializer, and be a positive `Int`.
+//   - An array with a known length copies, so it cannot copy from a view whose
+//     length is unknown, or from one of another length.
+
+fn takes(xs: Array<Int, 4>) -> Int { return 0 }
+
+fn fromView(xs: [Int]) -> Int {
+    let copy: Array<Int, 2> = xs
+    let mut d: Array<Int, 2>
+    d = xs
+    return 0
+}
+
+fn main() -> Int {
+    let a: [Int]
+    let b: Array<Int>
+    let c: Array<String, 4>
+    let d: Array<Int, 3> = [1, 2]
+    let e: Array<Int, 0>
+    let mut f: Array<Int, 2>
+    f = [1, 2, 3]
+    return 0
+}

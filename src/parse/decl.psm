@@ -337,11 +337,58 @@ internal fn parseTypeArgList(p: Parser, node: ASTNode) {
     node.i2 = 1
     let args = nodeList()
     loop {
-        nodeListPush(args, parseTypeAnnotation(p))
+        // A number is a length, and `Array<T, N>` is the one type that takes
+        // one. Every caller names the constructor before calling, so the
+        // refusal can say which it is; a refused number is not kept, and no pass
+        // after this one sees anything but types in another argument list.
+        if (p.check(TokenType.NUMBER_LITERAL)) {
+            let length = p.node(NodeKind.LITERAL_EXPR)
+            length.i1 = TokenType.NUMBER_LITERAL
+            length.s1 = p.current().value
+            if (node.s1.equals("Array")) {
+                nodeListPush(args, length)
+            } else {
+                let tok = p.current()
+                diag_error_at_code("P3006", tok.file, tok.line, tok.col, tok.len,
+                                   diagQuote(node.s1).concat(" takes types, not a number"))
+                diag_note("a length is written only on an array: `Array<T, N>`")
+            }
+            p.advance()
+        } else {
+            nodeListPush(args, parseTypeAnnotation(p))
+        }
         if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
     }
     node.child1 = args.head
     p.expectCloseAngle("type argument list")
+}
+
+// `Array<T, N>` and `Array<T>` become the node `[T]` parses to -- `i1` set,
+// the element under `child1` -- so every pass after this one reads an array
+// exactly as it always has. A written length rides on `child2`, where only a
+// `let` reads it (semaVariableDecl) and everything else refuses it. `Array<T>`
+// is `[T]`: the length comes from the initializer. See COLLECTIONS.md.
+private fn parseArrayTypeArgs(p: Parser, typeNode: ASTNode, name: Token) {
+    let element = ptr_to_node(typeNode.child1)
+    let second = element.next
+    let mut ok = element.kind == NodeKind.TYPE_ANNOTATION
+    if (nodeExists(second)) {
+        let length = ptr_to_node(second)
+        ok = ok and length.kind == NodeKind.LITERAL_EXPR and nodeExists(length.next) == false
+    }
+    typeNode.s1 = ""
+    typeNode.i1 = 1
+    typeNode.i2 = 0
+    if (ok == false) {
+        diag_error_at_code("P3006", name.file, name.line, name.col, name.len,
+                           "`Array` takes an element type, then optionally a length")
+        diag_note("write `Array<T, N>`, or `Array<T>` when an initializer gives the length")
+        // `[Invalid]`, so nothing after this reads a number as a type.
+        typeNode.child1 = ptr_null()
+        return
+    }
+    element.next = ptr_null()
+    typeNode.child2 = second
 }
 
 // Deep-copy one type annotation tree. An impl target and each method annotation
@@ -544,6 +591,9 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
         }
         if (typeNode.s1.equals("Vec")) {
             typeNode.s1 = "List"
+        }
+        if (typeNode.s1.equals("Array")) {
+            parseArrayTypeArgs(p, typeNode, name)
         }
     }
 

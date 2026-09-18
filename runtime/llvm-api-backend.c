@@ -2133,13 +2133,69 @@ int ir_elem_ptr(const char *elem_type, const char *base, const char *index) {
 }
 
 // Stack array of `count` elements, yielding a pointer to the first element.
-int ir_array_alloca(const char *elem_type, int count) {
-    LLVMTypeRef ety = type_from_key(elem_type);
-    LLVMTypeRef arr = LLVMArrayType2(ety, (uint64_t)count);
-    LLVMValueRef slot = LLVMBuildAlloca(g_builder, arr, "");
+// An array's frame storage, in the entry block like every other local. Built
+// where codegen happened to be, an array literal inside a loop allocated again
+// on every iteration: 10M iterations of `let a: [Int] = [i, 1, 2]` exited 139 at
+// -O0, and survived -O3 only where the optimiser deleted the array. And mem2reg
+// and SROA promote only an entry-block alloca -- the difference between a
+// sixteen-word state array living in registers or in memory.
+static LLVMValueRef array_slot(LLVMTypeRef arr) {
+    LLVMValueRef entry_term = LLVMGetBasicBlockTerminator(g_entry_block);
+    if (entry_term) {
+        LLVMPositionBuilderBefore(g_alloca_builder, entry_term);
+    } else {
+        LLVMPositionBuilderAtEnd(g_alloca_builder, g_entry_block);
+    }
+    return LLVMBuildAlloca(g_alloca_builder, arr, "");
+}
+
+static int array_base(LLVMTypeRef arr, LLVMValueRef slot) {
     LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
     LLVMValueRef idx[2] = {LLVMConstInt(i32, 0, 0), LLVMConstInt(i32, 0, 0)};
     return intern_value(LLVMBuildInBoundsGEP2(g_builder, arr, slot, idx, 2, ""));
+}
+
+int ir_array_alloca(const char *elem_type, int count) {
+    LLVMTypeRef arr = LLVMArrayType2(type_from_key(elem_type), (uint64_t)count);
+    return array_base(arr, array_slot(arr));
+}
+
+// `let m: Array<U32, 16>`. Zeroed where the declaration runs rather than where
+// the slot is, so a `let` in a loop body starts at zero on every iteration. One
+// store of the array's null constant: LLVM lowers it to a memset, and removes it
+// when every element is written before it is read.
+int ir_array_alloca_zeroed(const char *elem_type, int count) {
+    LLVMTypeRef arr = LLVMArrayType2(type_from_key(elem_type), (uint64_t)count);
+    LLVMValueRef slot = array_slot(arr);
+    LLVMBuildStore(g_builder, LLVMConstNull(arr), slot);
+    return array_base(arr, slot);
+}
+
+// An array whose type knows its length is a value: `let b = a` gets storage of
+// its own and one memcpy of the whole array, where it used to share `a`'s --
+// which `b[0] = 9` made visible once index stores wrote. The alignment is the
+// element's, read back from the data layout as ir_copy_struct does.
+static void array_copy_bytes(LLVMTypeRef ety, LLVMTypeRef arr,
+                             LLVMValueRef dst, LLVMValueRef src) {
+    unsigned align = LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), ety);
+    LLVMBuildMemCpy(g_builder, dst, align, src, align, LLVMSizeOf(arr));
+}
+
+int ir_array_copy(const char *elem_type, int count, const char *src) {
+    LLVMTypeRef ety = type_from_key(elem_type);
+    LLVMTypeRef arr = LLVMArrayType2(ety, (uint64_t)count);
+    LLVMValueRef slot = array_slot(arr);
+    array_copy_bytes(ety, arr, slot, resolve_value(src, "ptr"));
+    return array_base(arr, slot);
+}
+
+// `d = c` between two arrays of one known length: into `d`'s own storage, so
+// the binding never starts sharing `c`'s.
+void ir_array_copy_into(const char *elem_type, int count, const char *dst, const char *src) {
+    if (block_done()) return;
+    LLVMTypeRef ety = type_from_key(elem_type);
+    LLVMTypeRef arr = LLVMArrayType2(ety, (uint64_t)count);
+    array_copy_bytes(ety, arr, resolve_value(dst, "ptr"), resolve_value(src, "ptr"));
 }
 
 // The flat-`List` element view: `list_get_inline` with its representation test

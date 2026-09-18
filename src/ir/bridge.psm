@@ -342,6 +342,9 @@ public extern fn ir_list_flat_zero_append(listValue: String, countValue: String,
 public extern fn ir_mark_guard_safe_fn(name: String borrow, safe: Int)
 public extern fn ir_is_guard_safe_fn(name: String borrow) -> Int
 public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
+public extern fn ir_array_alloca_zeroed(elemType: String, count: Int) -> Int
+public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int
+public extern fn ir_array_copy_into(elemType: String, count: Int, dst: String, src: String)
 public extern fn ir_string_ptr(globalName: String) -> Int
 // LAYOUT 2. A constant C string created on demand and interned by content, for
 // the type and field names the profile instrumentation passes. Distinct from

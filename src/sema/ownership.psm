@@ -111,14 +111,19 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
         and valNode.kind == NodeKind.ARRAY_LITERAL_EXPR
         and nodeExists(expected.child)) {
         let elemExpected = ptr_to_type(expected.child)
+        let mut count = 0
         let mut elemPtr = valNode.child1
         while (nodeExists(elemPtr)) {
             let elem = ptr_to_node(elemPtr)
             semaCheckValue(module, elem, elemExpected, context)
+            count = count + 1
             elemPtr = elem.next
         }
-        nodeSetType(valNode, expected)
-        return expected
+        // The literal's own length, whatever the annotation knew: `[T]` knows
+        // none, and a binding typed from this has to (typeArrayCopies).
+        let sized = typeArraySized(elemExpected, count)
+        nodeSetType(valNode, sized)
+        return sized
     }
     // A list literal, which is an array literal until its context asks for a
     // `List<T>`. Tried after the array case above, so an annotation that says

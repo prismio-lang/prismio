@@ -4,6 +4,28 @@
 
 ### Added
 
+- **`Array<T, N>`: an array whose length is written.** `let m: Array<U32, 16>`
+  is sixteen zeroed slots, zeroed where the `let` runs (so again on every
+  iteration of a loop body), and needs an element type with a zero. `[T]` and
+  `Array<T>` are the same type with the length taken from an initializer, so
+  they need one; `Array<T, N>` with an initializer must match it. There is no
+  `[T; N]`. A number is accepted as a type argument only by `Array` (`P3006`
+  otherwise, including `Vec<T, N>` until chunked vectors exist), and a length
+  only on a local `let` -- a parameter, return or field needs step 3 of
+  COLLECTIONS.md. The length is part of the type, which makes an array of a
+  known length a value: `let b = a` and `d = c` copy the elements (`memcpy`),
+  equal lengths required, while a `[T]` parameter stays a view of the caller's
+  array. tests/test_158, neg_162, neg_163.
+- **`let items: Vec<Item>` is an empty Vec.** A `Vec` binding with no
+  initializer is given `= []` by sema, so its IR is identical to writing it.
+  `Vec<T>?` is unaffected. tests/test_159.
+- **`x[i] = v` stores.** It type-checked for every collection and generated
+  nothing. A `Vec` or `Slice` becomes `list_set` / `slice_set`; an array of
+  elements that own nothing stores in place; an array of owning elements, a
+  String, a DataView element and a struct's `at` are refused. Assignment now
+  lets an integer literal adopt the target's type, as a `let` does
+  (`w = 4294967296` into an `I64`). tests/test_156, neg_161.
+
 - **LLVM 23.** The pinned line is 23.1.1 (`PRISMIO_LLVM_EXPECTED_MAJOR`,
   `tools/setup_llvm.py`, the CI matrix). The seed and every program's IR are
   unchanged apart from LLVM's own printing -- `f0x` float literals, and `nosync`
@@ -132,6 +154,22 @@
   bitcode with a linker warning nobody read.
 
 ### Fixed
+
+- **Storing an element read into a container freed it twice.**
+  `list_push(ys, list_get(xs, 0))`, `list_set(xs, i, list_get(xs, j))` and
+  `v[i] = v[j]` double-freed any struct or enum literal, and the flat-struct form
+  computed a wrong answer. The tier ladder now counts a container element that
+  is Shared instead of placing it at T1, a stored view counts as a second
+  holder, and the cycle collector defers a buffered root's free to the
+  collection (Bacon-Rajan). tests/test_157.
+- **Array copies aliased.** `let b = a; b[0] = 9` changed `a` once index stores
+  existed; an array of a known length now copies.
+- **An array literal in a loop grew the stack.** Its slot was built where
+  codegen was, so ten million iterations exited 139 at `-O0`. Every array slot
+  is now in the entry block, which is also where SROA can promote it.
+- **`let a: [Int]` with no initializer compiled** to an uninitialised pointer;
+  it is now an error that suggests `Array<Int, N>`. `let items: Vec<Int>` did
+  the same, and the first `push` crashed; it is now an empty Vec.
 
 - **`let v = []` crashed the backend instead of being refused.** An empty
   literal with nothing to take a type from typed as `[Invalid]`, which counted

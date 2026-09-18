@@ -1483,21 +1483,29 @@ private fn semaArrayLiteralExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // overload after another reports this once.
     if (nodeIsNull(elemPtr)) {
         semaErrorAt(expr, "cannot infer the element type of an empty literal")
-        diag_note("write the type: `let v: Vec<Int> = []` or `let v: [Int] = []`")
+        diag_note("write the type: `let v: Vec<Int>`, or reserve an array: `let a: Array<Int, 4>`")
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
 
     let firstT = semaExpr(module, ptr_to_node(elemPtr))
+    let mut count = 1
+    let mut ragged = false
     elemPtr = ptr_to_node(elemPtr).next
     while (nodeExists(elemPtr)) {
         let elem = ptr_to_node(elemPtr)
         let elemT = semaExpr(module, elem)
         semaExpectAssignable(elem, "array literal element", firstT, elemT)
+        ragged = ragged or elemT.length != firstT.length
+        count = count + 1
         elemPtr = elem.next
     }
 
-    let arrT2 = typeArray(firstT)
+    // Rows of different lengths share no length, so the element type knows
+    // none: a row read out of `[[1, 2], [3]]` is a view, not a copy.
+    let mut rowT = typeCopy(firstT)
+    if (ragged) { rowT.length = 0 }
+    let arrT2 = typeArraySized(rowT, count)
     nodeSetType(expr, arrT2)
     return arrT2
 }
@@ -1935,17 +1943,99 @@ private fn semaSplitPrintStatement(module: ASTNode, stmt: ASTNode) {
 }
 
 
+// `let m: Array<U32, 16>` -- the one place a written length is read. Typed here
+// rather than through semaAnnotationType, which refuses a length everywhere else.
+private fn semaSizedArrayAnnotation(module: ASTNode, ann: ASTNode) -> TypeInfo {
+    let mut elemT = typeInvalid()
+    if (nodeExists(ann.child1)) {
+        elemT = semaAnnotationType(module, ptr_to_node(ann.child1))
+    }
+    let length = ptr_to_node(ann.child2)
+    let count = typeIntLiteralCount(length.s1)
+    if (count < 0) {
+        let shown = diagQuote(length.s1)
+        semaErrorAt(length, "an array's length is a positive whole number that fits `Int`, not ".concat(shown))
+    }
+    let arrT = typeArraySized(elemT, count)
+    nodeSetType(ann, arrT)
+    return arrT
+}
+
+// What a local array's declaration has to supply, and the type it binds. `[T]`
+// and `Array<T>` take the length from the initializer, so without one there is
+// nothing to size the frame storage with -- until 2026-09-18 that compiled to an
+// uninitialised pointer, which the first `x[i]` read through. With one, the
+// binding gets the initializer's length when it has one, which is what makes a
+// later `let b = a` a copy (typeArrayCopies). `initT` is Invalid with no
+// initializer.
+private fn semaCheckArrayDecl(stmt: ASTNode, ann: ASTNode, varT: TypeInfo, initT: TypeInfo) -> TypeInfo {
+    if (varT.kind != TypeKind.ARRAY or nodeExists(varT.child) == false) { return varT }
+    let elemT = ptr_to_type(varT.child)
+    if (nodeExists(stmt.child2) == false) {
+        if (varT.length <= 0) {
+            if (nodeExists(ann.child2) == false) {
+                semaErrorAt(stmt, diagQuote(stmt.s1).concat(" has no initializer to take its length from"))
+                diag_note("reserve slots with `Array<".concat(typeDisplay(elemT), ", N>`; they start at zero"))
+            }
+            return varT
+        }
+        if (typeIsValid(elemT) and typeOwnsNothing(elemT) == false) {
+            let shown = typeDisplay(elemT)
+            semaErrorAt(ann, "an array without an initializer starts at zero, and ".concat(shown, " has no zero"))
+            diag_note("write its elements, or use a `Vec`")
+        }
+        return varT
+    }
+    if (initT.kind != TypeKind.ARRAY) { return varT }
+    let init = ptr_to_node(stmt.child2)
+    if (varT.length <= 0) {
+        if (initT.length > 0) { return typeArraySized(elemT, initT.length) }
+        return varT
+    }
+    let written = "`Array<".concat(typeDisplay(elemT), ", ", strFromInt(varT.length), ">`")
+    if (initT.length > 0 and initT.length != varT.length) {
+        semaErrorAt(init, written.concat(" holds ", strFromInt(varT.length),
+                                         " elements, and this has ", strFromInt(initT.length)))
+        diag_note("drop the length and write `Array<".concat(typeDisplay(elemT), ">` to take it from the value"))
+    } else if (initT.length <= 0 and typeArrayCopies(varT)) {
+        semaErrorAt(init, written.concat(" is filled by copying, and this array's length is not known"))
+        diag_note("a `[T]` parameter takes any length; copy it element by element, or bind it as `[T]` to view it")
+    }
+    return varT
+}
+
+// `let items: Vec<Item>` is an empty Vec, as `Array<T, N>` on its own is zeroed
+// slots: the declaration gets the `[]` it would otherwise have to write, and is
+// checked and lowered exactly as that. Until 2026-09-18 it compiled to an
+// uninitialised pointer, and the first `push` wrote through it. Not for `Vec<T>?`,
+// whose absent value is `none`. The parser has already spelled `Vec` as `List`.
+private fn semaDefaultEmptyVec(stmt: ASTNode) {
+    if (nodeExists(stmt.child1) == false or nodeExists(stmt.child2)) { return }
+    let ann = ptr_to_node(stmt.child1)
+    if (ann.i2 != 1 or ann.i3 == 1 or ann.s1.equals("List") == false) { return }
+    let empty = createNode(NodeKind.ARRAY_LITERAL_EXPR)
+    nodeSpanFrom(empty, stmt)
+    stmt.child2 = node_to_ptr(empty)
+}
+
 private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
+    semaDefaultEmptyVec(stmt)
     let mut varT = typeInvalid()
     let hasAnnotation = nodeExists(stmt.child1)
     let hasInit = nodeExists(stmt.child2)
 
     if (hasAnnotation) {
-        varT = semaAnnotationType(module, ptr_to_node(stmt.child1))
+        let ann = ptr_to_node(stmt.child1)
+        if (ann.i1 == 1 and ann.i3 == 0 and nodeExists(ann.child2)) {
+            varT = semaSizedArrayAnnotation(module, ann)
+        } else {
+            varT = semaAnnotationType(module, ann)
+        }
     }
     if (hasInit) {
         if (hasAnnotation) {
-            semaCheckValue(module, ptr_to_node(stmt.child2), varT, "initializer for ".concat(diagQuote(stmt.s1)))
+            let initT = semaCheckValue(module, ptr_to_node(stmt.child2), varT, "initializer for ".concat(diagQuote(stmt.s1)))
+            varT = semaCheckArrayDecl(stmt, ptr_to_node(stmt.child1), varT, initT)
         } else {
             varT = semaExpr(module, ptr_to_node(stmt.child2))
             // No annotation, so nothing will widen a bare literal after
@@ -1975,6 +2065,9 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
             diag_note("project the field immediately, or pass the DataView to a borrowing function")
             varT = typeInvalid()
         }
+    }
+    if (hasAnnotation and hasInit == false) {
+        varT = semaCheckArrayDecl(stmt, ptr_to_node(stmt.child1), varT, typeInvalid())
     }
     // Only genuinely uninferrable declarations are reported. If there *was*
     // an annotation or an initializer, its own error has already been
@@ -2045,11 +2138,7 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
     if (collectionT.kind == TypeKind.ARRAY) {
         let elemT = ptr_to_type(collectionT.child)
         if (typeIsValid(elemT) == false) { return true }
-        let k = elemT.kind
-        if (k == TypeKind.INT or k == TypeKind.FLOAT or k == TypeKind.BOOL
-                or k == TypeKind.CHAR or k == TypeKind.PTR or k == TypeKind.ENUM) {
-            return false
-        }
+        if (typeOwnsNothing(elemT)) { return false }
         semaErrorAt(target, "an element of ".concat(typeDisplay(collectionT),
                                                      " cannot be replaced"))
         diag_note("an array stores only elements nobody owns this way; use a `Vec` and `v[i] = x`, or assign a field -- `a[i].f = x`")
@@ -2073,6 +2162,21 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
     }
     // Not indexable at all; the ordinary path reports that.
     return false
+}
+
+// `d = c` into an array whose length is known copies c's elements into d's
+// storage (typeArrayCopies), so the lengths have to be equal and both known.
+// An array the type knows no length for is a view -- a `[T]` parameter -- and
+// assigning to one re-points it, as before.
+private fn semaCheckArrayCopy(value: ASTNode, targetT: TypeInfo, valueT: TypeInfo) {
+    if (typeArrayCopies(targetT) == false or valueT.kind != TypeKind.ARRAY) { return }
+    let holds = "this array holds ".concat(strFromInt(targetT.length), " elements")
+    if (valueT.length <= 0) {
+        semaErrorAt(value, holds.concat(", and the length of the one assigned to it is not known"))
+        diag_note("a `[T]` parameter takes any length; copy it element by element")
+    } else if (valueT.length != targetT.length) {
+        semaErrorAt(value, holds.concat(", and the one assigned to it has ", strFromInt(valueT.length)))
+    }
 }
 
 private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
@@ -2123,6 +2227,7 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     } else {
         let valueT = semaValueTypeAgainst(module, value, targetT)
         semaExpectAssignable(value, "assignment", targetT, valueT)
+        semaCheckArrayCopy(value, targetT, valueT)
     }
     semaMoveOperand(value)
     ir_set_reinit_target("")

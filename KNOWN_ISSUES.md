@@ -704,6 +704,20 @@ names the file it looked for.
 
 ## Language surface
 
+**Two kinds of array are shared by a second binding rather than copied.** An
+array of a known length whose elements own nothing is a value since 2026-09-18
+(`typeArrayCopies`): `let b = a` and `d = c` copy it. An array of arrays is not
+-- the rows are separate frame slots a byte copy would not reach -- so `let g =
+grid; g[0][0] = 5` changes `grid`. An array of owning elements is not either,
+because a byte copy would put each element under two owners; its elements
+cannot be stored through an index, so that sharing is not observable. Both need
+an element-wise copy. And a `[T]` parameter is a view by design, not a gap.
+
+**Arrays do not cross function boundaries by value.** A length is accepted only
+on a local `let`: returning an array, an array field, and a parameter of one
+fixed length are COLLECTIONS step 3. A `[T]` parameter compiles once for every
+length rather than once per length.
+
 **A resolved path dependency is not on the import search.** Vendor source below
 the entry root. Deliberately not part of 0.1.
 

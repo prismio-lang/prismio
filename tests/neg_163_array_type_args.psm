@@ -1,0 +1,13 @@
+// expect-error: `Vec` takes types, not a number
+// expect-error: `Array` takes an element type, then optionally a length
+// expect-error: aborting due to 3 previous errors
+// A number in a type argument list is a length, and only `Array<T, N>` takes
+// one. `Vec<T, N>` -- a chunked Vec -- is step 4 of COLLECTIONS.md; until then a
+// number anywhere else is refused in the parser, so no later pass sees one.
+
+fn main() -> Int {
+    let a: Vec<Int, 4> = []
+    let b: Array<16>
+    let c: Array<Int, 4, 5>
+    return 0
+}

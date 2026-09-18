@@ -6446,6 +6446,9 @@ def run_aif_verify_test():
         # counted tier's teardown missing an element, as a Vec holding both a
         # counted and an uncounted element of one type still does (KNOWN_ISSUES).
         "test_157_shared_container_elements": 0,
+        # A Vec binding with no initializer is `= []`. A leak here would be the
+        # synthesised literal missing the owner an explicit one gets.
+        "test_159_vec_binding_empty": 0,
     }
 
     max_allocations = {

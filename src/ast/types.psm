@@ -56,7 +56,12 @@ struct TypeInfo {
     name: String,
     llvm: String,
     child: Ptr,
-    next: Ptr
+    next: Ptr,
+    // An array's element count, when the type knows it: from a literal, or
+    // written as `Array<T, N>`. 0 is "not known" -- a `[T]` parameter, which
+    // takes any length, and everything bound from one. A known length is what
+    // lets a binding copy the array rather than alias it (COLLECTIONS step 3).
+    length: Int
 }
 
 // The identity on a pointer, like ptr_to_node -- see ast.psm for why declaring
@@ -70,7 +75,8 @@ private fn typeMake(kind: TypeKind, name: String, llvm: String) -> TypeInfo {
         name: name,
         llvm: llvm,
         child: ptr_null(),
-        next: ptr_null()
+        next: ptr_null(),
+        length: 0
     }
 }
 
@@ -82,6 +88,7 @@ public fn typeCopy(t: TypeInfo) -> TypeInfo {
     let dup = typeMake(t.kind, t.name, t.llvm)
     dup.child = t.child
     dup.next = t.next
+    dup.length = t.length
     return dup
 }
 
@@ -161,20 +168,7 @@ public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
     let mut at = 0
     if (negative or strStartsWith(text, "+")) { at = 1 }
 
-    // `0xFF`, `0o755`, `0b1010`. The literal keeps the spelling it was written
-    // with, so the range check reads the base off the prefix exactly as the
-    // backend does -- and a leading zero is not octal in either place.
-    let mut radix = 10
-    if (strByteAt(text, at) == 48 and __builtin_string_len(text) > at + 1) {
-        let marker = strByteAt(text, at + 1)
-        if (marker == 120 or marker == 88) { radix = 16 }
-        if (marker == 111 or marker == 79) { radix = 8 }
-        if (marker == 98 or marker == 66) { radix = 2 }
-        if (radix != 10) { at = at + 2 }
-    }
-
-    let digits = strSubstring(text, at, __builtin_string_len(text) - at)
-    let parsed = strParseU64Radix(digits, radix)
+    let parsed = typeIntLiteralMagnitude(text, at)
     if (optionIsNone(parsed)) { return false }
     let magnitude = optionOr(parsed, 0 as U64)
 
@@ -184,6 +178,37 @@ public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
     }
     if (negative) { return magnitude <= typeTwoToThe(bits - 1) }
     return magnitude < typeTwoToThe(bits - 1)
+}
+
+// The digits from `at` on, as a magnitude. `0xFF`, `0o755`, `0b1010`: the
+// literal keeps the spelling it was written with, so this reads the base off the
+// prefix exactly as the backend does -- and a leading zero is not octal in
+// either place.
+private fn typeIntLiteralMagnitude(text: String, at: Int) -> Option<U64> {
+    let mut start = at
+    let mut radix = 10
+    if (strByteAt(text, start) == 48 and __builtin_string_len(text) > start + 1) {
+        let marker = strByteAt(text, start + 1)
+        if (marker == 120 or marker == 88) { radix = 16 }
+        if (marker == 111 or marker == 79) { radix = 8 }
+        if (marker == 98 or marker == 66) { radix = 2 }
+        if (radix != 10) { start = start + 2 }
+    }
+    let digits = strSubstring(text, start, __builtin_string_len(text) - start)
+    return strParseU64Radix(digits, radix)
+}
+
+// A length written in a type -- `Array<U8, 0x100>` -- as a count: the literal's
+// value when it is a positive number that fits `Int`, and -1 otherwise, so one
+// comparison tells the caller whether to report it.
+public fn typeIntLiteralCount(text: String) -> Int {
+    if (strStartsWith(text, "-") or strStartsWith(text, "+")) { return -1 }
+    if (typeIntLiteralFits(text, typeInt()) == false) { return -1 }
+    let parsed = typeIntLiteralMagnitude(text, 0)
+    if (optionIsNone(parsed)) { return -1 }
+    let count = optionOr(parsed, 0 as U64) as Int
+    if (count < 1) { return -1 }
+    return count
 }
 
 // Whether any 64-bit integer type could hold this literal: `I64` when it is
@@ -335,6 +360,32 @@ public fn typeEnum(name: String) -> TypeInfo {
 public fn typeArray(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.ARRAY, "Array", "ptr")
     t.child = type_to_ptr(elem)
+    return t
+}
+
+// Whether a value of this type owns nothing: a number, `Bool`, `Char`, `Ptr` or
+// an enum without payloads. What an array element has to be for three things
+// that copy or overwrite its bytes with no release: a store through the
+// element's address, a zero-filled `Array<T, N>`, and a copied array.
+public fn typeOwnsNothing(t: TypeInfo) -> Bool {
+    let k = t.kind
+    return k == TypeKind.INT or k == TypeKind.FLOAT or k == TypeKind.BOOL
+        or k == TypeKind.CHAR or k == TypeKind.PTR or k == TypeKind.ENUM
+}
+
+// Whether binding or assigning this array copies its elements: its length is
+// known and they own nothing. Anything else is a view -- a `[T]` parameter, and
+// what is bound from one -- or holds owners, which a byte copy would duplicate.
+// Sema checks against it and codegen emits the copy from it, so the two agree.
+public fn typeArrayCopies(t: TypeInfo) -> Bool {
+    if (t.kind != TypeKind.ARRAY or t.length <= 0 or nodeExists(t.child) == false) { return false }
+    return typeOwnsNothing(ptr_to_type(t.child))
+}
+
+// `Array<T, N>`, the length known. See `length` on TypeInfo.
+public fn typeArraySized(elem: TypeInfo, length: Int) -> TypeInfo {
+    let mut t = typeArray(elem)
+    t.length = length
     return t
 }
 
@@ -580,10 +631,12 @@ public fn typeSemKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.STRUCT) { return "struct:".concat(t.name) }
     if (t.kind == TypeKind.ENUM) { return "enum:".concat(t.name) }
     if (t.kind == TypeKind.ARRAY) {
+        let mut head = "array:"
+        if (t.length > 0) { head = "array#".concat(strFromInt(t.length), ":") }
         if (nodeExists(t.child)) {
-            return "array:".concat(typeSemKey(ptr_to_type(t.child)))
+            return head.concat(typeSemKey(ptr_to_type(t.child)))
         }
-        return "array:Invalid"
+        return head.concat("Invalid")
     }
     if (t.kind == TypeKind.LIST) {
         if (nodeExists(t.child)) {
@@ -731,6 +784,13 @@ public fn typeFromSemKey(key: String) -> TypeInfo {
     }
     if (strStartsWith(key, "array:")) {
         return typeArray(typeFromSemKey(strSubstring(key, 6, __builtin_string_len(key) - 6)))
+    }
+    // `array#16:U32`. The count is written by typeSemKey, so it always parses.
+    if (strStartsWith(key, "array#")) {
+        let colon = strIndexOf(key, ":")
+        let count = typeIntLiteralCount(strSubstring(key, 6, colon - 6))
+        let elem = typeFromSemKey(strSubstring(key, colon + 1, __builtin_string_len(key) - colon - 1))
+        return typeArraySized(elem, count)
     }
     if (strStartsWith(key, "list:")) {
         return typeList(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))

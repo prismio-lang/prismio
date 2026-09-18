@@ -426,6 +426,14 @@ private fn generateVariableDecl(stmt: ASTNode) {
     let hasInit = nodeExists(stmt.child2)
     if (hasInit) {
         initVal = generateExpression(ptr_to_node(stmt.child2))
+        // `let b = a` for an array whose length is known: storage of b's own,
+        // not a second name for a's. A literal already is fresh storage.
+        let declT = nodeGetType(stmt)
+        if (typeArrayCopies(declT)
+                and ptr_to_node(stmt.child2).kind != NodeKind.ARRAY_LITERAL_EXPR) {
+            let elemType = storageType(typeIrKey(ptr_to_type(declT.child)))
+            initVal = ir_get_temp_name(ir_array_copy(elemType, declT.length, initVal))
+        }
     }
 
     // A fresh binding with its own slot. Two `let x` in sibling blocks get
@@ -442,6 +450,19 @@ private fn generateVariableDecl(stmt: ASTNode) {
     // is uninitialised until the store lands, which is the same window C has
     // and the same one it does not describe either.
     debugLocal(varName, slot, varType, debugTypeName(stmt.child1, stmt.child2), stmt, 0)
+
+    // `let m: Array<U32, 16>`: the frame storage an array literal would get,
+    // zeroed where the declaration runs, and its address in the binding's slot.
+    if (hasInit == false and nodeExists(stmt.child1)) {
+        let typeNode = ptr_to_node(stmt.child1)
+        if (typeNode.i1 == 1 and nodeExists(typeNode.child2)) {
+            let count = typeIntLiteralCount(ptr_to_node(typeNode.child2).s1)
+            let arrT = nodeGetType(stmt)
+            let elemType = storageType(typeIrKey(ptr_to_type(arrT.child)))
+            let base = ir_get_temp_name(ir_array_alloca_zeroed(elemType, count))
+            ir_store(storeType, base, slot)
+        }
+    }
 
     if (hasInit) {
         // AIF Level 4, the reassignment half. An owning accumulator's slot
@@ -595,7 +616,16 @@ private fn generateAssignment(stmt: ASTNode) {
             if (releasesOld and consumedOld == false) {
                 generateDisplacedRelease(old, val, dropKindOf(ptr_to_node(stmt.child2)), varType)
             }
-            ir_store(storeType, val, ir_get_var_slot(varName))
+            // An array whose length is known keeps its own storage: `d = c`
+            // copies c's elements in rather than re-pointing d at c's.
+            let targetT = nodeGetType(targetNode)
+            if (typeArrayCopies(targetT)) {
+                let dst = ir_get_temp_name(ir_load(storeType, ir_get_var_slot(varName)))
+                let elemType = storageType(typeIrKey(ptr_to_type(targetT.child)))
+                ir_array_copy_into(elemType, targetT.length, dst, val)
+            } else {
+                ir_store(storeType, val, ir_get_var_slot(varName))
+            }
         }
     }
     // `a[i] = v` on an array: sema has turned every other collection's store

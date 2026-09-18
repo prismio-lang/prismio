@@ -1,0 +1,46 @@
+// `let items: Vec<Item>` -- a Vec binding with no initializer is an empty Vec,
+// checked and lowered exactly as `= []` (the IR is identical). Until 2026-09-18
+// it compiled to an uninitialised pointer, and the first `push` wrote through it.
+// `Vec<T>?` is not given one: its absent value is `none`.
+
+import std.io
+import std.vec
+import std.string
+
+struct Item {
+    name: String,
+    id: Int
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let items: Vec<Item>
+    items.push(Item { name: "first-long-enough-name", id: 1 })
+    items.push(Item { name: "second-long-enough-name", id: 2 })
+    if (items.length != 2 or items[1].id != 2) { return fail("Vec<Item>") }
+
+    let mut words: Vec<String>
+    words.push("alpha")
+    words = ["beta", "gamma"]
+    if (words.length != 2 or words[0].equals("beta") == false) { return fail("let mut Vec<String>") }
+
+    // A fresh, empty Vec on every iteration.
+    let mut total = 0
+    let mut i = 0
+    while (i < 4) {
+        let fresh: Vec<Int>
+        total = total + fresh.length
+        fresh.push(i)
+        i = i + 1
+    }
+    if (total != 0) { return fail("a loop body's Vec starts empty") }
+
+    let maybe: Vec<Int>? = none
+    if (maybe != none) { return fail("Vec<T>? stays none") }
+    println("PASS: empty Vec bindings")
+    return 0
+}

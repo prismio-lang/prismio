@@ -1,0 +1,85 @@
+// `Array<T, N>` -- an array whose length is written, and so part of its type.
+//
+//   - Without an initializer it is N zeroed slots, zeroed where the `let` runs:
+//     a declaration in a loop body starts at zero on every iteration.
+//   - `Array<T>` and `[T]` take the length from the initializer; `Array<T, N>`
+//     with one has to match it.
+//   - An array whose length is known is a value. `let b = a` and `d = c` copy
+//     the elements; until 2026-09-18 both shared the storage, which index stores
+//     made visible (`b[0] = 9` changed `a`).
+//   - A `[T]` parameter takes any length and is a view of the caller's array:
+//     a store through it is the caller's.
+
+import std.io
+import std.string
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn fillThrough(xs: [Int], value: Int) {
+    xs[0] = value
+    let view = xs
+    view[1] = value + 1
+}
+
+fn zeroed() -> Int {
+    let words: Array<U32, 16>
+    words[3] = 7
+    if ((words[0] as Int) != 0 or (words[15] as Int) != 0 or (words[3] as Int) != 7) {
+        return fail("Array<U32, 16>")
+    }
+    let reals: Array<Float, 4>
+    let flags: Array<Bool, 2>
+    let wide: Array<I64, 0x3>
+    wide[2] = 4294967296
+    if (reals[3] != 0.0 or flags[1] or wide[0] != 0 or wide[2] != 4294967296) {
+        return fail("zero of each width")
+    }
+
+    // Zeroed per iteration, not once per frame.
+    let mut sum = 0
+    let mut i = 0
+    while (i < 5) {
+        let fresh: Array<Int, 8>
+        sum = sum + fresh[i]
+        fresh[i] = 100
+        i = i + 1
+    }
+    if (sum != 0) { return fail("a loop body's array starts at zero") }
+    return 0
+}
+
+fn lengths() -> Int {
+    let inferred: Array<Int> = [5, 6, 7]
+    let exact: Array<Int, 3> = [8, 9, 10]
+    let sugar: [Int] = [1, 2]
+    if (inferred[2] + exact[0] + sugar[1] != 17) { return fail("initialised lengths") }
+    return 0
+}
+
+fn copies() -> Int {
+    let a: [Int] = [1, 2, 3]
+    let b = a
+    b[0] = 9
+    if (a[0] != 1 or b[0] != 9) { return fail("let b = a copies") }
+
+    let c: Array<Int, 2> = [4, 5]
+    let mut d: Array<Int, 2>
+    d = c
+    d[1] = 50
+    if (c[1] != 5 or d[1] != 50 or d[0] != 4) { return fail("d = c copies") }
+
+    fillThrough(d, 70)
+    if (d[0] != 70 or d[1] != 71) { return fail("a parameter is a view") }
+    return 0
+}
+
+fn main() -> Int {
+    if (zeroed() != 0) { return 1 }
+    if (lengths() != 0) { return 1 }
+    if (copies() != 0) { return 1 }
+    println("PASS: sized arrays")
+    return 0
+}
