@@ -178,6 +178,35 @@ def main() -> int:
     finally:
         shutil.rmtree(probe_dir, ignore_errors=True)
 
+    # The package where a user has it: copied out of the checkout, so nothing
+    # can find the checkout's third_party/llvm by searching upward. Inside the
+    # tree the compiler still links with the pinned clang, which is right for
+    # development and proves nothing about an installed toolchain -- this is
+    # the case that used to need the build machine's LLVM for `clang`.
+    print("\nThe package outside the checkout")
+    moved_root = Path(tempfile.mkdtemp())
+    try:
+        moved = moved_root / "Prismio"
+        shutil.copytree(dist, moved, symlinks=True)
+        check("the package carries no LLVM location",
+              not (moved / "third_party" / "llvm-paths.json").exists())
+        mcompiler = moved / "bin" / compiler.name
+        source = moved_root / "probe.psm"
+        source.write_text(PROBE, encoding="utf-8")
+        executable = moved_root / ("probe.exe" if WINDOWS else "probe")
+        env = dict(os.environ, PRISMIO_BUILD_TRACE="1")
+        env.pop("PRISMIO_LLVM_DIR", None)
+        built = subprocess.run([str(mcompiler), "build", str(source), "-o", str(executable)],
+                               capture_output=True, text=True, cwd=str(moved_root), env=env)
+        output = built.stdout + built.stderr
+        check("it compiles a program", built.returncode == 0, " ".join(output.split())[-300:])
+        check("code generation ran in process", "in process" in output)
+        if executable.is_file():
+            ran = subprocess.run([str(executable)], capture_output=True, text=True)
+            check("and the program runs", ran.stdout.strip() == "ok")
+    finally:
+        shutil.rmtree(moved_root, ignore_errors=True)
+
     print("")
     if failures:
         print(f"{RED}{failures} check(s) FAILED{RESET}")

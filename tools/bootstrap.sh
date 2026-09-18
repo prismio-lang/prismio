@@ -14,9 +14,10 @@
 # the only way out of the cycle. The seed carries no target triple, so llc targets
 # whatever host it runs on.
 #
-# Requires clang on PATH, and a clang new enough to read the seed's LLVM IR. On
-# macOS that means a Homebrew llvm (`brew install llvm`), not Apple's bundled
-# clang, because the two disagree on IR version.
+# Requires the LLVM that `python3 tools/setup_llvm.py` provisions into
+# third_party/llvm: its clang is the one new enough to read the seed's LLVM IR,
+# and its static archives are what the compiler links. Nothing is taken from
+# PATH unless PRISMIO_LLVM_DIR names an install explicitly.
 
 set -eu
 
@@ -55,9 +56,6 @@ if [ -z "$COMPILER" ] && [ -z "$SEED" ] && [ -z "$PRINT_KEY" ]; then
     exit 2
 fi
 
-for tool in clang; do
-    command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool not found on PATH" >&2; exit 1; }
-done
 
 # Must match prismio_toolchain_files[] in runtime/build_driver.c.
 RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c aif_containers.c aif_support.c diagnostics.c llvm-api-backend.c"
@@ -142,10 +140,19 @@ resolve_llvm() {
     # what the 2026-08-29 CI matrix reported the first time a Unix runner reached
     # the link step. setup_llvm.py already records which library it validated;
     # this reads it rather than assuming.
+    #
+    # LLVM_RSP is the pinned toolchain's response file: the static archives and
+    # the system libraries they need, so the compiler loads no LLVM at run time.
+    # An install named by PRISMIO_LLVM_DIR, or adopted with --llvm-dir, has none
+    # and is linked as a shared library.
     LLVM_LINK="LLVM-C"
+    LLVM_RSP=""
     if [ -n "${PRISMIO_LLVM_DIR:-}" ]; then
         LLVM_INC="$PRISMIO_LLVM_DIR/include"; LLVM_LIB="$PRISMIO_LLVM_DIR/lib"
+        CLANG="$PRISMIO_LLVM_DIR/bin/clang"
     elif [ -f "$REPO/third_party/llvm-paths.json" ]; then
+        CLANG="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["bin"])' "$REPO/third_party/llvm-paths.json")/clang"
+        LLVM_RSP="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("link_rsp",""))' "$REPO/third_party/llvm-paths.json")"
         LLVM_INC="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["include"])' "$REPO/third_party/llvm-paths.json")"
         LLVM_LIB="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["lib"])' "$REPO/third_party/llvm-paths.json")"
         # libLLVM-C.dylib -> LLVM-C, libLLVM.so -> LLVM, LLVM-C.lib -> LLVM-C:
@@ -211,12 +218,15 @@ green "IR: $(wc -l < "$SYMS" | tr -d ' ') symbols, all unique"
 # built with it has every local in a stack slot. Worth 1.4x-3.0x on user
 # programs (RESULTS-xlang 3.1) and the compiler is a user program too.
 step "ll -> obj"
-clang -O2 -c "$LL" -o "$WORK/program.o" || die "ll -> obj"
+resolve_llvm
+# Checked here rather than in resolve_llvm: --print-cache-key resolves a
+# deliberately fictional LLVM and never compiles anything.
+[ -x "$CLANG" ] || die "no clang at $CLANG -- run: python3 tools/setup_llvm.py"
+"$CLANG" -O2 -c "$LL" -o "$WORK/program.o" || die "ll -> obj"
 
 # 3. Runtime and backend C sources, compiled fresh from the working tree --
 # except where the cache above already holds the object this source and these
 # headers compile to.
-resolve_llvm
 
 # The misses are compiled in parallel. They are seven independent translation
 # units writing seven distinct objects, so the only thing this changes is how
@@ -235,7 +245,7 @@ for c in $RUNTIME_SOURCES; do
     fi
 
     step "cc $c"
-    clang -O2 -DPRISMIO_LLVM_REAL_HEADERS -DPRISMIO_BOOTSTRAP_COMPAT \
+    "$CLANG" -O2 -DPRISMIO_LLVM_REAL_HEADERS -DPRISMIO_BOOTSTRAP_COMPAT \
           -Wno-deprecated-declarations \
           -I"$LLVM_INC" -I"$REPO/runtime" \
           -c "$REPO/runtime/$c" -o "$WORK/${c%.c}.o" &
@@ -292,6 +302,10 @@ step "link"
 # CI matrix reported `run --jit` failing on ubuntu with a list of unresolved
 # std.io symbols, which are the dependents of the one runtime symbol it could
 # not find.
-clang $OBJS -o "$OUT" -rdynamic -L"$LLVM_LIB" -l"$LLVM_LINK" || die "link"
+if [ -n "$LLVM_RSP" ]; then
+    "$CLANG" $OBJS -o "$OUT" -rdynamic "@$LLVM_RSP" || die "link"
+else
+    "$CLANG" $OBJS -o "$OUT" -rdynamic -L"$LLVM_LIB" -l"$LLVM_LINK" || die "link"
+fi
 
 green "Built $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"

@@ -95,8 +95,7 @@ def main() -> int:
     bin_dir = prefix / "bin"
     lib_dir = prefix / "lib"
     stdlib_dir = prefix / "stdlib"
-    third_party_dir = prefix / "third_party"
-    for directory in (bin_dir, lib_dir, stdlib_dir, third_party_dir):
+    for directory in (bin_dir, lib_dir, stdlib_dir):
         directory.mkdir(parents=True, exist_ok=True)
 
     # Keep the outgoing binary so a bad install can be undone.
@@ -117,9 +116,18 @@ def main() -> int:
             shutil.copyfile(origin, lib_dir / name)
             print(f"  lib/{name:<14} {(lib_dir / name).stat().st_size:>10} bytes")
 
-    llvm_paths = dist / "third_party" / "llvm-paths.json"
-    if llvm_paths.is_file():
-        shutil.copyfile(llvm_paths, third_party_dir / llvm_paths.name)
+    # Windows only: the compiler links LLVM through an import library, and
+    # loads the DLL from beside itself. Everywhere else LLVM is inside it.
+    dll = source.parent / "LLVM-C.dll"
+    if WINDOWS and dll.is_file():
+        shutil.copyfile(dll, bin_dir / dll.name)
+        print(f"  {dll.name:<14} {(bin_dir / dll.name).stat().st_size:>10} bytes")
+
+    # An install made before LLVM was linked in recorded the build machine's
+    # LLVM here, and a compiler that found it would still use that clang.
+    stale = prefix / "third_party" / "llvm-paths.json"
+    if stale.is_file():
+        stale.unlink()
 
     runtime_source = dist / "lib" / "runtime"
     runtime_dest = lib_dir / "runtime"

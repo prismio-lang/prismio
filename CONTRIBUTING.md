@@ -46,12 +46,17 @@ For a list of open issues, see the [GitHub Issues tracker](https://github.com/pr
 
 | Dependency | Version | Notes |
 |---|---|---|
-| clang + LLVM | 22.x | On macOS this must be a Homebrew `llvm`, **not** Apple's bundled clang — the two disagree on IR version and the seed will not read |
-| Python | 3.8+ | The test runner and the AIF differential |
+| LLVM | 23.1.1, pinned | Provisioned into `third_party/llvm` by `python tools/setup_llvm.py` — do not install one |
+| A system C toolchain | — | The platform linker and C library: Xcode Command Line Tools on macOS, `build-essential` on Linux, Visual Studio's C++ tools on Windows |
+| Python | 3.8+ | Setup, the test runner and the AIF differential |
 | Prismio | any | Optional. You do not need an installed compiler — the committed seed builds the first one |
 
-`python tools/setup_llvm.py` provisions an LLVM with the C API headers and records
-where it went.
+`python tools/setup_llvm.py` downloads the pinned LLVM release, checks its SHA-256,
+and prepares it in `third_party/llvm` (about 2.5 minutes once; a no-op after
+that). It does not look at any LLVM already on the machine: the compiler links
+this one statically, so a Homebrew or apt upgrade cannot break a built compiler.
+`--llvm-dir <path>` adopts a local build instead, for platforms with no release
+archive.
 
 ---
 

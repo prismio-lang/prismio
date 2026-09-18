@@ -49,21 +49,26 @@ if ([string]::IsNullOrEmpty($Out) -and [string]::IsNullOrEmpty($PrintCacheKey)) 
 $runtimeSources = @('lang_runtime.c', 'program_support.c', 'build_driver.c', 'ir_symbols.c', 'aif_containers.c', 'aif_support.c', 'diagnostics.c', 'llvm-api-backend.c')
 
 # The backend is built on the LLVM C API, so building the compiler needs LLVM's
-# headers and its C API link library. Run tools\setup_llvm.py to find or fetch a
-# suitable toolchain -- it writes third_party\llvm-paths.json, which is read
-# here. PRISMIO_LLVM_DIR overrides it.
+# headers and its C API link library. tools\setup_llvm.py provisions the pinned
+# release into third_party\llvm and writes third_party\llvm-paths.json, which
+# is read here; its clang does every compile and the link, so nothing is taken
+# from PATH. PRISMIO_LLVM_DIR overrides it.
 function Resolve-Llvm {
     param([string]$Repo)
 
     if ($env:PRISMIO_LLVM_DIR) {
         $root = $env:PRISMIO_LLVM_DIR
-        return @{ include = (Join-Path $root 'include'); lib = (Join-Path $root 'lib'); bin = (Join-Path $root 'bin') }
+        $bin = Join-Path $root 'bin'
+        return @{ include = (Join-Path $root 'include'); lib = (Join-Path $root 'lib'); bin = $bin
+                  clang = (Join-Path $bin 'clang.exe'); rsp = '' }
     }
 
     $cfg = Join-Path $Repo 'third_party\llvm-paths.json'
     if (Test-Path $cfg) {
         $j = Get-Content $cfg -Raw | ConvertFrom-Json
-        return @{ include = $j.include; lib = $j.lib; bin = $j.bin }
+        $rsp = if ($j.PSObject.Properties.Name -contains 'link_rsp') { $j.link_rsp } else { '' }
+        return @{ include = $j.include; lib = $j.lib; bin = $j.bin
+                  clang = (Join-Path $j.bin 'clang.exe'); rsp = $rsp }
     }
 
     Write-Host 'FAILED: no LLVM toolchain configured.' -ForegroundColor Red
@@ -192,10 +197,10 @@ Write-Host "IR: $($syms.Count) symbols, all unique" -ForegroundColor Green
 $programObj = Join-Path $work 'program.obj'
 # clang -O2 rather than llc: llc runs the codegen pipeline but not the IR
 # pipeline, so a compiler built with it has every local in a stack slot.
-Invoke-Step 'll -> obj' 'clang' @('-O2', '-c', $ll, '-o', $programObj)
+$llvm = Resolve-Llvm -Repo $Repo
+Invoke-Step 'll -> obj' $llvm.clang @('-O2', '-c', $ll, '-o', $programObj)
 
 # 3. Runtime and backend C sources, compiled fresh from the working tree.
-$llvm = Resolve-Llvm -Repo $Repo
 
 $objs = @($programObj)
 foreach ($c in $runtimeSources) {
@@ -207,7 +212,7 @@ foreach ($c in $runtimeSources) {
     }
 
     $obj = Join-Path $work ([System.IO.Path]::GetFileNameWithoutExtension($c) + '.obj')
-    Invoke-Step "cc $c" 'clang' @('-O2', '-DPRISMIO_LLVM_REAL_HEADERS', '-DPRISMIO_BOOTSTRAP_COMPAT',
+    Invoke-Step "cc $c" $llvm.clang @('-O2', '-DPRISMIO_LLVM_REAL_HEADERS', '-DPRISMIO_BOOTSTRAP_COMPAT',
                                   '-Wno-deprecated-declarations',
                                   "-I$($llvm.include)", "-I$(Join-Path $Repo 'runtime')",
                                   '-c', (Join-Path $Repo "runtime\$c"), '-o', $obj)
@@ -268,7 +273,8 @@ if ((Test-Path $nm) -and $runtimeObjs.Count -gt 0) {
     Write-Host '[exports] llvm-nm not found -- run --jit will not resolve the runtime' -ForegroundColor Yellow
 }
 
-Invoke-Step 'link' 'clang' ($objs + @('-o', $Out, "-L$($llvm.lib)", '-lLLVM-C') + $exportArgs)
+$llvmArgs = if ($llvm.rsp) { @("@$($llvm.rsp)") } else { @("-L$($llvm.lib)", '-lLLVM-C') }
+Invoke-Step 'link' $llvm.clang ($objs + @('-o', $Out) + $llvmArgs + $exportArgs)
 
 # On Windows the compiler needs LLVM-C.dll beside it at runtime; copying beats
 # asking every user to put the LLVM bin directory on PATH.

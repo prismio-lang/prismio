@@ -39,6 +39,10 @@
 
 #include "prismio_llvm.h"
 
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
+
 // The value and block tables are indexed by a counter that runs for the whole
 // module, so their old fixed sizes were a ceiling on *program size* rather than
 // on anything a single function could do: a 922 KB source stopped with
@@ -7012,7 +7016,212 @@ int ir_jit_run_main(const char *program_name) {
     return status;
 }
 
+// Code generation, in process
+// `prismio build` used to finish by handing the merged module to `clang -O3 -c`
+// as textual IR. That made every user build depend on a clang of *exactly* this
+// LLVM version -- textual IR is versioned input, and a clang one release older
+// rejects attributes this one writes -- which is the one piece of LLVM no user
+// machine has. The compiler already carries the whole of LLVM, so it now does
+// the same work itself.
+//
+// "The same work" is checked, not assumed: for a `.ll` input the clang driver
+// hands cc1 a triple, a CPU and the optimisation level, and nothing else that
+// reaches code generation -- -mframe-pointer, -funwind-tables and -tune-cpu are
+// frontend options that only shape functions clang writes from C. This
+// reproduces those three, and the pass pipeline options cc1 derives from -O3.
+
+// The CPU the clang driver picks when none is named. Not the host's: a program
+// built here has to run on the machine it is copied to.
+static const char *default_target_cpu(const char *triple) {
+    int apple = strstr(triple, "-apple-") != NULL;
+    if (strncmp(triple, "arm64", 5) == 0 || strncmp(triple, "aarch64", 7) == 0) {
+        return apple ? "apple-m1" : "generic";
+    }
+    if (strncmp(triple, "x86_64", 6) == 0) return apple ? "penryn" : "x86-64";
+    if (triple[0] == 'i' && strncmp(triple + 2, "86", 2) == 0) {
+        return apple ? "yonah" : "pentium4";
+    }
+    if (strncmp(triple, "riscv64", 7) == 0) return "generic-rv64";
+    if (strncmp(triple, "riscv32", 7) == 0) return "generic-rv32";
+    return "generic";
+}
+
+// The macOS a host build targets: MACOSX_DEPLOYMENT_TARGET when set, as clang
+// honours it, otherwise the running system. The linker is told the same version
+// (compiler_link_min_os), so object and executable cannot disagree -- the
+// alternative is ld's "built for newer macOS version than being linked" on every
+// build whose SDK is older than the machine.
+static void host_macos_version(char *out, size_t size) {
+    const char *env = getenv("MACOSX_DEPLOYMENT_TARGET");
+    if (env && *env) {
+        snprintf(out, size, "%s", env);
+        return;
+    }
+    out[0] = '\0';
+#ifdef __APPLE__
+    size_t len = size;
+    if (sysctlbyname("kern.osproductversion", out, &len, NULL, 0) != 0) out[0] = '\0';
+#endif
+    if (!out[0]) snprintf(out, size, "11.0");
+}
+
+const char *ir_host_macos_version(void) {
+    static char version[32];
+    if (!version[0]) host_macos_version(version, sizeof(version));
+    return version;
+}
+
+// The triple clang would compile a host build for. LLVM's default names the
+// kernel (arm64-apple-darwin25.5.0); clang names the OS and its version
+// (arm64-apple-macosx26.5), which is what ends up in LC_BUILD_VERSION.
+static void host_codegen_triple(char *out, size_t size) {
+    char *def = LLVMGetDefaultTargetTriple();
+    const char *darwin = strstr(def, "-apple-darwin");
+    if (darwin) {
+        snprintf(out, size, "%.*s-apple-macosx%s", (int)(darwin - def), def,
+                 ir_host_macos_version());
+    } else {
+        snprintf(out, size, "%s", def);
+    }
+    LLVMDisposeMessage(def);
+}
+
+static void ensure_codegen_initialized(void) {
+    static int done = 0;
+    if (done) return;
+#ifdef PRISMIO_TARGETS
+    ensure_all_targets();
+    LLVMInitializeAllAsmPrinters();
+    LLVMInitializeAllAsmParsers();
 #else
+    LLVMInitializeNativeTarget();
+    LLVMInitializeNativeAsmPrinter();
+    LLVMInitializeNativeAsmParser();
+#endif
+    // `-mllvm -enable-nontrivial-unswitch`, which compile_ir_to_object passed
+    // to clang and documents. A process-wide option, set once.
+    static const char *const argv[] = { "prismio", "-enable-nontrivial-unswitch" };
+    LLVMParseCommandLineOptions(2, argv, NULL);
+    done = 1;
+}
+
+// Compile the IR in `ir_path` to an object file. `triple` is the target the
+// user named, or NULL for the host. `opt_level` is 3, or 0 for a -g build --
+// the same pair compile_ir_to_object gave clang. Returns 0 on success.
+int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple,
+                   int opt_level) {
+    ensure_codegen_initialized();
+
+    char chosen[256];
+    if (triple && *triple) {
+        // `--target x86_64-apple-macos` names no version; clang's driver fills
+        // in the deployment target, and the object's LC_BUILD_VERSION with it.
+        size_t n = strlen(triple);
+        int versionless_macos =
+            (n >= 6 && strcmp(triple + n - 6, "-macos") == 0)
+            || (n >= 7 && strcmp(triple + n - 7, "-macosx") == 0);
+        if (versionless_macos) {
+            snprintf(chosen, sizeof(chosen), "%.*s-macosx%s",
+                     (int)(n - (triple[n - 1] == 'x' ? 7 : 6)), triple,
+                     ir_host_macos_version());
+        } else {
+            snprintf(chosen, sizeof(chosen), "%s", triple);
+        }
+    } else {
+        host_codegen_triple(chosen, sizeof(chosen));
+    }
+
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMMemoryBufferRef buf = NULL;
+    LLVMModuleRef m = NULL;
+    char *err = NULL;
+    if (LLVMCreateMemoryBufferWithContentsOfFile(ir_path, &buf, &err) != 0
+        || LLVMParseIRInContext(ctx, buf, &m, &err) != 0) {
+        fprintf(stderr, "ERROR: could not read %s: %s\n", ir_path, err ? err : "?");
+        if (err) LLVMDisposeMessage(err);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+
+    LLVMTargetRef target = NULL;
+    if (LLVMGetTargetFromTriple(chosen, &target, &err) != 0) {
+        fprintf(stderr, "ERROR: LLVM does not know the target %s: %s\n", chosen,
+                err ? err : "?");
+        if (err) LLVMDisposeMessage(err);
+        LLVMDisposeModule(m);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+
+    // PIC everywhere clang's driver defaults to it, which is every hosted
+    // target; wasm has no dynamic loader to be position-independent for.
+    int wasm = strncmp(chosen, "wasm", 4) == 0;
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+        target, chosen, default_target_cpu(chosen), "",
+        opt_level > 0 ? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelNone,
+        wasm ? LLVMRelocStatic : LLVMRelocPIC, LLVMCodeModelDefault);
+
+    // clang overrides the module's triple with its own (the -Woverride-module
+    // note in compile_ir_to_object), and so does this. The layout is the one
+    // the frontend stamped, which the target suite checks equals this target's.
+    LLVMSetTarget(m, chosen);
+    const char *layout = LLVMGetDataLayoutStr(m);
+    if (!layout || !*layout) {
+        LLVMTargetDataRef td = LLVMCreateTargetDataLayout(tm);
+        char *rep = LLVMCopyStringRepOfTargetData(td);
+        LLVMSetDataLayout(m, rep);
+        LLVMDisposeMessage(rep);
+        LLVMDisposeTargetData(td);
+    }
+
+    // cc1's pipeline tuning at -O2 and above: unrolling and interleaving on,
+    // both vectorizers on. SLP is the one PipelineTuningOptions defaults off.
+    char pipeline[32];
+    snprintf(pipeline, sizeof(pipeline), "default<O%d>", opt_level);
+    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+    int vectorize = opt_level >= 2;
+    LLVMPassBuilderOptionsSetLoopUnrolling(options, vectorize);
+    LLVMPassBuilderOptionsSetLoopInterleaving(options, vectorize);
+    LLVMPassBuilderOptionsSetLoopVectorization(options, vectorize);
+    LLVMPassBuilderOptionsSetSLPVectorization(options, vectorize);
+    LLVMErrorRef perr = LLVMRunPasses(m, pipeline, tm, options);
+    LLVMDisposePassBuilderOptions(options);
+
+    int failed = 0;
+    if (perr) {
+        char *msg = LLVMGetErrorMessage(perr);
+        fprintf(stderr, "ERROR: the optimisation pipeline failed: %s\n", msg ? msg : "?");
+        LLVMDisposeErrorMessage(msg);
+        failed = 1;
+    }
+
+    if (!failed) {
+        char *path = (char *)malloc(strlen(obj_path) + 1);
+        strcpy(path, obj_path);
+        if (LLVMTargetMachineEmitToFile(tm, m, path, LLVMObjectFile, &err) != 0) {
+            fprintf(stderr, "ERROR: code generation failed: %s\n", err ? err : "?");
+            if (err) LLVMDisposeMessage(err);
+            failed = 1;
+        }
+        free(path);
+    }
+
+    LLVMDisposeTargetMachine(tm);
+    LLVMDisposeModule(m);
+    LLVMContextDispose(ctx);
+    return failed;
+}
+
+#else
+
+// No real headers, no code generation: the caller falls back to clang.
+int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple,
+                   int opt_level) {
+    (void)ir_path; (void)obj_path; (void)triple; (void)opt_level;
+    return -1;
+}
+
+const char *ir_host_macos_version(void) { return ""; }
 
 int ir_jit_run_main(const char *program_name) {
     (void)program_name;

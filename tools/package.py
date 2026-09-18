@@ -12,7 +12,13 @@ Produces:
     <out>/lib/runtime/<triple>/*.bc   the same, for each --target
     <out>/lib/backend.{a,lib}         linked into the compiler only
     <out>/stdlib/*.plib               a code section for the host and each --target
-    <out>/third_party/llvm-paths.json
+    <out>/bin/LLVM-C.dll              Windows only; elsewhere LLVM is linked in
+
+**No LLVM is needed where the package is installed.** The compiler links the
+pinned LLVM statically (tools/setup_llvm.py), optimises and generates code in
+process, and hands the finished object to the system's own linker driver. What
+the package used to carry instead -- `third_party/llvm-paths.json`, naming the
+*build machine's* LLVM for a `clang` it then ran -- is gone.
 
 **A cross build needs both halves for its triple**, and each is looked up by the
 triple exactly as the build spells it: `--target x86_64-apple-macos` here and in
@@ -113,6 +119,17 @@ def build_archive(name: str, sources: list, lib: Path, work: Path, archiver: lis
     else:
         run(f"ar {name}", archiver + [str(archive)] + objects)
     print(f"  {archive.name:<12} {archive.stat().st_size:>8} bytes  <- {' + '.join(sources)}")
+
+
+def llvm_bin() -> str:
+    configured = os.environ.get("PRISMIO_LLVM_DIR")
+    if configured:
+        return str(Path(configured) / "bin")
+    try:
+        paths = REPO / "third_party" / "llvm-paths.json"
+        return json.loads(paths.read_text(encoding="utf-8"))["bin"]
+    except (KeyError, ValueError, OSError):
+        die("no LLVM toolchain configured (run tools/setup_llvm.py)")
 
 
 def llvm_clang() -> str:
@@ -286,9 +303,8 @@ def main() -> int:
     lib = out / "lib"
     runtime_bc = lib / "runtime"
     stdlib = out / "stdlib"
-    third_party = out / "third_party"
     work = out / ".objs"
-    for directory in (bin_dir, lib, runtime_bc, stdlib, third_party, work):
+    for directory in (bin_dir, lib, runtime_bc, stdlib, work):
         directory.mkdir(parents=True, exist_ok=True)
 
     # Repackaging into an existing output must not leave the previous source or
@@ -322,13 +338,20 @@ def main() -> int:
     if not WINDOWS:
         installed.chmod(0o755)
 
-    # Textual LLVM IR must be consumed by a clang from the same LLVM release
-    # that produced it. Preserve setup_llvm.py's validated toolchain location
-    # beside the packaged compiler; PRISMIO_LLVM_DIR remains the portable
-    # override when the package moves to a machine with a different install.
-    llvm_paths = REPO / "third_party" / "llvm-paths.json"
-    if llvm_paths.is_file():
-        shutil.copyfile(llvm_paths, third_party / llvm_paths.name)
+    # An older package wrote the build machine's LLVM location here, and a
+    # compiler finding it would still take that machine's clang for granted.
+    stale = out / "third_party"
+    if stale.is_dir():
+        shutil.rmtree(stale)
+
+    # Windows links LLVM-C.lib, an import library, so the DLL travels with the
+    # compiler -- the same copy tools/bootstrap.ps1 makes beside every
+    # generation.
+    if WINDOWS:
+        dll = Path(llvm_bin()) / "LLVM-C.dll"
+        if not dll.is_file():
+            die(f"no LLVM-C.dll at {dll} (run tools/setup_llvm.py)")
+        shutil.copyfile(dll, bin_dir / dll.name)
 
     # Recorded beside the libraries so a later build can tell whether they still
     # match the sources on disk.

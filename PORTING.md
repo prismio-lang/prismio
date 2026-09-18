@@ -12,28 +12,20 @@ for whatever host it runs on, and from there the compiler builds itself.
 
 | Tool | Where it comes from | Notes |
 |---|---|---|
-| `clang` | Xcode Command Line Tools (`xcode-select --install`) | Also supplies the macOS SDK, `ar`, and `nm` |
-| `llc` | `brew install llvm` | Apple's toolchain ships no `llc` |
-| `python3` | Preinstalled | Only for the test runner |
+| The macOS SDK and `ld` | Xcode Command Line Tools (`xcode-select --install`) | The linker and C library every program links against |
+| LLVM 23.1.1 | `python3 tools/setup_llvm.py` | Downloaded, checksummed and prepared in `third_party/llvm`; no Homebrew LLVM |
+| `python3` | Preinstalled | Setup and the test runner |
 
-Homebrew's LLVM is keg-only, so put it on `PATH` — **appended, not prepended**:
-
-```sh
-export PATH="$PATH:$(brew --prefix llvm)/bin"
-```
-
-The order matters. Prismio shells out to bare `clang` for compiling and linking,
-and you want that to resolve to Apple's `/usr/bin/clang`, which knows where the
-macOS SDK is. Homebrew's `clang` often does not without an explicit `-isysroot`.
-Appending gives you Apple `clang` plus Homebrew `llc`, which is the combination
-that works. Mixing LLVM versions across the two is fine — Mach-O is stable, and
-the generated IR uses opaque pointers, supported since LLVM 15.
+The build takes `clang` from `third_party/llvm`, never from `PATH`, and that
+clang finds the SDK through the `clang.cfg` setup writes beside it. An LLVM you
+installed yourself is ignored unless you name it with `PRISMIO_LLVM_DIR`.
 
 ## Build it
 
 ```sh
 git clone <repo> && cd prismio
 chmod +x tools/*.sh
+python3 tools/setup_llvm.py
 
 # gen0: from the committed seed IR — the only step that needs the seed.
 tools/bootstrap.sh --seed --out build/gen0
@@ -126,11 +118,11 @@ rest, which is exactly what the flow above is.
 
 ## Troubleshooting
 
-**`llc: command not found`** — Homebrew LLVM is not on `PATH`. See above.
+**`no LLVM toolchain configured`** — run `python3 tools/setup_llvm.py`.
 
-**`ld: library not found for -lSystem`** — `clang` resolved to Homebrew's rather
-than Apple's. Confirm with `command -v clang`; it should be `/usr/bin/clang`.
-Append Homebrew's LLVM to `PATH` instead of prepending it.
+**`ld: library not found for -lSystem`** — the SDK moved (an Xcode update that
+removed the one `third_party/llvm/bin/clang.cfg` names). Re-run
+`python3 tools/setup_llvm.py`, which rewrites it from `xcrun` every time.
 
 **`'stdio.h' file not found`** — Command Line Tools are missing or stale. Run
 `xcode-select --install`, then `xcode-select -p` to confirm a valid path.

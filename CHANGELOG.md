@@ -193,6 +193,16 @@
 
 ### Fixed
 
+- **The compiler no longer depends on an installed LLVM, and neither does a
+  package.** `tools/setup_llvm.py` downloads the pinned LLVM 23.1.1, verifies
+  its SHA-256 and prepares it in `third_party/llvm`, ignoring whatever LLVM the
+  machine has; the compiler links it statically, so a `brew upgrade llvm` can no
+  longer break a built compiler. `prismio build` now optimises and generates
+  code in process -- byte-identical to the `clang -O3` it replaces on the
+  benchmark suite -- and links with the system's `cc`, so an installed toolchain
+  needs no LLVM and no clang. Packages drop `third_party/llvm-paths.json`.
+  KNOWN_ISSUES "Toolchain layout".
+
 - **Storing an element read into a container freed it twice.**
   `list_push(ys, list_get(xs, 0))`, `list_set(xs, i, list_get(xs, j))` and
   `v[i] = v[j]` double-freed any struct or enum literal, and the flat-struct form

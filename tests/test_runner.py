@@ -7595,7 +7595,7 @@ def run_module_artifact_test():
         # Production bitcode uses an immutable layout constructor. The mutable
         # post-construction stamp exists only under PRISMIO_BOOTSTRAP_COMPAT so
         # a preceding compiler generation can build the next one.
-        llvm_paths = dist / "third_party" / "llvm-paths.json"
+        llvm_paths = PROJECT_ROOT / "third_party" / "llvm-paths.json"
         llvm_dis = None
         if llvm_paths.is_file():
             try:

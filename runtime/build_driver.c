@@ -49,6 +49,12 @@ int ir_link_library_modules(const char* dest_ir,
                             const char* const* src_irs,
                             const int* link_modes, int module_count,
                             const char* out_path);
+// IR to an object, in process: 0 on success, 1 on failure, -1 when this
+// backend was built without the LLVM headers and cannot (the caller then asks
+// clang). See the note above it in llvm-api-backend.c.
+int ir_emit_object(const char* ir_path, const char* obj_path, const char* triple,
+                   int opt_level);
+const char* ir_host_macos_version(void);
 
 static const PrismioToolchainFile prismio_toolchain_files[] = {
     { "prismio_platform.h", 0, NULL,              1 },
@@ -346,9 +352,14 @@ static void llvm_link_name(const char* file_name, char* out, int out_size) {
     if (n == 0) snprintf(out, out_size, "LLVM-C");
 }
 
+// `rsp_out`, when non-NULL, receives the response file setup_llvm.py writes for
+// the pinned toolchain -- the static archives and the system libraries they
+// need -- or "" for an install adopted with --llvm-dir, which is linked by
+// `-L <lib> -l<link>` as before.
 static int find_llvm_paths_ex(char* include_out, int include_size, char* lib_out, int lib_size,
-                              char* link_out, int link_size) {
+                              char* link_out, int link_size, char* rsp_out, int rsp_size) {
     if (link_out && link_size > 0) snprintf(link_out, link_size, "LLVM-C");
+    if (rsp_out && rsp_size > 0) rsp_out[0] = '\0';
     const char* root = getenv("PRISMIO_LLVM_DIR");
     if (root && root[0]) {
         snprintf(include_out, include_size, "%s%cinclude", root, PRISMIO_PATH_SEP);
@@ -395,13 +406,17 @@ static int find_llvm_paths_ex(char* include_out, int include_size, char* lib_out
             llvm_link_name(recorded, link_out, link_size);
         }
     }
+    if (ok && rsp_out && rsp_size > 0
+        && !json_string_field(text, "link_rsp", rsp_out, rsp_size)) {
+        rsp_out[0] = '\0';
+    }
     free(text);
     return ok;
 }
 
 // The three-argument form every existing caller wants: directories only.
 static int find_llvm_paths(char* include_out, int include_size, char* lib_out, int lib_size) {
-    return find_llvm_paths_ex(include_out, include_size, lib_out, lib_size, NULL, 0);
+    return find_llvm_paths_ex(include_out, include_size, lib_out, lib_size, NULL, 0, NULL, 0);
 }
 
 // Use the clang that belongs to the LLVM C API linked into this compiler.
@@ -1439,11 +1454,33 @@ static char* merge_curated_into_program(const char* ir_file, const char* target_
     return merged;
 }
 
+// `PRISMIO_CODEGEN=clang` restores the old route, for comparing the two. It is a
+// measurement switch, not a supported mode: it needs the pinned clang.
+static int codegen_uses_clang(void) {
+    const char* v = getenv("PRISMIO_CODEGEN");
+    return v && strcmp(v, "clang") == 0;
+}
+
 static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
+    // In process first. The clang command below is what this reproduces, flag
+    // for flag, and stays as the fallback for a backend built without headers.
+    if (!codegen_uses_clang()) {
+        double t0 = build_trace_ms();
+        int emitted = ir_emit_object(ir_file, program_obj,
+                                     ir_target_is_explicit() ? ir_target_triple() : NULL,
+                                     g_debug_info ? 0 : 3);
+        build_trace_stage("program -O3 (whole program, in process)", t0);
+        if (emitted >= 0) return emitted;
+    }
+
     char* target = target_clang_flags();
     char* q_ir = command_quote_arg(ir_file);
     char* q_obj = command_quote_arg(program_obj);
-    int len = (int)(strlen(q_ir) + strlen(q_obj) + strlen(target) + 160);
+    // The driver's own path counts too. Leaving it out went unnoticed while it
+    // was Homebrew's 43-character Cellar path; the pinned toolchain's lives in
+    // the checkout, and the truncated command lost its closing quote.
+    int len = (int)(strlen(native_clang_command()) + strlen(q_ir) + strlen(q_obj)
+                    + strlen(target) + 160);
     char* command = (char*)malloc(len);
 
     // --target as well as the triple already written on the module: clang needs
@@ -1503,6 +1540,38 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     return result;
 }
 
+// Who links a program. The object is finished machine code by now, and object
+// files do not care which LLVM wrote them, so this is the one step that can use
+// the *system's* toolchain -- the way rustc hands its objects to `cc`. The
+// system linker is not optional anyway: it comes with the C library and SDK a
+// program links against (Xcode's Command Line Tools, a distribution's libc
+// development files, Visual Studio's C++ tools).
+//
+// In order: PRISMIO_CC; the pinned clang, when this compiler runs from a
+// checkout that has one (so development builds link exactly as before); then
+// `cc`, or `clang` on Windows, where there is no `cc`. A cross build needs a
+// driver that takes `--target`, which `cc` is only when it is clang.
+static const char* link_driver_command(void) {
+    static char command[1200];
+    static int ready = 0;
+    if (ready) return command;
+    ready = 1;
+    const char* env = getenv("PRISMIO_CC");
+    native_clang_command();
+    if (env && *env) {
+        snprintf(command, sizeof(command), "%s", env);
+    } else if (g_clang_binary[0]) {
+        snprintf(command, sizeof(command), "%s", native_clang_command());
+    } else {
+#ifdef _WIN32
+        snprintf(command, sizeof(command), "clang");
+#else
+        snprintf(command, sizeof(command), ir_target_is_explicit() ? "clang" : "cc");
+#endif
+    }
+    return command;
+}
+
 // The runtime has already been linked into the program's LLVM module before
 // optimisation. The native link therefore receives one program object plus any
 // explicit UMS inputs; there is no opaque runtime archive at this boundary.
@@ -1511,12 +1580,22 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
     char* q_exe = command_quote_arg(exe_file);
     char* target = target_clang_flags();
     const char* native = g_native_link_args ? g_native_link_args : "";
-    int len = (int)(strlen(q_obj) + strlen(q_exe) +
+    // A host build on macOS states the deployment version its object was
+    // compiled for (ir_host_macos_version), rather than letting the driver
+    // default to its SDK's and warn when the two differ.
+    char min_os[64] = "";
+#ifdef __APPLE__
+    if (!ir_target_is_explicit() && !codegen_uses_clang() && ir_host_macos_version()[0]) {
+        snprintf(min_os, sizeof(min_os), "-mmacosx-version-min=%s ", ir_host_macos_version());
+    }
+#endif
+    const char* driver = link_driver_command();
+    int len = (int)(strlen(driver) + strlen(min_os) + strlen(q_obj) + strlen(q_exe) +
                     strlen(target) + strlen(native) + 64);
     char* command = (char*)malloc(len);
 
-    snprintf(command, len, "%s %s%s%s -o %s",
-             native_clang_command(), target, q_obj, native, q_exe);
+    snprintf(command, len, "%s %s%s%s%s -o %s",
+             driver, target, min_os, q_obj, native, q_exe);
     int result = run_build_command(command);
 
     free(command);
@@ -1941,9 +2020,11 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
     char llvm_include[1024] = "";
     char llvm_lib[1024] = "";
     char llvm_link[256] = "LLVM-C";
+    char llvm_rsp[1024] = "";
     if (include_backend && !find_llvm_paths_ex(llvm_include, sizeof(llvm_include),
                                                llvm_lib, sizeof(llvm_lib),
-                                               llvm_link, sizeof(llvm_link))) {
+                                               llvm_link, sizeof(llvm_link),
+                                               llvm_rsp, sizeof(llvm_rsp))) {
         fprintf(stderr,
                 "ERROR: no LLVM toolchain configured, and the compiler backend needs one.\n"
                 "       Run: python3 tools/setup_llvm.py\n"
@@ -1956,7 +2037,7 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
         command_len += (int)strlen(source_paths[i]) * 2 + 64;
     }
     command_len += (int)(strlen(q_exe) + strlen(q_program_obj));
-    command_len += (int)(strlen(llvm_include) + strlen(llvm_lib)) * 2 + 256;
+    command_len += (int)(strlen(llvm_include) + strlen(llvm_lib) + strlen(llvm_rsp)) * 2 + 256;
     command_len += g_native_link_args ? (int)strlen(g_native_link_args) : 0;
     char* command = (char*)malloc(command_len);
     int result = 0;
@@ -2116,7 +2197,18 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             // The half that was missing. Without it the backend's several
             // hundred LLVM calls are undefined symbols, after every object has
             // already been compiled.
+            // The pinned toolchain is linked statically, from the archives its
+            // response file names: the compiler then loads no LLVM at run time,
+            // so no later change to any LLVM on this machine can break it. An
+            // adopted install has no response file and is linked as a library.
             char* q_lib = command_quote_arg(llvm_lib);
+            char* q_rsp = llvm_rsp[0] ? command_quote_arg(llvm_rsp) : NULL;
+            char llvm_args[1400];
+            if (q_rsp) {
+                snprintf(llvm_args, sizeof(llvm_args), "@%s", q_rsp);
+            } else {
+                snprintf(llvm_args, sizeof(llvm_args), "-L %s -l%s", q_lib, llvm_link);
+            }
             // -rdynamic for the same reason tools/bootstrap.sh passes it: the
             // artifact being produced here is a *compiler*, and `--jit` resolves
             // the jitted module's externals with a `dlsym` on the running
@@ -2132,8 +2224,7 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             // link line without them.
             char* exports = windows_runtime_export_flags(objs, exe_file);
             if (exports) {
-                int needed = written + (int)strlen(exports) + (int)strlen(q_lib)
-                             + (int)strlen(llvm_link) + 64;
+                int needed = written + (int)strlen(exports) + (int)strlen(llvm_args) + 64;
                 if (needed > command_len) {
                     char* grown = (char*)realloc(command, (size_t)needed);
                     if (grown) {
@@ -2145,14 +2236,14 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
                     }
                 }
             }
-            snprintf(command + written, command_len - written, "%s -L %s -l%s",
-                     exports ? exports : "", q_lib, llvm_link);
+            snprintf(command + written, command_len - written, "%s %s",
+                     exports ? exports : "", llvm_args);
             free(exports);
 #else
-            snprintf(command + written, command_len - written, " -rdynamic -L %s -l%s",
-                     q_lib, llvm_link);
+            snprintf(command + written, command_len - written, " -rdynamic %s", llvm_args);
 #endif
             free(q_lib);
+            free(q_rsp);
         }
         double t0 = build_trace_ms();
         if (run_build_command(command) != 0) result = 1;

@@ -554,29 +554,43 @@ at all.
 
 ## Toolchain layout
 
-**The compiler depends on a global LLVM, and a packaged toolchain does too.**
-Measured 2026-09-17, moving from LLVM 22.1.8 to 23.1.1 with `brew upgrade llvm`:
+**LLVM is pinned in the checkout and linked into the compiler; a package needs
+none.** Fixed 2026-09-18. Before, every compiler binary loaded Homebrew's
+`libLLVM-C.dylib` by the path of the unversioned keg, which `brew upgrade llvm`
+repointed and so broke every existing binary at once, and a package recorded the
+build machine's Cellar path for the `clang` its builds shelled out to.
 
-- Every compiler binary loads `libLLVM-C.dylib` by the install name the dylib
-  carries, `/opt/homebrew/opt/llvm/lib/...`. The upgrade moved that link, and
-  every existing binary -- the installed `prismio`, the project host, every
-  `build/` generation -- then refused to compile (`check_llvm_version`).
-- A packaged `third_party/llvm-paths.json` records the *build machine's*
-  Cellar path, `/opt/homebrew/Cellar/llvm/22.1.8`, for `clang`. The same
-  upgrade also moved `z3`, so that keg's `clang` stopped loading
-  (`libz3.4.16.dylib`), and a 22 build failed at the native step.
-- `tools/release.py` bundles no LLVM, so a release needs Homebrew LLVM at that
-  exact path.
-- `tools/setup_llvm.py`'s download fallback cannot help on macOS or Linux: the
-  official `LLVM-<ver>-<OS>-<ARCH>` archives carry neither `llvm-c/Core.h` nor
-  a shared `libLLVM-C` (the CI matrix, 2026-08-29).
+- `tools/setup_llvm.py` downloads LLVM 23.1.1 by exact asset name, checks a pinned
+  SHA-256, and prepares it in `third_party/llvm`. It consults no installed LLVM;
+  `--llvm-dir` still adopts one, dynamically, when asked.
+- **The official macOS/Linux archives carry static archives only, and those are
+  ThinLTO bitcode.** Apple's `ld` reads bitcode through Xcode's older libLTO
+  (thousands of undefined symbols), and LLVM 23's `ld64.lld` cannot parse the
+  macOS 27 SDK's `.tbd` stubs (`unknown target arm64e.x1-macos`). Setup lowers
+  the ~2,800 members the compiler uses to native objects once (75 s on ten
+  cores) and builds zstd 1.5.7 from pinned source, because LLVM's archives name
+  the build machine's `/opt/homebrew/lib/libzstd.a`. A compiler then links in
+  4 s with the system linker, is 134 MB, loads only libSystem, libz and libc++,
+  and starts in 5.2 ms against the dylib build's 10.7.
+- `prismio build` optimises and generates code in process
+  (`ir_emit_object`), reproducing what `clang -O3 -c x.ll` did: the benchmark
+  suite, a `-g` build and an `x86_64-apple-macos` cross build are byte-identical
+  either way (`PRISMIO_CODEGEN=clang` restores the old route for comparing).
+  Only the link leaves the process, through the system's driver.
 
-The fix is to ship the pinned LLVM inside the toolchain -- `lib/libLLVM` and
-`clang` beside `bin/prismio`, the compiler linked `@executable_path/../lib` --
-and to have `setup_llvm.py` provision that same artifact into `third_party/`
-for development. Not started. Until then, an old compiler runs against the
-versioned keg: `DYLD_LIBRARY_PATH=/opt/homebrew/opt/llvm@22/lib
-PRISMIO_LLVM_DIR=/opt/homebrew/opt/llvm@22`.
+What is left:
+
+- **Linking still needs the platform's C toolchain**: `cc` on macOS and Linux,
+  `clang` on PATH on Windows (`PRISMIO_CC` overrides). It is where the C
+  library and the SDK come from, so shipping a linker would not remove it --
+  and on macOS it could not: LLD 23 cannot read the current SDK at all. Zig
+  avoids this by shipping libc stubs; nothing here does.
+- **Windows was changed and not run.** Its archive ships `LLVM-C.lib`/`.dll`
+  rather than bitcode, so it stays dynamic, with the DLL copied beside
+  `prismio.exe` by the bootstrap, the package and the installer. The Linux path
+  (libstdc++ detection, lowering) was likewise written against the macOS run.
+  CI is the first run of both.
+- Darwin/x86_64 has no 23.1.x archive; setup refuses it and names `--llvm-dir`.
 
 **A struct crossing a `.plib` read its fields one slot late, and the cause was
 field order chosen per compilation.** Fixed; what it leaves is below. A program

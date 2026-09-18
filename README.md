@@ -7,7 +7,7 @@
 <div align="center">
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-6C63FF?style=for-the-badge&logoColor=white)](LICENSE)
-[![LLVM](https://img.shields.io/badge/backend-LLVM%2022-6C63FF?style=for-the-badge&logoColor=white)]()
+[![LLVM](https://img.shields.io/badge/backend-LLVM%2023-6C63FF?style=for-the-badge&logoColor=white)]()
 [![Status](https://img.shields.io/badge/status-active%20development-6C63FF?style=for-the-badge&logoColor=white)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-6C63FF?style=for-the-badge&logoColor=white)](CONTRIBUTING.md)
 
@@ -82,11 +82,11 @@ Source (.psm)
   IR Generator            ← src/ir/
      │  AST walk → LLVM IR, built through the LLVM C API
      ▼
-  llvm-llc
-     │  Object file (.obj / .o)
+  LLVM, in process
+     │  Merges the runtime and std bitcode, optimises at -O3, emits an object
      ▼
-  Clang
-     │  Links with the runtime (embedded in the compiler binary; see runtime/)
+  System linker (cc)
+     │  Links against the platform's C library
      ▼
   Native binary
 ```
@@ -124,7 +124,8 @@ For a full breakdown of compiler internals, see [Architecture](https://docs.pris
 
 | Dependency | Version | Notes |
 |---|---|---|
-| clang + LLVM | 22.x | Native code generation and the LLVM C API backend |
+| LLVM | 23.1.1, pinned | Provisioned into `third_party/llvm` by `tools/setup_llvm.py` and linked into the compiler; nothing to install |
+| A C toolchain | — | The system linker and C library (Xcode Command Line Tools, `build-essential`, Visual Studio C++ tools) |
 | Python | 3.8+ | Test runner utilities |
 | Prismio | not required | The committed seed creates the first local compiler |
 
