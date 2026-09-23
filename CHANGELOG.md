@@ -43,6 +43,13 @@
 
 ### Added
 
+- **`prismio bench` reports in the terminal.** Each workload prints a row as it
+  finishes -- the three arms' medians, the fastest in bold, Prismio's ratio to
+  C++ and to Rust coloured by the suite's 4% noise floor -- grouped by category,
+  under a progress bar with an ETA, then a summary: the geometric-mean ratio,
+  faster/parity/slower counts and the workloads furthest behind C++. It used to
+  print a bar and the path of the HTML report. Piped, the same rows are plain
+  text.
 - **The compiler's own output is styled on a terminal.** Diagnostics in
   rustc's colours (red `error[P4001]`, bold message, blue `-->` and gutter,
   carets in the severity's colour); a progress line rewritten in place while a

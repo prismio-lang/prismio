@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 from html import escape
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -43,32 +44,139 @@ CACHED_INPUTS = {
 }
 
 
+# Within this much of the other arm a result is parity, not a win or a loss:
+# the suite's run-to-run floor, measured alternating identical binaries, is
+# about 4% (aif/evidence, and code layout alone moves numeric kernels that far).
+PARITY = 0.04
+
+
+def color_enabled(stream):
+    """The compiler's rule (runtime/diagnostics.c): NO_COLOR and TERM=dumb win,
+    FORCE_COLOR/CLICOLOR_FORCE override a pipe, otherwise ask the terminal."""
+    def flag(name):
+        value = os.environ.get(name, "")
+        return value not in ("", "0")
+    if flag("NO_COLOR"):
+        return False
+    if flag("FORCE_COLOR") or flag("CLICOLOR_FORCE"):
+        return True
+    if os.environ.get("TERM") == "dumb":
+        return False
+    return stream.isatty()
+
+
+class Style:
+    """SGR roles, empty strings when stdout is not showing colour, so every
+    format string can carry its styling and still print plain text to a log."""
+
+    def __init__(self, enabled):
+        if enabled and os.name == "nt":
+            os.system("")   # switches a Windows console into VT processing
+        codes = {
+            "reset": "0", "bold": "1", "dim": "2",
+            "red": "1;31", "green": "1;32", "yellow": "1;33", "blue": "1;34", "cyan": "1;36",
+        }
+        for name, code in codes.items():
+            setattr(self, name, "\033[{}m".format(code) if enabled else "")
+
+
+STYLE = Style(color_enabled(sys.stdout))
+
+
+def format_ns(ns):
+    """A duration in the unit that keeps three significant digits readable."""
+    if ns >= 1e9:
+        return "{:.2f} s".format(ns / 1e9)
+    if ns >= 1e6:
+        return "{:.1f} ms".format(ns / 1e6)
+    if ns >= 1e3:
+        return "{:.1f} µs".format(ns / 1e3)
+    return "{:d} ns".format(int(ns))
+
+
+def format_seconds(seconds):
+    seconds = int(round(seconds))
+    if seconds < 60:
+        return "{}s".format(seconds)
+    return "{}m{:02d}s".format(seconds // 60, seconds % 60)
+
+
+def ratio_cell(ratio, width=8):
+    """Prismio's time over the other arm's: below 1 is Prismio ahead. Padded
+    before it is coloured, so escape codes never disturb the columns."""
+    text = "{:.2f}×".format(ratio).rjust(width)
+    if ratio <= 1 - PARITY:
+        return STYLE.green + text + STYLE.reset
+    if ratio < 1 + PARITY:
+        return text
+    if ratio < 1.25:
+        return STYLE.yellow + text + STYLE.reset
+    return STYLE.red + text + STYLE.reset
+
+
 class Progress:
+    """A bar rewritten in place on a terminal, with lines printed above it.
+
+    Everything the run reports goes through `line`, which clears the bar, prints,
+    and redraws it -- so a result row never lands on the end of the bar. Piped,
+    there is no bar and `line` is a plain print.
+    """
+
     def __init__(self, total):
         self.total = max(total, 1)
         self.current = 0
         self.interactive = sys.stdout.isatty()
         self.width = 0
+        self.label = ""
+        self.started = time.monotonic()
+
+    def _clear(self):
+        if self.interactive and self.width:
+            sys.stdout.write("\r" + (" " * self.width) + "\r")
 
     def show(self, label):
+        self.label = label
         if not self.interactive:
             return
-        columns = 24
-        filled = min(columns, int(columns * self.current / self.total))
-        bar = "█" * filled + "░" * (columns - filled)
-        line = "  [{}] {:3d}%  {}".format(bar, int(100 * self.current / self.total), label)
-        self.width = max(self.width, len(line))
-        sys.stdout.write("\r" + line.ljust(self.width))
+        columns = 28
+        fraction = self.current / self.total
+        filled = min(columns, int(columns * fraction))
+        bar = STYLE.cyan + "━" * filled + STYLE.reset + STYLE.dim + "━" * (columns - filled) + STYLE.reset
+        eta = ""
+        elapsed = time.monotonic() - self.started
+        if self.current and fraction < 1:
+            eta = "  ETA " + format_seconds(elapsed / self.current * (self.total - self.current))
+        plain = "  {} {:3d}%{}  {}".format("━" * columns, int(100 * fraction), eta, label)
+        line = "  {} {:3d}%{}{}  {}".format(bar, int(100 * fraction), STYLE.dim, eta + STYLE.reset, label)
+        self._clear()
+        self.width = max(self.width, len(plain))
+        sys.stdout.write("\r" + line)
         sys.stdout.flush()
 
     def advance(self, label):
         self.current += 1
         self.show(label)
 
+    def line(self, text=""):
+        self._clear()
+        sys.stdout.write(text + "\n")
+        if self.interactive and self.label:
+            self.show(self.label)
+        sys.stdout.flush()
+
     def finish(self):
-        if self.interactive:
-            sys.stdout.write("\r" + (" " * self.width) + "\r")
-            sys.stdout.flush()
+        """Removes the bar for good: lines printed after this -- the summary --
+        must not bring it back."""
+        self._clear()
+        self.width = 0
+        self.label = ""
+        sys.stdout.flush()
+
+
+def status(progress, verb, text, detail=""):
+    """A cargo-shaped status line: the verb right-aligned in bold green."""
+    tail = "  " + STYLE.dim + detail + STYLE.reset if detail else ""
+    progress.line("{}{:>12}{} {}{}".format(STYLE.green, verb, STYLE.reset, text, tail))
 
 
 def command_text(command):
@@ -158,6 +266,8 @@ def build_all(args, progress):
                 elapsed[language] = previous.get("compile_ns", 0)
                 cached.append(language)
                 progress.advance("Cached {}".format(LANGUAGE_LABELS[language]))
+                status(progress, "Cached", LANGUAGE_LABELS[language] + " suite",
+                       "built earlier in " + format_ns(elapsed[language]))
                 continue
 
         progress.show("Building " + LANGUAGE_LABELS[language])
@@ -172,6 +282,7 @@ def build_all(args, progress):
         if key is not None:
             stamp.write_text(json.dumps({"key": key, "compile_ns": elapsed[language]}))
         progress.advance("Built {}".format(LANGUAGE_LABELS[language]))
+        status(progress, "Compiled", LANGUAGE_LABELS[language] + " suite", format_ns(elapsed[language]))
     return commands, elapsed, cached
 
 
@@ -206,6 +317,59 @@ def execute(executable, benchmark, input_path, output_path):
     fields = parse_output(executable.name, benchmark, result.stdout)
     fields["wall_ns"] = wall_ns
     return fields
+
+
+def table_header(progress, name_width):
+    cells = "    {:<{w}}  {:>10}  {:>10}  {:>10}  {:>8}  {:>8}".format(
+        "workload", "Prismio", "C++", "Rust", "vs C++", "vs Rust", w=name_width)
+    progress.line()
+    progress.line(STYLE.bold + cells + STYLE.reset)
+
+
+def table_row(progress, measured, name_width):
+    """One workload: each arm's median, the fastest in bold, and Prismio's ratio
+    to each of the others."""
+    times = {language: measured["languages"][language]["elapsed_ns_median"] for language in LANGUAGES}
+    fastest = min(times.values())
+    cells = []
+    for language in LANGUAGES:
+        text = format_ns(times[language]).rjust(10)
+        cells.append(STYLE.bold + text + STYLE.reset if times[language] == fastest else text)
+    ratios = [ratio_cell(times["prismio"] / max(times[other], 1)) for other in ("cpp", "rust")]
+    progress.line("    {:<{w}}  {}  {}".format(measured["name"], "  ".join(cells), "  ".join(ratios),
+                                             w=name_width))
+
+
+def geomean(values):
+    values = [value for value in values if value > 0]
+    if not values:
+        return 0.0
+    return math.exp(sum(math.log(value) for value in values) / len(values))
+
+
+def print_summary(progress, report, elapsed_seconds):
+    measured = measured_benchmarks(report)
+    if not measured:
+        return
+    progress.line()
+    progress.line("{}Summary{}  {} workloads, {} runs each, {}".format(
+        STYLE.bold, STYLE.reset, len(measured), report["runs"], format_seconds(elapsed_seconds)))
+    for other in ("cpp", "rust"):
+        ratios = [item["languages"]["prismio"]["elapsed_ns_median"]
+                  / max(item["languages"][other]["elapsed_ns_median"], 1) for item in measured]
+        faster = sum(ratio <= 1 - PARITY for ratio in ratios)
+        slower = sum(ratio >= 1 + PARITY for ratio in ratios)
+        parity = len(ratios) - faster - slower
+        progress.line("  vs {:<5} geomean {}   {}{} faster{} · {} parity · {}{} slower{}".format(
+            LANGUAGE_LABELS[other], ratio_cell(geomean(ratios), 0),
+            STYLE.green, faster, STYLE.reset, parity, STYLE.red if slower else "", slower, STYLE.reset))
+    behind = sorted(((item["languages"]["prismio"]["elapsed_ns_median"]
+                      / max(item["languages"]["cpp"]["elapsed_ns_median"], 1), item["name"])
+                     for item in measured), reverse=True)
+    behind = [(ratio, name) for ratio, name in behind if ratio >= 1 + PARITY][:5]
+    if behind:
+        progress.line("  {}slowest vs C++{}  {}".format(
+            STYLE.dim, STYLE.reset, ", ".join("{} {}".format(name, ratio_cell(ratio, 0)) for ratio, name in behind)))
 
 
 def select_benchmarks(manifest, names):
@@ -261,6 +425,11 @@ def main():
                          for item in selected)
     artifact_steps = 2
     progress = Progress(build_steps + workload_steps + artifact_steps)
+    implemented_count = sum(item["status"] != "unsupported" for item in selected)
+    progress.line("{}Prismio benchmarks{}  {} workload{} · {} run{} each · Prismio, C++ and Rust".format(
+        STYLE.bold, STYLE.reset, implemented_count, "" if implemented_count == 1 else "s",
+        args.runs, "" if args.runs == 1 else "s"))
+    progress.line()
     progress.show("Preparing benchmark suite")
 
     build_commands = None
@@ -285,13 +454,21 @@ def main():
         "cached_builds": cached_arms,
         "benchmarks": [],
     }
+    name_width = max([len("workload")] + [len(item["name"]) for item in selected])
+    table_header(progress, name_width)
+    category = None
     with tempfile.TemporaryDirectory(prefix="prismio-bench-") as temp_name:
         temp = Path(temp_name)
         fixture = make_fixture(temp)
         for item in selected:
+            if item.get("category") != category:
+                category = item.get("category")
+                progress.line("  {}{}{}".format(STYLE.cyan, category, STYLE.reset))
             if item["status"] == "unsupported":
                 report["benchmarks"].append(dict(item))
                 progress.advance("Skipped {} (unsupported)".format(item["name"]))
+                progress.line("    {:<{w}}  {}unsupported{}".format(item["name"], STYLE.dim, STYLE.reset,
+                                                                  w=name_width))
                 continue
             samples = {language: [] for language in LANGUAGES}
             expected = None
@@ -319,6 +496,7 @@ def main():
                     "elapsed_ns_samples": [sample["elapsed_ns"] for sample in samples[language]],
                 }
             report["benchmarks"].append(measured)
+            table_row(progress, measured, name_width)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     html_path = args.output.parent / "report.html"
@@ -333,14 +511,16 @@ def main():
     write_html_report(report, html_path, args.output.name)
     progress.advance("Complete")
     progress.finish()
+    print_summary(progress, report, time.monotonic() - progress.started)
 
     implemented = len(measured_benchmarks(report))
     unsupported = sum(item["status"] == "unsupported" for item in report["benchmarks"])
     sample_text = "1 run" if args.runs == 1 else "{} runs".format(args.runs)
+    print()
     print("Completed {} benchmarks ({} unsupported) · {}".format(
         implemented, unsupported, sample_text))
-    print("Report   " + str(html_path))
-    print("Data     " + str(args.output))
+    print("{}Report{}   {}".format(STYLE.dim, STYLE.reset, html_path))
+    print("{}Data{}     {}".format(STYLE.dim, STYLE.reset, args.output))
     if args.open:
         webbrowser.open(html_path.resolve().as_uri())
 
