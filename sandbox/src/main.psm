@@ -1,23 +1,22 @@
 import std.io
+import common
+import std.term
 
 fn main() -> Int {
-    let st = 0
+
+    let t0 = benchNow()
+    let mut g: I64 = 0
 
     for i in 0..20000000 {
-        println(i)
+        g = g + i as I64
     }
 
+    let t1 = benchNow()
+    benchPrint("elapsed_ns: ")
+    benchPrintln((t1 - t0) as Int)
+    println("g".blue())
+    println("done".green())
+
+    print(0.1 + 0.2)
     return 0
 }
-
-/*
-
-  let st = Date.now()
-for(let i=0; i<2000000000;i++){
-
-console.log(i)
-
-}
-let ans = Date.now()-st;
-console.log(ans)
-*/
