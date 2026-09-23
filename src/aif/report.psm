@@ -290,6 +290,43 @@ private fn aifHumanStorage(site: Int) -> String {
     return "cross-thread heap (atomic RC)"
 }
 
+// The colour a storage decision is shown in on a terminal, by what it costs at
+// run time: a stack slot nothing, an arena a bump, a scoped or unique heap
+// object one free, and anything counted or traced the most. By storage class,
+// so the plan's rows and the table's cells agree.
+private fn aifStorageClassStyle(kind: Int) -> String {
+    if (kind == 0) { return "ok" }
+    if (kind == 1) { return "command" }
+    if (kind == 2) { return "accent" }
+    if (kind == 3) { return "warn" }
+    return "alert"
+}
+
+// `label` dim and `value` in `style`, as `  Label      value`. The padding is
+// part of the dim run, so a pipe gets the same columns the old prints made.
+private fn aifStyledKv(label: String, style: String, value: String) {
+    print("  ")
+    diag_styled("dim", aifPad(label, 11))
+    diag_styled(style, value)
+    println("")
+}
+
+// A bar proportional to `count` of `total`, for the storage plan -- printed
+// only where the plan is styled, so a pipe reads the plan it always did.
+private fn aifStorageBar(count: Int, total: Int, style: String) {
+    if (count == 0 or total == 0 or diag_tty_styled(1) == 0) { return }
+    let mut width = count * 30 / total
+    if (width < 1) { width = 1 }
+    let mut bar = ""
+    let mut i = 0
+    while (i < width) {
+        bar = bar.concat("#")
+        i = i + 1
+    }
+    print("  ")
+    diag_styled(style, bar)
+}
+
 private fn aifShortReason(site: Int) -> String {
     if (aif_region_name_at_site(site).equals("") == false) {
         if (aif_site_is_bracketed(site) == 1) { return "caller region selected" }
@@ -360,11 +397,12 @@ private fn aifHumanIdOf(sourcePath: String, wantedSite: Int) -> Int {
 }
 
 private fn aifEmitHumanRow(site: Int, id: Int) {
-    print(aifPad(strFromInt(id), 5))
+    diag_styled("heading", aifPad(strFromInt(id), 5))
     print(aifPad(aifFriendlyPosition(site), 25))
     print(aifPad(typeKeyDisplay(aif_site_type(site)), 16))
-    print(aifPad(aifHumanStorage(site), 34))
-    println(aifShortReason(site))
+    diag_styled(aifStorageClassStyle(aifStorageClass(site)), aifPad(aifHumanStorage(site), 34))
+    diag_styled("dim", aifShortReason(site))
+    println("")
 }
 
 private fn aifEmitHumanGroup(sourcePath: String, entryGroup: Bool, startId: Int) -> Int {
@@ -390,58 +428,80 @@ private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
     let local = aifEntrySiteCount(sourcePath)
     let imported = total - local
 
-    println("AIF analysis")
-    print("  Source   ")
+    // Styled on a terminal, and exactly the old text anywhere else: every
+    // diag_styled below prints its text unchanged when stdout is a pipe.
+    diag_styled("heading", "AIF analysis")
+    println("")
+    print("  ")
+    diag_styled("dim", "Source   ")
     println(aifReportPathLeaf(sourcePath))
-    print("  Result   ")
+    print("  ")
+    diag_styled("dim", "Result   ")
     if (converged) {
-        print("converged in ")
-        print(strFromInt(aif_rounds()))
-        println(" rounds")
+        diag_styled("ok", "converged in ".concat(strFromInt(aif_rounds()), " rounds"))
     } else {
-        print("budget exhausted after ")
-        print(strFromInt(aif_rounds()))
-        println(" rounds; unsettled decisions were made conservative")
+        diag_styled("warn", "budget exhausted after ".concat(strFromInt(aif_rounds()),
+                                                               " rounds; unsettled decisions were made conservative"))
     }
-    print("  Sites    ")
+    println("")
+    print("  ")
+    diag_styled("dim", "Sites    ")
     print(strFromInt(total))
-    println(" potential allocation site(s), not runtime allocation counts")
+    diag_styled("dim", " potential allocation site(s), not runtime allocation counts")
+    println("")
 
     println("")
-    println("Storage plan")
+    diag_styled("heading", "Storage plan")
+    println("")
     let mut kind = 0
     while (kind < 7) {
+        let count = aifStorageClassCount(kind)
+        let mut style = aifStorageClassStyle(kind)
+        if (count == 0) { style = "dim" }
         print("  ")
-        print(aifPad(aifStorageClassName(kind), 24))
-        println(strFromInt(aifStorageClassCount(kind)))
+        diag_styled(style, aifPad(aifStorageClassName(kind), 24).concat(strFromInt(count)))
+        aifStorageBar(count, total, style)
+        println("")
         kind = kind + 1
     }
 
     println("")
-    println("Your code")
+    diag_styled("heading", "Your code")
+    println("")
     let mut nextId = 1
     if (local == 0) {
-        println("  No allocation sites found.")
+        diag_styled("dim", "  No allocation sites found.")
+        println("")
     } else {
-        println("ID   location                 type            storage                           reason")
+        diag_styled("dim", "ID   location                 type            storage                           reason")
+        println("")
         nextId = aifEmitHumanGroup(sourcePath, true, nextId)
     }
 
     println("")
-    println("Imported modules")
+    diag_styled("heading", "Imported modules")
+    println("")
     if (imported == 0) {
-        println("  No imported allocation sites found.")
+        diag_styled("dim", "  No imported allocation sites found.")
+        println("")
     } else {
         print("  ")
         print(strFromInt(imported))
         println(" potential site(s) found in imported source.")
-        println("  Imported sites are analyzed even when their functions are not executed.")
-        println("ID   location                 type            storage                           reason")
+        diag_styled("dim", "  Imported sites are analyzed even when their functions are not executed.")
+        println("")
+        diag_styled("dim", "ID   location                 type            storage                           reason")
+        println("")
         nextId = aifEmitHumanGroup(sourcePath, false, nextId)
     }
 
     println("")
-    println("Use `--why=<ID>` for one decision or `--manifest` for compiler/CI details.")
+    diag_styled("dim", "Use ")
+    diag_styled("command", "`--why=<ID>`")
+    diag_styled("dim", " for one decision or ")
+    diag_styled("command", "`--manifest`")
+    diag_styled("dim", " for compiler/CI details.")
+    println("")
 }
 
 // SPEC 6.2. Line-oriented UTF-8, records sorted byte-wise ascending by symbol --
@@ -1187,7 +1247,8 @@ private fn aifEmitBlocker(mask: Int, bit: Int, shown: Int) -> Int {
 
 private fn aifEmitPlacement(site: Int) {
     println("")
-    println("  placement")
+    diag_styled("command", "  placement")
+    println("")
 
     let regionName = aif_region_name_at_site(site)
     if (regionName.equals("") == false) {
@@ -1357,27 +1418,22 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
         println("")
     }
 
-    print("Allocation ")
-    println(strFromInt(aifHumanIdOf(sourcePath, site)))
-    print("  Location   ")
-    println(aifFriendlyPosition(site))
-    print("  Type       ")
-    println(typeKeyDisplay(aif_site_type(site)))
-    print("  Storage    ")
-    println(aifHumanStorage(site))
-    print("  Reason     ")
-    println(aifShortReason(site))
+    diag_styled("heading", "Allocation ".concat(strFromInt(aifHumanIdOf(sourcePath, site))))
     println("")
-    println("Compiler evidence")
-    print("  Symbol     ")
-    println(aifSymbolOf(site))
-    print("  Tier       ")
-    println(aifTierName(aif_tier_of(site)))
-    print("  Thread     ")
-    println(aifThreadName(aif_site_thread(site)))
+    aifStyledKv("Location", "", aifFriendlyPosition(site))
+    aifStyledKv("Type", "", typeKeyDisplay(aif_site_type(site)))
+    aifStyledKv("Storage", aifStorageClassStyle(aifStorageClass(site)), aifHumanStorage(site))
+    aifStyledKv("Reason", "", aifShortReason(site))
+    println("")
+    diag_styled("heading", "Compiler evidence")
+    println("")
+    aifStyledKv("Symbol", "", aifSymbolOf(site))
+    aifStyledKv("Tier", "", aifTierName(aif_tier_of(site)))
+    aifStyledKv("Thread", "", aifThreadName(aif_site_thread(site)))
     println("")
 
-    println("  minimal cause")
+    diag_styled("command", "  minimal cause")
+    println("")
 
     // A path of one edge whose rule is ALLOC means nothing ever raised the fact:
     // it is still at the bottom the site was created with. Saying "rose to" there
@@ -1409,7 +1465,8 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
     aifEmitPlacement(site)
 
     println("")
-    println("  repairs, cheapest first")
+    diag_styled("command", "  repairs, cheapest first")
+    println("")
 
     // Walked outermost-first: the root cause is the cheapest thing to change,
     // because everything downstream of it follows. An edge with no repair is one
@@ -1447,7 +1504,8 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
 
     if (rank == 1) {
         println("")
-        println("  no repair is derivable: the path ends at the allocation itself.")
+        diag_styled("dim", "  no repair is derivable: the path ends at the allocation itself.")
+        println("")
     }
 }
 

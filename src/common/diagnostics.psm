@@ -74,12 +74,16 @@ public extern fn diag_progress_clear()
 public extern fn diag_result(plain: String, verb: String, subject: String, detail: String)
 // A styled status line with no plain form, such as `Running ./hello`.
 public extern fn diag_status(verb: String, subject: String)
-// Text in a role -- "ok", "fail", "heading", "command", "dim", "accent" -- on
+// Text in a role -- "ok", "fail", "warn", "alert", "heading", "command", "dim",
+// "accent" -- on
 // stdout, or on stderr for the `_err` form. No newline is added.
 public extern fn diag_styled(style: String, text: String)
 public extern fn diag_styled_err(style: String, text: String)
 // The usage text, with headings and commands styled on a terminal.
 public extern fn diag_print_help(text: String)
+// 1 when fd 1 or 2 is styled, for output that only a terminal gets at all -- the
+// bars beside `aif`'s storage plan, which a pipe must not grow.
+public extern fn diag_tty_styled(fd: Int) -> Int
 
 // Quotes a name the way every message in the compiler quotes one, so the style
 // cannot drift between call sites.

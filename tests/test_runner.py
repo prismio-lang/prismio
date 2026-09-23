@@ -906,7 +906,11 @@ def run_ums_test():
             if (project_build.returncode != 0 or not compiler_artifact.exists()
                     or "Using global toolchain" not in project_build.stderr):
                 print(f"{RED}[FAIL] ums: stage 0 did not build the first project host{RESET}")
-                print(project_build.stdout or project_build.stderr)
+                # All three conditions, and both streams: printing only stdout
+                # showed a successful build and hid which check had failed.
+                print(f"exit status {project_build.returncode}, host exists "
+                      f"{compiler_artifact.exists()}")
+                print(f"stdout:\n{project_build.stdout}\nstderr:\n{project_build.stderr[-2000:]}")
                 return False
 
             local_build = subprocess.run(

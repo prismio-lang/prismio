@@ -5725,8 +5725,15 @@ static LLVMMetadataRef di_struct_type(const char *name) {
 // a struct { Int, String, I64 } reports its String member at offset 64 on a
 // 64-bit host and at offset 32 for wasm32-unknown-unknown.
 //
-// The host default is reached only when nothing was named, and only then is
-// LLVMGetDefaultTargetTriple() the right question to ask.
+// The host default is reached only when nothing was named. It is stamped in
+// the spelling the object is compiled for -- host_codegen_triple's
+// `arm64-apple-macosx27.0`, not LLVMGetDefaultTargetTriple's
+// `arm64-apple-darwin27.0.0` -- because that is what the runtime bitcode and
+// every .plib carry. With the kernel's spelling, the library merge warned
+// "Linking two modules of different target triples" once per module on every
+// -g build.
+static void host_codegen_triple(char *out, size_t size);
+
 static void pin_data_layout(void) {
     const char *existing = LLVMGetDataLayoutStr(g_module);
     if (existing && *existing) {
@@ -5737,7 +5744,9 @@ static void pin_data_layout(void) {
     LLVMInitializeNativeTarget();
     LLVMInitializeNativeAsmPrinter();
 
-    char *triple = LLVMGetDefaultTargetTriple();
+    char host[256];
+    host_codegen_triple(host, sizeof(host));
+    char *triple = LLVMCreateMessage(host);
     LLVMTargetRef target = NULL;
     char *err = NULL;
     if (LLVMGetTargetFromTriple(triple, &target, &err)) {
@@ -7200,8 +7209,22 @@ static void ensure_codegen_initialized(void) {
 #endif
     // `-mllvm -enable-nontrivial-unswitch`, which compile_ir_to_object passed
     // to clang and documents. A process-wide option, set once.
-    static const char *const argv[] = { "prismio", "-enable-nontrivial-unswitch" };
-    LLVMParseCommandLineOptions(2, argv, NULL);
+    //
+    // PRISMIO_LLVM_ARGS appends LLVM's own options, as rustc's `-C llvm-args`
+    // does: `PRISMIO_LLVM_ARGS="-align-loops=64"`. A measurement switch for
+    // codegen experiments, not a supported mode -- an option LLVM does not know
+    // is reported by LLVM and ends the process.
+    static char args_copy[1024];
+    const char *argv[34] = { "prismio", "-enable-nontrivial-unswitch" };
+    int argc = 2;
+    const char *extra = getenv("PRISMIO_LLVM_ARGS");
+    if (extra && *extra) {
+        snprintf(args_copy, sizeof(args_copy), "%s", extra);
+        for (char *tok = strtok(args_copy, " \t"); tok && argc < 34; tok = strtok(NULL, " \t")) {
+            argv[argc++] = tok;
+        }
+    }
+    LLVMParseCommandLineOptions(argc, argv, NULL);
     done = 1;
 }
 

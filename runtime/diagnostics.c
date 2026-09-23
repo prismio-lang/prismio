@@ -122,6 +122,7 @@ static const char* sgr(int fd, const char* code) {
 #define SGR_GREEN  "\033[1;32m"
 #define SGR_YELLOW "\033[1;33m"
 #define SGR_BLUE   "\033[1;34m"
+#define SGR_MAGENTA "\033[1;35m"
 #define SGR_CYAN   "\033[1;36m"
 
 static const char* diag_severity_style(const char* severity) {
@@ -228,13 +229,15 @@ void diag_status(const char* verb, const char* subject) {
 }
 
 // One line of text on stdout in a style, or plain. `style` names a role rather
-// than a colour so the palette stays in this file: "ok", "fail", "heading",
-// "command", "dim", "accent".
+// than a colour so the palette stays in this file: "ok", "fail", "warn",
+// "alert", "heading", "command", "dim", "accent".
 void diag_styled(const char* style, const char* text) {
     const char* code = "";
     if (style) {
         if (strcmp(style, "ok") == 0) code = SGR_GREEN;
         else if (strcmp(style, "fail") == 0) code = SGR_RED;
+        else if (strcmp(style, "warn") == 0) code = SGR_YELLOW;
+        else if (strcmp(style, "alert") == 0) code = SGR_MAGENTA;
         else if (strcmp(style, "heading") == 0) code = SGR_BOLD;
         else if (strcmp(style, "command") == 0) code = SGR_CYAN;
         else if (strcmp(style, "dim") == 0) code = SGR_DIM;
