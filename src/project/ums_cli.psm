@@ -160,22 +160,26 @@ public fn initUmsProject(nameArg: String) -> Int {
         }
     }
 
-    print("created ")
-    println(name)
-    print("  ")
-    println(manifestPath)
-    print("  ")
-    println(entryPath)
-    print("  ")
-    println(ignorePath)
+    diag_styled("ok", "created ")
+    diag_styled("heading", name)
     println("")
+    print("  ")
+    diag_styled("dim", manifestPath)
+    println("")
+    print("  ")
+    diag_styled("dim", entryPath)
+    println("")
+    print("  ")
+    diag_styled("dim", ignorePath)
+    println("")
+    println("")
+    print("build it with `")
     if (nameArg.equals("")) {
-        println("build it with `prismio run`")
+        diag_styled("command", "prismio run")
     } else {
-        print("build it with `cd ")
-        print(nameArg)
-        println(" && prismio run`")
+        diag_styled("command", "cd ".concat(nameArg, " && prismio run"))
     }
+    println("`")
     return 0
 }
 
@@ -275,11 +279,11 @@ public fn testUmsProject(profile: String) -> Int {
         let target = workspace.target(index)
         if (target.kind == UmsTargetKind.TEST) {
             if (compiler_run_executable(target.outputPath) == 0) {
-                print("  ok    ")
+                diag_styled("ok", "  ok    ")
                 println(target.name)
                 passed = passed + 1
             } else {
-                print("  FAIL  ")
+                diag_styled("fail", "  FAIL  ")
                 println(target.name)
                 failed = failed + 1
             }
@@ -287,10 +291,15 @@ public fn testUmsProject(profile: String) -> Int {
         index = index + 1
     }
 
-    print(passed)
-    print(" passed, ")
-    print(failed)
-    println(" failed")
+    diag_styled("ok", strFromInt(passed).concat(" passed"))
+    print(", ")
+    if (failed > 0) {
+        diag_styled("fail", strFromInt(failed).concat(" failed"))
+    } else {
+        print(failed)
+        print(" failed")
+    }
+    println("")
     if (failed > 0) { return 1 }
     return 0
 }
@@ -382,7 +391,7 @@ private fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int
         return 1
     }
 
-    print("promoted project compiler: ")
+    diag_styled("ok", "promoted project compiler: ")
     println(active)
     return 0
 }
@@ -419,10 +428,7 @@ private fn cliWantsMachineOutput() -> Bool {
 // local one is the shape the `list_set_elem_inline` failure arrived in.
 private fn announceToolchain(kind: String, path: String) {
     if (cliWantsMachineOutput()) { return }
-    eprint("Using ")
-    eprint(kind)
-    eprint(" toolchain: ")
-    eprintln(path)
+    diag_styled_err("dim", "Using ".concat(kind, " toolchain: ", path, "\n"))
 }
 
 // The rest of the toolchain, beside the host that was just built.
@@ -445,11 +451,8 @@ private fn emitUmsToolchainLibraries(hostPath: String, compilerPath: String) -> 
         return 1
     }
     if (modules > 0 and cliWantsMachineOutput() == false) {
-        eprint("local toolchain: ")
-        eprint(root)
-        eprint(" (")
-        eprint(modules)
-        eprintln(" standard-library modules)")
+        diag_styled_err("dim", "local toolchain: ".concat(root, " (", strFromInt(modules),
+                                                          " standard-library modules)\n"))
     }
     return 0
 }

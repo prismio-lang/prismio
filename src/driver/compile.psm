@@ -120,11 +120,13 @@ private fn analyzedModule(path: String) -> ASTNode {
     if (emissionMod.equals("") == false) {
         diag_set_file_module(rootFile, emissionMod)
     }
+    diag_progress("parsing")
     let lex = createLexer(content, rootFile)
     let headToken = lexAllTokens(lex)
     let p = parserCreate(headToken)
     let astRoot = parseModule(p)
 
+    diag_progress("resolving imports")
     let baseDir = get_directory(path)
     let mergedAst = resolveImports(astRoot, baseDir, path)
 
@@ -135,12 +137,14 @@ private fn analyzedModule(path: String) -> ASTNode {
         return mergedAst
     }
 
+    diag_progress("checking types")
     analyzeModule(mergedAst)
 
     if (diag_error_count() > 0) {
         diag_finish()
     }
 
+    diag_progress_clear()
     return mergedAst
 }
 
@@ -161,12 +165,23 @@ public fn dumpAstCommand(path: String) -> Int {
 // native toolchain or output file. A successful JSON run still emits a summary,
 // which gives a long-lived client an explicit signal to clear stale diagnostics.
 public fn checkCommand(path: String) -> Int {
+    diag_progress_begin(path)
     analyzedModule(path)
     diag_finish()
     if (diag_error_count() > 0) {
         return 1
     }
+    // Quiet on a pipe, as it always was: a clean `check` prints nothing there.
+    diag_result("", "Checked", path, checkedDetail())
     return 0
+}
+
+// "no problems", or how many warnings a clean check still reported.
+private fn checkedDetail() -> String {
+    let warnings = diag_warning_count()
+    if (warnings == 0) { return "no problems" }
+    if (warnings == 1) { return "1 warning" }
+    return strFromInt(warnings).concat(" warnings")
 }
 
 // Runs the AIF memory model over the module and reports (aif/spec/SPEC.md 6).
@@ -244,6 +259,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     if (bootstrapMode == false) {
         checkRuntimeFreshness()
     }
+    diag_progress_begin(path)
 
     if (strEndsWith(outputFile, ".ll")) {
         outFile = outputFile
@@ -268,11 +284,13 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     if (emissionMod.equals("") == false) {
         diag_set_file_module(rootFile, emissionMod)
     }
+    diag_progress("parsing")
     let lex = createLexer(content, rootFile)
     let headToken = lexAllTokens(lex)
     let p = parserCreate(headToken)
     let astRoot = parseModule(p)
 
+    diag_progress("resolving imports")
     let baseDir = get_directory(path)
     let mergedAst = resolveImports(astRoot, baseDir, path)
 
@@ -283,6 +301,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
         return 1
     }
 
+    diag_progress("checking types")
     analyzeModule(mergedAst)
 
     // Sema reports every error it finds rather than stopping at the first, so the
@@ -339,6 +358,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     // so this would be dead code there -- but it would also mean the bootstrap
     // path could run a program at build time, and bootstrap's whole contract is
     // that it builds from the checkout and does nothing else.
+    diag_progress("analysing ownership")
     let mut profilePath = ""
     if (bootstrapMode == false and debugMode == false) {
         profilePath = runWorkloadProfile(mergedAst, path, verifyMode)
@@ -398,6 +418,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
         compiler_set_debug_info(1)
     }
 
+    diag_progress("generating IR")
     generateModule(mergedAst)
 
     // Before `ir_write_file`, and that is the whole point: `--jit` writes no IR,
@@ -409,6 +430,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
         // `--jit` is a way of running the same program, so a caller must not be
         // able to tell which path ran from the exit status or the diagnostic.
         // That is also what makes the two comparable in run_jit_test.
+        diag_status("Running", path.concat(" (JIT)"))
         let status = ir_jit_run_main(path)
         if (status != 0) {
             diag_error_code("P1009", path.concat(" exited with a failure status"))
@@ -423,8 +445,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     }
 
     if (emitIrOnly) {
-        print("Wrote LLVM IR: ")
-        println(outFile)
+        diag_result("Wrote LLVM IR: ", "Wrote", outFile, "LLVM IR")
         return 0
     }
 
@@ -443,10 +464,10 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
 
     delete_file(outFile)
 
-    print("Built ")
-    println(outputFile)
+    diag_result("Built ", "Built", outputFile, buildDetail(bootstrapMode, debugInfo, verifyMode))
 
     if (runAfterBuild) {
+        diag_status("Running", outputFile)
         if (compiler_run_executable(outputFile) != 0) {
             diag_error_code("P1012", outputFile.concat(" exited with a failure status"))
             return 1
@@ -454,6 +475,14 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     }
 
     return 0
+}
+
+// What kind of binary the result line names, on a terminal.
+private fn buildDetail(bootstrapMode: Bool, debugInfo: Bool, verifyMode: Bool) -> String {
+    if (bootstrapMode) { return "compiler" }
+    if (verifyMode) { return "verify" }
+    if (debugInfo) { return "debug" }
+    return "optimized"
 }
 
 // Project mode is deliberately a thin adapter. UMS discovers, parses, validates

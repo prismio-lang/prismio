@@ -11,6 +11,12 @@
 #include "prismio_platform.h"
 #include "prismio_runtime.h"
 #include <time.h>
+
+// The terminal's progress line, owned by diagnostics.c. A build step reports
+// the phase it starts, and anything that writes to the terminal clears the
+// line first -- a failed tool's log, or the program `run` hands the terminal to.
+void diag_progress(const char* phase);
+void diag_progress_clear(void);
 #ifndef _WIN32
 #include <errno.h>
 #include <sys/wait.h>
@@ -893,6 +899,7 @@ static int run_quiet_build_command(const char* command, const char* log_path) {
     if (failed) {
         char* text = read_file(log_path);
         if (text) {
+            diag_progress_clear();
             fputs(text, stderr);
             free(text);
         }
@@ -1464,6 +1471,7 @@ static int codegen_uses_clang(void) {
 static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
     // In process first. The clang command below is what this reproduces, flag
     // for flag, and stays as the fallback for a backend built without headers.
+    diag_progress(g_debug_info ? "generating code" : "optimizing");
     if (!codegen_uses_clang()) {
         double t0 = build_trace_ms();
         int emitted = ir_emit_object(ir_file, program_obj,
@@ -2246,6 +2254,7 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
             free(q_rsp);
         }
         double t0 = build_trace_ms();
+        diag_progress("linking");
         if (run_build_command(command) != 0) result = 1;
         build_trace_stage("link", t0);
     }
@@ -3372,6 +3381,7 @@ int compiler_run_executable_with(const char* exe_file, const char* arguments) {
     } else {
         snprintf(command, command_len, "%s", q_exe);
     }
+    diag_progress_clear();
     int result = run_build_command(command);
 
     free(command);

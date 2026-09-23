@@ -35,6 +35,17 @@
 
 ### Added
 
+- **The compiler's own output is styled on a terminal.** Diagnostics in
+  rustc's colours (red `error[P4001]`, bold message, blue `-->` and gutter,
+  carets in the severity's colour); a progress line rewritten in place while a
+  file compiles -- `Compiling main.psm (checking types)`, then ownership, IR,
+  optimizing, linking; cargo-style result lines with the time taken --
+  `Built hello (optimized, 80ms)`, `Checked main.psm (no problems, 130ms)`,
+  `Running hello`; a styled `--help`; and colour in `prismio init` and
+  `prismio test`. Piped or redirected output is byte-identical to before, and
+  `NO_COLOR`, `TERM=dumb`, `FORCE_COLOR` and `CLICOLOR_FORCE` are honoured. On
+  Windows the console is switched into escape processing rather than left
+  plain.
 - **Colour in the terminal: `\e`, `\xHH`, `\u{...}` and `std.term`.** There was
   no way to write ESC in a literal, so no program could print in colour. A string
   now takes `\e` (ESC), `\xHH` (one byte) and `\u{1F600}` (a Unicode scalar,

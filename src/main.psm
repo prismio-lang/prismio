@@ -102,7 +102,7 @@ Single-file commands -- these name a source and need no manifest:
     linking the compiler backend and the LLVM C API it calls.
 """
 
-private fn printUsage() { println(USAGE) }
+private fn printUsage() { diag_print_help(USAGE) }
 
 // LAYOUT 8's forced candidate: `--force-layout=<Type>:<hot>`.
 //

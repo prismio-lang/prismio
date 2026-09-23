@@ -59,6 +59,28 @@ public extern fn diag_set_json_mode(on: Int)
 public extern fn diag_finish()
 public extern fn diag_reset()
 
+// Terminal presentation. Every one of these is styled only when its stream is a
+// terminal, and prints exactly the old plain text -- or nothing -- when it is
+// not, so a pipe, a log and the test suite read what they always read.
+//
+// The progress line: `begin` names the source and starts the clock the result
+// line reports; each `progress` rewrites one line on stderr with the phase now
+// running. A diagnostic or result clears it first.
+public extern fn diag_progress_begin(subject: String)
+public extern fn diag_progress(phase: String)
+public extern fn diag_progress_clear()
+// `Built ./hello  (optimized, 0.84s)` on a terminal; `<plain><subject>` on a
+// pipe, or nothing when `plain` is "".
+public extern fn diag_result(plain: String, verb: String, subject: String, detail: String)
+// A styled status line with no plain form, such as `Running ./hello`.
+public extern fn diag_status(verb: String, subject: String)
+// Text in a role -- "ok", "fail", "heading", "command", "dim", "accent" -- on
+// stdout, or on stderr for the `_err` form. No newline is added.
+public extern fn diag_styled(style: String, text: String)
+public extern fn diag_styled_err(style: String, text: String)
+// The usage text, with headings and commands styled on a terminal.
+public extern fn diag_print_help(text: String)
+
 // Quotes a name the way every message in the compiler quotes one, so the style
 // cannot drift between call sites.
 public fn diagQuote(name: String) -> String {
