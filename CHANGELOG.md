@@ -24,6 +24,14 @@
   Vec are stored as bytes, as clang stores `bool`: prime_sieve 0.548 -> 0.494
   (C++ 0.502). Measurements in `aif/evidence/RESULTS-loop-range-proofs.md` and
   `RESULTS-relational-tier.md`.
+- **The compiler builds itself about ten times faster.** On `src/main.psm`:
+  `prismio check` 1.20 -> 0.13 s, emitting IR 8.8 -> 0.76 s, a full
+  self-bootstrap 12.9 -> ~4.5 s. Arena placement recomputed a function's
+  call-graph closure by rescanning every pair of functions, on every question,
+  and asked it once per candidate scope; the closure and the bracket blockers
+  are now computed once per function. The pass that synthesises `dyn` structs
+  re-walked every later declaration for each one. Nothing a program compiles
+  to changed: IR is byte-identical on every test and corpus program.
 
 ### Added
 
@@ -247,6 +255,8 @@
 
 ### Fixed
 
+- **A `dyn` naming no trait, or a trait that cannot be an object, was reported
+  once per declaration before it** -- twice in a two-function file. Once now.
 - **A function returning a String could not end in an `if`/`else` whose every
   branch returns.** The join after the chain is unreachable, and codegen closed
   it with `ret <String> 0`, which LLVM rejects: the build failed with "Function

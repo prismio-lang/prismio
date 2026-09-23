@@ -48,12 +48,6 @@ void bits_ensure(Bits* b, int bit, const char* what) {
     b->nwords = grow;
 }
 
-int bits_test(const Bits* b, int bit) {
-    int wi = bit / WORD_BITS;
-    if (bit < 0 || wi >= b->nwords) return 0;
-    return (int)((b->w[wi] >> (bit % WORD_BITS)) & 1u);
-}
-
 // Returns 1 only when the bit was absent. The solver's `changed` flag is the
 // disjunction of every such return, so an update that adds nothing must report
 // nothing -- otherwise the loop never terminates.
@@ -124,21 +118,6 @@ void vec_push(IntVec* iv, int x, const char* what) {
         iv->v = (int*)xrealloc(iv->v, (size_t)iv->cap * sizeof(int), what);
     }
     iv->v[iv->len++] = x;
-}
-
-// Portable count-trailing-zeros. A branchless intrinsic exists on every
-// compiler that matters and on none of them by the same name, and this runs
-// once per set bit rather than once per word, so a six-step binary search costs
-// nothing measurable next to the round it sits inside.
-int ctz64(Word x) {
-    int n = 0;
-    if (!(x & 0xFFFFFFFFull)) { x >>= 32; n += 32; }
-    if (!(x & 0xFFFFull))     { x >>= 16; n += 16; }
-    if (!(x & 0xFFull))       { x >>= 8;  n += 8;  }
-    if (!(x & 0xFull))        { x >>= 4;  n += 4;  }
-    if (!(x & 0x3ull))        { x >>= 2;  n += 2;  }
-    if (!(x & 0x1ull))        { n += 1; }
-    return n;
 }
 
 void bits_to_vec(const Bits* b, IntVec* out) {

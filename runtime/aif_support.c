@@ -298,7 +298,12 @@ int aif_fn_count(void) { return fn_count; }
 const char* aif_fn_symbol(int f) { return (f < 0 || f >= fn_count) ? "" : aif_str(fns[f].symbol); }
 const char* aif_fn_name(int f)   { return (f < 0 || f >= fn_count) ? "" : aif_str(fns[f].name); }
 int aif_fn_file(int f)           { return (f < 0 || f >= fn_count) ? 0 : fns[f].file; }
-void aif_fn_seal(int f)          { if (f >= 0 && f < fn_count) fns[f].sealed = 1; }
+static void bracket_blockers_forget(void);
+void aif_fn_seal(int f) {
+    if (f < 0 || f >= fn_count) return;
+    fns[f].sealed = 1;
+    bracket_blockers_forget();
+}
 int aif_fn_is_sealed(int f)      { return (f < 0 || f >= fn_count) ? 0 : fns[f].sealed; }
 
 // Nominal types
@@ -4423,6 +4428,13 @@ static int bracket_ready;
 // how a teardown leaks or double-frees.
 static int bracket_fn_cap;
 static Bits bracket_closure, bracket_scratch;
+// fn -> everything it reaches, filled on first ask. See bracket_reachable.
+static Bits* fn_closure;
+static char* fn_closure_known;
+static IntVec closure_work;
+// fn -> aif_fn_bracket_blockers, or -1 before the first ask. Every input is
+// frozen by bracket_prepare except `sealed`, so aif_fn_seal empties it.
+static int* fn_blockers;
 
 void aif_call_edge(int caller, int callee, int scope) {
     if (caller < 0 || callee < 0) return;
@@ -4481,6 +4493,10 @@ static void bracket_prepare(void) {
     fn_has_drop   = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket facts");
     fn_calls_opaque = (char*)xcalloc((size_t)fn_count, 1, "AIF opaque calls");
     fn_allocs_reach = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket facts");
+    fn_closure       = (Bits*)xcalloc((size_t)fn_count, sizeof(Bits), "AIF bracket closure");
+    fn_closure_known = (char*)xcalloc((size_t)fn_count, 1, "AIF bracket closure");
+    fn_blockers = (int*)xmalloc((size_t)fn_count * sizeof(int), "AIF bracket blockers");
+    bracket_blockers_forget();
 
     for (int i = 0; i < call_edge_count; i++) {
         CallEdge* e = &call_edges[i];
@@ -4516,11 +4532,15 @@ static void bracket_prepare(void) {
         spread = 0;
         for (int g = 0; g < fn_count; g++) {
             if (fn_allocs_reach[g]) continue;
-            for (int h = 0; h < fn_count; h++) {
-                if (!bits_test(&fn_callees[g], h) || !fn_allocs_reach[h]) continue;
-                fn_allocs_reach[g] = 1;
-                spread = 1;
-                break;
+            const Bits* callees = &fn_callees[g];
+            for (int wi = 0; wi < callees->nwords && !fn_allocs_reach[g]; wi++) {
+                for (Word x = callees->w[wi]; x; x &= x - 1) {
+                    int h = wi * WORD_BITS + ctz64(x);
+                    if (h >= fn_count || !fn_allocs_reach[h]) continue;
+                    fn_allocs_reach[g] = 1;
+                    spread = 1;
+                    break;
+                }
             }
         }
     }
@@ -4553,22 +4573,41 @@ static void bracket_prepare(void) {
 }
 
 // Every function reachable from `f` through the call graph, `f` included.
-// INFERENCE-style worklist rather than a walk, because mutual recursion makes
-// the transitive set a least fixed point (obligation 4).
+//
+// A worklist over the set bits of each callee set. Mutual recursion makes the
+// transitive set a least fixed point (obligation 4), and a function is pushed
+// only when bits_set reports it new, so a cycle is visited once.
+//
+// **Computed once per function and copied out.** The answer depends on
+// fn_callees alone, which bracket_prepare freezes, and placement asks it for the
+// same callee once per candidate scope. Rescanning every (g, h) pair until
+// nothing changed, per ask, was most of the compiler compiling itself: emitting
+// src/main.psm's IR went from 9.0 s to 3.5 s on this change alone.
 static void bracket_reachable(int f, Bits* out) {
     bits_clear(out);
-    bits_set(out, f, "AIF bracket closure");
-    int changed = 1;
-    while (changed) {
-        changed = 0;
-        for (int g = 0; g < fn_count; g++) {
-            if (!bits_test(out, g)) continue;
-            for (int h = 0; h < fn_count; h++) {
-                if (!bits_test(&fn_callees[g], h)) continue;
-                if (bits_set(out, h, "AIF bracket closure")) changed = 1;
+    if (f < 0 || f >= bracket_fn_cap || !fn_closure) {
+        bits_set(out, f, "AIF bracket closure");
+        return;
+    }
+    Bits* closure = &fn_closure[f];
+    if (!fn_closure_known[f]) {
+        fn_closure_known[f] = 1;
+        bits_set(closure, f, "AIF bracket closure");
+        closure_work.len = 0;
+        vec_push(&closure_work, f, "AIF bracket closure");
+        while (closure_work.len) {
+            const Bits* callees = &fn_callees[closure_work.v[--closure_work.len]];
+            for (int wi = 0; wi < callees->nwords; wi++) {
+                for (Word x = callees->w[wi]; x; x &= x - 1) {
+                    int h = wi * WORD_BITS + ctz64(x);
+                    if (bits_set(closure, h, "AIF bracket closure")) {
+                        vec_push(&closure_work, h, "AIF bracket closure");
+                    }
+                }
             }
         }
     }
+    bits_or(out, closure, "AIF bracket closure");
 }
 
 static int bits_subset(const Bits* a, const Bits* b) {
@@ -4581,9 +4620,24 @@ static int bits_subset(const Bits* a, const Bits* b) {
     return 1;
 }
 
+static void bracket_blockers_forget(void) {
+    if (!fn_blockers) return;
+    for (int g = 0; g < bracket_fn_cap; g++) fn_blockers[g] = -1;
+}
+
+static int bracket_blockers_compute(int f);
+
+// Placement asks this once per call edge per candidate scope, so the same
+// callee many times over, and each answer walks its closure and every call edge.
 int aif_fn_bracket_blockers(int f) {
     if (f < 0 || f >= fn_count) return AIF_BR_B_OPAQUE;
     bracket_prepare();
+    if (!fn_blockers || f >= bracket_fn_cap) return bracket_blockers_compute(f);
+    if (fn_blockers[f] < 0) fn_blockers[f] = bracket_blockers_compute(f);
+    return fn_blockers[f];
+}
+
+static int bracket_blockers_compute(int f) {
     bracket_reachable(f, &bracket_closure);
 
     int mask = 0;
@@ -5425,9 +5479,14 @@ static int stmt_range_over(int scope, const signed char* served, const int* at,
     for (int k = 0; k < key_count; k++) {
         KeyNode* kn = key_by_id[k];
         if (kn == NULL || kn->kind != AIF_KEY_VAR) continue;
+        // Over the sites the key points to rather than every site: the set is
+        // sparse, and the full scan made this keys x sites per candidate scope.
         int holds = 0;
-        for (int s = 0; s < site_count && !holds; s++) {
-            if (bits_test(&pt[k], s) && served[s]) holds = 1;
+        for (int wi = 0; wi < pt[k].nwords && !holds; wi++) {
+            for (Word x = pt[k].w[wi]; x; x &= x - 1) {
+                int s = wi * WORD_BITS + ctz64(x);
+                if (s < site_count && served[s]) { holds = 1; break; }
+            }
         }
         if (!holds) continue;
         int d = (k < var_scope_cap) ? var_scope[k] : -1;
@@ -7151,9 +7210,18 @@ void aif_reset(void) {
     for (int i = 0; i < bracket_fn_cap; i++) {
         bits_free(&fn_callees[i]);
         bits_free(&fn_owner_fns[i]);
+        bits_free(&fn_closure[i]);
     }
     free(fn_callees);
     free(fn_owner_fns);
+    free(fn_closure);
+    free(fn_closure_known);
+    free(fn_blockers);
+    fn_closure = NULL;
+    fn_closure_known = NULL;
+    fn_blockers = NULL;
+    free(closure_work.v);
+    closure_work = (IntVec){0};
     free(fn_has_global);
     free(fn_has_drop);
     free(fn_calls_opaque);

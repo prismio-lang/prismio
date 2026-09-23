@@ -3064,21 +3064,29 @@ private fn semaSynthesiseDynStructs(module: ASTNode) {
         let stmt = ptr_to_node(p)
         // Read `next` first: the synthesised structs are appended to this chain.
         let following = stmt.next
-        semaSynthesiseDynFrom(module, node_to_ptr(stmt))
+        semaSynthesiseDynIn(module, stmt)
         p = following
     }
+}
+
+// One declaration and everything under it, but not the declarations after it.
+// semaSynthesiseDynFrom follows `next`, and handing it each declaration in turn
+// walked every later one again: quadratic in the declarations of the whole
+// program, and a `dyn` naming no trait was reported once per earlier one.
+private fn semaSynthesiseDynIn(module: ASTNode, node: ASTNode) {
+    if (node.kind == NodeKind.TYPE_ANNOTATION and strStartsWith(node.s1, "dyn$")) {
+        semaEnsureDynStruct(module, node)
+    }
+    semaSynthesiseDynFrom(module, node.child1)
+    semaSynthesiseDynFrom(module, node.child2)
+    semaSynthesiseDynFrom(module, node.child3)
 }
 
 private fn semaSynthesiseDynFrom(module: ASTNode, ptr: Ptr) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
-        if (node.kind == NodeKind.TYPE_ANNOTATION and strStartsWith(node.s1, "dyn$")) {
-            semaEnsureDynStruct(module, node)
-        }
-        semaSynthesiseDynFrom(module, node.child1)
-        semaSynthesiseDynFrom(module, node.child2)
-        semaSynthesiseDynFrom(module, node.child3)
+        semaSynthesiseDynIn(module, node)
         p = node.next
     }
 }

@@ -41,7 +41,16 @@ typedef struct {
 } Bits;
 
 void bits_ensure(Bits* b, int bit, const char* what);
-int  bits_test(const Bits* b, int bit);
+
+// Inline, because the engine tests bits inside loops nested over functions and
+// sites, and a call into another translation unit is one the optimiser can
+// neither hoist the word load out of nor fold into its caller's loop.
+static inline int bits_test(const Bits* b, int bit) {
+    int wi = bit / WORD_BITS;
+    if (bit < 0 || wi >= b->nwords) return 0;
+    return (int)((b->w[wi] >> (bit % WORD_BITS)) & 1u);
+}
+
 // Answers whether the bit was *newly* set, which is how a solver round detects
 // that it changed something and another round is needed.
 int  bits_set(Bits* b, int bit, const char* what);
@@ -57,7 +66,26 @@ typedef struct {
 } IntVec;
 
 void vec_push(IntVec* iv, int x, const char* what);
-int  ctz64(Word x);
+
+// Count trailing zeros of a nonzero word -- the index of its lowest set bit,
+// which is how every set enumeration here walks a bitset. Inline and on the
+// builtin, because the closure walks call it once per set bit, and out of line
+// it had become the top entry in a profile of the compiler compiling itself.
+static inline int ctz64(Word x) {
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_ctzll(x);
+#else
+    int n = 0;
+    if (!(x & 0xFFFFFFFFull)) { x >>= 32; n += 32; }
+    if (!(x & 0xFFFFull))     { x >>= 16; n += 16; }
+    if (!(x & 0xFFull))       { x >>= 8;  n += 8;  }
+    if (!(x & 0xFull))        { x >>= 4;  n += 4;  }
+    if (!(x & 0x3ull))        { x >>= 2;  n += 2;  }
+    if (!(x & 0x1ull))        { n += 1; }
+    return n;
+#endif
+}
+
 void bits_to_vec(const Bits* b, IntVec* out);
 
 #endif
