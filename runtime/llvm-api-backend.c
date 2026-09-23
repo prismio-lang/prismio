@@ -1131,6 +1131,14 @@ void ir_ret_void(void) {
     LLVMBuildRetVoid(g_builder);
 }
 
+// The end of a block control cannot reach -- the join after an `if` whose every
+// branch returned. A `ret` there needs a value of the function's type, and there
+// is none to give: `0` is not a String.
+void ir_unreachable(void) {
+    if (block_done()) return;
+    LLVMBuildUnreachable(g_builder);
+}
+
 int ir_alloca(const char *type, const char *name) {
     for (int i = 0; i < g_alloca_count; i++) {
         if (strcmp(g_allocas[i].name, name) == 0) return -1; // already allocated

@@ -1,16 +1,23 @@
 import std.io
-import std.process
-import std.platform
-import stack_placement
 
 fn main() -> Int {
-//    let h = process.args[2]
-    println("Hello World!")
-    print("Bubble World!")
+    let st = 0
 
-    let x = sumLocal()
-    print(x)
-
+    for i in 0..20000000 {
+        println(i)
+    }
 
     return 0
 }
+
+/*
+
+  let st = Date.now()
+for(let i=0; i<2000000000;i++){
+
+console.log(i)
+
+}
+let ans = Date.now()-st;
+console.log(ans)
+*/

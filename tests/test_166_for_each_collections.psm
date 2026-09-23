@@ -1,0 +1,116 @@
+// `for ... in` over every collection, with and without `(index, element)`.
+//
+//   String, Vec, Slice, Array    each element; `(i, x)` adds its index
+//   Map                          each key in insertion order; `(k, v)` adds its value
+//   a type implementing Iterator each `next`
+//
+// A collection that is not a name -- `text.lines()`, `"a,b".split(',')`, a call
+// returning an Iterator -- is bound first, and released once the loop's block
+// ends; a field is read in place. The verify ledger for this file is pinned in
+// test_runner.py, with the one known leak it carries explained there.
+import std.io
+import std.string
+import std.vec
+import std.map
+import std.key
+import std.copy
+import std.option
+import std.iter
+
+struct Countdown { remaining: Int }
+
+impl Iterator for Countdown {
+    type Item = Int
+    fn hasNext(self) -> Bool { return self.remaining > 0 }
+    fn next(inout self) -> Self.Item {
+        self.remaining = self.remaining - 1
+        return self.remaining
+    }
+}
+
+fn countdown(n: Int) -> Countdown { return Countdown { remaining: n } }
+
+struct Shelf {
+    books: Vec<String>
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let word = "prism"
+    let mut letters = ""
+    for c in word { letters = letters.concat(c.toString()) }
+    if (letters.equals("prism") == false) { return fail("String elements") }
+    let mut indexSum = 0
+    for (i, c) in word {
+        if (c == 'i') { indexSum += i }
+    }
+    if (indexSum != 2) { return fail("String (index, element)") }
+
+    let numbers: Vec<Int> = [10, 20, 30]
+    let mut total = 0
+    for x in numbers { total += x }
+    if (total != 60) { return fail("Vec elements") }
+    let mut weighted = 0
+    for ((i, x) in numbers) { weighted += i * x }
+    if (weighted != 80) { return fail("Vec (index, element), parenthesised") }
+
+    let names: Vec<String> = ["ann", "bob", "a name long enough to own its buffer"]
+    let mut chars = 0
+    for (i, name) in names { chars += name.length + i }
+    if (chars != 45) { return fail("Vec<String> (index, element)") }
+
+    let arr = [1, 2, 3, 4]
+    let mut arrSum = 0
+    for x in arr { arrSum += x }
+    if (arrSum != 10) { return fail("array elements") }
+    let fixed: Array<Int, 3> = [7, 8, 9]
+    let mut fixedSum = 0
+    for (i, x) in fixed { fixedSum += i * x }
+    if (fixedSum != 26) { return fail("Array<Int, 3> (index, element)") }
+
+    let inclusive = numbers[1..2]
+    let mut sliceSum = 0
+    for x in inclusive { sliceSum += x }
+    if (sliceSum != 50) { return fail("a slice with an included end") }
+    let exclusive = numbers[0..<2]
+    let mut exclusiveSum = 0
+    for x in exclusive { exclusiveSum += x }
+    if (exclusiveSum != 30) { return fail("a slice with ..<") }
+
+    let ages = mapNew<String, Int>()
+    mapSet(ages, "ann", 31)
+    mapSet(ages, "bob", 42)
+    mapSet(ages, "cyd", 27)
+    let mut keys = ""
+    for name in ages { keys = keys.concat(name) }
+    if (keys.equals("annbobcyd") == false) { return fail("Map keys in insertion order") }
+    let mut years = 0
+    for (name, age) in ages { years += age + name.length }
+    if (years != 109) { return fail("Map (key, value)") }
+
+    let text = "alpha\nbeta\ngamma"
+    let mut lineCount = 0
+    for line in text.lines() { lineCount += line.length }
+    if (lineCount != 14) { return fail("a computed collection") }
+    let mut parts = ""
+    for (i, part) in "a,b,c".split(',') { parts = parts.concat(part, i.toString()) }
+    if (parts.equals("a0b1c2") == false) { return fail("a computed collection with its index") }
+
+    let shelf = Shelf { books: ["dune", "emma"] }
+    let mut spines = 0
+    for book in shelf.books { spines += book.length }
+    if (spines != 8) { return fail("a field read in place") }
+    if (shelf.books.length != 2) { return fail("the field is still there after the loop") }
+
+    let mut down = 0
+    for n in countdown(4) { down = down * 10 + n }
+    if (down != 3210) { return fail("an Iterator a call returned") }
+
+    println("PASS: for-each over collections")
+    return 0
+}

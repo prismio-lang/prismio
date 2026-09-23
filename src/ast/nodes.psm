@@ -271,6 +271,14 @@ public fn nodeIsNull(ptr: Ptr) -> Bool {
     return ptr_is_null(ptr) == 1
 }
 
+// The body block of a `while`, `for` or `loop`. A loop's label is kept on it, in
+// the BLOCK's otherwise unused `s1`.
+public fn loopBodyOf(loopNode: ASTNode) -> Ptr {
+    if (loopNode.kind == NodeKind.WHILE_STATEMENT) { return loopNode.child2 }
+    if (loopNode.kind == NodeKind.FOR_STATEMENT) { return loopNode.child3 }
+    return loopNode.child1
+}
+
 // The span is left at zero. Anything the parser builds should come from
 // parserNode() instead, which stamps the current token; a zero span here means
 // "synthesised, no source to point at", and the renderer degrades to a message

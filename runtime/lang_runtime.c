@@ -3316,7 +3316,7 @@ void* data_view_to_list(void* vp) {
 void prismio_slice_check(int available, int start, int end) {
     if (available < 0 || start < 0 || end < start || end > available) {
         fprintf(stderr,
-                "runtime error: slice range [%d..%d] is outside collection length %d\n",
+                "runtime error: slice range [%d..<%d] is outside collection length %d\n",
                 start, end, available);
         exit(1);
     }

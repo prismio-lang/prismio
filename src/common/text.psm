@@ -34,6 +34,9 @@ public fn isSeparator(c: Char) -> Bool {
     // REQUIREMENTS 4. Only ever the nullable-type suffix `T?`; there is no
     // ternary and no try operator, so it needs no precedence anywhere.
     if (c == '?') { return true }
+    // A loop label: `outer@ for ...` names the loop, `break@outer` leaves it.
+    // Nothing else is spelled with `@`, so it needs no precedence either.
+    if (c == '@') { return true }
     return false
 }
 

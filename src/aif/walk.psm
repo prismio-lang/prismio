@@ -914,7 +914,11 @@ private fn aifStmtEscapesUnjoined(n: ASTNode, name: String, inLoop: Bool) -> Boo
     if (n.kind == NodeKind.RETURN_STATEMENT) {
         return aifExprHasJoinOf(n.child1, name) == false
     }
+    // A labelled jump may leave loops outside the chain being scanned, which
+    // `inLoop` cannot see, so it is taken to leave. That costs a tier when the
+    // label names a loop inside the chain, and nothing worse.
     if (n.kind == NodeKind.BREAK_STATEMENT or n.kind == NodeKind.CONTINUE_STATEMENT) {
+        if (n.s1.equals("") == false) { return true }
         return inLoop == false
     }
     if (n.kind == NodeKind.IF_STATEMENT) {

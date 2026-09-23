@@ -1,0 +1,357 @@
+// Terminal styling: colour, bold, underline and the rest, as methods on String.
+//
+//     import std.io
+//     import std.term
+//
+//     println("error:".red().bold())
+//     println("done".green().forTerminal())
+//
+// **A styled String is an ordinary String** holding ANSI escape sequences, so it
+// concatenates, interpolates and prints like any other. Each method returns a new
+// owned String -- bind it, as with every String producer.
+//
+// **Each style closes with its own reset, not `\e[0m`.** `\e[0m` clears every
+// attribute at once, so `("a".red() + "b").bold()` would lose the bold halfway
+// through. Closing a colour with `\e[39m` and bold with `\e[22m` lets styles nest
+// and combine in any order.
+//
+// **Whether to style is the program's decision.** The methods always add the
+// sequences. `colorEnabled()` answers whether stdout will show them -- it is a
+// terminal, `NO_COLOR` is not set, `TERM` is not `dumb` -- and `forTerminal()`
+// strips them when it will not, so output piped into a file stays plain text.
+// On Windows, asking also turns on escape-sequence processing in a console that
+// has it off.
+
+import std.string
+
+private extern fn prismio_rt_color_supported(fd: Int) -> Int
+
+// ---------------------------------------------------------------------------
+// How every method here is built
+// ---------------------------------------------------------------------------
+//
+// **Each public method allocates its result in its own body**, with
+// `str_with_capacity`, and fills it through the private helpers below. That is
+// rule 2 of std/string.psm's header, and chaining is why it matters here: a
+// method that returned a helper's allocation would be a pass-through, and
+// `"x".red().bold()` -- an owned argument to the second call -- would leak both
+// strings. Written this way the chain releases each intermediate.
+
+// `\e[` + open + `m` + text + `\e[` + close + `m`.
+private fn termStyledLength(text: String, open: String, close: String) -> Int {
+    return __builtin_string_len(text) + __builtin_string_len(open)
+        + __builtin_string_len(close) + 6
+}
+
+private fn termPutSgr(out: String, at: Int, code: String) -> Int {
+    __builtin_string_put_byte(out, at, 27 as Char)
+    __builtin_string_put_byte(out, at + 1, '[')
+    let n = __builtin_string_len(code)
+    let mut i = 0
+    while (i < n) {
+        __builtin_string_put_byte(out, at + 2 + i, __builtin_string_byte_at(code, i))
+        i = i + 1
+    }
+    __builtin_string_put_byte(out, at + 2 + n, 'm')
+    return at + 3 + n
+}
+
+private fn termPutText(out: String, at: Int, text: String) -> Int {
+    let n = __builtin_string_len(text)
+    let mut i = 0
+    while (i < n) {
+        __builtin_string_put_byte(out, at + i, __builtin_string_byte_at(text, i))
+        i = i + 1
+    }
+    return at + n
+}
+
+private fn termFill(out: String, text: String, open: String, close: String) {
+    let afterOpen = termPutSgr(out, 0, open)
+    let afterText = termPutText(out, afterOpen, text)
+    termPutSgr(out, afterText, close)
+}
+
+// Where the escape sequence starting at `at` ends: past `\e[`, its parameters,
+// and its final byte, `@` through `~`.
+private fn termSequenceEnd(text: String, at: Int) -> Int {
+    let n = __builtin_string_len(text)
+    let mut i = at + 2
+    while (i < n and (__builtin_string_byte_at(text, i) < '@'
+                      or __builtin_string_byte_at(text, i) > '~')) {
+        i = i + 1
+    }
+    return i + 1
+}
+
+private fn termStartsSequence(text: String, at: Int) -> Bool {
+    return at + 1 < __builtin_string_len(text)
+        and __builtin_string_byte_at(text, at) == 27 as Char
+        and __builtin_string_byte_at(text, at + 1) == '['
+}
+
+// The bytes of `text` outside its escape sequences: how many, and written out.
+private fn termVisibleLength(text: String) -> Int {
+    let n = __builtin_string_len(text)
+    let mut count = 0
+    let mut i = 0
+    while (i < n) {
+        if (termStartsSequence(text, i)) {
+            i = termSequenceEnd(text, i)
+        } else {
+            count = count + 1
+            i = i + 1
+        }
+    }
+    return count
+}
+
+private fn termPutVisible(out: String, text: String) {
+    let n = __builtin_string_len(text)
+    let mut at = 0
+    let mut i = 0
+    while (i < n) {
+        if (termStartsSequence(text, i)) {
+            i = termSequenceEnd(text, i)
+        } else {
+            __builtin_string_put_byte(out, at, __builtin_string_byte_at(text, i))
+            at = at + 1
+            i = i + 1
+        }
+    }
+}
+
+// 0..255, the range of one colour channel or a 256-colour palette index.
+//
+// Clamped before it is formatted, so every path returns an owned String: one
+// returning a literal would make every result of this function static storage.
+private fn termByte(value: Int) -> String {
+    let mut clamped = value
+    if (clamped < 0) { clamped = 0 }
+    if (clamped > 255) { clamped = 255 }
+    return clamped.toString()
+}
+
+// Whether stdout shows ANSI styling: a terminal, with `NO_COLOR` unset and
+// `TERM` not `dumb`.
+public fn colorEnabled() -> Bool {
+    return prismio_rt_color_supported(1) == 1
+}
+
+// The same question for stderr, which is redirected independently of stdout.
+public fn stderrColorEnabled() -> Bool {
+    return prismio_rt_color_supported(2) == 1
+}
+
+impl String {
+    // Foreground colours. `gray` is the bright black most palettes render as grey.
+    public fn black(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "30", "39"))
+        termFill(out, self, "30", "39")
+        return out
+    }
+    public fn red(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "31", "39"))
+        termFill(out, self, "31", "39")
+        return out
+    }
+    public fn green(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "32", "39"))
+        termFill(out, self, "32", "39")
+        return out
+    }
+    public fn yellow(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "33", "39"))
+        termFill(out, self, "33", "39")
+        return out
+    }
+    public fn blue(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "34", "39"))
+        termFill(out, self, "34", "39")
+        return out
+    }
+    public fn magenta(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "35", "39"))
+        termFill(out, self, "35", "39")
+        return out
+    }
+    public fn cyan(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "36", "39"))
+        termFill(out, self, "36", "39")
+        return out
+    }
+    public fn white(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "37", "39"))
+        termFill(out, self, "37", "39")
+        return out
+    }
+    public fn gray(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "90", "39"))
+        termFill(out, self, "90", "39")
+        return out
+    }
+    public fn brightRed(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "91", "39"))
+        termFill(out, self, "91", "39")
+        return out
+    }
+    public fn brightGreen(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "92", "39"))
+        termFill(out, self, "92", "39")
+        return out
+    }
+    public fn brightYellow(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "93", "39"))
+        termFill(out, self, "93", "39")
+        return out
+    }
+    public fn brightBlue(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "94", "39"))
+        termFill(out, self, "94", "39")
+        return out
+    }
+    public fn brightMagenta(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "95", "39"))
+        termFill(out, self, "95", "39")
+        return out
+    }
+    public fn brightCyan(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "96", "39"))
+        termFill(out, self, "96", "39")
+        return out
+    }
+    public fn brightWhite(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "97", "39"))
+        termFill(out, self, "97", "39")
+        return out
+    }
+
+    // Background colours.
+    public fn onBlack(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "40", "49"))
+        termFill(out, self, "40", "49")
+        return out
+    }
+    public fn onRed(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "41", "49"))
+        termFill(out, self, "41", "49")
+        return out
+    }
+    public fn onGreen(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "42", "49"))
+        termFill(out, self, "42", "49")
+        return out
+    }
+    public fn onYellow(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "43", "49"))
+        termFill(out, self, "43", "49")
+        return out
+    }
+    public fn onBlue(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "44", "49"))
+        termFill(out, self, "44", "49")
+        return out
+    }
+    public fn onMagenta(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "45", "49"))
+        termFill(out, self, "45", "49")
+        return out
+    }
+    public fn onCyan(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "46", "49"))
+        termFill(out, self, "46", "49")
+        return out
+    }
+    public fn onWhite(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "47", "49"))
+        termFill(out, self, "47", "49")
+        return out
+    }
+    public fn onGray(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "100", "49"))
+        termFill(out, self, "100", "49")
+        return out
+    }
+
+    // Text attributes. Bold and dim share a reset, as the standard defines them.
+    public fn bold(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "1", "22"))
+        termFill(out, self, "1", "22")
+        return out
+    }
+    public fn dim(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "2", "22"))
+        termFill(out, self, "2", "22")
+        return out
+    }
+    public fn italic(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "3", "23"))
+        termFill(out, self, "3", "23")
+        return out
+    }
+    public fn underline(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "4", "24"))
+        termFill(out, self, "4", "24")
+        return out
+    }
+    public fn inverse(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "7", "27"))
+        termFill(out, self, "7", "27")
+        return out
+    }
+    public fn strikethrough(self) -> String {
+        let out = str_with_capacity(termStyledLength(self, "9", "29"))
+        termFill(out, self, "9", "29")
+        return out
+    }
+
+    // Any colour: 24-bit `rgb`, where the terminal supports it, and an index
+    // into the 256-colour palette, which nearly every terminal does. Each
+    // channel and index is clamped to 0..255.
+    public fn rgb(self, r: Int, g: Int, b: Int) -> String {
+        let code = "38;2;".concat(termByte(r), ";", termByte(g), ";", termByte(b))
+        let out = str_with_capacity(termStyledLength(self, code, "39"))
+        termFill(out, self, code, "39")
+        return out
+    }
+    public fn onRgb(self, r: Int, g: Int, b: Int) -> String {
+        let code = "48;2;".concat(termByte(r), ";", termByte(g), ";", termByte(b))
+        let out = str_with_capacity(termStyledLength(self, code, "49"))
+        termFill(out, self, code, "49")
+        return out
+    }
+    public fn color(self, index: Int) -> String {
+        let code = "38;5;".concat(termByte(index))
+        let out = str_with_capacity(termStyledLength(self, code, "39"))
+        termFill(out, self, code, "39")
+        return out
+    }
+    public fn onColor(self, index: Int) -> String {
+        let code = "48;5;".concat(termByte(index))
+        let out = str_with_capacity(termStyledLength(self, code, "49"))
+        termFill(out, self, code, "49")
+        return out
+    }
+
+    // The text without its escape sequences -- every `\e[` ... sequence up to
+    // and including its final byte. Its `length` is what a terminal shows,
+    // which is what aligning columns needs.
+    public fn plain(self) -> String {
+        let out = str_with_capacity(termVisibleLength(self))
+        termPutVisible(out, self)
+        return out
+    }
+
+    // The text as it should reach stdout: styled when `colorEnabled()`, plain
+    // otherwise.
+    public fn forTerminal(self) -> String {
+        if (colorEnabled()) {
+            let copy = str_with_capacity(__builtin_string_len(self))
+            termPutText(copy, 0, self)
+            return copy
+        }
+        let out = str_with_capacity(termVisibleLength(self))
+        termPutVisible(out, self)
+        return out
+    }
+}

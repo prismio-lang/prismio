@@ -1,0 +1,45 @@
+enum BenchTree {
+    Empty,
+    Node(BenchTree, Int, BenchTree)
+}
+
+fn benchTreeAdd(sink tree: BenchTree, amount: Int) -> BenchTree {
+    match (tree) {
+        BenchTree.Empty => { return BenchTree.Empty }
+        BenchTree.Node(left, value, right) => {
+            return BenchTree.Node(benchTreeAdd(left, amount), value + amount,
+            benchTreeAdd(right, amount))
+        }
+    }
+    return BenchTree.Empty
+}
+
+fn benchMemoryTreeSum(tree: BenchTree) -> Int {
+    match (tree) {
+        BenchTree.Empty => { return 0 }
+        BenchTree.Node(left, value, right) => {
+            return (value + benchMemoryTreeSum(left) + benchMemoryTreeSum(right)) % 1000000007
+        }
+    }
+    return 0
+}
+
+public fn benchTreePasses(sink tree: BenchTree, passes: Int) -> BenchTree {
+    if (passes == 0) { return tree }
+    return benchTreePasses(benchTreeAdd(tree, 1), passes - 1)
+}
+
+public fn benchRecursiveTreeRebuild(scale: Int) -> Int {
+    let tree = benchBuildMemoryTree(12 + scale / 4, 1)
+    let done = benchTreePasses(tree, 4 * scale)
+    return benchMemoryTreeSum(done)
+}
+
+public fn benchBuildMemoryTree(depth: Int, seed: Int) -> BenchTree {
+    if (depth == 0) { return BenchTree.Empty }
+    return BenchTree.Node(
+    benchBuildMemoryTree(depth - 1, (seed * 3 + 1) % 1009),
+    seed,
+    benchBuildMemoryTree(depth - 1, (seed * 5 + 7) % 1009)
+    )
+}

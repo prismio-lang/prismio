@@ -1196,3 +1196,33 @@ void chan_free(void* handle) {
     free(c->slots);
     free(c);
 }
+
+// std.term's `colorEnabled`: whether text written to descriptor `fd` (1 or 2)
+// should carry ANSI styling. No, when NO_COLOR is set to anything
+// (no-color.org), when TERM is `dumb`, and when the descriptor is not a
+// terminal -- a pipe or a file would keep the escape bytes as text.
+//
+// On Windows a console is a terminal but may not interpret the sequences:
+// conhost does so only once ENABLE_VIRTUAL_TERMINAL_PROCESSING is on. Asking is
+// the moment to turn it on, so a program that checks before styling gets colour
+// in a legacy console too, and one where the mode cannot be set gets a no.
+#if defined(_WIN32) && !defined(ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+
+int prismio_rt_color_supported(int fd) {
+    const char* no_color = getenv("NO_COLOR");
+    if (no_color && no_color[0]) return 0;
+    const char* term = getenv("TERM");
+    if (term && strcmp(term, "dumb") == 0) return 0;
+#ifdef _WIN32
+    if (!_isatty(fd)) return 0;
+    HANDLE handle = GetStdHandle(fd == 2 ? STD_ERROR_HANDLE : STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (handle == INVALID_HANDLE_VALUE || !GetConsoleMode(handle, &mode)) return 0;
+    if (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING) return 1;
+    return SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) ? 1 : 0;
+#else
+    return isatty(fd) ? 1 : 0;
+#endif
+}

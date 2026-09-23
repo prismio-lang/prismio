@@ -1,0 +1,54 @@
+// Terminal colour: the escapes that spell ESC, and std.term's styling methods.
+//
+//   - `\e` is ESC (27), `\xHH` any one byte, `\u{...}` a Unicode scalar value
+//     written as UTF-8. Before these there was no way to write ESC in a literal,
+//     so no program could print in colour.
+//   - Each std.term method wraps its text in one SGR sequence and closes with that
+//     attribute's own reset, so styles nest; `.plain()` removes them again.
+//   - Chaining -- `"x".red().bold()` -- releases every intermediate: each method
+//     allocates its result in its own body. The verify ledger for this file is
+//     pinned at zero leaks in test_runner.py.
+import std.io
+import std.string
+import std.term
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let esc = "\e"
+    if (esc.length != 1 or esc.charAt(0) as Int != 27) { return fail("\\e is ESC") }
+    if (("\x1b[0m").equals("\e[0m") == false) { return fail("\\x1b is ESC") }
+    if ('\e' as Int != 27 or '\x41' != 'A') { return fail("Char escapes") }
+    let check = "\u{2713}"
+    if (check.length != 3 or check.charAt(0) as Int != 226) { return fail("\\u{2713} is three UTF-8 bytes") }
+    if ("\u{1F600}".length != 4) { return fail("\\u{1F600} is four UTF-8 bytes") }
+    if (("caf\u{E9}").equals("caf\xC3\xA9") == false) { return fail("\\u{E9} is C3 A9") }
+
+    let red = "error".red()
+    if (red.equals("\e[31merror\e[39m") == false) { return fail("red") }
+    let both = "error".red().bold()
+    if (both.equals("\e[1m\e[31merror\e[39m\e[22m") == false) { return fail("red, then bold") }
+    let nested = ("a".red() + "b").bold()
+    if (nested.equals("\e[1m\e[31ma\e[39mb\e[22m") == false) { return fail("a reset closes one attribute") }
+    let custom = "x".rgb(300, -5, 128).onColor(208)
+    if (custom.equals("\e[48;5;208m\e[38;2;255;0;128mx\e[39m\e[49m") == false) {
+        return fail("rgb clamps, onColor indexes")
+    }
+
+    let styled = "a string long enough to live on the heap".green().underline().onBlue()
+    let plain = styled.plain()
+    if (plain.equals("a string long enough to live on the heap") == false) { return fail("plain") }
+    if (plain.length != 40) { return fail("plain's length is what a terminal shows") }
+
+    // The suite captures stdout, so it is not a terminal.
+    if (colorEnabled()) { return fail("a captured stdout reported colour") }
+    let shown = "maybe".cyan().forTerminal()
+    if (shown.equals("maybe") == false) { return fail("forTerminal strips when stdout is not a terminal") }
+
+    println("PASS: terminal styling")
+    return 0
+}

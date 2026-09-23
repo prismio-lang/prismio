@@ -6526,6 +6526,14 @@ static int type_is_reclaimed(int nominal) {
     return type_reclaimed[nominal];
 }
 
+// Whether a field of this type is its values' release point -- the premise
+// site_in_released_field bars every other owner on. Codegen asks it for a struct
+// on the frame: when it holds, the fields are released by nobody unless the
+// frame struct's own drop releases them.
+int aif_type_is_reclaimed(const char* name) {
+    return type_is_reclaimed(nominal_find(name));
+}
+
 static void compute_released_fields(void) {
     if (in_released_field_done) return;
     in_released_field_done = 1;

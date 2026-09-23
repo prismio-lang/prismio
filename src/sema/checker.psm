@@ -7,6 +7,7 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 import std.string
+import std.option
 
 // Sema reports and keeps going. Stopping at the first type error meant one
 // diagnostic per run, so fixing a file was a sequence of edit-rebuild rounds --
@@ -405,87 +406,216 @@ private fn semaConcatSpineIsString(module: ASTNode, expr: ASTNode) -> Bool {
 
 // `for c in s { ... }` rewritten into the range loop it means.
 //
-//     for $c in 0..strLength(s) { let c = s[$c]   ... }
+//     for $c in 0..<s.length { let c = s[$c]   ... }
 //
 // The element read is built as an INDEX_EXPR rather than as a direct call, which
 // is deliberate: `s[$c]` re-enters the indexing arm, so a String gets `charAt`
-// from the desugaring above and a `List` gets the existing element path
+// from the desugaring above and a `Vec` gets the existing element path
 // **including `ir_unmark_list_exclusive`** -- the bookkeeping that makes binding
 // an element safe. Emitting `list_get` by hand would have skipped it.
 //
-// **The collection has to be a name.** `for line in text.lines()` is refused, and
-// not to keep this function simple: the loop needs the collection twice -- once
-// for the length, once per element -- and an expression evaluated twice would run
-// `lines()` per iteration. Binding it here instead is not available either,
-// because a `let` needs a statement slot this rewrite does not have, and because
-// binding a *name* would move it and leave `s` unusable after the loop. The
-// caller writing `let parts = text.lines()` first is the same rule RUNTIME.md 3.1
-// already imposes on that call: an owned result nothing names is a leak.
+// What can follow `in`, and what each iteration binds:
 //
-// The index is named after the loop variable, so nested loops cannot collide
-// without the user's own variables colliding first. `$` is the compiler-generated
-// marker no source identifier may contain.
+//     String, Vec<T>, Slice<T>, Array<T, N>    each element; `(i, x)` adds its index
+//     Map<K, V>                                 each key; `(k, v)` adds its value
+//     a type implementing `Iterator`            each `next`
+//
+// **A collection that is not a place is bound first.** The loop reads the
+// collection twice -- once for the length, once per element -- so
+// `for line in text.lines()` becomes
+//
+//     let mut $for_L_C = text.lines()
+//     for line in $for_L_C { ... }
+//
+// spliced into the statement chain, which is what `lines()` needs anyway: an
+// owned result nothing names is a leak. A name or a field is read in place,
+// because binding it would move it and leave it unusable after the loop.
+//
+// The hidden index is named after the loop variable, so nested loops cannot
+// collide without the user's own variables colliding first. `$` is the
+// compiler-generated marker no source identifier may contain.
 private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
     let source = ptr_to_node(stmt.child1)
-    if (source.kind != NodeKind.IDENTIFIER_EXPR) {
-        semaErrorAt(source, "the collection in a `for ... in` loop must be a name")
-        diag_note("bind it first -- `let parts = text.lines()`, then `for p in parts`")
-        return false
-    }
-
     let sourceT = semaExpr(module, source)
     if (typeIsValid(sourceT) == false) { return false }
 
-    let mut lengthFn = "list_len"
+    let isIterator = sourceT.kind == TypeKind.STRUCT
+        and semaTypeImplementsNamedTrait(module, sourceT.name, "Iterator")
+    if (semaForSourceIsPlace(source) == false) {
+        semaForHoistSource(stmt, isIterator)
+        return true
+    }
+
+    if (isIterator) {
+        if (stmt.s2.equals("") == false) {
+            semaErrorAt(stmt, "an `Iterator` gives one value per iteration, but this loop names two")
+            return false
+        }
+        return semaForEachIterator(module, stmt, source)
+    }
+    if (semaForIsMap(module, sourceT)) { return semaForEachMap(stmt, source) }
+
+    let length = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(length, source)
     if (sourceT.kind == TypeKind.STRING) {
-        lengthFn = "strLength"
         if (semaStringSugarAvailable(stmt, "strLength", "iterating a String") == false) {
             return false
         }
-    } else if (sourceT.kind == TypeKind.STRUCT
-               and semaTypeImplementsNamedTrait(module, sourceT.name, "Iterator")) {
-        return semaForEachIterator(module, stmt, source)
-    } else if (sourceT.kind != TypeKind.LIST) {
-        semaErrorAt(source, "`for ... in` needs a String, a Vec, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
-        diag_note("implement `Iterator` for it, or iterate by index -- `for i in 0..n`")
+        semaBecomeCall(length, "strLength", semaForSourceArgs(source))
+        semaBindToStandardString(length)
+    } else if (sourceT.kind == TypeKind.LIST) {
+        semaBecomeCall(length, "list_len", semaForSourceArgs(source))
+    } else if (sourceT.kind == TypeKind.SLICE) {
+        semaBecomeCall(length, "slice_len", semaForSourceArgs(source))
+    } else if (sourceT.kind == TypeKind.ARRAY and sourceT.length > 0) {
+        length.kind = NodeKind.LITERAL_EXPR
+        length.i1 = TokenType.NUMBER_LITERAL
+        length.s1 = strFromInt(sourceT.length)
+    } else if (sourceT.kind == TypeKind.ARRAY) {
+        semaErrorAt(source, "the length of this array is not known here, so `for ... in` cannot iterate it")
+        diag_note("a `[T]` parameter takes arrays of any length; pass the length too and write `for i in 0..<n`")
+        return false
+    } else {
+        semaErrorAt(source, "`for ... in` needs a String, Vec, Slice, array, Map, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
+        diag_note("implement `Iterator` for it, or iterate by index -- `for i in 0..<n`")
         return false
     }
 
-    let indexName = "$".concat(stmt.s1)
+    // With a pair, the first name *is* the index and needs no hidden one.
+    let mut indexName = "$".concat(stmt.s1)
+    let mut elementName = strClone(stmt.s1)
+    if (stmt.s2.equals("") == false) {
+        indexName = strClone(stmt.s1)
+        elementName = strClone(stmt.s2)
+    }
 
-    // let <var> = <source>[<indexName>], prepended to the body the user wrote.
+    // let <element> = <source>[<index>], prepended to the body the user wrote.
     let index = createNode(NodeKind.INDEX_EXPR)
     nodeSpanFrom(index, source)
-    index.child1 = node_to_ptr(semaNameNode(source, source.s1))
+    index.child1 = node_to_ptr(monoCopyOne(node_to_ptr(source)))
     index.child2 = node_to_ptr(semaNameNode(source, indexName))
+    semaForPrependLet(stmt, elementName, index)
 
+    semaForBecomeRange(stmt, indexName, length)
+    return true
+}
+
+// `for k in m` and `for (k, v) in m` over a `Map<K, V>`: its iteration API,
+// `mapKeyAt`/`mapValueAt`, over positions `0..<mapLen(m)`. Positions are
+// insertion order, which is the order the loop visits.
+private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
+    let indexName = "$".concat(stmt.s1)
+
+    // Prepended value first, so the key's `let` ends up first in the body.
+    if (stmt.s2.equals("") == false) {
+        let value = createNode(NodeKind.CALL_EXPR)
+        nodeSpanFrom(value, source)
+        semaBecomeCall(value, "mapValueAt", semaForSourceAndIndex(source, indexName))
+        semaForPrependLet(stmt, stmt.s2, value)
+    }
+    let key = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(key, source)
+    semaBecomeCall(key, "mapKeyAt", semaForSourceAndIndex(source, indexName))
+    semaForPrependLet(stmt, stmt.s1, key)
+
+    let length = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(length, source)
+    semaBecomeCall(length, "mapLen", semaForSourceArgs(source))
+    semaForBecomeRange(stmt, indexName, length)
+    return true
+}
+
+// Whether this is an instantiation of std.map's `Map`. An instantiated generic
+// struct is named after its template and its arguments, `Map$String$Int`, and
+// the template is only there when `std.map` is imported.
+private fn semaForIsMap(module: ASTNode, t: TypeInfo) -> Bool {
+    if (t.kind != TypeKind.STRUCT) { return false }
+    if (t.name.startsWith("Map".concat(monoSeparator())) == false) { return false }
+    return monoHasTemplate(module, "mapKeyAt", NodeKind.FUNCTION)
+}
+
+// A name, or a field of one: something the loop can read twice without
+// evaluating anything, and must not bind, because binding it would move it.
+private fn semaForSourceIsPlace(source: ASTNode) -> Bool {
+    if (source.kind == NodeKind.IDENTIFIER_EXPR) { return true }
+    if (source.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        return semaForSourceIsPlace(ptr_to_node(source.child1))
+    }
+    return false
+}
+
+// `for x in <expression>` becomes `let mut $for_L_C = <expression>` followed by
+// `for x in $for_L_C`. This node is the one its block's chain already points
+// at, so it becomes the `let` and the loop moves to a new node after it; the
+// block's walk reaches the loop next and desugars it as a name.
+//
+// `mut` only for an `Iterator`, whose `next` takes it `inout`.
+private fn semaForHoistSource(stmt: ASTNode, isIterator: Bool) {
+    let hidden = "$for_".concat(stmt.line.toString(), "_", stmt.col.toString())
+    let source = ptr_to_node(stmt.child1)
+
+    let loopNode = createNode(NodeKind.FOR_STATEMENT)
+    nodeSpanFrom(loopNode, stmt)
+    loopNode.s1 = strClone(stmt.s1)
+    loopNode.s2 = strClone(stmt.s2)
+    loopNode.i1 = stmt.i1
+    loopNode.child1 = node_to_ptr(semaNameNode(source, hidden))
+    loopNode.child2 = stmt.child2
+    loopNode.child3 = stmt.child3
+    loopNode.next = stmt.next
+
+    stmt.kind = NodeKind.VARIABLE_DECL
+    stmt.s1 = strClone(hidden)
+    stmt.s2 = ""
+    stmt.i1 = 0
+    if (isIterator) { stmt.i1 = 1 }
+    stmt.child1 = ptr_null()
+    stmt.child2 = node_to_ptr(source)
+    stmt.child3 = ptr_null()
+    stmt.next = node_to_ptr(loopNode)
+}
+
+// `let <name> = <value>`, ahead of every statement the user wrote in the body.
+private fn semaForPrependLet(stmt: ASTNode, name: String, value: ASTNode) {
     let bind = createNode(NodeKind.VARIABLE_DECL)
     nodeSpanFrom(bind, stmt)
-    bind.s1 = stmt.s1
-    bind.child2 = node_to_ptr(index)
+    bind.s1 = strClone(name)
+    bind.child2 = node_to_ptr(value)
 
     let body = ptr_to_node(stmt.child3)
     bind.next = body.child1
     body.child1 = node_to_ptr(bind)
+}
 
-    // The header becomes the range. `stmt.s1` is read into `indexName` above
-    // before it is overwritten here.
-    let length = createNode(NodeKind.CALL_EXPR)
-    nodeSpanFrom(length, source)
-    let lengthArgs = nodeList()
-    nodeListPush(lengthArgs, semaNameNode(source, source.s1))
-    semaBecomeCall(length, lengthFn, lengthArgs.head)
-    if (lengthFn.equals("strLength")) { semaBindToStandardString(length) }
-
+// The header becomes `for <index> in 0..<length`, and the loop forgets it was
+// ever over a collection.
+private fn semaForBecomeRange(stmt: ASTNode, indexName: String, length: ASTNode) {
     let zero = createNode(NodeKind.LITERAL_EXPR)
     zero.i1 = TokenType.NUMBER_LITERAL
     zero.s1 = "0"
-    nodeSpanFrom(zero, source)
+    nodeSpanFrom(zero, length)
 
-    stmt.s1 = indexName
+    stmt.s1 = strClone(indexName)
+    stmt.s2 = ""
+    stmt.i1 = 0
     stmt.child1 = node_to_ptr(zero)
     stmt.child2 = node_to_ptr(length)
-    return true
+}
+
+// A fresh copy of the collection, as the one argument of a call. Fresh because
+// the source appears several times in the rewrite, and one node cannot be in
+// several places in a tree whose siblings are a `next` chain.
+private fn semaForSourceArgs(source: ASTNode) -> Ptr {
+    let args = nodeList()
+    nodeListPush(args, monoCopyOne(node_to_ptr(source)))
+    return args.head
+}
+
+private fn semaForSourceAndIndex(source: ASTNode, indexName: String) -> Ptr {
+    let args = nodeList()
+    nodeListPush(args, monoCopyOne(node_to_ptr(source)))
+    nodeListPush(args, semaNameNode(source, indexName))
+    return args.head
 }
 
 // T20. `for x in it` over a type implementing `Iterator`, desugared to the loop
@@ -510,29 +640,19 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
 private fn semaForEachIterator(module: ASTNode, stmt: ASTNode, source: ASTNode) -> Bool {
     let condition = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(condition, source)
-    let conditionArgs = nodeList()
-    nodeListPush(conditionArgs, semaNameNode(source, source.s1))
-    semaBecomeCall(condition, "hasNext", conditionArgs.head)
+    semaBecomeCall(condition, "hasNext", semaForSourceArgs(source))
     condition.s1 = strClone("Iterator")
 
     let advance = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(advance, source)
-    let advanceArgs = nodeList()
-    nodeListPush(advanceArgs, semaNameNode(source, source.s1))
-    semaBecomeCall(advance, "next", advanceArgs.head)
+    semaBecomeCall(advance, "next", semaForSourceArgs(source))
     advance.s1 = strClone("Iterator")
 
     // `let <var> = next(it)`, prepended to the body the user wrote, exactly as
     // the indexed desugar prepends its element binding.
-    let bind = createNode(NodeKind.VARIABLE_DECL)
-    nodeSpanFrom(bind, stmt)
-    bind.s1 = strClone(stmt.s1)
-    bind.child2 = node_to_ptr(advance)
+    semaForPrependLet(stmt, stmt.s1, advance)
 
     let body = ptr_to_node(stmt.child3)
-    bind.next = body.child1
-    body.child1 = node_to_ptr(bind)
-
     stmt.kind = NodeKind.WHILE_STATEMENT
     stmt.child1 = node_to_ptr(condition)
     stmt.child2 = node_to_ptr(body)
@@ -2349,24 +2469,30 @@ private fn semaRegionStatement(module: ASTNode, stmt: ASTNode, expectedReturn: T
 }
 
 private fn semaForStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
-    // v0.1 3.6. `for c in s` becomes `for $c in 0..strLength(s) { let c = s[$c] ... }`
+    // v0.1 3.6. `for c in s` becomes `for $c in 0..<s.length { let c = s[$c] ... }`
     // right here, so everything below -- and every pass after it -- only ever
     // sees the range loop it already handled.
     if (nodeIsNull(stmt.child2)) {
         if (semaForEachDesugar(module, stmt) == false) { return }
-        // The `Iterator` form rewrites this statement into a `while` rather
-        // than a range, because a stream has no end to range over. Re-enter
-        // so it is checked as the `while` it now is; falling through would
-        // read its Bool condition as a range start.
-        if (stmt.kind == NodeKind.WHILE_STATEMENT) {
+        // The `Iterator` form rewrites this statement into a `while`, because a
+        // stream has no end to range over, and a computed collection turns it
+        // into the `let` that binds it. Re-enter so it is checked as what it now
+        // is; falling through would read either as a range.
+        if (stmt.kind != NodeKind.FOR_STATEMENT) {
             semaStatement(module, stmt, expectedReturn)
             return
         }
+    } else if (stmt.s2.equals("") == false) {
+        semaErrorAt(stmt, "a range gives one value per iteration, but this loop names two")
+        diag_note("`(index, element)` is for iterating a collection; over a range write `for i in a..b`")
+        return
     }
     let startT = semaExpr(module, ptr_to_node(stmt.child1))
     semaExpectAssignable(ptr_to_node(stmt.child1), "for range start", typeInt(), startT)
-    let endT = semaExpr(module, ptr_to_node(stmt.child2))
-    semaExpectAssignable(ptr_to_node(stmt.child2), "for range end", typeInt(), endT)
+    let endNode = ptr_to_node(stmt.child2)
+    let endT = semaExpr(module, endNode)
+    semaExpectAssignable(endNode, "for range end", typeInt(), endT)
+    if (nodeExists(endNode.next)) { semaForStep(module, ptr_to_node(endNode.next)) }
     // The loop variable belongs to the loop, not to the enclosing block.
     ir_scope_push()
     ir_set_var_type(stmt.s1, typeSemKey(typeInt()))
@@ -2374,6 +2500,25 @@ private fn semaForStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     semaBlock(module, ptr_to_node(stmt.child3), expectedReturn)
     ir_loop_barrier_pop()
     ir_scope_pop()
+}
+
+// `step` counts up, by a positive Int. A literal is checked here; a computed
+// step that is not positive at run time runs the loop no times (ir/stmt.psm).
+private fn semaForStep(module: ASTNode, stepNode: ASTNode) {
+    let stepT = semaExpr(module, stepNode)
+    semaExpectAssignable(stepNode, "for step", typeInt(), stepT)
+
+    let mut notPositive = stepNode.kind == NodeKind.LITERAL_EXPR
+        and stepNode.i1 == TokenType.NUMBER_LITERAL
+        and optionOr(strParseInt(stepNode.s1), 1) <= 0
+    if (stepNode.kind == NodeKind.UNARY_EXPR and stepNode.s1.equals("-")) {
+        let operand = ptr_to_node(stepNode.child1)
+        notPositive = operand.kind == NodeKind.LITERAL_EXPR
+    }
+    if (notPositive) {
+        semaErrorAt(stepNode, "a `step` must be positive")
+        diag_note("a range counts up from its start; for a descending count, count up and subtract")
+    }
 }
 
 private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
@@ -2658,6 +2803,7 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
 
     if (nodeExists(fnNode.child2)) {
         let mut body = ptr_to_node(fnNode.child2)
+        semaCheckJumps(body)
         semaBlock(module, body, expectedReturn)
 
         // Every path out of a value-returning function must return. Falling off

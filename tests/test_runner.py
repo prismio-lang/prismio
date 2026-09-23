@@ -3601,7 +3601,7 @@ def run_slice_gate_test():
         ran = run_command([str(bounds_exe)])
         if ran.returncode == 0:
             problems.append("an out-of-range Slice was accepted")
-        if "slice range [0..2] is outside collection length 1" not in ran.stderr:
+        if "slice range [0..<2] is outside collection length 1" not in ran.stderr:
             problems.append("the Slice bounds failure did not name the range and length")
     cleanup_files(bounds_exe)
 
@@ -6460,6 +6460,29 @@ def run_aif_verify_test():
         # them: `total(makeGrid(1).cells, 4)` reads a field off an unbound
         # temporary, and the temporary is kept rather than freed under the read.
         "test_164_array_fields": 1,
+        # A Vec literal in a struct literal and an assigned field. Both used to
+        # leak the Vec: the struct lived on the frame, which releases no field,
+        # and nothing else owned a value written straight into one.
+        "test_149_list_literal": 0,
+        # Ranges, `step`, `repeat` and labels. A leak here would be a labelled
+        # jump skipping the scope drops between it and the loop it names.
+        "test_165_ranges_repeat_labels": 0,
+        # `for ... in` over every collection, computed ones bound to a hidden
+        # `let`. The 1 is the long String in `names`, and it is the known shape
+        # rather than the loops: another `Vec<String>` stored into a struct field
+        # and read through it stops the element release, identically on the
+        # compiler before this change with plain `while` loops (KNOWN_ISSUES).
+        "test_166_for_each_collections": 1,
+        # Fields of a struct on the frame. 22 leaked before its owned
+        # temporaries had an owner; what this guards is that and the 0
+        # violations. The 1 is a long String element whose copy site is counted
+        # (T3) because two Vec literals share it -- a Vec holding a counted and
+        # an uncounted element of one type, the shape test_157 names.
+        "test_167_frame_struct_fields": 1,
+        # std.term's methods chained on owned results. A leak here is a method
+        # returning a helper's allocation -- a pass-through its caller gets no
+        # drop for -- which leaks both strings of every `"x".red().bold()`.
+        "test_168_terminal_styling": 0,
     }
 
     max_allocations = {

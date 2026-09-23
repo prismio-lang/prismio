@@ -1,0 +1,6 @@
+// expect-error: `\u{...}` must name a Unicode scalar value other than NUL
+// A surrogate half is not a scalar value, and no UTF-8 text can hold one.
+fn main() -> Int {
+    let s = "\u{D800}"
+    return 0
+}

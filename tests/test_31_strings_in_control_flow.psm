@@ -27,7 +27,7 @@ fn label_for(n: Int) -> String {
 fn main() -> Int {
     // literal in a for body
     let mut seen = 0
-    for i in 0..3 {
+    for i in 0..<3 {
         let tag = "in-for"
         if (tag.equals("in-for") == false) {
             return fail("string literal in for body was corrupted")
@@ -66,7 +66,7 @@ fn main() -> Int {
     }
 
     // literal in a match nested inside a for body
-    for j in 0..2 {
+    for j in 0..<2 {
         match (j) {
             0 => {
                 if ("nested-zero".equals("nested-zero") == false) {

@@ -408,6 +408,54 @@ private fn generateStringDispatch(firstPtr: Ptr, count: Int) -> Ptr {
 }
 
 
+// A struct literal AIF placed on the frame, of a type whose fields own what
+// they hold. Nothing else releases those fields: once some object of the type is
+// reclaimed, a value stored into an owning field has no other owner (AIF's
+// site_in_released_field) -- including one stored into a frame instance, since
+// the field's points-to set is the type's and not the object's. A heap object
+// gets `__aif_release_T`; this one gets the same field walk without the free.
+//
+// A type no object of which is ever reclaimed bars nobody, so its values keep
+// the owners they had and this must not become a second one.
+//
+// Only a whole-program build: the fields-only release is defined by the module
+// that names it, and a library's facts about a type are not the program's.
+private fn frameStructOwnsFields(init: Ptr) -> Bool {
+    if (isFrameStructLiteral(init) == false) { return false }
+    if (irWholeProgram() == false) { return false }
+    let node = ptr_to_node(init)
+    return aif_type_releases(node.s1) == 1 and aif_type_is_reclaimed(node.s1) == 1
+}
+
+private fn isFrameStructLiteral(init: Ptr) -> Bool {
+    if (nodeIsNull(init)) { return false }
+    if (ptr_to_node(init).kind != NodeKind.STRUCT_LITERAL_EXPR) { return false }
+    if (aif_arena_at_node(init) == 1) { return false }
+    return aif_tier_at_node(init) == AIF_TIER_T0
+}
+
+private fn frameStructKey(slot: String, floor: Int) -> String {
+    return ";".concat(slot, "@", floor.toString(), ";")
+}
+
+// `s.field = value` where `s` is a frame struct declared in this very block, of
+// a type none of whose objects is reclaimed. Its fields are owned by whatever
+// owned them before they were stored -- a binding, or the hidden one a literal's
+// owned temporary was given -- so an owned temporary assigned here gets the
+// same: a hidden binding, released when this block exits, which is when `s`
+// dies. The value it displaces keeps its own owner, so nothing is released
+// early and a view of the old value stays good.
+//
+// The same block, because a hidden binding is dropped at the exit of the scope
+// it is made in; made in a nested block or a loop body, it would free a value
+// `s` still holds.
+private fn frameFieldAssignmentNeedsOwner(objectNode: ASTNode, structName: String) -> Bool {
+    if (objectNode.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    if (aif_type_is_reclaimed(structName) == 1) { return false }
+    let key = frameStructKey(ir_get_var_slot(objectNode.s1), ir_scope_drop_floor())
+    return irFrameStructSlots.contains(key)
+}
+
 private fn generateVariableDecl(stmt: ASTNode) {
     let varName = stmt.s1
     let mut varType = "i32"
@@ -539,6 +587,14 @@ private fn generateVariableDecl(stmt: ASTNode) {
             // branch above declines a returned value -- so this is every
             // other case.
             ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
+        } else if (frameStructOwnsFields(stmt.child2)
+            and chainAssignsName(irFunctionBody, varName) == false
+            and chainDropsName(irFunctionBody, varName) == false) {
+            ir_mark_droppable(varName, IR_DROP_FIELDS)
+            let typeName = structTypeName(getExprType(ptr_to_node(stmt.child2)))
+            if (irFrameReleaseTypes.contains(";".concat(typeName, ";")) == false) {
+                irFrameReleaseTypes = irFrameReleaseTypes.concat(";", typeName, ";")
+            }
         } else {
             // AIF item 3. The initialiser is not an allocation here -- it is a
             // call to a function that made one and handed it over. That is the
@@ -565,6 +621,13 @@ private fn generateVariableDecl(stmt: ASTNode) {
                 }
             }
         }
+    }
+    // Not one the function reassigns: after `s = other`, `s.f` is a field of
+    // another object, which may outlive this block.
+    if (hasInit and isFrameStructLiteral(stmt.child2)
+            and chainAssignsName(irFunctionBody, varName) == false) {
+        irFrameStructSlots = irFrameStructSlots.concat(
+            frameStructKey(ir_get_var_slot(varName), ir_scope_drop_floor()))
     }
 }
 
@@ -689,6 +752,9 @@ private fn generateAssignment(stmt: ASTNode) {
         let fieldIndex = ir_get_struct_field_index(structName, targetNode.s1)
         let fieldType = fieldStorageType(ir_get_struct_field_type(structName, targetNode.s1))
         let val = generateExpression(ptr_to_node(stmt.child2))
+        if (frameFieldAssignmentNeedsOwner(objectNode, structName)) {
+            spillOwnedFieldTemporary(ptr_to_node(stmt.child2), val)
+        }
 
         let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
         irProfileField(structName, targetNode.s1, true)
@@ -853,13 +919,11 @@ private fn generateWhile(stmt: ASTNode) {
 
         ir_label_numbered(fastBodyLabel)
         irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-        ir_loop_push(fastCondLabel, endLabel)
-        ir_drop_barrier_push()
+        irLoopEnter(stmt, fastCondLabel, endLabel)
         irLoopDepth = irLoopDepth + 1
         generateBlock(ptr_to_node(stmt.child2))
         irLoopDepth = irLoopDepth - 1
-        ir_drop_barrier_pop()
-        ir_loop_pop()
+        irLoopExit()
 
         if (ir_has_returned() == 0) { ir_br_numbered(fastCondLabel) }
         ir_clear_returned()
@@ -873,13 +937,11 @@ private fn generateWhile(stmt: ASTNode) {
 
         ir_label_numbered(slowBodyLabel)
         irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-        ir_loop_push(slowCondLabel, endLabel)
-        ir_drop_barrier_push()
+        irLoopEnter(stmt, slowCondLabel, endLabel)
         irLoopDepth = irLoopDepth + 1
         generateBlock(ptr_to_node(stmt.child2))
         irLoopDepth = irLoopDepth - 1
-        ir_drop_barrier_pop()
-        ir_loop_pop()
+        irLoopExit()
 
         if (ir_has_returned() == 0) { ir_br_numbered(slowCondLabel) }
         ir_clear_returned()
@@ -911,13 +973,11 @@ private fn generateWhile(stmt: ASTNode) {
 
     ir_label_numbered(bodyLabel)
     irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-    ir_loop_push(condLabel, endLabel)
-    ir_drop_barrier_push()
+    irLoopEnter(stmt, condLabel, endLabel)
     irLoopDepth = irLoopDepth + 1
     generateBlock(ptr_to_node(stmt.child2))
     irLoopDepth = irLoopDepth - 1
-    ir_drop_barrier_pop()
-    ir_loop_pop()
+    irLoopExit()
 
     if (ir_has_returned() == 0) { ir_br_numbered(condLabel) }
     ir_clear_returned()
@@ -940,11 +1000,9 @@ private fn generateLoop(stmt: ASTNode) {
 
     ir_br_numbered(bodyLabel)
     ir_label_numbered(bodyLabel)
-    ir_loop_push(bodyLabel, endLabel)
-    ir_drop_barrier_push()
+    irLoopEnter(stmt, bodyLabel, endLabel)
     generateBlock(ptr_to_node(stmt.child1))
-    ir_drop_barrier_pop()
-    ir_loop_pop()
+    irLoopExit()
 
     if (ir_has_returned() == 0) { ir_br_numbered(bodyLabel) }
     ir_clear_returned()
@@ -952,6 +1010,46 @@ private fn generateLoop(stmt: ASTNode) {
     ir_label_numbered(endLabel)
 }
 
+// Every loop enters its body through here, so a label is recorded on the same
+// stack entry the unlabelled break and continue read: `outer@ while` and
+// `outer@ for` differ only in which labels they pass.
+private fn irLoopEnter(stmt: ASTNode, continueLabel: Int, breakLabel: Int) {
+    ir_loop_push(continueLabel, breakLabel)
+    ir_drop_barrier_push()
+    let body = ptr_to_node(loopBodyOf(stmt))
+    if (body.s1.equals("") == false) { ir_loop_label(body.s1) }
+}
+
+private fn irLoopExit() {
+    ir_drop_barrier_pop()
+    ir_loop_pop()
+}
+
+// Whether a `for` needs the general lowering below rather than the plain
+// counted one: an included end, or any step.
+private fn forIsGeneral(stmt: ASTNode) -> Bool {
+    if (stmt.i1 == 1) { return true }
+    return nodeExists(ptr_to_node(stmt.child2).next)
+}
+
+// A range `for`. The start, the end and the step are each evaluated once, before
+// the first test, and in that order -- `for i in 0..<v.length` does not re-read
+// the length every iteration, and `repeat(f())` calls `f` once.
+//
+// `for i in a..<b` is the plain counted loop: test `i < b`, run the body, add one.
+// The increment cannot wrap, because `i < b` held and `b` is an Int.
+//
+// An included end or a step takes the general form, which tests before the
+// increment instead of after it:
+//
+//     enter:  i <= end (or i < end), and step > 0 when the step is computed
+//     latch:  continue while step fits in end - i, taken as unsigned
+//     incr:   i = i + step
+//
+// That is what makes `for i in 0..Int.max` and `0..<n step 3` stop. Adding first
+// and testing after would wrap `i` past the largest Int and never exit. `end - i`
+// cannot be negative there -- `i` never passes `end` -- so read unsigned it is
+// the exact distance left even when it does not fit in a signed Int.
 private fn generateFor(stmt: ASTNode) {
     // Scoped to the loop, matching sema.
     ir_scope_push()
@@ -962,6 +1060,15 @@ private fn generateFor(stmt: ASTNode) {
     let startVal = generateExpression(ptr_to_node(stmt.child1))
     ir_store("i32", startVal, loopVar)
 
+    let endNode = ptr_to_node(stmt.child2)
+    let endVal = generateExpression(endNode)
+
+    if (forIsGeneral(stmt)) {
+        generateForGeneral(stmt, loopVar, endVal)
+        ir_scope_pop()
+        return
+    }
+
     let condLabel = ir_get_label()
     let bodyLabel = ir_get_label()
     let incrLabel = ir_get_label()
@@ -970,16 +1077,13 @@ private fn generateFor(stmt: ASTNode) {
     ir_br_numbered(condLabel)
     ir_label_numbered(condLabel)
     let iv = ir_load("i32", loopVar)
-    let endVal = generateExpression(ptr_to_node(stmt.child2))
     let cmp = ir_icmp_slt("i32", ir_get_temp_name(iv), endVal)
     ir_cond_br_numbered(ir_get_temp_name(cmp), bodyLabel, endLabel)
 
     ir_label_numbered(bodyLabel)
-    ir_loop_push(incrLabel, endLabel)   // continue jumps to the increment step
-    ir_drop_barrier_push()
+    irLoopEnter(stmt, incrLabel, endLabel)   // continue jumps to the increment step
     generateBlock(ptr_to_node(stmt.child3))
-    ir_drop_barrier_pop()
-    ir_loop_pop()
+    irLoopExit()
     if (ir_has_returned() == 0) { ir_br_numbered(incrLabel) }
     ir_clear_returned()
 
@@ -991,6 +1095,69 @@ private fn generateFor(stmt: ASTNode) {
 
     ir_label_numbered(endLabel)
     ir_scope_pop()
+}
+
+// Sema has refused a literal step that is not positive, so only a computed one
+// needs testing at run time.
+private fn forStepIsLiteral(stepNode: ASTNode) -> Bool {
+    return stepNode.kind == NodeKind.LITERAL_EXPR and stepNode.i1 == TokenType.NUMBER_LITERAL
+}
+
+private fn generateForGeneral(stmt: ASTNode, loopVar: String, endVal: String) {
+    let endNode = ptr_to_node(stmt.child2)
+    let included = stmt.i1 == 1
+    let mut stepVal = "1"
+    let mut stepChecked = true
+    if (nodeExists(endNode.next)) {
+        let stepNode = ptr_to_node(endNode.next)
+        stepVal = generateExpression(stepNode)
+        stepChecked = forStepIsLiteral(stepNode)
+    }
+
+    let bodyLabel = ir_get_label()
+    let latchLabel = ir_get_label()
+    let incrLabel = ir_get_label()
+    let endLabel = ir_get_label()
+
+    let first = ir_get_temp_name(ir_load("i32", loopVar))
+    let mut enter = ""
+    if (included) {
+        enter = ir_get_temp_name(ir_icmp_sle("i32", first, endVal))
+    } else {
+        enter = ir_get_temp_name(ir_icmp_slt("i32", first, endVal))
+    }
+    // A step computed as zero or less would never reach the end. The loop runs
+    // no times instead, which a literal step never needs: sema refused those.
+    if (stepChecked == false) {
+        let positive = ir_get_temp_name(ir_icmp_sgt("i32", stepVal, "0"))
+        enter = ir_get_temp_name(ir_and("i1", enter, positive))
+    }
+    ir_cond_br_numbered(enter, bodyLabel, endLabel)
+
+    ir_label_numbered(bodyLabel)
+    irLoopEnter(stmt, latchLabel, endLabel)   // continue jumps to the latch
+    generateBlock(ptr_to_node(stmt.child3))
+    irLoopExit()
+    if (ir_has_returned() == 0) { ir_br_numbered(latchLabel) }
+    ir_clear_returned()
+
+    ir_label_numbered(latchLabel)
+    let current = ir_get_temp_name(ir_load("i32", loopVar))
+    let left = ir_get_temp_name(ir_sub("i32", endVal, current))
+    let mut more = ""
+    if (included) {
+        more = ir_get_temp_name(ir_icmp_uge("i32", left, stepVal))
+    } else {
+        more = ir_get_temp_name(ir_icmp_ugt("i32", left, stepVal))
+    }
+    ir_cond_br_numbered(more, incrLabel, endLabel)
+
+    ir_label_numbered(incrLabel)
+    let next = ir_add("i32", current, stepVal)
+    ir_store("i32", ir_get_temp_name(next), loopVar)
+    ir_br_numbered(bodyLabel)
+
+    ir_label_numbered(endLabel)
 }
 
     // SPEC 5.2. The arena is pushed on entry and popped on every exit; the
@@ -1008,21 +1175,30 @@ private fn generateRegion(stmt: ASTNode) {
 
     // Both leave every scope between here and the loop body, so the loop's
     // watermark is the floor. Bindings the loop inherited are above it and stay.
+    // A label (`break@outer`, in `s1`) moves the floor out to the named loop's,
+    // so every loop between here and there is left as well.
 private fn generateBreak(stmt: ASTNode) {
-    let target = ir_loop_break_label()
-    if (target >= 0) {
-        generateScopeDrops(ir_loop_drop_floor())
-        generateRegionExits(ir_region_depth() - ir_loop_region_depth())
-        ir_br_numbered(target)
-        ir_set_returned()
+    if (stmt.s1.equals("") == false) {
+        generateLoopJump(ir_loop_break_label_named(stmt.s1), ir_loop_drop_floor_named(stmt.s1),
+                         ir_loop_region_depth_named(stmt.s1))
+        return
     }
+    generateLoopJump(ir_loop_break_label(), ir_loop_drop_floor(), ir_loop_region_depth())
 }
 
 private fn generateContinue(stmt: ASTNode) {
-    let target = ir_loop_continue_label()
+    if (stmt.s1.equals("") == false) {
+        generateLoopJump(ir_loop_continue_label_named(stmt.s1), ir_loop_drop_floor_named(stmt.s1),
+                         ir_loop_region_depth_named(stmt.s1))
+        return
+    }
+    generateLoopJump(ir_loop_continue_label(), ir_loop_drop_floor(), ir_loop_region_depth())
+}
+
+private fn generateLoopJump(target: Int, floor: Int, regionDepth: Int) {
     if (target >= 0) {
-        generateScopeDrops(ir_loop_drop_floor())
-        generateRegionExits(ir_region_depth() - ir_loop_region_depth())
+        generateScopeDrops(floor)
+        generateRegionExits(ir_region_depth() - regionDepth)
         ir_br_numbered(target)
         ir_set_returned()
     }
@@ -1266,6 +1442,8 @@ private fn generateScopeDrops(floor: Int) {
             // The drop list keeps the declared type, so the generated release is
             // named from it rather than stored a second time.
             ir_free_typed(value, releaseFnName(structTypeName(declType)))
+        } else if (kind == IR_DROP_FIELDS) {
+            ir_free_typed(value, frameReleaseFnName(structTypeName(declType)))
         } else {
             ir_free_object(value)
         }

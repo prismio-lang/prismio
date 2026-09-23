@@ -144,6 +144,7 @@ violations.
 | `std/eq.psm` | `import std.eq` | the `Eq` bound, and `==` on a struct |
 | `std/display.psm` | `import std.display` | the `Display` bound — a value's text |
 | `std/iter.psm` | `import std.iter` | the `Iterator` bound, and `for ... in` over your own type |
+| `std/term.psm` | `import std.term` | terminal colour and text styles as String methods — `red`, `bold`, `onBlue`, `rgb`, `plain`, `forTerminal` — and `colorEnabled()` |
 
 **There is no prelude.** `std.io` is an ordinary import: a program that prints
 nothing carries no I/O, which is what lets a target with no stdout link at all.
@@ -186,7 +187,7 @@ compiler's own host-routing banner uses them for exactly that reason: while it
 printed to stdout, it prefixed the manifest with a human line and broke that
 format's one guarantee, that its first line is `aif-manifest 1`.
 
-This is why `a == b`, `a + b`, `s[i]`, `s[a..b]` and `for c in s` on a String all
+This is why `a == b`, `a + b`, `s[i]`, `s[a..<b]` and `for c in s` on a String all
 need `import std.string`: each is rewritten in sema into the `std.string` call it
 means, so the operator is only as available as the module. The diagnostic names
 the missing import rather than the function the rewrite was about to call.
@@ -412,6 +413,14 @@ rather than given the host's section.
 `prismio_rt_eprint_float` and `prismio_rt_eprintln_float` twins, are what is left
 of the console runtime. Each flushes before returning, which is what keeps a
 `printf` and a console write to the same descriptor in order.
+
+`prismio_rt_color_supported(fd)` in `runtime/program_support.c` is std.term's
+`colorEnabled()` and `stderrColorEnabled()`: 1 when the descriptor is a terminal,
+`NO_COLOR` is unset or empty and `TERM` is not `dumb`. It returns an `Int` and
+takes nothing that points, so its declaration needs no contract. On Windows it
+also turns on `ENABLE_VIRTUAL_TERMINAL_PROCESSING` for the console, answering 0
+if that cannot be set, so asking before styling is what gets colour in a legacy
+console. The styling itself is Prismio: bytes written with the string builtins.
 
 **Float text is C because round-tripping is.** `prismio_format_double` writes the
 shortest decimal that `strtod` reads back as the same double -- found by asking

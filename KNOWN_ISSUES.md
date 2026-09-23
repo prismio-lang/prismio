@@ -22,6 +22,42 @@ corpus sweep is 8 sources and 7 runnable, down from 33 and 30.
 
 ## Ownership
 
+**A struct on the frame now owns what its fields were given; four field shapes
+still leak.** AIF places a struct that does not outlive its function in a stack
+slot (T0), and nothing released such a struct's fields. `Bag { items: [] }` leaked
+the Vec outright, and `tests/test_167_frame_struct_fields.psm` leaked 22 of 28.
+Fixed on 2026-09-23 (`src/ir/expr.psm` `spillOwnedFieldTemporary`, `src/ir/stmt.psm`
+`frameStructOwnsFields`):
+
+- an owned temporary in a frame struct's literal, or assigned to its field in the
+  block that declared it, gets a hidden binding on the drop list — asked the same
+  questions, in the same order, a `let` of it would be;
+- where some object of the type is reclaimed (`aif_type_is_reclaimed`), AIF makes
+  the field its values' only release point, so the frame struct's drop runs a
+  fields-only release, `__aif_release_fields_T`, emitted for those types alone.
+
+What is still open, all leaks and none a violation:
+
+- **Reassigning a field whose type is reclaimed, or in a nested block or loop.**
+  `bag.items = [...]` on a heap struct leaks the displaced Vec. Releasing it at the
+  assignment is not sound yet: `let old = bag.items` is a *view*, and so is a
+  value a call returns out of `bag`, so the displaced value may still be read. It
+  needs the removal verdict's "no view can be live" proof (COLLECTIONS 1e), not a
+  syntactic one. Reproducer: `let mut b = make(); b.items = ["y"]` with `make`
+  returning a `Bag`.
+- **A field value read out and returned or pushed.** `return bag.items`, or
+  `keep.push(bag.items)`, leaks the struct and the list, identically with a named
+  binding in the field. The value escapes through a field read, and nothing in
+  the frame owns it after.
+- **One function's use of a field changes every function's.** Field keys are
+  per type, not per object, so `let before = bag.items` anywhere raises the
+  escape of every value any `Bag` holds in `items`, and each function's
+  temporaries there lose their owner.
+- **One `concat` stored into a released field** makes that site — which backs
+  every `concat` in the program — the field's, so every other `concat` result,
+  even a plain `let`, is owned by nobody. The same holds for any library
+  allocation site shared by many calls.
+
 **A value read out of a parameter is a view of it, and the caller no longer frees
 the argument before reading the result.** `optionOr(s.stripPrefix("x"), "!")`
 answered `""`: the release for the unbound `Option<String>` temporary was emitted

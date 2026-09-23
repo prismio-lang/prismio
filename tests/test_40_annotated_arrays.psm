@@ -37,7 +37,7 @@ fn main() -> Int {
     if (inferred[1] != 8) { fail("inferred element") }
 
     let mut total: I64 = 0
-    for i in 0..3 {
+    for i in 0..<3 {
         total = total + wide[i]
     }
     if (total != 6) { fail("sum over an annotated array") }

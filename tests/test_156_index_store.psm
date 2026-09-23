@@ -75,7 +75,7 @@ fn vectors() -> Int {
     if (throughParameter(ints) != 0) { return 1 }
     if (ints[0] != 100) { return fail("store through a parameter") }
 
-    let view: Slice<Int> = ints[0..3]
+    let view: Slice<Int> = ints[0..<3]
     view[2] = 9
     if (ints[2] != 9) { return fail("Slice store") }
     return 0

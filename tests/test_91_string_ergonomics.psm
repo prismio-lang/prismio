@@ -73,12 +73,12 @@ fn main() -> Int {
     if ((rejoined == s) == false) { return fail("owned left operand in a + b") }
 
     // Slicing is half-open and allocates, so it is bound.
-    let head = s[0..5]
-    if ((head == "Hello") == false) { return fail("s[0..5]") }
-    let tail = s[7..12]
-    if ((tail == "World") == false) { return fail("s[7..12]") }
-    let clamped = s[7..99]
-    if ((clamped == "World") == false) { return fail("s[7..99] clamps") }
+    let head = s[0..<5]
+    if ((head == "Hello") == false) { return fail("s[0..<5]") }
+    let tail = s[7..<12]
+    if ((tail == "World") == false) { return fail("s[7..<12]") }
+    let clamped = s[7..<99]
+    if ((clamped == "World") == false) { return fail("s[7..<99] clamps") }
 
     // Iteration over a String yields Char, and does not move the String.
     let mut letters = 0

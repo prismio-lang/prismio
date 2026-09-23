@@ -36,11 +36,11 @@ fn main() -> Int {
     if (check("different_length", -1, "length miss") != 0) { return 1 }
 
     let shortSource = "xxcatyy"
-    let shortValue = shortSource[2..5]
+    let shortValue = shortSource[2..<5]
     if (check(shortValue, 1, "inline substring") != 0) { return 1 }
 
     let longSource = "xxalpha_dispatch_01yy"
-    let longView = longSource[2..19]
+    let longView = longSource[2..<19]
     if (check(longView, 11, "long view") != 0) { return 1 }
 
     println("string dispatch ok")

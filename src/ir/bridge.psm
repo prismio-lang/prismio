@@ -122,6 +122,7 @@ public extern fn ir_fcmp_oge(type: String, lhs: String, rhs: String) -> Int
 // Control Flow
 public extern fn ir_ret(type: String, value: String)
 public extern fn ir_ret_void()
+public extern fn ir_unreachable()
 public extern fn ir_br(label: String)
 public extern fn ir_br_numbered(labelNum: Int)
 public extern fn ir_cond_br(condition: String, trueLabel: String, falseLabel: String)
@@ -136,6 +137,13 @@ public extern fn ir_loop_push(continueLabel: Int, breakLabel: Int)
 public extern fn ir_loop_pop()
 public extern fn ir_loop_continue_label() -> Int
 public extern fn ir_loop_break_label() -> Int
+// `outer@ for ...`. ir_loop_label names the innermost loop once its drop barrier
+// is pushed; the `_named` reads answer for the innermost loop carrying a label.
+public extern fn ir_loop_label(name: String borrow)
+public extern fn ir_loop_break_label_named(name: String borrow) -> Int
+public extern fn ir_loop_continue_label_named(name: String borrow) -> Int
+public extern fn ir_loop_drop_floor_named(name: String borrow) -> Int
+public extern fn ir_loop_region_depth_named(name: String borrow) -> Int
 
 // Move tracking (ownership / MVS)
 public extern fn ir_clear_moved()

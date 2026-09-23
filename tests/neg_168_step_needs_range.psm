@@ -1,0 +1,6 @@
+// expect-error: `step` needs a range to count through
+fn main() -> Int {
+    let xs = [1, 2, 3]
+    for x in xs step 2 { }
+    return 0
+}

@@ -152,6 +152,12 @@ int ir_is_guard_safe_fn(const char* name) {
 
 static int loop_continue_stack[MAX_LOOP_DEPTH];
 static int loop_break_stack[MAX_LOOP_DEPTH];
+// `outer@ for ...`: the label, and where a jump to that loop unwinds to. Set by
+// ir_loop_label after the loop's drop barrier is pushed; NULL on an unlabelled
+// loop, which only an unlabelled break or continue can reach.
+static const char* loop_name_stack[MAX_LOOP_DEPTH];
+static int loop_floor_stack[MAX_LOOP_DEPTH];
+static int loop_region_stack[MAX_LOOP_DEPTH];
 static int loop_depth = 0;
 
 void ir_loop_push(int continue_label, int break_label) {
@@ -161,6 +167,7 @@ void ir_loop_push(int continue_label, int break_label) {
     }
     loop_continue_stack[loop_depth] = continue_label;
     loop_break_stack[loop_depth] = break_label;
+    loop_name_stack[loop_depth] = NULL;
     loop_depth++;
 }
 
@@ -1149,6 +1156,48 @@ void ir_drop_barrier_pop(void) {
 
 int ir_loop_drop_floor(void) {
     return drop_barrier_depth > 0 ? drop_barriers[drop_barrier_depth - 1] : 0;
+}
+
+// Labelled loops. A `break@outer` leaves every scope and region down to the
+// named loop's, not the innermost one's, so the floor and region depth are
+// captured when the loop is named -- after its own barrier is pushed, which is
+// the order every loop in ir/stmt.psm enters in.
+void ir_loop_label(const char* name) {
+    if (loop_depth == 0 || !name || !name[0]) return;
+    loop_name_stack[loop_depth - 1] = ir_intern(name);
+    loop_floor_stack[loop_depth - 1] = ir_loop_drop_floor();
+    loop_region_stack[loop_depth - 1] = ir_loop_region_depth();
+}
+
+// The innermost open loop with this label, or -1. Sema has already refused a
+// label no enclosing loop carries, so -1 here means codegen is out of step.
+static int loop_named(const char* name) {
+    if (!name || !name[0]) return -1;
+    const char* s = ir_intern(name);
+    for (int i = loop_depth - 1; i >= 0; i--) {
+        if (loop_name_stack[i] == s) return i;
+    }
+    return -1;
+}
+
+int ir_loop_break_label_named(const char* name) {
+    int i = loop_named(name);
+    return i >= 0 ? loop_break_stack[i] : -1;
+}
+
+int ir_loop_continue_label_named(const char* name) {
+    int i = loop_named(name);
+    return i >= 0 ? loop_continue_stack[i] : -1;
+}
+
+int ir_loop_drop_floor_named(const char* name) {
+    int i = loop_named(name);
+    return i >= 0 ? loop_floor_stack[i] : 0;
+}
+
+int ir_loop_region_depth_named(const char* name) {
+    int i = loop_named(name);
+    return i >= 0 ? loop_region_stack[i] : 0;
 }
 
 int ir_drop_count(int floor) {

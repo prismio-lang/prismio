@@ -50,7 +50,7 @@ fn main() -> Int {
     // **The operators are bound to the library.** Each of these lowers to one of
     // the five functions this program has shadowed.
     if (("a" + "b").equals("ab") == false) { return fail("`+` is the library's concat") }
-    if (("abc"[1..3]).equals("bc") == false) { return fail("a slice is the library's") }
+    if (("abc"[1..<3]).equals("bc") == false) { return fail("a slice is the library's") }
     if ("abc"[0] != 'a') { return fail("an index is the library's charAt") }
     if (("abc" == "abc") == false) { return fail("`==` is the library's equality") }
     if ("a" < "b" == false) { return fail("`<` is the library's compare") }

@@ -34,7 +34,7 @@ fn self_append() -> String {
 // rebase rule must preserve it while the owned base grows.
 fn view_append() -> String {
     let mut out = "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
-    out = out + out[2..40]
+    out = out + out[2..<40]
     return out
 }
 

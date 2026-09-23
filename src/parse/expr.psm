@@ -363,6 +363,22 @@ private fn parseCall(p: Parser, callee: ASTNode) -> ASTNode {
     return call
 }
 
+// The end of `a[start..end]`, as the exclusive bound every slice is stored with.
+// `..<` is that bound already; `..` includes its end, so it is one past it.
+private fn parseSliceEnd(p: Parser, rangeOp: Token) -> ASTNode {
+    let end = parseExpression(p, 0)
+    if (rangeOp.value.equals("..<")) { return end }
+
+    let pastEnd = parserNodeFrom(NodeKind.BINARY_EXPR, rangeOp)
+    pastEnd.s1 = "+"
+    let one = parserNodeFrom(NodeKind.LITERAL_EXPR, rangeOp)
+    one.i1 = TokenType.NUMBER_LITERAL
+    one.s1 = "1"
+    pastEnd.child1 = node_to_ptr(end)
+    pastEnd.child2 = node_to_ptr(one)
+    return pastEnd
+}
+
 // The suffixes that bind tightest, applied left to right: `f(x)[i].field`.
 private fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
     let mut expr = base
@@ -376,12 +392,13 @@ private fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
             // cover both `a[i]` and SPEC 8.4's `a[start..end]` without making
             // range a general expression operator.
             let first = parseExpression(p, 0)
+            let rangeOp = p.current()
             if (p.matchToken(TokenType.RANGE)) {
                 let slice = p.node(NodeKind.SLICE_EXPR)
                 nodeSpanFrom(slice, expr)
                 slice.child1 = node_to_ptr(expr)
                 slice.child2 = node_to_ptr(first)
-                slice.child3 = node_to_ptr(parseExpression(p, 0))
+                slice.child3 = node_to_ptr(parseSliceEnd(p, rangeOp))
                 p.expectVal(TokenType.SEPARATOR, "]", "slice range")
                 expr = slice
             } else {

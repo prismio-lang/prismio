@@ -1,0 +1,209 @@
+// Ranges, `step`, `repeat`, `else if` chains, and labelled loops.
+//
+//   - `a..b` includes its end and `a..<b` stops before it. Both are empty when
+//     the start is past the end.
+//   - The start, the end and the step are each evaluated once, before the first
+//     test: assigning to the end inside the body changes nothing.
+//   - `step` counts up by a positive Int. A computed step that is not positive
+//     runs the loop no times.
+//   - A loop whose end is the largest Int stops there rather than wrapping.
+//   - `repeat(n)` runs its body n times and hides its counter.
+//   - `outer@ for ...` names a loop; `break@outer` and `continue@outer` leave or
+//     continue it from any depth, through every kind of loop.
+import std.io
+import std.iter
+import std.string
+
+struct Countdown { remaining: Int }
+
+impl Iterator for Countdown {
+    type Item = Int
+    fn hasNext(self) -> Bool { return self.remaining > 0 }
+    fn next(inout self) -> Self.Item {
+        self.remaining = self.remaining - 1
+        return self.remaining
+    }
+}
+
+fn countdown(n: Int) -> Countdown { return Countdown { remaining: n } }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn sumRange(lo: Int, hi: Int) -> Int {
+    let mut sum = 0
+    for i in lo..hi { sum += i }
+    return sum
+}
+
+fn sumExclusive(lo: Int, hi: Int) -> Int {
+    let mut sum = 0
+    for i in lo..<hi { sum += i }
+    return sum
+}
+
+fn classify(v: Int) -> Int {
+    if (v < 0) {
+        return 1
+    } else if (v == 0) {
+        return 2
+    } else if (v < 10) {
+        return 3
+    } else {
+        return 4
+    }
+}
+
+// Every branch returns and the type is not a number. The join after the chain
+// is unreachable, and codegen used to end it with `ret <String> 0` -- invalid IR,
+// so a two-branch `if`/`else` returning a String failed module verification.
+fn grade(score: Int) -> String {
+    if (score >= 90) {
+        return "A"
+    } else if (score >= 80) {
+        return "B"
+    } else {
+        return "C"
+    }
+}
+
+fn nestedIf(a: Int, b: Int) -> Int {
+    if (a > 0) {
+        if (b > 0) { return 1 } else if (b == 0) { return 2 }
+        return 3
+    } else if (a == 0) {
+        return 4
+    }
+    return 5
+}
+
+fn main() -> Int {
+    if (sumRange(1, 5) != 15) { return fail("1..5 includes 5") }
+    if (sumExclusive(1, 5) != 10) { return fail("1..<5 stops before 5") }
+    if (sumRange(5, 1) != 0) { return fail("5..1 is empty") }
+    if (sumRange(3, 3) != 3) { return fail("3..3 runs once") }
+    if (sumExclusive(3, 3) != 0) { return fail("3..<3 is empty") }
+
+    // Any expression can be a bound, parenthesised or not.
+    let x = 1
+    let n = 2
+    let mut count = 0
+    for i in 1..(x + n * 2) { count += 1 }
+    if (count != 5) { return fail("an expression end") }
+
+    // The end is read once, before the first test.
+    let mut limit = 3
+    let mut runs = 0
+    for i in 0..<limit {
+        runs += 1
+        limit = 100
+    }
+    if (runs != 3) { return fail("the end is read once") }
+
+    // step, in both spellings of the header.
+    let mut odd = 0
+    for (i in 1..10 step 2) { odd += i }
+    if (odd != 25) { return fail("1..10 step 2 sums the odds") }
+    let mut threes = 0
+    for i in 0..<10 step 3 { threes += 1 }
+    if (threes != 4) { return fail("0..<10 step 3 is 0, 3, 6, 9") }
+    let mut exact = 0
+    for i in 0..9 step 3 { exact += i }
+    if (exact != 18) { return fail("0..9 step 3 reaches 9") }
+    let stride = 4
+    let mut strided = 0
+    for i in 0..<16 step stride { strided += 1 }
+    if (strided != 4) { return fail("a computed step") }
+    let zero = 0
+    let mut never = 0
+    for i in 0..<10 step zero { never += 1 }
+    if (never != 0) { return fail("a zero step runs no times") }
+
+    // The largest Int ends the loop instead of wrapping past it.
+    let mut edge = 0
+    for i in 2147483645..2147483647 { edge += 1 }
+    if (edge != 3) { return fail("an end of Int.max") }
+    let mut edgeStep = 0
+    for i in 2147483640..2147483647 step 5 { edgeStep += 1 }
+    if (edgeStep != 2) { return fail("a step past Int.max") }
+
+    // repeat
+    let mut r = 0
+    repeat(4) { r += 1 }
+    if (r != 4) { return fail("repeat(4)") }
+    repeat(0) { r += 100 }
+    if (r != 4) { return fail("repeat(0)") }
+    let mut outerCount = 0
+    repeat(3) {
+        repeat(2) { outerCount += 1 }
+    }
+    if (outerCount != 6) { return fail("nested repeat") }
+
+    // else if
+    if (classify(-5) != 1 or classify(0) != 2 or classify(7) != 3 or classify(12) != 4) {
+        return fail("an else-if chain")
+    }
+    if (nestedIf(1, 1) != 1 or nestedIf(1, 0) != 2 or nestedIf(1, -1) != 3
+            or nestedIf(0, 0) != 4 or nestedIf(-1, 0) != 5) {
+        return fail("nested if inside else-if")
+    }
+    if (grade(95).equals("A") == false or grade(85).equals("B") == false
+            or grade(10).equals("C") == false) {
+        return fail("an else-if chain returning a String")
+    }
+
+    // Labels on every kind of loop.
+    let mut visits = 0
+    outer@ for i in 0..<4 {
+        for j in 0..<4 {
+            if (j == 2) { continue@outer }
+            if (i == 3) { break@outer }
+            visits += 1
+        }
+    }
+    if (visits != 6) { return fail("break@ and continue@ on for") }
+
+    let mut w = 0
+    search@ while (w < 10) {
+        w += 1
+        loop {
+            if (w == 4) { break@search }
+            break
+        }
+    }
+    if (w != 4) { return fail("break@ out of a loop into a while") }
+
+    let mut rep = 0
+    top@ repeat(5) {
+        rep += 1
+        repeat(5) {
+            if (rep == 3) { break@top }
+        }
+    }
+    if (rep != 3) { return fail("break@ on repeat") }
+
+    let mut pairs = 0
+    rows@ for a in countdown(3) {
+        for b in countdown(3) {
+            if (b == 0) { continue@rows }
+            pairs += 1
+        }
+    }
+    if (pairs != 6) { return fail("continue@ on an Iterator loop") }
+
+    let mut spins = 0
+    forever@ loop {
+        spins += 1
+        while (true) {
+            if (spins == 3) { break@forever }
+            continue@forever
+        }
+    }
+    if (spins != 3) { return fail("continue@ and break@ on loop") }
+
+    println("PASS: ranges, step, repeat, else if, labels")
+    return 0
+}

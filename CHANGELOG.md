@@ -2,7 +2,52 @@
 
 ## Unreleased
 
+### Changed
+
+- **`a..b` now includes its end; `a..<b` is the one that stops before it.**
+  Breaking: `for i in 0..n` used to run `0` to `n - 1` and now runs `0` to `n`.
+  Write `0..<n` for the old meaning. Slices follow the same rule --
+  `s[1..3]` is three elements and `s[1..<3]` two -- and the runtime's
+  out-of-range message prints the bound it checked as `[a..<b]`. Every program
+  in `tests/` was migrated and emits the IR it did before, apart from the end
+  moving out of the loop header (below).
+- **A range loop reads its end once.** The start, end and step are evaluated
+  before the first test, in that order, where the end used to be re-read every
+  iteration: `for i in 0..<v.length` no longer calls `length` per iteration, and
+  `for c in s` computes `s.length` once instead of per character.
+
 ### Added
+
+- **Colour in the terminal: `\e`, `\xHH`, `\u{...}` and `std.term`.** There was
+  no way to write ESC in a literal, so no program could print in colour. A string
+  now takes `\e` (ESC), `\xHH` (one byte) and `\u{1F600}` (a Unicode scalar,
+  written as UTF-8); a Char takes `\e` and `\xHH`. `std.term` styles text as
+  String methods -- 16 foreground colours, 9 backgrounds, `rgb`/`onRgb`,
+  256-colour `color`/`onColor`, `bold`, `dim`, `italic`, `underline`, `inverse`,
+  `strikethrough` -- each closing with its own reset so styles nest.
+  `.plain()` strips the sequences, `colorEnabled()` asks whether stdout shows
+  them (`NO_COLOR`, `TERM=dumb`, not a terminal), and `.forTerminal()` strips
+  them when it does not. On Windows, asking enables escape processing in a
+  legacy console. Every method allocates its own result, so
+  `"x".red().bold()` releases its intermediate. tests/test_168, neg_170, neg_171.
+- **`step`, `repeat`, labels, and `for` over everything.**
+  - `for i in 0..<n step 2`: a positive step, literal or computed. A literal
+    step of zero or less is refused; a computed one runs the loop no times.
+    Ranges ending at `Int.max` stop there instead of wrapping.
+  - The `for` header may be parenthesised: `for (x in 1..10 step 2) { }`.
+  - `repeat(n) { }` runs its body `n` times. `repeat` stays an ordinary name --
+    `"ab".repeat(3)` is unaffected.
+  - `outer@ for ...`, `outer@ while`, `outer@ loop`, `outer@ repeat(n)`, with
+    `break@outer` and `continue@outer` from any depth. A label no enclosing loop
+    carries, a label that shadows an enclosing one, and `break`/`continue`
+    outside any loop are errors -- the last was previously caught only by
+    accident, as unreachable code.
+  - `for ... in` takes arrays, `Slice<T>` and `Map<K, V>` (its keys in
+    insertion order) besides String, Vec and `Iterator` types, and
+    `for (i, x) in v` / `for (k, v) in m` names the index or value too. The
+    collection may be any expression -- `for line in text.lines()` binds it
+    first -- where it had to be a name.
+  - tests/test_165, test_166, neg_166..169.
 
 - **`Array<T, N>`: an array whose length is written.** `let m: Array<U32, 16>`
   is sixteen zeroed slots, zeroed where the `let` runs (so again on every
@@ -192,6 +237,20 @@
   bitcode with a linker warning nobody read.
 
 ### Fixed
+
+- **A function returning a String could not end in an `if`/`else` whose every
+  branch returns.** The join after the chain is unreachable, and codegen closed
+  it with `ret <String> 0`, which LLVM rejects: the build failed with "Function
+  return type does not match operand type of return inst!". It is now
+  `unreachable`, for every return type. Found by a docs example.
+  tests/test_165.
+- **A struct on the frame released none of its fields.** `Bag { items: [] }`
+  leaked the Vec whenever AIF kept `Bag` on the stack: nothing owned a value
+  written straight into a field. Such a value now gets a hidden scope-exit
+  owner, and where the type's fields are the release point AIF assumes, a frame
+  struct's drop releases them. tests/test_167_frame_struct_fields leaked 22 of
+  28 and now 1, with zero violations; test_149 went from 4 leaked to 0. Four
+  field shapes still leak and are listed in KNOWN_ISSUES.md.
 
 - **The compiler no longer depends on an installed LLVM, and neither does a
   package.** `tools/setup_llvm.py` downloads the pinned LLVM 23.1.1, verifies

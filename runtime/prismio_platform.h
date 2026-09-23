@@ -19,6 +19,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
 #include <process.h>
 #include <windows.h>
 #define PRISMIO_GETPID _getpid

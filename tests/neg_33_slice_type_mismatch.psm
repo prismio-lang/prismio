@@ -2,7 +2,7 @@
 fn main() -> Int {
     let mut values: Vec<Int> = list_new()
     list_push(values, 1)
-    let view = values[0..1]
+    let view = values[0..<1]
     slice_set(view, 0, "wrong")
     return 0
 }

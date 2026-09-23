@@ -29,7 +29,7 @@ public extern fn compiler_default_exe_path(sourcePath: String) -> String produce
 to return String returns something a release can take -- and it is what makes
  `produce` true here rather than nearly true.
 */
-public extern fn compiler_runtime_source_hash() -> String produce(free)
+public extern fn compiler_runtime_source_hash() -> String produce (free )
 
 /** `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
  property of the triple, which is why it is not in the target record: two hosts
@@ -50,52 +50,59 @@ public extern fn ir_llvm_version() -> String alias
 // Prismio targets one LLVM major, and the C API is not stable across them.
 let PRISMIO_VERSION = "0.1.0"
 
-private fn printUsage() {
-    println("Usage:")
-    println("")
-    println("Project commands -- these read build.ums, found at or above the")
-    println("working directory, and write to .prismio/build/<profile>/:")
-    println("  prismio init [name]              start a project here, or in a new directory")
-    println("  prismio build [--release]        build every target")
-    println("  prismio run [--release]          build, then run the executable target")
-    println("  prismio test [--release]         build and run every test target")
-    println("  prismio clean [--release]        remove this profile's build output")
-    println("  prismio <name> [args...]         run a command the manifest declares")
-    println("")
-    println("Single-file commands -- these name a source and need no manifest:")
-    println("  prismio build [source.psm] [-o output.exe] [-g] [--verify]")
-    println("                [--overflow-checks] [--target <triple>] [--sysroot <sdk>]")
-    println("  prismio run <source.psm> [-o output.exe] [-g] [--verify] [--jit]")
-    println("                [--overflow-checks]")
-    println("  prismio check <source.psm> [--diagnostic-format=json]")
-    println("  prismio bootstrap [source.psm] [-o output.exe] [-g]")
-    println("  prismio runtime-hash")
-    println("  prismio dump-ast <source.psm>")
-    println("  prismio aif <source.psm> [--manifest] [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]")
-    println("                            [--target <triple>]")
-    println("  prismio aif <source.psm> --why=<ID|symbol>   explain one allocation decision")
-    println("  prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate")
-    println("")
-    println("-g emits DWARF: line tables, functions, scopes, locals and struct")
-    println("   layouts, so the program can be run under lldb or gdb. It also drops")
-    println("   the object step to -O0, because a variable folded into a register is")
-    println("   a variable a debugger cannot show you. Distinct from --debug, which")
-    println("   is the analysis level and says nothing about debug info.")
-    println("")
-    println("--target takes an LLVM target triple -- x86_64-apple-macos,")
-    println("   aarch64-linux-android, x86_64-pc-windows-msvc,")
-    println("   x86_64-unknown-linux-gnu, wasm32-unknown-unknown. LLVM validates")
-    println("   it and answers with the pointer width and data layout, so there")
-    println("   is no list of supported targets to fall out of date. --sysroot")
-    println("   points clang at that target's SDK, and a cross build links")
-    println("   runtime-<triple> rather than the host's runtime.")
-    println("")
-    println("build/run link against the installed Prismio runtime only.")
-    println("A project command is the same command with no source named: `prismio build`")
-    println("builds the project, `prismio build main.psm` builds one file.")
-    println("bootstrap builds the compiler itself from the repository sources,")
-    println("linking the compiler backend and the LLVM C API it calls.")
-}
+let USAGE =
+"""
+Usage:
+
+Project commands -- these read build.ums, found at or above the
+working directory, and write to .prismio/build/<profile>/:
+  prismio init [name]              start a project here, or in a new directory
+  prismio build [--release]        build every target
+  prismio run [--release]          build, then run the executable target
+  prismio test [--release]         build and run every test target
+  prismio clean [--release]        remove this profile's build output
+  prismio <name> [args...]         run a command the manifest declares
+
+Single-file commands -- these name a source and need no manifest:
+
+  prismio build [source.psm] [-o output.exe] [-g] [--verify]
+                [--overflow-checks] [--target <triple>] [--sysroot <sdk>]
+
+  prismio run <source.psm> [-o output.exe] [-g] [--verify] [--jit]
+                           [--overflow-checks]
+
+  prismio check <source.psm> [--diagnostic-format=json]
+  prismio bootstrap [source.psm] [-o output.exe] [-g]
+  prismio runtime-hash
+  prismio dump-ast <source.psm>
+  prismio aif <source.psm> [--manifest] [--summary] [--layout] [--copyable-collections] [--theta-fields] [--budget=N]
+                           [--target <triple>]
+
+  prismio aif <source.psm> --why=<ID|symbol>   explain one allocation decision
+  prismio build|aif <source.psm> --force-layout=<Type>:<hot>   emit a named layout candidate
+
+      -g emits DWARF: line tables, functions, scopes, locals and struct
+      layouts, so the program can be run under lldb or gdb. It also drops
+      the object step to -O0, because a variable folded into a register is
+      a variable a debugger cannot show you. Distinct from --debug, which
+      is the analysis level and says nothing about debug info.
+
+      --target takes an LLVM target triple -- x86_64-apple-macos,
+      aarch64-linux-android, x86_64-pc-windows-msvc,
+      x86_64-unknown-linux-gnu, wasm32-unknown-unknown. LLVM validates
+      it and answers with the pointer width and data layout, so there
+      is no list of supported targets to fall out of date. --sysroot
+      points clang at that target's SDK, and a cross build links
+      runtime-<triple> rather than the host's runtime.
+
+    build/run link against the installed Prismio runtime only.
+    A project command is the same command with no source named: `prismio build`
+    builds the project, `prismio build main.psm` builds one file.
+    bootstrap builds the compiler itself from the repository sources,
+    linking the compiler backend and the LLVM C API it calls.
+"""
+
+private fn printUsage() { println(USAGE) }
 
 // LAYOUT 8's forced candidate: `--force-layout=<Type>:<hot>`.
 //
@@ -393,9 +400,10 @@ private fn cliBootstrap() -> Int {
 }
 
 fn main() -> Int {
-    let mut path = ""
-    let mut outputFile = ""
-    let mut command = ""
+    let mut path: String
+    let mut outputFile: String
+    let mut command: String
+
     let mut runAfterBuild = false
     let mut bootstrapMode = false
     let mut verifyMode = false

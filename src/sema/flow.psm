@@ -13,14 +13,15 @@ import lexer.token
 import ast.types
 import ir.bridge
 import common.diagnostics
+import std.string
 
 public extern fn exit(code: Int)
 
 // --- structured control-flow analysis ---------------------------------------
 //
-// Prismio's control flow is fully structured -- no goto, no labeled break -- so
-// "can control fall out of the bottom of this statement?" is answerable from the
-// AST alone, without building a CFG. That is what definite-return and
+// Prismio's control flow is fully structured -- no goto, and a labelled break
+// can only leave loops that enclose it -- so "can control fall out of the bottom
+// of this statement?" is answerable from the AST alone, without building a CFG. That is what definite-return and
 // unreachable-code checking need.
 //
 // Both answers are deliberately conservative in the safe direction: when in
@@ -35,8 +36,9 @@ private fn semaBlockHasBreak(block: ASTNode) -> Bool {
 
         if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
 
-        // Nested loops own their own breaks, but descending into them anyway
-        // only makes this more conservative, never less.
+        // Nested loops own their own unlabelled breaks, but a `break@outer`
+        // inside one leaves this loop too. Descending into them counts both, and
+        // is conservative about the first kind rather than wrong about the second.
         if (stmt.kind == NodeKind.IF_STATEMENT) {
             if (semaIfHasBreak(stmt)) { return true }
         }
@@ -117,4 +119,86 @@ internal fn semaBlockDiverges(block: ASTNode) -> Bool {
         stmtPtr = stmt.next
     }
     return false
+}
+
+// --- jumps -------------------------------------------------------------------
+//
+// `break` and `continue` outside any loop, and a label that no enclosing loop
+// carries. Checked over the statement tree before the body is typed, because
+// both are properties of where a jump is written rather than of any type.
+//
+// `labels` holds the enclosing loops' labels, each with a space on both sides,
+// so looking one up cannot match a prefix of another. A closure's body is an
+// expression and is never entered here: it is checked as its own function,
+// where a `break` has no loop around it.
+
+internal fn semaCheckJumps(body: ASTNode) {
+    semaCheckJumpsIn(body, " ", 0)
+}
+
+private fn semaCheckJumpsIn(block: ASTNode, labels: String, depth: Int) {
+    let mut p = block.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        semaCheckJumpsAt(stmt, labels, depth)
+        p = stmt.next
+    }
+}
+
+private fn semaCheckJumpsAt(stmt: ASTNode, labels: String, depth: Int) {
+    if (stmt.kind == NodeKind.BREAK_STATEMENT or stmt.kind == NodeKind.CONTINUE_STATEMENT) {
+        let mut word = "break"
+        if (stmt.kind == NodeKind.CONTINUE_STATEMENT) { word = "continue" }
+        if (depth == 0) {
+            semaErrorAt(stmt, "`".concat(word, "` is only valid inside a loop"))
+            return
+        }
+        if (stmt.s1.equals("") == false and labels.contains(" ".concat(stmt.s1, " ")) == false) {
+            semaErrorAt(stmt, "no enclosing loop is labelled ".concat(diagQuote(stmt.s1)))
+            diag_note("a label is written on the loop it names: `".concat(stmt.s1, "@ for i in 0..<n { ... }`"))
+        }
+        return
+    }
+
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        semaCheckJumpsIn(ptr_to_node(stmt.child2), labels, depth)
+        if (nodeIsNull(stmt.child3)) { return }
+        let elseNode = ptr_to_node(stmt.child3)
+        if (elseNode.kind == NodeKind.IF_STATEMENT) {
+            semaCheckJumpsAt(elseNode, labels, depth)
+        } else {
+            semaCheckJumpsIn(elseNode, labels, depth)
+        }
+        return
+    }
+
+    if (stmt.kind == NodeKind.WHILE_STATEMENT or stmt.kind == NodeKind.LOOP_STATEMENT
+            or stmt.kind == NodeKind.FOR_STATEMENT) {
+        let body = ptr_to_node(loopBodyOf(stmt))
+        if (body.s1.equals("")) {
+            semaCheckJumpsIn(body, labels, depth + 1)
+            return
+        }
+        // Shadowing a label would make `break@outer` in the inner loop mean the
+        // nearer one, silently; a reader would take it for the outer.
+        if (labels.contains(" ".concat(body.s1, " "))) {
+            semaErrorAt(stmt, "the label ".concat(diagQuote(body.s1), " is already used by a loop around this one"))
+        }
+        semaCheckJumpsIn(body, labels.concat(body.s1, " "), depth + 1)
+        return
+    }
+
+    if (stmt.kind == NodeKind.REGION_STATEMENT) {
+        semaCheckJumpsIn(ptr_to_node(stmt.child1), labels, depth)
+        return
+    }
+
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        let mut armPtr = stmt.child2
+        while (nodeExists(armPtr)) {
+            let arm = ptr_to_node(armPtr)
+            semaCheckJumpsIn(ptr_to_node(arm.child2), labels, depth)
+            armPtr = arm.next
+        }
+    }
 }

@@ -1,6 +1,7 @@
 // Statements: blocks, control flow, assignment.
 
 import lexer.token
+import lexer.scanner
 import common.text
 import ast.nodes
 import common.diagnostics
@@ -120,13 +121,60 @@ private fn parseRegionStatement(p: Parser) -> ASTNode {
     return regionNode
 }
 
+// The token after the one the parser is looking at, and the one after that.
+private fn parserPeekSecond(p: Parser) -> Token {
+    let next = p.peek()
+    return ptr_to_token(next.tokNext)
+}
+
+// `(key, value)` in a `for` header. The names land in `s1` and `s2`; which one
+// is the index, the key or the element is sema's question, because it depends
+// on what is being iterated.
+private fn parseForPair(p: Parser, forNode: ASTNode) {
+    p.expectVal(TokenType.SEPARATOR, "(", "for loop pair")
+    let first = p.current()
+    forNode.s1 = first.value
+    p.expectToken(TokenType.IDENTIFIER, "for loop variable")
+    p.expectVal(TokenType.SEPARATOR, ",", "for loop pair")
+    let second = p.current()
+    forNode.s2 = second.value
+    p.expectToken(TokenType.IDENTIFIER, "for loop variable")
+    p.expectVal(TokenType.SEPARATOR, ")", "for loop pair")
+}
+
+// `for i in 1..10`, `for i in 0..<n step 2`, `for c in s`, `for (k, v) in m`,
+// and each of those with the header in parentheses: `for (i in 1..10) { }`.
+//
+// The shape a range leaves behind:
+//
+//     child1   the start
+//     child2   the end, then the step when one was written, as one chain
+//     child3   the body
+//     i1       1 when the end is included (`..`), 0 when it is not (`..<`)
+//
+// The step rides on the end's `next` rather than taking a slot of its own
+// because an ASTNode has three children and a `for` already fills them. A chain
+// is also what every walk that visits a child slot already follows.
 private fn parseForStatement(p: Parser) -> ASTNode {
     p.expectVal(TokenType.KEYWORD, "for", "for statement")
     let forNode = p.node(NodeKind.FOR_STATEMENT)
 
-    let name = p.current()
-    forNode.s1 = name.value
-    p.expectToken(TokenType.IDENTIFIER, "for loop variable")
+    // `for (a, b) in m` opens with a parenthesis too, and is the pair rather than
+    // a wrapped header when a comma follows the first name.
+    let mut wrapped = false
+    if (p.checkVal(TokenType.SEPARATOR, "(")) {
+        let second = parserPeekSecond(p)
+        wrapped = (second.type == TokenType.SEPARATOR and second.value.equals(",")) == false
+    }
+    if (wrapped) { p.advance() }
+
+    if (p.checkVal(TokenType.SEPARATOR, "(")) {
+        parseForPair(p, forNode)
+    } else {
+        let name = p.current()
+        forNode.s1 = name.value
+        p.expectToken(TokenType.IDENTIFIER, "for loop variable")
+    }
     p.expectVal(TokenType.KEYWORD, "in", "for ... in")
 
     // Otherwise `for i in 0..n { ... }` reads `n { ... }` as a struct literal and
@@ -134,17 +182,116 @@ private fn parseForStatement(p: Parser) -> ASTNode {
     p.allowStructLit = 0
     forNode.child1 = node_to_ptr(parseExpression(p, 0))
 
-    // v0.1 3.6. `..` is what separates the two loops, and its absence is what
-    // says this is `for c in s` over a collection rather than `for i in 0..n`
-    // over a range. An absent `child2` is the whole marker: no flag, and the two
-    // forms cannot be confused because a range always has both bounds.
+    // v0.1 3.6. A range operator is what separates the two loops, and its
+    // absence is what says this is `for c in s` over a collection rather than
+    // `for i in 0..n` over a range. An absent `child2` is the whole marker: the
+    // two forms cannot be confused because a range always has both bounds.
+    let rangeOp = p.current()
     if (p.matchToken(TokenType.RANGE)) {
-        forNode.child2 = node_to_ptr(parseExpression(p, 0))
+        if (rangeOp.value.equals("..")) { forNode.i1 = 1 }
+        let end = parseExpression(p, 0)
+
+        // Contextual, like `pin`: `step` stays an ordinary name everywhere else,
+        // and here nothing else may follow an end.
+        if (p.checkVal(TokenType.IDENTIFIER, "step")) {
+            p.advance()
+            end.next = node_to_ptr(parseExpression(p, 0))
+        }
+        forNode.child2 = node_to_ptr(end)
+    } else if (p.checkVal(TokenType.IDENTIFIER, "step")) {
+        p.fatal("`step` needs a range to count through, such as `0..<n step 2`")
     }
     p.allowStructLit = 1
 
+    if (wrapped) { p.expectVal(TokenType.SEPARATOR, ")", "for header") }
+
     forNode.child3 = node_to_ptr(parseBlock(p))
     return forNode
+}
+
+// `repeat(n) { ... }` at the start of a statement. Contextual rather than a
+// keyword, because `"ab".repeat(3)` is a String method and must stay one: this
+// form is recognised only where a statement begins with `repeat`, a
+// parenthesised count, and a block -- a shape no call can take, since Prismio has
+// no bare block statement for a call to be followed by.
+private fn atRepeatStatement(p: Parser) -> Bool {
+    if (p.checkVal(TokenType.IDENTIFIER, "repeat") == false) { return false }
+    let open = p.peek()
+    if (open.type != TokenType.SEPARATOR or open.value.equals("(") == false) { return false }
+
+    let mut depth = 0
+    let mut at = open.tokNext
+    loop {
+        let tok = ptr_to_token(at)
+        if (tok.type == TokenType.EOF) { return false }
+        if (tok.type == TokenType.SEPARATOR and tok.value.equals("(")) { depth = depth + 1 }
+        if (tok.type == TokenType.SEPARATOR and tok.value.equals(")")) {
+            if (depth == 0) {
+                let after = ptr_to_token(tok.tokNext)
+                return after.type == TokenType.SEPARATOR and after.value.equals("{")
+            }
+            depth = depth - 1
+        }
+        at = tok.tokNext
+    }
+}
+
+// `repeat(n) { body }` is `for $repeat in 0..<n { body }`: the count is read once,
+// and the counter has a name no source can spell, so the body cannot see it or
+// collide with it. Named after the position so that nested repeats each have
+// their own.
+private fn parseRepeatStatement(p: Parser) -> ASTNode {
+    let forNode = p.node(NodeKind.FOR_STATEMENT)
+    forNode.s1 = "$repeat_".concat(forNode.line.toString(), "_", forNode.col.toString())
+    p.advance()
+
+    p.expectVal(TokenType.SEPARATOR, "(", "repeat count")
+    let zero = p.node(NodeKind.LITERAL_EXPR)
+    zero.i1 = TokenType.NUMBER_LITERAL
+    zero.s1 = "0"
+    forNode.child1 = node_to_ptr(zero)
+    forNode.child2 = node_to_ptr(parseExpression(p, 0))
+    p.expectVal(TokenType.SEPARATOR, ")", "repeat count")
+
+    forNode.child3 = node_to_ptr(parseBlock(p))
+    return forNode
+}
+
+// The loop a label names.
+private fn parseLoopKind(p: Parser) -> ASTNode {
+    if (p.checkVal(TokenType.KEYWORD, "while")) { return parseWhileStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "loop")) { return parseLoopStatement(p) }
+    if (p.checkVal(TokenType.KEYWORD, "for")) { return parseForStatement(p) }
+    if (atRepeatStatement(p)) { return parseRepeatStatement(p) }
+    p.fatal("a label names a loop; expected `for`, `while`, `loop` or `repeat` after it, found ".concat(parserDescribe(p.current())))
+    return parseLoopStatement(p)
+}
+
+// `outer@ for ... { }`. The label is kept on the loop's body block, in `s1`,
+// which a BLOCK does not otherwise use: every loop kind has a body, and every
+// rewrite a loop goes through later -- `for x in it` becoming a `while` among
+// them -- keeps the body it was given, so the label cannot be lost on the way.
+private fn parseLabeledLoop(p: Parser) -> ASTNode {
+    let label = p.current()
+    p.advance()
+    p.expectVal(TokenType.SEPARATOR, "@", "loop label")
+    let loopNode = parseLoopKind(p)
+    let body = ptr_to_node(loopBodyOf(loopNode))
+    body.s1 = label.value
+    return loopNode
+}
+
+// `break@outer` and `continue@outer`. The label has to be on the same line as
+// the keyword: a statement ends at the line, so anything on the next line is
+// the next statement.
+private fn parseJumpLabel(p: Parser, jump: ASTNode, keyword: Token) {
+    let at = p.current()
+    if (at.type != TokenType.SEPARATOR or at.value.equals("@") == false) { return }
+    if (at.line != keyword.line) { return }
+    p.advance()
+    let label = p.current()
+    jump.s1 = label.value
+    p.expectToken(TokenType.IDENTIFIER, "loop label")
 }
 
 private fn parseMatchArm(p: Parser) -> ASTNode {
@@ -237,17 +384,30 @@ private fn parseStatement(p: Parser) -> ASTNode {
     if (p.checkVal(TokenType.KEYWORD, "for")) { return parseForStatement(p) }
     if (p.checkVal(TokenType.KEYWORD, "region")) { return parseRegionStatement(p) }
     if (p.checkVal(TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
+    if (atRepeatStatement(p)) { return parseRepeatStatement(p) }
 
     // Held before anything is consumed: every node built below is built *after*
     // its own text has been parsed, so `parserCurrent` is by then the token that
     // follows the statement.
     let first = p.current()
 
+    if (first.type == TokenType.IDENTIFIER) {
+        let after = p.peek()
+        if (after.type == TokenType.SEPARATOR and after.value.equals("@")) {
+            return parseLabeledLoop(p)
+        }
+    }
+
+    // A label, when there is one, is in `s1`.
     if (p.matchVal(TokenType.KEYWORD, "break")) {
-        return parserNodeFrom(NodeKind.BREAK_STATEMENT, first)
+        let jump = parserNodeFrom(NodeKind.BREAK_STATEMENT, first)
+        parseJumpLabel(p, jump, first)
+        return jump
     }
     if (p.matchVal(TokenType.KEYWORD, "continue")) {
-        return parserNodeFrom(NodeKind.CONTINUE_STATEMENT, first)
+        let jump = parserNodeFrom(NodeKind.CONTINUE_STATEMENT, first)
+        parseJumpLabel(p, jump, first)
+        return jump
     }
     if (p.matchVal(TokenType.KEYWORD, "return")) {
         return parseReturnStatement(p)

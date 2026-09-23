@@ -1,0 +1,5 @@
+// expect-error: a label names a loop; expected `for`, `while`, `loop` or `repeat` after it
+fn main() -> Int {
+    outer@ if (true) { return 1 }
+    return 0
+}

@@ -327,15 +327,18 @@ private fn generateFunction(func: ASTNode) {
 
     ir_scope_pop()
 
+    // A value-returning function reaches here only through a block nothing
+    // enters: sema refused it unless every path returns, so what is left is the
+    // join after an `if` whose branches all did. `ret <T> 0` there was invalid
+    // IR for any T that is not a number -- `0` is not a String -- and the module
+    // failed verification.
     if (ir_has_returned() == 0) {
         if (retSigType.equals("void")) {
             ir_ret_void()
+        } else if (isMain == 1) {
+            ir_ret("i32", "0")
         } else {
-            if (isMain == 1) {
-                ir_ret("i32", "0")
-            } else {
-                ir_ret(retSigType, "0")
-            }
+            ir_unreachable()
         }
     }
 
@@ -1299,6 +1302,86 @@ private fn generatedFieldRelease(tname: String, field: ASTNode) -> Int {
     return disp
 }
 
+// One field's release, out of the object at `current`. Shared by the generated
+// release for a heap object and the fields-only one for a struct on the frame,
+// so the two cannot disagree about what a field owns.
+//
+// `tailSelf` is the field the heap release turns into its loop continuation
+// instead of a call; that field is loaded and handed back rather than released.
+// Anything else answers "".
+private fn generateOwnedFieldRelease(tname: String, field: ASTNode, current: String,
+                                     tailSelf: Bool) -> String {
+    // An inline field is storage inside this object, not a pointer to
+    // one, so there is nothing to release and the address is interior --
+    // handing it to a deallocator would be a free of the middle of our
+    // own allocation. The registry is asked rather than AIF because the
+    // registry is what decided the layout. Inline implies plain data
+    // (structIsPod), so there is never a nested release to run either.
+    //
+    // **A fat `String` is the exception, and excluding it is the fix for
+    // a leak this veto caused.** `String` is `struct:prismio.str`, a
+    // `{ptr, i64}` that does live in the object's own storage -- so it
+    // matches isStructTypeKey and was vetoed with the inline structs.
+    // But the half that is a pointer owns a heap buffer, so "inline
+    // implies plain data" is true of a user struct and false of this one:
+    // `struct Thing { name: String }` in a container leaked one buffer
+    // per element, and UMS -- whose models are almost entirely `strClone`d
+    // String fields -- leaked 1475 of 2112 allocations.
+    let disp = generatedFieldRelease(tname, field)
+    if (disp == AIF_ELEM_NONE) { return "" }
+    let idx = ir_get_struct_field_index(tname, field.s1)
+    let slot = ir_struct_field_ptr(tname, current, idx)
+    if (isFatStringKey(ir_get_struct_field_type(tname, field.s1))) {
+        // **A String field is released as the whole pair.** Loaded as a
+        // `ptr` it is field 0 alone, which for an inline string is its
+        // text, and ir_free_object freed whatever address those bytes
+        // spell -- a list of `struct { name: String }` built with short
+        // names released 0x30, 0x31 and 0x32 at teardown. Given the pair,
+        // ir_release_call reads the tag and skips an inline or view form.
+        ir_free_object(ir_get_temp_name(ir_struct_load_ptr("struct:prismio.str",
+            ir_get_temp_name(slot), tname, idx)))
+        return ""
+    }
+    let loaded = ir_struct_load_ptr("ptr", ir_get_temp_name(slot), tname, idx)
+    let value = ir_get_temp_name(loaded)
+    if (disp == AIF_ELEM_TYPED and tailSelf) { return value }
+    let ftype = ptr_to_node(field.child1)
+    generateReleaseByDisposition(value, disp, ftype.s1)
+    return ""
+}
+
+// Releases a value a field owned, by the disposition AIF gave the field.
+internal fn generateReleaseByDisposition(value: String, disp: Int, typedName: String) {
+    if (disp == AIF_ELEM_LIST) {
+        ir_free_list(value)
+    } else if (disp == AIF_ELEM_RC or disp == AIF_ELEM_CYCLE) {
+        // AIF_ELEM_CYCLE pairs with AIF_ELEM_RC exactly as
+        // CYCLE_ATOMIC pairs with RC_ATOMIC below: a field on a cyclic
+        // edge gets the *count* decremented and nothing else, because
+        // collector registration is the container's business.
+        //
+        // **Unreachable until M2.1a, and it fell into the plain
+        // ir_free_object below.** A CYCLE disposition can only arise
+        // on a field that re-enters its owner's type, and
+        // field_closes_cycle vetoed every one of those -- so removing
+        // that veto turned this missing branch into a double free of
+        // a collected object. test_52 reported 8 violations, which is
+        // the whole reason its counts are asserted.
+        ir_free_rc(value)
+    } else if (disp == AIF_ELEM_RC_ATOMIC or disp == AIF_ELEM_CYCLE_ATOMIC) {
+        // AIF T4a. The same decrement through the atomic entry
+        // point. CYCLE_ATOMIC lands here too and gets only the
+        // count: collector registration is a container's business
+        // (list_release drives cyc_release), and a struct field is
+        // not a container.
+        ir_free_rc_atomic(value)
+    } else if (disp == AIF_ELEM_TYPED) {
+        ir_free_typed(value, releaseFnName(typedName))
+    } else {
+        ir_free_object(value)
+    }
+}
+
 // Emits one release per owned field, then frees the object.
 //
 // **Reverse declaration order**, as everywhere else a scope unwinds: a later
@@ -1363,74 +1446,11 @@ private fn generateReleaseFn(structNode: ASTNode) {
     while (i >= 0) {
         let field = nthStructField(structNode, i)
         if (nodeExists(node_to_ptr(field))) {
-            // An inline field is storage inside this object, not a pointer to
-            // one, so there is nothing to release and the address is interior --
-            // handing it to a deallocator would be a free of the middle of our
-            // own allocation. The registry is asked rather than AIF because the
-            // registry is what decided the layout. Inline implies plain data
-            // (structIsPod), so there is never a nested release to run either.
-            //
-            // **A fat `String` is the exception, and excluding it is the fix for
-            // a leak this veto caused.** `String` is `struct:prismio.str`, a
-            // `{ptr, i64}` that does live in the object's own storage -- so it
-            // matches isStructTypeKey and was vetoed with the inline structs.
-            // But the half that is a pointer owns a heap buffer, so "inline
-            // implies plain data" is true of a user struct and false of this one:
-            // `struct Thing { name: String }` in a container leaked one buffer
-            // per element, and UMS -- whose models are almost entirely `strClone`d
-            // String fields -- leaked 1475 of 2112 allocations.
-            let disp = generatedFieldRelease(tname, field)
-            if (disp != AIF_ELEM_NONE
-                    and isFatStringKey(ir_get_struct_field_type(tname, field.s1))) {
-                // **A String field is released as the whole pair.** Loaded as a
-                // `ptr` it is field 0 alone, which for an inline string is its
-                // text, and ir_free_object freed whatever address those bytes
-                // spell -- a list of `struct { name: String }` built with short
-                // names released 0x30, 0x31 and 0x32 at teardown. Given the pair,
-                // ir_release_call reads the tag and skips an inline or view form.
-                let idx = ir_get_struct_field_index(tname, field.s1)
-                let slot = ir_struct_field_ptr(tname, current, idx)
-                ir_free_object(ir_get_temp_name(ir_struct_load_ptr("struct:prismio.str",
-                    ir_get_temp_name(slot), tname, idx)))
-            } else if (disp != AIF_ELEM_NONE) {
-                let idx = ir_get_struct_field_index(tname, field.s1)
-                let slot = ir_struct_field_ptr(tname, current, idx)
-                let loaded = ir_struct_load_ptr("ptr", ir_get_temp_name(slot), tname, idx)
-                let value = ir_get_temp_name(loaded)
-                if (disp == AIF_ELEM_LIST) {
-                    ir_free_list(value)
-                } else if (disp == AIF_ELEM_RC or disp == AIF_ELEM_CYCLE) {
-                    // AIF_ELEM_CYCLE pairs with AIF_ELEM_RC exactly as
-                    // CYCLE_ATOMIC pairs with RC_ATOMIC below: a field on a cyclic
-                    // edge gets the *count* decremented and nothing else, because
-                    // collector registration is the container's business.
-                    //
-                    // **Unreachable until M2.1a, and it fell into the plain
-                    // ir_free_object below.** A CYCLE disposition can only arise
-                    // on a field that re-enters its owner's type, and
-                    // field_closes_cycle vetoed every one of those -- so removing
-                    // that veto turned this missing branch into a double free of
-                    // a collected object. test_52 reported 8 violations, which is
-                    // the whole reason its counts are asserted.
-                    ir_free_rc(value)
-                } else if (disp == AIF_ELEM_RC_ATOMIC or disp == AIF_ELEM_CYCLE_ATOMIC) {
-                    // AIF T4a. The same decrement through the atomic entry
-                    // point. CYCLE_ATOMIC lands here too and gets only the
-                    // count: collector registration is a container's business
-                    // (list_release drives cyc_release), and a struct field is
-                    // not a container.
-                    ir_free_rc_atomic(value)
-                } else if (disp == AIF_ELEM_TYPED and i != tailSelfIndex) {
-                    let ftype = ptr_to_node(field.child1)
-                    ir_free_typed(value, releaseFnName(ftype.s1))
-                } else if (disp != AIF_ELEM_TYPED) {
-                    ir_free_object(value)
-                }
-                // Last use in source order: assigning a String transfers it,
-                // and sema intentionally does not make that move path-sensitive.
-                if (disp == AIF_ELEM_TYPED and i == tailSelfIndex) {
-                    tailValue = value
-                }
+            let value = generateOwnedFieldRelease(tname, field, current, i == tailSelfIndex)
+            // Last use in source order: assigning a String transfers it,
+            // and sema intentionally does not make that move path-sensitive.
+            if (i == tailSelfIndex and value.equals("") == false) {
+                tailValue = value
             }
         }
         i = i - 1
@@ -1455,6 +1475,46 @@ private fn generateReleaseFn(structNode: ASTNode) {
     ir_label_numbered(doneLabel)
     ir_ret_void()
     ir_function_end()
+}
+
+// The fields-only release of a struct on the frame: what `__aif_release_T`
+// does, without freeing the object -- which is a stack slot, and so is its cold
+// half when the type is split. Defined only for the types a frame struct's drop
+// named (irFrameReleaseTypes), after every function, since only by then is it
+// known which those are.
+// Whether this build is the whole program rather than a library's PLIB, which
+// is the build that defines the type helpers above.
+internal fn irWholeProgram() -> Bool {
+    return compiler_library_emission_module().equals("")
+}
+
+internal fn frameReleaseFnName(typeName: String) -> String {
+    return "__aif_release_fields_".concat(typeName)
+}
+
+private fn generateFrameReleaseFns(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let structNode = ptr_to_node(p)
+        if (structNode.kind == NodeKind.STRUCT_DECL
+                and irFrameReleaseTypes.contains(";".concat(structNode.s1, ";"))) {
+            let tname = structNode.s1
+            ir_function_begin(frameReleaseFnName(tname), "void")
+            ir_function_param("ptr", "p_obj")
+            ir_function_body_start()
+            let mut i = irFieldCountOf(structNode) - 1
+            while (i >= 0) {
+                let field = nthStructField(structNode, i)
+                if (nodeExists(node_to_ptr(field))) {
+                    generateOwnedFieldRelease(tname, field, "%p_obj", false)
+                }
+                i = i - 1
+            }
+            ir_ret_void()
+            ir_function_end()
+        }
+        p = structNode.next
+    }
 }
 
 // CYCLES 4. The per-type function the collector is told about at construction:
@@ -1583,9 +1643,11 @@ private fn collectStringsStmt(stmt: ASTNode) {
         collectStringsChildBlock(stmt.child1)
     }
     if (stmt.kind == NodeKind.FOR_STATEMENT) {
-        // child1/child2 are the range bounds, child3 the body.
+        // child1/child2 are the range bounds, child3 the body. A step rides on
+        // the end's `next`.
         collectStringsChildExpr(stmt.child1)
         collectStringsChildExpr(stmt.child2)
+        if (nodeExists(stmt.child2)) { collectStringsChildExpr(ptr_to_node(stmt.child2).next) }
         collectStringsChildBlock(stmt.child3)
     }
     if (stmt.kind == NodeKind.MATCH_STATEMENT) {
@@ -1617,6 +1679,8 @@ private fn collectStringsFunction(func: ASTNode) {
 }
 
 public fn generateModule(module: ASTNode) {
+    irFrameReleaseTypes = ""
+    irFrameStructSlots = ""
     ir_reset_globals()
     ir_reset_types()
     ir_clear_var_types()
@@ -2353,6 +2417,7 @@ public fn generateModule(module: ASTNode) {
     // table that points at them.
     if (compiler_library_emission_module().equals("")) {
         generateVtables(module)
+        generateFrameReleaseFns(module)
     }
 
     // Before ir_module_end, and before ir_write_file's verifier runs: an

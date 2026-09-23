@@ -2449,14 +2449,14 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     if (irLoopPushGuard.equals("") == false) {
         let pushGuard = ir_get_temp_name(ir_load("i1", irLoopPushGuard))
         let fast = ir_get_temp_name(ir_list_flat_push(listVal, esize, pushGuard))
-        generateStructLiteralFields(valueNode, valueNode.s1, fast, true)
+        generateStructLiteralFields(valueNode, valueNode.s1, fast, true, false)
         return true
     }
     ir_call_begin()
     ir_call_arg("ptr", listVal)
     ir_call_arg("i32", strFromInt(esize))
     let slot = ir_get_temp_name(ir_call_end("ptr", "list_push_slot"))
-    generateStructLiteralFields(valueNode, valueNode.s1, slot, true)
+    generateStructLiteralFields(valueNode, valueNode.s1, slot, true, false)
     return true
 }
 
@@ -2618,7 +2618,46 @@ private fn scalarSpillToSlot(storeType: String, value: String) -> String {
     return "%".concat(slot)
 }
 
-private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String, listElement: Bool) {
+// A struct on the frame releases none of its fields, so an owned temporary
+// written into one had no owner: `Bag { items: [] }` leaked the Vec outright.
+// Named, the same value is released by its binding at the scope exit, and that
+// is what this gives it -- a hidden binding on the drop list, as `spawn` gives
+// its arguments. The facts that gate it are the ones the binding's own release
+// is gated by: aif_owns_call_result_at_node declines a value a container took,
+// or one a field the type releases will free.
+//
+// The questions, and their order, are a `let`'s (generateVariableDecl): whether
+// this node's value is freed at the scope exit, asked first because it is
+// answered per node where one allocation site backs many calls -- every
+// `concat` in a program is one site -- and then whether a call hands over
+// what it returns.
+internal fn spillOwnedFieldTemporary(init: ASTNode, value: String) {
+    let mut kind = 0 - 1
+    if (nodeGetType(init).kind == TypeKind.ARRAY) { return }
+    if (aif_frees_at_scope_node(node_to_ptr(init)) == 1) {
+        kind = dropKindOf(init)
+    } else if (irArgumentIsOwnedTemporary(init)) {
+        kind = irOwnedTemporaryKind(init)
+    }
+    if (kind < 0) { return }
+
+    let declType = getExprType(init)
+    let store = storageType(declType)
+    let name = "fieldtmp.".concat(strFromInt(irElemSpillCounter))
+    irElemSpillCounter = irElemSpillCounter + 1
+    // The binding assigns the slot its serial, so it has to come first -- the
+    // drop list looks for `name.N`, not `name`.
+    ir_set_var_type(name, declType)
+    let slot = ir_get_var_slot(name)
+    ir_alloca(store, slot)
+    ir_store(store, value, slot)
+    ir_mark_droppable(name, kind)
+}
+
+// `onFrame` is true for a literal AIF placed on the stack (T0): the one kind of
+// storage whose fields nothing will ever release.
+private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPtr: String,
+                                       listElement: Bool, onFrame: Bool) {
     // Every array field starts at zero, as `Array<T, N>` on its own does -- one
     // the literal names is then copied over, and LLVM drops the zeroing of it.
     let fieldCount = ir_get_struct_field_count(structName)
@@ -2645,7 +2684,8 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
             let init = ptr_to_node(field.child1)
             let innerName = structTypeName(fieldType)
             if (init.kind == NodeKind.STRUCT_LITERAL_EXPR) {
-                generateStructLiteralFields(init, innerName, ir_get_temp_name(slot), listElement)
+                generateStructLiteralFields(init, innerName, ir_get_temp_name(slot), listElement,
+                                            onFrame)
             } else {
                 // An inline field is the object's own storage, so this **copies**
                 // and the source keeps whatever ownership it had. Where the source
@@ -2668,7 +2708,9 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
                 }
             }
         } else {
-            let fieldVal = generateExpression(ptr_to_node(field.child1))
+            let init = ptr_to_node(field.child1)
+            let fieldVal = generateExpression(init)
+            if (onFrame) { spillOwnedFieldTemporary(init, fieldVal) }
             let slot = ir_struct_field_ptr(structName, destPtr, fieldIndex)
             // CYCLES 3. A cyclic edge is an edge the collector *traverses*, so it
             // has to be one the count knows about -- trial deletion subtracts
@@ -2782,7 +2824,7 @@ private fn generateStructLiteral(expr: ASTNode) -> String {
     if (expr.i3 == 2 and irReuseValue.equals("") == false) {
         let reused = irReuseValue
         irReuseValue = ""
-        generateStructLiteralFields(expr, structName, reused, false)
+        generateStructLiteralFields(expr, structName, reused, false, false)
         return reused
     }
 
@@ -2796,6 +2838,7 @@ private fn generateStructLiteral(expr: ASTNode) -> String {
     // behaviour exactly, because it is what makes SPEC 7.1's zero-analysis
     // mode behaviourally identical rather than merely intended to be.
     let mut allocTemp = 0
+    let mut onFrame = false
     if (aif_arena_at_node(node_to_ptr(expr)) == 1) {
         // T1 inside a `region` it cannot outlive: bump from the arena, and
         // the whole block goes back at the region's exit rather than one
@@ -2803,6 +2846,7 @@ private fn generateStructLiteral(expr: ASTNode) -> String {
         allocTemp = ir_alloc_region(structName)
     } else if (aif_tier_at_node(node_to_ptr(expr)) == AIF_TIER_T0) {
         allocTemp = ir_alloc_stack(structName)
+        onFrame = true
     } else if (aif_rc_at_node(node_to_ptr(expr)) == 1) {
         // AIF Level 5. T3, held by more than one container, so no single
         // teardown can decide when it dies. The count goes in a prefix header,
@@ -2844,7 +2888,7 @@ private fn generateStructLiteral(expr: ASTNode) -> String {
         ir_call_end("void", "cyc_set_type")
     }
 
-    generateStructLiteralFields(expr, structName, memName, false)
+    generateStructLiteralFields(expr, structName, memName, false, onFrame)
     return memName
 }
 

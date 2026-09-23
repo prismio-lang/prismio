@@ -132,6 +132,22 @@ let IR_DROP_DATAVIEW = 3
 // separate kind rather than IR_DROP_OBJECT because freeing it through the seam
 // would report a release of a pointer the verify ledger never handed out.
 let IR_DROP_TASK = 4
+// A struct AIF placed on the frame, of a type whose fields own what they hold.
+// The slot is the frame's, so only the fields are released -- through the
+// type's fields-only release, `__aif_release_fields_T`, which the drop list
+// names from the declared type exactly as IR_DROP_TYPED does.
+let IR_DROP_FIELDS = 5
+
+// The struct types a frame struct's drop has named, joined with `;`. Their
+// fields-only releases are defined after every function, for these and no
+// others, so a program with no such struct carries none.
+let mut irFrameReleaseTypes = ""
+
+// Bindings initialised from a struct literal on the frame, as `;slot@floor;`:
+// the slot, and the scope's drop floor it was declared at. A field assignment
+// made at that same floor may give its new value the same scope-exit owner the
+// literal's fields got (ir/stmt.psm, generateAssignment).
+let mut irFrameStructSlots = ""
 
 // AIF item 3. What a container does with its elements when it is released, and
 // what a known callee's return leaves the caller owning. One encoding for both,
@@ -237,6 +253,7 @@ internal extern fn aif_fn_may_return_view_of_param(symbol: String) -> Int
 // needs. Per field, because a struct mixes -- `World` is five owned Lists and an
 // Int, and one answer for the whole type would have to be "nothing" for all six.
 internal extern fn aif_type_releases(type: String) -> Int
+internal extern fn aif_type_is_reclaimed(type: String) -> Int
 internal extern fn aif_field_release(type: String, field: String) -> Int
 
 // The element type of a container whose elements are released by type. Read from

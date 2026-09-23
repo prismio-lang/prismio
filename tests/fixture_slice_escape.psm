@@ -11,7 +11,7 @@ fn escaping_slice(n: Int) -> Slice<Item> {
     let items: Vec<Item> = list_new()
     list_push(items, Item { value: n })
     list_push(items, Item { value: n + 1 })
-    return items[0..1]
+    return items[0..<1]
 }
 
 fn main() -> Int {

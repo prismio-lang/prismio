@@ -1,0 +1,95 @@
+// A struct on the frame owns what its fields were given.
+//
+// AIF places a struct that does not outlive its function in a stack slot (T0),
+// and nothing ever released such a struct's fields. Named first, a field's value
+// was released by its binding; written straight into the literal it had no
+// owner at all, so `Bag { items: [] }` leaked the Vec outright. Now:
+//
+//   - an owned temporary in a frame struct's literal, or assigned to its field
+//     in the block that declared it, gets a hidden binding on the drop list;
+//   - where the type's fields are the release point for its values -- some
+//     object of the type is reclaimed, so AIF bars every other owner -- the
+//     frame struct's drop releases its fields, as `__aif_release_T` does for a
+//     heap one, without freeing the slot.
+//
+// The verify ledger for this file is pinned in test_runner.py, with the one
+// known leak it carries explained there.
+import std.io
+import std.string
+import std.vec
+
+struct Bag {
+    items: Vec<String>,
+    name: String
+}
+
+struct Job {
+    title: String,
+    tags: Vec<Int>
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// The heap Job that makes Job's fields a release point. Its title is a literal:
+// a `concat` stored into a released field would make that one site -- which
+// backs every `concat` in the program -- the field's, and the frame structs'
+// `concat` names below would lose their owner (KNOWN_ISSUES).
+fn makeJob() -> Job {
+    return Job { title: "heap", tags: [1] }
+}
+
+fn literalFields() -> Int {
+    let bag = Bag { items: ["one", "a string long enough to live on the heap"],
+                    name: "a name long enough to own its buffer".concat("!") }
+    return bag.items.length
+}
+
+fn emptyLiteralField() -> Int {
+    let bag = Bag { items: [], name: "q" }
+    return bag.items.length
+}
+
+fn namedFields() -> Int {
+    let v: Vec<String> = ["x", "y"]
+    let bag = Bag { items: v, name: "q" }
+    return bag.items.length
+}
+
+fn assignedField() -> Int {
+    let mut bag = Bag { items: ["x"], name: "q" }
+    let first = bag.items.length
+    bag.items = ["y", "z", "w"]
+    return first * 10 + bag.items.length
+}
+
+fn inALoop() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < 3) {
+        let bag = Bag { items: ["e"], name: "per-iteration name long enough".concat("!") }
+        total += bag.items.length
+        i += 1
+    }
+    return total
+}
+
+fn reclaimedType() -> Int {
+    let heap = makeJob()
+    let local = Job { title: "frame", tags: [2, 3] }
+    return heap.tags.length + local.tags.length
+}
+
+fn main() -> Int {
+    if (literalFields() != 2) { return fail("owned temporaries in a literal") }
+    if (emptyLiteralField() != 0) { return fail("an empty Vec in a literal") }
+    if (namedFields() != 2) { return fail("a named value in a literal") }
+    if (assignedField() != 13) { return fail("an owned temporary assigned to a field") }
+    if (inALoop() != 3) { return fail("a frame struct per iteration") }
+    if (reclaimedType() != 3) { return fail("a frame struct of a reclaimed type") }
+    println("PASS: frame struct fields")
+    return 0
+}

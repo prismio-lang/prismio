@@ -1,0 +1,24 @@
+// expect-error: `break` is only valid inside a loop
+// expect-error: `continue` is only valid inside a loop
+// expect-error: no enclosing loop is labelled `inner`
+// expect-error: the label `outer` is already used by a loop around this one
+// A jump has to be inside a loop, and a label has to name one that encloses it.
+// Shadowing a label is refused rather than resolved to the nearer loop, which a
+// reader would take for the outer one.
+fn main() -> Int {
+    let mut n = 0
+    if (n == 0) {
+        break
+    }
+    outer@ for i in 0..<3 {
+        for j in 0..<3 { break@inner }
+        outer@ while (n < 3) {
+            n += 1
+            continue@outer
+        }
+    }
+    if (n > 5) {
+        continue
+    }
+    return n
+}

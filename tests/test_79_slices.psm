@@ -25,7 +25,7 @@ fn fail(message: String) -> Int {
 }
 
 fn middle(points: Vec<Point>) -> Slice<Point> {
-    return points[1..4]
+    return points[1..<4]
 }
 
 fn first<T>(items: Slice<T>) -> T {
@@ -51,7 +51,7 @@ fn main() -> Int {
     list_push(points, Point { x: 3, y: 13 })
 
     let view = middle(points)
-    let nested = view[1..3]
+    let nested = view[1..<3]
     let window = Window { view: nested }
     if (slice_len(view) != 3 or slice_len(window.view) != 2) {
         return fail("slice lengths")
@@ -71,8 +71,8 @@ fn main() -> Int {
 
     // Overlapping mutable views are legal. Both writes resolve the current List
     // block, and the second sees the first's update through the overlap.
-    let left = points[1..4]
-    let right = points[2..5]
+    let left = points[1..<4]
+    let right = points[2..<5]
     slice_set(left, 1, Point { x: 20, y: 2 })
     if (right[0].x != 20 or points[2].y != 2) {
         return fail("overlapping mutable views")
@@ -82,7 +82,7 @@ fn main() -> Int {
     list_push(nums, 7)
     list_push(nums, 8)
     list_push(nums, 9)
-    let numView = nums[1..3]
+    let numView = nums[1..<3]
     slice_set(numView, 0, 80)
     if (numView[0] != 80 or nums[1] != 80) {
         return fail("scalar slice read/write")
@@ -92,7 +92,7 @@ fn main() -> Int {
     list_push(words, "zero")
     list_push(words, "one")
     list_push(words, "two")
-    let wordView = words[1..3]
+    let wordView = words[1..<3]
     if (wordView[1].equals("two") == false) {
         return fail("String slice read")
     }
@@ -111,7 +111,7 @@ fn main() -> Int {
         list_push(tags, Tagged { name: t.toString(), rank: t })
         t = t + 1
     }
-    let tagView = tags[1..3]
+    let tagView = tags[1..<3]
     if (tagView[1].rank != 2) {
         return fail("boxed slice read")
     }
