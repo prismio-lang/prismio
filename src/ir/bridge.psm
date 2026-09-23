@@ -54,6 +54,9 @@ public extern fn ir_store_global(type: String, value: String, name: String)
 public extern fn ir_add(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_sub(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_mul(type: String, lhs: String, rhs: String) -> Int
+// Only where the frontend has proved the operation cannot wrap.
+public extern fn ir_add_nsw(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_sub_nsw(type: String, lhs: String, rhs: String) -> Int
 
 // RFC 0560's "check in debug, wrap in release", emitted only under
 // `--overflow-checks`. Each one lowers to llvm.s{add,sub,mul}.with.overflow, a
@@ -349,6 +352,15 @@ public extern fn ir_list_flat_zero_append(listValue: String, countValue: String,
 // call site inside a guarded loop.
 public extern fn ir_mark_guard_safe_fn(name: String borrow, safe: Int)
 public extern fn ir_is_guard_safe_fn(name: String borrow) -> Int
+// Loop range proofs (ir/ranges.psm): a fresh proof number per analysed loop copy,
+// which of this loop's access nodes it covers, and the receiver's element base the
+// preheader loaded for each. The node is our own AST; the base is interned.
+public extern fn ir_range_proof_new() -> Int
+public extern fn ir_range_proof_mark(node: Ptr, proof: Int, data: String borrow)
+public extern fn ir_range_proof_of(node: Ptr) -> Int
+public extern fn ir_range_proof_marked(node: Ptr) -> Int
+public extern fn ir_range_proof_data(node: Ptr) -> String alias
+public extern fn ir_range_trace(line: Int, proved: Int, total: Int)
 public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 public extern fn ir_array_alloca_zeroed(elemType: String, count: Int) -> Int
 public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int

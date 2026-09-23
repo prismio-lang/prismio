@@ -1,0 +1,895 @@
+// Relational loop facts: which `Int` arithmetic in a loop provably cannot wrap,
+// and which list accesses stay in range on facts no single counter carries.
+//
+// ranges.psm bounds each counter by itself: a start, a direction and a condition
+// conjunct. A bisection defeats that. `low` and `high` close on each other through
+// a midpoint, neither moves by a fixed step, and what keeps `mid` inside the list
+// is a chain -- `L0 <= low <= mid <= high <= H0` -- where every link relates two
+// variables. That is a difference-bound matrix (ir/dbm.psm; ABCD, Bodik et al.
+// PLDI 2000, is the on-demand form of the same constraints): an upper bound on
+// `x - y` for every pair of variables, closed under shortest paths.
+//
+// The variables are a zero, so `x <= c` is `x - 0 <= c`; the `Int` locals the body
+// assigns; the frozen start of each of those, which is what lets a head fact say
+// `high <= H0` rather than nothing; the locals the body declares, while they are
+// in scope; and the anchors the preheader can evaluate -- invariant locals and the
+// lengths of stable lists. A bound on a variable is therefore a bound over anchor
+// values, which is what the guard computes.
+//
+// Soundness. The interpretation treats `+` and `-` as exact, which the loop's
+// wrapping `Int` is not. Every operation the interpretation relies on is
+// "interpreted": its value is some `v + c`, and it is interpreted only where `v`
+// is bounded on both sides, so its result has a range over anchor values. That
+// range goes into the guard (inside `Int`) and the node gets the loop's proof, so
+// the proved copy emits it `nsw`. With the guard true, induction over the run: at
+// every head the state satisfies the invariant, each interpreted operation's
+// mathematical result lies in its folded range, so it did not wrap, so the
+// transfer was exact. Everything else is uninterpreted and forgets its target.
+//
+// Decisions depend on the abstract state only, never on the walk mode, so the
+// emission walk is the last verification walk of the fixpoint with IR attached.
+
+import ast.nodes
+import ast.types
+import common.text
+import std.string
+
+let REL_ZERO = 0
+let REL_LOOP = 1
+let REL_FROZEN = 2
+let REL_LOCAL = 3
+let REL_ANCHOR = 4
+let REL_LEN = 5
+
+let REL_MAX_VARS = 24
+let REL_JOIN_ROUNDS = 2
+let REL_MAX_ROUNDS = 12
+let REL_LITERAL_DIGITS = 6
+
+let REL_INT_MAX = "2147483647"
+let REL_INT_MIN = "-2147483648"
+
+let REL_FIX = 0
+let REL_EMIT = 1
+
+struct RelLoop {
+    // The variables, indexed alike. `names` holds the local's name, the assigned
+    // variable's for its REL_FROZEN start, and the receiver's for REL_LEN.
+    kinds: Vec<Int>,
+    names: Vec<String>,
+    // An anchor's i64 preheader value, computed on first use ("" until then).
+    values: Vec<String>,
+    count: Int,
+
+    // Collection: per name, how the body binds it.
+    seenNames: Vec<String>,
+    seenDecls: Vec<Int>,
+    seenIntDecls: Vec<Int>,
+    seenAssigns: Vec<Int>,
+    seenIntAssigns: Vec<Int>,
+
+    // The state at the walk's point and at the back edge: count * count entries,
+    // entry (i, j) bounding `x_i - x_j`, and a trailing flag set when unreachable.
+    cur: Vec<Int>,
+    back: Vec<Int>,
+
+    // REL_LOCAL variables in scope, and the declarations of the blocks being
+    // walked, innermost last.
+    inScope: Vec<Int>,
+    scopeVars: Vec<Int>,
+    scopeCount: Int,
+
+    mode: Int,
+    failed: Bool,
+
+    // relTerm's answer: `termVar + termConst`, reached through termOps additions.
+    termVar: Int,
+    termConst: Int,
+    termOps: Int,
+    literal: Int
+}
+
+private fn relLoopNew() -> RelLoop {
+    return RelLoop {
+        kinds: list_new(), names: list_new(), values: list_new(), count: 0,
+        seenNames: list_new(), seenDecls: list_new(), seenIntDecls: list_new(),
+        seenAssigns: list_new(), seenIntAssigns: list_new(),
+        cur: list_new(), back: list_new(),
+        inScope: list_new(), scopeVars: list_new(), scopeCount: 0,
+        mode: REL_FIX, failed: false,
+        termVar: 0, termConst: 0, termOps: 0, literal: 0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+// Runs after the delta tier's emission, into the same guard and proof. Proves the
+// accesses that tier left, marks every interpreted operation, and counts its
+// proofs into `rl.proved`. A `for` loop's variable belongs to the latch, which this
+// does not model yet.
+internal fn relationsProve(rl: RangeLoop) {
+    if (rl.forVar >= 0 or nodeIsNull(rl.condPtr)) { return }
+    let rs = relLoopNew()
+    relCollect(rs, rl)
+    if (rs.failed or rs.count > REL_MAX_VARS) { return }
+
+    let entry = dbmTop(rs.count)
+    let mut v = 0
+    while (v < rs.count) {
+        if (list_get(rs.kinds, v) == REL_LOOP) {
+            let name: String = list_get(rs.names, v)
+            dbmAssign(rs.count, entry, v, relFind(rs, REL_FROZEN, name), 0)
+        }
+        v = v + 1
+    }
+    rs.cur = dbmTop(rs.count)
+    rs.back = dbmTop(rs.count)
+    let head = dbmCopy(entry)
+    let mut round = 0
+    let mut stable = false
+    while (stable == false) {
+        relRunBody(rs, rl, head)
+        if (rs.failed) { return }
+        let next = dbmCopy(entry)
+        dbmJoin(rs.count, next, rs.back)
+        if (dbmLeq(rs.count, next, head)) {
+            stable = true
+        } else {
+            if (round >= REL_MAX_ROUNDS) { return }
+            if (round < REL_JOIN_ROUNDS) { dbmJoin(rs.count, head, next) } else { dbmWiden(rs.count, head, next) }
+            dbmClose(rs.count, head)
+            round = round + 1
+        }
+    }
+
+    rs.mode = REL_EMIT
+    relRunBody(rs, rl, head)
+}
+
+// One pass over the condition and the body from `head`, leaving in `back` the
+// join of every state that reaches the back edge.
+private fn relRunBody(rs: RelLoop, rl: RangeLoop, head: Vec<Int>) {
+    dbmCopyInto(rs.cur, head)
+    dbmSetBottom(rs.count, rs.back)
+    rs.scopeCount = 0
+    let mut v = 0
+    while (v < rs.count) {
+        list_set(rs.inScope, v, 0)
+        v = v + 1
+    }
+    relWalkCondition(rs, rl, rl.condPtr)
+    relWalkBlock(rs, rl, rl.bodyPtr)
+    if (dbmIsBottom(rs.count, rs.cur) == false) { relJoinBack(rs) }
+}
+
+// ---------------------------------------------------------------------------
+// Variables
+// ---------------------------------------------------------------------------
+
+private fn relFind(rs: RelLoop, kind: Int, name: String) -> Int {
+    let mut i = 0
+    while (i < rs.count) {
+        let known: String = list_get(rs.names, i)
+        if (list_get(rs.kinds, i) == kind and known.equals(name)) { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+private fn relAddVar(rs: RelLoop, kind: Int, name: String) -> Int {
+    let found = relFind(rs, kind, name)
+    if (found >= 0) { return found }
+    list_push(rs.kinds, kind)
+    list_push(rs.names, strClone(name))
+    list_push(rs.values, "")
+    list_push(rs.inScope, 0)
+    rs.count = rs.count + 1
+    return rs.count - 1
+}
+
+private fn relIsAnchor(rs: RelLoop, v: Int) -> Bool {
+    let kind = list_get(rs.kinds, v)
+    return kind == REL_ZERO or kind == REL_FROZEN or kind == REL_ANCHOR or kind == REL_LEN
+}
+
+// The variable a name reads at the walk's point, or -1. Classification gives a
+// name at most one kind; a body-declared one reads nothing outside its scope,
+// where the name means some other binding.
+private fn relNameVar(rs: RelLoop, name: String) -> Int {
+    let assigned = relFind(rs, REL_LOOP, name)
+    if (assigned >= 0) { return assigned }
+    let anchor = relFind(rs, REL_ANCHOR, name)
+    if (anchor >= 0) { return anchor }
+    let local = relFind(rs, REL_LOCAL, name)
+    if (local >= 0 and list_get(rs.inScope, local) != 0) { return local }
+    return 0 - 1
+}
+
+// Every binding the loop makes, at any depth, and every anchor it reads outside
+// nested loops. A name the body declares is a scoped local -- if every declaration
+// of it is an `Int` -- and otherwise nothing; a name it only assigns is a loop
+// variable with a frozen start. Globals and match binders are never variables:
+// a callee may assign the first, and the second shadows by pattern.
+private fn relCollect(rs: RelLoop, rl: RangeLoop) {
+    relAddVar(rs, REL_ZERO, "")
+    relCollectNode(rl.condPtr, rs, rl, 0)
+    relCollectChain(ptr_to_node(rl.bodyPtr).child1, rs, rl, 0)
+    let mut i = 0
+    while (i < list_len(rs.seenNames)) {
+        let name: String = list_get(rs.seenNames, i)
+        let decls = list_get(rs.seenDecls, i)
+        let assigns = list_get(rs.seenAssigns, i)
+        let usable = ir_var_is_global(name) == 0 and rangeBindsInPattern(rl.bodyPtr, name) == false
+        if (usable and decls > 0) {
+            if (list_get(rs.seenIntDecls, i) == decls) { relAddVar(rs, REL_LOCAL, name) }
+        } else if (usable and assigns > 0 and list_get(rs.seenIntAssigns, i) == assigns) {
+            relAddVar(rs, REL_LOOP, name)
+            relAddVar(rs, REL_FROZEN, name)
+        }
+        i = i + 1
+    }
+}
+
+private fn relSeen(rs: RelLoop, name: String) -> Int {
+    let mut i = 0
+    while (i < list_len(rs.seenNames)) {
+        let known: String = list_get(rs.seenNames, i)
+        if (known.equals(name)) { return i }
+        i = i + 1
+    }
+    list_push(rs.seenNames, strClone(name))
+    list_push(rs.seenDecls, 0)
+    list_push(rs.seenIntDecls, 0)
+    list_push(rs.seenAssigns, 0)
+    list_push(rs.seenIntAssigns, 0)
+    return list_len(rs.seenNames) - 1
+}
+
+private fn relBump(counts: Vec<Int>, at: Int) {
+    list_set(counts, at, list_get(counts, at) + 1)
+}
+
+private fn relCollectChain(head: Ptr, rs: RelLoop, rl: RangeLoop, nested: Int) {
+    let mut p = head
+    while (nodeExists(p)) {
+        relCollectNode(p, rs, rl, nested)
+        p = ptr_to_node(p).next
+    }
+}
+
+private fn relCollectNode(p: Ptr, rs: RelLoop, rl: RangeLoop, nested: Int) {
+    if (nodeIsNull(p)) { return }
+    let n = ptr_to_node(p)
+    let mut inner = nested
+    if (rangeIsLoop(n)) { inner = nested + 1 }
+    if (n.kind == NodeKind.VARIABLE_DECL) {
+        let at = relSeen(rs, n.s1)
+        relBump(rs.seenDecls, at)
+        if (nodeExists(n.child2) and rangeIsIntNode(ptr_to_node(n.child2))) { relBump(rs.seenIntDecls, at) }
+    }
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+        let target = ptr_to_node(n.child1)
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            let at = relSeen(rs, target.s1)
+            relBump(rs.seenAssigns, at)
+            if (rangeIsIntNode(target)) { relBump(rs.seenIntAssigns, at) }
+        }
+    }
+    if (nested == 0 and n.kind == NodeKind.IDENTIFIER_EXPR and rangeIsInvariantName(n, rl)) {
+        relAddVar(rs, REL_ANCHOR, n.s1)
+    }
+    if (nested == 0) {
+        let list = relLenReceiver(n, rl)
+        if (list.equals("") == false) { relAddVar(rs, REL_LEN, list) }
+    }
+    relCollectChain(n.child1, rs, rl, inner)
+    relCollectChain(n.child2, rs, rl, inner)
+    relCollectChain(n.child3, rs, rl, inner)
+}
+
+// The receiver of `list_len(x)` for a stable local `x`, or "".
+private fn relLenReceiver(n: ASTNode, rl: RangeLoop) -> String {
+    if (n.kind != NodeKind.CALL_EXPR or nodeIsNull(n.child1) or nodeIsNull(n.child2)) { return "" }
+    if (ptr_to_node(n.child1).s1.equals("list_len") == false) { return "" }
+    let list = ptr_to_node(n.child2)
+    if (nodeExists(list.next) or rangeIsStableList(list, rl) == false) { return "" }
+    return strClone(list.s1)
+}
+
+// A continuing path's state joins the back edge without the locals, which the
+// iteration's end takes out of scope.
+private fn relJoinBack(rs: RelLoop) {
+    let st = dbmCopy(rs.cur)
+    let mut v = 0
+    while (v < rs.count) {
+        if (list_get(rs.kinds, v) == REL_LOCAL) { dbmForget(rs.count, st, v) }
+        v = v + 1
+    }
+    dbmJoin(rs.count, rs.back, st)
+}
+
+// Whether some anchor bounds `v` from above, or from below. An anchor bounds
+// itself.
+private fn relHasUpper(rs: RelLoop, v: Int) -> Bool {
+    let mut u = 0
+    while (u < rs.count) {
+        if (relIsAnchor(rs, u) and dbmGet(rs.count, rs.cur, v, u) < DBM_INF) { return true }
+        u = u + 1
+    }
+    return false
+}
+
+private fn relHasLower(rs: RelLoop, v: Int) -> Bool {
+    let mut u = 0
+    while (u < rs.count) {
+        if (relIsAnchor(rs, u) and dbmGet(rs.count, rs.cur, u, v) < DBM_INF) { return true }
+        u = u + 1
+    }
+    return false
+}
+
+private fn relBounded(rs: RelLoop, v: Int) -> Bool {
+    return relHasUpper(rs, v) and relHasLower(rs, v)
+}
+
+// ---------------------------------------------------------------------------
+// The walk
+// ---------------------------------------------------------------------------
+
+// The condition's `and` conjuncts, left to right: each is evaluated only when the
+// ones before it held.
+private fn relWalkCondition(rs: RelLoop, rl: RangeLoop, p: Ptr) {
+    let n = ptr_to_node(p)
+    if (n.kind == NodeKind.BINARY_EXPR and n.s1.equals("and")) {
+        relWalkCondition(rs, rl, n.child1)
+        relWalkCondition(rs, rl, n.child2)
+        return
+    }
+    relVisitExpr(rs, rl, p)
+    relAssumeCond(rs, rl, p, true)
+}
+
+private fn relWalkBlock(rs: RelLoop, rl: RangeLoop, blockPtr: Ptr) {
+    if (nodeIsNull(blockPtr)) { return }
+    let mark = rs.scopeCount
+    let mut p = ptr_to_node(blockPtr).child1
+    while (nodeExists(p) and rs.failed == false and dbmIsBottom(rs.count, rs.cur) == false) {
+        relWalkStmt(rs, rl, p)
+        p = ptr_to_node(p).next
+    }
+    relPopScope(rs, mark)
+}
+
+// Ends the scope of every local declared since `mark`. A shadowed outer
+// declaration of the same name loses its facts too, which is only imprecise.
+private fn relPopScope(rs: RelLoop, mark: Int) {
+    while (rs.scopeCount > mark) {
+        rs.scopeCount = rs.scopeCount - 1
+        let v = list_get(rs.scopeVars, rs.scopeCount)
+        list_set(rs.inScope, v, 0)
+        dbmForget(rs.count, rs.cur, v)
+    }
+}
+
+private fn relPushScope(rs: RelLoop, v: Int) {
+    if (rs.scopeCount < list_len(rs.scopeVars)) {
+        list_set(rs.scopeVars, rs.scopeCount, v)
+    } else {
+        list_push(rs.scopeVars, v)
+    }
+    rs.scopeCount = rs.scopeCount + 1
+    list_set(rs.inScope, v, 1)
+}
+
+private fn relWalkStmt(rs: RelLoop, rl: RangeLoop, p: Ptr) {
+    let s = ptr_to_node(p)
+    if (s.kind == NodeKind.EXPRESSION_STATEMENT) {
+        relVisitExpr(rs, rl, s.child1)
+        return
+    }
+    if (s.kind == NodeKind.VARIABLE_DECL) {
+        relVisitExpr(rs, rl, s.child2)
+        let v = relFind(rs, REL_LOCAL, s.s1)
+        if (v >= 0) {
+            relTransfer(rs, rl, v, s.child2)
+            relPushScope(rs, v)
+        }
+        return
+    }
+    if (s.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        relVisitExpr(rs, rl, s.child2)
+        if (rangeIsNamedTarget(s) == false) {
+            relVisitExpr(rs, rl, s.child1)
+            return
+        }
+        let v = relNameVar(rs, ptr_to_node(s.child1).s1)
+        if (v >= 0) { relTransfer(rs, rl, v, s.child2) }
+        return
+    }
+    if (s.kind == NodeKind.IF_STATEMENT) {
+        relWalkIf(rs, rl, s)
+        return
+    }
+    if (s.kind == NodeKind.MATCH_STATEMENT) {
+        relWalkMatch(rs, rl, s)
+        return
+    }
+    if (s.kind == NodeKind.BLOCK) {
+        relWalkBlock(rs, rl, p)
+        return
+    }
+    if (s.kind == NodeKind.REGION_STATEMENT) {
+        relWalkBlock(rs, rl, s.child1)
+        return
+    }
+    if (s.kind == NodeKind.RETURN_STATEMENT) {
+        relVisitExpr(rs, rl, s.child1)
+        dbmSetBottom(rs.count, rs.cur)
+        return
+    }
+    if (s.kind == NodeKind.BREAK_STATEMENT) {
+        dbmSetBottom(rs.count, rs.cur)
+        return
+    }
+    if (s.kind == NodeKind.CONTINUE_STATEMENT) {
+        if (s.s1.equals("") or s.s1.equals(rl.label)) { relJoinBack(rs) }
+        dbmSetBottom(rs.count, rs.cur)
+        return
+    }
+    if (rangeIsLoop(s)) {
+        relWalkNested(rs, rl, p)
+        return
+    }
+    rs.failed = true
+}
+
+private fn relWalkIf(rs: RelLoop, rl: RangeLoop, s: ASTNode) {
+    relVisitExpr(rs, rl, s.child1)
+    let entry = dbmCopy(rs.cur)
+    relAssumeCond(rs, rl, s.child1, true)
+    relWalkBlock(rs, rl, s.child2)
+    let taken = dbmCopy(rs.cur)
+    dbmCopyInto(rs.cur, entry)
+    relAssumeCond(rs, rl, s.child1, false)
+    if (nodeExists(s.child3)) {
+        if (ptr_to_node(s.child3).kind == NodeKind.IF_STATEMENT) {
+            relWalkStmt(rs, rl, s.child3)
+        } else {
+            relWalkBlock(rs, rl, s.child3)
+        }
+    }
+    dbmJoin(rs.count, rs.cur, taken)
+}
+
+// Every arm from the same state, and that state itself for a match no arm takes.
+private fn relWalkMatch(rs: RelLoop, rl: RangeLoop, s: ASTNode) {
+    relVisitExpr(rs, rl, s.child1)
+    let entry = dbmCopy(rs.cur)
+    let out = dbmCopy(rs.cur)
+    let mut arm = s.child2
+    while (nodeExists(arm)) {
+        dbmCopyInto(rs.cur, entry)
+        relWalkBlock(rs, rl, ptr_to_node(arm).child2)
+        dbmJoin(rs.count, out, rs.cur)
+        arm = ptr_to_node(arm).next
+    }
+    dbmCopyInto(rs.cur, out)
+}
+
+// A nested loop runs its body any number of times, so it forgets every variable
+// it assigns. Its accesses are its own guard's. A `continue` naming this loop from
+// inside it reaches the back edge in that forgotten state.
+private fn relWalkNested(rs: RelLoop, rl: RangeLoop, p: Ptr) {
+    relForgetAssigned(rs, p)
+    if (rl.label.equals("") == false and relContinuesTo(p, rl.label)) { relJoinBack(rs) }
+}
+
+private fn relForgetAssigned(rs: RelLoop, p: Ptr) {
+    if (nodeIsNull(p)) { return }
+    let n = ptr_to_node(p)
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and rangeIsNamedTarget(n)) {
+        let name = ptr_to_node(n.child1).s1
+        let assigned = relFind(rs, REL_LOOP, name)
+        if (assigned >= 0) { dbmForget(rs.count, rs.cur, assigned) }
+        let local = relFind(rs, REL_LOCAL, name)
+        if (local >= 0) { dbmForget(rs.count, rs.cur, local) }
+    }
+    relForgetAssignedChain(rs, n.child1)
+    relForgetAssignedChain(rs, n.child2)
+    relForgetAssignedChain(rs, n.child3)
+}
+
+private fn relForgetAssignedChain(rs: RelLoop, head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        relForgetAssigned(rs, p)
+        p = ptr_to_node(p).next
+    }
+}
+
+private fn relContinuesTo(p: Ptr, label: String) -> Bool {
+    if (nodeIsNull(p)) { return false }
+    let n = ptr_to_node(p)
+    if (n.kind == NodeKind.CONTINUE_STATEMENT and n.s1.equals(label)) { return true }
+    if (relContinuesToChain(n.child1, label)) { return true }
+    if (relContinuesToChain(n.child2, label)) { return true }
+    return relContinuesToChain(n.child3, label)
+}
+
+private fn relContinuesToChain(head: Ptr, label: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (relContinuesTo(p, label)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+// ---------------------------------------------------------------------------
+// Transfers
+// ---------------------------------------------------------------------------
+
+// `x := rhs`: a linear term, a midpoint, or anything else, which forgets `x`.
+private fn relTransfer(rs: RelLoop, rl: RangeLoop, x: Int, rhsPtr: Ptr) {
+    if (dbmIsBottom(rs.count, rs.cur)) { return }
+    if (nodeIsNull(rhsPtr) or rangeIsIntNode(ptr_to_node(rhsPtr)) == false) {
+        dbmForget(rs.count, rs.cur, x)
+        return
+    }
+    if (relMidpoint(rs, rl, x, ptr_to_node(rhsPtr))) { return }
+    if (relTerm(rs, rl, rhsPtr, false) and relTermUsable(rs)) {
+        relTerm(rs, rl, rhsPtr, true)
+        dbmAssign(rs.count, rs.cur, x, rs.termVar, rs.termConst)
+        return
+    }
+    dbmForget(rs.count, rs.cur, x)
+}
+
+// A term whose additions can be bounded, so each can be interpreted.
+private fn relTermUsable(rs: RelLoop) -> Bool {
+    if (rs.termOps == 0) { return true }
+    return relBounded(rs, rs.termVar)
+}
+
+// `expr` as `termVar + termConst`: literals, variables, stable lengths, and a
+// literal added to or subtracted from one of those. With `commit`, each addition
+// is interpreted -- bounded into the guard and marked -- at the value it computes.
+private fn relTerm(rs: RelLoop, rl: RangeLoop, p: Ptr, commit: Bool) -> Bool {
+    if (nodeIsNull(p)) { return false }
+    let e = ptr_to_node(p)
+    if (rangeIsIntNode(e) == false) { return false }
+    if (relLiteral(rs, e)) {
+        rs.termVar = 0
+        rs.termConst = rs.literal
+        rs.termOps = 0
+        return true
+    }
+    if (e.kind == NodeKind.IDENTIFIER_EXPR) {
+        let v = relNameVar(rs, e.s1)
+        if (v < 0) { return false }
+        rs.termVar = v
+        rs.termConst = 0
+        rs.termOps = 0
+        return true
+    }
+    let list = relLenReceiver(e, rl)
+    if (list.equals("") == false) {
+        let v = relFind(rs, REL_LEN, list)
+        if (v < 0) { return false }
+        rs.termVar = v
+        rs.termConst = 0
+        rs.termOps = 0
+        return true
+    }
+    if (e.kind != NodeKind.BINARY_EXPR) { return false }
+    let plus = e.s1.equals("+")
+    if (plus == false and e.s1.equals("-") == false) { return false }
+    if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return false }
+    let mut side = e.child1
+    if (relLiteral(rs, ptr_to_node(e.child2)) == false) {
+        if (plus == false or relLiteral(rs, ptr_to_node(e.child1)) == false) { return false }
+        side = e.child2
+    }
+    let amount = rs.literal
+    if (relTerm(rs, rl, side, commit) == false) { return false }
+    let mut c = rs.termConst + amount
+    if (plus == false) { c = rs.termConst - amount }
+    if (c > DBM_LIMIT or c < 0 - DBM_LIMIT) { return false }
+    rs.termConst = c
+    rs.termOps = rs.termOps + 1
+    if (commit) { relCommit(rs, rl, e, rs.termVar, c, rs.termVar, c) }
+    return true
+}
+
+// A decimal `Int` literal of at most REL_LITERAL_DIGITS digits, into `literal`.
+// The parse runs with two fallbacks: they agree only when the text is a number.
+private fn relLiteral(rs: RelLoop, n: ASTNode) -> Bool {
+    if (n.kind != NodeKind.LITERAL_EXPR or n.i1 != TokenType.NUMBER_LITERAL) { return false }
+    if (__builtin_string_len(n.s1) > REL_LITERAL_DIGITS + 1) { return false }
+    let value = strParseIntOr(n.s1, 0)
+    if (value != strParseIntOr(n.s1, 1)) { return false }
+    if (value > 999999 or value < 0 - 999999) { return false }
+    rs.literal = value
+    return true
+}
+
+// `x := y + (z - y) / c` for a literal c >= 1, or `x := (y + z) / 2`. Where the
+// state implies `y <= z`, x lands in [y, z]: the difference is non-negative, so the
+// quotient is between 0 and it. Neither shape is a difference constraint, but its
+// result is two of them.
+private fn relMidpoint(rs: RelLoop, rl: RangeLoop, x: Int, e: ASTNode) -> Bool {
+    if (e.kind != NodeKind.BINARY_EXPR or nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return false }
+    if (e.s1.equals("+")) {
+        let quotient = ptr_to_node(e.child2)
+        if (quotient.kind != NodeKind.BINARY_EXPR or quotient.s1.equals("/") == false) { return false }
+        if (relLiteral(rs, ptr_to_node(quotient.child2)) == false or rs.literal < 1) { return false }
+        let diff = ptr_to_node(quotient.child1)
+        if (diff.kind != NodeKind.BINARY_EXPR or diff.s1.equals("-") == false) { return false }
+        let base = ptr_to_node(e.child1)
+        if (base.kind != NodeKind.IDENTIFIER_EXPR or rangeIsNamed(diff.child2, base.s1) == false) { return false }
+        if (rangeIsIntNode(diff) == false or rangeIsIntNode(base) == false) { return false }
+        let top = ptr_to_node(diff.child1)
+        if (top.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+        let y = relNameVar(rs, base.s1)
+        let z = relNameVar(rs, top.s1)
+        if (y < 0 or z < 0 or x == y or x == z or y == z) { return false }
+        if (dbmGet(rs.count, rs.cur, y, z) > 0) { return false }
+        if (relHasUpper(rs, z) == false or relHasLower(rs, y) == false) { return false }
+        if (rs.mode == REL_EMIT) {
+            // z - y is in [0, d(z, y)], or in [0, hi(z) - lo(y)] where the state
+            // relates them no tighter than their anchors do.
+            if (dbmGet(rs.count, rs.cur, z, y) >= DBM_INF) {
+                let span = ir_get_temp_name(ir_sub("i64", relUpper(rs, rl, z, 0), relLower(rs, rl, y, 0)))
+                rangeFold(rl, ir_get_temp_name(ir_icmp_sle("i64", span, REL_INT_MAX)))
+            }
+            ir_range_proof_mark(node_to_ptr(diff), rl.proof, "")
+        }
+        relCommit(rs, rl, e, z, 0, y, 0)
+        relBetween(rs, x, y, z)
+        return true
+    }
+    if (e.s1.equals("/") == false) { return false }
+    if (relLiteral(rs, ptr_to_node(e.child2)) == false or rs.literal != 2) { return false }
+    let sum = ptr_to_node(e.child1)
+    if (sum.kind != NodeKind.BINARY_EXPR or sum.s1.equals("+") == false) { return false }
+    if (nodeIsNull(sum.child1) or nodeIsNull(sum.child2) or rangeIsIntNode(sum) == false) { return false }
+    let a = ptr_to_node(sum.child1)
+    let b = ptr_to_node(sum.child2)
+    if (a.kind != NodeKind.IDENTIFIER_EXPR or b.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let mut y = relNameVar(rs, a.s1)
+    let mut z = relNameVar(rs, b.s1)
+    if (y < 0 or z < 0 or x == y or x == z) { return false }
+    if (dbmGet(rs.count, rs.cur, y, z) > 0) {
+        if (dbmGet(rs.count, rs.cur, z, y) > 0) { return false }
+        let swap = y
+        y = z
+        z = swap
+    }
+    if (relBounded(rs, y) == false or relBounded(rs, z) == false) { return false }
+    if (rs.mode == REL_EMIT) {
+        let high = ir_get_temp_name(ir_add("i64", relUpper(rs, rl, y, 0), relUpper(rs, rl, z, 0)))
+        let low = ir_get_temp_name(ir_add("i64", relLower(rs, rl, y, 0), relLower(rs, rl, z, 0)))
+        rangeFold(rl, ir_get_temp_name(ir_icmp_sle("i64", high, REL_INT_MAX)))
+        rangeFold(rl, ir_get_temp_name(ir_icmp_sge("i64", low, REL_INT_MIN)))
+        ir_range_proof_mark(node_to_ptr(sum), rl.proof, "")
+    }
+    relBetween(rs, x, y, z)
+    return true
+}
+
+// x := some value in [y, z].
+private fn relBetween(rs: RelLoop, x: Int, y: Int, z: Int) {
+    dbmForget(rs.count, rs.cur, x)
+    dbmAssumeLE(rs.count, rs.cur, x, z, 0)
+    dbmAssumeLE(rs.count, rs.cur, y, x, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Assumptions
+// ---------------------------------------------------------------------------
+
+// Narrows the state by what reaching here says of `cond`: that it held, or with
+// `positive` false that it did not. A shape this cannot read narrows nothing.
+private fn relAssumeCond(rs: RelLoop, rl: RangeLoop, p: Ptr, positive: Bool) {
+    if (nodeIsNull(p) or dbmIsBottom(rs.count, rs.cur)) { return }
+    let e = ptr_to_node(p)
+    if (e.kind == NodeKind.UNARY_EXPR and e.s1.equals("!")) {
+        relAssumeCond(rs, rl, e.child1, positive == false)
+        return
+    }
+    if (e.kind != NodeKind.BINARY_EXPR) { return }
+    if (e.s1.equals("and")) {
+        if (positive) {
+            relAssumeCond(rs, rl, e.child1, true)
+            relAssumeCond(rs, rl, e.child2, true)
+        }
+        return
+    }
+    if (e.s1.equals("or")) {
+        if (positive == false) {
+            relAssumeCond(rs, rl, e.child1, false)
+            relAssumeCond(rs, rl, e.child2, false)
+        }
+        return
+    }
+    let mut op = strClone(e.s1)
+    if (positive == false) { op = relNegated(e.s1) }
+    if (op.equals("<") == false and op.equals("<=") == false and op.equals(">") == false
+            and op.equals(">=") == false and op.equals("==") == false) {
+        return
+    }
+    if (relTerm(rs, rl, e.child1, false) == false or relTermUsable(rs) == false) { return }
+    if (relTerm(rs, rl, e.child2, false) == false or relTermUsable(rs) == false) { return }
+    relTerm(rs, rl, e.child1, true)
+    let a = rs.termVar
+    let ca = rs.termConst
+    relTerm(rs, rl, e.child2, true)
+    let b = rs.termVar
+    let cb = rs.termConst
+    if (op.equals("<")) { dbmAssumeLE(rs.count, rs.cur, a, b, cb - ca - 1) }
+    if (op.equals("<=") or op.equals("==")) { dbmAssumeLE(rs.count, rs.cur, a, b, cb - ca) }
+    if (op.equals(">")) { dbmAssumeLE(rs.count, rs.cur, b, a, ca - cb - 1) }
+    if (op.equals(">=") or op.equals("==")) { dbmAssumeLE(rs.count, rs.cur, b, a, ca - cb) }
+}
+
+private fn relNegated(op: String) -> String {
+    if (op.equals("<")) { return ">=" }
+    if (op.equals("<=")) { return ">" }
+    if (op.equals(">")) { return "<=" }
+    if (op.equals(">=")) { return "<" }
+    if (op.equals("!=")) { return "==" }
+    return ""
+}
+
+// ---------------------------------------------------------------------------
+// Emission
+// ---------------------------------------------------------------------------
+
+// The expressions evaluated at this point, for their accesses. The right operand
+// of `and` is evaluated only when the left held, and of `or` only when it did not.
+private fn relVisitExpr(rs: RelLoop, rl: RangeLoop, p: Ptr) {
+    if (rs.mode != REL_EMIT or nodeIsNull(p)) { return }
+    let e = ptr_to_node(p)
+    if (e.kind == NodeKind.BINARY_EXPR and (e.s1.equals("and") or e.s1.equals("or"))) {
+        relVisitExpr(rs, rl, e.child1)
+        let entry = dbmCopy(rs.cur)
+        relAssumeCond(rs, rl, e.child1, e.s1.equals("and"))
+        relVisitExpr(rs, rl, e.child2)
+        dbmCopyInto(rs.cur, entry)
+        return
+    }
+    if (rangeIsAccess(e)) { relVisitAccess(rs, rl, e) }
+    relVisitChain(rs, rl, e.child1)
+    relVisitChain(rs, rl, e.child2)
+    relVisitChain(rs, rl, e.child3)
+}
+
+private fn relVisitChain(rs: RelLoop, rl: RangeLoop, head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        relVisitExpr(rs, rl, p)
+        p = ptr_to_node(p).next
+    }
+}
+
+// An access the delta tier left: its index as a bounded term, inside the list.
+private fn relVisitAccess(rs: RelLoop, rl: RangeLoop, e: ASTNode) {
+    if (ir_range_proof_marked(node_to_ptr(e)) == rl.proof) { return }
+    if (dbmIsBottom(rs.count, rs.cur)) { return }
+    let list = ptr_to_node(e.child2)
+    if (nodeIsNull(list.next) or rangeIsStableList(list, rl) == false) { return }
+    if (relTerm(rs, rl, list.next, false) == false) { return }
+    let v = rs.termVar
+    if (relBounded(rs, v) == false) { return }
+    relTerm(rs, rl, list.next, true)
+    let c = rs.termConst
+    let low = relLower(rs, rl, v, c)
+    let high = relUpper(rs, rl, v, c)
+    ir_call_begin()
+    ir_call_arg("ptr", generateExpression(list))
+    let len = ir_get_temp_name(ir_sext("i32",
+        ir_get_temp_name(ir_call_end("i32", "list_len")), "i64"))
+    let lowOk = ir_get_temp_name(ir_icmp_sge("i64", low, "0"))
+    let highOk = ir_get_temp_name(ir_icmp_slt("i64", high, len))
+    rangeFold(rl, ir_get_temp_name(ir_and("i1", lowOk, highOk)))
+    ir_range_proof_mark(node_to_ptr(e), rl.proof, rangeDataFor(rl, list))
+    rl.proved = rl.proved + 1
+}
+
+// Interprets one operation whose result lies in [lo(low) + lowC, hi(high) + highC]:
+// folds what keeps that inside `Int` and marks the node. Only in emission.
+private fn relCommit(rs: RelLoop, rl: RangeLoop, node: ASTNode, high: Int, highC: Int,
+                     low: Int, lowC: Int) {
+    if (rs.mode != REL_EMIT) { return }
+    if (relUpperInInt(rs, high, highC) == false) {
+        rangeFold(rl, ir_get_temp_name(ir_icmp_sle("i64", relUpper(rs, rl, high, highC), REL_INT_MAX)))
+    }
+    if (relLowerInInt(rs, low, lowC) == false) {
+        rangeFold(rl, ir_get_temp_name(ir_icmp_sge("i64", relLower(rs, rl, low, lowC), REL_INT_MIN)))
+    }
+    ir_range_proof_mark(node_to_ptr(node), rl.proof, "")
+}
+
+// Whether `v + c` is statically at most INT_MAX: some anchor bounds it at or
+// below its own value, which is an `Int`, or the zero bounds it by a constant.
+private fn relUpperInInt(rs: RelLoop, v: Int, c: Int) -> Bool {
+    let mut u = 0
+    while (u < rs.count) {
+        let d = dbmGet(rs.count, rs.cur, v, u)
+        if (relIsAnchor(rs, u) and d < DBM_INF) {
+            if (u == 0 or d + c <= 0) { return true }
+        }
+        u = u + 1
+    }
+    return false
+}
+
+private fn relLowerInInt(rs: RelLoop, v: Int, c: Int) -> Bool {
+    let mut u = 0
+    while (u < rs.count) {
+        let d = dbmGet(rs.count, rs.cur, u, v)
+        if (relIsAnchor(rs, u) and d < DBM_INF) {
+            if (u == 0 or c - d >= 0) { return true }
+        }
+        u = u + 1
+    }
+    return false
+}
+
+// The least upper bound on `v + c` the anchors give, as an i64 value.
+private fn relUpper(rs: RelLoop, rl: RangeLoop, v: Int, c: Int) -> String {
+    let mut result = ""
+    let mut u = 0
+    while (u < rs.count) {
+        let d = dbmGet(rs.count, rs.cur, v, u)
+        if (relIsAnchor(rs, u) and d < DBM_INF) {
+            let bound = relValuePlus(rs, rl, u, d + c)
+            if (result.equals("")) { result = strClone(bound) } else { result = rangeSmin(result, bound) }
+        }
+        u = u + 1
+    }
+    return result
+}
+
+private fn relLower(rs: RelLoop, rl: RangeLoop, v: Int, c: Int) -> String {
+    let mut result = ""
+    let mut u = 0
+    while (u < rs.count) {
+        let d = dbmGet(rs.count, rs.cur, u, v)
+        if (relIsAnchor(rs, u) and d < DBM_INF) {
+            let bound = relValuePlus(rs, rl, u, c - d)
+            if (result.equals("")) { result = strClone(bound) } else { result = rangeSmax(result, bound) }
+        }
+        u = u + 1
+    }
+    return result
+}
+
+private fn relValuePlus(rs: RelLoop, rl: RangeLoop, u: Int, k: Int) -> String {
+    if (u == 0) { return strFromInt(k) }
+    let value = relValue(rs, rl, u)
+    if (k == 0) { return value }
+    return ir_get_temp_name(ir_add("i64", value, strFromInt(k)))
+}
+
+// An anchor's value in the preheader, as i64. A frozen start is the variable's
+// value there; a length is the stable list's.
+private fn relValue(rs: RelLoop, rl: RangeLoop, u: Int) -> String {
+    let known: String = list_get(rs.values, u)
+    if (known.equals("") == false) { return strClone(known) }
+    let name: String = list_get(rs.names, u)
+    let mut value = ""
+    if (list_get(rs.kinds, u) == REL_LEN) {
+        let list = ir_get_temp_name(ir_load(storageType(ir_get_var_type(name)), ir_get_var_slot(name)))
+        ir_call_begin()
+        ir_call_arg("ptr", list)
+        value = ir_get_temp_name(ir_sext("i32", ir_get_temp_name(ir_call_end("i32", "list_len")), "i64"))
+    } else {
+        value = ir_get_temp_name(ir_sext("i32",
+            ir_get_temp_name(ir_load("i32", ir_get_var_slot(name))), "i64"))
+    }
+    list_set(rs.values, u, strClone(value))
+    return value
+}

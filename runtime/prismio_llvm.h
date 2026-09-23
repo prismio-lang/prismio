@@ -230,6 +230,8 @@ LLVMValueRef LLVMGetBasicBlockParent(LLVMBasicBlockRef BB);
 // --- instructions -----------------------------------------------------------
 LLVMValueRef LLVMBuildAdd(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 LLVMValueRef LLVMBuildSub(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
+LLVMValueRef LLVMBuildNSWAdd(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
+LLVMValueRef LLVMBuildNSWSub(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 LLVMValueRef LLVMBuildMul(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 LLVMValueRef LLVMBuildSDiv(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 LLVMValueRef LLVMBuildUDiv(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);

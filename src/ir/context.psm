@@ -28,16 +28,20 @@ let mut irLoopDepth = 0
 let mut irLoopFlatGuard = ""
 let mut irLoopFlatGuardCounter = 0
 
-// Whether that same guard also proved, in the preheader, that every index this
-// loop forms is in range. Only then may a guarded read drop its bounds check --
-// and dropping it is the point, because a conditional element load is one LICM
-// will not hoist, which is the whole reason `data` was re-read per access.
-// Saved and restored around each loop exactly as irLoopFlatGuard is.
-let mut irLoopRangeProved = false
+// The range proof active in the loop copy being generated, or 0 (ir/ranges.psm).
+// An access whose node carries this proof drops its bounds check -- and dropping
+// it is the point, because a conditional element load is one LICM will not
+// hoist, which is the whole reason `data` was re-read per access. Saved and
+// restored around each loop exactly as irLoopFlatGuard is.
+let mut irLoopRangeProof = 0
+// The proof the last range analysis produced, handed from ir/ranges.psm to the
+// loop that asked for it, and whether it covers every flat access in the loop.
+let mut irLoopRangeProofPending = 0
+let mut irLoopRangeProofComplete = false
 
 // A narrower bounds fact for a growing-container loop:
 // `while (iv < list_len(xs))`. The condition proves only `xs[iv]`, and only
-// until the body assigns `iv`; unlike irLoopRangeProved it says nothing about
+// until the body assigns `iv`; unlike a range proof it says nothing about
 // any other index formed by the body. generateStatement clears Active at that
 // first assignment and restores the enclosing loop's fact around nested loops.
 let mut irLoopHeaderBoundList = ""

@@ -937,3 +937,14 @@ faulted in. The difference inverts the cross-language comparison — a warm C++ 
 reads a *slower* fill than Prismio's, purely because `std::vector`'s allocator
 returns the block to the OS between iterations.
 See `aif/evidence/RESULTS-scoped-alias-metadata.md`.
+
+**lz4's input fill is ~30% slower than an instruction-identical C loop, and the
+reason is not in the loop.** One shot per process, a standalone copy spends 312 us
+of 404 in the fill (`seed` recurrence plus one push per byte); a C loop with the same
+instructions runs it in 237 us. Versioning push loops on the capacity guard made
+Prismio's loop C++'s exactly (length in a register, base hoisted) and changed
+nothing, so it was reverted. Ruled out: the clock ramp (a 50 ms pre-spin moves
+neither arm), first-touch paging (a second fill in the same process is no faster),
+and the allocation (4 us). The main loop's bounds checks are not it either: a C
+model with and without them runs in the same time.
+See `aif/evidence/RESULTS-relational-tier.md`.

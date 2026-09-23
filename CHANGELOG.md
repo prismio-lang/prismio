@@ -15,6 +15,15 @@
   before the first test, in that order, where the end used to be re-read every
   iteration: `for i in 0..<v.length` no longer calls `length` per iteration, and
   `for c in s` computes `s.length` once instead of per character.
+- **Bounds checks leave more loops.** A loop's accesses are now proved in range
+  per access, from its induction variables (`src/ir/ranges.psm`) and, where that
+  is not enough, from difference bounds between its locals (`src/ir/dbm.psm`,
+  `src/ir/relations.psm`) -- `low + (high - low) / 2` inside `low <= high` is
+  proved. The proved copy of the loop carries no checks and emits its counter
+  updates `nsw`. binary_search 88.2 -> 69.9 ms (C++ 71.6). Bool elements of a
+  Vec are stored as bytes, as clang stores `bool`: prime_sieve 0.548 -> 0.494
+  (C++ 0.502). Measurements in `aif/evidence/RESULTS-loop-range-proofs.md` and
+  `RESULTS-relational-tier.md`.
 
 ### Added
 

@@ -1,0 +1,438 @@
+// Loop range proofs (src/ir/ranges.psm), and the property they must never break.
+//
+// A loop whose indices the analysis can bound runs a copy with no bounds checks,
+// behind a preheader guard that holds the facts the proof rests on. `list_get` is
+// total -- an index outside the list reads 0 and a write there does nothing -- so
+// every shape below runs once with inputs the guard admits and once with inputs
+// that make one of its facts false, and both must give what the language says.
+// The expected values come from a model of that semantics: `Int` wraps at 32 bits,
+// an out-of-range read is 0, an out-of-range write is dropped.
+//
+// Each shape is one the analysis handles and the previous one did not: several
+// counters moving under branches, a relation that bounds a counter the condition
+// never mentions, a step that is a variable, an access inside the condition, two
+// counters closing on each other, and `for` loops. The adversarial halves aim at
+// the soundness conditions: a start or step that makes a counter wrap, a list
+// shorter than the relation needs, a `let` or a match binder shadowing a name the
+// analysis tracks, and a counter a nested loop moves.
+
+import std.io
+
+enum Slot { Empty, At(Int) }
+
+fn ascending(n: Int, from: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(xs, from + i)
+        i = i + 1
+    }
+    return xs
+}
+
+fn weighted(xs: Vec<Int>) -> Int {
+    let mut acc = 0
+    let mut k = 0
+    while (k < list_len(xs)) {  // range: 1/1
+        acc = acc + (k + 1) * list_get(xs, k)
+        k = k + 1
+    }
+    return acc
+}
+
+// Three counters, two of them moving under a branch; `out` is bounded only by
+// `out - left - right` not changing on any path.
+fn merge(scratchLen: Int, low: Int, mid: Int, high: Int) -> Int {
+    let mut values: Vec<Int> = list_new_with_capacity(10)
+    list_push(values, 5)
+    list_push(values, 1)
+    list_push(values, 9)
+    list_push(values, 3)
+    list_push(values, 7)
+    list_push(values, 2)
+    list_push(values, 8)
+    list_push(values, 6)
+    list_push(values, 4)
+    list_push(values, 0)
+    let mut scratch: Vec<Int> = list_new_with_capacity(scratchLen)
+    let mut z = 0
+    while (z < scratchLen) {
+        list_push(scratch, 0)
+        z = z + 1
+    }
+    let mut left = low
+    let mut right = mid
+    let mut out = low
+    while (left < mid and right < high) {  // range: 6/6
+        if (list_get(values, left) <= list_get(values, right)) {
+            list_set(scratch, out, list_get(values, left))
+            left = left + 1
+        } else {
+            list_set(scratch, out, list_get(values, right))
+            right = right + 1
+        }
+        out = out + 1
+    }
+    while (left < mid) {  // range: 2/2
+        list_set(scratch, out, list_get(values, left))
+        left = left + 1
+        out = out + 1
+    }
+    while (right < high) {  // range: 2/2
+        list_set(scratch, out, list_get(values, right))
+        right = right + 1
+        out = out + 1
+    }
+    return weighted(scratch)
+}
+
+// A step that is a variable, as a sieve strides. A huge step wraps the counter
+// negative with the condition still true; `cap` ends the loop.
+fn sieveStep(n: Int, start: Int, step: Int, cap: Int) -> Int {
+    let mut marks: Vec<Int> = list_new_with_capacity(n + 1)
+    let mut i = 0
+    while (i <= n) {
+        list_push(marks, 1)
+        i = i + 1
+    }
+    let mut m = start
+    let mut count = 0
+    while (m <= n) {  // range: 1/1
+        list_set(marks, m, 0)
+        m = m + step
+        count = count + 1
+        if (count > cap) { break }
+    }
+    let mut total = 0
+    let mut k = 0
+    while (k <= n) {  // range: 1/1
+        total = total + list_get(marks, k)
+        k = k + 1
+    }
+    return total * 1000 + count
+}
+
+// `at + 3 < n` bounds `at` by n - 4 only while the sum does not wrap. Started
+// near the top of `Int` it does, the condition is true, and every read is past
+// the end.
+fn shifted(n: Int, start: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut acc = 0
+    let mut at = start
+    let mut count = 0
+    while (at + 3 < n) {  // range: 1/1
+        acc = acc + list_get(xs, at)
+        at = at + 1
+        count = count + 1
+        if (count > 6) { break }
+    }
+    return acc * 100 + count
+}
+
+// Reads inside the condition, each bounded by the conjunct before it.
+fn matchLength(pos: Int, ref: Int, n: Int) -> Int {
+    let mut data: Vec<Int> = list_new_with_capacity(10)
+    list_push(data, 1)
+    list_push(data, 2)
+    list_push(data, 3)
+    list_push(data, 1)
+    list_push(data, 2)
+    list_push(data, 3)
+    list_push(data, 1)
+    list_push(data, 2)
+    list_push(data, 9)
+    list_push(data, 9)
+    let mut m = 0
+    while (pos + m < n and list_get(data, pos + m) == list_get(data, ref + m) and m < 255) {  // range: 2/2
+        m = m + 1
+    }
+    return m
+}
+
+// Two counters closing on each other: `i < j` bounds each by the other's start.
+fn reverse(n: Int, i0: Int, j0: Int) -> Int {
+    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut k = 0
+    while (k < n) {
+        list_push(xs, k * 3)
+        k = k + 1
+    }
+    let mut i = i0
+    let mut j = j0
+    while (i < j) {  // range: 4/4
+        let a = list_get(xs, i)
+        let b = list_get(xs, j)
+        list_set(xs, i, b)
+        list_set(xs, j, a)
+        i = i + 1
+        j = j - 1
+    }
+    return weighted(xs)
+}
+
+// A `for` variable, and a second cursor moving in step with it.
+fn forCopy(n: Int, a: Int, b: Int, dst0: Int) -> Int {
+    let src = ascending(n, 5)
+    let mut dst: Vec<Int> = list_new_with_capacity(n)
+    let mut z = 0
+    while (z < n) {
+        list_push(dst, 0)
+        z = z + 1
+    }
+    let mut j = dst0
+    for i in a..<b {  // range: 2/2
+        list_set(dst, j, list_get(src, i))
+        j = j + 1
+    }
+    return weighted(dst)
+}
+
+fn forStep(n: Int, a: Int, b: Int, step: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut acc = 0
+    for i in a..b step step {  // range: 1/1
+        acc = acc + list_get(xs, i) * (i + 2)
+    }
+    return acc
+}
+
+// Division and remainder see the index the loop computed, and a remainder takes
+// the dividend's sign.
+fn divided(n: Int, a: Int, b: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut acc = 0
+    let mut i = a
+    while (i < b) {  // range: 2/2
+        acc = acc + list_get(xs, i / 2) * 7 + list_get(xs, i % 3)
+        i = i + 1
+    }
+    return acc
+}
+
+// `x & m` is in [0, m] for any x -- but only while m is not negative.
+fn masked(n: Int, m: Int, a: Int, b: Int) -> Int {
+    let xs = ascending(n, 2)
+    let mut acc = 0
+    let mut i = a
+    while (i < b) {  // range: 1/1
+        acc = acc + list_get(xs, (i * 7) & m)
+        i = i + 1
+    }
+    return acc
+}
+
+// A `let` in the body shadows an outer name for the rest of the body only.
+fn letShadow(n: Int) -> Int {
+    let xs = ascending(8, 1)
+    let k = 100
+    let mut acc = 0
+    let mut i = 0
+    while (i < n) {  // range: 1/2
+        acc = acc + list_get(xs, k)
+        let k = i + 1
+        acc = acc + list_get(xs, k) * 10
+        i = i + 1
+    }
+    return acc
+}
+
+// A match binder shadows the loop's counter inside its arm and nowhere else, so
+// `xs[i]` in the arm is indexed by the payload, which nothing bounds.
+fn binderShadow(n: Int, at: Int) -> Int {
+    let xs = ascending(8, 1)
+    let s = Slot.At(at)
+    let mut acc = 0
+    let mut i = 0
+    while (i < n) {  // range: 0/1
+        match (s) {
+            Slot.At(i) => { acc = acc + list_get(xs, i) }
+            Slot.Empty => { acc = acc + 1000 }
+        }
+        i = i + 1
+    }
+    return acc
+}
+
+// The counter a nested loop moves bounds nothing in the outer one.
+fn nestedBump(n: Int) -> Int {
+    let xs = ascending(8, 1)
+    let mut acc = 0
+    let mut i = 0
+    while (i < n) {  // range: 0/1
+        acc = acc + list_get(xs, i)
+        let mut r = 0
+        while (r < 2) {
+            i = i + 1
+            r = r + 1
+        }
+    }
+    return acc
+}
+
+// A bisection (ir/relations.psm). Neither bound moves by a fixed step; what keeps
+// `mid` in the list is `L0 <= low <= mid <= high <= H0`, a chain of differences.
+// The twins start past either end, and far enough apart that `high - low`, or
+// `high + 1`, wraps: the proved copy's facts are false there, so the checked copy
+// must run and give the wrapping answer.
+fn bisect(n: Int, low0: Int, high0: Int, needle: Int) -> Int {
+    let xs = ascending(n, 0)
+    let mut low = low0
+    let mut high = high0
+    let mut steps = 0
+    let mut at = 0 - 1
+    while (low <= high) {  // range: 1/1
+        let mid = low + (high - low) / 2
+        let value = list_get(xs, mid)
+        steps = steps + 1
+        if (steps > 40) { break }
+        if (value == needle) {
+            at = mid
+            low = high + 1
+        } else if (value < needle) {
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return at * 100 + steps
+}
+
+// The same search through `(low + high) / 2`, whose sum wraps first.
+fn bisectSum(n: Int, low0: Int, high0: Int, needle: Int) -> Int {
+    let xs = ascending(n, 0)
+    let mut low = low0
+    let mut high = high0
+    let mut steps = 0
+    let mut at = 0 - 1
+    while (low <= high) {  // range: 1/1
+        let mid = (low + high) / 2
+        let value = list_get(xs, mid)
+        steps = steps + 1
+        if (steps > 40) { break }
+        if (value == needle) {
+            at = mid
+            low = high + 1
+        } else if (value < needle) {
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    return at * 100 + steps
+}
+
+// A midpoint of two bounds nothing orders: with `high` below `low` it lands
+// below both, and the difference-bound tier must not place it between them.
+fn unordered(n: Int, low0: Int, high0: Int, limit: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut low = low0
+    let high = high0
+    let mut acc = 0
+    let mut steps = 0
+    while (low < limit) {  // range: 1/1
+        let mid = low + (high - low) / 2
+        acc = acc + list_get(xs, mid)
+        low = low + 1
+        steps = steps + 1
+        if (steps > 20) { break }
+    }
+    return acc
+}
+
+// A nested loop that moves `high` leaves nothing known of it at the next head.
+fn nestedGrow(n: Int, high0: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut low = 0
+    let mut high = high0
+    let mut acc = 0
+    let mut steps = 0
+    while (low <= high) {  // range: 0/1
+        let mid = low + (high - low) / 2
+        acc = acc + list_get(xs, mid)
+        let mut r = 0
+        while (r < 1) {
+            high = high + 5
+            r = r + 1
+        }
+        low = mid + 1
+        steps = steps + 1
+        if (steps > 12) { break }
+    }
+    return acc
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("FAIL: merge in range", merge(10, 0, 5, 10), 270)
+    bad = bad + check("FAIL: merge short scratch", merge(6, 0, 5, 10), 101)
+    bad = bad + check("FAIL: merge past the end", merge(10, 3, 5, 14), 205)
+
+    bad = bad + check("FAIL: sieve in range", sieveStep(40, 4, 2, 100), 22019)
+    bad = bad + check("FAIL: sieve huge step", sieveStep(40, 4, 2147483600, 5), 40001)
+    bad = bad + check("FAIL: sieve wrapping step", sieveStep(40, 4, 2147483647, 5), 38005)
+    bad = bad + check("FAIL: sieve start past n", sieveStep(40, 2147483600, 30, 5), 41000)
+
+    bad = bad + check("FAIL: shifted in range", shifted(8, 0), 1505)
+    bad = bad + check("FAIL: shifted wrapping start", shifted(8, 2147483646), 7)
+
+    bad = bad + check("FAIL: match length", matchLength(3, 0, 10), 5)
+    bad = bad + check("FAIL: match length short", matchLength(6, 0, 10), 2)
+    bad = bad + check("FAIL: match length past the end", matchLength(3, 0, 20), 5)
+
+    bad = bad + check("FAIL: reverse in range", reverse(8, 0, 7), 252)
+    bad = bad + check("FAIL: reverse past the end", reverse(8, 0, 11), 414)
+    bad = bad + check("FAIL: reverse before the start", reverse(8, 0 - 3, 4), 387)
+
+    bad = bad + check("FAIL: for copy", forCopy(8, 0, 8, 0), 348)
+    bad = bad + check("FAIL: for copy offset source", forCopy(8, 2, 8, 0), 217)
+    bad = bad + check("FAIL: for copy offset target", forCopy(8, 0, 8, 3), 220)
+    bad = bad + check("FAIL: for copy past the end", forCopy(8, 0, 12, 0), 348)
+
+    bad = bad + check("FAIL: for step", forStep(10, 0, 9, 3), 188)
+    bad = bad + check("FAIL: for step one", forStep(10, 0, 9, 1), 440)
+    bad = bad + check("FAIL: for step past the end", forStep(10, 4, 20, 5), 140)
+
+    bad = bad + check("FAIL: divided", divided(8, 0, 10), 229)
+    bad = bad + check("FAIL: divided negative", divided(8, 0 - 5, 6), 104)
+    bad = bad + check("FAIL: divided past the end", divided(8, 0, 20), 543)
+
+    bad = bad + check("FAIL: masked", masked(8, 7, 0, 20), 114)
+    bad = bad + check("FAIL: masked past the end", masked(8, 15, 0, 20), 62)
+    bad = bad + check("FAIL: masked negative mask", masked(8, 0 - 1, 0, 5), 11)
+
+    bad = bad + check("FAIL: let shadow", letShadow(5), 200)
+    bad = bad + check("FAIL: let shadow past the end", letShadow(8), 350)
+    bad = bad + check("FAIL: binder shadow", binderShadow(5, 2), 15)
+    bad = bad + check("FAIL: binder shadow past the end", binderShadow(5, 9), 0)
+    bad = bad + check("FAIL: nested bump", nestedBump(8), 16)
+    bad = bad + check("FAIL: nested bump past the end", nestedBump(11), 16)
+
+    bad = bad + check("FAIL: bisect found", bisect(16, 0, 15, 11), 1102)
+    bad = bad + check("FAIL: bisect found low", bisect(16, 0, 15, 4), 404)
+    bad = bad + check("FAIL: bisect missing", bisect(16, 0, 15, 99), 0 - 95)
+    bad = bad + check("FAIL: bisect past the end", bisect(16, 0, 20, 18), 0 - 95)
+    bad = bad + check("FAIL: bisect before the start", bisect(16, 0 - 3, 15, 1), 102)
+    bad = bad + check("FAIL: bisect wrapping span", bisect(16, 0 - 2147483600, 2147483600, 5), 0 - 98)
+    bad = bad + check("FAIL: bisect wrapping bound", bisect(16, 0, 2147483647, 0), 41)
+    bad = bad + check("FAIL: bisect sum found", bisectSum(16, 0, 15, 11), 1102)
+    bad = bad + check("FAIL: bisect sum past the end", bisectSum(16, 0, 20, 18), 0 - 95)
+    bad = bad + check("FAIL: bisect sum wrapping", bisectSum(16, 2147483000, 2147483600, 5), 0 - 59)
+    bad = bad + check("FAIL: bisect sum before the start", bisectSum(16, 0 - 5, 15, 0), 2)
+    bad = bad + check("FAIL: unordered midpoint", unordered(8, 0, 7, 8), 48)
+    bad = bad + check("FAIL: unordered midpoint below", unordered(8, 6, 0, 8), 9)
+    bad = bad + check("FAIL: nested grow", nestedGrow(8, 7), 4)
+    bad = bad + check("FAIL: nested grow past the end", nestedGrow(40, 7), 172)
+
+    if (bad != 0) { return 1 }
+    println("PASS: loop range proofs")
+    return 0
+}

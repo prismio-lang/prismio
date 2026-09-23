@@ -1,0 +1,1611 @@
+// Loop index ranges: which list accesses in one loop provably stay inside their
+// list on every iteration, and the preheader facts each of those proofs rests on.
+//
+// The caller versions the loop on the guard this folds its facts into. The
+// guarded copy drops the bounds check at every access marked here; the other copy
+// is the loop as written, so `list_get` stays total. A fact that is false at run
+// time selects the checked loop -- nothing here can admit an out-of-range access.
+//
+// The proof is an abstract interpretation of the body over its *induction
+// variables*: `Int` locals every assignment to which, in the body and outside any
+// nested loop, adds a non-negative step (or every one subtracts), the step being a
+// literal or the same loop-invariant name each time. A delta walk runs the body
+// for one linear combination of them and answers the least and greatest change
+// since the loop head, at every access and over a whole iteration. The one walk
+// serves three questions:
+//
+// - per variable: its span at each access, and how far one iteration can move it,
+//   which is what keeps it from wrapping between the checks the guard makes;
+// - per candidate relation: `out - left - right` changing on no path that stays in
+//   the loop is what bounds a merge's output cursor, which nothing in the
+//   condition mentions;
+// - for a `for` loop, whose variable the latch advances after every such path.
+//
+// Head bounds come from the condition's `and` conjuncts, from a monotone
+// variable's start, and from relations. Index expressions are then evaluated as
+// intervals in i64, in the preheader. The loop computes the index in wrapping
+// `Int`; `+ - *` agree with their wrapped results modulo 2^32, so an interval
+// inside [0, len) -- which is inside `Int` -- is the index the loop computes.
+// `/` and `%` do not commute with wrapping, and each adds the fact that its
+// operand did not wrap.
+
+import ast.nodes
+import ast.types
+import common.text
+import std.string
+
+let RANGE_OPAQUE = 0
+let RANGE_UP = 1
+let RANGE_DOWN = 2
+let RANGE_PENDING = 3
+
+let RANGE_INT_MAX = "2147483647"
+let RANGE_INT_MIN = "-2147483648"
+
+// Every literal this reads -- a step, a shift, a multiplier -- is at most six
+// digits, so no product or sum of them with 32-bit values can approach the edge of
+// the i64 the guard computes in.
+let RANGE_LITERAL_DIGITS = 6
+
+// A relation is `y - y0 = sum of (x - x0)` over at most this many variables.
+let RANGE_RELATION_MEMBERS = 3
+
+// Walk modes. Enumeration sizes the per-access tables; measurement fills one
+// column of them; emission computes each access's interval and folds its facts.
+let RANGE_WALK_ENUMERATE = 0
+let RANGE_WALK_MEASURE = 1
+let RANGE_WALK_EMIT = 2
+
+struct RangeLoop {
+    condPtr: Ptr,
+    bodyPtr: Ptr,
+    slot: String,
+    proof: Int,
+    proved: Int,
+    failed: Bool,
+    // The loop's own label, which a `continue@label` in its body names, and its
+    // source line, for PRISMIO_RANGE_TRACE.
+    label: String,
+    line: Int,
+
+    // The induction variables, indexed alike across every field below.
+    names: Vec<String>,
+    kinds: Vec<Int>,
+    // "" while every update adds a literal, and a walk counts literal amounts;
+    // otherwise the one invariant name every update adds, and a walk counts steps.
+    units: Vec<String>,
+    // The walk's linear combination.
+    coefs: Vec<Int>,
+    // How far one iteration can move the variable along its direction, in the
+    // units above.
+    growth: Vec<Int>,
+    // The first condition conjunct that bounds the variable, or -1.
+    boundConj: Vec<Int>,
+    // The members of the relation that bounds it, as a bit set, or 0.
+    relations: Vec<Int>,
+
+    // Preheader values, as i64: the variable's start, its step when symbolic,
+    // and its bounds at the loop head ("" when it has none).
+    inits: Vec<String>,
+    unitValues: Vec<String>,
+    lows: Vec<String>,
+    highs: Vec<String>,
+    // Whether this variable's no-wrap facts are already in the guard.
+    folded: Vec<Int>,
+
+    // The `for` variable's index, or -1, and how far its latch moves it in units.
+    forVar: Int,
+    forStep: Int,
+
+    // Per access, in walk order: the conjunct it sits in (-1 in the body), then a
+    // (least, greatest) delta pair per variable.
+    accessConj: Vec<Int>,
+    accessSpans: Vec<Int>,
+    // Immutable `Int` lets in the body, in walk order, with their spans.
+    letNames: Vec<String>,
+    letSpans: Vec<Int>,
+    // Receivers whose element base the preheader has loaded, and the loads.
+    dataNames: Vec<String>,
+    dataValues: Vec<String>,
+    // The lets in scope at the walk's current point, innermost last.
+    scopeLets: Vec<Int>,
+    scopeCount: Int,
+
+    // Walk state.
+    mode: Int,
+    column: Int,
+    cursor: Int,
+    letCursor: Int,
+    conjunct: Int,
+    nextConjunct: Int,
+    curLo: Int,
+    curHi: Int,
+    live: Bool,
+    contLo: Int,
+    contHi: Int,
+    contLive: Bool,
+    allLo: Int,
+    allHi: Int,
+    allLive: Bool,
+
+    // Interval results. `extra` gathers the operand facts `/` and `%` need.
+    outLo: String,
+    outHi: String,
+    extra: String,
+    usedMask: Int,
+    // The conjunct the access being evaluated sits in, or -1 in the body.
+    conjLimit: Int
+}
+
+private fn rangeLoopNew(condPtr: Ptr, bodyPtr: Ptr) -> RangeLoop {
+    let mut label = ""
+    if (nodeExists(bodyPtr)) { label = strClone(ptr_to_node(bodyPtr).s1) }
+    return RangeLoop {
+        condPtr: condPtr, bodyPtr: bodyPtr, slot: "", proof: 0, proved: 0,
+        failed: false, label: label, line: 0,
+        names: list_new(), kinds: list_new(), units: list_new(), coefs: list_new(),
+        growth: list_new(), boundConj: list_new(), relations: list_new(),
+        inits: list_new(), unitValues: list_new(), lows: list_new(), highs: list_new(),
+        folded: list_new(), forVar: 0 - 1, forStep: 0,
+        accessConj: list_new(), accessSpans: list_new(),
+        letNames: list_new(), letSpans: list_new(), dataNames: list_new(), dataValues: list_new(),
+        scopeLets: list_new(), scopeCount: 0,
+        mode: RANGE_WALK_ENUMERATE, column: 0 - 1, cursor: 0, letCursor: 0,
+        conjunct: 0 - 1, nextConjunct: 0,
+        curLo: 0, curHi: 0, live: true, contLo: 0, contHi: 0, contLive: false,
+        allLo: 0, allHi: 0, allLive: false,
+        outLo: "", outHi: "", extra: "", usedMask: 0, conjLimit: 0 - 1
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Entry points
+// ---------------------------------------------------------------------------
+
+// A `while` loop. Returns the guard slot for the proved copy, or "" when no access
+// could be proved; `irLoopRangeProofPending` then holds the proof to activate.
+internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode) -> String {
+    let rl = rangeLoopNew(node_to_ptr(cond), node_to_ptr(body))
+    rl.line = cond.line
+    rangeCollectVars(rl)
+    return rangeProve(rl)
+}
+
+// A range `for` over `name` from the value already in its slot to `endVal`,
+// advancing by `stepVal` -- a literal, or an i32 value the loop has already
+// required to be positive before it is entered. `endVal` is exclusive unless
+// `inclusive`.
+internal fn generateForRangeGuard(stmt: ASTNode, endVal: String, stepVal: String,
+                                  stepIsLiteral: Bool, inclusive: Bool) -> String {
+    let rl = rangeLoopNew(ptr_null(), stmt.child3)
+    rl.line = stmt.line
+    let index = rangeAddVar(rl, stmt.s1)
+    list_set(rl.kinds, index, RANGE_UP)
+    if (stepIsLiteral) {
+        if (__builtin_string_len(stepVal) > RANGE_LITERAL_DIGITS) { return "" }
+        rl.forStep = strParseIntOr(stepVal, 0)
+        if (rl.forStep <= 0) { return "" }
+    } else {
+        list_set(rl.units, index, "$for")
+        rl.forStep = 1
+    }
+    rl.forVar = index
+    rangeCollectVars(rl)
+    if (list_get(rl.kinds, index) != RANGE_UP) { return "" }
+
+    // The latch leaves the loop before it would pass `end`, so the variable is
+    // never past it at the head and never wraps: no fact to fold for it.
+    let slotName = rangeSlotName()
+    rl.slot = strClone(slotName)
+    let start = ir_get_temp_name(ir_sext("i32",
+        ir_get_temp_name(ir_load("i32", ir_get_var_slot(stmt.s1))), "i64"))
+    let end64 = ir_get_temp_name(ir_sext("i32", endVal, "i64"))
+    list_set(rl.inits, index, strClone(start))
+    list_set(rl.lows, index, strClone(start))
+    if (inclusive) {
+        list_set(rl.highs, index, strClone(end64))
+    } else {
+        list_set(rl.highs, index, ir_get_temp_name(ir_sub("i64", end64, "1")))
+    }
+    if (stepIsLiteral == false) {
+        list_set(rl.unitValues, index, ir_get_temp_name(ir_sext("i32", stepVal, "i64")))
+    }
+    list_set(rl.folded, index, 1)
+    return rangeFinish(rl)
+}
+
+// The slot, the analysis and the emission, once the variables are known.
+private fn rangeProve(rl: RangeLoop) -> String {
+    if (rl.failed) { return "" }
+    rl.slot = rangeSlotName()
+    return rangeFinish(rl)
+}
+
+private fn rangeFinish(rl: RangeLoop) -> String {
+    rangeRunWalk(rl, RANGE_WALK_ENUMERATE)
+    if (rl.failed or list_len(rl.accessConj) == 0) { return "" }
+    rangeMeasureVars(rl)
+    rangeFindConditionBounds(rl)
+    rangeFindRelations(rl)
+    rangeEmitVarValues(rl)
+
+    rl.proof = ir_range_proof_new()
+    rangeRunWalk(rl, RANGE_WALK_EMIT)
+    relationsProve(rl)
+    ir_range_trace(rl.line, rl.proved, list_len(rl.accessConj))
+    if (rl.proved == 0) { return "" }
+    irLoopRangeProofPending = rl.proof
+    irLoopRangeProofComplete = rl.proved == list_len(rl.accessConj)
+    return strClone(rl.slot)
+}
+
+// A fresh `i1` slot, true until a fact is folded into it.
+private fn rangeSlotName() -> String {
+    let name = "rangeguard.".concat(strFromInt(irLoopFlatGuardCounter))
+    irLoopFlatGuardCounter = irLoopFlatGuardCounter + 1
+    ir_set_var_type(name, "Bool")
+    let slot = ir_get_var_slot(name)
+    ir_alloca("i1", slot)
+    ir_store("i1", "true", slot)
+    return strClone(slot)
+}
+
+internal fn rangeFold(rl: RangeLoop, fact: String) {
+    let prev = ir_get_temp_name(ir_load("i1", rl.slot))
+    ir_store("i1", ir_get_temp_name(ir_and("i1", prev, fact)), rl.slot)
+}
+
+// ---------------------------------------------------------------------------
+// Induction variables
+// ---------------------------------------------------------------------------
+
+private fn rangeVarIndex(rl: RangeLoop, name: String) -> Int {
+    let mut i = 0
+    let n = list_len(rl.names)
+    while (i < n) {
+        let known: String = list_get(rl.names, i)
+        if (known.equals(name)) { return i }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+private fn rangeAddVar(rl: RangeLoop, name: String) -> Int {
+    let found = rangeVarIndex(rl, name)
+    if (found >= 0) { return found }
+    list_push(rl.names, strClone(name))
+    list_push(rl.kinds, RANGE_PENDING)
+    list_push(rl.units, "")
+    list_push(rl.coefs, 0)
+    list_push(rl.growth, 0)
+    list_push(rl.boundConj, 0 - 1)
+    list_push(rl.relations, 0)
+    list_push(rl.inits, "")
+    list_push(rl.unitValues, "")
+    list_push(rl.lows, "")
+    list_push(rl.highs, "")
+    list_push(rl.folded, 0)
+    return list_len(rl.names) - 1
+}
+
+private fn rangeOpaque(rl: RangeLoop, index: Int) {
+    list_set(rl.kinds, index, RANGE_OPAQUE)
+}
+
+private fn rangeCollectVars(rl: RangeLoop) {
+    rangeClassify(rl.bodyPtr, rl, 0)
+    let mut i = 0
+    while (i < list_len(rl.names)) {
+        let name: String = list_get(rl.names, i)
+        // A body that declares or pattern-binds the name has a second variable
+        // under it, and which one an index means depends on where it sits.
+        if (i != rl.forVar and rangeBodyDeclares(rl.bodyPtr, name)) { rangeOpaque(rl, i) }
+        if (i != rl.forVar and ir_var_is_global(name) == 1) { rangeOpaque(rl, i) }
+        if (list_get(rl.kinds, i) == RANGE_PENDING) { rangeOpaque(rl, i) }
+        i = i + 1
+    }
+}
+
+private fn rangeClassifyChain(head: Ptr, rl: RangeLoop, nested: Int) {
+    let mut p = head
+    while (nodeExists(p)) {
+        rangeClassify(p, rl, nested)
+        p = ptr_to_node(p).next
+    }
+}
+
+private fn rangeClassify(nodePtr: Ptr, rl: RangeLoop, nested: Int) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    let mut inner = nested
+    if (rangeIsLoop(n)) { inner = nested + 1 }
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+        let target = ptr_to_node(n.child1)
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+            rangeClassifyUpdate(rl, target, n.child2, nested)
+        }
+    }
+    rangeClassifyChain(n.child1, rl, inner)
+    rangeClassifyChain(n.child2, rl, inner)
+    rangeClassifyChain(n.child3, rl, inner)
+}
+
+internal fn rangeIsLoop(n: ASTNode) -> Bool {
+    return n.kind == NodeKind.WHILE_STATEMENT or n.kind == NodeKind.LOOP_STATEMENT
+        or n.kind == NodeKind.FOR_STATEMENT
+}
+
+// One assignment to `target`: an update of the recognised shape keeps the
+// variable's direction and unit, anything else makes it opaque. An update inside
+// a nested loop can run any number of times per iteration of this one, so it
+// bounds nothing.
+private fn rangeClassifyUpdate(rl: RangeLoop, target: ASTNode, rhsPtr: Ptr, nested: Int) {
+    let index = rangeAddVar(rl, target.s1)
+    if (list_get(rl.kinds, index) == RANGE_OPAQUE) { return }
+    if (index == rl.forVar) {
+        rangeOpaque(rl, index)
+        return
+    }
+    if (nested > 0 or rangeIsIntNode(target) == false) {
+        rangeOpaque(rl, index)
+        return
+    }
+    let dir = rangeUpdateDirection(rhsPtr, target.s1)
+    if (dir == RANGE_OPAQUE) {
+        rangeOpaque(rl, index)
+        return
+    }
+    let stepPtr = rangeUpdateStep(rhsPtr, target.s1)
+    if (nodeIsNull(stepPtr)) {
+        rangeOpaque(rl, index)
+        return
+    }
+    let step = ptr_to_node(stepPtr)
+    let mut unit = ""
+    if (step.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (rangeIsInvariantName(step, rl) == false) {
+            rangeOpaque(rl, index)
+            return
+        }
+        unit = strClone(step.s1)
+    } else if (rangeLiteralValue(step) < 0) {
+        rangeOpaque(rl, index)
+        return
+    }
+    let kind = list_get(rl.kinds, index)
+    if (kind == RANGE_PENDING) {
+        list_set(rl.kinds, index, dir)
+        list_set(rl.units, index, strClone(unit))
+        return
+    }
+    let known: String = list_get(rl.units, index)
+    if (kind != dir or known.equals(unit) == false) { rangeOpaque(rl, index) }
+}
+
+// RANGE_UP for `x = x + s` or `x = s + x`, RANGE_DOWN for `x = x - s`, otherwise
+// RANGE_OPAQUE.
+private fn rangeUpdateDirection(rhsPtr: Ptr, name: String) -> Int {
+    if (nodeIsNull(rhsPtr)) { return RANGE_OPAQUE }
+    let rhs = ptr_to_node(rhsPtr)
+    if (rhs.kind != NodeKind.BINARY_EXPR) { return RANGE_OPAQUE }
+    if (nodeIsNull(rhs.child1) or nodeIsNull(rhs.child2)) { return RANGE_OPAQUE }
+    let lhsNamed = rangeIsNamed(rhs.child1, name)
+    if (rhs.s1.equals("+")) {
+        if (lhsNamed or rangeIsNamed(rhs.child2, name)) { return RANGE_UP }
+        return RANGE_OPAQUE
+    }
+    if (rhs.s1.equals("-") and lhsNamed) { return RANGE_DOWN }
+    return RANGE_OPAQUE
+}
+
+// The step operand of an update rangeUpdateDirection accepted: a literal or a
+// name. Null for anything else.
+private fn rangeUpdateStep(rhsPtr: Ptr, name: String) -> Ptr {
+    if (rangeUpdateDirection(rhsPtr, name) == RANGE_OPAQUE) { return ptr_null() }
+    let rhs = ptr_to_node(rhsPtr)
+    let mut stepPtr = rhs.child2
+    if (rangeIsNamed(rhs.child1, name) == false) { stepPtr = rhs.child1 }
+    let step = ptr_to_node(stepPtr)
+    if (step.kind == NodeKind.IDENTIFIER_EXPR) { return stepPtr }
+    if (rangeLiteralValue(step) >= 0) { return stepPtr }
+    return ptr_null()
+}
+
+// A non-negative integer literal of at most RANGE_LITERAL_DIGITS digits, or -1.
+private fn rangeLiteralValue(n: ASTNode) -> Int {
+    if (n.kind != NodeKind.LITERAL_EXPR) { return 0 - 1 }
+    if (n.i1 != TokenType.NUMBER_LITERAL) { return 0 - 1 }
+    if (__builtin_string_len(n.s1) > RANGE_LITERAL_DIGITS) { return 0 - 1 }
+    return strParseIntOr(n.s1, 0 - 1)
+}
+
+internal fn rangeIsNamed(p: Ptr, name: String) -> Bool {
+    if (nodeIsNull(p)) { return false }
+    let n = ptr_to_node(p)
+    return n.kind == NodeKind.IDENTIFIER_EXPR and n.s1.equals(name)
+}
+
+internal fn rangeIsIntNode(n: ASTNode) -> Bool {
+    if (nodeHasType(n) == false) { return false }
+    return storageType(getExprType(n)).equals("i32")
+}
+
+// The amount one recognised update moves its variable, in the variable's units.
+private fn rangeUpdateAmount(rhsPtr: Ptr, name: String, rl: RangeLoop, index: Int) -> Int {
+    let unit: String = list_get(rl.units, index)
+    if (unit.equals("") == false) { return 1 }
+    return rangeLiteralValue(ptr_to_node(rangeUpdateStep(rhsPtr, name)))
+}
+
+// A local the loop cannot change: not a global -- a callee the guard looks
+// through may still assign one -- and not declared, assigned or pattern-bound
+// anywhere in the body.
+internal fn rangeIsInvariantName(n: ASTNode, rl: RangeLoop) -> Bool {
+    if (n.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    if (rangeIsIntNode(n) == false) { return false }
+    if (ir_var_is_global(n.s1) == 1) { return false }
+    if (irBodyBindsName(rl.bodyPtr, n.s1)) { return false }
+    return rangeBindsInPattern(rl.bodyPtr, n.s1) == false
+}
+
+private fn rangeBodyDeclares(bodyPtr: Ptr, name: String) -> Bool {
+    if (rangeBindsInPattern(bodyPtr, name)) { return true }
+    return nodeExists(irFindDeclInBody(bodyPtr, name))
+}
+
+// Whether a `match` arm in the body binds `name` from an enum payload.
+internal fn rangeBindsInPattern(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.MATCH_ARM and nodeExists(n.child1)) {
+        let pattern = ptr_to_node(n.child1)
+        if (pattern.kind == NodeKind.CALL_EXPR) {
+            let mut binder = pattern.child2
+            while (nodeExists(binder)) {
+                if (rangeIsNamed(binder, name)) { return true }
+                binder = ptr_to_node(binder).next
+            }
+        }
+    }
+    if (rangeBindsInPatternChain(n.child1, name)) { return true }
+    if (rangeBindsInPatternChain(n.child2, name)) { return true }
+    return rangeBindsInPatternChain(n.child3, name)
+}
+
+private fn rangeBindsInPatternChain(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (rangeBindsInPattern(p, name)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+// ---------------------------------------------------------------------------
+// The delta walk
+// ---------------------------------------------------------------------------
+
+// Walks the condition and the body once, for the combination in `coefs`. Leaves
+// the span of every path that stays in the loop in cont*, and of every path at
+// all in all*.
+private fn rangeRunWalk(rl: RangeLoop, mode: Int) {
+    rl.mode = mode
+    rl.curLo = 0
+    rl.curHi = 0
+    rl.live = true
+    rl.contLive = false
+    rl.allLive = false
+    rl.cursor = 0
+    rl.letCursor = 0
+    rl.scopeCount = 0
+    rl.nextConjunct = 0
+    rl.conjunct = 0 - 1
+    if (nodeExists(rl.condPtr)) { rangeWalkConjuncts(rl.condPtr, rl) }
+    rl.conjunct = 0 - 1
+    rangeWalkBlock(rl.bodyPtr, rl)
+    if (rl.live) { rangeEndContinue(rl) }
+    if (rl.forVar >= 0 and rl.contLive) {
+        let latch = list_get(rl.coefs, rl.forVar) * rl.forStep
+        rl.contLo = rl.contLo + latch
+        rl.contHi = rl.contHi + latch
+    }
+    if (rl.contLive) { rangeJoinAll(rl, rl.contLo, rl.contHi) }
+}
+
+private fn rangeEndContinue(rl: RangeLoop) {
+    if (rl.contLive) {
+        rl.contLo = rangeMin(rl.contLo, rl.curLo)
+        rl.contHi = rangeMax(rl.contHi, rl.curHi)
+    } else {
+        rl.contLo = rl.curLo
+        rl.contHi = rl.curHi
+        rl.contLive = true
+    }
+    rl.live = false
+}
+
+private fn rangeEndExit(rl: RangeLoop) {
+    rangeJoinAll(rl, rl.curLo, rl.curHi)
+    rl.live = false
+}
+
+private fn rangeJoinAll(rl: RangeLoop, lo: Int, hi: Int) {
+    if (rl.allLive) {
+        rl.allLo = rangeMin(rl.allLo, lo)
+        rl.allHi = rangeMax(rl.allHi, hi)
+    } else {
+        rl.allLo = lo
+        rl.allHi = hi
+        rl.allLive = true
+    }
+}
+
+// Joins a branch's outcome into the current state.
+private fn rangeJoinCur(rl: RangeLoop, lo: Int, hi: Int, live: Bool) {
+    if (live == false) { return }
+    if (rl.live) {
+        rl.curLo = rangeMin(rl.curLo, lo)
+        rl.curHi = rangeMax(rl.curHi, hi)
+    } else {
+        rl.curLo = lo
+        rl.curHi = hi
+        rl.live = true
+    }
+}
+
+private fn rangeMin(a: Int, b: Int) -> Int {
+    if (a < b) { return a }
+    return b
+}
+
+private fn rangeMax(a: Int, b: Int) -> Int {
+    if (a > b) { return a }
+    return b
+}
+
+// The condition's `and` conjuncts, left to right, each numbered so an access in
+// one can use the facts of those before it and no others.
+private fn rangeWalkConjuncts(nodePtr: Ptr, rl: RangeLoop) {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.BINARY_EXPR and n.s1.equals("and")) {
+        rangeWalkConjuncts(n.child1, rl)
+        rangeWalkConjuncts(n.child2, rl)
+        return
+    }
+    rl.conjunct = rl.nextConjunct
+    rl.nextConjunct = rl.nextConjunct + 1
+    rangeWalkExpr(nodePtr, rl)
+}
+
+private fn rangeWalkBlock(blockPtr: Ptr, rl: RangeLoop) {
+    if (nodeIsNull(blockPtr)) { return }
+    let scope = rl.scopeCount
+    let mut p = ptr_to_node(blockPtr).child1
+    while (nodeExists(p) and rl.live) {
+        rangeWalkStmt(p, rl)
+        p = ptr_to_node(p).next
+    }
+    rl.scopeCount = scope
+}
+
+private fn rangeWalkStmt(stmtPtr: Ptr, rl: RangeLoop) {
+    let s = ptr_to_node(stmtPtr)
+    if (s.kind == NodeKind.EXPRESSION_STATEMENT) {
+        rangeWalkExpr(s.child1, rl)
+        return
+    }
+    if (s.kind == NodeKind.VARIABLE_DECL) {
+        rangeWalkExpr(s.child2, rl)
+        rangeVisitLet(s, rl)
+        return
+    }
+    if (s.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        rangeWalkExpr(s.child2, rl)
+        if (rangeIsNamedTarget(s) == false) { rangeWalkExpr(s.child1, rl) }
+        rangeApplyUpdate(s, rl)
+        return
+    }
+    if (s.kind == NodeKind.IF_STATEMENT) {
+        rangeWalkIf(s, rl)
+        return
+    }
+    if (s.kind == NodeKind.MATCH_STATEMENT) {
+        rangeWalkMatch(s, rl)
+        return
+    }
+    if (s.kind == NodeKind.BLOCK) {
+        rangeWalkBlock(stmtPtr, rl)
+        return
+    }
+    if (s.kind == NodeKind.REGION_STATEMENT) {
+        rangeWalkBlock(s.child1, rl)
+        return
+    }
+    if (s.kind == NodeKind.RETURN_STATEMENT) {
+        rangeWalkExpr(s.child1, rl)
+        rangeEndExit(rl)
+        return
+    }
+    if (s.kind == NodeKind.BREAK_STATEMENT) {
+        rangeEndExit(rl)
+        return
+    }
+    if (s.kind == NodeKind.CONTINUE_STATEMENT) {
+        if (s.s1.equals("") or s.s1.equals(rl.label)) {
+            rangeEndContinue(rl)
+        } else {
+            rangeEndExit(rl)
+        }
+        return
+    }
+    if (rangeIsLoop(s)) {
+        rangeWalkNested(stmtPtr, rl)
+        return
+    }
+    rl.failed = true
+}
+
+internal fn rangeIsNamedTarget(s: ASTNode) -> Bool {
+    if (nodeIsNull(s.child1)) { return false }
+    return ptr_to_node(s.child1).kind == NodeKind.IDENTIFIER_EXPR
+}
+
+private fn rangeApplyUpdate(s: ASTNode, rl: RangeLoop) {
+    if (rangeIsNamedTarget(s) == false) { return }
+    let name = ptr_to_node(s.child1).s1
+    let index = rangeVarIndex(rl, name)
+    if (index < 0) { return }
+    let coef = list_get(rl.coefs, index)
+    if (coef == 0) { return }
+    let kind = list_get(rl.kinds, index)
+    if (kind != RANGE_UP and kind != RANGE_DOWN) { return }
+    let mut delta = coef * rangeUpdateAmount(s.child2, name, rl, index)
+    if (kind == RANGE_DOWN) { delta = 0 - delta }
+    rl.curLo = rl.curLo + delta
+    rl.curHi = rl.curHi + delta
+}
+
+private fn rangeWalkIf(s: ASTNode, rl: RangeLoop) {
+    rangeWalkExpr(s.child1, rl)
+    let inLo = rl.curLo
+    let inHi = rl.curHi
+    let inLive = rl.live
+    rangeWalkBlock(s.child2, rl)
+    let thenLo = rl.curLo
+    let thenHi = rl.curHi
+    let thenLive = rl.live
+    rl.curLo = inLo
+    rl.curHi = inHi
+    rl.live = inLive
+    if (nodeExists(s.child3)) {
+        if (ptr_to_node(s.child3).kind == NodeKind.IF_STATEMENT) {
+            rangeWalkStmt(s.child3, rl)
+        } else {
+            rangeWalkBlock(s.child3, rl)
+        }
+    }
+    rangeJoinCur(rl, thenLo, thenHi, thenLive)
+}
+
+// Every arm from the same state, and the state itself: a match that no arm takes
+// falls through, and counting that path only widens the spans.
+private fn rangeWalkMatch(s: ASTNode, rl: RangeLoop) {
+    rangeWalkExpr(s.child1, rl)
+    let inLo = rl.curLo
+    let inHi = rl.curHi
+    let inLive = rl.live
+    let mut outLo = inLo
+    let mut outHi = inHi
+    let mut outLive = inLive
+    let mut arm = s.child2
+    while (nodeExists(arm)) {
+        rl.curLo = inLo
+        rl.curHi = inHi
+        rl.live = inLive
+        rangeWalkBlock(ptr_to_node(arm).child2, rl)
+        if (rl.live) {
+            if (outLive) {
+                outLo = rangeMin(outLo, rl.curLo)
+                outHi = rangeMax(outHi, rl.curHi)
+            } else {
+                outLo = rl.curLo
+                outHi = rl.curHi
+                outLive = true
+            }
+        }
+        arm = ptr_to_node(arm).next
+    }
+    rl.curLo = outLo
+    rl.curHi = outHi
+    rl.live = outLive
+}
+
+// A nested loop changes no variable this analysis tracks -- an update inside one
+// made that variable opaque -- and its accesses are its own guard's to prove. What
+// it can do is leave this loop: a `return`, or a jump naming an enclosing loop.
+// Both are counted where the nested loop starts, which is where this state is.
+private fn rangeWalkNested(stmtPtr: Ptr, rl: RangeLoop) {
+    if (rangeLeavesLoop(stmtPtr) == false) { return }
+    let lo = rl.curLo
+    let hi = rl.curHi
+    rangeJoinAll(rl, lo, hi)
+    if (rl.contLive) {
+        rl.contLo = rangeMin(rl.contLo, lo)
+        rl.contHi = rangeMax(rl.contHi, hi)
+    } else {
+        rl.contLo = lo
+        rl.contHi = hi
+        rl.contLive = true
+    }
+}
+
+private fn rangeLeavesLoop(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.RETURN_STATEMENT) { return true }
+    if (n.kind == NodeKind.BREAK_STATEMENT or n.kind == NodeKind.CONTINUE_STATEMENT) {
+        if (n.s1.equals("") == false) { return true }
+    }
+    if (rangeLeavesLoopChain(n.child1)) { return true }
+    if (rangeLeavesLoopChain(n.child2)) { return true }
+    return rangeLeavesLoopChain(n.child3)
+}
+
+private fn rangeLeavesLoopChain(head: Ptr) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (rangeLeavesLoop(p)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+private fn rangeWalkExprChain(head: Ptr, rl: RangeLoop) {
+    let mut p = head
+    while (nodeExists(p)) {
+        rangeWalkExpr(p, rl)
+        p = ptr_to_node(p).next
+    }
+}
+
+private fn rangeWalkExpr(exprPtr: Ptr, rl: RangeLoop) {
+    if (nodeIsNull(exprPtr)) { return }
+    let e = ptr_to_node(exprPtr)
+    if (rangeIsAccess(e)) { rangeVisitAccess(e, rl) }
+    rangeWalkExprChain(e.child1, rl)
+    rangeWalkExprChain(e.child2, rl)
+    rangeWalkExprChain(e.child3, rl)
+}
+
+// The accesses whose check the guarded copy can drop: the flat read and the flat
+// scalar write, which are the two sites that consult the proof.
+internal fn rangeIsAccess(e: ASTNode) -> Bool {
+    if (e.kind != NodeKind.CALL_EXPR or nodeIsNull(e.child1)) { return false }
+    let fname = ptr_to_node(e.child1).s1
+    if (flatGetStride(e, fname) > 0) { return true }
+    return flatSetScalarStride(e, fname) > 0
+}
+
+private fn rangeVisitAccess(e: ASTNode, rl: RangeLoop) {
+    let width = 2 * list_len(rl.names)
+    if (rl.mode == RANGE_WALK_ENUMERATE) {
+        list_push(rl.accessConj, rl.conjunct)
+        let mut k = 0
+        while (k < width) {
+            list_push(rl.accessSpans, 0)
+            k = k + 1
+        }
+    } else if (rl.mode == RANGE_WALK_MEASURE and rl.column >= 0) {
+        let at = rl.cursor * width + 2 * rl.column
+        list_set(rl.accessSpans, at, rl.curLo)
+        list_set(rl.accessSpans, at + 1, rl.curHi)
+    } else if (rl.mode == RANGE_WALK_EMIT) {
+        rangeEmitAccess(e, rl)
+    }
+    rl.cursor = rl.cursor + 1
+}
+
+// An immutable `Int` let, which an index may name: its value is the initialiser's
+// at this point, whatever the variables do afterwards.
+private fn rangeVisitLet(s: ASTNode, rl: RangeLoop) {
+    if (s.i1 != 0 or nodeIsNull(s.child2)) { return }
+    if (rangeIsIntNode(ptr_to_node(s.child2)) == false) { return }
+    let width = 2 * list_len(rl.names)
+    if (rl.mode == RANGE_WALK_ENUMERATE) {
+        list_push(rl.letNames, strClone(s.s1))
+        let mut k = 0
+        while (k < width) {
+            list_push(rl.letSpans, 0)
+            k = k + 1
+        }
+    } else if (rl.mode == RANGE_WALK_MEASURE and rl.column >= 0) {
+        let at = rl.letCursor * width + 2 * rl.column
+        list_set(rl.letSpans, at, rl.curLo)
+        list_set(rl.letSpans, at + 1, rl.curHi)
+    }
+    if (rl.scopeCount < list_len(rl.scopeLets)) {
+        list_set(rl.scopeLets, rl.scopeCount, rl.letCursor)
+    } else {
+        list_push(rl.scopeLets, rl.letCursor)
+    }
+    rl.scopeCount = rl.scopeCount + 1
+    rl.letCursor = rl.letCursor + 1
+}
+
+// ---------------------------------------------------------------------------
+// Measurement: spans, growth, bounds and relations
+// ---------------------------------------------------------------------------
+
+private fn rangeClearCoefs(rl: RangeLoop) {
+    let mut i = 0
+    while (i < list_len(rl.coefs)) {
+        list_set(rl.coefs, i, 0)
+        i = i + 1
+    }
+}
+
+private fn rangeIsTracked(rl: RangeLoop, index: Int) -> Bool {
+    let kind = list_get(rl.kinds, index)
+    return kind == RANGE_UP or kind == RANGE_DOWN
+}
+
+// One walk per variable: its span at every access and let, and its growth over
+// one iteration along its own direction.
+private fn rangeMeasureVars(rl: RangeLoop) {
+    let mut i = 0
+    while (i < list_len(rl.names)) {
+        if (rangeIsTracked(rl, i)) {
+            rangeClearCoefs(rl)
+            list_set(rl.coefs, i, 1)
+            rl.column = i
+            rangeRunWalk(rl, RANGE_WALK_MEASURE)
+            let mut growth = 0
+            if (rl.allLive) {
+                if (list_get(rl.kinds, i) == RANGE_UP) { growth = rl.allHi } else { growth = 0 - rl.allLo }
+            }
+            list_set(rl.growth, i, rangeMax(growth, 0))
+        }
+        i = i + 1
+    }
+    rl.column = 0 - 1
+    rangeClearCoefs(rl)
+}
+
+// The first conjunct that bounds each variable in its direction of travel.
+private fn rangeFindConditionBounds(rl: RangeLoop) {
+    if (nodeIsNull(rl.condPtr)) { return }
+    let count = rangeConjunctCount(rl.condPtr)
+    let mut k = 0
+    while (k < count) {
+        let c = ptr_to_node(rangeConjunct(rl.condPtr, k))
+        let mut i = 0
+        while (i < list_len(rl.names)) {
+            if (rangeIsTracked(rl, i) and list_get(rl.boundConj, i) < 0) {
+                if (rangeFactBounds(c, rl, i)) { list_set(rl.boundConj, i, k) }
+            }
+            i = i + 1
+        }
+        k = k + 1
+    }
+}
+
+private fn rangeConjunctCount(nodePtr: Ptr) -> Int {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.BINARY_EXPR and n.s1.equals("and")) {
+        return rangeConjunctCount(n.child1) + rangeConjunctCount(n.child2)
+    }
+    return 1
+}
+
+private fn rangeConjunct(nodePtr: Ptr, k: Int) -> Ptr {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.BINARY_EXPR and n.s1.equals("and")) {
+        let left = rangeConjunctCount(n.child1)
+        if (k < left) { return rangeConjunct(n.child1, k) }
+        return rangeConjunct(n.child2, k - left)
+    }
+    return nodePtr
+}
+
+// A comparison normalised so the variable side is on the left: the operator as
+// it reads with the variable first. "" for a node that is no comparison.
+private fn rangeFlipped(op: String) -> String {
+    if (op.equals("<")) { return ">" }
+    if (op.equals("<=")) { return ">=" }
+    if (op.equals(">")) { return "<" }
+    if (op.equals(">=")) { return "<=" }
+    return ""
+}
+
+private fn rangeIsComparison(op: String) -> Bool {
+    return op.equals("<") or op.equals("<=") or op.equals(">") or op.equals(">=")
+}
+
+// Whether conjunct `c` bounds variable `index` in its direction of travel: an
+// upper bound for one that counts up, a lower bound for one that counts down.
+// The shapes, with `x` the variable, `B` loop-invariant and `y` a variable
+// travelling the other way:
+//
+//     x < B    x <= B    B > x    x + E < B    E + x < B    x < y    x <= y
+//
+// and their mirrors for a variable counting down.
+private fn rangeFactBounds(c: ASTNode, rl: RangeLoop, index: Int) -> Bool {
+    if (c.kind != NodeKind.BINARY_EXPR or rangeIsComparison(c.s1) == false) { return false }
+    let name: String = list_get(rl.names, index)
+    let up = list_get(rl.kinds, index) == RANGE_UP
+    if (rangeSideHas(c.child1, name, rl)) {
+        return rangeOpBounds(c.s1, up) and rangeBoundSideOk(c.child2, index, rl)
+    }
+    if (rangeSideHas(c.child2, name, rl)) {
+        return rangeOpBounds(rangeFlipped(c.s1), up) and rangeBoundSideOk(c.child1, index, rl)
+    }
+    return false
+}
+
+private fn rangeOpBounds(op: String, up: Bool) -> Bool {
+    if (up) { return op.equals("<") or op.equals("<=") }
+    return op.equals(">") or op.equals(">=")
+}
+
+// `name`, or `name + E` / `E + name` with E invariant.
+private fn rangeSideHas(sidePtr: Ptr, name: String, rl: RangeLoop) -> Bool {
+    if (rangeIsNamed(sidePtr, name)) { return true }
+    return nodeExists(rangeShiftOf(sidePtr, name, rl))
+}
+
+// The E of `name + E` or `E + name`, or null.
+private fn rangeShiftOf(sidePtr: Ptr, name: String, rl: RangeLoop) -> Ptr {
+    let side = ptr_to_node(sidePtr)
+    if (side.kind != NodeKind.BINARY_EXPR or side.s1.equals("+") == false) { return ptr_null() }
+    if (nodeIsNull(side.child1) or nodeIsNull(side.child2)) { return ptr_null() }
+    if (rangeIsNamed(side.child1, name) and rangeIsInvariant(side.child2, rl)) {
+        return side.child2
+    }
+    if (rangeIsNamed(side.child2, name) and rangeIsInvariant(side.child1, rl)) {
+        return side.child1
+    }
+    return ptr_null()
+}
+
+// The bounding side of a fact: an invariant, or a variable travelling the other
+// way, whose start then bounds this one.
+private fn rangeBoundSideOk(sidePtr: Ptr, index: Int, rl: RangeLoop) -> Bool {
+    if (rangeIsInvariant(sidePtr, rl)) { return true }
+    let side = ptr_to_node(sidePtr)
+    if (side.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let other = rangeVarIndex(rl, side.s1)
+    if (other < 0 or other == index or rangeIsTracked(rl, other) == false) { return false }
+    return list_get(rl.kinds, other) != list_get(rl.kinds, index)
+}
+
+// For every variable the condition leaves unbounded, the smallest set of bounded
+// variables whose sum it moves in step with on every path that stays in the loop.
+private fn rangeFindRelations(rl: RangeLoop) {
+    let n = list_len(rl.names)
+    let mut y = 0
+    while (y < n) {
+        if (rangeNeedsRelation(rl, y)) {
+            let mask = rangeFindRelation(rl, y)
+            list_set(rl.relations, y, mask)
+        }
+        y = y + 1
+    }
+    rangeClearCoefs(rl)
+}
+
+private fn rangeNeedsRelation(rl: RangeLoop, y: Int) -> Bool {
+    if (rangeIsTracked(rl, y) == false) { return false }
+    if (y == rl.forVar or list_get(rl.boundConj, y) >= 0) { return false }
+    let unit: String = list_get(rl.units, y)
+    return unit.equals("")
+}
+
+// A candidate member: bounded directly, travelling the same way, counted in
+// literal amounts like the variable it bounds.
+private fn rangeCanRelate(rl: RangeLoop, y: Int, x: Int) -> Bool {
+    if (x == y or rangeIsTracked(rl, x) == false) { return false }
+    if (list_get(rl.kinds, x) != list_get(rl.kinds, y)) { return false }
+    let unit: String = list_get(rl.units, x)
+    if (x == rl.forVar) { return unit.equals("") }
+    return unit.equals("") and list_get(rl.boundConj, x) >= 0
+}
+
+private fn rangeFindRelation(rl: RangeLoop, y: Int) -> Int {
+    let n = list_len(rl.names)
+    let mut size = 1
+    while (size <= RANGE_RELATION_MEMBERS) {
+        let mut mask = 1
+        let limit = rangeShift(n)
+        while (mask < limit) {
+            if (rangeBitCount(mask) == size and (mask & rangeShift(y)) == 0
+                    and rangeMaskCanRelate(rl, y, mask)
+                    and rangeRelationHolds(rl, y, mask)) {
+                return mask
+            }
+            mask = mask + 1
+        }
+        size = size + 1
+    }
+    return 0
+}
+
+private fn rangeShift(bit: Int) -> Int {
+    let mut v = 1
+    let mut i = 0
+    while (i < bit) {
+        v = v * 2
+        i = i + 1
+    }
+    return v
+}
+
+private fn rangeBitCount(mask: Int) -> Int {
+    let mut m = mask
+    let mut count = 0
+    while (m > 0) {
+        count = count + (m % 2)
+        m = m / 2
+    }
+    return count
+}
+
+private fn rangeMaskCanRelate(rl: RangeLoop, y: Int, mask: Int) -> Bool {
+    let mut i = 0
+    while (i < list_len(rl.names)) {
+        if ((mask & rangeShift(i)) != 0 and rangeCanRelate(rl, y, i) == false) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// `y - sum(mask)` does not change on any path that stays in the loop.
+private fn rangeRelationHolds(rl: RangeLoop, y: Int, mask: Int) -> Bool {
+    rangeClearCoefs(rl)
+    list_set(rl.coefs, y, 1)
+    let mut i = 0
+    while (i < list_len(rl.names)) {
+        if ((mask & rangeShift(i)) != 0) { list_set(rl.coefs, i, 0 - 1) }
+        i = i + 1
+    }
+    rl.column = 0 - 1
+    rangeRunWalk(rl, RANGE_WALK_MEASURE)
+    return rl.contLive and rl.contLo == 0 and rl.contHi == 0
+}
+
+// ---------------------------------------------------------------------------
+// Preheader values
+// ---------------------------------------------------------------------------
+
+// Every variable's start, step and head bounds, as i64. Emitted whether or not an
+// access ends up needing them: a value nothing reads costs nothing after -O3, and
+// computing them first keeps the emission walk free of ordering questions.
+private fn rangeEmitVarValues(rl: RangeLoop) {
+    let n = list_len(rl.names)
+    let mut i = 0
+    while (i < n) {
+        if (rangeIsTracked(rl, i) and i != rl.forVar) { rangeEmitVarStart(rl, i) }
+        i = i + 1
+    }
+    i = 0
+    while (i < n) {
+        if (rangeIsTracked(rl, i) and i != rl.forVar and list_get(rl.boundConj, i) >= 0) {
+            rangeEmitConditionBound(rl, i)
+        }
+        i = i + 1
+    }
+    i = 0
+    while (i < n) {
+        if (rangeIsTracked(rl, i) and list_get(rl.relations, i) != 0) {
+            rangeEmitRelationBound(rl, i)
+        }
+        i = i + 1
+    }
+}
+
+private fn rangeEmitVarStart(rl: RangeLoop, i: Int) {
+    let name: String = list_get(rl.names, i)
+    let start = ir_get_temp_name(ir_sext("i32",
+        ir_get_temp_name(ir_load("i32", ir_get_var_slot(name))), "i64"))
+    list_set(rl.inits, i, strClone(start))
+    if (list_get(rl.kinds, i) == RANGE_UP) {
+        list_set(rl.lows, i, strClone(start))
+    } else {
+        list_set(rl.highs, i, strClone(start))
+    }
+    let unit: String = list_get(rl.units, i)
+    if (unit.equals("") == false) {
+        let value = ir_get_temp_name(ir_sext("i32",
+            ir_get_temp_name(ir_load("i32", ir_get_var_slot(unit))), "i64"))
+        list_set(rl.unitValues, i, strClone(value))
+    }
+}
+
+// The head bound the variable's first bounding conjunct gives, and the facts that
+// make it one. With `x + E < B`, the condition's own sum is computed in `Int`
+// too, so it must not wrap at any head: from the start, and one iteration's growth
+// past the bound.
+private fn rangeEmitConditionBound(rl: RangeLoop, i: Int) {
+    let c = ptr_to_node(rangeConjunct(rl.condPtr, list_get(rl.boundConj, i)))
+    let name: String = list_get(rl.names, i)
+    let up = list_get(rl.kinds, i) == RANGE_UP
+    let mut op = strClone(c.s1)
+    let mut varSide = c.child1
+    let mut boundSide = c.child2
+    if (rangeSideHas(c.child1, name, rl) == false) {
+        op = rangeFlipped(c.s1)
+        varSide = c.child2
+        boundSide = c.child1
+    }
+
+    let mut bound = ""
+    let boundNode = ptr_to_node(boundSide)
+    if (rangeIsInvariant(boundSide, rl)) {
+        bound = rangeInvariantValue(boundNode)
+    } else {
+        let other = rangeVarIndex(rl, boundNode.s1)
+        bound = strClone(list_get(rl.inits, other))
+    }
+    if (bound.equals("")) { return }
+
+    let shiftPtr = rangeShiftOf(varSide, name, rl)
+    let mut shift = ""
+    if (nodeExists(shiftPtr)) {
+        shift = rangeInvariantValue(ptr_to_node(shiftPtr))
+        bound = ir_get_temp_name(ir_sub("i64", bound, shift))
+    }
+
+    // Strict comparisons take the extreme one step in: `k < n` admits n - 1.
+    if (op.equals("<")) { bound = ir_get_temp_name(ir_sub("i64", bound, "1")) }
+    if (op.equals(">")) { bound = ir_get_temp_name(ir_add("i64", bound, "1")) }
+    if (up) {
+        list_set(rl.highs, i, strClone(bound))
+    } else {
+        list_set(rl.lows, i, strClone(bound))
+    }
+
+    if (shift.equals("") == false) {
+        let start: String = list_get(rl.inits, i)
+        let first = ir_get_temp_name(ir_add("i64", start, shift))
+        let reach = ir_get_temp_name(ir_add("i64", rangeReach(rl, i, bound), shift))
+        rangeFold(rl, rangeWithinInt(first))
+        rangeFold(rl, rangeWithinInt(reach))
+    }
+}
+
+// How far the variable can get within the iteration that starts at `head`: one
+// iteration's growth past it, in its direction.
+private fn rangeReach(rl: RangeLoop, i: Int, head: String) -> String {
+    let amount = rangeGrowthValue(rl, i)
+    if (list_get(rl.kinds, i) == RANGE_UP) {
+        return ir_get_temp_name(ir_add("i64", head, amount))
+    }
+    return ir_get_temp_name(ir_sub("i64", head, amount))
+}
+
+// The variable's growth over one iteration as an i64 value.
+private fn rangeGrowthValue(rl: RangeLoop, i: Int) -> String {
+    let growth = strFromInt(list_get(rl.growth, i))
+    let unit: String = list_get(rl.unitValues, i)
+    if (unit.equals("")) { return growth }
+    return ir_get_temp_name(ir_mul("i64", growth, unit))
+}
+
+private fn rangeWithinInt(value: String) -> String {
+    let low = ir_get_temp_name(ir_icmp_sge("i64", value, RANGE_INT_MIN))
+    let high = ir_get_temp_name(ir_icmp_sle("i64", value, RANGE_INT_MAX))
+    return ir_get_temp_name(ir_and("i1", low, high))
+}
+
+// `y = y0 + sum(x - x0)` at every head, so each member's bound in the shared
+// direction bounds `y` the same way.
+private fn rangeEmitRelationBound(rl: RangeLoop, y: Int) {
+    let mask = list_get(rl.relations, y)
+    let up = list_get(rl.kinds, y) == RANGE_UP
+    let mut acc = strClone(list_get(rl.inits, y))
+    let mut i = 0
+    while (i < list_len(rl.names)) {
+        if ((mask & rangeShift(i)) != 0) {
+            let mut edge = ""
+            if (up) { edge = strClone(list_get(rl.highs, i)) } else { edge = strClone(list_get(rl.lows, i)) }
+            if (edge.equals("")) { return }
+            let start: String = list_get(rl.inits, i)
+            let moved = ir_get_temp_name(ir_sub("i64", edge, start))
+            acc = ir_get_temp_name(ir_add("i64", acc, moved))
+        }
+        i = i + 1
+    }
+    if (up) {
+        list_set(rl.highs, y, strClone(acc))
+    } else {
+        list_set(rl.lows, y, strClone(acc))
+    }
+}
+
+// The facts under which variable `i`'s bounds hold at every head and every access:
+// it moves only its own way, and never far enough to wrap. Folded once, the first
+// time a proved access relies on the variable.
+private fn rangeFoldVar(rl: RangeLoop, i: Int) {
+    if (list_get(rl.folded, i) != 0) { return }
+    list_set(rl.folded, i, 1)
+    let unit: String = list_get(rl.unitValues, i)
+    if (unit.equals("") == false) {
+        rangeFold(rl, ir_get_temp_name(ir_icmp_sge("i64", unit, "0")))
+    }
+    if (list_get(rl.kinds, i) == RANGE_UP) {
+        let reach = rangeReach(rl, i, list_get(rl.highs, i))
+        rangeFold(rl, ir_get_temp_name(ir_icmp_sle("i64", reach, RANGE_INT_MAX)))
+    } else {
+        let reach = rangeReach(rl, i, list_get(rl.lows, i))
+        rangeFold(rl, ir_get_temp_name(ir_icmp_sge("i64", reach, RANGE_INT_MIN)))
+    }
+    // With these facts in the guard, no update of the variable wraps in the
+    // proved copy, and saying so lets LLVM widen it.
+    if (i != rl.forVar) { rangeMarkUpdates(rl.bodyPtr, rl, list_get(rl.names, i)) }
+    let conj = list_get(rl.boundConj, i)
+    if (conj >= 0) {
+        let other = rangeBoundingVar(rl, i)
+        if (other >= 0) { rangeFoldVar(rl, other) }
+    }
+    let mask = list_get(rl.relations, i)
+    let mut m = 0
+    while (m < list_len(rl.names)) {
+        if ((mask & rangeShift(m)) != 0) { rangeFoldVar(rl, m) }
+        m = m + 1
+    }
+}
+
+// Marks the arithmetic of every update of `name` with the proof. Every update of a
+// tracked variable is one rangeClassifyUpdate recognised, outside nested loops.
+private fn rangeMarkUpdates(nodePtr: Ptr, rl: RangeLoop, name: String) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and rangeIsNamed(n.child1, name)) {
+        ir_range_proof_mark(n.child2, rl.proof, "")
+    }
+    rangeMarkUpdatesChain(n.child1, rl, name)
+    rangeMarkUpdatesChain(n.child2, rl, name)
+    rangeMarkUpdatesChain(n.child3, rl, name)
+}
+
+private fn rangeMarkUpdatesChain(head: Ptr, rl: RangeLoop, name: String) {
+    let mut p = head
+    while (nodeExists(p)) {
+        rangeMarkUpdates(p, rl, name)
+        p = ptr_to_node(p).next
+    }
+}
+
+// The variable whose start bounds variable `i`, when its condition fact is
+// `x < y` rather than one against an invariant; -1 otherwise.
+private fn rangeBoundingVar(rl: RangeLoop, i: Int) -> Int {
+    let c = ptr_to_node(rangeConjunct(rl.condPtr, list_get(rl.boundConj, i)))
+    let name: String = list_get(rl.names, i)
+    let mut boundSide = c.child2
+    if (rangeSideHas(c.child1, name, rl) == false) { boundSide = c.child1 }
+    if (rangeIsInvariant(boundSide, rl)) { return 0 - 1 }
+    return rangeVarIndex(rl, ptr_to_node(boundSide).s1)
+}
+
+// ---------------------------------------------------------------------------
+// Emission: one access
+// ---------------------------------------------------------------------------
+
+private fn rangeEmitAccess(e: ASTNode, rl: RangeLoop) {
+    let listPtr = e.child2
+    let list = ptr_to_node(listPtr)
+    if (nodeIsNull(list.next)) { return }
+    if (rangeIsStableList(list, rl) == false) { return }
+
+    rl.usedMask = 0
+    rl.extra = "true"
+    rl.conjLimit = list_get(rl.accessConj, rl.cursor)
+    if (rangeInterval(list.next, rl, rl.accessSpans, rl.cursor) == false) { return }
+    let lo = strClone(rl.outLo)
+    let hi = strClone(rl.outHi)
+    let extra = strClone(rl.extra)
+    let used = rl.usedMask
+
+    ir_call_begin()
+    ir_call_arg("ptr", generateExpression(list))
+    let len = ir_get_temp_name(ir_sext("i32",
+        ir_get_temp_name(ir_call_end("i32", "list_len")), "i64"))
+    let lowOk = ir_get_temp_name(ir_icmp_sge("i64", lo, "0"))
+    let highOk = ir_get_temp_name(ir_icmp_slt("i64", hi, len))
+    let inside = ir_get_temp_name(ir_and("i1", lowOk, highOk))
+    rangeFold(rl, ir_get_temp_name(ir_and("i1", inside, extra)))
+    let mut i = 0
+    while (i < list_len(rl.names)) {
+        if ((used & rangeShift(i)) != 0) { rangeFoldVar(rl, i) }
+        i = i + 1
+    }
+    ir_range_proof_mark(node_to_ptr(e), rl.proof, rangeDataFor(rl, list))
+    rl.proved = rl.proved + 1
+}
+
+// The receiver's element base, loaded once here for every proved access to it.
+// The receiver is stable and nothing in the loop moves its block, so the base is
+// the loop's for its whole run; handing it to the access rather than leaving LICM
+// to find it matters because the load otherwise sits in whichever arm of a branch
+// the access is in, where it is not hoisted until after the passes that would
+// have merged the two arms' stores.
+internal fn rangeDataFor(rl: RangeLoop, list: ASTNode) -> String {
+    let mut i = 0
+    while (i < list_len(rl.dataNames)) {
+        let known: String = list_get(rl.dataNames, i)
+        if (known.equals(list.s1)) { return strClone(list_get(rl.dataValues, i)) }
+        i = i + 1
+    }
+    let data = ir_get_temp_name(ir_list_data(generateExpression(list)))
+    list_push(rl.dataNames, strClone(list.s1))
+    list_push(rl.dataValues, strClone(data))
+    return data
+}
+
+// A receiver the preheader can read once: a local the body neither rebinds nor
+// resizes. A push only grows a list, so a pushed receiver would still be long
+// enough -- but its block moves, and the proof is also what licenses reading the
+// base once.
+internal fn rangeIsStableList(list: ASTNode, rl: RangeLoop) -> Bool {
+    if (list.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    if (ir_var_is_global(list.s1) == 1) { return false }
+    if (irBodyBindsName(rl.bodyPtr, list.s1)) { return false }
+    if (rangeBindsInPattern(rl.bodyPtr, list.s1)) { return false }
+    return irBodyPushesList(rl.bodyPtr, list.s1) == false
+}
+
+// ---------------------------------------------------------------------------
+// Intervals
+// ---------------------------------------------------------------------------
+
+// The interval an `Int` expression takes at the point whose spans are row `row`
+// of `spans`, into outLo/outHi as i64 values. False when this cannot bound it.
+private fn rangeInterval(exprPtr: Ptr, rl: RangeLoop, spans: Vec<Int>, row: Int) -> Bool {
+    if (nodeIsNull(exprPtr)) { return false }
+    let e = ptr_to_node(exprPtr)
+    if (rangeIsIntNode(e) == false) { return false }
+
+    let literal = rangeLiteralValue(e)
+    if (literal >= 0) {
+        rl.outLo = strFromInt(literal)
+        rl.outHi = strFromInt(literal)
+        return true
+    }
+    if (e.kind == NodeKind.IDENTIFIER_EXPR) { return rangeNameInterval(e, rl, spans, row) }
+    if (e.kind == NodeKind.UNARY_EXPR and e.s1.equals("-")) {
+        if (rangeInterval(e.child1, rl, spans, row) == false) { return false }
+        let lo = strClone(rl.outLo)
+        rl.outLo = ir_get_temp_name(ir_sub("i64", "0", rl.outHi))
+        rl.outHi = ir_get_temp_name(ir_sub("i64", "0", lo))
+        return true
+    }
+    if (e.kind == NodeKind.BINARY_EXPR) { return rangeBinaryInterval(e, rl, spans, row) }
+    if (rangeIsInvariant(exprPtr, rl)) {
+        let value = rangeInvariantValue(e)
+        rl.outLo = strClone(value)
+        rl.outHi = strClone(value)
+        return true
+    }
+    return false
+}
+
+private fn rangeNameInterval(e: ASTNode, rl: RangeLoop, spans: Vec<Int>, row: Int) -> Bool {
+    let letIndex = rangeScopeLet(rl, e.s1)
+    if (letIndex >= 0) {
+        let decl = irFindDeclInBody(rl.bodyPtr, e.s1)
+        if (nodeIsNull(decl)) { return false }
+        return rangeInterval(ptr_to_node(decl).child2, rl, rl.letSpans, letIndex)
+    }
+    let index = rangeVarIndex(rl, e.s1)
+    if (index >= 0) {
+        if (rangeIsTracked(rl, index) == false) { return false }
+        return rangeVarInterval(rl, index, spans, row)
+    }
+    if (rangeIsInvariantName(e, rl) == false) { return false }
+    let value = rangeInvariantValue(e)
+    rl.outLo = strClone(value)
+    rl.outHi = strClone(value)
+    return true
+}
+
+// The let in scope under `name`, innermost first, or -1. Only a name declared
+// once in the body is resolved: irFindDeclInBody answers the first declaration,
+// and two would make that answer depend on which one is in scope.
+private fn rangeScopeLet(rl: RangeLoop, name: String) -> Int {
+    let mut k = rl.scopeCount - 1
+    while (k >= 0) {
+        let index = list_get(rl.scopeLets, k)
+        let known: String = list_get(rl.letNames, index)
+        if (known.equals(name)) {
+            if (rangeLetDeclCount(rl, name) != 1) { return 0 - 1 }
+            return index
+        }
+        k = k - 1
+    }
+    return 0 - 1
+}
+
+private fn rangeLetDeclCount(rl: RangeLoop, name: String) -> Int {
+    let mut count = 0
+    let mut i = 0
+    while (i < list_len(rl.letNames)) {
+        let known: String = list_get(rl.letNames, i)
+        if (known.equals(name)) { count = count + 1 }
+        i = i + 1
+    }
+    return count
+}
+
+// A variable at this point: its head bounds, moved by its span here. An access
+// in the condition sees only the conjuncts before its own, so a bound from a
+// later one -- or from a relation, whose members' bounds are the whole
+// condition's -- is not available there.
+private fn rangeVarInterval(rl: RangeLoop, index: Int, spans: Vec<Int>, row: Int) -> Bool {
+    let lowBound: String = list_get(rl.lows, index)
+    let highBound: String = list_get(rl.highs, index)
+    if (lowBound.equals("") or highBound.equals("")) { return false }
+    if (rl.conjLimit >= 0 and index != rl.forVar) {
+        if (list_get(rl.relations, index) != 0) { return false }
+        if (list_get(rl.boundConj, index) >= rl.conjLimit) { return false }
+    }
+    let width = 2 * list_len(rl.names)
+    let least = list_get(spans, row * width + 2 * index)
+    let most = list_get(spans, row * width + 2 * index + 1)
+    rl.outLo = rangeOffset(rl, index, lowBound, least)
+    rl.outHi = rangeOffset(rl, index, highBound, most)
+    rl.usedMask = rl.usedMask | rangeShift(index)
+    return true
+}
+
+// `base + delta` units of variable `index`.
+private fn rangeOffset(rl: RangeLoop, index: Int, base: String, delta: Int) -> String {
+    if (delta == 0) { return strClone(base) }
+    let unit: String = list_get(rl.unitValues, index)
+    if (unit.equals("")) { return ir_get_temp_name(ir_add("i64", base, strFromInt(delta))) }
+    let scaled = ir_get_temp_name(ir_mul("i64", unit, strFromInt(delta)))
+    return ir_get_temp_name(ir_add("i64", base, scaled))
+}
+
+private fn rangeBinaryInterval(e: ASTNode, rl: RangeLoop, spans: Vec<Int>, row: Int) -> Bool {
+    let op = e.s1
+    if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return false }
+    // `x & m` with `m >= 0` is in [0, m] whatever x is, which is how every
+    // power-of-two table is indexed.
+    if (op.equals("&")) { return rangeMaskInterval(e, rl) }
+    if (op.equals("*") and rangeIsInvariant(node_to_ptr(e), rl)) {
+        let value = rangeInvariantValue(e)
+        rl.outLo = strClone(value)
+        rl.outHi = strClone(value)
+        return true
+    }
+    if (op.equals("+") == false and op.equals("-") == false and op.equals("*") == false
+            and op.equals("/") == false and op.equals("%") == false) {
+        return false
+    }
+    if (op.equals("*") or op.equals("/") or op.equals("%")) {
+        return rangeScaledInterval(e, rl, spans, row)
+    }
+    if (rangeInterval(e.child1, rl, spans, row) == false) { return false }
+    let aLo = strClone(rl.outLo)
+    let aHi = strClone(rl.outHi)
+    if (rangeInterval(e.child2, rl, spans, row) == false) { return false }
+    let bLo = strClone(rl.outLo)
+    let bHi = strClone(rl.outHi)
+    if (op.equals("+")) {
+        rl.outLo = ir_get_temp_name(ir_add("i64", aLo, bLo))
+        rl.outHi = ir_get_temp_name(ir_add("i64", aHi, bHi))
+    } else {
+        rl.outLo = ir_get_temp_name(ir_sub("i64", aLo, bHi))
+        rl.outHi = ir_get_temp_name(ir_sub("i64", aHi, bLo))
+    }
+    return true
+}
+
+// `a * c`, `c * a`, `a / c` and `a % c` for a positive literal c.
+private fn rangeScaledInterval(e: ASTNode, rl: RangeLoop, spans: Vec<Int>, row: Int) -> Bool {
+    let op = e.s1
+    let mut operand = e.child1
+    let mut factor = rangeLiteralValue(ptr_to_node(e.child2))
+    if (factor < 0 and op.equals("*")) {
+        operand = e.child2
+        factor = rangeLiteralValue(ptr_to_node(e.child1))
+    }
+    if (factor <= 0) { return false }
+    if (rangeInterval(operand, rl, spans, row) == false) { return false }
+    let aLo = strClone(rl.outLo)
+    let aHi = strClone(rl.outHi)
+    let c = strFromInt(factor)
+    if (op.equals("*")) {
+        rl.outLo = ir_get_temp_name(ir_mul("i64", aLo, c))
+        rl.outHi = ir_get_temp_name(ir_mul("i64", aHi, c))
+        return true
+    }
+    // Division and remainder see the operand the loop computed, wrapped, so the
+    // interval is only the operand's when the operand stayed inside `Int`.
+    let lowOk = ir_get_temp_name(ir_icmp_sge("i64", aLo, RANGE_INT_MIN))
+    let highOk = ir_get_temp_name(ir_icmp_sle("i64", aHi, RANGE_INT_MAX))
+    let prev = strClone(rl.extra)
+    rl.extra = ir_get_temp_name(ir_and("i1", prev,
+        ir_get_temp_name(ir_and("i1", lowOk, highOk))))
+    if (op.equals("/")) {
+        rl.outLo = ir_get_temp_name(ir_sdiv("i64", aLo, c))
+        rl.outHi = ir_get_temp_name(ir_sdiv("i64", aHi, c))
+        return true
+    }
+    // A remainder takes the dividend's sign and is smaller than the divisor.
+    let top = strFromInt(factor - 1)
+    let bottom = strFromInt(1 - factor)
+    rl.outLo = rangeSmax(rangeSmin(aLo, "0"), bottom)
+    rl.outHi = rangeSmin(rangeSmax(aHi, "0"), top)
+    return true
+}
+
+private fn rangeMaskInterval(e: ASTNode, rl: RangeLoop) -> Bool {
+    let mut mask = ""
+    if (rangeIsInvariant(e.child2, rl)) {
+        mask = rangeInvariantValue(ptr_to_node(e.child2))
+    } else if (rangeIsInvariant(e.child1, rl)) {
+        mask = rangeInvariantValue(ptr_to_node(e.child1))
+    }
+    if (mask.equals("")) { return false }
+    let prev = strClone(rl.extra)
+    rl.extra = ir_get_temp_name(ir_and("i1", prev,
+        ir_get_temp_name(ir_icmp_sge("i64", mask, "0"))))
+    rl.outLo = "0"
+    rl.outHi = strClone(mask)
+    return true
+}
+
+internal fn rangeSmin(a: String, b: String) -> String {
+    ir_call_begin()
+    ir_call_arg("i64", a)
+    ir_call_arg("i64", b)
+    return ir_get_temp_name(ir_call_end("i64", "llvm.smin.i64"))
+}
+
+internal fn rangeSmax(a: String, b: String) -> String {
+    ir_call_begin()
+    ir_call_arg("i64", a)
+    ir_call_arg("i64", b)
+    return ir_get_temp_name(ir_call_end("i64", "llvm.smax.i64"))
+}
+
+// ---------------------------------------------------------------------------
+// Invariants
+// ---------------------------------------------------------------------------
+
+// An `Int` expression the loop cannot change and the preheader can evaluate
+// without a trap it would not have had: literals, invariant locals, `+ - *`,
+// negation, and the length of a list the body does not resize. No division --
+// evaluated ahead of a loop that might never run, a zero divisor would be one.
+private fn rangeIsInvariant(exprPtr: Ptr, rl: RangeLoop) -> Bool {
+    if (nodeIsNull(exprPtr)) { return false }
+    let e = ptr_to_node(exprPtr)
+    if (rangeIsIntNode(e) == false) { return false }
+    if (e.kind == NodeKind.LITERAL_EXPR) { return rangeLiteralValue(e) >= 0 }
+    if (e.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (rangeVarIndex(rl, e.s1) >= 0) { return false }
+        return rangeIsInvariantName(e, rl)
+    }
+    if (e.kind == NodeKind.UNARY_EXPR and e.s1.equals("-")) {
+        return rangeIsInvariant(e.child1, rl)
+    }
+    if (e.kind == NodeKind.BINARY_EXPR) {
+        if (e.s1.equals("+") or e.s1.equals("-") or e.s1.equals("*")) {
+            return rangeIsInvariant(e.child1, rl) and rangeIsInvariant(e.child2, rl)
+        }
+        return false
+    }
+    if (e.kind == NodeKind.CALL_EXPR and nodeExists(e.child1)
+            and ptr_to_node(e.child1).s1.equals("list_len") and nodeExists(e.child2)) {
+        let list = ptr_to_node(e.child2)
+        if (nodeExists(list.next)) { return false }
+        return rangeIsStableList(list, rl)
+    }
+    return false
+}
+
+// An invariant's value, computed in `Int` exactly as the loop computes it and
+// widened to i64.
+private fn rangeInvariantValue(e: ASTNode) -> String {
+    return ir_get_temp_name(ir_sext("i32", generateExpression(e), "i64"))
+}

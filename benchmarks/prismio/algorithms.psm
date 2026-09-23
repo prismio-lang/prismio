@@ -352,53 +352,61 @@ struct BenchHeapHandle {
     size: Int
 }
 
+// The heap the other two arms get from their standard libraries, written out:
+// libc++'s `push_heap`/`pop_heap` and Rust's `BinaryHeap` both move a hole rather
+// than swapping, and both pop by Floyd's method -- walk the hole to a leaf along
+// the smaller child, one comparison per level, then sift the displaced last
+// element up. The first version here swapped at every level and compared both
+// children against the parent, which is a different algorithm with about twice
+// the comparisons.
 public fn benchHeapPush(data: Vec<I64>, h: BenchHeapHandle, val: I64) {
     if (h.size < list_len(data)) {
         list_set(data, h.size, val)
     } else {
         list_push(data, val)
     }
-    let mut i = h.size
+    let mut hole = h.size
     h.size = h.size + 1
-
-    while (i > 0) {
-        let p = (i - 1) / 2
-        if (list_get(data, i) < list_get(data, p)) {
-            let tmp = list_get(data, i)
-            list_set(data, i, list_get(data, p))
-            list_set(data, p, tmp)
-            i = p
+    while (hole > 0) {
+        let parent = (hole - 1) / 2
+        let above = list_get(data, parent)
+        if (val < above) {
+            list_set(data, hole, above)
+            hole = parent
         } else {
             break
         }
     }
+    list_set(data, hole, val)
 }
 
 public fn benchHeapPop(data: Vec<I64>, h: BenchHeapHandle) -> I64 {
     let top = list_get(data, 0)
     h.size = h.size - 1
-    list_set(data, 0, list_get(data, h.size))
     let n = h.size
-    let mut i = 0
-    while (true) {
-        let left = 2 * i + 1
-        let right = 2 * i + 2
-        let mut smallest = i
-        if (left < n and list_get(data, left) < list_get(data, smallest)) {
-            smallest = left
+    if (n == 0) { return top }
+    let last = list_get(data, n)
+    let mut hole = 0
+    let mut child = 1
+    while (child < n) {
+        if (child + 1 < n and list_get(data, child + 1) < list_get(data, child)) {
+            child = child + 1
         }
-        if (right < n and list_get(data, right) < list_get(data, smallest)) {
-            smallest = right
-        }
-        if (smallest != i) {
-            let tmp = list_get(data, i)
-            list_set(data, i, list_get(data, smallest))
-            list_set(data, smallest, tmp)
-            i = smallest
+        list_set(data, hole, list_get(data, child))
+        hole = child
+        child = 2 * hole + 1
+    }
+    while (hole > 0) {
+        let parent = (hole - 1) / 2
+        let above = list_get(data, parent)
+        if (last < above) {
+            list_set(data, hole, above)
+            hole = parent
         } else {
             break
         }
     }
+    list_set(data, hole, last)
     return top
 }
 
@@ -500,7 +508,9 @@ public fn benchDijkstraShortestPath(scale: Int) -> Int {
 
 public fn benchLz4Compress(scale: Int) -> Int {
     let n = 20000 * scale
-    let mut input: Vec<Int> = list_new_with_capacity(n)
+    // Bytes, as the other two arms compress: a `Vec<Int>` here was four times the
+    // input they read, which took the Prismio arm's working set out of L1.
+    let mut input: Vec<U8> = list_new_with_capacity(n)
 
     let mut seed = 83
     let mut i = 0
@@ -510,7 +520,7 @@ public fn benchLz4Compress(scale: Int) -> Int {
             let offset = 12 + (seed % 8)
             list_push(input, list_get(input, i - offset))
         } else {
-            list_push(input, 32 + (seed % 95))
+            list_push(input, (32 + (seed % 95)) as U8)
         }
         i = i + 1
     }
@@ -528,18 +538,18 @@ public fn benchLz4Compress(scale: Int) -> Int {
     let mut checksum: I64 = 0
 
     while (pos + 4 <= n) {
-        let b0 = list_get(input, pos)
-        let b1 = list_get(input, pos + 1)
-        let b2 = list_get(input, pos + 2)
-        let b3 = list_get(input, pos + 3)
+        let b0 = list_get(input, pos) as Int
+        let b1 = list_get(input, pos + 1) as Int
+        let b2 = list_get(input, pos + 2) as Int
+        let b3 = list_get(input, pos + 3) as Int
 
         let h = ((b0 << 12) ^ (b1 << 8) ^ (b2 << 4) ^ b3) % 4096
         let refPos = list_get(table, h)
         list_set(table, h, pos)
 
         if (refPos != -1 and (pos - refPos) < 65535 and
-            list_get(input, refPos) == b0 and list_get(input, refPos + 1) == b1 and
-            list_get(input, refPos + 2) == b2 and list_get(input, refPos + 3) == b3) {
+            (list_get(input, refPos) as Int) == b0 and (list_get(input, refPos + 1) as Int) == b1 and
+            (list_get(input, refPos + 2) as Int) == b2 and (list_get(input, refPos + 3) as Int) == b3) {
 
             let mut matchLen = 4
             while (pos + matchLen < n and list_get(input, pos + matchLen) == list_get(input, refPos + matchLen) and matchLen < 255) {

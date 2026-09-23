@@ -3692,6 +3692,50 @@ def run_data_view_gate_test():
     return True
 
 
+def run_loop_range_proofs_test():
+    """Every loop in test_169 is proved exactly as its `// range: P/T` says.
+
+    The fixture's own run checks answers, and a guard that never holds passes
+    every one of them -- the checked copy is correct by construction. So the
+    counts are asserted from the compiler's side too: each annotated loop header
+    must report that many proved accesses out of that many, and no loop may report
+    without an annotation, which is what catches a proof that silently stops
+    firing or starts covering an access it must refuse.
+    """
+    print(f"\n{BLUE}--- Running loop_range_proofs ---{RESET}")
+    source = TEST_DIR / "test_169_loop_range_proofs.psm"
+    want = {}
+    for number, line in enumerate(source.read_text().splitlines(), start=1):
+        found = re.search(r"// range: (\d+)/(\d+)\s*$", line)
+        if found:
+            want[number] = (int(found.group(1)), int(found.group(2)))
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-range-proofs-") as tmp:
+        env = os.environ.copy()
+        env["PRISMIO_RANGE_TRACE"] = "1"
+        built = subprocess.run([str(PRISMIO_EXE), "build", str(source), "-o",
+                                str(Path(tmp) / "ranges.ll")],
+                               cwd=PROJECT_ROOT, env=env, capture_output=True, text=True)
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] loop range proofs: {built.stdout} {built.stderr}{RESET}")
+            return False
+        got = {}
+        for found in re.finditer(r"range proof: line (\d+) proved (\d+) of (\d+)", built.stderr):
+            got[int(found.group(1))] = (int(found.group(2)), int(found.group(3)))
+    for number, counts in sorted(want.items()):
+        if got.get(number) != counts:
+            problems.append(f"line {number}: expected {counts[0]}/{counts[1]}, got {got.get(number)}")
+    for number in sorted(set(got) - set(want)):
+        problems.append(f"line {number}: proved {got[number][0]}/{got[number][1]} with no annotation")
+    if problems:
+        print(f"{RED}[FAIL] loop range proofs{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] {len(want)} loops proved as annotated{RESET}")
+    return True
+
+
 def run_counted_fill_codegen_test():
     """The pure fill grows early; observable calls and early exits do not."""
     print(f"\n{BLUE}--- Running counted_fill_codegen ---{RESET}")
@@ -3725,6 +3769,13 @@ def run_counted_fill_codegen_test():
             problems.append("list counts have no nonnegative range")
         if not re.search(r'store i1 false, ptr %pushguard\.', body("wrappingInclusiveFill")):
             problems.append("inclusive Int.MAX loop received a finite capacity guard")
+        bools = body("boolFill")
+        if not re.search(r'store i8 1, ptr %\d+', bools):
+            problems.append("a Bool element push does not store a byte")
+        if re.search(r'store i1 (true|false|%\S+), ptr %\d+', bools):
+            problems.append("a Bool element is stored as i1")
+        if not re.search(r'icmp ne i8 ', bools):
+            problems.append("a Bool element read is not a byte test")
 
         exe = Path(tmp) / ("fill.exe" if platform.system() == "Windows" else "fill")
         built = run_command([str(PRISMIO_EXE), "build", str(source), "--verify",
@@ -7884,6 +7935,7 @@ def main():
         ("slice_gate", run_slice_gate_test),
         ("data_view_gate", run_data_view_gate_test),
         ("counted_fill_codegen", run_counted_fill_codegen_test),
+        ("loop_range_proofs", run_loop_range_proofs_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

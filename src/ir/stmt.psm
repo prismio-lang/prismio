@@ -859,14 +859,12 @@ private fn generateIf(stmt: ASTNode) {
 }
 
 private fn generateWhile(stmt: ASTNode) {
-    let condLabel = ir_get_label()
-    let bodyLabel = ir_get_label()
     let endLabel = ir_get_label()
 
     // M4.2, the loop half. Emitted here because here is the preheader: the
-    // guard has to dominate the loop and be computed once.
+    // guards have to dominate the loop and be computed once.
     let savedGuard = irLoopFlatGuard
-    let savedRange = irLoopRangeProved
+    let savedProof = irLoopRangeProof
     let savedPush = irLoopPushGuard
     let savedHeaderList = irLoopHeaderBoundList
     let savedHeaderIndex = irLoopHeaderBoundIndex
@@ -874,7 +872,7 @@ private fn generateWhile(stmt: ASTNode) {
     let savedHoistedBoundList = irLoopHoistedBoundList
     let savedHoistedBoundValue = irLoopHoistedBoundValue
     let savedHoistedDataValue = irLoopHoistedDataValue
-    irLoopRangeProved = false
+    irLoopRangeProof = 0
     irLoopHeaderBoundList = ""
     irLoopHeaderBoundIndex = ""
     irLoopHeaderBoundActive = false
@@ -896,102 +894,113 @@ private fn generateWhile(stmt: ASTNode) {
     generateWholeBufferCopy(ptr_to_node(stmt.child1), ptr_to_node(stmt.child2),
                             endLabel)
 
-    let guardSlot = generateLoopFlatGuard(ptr_to_node(stmt.child1),
-                                          ptr_to_node(stmt.child2))
+    let flatSlot = generateLoopFlatGuard(stmt.child1, ptr_to_node(stmt.child2))
+    let mut rangeSlot = ""
+    let mut proof = 0
+    if (flatSlot.equals("") == false or savedGuard.equals("1")) {
+        irLoopRangeProofPending = 0
+        irLoopRangeProofComplete = false
+        rangeSlot = generateWhileRangeGuard(ptr_to_node(stmt.child1),
+                                            ptr_to_node(stmt.child2))
+        proof = irLoopRangeProofPending
+    }
+    generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, "", "")
 
-    if (guardSlot.equals("") == false) {
-        let fastCondLabel = ir_get_label()
-        let fastBodyLabel = ir_get_label()
-        let slowCondLabel = ir_get_label()
-        let slowBodyLabel = ir_get_label()
+    irLoopFlatGuard = strClone(savedGuard)
+    irLoopRangeProof = savedProof
+    irLoopPushGuard = strClone(savedPush)
+    irLoopHeaderBoundList = strClone(savedHeaderList)
+    irLoopHeaderBoundIndex = strClone(savedHeaderIndex)
+    irLoopHeaderBoundActive = savedHeaderActive
+    irLoopHoistedBoundList = strClone(savedHoistedBoundList)
+    irLoopHoistedBoundValue = strClone(savedHoistedBoundValue)
+    irLoopHoistedDataValue = strClone(savedHoistedDataValue)
+    ir_label_numbered(endLabel)
+}
 
-        let guardVal = ir_get_temp_name(ir_load("i1", guardSlot))
-        ir_cond_br_numbered(guardVal, fastCondLabel, slowCondLabel)
+// The loop once per version its guards ask for. Behind the flat guard, every
+// receiver has the representation its static type names; behind the range guard
+// within that, every access the proof marked is in range.
+//
+// A proof that leaves some flat access unproved keeps its facts out of the flat
+// guard, in a copy of its own: one access with a loose interval would otherwise
+// send the whole loop to the generic copy, and a proof must never cost more than
+// the checked flat loop it replaces. A proof that covers every access has nothing
+// left for a checked flat copy to serve, so its facts join the flat guard and the
+// loop keeps two copies -- a third is code the function pays for in register
+// pressure wherever it lives, measured at 7% on a neighbouring fill loop in
+// aos_vs_soa that the proof never touched. `plain` is the representation a loop
+// with no guard of its own inherits from the one around it.
+private fn generateLoopVersions(stmt: ASTNode, endLabel: Int, flatSlot: String,
+                                rangeSlot: String, proof: Int, plain: String,
+                                forEnd: String, forStep: String) {
+    let hasFlat = flatSlot.equals("") == false
+    let mut hasRange = rangeSlot.equals("") == false
+    let mut fastProof = 0
+    if (hasFlat and hasRange and irLoopRangeProofComplete) {
+        let both = ir_get_temp_name(ir_and("i1",
+            ir_get_temp_name(ir_load("i1", flatSlot)),
+            ir_get_temp_name(ir_load("i1", rangeSlot))))
+        ir_store("i1", both, flatSlot)
+        hasRange = false
+        fastProof = proof
+    }
+    let genericLabel = ir_get_label()
+    if (hasFlat) {
+        let flatLabel = ir_get_label()
+        ir_cond_br_numbered(ir_get_temp_name(ir_load("i1", flatSlot)), flatLabel, genericLabel)
+        ir_label_numbered(flatLabel)
+    }
+    if (hasRange) {
+        let provedLabel = ir_get_label()
+        let checkedLabel = ir_get_label()
+        ir_cond_br_numbered(ir_get_temp_name(ir_load("i1", rangeSlot)), provedLabel,
+                            checkedLabel)
+        generateLoopCopy(stmt, provedLabel, endLabel, "1", proof, forEnd, forStep)
+        generateLoopCopy(stmt, checkedLabel, endLabel, "1", 0, forEnd, forStep)
+    } else if (hasFlat) {
+        let flatCopy = ir_get_label()
+        ir_br_numbered(flatCopy)
+        generateLoopCopy(stmt, flatCopy, endLabel, "1", fastProof, forEnd, forStep)
+    }
+    if (hasFlat) {
+        generateLoopCopy(stmt, genericLabel, endLabel, "", 0, forEnd, forStep)
+    }
+    if (hasFlat == false and hasRange == false) {
+        ir_br_numbered(genericLabel)
+        generateLoopCopy(stmt, genericLabel, endLabel, plain, 0, forEnd, forStep)
+    }
+}
 
-        let provedRange = irLoopRangeProved
-
-        // Specialized fast loop: representation is guaranteed flat and constant-guarded.
-        ir_label_numbered(fastCondLabel)
-        irLoopFlatGuard = "1"
-        irLoopRangeProved = provedRange
-        let fastCondVal = generateExpression(ptr_to_node(stmt.child1))
-        ir_cond_br_numbered(fastCondVal, fastBodyLabel, endLabel)
-
-        ir_label_numbered(fastBodyLabel)
-        irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-        irLoopEnter(stmt, fastCondLabel, endLabel)
-        irLoopDepth = irLoopDepth + 1
-        generateBlock(ptr_to_node(stmt.child2))
-        irLoopDepth = irLoopDepth - 1
-        irLoopExit()
-
-        if (ir_has_returned() == 0) { ir_br_numbered(fastCondLabel) }
-        ir_clear_returned()
-
-        // Safe slow loop: standard fallback.
-        ir_label_numbered(slowCondLabel)
-        irLoopFlatGuard = ""
-        irLoopRangeProved = false
-        let slowCondVal = generateExpression(ptr_to_node(stmt.child1))
-        ir_cond_br_numbered(slowCondVal, slowBodyLabel, endLabel)
-
-        ir_label_numbered(slowBodyLabel)
-        irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-        irLoopEnter(stmt, slowCondLabel, endLabel)
-        irLoopDepth = irLoopDepth + 1
-        generateBlock(ptr_to_node(stmt.child2))
-        irLoopDepth = irLoopDepth - 1
-        irLoopExit()
-
-        if (ir_has_returned() == 0) { ir_br_numbered(slowCondLabel) }
-        ir_clear_returned()
-
-        irLoopFlatGuard = strClone(savedGuard)
-        irLoopRangeProved = savedRange
-        irLoopPushGuard = strClone(savedPush)
-        irLoopHeaderBoundList = strClone(savedHeaderList)
-        irLoopHeaderBoundIndex = strClone(savedHeaderIndex)
-        irLoopHeaderBoundActive = savedHeaderActive
-        irLoopHoistedBoundList = strClone(savedHoistedBoundList)
-        irLoopHoistedBoundValue = strClone(savedHoistedBoundValue)
-        irLoopHoistedDataValue = strClone(savedHoistedDataValue)
-        ir_label_numbered(endLabel)
+// One copy of a `while` or a range `for`, entered at `entryLabel`, with the
+// representation fact `flat` and range proof `proof` in force for its accesses.
+private fn generateLoopCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int, flat: String,
+                            proof: Int, forEnd: String, forStep: String) {
+    irLoopFlatGuard = strClone(flat)
+    irLoopRangeProof = proof
+    if (stmt.kind == NodeKind.FOR_STATEMENT) {
+        if (forIsGeneral(stmt)) {
+            generateForGeneralCopy(stmt, entryLabel, endLabel, forEnd, forStep)
+        } else {
+            generateForCopy(stmt, entryLabel, endLabel, forEnd)
+        }
         return
     }
-
-    if (savedGuard.equals("1")) {
-        irLoopFlatGuard = "1"
-    } else {
-        irLoopFlatGuard = guardSlot
-    }
-
-    ir_br_numbered(condLabel)
-    ir_label_numbered(condLabel)
-
+    let bodyLabel = ir_get_label()
+    ir_label_numbered(entryLabel)
     let condVal = generateExpression(ptr_to_node(stmt.child1))
     ir_cond_br_numbered(condVal, bodyLabel, endLabel)
 
     ir_label_numbered(bodyLabel)
     irLoopHeaderBoundActive = irLoopHeaderBoundList.equals("") == false
-    irLoopEnter(stmt, condLabel, endLabel)
+    irLoopEnter(stmt, entryLabel, endLabel)
     irLoopDepth = irLoopDepth + 1
     generateBlock(ptr_to_node(stmt.child2))
     irLoopDepth = irLoopDepth - 1
     irLoopExit()
 
-    if (ir_has_returned() == 0) { ir_br_numbered(condLabel) }
+    if (ir_has_returned() == 0) { ir_br_numbered(entryLabel) }
     ir_clear_returned()
-
-    irLoopFlatGuard = savedGuard
-    irLoopRangeProved = savedRange
-    irLoopPushGuard = savedPush
-    irLoopHeaderBoundList = savedHeaderList
-    irLoopHeaderBoundIndex = savedHeaderIndex
-    irLoopHeaderBoundActive = savedHeaderActive
-    irLoopHoistedBoundList = savedHoistedBoundList
-    irLoopHoistedBoundValue = savedHoistedBoundValue
-    irLoopHoistedDataValue = savedHoistedDataValue
-    ir_label_numbered(endLabel)
 }
 
 private fn generateLoop(stmt: ASTNode) {
@@ -1062,39 +1071,80 @@ private fn generateFor(stmt: ASTNode) {
 
     let endNode = ptr_to_node(stmt.child2)
     let endVal = generateExpression(endNode)
-
-    if (forIsGeneral(stmt)) {
-        generateForGeneral(stmt, loopVar, endVal)
-        ir_scope_pop()
-        return
+    let mut stepVal = "1"
+    let mut stepIsLiteral = true
+    if (nodeExists(endNode.next)) {
+        let stepNode = ptr_to_node(endNode.next)
+        stepVal = generateExpression(stepNode)
+        stepIsLiteral = forStepIsLiteral(stepNode)
     }
 
-    let condLabel = ir_get_label()
+    let endLabel = ir_get_label()
+    let savedGuard = irLoopFlatGuard
+    let savedProof = irLoopRangeProof
+    let savedHeaderList = irLoopHeaderBoundList
+    let savedHeaderIndex = irLoopHeaderBoundIndex
+    let savedHeaderActive = irLoopHeaderBoundActive
+    let savedHoistedBoundList = irLoopHoistedBoundList
+    let savedHoistedBoundValue = irLoopHoistedBoundValue
+    let savedHoistedDataValue = irLoopHoistedDataValue
+    irLoopRangeProof = 0
+    irLoopHeaderBoundList = ""
+    irLoopHeaderBoundIndex = ""
+    irLoopHeaderBoundActive = false
+    irLoopHoistedBoundList = ""
+    irLoopHoistedBoundValue = ""
+    irLoopHoistedDataValue = ""
+    let body = ptr_to_node(stmt.child3)
+    let flatSlot = generateLoopFlatGuard(ptr_null(), body)
+    let mut rangeSlot = ""
+    let mut proof = 0
+    if (flatSlot.equals("") == false or savedGuard.equals("1")) {
+        irLoopRangeProofPending = 0
+        irLoopRangeProofComplete = false
+        rangeSlot = generateForRangeGuard(stmt, endVal, stepVal, stepIsLiteral, stmt.i1 == 1)
+        proof = irLoopRangeProofPending
+    }
+    generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, endVal, stepVal)
+    irLoopFlatGuard = strClone(savedGuard)
+    irLoopRangeProof = savedProof
+    irLoopHeaderBoundList = strClone(savedHeaderList)
+    irLoopHeaderBoundIndex = strClone(savedHeaderIndex)
+    irLoopHeaderBoundActive = savedHeaderActive
+    irLoopHoistedBoundList = strClone(savedHoistedBoundList)
+    irLoopHoistedBoundValue = strClone(savedHoistedBoundValue)
+    irLoopHoistedDataValue = strClone(savedHoistedDataValue)
+
+    ir_label_numbered(endLabel)
+    ir_scope_pop()
+}
+
+// The plain counted copy: test `i < end`, run the body, add one.
+private fn generateForCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int, endVal: String) {
+    let loopVar = ir_get_var_slot(stmt.s1)
     let bodyLabel = ir_get_label()
     let incrLabel = ir_get_label()
-    let endLabel = ir_get_label()
 
-    ir_br_numbered(condLabel)
-    ir_label_numbered(condLabel)
+    ir_label_numbered(entryLabel)
     let iv = ir_load("i32", loopVar)
     let cmp = ir_icmp_slt("i32", ir_get_temp_name(iv), endVal)
     ir_cond_br_numbered(ir_get_temp_name(cmp), bodyLabel, endLabel)
 
     ir_label_numbered(bodyLabel)
     irLoopEnter(stmt, incrLabel, endLabel)   // continue jumps to the increment step
+    irLoopDepth = irLoopDepth + 1
     generateBlock(ptr_to_node(stmt.child3))
+    irLoopDepth = irLoopDepth - 1
     irLoopExit()
     if (ir_has_returned() == 0) { ir_br_numbered(incrLabel) }
     ir_clear_returned()
 
+    // `i < end` held and `end` is an Int, so the increment cannot wrap.
     ir_label_numbered(incrLabel)
     let iv2 = ir_load("i32", loopVar)
-    let next = ir_add("i32", ir_get_temp_name(iv2), "1")
+    let next = ir_add_nsw("i32", ir_get_temp_name(iv2), "1")
     ir_store("i32", ir_get_temp_name(next), loopVar)
-    ir_br_numbered(condLabel)
-
-    ir_label_numbered(endLabel)
-    ir_scope_pop()
+    ir_br_numbered(entryLabel)
 }
 
 // Sema has refused a literal step that is not positive, so only a computed one
@@ -1103,22 +1153,19 @@ private fn forStepIsLiteral(stepNode: ASTNode) -> Bool {
     return stepNode.kind == NodeKind.LITERAL_EXPR and stepNode.i1 == TokenType.NUMBER_LITERAL
 }
 
-private fn generateForGeneral(stmt: ASTNode, loopVar: String, endVal: String) {
+private fn generateForGeneralCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int,
+                                  endVal: String, stepVal: String) {
+    let loopVar = ir_get_var_slot(stmt.s1)
     let endNode = ptr_to_node(stmt.child2)
     let included = stmt.i1 == 1
-    let mut stepVal = "1"
     let mut stepChecked = true
-    if (nodeExists(endNode.next)) {
-        let stepNode = ptr_to_node(endNode.next)
-        stepVal = generateExpression(stepNode)
-        stepChecked = forStepIsLiteral(stepNode)
-    }
+    if (nodeExists(endNode.next)) { stepChecked = forStepIsLiteral(ptr_to_node(endNode.next)) }
 
     let bodyLabel = ir_get_label()
     let latchLabel = ir_get_label()
     let incrLabel = ir_get_label()
-    let endLabel = ir_get_label()
 
+    ir_label_numbered(entryLabel)
     let first = ir_get_temp_name(ir_load("i32", loopVar))
     let mut enter = ""
     if (included) {
@@ -1136,7 +1183,9 @@ private fn generateForGeneral(stmt: ASTNode, loopVar: String, endVal: String) {
 
     ir_label_numbered(bodyLabel)
     irLoopEnter(stmt, latchLabel, endLabel)   // continue jumps to the latch
+    irLoopDepth = irLoopDepth + 1
     generateBlock(ptr_to_node(stmt.child3))
+    irLoopDepth = irLoopDepth - 1
     irLoopExit()
     if (ir_has_returned() == 0) { ir_br_numbered(latchLabel) }
     ir_clear_returned()
@@ -1152,12 +1201,11 @@ private fn generateForGeneral(stmt: ASTNode, loopVar: String, endVal: String) {
     }
     ir_cond_br_numbered(more, incrLabel, endLabel)
 
+    // The latch let it through only if `step` fits in what is left to `end`.
     ir_label_numbered(incrLabel)
-    let next = ir_add("i32", current, stepVal)
+    let next = ir_add_nsw("i32", current, stepVal)
     ir_store("i32", ir_get_temp_name(next), loopVar)
     ir_br_numbered(bodyLabel)
-
-    ir_label_numbered(endLabel)
 }
 
     // SPEC 5.2. The arena is pushed on entry and popped on every exit; the
@@ -1239,9 +1287,17 @@ private fn generateMatch(stmt: ASTNode) {
             ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)
 
             ir_label_numbered(armLabel)
+            // The binders' own scope, as sema gives them (semaCheckPayloadArm).
+            // Bound in the enclosing scope instead, a binder named like an outer
+            // variable took over that name's slot for the rest of the enclosing
+            // block: `i = i + 1` after `Slot.At(i) => ...` in a loop over `i`
+            // stored to the binder, the condition read the loop's `i`, and the
+            // loop never ended.
+            ir_scope_push()
             generatePayloadBinders(arm, structTypeName(scrutType), stmt.s1)
             beginArmReuse(stmt, arm, structTypeName(scrutType))
             generateBlock(ptr_to_node(arm.child2))
+            ir_scope_pop()
             irReuseValue = ""
             if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
             ir_clear_returned()

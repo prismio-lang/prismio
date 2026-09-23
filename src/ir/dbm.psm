@@ -1,0 +1,201 @@
+// A difference-bound matrix (Mine, "The Octagon Abstract Domain", restricted to
+// differences): for n variables, an upper bound on `x_i - x_j` for every pair,
+// kept closed under shortest paths, and the operations a loop analysis needs --
+// assignment, assumption, join, widening and inclusion. ir/relations.psm is the
+// analysis that interprets a loop over it.
+//
+// A state is a `Vec<Int>` of n * n entries, entry (i, j) at i * n + j, and a
+// trailing flag set when the state is unreachable.
+
+// An absent bound. A finite entry that passes DBM_LIMIT either way is dropped to
+// it, which only loosens the state, so no sum of two entries leaves `Int`.
+let DBM_INF = 1000000000
+let DBM_LIMIT = 100000000
+
+internal fn dbmTop(n: Int) -> Vec<Int> {
+    let mut st: Vec<Int> = list_new_with_capacity(n * n + 1)
+    let mut i = 0
+    while (i < n * n) {
+        list_push(st, DBM_INF)
+        i = i + 1
+    }
+    list_push(st, 0)
+    i = 0
+    while (i < n) {
+        list_set(st, i * n + i, 0)
+        i = i + 1
+    }
+    return st
+}
+
+internal fn dbmCopy(src: Vec<Int>) -> Vec<Int> {
+    let n = list_len(src)
+    let mut st: Vec<Int> = list_new_with_capacity(n)
+    let mut i = 0
+    while (i < n) {
+        list_push(st, list_get(src, i))
+        i = i + 1
+    }
+    return st
+}
+
+internal fn dbmCopyInto(dst: Vec<Int>, src: Vec<Int>) {
+    let mut i = 0
+    while (i < list_len(src)) {
+        list_set(dst, i, list_get(src, i))
+        i = i + 1
+    }
+}
+
+internal fn dbmGet(n: Int, st: Vec<Int>, i: Int, j: Int) -> Int {
+    return list_get(st, i * n + j)
+}
+
+internal fn dbmPut(n: Int, st: Vec<Int>, i: Int, j: Int, value: Int) {
+    list_set(st, i * n + j, value)
+}
+
+internal fn dbmIsBottom(n: Int, st: Vec<Int>) -> Bool {
+    return list_get(st, n * n) != 0
+}
+
+internal fn dbmSetBottom(n: Int, st: Vec<Int>) {
+    list_set(st, n * n, 1)
+}
+
+internal fn dbmSum(a: Int, b: Int) -> Int {
+    if (a >= DBM_INF or b >= DBM_INF) { return DBM_INF }
+    let s = a + b
+    if (s > DBM_LIMIT or s < 0 - DBM_LIMIT) { return DBM_INF }
+    return s
+}
+
+// Floyd-Warshall. A negative cycle is a contradiction: no run reaches the state.
+internal fn dbmClose(n: Int, st: Vec<Int>) {
+    if (dbmIsBottom(n, st)) { return }
+    let mut k = 0
+    while (k < n) {
+        let mut i = 0
+        while (i < n) {
+            let ik = dbmGet(n, st, i, k)
+            if (ik < DBM_INF) {
+                let mut j = 0
+                while (j < n) {
+                    let via = dbmSum(ik, dbmGet(n, st, k, j))
+                    if (via < dbmGet(n, st, i, j)) { dbmPut(n, st, i, j, via) }
+                    j = j + 1
+                }
+            }
+            i = i + 1
+        }
+        k = k + 1
+    }
+    let mut d = 0
+    while (d < n) {
+        if (dbmGet(n, st, d, d) < 0) {
+            dbmSetBottom(n, st)
+            return
+        }
+        d = d + 1
+    }
+}
+
+internal fn dbmForget(n: Int, st: Vec<Int>, x: Int) {
+    let mut j = 0
+    while (j < n) {
+        dbmPut(n, st, x, j, DBM_INF)
+        dbmPut(n, st, j, x, DBM_INF)
+        j = j + 1
+    }
+    dbmPut(n, st, x, x, 0)
+}
+
+// `x := y + c`. A closed state stays closed: x is a copy of y, moved.
+internal fn dbmAssign(n: Int, st: Vec<Int>, x: Int, y: Int, c: Int) {
+    if (dbmIsBottom(n, st)) { return }
+    if (x == y) {
+        let mut j = 0
+        while (j < n) {
+            if (j != x) {
+                dbmPut(n, st, x, j, dbmSum(dbmGet(n, st, x, j), c))
+                dbmPut(n, st, j, x, dbmSum(dbmGet(n, st, j, x), 0 - c))
+            }
+            j = j + 1
+        }
+        return
+    }
+    dbmForget(n, st, x)
+    let mut j = 0
+    while (j < n) {
+        if (j != x) {
+            dbmPut(n, st, x, j, dbmSum(dbmGet(n, st, y, j), c))
+            dbmPut(n, st, j, x, dbmSum(dbmGet(n, st, j, y), 0 - c))
+        }
+        j = j + 1
+    }
+}
+
+// `x_a - x_b <= k`, closed incrementally: every path may now take the new edge.
+internal fn dbmAssumeLE(n: Int, st: Vec<Int>, a: Int, b: Int, k: Int) {
+    if (dbmIsBottom(n, st)) { return }
+    if (k > DBM_LIMIT or k < 0 - DBM_LIMIT) { return }
+    if (dbmSum(dbmGet(n, st, b, a), k) < 0) {
+        dbmSetBottom(n, st)
+        return
+    }
+    if (k >= dbmGet(n, st, a, b)) { return }
+    let mut i = 0
+    while (i < n) {
+        let ia = dbmSum(dbmGet(n, st, i, a), k)
+        if (ia < DBM_INF) {
+            let mut j = 0
+            while (j < n) {
+                let via = dbmSum(ia, dbmGet(n, st, b, j))
+                if (via < dbmGet(n, st, i, j)) { dbmPut(n, st, i, j, via) }
+                j = j + 1
+            }
+        }
+        i = i + 1
+    }
+}
+
+// Least upper bound into `dst`: the looser of each pair of bounds.
+internal fn dbmJoin(n: Int, dst: Vec<Int>, src: Vec<Int>) {
+    if (dbmIsBottom(n, src)) { return }
+    if (dbmIsBottom(n, dst)) {
+        dbmCopyInto(dst, src)
+        return
+    }
+    let mut i = 0
+    while (i < n * n) {
+        if (list_get(src, i) > list_get(dst, i)) { list_set(dst, i, list_get(src, i)) }
+        i = i + 1
+    }
+}
+
+// A bound the new iterate loosened is dropped outright, so every chain of
+// iterates is finite.
+internal fn dbmWiden(n: Int, dst: Vec<Int>, src: Vec<Int>) {
+    if (dbmIsBottom(n, src)) { return }
+    if (dbmIsBottom(n, dst)) {
+        dbmCopyInto(dst, src)
+        return
+    }
+    let mut i = 0
+    while (i < n * n) {
+        if (list_get(src, i) > list_get(dst, i)) { list_set(dst, i, DBM_INF) }
+        i = i + 1
+    }
+}
+
+// Whether every state `a` admits, `b` admits.
+internal fn dbmLeq(n: Int, a: Vec<Int>, b: Vec<Int>) -> Bool {
+    if (dbmIsBottom(n, a)) { return true }
+    if (dbmIsBottom(n, b)) { return false }
+    let mut i = 0
+    while (i < n * n) {
+        if (list_get(a, i) > list_get(b, i)) { return false }
+        i = i + 1
+    }
+    return true
+}

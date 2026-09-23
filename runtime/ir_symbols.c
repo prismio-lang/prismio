@@ -148,6 +148,103 @@ int ir_is_guard_safe_fn(const char* name) {
     return 0;
 }
 
+// Which list accesses a loop's preheader proved in range (src/ir/ranges.psm).
+//
+// A proof belongs to one *copy* of a loop: generateWhile emits the body twice,
+// and only the copy behind the guard may drop a bounds check. Each analysis takes
+// a fresh number, marks the access nodes it proved with it, and codegen drops a
+// check only where the node's mark equals the proof active in the copy it is
+// emitting. Numbers are never reused -- not across loops and not across the
+// modules one bootstrap process compiles -- so a mark left on a node, or on a node
+// allocated later at the same address, can never match a later proof.
+#define RANGE_PROOF_BUCKETS 1024
+
+typedef struct RangeProofNode {
+    struct RangeProofNode* next;
+    const void* node;
+    int proof;
+    // The receiver's element base, loaded once in the preheader (interned).
+    const char* data;
+} RangeProofNode;
+
+static RangeProofNode* range_proof_buckets[RANGE_PROOF_BUCKETS];
+static int range_proof_last = 0;
+
+static unsigned range_proof_bucket(const void* node) {
+    unsigned long long v = (unsigned long long)(size_t)node;
+    v ^= v >> 29;
+    v *= 0xbf58476d1ce4e5b9ull;
+    v ^= v >> 32;
+    return (unsigned)(v & (RANGE_PROOF_BUCKETS - 1));
+}
+
+int ir_range_proof_new(void) {
+    range_proof_last++;
+    return range_proof_last;
+}
+
+static RangeProofNode* range_proof_entry(const void* node) {
+    unsigned bucket = range_proof_bucket(node);
+    for (RangeProofNode* n = range_proof_buckets[bucket]; n; n = n->next) {
+        if (n->node == node) return n;
+    }
+    return NULL;
+}
+
+void ir_range_proof_mark(const void* node, int proof, const char* data) {
+    RangeProofNode* n = range_proof_entry(node);
+    if (!n) {
+        unsigned bucket = range_proof_bucket(node);
+        n = (RangeProofNode*)xmalloc(sizeof(RangeProofNode), "the loop range proof table");
+        n->node = node;
+        n->next = range_proof_buckets[bucket];
+        range_proof_buckets[bucket] = n;
+    }
+    n->proof = proof;
+    n->data = ir_intern(data);
+}
+
+// `PRISMIO_RANGE_PROOFS=0` is a measurement switch, not a mode: every proof is
+// still computed and every loop still versioned, but no access is ever answered
+// as proved. It separates what a proof buys from what the versioning around it
+// costs, which a comparison against an older compiler cannot -- that one differs
+// in both.
+static int range_proofs_disabled(void) {
+    static int disabled = -1;
+    if (disabled < 0) {
+        const char* v = getenv("PRISMIO_RANGE_PROOFS");
+        disabled = v && strcmp(v, "0") == 0;
+    }
+    return disabled;
+}
+
+// The mark itself, whatever the measurement switch says: what the analysis asks
+// when a second tier must not prove an access the first one already did.
+int ir_range_proof_marked(const void* node) {
+    RangeProofNode* n = range_proof_entry(node);
+    return n ? n->proof : 0;
+}
+
+int ir_range_proof_of(const void* node) {
+    if (range_proofs_disabled()) return 0;
+    return ir_range_proof_marked(node);
+}
+
+// `PRISMIO_RANGE_TRACE=1`: one line per analysed loop copy, so a fixture can
+// assert that a proof fired rather than only that the answers were right -- a
+// guard that never holds passes every totality test.
+void ir_range_trace(int line, int proved, int total) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = getenv("PRISMIO_RANGE_TRACE") != NULL;
+    if (!enabled) return;
+    fprintf(stderr, "range proof: line %d proved %d of %d\n", line, proved, total);
+}
+
+const char* ir_range_proof_data(const void* node) {
+    RangeProofNode* n = range_proof_entry(node);
+    return n ? n->data : "";
+}
+
 #define MAX_LOOP_DEPTH 256
 
 static int loop_continue_stack[MAX_LOOP_DEPTH];

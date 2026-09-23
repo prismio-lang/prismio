@@ -1061,7 +1061,10 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
         }
     }
 
-    let a = irFlatGuardCountChain(n.child1, bodyPtr)
+    // A match arm's pattern names a variant and its binders; it is never
+    // evaluated, so the call node it is spelled as is not a call.
+    let mut a = 0
+    if (n.kind != NodeKind.MATCH_ARM) { a = irFlatGuardCountChain(n.child1, bodyPtr) }
     if (a < 0) { return 0 - 1 }
     let b = irFlatGuardCountChain(n.child2, bodyPtr)
     if (b < 0) { return 0 - 1 }
@@ -1128,9 +1131,10 @@ private fn irStringListContains(xs: Vec<String>, s: String) -> Bool {
 // predicate into the slot. The slot is the accumulator, which is what removes
 // the need to hold the receivers anywhere -- mem2reg turns the load/and/store
 // chain back into one `and` tree in the preheader.
-private fn irEmitFlatGuards(nodePtr: Ptr, slot: String, bodyPtr: Ptr) {
+private fn irEmitFlatGuards(condPtr: Ptr, bodyPtr: Ptr, slot: String) {
     let mut seen: Vec<String> = list_new()
-    irEmitFlatGuardsRec(nodePtr, slot, seen, bodyPtr)
+    irEmitFlatGuardsRec(condPtr, slot, seen, bodyPtr)
+    irEmitFlatGuardsRec(bodyPtr, slot, seen, bodyPtr)
 }
 
 private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: Vec<String>, bodyPtr: Ptr) {
@@ -1184,7 +1188,7 @@ private fn irEmitFlatGuardsChain(head: Ptr, slot: String, seen: Vec<String>, bod
 // Whether this body can change one identifier receiver's length. Calls not
 // explicitly understood already make irFlatGuardCount decline the loop; among
 // accepted calls, a typed push is the only length-changing operation.
-private fn irBodyPushesList(nodePtr: Ptr, name: String) -> Bool {
+internal fn irBodyPushesList(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
     if (n.kind == NodeKind.CALL_EXPR and nodeExists(n.child1)
@@ -1250,6 +1254,13 @@ private fn irCaptureStableListBoundChain(head: Ptr, bodyPtr: Ptr) -> Bool {
     return false
 }
 
+// Whether the loop copy being generated proved this node: an access in range, or
+// an induction variable's update free of wrap.
+private fn irAccessProved(expr: ASTNode) -> Bool {
+    if (irLoopRangeProof == 0) { return false }
+    return ir_range_proof_of(node_to_ptr(expr)) == irLoopRangeProof
+}
+
 // The loop's one flat-List guard, emitted into the preheader, or "" for a loop
 // this declines to serve.
 //
@@ -1261,27 +1272,18 @@ private fn irCaptureStableListBoundChain(head: Ptr, bodyPtr: Ptr) -> Bool {
 //
 // Conservative in one direction only. If the guard is false at run time every
 // site takes `list_get_inline`, which is exactly what they did before.
-internal fn generateLoopFlatGuard(cond: ASTNode, body: ASTNode) -> String {
+internal fn generateLoopFlatGuard(condPtr: Ptr, body: ASTNode) -> String {
     let bodyPtr = node_to_ptr(body)
-    if (irFlatGuardCount(bodyPtr, bodyPtr) <= 0) { return "" }
-
-    // If an enclosing loop already established that all lists are flat, we only
-    // need a guard if this loop can prove its own range.
-    if (irLoopFlatGuard.equals("1")) {
-        let name = "rangeguard.".concat(strFromInt(irLoopFlatGuardCounter))
-        irLoopFlatGuardCounter = irLoopFlatGuardCounter + 1
-        ir_set_var_type(name, "Bool")
-        let slot = ir_get_var_slot(name)
-        ir_alloca("i1", slot)
-        ir_store("i1", "true", slot)
-        let proved = generateLoopRangeGuards(node_to_ptr(cond), bodyPtr, slot)
-        if (proved) {
-            irLoopRangeProved = true
-            return slot
-        }
-        irLoopRangeProved = false
-        return ""
-    }
+    let inBody = irFlatGuardCount(bodyPtr, bodyPtr)
+    if (inBody < 0) { return "" }
+    // The condition runs on every iteration of the copy the guard selects, so its
+    // receivers need the same representation fact and its calls the same scrutiny
+    // as the body's: a push there moves a block the body reads through a base
+    // loaded once.
+    let inCond = irFlatGuardCount(condPtr, bodyPtr)
+    if (inCond < 0 or inBody + inCond <= 0) { return "" }
+    // An enclosing loop's guard walked this whole loop, condition included.
+    if (irLoopFlatGuard.equals("1")) { return "" }
 
     let name = "flatguard.".concat(strFromInt(irLoopFlatGuardCounter))
     irLoopFlatGuardCounter = irLoopFlatGuardCounter + 1
@@ -1289,10 +1291,9 @@ internal fn generateLoopFlatGuard(cond: ASTNode, body: ASTNode) -> String {
     let slot = ir_get_var_slot(name)
     ir_alloca("i1", slot)
     ir_store("i1", "true", slot)
-    irEmitFlatGuards(bodyPtr, slot, bodyPtr)
+    irEmitFlatGuards(condPtr, bodyPtr, slot)
     irCaptureStableListBound(bodyPtr, bodyPtr)
-    generateLoopHeaderBound(cond, bodyPtr, slot)
-    irLoopRangeProved = generateLoopRangeGuards(node_to_ptr(cond), bodyPtr, slot)
+    if (nodeExists(condPtr)) { generateLoopHeaderBound(ptr_to_node(condPtr), bodyPtr, slot) }
     return slot
 }
 
@@ -1337,7 +1338,7 @@ private fn generateLoopHeaderBound(cond: ASTNode, bodyPtr: Ptr, slot: String) {
 // not exist there yet: treating one as invariant emits a load from a local the
 // backend has never seen, which is an internal error rather than a wrong answer.
 // It was `let mid = ...` in a merge loop that found this.
-private fn irBodyBindsName(nodePtr: Ptr, name: String) -> Bool {
+internal fn irBodyBindsName(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
     if (n.kind == NodeKind.VARIABLE_DECL and n.s1.equals(name)) { return true }
@@ -1472,70 +1473,8 @@ private fn irIVUpdateIsLast(bodyPtr: Ptr, iv: String) -> Bool {
     return target.s1.equals(iv)
 }
 
-// Whether every guarded read in this loop indexes affinely off `iv`: `iv`,
-// `iv - E` or `iv + E` for an E the loop cannot change. All-or-nothing, like the
-// representation guard above -- one read this cannot place leaves the whole loop
-// checked, because the guard is a single `i1` and a partially true one is worse
-// than none.
-private fn irRangeMatchAll(nodePtr: Ptr, iv: String, bodyPtr: Ptr) -> Bool {
-    if (nodeIsNull(nodePtr)) { return true }
-    let n = ptr_to_node(nodePtr)
-    if (n.kind == NodeKind.CALL_EXPR) {
-        let mut fname = ""
-        if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
-        if (flatGetStride(n, fname) > 0 or flatSetScalarStride(n, fname) > 0) {
-            let listNode = ptr_to_node(n.child2)
-            if (nodeIsNull(listNode.next)) { return false }
-            if (irIndexOffsetSign(ptr_to_node(listNode.next), iv, bodyPtr) == 0) {
-                return false
-            }
-            // **The length is read once, in the preheader, so the receiver has
-            // to still name the same list at every access.** The representation
-            // guard tolerates a re-bound receiver -- it would only pick the
-            // wrong arm -- but a stale length here is an out-of-bounds store.
-            // A plain name the body never assigns is the only shape admitted;
-            // `w.items` is declined because an assignment through a field is not
-            // what irCountAssigns looks at.
-            if (listNode.kind != NodeKind.IDENTIFIER_EXPR) { return false }
-            if (chainAssignsName(bodyPtr, listNode.s1)) { return false }
-        }
-    }
-    if (irRangeMatchChain(n.child1, iv, bodyPtr) == false) { return false }
-    if (irRangeMatchChain(n.child2, iv, bodyPtr) == false) { return false }
-    return irRangeMatchChain(n.child3, iv, bodyPtr)
-}
-
-private fn irRangeMatchChain(head: Ptr, iv: String, bodyPtr: Ptr) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (irRangeMatchAll(node_to_ptr(n), iv, bodyPtr) == false) { return false }
-        p = n.next
-    }
-    return true
-}
-// 1 for a bare `iv`, 2 for `iv + E`, 3 for `iv - E`, 0 for anything else.
-//
-// **Deliberately not a general affine matcher, and that was measured.** A version
-// admitting commuted operands, compound invariants like `row * n`, and a scaled
-// induction variable `k * n` was built and reverted: it served three more index
-// shapes in `benchMatrixMultiply` and cost 1.088x on large_buffer_copy, 1.028x on
-// convolution and 1.011x on matrix_multiply itself, against no benchmark it
-// improved. See aif/evidence/RESULTS-affine-index-rejected.md.
-//
-// A preheader guard is paid per loop *entry* and repaid per *iteration*, and the
-// loops a wider matcher admits are the ones whose entry count is close to their
-// iteration count -- an inner loop entered n^2 times to run n times, or a body
-// already dominated by a division. Widening it without a trip-count estimate
-// widens it in exactly the wrong direction.
-private fn irFindImmutableDecl(bodyPtr: Ptr, name: String) -> Ptr {
-    let declPtr = irFindDeclInBody(bodyPtr, name)
-    if (nodeIsNull(declPtr)) { return ptr_null() }
-    if (irCountAssigns(bodyPtr, name) > 0) { return ptr_null() }
-    return declPtr
-}
-
-private fn irFindDeclInBody(nodePtr: Ptr, name: String) -> Ptr {
+// The declaration of `name` inside the body, or null.
+internal fn irFindDeclInBody(nodePtr: Ptr, name: String) -> Ptr {
     if (nodeIsNull(nodePtr)) { return ptr_null() }
     let n = ptr_to_node(nodePtr)
     if (n.kind == NodeKind.VARIABLE_DECL and n.s1.equals(name)) {
@@ -1564,323 +1503,6 @@ private fn irFindDeclChain(head: Ptr, name: String) -> Ptr {
         p = n.next
     }
     return ptr_null()
-}
-
-private fn irIsInvariantExpr(n: ASTNode, iv: String, bodyPtr: Ptr) -> Bool {
-    if (irIsInvariantTerm(n, iv, bodyPtr)) { return true }
-    if (n.kind == NodeKind.BINARY_EXPR) {
-        if (n.s1.equals("+") or n.s1.equals("-")) {
-            if (nodeExists(n.child1) and nodeExists(n.child2)) {
-                return irIsInvariantExpr(ptr_to_node(n.child1), iv, bodyPtr)
-                   and irIsInvariantExpr(ptr_to_node(n.child2), iv, bodyPtr)
-            }
-        }
-    }
-    return false
-}
-
-private fn irResolveIndexSign(idx: ASTNode, iv: String, bodyPtr: Ptr) -> Int {
-    if (idx.kind == NodeKind.IDENTIFIER_EXPR) {
-        if (idx.s1.equals(iv)) { return 1 }
-        let declPtr = irFindImmutableDecl(bodyPtr, idx.s1)
-        if (nodeExists(declPtr)) {
-            let decl = ptr_to_node(declPtr)
-            if (nodeExists(decl.child2)) {
-                return irResolveIndexSign(ptr_to_node(decl.child2), iv, bodyPtr)
-            }
-        }
-        return 0
-    }
-    if (idx.kind != NodeKind.BINARY_EXPR) { return 0 }
-    if (nodeIsNull(idx.child1) or nodeIsNull(idx.child2)) { return 0 }
-    let child1 = ptr_to_node(idx.child1)
-    let child2 = ptr_to_node(idx.child2)
-
-    if (idx.s1.equals("+")) {
-        if (child1.kind == NodeKind.IDENTIFIER_EXPR and child1.s1.equals(iv)) {
-            if (irIsInvariantExpr(child2, iv, bodyPtr)) { return 2 }
-        }
-        if (child2.kind == NodeKind.IDENTIFIER_EXPR and child2.s1.equals(iv)) {
-            if (irIsInvariantExpr(child1, iv, bodyPtr)) { return 2 }
-        }
-        let s1 = irResolveIndexSign(child1, iv, bodyPtr)
-        if (s1 == 2 and irIsInvariantExpr(child2, iv, bodyPtr)) { return 2 }
-        let s2 = irResolveIndexSign(child2, iv, bodyPtr)
-        if (s2 == 2 and irIsInvariantExpr(child1, iv, bodyPtr)) { return 2 }
-        return 0
-    }
-
-    if (idx.s1.equals("-")) {
-        if (child1.kind == NodeKind.IDENTIFIER_EXPR and child1.s1.equals(iv)) {
-            if (irIsInvariantExpr(child2, iv, bodyPtr)) { return 3 }
-        }
-        return 0
-    }
-
-    return 0
-}
-
-private fn irResolveIndexOffset(idx: ASTNode, iv: String, bodyPtr: Ptr) -> Ptr {
-    if (idx.kind == NodeKind.IDENTIFIER_EXPR) {
-        if (idx.s1.equals(iv)) { return ptr_null() }
-        let declPtr = irFindImmutableDecl(bodyPtr, idx.s1)
-        if (nodeExists(declPtr)) {
-            let decl = ptr_to_node(declPtr)
-            if (nodeExists(decl.child2)) {
-                return irResolveIndexOffset(ptr_to_node(decl.child2), iv, bodyPtr)
-            }
-        }
-        return ptr_null()
-    }
-    if (idx.kind != NodeKind.BINARY_EXPR) { return ptr_null() }
-    if (nodeIsNull(idx.child1) or nodeIsNull(idx.child2)) { return ptr_null() }
-    let child1 = ptr_to_node(idx.child1)
-    let child2 = ptr_to_node(idx.child2)
-
-    if (idx.s1.equals("+")) {
-        if (child1.kind == NodeKind.IDENTIFIER_EXPR and child1.s1.equals(iv)) {
-            return idx.child2
-        }
-        if (child2.kind == NodeKind.IDENTIFIER_EXPR and child2.s1.equals(iv)) {
-            return idx.child1
-        }
-        let s1 = irResolveIndexSign(child1, iv, bodyPtr)
-        if (s1 == 2 and irIsInvariantExpr(child2, iv, bodyPtr)) {
-            let off1 = irResolveIndexOffset(child1, iv, bodyPtr)
-            let combined = createNode(NodeKind.BINARY_EXPR)
-            combined.s1 = "+"
-            combined.child1 = off1
-            combined.child2 = idx.child2
-            return node_to_ptr(combined)
-        }
-        let s2 = irResolveIndexSign(child2, iv, bodyPtr)
-        if (s2 == 2 and irIsInvariantExpr(child1, iv, bodyPtr)) {
-            let off2 = irResolveIndexOffset(child2, iv, bodyPtr)
-            let combined = createNode(NodeKind.BINARY_EXPR)
-            combined.s1 = "+"
-            combined.child1 = idx.child1
-            combined.child2 = off2
-            return node_to_ptr(combined)
-        }
-    }
-
-    if (idx.s1.equals("-")) {
-        if (child1.kind == NodeKind.IDENTIFIER_EXPR and child1.s1.equals(iv)) {
-            return idx.child2
-        }
-    }
-
-    return ptr_null()
-}
-
-// 1 for a bare `iv`, 2 for `iv + E` (or commuted `E + iv` / resolved `let`), 3 for `iv - E`, 0 for anything else.
-private fn irIndexOffsetSign(idx: ASTNode, iv: String, bodyPtr: Ptr) -> Int {
-    return irResolveIndexSign(idx, iv, bodyPtr)
-}
-
-// Fold `0 <= lowest index && highest index < len` for one read into the slot.
-private fn irEmitOneRangeGuard(n: ASTNode, iv: String, bodyPtr: Ptr,
-                               lo: String, hi: String, slot: String) {
-    let listNode = ptr_to_node(n.child2)
-    let idx = ptr_to_node(listNode.next)
-    let sign = irIndexOffsetSign(idx, iv, bodyPtr)
-    let mut low = strClone(lo)
-    let mut high = strClone(hi)
-    if (sign != 1) {
-        let offPtr = irResolveIndexOffset(idx, iv, bodyPtr)
-        if (nodeExists(offPtr)) {
-            let off = ir_get_temp_name(
-                ir_sext("i32", generateExpression(ptr_to_node(offPtr)), "i64"))
-            let offAgain = strClone(off)
-            if (sign == 2) {
-                low = ir_get_temp_name(ir_add("i64", low, off))
-                high = ir_get_temp_name(ir_add("i64", high, offAgain))
-            } else {
-                low = ir_get_temp_name(ir_sub("i64", low, off))
-                high = ir_get_temp_name(ir_sub("i64", high, offAgain))
-            }
-        }
-    }
-    ir_call_begin()
-    ir_call_arg("ptr", generateExpression(listNode))
-    let len = ir_get_temp_name(ir_call_end("i32", "list_len"))
-    let len64 = ir_get_temp_name(ir_sext("i32", len, "i64"))
-    let lowOk = ir_get_temp_name(ir_icmp_sge("i64", low, "0"))
-    let highOk = ir_get_temp_name(ir_icmp_slt("i64", high, len64))
-    let both = ir_get_temp_name(ir_and("i1", lowOk, highOk))
-    let prev = ir_get_temp_name(ir_load("i1", slot))
-    ir_store("i1", ir_get_temp_name(ir_and("i1", prev, both)), slot)
-}
-
-private fn irEmitRangeGuards(nodePtr: Ptr, iv: String, bodyPtr: Ptr,
-                             lo: String, hi: String, slot: String) {
-    let mut seen: Vec<String> = list_new()
-    irEmitRangeGuardsRec(nodePtr, iv, bodyPtr, lo, hi, slot, seen)
-}
-
-private fn irEmitRangeGuardsRec(nodePtr: Ptr, iv: String, bodyPtr: Ptr,
-                                lo: String, hi: String, slot: String, seen: Vec<String>) {
-    if (nodeIsNull(nodePtr)) { return }
-    let n = ptr_to_node(nodePtr)
-    if (n.kind == NodeKind.CALL_EXPR) {
-        let mut fname = ""
-        if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
-        if (flatGetStride(n, fname) > 0 or flatSetScalarStride(n, fname) > 0) {
-            let listNode = ptr_to_node(n.child2)
-            let idx = ptr_to_node(listNode.next)
-            let mut key = ""
-            if (listNode.kind == NodeKind.IDENTIFIER_EXPR and idx.kind == NodeKind.IDENTIFIER_EXPR) {
-                key = listNode.s1.concat("@").concat(idx.s1)
-            }
-            let mut alreadySeen = false
-            if (key.equals("") == false) {
-                alreadySeen = irStringListContains(seen, key)
-            }
-            if (alreadySeen == false) {
-                if (key.equals("") == false) { list_push(seen, strClone(key)) }
-                irEmitOneRangeGuard(n, iv, bodyPtr, lo, hi, slot)
-            }
-        }
-    }
-    irEmitRangeChain(n.child1, iv, bodyPtr, lo, hi, slot, seen)
-    irEmitRangeChain(n.child2, iv, bodyPtr, lo, hi, slot, seen)
-    irEmitRangeChain(n.child3, iv, bodyPtr, lo, hi, slot, seen)
-}
-
-private fn irEmitRangeChain(head: Ptr, iv: String, bodyPtr: Ptr,
-                            lo: String, hi: String, slot: String, seen: Vec<String>) {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        irEmitRangeGuardsRec(node_to_ptr(n), iv, bodyPtr, lo, hi, slot, seen)
-        p = n.next
-    }
-}
-
-// HotSpot's loop predication, with the versioned slow loop standing in for
-// deoptimisation. Folds "every index this loop forms is in range" into the same
-// preheader `i1` the representation guard uses, so the true version can drop the
-// per-access bounds check -- and dropping it is what makes the element load
-// unconditional, which is the only reason LICM could not hoist `data`. The false
-// version is unchanged, so `list_get` stays total: nothing here can make an
-// out-of-range read do anything other than what it does today.
-//
-// The range is computed in i64, but the loop runs in 32-bit `Int`, and that gap
-// is where the one soundness bug lived: see the monotonicity conjunct below.
-private fn generateLoopRangeGuards(condPtr: Ptr, bodyPtr: Ptr, slot: String) -> Bool {
-    if (nodeIsNull(condPtr) or nodeIsNull(bodyPtr)) { return false }
-    let cond = ptr_to_node(condPtr)
-    if (cond.kind != NodeKind.BINARY_EXPR) { return false }
-    let mut decreasing = false
-    if (cond.s1.equals(">=") or cond.s1.equals(">")) {
-        decreasing = true
-    } else if (cond.s1.equals("<=") == false and cond.s1.equals("<") == false) {
-        return false
-    }
-    if (nodeIsNull(cond.child1) or nodeIsNull(cond.child2)) { return false }
-
-    // MEM-035. A multi-point stencil is written `while (at + 3 < n)`, so that the
-    // widest read `input[at + 3]` is the one the condition bounds. The offsets
-    // themselves were always matched -- `irIndexOffsetSign` takes `iv + E` and
-    // `iv - E` -- and what declined the loop was the *condition*: a shifted
-    // left-hand side is not an identifier.
-    //
-    // `at + K < n` is `at < n - K`, so the shift moves to the bound and
-    // everything below is unchanged. **A non-negative literal, and only going
-    // up**: then the condition's own `at + K` cannot wrap either, because every
-    // admitted `at` is at most `n - K - 1`, so `at + K <= n - 1` and `n` came
-    // from an i32. A symbolic or negative shift would need its own runtime
-    // conjunct for that, and no shape in the corpus asks for one.
-    let lhs = ptr_to_node(cond.child1)
-    let mut ivPtr = cond.child1
-    let mut shift = ""
-    if (lhs.kind == NodeKind.BINARY_EXPR) {
-        if (decreasing) { return false }
-        if (lhs.s1.equals("+") == false) { return false }
-        if (nodeIsNull(lhs.child1) or nodeIsNull(lhs.child2)) { return false }
-        let amount = ptr_to_node(lhs.child2)
-        if (amount.kind != NodeKind.LITERAL_EXPR) { return false }
-        if (amount.i1 != TokenType.NUMBER_LITERAL) { return false }
-        if (__builtin_string_len(amount.s1) > 10) { return false }
-        shift = strClone(amount.s1)
-        ivPtr = lhs.child1
-    }
-    let ivNode = ptr_to_node(ivPtr)
-    if (ivNode.kind != NodeKind.IDENTIFIER_EXPR) { return false }
-    let iv = ivNode.s1
-
-    // Exactly one update, of the recognised shape and in the direction the
-    // condition needs. More than one and the value seen at an access is not
-    // bracketed by the condition and that update alone.
-    if (irCountAssigns(bodyPtr, iv) != 1) { return false }
-    let mut stepOp = "+"
-    if (decreasing) { stepOp = "-" }
-    let step = irIVStepText(bodyPtr, iv, stepOp)
-    if (step.equals("")) { return false }
-    if (irIVUpdateIsLast(bodyPtr, iv) == false) { return false }
-
-    // Ten digits is the widest an `Int` literal can be. Longer text is emitted
-    // nowhere: it would have to be an i64 constant below, and a literal too wide
-    // for i64 is not one LLVM will parse. Inside the cap a literal `Int` cannot
-    // overflow can only make the monotonicity test stricter, never looser, so no
-    // range check on the value itself is needed.
-    if (__builtin_string_len(step) > 10) { return false }
-
-    let boundNode = ptr_to_node(cond.child2)
-    if (irIsInvariantTerm(boundNode, iv, bodyPtr) == false) { return false }
-    if (irRangeMatchAll(bodyPtr, iv, bodyPtr) == false) { return false }
-
-    // The preheader still holds the induction variable's initial value, so the
-    // range needs no symbolic start: it is the variable itself, read here.
-    let init = ir_get_temp_name(ir_sext("i32", generateExpression(ivNode), "i64"))
-    let mut bound = ir_get_temp_name(ir_sext("i32", generateExpression(boundNode), "i64"))
-    if (shift.equals("") == false) {
-        bound = ir_get_temp_name(ir_sub("i64", bound, shift))
-    }
-
-    // The update is the body's last statement, so every access sees a value the
-    // condition admitted: exactly [bound, init] going down, [init, bound] going
-    // up, with the strict comparisons taking the extreme one step in -- `k < n`
-    // admits n - 1, never n.
-    let mut lo = ""
-    let mut hi = ""
-    if (decreasing) {
-        if (cond.s1.equals(">")) {
-            lo = ir_get_temp_name(ir_add("i64", bound, "1"))
-        } else {
-            lo = strClone(bound)
-        }
-        hi = strClone(init)
-    } else {
-        lo = strClone(init)
-        if (cond.s1.equals("<")) {
-            hi = ir_get_temp_name(ir_sub("i64", bound, "1"))
-        } else {
-            hi = strClone(bound)
-        }
-    }
-
-    // **[lo, hi] is a range only while the induction variable is monotone, and
-    // 32-bit `Int` arithmetic wraps.** `at = at + 2147483647` under
-    // `while (at < 3)` reaches -2147483648 with the condition still true, and an
-    // unchecked GEP off that is a SIGSEGV where the language promises a total
-    // `list_get`. The step's direction is checked above; what is left is a
-    // runtime fact, so it joins the same `i1`: the update the last admitted
-    // value performs has to land back inside `Int`. Every earlier update lands
-    // between that and the initial value, so one conjunct covers the whole loop.
-    let mut noWrap = ""
-    if (decreasing) {
-        let past = ir_get_temp_name(ir_sub("i64", lo, step))
-        noWrap = ir_get_temp_name(ir_icmp_sge("i64", past, "-2147483648"))
-    } else {
-        let past = ir_get_temp_name(ir_add("i64", hi, step))
-        noWrap = ir_get_temp_name(ir_icmp_sle("i64", past, "2147483647"))
-    }
-    let prevWrap = ir_get_temp_name(ir_load("i1", slot))
-    ir_store("i1", ir_get_temp_name(ir_and("i1", prevWrap, noWrap)), slot)
-
-    irEmitRangeGuards(bodyPtr, iv, bodyPtr, lo, hi, slot)
-    return true
 }
 
 // The one call in the body of a `while` whose body is a single expression
@@ -2378,7 +2000,7 @@ private fn isStaticBoxedListGet(expr: ASTNode, funcName: String) -> Bool {
 // nested list and a receiver a call in the same loop can reallocate are all
 // still the runtime's, because none of them is answered by the element type
 // alone.
-private fn flatGetStride(expr: ASTNode, funcName: String) -> Int {
+internal fn flatGetStride(expr: ASTNode, funcName: String) -> Int {
     if (isTypedListGet(expr, funcName) == false) { return 0 }
     let listNode = ptr_to_node(expr.child2)
     return inlineElemSizeOfList(listNode)
@@ -2399,7 +2021,7 @@ private fn flatGetStride(expr: ASTNode, funcName: String) -> Int {
 // setter runs `list_release_source` and the boxed one an `rc_release`, and a
 // releaser is user code that could reach the same list and grow it
 // behind the guard. A scalar element has neither.
-private fn flatSetScalarStride(expr: ASTNode, funcName: String) -> Int {
+internal fn flatSetScalarStride(expr: ASTNode, funcName: String) -> Int {
     if (funcName.equals("list_set") == false) { return 0 }
     if (nodeIsNull(expr.child2)) { return 0 }
     let listNode = ptr_to_node(expr.child2)
@@ -3407,6 +3029,11 @@ private fn generateBinary(expr: ASTNode) -> String {
                 if (op.equals("-")) { tempId = ir_sub_checked(opType, leftVal, rightVal, file, expr.line) }
                 if (op.equals("*")) { tempId = ir_mul_checked(opType, leftVal, rightVal, file, expr.line) }
             }
+        } else if (irAccessProved(expr)) {
+            // An induction variable's update in the copy whose guard proved it
+            // cannot wrap (ir/ranges.psm).
+            if (op.equals("+")) { tempId = ir_add_nsw(opType, leftVal, rightVal) }
+            if (op.equals("-")) { tempId = ir_sub_nsw(opType, leftVal, rightVal) }
         } else {
             if (op.equals("+")) { tempId = ir_add(opType, leftVal, rightVal) }
             if (op.equals("-")) { tempId = ir_sub(opType, leftVal, rightVal) }
@@ -3698,7 +3325,7 @@ private fn generateCall(expr: ASTNode) -> String {
             guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
         }
         let mut checkBounds = 1
-        if (irLoopRangeProved) {
+        if (irAccessProved(expr)) {
             checkBounds = 0
         } else if (irLoopHeaderBoundActive
                 and listNode.kind == NodeKind.IDENTIFIER_EXPR
@@ -3714,7 +3341,9 @@ private fn generateCall(expr: ASTNode) -> String {
         if (scalarInlineBytes(flatRet) > 0) {
             let mut hoistedBound = ""
             let mut hoistedData = ""
-            if (listNode.kind == NodeKind.IDENTIFIER_EXPR
+            if (checkBounds == 0 and irAccessProved(expr)) {
+                hoistedData = strClone(ir_range_proof_data(node_to_ptr(expr)))
+            } else if (listNode.kind == NodeKind.IDENTIFIER_EXPR
                     and listNode.s1.equals(irLoopHoistedBoundList)) {
                 hoistedBound = strClone(irLoopHoistedBoundValue)
                 hoistedData = strClone(irLoopHoistedDataValue)
@@ -3745,10 +3374,12 @@ private fn generateCall(expr: ASTNode) -> String {
             guard2 = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
         }
         let mut checkBounds2 = 1
-        if (irLoopRangeProved) { checkBounds2 = 0 }
+        if (irAccessProved(expr)) { checkBounds2 = 0 }
         let mut hoistedBound2 = ""
         let mut hoistedData2 = ""
-        if (setList.kind == NodeKind.IDENTIFIER_EXPR
+        if (checkBounds2 == 0) {
+            hoistedData2 = strClone(ir_range_proof_data(node_to_ptr(expr)))
+        } else if (setList.kind == NodeKind.IDENTIFIER_EXPR
                 and setList.s1.equals(irLoopHoistedBoundList)) {
             hoistedBound2 = strClone(irLoopHoistedBoundValue)
             hoistedData2 = strClone(irLoopHoistedDataValue)

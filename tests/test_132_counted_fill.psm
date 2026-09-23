@@ -116,6 +116,30 @@ fn queueGrowth(n: Int) -> Int {
     return 0
 }
 
+// Bool elements are bytes in the block: stored as `i8` and read as "not zero".
+// An `i1` store is not a byte store to LLVM, and kept the fill from becoming a
+// memset (runtime/llvm-api-backend.c, element_memory_type).
+fn boolFill(n: Int) -> Int {
+    let mut marks: Vec<Bool> = list_new_with_capacity(n + 1)
+    let mut i = 0
+    while (i <= n) {
+        list_push(marks, true)
+        i = i + 1
+    }
+    let mut k = 0
+    while (k <= n) {
+        if (k % 3 == 0) { list_set(marks, k, false) }
+        k = k + 1
+    }
+    let mut count = 0
+    k = 0
+    while (k <= n) {
+        if (list_get(marks, k)) { count = count + 1 }
+        k = k + 1
+    }
+    return count
+}
+
 fn main() -> Int {
     if (checkFill(0) != 0 or checkFill(1) != 0 or checkFill(63) != 0
             or checkFill(64) != 0 or checkFill(65) != 0 or checkFill(127) != 0
@@ -139,6 +163,7 @@ fn main() -> Int {
     nearLimitFill(limit)
     if (list_len(limit) != 64 or list_get(limit, 0) != 2147483583
             or list_get(limit, 63) != 2147483646) { return 17 }
+    if (boolFill(300) != 200 or boolFill(0) != 0 or boolFill(4096) != 2731) { return 18 }
     println("PASS: counted fill, struct regions, and growing queue")
     return 0
 }

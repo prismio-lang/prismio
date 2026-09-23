@@ -1450,6 +1450,38 @@ static void tag_list_element(LLVMValueRef inst, const char *type) {
     tag_list_region(inst, 1);
 }
 
+// A `Bool` element is a byte in the block and is stored and loaded as `i8`, the
+// way clang stores a `bool`. `i1` is not a byte-sized type to LLVM: the
+// vectoriser scalarises a loop of `store i1` into one store per lane, and
+// LoopIdiomRecognize cannot read `i1 true` as a byte pattern, so a fill of a
+// `Vec<Bool>` ran as merged scalar stores where C++'s `vector<uint8_t>` fill is
+// a memset. The runtime's boxed paths already write the value's low byte, which
+// is the same 0 or 1.
+//
+// A load reads the byte as "not zero" rather than truncating it. The two agree
+// on every byte this writes; the difference is the shape a branch sees. AArch64's
+// runtime unrolling for Apple cores fires on a loop whose exit or early continue
+// is an `icmp` fed by a load, and a `trunc` is not one: prime_sieve's counting
+// loop stayed rolled while C++'s byte test unrolled by eight.
+static LLVMTypeRef element_memory_type(LLVMTypeRef elemty) {
+    if (LLVMGetTypeKind(elemty) == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(elemty) == 1) {
+        return LLVMInt8TypeInContext(g_ctx);
+    }
+    return elemty;
+}
+
+static LLVMValueRef element_to_memory(LLVMValueRef value) {
+    LLVMTypeRef ty = LLVMTypeOf(value);
+    if (element_memory_type(ty) == ty) return value;
+    return LLVMBuildZExt(g_builder, value, element_memory_type(ty), "");
+}
+
+static LLVMValueRef element_from_memory(LLVMValueRef loaded, LLVMTypeRef elemty) {
+    if (element_memory_type(elemty) == elemty) return loaded;
+    return LLVMBuildICmp(g_builder, LLVMIntNE, loaded,
+                         LLVMConstNull(LLVMTypeOf(loaded)), "");
+}
+
 
 // Load/store through a pointer *value* rather than a named local. Struct fields
 // and array elements are addresses produced by a GEP, so they have no name to
@@ -2668,7 +2700,7 @@ void ir_list_flat_push_scalar(const char *list, const char *value,
         g_builder, LLVMBuildSExt(g_builder, len, i64, ""),
         LLVMConstInt(i64, (unsigned long long)stride, 0), "");
     LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-    LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+    LLVMValueRef st = LLVMBuildStore(g_builder, element_to_memory(val), addr);
     tag_list_element(st, elem_type);
     LLVMValueRef bumped = LLVMBuildStore(
         g_builder, LLVMBuildAdd(g_builder, len, LLVMConstInt(i32, 1, 0), ""), len_ptr);
@@ -2702,6 +2734,26 @@ static int is_constant_true_guard(const char *guard) {
     return guard && (strcmp(guard, "1") == 0 || strcmp(guard, "true") == 0);
 }
 
+// The address of row `idx` of an inline block with rows of `stride` bytes: one
+// GEP over `[stride x i8]` rather than a multiply and a byte GEP. The two are the
+// same address; the difference is what LLVM can match. Two accesses to one row
+// from the two sides of a branch are then the same instruction on the same
+// widened index, which is what merging their stores into one select keys on --
+// the multiply was a separate instruction per side and the stores never merged.
+//
+// `inbounds` only where the index is known to be in range: a proved access, or
+// the arm of a checked one the test admitted. An address formed ahead of a
+// select that discards it for an out-of-range index stays a plain GEP.
+static LLVMValueRef flat_element_address(LLVMValueRef data, LLVMValueRef idx, int stride,
+                                         int inbounds) {
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef row = LLVMArrayType2(i8, (uint64_t)stride);
+    LLVMValueRef wide = LLVMBuildSExt(g_builder, idx, i64, "");
+    if (inbounds) return LLVMBuildInBoundsGEP2(g_builder, row, data, &wide, 1, "");
+    return LLVMBuildGEP2(g_builder, row, data, &wide, 1, "");
+}
+
 int ir_list_flat_elem(const char *list, const char *index, int stride,
                       const char *guard, int check_bounds) {
     LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
@@ -2733,9 +2785,7 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
             LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
         LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
         tag_list_header(data, "ptr");
-        LLVMValueRef offset = LLVMBuildMul(g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-                                           LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+        LLVMValueRef addr = flat_element_address(data, idx, stride, !check_bounds);
         if (!check_bounds) {
             return intern_value(addr);
         }
@@ -2780,9 +2830,7 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
     LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
     tag_list_header(data, "ptr");
-    LLVMValueRef offset = LLVMBuildMul(g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-                                       LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    LLVMValueRef addr = flat_element_address(data, idx, stride, !check_bounds);
     LLVMValueRef flat_val = addr;
     if (check_bounds) {
         LLVMValueRef len_ptr =
@@ -2875,12 +2923,10 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
             data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
             tag_list_header(data, "ptr");
         }
-        LLVMValueRef offset = LLVMBuildMul(
-            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-        LLVMValueRef flat_val = LLVMBuildLoad2(g_builder, elemty, addr, "");
+        LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
+        LLVMValueRef flat_val = LLVMBuildLoad2(g_builder, element_memory_type(elemty), addr, "");
         tag_list_element(flat_val, elem_type);
+        flat_val = element_from_memory(flat_val, elemty);
         return intern_value(flat_val);
     }
     if (is_constant_true_guard(guard) && check_bounds) {
@@ -2910,12 +2956,10 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
         LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
 
         LLVMPositionBuilderAtEnd(g_builder, block_for(present));
-        LLVMValueRef offset = LLVMBuildMul(
-            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-        LLVMValueRef loaded = LLVMBuildLoad2(g_builder, elemty, addr, "");
+        LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
+        LLVMValueRef loaded = LLVMBuildLoad2(g_builder, element_memory_type(elemty), addr, "");
         tag_list_element(loaded, elem_type);
+        loaded = element_from_memory(loaded, elemty);
         LLVMBuildBr(g_builder, block_for(checked));
         LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
 
@@ -2960,12 +3004,10 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
             data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
             tag_list_header(data, "ptr");
         }
-        LLVMValueRef offset = LLVMBuildMul(
-            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-        flat_val = LLVMBuildLoad2(g_builder, elemty, addr, "");
+        LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
+        flat_val = LLVMBuildLoad2(g_builder, element_memory_type(elemty), addr, "");
         tag_list_element(flat_val, elem_type);
+        flat_val = element_from_memory(flat_val, elemty);
         LLVMBuildBr(g_builder, block_for(join));
     } else {
     LLVMValueRef len;
@@ -2994,12 +3036,10 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
     LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(present));
-    LLVMValueRef offset = LLVMBuildMul(
-        g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-    LLVMValueRef loaded = LLVMBuildLoad2(g_builder, elemty, addr, "");
+    LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
+    LLVMValueRef loaded = LLVMBuildLoad2(g_builder, element_memory_type(elemty), addr, "");
     tag_list_element(loaded, elem_type);
+    loaded = element_from_memory(loaded, elemty);
     LLVMBuildBr(g_builder, block_for(checked));
     LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
 
@@ -3084,11 +3124,8 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
             data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
             tag_list_header(data, "ptr");
         }
-        LLVMValueRef offset = LLVMBuildMul(
-            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-        LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+        LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
+        LLVMValueRef st = LLVMBuildStore(g_builder, element_to_memory(val), addr);
         tag_list_element(st, elem_type);
         return;
     }
@@ -3117,11 +3154,8 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
         int join = ir_get_label();
         LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));
         LLVMPositionBuilderAtEnd(g_builder, block_for(present));
-        LLVMValueRef offset = LLVMBuildMul(
-            g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-            LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-        LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
-        LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+        LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
+        LLVMValueRef st = LLVMBuildStore(g_builder, element_to_memory(val), addr);
         tag_list_element(st, elem_type);
         LLVMBuildBr(g_builder, block_for(join));
         LLVMPositionBuilderAtEnd(g_builder, block_for(join));
@@ -3174,17 +3208,14 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
         store_at = present;
     }
     (void)store_at;
-    LLVMValueRef offset = LLVMBuildMul(
-        g_builder, LLVMBuildSExt(g_builder, idx, i64, ""),
-        LLVMConstInt(i64, (unsigned long long)stride, 0), "");
-    LLVMValueRef addr = LLVMBuildGEP2(g_builder, i8, data, &offset, 1, "");
+    LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
     // **Tagged, and leaving it untagged cost the whole vectoriser.** An untagged
     // store may alias anything, including the `data` pointer this block just
     // loaded out of the header -- so LICM cannot hoist that load, the base is
     // re-read every iteration, and dependence analysis across iterations is
     // impossible. Every other access this backend emits is tagged; this one was
     // not, and the loop stayed scalar with the reason invisible in the assembly.
-    LLVMValueRef st = LLVMBuildStore(g_builder, val, addr);
+    LLVMValueRef st = LLVMBuildStore(g_builder, element_to_memory(val), addr);
     tag_list_element(st, elem_type);
     LLVMBuildBr(g_builder, block_for(join));
 
@@ -3273,6 +3304,15 @@ int ir_list_boxed_elem(const char *list, const char *index) {
 BINOP(ir_add, LLVMBuildAdd)
 BINOP(ir_sub, LLVMBuildSub)
 BINOP(ir_mul, LLVMBuildMul)
+
+// `Int` wraps, so a plain add is the only honest default. These are for the adds
+// the frontend has *proved* cannot wrap -- a range `for`'s latch, and an
+// induction variable's update in the loop copy whose guard established it.
+// `nsw` is what lets IndVarSimplify widen the variable to 64 bits, and a widened
+// variable is one address instead of a sign extension per use, which is what the
+// merging of stores on the two sides of a branch keys on.
+BINOP(ir_add_nsw, LLVMBuildNSWAdd)
+BINOP(ir_sub_nsw, LLVMBuildNSWSub)
 
 // Debug-mode overflow checking, RFC 0560's model: check in debug, wrap in
 // release. `Int` is signed 32-bit and wraps, decided by measurement in
