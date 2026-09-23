@@ -134,6 +134,10 @@ public extern fn ir_cond_br_numbered(condition: String, trueLabel: Int, falseLab
 // LLVM owns their final ordering and chooses a jump table when profitable.
 public extern fn ir_switch_begin(value: String, defaultLabel: Int, caseCount: Int) -> Int
 public extern fn ir_switch_case(switchId: Int, value: Int, label: Int)
+// A switch over any integer width, and a case given as an already-generated
+// constant; 0 when that value is already a case. See generateSwitchMatch.
+public extern fn ir_switch_begin_typed(type: String, value: String, defaultLabel: Int, caseCount: Int) -> Int
+public extern fn ir_switch_case_value(switchId: Int, type: String, value: String, label: Int) -> Int
 
 // Loop context (break/continue targets)
 public extern fn ir_loop_push(continueLabel: Int, breakLabel: Int)

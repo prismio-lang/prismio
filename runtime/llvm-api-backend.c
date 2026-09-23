@@ -1115,6 +1115,58 @@ void ir_switch_case(int switch_id, int value, int label) {
                 block_for(label));
 }
 
+// The same dispatch over a scrutinee of any integer width -- a `match` on an
+// Int, an I64, a U8 or an enum's tag. ir_switch_begin above resolves its value
+// as i32 and stays so: the committed seed calls it.
+//
+// The values already added to the switch being built, for the duplicate test
+// in ir_switch_case_value. Kept here rather than read back from the switch: the
+// case values are not reachable as operands through the C API on LLVM 23, and a
+// lookup that silently finds nothing is how a duplicate reached the verifier.
+// One switch at a time is enough -- generateSwitchMatch adds every case before
+// it generates any arm, so a nested match never interleaves with this one.
+static int g_case_switch = -1;
+static long long *g_case_values;
+static int g_case_count, g_case_cap;
+
+int ir_switch_begin_typed(const char *type, const char *value, int default_label,
+                          int case_count) {
+    g_case_count = 0;
+    if (block_done()) return g_case_switch = intern_value(NULL);
+    LLVMValueRef dispatch = LLVMBuildSwitch(
+        g_builder, resolve_value(value, type), block_for(default_label),
+        case_count > 0 ? (unsigned)case_count : 0);
+    return g_case_switch = intern_value(dispatch);
+}
+
+// Adds `value` -- a constant the caller already generated, such as `-5` or an
+// enum variant -- as a case, at the scrutinee's width. Returns 0 without adding
+// it when an earlier case has the same value: a `match` takes the first arm
+// that matches, and LLVM rejects a switch with a duplicate case.
+int ir_switch_case_value(int switch_id, const char *type, const char *value, int label) {
+    if (switch_id < 0 || switch_id >= g_value_count) {
+        backend_fail("switch handle out of range", NULL);
+    }
+    if (switch_id != g_case_switch) backend_fail("switch cases must follow their switch", value);
+    LLVMValueRef dispatch = g_values[switch_id];
+    if (!dispatch) return 0;   // generated into a closed block; there is no switch
+    LLVMValueRef constant = resolve_value(value, type);
+    if (!LLVMIsAConstantInt(constant)) backend_fail("switch case is not an integer constant", value);
+    LLVMTypeRef width = LLVMTypeOf(constant);
+    long long v = LLVMConstIntGetSExtValue(constant);
+    for (int i = 0; i < g_case_count; i++) {
+        if (g_case_values[i] == v) return 0;
+    }
+    if (g_case_count == g_case_cap) {
+        g_case_cap = g_case_cap ? g_case_cap * 2 : 64;
+        g_case_values = (long long *)realloc(g_case_values, (size_t)g_case_cap * sizeof(long long));
+        if (!g_case_values) backend_fail("out of memory growing a switch", NULL);
+    }
+    g_case_values[g_case_count++] = v;
+    LLVMAddCase(dispatch, LLVMConstInt(width, (unsigned long long)v, 1), block_for(label));
+    return 1;
+}
+
 void ir_br(const char *label) { (void)label; backend_fail("named branches are not supported", label); }
 void ir_cond_br(const char *c, const char *t, const char *f) {
     (void)c; (void)t; (void)f;

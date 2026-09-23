@@ -33,6 +33,14 @@
   re-walked every later declaration for each one. Nothing a program compiles
   to changed: IR is byte-identical on every test and corpus program.
 
+- **A `match` whose every pattern is a constant is one `switch`.** Integer
+  literals, negated ones and plain enum variants now lower to a single LLVM
+  `switch` at the scrutinee's width, where each arm used to be a compare and a
+  branch that LLVM had to reassemble -- which on a 256-arm match came back as a
+  tree of four jump tables behind three range tests. `switch_dispatch` 59.4 ->
+  48.8 ms, ahead of C++ (51.7) and Rust (53.1). A value two arms share still
+  goes to the first; a pattern that is not a constant keeps the compare chain.
+
 ### Added
 
 - **The compiler's own output is styled on a terminal.** Diagnostics in

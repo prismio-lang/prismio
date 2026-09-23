@@ -1252,6 +1252,106 @@ private fn generateLoopJump(target: Int, floor: Int, regionDepth: Int) {
     }
 }
 
+// **A `match` whose every pattern is a constant is one LLVM `switch`.**
+//
+// The chain below compares the scrutinee arm by arm, and LLVM has to rebuild a
+// switch out of it -- which on a 256-arm match came back as a tree of four jump
+// tables behind three range tests, where clang's `switch` over the same cases is
+// one table behind one. switch_dispatch paid for the difference on every call.
+// A switch also says what the chain only implies: that the arms are disjoint
+// values, so the backend may order, table or bit-test them as it likes.
+//
+// Constant means known without generating anything: an integer, Char or Bool
+// literal, a negated integer literal, or a variant of an enum without payloads.
+// Anything else -- a name, a call, a field -- keeps the chain and its order.
+private fn matchPatternIsConstant(pattern: ASTNode) -> Bool {
+    if (pattern.kind == NodeKind.LITERAL_EXPR) {
+        return pattern.i1 == TokenType.NUMBER_LITERAL or pattern.i1 == TokenType.CHAR_LITERAL
+            or pattern.i1 == TokenType.BOOL_LITERAL
+    }
+    if (pattern.kind == NodeKind.UNARY_EXPR and pattern.s1.equals("-")) {
+        let operand = ptr_to_node(pattern.child1)
+        return operand.kind == NodeKind.LITERAL_EXPR and operand.i1 == TokenType.NUMBER_LITERAL
+    }
+    if (pattern.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let owner = ptr_to_node(pattern.child1)
+        return owner.kind == NodeKind.IDENTIFIER_EXPR
+            and ir_get_enum_variant(owner.s1, pattern.s1) >= 0
+    }
+    return false
+}
+
+// An integer scrutinee, every pattern constant, and a wildcard -- if there is
+// one -- last. The chain generates arms after a wildcard into a block already
+// closed; rather than reproduce that, such a match keeps the chain.
+private fn matchLowersToSwitch(stmt: ASTNode, scrutType: String) -> Bool {
+    if (scrutType.equals("i1") == false and scrutType.equals("i8") == false
+        and scrutType.equals("i16") == false and scrutType.equals("i32") == false
+        and scrutType.equals("i64") == false) {
+        return false
+    }
+    let mut cases = 0
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (arm.s1.equals("_")) {
+            return cases > 0 and nodeExists(arm.next) == false
+        }
+        if (matchPatternIsConstant(ptr_to_node(arm.child1)) == false) { return false }
+        cases = cases + 1
+        armPtr = arm.next
+    }
+    return cases > 0
+}
+
+// The arms in source order, each its own block; the wildcard is the default,
+// or the end when there is none. A value two arms share goes to the first, as
+// the chain would take it -- ir_switch_case_value declines the second.
+//
+// Every pattern is generated *before* the switch: a negated literal goes
+// through the builder, which folds it to a constant only while the block is
+// still open.
+private fn generateSwitchMatch(stmt: ASTNode, scrutType: String, endLabel: Int) {
+    let mut patterns: Vec<String> = list_new()
+    let mut labels: Vec<Int> = list_new()
+    let mut defaultLabel = endLabel
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (arm.s1.equals("_")) {
+            defaultLabel = ir_get_label()
+        } else {
+            list_push(patterns, generateExpression(ptr_to_node(arm.child1)))
+            list_push(labels, ir_get_label())
+        }
+        armPtr = arm.next
+    }
+
+    let switchId = ir_switch_begin_typed(scrutType, stmt.s2, defaultLabel, list_len(labels))
+    let mut index = 0
+    while (index < list_len(labels)) {
+        ir_switch_case_value(switchId, scrutType, list_get(patterns, index), list_get(labels, index))
+        index = index + 1
+    }
+
+    index = 0
+    armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (arm.s1.equals("_")) {
+            ir_label_numbered(defaultLabel)
+        } else {
+            ir_label_numbered(list_get(labels, index))
+            index = index + 1
+        }
+        generateBlock(ptr_to_node(arm.child2))
+        irReuseValue = ""
+        if (ir_has_returned() == 0) { ir_br_numbered(endLabel) }
+        ir_clear_returned()
+        armPtr = arm.next
+    }
+}
+
 private fn generateMatch(stmt: ASTNode) {
     // Parked on the statement so it can be read once per arm. A temp name is
     // a String and Strings are affine, so a `let` holding it may be named
@@ -1275,6 +1375,12 @@ private fn generateMatch(stmt: ASTNode) {
         stmt.s2 = ir_get_temp_name(ir_enum_tag(structTypeName(scrutType), stmt.s1))
     } else {
         stmt.s2 = stmt.s1
+    }
+
+    if (payloadMatch == false and matchLowersToSwitch(stmt, scrutType)) {
+        generateSwitchMatch(stmt, scrutType, endLabel)
+        ir_label_numbered(endLabel)
+        return
     }
 
     let mut armPtr = stmt.child2

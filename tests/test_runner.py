@@ -1003,12 +1003,15 @@ def run_ums_test():
             missing_bc = local_runtime / "program_support.verify.bc"
             missing_plib.unlink()
             missing_bc.unlink()
-            _, _, repaired = toolchain_trace(cache_env)
+            repair_run, _, repaired = toolchain_trace(cache_env)
             if (repaired != {"runtime", "std.option"}
                     or not missing_plib.is_file() or not missing_bc.is_file()):
                 print(f"{RED}[FAIL] ums: a deleted toolchain artifact was served "
                       f"from the stamp instead of rebuilt{RESET}")
                 print(f"rebuilt {sorted(repaired)}")
+                # Seen once in a full run (2026-09-24) and never in isolation, with
+                # `rebuilt []` -- which a build that failed outright also reads as.
+                print(f"exit status {repair_run.returncode}\n{repair_run.stderr[-2000:]}")
                 return False
 
             # **Two producers, one format.** `tools/package.py` builds these for

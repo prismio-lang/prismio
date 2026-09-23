@@ -938,6 +938,17 @@ reads a *slower* fill than Prismio's, purely because `std::vector`'s allocator
 returns the block to the OS between iterations.
 See `aif/evidence/RESULTS-scoped-alias-metadata.md`.
 
+**`bytecode_interpreter` moves 19% when an unrelated function changes size.**
+Lowering `match` to a `switch` shrank one function in the suite binary,
+`benchSwitchCase`, by 16 instructions, and `tools/fn_mnemonic_diff.py` finds no
+other function changed among 635 -- yet `bytecode_interpreter` read 19.2 -> 22.9 ms,
+reproducibly, over two alternating 15-run A/Bs. Its function is byte-identical and
+64 bytes lower in the binary, so the same offset within a cache line: what moved is
+its placement relative to everything else, which is what the branch predictor and
+the instruction TLB see. `fft` and `knapsack` showed the same effect on 2026-09-04.
+Until the hot loops are aligned deliberately, check mnemonics with
+`fn_mnemonic_diff.py` before believing any single-workload regression.
+
 **lz4's input fill is ~30% slower than an instruction-identical C loop, and the
 reason is not in the loop.** One shot per process, a standalone copy spends 312 us
 of 404 in the fill (`seed` recurrence plus one push per byte); a C loop with the same

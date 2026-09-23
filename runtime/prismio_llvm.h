@@ -226,6 +226,12 @@ LLVMValueRef LLVMGetNextInstruction(LLVMValueRef Inst);
 LLVMBasicBlockRef LLVMGetInstructionParent(LLVMValueRef Inst);
 LLVMValueRef LLVMGetBasicBlockTerminator(LLVMBasicBlockRef BB);
 LLVMValueRef LLVMGetBasicBlockParent(LLVMBasicBlockRef BB);
+// A switch case's value (ir_switch_case_value), and the operand walk
+// is_elem_size_load already did without a declaration here.
+LLVMValueRef LLVMIsAConstantInt(LLVMValueRef Val);
+long long LLVMConstIntGetSExtValue(LLVMValueRef ConstantVal);
+LLVMValueRef LLVMGetOperand(LLVMValueRef Val, unsigned Index);
+int LLVMGetNumOperands(LLVMValueRef Val);
 
 // --- instructions -----------------------------------------------------------
 LLVMValueRef LLVMBuildAdd(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
