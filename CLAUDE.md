@@ -21,12 +21,13 @@ rather than a leak — corruption, not lost bytes:
 reaching into the Prismio runtime. When you add or change a runtime symbol, the
 wrapper and its contract in `std/` are part of the change.
 
-The user-facing documentation site is a **sibling repository** at `../docs`, not
-in this tree. Its examples are compiler-checked — after a language or library
-change, run:
+The documentation is a **sibling repository**, `../website`, not in this tree:
+`apps/docs` for users and `apps/developers` for compiler contributors. Both have
+compiler-checked examples — after a language or library change, run in each app
+(the compiler must be a packaged toolchain, not a bare `build/gN`):
 
 ```bash
-cd ../docs && PRISMIO=<compiler> node scripts/verify-doc-examples.mjs
+cd ../website/apps/docs && PRISMIO_INTERNAL_HOSTED=1 PRISMIO=<toolchain>/bin/prismio node scripts/verify-doc-examples.mjs
 ```
 
 Two rules from it are load-bearing enough to repeat here, because breaking either one
