@@ -1186,7 +1186,9 @@ class Engine:
             if n['c1']:
                 v = self.sites_of(n['c1'][0], fn, scope)
                 self.constraints.append(('bind', ('ret', fn), v))
-                self.constraints.append(('escape_caller', v))
+                # Carries `fn`, as aif_con_return does: E-VIEW needs to know a
+                # source-level return from any other escape to the caller.
+                self.constraints.append(('escape_caller', v, fn))
             return
 
         for slot in ('c1', 'c2', 'c3'):
@@ -1246,8 +1248,13 @@ class Engine:
             # (E-STATIC has it Global). A view that outlives `in_fn` arrives
             # here with a function-independent target instead. See the same
             # case analysis in raise_view_owners in aif_support.c.
-            if (isinstance(target, tuple) and target[0] == 'R'
-                    and in_fn is not None and self.m.sites[c].fn != in_fn):
+            # The same holds for a Caller target that a `return` in `in_fn`
+            # supplies: the view escapes `in_fn`, and a collection from
+            # another function already outlives that activation. Mirrors the
+            # `target == AIF_E_CALLER` half of the same test in aif_support.c.
+            if (in_fn is not None and self.m.sites[c].fn != in_fn
+                    and ((isinstance(target, tuple) and target[0] == 'R')
+                         or target == CALLER)):
                 continue
             j = escape_join(self.m.scopes, self.E[c], target)
             if j != self.E[c]:
@@ -1489,8 +1496,13 @@ class Engine:
                             changed = self.moved(s)
                     # E-VIEW, and the case the safety gap was actually about:
                     # `return list_get(l, i)` hands the caller a reference into
-                    # a collection this frame owns. The collection follows.
-                    if self.raise_view_owners(c[1], CALLER, None):
+                    # a collection this frame owns. The collection follows. A
+                    # returned view of a collection allocated elsewhere does
+                    # not: it was already live across this activation (see
+                    # raise_view_owners). Only a source-level return names its
+                    # function; an FFI consume stays function-independent.
+                    in_fn = c[2] if len(c) > 2 else None
+                    if self.raise_view_owners(c[1], CALLER, in_fn):
                         changed = True
 
                 elif kind == 'foreign':
