@@ -870,9 +870,15 @@ char* compiler_installed_runtime_hash(void) {
     return text;
 }
 
+// Through execute_command rather than `system` directly, for Windows: `system`
+// runs `cmd /c <line>`, and when the line starts with a quote cmd strips the
+// first and the last one -- so `"C:\\...\\clang.exe" ... "out.o"` became a broken
+// path, reported as "The filename, directory name, or volume label syntax is
+// incorrect" by `prismio bootstrap` on CI. execute_command wraps the line in
+// `cmd /S /C "..."`, which strips exactly the pair it added. On POSIX the two
+// are the same call.
 static int run_build_command(const char* command) {
-    int result = system(command);
-    return result == 0 ? 0 : 1;
+    return execute_command(command);
 }
 
 // The same, with the command's own output held back until it is worth reading.
@@ -1809,10 +1815,7 @@ static int link_program_msvc(const char* program_obj, const char* exe_file) {
     if (command && out_arg) {
         snprintf(command, len, "%s%s -defaultlib:libcmt -defaultlib:oldnames -nologo%s %s%s",
                  q_link, out_arg, libpaths ? libpaths : "", q_obj, native);
-        // execute_command, not run_build_command: the line starts with a quoted
-        // path, and `system` hands it to `cmd /c`, which strips the first and
-        // last quote of such a line. execute_command wraps it in `cmd /S /C`.
-        result = execute_command(command);
+        result = run_build_command(command);
     }
     free(command);
     free(out_arg);

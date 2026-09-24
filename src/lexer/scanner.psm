@@ -522,8 +522,15 @@ private fn lexString(lex: Lexer) -> Token {
 
 // One run of literal text inside a triple-quoted string, ending at the closing
 // """ or at an unescaped `${`.
+//
+// A line break in the literal is `\n` whatever the file's own line endings are,
+// as it is in Kotlin, Python, Rust and Swift. Taken verbatim, a CRLF checkout --
+// git's default on Windows -- gave `test_150`'s three-line string a `\r` at the
+// end of each line, and the same source two different values on two platforms.
+// Only a CR that starts a CRLF pair goes; a lone CR is kept as written.
 private fn lexTripleStringChunk(lex: Lexer) -> String {
     let bodyStart = lex.pos
+    let mut sawCrlf = false
 
     while (lex.pos < lex.length) {
         let c = lexerCurrent(lex)
@@ -533,13 +540,20 @@ private fn lexTripleStringChunk(lex: Lexer) -> String {
         if (c == '$' and lexerPeek(lex, 1) == '{') {
             break
         }
+        if (c == '\r' and lexerPeek(lex, 1) == '\n') {
+            sawCrlf = true
+        }
         if (c == '\n') {
             lexerNewline(lex)
         }
         lexerAdvance(lex)
     }
 
-    return strSubstring(lex.input, bodyStart, lex.pos - bodyStart)
+    let raw = strSubstring(lex.input, bodyStart, lex.pos - bodyStart)
+    if (sawCrlf) {
+        return strReplaceAll(raw, "\r\n", "\n")
+    }
+    return raw
 }
 
 // Kotlin-style triple-quoted multiline strings: `"""..."""`.

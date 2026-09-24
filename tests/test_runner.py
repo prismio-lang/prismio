@@ -628,6 +628,49 @@ def run_cli_usage_test():
     return True
 
 
+def run_crlf_triple_string_test():
+    """A triple-quoted string's line breaks are `\\n` in a CRLF source too.
+
+    Written here rather than as a tests/*.psm, because git decides a checked-in
+    file's line endings: on CI's Windows runner `test_150` arrived as CRLF and
+    its string carried a `\\r` per line, while every other platform saw LF. This
+    writes the CRLF bytes itself, so every platform tests the CRLF case.
+    """
+    print(f"\n{BLUE}--- Running crlf_triple_string ---{RESET}")
+    source = (
+        'import std.io\r\n'
+        'import std.string\r\n'
+        '\r\n'
+        'fn main() -> Int {\r\n'
+        '    let s = """one\r\n'
+        'two\r\n'
+        'three"""\r\n'
+        '    if (s.equals("one\\ntwo\\nthree") == false) {\r\n'
+        '        println("FAIL: CRLF reached the string")\r\n'
+        '        return 1\r\n'
+        '    }\r\n'
+        '    println("ok")\r\n'
+        '    return 0\r\n'
+        '}\r\n'
+    )
+    with tempfile.TemporaryDirectory(prefix="prismio-crlf-") as temp_dir:
+        path = Path(temp_dir) / "crlf.psm"
+        path.write_bytes(source.encode("utf-8"))
+        exe = Path(temp_dir) / ("crlf.exe" if os.name == "nt" else "crlf")
+        built = run_command([str(PRISMIO_EXE), "build", str(path), "-o", str(exe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] a CRLF source did not build{RESET}")
+            print(elide_middle(built.stderr))
+            return False
+        ran = run_command([str(exe)])
+        if ran.returncode != 0 or ran.stdout.strip() != "ok":
+            print(f"{RED}[FAIL] a CRLF line break reached a triple-quoted string{RESET}")
+            print(ran.stdout.strip())
+            return False
+    print(f"{GREEN}[PASS] CRLF line breaks in a triple-quoted string read as \\n{RESET}")
+    return True
+
+
 def run_corpus_test():
     """Build and *run* every benchmark corpus program.
 
@@ -906,7 +949,10 @@ def run_ums_test():
             return False
         answer_object = native / "answer.o"
         bonus_object = native / "bonus.o"
-        answer_archive = native / "libanswer.a"
+        # `library("answer")` names `answer.lib` on Windows, which is what
+        # link.exe -- and clang targeting MSVC before it -- look for, and
+        # `libanswer.a` everywhere else. The archive format is the same.
+        answer_archive = native / ("answer.lib" if os.name == "nt" else "libanswer.a")
         native_steps = [
             [clang, "-c", str(native / "answer.c"), "-o", str(answer_object)],
             [archiver, "rcs", str(answer_archive), str(answer_object)],
@@ -7975,6 +8021,7 @@ def main():
         ("cli_run_forward_slash", run_cli_test),
         ("cli_check_protocol", run_check_command_test),
         ("cli_usage", run_cli_usage_test),
+        ("crlf_triple_string", run_crlf_triple_string_test),
         ("ums", run_ums_test),
         ("corpus", run_corpus_test),
         ("aif_tiers", run_aif_test),
