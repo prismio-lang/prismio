@@ -494,6 +494,26 @@ private fn semaAnyArgumentInvalid(argPtr: Ptr) -> Bool {
     return false
 }
 
+// The type whose `impl` declares a function `name` with no `self` -- the one
+// `Type.name` it became -- or "" when none does. Walked only on the way to an
+// "unknown function" error, so the linear scan costs a program nothing.
+private fn semaTypeFunctionOwner(module: ASTNode, name: String) -> String {
+    let suffix = ".".concat(name)
+    let mut chain = module.child1
+    repeat(2) {
+        let mut p = chain
+        while (nodeExists(p)) {
+            let stmt = ptr_to_node(p)
+            if (stmt.kind == NodeKind.FUNCTION and stmt.s1.endsWith(suffix)) {
+                return stmt.s1.substring(0, __builtin_string_len(stmt.s1) - __builtin_string_len(suffix))
+            }
+            p = stmt.next
+        }
+        chain = module.child2
+    }
+    return ""
+}
+
 internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
@@ -709,6 +729,12 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         return createNode(NodeKind.MODULE)
     }
     semaErrorAt(call, "unknown function ".concat(diagQuote(name)))
+    // A function with no `self` written in an `impl` is named for its type
+    // (parseImplDecl), so a bare call to one misses it by design.
+    let owner = semaTypeFunctionOwner(module, name)
+    if (owner.equals("") == false) {
+        diag_note(diagQuote(name).concat(" belongs to a type: call it `", owner, ".", name, "(...)`"))
+    }
     // The one name that is a shape somewhere else. `separator(...)` is consumed
     // by the print split in the checker and is a function nowhere, so reaching
     // resolution at all means it was written outside a print's argument list.

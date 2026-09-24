@@ -16,7 +16,7 @@ impl<T> From<T> for Label {
 }
 
 fn make<U: From<Int>>(value: Int) -> U {
-    return from(value)
+    return U.from(value)
 }
 
 // The same target may implement distinct applications of one generic trait.

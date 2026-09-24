@@ -1,0 +1,11 @@
+// expect-error: unknown function `make`
+struct Config { retries: Int }
+
+impl Config {
+    fn make() -> Config { return Config { retries: 3 } }
+}
+
+fn main() -> Int {
+    let c = make()
+    return 0
+}

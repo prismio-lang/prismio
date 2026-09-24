@@ -1,0 +1,11 @@
+// expect-error: Plain does not implement `Default`
+import std.default
+
+struct Plain { n: Int }
+
+fn fresh<T: Default>() -> T { return T.default() }
+
+fn main() -> Int {
+    let p = fresh<Plain>()
+    return 0
+}

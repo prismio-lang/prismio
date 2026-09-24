@@ -1,0 +1,40 @@
+// `Default` -- a type's own starting value, which the type chooses.
+//
+// **Two defaults, on purpose.** The `default` keyword is the compiler's value
+// for a type: zero, `false`, `""`, `[]`, and a struct of its fields' defaults.
+// It never runs user code, so it means the same thing for every type and costs
+// nothing to read. `Config.default()` is the type's *own* answer -- three
+// retries, a name, a capacity that is not zero -- written once, beside the type:
+//
+//     impl Default for Config {
+//         fn default() -> Config { return Config { retries: 3, name: "app" } }
+//     }
+//
+// A function with no `self` belongs to its type (`Config.default`, not a free
+// `default`), so every type may have one without the names colliding.
+//
+// **The trait is for generic code.** `fn fresh<T: Default>() -> T { return
+// T.default() }` asks for the caller's type's own value; the bound is what makes
+// `T.default()` a promise rather than a hope. The builtin types below answer
+// with the value the keyword gives them, so a bound on `Default` admits them.
+
+import std.string
+
+trait Default {
+    fn default() -> Self
+}
+
+impl Default for Int    { fn default() -> Int { return 0 } }
+impl Default for I8     { fn default() -> I8 { return 0 } }
+impl Default for I16    { fn default() -> I16 { return 0 } }
+impl Default for I64    { fn default() -> I64 { return 0 } }
+impl Default for Isize  { fn default() -> Isize { return 0 } }
+impl Default for U8     { fn default() -> U8 { return 0 } }
+impl Default for U16    { fn default() -> U16 { return 0 } }
+impl Default for U32    { fn default() -> U32 { return 0 } }
+impl Default for U64    { fn default() -> U64 { return 0 } }
+impl Default for Usize  { fn default() -> Usize { return 0 } }
+impl Default for Float  { fn default() -> Float { return 0.0 } }
+impl Default for Bool   { fn default() -> Bool { return false } }
+impl Default for Char   { fn default() -> Char { return '\0' } }
+impl Default for String { fn default() -> String { return "" } }

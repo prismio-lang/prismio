@@ -1141,6 +1141,34 @@ private fn semaClosureExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return semaLowerClosure(module, expr)
 }
 
+// `Config.make()` or `Box<Int>.new(5)`: a function with no `self` written in
+// `impl Config`, which the parser named `Config.make` (parseImplDecl). The
+// call becomes a plain call to that name, so overload resolution, generics
+// and codegen see an ordinary function; written type arguments carry over as
+// the call's own. Asked before an enum variant, so `impl Shape { fn unit() }`
+// is found rather than reported as a missing variant, and never of a name
+// that is a binding -- `c.make()` is a method call on the value `c`.
+private fn semaTypeFunctionCall(module: ASTNode, expr: ASTNode, callee: ASTNode, target: ASTNode) -> Bool {
+    if (target.kind != NodeKind.IDENTIFIER_EXPR and target.kind != NodeKind.TYPE_ANNOTATION) { return false }
+    if (target.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(target.s1) == 1) { return false }
+    let name = target.s1.concat(".", callee.s1)
+    // A generic one (`impl<T> Box<T>`) is a template, which the declaration
+    // index does not hold.
+    if (ir_decl_count(name) == 0 and monoHasTemplate(module, name, NodeKind.FUNCTION) == false) { return false }
+    if (target.kind == NodeKind.TYPE_ANNOTATION and target.i2 == 1 and nodeIsNull(expr.child3)) {
+        let written = createNode(NodeKind.TYPE_ANNOTATION)
+        nodeSpanFrom(written, target)
+        written.s1 = name.clone()
+        written.i2 = 1
+        written.child1 = target.child1
+        expr.child3 = node_to_ptr(written)
+    }
+    callee.kind = NodeKind.IDENTIFIER_EXPR
+    callee.s1 = name
+    callee.child1 = ptr_null()
+    return true
+}
+
 private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let callee = ptr_to_node(expr.child1)
 
@@ -1155,6 +1183,9 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // rewritten node so the literal is checked exactly as a written one is.
     if (callee.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         let target = ptr_to_node(callee.child1)
+        if (semaTypeFunctionCall(module, expr, callee, target)) {
+            return semaExpr(module, expr)
+        }
         if (target.kind == NodeKind.IDENTIFIER_EXPR or target.kind == NodeKind.TYPE_ANNOTATION) {
             if (enumResolveConstruction(module, expr, target.s1, callee.s1,
                                         expr.child2, enumExplicitArgs(target))) {
@@ -4201,9 +4232,13 @@ private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
     while (nodeExists(recordPtr)) {
         let record = ptr_to_node(recordPtr)
         if (record.s1.equals(signature.s1)) {
-            let count = ir_decl_count(record.s1)
+            // The function's own name: `Config.default` for one with no `self`
+            // (parseImplDecl), which the record matched by its short name.
+            let mut fnName = record.s1.clone()
+            if (record.s2.equals("") == false) { fnName = record.s2.clone() }
+            let count = ir_decl_count(fnName)
             for i in 0..<count {
-                let candidate = ptr_to_node(ir_decl_at(record.s1, i))
+                let candidate = ptr_to_node(ir_decl_at(fnName, i))
                 if (candidate.kind == NodeKind.FUNCTION
                     and candidate.file == record.file
                     and candidate.line == record.line
@@ -4211,7 +4246,7 @@ private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
                     and semaSignaturesAgree(header.child1, traitDecl.s2,
                                             ptr_to_node(header.child2).child1,
                                             signature, candidate)) {
-                    return ir_decl_at(record.s1, i)
+                    return ir_decl_at(fnName, i)
                 }
             }
 
@@ -4224,7 +4259,7 @@ private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
             while (nodeExists(templatePtr)) {
                 let candidate = ptr_to_node(templatePtr)
                 if (candidate.kind == NodeKind.FUNCTION
-                    and candidate.s1.equals(record.s1)
+                    and candidate.s1.equals(fnName)
                     and candidate.file == record.file
                     and candidate.line == record.line
                     and candidate.col == record.col

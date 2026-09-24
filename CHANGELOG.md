@@ -116,6 +116,18 @@
 
 ### Added
 
+- **Type-level functions, and `Default`.** A function with no `self` in an
+  `impl` belongs to the type: `impl Config { fn make() -> Config }` is called
+  `Config.make()`, `Self.make()` inside the block, `Box.new(5)` or
+  `Box<String>.new("x")` for a generic type. `default` may be its name, so
+  `Config.default()` is a type's own default while the `default` keyword stays
+  the compiler's zero value. `std.default` declares `trait Default { fn
+  default() -> Self }`, implemented for the builtin scalars and String, and
+  generic code asks for it with `T.default()` under a `T: Default` bound.
+  Breaking: such a function used to be a free function called bare
+  (`origin()`); the bare call is now "unknown function" with a note naming
+  `Point.origin(...)`, and a trait's static function is `U.from(v)` in generic
+  code rather than `from(v)`. test_177, test_178, neg_187, neg_188.
 - **A generic enum's variant takes its type arguments from the context.**
   `let e: Option<Int> = Option.None`, `return Result.Ok(v)` in a function
   returning `Result<Int, String>`, a struct field, an assignment and an argument

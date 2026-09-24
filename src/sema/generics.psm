@@ -579,10 +579,32 @@ private fn monoSubstituteInto(target: ASTNode, argPtr: Ptr) {
     target.child1 = arg.child1
 }
 
+private fn monoHasReceiver(method: ASTNode) -> Bool {
+    if (nodeIsNull(method.child1)) { return false }
+    return ptr_to_node(method.child1).s1.equals("self")
+}
+
 internal fn monoSubstituteChain(ptr: Ptr, params: String, argsPtr: Ptr) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
+        // `T.default()` in a generic body: the qualifier is the type parameter,
+        // and becomes the type it stands for -- an annotation, which is how a
+        // written `Box<Int>.new(5)` arrives, so semaTypeFunctionCall reads both
+        // the same way.
+        if (node.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(node.child1)) {
+            let qualifier = ptr_to_node(node.child1)
+            if (qualifier.kind == NodeKind.IDENTIFIER_EXPR) {
+                let index = monoParamIndex(params, qualifier.s1)
+                if (index >= 0) {
+                    let argPtr = monoChainAt(argsPtr, index)
+                    if (nodeExists(argPtr)) {
+                        qualifier.kind = NodeKind.TYPE_ANNOTATION
+                        monoSubstituteInto(qualifier, argPtr)
+                    }
+                }
+            }
+        }
         if (node.kind == NodeKind.TYPE_ANNOTATION and node.i1 == 0 and node.i2 == 0) {
             let index = monoParamIndex(params, node.s1)
             if (index >= 0) {
@@ -1068,9 +1090,15 @@ private fn monoAddDefaultMethod(module: ASTNode, implNode: ASTNode, header: ASTN
     // The span stays the trait's. An error inside a default is an error in the
     // body as written, and pointing at the `impl` that inherited it would send
     // the reader to a method that is not there.
+    // A default with no `self` belongs to the type, as a written one does
+    // (parseImplDecl): `Config.make`, recorded under the trait's short name.
     let record = createNode(NodeKind.IMPL_METHOD)
     nodeSpanFrom(record, method)
-    record.s1 = method.s1
+    record.s1 = method.s1.clone()
+    if (monoHasReceiver(method) == false) {
+        method.s1 = ptr_to_node(header.child1).s1.concat(".", method.s1)
+    }
+    record.s2 = method.s1.clone()
     monoPushImplMethodRecord(implNode, record)
 
     monoAppendDeclaration(module, method)

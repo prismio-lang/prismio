@@ -957,7 +957,14 @@ private fn parseFunctionDecl(p: Parser) -> ASTNode {
     fnNode.i2 = 1
     let name = p.current()
     fnNode.s1 = name.value
-    p.expectToken(TokenType.IDENTIFIER, "function name")
+    // `fn default() -> Config` inside an `impl`: a type's own default, called
+    // `Config.default()`. Only there, because only there is it qualified -- a
+    // bare `default` anywhere else is the keyword's value.
+    if (name.type == TokenType.KEYWORD and name.value.equals("default") and nodeExists(p.implType)) {
+        p.advance()
+    } else {
+        p.expectToken(TokenType.IDENTIFIER, "function name")
+    }
 
     fnNode.s2 = parseGenericParams(p, fnNode)
     p.implPosition = 1
@@ -1070,6 +1077,17 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
         }
         let method = parseFunctionDecl(p)
         method.s2 = parseImplMethodParams(p, header.s1, method.s2)
+        // A function with no `self` belongs to the type: `impl Config { fn
+        // make() -> Config }` is `Config.make()`, and its name says so, so two
+        // types may each have a `make` or a `default` without colliding and
+        // neither is callable bare. The same in a trait's `impl` -- `impl
+        // Default for Config` gives `Config.default` -- where the record keeps
+        // the short name the trait declares, for conformance to match, and
+        // carries the real one in `s2`.
+        let declaredName = method.s1.clone()
+        if (parseHasReceiver(method) == false) {
+            method.s1 = implNode.s1.concat(".", method.s1)
+        }
         parseImplMethodGenericInfo(header, method)
         // A trait's method is public unless it says otherwise, and an inherent
         // one takes the private default like any other `fn`. `impl Eq for Key`
@@ -1091,7 +1109,8 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
         // function without retaining an AST back-edge.
         let record = createNode(NodeKind.IMPL_METHOD)
         nodeSpanFrom(record, method)
-        record.s1 = method.s1
+        record.s1 = declaredName
+        record.s2 = method.s1.clone()
         nodeListPush(methodRecords, record)
         nodeListPush(methods, method)
         }
@@ -1215,6 +1234,11 @@ private fn parseImplMethodParams(p: Parser, implParams: String, methodParams: St
 // The parser accepts one anywhere because position is not a parse question. It
 // matters because `x.f(a)` is `f(x, a)`: a receiver written second is a method
 // no method call can ever reach.
+private fn parseHasReceiver(method: ASTNode) -> Bool {
+    if (nodeIsNull(method.child1)) { return false }
+    return ptr_to_node(method.child1).s1.equals("self")
+}
+
 private fn parseImplCheckReceiver(p: Parser, method: ASTNode) {
     let mut paramPtr = method.child1
     let mut index = 0
@@ -1350,7 +1374,12 @@ private fn parseTraitSignature(p: Parser) -> ASTNode {
     let signature = p.node(NodeKind.FUNCTION)
     let name = p.current()
     signature.s1 = name.value
-    p.expectToken(TokenType.IDENTIFIER, "method name")
+    // `trait Default { fn default() -> Self }` -- see parseFunctionDecl.
+    if (name.type == TokenType.KEYWORD and name.value.equals("default")) {
+        p.advance()
+    } else {
+        p.expectToken(TokenType.IDENTIFIER, "method name")
+    }
 
     if (p.checkVal(TokenType.RELATIONAL_OPERATOR, "<")) {
         p.fatal("a generic method in a `trait` is not supported yet")

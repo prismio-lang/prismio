@@ -25,9 +25,8 @@ impl Point {
         return self.x + self.y
     }
 
-    // A method with no receiver at all. `impl` is a naming construct, so an
-    // associated function is just a function that happens to be written inside
-    // one -- there is nothing for it to be except a free function.
+    // A function with no receiver belongs to the type: it is `Point.origin()`,
+    // not a free `origin()`, so another type may have an `origin` of its own.
     fn origin() -> Point {
         return Point { x: 0, y: 0 }
     }
@@ -71,7 +70,7 @@ fn main() -> Int {
     if (p.shifted(1, 1).sum() != 5) { return fail("chained method call") }
 
     // An associated function, called by name.
-    if (origin().sum() != 0) { return fail("origin()") }
+    if (Point.origin().sum() != 0) { return fail("Point.origin()") }
 
     // Overload resolution across two `impl` blocks.
     if (p.size() != 2) { return fail("Point.size") }

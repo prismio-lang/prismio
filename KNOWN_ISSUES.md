@@ -771,13 +771,18 @@ something changeable. A struct field is assignable through any binding, so
 written without the read-only check; that is the struct-by-reference rule
 `variables.md` states, and tightening it is a language decision, not a bug fix.
 
-**`default` has no user-defined form.** It is built in for the types
-`src/sema/defaults.psm` knows, plus every struct whose fields have one. A type
-whose fields' defaults do not make a valid value -- the way `Map`'s buckets do
-not, which the compiler special-cases to `mapNew` -- has no way to say so; that
-needs a `Default` trait with an associated constructor, and associated functions
-are only `Vec<T>.withCapacity` today. An enum has no default at all, and
-`default` cannot be an argument, since overloads are chosen from argument types.
+**A generic function's type argument is not inferred from its expected return
+type.** `fn fresh<T: Default>() -> T` has no argument that mentions `T`, so
+`let c: Config = fresh()` is "unknown function"; it has to be written
+`fresh<Config>()`. Inference solves type parameters from arguments only
+(monoSolveTypeParam); the expected type would need to reach the call the way
+enumQualifyFromExpected brings it to a variant construction.
+
+**`T.default()` for a generic *type* argument.** A qualifier that is a type
+parameter becomes the concrete type in a generic body, and `Box<Int>` becomes a
+call to the `Box.default` template with `Int` as its argument -- but only for a
+function the generic type's own `impl<T> Box<T>` declares. An instantiation's
+mangled name (`Box$Int`) is never looked up as a qualifier.
 
 **Two kinds of array are shared by a second binding rather than copied.** An
 array of a known length whose elements own nothing is a value since 2026-09-18

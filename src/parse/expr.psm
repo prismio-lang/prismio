@@ -411,10 +411,19 @@ private fn parseSuffixes(p: Parser, base: ASTNode) -> ASTNode {
             }
         } else if (p.matchVal(TokenType.SEPARATOR, ".")) {
             let member = p.node(NodeKind.MEMBER_ACCESS_EXPR)
+            // `Self.make()` inside an `impl` names the type being implemented.
+            if (expr.kind == NodeKind.IDENTIFIER_EXPR and expr.s1.equals("Self") and nodeExists(p.implType)) {
+                expr.s1 = ptr_to_node(p.implType).s1.clone()
+            }
             member.child1 = node_to_ptr(expr)
             let name = p.current()
             member.s1 = name.value
-            p.expectToken(TokenType.IDENTIFIER, "member name")
+            // `Config.default()`: a type's own default function (parseFunctionDecl).
+            if (name.type == TokenType.KEYWORD and name.value.equals("default")) {
+                p.advance()
+            } else {
+                p.expectToken(TokenType.IDENTIFIER, "member name")
+            }
             expr = member
         } else {
             break

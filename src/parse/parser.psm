@@ -102,21 +102,6 @@ impl Parser {
     // Creates a node already stamped with the position of the token the parser is
     // sitting on. Every node the parser builds comes from here rather than from
     // createNode(), so a node without a span means "synthesised", not "forgotten".
-    // The same, from a token the caller kept rather than the one the parser is
-    // looking at now. A statement whose node is built *after* its body is parsed --
-    // an expression statement, `break`, `continue` -- is looking at the token that
-    // follows it by then, which is the next statement's first token, or the closing
-    // brace. Stamping that is an off-by-one in the line table and an underline in
-    // the wrong place in a diagnostic.
-    internal fn parserNodeFrom(kind: NodeKind, tok: Token) -> ASTNode {
-        let node = createNode(kind)
-        node.line = tok.line
-        node.col = tok.col
-        node.len = tok.len
-        node.file = tok.file
-        return node
-    }
-
     internal fn node(self, kind: NodeKind) -> ASTNode {
         let node = createNode(kind)
         let tok = self.current()
@@ -132,15 +117,6 @@ impl Parser {
     internal fn error(self, message: String) {
         let tok = self.current()
         diag_error_at_code("P3201", tok.file, tok.line, tok.col, tok.len, message)
-    }
-
-    // How the offending token reads in a message. EOF has no source text, so name it
-    // rather than quoting the empty string.
-    internal fn parserDescribe(tok: Token) -> String {
-        if (tok.type == TokenType.EOF) {
-            return "end of file"
-        }
-        return diagQuote(tok.value)
     }
 
     // A parse error the parser cannot recover from locally. Reports, then stops:
@@ -175,27 +151,6 @@ impl Parser {
                                           parserDescribe(tok)))
         }
         self.advance()
-    }
-
-    // Whether this keyword can only begin a construct, and so is a safe place for
-    // recovery to resume.
-    private fn startsConstruct(word: String) -> Bool {
-        if (word.equals("fn")) { return true }
-        if (word.equals("let")) { return true }
-        if (word.equals("struct")) { return true }
-        if (word.equals("enum")) { return true }
-        if (word.equals("extern")) { return true }
-        if (word.equals("import")) { return true }
-        if (word.equals("impl")) { return true }
-        if (word.equals("trait")) { return true }
-        if (word.equals("if")) { return true }
-        if (word.equals("while")) { return true }
-        if (word.equals("for")) { return true }
-        if (word.equals("loop")) { return true }
-        if (word.equals("match")) { return true }
-        if (word.equals("return")) { return true }
-        if (word.equals("region")) { return true }
-        return false
     }
 
     // Drops tokens until something that plausibly begins a new declaration or
@@ -464,4 +419,54 @@ impl Parser {
         return module
     }
 
+}
+
+// Free functions the parser's methods share. Outside `impl Parser` because none
+// takes the parser: a function with no `self` inside an `impl` belongs to the
+// type and is called `Parser.name(...)`, and these are called bare, from the
+// declaration and expression parsers as well as from here.
+
+// A node stamped like Parser.node's, from a token the caller kept rather than the
+// one the parser is looking at now. A statement whose node is built *after* its body is parsed --
+// an expression statement, `break`, `continue` -- is looking at the token that
+// follows it by then, which is the next statement's first token, or the closing
+// brace. Stamping that is an off-by-one in the line table and an underline in
+// the wrong place in a diagnostic.
+internal fn parserNodeFrom(kind: NodeKind, tok: Token) -> ASTNode {
+    let node = createNode(kind)
+    node.line = tok.line
+    node.col = tok.col
+    node.len = tok.len
+    node.file = tok.file
+    return node
+}
+
+// How the offending token reads in a message. EOF has no source text, so name it
+// rather than quoting the empty string.
+internal fn parserDescribe(tok: Token) -> String {
+    if (tok.type == TokenType.EOF) {
+        return "end of file"
+    }
+    return diagQuote(tok.value)
+}
+
+// Whether this keyword can only begin a construct, and so is a safe place for
+// recovery to resume.
+private fn startsConstruct(word: String) -> Bool {
+    if (word.equals("fn")) { return true }
+    if (word.equals("let")) { return true }
+    if (word.equals("struct")) { return true }
+    if (word.equals("enum")) { return true }
+    if (word.equals("extern")) { return true }
+    if (word.equals("import")) { return true }
+    if (word.equals("impl")) { return true }
+    if (word.equals("trait")) { return true }
+    if (word.equals("if")) { return true }
+    if (word.equals("while")) { return true }
+    if (word.equals("for")) { return true }
+    if (word.equals("loop")) { return true }
+    if (word.equals("match")) { return true }
+    if (word.equals("return")) { return true }
+    if (word.equals("region")) { return true }
+    return false
 }

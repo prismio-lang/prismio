@@ -1,0 +1,37 @@
+// `Default` (std.default): a type's own starting value, for generic code to ask
+// for with `T.default()`. The `default` keyword is still the compiler's zero.
+// neg_188 is a type that does not implement it.
+import std.io
+import std.string
+import std.default
+
+struct Config {
+    retries: Int,
+    name: String
+}
+
+impl Default for Config {
+    fn default() -> Config { return Config { retries: 3, name: "app" } }
+}
+
+fn fresh<T: Default>() -> T {
+    return T.default()
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let keyword: Config = default
+    if (keyword.retries != 0) { return fail("the keyword ignores the impl") }
+    if (Config.default().retries != 3) { return fail("Config.default()") }
+    if (fresh<Config>().name.equals("app") == false) { return fail("T.default() in generic code") }
+    if (fresh<Int>() != 0) { return fail("a builtin's Default") }
+    if (fresh<String>().equals("") == false) { return fail("String's Default") }
+    if (fresh<Bool>()) { return fail("Bool's Default") }
+    println("test_178 ok")
+    return 0
+}

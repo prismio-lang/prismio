@@ -1,0 +1,53 @@
+// A function with no `self` in an `impl` belongs to the type: `Config.make()`.
+// Two types may each have one of the same name, `Self.make()` names it inside
+// the impl, a generic type's takes its arguments (`Box<String>.new`) or infers
+// them (`Box.new(5)`), and `default` may be its name. neg_187 is the bare call.
+import std.io
+import std.string
+
+struct Config {
+    retries: Int,
+    name: String
+}
+
+impl Config {
+    fn default() -> Config { return Config { retries: 3, name: "app" } }
+
+    fn named(name: String) -> Config {
+        let mut c = Self.default()
+        c.name = name
+        return c
+    }
+
+    fn describe(self) -> String { return self.name.concat(":", self.retries.toString()) }
+}
+
+struct Server { port: Int }
+
+impl Server {
+    fn default() -> Server { return Server { port: 8080 } }
+}
+
+struct Box<T> { value: T }
+
+impl<T> Box<T> {
+    fn new(value: T) -> Box<T> { return Box<T> { value: value } }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (Config.default().retries != 3) { return fail("a type's own default") }
+    let zero: Config = default
+    if (zero.retries != 0 or zero.name.equals("") == false) { return fail("the keyword stays the compiler's zero") }
+    if (Config.named("web").describe().equals("web:3") == false) { return fail("Self.default() inside the impl") }
+    if (Server.default().port != 8080) { return fail("a second type's `default`") }
+    if (Box.new(5).value != 5) { return fail("a generic type's function, inferred") }
+    if (Box<String>.new("x").value.equals("x") == false) { return fail("a generic type's function, written") }
+    println("test_177 ok")
+    return 0
+}
