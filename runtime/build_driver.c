@@ -1826,6 +1826,23 @@ static int link_program_msvc(const char* program_obj, const char* exe_file) {
 }
 #endif
 
+// Whether the C library keeps `sin`, `sqrt` and the rest in a separate libm.
+// glibc and musl do, and clang links neither by default: the benchmark suite's
+// fft and raytracer failed CI's first Linux link with `undefined reference to
+// cos`. Darwin's libSystem and the Windows CRT carry them, and wasm targets
+// get them from their own libc.
+static int target_needs_libm(void) {
+    if (!ir_target_is_explicit()) {
+#if defined(__APPLE__) || defined(_WIN32)
+        return 0;
+#else
+        return 1;
+#endif
+    }
+    const char* t = ir_target_triple();
+    return strstr(t, "linux") != NULL || strstr(t, "bsd") != NULL;
+}
+
 // The runtime has already been linked into the program's LLVM module before
 // optimisation. The native link therefore receives one program object plus any
 // explicit UMS inputs; there is no opaque runtime archive at this boundary.
@@ -1854,8 +1871,9 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
                     strlen(target) + strlen(native) + 64);
     char* command = (char*)malloc(len);
 
-    snprintf(command, len, "%s %s%s%s%s -o %s",
-             driver, target, min_os, q_obj, native, q_exe);
+    snprintf(command, len, "%s %s%s%s%s -o %s%s",
+             driver, target, min_os, q_obj, native, q_exe,
+             target_needs_libm() ? " -lm" : "");
     int result = run_build_command(command);
 
     free(command);
@@ -2158,6 +2176,8 @@ static char* object_cache_temp_path(const char* entry) {
 // Best-effort: everything except `run --jit` works without an export table, so a
 // missing llvm-nm says so and the link proceeds. Returns a malloc'd string of
 // flags to append, or NULL.
+static char* g_export_rsp = NULL;
+
 static char* windows_runtime_export_flags(char** objs, const char* exe_file) {
     char* list_path = compiler_temp_path(exe_file, "exports.txt");
     if (!list_path) return NULL;
@@ -2233,7 +2253,31 @@ static char* windows_runtime_export_flags(char** objs, const char* exe_file) {
     free(text);
 
     if (count == 0) { free(flags); return NULL; }
-    return flags;
+
+    // **Through a response file, not on the command line.** cmd.exe refuses a
+    // line longer than 8191 characters, and 191 exports are several thousand on
+    // their own: CI's `prismio bootstrap` failed with "The command line is too
+    // long." as soon as the quoting in front of it was fixed. clang expands
+    // `@file` itself, one argument per whitespace-separated token; the names
+    // are C identifiers, so none needs quoting. The file is removed after the
+    // link (g_export_rsp).
+    char* rsp_path = compiler_temp_path(exe_file, "exports.rsp");
+    FILE* rsp = rsp_path ? fopen(rsp_path, "wb") : NULL;
+    if (!rsp) {
+        free(rsp_path);
+        return flags;
+    }
+    for (char* c = flags; *c; c++) fputc(*c == ' ' ? '\n' : *c, rsp);
+    fclose(rsp);
+    free(flags);
+    free(g_export_rsp);
+    g_export_rsp = rsp_path;
+    char* q_rsp_path = command_quote_arg(rsp_path);
+    size_t arg_len = strlen(q_rsp_path) + 3;
+    char* arg = (char*)malloc(arg_len);
+    if (arg) snprintf(arg, arg_len, " @%s", q_rsp_path);
+    free(q_rsp_path);
+    return arg;
 }
 #endif
 
@@ -2509,6 +2553,13 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
         diag_progress("linking");
         if (run_build_command(command) != 0) result = 1;
         build_trace_stage("link", t0);
+#ifdef _WIN32
+        if (g_export_rsp) {
+            delete_file(g_export_rsp);
+            free(g_export_rsp);
+            g_export_rsp = NULL;
+        }
+#endif
     }
 
     for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
