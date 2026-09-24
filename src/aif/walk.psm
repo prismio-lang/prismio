@@ -144,7 +144,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         // handed the read the array's own value set, and an array field's is a
         // view of its struct: `t.cells[3]` summed into a longer-lived `let`
         // lifted `t` off the stack and into the function's region (E-VIEW).
-        if (strStartsWith(baseTy, "[") and aifIsRef(ty) == false) {
+        if (baseTy.startsWith("[") and aifIsRef(ty) == false) {
             aifSitesOf(e.child1, fnId, scope)
             aifSitesOf(e.child2, fnId, scope)
             return aifVsEmpty()
@@ -563,15 +563,15 @@ private fn aifTierFromName(name: String) -> Int {
 private fn aifApplyAnnotations(decl: ASTNode, vs: Int) {
     if (decl.s2.equals("")) { return }
 
-    if (strContains(decl.s2, "unique ")) {
+    if (decl.s2.contains("unique ")) {
         aif_con_unique(vs)
     }
 
-    let at = strIndexOf(decl.s2, "pin:")
+    let at = decl.s2.indexOf("pin:")
     if (at >= 0) {
-        let mut name = strSubstring(decl.s2, at + 4, __builtin_string_len(decl.s2) - at - 4)
-        let space = strIndexOf(name, " ")
-        if (space >= 0) { name = strSubstring(name, 0, space) }
+        let mut name = decl.s2.substring(at + 4, __builtin_string_len(decl.s2) - at - 4)
+        let space = name.indexOf(" ")
+        if (space >= 0) { name = name.substring(0, space) }
         let tier = aifTierFromName(name)
         if (tier >= 0) {
             aif_con_pin(vs, tier)

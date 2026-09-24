@@ -32,7 +32,7 @@ internal fn umsToken(kind: UmsTokenKind, value: String, offset: Int,
                      line: Int, col: Int, len: Int) -> UmsToken {
     return UmsToken {
         kind: kind,
-        value: strClone(value),
+        value: value.clone(),
         offset: offset,
         line: line,
         col: col,

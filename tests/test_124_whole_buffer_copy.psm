@@ -13,10 +13,10 @@
 import std.io
 
 fn filled(n: Int, base: Int) -> Vec<Int> {
-    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(xs, base + i)
+        xs.push(base + i)
         i = i + 1
     }
     return xs
@@ -25,29 +25,29 @@ fn filled(n: Int, base: Int) -> Vec<Int> {
 fn digest(xs: Vec<Int>) -> Int {
     let mut acc = 0
     let mut i = 0
-    let n = list_len(xs)
+    let n = xs.length
     while (i < n) {
-        acc = (acc * 31 + list_get(xs, i)) % 1000000007
+        acc = (acc * 31 + xs[i]) % 1000000007
         i = i + 1
     }
     return acc
 }
 
 // The shape the lowering serves.
-fn copyAll(dst: Vec<Int>, src: Vec<Int>, n: Int) -> Int {
+fn copyAll(inout dst: Vec<Int>, src: Vec<Int>, n: Int) -> Int {
     let mut k = 0
     while (k < n) {
-        list_set(dst, k, list_get(src, k))
+        dst[k] = src[k]
         k = k + 1
     }
     return k
 }
 
 // The same, from a non-zero start.
-fn copyFrom(dst: Vec<Int>, src: Vec<Int>, start: Int, n: Int) -> Int {
+fn copyFrom(inout dst: Vec<Int>, src: Vec<Int>, start: Int, n: Int) -> Int {
     let mut k = start
     while (k < n) {
-        list_set(dst, k, list_get(src, k))
+        dst[k] = src[k]
         k = k + 1
     }
     return k
@@ -70,55 +70,55 @@ fn main() -> Int {
 
     // Whole buffer, both lengths equal: the transfer runs.
     let a = filled(64, 100)
-    let b = filled(64, 0)
+    let mut b = filled(64, 0)
     bad = bad + check("FAIL: copyAll returns the bound", copyAll(b, a, 64), 64)
     bad = bad + check("FAIL: copyAll content", digest(b), digest(a))
 
     // The bound is past the destination. `list_set` does nothing past the end,
     // so the first 8 move and the rest are dropped.
     let c = filled(32, 200)
-    let d = filled(8, 0)
+    let mut d = filled(8, 0)
     bad = bad + check("FAIL: short dst returns the bound", copyAll(d, c, 32), 32)
-    bad = bad + check("FAIL: short dst length", list_len(d), 8)
+    bad = bad + check("FAIL: short dst length", d.length, 8)
     bad = bad + check("FAIL: short dst content", digest(d), digest(filled(8, 200)))
 
     // The bound is past the source. `list_get` yields 0 there, so the tail of
     // the destination is zeroed rather than left alone.
     let e = filled(8, 300)
-    let f = filled(32, 7)
+    let mut f = filled(32, 7)
     bad = bad + check("FAIL: short src returns the bound", copyAll(f, e, 32), 32)
-    bad = bad + check("FAIL: short src head", list_get(f, 0), 300)
-    bad = bad + check("FAIL: short src boundary", list_get(f, 7), 307)
-    bad = bad + check("FAIL: short src tail", list_get(f, 8), 0)
-    bad = bad + check("FAIL: short src end", list_get(f, 31), 0)
+    bad = bad + check("FAIL: short src head", f[0], 300)
+    bad = bad + check("FAIL: short src boundary", f[7], 307)
+    bad = bad + check("FAIL: short src tail", f[8], 0)
+    bad = bad + check("FAIL: short src end", f[31], 0)
 
     // A non-zero start leaves everything below it alone.
     let g = filled(16, 400)
-    let h = filled(16, 0)
+    let mut h = filled(16, 0)
     bad = bad + check("FAIL: copyFrom returns the bound", copyFrom(h, g, 4, 16), 16)
-    bad = bad + check("FAIL: copyFrom below start", list_get(h, 3), 3)
-    bad = bad + check("FAIL: copyFrom at start", list_get(h, 4), 404)
-    bad = bad + check("FAIL: copyFrom end", list_get(h, 15), 415)
+    bad = bad + check("FAIL: copyFrom below start", h[3], 3)
+    bad = bad + check("FAIL: copyFrom at start", h[4], 404)
+    bad = bad + check("FAIL: copyFrom end", h[15], 415)
 
     // Start past the bound: no iteration, and the variable still lands there.
     let i2 = filled(16, 500)
-    let j = filled(16, 0)
+    let mut j = filled(16, 0)
     bad = bad + check("FAIL: empty range returns the start", copyFrom(j, i2, 20, 16), 20)
     bad = bad + check("FAIL: empty range content", digest(j), digest(filled(16, 0)))
 
     // Same list on both sides: every element copies onto itself.
-    let k2 = filled(16, 600)
+    let mut k2 = filled(16, 600)
     bad = bad + check("FAIL: aliased returns the bound", copyAll(k2, k2, 16), 16)
     bad = bad + check("FAIL: aliased content", digest(k2), digest(filled(16, 600)))
 
     // Nothing to move.
     let l = filled(0, 0)
-    let m = filled(0, 0)
+    let mut m = filled(0, 0)
     bad = bad + check("FAIL: empty lists", copyAll(m, l, 0), 0)
 
     // A negative bound is not a range at all.
     let o = filled(8, 700)
-    let p = filled(8, 0)
+    let mut p = filled(8, 0)
     bad = bad + check("FAIL: negative bound", copyAll(p, o, 0 - 5), 0)
     bad = bad + check("FAIL: negative bound content", digest(p), digest(filled(8, 0)))
 

@@ -15,7 +15,7 @@ struct Point { x: Int, y: Int }
 
 impl Display for Point {
     fn show(self) -> String {
-        return "(".concat(strFromInt(self.x), ", ", strFromInt(self.y), ")")
+        return "(".concat(self.x.toString(), ", ", self.y.toString(), ")")
     }
 }
 
@@ -37,7 +37,7 @@ fn main() -> Int {
 
     // Any expression, not just a name.
     if (("${count + 1}" == "43") == false) { return fail("an expression") }
-    if (("${strFromInt(count)}" == "42") == false) { return fail("a call") }
+    if (("${count.toString()}" == "42") == false) { return fail("a call") }
 
     // Every builtin `Display` covers, and a user type through the same trait.
     if (("${count}" == "42") == false) { return fail("Int") }
@@ -75,7 +75,7 @@ fn main() -> Int {
 
     if (1e9 != 1000000000.0) { return fail("an exponent with no dot") }
     if (1.5e-3 != 0.0015) { return fail("a negative exponent") }
-    if (strFromFloat(6.022e23).equals("6.022e+23") == false) { return fail("a large exponent") }
+    if (6.022e23.toString().equals("6.022e+23") == false) { return fail("a large exponent") }
 
     println("test_136 ok")
     return 0

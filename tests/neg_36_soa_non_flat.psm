@@ -4,8 +4,8 @@ struct OwnedRow {
 }
 
 fn main() -> Int {
-    let mut rows: Vec<OwnedRow> = list_new()
-    list_push(rows, OwnedRow { name: "owned" })
+    let mut rows: Vec<OwnedRow> = []
+    rows.push(OwnedRow { name: "owned" })
     let view = soa(rows)
     return 0
 }

@@ -91,11 +91,11 @@ struct RelLoop {
 
 private fn relLoopNew() -> RelLoop {
     return RelLoop {
-        kinds: list_new(), names: list_new(), values: list_new(), count: 0,
-        seenNames: list_new(), seenDecls: list_new(), seenIntDecls: list_new(),
-        seenAssigns: list_new(), seenIntAssigns: list_new(),
-        cur: list_new(), back: list_new(),
-        inScope: list_new(), scopeVars: list_new(), scopeCount: 0,
+        kinds: [], names: [], values: [], count: 0,
+        seenNames: [], seenDecls: [], seenIntDecls: [],
+        seenAssigns: [], seenIntAssigns: [],
+        cur: [], back: [],
+        inScope: [], scopeVars: [], scopeCount: 0,
         mode: REL_FIX, failed: false,
         termVar: 0, termConst: 0, termOps: 0, literal: 0
     }
@@ -115,24 +115,24 @@ internal fn relationsProve(rl: RangeLoop) {
     relCollect(rs, rl)
     if (rs.failed or rs.count > REL_MAX_VARS) { return }
 
-    let entry = dbmTop(rs.count)
+    let mut entry = dbmTop(rs.count)
     let mut v = 0
     while (v < rs.count) {
-        if (list_get(rs.kinds, v) == REL_LOOP) {
-            let name: String = list_get(rs.names, v)
+        if (rs.kinds[v] == REL_LOOP) {
+            let name: String = rs.names[v]
             dbmAssign(rs.count, entry, v, relFind(rs, REL_FROZEN, name), 0)
         }
         v = v + 1
     }
     rs.cur = dbmTop(rs.count)
     rs.back = dbmTop(rs.count)
-    let head = dbmCopy(entry)
+    let mut head = dbmCopy(entry)
     let mut round = 0
     let mut stable = false
     while (stable == false) {
         relRunBody(rs, rl, head)
         if (rs.failed) { return }
-        let next = dbmCopy(entry)
+        let mut next = dbmCopy(entry)
         dbmJoin(rs.count, next, rs.back)
         if (dbmLeq(rs.count, next, head)) {
             stable = true
@@ -156,7 +156,7 @@ private fn relRunBody(rs: RelLoop, rl: RangeLoop, head: Vec<Int>) {
     rs.scopeCount = 0
     let mut v = 0
     while (v < rs.count) {
-        list_set(rs.inScope, v, 0)
+        rs.inScope[v] = 0
         v = v + 1
     }
     relWalkCondition(rs, rl, rl.condPtr)
@@ -171,8 +171,8 @@ private fn relRunBody(rs: RelLoop, rl: RangeLoop, head: Vec<Int>) {
 private fn relFind(rs: RelLoop, kind: Int, name: String) -> Int {
     let mut i = 0
     while (i < rs.count) {
-        let known: String = list_get(rs.names, i)
-        if (list_get(rs.kinds, i) == kind and known.equals(name)) { return i }
+        let known: String = rs.names[i]
+        if (rs.kinds[i] == kind and known.equals(name)) { return i }
         i = i + 1
     }
     return 0 - 1
@@ -181,16 +181,16 @@ private fn relFind(rs: RelLoop, kind: Int, name: String) -> Int {
 private fn relAddVar(rs: RelLoop, kind: Int, name: String) -> Int {
     let found = relFind(rs, kind, name)
     if (found >= 0) { return found }
-    list_push(rs.kinds, kind)
-    list_push(rs.names, strClone(name))
-    list_push(rs.values, "")
-    list_push(rs.inScope, 0)
+    rs.kinds.push(kind)
+    rs.names.push(name.clone())
+    rs.values.push("")
+    rs.inScope.push(0)
     rs.count = rs.count + 1
     return rs.count - 1
 }
 
 private fn relIsAnchor(rs: RelLoop, v: Int) -> Bool {
-    let kind = list_get(rs.kinds, v)
+    let kind = rs.kinds[v]
     return kind == REL_ZERO or kind == REL_FROZEN or kind == REL_ANCHOR or kind == REL_LEN
 }
 
@@ -203,7 +203,7 @@ private fn relNameVar(rs: RelLoop, name: String) -> Int {
     let anchor = relFind(rs, REL_ANCHOR, name)
     if (anchor >= 0) { return anchor }
     let local = relFind(rs, REL_LOCAL, name)
-    if (local >= 0 and list_get(rs.inScope, local) != 0) { return local }
+    if (local >= 0 and rs.inScope[local] != 0) { return local }
     return 0 - 1
 }
 
@@ -217,14 +217,14 @@ private fn relCollect(rs: RelLoop, rl: RangeLoop) {
     relCollectNode(rl.condPtr, rs, rl, 0)
     relCollectChain(ptr_to_node(rl.bodyPtr).child1, rs, rl, 0)
     let mut i = 0
-    while (i < list_len(rs.seenNames)) {
-        let name: String = list_get(rs.seenNames, i)
-        let decls = list_get(rs.seenDecls, i)
-        let assigns = list_get(rs.seenAssigns, i)
+    while (i < rs.seenNames.length) {
+        let name: String = rs.seenNames[i]
+        let decls = rs.seenDecls[i]
+        let assigns = rs.seenAssigns[i]
         let usable = ir_var_is_global(name) == 0 and rangeBindsInPattern(rl.bodyPtr, name) == false
         if (usable and decls > 0) {
-            if (list_get(rs.seenIntDecls, i) == decls) { relAddVar(rs, REL_LOCAL, name) }
-        } else if (usable and assigns > 0 and list_get(rs.seenIntAssigns, i) == assigns) {
+            if (rs.seenIntDecls[i] == decls) { relAddVar(rs, REL_LOCAL, name) }
+        } else if (usable and assigns > 0 and rs.seenIntAssigns[i] == assigns) {
             relAddVar(rs, REL_LOOP, name)
             relAddVar(rs, REL_FROZEN, name)
         }
@@ -233,20 +233,20 @@ private fn relCollect(rs: RelLoop, rl: RangeLoop) {
 }
 
 private fn relSeen(rs: RelLoop, name: String) -> Int {
-    for i in 0..<list_len(rs.seenNames) {
-        let known: String = list_get(rs.seenNames, i)
+    for i in 0..<rs.seenNames.length {
+        let known: String = rs.seenNames[i]
         if (known.equals(name)) { return i }
     }
-    list_push(rs.seenNames, strClone(name))
-    list_push(rs.seenDecls, 0)
-    list_push(rs.seenIntDecls, 0)
-    list_push(rs.seenAssigns, 0)
-    list_push(rs.seenIntAssigns, 0)
-    return list_len(rs.seenNames) - 1
+    rs.seenNames.push(name.clone())
+    rs.seenDecls.push(0)
+    rs.seenIntDecls.push(0)
+    rs.seenAssigns.push(0)
+    rs.seenIntAssigns.push(0)
+    return rs.seenNames.length - 1
 }
 
-private fn relBump(counts: Vec<Int>, at: Int) {
-    list_set(counts, at, list_get(counts, at) + 1)
+private fn relBump(inout counts: Vec<Int>, at: Int) {
+    counts[at] = counts[at] + 1
 }
 
 private fn relCollectChain(head: Ptr, rs: RelLoop, rl: RangeLoop, nested: Int) {
@@ -293,16 +293,16 @@ private fn relLenReceiver(n: ASTNode, rl: RangeLoop) -> String {
     if (ptr_to_node(n.child1).s1.equals("list_len") == false) { return "" }
     let list = ptr_to_node(n.child2)
     if (nodeExists(list.next) or rangeIsStableList(list, rl) == false) { return "" }
-    return strClone(list.s1)
+    return list.s1.clone()
 }
 
 // A continuing path's state joins the back edge without the locals, which the
 // iteration's end takes out of scope.
 private fn relJoinBack(rs: RelLoop) {
-    let st = dbmCopy(rs.cur)
+    let mut st = dbmCopy(rs.cur)
     let mut v = 0
     while (v < rs.count) {
-        if (list_get(rs.kinds, v) == REL_LOCAL) { dbmForget(rs.count, st, v) }
+        if (rs.kinds[v] == REL_LOCAL) { dbmForget(rs.count, st, v) }
         v = v + 1
     }
     dbmJoin(rs.count, rs.back, st)
@@ -365,20 +365,20 @@ private fn relWalkBlock(rs: RelLoop, rl: RangeLoop, blockPtr: Ptr) {
 private fn relPopScope(rs: RelLoop, mark: Int) {
     while (rs.scopeCount > mark) {
         rs.scopeCount = rs.scopeCount - 1
-        let v = list_get(rs.scopeVars, rs.scopeCount)
-        list_set(rs.inScope, v, 0)
+        let v = rs.scopeVars[rs.scopeCount]
+        rs.inScope[v] = 0
         dbmForget(rs.count, rs.cur, v)
     }
 }
 
 private fn relPushScope(rs: RelLoop, v: Int) {
-    if (rs.scopeCount < list_len(rs.scopeVars)) {
-        list_set(rs.scopeVars, rs.scopeCount, v)
+    if (rs.scopeCount < rs.scopeVars.length) {
+        rs.scopeVars[rs.scopeCount] = v
     } else {
-        list_push(rs.scopeVars, v)
+        rs.scopeVars.push(v)
     }
     rs.scopeCount = rs.scopeCount + 1
-    list_set(rs.inScope, v, 1)
+    rs.inScope[v] = 1
 }
 
 private fn relWalkStmt(rs: RelLoop, rl: RangeLoop, p: Ptr) {
@@ -465,7 +465,7 @@ private fn relWalkIf(rs: RelLoop, rl: RangeLoop, s: ASTNode) {
 private fn relWalkMatch(rs: RelLoop, rl: RangeLoop, s: ASTNode) {
     relVisitExpr(rs, rl, s.child1)
     let entry = dbmCopy(rs.cur)
-    let out = dbmCopy(rs.cur)
+    let mut out = dbmCopy(rs.cur)
     let mut arm = s.child2
     while (nodeExists(arm)) {
         dbmCopyInto(rs.cur, entry)
@@ -606,8 +606,8 @@ private fn relTerm(rs: RelLoop, rl: RangeLoop, p: Ptr, commit: Bool) -> Bool {
 private fn relLiteral(rs: RelLoop, n: ASTNode) -> Bool {
     if (n.kind != NodeKind.LITERAL_EXPR or n.i1 != TokenType.NUMBER_LITERAL) { return false }
     if (__builtin_string_len(n.s1) > REL_LITERAL_DIGITS + 1) { return false }
-    let value = strParseIntOr(n.s1, 0)
-    if (value != strParseIntOr(n.s1, 1)) { return false }
+    let value = n.s1.parseIntOr(0)
+    if (value != n.s1.parseIntOr(1)) { return false }
     if (value > 999999 or value < 0 - 999999) { return false }
     rs.literal = value
     return true
@@ -712,7 +712,7 @@ private fn relAssumeCond(rs: RelLoop, rl: RangeLoop, p: Ptr, positive: Bool) {
         }
         return
     }
-    let mut op = strClone(e.s1)
+    let mut op = e.s1.clone()
     if (positive == false) { op = relNegated(e.s1) }
     if (op.equals("<") == false and op.equals("<=") == false and op.equals(">") == false
             and op.equals(">=") == false and op.equals("==") == false) {
@@ -844,7 +844,7 @@ private fn relUpper(rs: RelLoop, rl: RangeLoop, v: Int, c: Int) -> String {
         let d = dbmGet(rs.count, rs.cur, v, u)
         if (relIsAnchor(rs, u) and d < DBM_INF) {
             let bound = relValuePlus(rs, rl, u, d + c)
-            if (result.equals("")) { result = strClone(bound) } else { result = rangeSmin(result, bound) }
+            if (result.equals("")) { result = bound.clone() } else { result = rangeSmin(result, bound) }
         }
         u = u + 1
     }
@@ -858,7 +858,7 @@ private fn relLower(rs: RelLoop, rl: RangeLoop, v: Int, c: Int) -> String {
         let d = dbmGet(rs.count, rs.cur, u, v)
         if (relIsAnchor(rs, u) and d < DBM_INF) {
             let bound = relValuePlus(rs, rl, u, c - d)
-            if (result.equals("")) { result = strClone(bound) } else { result = rangeSmax(result, bound) }
+            if (result.equals("")) { result = bound.clone() } else { result = rangeSmax(result, bound) }
         }
         u = u + 1
     }
@@ -866,20 +866,20 @@ private fn relLower(rs: RelLoop, rl: RangeLoop, v: Int, c: Int) -> String {
 }
 
 private fn relValuePlus(rs: RelLoop, rl: RangeLoop, u: Int, k: Int) -> String {
-    if (u == 0) { return strFromInt(k) }
+    if (u == 0) { return k.toString() }
     let value = relValue(rs, rl, u)
     if (k == 0) { return value }
-    return ir_get_temp_name(ir_add("i64", value, strFromInt(k)))
+    return ir_get_temp_name(ir_add("i64", value, k.toString()))
 }
 
 // An anchor's value in the preheader, as i64. A frozen start is the variable's
 // value there; a length is the stable list's.
 private fn relValue(rs: RelLoop, rl: RangeLoop, u: Int) -> String {
-    let known: String = list_get(rs.values, u)
-    if (known.equals("") == false) { return strClone(known) }
-    let name: String = list_get(rs.names, u)
+    let known: String = rs.values[u]
+    if (known.equals("") == false) { return known.clone() }
+    let name: String = rs.names[u]
     let mut value = ""
-    if (list_get(rs.kinds, u) == REL_LEN) {
+    if (rs.kinds[u] == REL_LEN) {
         let list = ir_get_temp_name(ir_load(storageType(ir_get_var_type(name)), ir_get_var_slot(name)))
         ir_call_begin()
         ir_call_arg("ptr", list)
@@ -888,6 +888,6 @@ private fn relValue(rs: RelLoop, rl: RangeLoop, u: Int) -> String {
         value = ir_get_temp_name(ir_sext("i32",
             ir_get_temp_name(ir_load("i32", ir_get_var_slot(name))), "i64"))
     }
-    list_set(rs.values, u, strClone(value))
+    rs.values[u] = value.clone()
     return value
 }

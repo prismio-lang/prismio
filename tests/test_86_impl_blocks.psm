@@ -35,11 +35,11 @@ impl Point {
 
 impl String {
     fn trimmed(self) -> String {
-        return strTrim(self)
+        return self.trim()
     }
 
     fn size(self) -> Int {
-        return strLength(self)
+        return self.length
     }
 }
 
@@ -98,7 +98,7 @@ fn main() -> Int {
     // along, and unrelated to `impl`; binding it keeps this fixture clean under
     // `--verify` so a future leak here means something.
     let parts = "a,b,c".split(',')
-    if (list_len(parts) != 3) { return fail("String.split") }
+    if (parts.length != 3) { return fail("String.split") }
     if (optionOr("42".parseInt(), 0) != 42) { return fail("String.parseInt") }
     // Bound for the same reason, and this one is worth naming: the intermediate
     // of a *chain* is an owned temporary passed straight into the next call, and

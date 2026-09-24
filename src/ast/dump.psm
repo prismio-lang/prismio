@@ -59,7 +59,7 @@ private fn jsonString(s: String) {
             print(hexDigit(hi))
             print(hexDigit(c - hi * 16))
         }
-        else { print(strFromChar(b)) }
+        else { print(b.toString()) }
     }
     print("\"")
 }
@@ -75,7 +75,7 @@ private fn jsonFieldInt(name: String, value: Int) {
     print("\"")
     print(name)
     print("\":")
-    print(strFromInt(value))
+    print(value.toString())
 }
 
 // Names rather than ordinals, so the consumer never depends on the declaration

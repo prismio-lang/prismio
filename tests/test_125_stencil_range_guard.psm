@@ -13,10 +13,10 @@
 import std.io
 
 fn filled(n: Int) -> Vec<Int> {
-    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(xs, i + 1)
+        xs.push(i + 1)
         i = i + 1
     }
     return xs
@@ -28,9 +28,9 @@ fn stencil(n: Int, len: Int) -> Int {
     let mut acc = 0
     let mut at = 3
     while (at + 3 < n) {
-        acc = acc + list_get(xs, at - 3) + 2 * list_get(xs, at - 1)
-                  + list_get(xs, at) + 2 * list_get(xs, at + 1)
-                  + list_get(xs, at + 3)
+        acc = acc + xs[at - 3] + 2 * xs[at - 1]
+                  + xs[at] + 2 * xs[at + 1]
+                  + xs[at + 3]
         at = at + 1
     }
     return acc
@@ -42,7 +42,7 @@ fn shiftedPastEnd(n: Int) -> Int {
     let mut acc = 0
     let mut at = 0
     while (at + 100 < n) {
-        acc = acc + list_get(xs, at + 100)
+        acc = acc + xs[at + 100]
         at = at + 1
     }
     return acc
@@ -54,7 +54,7 @@ fn neverRuns() -> Int {
     let mut acc = 0
     let mut at = 0
     while (at + 20 < 10) {
-        acc = acc + list_get(xs, at)
+        acc = acc + xs[at]
         at = at + 1
     }
     return acc

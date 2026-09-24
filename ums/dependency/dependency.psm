@@ -30,7 +30,7 @@ struct UmsDependency {
 impl UmsDependency {
 
     internal fn isPath(self) -> Bool {
-        return strLength(self.path) > 0
+        return self.path.length > 0
     }
 
     // The scope as it is written in a manifest, which is also how the lockfile
@@ -38,19 +38,19 @@ impl UmsDependency {
     // produced it is a file nobody will check.
 }
 internal fn umsDependencyScopeName(scope: UmsDependencyScope) -> String {
-    if (scope == UmsDependencyScope.IMPLEMENTATION) { return strClone("implementation") }
-    if (scope == UmsDependencyScope.API) { return strClone("api") }
+    if (scope == UmsDependencyScope.IMPLEMENTATION) { return "implementation".clone() }
+    if (scope == UmsDependencyScope.API) { return "api".clone() }
     if (scope == UmsDependencyScope.TEST_IMPLEMENTATION) {
-        return strClone("testImplementation")
+        return "testImplementation".clone()
     }
-    return strClone("unknown")
+    return "unknown".clone()
 }
 
 public fn umsDependencyFind(dependencies: Vec<UmsDependency>, scope: UmsDependencyScope,
                      name: String) -> Int {
     let mut i = 0
-    while (i < list_len(dependencies)) {
-        let dependency = list_get(dependencies, i)
+    while (i < dependencies.length) {
+        let dependency = dependencies[i]
         if (dependency.scope == scope and dependency.name.equals(name)) {
             return i
         }

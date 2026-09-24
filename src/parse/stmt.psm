@@ -112,7 +112,7 @@ private fn parseRegionStatement(p: Parser) -> ASTNode {
         if (cap.type != TokenType.NUMBER_LITERAL) {
             p.fatal("expected a byte budget, found ".concat(parserDescribe(cap)))
         }
-        regionNode.i1 = optionOr(strParseInt(cap.value), 0)
+        regionNode.i1 = optionOr(cap.value.parseInt(), 0)
         p.advance()
         p.expectVal(TokenType.SEPARATOR, ")", "region budget")
     }
@@ -343,7 +343,7 @@ private fn parseReturnStatement(p: Parser) -> ASTNode {
 // silently doing it, and the workaround is to write the assignment out in full.
 private fn parseCompoundAssignment(p: Parser, target: ASTNode, operatorToken: Token,
                             first: Token) -> ASTNode {
-    let op = strSubstring(operatorToken.value, 0, 1)
+    let op = operatorToken.value.substring(0, 1)
     p.advance()
 
     if (target.kind != NodeKind.IDENTIFIER_EXPR) {

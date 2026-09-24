@@ -53,7 +53,7 @@ private fn reportForcedLayouts() {
         if (aif_layout_force_applied(i) == 0) {
             diag_warning_code("P1003", "--force-layout did not apply: no candidate of ".concat(diagQuote(aif_layout_forced_type(i)),
                                                                                                " keeps ",
-                                                                                               strFromInt(aif_layout_forced_hot(i)),
+                                                                                               aif_layout_forced_hot(i).toString(),
                                                                                                " fields hot (see `aif --layout` for the candidates)"))
         }
         i = i + 1
@@ -181,7 +181,7 @@ private fn checkedDetail() -> String {
     let warnings = diag_warning_count()
     if (warnings == 0) { return "no problems" }
     if (warnings == 1) { return "1 warning" }
-    return strFromInt(warnings).concat(" warnings")
+    return warnings.toString().concat(" warnings")
 }
 
 // Runs the AIF memory model over the module and reports (aif/spec/SPEC.md 6).
@@ -261,7 +261,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     }
     diag_progress_begin(path)
 
-    if (strEndsWith(outputFile, ".ll")) {
+    if (outputFile.endsWith(".ll")) {
         outFile = outputFile
         emitIrOnly = true
     } else {

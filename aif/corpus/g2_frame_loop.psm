@@ -35,11 +35,11 @@ struct Stats {
 }
 
 fn build_scene(count: Int) -> Vec<Renderable> {
-    let mut scene: Vec<Renderable> = list_new()
+    let mut scene: Vec<Renderable> = []
     let mut i = 0
     let mut f = 0.0
     while (i < count) {
-        list_push(scene, Renderable {
+        scene.push(Renderable {
             mesh_id: i,
             material_id: i,
             x: f,
@@ -56,13 +56,13 @@ fn build_scene(count: Int) -> Vec<Renderable> {
 // Allocates a fresh command list every call. Returns it, so it escapes to the
 // caller -- but only as far as the caller's frame scope.
 fn cull(scene: Vec<Renderable>, near: Float, far: Float) -> Vec<DrawCmd> {
-    let mut cmds: Vec<DrawCmd> = list_new()
-    let n = list_len(scene)
+    let mut cmds: Vec<DrawCmd> = []
+    let n = scene.length
     let mut i = 0
     while (i < n) {
-        let r = list_get(scene, i)
+        let r = scene[i]
         if (r.z >= near and r.z <= far) {
-            list_push(cmds, DrawCmd {
+            cmds.push(DrawCmd {
                 mesh_id: r.mesh_id,
                 material_id: r.material_id,
                 depth: r.z,
@@ -76,11 +76,11 @@ fn cull(scene: Vec<Renderable>, near: Float, far: Float) -> Vec<DrawCmd> {
 
 // Consumes the batch without retaining anything from it. A borrow, in FFI terms.
 fn submit(cmds: Vec<DrawCmd>) -> Int {
-    let n = list_len(cmds)
+    let n = cmds.length
     let mut drawn = 0
     let mut i = 0
     while (i < n) {
-        let c = list_get(cmds, i)
+        let c = cmds[i]
         if (c.visible) {
             drawn = drawn + 1
         }

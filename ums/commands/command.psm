@@ -46,9 +46,9 @@ struct UmsCommand {
 
 public fn umsCommand(name: String, line: Int, col: Int, len: Int) -> UmsCommand {
     return UmsCommand {
-        name: strClone(name),
-        description: strClone(""),
-        steps: list_new(),
+        name: name.clone(),
+        description: "".clone(),
+        steps: [],
         line: line,
         col: col,
         len: len
@@ -59,8 +59,8 @@ public fn umsCommandStep(kind: UmsCommandStepKind, subject: String,
                   line: Int, col: Int, len: Int) -> UmsCommandStep {
     return UmsCommandStep {
         kind: kind,
-        subject: strClone(subject),
-        arguments: list_new(),
+        subject: subject.clone(),
+        arguments: [],
         line: line,
         col: col,
         len: len
@@ -71,7 +71,7 @@ public fn umsCommandArgument(forwarded: Bool, text: String,
                       line: Int, col: Int, len: Int) -> UmsCommandArgument {
     return UmsCommandArgument {
         forwarded: forwarded,
-        text: strClone(text),
+        text: text.clone(),
         line: line,
         col: col,
         len: len
@@ -80,8 +80,8 @@ public fn umsCommandArgument(forwarded: Bool, text: String,
 
 public fn umsCommandFind(commands: Vec<UmsCommand>, name: String) -> Int {
     let mut i = 0
-    while (i < list_len(commands)) {
-        if (list_get(commands, i).name.equals(name)) { return i }
+    while (i < commands.length) {
+        if (commands[i].name.equals(name)) { return i }
         i = i + 1
     }
     return -1

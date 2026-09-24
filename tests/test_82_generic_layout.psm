@@ -20,24 +20,24 @@ struct Named {
 }
 
 fn singleton<T>(sink value: T) -> Vec<T> {
-    let mut items: Vec<T> = list_new()
-    list_push(items, value)
+    let mut items: Vec<T> = []
+    items.push(value)
     return items
 }
 
 fn genericGet<T>(items: Vec<T>, index: Int) -> T {
-    return list_get(items, index)
+    return items[index]
 }
 
-fn genericSet<T>(items: Vec<T>, index: Int, sink value: T) {
-    list_set(items, index, value)
+fn genericSet<T>(inout items: Vec<T>, index: Int, sink value: T) {
+    items[index] = value
 }
 
 // Demand the boxed set clone so the IR gate can inspect its representation.
 // Do not execute it here: replacing an OBJECT element while an untracked
 // element borrow may exist is intentionally conservative today, and is a
 // separate lifetime problem from this test's generic-layout discriminator.
-fn instantiateNamedSet(items: Vec<Named>, sink value: Named) {
+fn instantiateNamedSet(inout items: Vec<Named>, sink value: Named) {
     genericSet(items, 0, value)
 }
 
@@ -61,7 +61,7 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let flatItems = singleton(Flat { x: 7, weight: 2.5 })
+    let mut flatItems = singleton(Flat { x: 7, weight: 2.5 })
     if (flatMatches(flatItems, 7, 2.5) == false) {
         return fail("flat generic read")
     }

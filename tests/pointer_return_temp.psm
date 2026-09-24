@@ -33,7 +33,7 @@ fn make() -> String { return "hello".concat(" world") }
 // different type, different allocation -- but the release of the temporary is
 // withheld on the broad "the result carries a pointer" test.
 fn wrap(s: String) -> Box {
-    return Box { n: strLength(s) }
+    return Box { n: s.length }
 }
 
 fn main() -> Int {

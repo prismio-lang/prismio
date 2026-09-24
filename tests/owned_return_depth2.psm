@@ -39,6 +39,10 @@
 import std.io
 import std.string
 
+// A fresh heap String the test fills itself. std keeps this entry point
+// internal, so a program that wants one raw declares it.
+extern fn str_with_capacity(length: Int) -> String produce(free)
+
 // The producing runtime call is in this function's own body, so the site's `fn`
 // is this function and the caller is allowed to own the result.
 fn pieceDepthOne() -> String {
@@ -58,7 +62,7 @@ fn depthOne(n: Int) -> Int {
         s = pieceDepthOne()
         i = i + 1
     }
-    return strLength(s)
+    return s.length
 }
 
 fn depthTwo(n: Int) -> Int {
@@ -68,7 +72,7 @@ fn depthTwo(n: Int) -> Int {
         s = pieceDepthTwo()
         i = i + 1
     }
-    return strLength(s)
+    return s.length
 }
 
 fn main() -> Int {

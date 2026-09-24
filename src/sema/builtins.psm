@@ -531,6 +531,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaErrorAt(a0, "list_push expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
+        semaCheckMutablePlace(a0)
         let valueNode = ptr_to_node(a0.next)
         let elemT = semaListElementType(lt)
         semaCheckValue(module, valueNode, elemT, "list_push value")
@@ -565,6 +566,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaErrorAt(a0, "list_set expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
+        semaCheckMutablePlace(a0)
         let a1 = ptr_to_node(a0.next)
         semaCheckValue(module, a1, typeInt(), "list_set index")
         let valueNode = ptr_to_node(a1.next)
@@ -597,6 +599,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaErrorAt(a0, "list_set_exclusive expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
+        semaCheckMutablePlace(a0)
         let a1 = ptr_to_node(a0.next)
         semaCheckValue(module, a1, typeInt(), "list_set_exclusive index")
         let valueNode = ptr_to_node(a1.next)
@@ -607,13 +610,13 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         // this task is specifically the separately allocated boxed OBJECT case.
         if (elemT.kind != TypeKind.STRUCT
             or structDeclIsPodIn(module, elemT.name, 0, true)) {
-            semaErrorAt(a0, "list_set_exclusive requires a boxed struct element type")
-            diag_note("flat Vec elements are inline; use list_set for them")
+            semaErrorAt(a0, "`replace` requires a boxed struct element type")
+            diag_note("flat Vec elements are inline; use `v[i] = x` for them")
         }
         if (a0.kind != NodeKind.IDENTIFIER_EXPR
             or ir_is_list_exclusive(a0.s1) == 0) {
-            semaErrorAt(a0, "list_set_exclusive requires an unobserved local Vec")
-            diag_note("create it with list_new and replace before list_get, slicing, or passing it to another function")
+            semaErrorAt(a0, "`replace` requires an unobserved local Vec")
+            diag_note("build it with `[]`, and replace before reading an element, slicing it, or passing it to another function")
         }
         semaConsumeOperand(valueNode)
         return true
@@ -630,6 +633,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaErrorAt(a0, "list_swap expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
+        semaCheckMutablePlace(a0)
         let a1 = ptr_to_node(a0.next)
         semaCheckValue(module, a1, typeInt(), "list_swap index")
         semaCheckValue(module, ptr_to_node(a1.next), typeInt(), "list_swap index")
@@ -646,6 +650,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaErrorAt(a0, "insert expects a Vec, found ".concat(typeDisplay(lt)))
             return true
         }
+        semaCheckMutablePlace(a0)
         let a1 = ptr_to_node(a0.next)
         semaCheckValue(module, a1, typeInt(), "insert index")
         let valueNode = ptr_to_node(a1.next)
@@ -680,6 +685,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             return true
         }
         if (arity == 2) {
+            semaCheckMutablePlace(v0)
             semaCheckValue(module, ptr_to_node(v0.next), typeInt(), vecIntOp.concat(" argument"))
         }
         if (name.equals("list_truncate") or name.equals("list_remove_at")) {

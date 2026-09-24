@@ -4,8 +4,8 @@ struct Row {
 }
 
 fn main() -> Int {
-    let mut rows: Vec<Row> = list_new()
-    list_push(rows, Row { value: 1 })
+    let mut rows: Vec<Row> = []
+    rows.push(Row { value: 1 })
     let view = soa(rows)
-    return list_len(rows)
+    return rows.length
 }

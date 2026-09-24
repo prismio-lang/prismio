@@ -23,7 +23,7 @@ impl Grid {
 }
 
 fn make(seed: Int) -> Array<Int, 3> {
-    let a: Array<Int, 3>
+    let mut a: Array<Int, 3>
     a[1] = seed
     a[2] = seed * 10
     return a
@@ -58,7 +58,7 @@ fn fail(what: String) -> Int {
 }
 
 fn main() -> Int {
-    let b = make(7)
+    let mut b = make(7)
     b[0] = 1
     if (b[0] + b[1] + b[2] != 78) { return fail("a returned local") }
     let again = make(7)
@@ -82,7 +82,7 @@ fn main() -> Int {
     if ((bs[3] as Int) != 250 or ps[1] != 6 or k[1] != 8) { return fail("literal, generic and method returns") }
 
     let local: [Int] = [9, 8]
-    let same = id(local)
+    let mut same = id(local)
     same[0] = 90
     if (local[0] != 90) { return fail("a generic -> T still returns a view") }
     println("PASS: arrays returned by value")

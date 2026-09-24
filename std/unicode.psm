@@ -79,7 +79,7 @@ public fn scalarWidth(scalar: Int) -> Int {
 //
 // `strScalarCount` is the wrong measure for one and `length` is wronger: the
 // three-column string `"日本"` is 6 bytes, 2 scalars and 4 columns.
-public fn strDisplayWidth(s: String) -> Int {
+internal fn strDisplayWidth(s: String) -> Int {
     let slen = __builtin_string_len(s)
     let mut total = 0
     let mut i = 0
@@ -150,7 +150,7 @@ private fn unicodeContinuesCluster(previous: Int, next: Int, sawZwj: Bool,
 //
 // Walking a string by grapheme is this in a loop, exactly as
 // `strScalarWidthAt` is for scalars. Returns 0 when `at` is past the end.
-public fn strGraphemeWidthAt(s: String, at: Int) -> Int {
+internal fn strGraphemeWidthAt(s: String, at: Int) -> Int {
     let slen = __builtin_string_len(s)
     if (at < 0 or at >= slen) { return 0 }
 
@@ -181,7 +181,7 @@ public fn strGraphemeWidthAt(s: String, at: Int) -> Int {
 //
 // `"é"` typed as `e` and a combining acute is two scalars and one of these;
 // a flag is two scalars and one; a family emoji can be seven.
-public fn strGraphemeCount(s: String) -> Int {
+internal fn strGraphemeCount(s: String) -> Int {
     let slen = __builtin_string_len(s)
     let mut count = 0
     let mut i = 0
@@ -194,9 +194,9 @@ public fn strGraphemeCount(s: String) -> Int {
     return count
 }
 
-public fn strGraphemes(s: String) -> Vec<String> {
+internal fn strGraphemes(s: String) -> Vec<String> {
     let slen = __builtin_string_len(s)
-    let out: Vec<String> = list_new()
+    let mut out: Vec<String> = list_new()
     let mut i = 0
     while (i < slen) {
         let step = strGraphemeWidthAt(s, i)
@@ -212,7 +212,7 @@ public fn strGraphemes(s: String) -> Vec<String> {
 // The operation a table needs when a value is too long for its column, and the
 // one every naive implementation gets wrong twice: by cutting mid-character, and
 // by counting a CJK ideograph as one column and overflowing the row.
-public fn strTruncateToWidth(s: String, columns: Int) -> String {
+internal fn strTruncateToWidth(s: String, columns: Int) -> String {
     // Owned rather than a view of `s`, for the reason `strScalarSubstring` in
     // std/string.psm gives: the "returns a view of parameter 0" fact does not
     // survive a function that hands that parameter to another one, and a view
@@ -268,7 +268,7 @@ private fn unicodeWidthPrefix(s: String, columns: Int) -> Int {
 //
 // `std.string`'s `padStart` counts characters, which lines up every alphabet
 // whose characters are one column wide. These are for the ones that are not.
-public fn strPadStartDisplay(s: String, columns: Int, pad: Char) -> String {
+internal fn strPadStartDisplay(s: String, columns: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
     let mut padLen = columns - strDisplayWidth(s)
     if (padLen < 0) { padLen = 0 }
@@ -286,7 +286,7 @@ public fn strPadStartDisplay(s: String, columns: Int, pad: Char) -> String {
     return out
 }
 
-public fn strPadEndDisplay(s: String, columns: Int, pad: Char) -> String {
+internal fn strPadEndDisplay(s: String, columns: Int, pad: Char) -> String {
     let slen = __builtin_string_len(s)
     let mut padLen = columns - strDisplayWidth(s)
     if (padLen < 0) { padLen = 0 }
@@ -369,7 +369,7 @@ private fn unicodeDecompositionAt(scalar: Int) -> Int {
 // Hangul is arithmetic rather than a table: eleven thousand syllables that
 // decompose by division and compose by multiplication, which is why Unicode
 // gives them a rule instead of eleven thousand entries.
-private fn unicodeHangulDecompose(scalar: Int, out: Vec<Int>) -> Bool {
+private fn unicodeHangulDecompose(scalar: Int, inout out: Vec<Int>) -> Bool {
     if (scalar < 44032 or scalar > 55203) { return false }
     let index = scalar - 44032
     list_push(out, 4352 + index / 588)
@@ -423,7 +423,7 @@ private fn unicodeComposePair(first: Int, second: Int) -> Int {
 // be typed in either order and mean the same thing, so a decomposition that kept
 // the typing order would still have two spellings. Ordering by combining class
 // -- stably, and never across a starter -- is what collapses them to one.
-private fn unicodeCanonicalOrder(scalars: Vec<Int>) {
+private fn unicodeCanonicalOrder(inout scalars: Vec<Int>) {
     let n = list_len(scalars)
     let mut i = 1
     while (i < n) {
@@ -502,7 +502,7 @@ private fn unicodeWriteScalars(out: String, scalars: Vec<Int>) {
 // The decomposed scalars, canonically ordered. Both public forms start here.
 private fn unicodeDecomposedScalars(s: String) -> Vec<Int> {
     let slen = __builtin_string_len(s)
-    let out: Vec<Int> = list_new()
+    let mut out: Vec<Int> = list_new()
     let table = unicodeDecompositionTable()
 
     let mut i = 0
@@ -543,7 +543,7 @@ private fn unicodeDecomposedScalars(s: String) -> Vec<Int> {
 }
 
 // Canonical decomposition: `é` becomes `e` and a combining acute.
-public fn strNormalizeNfd(s: String) -> String {
+internal fn strNormalizeNfd(s: String) -> String {
     let scalars = unicodeDecomposedScalars(s)
     let out = str_with_capacity(unicodeEncodedLength(scalars))
     unicodeWriteScalars(out, scalars)
@@ -555,12 +555,12 @@ public fn strNormalizeNfd(s: String) -> String {
 // Decompose first, then compose -- which is not a detour. Composing the input
 // directly would keep whatever order its marks were typed in, and two spellings
 // that decompose alike have to come back identical or this is not a normal form.
-public fn strNormalizeNfc(s: String) -> String {
+internal fn strNormalizeNfc(s: String) -> String {
     let decomposed = unicodeDecomposedScalars(s)
     let n = list_len(decomposed)
     if (n == 0) { return str_with_capacity(0) }
 
-    let out: Vec<Int> = list_new()
+    let mut out: Vec<Int> = list_new()
     list_push(out, list_get(decomposed, 0))
     let mut starter = 0
     // -1 rather than 0: nothing stands between the starter and the next
@@ -606,7 +606,7 @@ public fn strNormalizeNfc(s: String) -> String {
 // `é` have different ones. Normalizing both is the whole implementation, and
 // naming it is what stops every caller writing that out and half of them
 // forgetting.
-public fn strEqualsNormalized(a: String, b: String) -> Bool {
+internal fn strEqualsNormalized(a: String, b: String) -> Bool {
     let left = strNormalizeNfc(a)
     let right = strNormalizeNfc(b)
     return left.equals(right)

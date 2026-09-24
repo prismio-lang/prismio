@@ -36,7 +36,7 @@ import std.string
 private fn enumTagField() -> String { return "$tag" }
 
 public fn enumPayloadField(variantName: String, index: Int) -> String {
-    return variantName.concat("$", strFromInt(index))
+    return variantName.concat("$", index.toString())
 }
 
 internal fn enumHasPayload(enumDecl: ASTNode) -> Bool {
@@ -242,7 +242,7 @@ public fn enumDesugarModule(module: ASTNode) {
 private fn enumTagLiteral(tag: Int) -> ASTNode {
     let literal = createNode(NodeKind.LITERAL_EXPR)
     literal.i1 = TokenType.NUMBER_LITERAL
-    literal.s1 = strFromInt(tag)
+    literal.s1 = tag.toString()
     return literal
 }
 

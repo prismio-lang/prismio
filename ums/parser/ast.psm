@@ -54,7 +54,7 @@ struct UmsAstDocument {
 private fn umsAstEmptyValue() -> UmsAstValue {
     return UmsAstValue {
         kind: UmsAstValueKind.UNKNOWN,
-        text: strClone(""),
+        text: "".clone(),
         line: 0,
         col: 0,
         len: 0
@@ -65,11 +65,11 @@ internal fn umsAstStatement(kind: UmsAstStatementKind, name: String,
                    start: Int, line: Int, col: Int, len: Int) -> UmsAstStatement {
     return UmsAstStatement {
         kind: kind,
-        name: strClone(name),
+        name: name.clone(),
         value: umsAstEmptyValue(),
-        arguments: list_new(),
-        arrayValues: list_new(),
-        children: list_new(),
+        arguments: [],
+        arrayValues: [],
+        children: [],
         hasBlock: false,
         start: start,
         blockOpen: -1,

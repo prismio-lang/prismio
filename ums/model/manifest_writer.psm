@@ -18,16 +18,16 @@ struct UmsManifestEdit {
 }
 
 private fn umsManifestUnchanged(source: String) -> UmsManifestEdit {
-    return UmsManifestEdit { text: strClone(source), changed: false }
+    return UmsManifestEdit { text: source.clone(), changed: false }
 }
 
 private fn umsManifestScopeName(scope: UmsDependencyScope) -> String {
-    if (scope == UmsDependencyScope.IMPLEMENTATION) { return strClone("implementation") }
-    if (scope == UmsDependencyScope.API) { return strClone("api") }
+    if (scope == UmsDependencyScope.IMPLEMENTATION) { return "implementation".clone() }
+    if (scope == UmsDependencyScope.API) { return "api".clone() }
     if (scope == UmsDependencyScope.TEST_IMPLEMENTATION) {
-        return strClone("testImplementation")
+        return "testImplementation".clone()
     }
-    return strClone("")
+    return "".clone()
 }
 
 // The lexer decodes these five escapes, so the writer emits exactly that same
@@ -43,7 +43,7 @@ private fn umsManifestEscape(value: String) -> String {
         else if (c == '\n') { escaped = escaped.concat("\\n") }
         else if (c == '\r') { escaped = escaped.concat("\\r") }
         else if (c == '\t') { escaped = escaped.concat("\\t") }
-        else { escaped = escaped.concat(strFromChar(c)) }
+        else { escaped = escaped.concat(c.toString()) }
         i = i + 1
     }
     return escaped
@@ -67,8 +67,8 @@ private fn umsManifestDependencyText(scope: UmsDependencyScope, name: String,
 }
 
 private fn umsManifestNewline(source: String) -> String {
-    if (strContains(source, "\r\n")) { return strClone("\r\n") }
-    return strClone("\n")
+    if (source.contains("\r\n")) { return "\r\n".clone() }
+    return "\n".clone()
 }
 
 private fn umsManifestLineStart(source: String, at: Int) -> Int {
@@ -102,17 +102,17 @@ private fn umsManifestOnlyWhitespace(source: String, start: Int, end: Int) -> Bo
 
 private fn umsManifestIndentAt(source: String, at: Int) -> String {
     let start = umsManifestLineStart(source, at)
-    if (umsManifestOnlyIndent(source, start, at) == false) { return strClone("") }
-    return strSubstring(source, start, at - start)
+    if (umsManifestOnlyIndent(source, start, at) == false) { return "".clone() }
+    return source.substring(start, at - start)
 }
 
 private fn umsManifestChildIndent(source: String, document: UmsAstDocument,
                                   block: UmsAstStatement) -> String {
-    if (list_len(block.children) > 0) {
-        let child = list_get(document.statements, list_get(block.children, 0))
+    if (block.children.length > 0) {
+        let child = document.statements[block.children[0]]
         let start = umsManifestLineStart(source, child.start)
         if (umsManifestOnlyIndent(source, start, child.start)) {
-            return strSubstring(source, start, child.start - start)
+            return source.substring(start, child.start - start)
         }
     }
     let closingIndent = umsManifestIndentAt(source, block.blockClose)
@@ -121,9 +121,9 @@ private fn umsManifestChildIndent(source: String, document: UmsAstDocument,
 
 private fn umsManifestDependencyBlock(document: UmsAstDocument) -> Int {
     let mut i = 0
-    while (i < list_len(document.roots)) {
-        let index = list_get(document.roots, i)
-        let statement = list_get(document.statements, index)
+    while (i < document.roots.length) {
+        let index = document.roots[i]
+        let statement = document.statements[index]
         if (statement.kind == UmsAstStatementKind.CALL and
             statement.name.equals("dependencies")) {
             return index
@@ -140,9 +140,9 @@ private fn umsManifestAppendDependencyBlock(source: String,
     let length = __builtin_string_len(source)
     if (length > 0) {
         let blankLine = newline.concat(newline)
-        if (strEndsWith(source, blankLine) == false) {
-            if (strEndsWith(source, newline)) {
-                separator = strClone(newline)
+        if (source.endsWith(blankLine) == false) {
+            if (source.endsWith(newline)) {
+                separator = newline.clone()
             } else {
                 separator = newline.concat(newline)
             }
@@ -166,16 +166,16 @@ private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
         let indent = umsManifestChildIndent(source, document, block)
         let newline = umsManifestNewline(source)
         let addition = indent.concat(declaration, newline)
-        return strInsert(source, closeLine, addition)
+        return source.insert(closeLine, addition)
     }
 
     let interiorStart = block.blockOpen + 1
     if (umsManifestOnlyWhitespace(source, interiorStart, block.blockClose)) {
         if (interiorStart == block.blockClose) {
-            return strInsert(source, block.blockClose,
+            return source.insert(block.blockClose,
                              " ".concat(declaration, " "))
         }
-        return strInsert(source, block.blockClose, declaration.concat(" "))
+        return source.insert(block.blockClose, declaration.concat(" "))
     }
 
     let mut contentEnd = block.blockClose
@@ -184,7 +184,7 @@ private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
         if (c != ' ' and c != '\t') { break }
         contentEnd = contentEnd - 1
     }
-    return strInsert(source, contentEnd, "; ".concat(declaration))
+    return source.insert(contentEnd, "; ".concat(declaration))
 }
 
 // Adds one dependency declaration without serializing the manifest around it.
@@ -194,7 +194,7 @@ private fn umsManifestInsertDependency(source: String, document: UmsAstDocument,
 public fn umsManifestAddDependency(source: String, manifestPath: String,
                             scope: UmsDependencyScope, name: String,
                             constraint: String, localPath: String,
-                            diagnostics: Vec<UmsDiagnostic>) -> UmsManifestEdit {
+                            inout diagnostics: Vec<UmsDiagnostic>) -> UmsManifestEdit {
     let scopeName = umsManifestScopeName(scope)
     if (__builtin_string_len(scopeName) == 0) {
         umsDiagnosticAdd(diagnostics, "UMS2401", manifestPath, 0, 0, 0,
@@ -215,7 +215,7 @@ public fn umsManifestAddDependency(source: String, manifestPath: String,
     let tokens = umsLex(source, manifestPath, diagnostics)
     let document = umsParse(tokens, manifestPath, diagnostics)
     let project = umsLowerDocument(document, ".", manifestPath, "debug", diagnostics)
-    if (list_len(diagnostics) > 0) { return umsManifestUnchanged(source) }
+    if (diagnostics.length > 0) { return umsManifestUnchanged(source) }
 
     if (umsDependencyFind(project.dependencies, scope, name) >= 0) {
         umsDiagnosticAdd(diagnostics, "UMS2404", manifestPath, 0, 0, 0,
@@ -232,7 +232,7 @@ public fn umsManifestAddDependency(source: String, manifestPath: String,
         }
     }
 
-    let block = list_get(document.statements, blockIndex)
+    let block = document.statements[blockIndex]
     return UmsManifestEdit {
         text: umsManifestInsertDependency(source, document, block, declaration),
         changed: true

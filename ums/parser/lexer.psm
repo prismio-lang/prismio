@@ -63,7 +63,7 @@ impl UmsLexer {
         let mut result = ""
         let mut i = 0
         while (i < length) {
-            result = result.concat(strFromChar(self.source.charAt(start + i)))
+            result = result.concat(self.source.charAt(start + i).toString())
             i = i + 1
         }
         return result
@@ -71,7 +71,7 @@ impl UmsLexer {
 
     private fn addToken(self, kind: UmsTokenKind, value: String,
                    start: Int, line: Int, col: Int) {
-        list_push(self.tokens, umsToken(kind, value, start, line, col, self.pos - start))
+        self.tokens.push(umsToken(kind, value, start, line, col, self.pos - start))
     }
 
     private fn error(self, code: String, line: Int, col: Int,
@@ -143,11 +143,11 @@ impl UmsLexer {
                 else if (escaped == '"') { current = '"' }
                 else {
                     self.error("UMS1003", self.line, self.col - 1, 2,
-                                  "unsupported escape sequence \\".concat(strFromChar(escaped)))
+                                  "unsupported escape sequence \\".concat(escaped.toString()))
                     current = escaped
                 }
             }
-            value = value.concat(strFromChar(current))
+            value = value.concat(current.toString())
             self.advance()
         }
 
@@ -168,7 +168,7 @@ public fn umsLex(source: String, path: String,
         line: 1,
         col: 1,
         length: __builtin_string_len(source),
-        tokens: list_new(),
+        tokens: [],
         diagnostics: diagnostics
     }
 
@@ -201,14 +201,13 @@ public fn umsLex(source: String, path: String,
             lexer.advance()
             if (kind == UmsTokenKind.UNKNOWN) {
                 lexer.error("UMS1004", line, col, 1,
-                              "unexpected character ".concat(strFromChar(current)))
+                              "unexpected character ".concat(current.toString()))
             } else {
-                lexer.addToken(kind, strFromChar(current), start, line, col)
+                lexer.addToken(kind, current.toString(), start, line, col)
             }
         }
     }
 
-    list_push(lexer.tokens,
-              umsToken(UmsTokenKind.EOF, "", lexer.pos, lexer.line, lexer.col, 0))
+    lexer.tokens.push(umsToken(UmsTokenKind.EOF, "", lexer.pos, lexer.line, lexer.col, 0))
     return lexer.tokens
 }

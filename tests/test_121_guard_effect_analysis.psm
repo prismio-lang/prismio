@@ -22,54 +22,54 @@ fn check(label: String, got: Int, want: Int) -> Int {
 }
 
 fn filled(n: Int) -> Vec<Int> {
-    let mut xs: Vec<Int> = list_new_with_capacity(2)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(2)
     let mut i = 0
     while (i < n) {
-        list_push(xs, i)
+        xs.push(i)
         i = i + 1
     }
     return xs
 }
 
 // Moves the block. Must disqualify any loop that calls it.
-fn growIt(xs: Vec<Int>) -> Int {
-    list_push(xs, 99)
+fn growIt(inout xs: Vec<Int>) -> Int {
+    xs.push(99)
     return 1
 }
 
 // Reaches the grower one call away. Must disqualify transitively.
-fn indirectGrow(xs: Vec<Int>) -> Int {
+fn indirectGrow(inout xs: Vec<Int>) -> Int {
     return growIt(xs)
 }
 
 // Reads only. Must stay eligible.
 fn readIt(xs: Vec<Int>, at: Int) -> Int {
-    return list_get(xs, at)
+    return xs[at]
 }
 
 // Writes, which cannot move the block either. Must stay eligible.
-fn bumpIt(xs: Vec<Int>, at: Int) -> Int {
-    list_set(xs, at, list_get(xs, at))
+fn bumpIt(inout xs: Vec<Int>, at: Int) -> Int {
+    xs[at] = xs[at]
     return 0
 }
 
 fn withGrower(n: Int) -> Int {
-    let xs = filled(n)
+    let mut xs = filled(n)
     let mut acc = 0
     let mut at = n - 1
     while (at >= 0) {
-        acc = acc + list_get(xs, at) + growIt(xs)
+        acc = acc + xs[at] + growIt(xs)
         at = at - 1
     }
     return acc
 }
 
 fn withIndirectGrower(n: Int) -> Int {
-    let xs = filled(n)
+    let mut xs = filled(n)
     let mut acc = 0
     let mut at = n - 1
     while (at >= 0) {
-        acc = acc + list_get(xs, at) + indirectGrow(xs)
+        acc = acc + xs[at] + indirectGrow(xs)
         at = at - 1
     }
     return acc
@@ -80,18 +80,18 @@ fn withReader(n: Int) -> Int {
     let mut acc = 0
     let mut at = n - 1
     while (at >= 0) {
-        acc = acc + list_get(xs, at) + readIt(xs, at)
+        acc = acc + xs[at] + readIt(xs, at)
         at = at - 1
     }
     return acc
 }
 
 fn withWriter(n: Int) -> Int {
-    let xs = filled(n)
+    let mut xs = filled(n)
     let mut acc = 0
     let mut at = n - 1
     while (at >= 0) {
-        acc = acc + list_get(xs, at) + bumpIt(xs, at)
+        acc = acc + xs[at] + bumpIt(xs, at)
         at = at - 1
     }
     return acc
@@ -104,7 +104,7 @@ fn plain(n: Int) -> Int {
     let mut acc = 0
     let mut at = n - 1
     while (at >= 0) {
-        acc = acc + list_get(xs, at)
+        acc = acc + xs[at]
         at = at - 1
     }
     return acc

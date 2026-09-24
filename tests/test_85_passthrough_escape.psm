@@ -64,20 +64,20 @@ fn main() -> Int {
     let a = escaping()
     // Allocate across the read: a freed block that is never reused can still
     // hold the right bytes, and a test that passes on that proves nothing.
-    let mut churn: Vec<Int> = list_new()
+    let mut churn: Vec<Int> = []
     let mut i = 0
     while (i < 64) {
-        list_push(churn, i * 3)
+        churn.push(i * 3)
         i = i + 1
     }
     if (a.seed != 7919) { return fail("escaping(): seed read after free") }
     if (a.steps != 32) { return fail("escaping(): steps read after free") }
 
     let b = escapingNested()
-    let mut churn2: Vec<Int> = list_new()
+    let mut churn2: Vec<Int> = []
     let mut j = 0
     while (j < 64) {
-        list_push(churn2, j * 5)
+        churn2.push(j * 5)
         j = j + 1
     }
     if (b.seed != 15838) { return fail("escapingNested(): seed read after free") }

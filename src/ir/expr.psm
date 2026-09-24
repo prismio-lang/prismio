@@ -23,7 +23,7 @@ import aif.model
 private fn generateShortCircuit(expr: ASTNode) -> String {
     let isAnd = expr.s1.equals("and")
 
-    let slot = "sc.".concat(strFromInt(irShortCircuitCounter))
+    let slot = "sc.".concat(irShortCircuitCounter.toString())
     irShortCircuitCounter = irShortCircuitCounter + 1
     ir_alloca("i1", slot)
 
@@ -455,10 +455,10 @@ private fn generateOwnedTemporaryRelease(value: String, kind: Int, declType: Str
 // borrowed value"). So the caller is the last owner and this is its release
 // point.
 private fn generateOwnedTemporaryReleases(vals: Vec<String>, kinds: Vec<Int>, types: Vec<String>) {
-    for i in 0..<list_len(vals) {
-        let value: String = list_get(vals, i)
-        let kind: Int = list_get(kinds, i)
-        let declType: String = list_get(types, i)
+    for i in 0..<vals.length {
+        let value: String = vals[i]
+        let kind: Int = kinds[i]
+        let declType: String = types[i]
         generateOwnedTemporaryRelease(value, kind, declType)
     }
 }
@@ -550,15 +550,15 @@ private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> Str
         scan = part.next
     }
 
-    let mut datas: Vec<String> = list_new()
-    let mut lengths: Vec<String> = list_new()
-    let mut ownedVals: Vec<String> = list_new()
-    let mut ownedKinds: Vec<Int> = list_new()
-    let mut ownedTypes: Vec<String> = list_new()
+    let mut datas: Vec<String> = []
+    let mut lengths: Vec<String> = []
+    let mut ownedVals: Vec<String> = []
+    let mut ownedKinds: Vec<Int> = []
+    let mut ownedTypes: Vec<String> = []
     let oldWide = ir_get_temp_name(ir_extract_value("struct:prismio.str", old, 1))
     let oldNarrow = ir_get_temp_name(ir_trunc("i64", oldWide, "i32"))
     let oldLen = ir_get_temp_name(ir_and("i32", oldNarrow, "2147483647"))
-    let mut total = strClone(oldLen)
+    let mut total = oldLen.clone()
     let mut partPtr = firstSuffix
     while (nodeExists(partPtr)) {
         let part = ptr_to_node(partPtr)
@@ -571,12 +571,12 @@ private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> Str
         let narrow = ir_get_temp_name(ir_trunc("i64", wide, "i32"))
         let length = ir_get_temp_name(ir_and("i32", narrow, "2147483647"))
         total = ir_get_temp_name(ir_add("i32", total, length))
-        list_push(lengths, length)
-        list_push(datas, ir_get_temp_name(ir_str_data(value)))
+        lengths.push(length)
+        datas.push(ir_get_temp_name(ir_str_data(value)))
         if (release) {
-            list_push(ownedVals, strClone(value))
-            list_push(ownedKinds, dropKind)
-            list_push(ownedTypes, dropType)
+            ownedVals.push(value.clone())
+            ownedKinds.push(dropKind)
+            ownedTypes.push(dropType)
         }
         partPtr = part.next
     }
@@ -586,11 +586,11 @@ private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> Str
     ir_call_arg("ptr", oldData)
     ir_call_arg("i32", oldLen)
     ir_call_arg("i64", oldWide)
-    ir_call_arg("i32", strFromInt(list_len(datas)))
+    ir_call_arg("i32", datas.length.toString())
     for slot in 0..<5 {
-        if (slot < list_len(datas)) {
-            ir_call_arg("ptr", list_get(datas, slot))
-            ir_call_arg("i32", list_get(lengths, slot))
+        if (slot < datas.length) {
+            ir_call_arg("ptr", datas[slot])
+            ir_call_arg("i32", lengths[slot])
         } else {
             ir_call_arg("ptr", "null")
             ir_call_arg("i32", "0")
@@ -1109,9 +1109,9 @@ private fn irIsPureReceiver(recv: ASTNode) -> Bool {
 }
 
 private fn irStringListContains(xs: Vec<String>, s: String) -> Bool {
-    let n = list_len(xs)
+    let n = xs.length
     for i in 0..<n {
-        let item: String = list_get(xs, i)
+        let item: String = xs[i]
         if (item.equals(s)) { return true }
     }
     return false
@@ -1122,12 +1122,12 @@ private fn irStringListContains(xs: Vec<String>, s: String) -> Bool {
 // the need to hold the receivers anywhere -- mem2reg turns the load/and/store
 // chain back into one `and` tree in the preheader.
 private fn irEmitFlatGuards(condPtr: Ptr, bodyPtr: Ptr, slot: String) {
-    let mut seen: Vec<String> = list_new()
+    let mut seen: Vec<String> = []
     irEmitFlatGuardsRec(condPtr, slot, seen, bodyPtr)
     irEmitFlatGuardsRec(bodyPtr, slot, seen, bodyPtr)
 }
 
-private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: Vec<String>, bodyPtr: Ptr) {
+private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, inout seen: Vec<String>, bodyPtr: Ptr) {
     if (nodeIsNull(nodePtr)) { return }
     let n = ptr_to_node(nodePtr)
 
@@ -1151,7 +1151,7 @@ private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: Vec<String>, bo
                     alreadySeen = irStringListContains(seen, key)
                 }
                 if (alreadySeen == false) {
-                    if (key.equals("") == false) { list_push(seen, strClone(key)) }
+                    if (key.equals("") == false) { seen.push(key.clone()) }
                     let one = ir_get_temp_name(ir_list_is_flat(
                         generateExpression(recvNode), stride))
                     let prev = ir_get_temp_name(ir_load("i1", slot))
@@ -1166,7 +1166,7 @@ private fn irEmitFlatGuardsRec(nodePtr: Ptr, slot: String, seen: Vec<String>, bo
     irEmitFlatGuardsChain(n.child3, slot, seen, bodyPtr)
 }
 
-private fn irEmitFlatGuardsChain(head: Ptr, slot: String, seen: Vec<String>, bodyPtr: Ptr) {
+private fn irEmitFlatGuardsChain(head: Ptr, slot: String, inout seen: Vec<String>, bodyPtr: Ptr) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -1222,7 +1222,7 @@ private fn irCaptureStableListBound(nodePtr: Ptr, bodyPtr: Ptr) -> Bool {
         if (stride > 0 and recv.kind == NodeKind.IDENTIFIER_EXPR
                 and irBodyBindsName(bodyPtr, recv.s1) == false
                 and irBodyPushesList(bodyPtr, recv.s1) == false) {
-            irLoopHoistedBoundList = strClone(recv.s1)
+            irLoopHoistedBoundList = recv.s1.clone()
             let listValue = generateExpression(recv)
             irLoopHoistedBoundValue = ir_get_temp_name(ir_list_len(listValue))
             irLoopHoistedDataValue = ir_get_temp_name(ir_list_data(listValue))
@@ -1275,7 +1275,7 @@ internal fn generateLoopFlatGuard(condPtr: Ptr, body: ASTNode) -> String {
     // An enclosing loop's guard walked this whole loop, condition included.
     if (irLoopFlatGuard.equals("1")) { return "" }
 
-    let name = "flatguard.".concat(strFromInt(irLoopFlatGuardCounter))
+    let name = "flatguard.".concat(irLoopFlatGuardCounter.toString())
     irLoopFlatGuardCounter = irLoopFlatGuardCounter + 1
     ir_set_var_type(name, "Bool")
     let slot = ir_get_var_slot(name)
@@ -1313,8 +1313,8 @@ private fn generateLoopHeaderBound(cond: ASTNode, bodyPtr: Ptr, slot: String) {
     let nonNegative = ir_get_temp_name(ir_icmp_sge("i32", value, "0"))
     let prev = ir_get_temp_name(ir_load("i1", slot))
     ir_store("i1", ir_get_temp_name(ir_and("i1", prev, nonNegative)), slot)
-    irLoopHeaderBoundList = strClone(listNode.s1)
-    irLoopHeaderBoundIndex = strClone(index.s1)
+    irLoopHeaderBoundList = listNode.s1.clone()
+    irLoopHeaderBoundIndex = index.s1.clone()
     irLoopHeaderBoundActive = true
 }
 
@@ -1818,7 +1818,7 @@ private fn irEmitPushGuards(nodePtr: Ptr, bodyPtr: Ptr, trip: String, slot: Stri
         if (stride > 0) {
             let recv = ptr_to_node(n.child2)
             let per = irCountPushes(bodyPtr, recv.s1)
-            let need = ir_get_temp_name(ir_mul("i64", trip, strFromInt(per)))
+            let need = ir_get_temp_name(ir_mul("i64", trip, per.toString()))
             let flat = ir_get_temp_name(ir_list_is_flat(generateExpression(recv), stride))
             let room = ir_get_temp_name(ir_list_has_room(generateExpression(recv), need))
             let both = ir_get_temp_name(ir_and("i1", flat, room))
@@ -1887,9 +1887,9 @@ internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
     let init = ir_get_temp_name(ir_sext("i32", generateExpression(ivNode), "i64"))
     let bound = ir_get_temp_name(ir_sext("i32", generateExpression(boundNode), "i64"))
     let span = ir_get_temp_name(ir_sub("i64", bound, init))
-    let mut trip = strClone(span)
+    let mut trip = span.clone()
     let mut finite = "true"
-    let mut preparedTrip = strClone(span)
+    let mut preparedTrip = span.clone()
     if (cond.s1.equals("<=")) {
         trip = ir_get_temp_name(ir_add("i64", span, "1"))
         // i = i + 1 wraps after Int.MAX. That loop has no finite append bound,
@@ -1914,7 +1914,7 @@ internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
         }
     }
 
-    let name = "pushguard.".concat(strFromInt(irLoopPushGuardCounter))
+    let name = "pushguard.".concat(irLoopPushGuardCounter.toString())
     irLoopPushGuardCounter = irLoopPushGuardCounter + 1
     ir_set_var_type(name, "Bool")
     let slot = ir_get_var_slot(name)
@@ -2066,7 +2066,7 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     }
     ir_call_begin()
     ir_call_arg("ptr", listVal)
-    ir_call_arg("i32", strFromInt(esize))
+    ir_call_arg("i32", esize.toString())
     let slot = ir_get_temp_name(ir_call_end("ptr", "list_push_slot"))
     generateStructLiteralFields(valueNode, valueNode.s1, slot, true, false)
     return true
@@ -2093,19 +2093,19 @@ private fn vecRemovalReleasesNow(expr: ASTNode) -> String {
 // the iteration. Blunt on purpose: any assignment whose value is not a scalar
 // and mentions a name that may hold such a view answers yes, whatever its target.
 private fn irViewMayOutliveIteration(body: Ptr, listName: String) -> Bool {
-    let holders: Vec<String> = list_new()
-    list_push(holders, listName.concat(""))
+    let mut holders: Vec<String> = []
+    holders.push(listName.concat(""))
     loop {
-        let before = list_len(holders)
+        let before = holders.length
         irGrowViewHolders(body, holders)
-        if (list_len(holders) == before) { break }
+        if (holders.length == before) { break }
     }
     return irAssignsViewOf(body, holders)
 }
 
 // One pass of the fixed point: every non-scalar binding whose initializer
 // mentions a holder may itself hold a view -- `let t = s`, `let n = s.name`.
-private fn irGrowViewHolders(head: Ptr, holders: Vec<String>) {
+private fn irGrowViewHolders(head: Ptr, inout holders: Vec<String>) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -2113,7 +2113,7 @@ private fn irGrowViewHolders(head: Ptr, holders: Vec<String>) {
                 and typeOwnsNothing(nodeGetType(n)) == false
                 and irHoldersContain(holders, n.s1) == false
                 and irMentionsHolder(n.child2, holders)) {
-            list_push(holders, n.s1.concat(""))
+            holders.push(n.s1.concat(""))
         }
         irGrowViewHolders(n.child1, holders)
         irGrowViewHolders(n.child2, holders)
@@ -2161,8 +2161,8 @@ private fn irChainMentionsHolder(head: Ptr, holders: Vec<String>) -> Bool {
 }
 
 private fn irHoldersContain(holders: Vec<String>, name: String) -> Bool {
-    for i in 0..<list_len(holders) {
-        if (list_get(holders, i).equals(name)) { return true }
+    for i in 0..<holders.length {
+        if (holders[i].equals(name)) { return true }
     }
     return false
 }
@@ -2217,7 +2217,7 @@ private fn scalarFromInlineBits(storeType: String, bits: String) -> String {
 }
 
 private fn scalarSpillToSlot(storeType: String, value: String) -> String {
-    let slot = "elem.".concat(strFromInt(irElemSpillCounter))
+    let slot = "elem.".concat(irElemSpillCounter.toString())
     irElemSpillCounter = irElemSpillCounter + 1
     ir_alloca(storeType, slot)
     ir_store(storeType, value, slot)
@@ -2253,7 +2253,7 @@ internal fn spillOwnedFieldTemporary(init: ASTNode, value: String) {
 
     let declType = getExprType(init)
     let store = storageType(declType)
-    let name = "fieldtmp.".concat(strFromInt(irElemSpillCounter))
+    let name = "fieldtmp.".concat(irElemSpillCounter.toString())
     irElemSpillCounter = irElemSpillCounter + 1
     // The binding assigns the slot its serial, so it has to come first -- the
     // drop list looks for `name.N`, not `name`.
@@ -2418,7 +2418,7 @@ private fn generateStructLiteral(expr: ASTNode) -> String {
         if (tagField.s1.equals("$tag") and nodeExists(tagField.child1)) {
             let tag = ptr_to_node(tagField.child1)
             if (tag.kind == NodeKind.LITERAL_EXPR
-                and tag.s1.equals(strFromInt(nullTag))) {
+                and tag.s1.equals(nullTag.toString())) {
                 return "null"
             }
         }
@@ -2517,7 +2517,7 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
     if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
         let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
         if (enumVal >= 0) {
-            return strFromInt(enumVal)
+            return enumVal.toString()
         }
     }
 
@@ -2538,7 +2538,7 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
                                                       descriptor, 1))
         ir_call_begin()
         ir_call_arg("ptr", view)
-        ir_call_arg("i32", strFromInt(fieldIndex))
+        ir_call_arg("i32", fieldIndex.toString())
         let column = ir_get_temp_name(ir_call_end("ptr", "data_view_column"))
         // The row type makes the stride a compile-time LLVM type rather
         // than the runtime column's dynamic byte size. That is what lets a
@@ -2604,7 +2604,7 @@ private fn generateArrayLiteral(expr: ASTNode) -> String {
     while (nodeExists(elemPtr)) {
         let elemNode = ptr_to_node(elemPtr)
         let elemVal = generateExpression(elemNode)
-        let slot = ir_elem_ptr(elemType, base, strFromInt(elemIndex))
+        let slot = ir_elem_ptr(elemType, base, elemIndex.toString())
         ir_store_ptr(elemType, elemVal, ir_get_temp_name(slot))
         elemIndex = elemIndex + 1
         elemPtr = elemNode.next
@@ -2672,7 +2672,7 @@ private fn generateIndex(expr: ASTNode) -> String {
         // slot's contents for a boxed one, and only a scalar can tell those
         // apart -- so the branch belongs where `elem_size` is, not here.
         if (listInline > 0 and scalarInlineBytes(retType) > 0) {
-            ir_call_arg("i32", strFromInt(listInline))
+            ir_call_arg("i32", listInline.toString())
             let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
             return scalarFromInlineBits(retType, bits)
         }
@@ -2702,7 +2702,7 @@ private fn generateIndex(expr: ASTNode) -> String {
         let retType = storageType(getExprType(expr))
         // The same by-value resolution as `l[i]` above, one indirection out.
         if (sliceInline > 0 and scalarInlineBytes(retType) > 0) {
-            ir_call_arg("i32", strFromInt(sliceInline))
+            ir_call_arg("i32", sliceInline.toString())
             let bits = ir_get_temp_name(
                 ir_call_end("i64", "list_slice_get_inline_scalar"))
             return scalarFromInlineBits(retType, bits)
@@ -2872,7 +2872,7 @@ private fn generateSpawn(expr: ASTNode) -> String {
 
     ir_call_begin()
     ir_call_arg("ptr", ir_get_temp_name(ir_func_addr(target)))
-    ir_call_arg("i32", strFromInt(rkind))
+    ir_call_arg("i32", rkind.toString())
 
     // The arity is counted before the arguments are emitted, because
     // ir_call_arg wants them in order and the count comes first.
@@ -2882,7 +2882,7 @@ private fn generateSpawn(expr: ASTNode) -> String {
         argc = argc + 1
         countPtr = ptr_to_node(countPtr).next
     }
-    ir_call_arg("i32", strFromInt(argc))
+    ir_call_arg("i32", argc.toString())
 
     // An owned temporary handed straight to `spawn` had no owner at all:
     // `spawn f(g(x))` leaks what `g` produced, which is 80 of
@@ -2913,7 +2913,7 @@ private fn generateSpawn(expr: ASTNode) -> String {
         if (spawnJoined and irArgumentIsOwnedTemporary(argNode)) {
             let declType = getExprType(argNode)
             let store = storageType(declType)
-            let name = "spawnarg.".concat(strFromInt(irSpawnArgCounter))
+            let name = "spawnarg.".concat(irSpawnArgCounter.toString())
             irSpawnArgCounter = irSpawnArgCounter + 1
             // Same order as an ordinary binding in src/ir/stmt.psm, and it
             // is load-bearing: the binding is what assigns the slot its
@@ -3108,16 +3108,16 @@ private fn generateCall(expr: ASTNode) -> String {
 
             ir_call_begin()
             ir_call_arg("ptr", source)
-            ir_call_arg("i32", strFromInt(fieldCount))
-            ir_call_arg("i32", strFromInt(elemSize))
+            ir_call_arg("i32", fieldCount.toString())
+            ir_call_arg("i32", elemSize.toString())
             expr.s1 = ir_get_temp_name(ir_call_end("ptr", "data_view_begin"))
 
             for field in 0..<fieldCount {
                 ir_call_begin()
                 ir_call_arg("ptr", expr.s1)
-                ir_call_arg("i32", strFromInt(field))
-                ir_call_arg("i32", strFromInt(ir_struct_field_offset(structName, field)))
-                ir_call_arg("i32", strFromInt(ir_struct_field_size(structName, field)))
+                ir_call_arg("i32", field.toString())
+                ir_call_arg("i32", ir_struct_field_offset(structName, field).toString())
+                ir_call_arg("i32", ir_struct_field_size(structName, field).toString())
                 ir_call_end("void", "data_view_add_column")
             }
             ir_call_begin()
@@ -3219,7 +3219,7 @@ private fn generateCall(expr: ASTNode) -> String {
                 let mut setName = "list_slice_set"
                 if (sliceSetInline > 0 and scalarInlineBytes(valueType) > 0) {
                     ir_call_arg("i64", passed)
-                    ir_call_arg("i32", strFromInt(sliceSetInline))
+                    ir_call_arg("i32", sliceSetInline.toString())
                     setName = "list_slice_set_inline_scalar"
                 } else {
                     ir_call_arg("ptr", passed)
@@ -3326,11 +3326,11 @@ private fn generateCall(expr: ASTNode) -> String {
             let mut hoistedBound = ""
             let mut hoistedData = ""
             if (checkBounds == 0 and irAccessProved(expr)) {
-                hoistedData = strClone(ir_range_proof_data(node_to_ptr(expr)))
+                hoistedData = ir_range_proof_data(node_to_ptr(expr)).clone()
             } else if (listNode.kind == NodeKind.IDENTIFIER_EXPR
                     and listNode.s1.equals(irLoopHoistedBoundList)) {
-                hoistedBound = strClone(irLoopHoistedBoundValue)
-                hoistedData = strClone(irLoopHoistedDataValue)
+                hoistedBound = irLoopHoistedBoundValue.clone()
+                hoistedData = irLoopHoistedDataValue.clone()
             }
             return ir_get_temp_name(ir_list_flat_scalar_elem(
                 listVal, indexVal, flatRet, flatStride, guard, checkBounds,
@@ -3362,11 +3362,11 @@ private fn generateCall(expr: ASTNode) -> String {
         let mut hoistedBound2 = ""
         let mut hoistedData2 = ""
         if (checkBounds2 == 0) {
-            hoistedData2 = strClone(ir_range_proof_data(node_to_ptr(expr)))
+            hoistedData2 = ir_range_proof_data(node_to_ptr(expr)).clone()
         } else if (setList.kind == NodeKind.IDENTIFIER_EXPR
                 and setList.s1.equals(irLoopHoistedBoundList)) {
-            hoistedBound2 = strClone(irLoopHoistedBoundValue)
-            hoistedData2 = strClone(irLoopHoistedDataValue)
+            hoistedBound2 = irLoopHoistedBoundValue.clone()
+            hoistedData2 = irLoopHoistedDataValue.clone()
         }
         ir_list_flat_scalar_set(listVal2, indexVal2, valueVal2, elemKey,
                                 flatSetStride, guard2, checkBounds2,
@@ -3817,9 +3817,9 @@ private fn generateCall(expr: ASTNode) -> String {
     // The owned temporaries this call is about to consume, released once it
     // returns. Collected here because this is the only point where the
     // generated value and the argument node are both in hand.
-    let mut ownedTempVals: Vec<String> = list_new()
-    let mut ownedTempKinds: Vec<Int> = list_new()
-    let mut ownedTempTypes: Vec<String> = list_new()
+    let mut ownedTempVals: Vec<String> = []
+    let mut ownedTempKinds: Vec<Int> = []
+    let mut ownedTempTypes: Vec<String> = []
 
     // Which storage key the element argument carried, so the entry-point
     // choice below can tell a scalar from a struct without re-deriving it.
@@ -3836,14 +3836,14 @@ private fn generateCall(expr: ASTNode) -> String {
         let argVal = generateExpression(argNode)
         let argStore = storageType(getExprType(argNode))
         // Cloned: `argStore` is affine and the branches below still name it.
-        if (argIndex == elemArg) { elemStoreKey = strClone(argStore) }
+        if (argIndex == elemArg) { elemStoreKey = argStore.clone() }
         // Cloned because `argVal` is affine and the argument itself still
         // has to consume it below -- the same reason the two branches under
         // this one each name it exactly once.
         if (releaseOwnedTemp) {
-            list_push(ownedTempVals, strClone(argVal))
-            list_push(ownedTempKinds, ownedTempKind)
-            list_push(ownedTempTypes, ownedTempType)
+            ownedTempVals.push(argVal.clone())
+            ownedTempKinds.push(ownedTempKind)
+            ownedTempTypes.push(ownedTempType)
         }
         // Crossing into C: a String is `{ptr, i64}` here and `const char*`
         // there, so the pointer half goes and the length stays. The buffer is
@@ -3865,7 +3865,7 @@ private fn generateCall(expr: ASTNode) -> String {
                 // it holds -- a literal stored as it was is `.rodata` freed at
                 // teardown -- so it goes in as an owned copy. Cloned:
                 // `argVal` is affine and the branches below still name it.
-                let mut element = strClone(argVal)
+                let mut element = argVal.clone()
                 if (nodeIsStringLiteralExpr(argPtr)) {
                     element = generateOwnedStringLiteral(element, argPtr)
                 }
@@ -3977,7 +3977,7 @@ private fn generateCall(expr: ASTNode) -> String {
             // still does not need it. An insert is a push.
             if (funcName.equals("list_push") or funcName.equals("list_insert")
                     or (scalarElem and funcName.equals("list_set"))) {
-                ir_call_arg("i32", strFromInt(inlineSize))
+                ir_call_arg("i32", inlineSize.toString())
             }
         }
     }
@@ -3995,20 +3995,20 @@ private fn generateCall(expr: ASTNode) -> String {
         let newInlineSize = inlineElemSizeOfList(expr)
         if (newInlineSize > 0) {
             callName = "list_new_inline"
-            ir_call_arg("i32", strFromInt(newInlineSize))
+            ir_call_arg("i32", newInlineSize.toString())
         } else if (listHoldsStrings(expr)) {
             callName = "list_new_inline"
-            ir_call_arg("i32", strFromInt(stringPairBytes()))
+            ir_call_arg("i32", stringPairBytes().toString())
         }
     }
     if (funcName.equals("list_new_with_capacity")) {
         let newCapInlineSize = inlineElemSizeOfList(expr)
         if (newCapInlineSize > 0) {
             callName = "list_new_with_capacity_inline"
-            ir_call_arg("i32", strFromInt(newCapInlineSize))
+            ir_call_arg("i32", newCapInlineSize.toString())
         } else if (listHoldsStrings(expr)) {
             callName = "list_new_with_capacity_inline"
-            ir_call_arg("i32", strFromInt(stringPairBytes()))
+            ir_call_arg("i32", stringPairBytes().toString())
         }
     }
     // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
@@ -4122,7 +4122,7 @@ private fn generateCall(expr: ASTNode) -> String {
         // the inline entry point returns an address and the boxed one the
         // slot's contents, and only a scalar can tell them apart.
         if (inlineSize > 0 and scalarInlineBytes(retType) > 0) {
-            ir_call_arg("i32", strFromInt(inlineSize))
+            ir_call_arg("i32", inlineSize.toString())
             let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
             return scalarFromInlineBits(retType, bits)
         }
@@ -4160,7 +4160,7 @@ private fn generateCall(expr: ASTNode) -> String {
         }
         ir_call_begin()
         ir_call_arg("ptr", result)
-        ir_call_arg("i32", strFromInt(stampedOwn))
+        ir_call_arg("i32", stampedOwn.toString())
         ir_call_end("void", "list_set_elem_owner")
 
         // Struct-field ownership. An int cannot name a type, and a container

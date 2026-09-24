@@ -29,7 +29,7 @@ fn fail(message: String) -> Int {
 fn total(xs: Vec<I64>) -> I64 {
     let mut sum: I64 = 0
     let mut i = 0
-    while (i < list_len(xs)) {
+    while (i < xs.length) {
         sum = sum + xs[i]
         i = i + 1
     }
@@ -38,16 +38,16 @@ fn total(xs: Vec<I64>) -> I64 {
 
 fn main() -> Int {
     // 1. An annotation.
-    let names: Vec<String> = ["ada", "grace", "alan"]
-    if (list_len(names) != 3) { return fail("three names") }
+    let mut names: Vec<String> = ["ada", "grace", "alan"]
+    if (names.length != 3) { return fail("three names") }
     if (names[0].equals("ada") == false) { return fail("the first name") }
     if (names[2].equals("alan") == false) { return fail("the last name") }
 
     // The list is a real `Vec<String>`, not something that merely reads like
     // one: it is pushed to, sorted, and passed on.
-    list_push(names, "hedy")
+    names.push("hedy")
     sort(names)
-    if (list_len(names) != 4) { return fail("a literal list still grows") }
+    if (names.length != 4) { return fail("a literal list still grows") }
     if (names[0].equals("ada") == false or names[3].equals("hedy") == false) {
         return fail("a literal list sorts")
     }
@@ -59,23 +59,23 @@ fn main() -> Int {
 
     // 3. Empty, which becomes `list_new()` and takes the annotation's element
     // type -- the M4.2 rule, which codegen needs to size the element storage.
-    let nothing: Vec<String> = []
-    if (list_len(nothing) != 0) { return fail("an empty literal") }
-    list_push(nothing, "later")
+    let mut nothing: Vec<String> = []
+    if (nothing.length != 0) { return fail("an empty literal") }
+    nothing.push("later")
     if (nothing[0].equals("later") == false) { return fail("an empty literal grows") }
 
     // 4. A struct field, initialised and then assigned.
     let mut job = Job { name: "git", arguments: ["--short"] }
-    if (list_len(job.arguments) != 1) { return fail("a field initialiser") }
+    if (job.arguments.length != 1) { return fail("a field initialiser") }
     job.arguments = ["status", "--short", "--branch"]
-    if (list_len(job.arguments) != 3) { return fail("a field assignment") }
+    if (job.arguments.length != 3) { return fail("a field assignment") }
     if (job.arguments[2].equals("--branch") == false) { return fail("the assigned element") }
 
     // 5. Twelve is the cap, and twelve works.
     let full: Vec<Int> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     let mut sum = 0
     let mut i = 0
-    while (i < list_len(full)) {
+    while (i < full.length) {
         sum = sum + full[i]
         i = i + 1
     }

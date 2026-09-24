@@ -1,0 +1,12 @@
+// expect-error: cannot change `v`, which is not declared `mut`
+// expect-error: cannot change `items`, which is not declared `mut`
+// A parameter is a borrow: changing what the caller passed takes `inout`, and
+// an `inout` argument has to be something the caller may change.
+fn grow(v: Vec<Int>) { v.push(1) }
+fn fill(inout v: Vec<Int>) { v.push(2) }
+
+fn main() -> Int {
+    let items: Vec<Int> = []
+    fill(items)
+    return items.length
+}

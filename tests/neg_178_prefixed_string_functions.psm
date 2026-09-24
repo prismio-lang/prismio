@@ -1,0 +1,8 @@
+// expect-error: `strTrim` is internal to the package that declares it
+// The `str*` free functions are std.string's implementation; the surface is the
+// method, `"  x ".trim()`.
+import std.string
+
+fn main() -> Int {
+    return strTrim("  x ").length
+}

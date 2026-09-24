@@ -32,22 +32,22 @@ fn totalLength(names: Vec<String>) -> Int {
 
 fn main() -> Int {
     // Short strings built at run time stay in the pair.
-    let mut words: Vec<String> = list_new()
+    let mut words: Vec<String> = []
     let mut i = 0
     while (i < 100) {
-        list_push(words, "w".concat(i.toString()))
+        words.push("w".concat(i.toString()))
         i = i + 1
     }
-    if (list_len(words) != 100) { return fail("100 pushes") }
-    if (list_get(words, 42).equals("w42") == false) { return fail("list_get of a short string") }
+    if (words.length != 100) { return fail("100 pushes") }
+    if (words[42].equals("w42") == false) { return fail("list_get of a short string") }
     if (words[7].equals("w7") == false) { return fail("indexing a short string") }
 
     // Literals, short and long, pushed and set. The list releases what it holds,
     // so each has to arrive as an owned copy rather than as static storage.
-    list_push(words, "ab")
-    list_push(words, "a literal longer than twelve bytes")
-    list_set(words, 0, "short")
-    list_set(words, 1, "another literal longer than twelve")
+    words.push("ab")
+    words.push("a literal longer than twelve bytes")
+    words[0] = "short"
+    words[1] = "another literal longer than twelve"
     if (words[100].equals("ab") == false) { return fail("a pushed short literal") }
     if (words[101].equals("a literal longer than twelve bytes") == false) {
         return fail("a pushed long literal")
@@ -60,23 +60,23 @@ fn main() -> Int {
     // An owned long String, and a view: a borrow of `sentence` that the list has
     // to keep a copy of.
     let sentence = "the quick brown fox jumps over the lazy dog"
-    list_push(words, sentence.concat("!"))
-    list_push(words, sentence.slice(4, 25))
+    words.push(sentence.concat("!"))
+    words.push(sentence.slice(4, 25))
     if (words[102].length() != 44) { return fail("an owned long string") }
     if (words[103].equals("quick brown fox jumps") == false) { return fail("a pushed view") }
 
     // Iteration over every element, and a read past the end, which is the empty
     // String it always was.
     if (totalLength(words) != 426) { return fail("for-in over a Vec<String>") }
-    if (list_get(words, 1000).length() != 0) { return fail("a read past the end") }
+    if (words[1000].length() != 0) { return fail("a read past the end") }
 
     // Sorting moves pairs between slots, inline and owned alike.
-    let mut fruit: Vec<String> = list_new()
-    list_push(fruit, "pear")
-    list_push(fruit, "an apple with a much longer name")
-    list_push(fruit, "fig")
-    list_push(fruit, "banana")
-    list_push(fruit, "an apple")
+    let mut fruit: Vec<String> = []
+    fruit.push("pear")
+    fruit.push("an apple with a much longer name")
+    fruit.push("fig")
+    fruit.push("banana")
+    fruit.push("an apple")
     sort(fruit)
     if (fruit[0].equals("an apple") == false) { return fail("sort: first") }
     if (fruit[1].equals("an apple with a much longer name") == false) {
@@ -88,7 +88,7 @@ fn main() -> Int {
     let counts: Map<String, Int> = mapNew<String, Int>()
     let mut k = 0
     while (k < 50) {
-        let key = list_get(words, k % 5)
+        let key = words[k % 5]
         mapSet(counts, key, mapGetOr(counts, key, 0) + 1)
         k = k + 1
     }
@@ -98,8 +98,8 @@ fn main() -> Int {
     // A slice reads and writes the list's own pairs.
     let middle = words[2..<6]
     if (middle[0].equals("w2") == false) { return fail("a slice read") }
-    slice_set(middle, 1, "replaced through a slice, long enough to own")
-    slice_set(middle, 2, "tiny")
+    middle[1] = "replaced through a slice, long enough to own"
+    middle[2] = "tiny"
     if (words[3].equals("replaced through a slice, long enough to own") == false) {
         return fail("a slice write, owned")
     }
@@ -107,10 +107,10 @@ fn main() -> Int {
 
     // A list born boxed -- `list_new()` has no element type in a struct literal --
     // reaching code typed `Vec<String>`.
-    let roster = Roster { names: list_new() }
-    list_push(roster.names, "ann")
-    list_push(roster.names, "a long name that has to live on the heap")
-    if (list_get(roster.names, 0).equals("ann") == false) { return fail("a boxed list, short") }
+    let roster = Roster { names: [] }
+    roster.names.push("ann")
+    roster.names.push("a long name that has to live on the heap")
+    if (roster.names[0].equals("ann") == false) { return fail("a boxed list, short") }
     if (totalLength(roster.names) != 43) { return fail("a boxed list through a typed parameter") }
 
     println("PASS")

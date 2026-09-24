@@ -12,8 +12,8 @@
 import std.io
 import std.string
 
-fn step(log: Vec<Int>, value: Int) -> Int {
-    list_push(log, value)
+fn step(inout log: Vec<Int>, value: Int) -> Int {
+    log.push(value)
     return value
 }
 
@@ -24,26 +24,26 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let log: Vec<Int> = list_new()
+    let mut log: Vec<Int> = []
 
     println(step(log, 1), step(log, 2), step(log, 3))
-    if (list_len(log) != 3) { return fail("three values, three evaluations") }
-    if (list_get(log, 0) != 1) { return fail("first value first") }
-    if (list_get(log, 1) != 2) { return fail("second value second") }
-    if (list_get(log, 2) != 3) { return fail("third value third") }
+    if (log.length != 3) { return fail("three values, three evaluations") }
+    if (log[0] != 1) { return fail("first value first") }
+    if (log[1] != 2) { return fail("second value second") }
+    if (log[2] != 3) { return fail("third value third") }
 
     // The separator is not one of the values, and consuming it must not disturb
     // the ones it sits after.
     println(step(log, 4), step(log, 5), separator(" | "))
-    if (list_len(log) != 5) { return fail("the marker is not a value") }
-    if (list_get(log, 3) != 4) { return fail("order holds with a separator") }
-    if (list_get(log, 4) != 5) { return fail("order holds with a separator") }
+    if (log.length != 5) { return fail("the marker is not a value") }
+    if (log[3] != 4) { return fail("order holds with a separator") }
+    if (log[4] != 5) { return fail("order holds with a separator") }
 
     // One value and a separator: nothing to put between, and the marker still
     // comes off rather than reaching overload resolution as an argument.
     print(step(log, 6), separator("!"))
     println()
-    if (list_len(log) != 6) { return fail("a lone value with a separator") }
+    if (log.length != 6) { return fail("a lone value with a separator") }
 
     // Every overload the split can land on, mixed in one call.
     println("mixed:", 1, true, 'c', 2.5)

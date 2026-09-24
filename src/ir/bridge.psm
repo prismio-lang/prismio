@@ -603,6 +603,8 @@ public extern fn ir_get_var_slot(name: String borrow) -> String alias
 public extern fn ir_var_is_global(name: String) -> Int
 public extern fn ir_mark_mutable(name: String)
 public extern fn ir_var_is_mutable(name: String) -> Int
+public extern fn ir_mark_inout(name: String)
+public extern fn ir_var_is_inout(name: String) -> Int
 // The resolved byte pointer for a String binding: asked once where the binding
 // is made, so a byte loop does not ask per character. `-1` when the binding has
 // none -- a mutable one never does, because the value replacing it would be

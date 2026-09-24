@@ -24,7 +24,7 @@ trait Weigh {
 struct Point { x: Int, y: Int }
 
 impl Show for Point {
-    fn show(self) -> String { return "P".concat(strFromInt(self.x)) }
+    fn show(self) -> String { return "P".concat(self.x.toString()) }
 }
 
 impl Weigh for Point {
@@ -34,7 +34,7 @@ impl Weigh for Point {
 struct Tag { name: String }
 
 impl Show for Tag {
-    fn show(self) -> String { return strClone(self.name) }
+    fn show(self) -> String { return self.name.clone() }
 }
 
 // Argument position: sugar for `fn describe<T: Show>(v: T) -> String`.

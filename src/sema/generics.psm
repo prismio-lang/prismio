@@ -189,7 +189,7 @@ internal fn monoParamAt(params: String, index: Int) -> String {
     let n = __builtin_string_len(params)
     for i in 0..n {
         if (i == n or params.charAt(i) == ',') {
-            if (seen == index) { return strSubstring(params, start, i - start) }
+            if (seen == index) { return params.substring(start, i - start) }
             seen = seen + 1
             start = i + 1
         }
@@ -233,7 +233,7 @@ private fn monoAnnotationText(annotationPtr: Ptr) -> String {
     if (annotation.i1 == 1) {
         return "[".concat(monoAnnotationText(annotation.child1), "]")
     }
-    let mut text = strClone(annotation.s1)
+    let mut text = annotation.s1.clone()
     if (annotation.i2 == 1) {
         text = text.concat("<")
         let mut argPtr = annotation.child1
@@ -253,7 +253,7 @@ private fn monoAnnotationText(annotationPtr: Ptr) -> String {
 internal fn monoTraitRefText(traitRefPtr: Ptr) -> String {
     if (nodeIsNull(traitRefPtr)) { return "" }
     let traitRef = ptr_to_node(traitRefPtr)
-    if (traitRef.i2 == 0) { return strClone(traitRef.s1) }
+    if (traitRef.i2 == 0) { return traitRef.s1.clone() }
 
     let mut text = traitRef.s1.concat("<")
     let mut argPtr = traitRef.child1
@@ -473,7 +473,7 @@ let MONO_MAX_TYPE_DEPTH = 32
 
 private fn monoFirstReportOfBound(typeName: String, bound: String) -> Bool {
     let marker = "|".concat(typeName, ":", bound, "|")
-    if (strContains(monoReportedBounds, marker)) { return false }
+    if (monoReportedBounds.contains(marker)) { return false }
     monoReportedBounds = monoReportedBounds.concat(marker)
     return true
 }
@@ -517,12 +517,12 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
     // is T16's synthesised name for an argument-position `impl Trait`, and
     // naming it here would point at a declaration that does not appear in the
     // source. The bound is the same either way; only the spelling differs.
-    if (strStartsWith(param, "opaque$")) {
+    if (param.startsWith("opaque$")) {
         diag_note(diagQuote(name).concat(" promises it: the return type is written ",
                                          "`impl ",
                                          boundText,
                                          "`"))
-    } else if (strStartsWith(param, "impl$")) {
+    } else if (param.startsWith("impl$")) {
         diag_note(diagQuote(name).concat(" requires it: the parameter is written ",
                                          "`impl ",
                                          boundText,
@@ -854,7 +854,7 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
         // identifier, so this prefix tests the constructor without trying to
         // parse type arguments back out of the mangled name.
         let constructorPrefix = tn.s1.concat(monoSeparator())
-        if (strStartsWith(actual.name, constructorPrefix) == false) {
+        if (actual.name.startsWith(constructorPrefix) == false) {
             return ptr_to_node(ptr_null())
         }
         let decl = findStructDeclNamed(module, actual.name)
@@ -1283,10 +1283,10 @@ private fn monoSeparatorCount(name: String) -> Int {
 // head is what identifies it; the tail is the same thing repeated.
 private fn monoElide(text: String) -> String {
     let n = __builtin_string_len(text)
-    if (n <= 48) { return strClone(text) }
+    if (n <= 48) { return text.clone() }
     let mut head = ""
     for i in 0..<48 {
-        head = head.concat(strFromChar(text.charAt(i)))
+        head = head.concat(text.charAt(i).toString())
     }
     return head.concat("...")
 }

@@ -77,16 +77,16 @@ fn makeTree(depth: Int) -> Tree {
 }
 
 fn makeReversed() -> Reversed {
-    return Reversed.Value(strClone("a long owned enum string"), Reversed.Empty)
+    return Reversed.Value("a long owned enum string".clone(), Reversed.Empty)
 }
 
 fn makeNested() -> Maybe<Maybe<String>> {
     return Maybe.Some(makeInner())
 }
 
-fn makeInner() -> Maybe<String> { return Maybe.Some(strClone("nested owned string")) }
+fn makeInner() -> Maybe<String> { return Maybe.Some("nested owned string".clone()) }
 
-fn makeThree() -> Three { return Three.Text(strClone("many variants")) }
+fn makeThree() -> Three { return Three.Text("many variants".clone()) }
 
 fn main() -> Int {
     let t = makeTree(2)
@@ -95,13 +95,13 @@ fn main() -> Int {
     if (sum(add(Tree.Empty, 100)) != 0) { return 2 }
     if (wildcard(Tree.Empty) != 1 or wildcard(changed) != 2) { return 3 }
 
-    let trees: Vec<Tree> = list_new()
-    list_push(trees, Tree.Empty)
-    list_push(trees, Tree.Node(Tree.Empty, 23, Tree.Empty))
-    list_push(trees, Tree.Empty)
-    if (list_len(trees) != 3) { return 4 }
-    if (sum(list_get(trees, 0)) != 0 or sum(list_get(trees, 1)) != 23
-        or sum(list_get(trees, 2)) != 0) { return 5 }
+    let mut trees: Vec<Tree> = []
+    trees.push(Tree.Empty)
+    trees.push(Tree.Node(Tree.Empty, 23, Tree.Empty))
+    trees.push(Tree.Empty)
+    if (trees.length != 3) { return 4 }
+    if (sum(trees[0]) != 0 or sum(trees[1]) != 23
+        or sum(trees[2]) != 0) { return 5 }
 
     if (reversedLength(Reversed.Empty) != 0) { return 6 }
     if (reversedLength(makeReversed()) != 24) { return 7 }
@@ -114,10 +114,10 @@ fn main() -> Int {
     // POD enums remain inline, both in another struct and in a List.
     let wrapped = Wrapped { number: Maybe.Some(42) }
     if (number(wrapped.number) != 42) { return 11 }
-    let numbers: Vec<Maybe<Int>> = list_new()
-    list_push(numbers, Maybe<Int>.None)
-    list_push(numbers, Maybe.Some(31))
-    if (number(list_get(numbers, 0)) != 0 or number(list_get(numbers, 1)) != 31) { return 12 }
+    let mut numbers: Vec<Maybe<Int>> = []
+    numbers.push(Maybe<Int>.None)
+    numbers.push(Maybe.Some(31))
+    if (number(numbers[0]) != 0 or number(numbers[1]) != 31) { return 12 }
 
     // More than two variants retain their tagged representation.
     if (three(Three.First) != 1 or three(Three.Last) != 3

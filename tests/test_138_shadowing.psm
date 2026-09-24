@@ -44,8 +44,8 @@ fn main() -> Int {
     if (concat("a", "b").equals("MINE") == false) { return fail("the program's concat") }
     if (compare("a", "b") != 42) { return fail("the program's compare") }
 
-    // The library's, by its prefixed spelling, which is what the prefix is for.
-    if (strTrim("  x  ").equals("x") == false) { return fail("the library's strTrim") }
+    // The library's, by its module path, which is what qualification is for.
+    if (std.string.trim("  x  ").equals("x") == false) { return fail("the library's trim") }
 
     // **The operators are bound to the library.** Each of these lowers to one of
     // the five functions this program has shadowed.

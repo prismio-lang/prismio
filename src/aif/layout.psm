@@ -280,8 +280,8 @@ internal fn aifLayoutFixStandardLibrary(module: ASTNode) {
     while (nodeExists(p)) {
         let d = ptr_to_node(p)
         if (d.kind == NodeKind.STRUCT_DECL) {
-            let qualifier = strClone(diag_file_module(d.file))
-            if (strStartsWith(qualifier, "std.")) {
+            let qualifier = diag_file_module(d.file).clone()
+            if (qualifier.startsWith("std.")) {
                 aif_layout_fix(d.s1)
             }
         }

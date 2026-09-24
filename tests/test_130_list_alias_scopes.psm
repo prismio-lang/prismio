@@ -31,9 +31,9 @@ fn check(label: String, got: Int, want: Int) -> Int {
 fn digest(xs: Vec<Int>) -> Int {
     let mut acc = 1
     let mut i = 0
-    let n = list_len(xs)
+    let n = xs.length
     while (i < n) {
-        acc = (acc * 31 + list_get(xs, i) + 7919) % 100003
+        acc = (acc * 31 + xs[i] + 7919) % 100003
         i = i + 1
     }
     return acc
@@ -42,12 +42,12 @@ fn digest(xs: Vec<Int>) -> Int {
 // The length is read *inside* the loop that is bumping it. If `len` is promoted
 // to a register and the reload elided, this returns the wrong running total.
 fn lengthObservedDuringPush(n: Int) -> Int {
-    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut seen = 0
     let mut i = 0
     while (i < n) {
-        list_push(xs, i)
-        seen = seen + list_len(xs)
+        xs.push(i)
+        seen = seen + xs.length
         i = i + 1
     }
     return seen
@@ -55,12 +55,12 @@ fn lengthObservedDuringPush(n: Int) -> Int {
 
 // Two receivers, two constructors: the case `noalias` on the constructor is for.
 fn twoReceivers(n: Int) -> Int {
-    let mut a: Vec<Int> = list_new_with_capacity(n)
-    let mut b: Vec<Int> = list_new_with_capacity(n)
+    let mut a: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut b: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(a, i)
-        list_push(b, 0 - i)
+        a.push(i)
+        b.push(0 - i)
         i = i + 1
     }
     // Not `digest(a) + digest(b)`: the digest is linear in the elements, and
@@ -73,21 +73,21 @@ fn twoReceivers(n: Int) -> Int {
 // number of positions that disagree, so the expected answer is 0 and a wrong
 // one is a count rather than a hash nobody can read.
 fn twoReceiverHead(n: Int) -> Int {
-    let mut a: Vec<Int> = list_new_with_capacity(n)
-    let mut b: Vec<Int> = list_new_with_capacity(n)
+    let mut a: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut b: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(a, i)
-        list_push(b, 0 - i)
+        a.push(i)
+        b.push(0 - i)
         i = i + 1
     }
     let mut wrong = 0
     let mut k = 0
     while (k < n) {
-        if (list_get(a, k) != k) { wrong = wrong + 1 }
-        if (list_get(b, k) != 0 - k) { wrong = wrong + 1 }
-        if (list_len(a) != n) { wrong = wrong + 1 }
-        if (list_len(b) != n) { wrong = wrong + 1 }
+        if (a[k] != k) { wrong = wrong + 1 }
+        if (b[k] != 0 - k) { wrong = wrong + 1 }
+        if (a.length != n) { wrong = wrong + 1 }
+        if (b.length != n) { wrong = wrong + 1 }
         k = k + 1
     }
     return wrong
@@ -99,42 +99,42 @@ fn twoReceiverHead(n: Int) -> Int {
 // The `noalias` on the constructor cannot reach here -- these are parameters,
 // not call results -- and the header scope is shared by every receiver, so both
 // pushes must still see each other's length.
-fn pushBoth(a: Vec<Int>, b: Vec<Int>, n: Int) {
+fn pushBoth(inout a: Vec<Int>, inout b: Vec<Int>, n: Int) {
     let mut i = 0
     while (i < n) {
-        list_push(a, i)
-        list_push(b, i + 1000)
+        a.push(i)
+        b.push(i + 1000)
         i = i + 1
     }
 }
 
 fn aliasedReceiver(n: Int) -> Int {
-    let mut xs: Vec<Int> = list_new_with_capacity(2 * n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(2 * n)
     pushBoth(xs, xs, n)
-    return list_len(xs) * 100003 + digest(xs)
+    return xs.length * 100003 + digest(xs)
 }
 
 fn oneName(n: Int) -> Int {
-    let mut xs: Vec<Int> = list_new_with_capacity(2 * n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(2 * n)
     let mut i = 0
     while (i < n) {
-        list_push(xs, i)
-        list_push(xs, i + 1000)
+        xs.push(i)
+        xs.push(i + 1000)
         i = i + 1
     }
-    return list_len(xs) * 100003 + digest(xs)
+    return xs.length * 100003 + digest(xs)
 }
 
 // A read of the element block in the same loop that appends to it. The element
 // store and the header's length store are in two regions; the element *read* is
 // in the same region as the store that just happened.
 fn readWhileAppending(n: Int) -> Int {
-    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut acc = 0
     let mut i = 0
     while (i < n) {
-        list_push(xs, i * 3)
-        acc = (acc + list_get(xs, i)) % 1000000007
+        xs.push(i * 3)
+        acc = (acc + xs[i]) % 1000000007
         i = i + 1
     }
     return acc
@@ -144,30 +144,30 @@ fn readWhileAppending(n: Int) -> Int {
 // reallocates the element block underneath the loop. A hoisted base pointer is
 // wrong here and the digest says so.
 fn growsUnderneath(n: Int) -> Int {
-    let mut xs: Vec<Int> = list_new()
+    let mut xs: Vec<Int> = []
     let mut i = 0
     while (i < n) {
-        list_push(xs, i * 7)
+        xs.push(i * 7)
         i = i + 1
     }
-    return list_len(xs) * 100003 + digest(xs)
+    return xs.length * 100003 + digest(xs)
 }
 
 // The same shape on a flat struct element, whose store is the wider one.
 struct Cell { a: Int, b: Int }
 
 fn structElements(n: Int) -> Int {
-    let mut cells: Vec<Cell> = list_new_with_capacity(n)
+    let mut cells: Vec<Cell> = Vec<Cell>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(cells, Cell { a: i, b: 0 - i })
+        cells.push(Cell { a: i, b: 0 - i })
         i = i + 1
     }
     let mut acc = 0
     let mut k = 0
     while (k < n) {
-        let c = list_get(cells, k)
-        acc = (acc + c.a - c.b + list_len(cells)) % 1000000007
+        let c = cells[k]
+        acc = (acc + c.a - c.b + cells.length) % 1000000007
         k = k + 1
     }
     return acc

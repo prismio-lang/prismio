@@ -13,7 +13,7 @@ import std.string
 
 fn main() -> Int {
     println("a", separator(", "), "b")
-    println("a", "b", separator(strFromInt(3)))
+    println("a", "b", separator((3).toString()))
     println("a", "b", separator())
     let stray = separator(", ")
     return 0

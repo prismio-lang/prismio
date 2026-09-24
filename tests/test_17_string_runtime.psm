@@ -15,7 +15,7 @@ fn main() -> Int {
         return fail("string length builtin should read the native length")
     }
 
-    if (strSubstring(text, 0, 5).equals("Hello") == false) {
+    if (text.substring(0, 5).equals("Hello") == false) {
         return fail("str_substring should extract the requested slice")
     }
 
@@ -23,15 +23,15 @@ fn main() -> Int {
         return fail("str_char_at should read the requested character")
     }
 
-    if (strContains(text, "World") == false) {
+    if (text.contains("World") == false) {
         return fail("str_contains should find an included substring")
     }
 
-    if (strStartsWith(text, "Hello") == false) {
+    if (text.startsWith("Hello") == false) {
         return fail("str_starts_with should match prefixes")
     }
 
-    if (strIndexOf(text, "World") != 7) {
+    if (text.indexOf("World") != 7) {
         return fail("str_index_of should return the substring offset")
     }
 
@@ -39,11 +39,11 @@ fn main() -> Int {
         return fail("str_concat should join strings")
     }
 
-    if (strFromInt(42).equals("42") == false) {
+    if ((42).toString().equals("42") == false) {
         return fail("int_to_str should format integers")
     }
 
-    if (optionOr(strParseInt("123"), 0) != 123) {
+    if (optionOr("123".parseInt(), 0) != 123) {
         return fail("str_to_int should parse decimal integers")
     }
 

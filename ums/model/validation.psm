@@ -49,7 +49,7 @@ private fn umsValidVersion(value: String, minimumComponents: Int) -> Bool {
 // cannot be SPDX expressions at all; registry publication can later validate
 // identifiers against the versioned catalogue it serves.
 private fn umsValidLicenseExpression(value: String) -> Bool {
-    let trimmed = strTrim(value)
+    let trimmed = value.trim()
     if (__builtin_string_len(trimmed) == 0) { return false }
     let mut i = 0
     while (i < __builtin_string_len(trimmed)) {
@@ -70,7 +70,7 @@ private fn umsValidLicenseExpression(value: String) -> Bool {
 // other. A shell script is not on the list because there is no portable way to
 // start one, which is the whole reason `shell` exists as a separate step.
 private fn umsRunnableScript(value: String) -> Bool {
-    return strEndsWith(value, ".py") or strEndsWith(value, ".psm")
+    return value.endsWith(".py") or value.endsWith(".psm")
 }
 
 private fn umsAbsolutePath(value: String) -> Bool {
@@ -86,12 +86,12 @@ private fn umsAbsolutePath(value: String) -> Bool {
 // first.
 impl UmsProjectModel {
 
-    private fn validationError(self, diagnostics: Vec<UmsDiagnostic>,
+    private fn validationError(self, inout diagnostics: Vec<UmsDiagnostic>,
                           code: String, message: String) {
         umsDiagnosticAdd(diagnostics, code, self.manifestPath, 0, 0, 0, message)
     }
 
-    internal fn validate(self, diagnostics: Vec<UmsDiagnostic>) {
+    internal fn validate(self, inout diagnostics: Vec<UmsDiagnostic>) {
         if (__builtin_string_len(self.metadata.name) == 0) {
             self.validationError(diagnostics, "UMS2301", "project.name is required")
         } else if (umsValidName(self.metadata.name) == false) {
@@ -115,7 +115,7 @@ impl UmsProjectModel {
 
 
         if (self.metadata.descriptionDeclared) {
-            let description = strTrim(self.metadata.description)
+            let description = self.metadata.description.trim()
             if (__builtin_string_len(description) == 0) {
                 self.validationError(diagnostics, "UMS2316",
                                    "project.description cannot be empty")
@@ -145,13 +145,13 @@ impl UmsProjectModel {
                                "project.license and project.licenseFile are mutually exclusive")
         }
 
-        if (self.metadata.authorsDeclared and list_len(self.metadata.authors) == 0) {
+        if (self.metadata.authorsDeclared and self.metadata.authors.length == 0) {
             self.validationError(diagnostics, "UMS2321",
                                "project.authors must contain at least one author")
         }
         let mut authorIndex = 0
-        while (authorIndex < list_len(self.metadata.authors)) {
-            let author = strTrim(list_get(self.metadata.authors, authorIndex))
+        while (authorIndex < self.metadata.authors.length) {
+            let author = self.metadata.authors[authorIndex].trim()
             if (__builtin_string_len(author) == 0) {
                 self.validationError(diagnostics, "UMS2322",
                                    "project.authors cannot contain an empty author")
@@ -159,14 +159,14 @@ impl UmsProjectModel {
             authorIndex = authorIndex + 1
         }
 
-        if (list_len(self.targets) == 0) {
+        if (self.targets.length == 0) {
             self.validationError(diagnostics, "UMS2307",
                                "at least one build target is required")
         }
 
         let mut targetIndex = 0
-        while (targetIndex < list_len(self.targets)) {
-            let target = list_get(self.targets, targetIndex)
+        while (targetIndex < self.targets.length) {
+            let target = self.targets[targetIndex]
             if (umsValidName(target.name) == false) {
                 umsDiagnosticAdd(diagnostics, "UMS2308", self.manifestPath,
                     target.line, target.col, target.len,
@@ -190,8 +190,8 @@ impl UmsProjectModel {
                     "library targets are modeled but artifact emission is not implemented yet")
             }
             let mut linkIndex = 0
-            while (linkIndex < list_len(target.links)) {
-                let input = list_get(target.links, linkIndex)
+            while (linkIndex < target.links.length) {
+                let input = target.links[linkIndex]
                 if (__builtin_string_len(input.value) == 0) {
                     umsDiagnosticAdd(diagnostics, "UMS2314", self.manifestPath,
                         input.line, input.col, input.len,
@@ -209,8 +209,8 @@ impl UmsProjectModel {
         }
 
         let mut dependencyIndex = 0
-        while (dependencyIndex < list_len(self.dependencies)) {
-            let dependency = list_get(self.dependencies, dependencyIndex)
+        while (dependencyIndex < self.dependencies.length) {
+            let dependency = self.dependencies[dependencyIndex]
             if (umsValidName(dependency.name) == false) {
                 umsDiagnosticAdd(diagnostics, "UMS2311", self.manifestPath,
                     dependency.line, dependency.col, dependency.len,
@@ -225,21 +225,21 @@ impl UmsProjectModel {
         }
 
         let mut commandIndex = 0
-        while (commandIndex < list_len(self.commands)) {
-            let command = list_get(self.commands, commandIndex)
+        while (commandIndex < self.commands.length) {
+            let command = self.commands[commandIndex]
             if (umsValidName(command.name) == false) {
                 umsDiagnosticAdd(diagnostics, "UMS2601", self.manifestPath,
                     command.line, command.col, command.len,
                     "invalid command name '".concat(command.name, "'"))
             }
-            if (list_len(command.steps) == 0) {
+            if (command.steps.length == 0) {
                 umsDiagnosticAdd(diagnostics, "UMS2602", self.manifestPath,
                     command.line, command.col, command.len,
                     "command '".concat(command.name, "' declares no steps"))
             }
             let mut stepIndex = 0
-            while (stepIndex < list_len(command.steps)) {
-                let step = list_get(command.steps, stepIndex)
+            while (stepIndex < command.steps.length) {
+                let step = command.steps[stepIndex]
                 if (step.kind == UmsCommandStepKind.UNKNOWN) {
                     // Lowering already reported this one; a second diagnostic
                     // about its subject would name a mistake that is not there.
@@ -256,7 +256,7 @@ impl UmsProjectModel {
                     let referenced = umsTargetFind(self.targets, step.subject)
                     if (referenced >= 0) {
                         if (step.kind == UmsCommandStepKind.RUN and
-                            list_get(self.targets, referenced).kind != UmsTargetKind.EXECUTABLE) {
+                            self.targets[referenced].kind != UmsTargetKind.EXECUTABLE) {
                             umsDiagnosticAdd(diagnostics, "UMS2604", self.manifestPath,
                                 step.line, step.col, step.len,
                                 "run needs an executable target, and '".concat(step.subject,

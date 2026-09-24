@@ -82,11 +82,11 @@ public extern fn make_directory(path: String borrow) -> Int
 public extern fn write_file(path: String borrow, content: String borrow) -> Int
 
 private fn pathLeaf(path: String) -> String {
-    let mut cut = strLastIndexOfChar(path, '/')
-    let back = strLastIndexOfChar(path, '\\')
+    let mut cut = path.lastIndexOf('/')
+    let back = path.lastIndexOf('\\')
     if (back > cut) { cut = back }
-    if (cut < 0) { return strClone(path) }
-    return strSubstring(path, cut + 1, __builtin_string_len(path) - cut - 1)
+    if (cut < 0) { return path.clone() }
+    return path.substring(cut + 1, __builtin_string_len(path) - cut - 1)
 }
 
 // `prismio init [name]` -- a project in the current directory, or in a new one.
@@ -105,8 +105,8 @@ public fn initUmsProject(nameArg: String) -> Int {
     if (nameArg.equals("")) {
         name = pathLeaf(current_directory())
     } else {
-        root = strClone(nameArg)
-        name = strClone(nameArg)
+        root = nameArg.clone()
+        name = nameArg.clone()
     }
 
     // Rejected by UMS's own rule rather than a copy of it, so a name this writes
@@ -187,10 +187,10 @@ private fn umsNativePath(root: String, value: String) -> String {
     let length = __builtin_string_len(value)
     if (length > 0 and (value.charAt(0) == '/' or
         value.charAt(0) == '\\')) {
-        return strClone(value)
+        return value.clone()
     }
     if (length > 1 and value.charAt(1) == ':') {
-        return strClone(value)
+        return value.clone()
     }
     return join_path(root, value)
 }
@@ -201,8 +201,8 @@ private fn umsNativePath(root: String, value: String) -> String {
 // else becomes one safely quoted clang argument in declaration order.
 private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
     compiler_link_reset()
-    for i in 0..<list_len(target.links) {
-        let input = list_get(target.links, i)
+    for i in 0..<target.links.length {
+        let input = target.links[i]
         let mut result = 0
         if (input.kind == UmsLinkKind.LIBRARY) {
             result = compiler_link_library(input.value)
@@ -289,10 +289,10 @@ public fn testUmsProject(profile: String) -> Int {
         index = index + 1
     }
 
-    diag_styled("ok", strFromInt(passed).concat(" passed"))
+    diag_styled("ok", passed.toString().concat(" passed"))
     print(", ")
     if (failed > 0) {
-        diag_styled("fail", strFromInt(failed).concat(" failed"))
+        diag_styled("fail", failed.toString().concat(" failed"))
     } else {
         print(failed)
         print(" failed")
@@ -380,7 +380,7 @@ private fn checkUmsCompilerCandidate(candidate: String) -> Int {
 }
 
 private fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int {
-    if (checkUmsCompilerCandidate(strClone(candidate)) != 0) { return 1 }
+    if (checkUmsCompilerCandidate(candidate.clone()) != 0) { return 1 }
     if (compiler_promote_executable(candidate, active) != 0) {
         delete_file(candidate)
         diag_error_code("P1055", "could not promote the compiler candidate; the active local compiler was kept")
@@ -408,7 +408,7 @@ private fn cliWantsMachineOutput() -> Bool {
     for i in 1..<process.args.count {
         let flag = process.args[i]
         if (flag.equals("--manifest")) { return true }
-        if (strStartsWith(flag, "--diagnostic-format=")) { return true }
+        if (flag.startsWith("--diagnostic-format=")) { return true }
     }
     return false
 }
@@ -445,14 +445,14 @@ private fn emitUmsToolchainLibraries(hostPath: String, compilerPath: String) -> 
         return 1
     }
     if (modules > 0 and cliWantsMachineOutput() == false) {
-        diag_styled_err("dim", "local toolchain: ".concat(root, " (", strFromInt(modules),
+        diag_styled_err("dim", "local toolchain: ".concat(root, " (", modules.toString(),
                                                           " standard-library modules)\n"))
     }
     return 0
 }
 
 private fn buildUmsHostTarget(target: UmsTarget) -> Int {
-    let candidate = strClone(target.outputPath).concat(".next")
+    let candidate = target.outputPath.clone().concat(".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
 
     let replacesSelf = compiler_is_current_executable(target.outputPath) == 1
@@ -462,7 +462,7 @@ private fn buildUmsHostTarget(target: UmsTarget) -> Int {
         return 1
     }
 
-    let built = compileSource(target.sourcePath, strClone(candidate),
+    let built = compileSource(target.sourcePath, candidate.clone(),
                               false, true, false, false, false, false, false)
     if (built != 0) {
         delete_file(candidate)
@@ -470,7 +470,7 @@ private fn buildUmsHostTarget(target: UmsTarget) -> Int {
         return 1
     }
     if (replacesSelf) {
-        if (checkUmsCompilerCandidate(strClone(candidate)) != 0) { return 1 }
+        if (checkUmsCompilerCandidate(candidate.clone()) != 0) { return 1 }
         // The candidate emits the libraries, not the compiler running this: they
         // have to be what the generation about to be promoted produces, and it
         // has just been checked. The launcher renames it over this binary after
@@ -606,7 +606,7 @@ public fn dispatchToUmsHost() -> Int {
         }
     }
 
-    let candidate = strClone(host).concat(".next")
+    let candidate = host.clone().concat(".next")
     if (file_exists(candidate) == 1) { delete_file(candidate) }
 
     announceToolchain("local", host)
@@ -682,13 +682,13 @@ public fn buildUmsProject(profile: String, runAfterBuild: Bool) -> Int {
     // resolve is exactly the case a reader wants the file for -- it records what
     // was asked for and that it did not resolve, which is the difference between
     // "the lockfile is stale" and "the fetch has nothing behind it".
-    let resolveDiagnostics = umsDiagnostics()
+    let mut resolveDiagnostics = umsDiagnostics()
     let resolutions = workspace.project.resolveDependencies(resolveDiagnostics)
     if (workspace.project.writeLockfile(resolutions) == false) {
         println("error: could not write the lockfile")
         return 1
     }
-    if (list_len(resolveDiagnostics) > 0) {
+    if (resolveDiagnostics.length > 0) {
         umsDiagnosticsPrint(resolveDiagnostics)
         return 1
     }
@@ -793,15 +793,15 @@ private fn umsShellProgram(root: String, program: String) -> String {
         if (current == '/' or current == '\\') { return umsNativePath(root, program) }
         i = i + 1
     }
-    return strClone(program)
+    return program.clone()
 }
 
 // Every argument is quoted, the forwarded ones included: what the user typed
 // after the command name reaches the process as arguments and never as syntax.
 private fn umsStepArguments(step: UmsCommandStep, forwardFrom: Int) -> String {
     let mut tail = ""
-    for index in 0..<list_len(step.arguments) {
-        let argument = list_get(step.arguments, index)
+    for index in 0..<step.arguments.length {
+        let argument = step.arguments[index]
         if (argument.forwarded) {
             for forwarded in forwardFrom..<process.args.count {
                 tail = tail.concat(" ", command_quote_arg(process.args[forwarded]))
@@ -837,7 +837,7 @@ private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
                             forwardFrom: Int) -> Int {
     let scriptPath = umsNativePath(workspace.project.root, step.subject)
 
-    if (strEndsWith(step.subject, ".py")) {
+    if (step.subject.endsWith(".py")) {
         let line = umsPythonInterpreter().concat(" ",
                                                  command_quote_arg(scriptPath),
                                                  umsStepArguments(step, forwardFrom))
@@ -847,7 +847,7 @@ private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
     let toolPath = join_path(workspace.plan.artifactRoot,
                              join_path(workspace.project.build.profile,
                                        compiler_default_exe_path(pathLeaf(step.subject))))
-    if (compileSource(scriptPath, strClone(toolPath),
+    if (compileSource(scriptPath, toolPath.clone(),
                       false, false, false, false, false, false, false) != 0) {
         return 1
     }
@@ -868,7 +868,7 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
         // a build step naming no target a manifest error.
         return runUmsScriptStep(workspace, step, forwardFrom)
     }
-    let target = list_get(workspace.project.targets, index)
+    let target = workspace.project.targets[index]
 
     // Rebuilding the host stages a candidate the *launcher* promotes once this
     // process exits, so every later step in the command would still run the
@@ -907,8 +907,8 @@ public fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
 
     let declared = workspace.command(found)
     let mut index = 0
-    while (index < list_len(declared.steps)) {
-        if (runUmsCommandStep(workspace, list_get(declared.steps, index), forwardFrom) != 0) {
+    while (index < declared.steps.length) {
+        if (runUmsCommandStep(workspace, declared.steps[index], forwardFrom) != 0) {
             diag_error_code("P1059",
                 "project command ".concat(diagQuote(declared.name), " failed"))
             return 1

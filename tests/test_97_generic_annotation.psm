@@ -26,7 +26,7 @@ struct Bag<T> {
 }
 
 fn bagOf<T>() -> Bag<T> {
-    let items: Vec<T> = list_new()
+    let items: Vec<T> = []
     return Bag<T> { items: items }
 }
 
@@ -45,10 +45,10 @@ fn main() -> Int {
     if (mapLen(m) != 1) { return fail("annotated Map lost its length") }
 
     let bag: Bag<Int> = bagOf<Int>()
-    list_push(bag.items, 3)
-    list_push(bag.items, 4)
-    if (list_len(bag.items) != 2) { return fail("annotated Bag lost its elements") }
-    if (list_get(bag.items, 1) != 4) { return fail("annotated Bag reordered its elements") }
+    bag.items.push(3)
+    bag.items.push(4)
+    if (bag.items.length != 2) { return fail("annotated Bag lost its elements") }
+    if (bag.items[1] != 4) { return fail("annotated Bag reordered its elements") }
 
     // The annotation-free form has always worked; keeping it here says the fix
     // did not trade one shape for the other.

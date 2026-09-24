@@ -1,4 +1,4 @@
-// expect-error: list_set_exclusive requires an unobserved local Vec
+// expect-error: `replace` requires an unobserved local Vec
 
 struct Named {
     label: String,
@@ -6,10 +6,10 @@ struct Named {
 }
 
 fn main() -> Int {
-    let items: Vec<Named> = list_new()
-    list_push(items, Named { label: "first", value: 3 })
-    let old = list_get(items, 0)
+    let mut items: Vec<Named> = []
+    items.push(Named { label: "first", value: 3 })
+    let old = items[0]
     let n = old.value
-    list_set_exclusive(items, 0, Named { label: "second", value: 7 })
+    items.replace(0, Named { label: "second", value: 7 })
     return n
 }

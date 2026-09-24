@@ -24,10 +24,6 @@ import std.string
 
 extern fn print(s: String)
 extern fn println(s: String)
-extern fn list_new() -> Vec<Cell>
-extern fn list_push(l: Vec<Cell>, item: Cell retain_in(0))
-extern fn list_get(l: Vec<Cell>, i: Int) -> Cell alias
-extern fn list_len(l: Vec<Cell>) -> Int
 extern fn exit(code: Int)
 
 // **The declaration order is chosen to be discriminating, and that is the point
@@ -61,10 +57,10 @@ fn make_cell(seed: Int) -> Cell {
 }
 
 fn build(n: Int) -> Vec<Cell> {
-    let cells = list_new()
+    let mut cells: Vec<Cell> = []
     let mut i = 0
     while (i < n) {
-        list_push(cells, make_cell(i))
+        cells.push(make_cell(i))
         i = i + 1
     }
     return cells
@@ -73,8 +69,8 @@ fn build(n: Int) -> Vec<Cell> {
 // The hot traversal: touches `hits` and `scratch` only.
 fn hot(cells: Vec<Cell>) {
     let mut i = 0
-    while (i < list_len(cells)) {
-        let c = list_get(cells, i)
+    while (i < cells.length) {
+        let c = cells[i]
         c.hits = c.hits + 1
         c.scratch = c.scratch + c.hits
         i = i + 1
@@ -86,8 +82,8 @@ fn hot(cells: Vec<Cell>) {
 // would not discriminate between a measured profile and a static one.
 fn cold(cells: Vec<Cell>) {
     let mut i = 0
-    while (i < list_len(cells)) {
-        let c = list_get(cells, i)
+    while (i < cells.length) {
+        let c = cells[i]
         c.spare1 = c.label
         c.spare2 = c.label + 1
         i = i + 1
@@ -97,8 +93,8 @@ fn cold(cells: Vec<Cell>) {
 fn checksum(cells: Vec<Cell>) -> Int {
     let mut total = 0
     let mut i = 0
-    while (i < list_len(cells)) {
-        let c = list_get(cells, i)
+    while (i < cells.length) {
+        let c = cells[i]
         total = total + c.hits + c.spare2
         i = i + 1
     }
@@ -138,7 +134,7 @@ fn main() -> Int {
     // sum(hits) = 50*40 = 2000; sum(spare2) = sum(i+1 for i in 0..49) = 1275.
     let got = checksum(cells)
     print("checksum ")
-    println(strFromInt(got))
+    println(got.toString())
     if (got != 3275) {
         println("FAIL: checksum is wrong")
         exit(1)

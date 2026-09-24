@@ -59,11 +59,11 @@ fn make(seed: Float) -> Sample {
 }
 
 fn build(count: Int) -> Vec<Sample> {
-    let mut xs: Vec<Sample> = list_new()
+    let mut xs: Vec<Sample> = []
     let mut n = 0
     let mut seed = 0.0
     while (n < count) {
-        list_push(xs, make(seed))
+        xs.push(make(seed))
         seed = seed + 1.0
         n = n + 1
     }
@@ -72,10 +72,10 @@ fn build(count: Int) -> Vec<Sample> {
 
 // Six fields, one pass. These must end up hot.
 fn advance(xs: Vec<Sample>, dt: Float) {
-    let n = list_len(xs)
+    let n = xs.length
     let mut idx = 0
     while (idx < n) {
-        let s = list_get(xs, idx)
+        let s = xs[idx]
         s.a = s.a + s.d * dt
         s.b = s.b + s.e * dt
         s.c = s.c + s.f * dt
@@ -86,10 +86,10 @@ fn advance(xs: Vec<Sample>, dt: Float) {
 // Two fields, touched more often each than any single field above -- which is
 // what makes the naive first-boundary cut land here and stop.
 fn settle(xs: Vec<Sample>) {
-    let n = list_len(xs)
+    let n = xs.length
     let mut idx = 0
     while (idx < n) {
-        let s = list_get(xs, idx)
+        let s = xs[idx]
         s.g = s.g * 0.5
         s.g = s.g + 1.0
         s.h = s.h * 0.5
@@ -106,7 +106,7 @@ fn main() -> Int {
         settle(xs)
         frame = frame + 1
     }
-    let first = list_get(xs, 0)
+    let first = xs[0]
     println(first.tag)
     return 0
 }

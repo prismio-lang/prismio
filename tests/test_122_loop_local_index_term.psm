@@ -22,10 +22,10 @@ fn check(label: String, got: Int, want: Int) -> Int {
 }
 
 fn filled(n: Int) -> Vec<Int> {
-    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(xs, i)
+        xs.push(i)
         i = i + 1
     }
     return xs
@@ -39,7 +39,7 @@ fn localDecl(n: Int) -> Int {
     let mut at = n - 1
     while (at >= 0) {
         let step = 1
-        acc = acc + list_get(xs, at - step)
+        acc = acc + xs[at - step]
         at = at - 1
     }
     return acc
@@ -53,7 +53,7 @@ fn assignedInBody(n: Int) -> Int {
     let mut step = 1
     let mut at = n - 1
     while (at >= 0) {
-        acc = acc + list_get(xs, at - step)
+        acc = acc + xs[at - step]
         step = 1
         at = at - 1
     }
@@ -67,7 +67,7 @@ fn trulyInvariant(n: Int, step: Int) -> Int {
     let mut acc = 0
     let mut at = n - 1
     while (at >= 0) {
-        acc = acc + list_get(xs, at - step)
+        acc = acc + xs[at - step]
         at = at - 1
     }
     return acc

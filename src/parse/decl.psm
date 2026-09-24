@@ -26,7 +26,7 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
     let visibility = p.visibilityLevel()
     if (visibility >= 0) {
         let marker = p.current()
-        let markerText = strClone(marker.value)
+        let markerText = marker.value.clone()
         let enforced = p.visibilityIsEnforced()
         p.advance()
         let declaration = parseDeclaration(p)
@@ -202,12 +202,12 @@ private fn parseTraitRefArgs(p: Parser, traitRef: ASTNode) {
 // uses, so `impl A + B` and `<T: A + B>` produce structurally identical bounds
 // and neither conformance nor coherence can tell them apart afterwards.
 private fn parseImplTraitParam(p: Parser, site: ASTNode) -> String {
-    let synthesized = "impl$".concat(strFromInt(p.implParamSeq))
+    let synthesized = "impl$".concat(p.implParamSeq.toString())
     p.implParamSeq = p.implParamSeq + 1
 
     let genericParam = createNode(NodeKind.GENERIC_PARAM)
     nodeSpanFrom(genericParam, site)
-    genericParam.s1 = strClone(synthesized)
+    genericParam.s1 = synthesized.clone()
 
     let bounds = nodeList()
     loop {
@@ -267,7 +267,7 @@ private fn drainImplTraitParams(p: Parser, owner: ASTNode, existing: String) -> 
     let mut param = ptr_to_node(p.implParams)
     loop {
         if (names.equals("")) {
-            names = strClone(param.s1)
+            names = param.s1.clone()
         } else {
             names = names.concat(",", param.s1)
         }
@@ -315,7 +315,7 @@ private fn parseGenericParams(p: Parser, owner: ASTNode) -> String {
         nodeListPush(genericParams, genericParam)
 
         if (params.equals("")) {
-            params = strClone(name.value)
+            params = name.value.clone()
         } else {
             params = params.concat(",", name.value)
         }
@@ -1124,7 +1124,7 @@ private fn implParamNameAt(params: String, index: Int) -> String {
     for i in 0..n {
         if (i == n or params.charAt(i) == ',') {
             if (seen == index) {
-                return strSubstring(params, start, i - start)
+                return params.substring(start, i - start)
             }
             seen = seen + 1
             start = i + 1
@@ -1203,7 +1203,7 @@ private fn parseImplMethodParams(p: Parser, implParams: String, methodParams: St
         i = i + 1
     }
 
-    if (methodParams.equals("")) { return strClone(implParams) }
+    if (methodParams.equals("")) { return implParams.clone() }
     return implParams.concat(",", methodParams)
 }
 
@@ -1470,7 +1470,7 @@ private fn parseWorkloadCount(p: Parser, clause: String) -> Int {
     if (tok.type != TokenType.NUMBER_LITERAL) {
         p.fatal("expected a count after `".concat(clause, "`"))
     }
-    let n = optionOr(strParseInt(tok.value), 0)
+    let n = optionOr(tok.value.parseInt(), 0)
     p.advance()
     // Zero repeats profiles nothing and a negative one is meaningless; both would
     // reach the runner and produce an empty profile that reads as a failed run.

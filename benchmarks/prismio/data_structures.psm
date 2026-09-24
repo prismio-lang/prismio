@@ -23,24 +23,24 @@ public fn benchHashMap(scale: Int) -> Int {
 
 public fn benchVectorGrowth(scale: Int) -> Int {
     let n = 1000000 * scale
-    let mut values: Vec<Int> = list_new()
+    let mut values: Vec<Int> = []
     let mut checksum = 0
     let mut i = 0
     while (i < n) {
         let value = i % 997
-        list_push(values, value)
+        values.push(value)
         checksum = (checksum + value) % 1000000007
         i = i + 1
     }
-    return checksum + list_len(values)
+    return checksum + values.length
 }
 
 public fn benchVectorIteration(scale: Int) -> Int {
     let n = 1000000 * scale
-    let mut values: Vec<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(values, i % 1009)
+        values.push(i % 1009)
         i = i + 1
     }
     let mut checksum = 0
@@ -48,7 +48,7 @@ public fn benchVectorIteration(scale: Int) -> Int {
     while (round < 8) {
         let mut k = 0
         while (k < n) {
-            checksum = (checksum + list_get(values, k)) % 1000000007
+            checksum = (checksum + values[k]) % 1000000007
             k = k + 1
         }
         round = round + 1
@@ -99,15 +99,15 @@ public fn benchFlatBitset(scale: Int) -> Int {
     let n = 50000 * scale
     let words = (n + 63) / 64
 
-    let mut a: Vec<I64> = list_new_with_capacity(words)
-    let mut b: Vec<I64> = list_new_with_capacity(words)
-    let mut c: Vec<I64> = list_new_with_capacity(words)
+    let mut a: Vec<I64> = Vec<I64>.withCapacity(words)
+    let mut b: Vec<I64> = Vec<I64>.withCapacity(words)
+    let mut c: Vec<I64> = Vec<I64>.withCapacity(words)
 
     let mut initW = 0
     while (initW < words) {
-        list_push(a, 0 as I64)
-        list_push(b, 0 as I64)
-        list_push(c, 0 as I64)
+        a.push(0 as I64)
+        b.push(0 as I64)
+        c.push(0 as I64)
         initW = initW + 1
     }
 
@@ -119,11 +119,11 @@ public fn benchFlatBitset(scale: Int) -> Int {
         let wIdx = i / 64
         let bIdx = (i % 64) as I64
         if (seed % 3 == 0) {
-            list_set(a, wIdx, list_get(a, wIdx) | (one << bIdx))
+            a[wIdx] = a[wIdx] | (one << bIdx)
         }
         seed = benchRandom(seed)
         if (seed % 5 == 0) {
-            list_set(b, wIdx, list_get(b, wIdx) | (one << bIdx))
+            b[wIdx] = b[wIdx] | (one << bIdx)
         }
         i = i + 1
     }
@@ -133,13 +133,13 @@ public fn benchFlatBitset(scale: Int) -> Int {
     while (round < 10) {
         let mut w = 0
         while (w < words) {
-            let aw = list_get(a, w)
-            let bw = list_get(b, w)
+            let aw = a[w]
+            let bw = b[w]
             let cw = (aw & bw) | ((~aw) & (bw ^ magic))
-            list_set(c, w, cw)
-            list_set(a, w, aw ^ cw)
+            c[w] = cw
+            a[w] = aw ^ cw
             let shifted = (bw << (1 as I64)) | ((bw >> (63 as I64)) & (1 as I64))
-            list_set(b, w, shifted)
+            b[w] = shifted
             w = w + 1
         }
         round = round + 1
@@ -150,9 +150,9 @@ public fn benchFlatBitset(scale: Int) -> Int {
     let mut countC: I64 = 0
     let mut w2 = 0
     while (w2 < words) {
-        countA = countA + (popcount64(list_get(a, w2)) as I64)
-        countB = countB + (popcount64(list_get(b, w2)) as I64)
-        countC = countC + (popcount64(list_get(c, w2)) as I64)
+        countA = countA + (popcount64(a[w2]) as I64)
+        countB = countB + (popcount64(b[w2]) as I64)
+        countC = countC + (popcount64(c[w2]) as I64)
         w2 = w2 + 1
     }
 
@@ -164,17 +164,17 @@ public fn benchTrieSearch(scale: Int) -> Int {
     let numKeys = 8000 * scale
     let numQueries = 15000 * scale
 
-    let mut c0: Vec<Int> = list_new()
-    let mut c1: Vec<Int> = list_new()
-    let mut c2: Vec<Int> = list_new()
-    let mut c3: Vec<Int> = list_new()
-    let mut counts: Vec<Int> = list_new()
+    let mut c0: Vec<Int> = []
+    let mut c1: Vec<Int> = []
+    let mut c2: Vec<Int> = []
+    let mut c3: Vec<Int> = []
+    let mut counts: Vec<Int> = []
 
-    list_push(c0, -1)
-    list_push(c1, -1)
-    list_push(c2, -1)
-    list_push(c3, -1)
-    list_push(counts, 0)
+    c0.push(-1)
+    c1.push(-1)
+    c2.push(-1)
+    c3.push(-1)
+    counts.push(0)
 
     let mut seed = 53
     let mut k = 0
@@ -188,54 +188,54 @@ public fn benchTrieSearch(scale: Int) -> Int {
             let branch = seed % 4
             let mut nextNode = -1
             if (branch == 0) {
-                if (list_get(c0, curr) == -1) {
-                    let newIdx = list_len(c0)
-                    list_push(c0, -1)
-                    list_push(c1, -1)
-                    list_push(c2, -1)
-                    list_push(c3, -1)
-                    list_push(counts, 0)
-                    list_set(c0, curr, newIdx)
+                if (c0[curr] == -1) {
+                    let newIdx = c0.length
+                    c0.push(-1)
+                    c1.push(-1)
+                    c2.push(-1)
+                    c3.push(-1)
+                    counts.push(0)
+                    c0[curr] = newIdx
                 }
-                nextNode = list_get(c0, curr)
+                nextNode = c0[curr]
             } else if (branch == 1) {
-                if (list_get(c1, curr) == -1) {
-                    let newIdx = list_len(c0)
-                    list_push(c0, -1)
-                    list_push(c1, -1)
-                    list_push(c2, -1)
-                    list_push(c3, -1)
-                    list_push(counts, 0)
-                    list_set(c1, curr, newIdx)
+                if (c1[curr] == -1) {
+                    let newIdx = c0.length
+                    c0.push(-1)
+                    c1.push(-1)
+                    c2.push(-1)
+                    c3.push(-1)
+                    counts.push(0)
+                    c1[curr] = newIdx
                 }
-                nextNode = list_get(c1, curr)
+                nextNode = c1[curr]
             } else if (branch == 2) {
-                if (list_get(c2, curr) == -1) {
-                    let newIdx = list_len(c0)
-                    list_push(c0, -1)
-                    list_push(c1, -1)
-                    list_push(c2, -1)
-                    list_push(c3, -1)
-                    list_push(counts, 0)
-                    list_set(c2, curr, newIdx)
+                if (c2[curr] == -1) {
+                    let newIdx = c0.length
+                    c0.push(-1)
+                    c1.push(-1)
+                    c2.push(-1)
+                    c3.push(-1)
+                    counts.push(0)
+                    c2[curr] = newIdx
                 }
-                nextNode = list_get(c2, curr)
+                nextNode = c2[curr]
             } else {
-                if (list_get(c3, curr) == -1) {
-                    let newIdx = list_len(c0)
-                    list_push(c0, -1)
-                    list_push(c1, -1)
-                    list_push(c2, -1)
-                    list_push(c3, -1)
-                    list_push(counts, 0)
-                    list_set(c3, curr, newIdx)
+                if (c3[curr] == -1) {
+                    let newIdx = c0.length
+                    c0.push(-1)
+                    c1.push(-1)
+                    c2.push(-1)
+                    c3.push(-1)
+                    counts.push(0)
+                    c3[curr] = newIdx
                 }
-                nextNode = list_get(c3, curr)
+                nextNode = c3[curr]
             }
             curr = nextNode
             i = i + 1
         }
-        list_set(counts, curr, list_get(counts, curr) + 1)
+        counts[curr] = counts[curr] + 1
         k = k + 1
     }
 
@@ -252,10 +252,10 @@ public fn benchTrieSearch(scale: Int) -> Int {
             qSeed = benchRandom(qSeed)
             let branch = qSeed % 4
             let mut nextNode = -1
-            if (branch == 0) { nextNode = list_get(c0, curr) }
-            else if (branch == 1) { nextNode = list_get(c1, curr) }
-            else if (branch == 2) { nextNode = list_get(c2, curr) }
-            else { nextNode = list_get(c3, curr) }
+            if (branch == 0) { nextNode = c0[curr] }
+            else if (branch == 1) { nextNode = c1[curr] }
+            else if (branch == 2) { nextNode = c2[curr] }
+            else { nextNode = c3[curr] }
 
             if (nextNode == -1) {
                 found = false
@@ -265,7 +265,7 @@ public fn benchTrieSearch(scale: Int) -> Int {
             qi = qi + 1
         }
         if (found) {
-            checksum = (checksum + curr * 31 + list_get(counts, curr) + 1) % 1000000007
+            checksum = (checksum + curr * 31 + counts[curr] + 1) % 1000000007
         }
         q = q + 1
     }

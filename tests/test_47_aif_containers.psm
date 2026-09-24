@@ -34,17 +34,17 @@ struct Item {
 // regrown too -- reclaiming the elements must not reclaim the block they used to
 // live in.
 fn owned_elements() -> Int {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: 1 })
-    list_push(items, Item { value: 2 })
-    list_push(items, Item { value: 4 })
-    list_push(items, Item { value: 8 })
-    list_push(items, Item { value: 16 })
+    let mut items: Vec<Item> = []
+    items.push(Item { value: 1 })
+    items.push(Item { value: 2 })
+    items.push(Item { value: 4 })
+    items.push(Item { value: 8 })
+    items.push(Item { value: 16 })
 
     let mut total = 0
     let mut i = 0
-    while (i < list_len(items)) {
-        let e = list_get(items, i)
+    while (i < items.length) {
+        let e = items[i]
         total = total + e.value
         i = i + 1
     }
@@ -57,9 +57,9 @@ fn owned_elements() -> Int {
 // it would hand the teardown a frame slot. The value is small enough that it
 // would have been promoted before.
 fn small_element_is_not_stack() -> Int {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: 7 })
-    let e = list_get(items, 0)
+    let mut items: Vec<Item> = []
+    items.push(Item { value: 7 })
+    let e = items[0]
     return e.value
 }
 
@@ -69,10 +69,10 @@ fn small_element_is_not_stack() -> Int {
 // belongs to one function -- so this is the fact that had to come from somewhere
 // else.
 fn build(n: Int) -> Vec<Item> {
-    let mut out: Vec<Item> = list_new()
+    let mut out: Vec<Item> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Item { value: i })
+        out.push(Item { value: i })
         i = i + 1
     }
     return out
@@ -82,8 +82,8 @@ fn consumes_returned_container(n: Int) -> Int {
     let items = build(n)
     let mut total = 0
     let mut i = 0
-    while (i < list_len(items)) {
-        let e = list_get(items, i)
+    while (i < items.length) {
+        let e = items[i]
         total = total + e.value
         i = i + 1
     }
@@ -97,7 +97,7 @@ fn per_iteration() -> Int {
     let mut i = 0
     while (i < 20) {
         let batch = build(3)
-        total = total + list_len(batch)
+        total = total + batch.length
         i = i + 1
     }
     return total
@@ -131,7 +131,7 @@ fn identity(l: Vec<Item>) -> Vec<Item> {
 fn pass_through_is_not_owned() -> Int {
     let items = build(2)
     let same = identity(items)
-    return list_len(same)
+    return same.length
 }
 
 // Nested containers. The outer list's elements are lists, which need
@@ -150,25 +150,25 @@ fn pass_through_is_not_owned() -> Int {
 // per_iteration would quietly stop releasing. Context-insensitivity, doing
 // exactly what INFERENCE 6 says contexts are for.
 fn build_row() -> Vec<Item> {
-    let mut row: Vec<Item> = list_new()
-    list_push(row, Item { value: 1 })
-    list_push(row, Item { value: 2 })
+    let mut row: Vec<Item> = []
+    row.push(Item { value: 1 })
+    row.push(Item { value: 2 })
     return row
 }
 
 fn nested_containers() -> Int {
-    let rows: Vec<Vec<Item>> = list_new()
+    let mut rows: Vec<Vec<Item>> = []
     let mut i = 0
     while (i < 3) {
-        list_push(rows, build_row())
+        rows.push(build_row())
         i = i + 1
     }
 
     let mut total = 0
     let mut r = 0
-    while (r < list_len(rows)) {
-        let row = list_get(rows, r)
-        total = total + list_len(row)
+    while (r < rows.length) {
+        let row = rows[r]
+        total = total + row.length
         r = r + 1
     }
     return total
@@ -205,10 +205,10 @@ fn main() -> Int {
     bad = bad + check("nested", nested_containers(), 6)
 
     let forwarded = forwards(4)
-    bad = bad + check("forwards", list_len(forwarded), 4)
+    bad = bad + check("forwards", forwarded.length, 4)
     // Still readable: the callee's binding must not have released what it
     // returned. Reading a released element under --verify reads poison.
-    let head = list_get(forwarded, 0)
+    let head = forwarded[0]
     bad = bad + check("forwarded_head", head.value, 0)
 
     if (bad == 0) {

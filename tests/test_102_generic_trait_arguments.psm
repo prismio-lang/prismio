@@ -22,14 +22,14 @@ fn make<U: From<Int>>(value: Int) -> U {
 // The same target may implement distinct applications of one generic trait.
 impl ScaleBy<Int> for Label {
     fn scaleBy(self, value: Int) -> Int {
-        return strLength(self.text) + value
+        return self.text.length + value
     }
 }
 
 impl ScaleBy<Bool> for Label {
     fn scaleBy(self, value: Bool) -> Int {
-        if (value) { return strLength(self.text) + 100 }
-        return strLength(self.text)
+        if (value) { return self.text.length + 100 }
+        return self.text.length
     }
 }
 
@@ -43,7 +43,7 @@ fn scaleWithBool<U: ScaleBy<Bool>>(value: U) -> Int {
 
 // Nested type arguments exercise `>>` recovery and recursive identity.
 impl Wraps<Vec<Int>> for Label {
-    fn wraps(self) -> Bool { return strLength(self.text) > 0 }
+    fn wraps(self) -> Bool { return self.text.length > 0 }
 }
 
 fn acceptsWrapped<U: Wraps<Vec<Int>>>(value: U) -> Bool {

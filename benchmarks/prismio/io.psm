@@ -28,12 +28,12 @@ public fn benchLineProcessing(path: String) -> Int {
     let lines = text.lines()
     let mut checksum = 0
     let mut i = 0
-    while (i < list_len(lines)) {
-        let line = list_get(lines, i)
+    while (i < lines.length) {
+        let line = lines[i]
         checksum = (checksum + line.length() * 31 + line.count('a')) % 1000000007
         i = i + 1
     }
-    return checksum + list_len(lines)
+    return checksum + lines.length
 }
 
 public fn benchTokenization(scale: Int) -> Int {
@@ -73,75 +73,75 @@ public fn benchTokenization(scale: Int) -> Int {
 
 public fn benchBase64Codec(scale: Int) -> Int {
     let n = 30000 * scale
-    let mut input: Vec<Int> = list_new_with_capacity(n)
+    let mut input: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut seed = 17
     let mut i = 0
     while (i < n) {
         seed = benchRandom(seed)
-        list_push(input, seed % 256)
+        input.push(seed % 256)
         i = i + 1
     }
 
     let b64Chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     let encodedLen = (n / 3) * 4
-    let mut encoded: Vec<Int> = list_new_with_capacity(encodedLen)
+    let mut encoded: Vec<Int> = Vec<Int>.withCapacity(encodedLen)
     let mut initJ = 0
     while (initJ < encodedLen) {
-        list_push(encoded, 0)
+        encoded.push(0)
         initJ = initJ + 1
     }
 
     let mut k = 0
     let mut j = 0
     while (k < n) {
-        let b0 = list_get(input, k)
-        let b1 = list_get(input, k + 1)
-        let b2 = list_get(input, k + 2)
+        let b0 = input[k]
+        let b1 = input[k + 1]
+        let b2 = input[k + 2]
 
         let i0 = b0 >> 2
         let i1 = ((b0 & 3) << 4) | (b1 >> 4)
         let i2 = ((b1 & 15) << 2) | (b2 >> 6)
         let i3 = b2 & 63
 
-        list_set(encoded, j, b64Chars.byteAt(i0))
-        list_set(encoded, j + 1, b64Chars.byteAt(i1))
-        list_set(encoded, j + 2, b64Chars.byteAt(i2))
-        list_set(encoded, j + 3, b64Chars.byteAt(i3))
+        encoded[j] = b64Chars.byteAt(i0)
+        encoded[j + 1] = b64Chars.byteAt(i1)
+        encoded[j + 2] = b64Chars.byteAt(i2)
+        encoded[j + 3] = b64Chars.byteAt(i3)
 
         k = k + 3
         j = j + 4
     }
 
-    let mut inv: Vec<Int> = list_new_with_capacity(256)
+    let mut inv: Vec<Int> = Vec<Int>.withCapacity(256)
     let mut initInv = 0
     while (initInv < 256) {
-        list_push(inv, 0)
+        inv.push(0)
         initInv = initInv + 1
     }
     let mut ti = 0
     while (ti < 64) {
-        list_set(inv, b64Chars.byteAt(ti), ti)
+        inv[b64Chars.byteAt(ti)] = ti
         ti = ti + 1
     }
 
-    let mut decoded: Vec<Int> = list_new_with_capacity(n)
+    let mut decoded: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut initDec = 0
     while (initDec < n) {
-        list_push(decoded, 0)
+        decoded.push(0)
         initDec = initDec + 1
     }
 
     let mut dj = 0
     let mut di = 0
     while (dj < encodedLen) {
-        let c0 = list_get(inv, list_get(encoded, dj))
-        let c1 = list_get(inv, list_get(encoded, dj + 1))
-        let c2 = list_get(inv, list_get(encoded, dj + 2))
-        let c3 = list_get(inv, list_get(encoded, dj + 3))
+        let c0 = inv[encoded[dj]]
+        let c1 = inv[encoded[dj + 1]]
+        let c2 = inv[encoded[dj + 2]]
+        let c3 = inv[encoded[dj + 3]]
 
-        list_set(decoded, di, (c0 << 2) | (c1 >> 4))
-        list_set(decoded, di + 1, ((c1 & 15) << 4) | (c2 >> 2))
-        list_set(decoded, di + 2, ((c2 & 3) << 6) | c3)
+        decoded[di] = (c0 << 2) | (c1 >> 4)
+        decoded[di + 1] = ((c1 & 15) << 4) | (c2 >> 2)
+        decoded[di + 2] = ((c2 & 3) << 6) | c3
 
         dj = dj + 4
         di = di + 3
@@ -150,7 +150,7 @@ public fn benchBase64Codec(scale: Int) -> Int {
     let mut checksum: I64 = 0
     let mut ci = 0
     while (ci < n) {
-        checksum = (checksum * 31 + (list_get(decoded, ci) as I64)) % 1000000007
+        checksum = (checksum * 31 + (decoded[ci] as I64)) % 1000000007
         ci = ci + 1
     }
     return ((checksum + (encodedLen as I64)) % 1000000007) as Int

@@ -39,7 +39,7 @@ private fn structTypeKey(name: String) -> String {
 }
 
 internal fn isStructTypeKey(t: String) -> Bool {
-    return strStartsWith(t, "struct:")
+    return t.startsWith("struct:")
 }
 
 // A machine integer wide enough to overflow, which is the set the debug-mode
@@ -82,7 +82,7 @@ internal fn isValueStructKey(t: String) -> Bool {
 }
 
 internal fn structTypeName(t: String) -> String {
-    return strSubstring(t, 7, __builtin_string_len(t) - 7)
+    return t.substring(7, __builtin_string_len(t) - 7)
 }
 
 private fn llvmTypeName(t: String) -> String {
@@ -200,11 +200,11 @@ internal fn functionSymbolName(func: ASTNode) -> String {
 // `-> Array<T, N>` function, and back into the caller's frame.
 internal fn irArrayValueKey(t: TypeInfo) -> String {
     let elem = storageType(typeIrKey(ptr_to_type(t.child)))
-    return "arr:".concat(strFromInt(t.length), ":", elem)
+    return "arr:".concat(t.length.toString(), ":", elem)
 }
 
 internal fn isArrayValueKey(key: String) -> Bool {
-    return strStartsWith(key, "arr:")
+    return key.startsWith("arr:")
 }
 
 // The value key when `func` is declared `-> Array<T, N>`, and "" otherwise. Read

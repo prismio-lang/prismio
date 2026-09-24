@@ -11,12 +11,12 @@ struct Item {
     value: Int
 }
 
-fn hold(items: Vec<Item>, e: Item) {
-    list_push(items, e)
+fn hold(inout items: Vec<Item>, e: Item) {
+    items.push(e)
 }
 
 fn main() -> Int {
-    let items: Vec<Item> = list_new()
+    let mut items: Vec<Item> = []
     hold(items, Item { value: 1 })
-    return list_len(items)
+    return items.length
 }

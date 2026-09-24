@@ -9,7 +9,7 @@ import visibility.alpha as alpha
 
 // Shadows std.io's `print` for unqualified calls in this file.
 fn print(value: String) -> Int {
-    return str.strLength(value)
+    return str.length(value)
 }
 
 fn main() -> Int {
@@ -17,13 +17,13 @@ fn main() -> Int {
         io.println("FAIL: the local `print` should win unqualified")
         return 1
     }
-    if (str.strLength("abcde") != 5) {
+    if (str.length("abcde") != 5) {
         io.println("FAIL: alias qualifier")
         return 1
     }
     // The real import path keeps working: an alias adds a name, it does not
     // take one away.
-    if (std.string.strLength("ab") != 2) {
+    if (std.string.length("ab") != 2) {
         io.println("FAIL: full path still qualifies")
         return 1
     }

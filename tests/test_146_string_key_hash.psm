@@ -22,12 +22,12 @@ fn main() -> Int {
     mapSet(m, "abc", 1)
     // `strToLower` and `strToUpper` allocate whatever the length, so these are
     // a long key and a short one on the heap.
-    mapSet(m, strToLower("DEFGHIJKLMNOP"), 2)
-    mapSet(m, strToUpper("xyz"), 3)
+    mapSet(m, "DEFGHIJKLMNOP".toLower(), 2)
+    mapSet(m, "xyz".toUpper(), 3)
     mapSet(m, "é-key", 4)
     mapSet(m, "", 5)
 
-    if (mapGetOr(m, strToLower("ABC"), 0) != 1) { return fail("an inline key by a heap one") }
+    if (mapGetOr(m, "ABC".toLower(), 0) != 1) { return fail("an inline key by a heap one") }
     if (mapGetOr(m, "defghijklmnop", 0) != 2) { return fail("a heap key by a literal") }
     if (mapGetOr(m, "XYZ", 0) != 3) { return fail("a heap-short key by an inline one") }
     if (mapGetOr(m, "é-key", 0) != 4) { return fail("a key past 0x7F") }

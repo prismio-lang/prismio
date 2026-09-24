@@ -10,11 +10,11 @@ struct Named {
 }
 
 fn main() -> Int {
-    let items: Vec<Named> = list_new()
-    list_push(items, Named { label: "first", value: 3 })
-    list_set_exclusive(items, 0, Named { label: "second", value: 7 })
+    let mut items: Vec<Named> = []
+    items.push(Named { label: "first", value: 3 })
+    items.replace(0, Named { label: "second", value: 7 })
 
-    let current = list_get(items, 0)
+    let current = items[0]
     if (current.value != 7) {
         println("FAIL: exclusive replacement value")
         return 1

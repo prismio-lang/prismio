@@ -107,12 +107,12 @@ internal fn semaFunctionSymbol(module: ASTNode, fnNode: ASTNode) -> String {
 // The module path as a symbol fragment: `app.text` becomes `app_text`.
 private fn semaModulePrefix(file: Int) -> String {
     let qualifier = semaFileQualifier(file)
-    return strReplaceAll(qualifier, ".", "_")
+    return qualifier.replaceAll(".", "_")
 }
 
-private fn semaFileIsStandardLibrary(file: Int) -> Bool {
+internal fn semaFileIsStandardLibrary(file: Int) -> Bool {
     let qualifier = semaFileQualifier(file)
-    return strStartsWith(qualifier, "std.")
+    return qualifier.startsWith("std.")
 }
 
 // Whether this declaration is a program's own, with a standard-library function
@@ -169,7 +169,7 @@ private fn semaBuildTraitMethodIndex(module: ASTNode) {
                 let record = ptr_to_node(recordPtr)
                 if (record.kind == NodeKind.IMPL_METHOD) {
                     let entry = createNode(NodeKind.IMPL_METHOD)
-                    entry.s1 = strClone(stmt.s2)
+                    entry.s1 = stmt.s2.clone()
                     nodeSpanFrom(entry, record)
                     nodeListPush(entries, entry)
                 }
@@ -266,10 +266,10 @@ private fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeI
 internal fn semaCoercesToDyn(module: ASTNode, expected: TypeInfo, actual: TypeInfo) -> Bool {
     if (typeIsValid(expected) == false or typeIsValid(actual) == false) { return false }
     if (expected.kind != TypeKind.STRUCT) { return false }
-    if (strStartsWith(expected.name, "dyn$") == false) { return false }
-    if (actual.kind == TypeKind.STRUCT and strStartsWith(actual.name, "dyn$")) { return false }
+    if (expected.name.startsWith("dyn$") == false) { return false }
+    if (actual.kind == TypeKind.STRUCT and actual.name.startsWith("dyn$")) { return false }
 
-    let traitName = strSubstring(expected.name, 4, __builtin_string_len(expected.name) - 4)
+    let traitName = expected.name.substring(4, __builtin_string_len(expected.name) - 4)
     return semaTypeImplementsNamedTrait(module, typeKeyName(actual), traitName)
 }
 
@@ -365,7 +365,7 @@ private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
 // Cloned because diag_file_module is an `alias` into the registry's storage and
 // this returns an owned String.
 internal fn semaFileQualifier(file: Int) -> String {
-    return strClone(diag_file_module(file))
+    return diag_file_module(file).clone()
 }
 
 // The import path of a module whose last segment is `leaf`, or "" if none is.
@@ -382,10 +382,9 @@ internal fn semaModuleWithLeaf(leaf: String) -> String {
     let count = diag_file_count()
     for file in 0..<count {
         let qualifier = semaFileQualifier(file)
-        let dot = strLastIndexOf(qualifier, ".")
+        let dot = qualifier.lastIndexOf(".")
         if (dot >= 0) {
-            let tail = strSubstring(qualifier, dot + 1,
-                                    __builtin_string_len(qualifier) - dot - 1)
+            let tail = qualifier.substring(dot + 1, __builtin_string_len(qualifier) - dot - 1)
             if (tail.equals(leaf)) { return qualifier }
         }
     }
@@ -424,9 +423,9 @@ internal fn semaQualifierNamesModule(qualifier: String) -> Bool {
 // `std.string` is `std`, `ir.expr` is `ir`, and a module imported by a bare name
 // is "" -- the root package, which is also where the entry file sits.
 private fn semaPackageOf(qualifier: String) -> String {
-    let dot = strLastIndexOf(qualifier, ".")
+    let dot = qualifier.lastIndexOf(".")
     if (dot < 0) { return "" }
-    return strSubstring(qualifier, 0, dot)
+    return qualifier.substring(0, dot)
 }
 
 // v0.1 3.5. Whether this declaration is visible from `atFile`.
@@ -622,7 +621,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
                     // it this is "unknown function", which is true and useless:
                     // the function is right there, one line at the top of the
                     // file away from being callable.
-                    unimportedModule = strClone(declModule)
+                    unimportedModule = declModule.clone()
                 }
             }
         }
@@ -779,9 +778,9 @@ internal fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: I
     let mut noun = " arguments, found "
     if (expected == 1) { noun = " argument, found " }
     semaErrorAt(call, diagQuote(name).concat(" expects ",
-                                             strFromInt(expected),
+                                             expected.toString(),
                                              noun,
-                                             strFromInt(actual)))
+                                             actual.toString()))
     return false
 }
 

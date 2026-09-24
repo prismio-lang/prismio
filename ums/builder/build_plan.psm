@@ -34,31 +34,31 @@ private fn umsPlannedOutput(kind: UmsTargetKind, profileRoot: String, name: Stri
 }
 
 public fn umsBuildPlanCreate(project: UmsProjectModel,
-                      diagnostics: Vec<UmsDiagnostic>) -> UmsBuildPlan {
+                      inout diagnostics: Vec<UmsDiagnostic>) -> UmsBuildPlan {
     if (umsBuildProfileValid(project.build.profile) == false) {
         umsDiagnosticAdd(diagnostics, "UMS3001", project.manifestPath, 0, 0, 0,
             "invalid build profile '".concat(project.build.profile, "'"))
-        return UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") }
+        return UmsBuildPlan { stateRoot: "".clone(), artifactRoot: "".clone() }
     }
 
     let stateRoot = join_path(project.root, project.build.stateDirectory)
     let artifactRoot = join_path(stateRoot, project.build.buildDirectory)
     let profileRoot = join_path(artifactRoot, project.build.profile)
     let mut i = 0
-    while (i < list_len(project.targets)) {
-        let target = list_get(project.targets, i)
-        let plannedLinks: Vec<UmsLinkInput> = list_new()
+    while (i < project.targets.length) {
+        let target = project.targets[i]
+        let mut plannedLinks: Vec<UmsLinkInput> = []
         let mut linkIndex = 0
-        while (linkIndex < list_len(target.links)) {
-            let input = list_get(target.links, linkIndex)
-            list_push(plannedLinks, umsLinkInput(input.kind, input.value,
+        while (linkIndex < target.links.length) {
+            let input = target.links[linkIndex]
+            plannedLinks.push(umsLinkInput(input.kind, input.value,
                       input.line, input.col, input.len))
             linkIndex = linkIndex + 1
         }
         let planned = UmsTarget {
             kind: target.kind,
-            name: strClone(target.name),
-            entry: strClone(target.entry),
+            name: target.name.clone(),
+            entry: target.entry.clone(),
             sourcePath: join_path(project.root, target.entry),
             outputPath: umsPlannedOutput(target.kind, profileRoot, target.name),
             links: plannedLinks,
@@ -66,7 +66,7 @@ public fn umsBuildPlanCreate(project: UmsProjectModel,
             col: target.col,
             len: target.len
         }
-        list_set(project.targets, i, planned)
+        project.targets[i] = planned
         i = i + 1
     }
     return UmsBuildPlan { stateRoot: stateRoot, artifactRoot: artifactRoot }

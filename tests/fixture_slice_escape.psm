@@ -8,9 +8,9 @@ struct Item {
 // would leave the returned handle dangling; the analysis must raise the List to
 // Caller instead, just as test_53 already requires for an element view.
 fn escaping_slice(n: Int) -> Slice<Item> {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: n })
-    list_push(items, Item { value: n + 1 })
+    let mut items: Vec<Item> = []
+    items.push(Item { value: n })
+    items.push(Item { value: n + 1 })
     return items[0..<1]
 }
 

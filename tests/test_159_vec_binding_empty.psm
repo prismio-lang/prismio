@@ -18,7 +18,7 @@ fn fail(what: String) -> Int {
 }
 
 fn main() -> Int {
-    let items: Vec<Item>
+    let mut items: Vec<Item>
     items.push(Item { name: "first-long-enough-name", id: 1 })
     items.push(Item { name: "second-long-enough-name", id: 2 })
     if (items.length != 2 or items[1].id != 2) { return fail("Vec<Item>") }
@@ -32,7 +32,7 @@ fn main() -> Int {
     let mut total = 0
     let mut i = 0
     while (i < 4) {
-        let fresh: Vec<Int>
+        let mut fresh: Vec<Int>
         total = total + fresh.length
         fresh.push(i)
         i = i + 1

@@ -13,11 +13,11 @@ import std.vec
 import std.string
 
 fn word(i: Int) -> String {
-    return "element-number-".concat(strFromInt(i), "-long-enough-to-allocate")
+    return "element-number-".concat(i.toString(), "-long-enough-to-allocate")
 }
 
 fn kept() -> String {
-    let buf: Vec<String>
+    let mut buf: Vec<String>
     let mut keep = "start"
     let mut i = 0
     while (i < 3) {
@@ -30,7 +30,7 @@ fn kept() -> String {
 }
 
 fn early() -> String {
-    let v: Vec<String>
+    let mut v: Vec<String>
     v.push(word(7))
     let s = v[0]
     v.clear()
@@ -42,7 +42,7 @@ fn count(xs: Vec<String>) -> Int {
 }
 
 fn lent() -> Int {
-    let v: Vec<String>
+    let mut v: Vec<String>
     v.push(word(8))
     let n = count(v)
     v.clear()

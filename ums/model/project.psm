@@ -46,29 +46,29 @@ struct UmsProjectModel {
 
 internal fn umsProjectModel(root: String, manifestPath: String, profile: String) -> UmsProjectModel {
     return UmsProjectModel {
-        root: strClone(root),
-        manifestPath: strClone(manifestPath),
+        root: root.clone(),
+        manifestPath: manifestPath.clone(),
         metadata: UmsProjectMetadata {
-            name: strClone(""),
-            version: strClone(""),
-            prismioVersion: strClone(""),
-            description: strClone(""),
-            license: strClone(""),
-            licenseFile: strClone(""),
-            authors: list_new(),
+            name: "".clone(),
+            version: "".clone(),
+            prismioVersion: "".clone(),
+            description: "".clone(),
+            license: "".clone(),
+            licenseFile: "".clone(),
+            authors: [],
             descriptionDeclared: false,
             licenseDeclared: false,
             licenseFileDeclared: false,
             authorsDeclared: false
         },
         build: UmsBuildConfiguration {
-            profile: strClone(profile),
-            stateDirectory: strClone(".prismio"),
-            buildDirectory: strClone("build")
+            profile: profile.clone(),
+            stateDirectory: ".prismio".clone(),
+            buildDirectory: "build".clone()
         },
-        toolchain: UmsToolchainConfiguration { host: strClone("") },
-        targets: list_new(),
-        commands: list_new(),
-        dependencies: list_new()
+        toolchain: UmsToolchainConfiguration { host: "".clone() },
+        targets: [],
+        commands: [],
+        dependencies: []
     }
 }

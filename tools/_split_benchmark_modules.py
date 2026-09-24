@@ -218,7 +218,7 @@ extern fn prismio_rt_println(text: String borrow)
 
 fn benchPrint(text: String) { prismio_rt_print(text) }
 fn benchPrintln(text: String) { prismio_rt_println(text) }
-fn benchPrintln(value: Int) { prismio_rt_println(strFromInt(value)) }
+fn benchPrintln(value: Int) { prismio_rt_println(value.toString()) }
 
 struct BenchTimespec {
     seconds: I64,

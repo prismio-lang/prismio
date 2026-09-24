@@ -161,9 +161,9 @@ private fn aifKv(key: String, value: String) {
 private fn aifSitePosition(site: Int) -> String {
     let path = diag_file_path(aif_site_file(site))
     return path.concat(":",
-                       strFromInt(aif_site_line(site)),
+                       aif_site_line(site).toString(),
                        ":",
-                       strFromInt(aif_site_col(site)))
+                       aif_site_col(site).toString())
 }
 
 // The manifest's record name. Numbering within the declaring function rather
@@ -174,7 +174,7 @@ private fn aifSymbolOf(site: Int) -> String {
     let owner = aif_site_fn(site)
     let mut base = "<module>"
     if (owner >= 0) { base = aif_fn_symbol(owner) }
-    return base.concat("#", strFromInt(aif_site_ordinal(site)))
+    return base.concat("#", aif_site_ordinal(site).toString())
 }
 
 // Both the human report and the manifest need a stable record order. The native
@@ -205,12 +205,12 @@ private fn aifEntrySiteCount(sourcePath: String) -> Int {
 }
 
 private fn aifReportPathLeaf(path: String) -> String {
-    let forward = strLastIndexOf(path, "/")
-    let backward = strLastIndexOf(path, "\\")
+    let forward = path.lastIndexOf("/")
+    let backward = path.lastIndexOf("\\")
     let mut at = forward
     if (backward > at) { at = backward }
     if (at < 0) { return path }
-    return strSubstring(path, at + 1, __builtin_string_len(path) - at - 1)
+    return path.substring(at + 1, __builtin_string_len(path) - at - 1)
 }
 
 // Imported files already carry the logical name they were reached by. That is
@@ -221,12 +221,12 @@ private fn aifFriendlyPosition(site: Int) -> String {
     let file = aif_site_file(site)
     let mut label = aifReportPathLeaf(diag_file_path(file))
     if (diag_file_module(file).equals("") == false) {
-        label = strClone(diag_file_module(file))
+        label = diag_file_module(file).clone()
     }
     return label.concat(":",
-                        strFromInt(aif_site_line(site)),
+                        aif_site_line(site).toString(),
                         ":",
-                        strFromInt(aif_site_col(site)))
+                        aif_site_col(site).toString())
 }
 
 // Human storage groups. Placement wins over tier: a T2 allocation reached from
@@ -383,7 +383,7 @@ private fn aifHumanIdOf(sourcePath: String, wantedSite: Int) -> Int {
 }
 
 private fn aifEmitHumanRow(site: Int, id: Int) {
-    diag_styled("heading", aifPad(strFromInt(id), 5))
+    diag_styled("heading", aifPad(id.toString(), 5))
     print(aifPad(aifFriendlyPosition(site), 25))
     print(aifPad(typeKeyDisplay(aif_site_type(site)), 16))
     diag_styled(aifStorageClassStyle(aifStorageClass(site)), aifPad(aifHumanStorage(site), 34))
@@ -424,15 +424,15 @@ private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
     print("  ")
     diag_styled("dim", "Result   ")
     if (converged) {
-        diag_styled("ok", "converged in ".concat(strFromInt(aif_rounds()), " rounds"))
+        diag_styled("ok", "converged in ".concat(aif_rounds().toString(), " rounds"))
     } else {
-        diag_styled("warn", "budget exhausted after ".concat(strFromInt(aif_rounds()),
+        diag_styled("warn", "budget exhausted after ".concat(aif_rounds().toString(),
                                                                " rounds; unsettled decisions were made conservative"))
     }
     println("")
     print("  ")
     diag_styled("dim", "Sites    ")
-    print(strFromInt(total))
+    print(total.toString())
     diag_styled("dim", " potential allocation site(s), not runtime allocation counts")
     println("")
 
@@ -444,7 +444,7 @@ private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
         let mut style = aifStorageClassStyle(kind)
         if (count == 0) { style = "dim" }
         print("  ")
-        diag_styled(style, aifPad(aifStorageClassName(kind), 24).concat(strFromInt(count)))
+        diag_styled(style, aifPad(aifStorageClassName(kind), 24).concat(count.toString()))
         aifStorageBar(count, total, style)
         println("")
     }
@@ -470,7 +470,7 @@ private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
         println("")
     } else {
         print("  ")
-        print(strFromInt(imported))
+        print(imported.toString())
         println(" potential site(s) found in imported source.")
         diag_styled("dim", "  Imported sites are analyzed even when their functions are not executed.")
         println("")
@@ -511,7 +511,7 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     // analysis, not a build. SPEC 7.3's verify mode changes the allocator names
     // and nothing the inference does, so the facts here are the same either way.
     aifKv("build", "release")
-    aifKv("budget", strFromInt(aifBudget).concat(" rounds"))
+    aifKv("budget", aifBudget.toString().concat(" rounds"))
     if (converged) {
         aifKv("converged", "yes")
     } else {
@@ -520,19 +520,19 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     // Split because the two phases truncate very differently: a budget that
     // stops the points-to phase leaves the whole graph unproven, one that stops
     // the fact phase leaves only a frontier.
-    aifKv("rounds", strFromInt(aif_rounds()).concat(" (points-to ",
-                                                    strFromInt(aif_pt_rounds()),
+    aifKv("rounds", aif_rounds().toString().concat(" (points-to ",
+                                                    aif_pt_rounds().toString(),
                                                     ")"))
     // SPEC 4.2 requires the implementation document its Theta_stack. This is
     // where it does it.
     let mut thetaUnit = " bytes"
     if (aif_theta_mode() == 1) { thetaUnit = " fields (oracle-parity mode)" }
-    aifKv("theta-stack", strFromInt(aif_theta_stack()).concat(thetaUnit))
+    aifKv("theta-stack", aif_theta_stack().toString().concat(thetaUnit))
     aifKv("ffi-default", "borrow")
     aifKv("compiler", "prismio ".concat(version))
     aifKv("llvm", ir_llvm_version())
     aifKv("source", sourcePath)
-    aifKv("sites", strFromInt(total))
+    aifKv("sites", total.toString())
     // CYCLES 2's headline result, and it costs one line: a program whose types
     // have no non-trivial SCC needs no cycle collector, and this is where the
     // compiler says so. It is a property of the type declarations, checkable
@@ -543,10 +543,10 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     // layout, a string's is its length, and a fabricated per-string constant
     // would make the `pin` gate turn on a number nobody computed.
     let unsized = aif_arena_unsized_sites()
-    let mut budgetNote = strFromInt(aif_arena_high_water()).concat(" bytes peak arena (est.)")
+    let mut budgetNote = aif_arena_high_water().toString().concat(" bytes peak arena (est.)")
     if (unsized > 0) {
         budgetNote = budgetNote.concat(", ",
-                                       strFromInt(unsized),
+                                       unsized.toString(),
                                        " dynamically-sized site(s) excluded")
     }
     aifKv("peak-bytes", budgetNote)
@@ -563,9 +563,9 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     if (sccTypes == 0) {
         aifKv("cycles", "none")
     } else {
-        aifKv("cycles", "collector (".concat(strFromInt(sccTypes),
+        aifKv("cycles", "collector (".concat(sccTypes.toString(),
                                              " cyclic type(s), ",
-                                             strFromInt(aif_t4b_site_count()),
+                                             aif_t4b_site_count().toString(),
                                              " T4b site(s))"))
     }
     println("#")
@@ -628,9 +628,9 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
         let hotCount = aif_layout_hot_count(aif_site_type(site))
         if (hotCount > 0) {
             grouping = grouping.concat("+",
-                                       strFromInt(hotCount),
+                                       hotCount.toString(),
                                        "/",
-                                       strFromInt(aif_struct_nfields(aif_site_type(site))))
+                                       aif_struct_nfields(aif_site_type(site)).toString())
         }
         print(aifPad(grouping, 12))
         print(aifPad(origin, 18))
@@ -663,12 +663,12 @@ private fn aifEmitBrackets() {
         print("#   ")
         print(aifPad(aif_fn_name(aif_bracket_callee(i)), 30))
         print(aifPad("region:".concat(aif_scope_region(scope)), 24))
-        print(aifPad(strFromInt(aif_bracket_served(i)).concat(" site(s) served"), 20))
+        print(aifPad(aif_bracket_served(i).toString().concat(" site(s) served"), 20))
         let path = diag_file_path(aif_scope_region_file(scope))
         println(path.concat(":",
-                            strFromInt(aif_scope_region_line(scope)),
+                            aif_scope_region_line(scope).toString(),
                             ":",
-                            strFromInt(aif_scope_region_col(scope))))
+                            aif_scope_region_col(scope).toString()))
     }
 }
 
@@ -727,14 +727,14 @@ private fn aifEmitPackingAdvice(module: ASTNode) {
                                 }
                                 print("# ")
                                 print(aifPad(d.s1.concat(".", f.s1), 30))
-                                print(aifPad(strFromInt(declared).concat(" bytes"), 10))
+                                print(aifPad(declared.toString().concat(" bytes"), 10))
                                 // Narrowed to Int for printing, which is exact
                                 // here and only here: this branch runs when the
                                 // range fits in 1 or 2 bytes, so both ends are
                                 // inside i32 by the test just above.
-                                print(aifPad(strFromInt(lo as Int).concat("..",
-                                                                          strFromInt(hi as Int)), 22))
-                                println(strFromInt(needed).concat(" bytes"))
+                                print(aifPad((lo as Int).toString().concat("..",
+                                                                          (hi as Int).toString()), 22))
+                                println(needed.toString().concat(" bytes"))
                                 shown = shown + 1
                             }
                         }
@@ -753,9 +753,9 @@ private fn aifEmitKindRow(kind: Int) {
     if (n == 0) { return }
     print("  ")
     print(aifPad(aifKindName(kind), 9))
-    print(aifPad(strFromInt(n), 8))
+    print(aifPad(n.toString(), 8))
     for t in 0..<6 {
-        print(aifPad(strFromInt(aifCountKindTier(kind, t)), 7))
+        print(aifPad(aifCountKindTier(kind, t).toString(), 7))
     }
     println("")
 }
@@ -772,34 +772,34 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
     print("# ")
     print(sourcePath)
     print("  (")
-    print(strFromInt(aif_fn_count()))
+    print(aif_fn_count().toString())
     print(" functions, ")
-    print(strFromInt(aif_nominal_count()))
+    print(aif_nominal_count().toString())
     println(" nominal types)")
 
     print("aif-manifest 1 (in-compiler)  rounds=")
-    print(strFromInt(aif_rounds()))
+    print(aif_rounds().toString())
     print("  converged=")
     if (converged) { print("yes") } else { print("no") }
     print("  constraints=")
-    println(strFromInt(aif_con_count()))
+    println(aif_con_count().toString())
 
     print("sites        ")
-    print(strFromInt(total))
+    print(total.toString())
     print("   (excluded: ")
-    print(strFromInt(aifLiteralStrings))
+    print(aifLiteralStrings.toString())
     println(" string literals -- static, not allocated)")
 
     print("opaque-ret   ")
-    print(strFromInt(aifOpaqueReturns))
+    print(aifOpaqueReturns.toString())
     println("  (undeclared extern/sealed returns -- provenance unknown)")
 
     print("extern-alloc ")
-    print(strFromInt(aifExternAlloc))
+    print(aifExternAlloc.toString())
     println("  (values produced by runtime calls, e.g. str_concat)")
 
     print("static-ret   ")
-    print(strFromInt(aifStaticReturns))
+    print(aifStaticReturns.toString())
     println("  (declared `alias` with nothing to alias -- static, not allocated)")
 
     println("#")
@@ -811,8 +811,8 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
         if (t < 3) { cheap = cheap + n }
         print("  ")
         print(aifPad(aifTierName(t), 5))
-        print(aifPad(strFromInt(n), 8))
-        print(aifPad(strFromInt(100 * n / denom).concat("%"), 6))
+        print(aifPad(n.toString(), 8))
+        print(aifPad((100 * n / denom).toString().concat("%"), 6))
         let mut bar = ""
         let width = 60 * n / denom
         repeat(width) {
@@ -823,11 +823,11 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
 
     println("")
     print("  T0-T2 (no runtime bookkeeping): ")
-    print(strFromInt(cheap))
+    print(cheap.toString())
     print(" / ")
-    print(strFromInt(total))
+    print(total.toString())
     print(" = ")
-    print(strFromInt(100 * cheap / denom))
+    print((100 * cheap / denom).toString())
     println("%")
     print("  H1 kill criterion is < 70%.  ")
     if (100 * cheap / denom >= 70) { println("PASS") } else { println("FAIL") }
@@ -852,7 +852,7 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
         }
         print("  ")
         print(aifPad(aifThreadName(ti), 12))
-        println(strFromInt(n))
+        println(n.toString())
     }
 
     println("")
@@ -869,14 +869,14 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
     }
     if (cyclic == 0) {
         print("  none -- no struct type lies in a non-trivial SCC, of ")
-        print(strFromInt(structs))
+        print(structs.toString())
         println(" struct types.")
         println("  The collector can be omitted from the binary entirely.")
     } else {
         print("  collector needed: ")
-        print(strFromInt(cyclic))
+        print(cyclic.toString())
         print(" of ")
-        print(strFromInt(structs))
+        print(structs.toString())
         println(" struct types lie in or reach a non-trivial SCC")
     }
 
@@ -931,35 +931,35 @@ private fn aifEmitBracketing() {
     println("# call-site bracketing (SPEC 5.2.1) -- may a caller's region reach a callee's allocations?")
 
     print("bracketable  ")
-    print(strFromInt(ok))
+    print(ok.toString())
     print(" / ")
-    print(strFromInt(fnCount))
+    print(fnCount.toString())
     println("  (obligations 1, 2, 4: nothing the extent allocates outlives the call)")
 
     print("sole-regime  ")
-    print(strFromInt(sole))
+    print(sole.toString())
     println("  (of those: one call site, so regime (a) holds whatever the region)")
 
     print("region-calls ")
-    print(strFromInt(aif_region_call_sites()))
+    print(aif_region_call_sites().toString())
     print(" / ")
-    print(strFromInt(aif_call_edge_count()))
+    print(aif_call_edge_count().toString())
     print("  call sites lie inside a region; ")
-    print(strFromInt(aif_bracketable_region_call_sites()))
+    print(aif_bracketable_region_call_sites().toString())
     println(" of them reach a bracketable callee")
 
     print("br-global    ")
-    println(strFromInt(nGlobal))
+    println(nGlobal.toString())
     print("br-param     ")
-    println(strFromInt(nParam))
+    println(nParam.toString())
     print("br-opaque    ")
-    println(strFromInt(nOpaque))
+    println(nOpaque.toString())
     print("br-drop      ")
-    println(strFromInt(nDrop))
+    println(nDrop.toString())
     print("br-shared    ")
-    println(strFromInt(nShared))
+    println(nShared.toString())
     print("br-multicall ")
-    print(strFromInt(nMulti))
+    print(nMulti.toString())
     println("  (more than one call site: regime (a) is then a question about the region)")
 
     // The placement itself (SPEC 5.2.1.1), and the two numbers are deliberately
@@ -970,7 +970,7 @@ private fn aifEmitBracketing() {
     // site already has the frame and a T3 one has a count in front of it. A
     // bracket with 0 served is the call-site form of the inert `region`.
     print("bracketed    ")
-    print(strFromInt(aif_bracket_count()))
+    print(aif_bracket_count().toString())
     print("  call site(s) placed; ")
     let mut served = 0
     let mut b = 0
@@ -978,7 +978,7 @@ private fn aifEmitBracketing() {
         served = served + aif_bracket_served(b)
         b = b + 1
     }
-    print(strFromInt(served))
+    print(served.toString())
     println(" site(s) now arena-served")
 }
 
@@ -1328,7 +1328,7 @@ internal fn aifEmitBracketing(site: Int) {
     if (unsafeMask == 0) {
         if (mask == 0) {
             print("      yes  -- every obligation holds, and the body serves one regime (")
-            print(strFromInt(calls))
+            print(calls.toString())
             println(" call site)")
         } else if (mask / AIF_BR_B_SHARED_BODY % 2 == 1) {
             println("      no   -- the body is reachable from outside the bracket, so it would")
@@ -1339,7 +1339,7 @@ internal fn aifEmitBracketing(site: Int) {
             // question belongs to a region, and the `callers` line below is
             // where a reader finds out whether one was found.
             print("      maybe -- every obligation holds, and the body has ")
-            print(strFromInt(calls))
+            print(calls.toString())
             println(" call sites")
             println("      note     one regime iff all of them are bracketed into the same region,")
             println("               which is decided per region, not here")
@@ -1359,9 +1359,9 @@ internal fn aifEmitBracketing(site: Int) {
     // them is still never placed if nothing calls it from a region, and saying
     // "yes" without this would report a property that reads as a placement.
     print("      callers  ")
-    print(strFromInt(inRegion))
+    print(inRegion.toString())
     print(" of ")
-    print(strFromInt(calls))
+    print(calls.toString())
     if (inRegion == 0) {
         println(" call sites lie inside a region -- so no arena would serve it either way")
     } else {
@@ -1384,7 +1384,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
         println("")
     }
 
-    diag_styled("heading", "Allocation ".concat(strFromInt(aifHumanIdOf(sourcePath, site))))
+    diag_styled("heading", "Allocation ".concat(aifHumanIdOf(sourcePath, site).toString()))
     println("")
     aifStyledKv("Location", "", aifFriendlyPosition(site))
     aifStyledKv("Type", "", typeKeyDisplay(aif_site_type(site)))
@@ -1421,9 +1421,9 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
         print(aifPad(aif_rule_name(rule), 10))
         print(aifPad(diag_file_path(aif_cause_file(i)), 36))
         print(" ")
-        print(strFromInt(aif_cause_line(i)))
+        print(aif_cause_line(i).toString())
         print(":")
-        println(strFromInt(aif_cause_col(i)))
+        println(aif_cause_col(i).toString())
     }
 
     aifEmitPlacement(site)
@@ -1442,7 +1442,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
         let repair = aifRepairFor(aif_cause_rule(j))
         if (repair.equals("") == false) {
             print("    ")
-            print(strFromInt(rank))
+            print(rank.toString())
             print(". ")
             println(repair)
             rank = rank + 1
@@ -1457,7 +1457,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
     // truncated run the same pin is unproven rather than disproven, and SPEC
     // 5.4.2 makes it a warning that raising the budget may clear.
     print("    ")
-    print(strFromInt(rank))
+    print(rank.toString())
     print(". pin(")
     print(aifTierName(aif_tier_of(site) - 1))
     if (converged) {
@@ -1477,7 +1477,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
 // stable symbol from a manifest diff. Returns 1 when it found one.
 public fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> Int {
     aifPrepareOrder()
-    let numeric = optionOr(strParseInt(selector), -1)
+    let numeric = optionOr(selector.parseInt(), -1)
     if (numeric > 0) {
         let selected = aifHumanSiteAtId(sourcePath, numeric)
         if (selected >= 0) {
@@ -1617,7 +1617,7 @@ private fn aifReportPlacementPin(i: Int) -> Int {
         diag_note("the call that reached it was bracketed into ".concat(want,
                                                                         " (SPEC 5.2.1.1 regime (a)) and no longer is:"))
         diag_note(aif_fn_name(f).concat(" has ",
-                                        strFromInt(aif_fn_call_sites(f)),
+                                        aif_fn_call_sites(f).toString(),
                                         " call sites, and a bracketed callee may have exactly one outside the region"))
         return 1
     }
@@ -1645,11 +1645,11 @@ public fn aifReportBudgets(converged: Bool) -> Int {
         if (cap > 0) {
             let served = aif_scope_served(s)
             if (served > cap) {
-                let asserted = strFromInt(cap).concat(" asserted")
+                let asserted = cap.toString().concat(" asserted")
                 diag_error_at_code("P5006", aif_scope_budget_file(s), aif_scope_budget_line(s),
                               aif_scope_budget_col(s), 0,
                               "region ".concat(aif_scope_region(s), " exceeds its budget: ",
-                                               strFromInt(served), " bytes estimated, ",
+                                               served.toString(), " bytes estimated, ",
                                                asserted))
                 diag_note("the estimate counts statically sized allocations only; a string's length is a run-time value")
                 errors = errors + 1
@@ -1743,7 +1743,7 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                     let total = aif_struct_nfields(d.s1)
                     let mut label = "unsplit"
                     if (hot < total) {
-                        label = "split ".concat(strFromInt(hot), "/", strFromInt(total))
+                        label = "split ".concat(hot.toString(), "/", total.toString())
                     }
                     if (i == best) { label = label.concat(" *") }
                     let mut emitted = ""
@@ -1756,12 +1756,12 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                     }
                     print("  ")
                     print(aifPad(d.s1, 24))
-                    print(aifPad(strFromInt(total), 8))
-                    print(aifPad(strFromInt(trav), 6))
+                    print(aifPad(total.toString(), 8))
+                    print(aifPad(trav.toString(), 6))
                     print(aifPad(label, 15))
-                    print(aifPad(strFromInt(aif_layout_cand_bytes(i, 0)), 7))
-                    print(aifPad(strFromInt(aif_layout_cand_bytes(i, 1)), 8))
-                    print(aifPad(strFromInt(aif_layout_cand_ratio(i)), 10))
+                    print(aifPad(aif_layout_cand_bytes(i, 0).toString(), 7))
+                    print(aifPad(aif_layout_cand_bytes(i, 1).toString(), 8))
+                    print(aifPad(aif_layout_cand_ratio(i).toString(), 10))
                     println(emitted)
                 }
                 // A type nothing traverses has no evidence behind its ranking:

@@ -29,13 +29,13 @@ fn rootValue(t: Tree) -> Int {
 }
 
 fn main() -> Int {
-    let a: Vec<Tree> = list_new()
-    let b: Vec<Tree> = list_new()
-    list_push(a, Tree.Node(Tree.Leaf, 1, Tree.Leaf))
-    list_push(b, list_get(a, 0))
+    let mut a: Vec<Tree> = []
+    let mut b: Vec<Tree> = []
+    a.push(Tree.Node(Tree.Leaf, 1, Tree.Leaf))
+    b.push(a[0])
 
-    let changed = mapAdd(list_get(a, 0), 10)
-    let before = rootValue(list_get(b, 0))
+    let changed = mapAdd(a[0], 10)
+    let before = rootValue(b[0])
     let after = rootValue(changed)
     if (before != 1 or after != 11) {
         println("FAIL: shared rebuild was mutated in place")

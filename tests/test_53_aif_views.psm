@@ -29,19 +29,19 @@ struct Item {
 // caller instead, so it sinks T1 -> T2 and the scope drop does not happen.
 // ---------------------------------------------------------------------------
 fn view_escapes_by_return(n: Int) -> Item {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: n })
-    list_push(items, Item { value: n + 1 })
-    return list_get(items, 0)
+    let mut items: Vec<Item> = []
+    items.push(Item { value: n })
+    items.push(Item { value: n + 1 })
+    return items[0]
 }
 
 // The same escape one hop later. The view is bound to a name first, which is
 // why provenance has to ride the points-to graph: the `return` sees the value
 // set of `e`, not of the `list_get` that produced it.
 fn view_escapes_through_a_binding(n: Int) -> Item {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: n })
-    let e = list_get(items, 0)
+    let mut items: Vec<Item> = []
+    items.push(Item { value: n })
+    let e = items[0]
     return e
 }
 
@@ -55,14 +55,14 @@ fn view_escapes_through_a_binding(n: Int) -> Item {
 // every list in the file resolved through it and one escaping list demoted all
 // the others.
 fn view_stays_local() -> Int {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: 3 })
-    list_push(items, Item { value: 4 })
+    let mut items: Vec<Item> = []
+    items.push(Item { value: 3 })
+    items.push(Item { value: 4 })
 
     let mut total = 0
     let mut i = 0
-    while (i < list_len(items)) {
-        let e = list_get(items, i)
+    while (i < items.length) {
+        let e = items[i]
         total = total + e.value
         i = i + 1
     }
@@ -72,10 +72,10 @@ fn view_stays_local() -> Int {
 // A scalar read out of a container is a copy, not a view: it goes into a
 // register and keeps nothing alive. Returning one must not demote the list.
 fn scalar_read_is_not_a_view() -> Int {
-    let nums: Vec<Int> = list_new()
-    list_push(nums, 10)
-    list_push(nums, 32)
-    return list_get(nums, 0) + list_get(nums, 1)
+    let mut nums: Vec<Int> = []
+    nums.push(10)
+    nums.push(32)
+    return nums[0] + nums[1]
 }
 
 // A view taken in a callee, of a collection its caller owns. The view dies with
@@ -85,8 +85,8 @@ fn scalar_read_is_not_a_view() -> Int {
 fn sum_visible(items: Vec<Item>) -> Int {
     let mut total = 0
     let mut i = 0
-    while (i < list_len(items)) {
-        let e = list_get(items, i)
+    while (i < items.length) {
+        let e = items[i]
         total = total + e.value
         i = i + 1
     }
@@ -94,9 +94,9 @@ fn sum_visible(items: Vec<Item>) -> Int {
 }
 
 fn view_in_a_callee() -> Int {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: 100 })
-    list_push(items, Item { value: 23 })
+    let mut items: Vec<Item> = []
+    items.push(Item { value: 100 })
+    items.push(Item { value: 23 })
     return sum_visible(items)
 }
 

@@ -6,7 +6,7 @@ import std.string
 import trait_args.source
 
 impl ScaleBy<Int> for String {
-    fn scaleBy(self, value: Int) -> Int { return strLength(self) + value }
+    fn scaleBy(self, value: Int) -> Int { return self.length + value }
 }
 
 fn main() -> Int { return 0 }

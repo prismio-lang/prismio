@@ -4,7 +4,7 @@
 // it is written, with the replacement named, rather than left to fail as an
 // unknown type.
 fn count(xs: List<Int>) -> Int {
-    return list_len(xs)
+    return xs.length
 }
 
 fn main() -> Int {

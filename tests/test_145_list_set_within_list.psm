@@ -23,13 +23,13 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let copies: Vec<Pt> = list_new()
-    list_push(copies, Pt { x: 1, y: 10 })
-    list_push(copies, Pt { x: 2, y: 20 })
-    list_push(copies, Pt { x: 3, y: 30 })
-    list_set(copies, 0, list_get(copies, 2))
-    if (list_get(copies, 0).x != 3 or list_get(copies, 0).y != 30
-            or list_get(copies, 1).x != 2 or list_get(copies, 2).y != 30) {
+    let mut copies: Vec<Pt> = []
+    copies.push(Pt { x: 1, y: 10 })
+    copies.push(Pt { x: 2, y: 20 })
+    copies.push(Pt { x: 3, y: 30 })
+    copies[0] = copies[2]
+    if (copies[0].x != 3 or copies[0].y != 30
+            or copies[1].x != 2 or copies[2].y != 30) {
         return fail("a flat element copied within its own list")
     }
     println("PASS")

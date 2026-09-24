@@ -1,4 +1,4 @@
-// expect-error: list_set_exclusive requires a boxed struct element type
+// expect-error: `replace` requires a boxed struct element type
 
 struct Flat {
     x: Int,
@@ -6,8 +6,8 @@ struct Flat {
 }
 
 fn main() -> Int {
-    let items: Vec<Flat> = list_new()
-    list_push(items, Flat { x: 1, y: 2 })
-    list_set_exclusive(items, 0, Flat { x: 3, y: 4 })
+    let mut items: Vec<Flat> = []
+    items.push(Flat { x: 1, y: 2 })
+    items.replace(0, Flat { x: 3, y: 4 })
     return 0
 }

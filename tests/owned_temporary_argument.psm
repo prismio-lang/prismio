@@ -85,10 +85,10 @@ fn band(f: Int, i: Int, s: Int) -> Band {
 // otherwise hide the whole question. An extern with no contract has unknown
 // provenance, and that is the property being used -- not anything about `abs`.
 fn drive(bound: Bool) -> Int {
-    let mut samples: Vec<Int> = list_new()
+    let mut samples: Vec<Int> = []
     let mut g = 0
     while (g < 20) {
-        list_push(samples, 0)
+        samples.push(0)
         g = g + 1
     }
 
@@ -104,7 +104,7 @@ fn drive(bound: Bool) -> Int {
             total = total + simulate(band(frame, 0, 32)) + simulate(band(frame, 1, 32))
         }
         let t1 = abs(frame + 1)
-        list_set(samples, frame, t1 - t0)
+        samples[frame] = t1 - t0
         frame = frame + 1
     }
     return total

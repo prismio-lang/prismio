@@ -34,10 +34,10 @@ fn main() -> Int {
     // round trip, which is the property that actually has to hold on every host.
     let dir = joinPath("a", "b")
     let joined = joinPath(dir, "c.psm")
-    if (strContains(joined, "c.psm") == false) {
+    if (joined.contains("c.psm") == false) {
         return fail("joinPath should end with the file name")
     }
-    if (strStartsWith(joined, dir) == false) {
+    if (joined.startsWith(dir) == false) {
         return fail("joinPath should begin with the directory")
     }
     if (directoryOf(joined).equals(dir) == false) {
@@ -65,12 +65,12 @@ fn main() -> Int {
     }
 
     let cwd = currentDirectory()
-    if (strLength(cwd) == 0) {
+    if (cwd.length == 0) {
         return fail("currentDirectory should never be empty -- it falls back to \".\"")
     }
 
     let exeDir = executableDirectory()
-    if (strLength(exeDir) == 0) {
+    if (exeDir.length == 0) {
         return fail("executableDirectory should never be empty -- it falls back to \".\"")
     }
 
@@ -81,16 +81,16 @@ fn main() -> Int {
     }
 
     let program = process.args[0]
-    if (strLength(program) == 0) {
+    if (program.length == 0) {
         return fail("process.args[0] should be the program name")
     }
 
     // Out of range answers `""`, which is also what an empty argument answers.
     // `count` is the discrimination, and it is one property away.
-    if (strLength(process.args[0 - 1]) != 0) {
+    if (process.args[0 - 1].length != 0) {
         return fail("a negative index should answer the empty string")
     }
-    if (strLength(process.args[9999]) != 0) {
+    if (process.args[9999].length != 0) {
         return fail("an index past the end should answer the empty string")
     }
 

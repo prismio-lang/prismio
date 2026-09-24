@@ -113,9 +113,9 @@ fn check(name: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(name)
     print(": got ")
-    print(strFromInt(got))
+    print(got.toString())
     print(" want ")
-    println(strFromInt(want))
+    println(want.toString())
     return 1
 }
 

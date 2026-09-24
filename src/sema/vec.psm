@@ -9,7 +9,8 @@
 // stops the escape analysis releasing the container it came from.
 //
 // The size queries are lowered too, for a smaller reason: they are one field
-// read, and `v.length` in a loop condition should not be a call.
+// read, and `v.length` in a loop condition should not be a call. A Slice's and a
+// DataView's `length` are the same query on their own runtime entry point.
 //
 // COLLECTIONS.md has the approved list.
 
@@ -23,9 +24,18 @@ import std.string
 // The runtime entry point a method becomes by prepending the receiver, or "" when
 // the name is not a plain one. The shaped ones -- `clear`, `first`, `last`,
 // `isEmpty`, `isNotEmpty` -- are built by semaVecLower itself.
-private fn semaVecEntryPoint(name: String) -> String {
+private fn semaVecEntryPoint(kind: TypeKind, name: String) -> String {
+    if (kind == TypeKind.SLICE) {
+        if (name.equals("length")) { return "slice_len" }
+        return ""
+    }
+    if (kind == TypeKind.DATAVIEW) {
+        if (name.equals("length")) { return "data_len" }
+        return ""
+    }
     if (name.equals("push")) { return "list_push" }
     if (name.equals("set")) { return "list_set" }
+    if (name.equals("replace")) { return "list_set_exclusive" }
     if (name.equals("swap")) { return "list_swap" }
     if (name.equals("insert")) { return "list_insert" }
     if (name.equals("reserve")) { return "list_reserve" }
@@ -37,9 +47,14 @@ private fn semaVecEntryPoint(name: String) -> String {
 
 // How many arguments the method takes after its receiver, or -1 when this
 // module does not lower it.
-private fn semaVecArity(name: String) -> Int {
+private fn semaVecArity(kind: TypeKind, name: String) -> Int {
+    if (kind != TypeKind.LIST) {
+        if (name.equals("length")) { return 0 }
+        return 0 - 1
+    }
     if (name.equals("push")) { return 1 }
     if (name.equals("set")) { return 2 }
+    if (name.equals("replace")) { return 2 }
     if (name.equals("swap")) { return 2 }
     if (name.equals("insert")) { return 2 }
     if (name.equals("reserve")) { return 1 }
@@ -54,10 +69,11 @@ private fn semaVecArity(name: String) -> Int {
     return 0 - 1
 }
 
-// Whether `name` read with no parentheses is one of Vec's properties. The size
-// queries and the two ends; none of them allocates.
-internal fn semaVecIsProperty(name: String) -> Bool {
+// Whether `name` read with no parentheses is one of the collection's
+// properties: the size queries, and a Vec's two ends. None of them allocates.
+internal fn semaVecIsProperty(kind: TypeKind, name: String) -> Bool {
     if (name.equals("length")) { return true }
+    if (kind != TypeKind.LIST) { return false }
     if (name.equals("capacity")) { return true }
     if (name.equals("first")) { return true }
     if (name.equals("last")) { return true }
@@ -69,14 +85,14 @@ internal fn semaVecIsProperty(name: String) -> Bool {
 private fn semaVecIntLiteral(text: String, at: ASTNode) -> ASTNode {
     let literal = createNode(NodeKind.LITERAL_EXPR)
     literal.i1 = TokenType.NUMBER_LITERAL
-    literal.s1 = strClone(text)
+    literal.s1 = text.clone()
     nodeSpanFrom(literal, at)
     return literal
 }
 
 private fn semaVecCall(name: String, args: Ptr, at: ASTNode) -> ASTNode {
     let callee = createNode(NodeKind.IDENTIFIER_EXPR)
-    callee.s1 = strClone(name)
+    callee.s1 = name.clone()
     nodeSpanFrom(callee, at)
     let call = createNode(NodeKind.CALL_EXPR)
     call.child1 = node_to_ptr(callee)
@@ -104,12 +120,17 @@ internal fn semaVecNotLowered() -> Int { return 0 }
 internal fn semaVecRewritten() -> Int { return 1 }
 internal fn semaVecRejected() -> Int { return 2 }
 
+// Whether this module lowers methods on a receiver of this kind.
+internal fn semaVecLowersKind(kind: TypeKind) -> Bool {
+    return kind == TypeKind.LIST or kind == TypeKind.SLICE or kind == TypeKind.DATAVIEW
+}
+
 // Rewrites `expr` in place into the lowering of `receiver.name(args)`, where
-// `receiver` is already known to be a Vec. `args` is the chain after the
-// receiver.
-internal fn semaVecLower(module: ASTNode, expr: ASTNode, name: String,
+// `receiver` is already known to be of `kind` (semaVecLowersKind). `args` is
+// the chain after the receiver.
+internal fn semaVecLower(module: ASTNode, expr: ASTNode, kind: TypeKind, name: String,
                          receiver: ASTNode, args: Ptr) -> Int {
-    let arity = semaVecArity(name)
+    let arity = semaVecArity(kind, name)
     if (arity < 0) { return semaVecNotLowered() }
 
     let mut given = 0
@@ -145,7 +166,7 @@ internal fn semaVecLower(module: ASTNode, expr: ASTNode, name: String,
         return semaVecRewritten()
     }
 
-    let mut target = semaVecEntryPoint(name)
+    let mut target = semaVecEntryPoint(kind, name)
     if (name.equals("clear")) {
         target = "list_truncate"
         receiver.next = node_to_ptr(semaVecIntLiteral("0", expr))
@@ -204,10 +225,10 @@ internal fn semaVecLowerIndexStore(stmt: ASTNode, target: ASTNode, store: String
     return call
 }
 
-// `Vec<T>.withCapacity(n)` -- the one associated function. The element type is
-// written, not inferred, so it becomes std.vec's `withCapacity<T>(n)`, which
-// builds the list inside an instantiation that knows `T` and therefore chooses
-// the right storage for it.
+// `Vec<T>.withCapacity(n)` -- the one associated function. It is `[]` with room
+// for `n`, and lowers as `[]` does: onto the runtime, typed `Vec<T>` from the
+// written `T`, because a container's element storage is chosen from the type at
+// its construction site. So, like `[]`, it needs no import and costs no call.
 internal fn semaVecAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode,
                               name: String) -> Int {
     if (qualifier.s1.equals("Vec") == false) { return semaVecNotLowered() }
@@ -223,21 +244,98 @@ internal fn semaVecAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
         nodeSetType(expr, typeInvalid())
         return semaVecRejected()
     }
-    if (monoHasTemplate(module, name, NodeKind.FUNCTION) == false) {
-        semaErrorAt(expr, "`Vec<T>.withCapacity` needs `import std.vec`")
-        nodeSetType(expr, typeInvalid())
-        return semaVecRejected()
-    }
     let written = createNode(NodeKind.TYPE_ANNOTATION)
-    written.s1 = strClone(name)
+    written.s1 = "List"
     written.i2 = 1
     written.child1 = qualifier.child1
     nodeSpanFrom(written, qualifier)
+    let vecT = semaAnnotationType(module, written)
+    if (typeIsValid(vecT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return semaVecRejected()
+    }
 
     let callee = createNode(NodeKind.IDENTIFIER_EXPR)
-    callee.s1 = strClone(name)
+    callee.s1 = "list_new_with_capacity"
     nodeSpanFrom(callee, expr)
+    expr.s1 = ""
     expr.child1 = node_to_ptr(callee)
-    expr.child3 = node_to_ptr(written)
+    expr.child3 = ptr_null()
+    semaExpr(module, expr)
+    nodeSetType(expr, vecT)
     return semaVecRewritten()
+}
+
+// ---------------------------------------------------------------------------
+// The runtime layer is std's
+// ---------------------------------------------------------------------------
+
+// The spelling a program writes for a runtime entry point, or "" when `name` is
+// not one. These are what the methods above lower to; std/ is the layer that
+// implements them and the only one that names them.
+private fn semaRuntimeCallSpelling(name: String) -> String {
+    if (name.equals("list_new")) { return "[]" }
+    if (name.equals("list_new_with_capacity")) { return "Vec<T>.withCapacity(n)" }
+    if (name.equals("list_len")) { return "v.length" }
+    if (name.equals("list_get")) { return "v[i]" }
+    if (name.equals("list_push")) { return "v.push(x)" }
+    if (name.equals("list_set")) { return "v[i] = x" }
+    if (name.equals("list_set_exclusive")) { return "v.replace(i, x)" }
+    if (name.equals("list_swap")) { return "v.swap(i, j)" }
+    if (name.equals("list_insert")) { return "v.insert(i, x)" }
+    if (name.equals("list_capacity")) { return "v.capacity" }
+    if (name.equals("list_reserve")) { return "v.reserve(n)" }
+    if (name.equals("list_truncate")) { return "v.truncate(n)" }
+    if (name.equals("list_remove_at")) { return "v.removeAt(i)" }
+    if (name.equals("slice_len")) { return "s.length" }
+    if (name.equals("slice_set")) { return "s[i] = x" }
+    if (name.equals("data_len")) { return "view.length" }
+    return ""
+}
+
+// Refuses a runtime entry point written outside std/.
+//
+// **Syntactic, and first in analyzeModule**, because the lowerings above write
+// these same calls: after them a call to `list_push` may be `v.push(x)`, and
+// only before them is every one of these a call somebody typed. Both chains,
+// because monoCollectTemplates parks generic templates on `child2`.
+internal fn semaRefuseRuntimeCalls(module: ASTNode) {
+    semaRuntimeCallsInDecls(module.child1)
+    semaRuntimeCallsInDecls(module.child2)
+}
+
+private fn semaRuntimeCallsInDecls(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (semaFileIsStandardLibrary(decl.file) == false) {
+            if (decl.kind == NodeKind.FUNCTION or decl.kind == NodeKind.VARIABLE_DECL) {
+                semaRuntimeCallsIn(decl.child2)
+            } else if (decl.kind == NodeKind.TRAIT_DECL) {
+                semaRuntimeCallsInDecls(decl.child1)
+            }
+        }
+        p = decl.next
+    }
+}
+
+private fn semaRuntimeCallsIn(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.CALL_EXPR and nodeExists(n.child1)) {
+            let callee = ptr_to_node(n.child1)
+            let spelling = semaRuntimeCallSpelling(callee.s1)
+            if (callee.kind == NodeKind.IDENTIFIER_EXPR and spelling.equals("") == false) {
+                semaErrorAt(callee, diagQuote(callee.s1).concat(" is internal to the standard library"))
+                diag_note("write `".concat(spelling, "`"))
+            }
+        }
+        if (n.kind != NodeKind.TYPE_ANNOTATION) {
+            semaRuntimeCallsIn(n.child1)
+            semaRuntimeCallsIn(n.child2)
+            semaRuntimeCallsIn(n.child3)
+        }
+        p = n.next
+    }
 }

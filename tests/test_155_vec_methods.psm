@@ -41,7 +41,7 @@ fn fail(message: String) -> Int {
 }
 
 fn ints() -> Int {
-    let v: Vec<Int> = [3, 1, 2]
+    let mut v: Vec<Int> = [3, 1, 2]
     v.push(5)
     v.insert(0, 9)
     v.set(1, 7)
@@ -59,7 +59,7 @@ fn ints() -> Int {
     // [9, 2, 1, 7, 5]
     if (v[0] != 9 or v[4] != 5) { return fail("reverse") }
 
-    let w = v.clone()
+    let mut w = v.clone()
     w.extend(v)
     if (w.length != 10) { return fail("clone + extend") }
 
@@ -90,14 +90,14 @@ fn ints() -> Int {
         Option.None => { }
     }
 
-    let reserved = Vec<Int>.withCapacity(32)
+    let mut reserved = Vec<Int>.withCapacity(32)
     reserved.reserve(64)
     if (reserved.capacity < 64 or reserved.isNotEmpty) { return fail("withCapacity/reserve") }
     return 0
 }
 
 fn strings() -> Int {
-    let words: Vec<String> = []
+    let mut words: Vec<String> = []
     words.push("a string long enough to live on the heap, number one")
     words.push("short")
     words.insert(1, "a string long enough to live on the heap, number two")
@@ -120,7 +120,7 @@ fn strings() -> Int {
 }
 
 fn jobs() -> Int {
-    let queue: Vec<Job> = []
+    let mut queue: Vec<Job> = []
     queue.push(Job { name: "compile everything in the whole tree please", weight: 3 })
     queue.push(Job { name: "link", weight: 1 })
     queue.insert(0, Job { name: "fetch the dependencies from the network", weight: 2 })
@@ -132,7 +132,7 @@ fn jobs() -> Int {
 }
 
 fn points() -> Int {
-    let pts: Vec<Pt> = []
+    let mut pts: Vec<Pt> = []
     pts.push(Pt { x: 1, y: 2 })
     pts.push(Pt { x: 3, y: 4 })
     pts.insert(1, Pt { x: 5, y: 6 })

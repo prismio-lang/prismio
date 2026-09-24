@@ -36,10 +36,10 @@ struct Inventory {
 }
 
 fn make_inventory(n: Int) -> Inventory {
-    let contents: Vec<Item> = list_new()
+    let mut contents: Vec<Item> = []
     let mut i = 0
     while (i < n) {
-        list_push(contents, Item { value: i })
+        contents.push(Item { value: i })
         i = i + 1
     }
     return Inventory {
@@ -58,7 +58,7 @@ fn make_inventory(n: Int) -> Inventory {
 // would make this false, and it must not.
 fn owned_struct_return(n: Int) -> Int {
     let inv = make_inventory(n)
-    return inv.capacity + list_len(inv.items) + inv.lead.weight
+    return inv.capacity + inv.items.length + inv.lead.weight
 }
 
 // Called in a loop, so a missed release grows without bound and a doubled one
@@ -89,10 +89,10 @@ struct Crate {
 // there. Context-insensitivity, doing exactly what INFERENCE 6 says contexts are
 // for.
 fn make_crate_inventory(n: Int) -> Inventory {
-    let contents: Vec<Item> = list_new()
+    let mut contents: Vec<Item> = []
     let mut i = 0
     while (i < n) {
-        list_push(contents, Item { value: i })
+        contents.push(Item { value: i })
         i = i + 1
     }
     return Inventory {
@@ -116,7 +116,7 @@ fn make_crate(n: Int) -> Crate {
 
 fn nested_owner(n: Int) -> Int {
     let c = make_crate(n)
-    return c.label + list_len(c.inner.items) + c.inner.lead.weight
+    return c.label + c.inner.items.length + c.inner.lead.weight
 }
 
 // **The T0 owner.** `Holder` is small, does not escape, and nothing aliases it,
@@ -134,14 +134,14 @@ struct Holder {
 }
 
 fn stack_owner_does_not_bar_its_field(n: Int) -> Int {
-    let contents: Vec<Item> = list_new()
+    let mut contents: Vec<Item> = []
     let mut i = 0
     while (i < n) {
-        list_push(contents, Item { value: i })
+        contents.push(Item { value: i })
         i = i + 1
     }
     let h = Holder { items: contents, tag: 3 }
-    return h.tag + list_len(h.items)
+    return h.tag + h.items.length
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {

@@ -571,11 +571,11 @@ internal fn aifNodeType(node: ASTNode) -> String {
 // container's fields are shared across its instantiations -- object-insensitive
 // in the type argument as well as in the object (INFERENCE 11.1).
 internal fn aifBaseType(ty: String) -> String {
-    let at = strIndexOf(ty, "<")
+    let at = ty.indexOf("<")
     if (at < 0) {
         return ty
     }
-    return strSubstring(ty, 0, at)
+    return ty.substring(0, at)
 }
 
 // Does a value of this type participate in the memory model at all? Scalars and
@@ -611,7 +611,7 @@ private fn aifKindOf(ty: String) -> Int {
     // and is not arena-placed. Codegen still selects its distinct release from
     // the semantic TypeKind.
     if (aifBaseType(ty).equals("DataView")) { return AIF_KIND_LIST }
-    if (strStartsWith(ty, "[")) { return AIF_KIND_ARRAY }
+    if (ty.startsWith("[")) { return AIF_KIND_ARRAY }
     if (ty.equals("Array")) { return AIF_KIND_ARRAY }
     return AIF_KIND_OPAQUE
 }
@@ -646,8 +646,8 @@ internal fn aifElemKey(containerType: String) -> Int {
 // facts therefore belong to the List key, not to a parallel Slice key that no
 // store ever populates.
 internal fn aifElementContainerType(ty: String) -> String {
-    if (strStartsWith(ty, "Slice<")) {
-        return "List".concat(strSubstring(ty, 5, __builtin_string_len(ty) - 5))
+    if (ty.startsWith("Slice<")) {
+        return "List".concat(ty.substring(5, __builtin_string_len(ty) - 5))
     }
     return ty
 }
@@ -683,7 +683,7 @@ internal fn aifVsOfKey(key: Int) -> Int {
 // tests/ and aif/corpus/ being unchanged across this edit.
 private fn aifSiteType(ty: String) -> String {
     let n = __builtin_string_len(ty)
-    if (n > 1 and strEndsWith(ty, "?")) { return strSubstring(ty, 0, n - 1) }
+    if (n > 1 and ty.endsWith("?")) { return ty.substring(0, n - 1) }
     return ty
 }
 

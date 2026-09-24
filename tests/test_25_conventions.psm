@@ -24,7 +24,7 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let a = Counter { value: 10 }
+    let mut a = Counter { value: 10 }
 
     // borrow (default): `a` stays usable across multiple calls
     if (peek(a) != 10) { return fail("borrow should read 10") }

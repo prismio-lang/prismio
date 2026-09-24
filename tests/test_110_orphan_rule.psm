@@ -20,7 +20,7 @@ trait Describe {
 }
 
 impl Describe for String {
-    fn describe(self) -> Int { return strLength(self) }
+    fn describe(self) -> Int { return self.length }
 }
 
 // (3) We own both.

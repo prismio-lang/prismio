@@ -33,13 +33,13 @@ public fn benchTransientAllocation(scale: Int) -> Int {
     let mut checksum = 0
     let mut r = 0
     while (r < rounds) {
-        let mut values: Vec<Int> = list_new()
+        let mut values: Vec<Int> = []
         let mut i = 0
         while (i < 4000) {
-            list_push(values, (i + r) % 997)
+            values.push((i + r) % 997)
             i = i + 1
         }
-        checksum = (checksum + list_get(values, r % 4000)) % 1000000007
+        checksum = (checksum + values[r % 4000]) % 1000000007
         drop(values)
         r = r + 1
     }
@@ -48,10 +48,10 @@ public fn benchTransientAllocation(scale: Int) -> Int {
 
 public fn benchStructCreation(scale: Int) -> Int {
     let n = 250000 * scale
-    let mut particles: Vec<BenchMemoryParticle> = list_new_with_capacity(n)
+    let mut particles: Vec<BenchMemoryParticle> = Vec<BenchMemoryParticle>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(particles, BenchMemoryParticle {
+        particles.push(BenchMemoryParticle {
             x: i as Float, y: (i % 31) as Float, vx: 1.0, vy: 2.0, life: i % 100
         })
         i = i + 1
@@ -59,7 +59,7 @@ public fn benchStructCreation(scale: Int) -> Int {
     let mut checksum = 0
     let mut k = 0
     while (k < n) {
-        let p = list_get(particles, k)
+        let p = particles[k]
         checksum = (checksum + (p.x as Int) + p.life) % 1000000007
         k = k + 1
     }
@@ -68,17 +68,17 @@ public fn benchStructCreation(scale: Int) -> Int {
 
 public fn benchAllocationMutation(scale: Int) -> Int {
     let n = 100000 * scale
-    let mut particles: Vec<BenchMemoryParticle> = list_new_with_capacity(n)
+    let mut particles: Vec<BenchMemoryParticle> = Vec<BenchMemoryParticle>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(particles, BenchMemoryParticle { x: 0.0, y: 0.0, vx: 1.0, vy: 2.0, life: 50 })
+        particles.push(BenchMemoryParticle { x: 0.0, y: 0.0, vx: 1.0, vy: 2.0, life: 50 })
         i = i + 1
     }
     let mut round = 0
     while (round < 20) {
         let mut k = 0
         while (k < n) {
-            let p = list_get(particles, k)
+            let p = particles[k]
             p.x = p.x + p.vx
             p.y = p.y + p.vy
             p.life = p.life - 1
@@ -89,7 +89,7 @@ public fn benchAllocationMutation(scale: Int) -> Int {
     let mut checksum = 0
     let mut q = 0
     while (q < n) {
-        let p = list_get(particles, q)
+        let p = particles[q]
         checksum = (checksum + (p.x as Int) + (p.y as Int) + p.life) % 1000000007
         q = q + 1
     }
@@ -98,25 +98,25 @@ public fn benchAllocationMutation(scale: Int) -> Int {
 
 public fn benchNestedCollection(scale: Int) -> Int {
     let bucketsCount = 200 * scale
-    let mut buckets: Vec<BenchBucket> = list_new_with_capacity(bucketsCount)
+    let mut buckets: Vec<BenchBucket> = Vec<BenchBucket>.withCapacity(bucketsCount)
     let mut b = 0
     while (b < bucketsCount) {
-        let mut values: Vec<Int> = list_new_with_capacity(1000)
+        let mut values: Vec<Int> = Vec<Int>.withCapacity(1000)
         let mut i = 0
         while (i < 1000) {
-            list_push(values, (b + i) % 1021)
+            values.push((b + i) % 1021)
             i = i + 1
         }
-        list_push(buckets, BenchBucket { values: values })
+        buckets.push(BenchBucket { values: values })
         b = b + 1
     }
     let mut checksum = 0
     let mut x = 0
     while (x < bucketsCount) {
-        let bucket = list_get(buckets, x)
+        let bucket = buckets[x]
         let mut y = 0
-        while (y < list_len(bucket.values)) {
-            checksum = (checksum + list_get(bucket.values, y)) % 1000000007
+        while (y < bucket.values.length) {
+            checksum = (checksum + bucket.values[y]) % 1000000007
             y = y + 1
         }
         x = x + 1
@@ -126,19 +126,19 @@ public fn benchNestedCollection(scale: Int) -> Int {
 
 public fn benchLargeBufferCopy(scale: Int) -> Int {
     let n = 500000 * scale
-    let mut source: Vec<Int> = list_new_with_capacity(n)
-    let mut target: Vec<Int> = list_new_with_capacity(n)
+    let mut source: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut target: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(source, i % 4093)
-        list_push(target, 0)
+        source.push(i % 4093)
+        target.push(0)
         i = i + 1
     }
     let mut round = 0
     while (round < 8) {
         let mut k = 0
         while (k < n) {
-            list_set(target, k, list_get(source, k))
+            target[k] = source[k]
             k = k + 1
         }
         round = round + 1
@@ -146,7 +146,7 @@ public fn benchLargeBufferCopy(scale: Int) -> Int {
     let mut checksum = 0
     let mut q = 0
     while (q < n) {
-        checksum = (checksum + list_get(target, q)) % 1000000007
+        checksum = (checksum + target[q]) % 1000000007
         q = q + 1
     }
     return checksum
@@ -186,10 +186,10 @@ public fn benchRecursiveTreeRebuild(scale: Int) -> Int {
 // language's library is actually for.
 public fn benchStringJoin(scale: Int) -> Int {
     let n = 60000 * scale
-    let mut parts: Vec<String> = list_new_with_capacity(n)
+    let mut parts: Vec<String> = Vec<String>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(parts, "field".concat((i % 9973).toString()))
+        parts.push("field".concat((i % 9973).toString()))
         i = i + 1
     }
 

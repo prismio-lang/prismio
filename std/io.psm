@@ -32,7 +32,7 @@ private extern fn prismio_rt_println_float(value: Float)
 private extern fn prismio_rt_eprint_float(value: Float)
 private extern fn prismio_rt_eprintln_float(value: Float)
 
-public extern fn str_with_capacity(length: Int) -> String produce(free)
+internal extern fn str_with_capacity(length: Int) -> String produce(free)
 
 // A String of twelve bytes or fewer is the inline form: the bytes live in the
 // pair rather than behind the pointer, so there is nothing to offset and

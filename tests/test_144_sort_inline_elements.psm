@@ -52,10 +52,10 @@ fn fail(message: String) -> Int {
 fn rnd(seed: Int) -> Int { return (seed * 25173 + 13849) % 65521 }
 
 fn freshSeen(n: Int) -> Vec<Bool> {
-    let seen: Vec<Bool> = list_new_with_capacity(n)
+    let mut seen: Vec<Bool> = Vec<Bool>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(seen, false)
+        seen.push(false)
         i = i + 1
     }
     return seen
@@ -65,56 +65,56 @@ fn main() -> Int {
     let n = 500
     let mut seed = 5
 
-    let points: Vec<Pt> = list_new()
+    let mut points: Vec<Pt> = []
     let mut i = 0
     while (i < n) {
         seed = rnd(seed)
-        list_push(points, Pt { x: seed % 1000, y: i })
+        points.push(Pt { x: seed % 1000, y: i })
         i = i + 1
     }
     sortBy(points, |a: Pt, b: Pt| a.x - b.x)
-    let seenPoints = freshSeen(n)
+    let mut seenPoints = freshSeen(n)
     let mut k = 0
     while (k < n) {
-        if (k > 0 and list_get(points, k - 1).x > list_get(points, k).x) {
+        if (k > 0 and points[k - 1].x > points[k].x) {
             return fail("Pt out of order at ".concat(k.toString()))
         }
-        let id = list_get(points, k).y
-        if (list_get(seenPoints, id)) { return fail("Pt duplicated: ".concat(id.toString())) }
-        list_set(seenPoints, id, true)
+        let id = points[k].y
+        if (seenPoints[id]) { return fail("Pt duplicated: ".concat(id.toString())) }
+        seenPoints[id] = true
         k = k + 1
     }
 
-    let wides: Vec<Wide> = list_new()
+    let mut wides: Vec<Wide> = []
     i = 0
     while (i < n) {
         seed = rnd(seed)
-        list_push(wides, Wide { a: i * 3, key: seed % 97, c: 7, d: i, id: i })
+        wides.push(Wide { a: i * 3, key: seed % 97, c: 7, d: i, id: i })
         i = i + 1
     }
     sortBy(wides, |a: Wide, b: Wide| a.key - b.key)
-    let seenWides = freshSeen(n)
+    let mut seenWides = freshSeen(n)
     k = 0
     while (k < n) {
-        if (k > 0 and list_get(wides, k - 1).key > list_get(wides, k).key) {
+        if (k > 0 and wides[k - 1].key > wides[k].key) {
             return fail("Wide out of order at ".concat(k.toString()))
         }
-        let id = list_get(wides, k).id
-        if (list_get(wides, k).a != id * 3 or list_get(wides, k).d != id
-                or list_get(wides, k).c != 7) {
+        let id = wides[k].id
+        if (wides[k].a != id * 3 or wides[k].d != id
+                or wides[k].c != 7) {
             return fail("Wide torn at ".concat(k.toString()))
         }
-        if (list_get(seenWides, id)) { return fail("Wide duplicated: ".concat(id.toString())) }
-        list_set(seenWides, id, true)
+        if (seenWides[id]) { return fail("Wide duplicated: ".concat(id.toString())) }
+        seenWides[id] = true
         k = k + 1
     }
 
-    let smalls: Vec<Small> = list_new()
+    let mut smalls: Vec<Small> = []
     let mut keySum = 0
     i = 0
     while (i < n) {
         seed = rnd(seed)
-        list_push(smalls, Small { key: seed % 50 })
+        smalls.push(Small { key: seed % 50 })
         keySum = keySum + seed % 50
         i = i + 1
     }
@@ -122,54 +122,54 @@ fn main() -> Int {
     let mut after = 0
     k = 0
     while (k < n) {
-        if (k > 0 and list_get(smalls, k - 1).key < list_get(smalls, k).key) {
+        if (k > 0 and smalls[k - 1].key < smalls[k].key) {
             return fail("Small out of order at ".concat(k.toString()))
         }
-        after = after + list_get(smalls, k).key
+        after = after + smalls[k].key
         k = k + 1
     }
     if (after != keySum) { return fail("Small is not a permutation") }
 
     // 7919 is prime, so `i * 7919 % n` is a permutation of the ranks.
-    let named: Vec<Named> = list_new()
+    let mut named: Vec<Named> = []
     i = 0
     while (i < n) {
-        list_push(named, Named { name: "item-".concat(i.toString()), rank: (i * 7919) % n, id: i })
+        named.push(Named { name: "item-".concat(i.toString()), rank: (i * 7919) % n, id: i })
         i = i + 1
     }
     sortBy(named, |a: Named, b: Named| a.rank - b.rank)
-    let seenNamed = freshSeen(n)
+    let mut seenNamed = freshSeen(n)
     k = 0
     while (k < n) {
-        if (list_get(named, k).rank != k) { return fail("Named out of order at ".concat(k.toString())) }
-        let id = list_get(named, k).id
-        if (list_get(named, k).name.equals("item-".concat(id.toString())) == false) {
+        if (named[k].rank != k) { return fail("Named out of order at ".concat(k.toString())) }
+        let id = named[k].id
+        if (named[k].name.equals("item-".concat(id.toString())) == false) {
             return fail("Named lost its name at ".concat(k.toString()))
         }
-        if (list_get(seenNamed, id)) { return fail("Named duplicated: ".concat(id.toString())) }
-        list_set(seenNamed, id, true)
+        if (seenNamed[id]) { return fail("Named duplicated: ".concat(id.toString())) }
+        seenNamed[id] = true
         k = k + 1
     }
 
     // `list_swap` directly, on the representations the sorts above did not
     // exercise by hand: scalars by value, and String pairs -- one inline, one
     // behind a pointer. A swap with itself and one out of range change nothing.
-    let ints: Vec<Int> = list_new()
-    list_push(ints, 10)
-    list_push(ints, 20)
-    list_push(ints, 30)
-    list_swap(ints, 0, 2)
-    list_swap(ints, 1, 1)
-    list_swap(ints, 0, 3)
-    if (list_get(ints, 0) != 30 or list_get(ints, 1) != 20 or list_get(ints, 2) != 10) {
+    let mut ints: Vec<Int> = []
+    ints.push(10)
+    ints.push(20)
+    ints.push(30)
+    ints.swap(0, 2)
+    ints.swap(1, 1)
+    ints.swap(0, 3)
+    if (ints[0] != 30 or ints[1] != 20 or ints[2] != 10) {
         return fail("list_swap on Int")
     }
-    let words: Vec<String> = list_new()
-    list_push(words, "short")
-    list_push(words, "a string of more than twelve bytes")
-    list_swap(words, 0, 1)
-    if (list_get(words, 0).equals("a string of more than twelve bytes") == false
-            or list_get(words, 1).equals("short") == false) {
+    let mut words: Vec<String> = []
+    words.push("short")
+    words.push("a string of more than twelve bytes")
+    words.swap(0, 1)
+    if (words[0].equals("a string of more than twelve bytes") == false
+            or words[1].equals("short") == false) {
         return fail("list_swap on String")
     }
 

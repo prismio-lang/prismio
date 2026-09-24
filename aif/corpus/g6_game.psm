@@ -41,7 +41,7 @@ struct Order {
 }
 
 fn make_squad(team: Int, rx: Float, ry: Float) -> Squad {
-    let m: Vec<Member> = list_new()
+    let m: Vec<Member> = []
     return Squad {
         members: m,
         team: team,
@@ -57,7 +57,7 @@ fn recruit(w: World, s: Squad, count: Int) {
     let mut f = 0.0
     while (i < count) {
         let h = world_spawn(w, s.rally_x + f, s.rally_y + f, s.team)
-        list_push(s.members, Member { actor: h, role: 0, kills: 0 })
+        s.members.push(Member { actor: h, role: 0, kills: 0 })
         f = f + 2.0
         i = i + 1
     }
@@ -66,11 +66,11 @@ fn recruit(w: World, s: Squad, count: Int) {
 // Per-tick transient allocation: build an order list, consume it, discard it.
 // Nothing here outlives the tick.
 fn plan_orders(w: World, s: Squad) -> Vec<Order> {
-    let mut orders: Vec<Order> = list_new()
-    let n = list_len(s.members)
+    let mut orders: Vec<Order> = []
+    let n = s.members.length
     let mut i = 0
     while (i < n) {
-        let mem = list_get(s.members, i)
+        let mem = s.members[i]
         let h = mem.actor
         let a = world_actor(w, h)
         if (a.alive) {
@@ -81,7 +81,7 @@ fn plan_orders(w: World, s: Squad) -> Vec<Order> {
             if (a.health < 50) {
                 pri = 3
             }
-            list_push(orders, Order { target: h, dx: dx, dy: dy, priority: pri })
+            orders.push(Order { target: h, dx: dx, dy: dy, priority: pri })
         }
         i = i + 1
     }
@@ -89,11 +89,11 @@ fn plan_orders(w: World, s: Squad) -> Vec<Order> {
 }
 
 fn apply_orders(w: World, orders: Vec<Order>, speed: Float) -> Int {
-    let n = list_len(orders)
+    let n = orders.length
     let mut applied = 0
     let mut i = 0
     while (i < n) {
-        let o = list_get(orders, i)
+        let o = orders[i]
         world_set_velocity(w, o.target, o.dx * speed, o.dy * speed)
         applied = applied + 1
         i = i + 1
@@ -102,13 +102,13 @@ fn apply_orders(w: World, orders: Vec<Order>, speed: Float) -> Int {
 }
 
 fn resolve_combat(w: World, a: Squad, b: Squad) -> Int {
-    let na = list_len(a.members)
-    let nb = list_len(b.members)
+    let na = a.members.length
+    let nb = b.members.length
     let mut kills = 0
     let mut i = 0
     while (i < na and i < nb) {
-        let am = list_get(a.members, i)
-        let bm = list_get(b.members, i)
+        let am = a.members[i]
+        let bm = b.members[i]
         let att = world_actor(w, am.actor)
         if (att.alive) {
             if (world_damage(w, bm.actor, 7)) {

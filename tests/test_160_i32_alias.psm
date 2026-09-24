@@ -20,7 +20,7 @@ fn main() -> Int {
     let c = twice(21) + b - a
     let d = 300 as I32
     let xs: Vec<I32> = [1, 2]
-    let arr: Array<I32, 3>
+    let mut arr: Array<I32, 3>
     arr[1] = 5
     let p = Point { x: 7, y: 8 }
     if (c + d + xs[1] + arr[1] + p.x + p.y != 364) { return 1 }

@@ -1,0 +1,9 @@
+// expect-error: `list_push` is internal to the standard library
+// expect-error: `list_len` is internal to the standard library
+// The runtime entry points Vec's methods lower to are std's to call. A program
+// writes the method, and the diagnostic names it.
+fn main() -> Int {
+    let mut v: Vec<Int> = []
+    list_push(v, 1)
+    return list_len(v)
+}

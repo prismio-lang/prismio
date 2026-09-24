@@ -29,6 +29,10 @@ import std.io
 import std.string
 import std.option
 
+// A fresh heap String the test fills itself. std keeps this entry point
+// internal, so a program that wants one raw declares it.
+extern fn str_with_capacity(length: Int) -> String produce(free)
+
 struct Box { text: String }
 
 enum Holder { Empty, Full(String) }

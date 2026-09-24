@@ -45,7 +45,7 @@ fn count_span(j: Job) -> Int {
 }
 
 fn name_span(j: Job) -> String {
-    return "span-".concat(strFromInt(j.hi - j.lo))
+    return "span-".concat((j.hi - j.lo).toString())
 }
 
 fn summarise(j: Job) -> Report {
@@ -113,9 +113,9 @@ fn check(name: String, got: Int, want: Int) -> Int {
     print("FAIL ")
     print(name)
     print(": got ")
-    print(strFromInt(got))
+    print(got.toString())
     print(" want ")
-    println(strFromInt(want))
+    println(want.toString())
     return 1
 }
 

@@ -124,7 +124,7 @@ fn literal_is_not_owned() -> Int {
 // literal "". Before Level 4 the difference was invisible; now the difference is
 // whether the scope exit frees a pointer into read-only memory.
 fn empty_substring_is_owned() -> Int {
-    let s = strSubstring("abc", 9, 2)
+    let s = "abc".substring(9, 2)
     return __builtin_string_len(s)
 }
 
@@ -132,15 +132,15 @@ fn empty_substring_is_owned() -> Int {
 // released through list_release rather than the deallocator seam. Freeing only
 // the handle leaks the block, which a verify build reports.
 fn list_released() -> Int {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: 10 })
-    list_push(items, Item { value: 20 })
-    list_push(items, Item { value: 30 })
-    list_push(items, Item { value: 40 })
+    let mut items: Vec<Item> = []
+    items.push(Item { value: 10 })
+    items.push(Item { value: 20 })
+    items.push(Item { value: 30 })
+    items.push(Item { value: 40 })
     // Five pushes cross the initial capacity of four, so the element block is
     // regrown -- and the old one has to go back, not leak.
-    list_push(items, Item { value: 50 })
-    return list_len(items)
+    items.push(Item { value: 50 })
+    return items.length
 }
 
 // The binding looks droppable -- its initialiser allocated something this scope

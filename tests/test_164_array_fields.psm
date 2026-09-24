@@ -45,7 +45,7 @@ impl Grid {
 
 trait Scratch {
     fn scratch(self) -> Int {
-        let s: Array<Int, 3>
+        let mut s: Array<Int, 3>
         s[2] = 5
         return s[2] + s[0]
     }
@@ -87,7 +87,7 @@ fn total(xs: [Int], n: Int) -> Int {
     return s
 }
 
-fn setFirst(xs: [Int], v: Int) {
+fn setFirst(inout xs: [Int], v: Int) {
     xs[0] = v
 }
 
@@ -122,11 +122,11 @@ fn main() -> Int {
     g.cells[2] = 30
     if (g.cells[2] != 30) { return fail("s.data[i] = x") }
 
-    let d = g.cells
+    let mut d = g.cells
     d[0] = 99
     if (g.cells[0] != 1 or d[0] != 99 or d[3] != 4) { return fail("let d = s.data copies") }
 
-    let other: Array<Int, 4> = [7, 8, 9, 10]
+    let mut other: Array<Int, 4> = [7, 8, 9, 10]
     g.cells = other
     other[0] = 70
     if (g.cells[0] != 7 or g.cells[3] != 10) { return fail("s.data = other copies") }
@@ -152,7 +152,7 @@ fn main() -> Int {
     o.bs[2] = true
     if (o.inner.xs[1] != 7000000000 or o.bs[2] != true or o.bs[0] != false) { return fail("nested writes") }
 
-    let v: Vec<Grid> = []
+    let mut v: Vec<Grid> = []
     let mut k = 0
     while (k < 5) {
         v.push(Grid { w: k, cells: [k, k * 2, k * 3, k * 4] })

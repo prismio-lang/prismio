@@ -40,7 +40,7 @@ fn main() -> Int {
     let text = "abc"
     text[0] = 'z'
 
-    let rows: Vec<Cell> = []
+    let mut rows: Vec<Cell> = []
     rows.push(Cell { x: 1 })
     let view: DataView<Cell> = soa(rows)
     view[0] = Cell { x: 2 }

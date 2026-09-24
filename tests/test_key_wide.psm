@@ -8,10 +8,10 @@ fn main() -> Int {
     let signed = mapNew<I64, Int>()
     let unsigned = mapNew<U64, Int>()
     let sizes = mapNew<Usize, Int>()
-    let buckets: Vec<Int> = list_new_with_capacity(256)
+    let mut buckets: Vec<Int> = Vec<Int>.withCapacity(256)
     let mut b = 0
     while (b < 256) {
-        list_push(buckets, 0)
+        buckets.push(0)
         b = b + 1
     }
     let mut i = 0
@@ -22,7 +22,7 @@ fn main() -> Int {
         mapSet(unsigned, key, i)
         if (((key as Usize) as U64) == key) { mapSet(sizes, key as Usize, i) }
         let bucket = hash(key) & 255
-        list_set(buckets, bucket, list_get(buckets, bucket) + 1)
+        buckets[bucket] = buckets[bucket] + 1
         // Signed and unsigned hashing must preserve the same bit pattern.
         if (hash(negative as I64) != hash(negative)) { return 1 }
         if (((key as Usize) as U64) == key) {
@@ -33,7 +33,7 @@ fn main() -> Int {
     let mut used = 0
     let mut j = 0
     while (j < 256) {
-        let count = list_get(buckets, j)
+        let count = buckets[j]
         if (count > 0) { used = used + 1 }
         if (count > 64) { return 3 }
         j = j + 1

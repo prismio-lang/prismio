@@ -15,11 +15,11 @@ import std.vec
 import std.string
 
 fn churnWord(i: Int) -> String {
-    return "churned-element-".concat(strFromInt(i), "-long-enough-to-allocate")
+    return "churned-element-".concat(i.toString(), "-long-enough-to-allocate")
 }
 
 fn churn() -> Int {
-    let buf: Vec<String>
+    let mut buf: Vec<String>
     let mut total = 0
     let mut i = 0
     while (i < 400) {

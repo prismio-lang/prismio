@@ -57,16 +57,13 @@ fn pickLarger<T: Ord, U>(a: T, b: T, tag: U) -> T {
     return maxOf(a, b)
 }
 
-fn sortInPlace<T: Ord>(items: Vec<T>) {
-    let n = list_len(items)
+fn sortInPlace<T: Ord>(inout items: Vec<T>) {
+    let n = items.length
     let mut i = 1
     while (i < n) {
         let mut j = i
-        while (j > 0 and cmp(list_get(items, j - 1), list_get(items, j)) > 0) {
-            let left = list_get(items, j - 1)
-            let right = list_get(items, j)
-            list_set(items, j - 1, right)
-            list_set(items, j, left)
+        while (j > 0 and cmp(items[j - 1], items[j]) > 0) {
+            items.swap(j - 1, j)
             j = j - 1
         }
         i = i + 1
@@ -103,20 +100,20 @@ fn main() -> Int {
 
     // The bar from v0.1 1: `list.sort()`, written as a bounded generic free
     // function and reached with method syntax.
-    let mut xs: Vec<Int> = list_new()
-    list_push(xs, 5)
-    list_push(xs, 1)
-    list_push(xs, 4)
+    let mut xs: Vec<Int> = []
+    xs.push(5)
+    xs.push(1)
+    xs.push(4)
     xs.sortInPlace()
-    if (list_get(xs, 0) != 1 or list_get(xs, 1) != 4 or list_get(xs, 2) != 5) {
+    if (xs[0] != 1 or xs[1] != 4 or xs[2] != 5) {
         return fail("sortInPlace at Int")
     }
 
-    let mut names: Vec<String> = list_new()
-    list_push(names, "pear")
-    list_push(names, "apple")
+    let mut names: Vec<String> = []
+    names.push("pear")
+    names.push("apple")
     sortInPlace(names)
-    if (list_get(names, 0).equals("apple") == false) { return fail("sortInPlace at String") }
+    if (names[0].equals("apple") == false) { return fail("sortInPlace at String") }
 
     println("test_87 ok")
     return 0

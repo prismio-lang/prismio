@@ -16,10 +16,10 @@
 import std.io
 
 fn filled() -> Vec<Int> {
-    let mut xs: Vec<Int> = list_new_with_capacity(4)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(4)
     let mut i = 0
     while (i < 4) {
-        list_push(xs, i + 1)
+        xs.push(i + 1)
         i = i + 1
     }
     return xs
@@ -31,7 +31,7 @@ fn sumDown(top: Int) -> Int {
     let mut acc = 0
     let mut at = top
     while (at >= 0) {
-        acc = acc + list_get(xs, at)
+        acc = acc + xs[at]
         at = at - 1
     }
     return acc
@@ -43,7 +43,7 @@ fn sumDownOffset(top: Int, k: Int) -> Int {
     let mut acc = 0
     let mut at = top
     while (at >= 0) {
-        acc = acc + list_get(xs, at - k)
+        acc = acc + xs[at - k]
         at = at - 1
     }
     return acc
@@ -55,7 +55,7 @@ fn sumUp(limit: Int) -> Int {
     let mut acc = 0
     let mut at = 0
     while (at < limit) {
-        acc = acc + list_get(xs, at)
+        acc = acc + xs[at]
         at = at + 1
     }
     return acc
@@ -65,17 +65,17 @@ fn sumUp(limit: Int) -> Int {
 // veto outright, and the one the range guard has to serve with the write still
 // checked.
 fn readWrite(top: Int) -> Int {
-    let xs = filled()
+    let mut xs = filled()
     let mut at = top
     while (at >= 0) {
-        let doubled = list_get(xs, at) * 2
-        list_set(xs, at, doubled)
+        let doubled = xs[at] * 2
+        xs[at] = doubled
         at = at - 1
     }
     let mut acc = 0
     let mut i = 0
     while (i < 4) {
-        acc = acc + list_get(xs, i)
+        acc = acc + xs[i]
         i = i + 1
     }
     return acc
@@ -110,11 +110,11 @@ fn main() -> Int {
     bad = bad + check("FAIL: sumDownOffset past end", sumDownOffset(3, 0 - 2), 7)
 
     // An empty list: length 0, so no index is ever in range.
-    let empty: Vec<Int> = list_new_with_capacity(1)
+    let empty: Vec<Int> = Vec<Int>.withCapacity(1)
     let mut acc = 0
     let mut at = 3
     while (at >= 0) {
-        acc = acc + list_get(empty, at)
+        acc = acc + empty[at]
         at = at - 1
     }
     bad = bad + check("FAIL: empty list", acc, 0)

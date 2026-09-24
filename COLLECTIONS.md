@@ -45,12 +45,13 @@ releasing the container.
 | | `Vec<T>.withCapacity(n)` | rewrite → `list_new_with_capacity` |
 | Size | `length`, `isEmpty`, `isNotEmpty` | library |
 | | `capacity` | new runtime entry |
-| Read | `v[i]`, `for x in v`, `v[a..b]` | existing |
+| Read | `v[i]`, `for x in v`, `v[a..b]` | rewrite → `list_get` (2026-09-24; a Slice keeps its own path) |
 | | `first`, `last` | rewrite → `v[0]`, `v[v.length - 1]`; bounds-checked |
 | | `get(i)` → absent out of range | library, `T: Copy` |
 | Search | `contains`, `indexOf`, `lastIndexOf`, `countOf` | library, `T: Eq` |
 | | `binarySearch`, `isSorted` | existing |
 | Write | `push`, `set`, `swap`, `v[i] = x` | rewrite → `list_push`, `list_set`, `list_swap` |
+| | `replace(i, x)` → releases the displaced boxed element | rewrite → `list_set_exclusive` (2026-09-24) |
 | | `pop` → absent when empty | new runtime entry + rewrite |
 | | `insert`, `removeAt`, `clear`, `truncate`, `reserve` | new runtime entry + rewrite |
 | | `extend(other)` | library, `T: Copy` |
@@ -59,8 +60,12 @@ releasing the container.
 | Derive | `clone` | library, `T: Copy` |
 | | `filter`, `mapInto`, `countWhere`, `anyOf`, `allOf` | existing |
 
-The `list_*` functions remain as the runtime layer, as `str_*` do under String;
-documentation shows the methods.
+The `list_*` functions remain as the runtime layer, as `str_*` do under String.
+**Since 2026-09-24 a program cannot call them**: `semaRefuseRuntimeCalls`
+(src/sema/vec.psm) refuses one written outside `std/` and names the method. And
+every changing method needs a changeable Vec -- a `let mut` binding or an `inout`
+parameter (`semaCheckMutablePlace`); the library-tier changers take their Vec
+`inout`.
 
 ### `Array<T, N>` is an array whose length is part of its type
 

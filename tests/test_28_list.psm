@@ -10,20 +10,20 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let mut items: Vec<Item> = list_new()
-    list_push(items, Item { value: 10 })
-    list_push(items, Item { value: 20 })
-    list_push(items, Item { value: 30 })
+    let mut items: Vec<Item> = []
+    items.push(Item { value: 10 })
+    items.push(Item { value: 20 })
+    items.push(Item { value: 30 })
 
-    if (list_len(items) != 3) {
+    if (items.length != 3) {
         return fail("list should hold three items")
     }
 
     // iterate and sum
     let mut sum = 0
     let mut i = 0
-    while (i < list_len(items)) {
-        let it = list_get(items, i)
+    while (i < items.length) {
+        let it = items[i]
         sum = sum + it.value
         i = i + 1
     }
@@ -32,7 +32,7 @@ fn main() -> Int {
     }
 
     // random access returns the right element type
-    let second = list_get(items, 1)
+    let second = items[1]
     if (second.value != 20) {
         return fail("indexed get should return the second item")
     }

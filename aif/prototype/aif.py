@@ -1741,8 +1741,8 @@ def bracket_masks(model, eng):
                    nothing bounds its lifetime and no region can.
       PARAM_STORE  the extent stores into something it did not allocate:
 
-                       fn add_to(dest: Vec<Node>, n: Int) {
-                           list_push(dest, Node { id: n })
+                       fn add_to(inout dest: Vec<Node>, n: Int) {
+                           dest.push(Node { id: n })
                        }
                        region R { add_to(long_lived_list, 5) }
 

@@ -21,14 +21,14 @@ public fn benchAdversarialNext(seed: I64) -> I64 {
 
 public fn benchPointerChase(scale: Int) -> Int {
     let n = 131072 * scale
-    let mut nodes: Vec<Int> = list_new_with_capacity(n)
-    let mut values: Vec<Int> = list_new_with_capacity(n)
-    let mut permutation: Vec<Int> = list_new_with_capacity(n)
+    let mut nodes: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut values: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut permutation: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(nodes, 0)
-        list_push(values, (i * 37 + 11) % 251)
-        list_push(permutation, i)
+        nodes.push(0)
+        values.push((i * 37 + 11) % 251)
+        permutation.push(i)
         i = i + 1
     }
 
@@ -37,26 +37,26 @@ public fn benchPointerChase(scale: Int) -> Int {
     while (at > 0) {
         seed = benchAdversarialNext(seed)
         let other = (seed % ((at + 1) as I64)) as Int
-        let current = list_get(permutation, at)
-        list_set(permutation, at, list_get(permutation, other))
-        list_set(permutation, other, current)
+        let current = permutation[at]
+        permutation[at] = permutation[other]
+        permutation[other] = current
         at = at - 1
     }
 
     let mut link = 0
     while (link < n) {
-        let from = list_get(permutation, link)
-        let to = list_get(permutation, (link + 1) % n)
-        list_set(nodes, from, to)
+        let from = permutation[link]
+        let to = permutation[(link + 1) % n]
+        nodes[from] = to
         link = link + 1
     }
 
-    let mut index = list_get(permutation, 0)
+    let mut index = permutation[0]
     let mut sum = 0
     let mut step = 0
     while (step < n * 8) {
-        index = list_get(nodes, index)
-        sum = (sum + list_get(values, index)) % 1000000007
+        index = nodes[index]
+        sum = (sum + values[index]) % 1000000007
         step = step + 1
     }
     return sum
@@ -64,14 +64,14 @@ public fn benchPointerChase(scale: Int) -> Int {
 
 public fn benchRandomGather(scale: Int) -> Int {
     let n = 262144 * scale
-    let mut values: Vec<Int> = list_new_with_capacity(n)
-    let mut indices: Vec<Int> = list_new_with_capacity(n)
+    let mut values: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut indices: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut seed: I64 = 7
     let mut i = 0
     while (i < n) {
-        list_push(values, (i * 53 + 17) % 4093)
+        values.push((i * 53 + 17) % 4093)
         seed = benchAdversarialNext(seed)
-        list_push(indices, (seed % (n as I64)) as Int)
+        indices.push((seed % (n as I64)) as Int)
         i = i + 1
     }
 
@@ -80,7 +80,7 @@ public fn benchRandomGather(scale: Int) -> Int {
     while (round < 8) {
         let mut k = 0
         while (k < n) {
-            sum = (sum + list_get(values, list_get(indices, k))) % 1000000007
+            sum = (sum + values[indices[k]]) % 1000000007
             k = k + 1
         }
         round = round + 1
@@ -90,16 +90,16 @@ public fn benchRandomGather(scale: Int) -> Int {
 
 public fn benchBranchMispredict(scale: Int) -> Int {
     let n = 500000 * scale
-    let mut conditions: Vec<Bool> = list_new_with_capacity(n)
-    let mut a: Vec<Int> = list_new_with_capacity(n)
-    let mut b: Vec<Int> = list_new_with_capacity(n)
+    let mut conditions: Vec<Bool> = Vec<Bool>.withCapacity(n)
+    let mut a: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut b: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut seed: I64 = 19
     let mut i = 0
     while (i < n) {
         seed = benchAdversarialNext(seed)
-        list_push(conditions, seed % 2 == 0)
-        list_push(a, (i * 13 + 5) % 997)
-        list_push(b, (i * 29 + 3) % 991)
+        conditions.push(seed % 2 == 0)
+        a.push((i * 13 + 5) % 997)
+        b.push((i * 29 + 3) % 991)
         i = i + 1
     }
 
@@ -108,10 +108,10 @@ public fn benchBranchMispredict(scale: Int) -> Int {
     while (round < 6) {
         let mut k = 0
         while (k < n) {
-            if (list_get(conditions, k)) {
-                sum = (sum + list_get(a, k)) % 1000000007
+            if (conditions[k]) {
+                sum = (sum + a[k]) % 1000000007
             } else {
-                sum = (sum + list_get(b, k)) % 1000000007
+                sum = (sum + b[k]) % 1000000007
             }
             k = k + 1
         }
@@ -122,33 +122,33 @@ public fn benchBranchMispredict(scale: Int) -> Int {
 
 public fn benchStridedMemory(scale: Int) -> Int {
     let n = 1048576 * scale
-    let mut data: Vec<Int> = list_new_with_capacity(n)
-    let mut strides: Vec<Int> = list_new_with_capacity(8)
+    let mut data: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut strides: Vec<Int> = Vec<Int>.withCapacity(8)
     let mut i = 0
     while (i < n) {
-        list_push(data, (i * 17 + 23) % 1009)
+        data.push((i * 17 + 23) % 1009)
         i = i + 1
     }
-    list_push(strides, 1)
-    list_push(strides, 2)
-    list_push(strides, 4)
-    list_push(strides, 8)
-    list_push(strides, 16)
-    list_push(strides, 32)
-    list_push(strides, 64)
-    list_push(strides, 128)
+    strides.push(1)
+    strides.push(2)
+    strides.push(4)
+    strides.push(8)
+    strides.push(16)
+    strides.push(32)
+    strides.push(64)
+    strides.push(128)
 
     let mut sum = 0
     let mut s = 0
-    while (s < list_len(strides)) {
-        let stride = list_get(strides, s)
+    while (s < strides.length) {
+        let stride = strides[s]
         let mut rounds = stride
         if (rounds > 16) { rounds = 16 }
         let mut round = 0
         while (round < rounds) {
             let mut at = round % stride
             while (at < n) {
-                sum = (sum + list_get(data, at)) % 1000000007
+                sum = (sum + data[at]) % 1000000007
                 at = at + stride
             }
             round = round + 1
@@ -213,12 +213,12 @@ public fn benchIndirectDispatch(operation: Int, value: Int) -> Int {
 
 public fn benchIndirectCalls(scale: Int) -> Int {
     let n = 262144 * scale
-    let mut operations: Vec<Int> = list_new_with_capacity(n)
+    let mut operations: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut seed: I64 = 37
     let mut i = 0
     while (i < n) {
         seed = benchAdversarialNext(seed)
-        list_push(operations, (seed % 4) as Int)
+        operations.push((seed % 4) as Int)
         i = i + 1
     }
 
@@ -227,7 +227,7 @@ public fn benchIndirectCalls(scale: Int) -> Int {
     while (round < 8) {
         let mut k = 0
         while (k < n) {
-            sum = (sum + benchIndirectDispatch(list_get(operations, k), k % 1000)) % 1000000007
+            sum = (sum + benchIndirectDispatch(operations[k], k % 1000)) % 1000000007
             k = k + 1
         }
         round = round + 1
@@ -249,10 +249,10 @@ public fn benchDependencyChain(scale: Int) -> Int {
 public fn benchAosVsSoa(scale: Int) -> Int {
     let n = 100000 * scale
     let rounds = 20
-    let mut particles: Vec<BenchLayoutParticle> = list_new_with_capacity(n)
+    let mut particles: Vec<BenchLayoutParticle> = Vec<BenchLayoutParticle>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(particles, BenchLayoutParticle {
+        particles.push(BenchLayoutParticle {
             x: i % 1009,
             y: i % 509,
             z: i % 257,
@@ -266,7 +266,7 @@ public fn benchAosVsSoa(scale: Int) -> Int {
     while (round < rounds) {
         let mut k = 0
         while (k < n) {
-            let particle = list_get(particles, k)
+            let particle = particles[k]
             particle.x = particle.x + particle.velocity
             particle.y = particle.y + particle.mass
             particle.z = particle.z + particle.velocity + particle.mass
@@ -278,23 +278,23 @@ public fn benchAosVsSoa(scale: Int) -> Int {
     let mut aos = 0
     let mut a = 0
     while (a < n) {
-        let particle = list_get(particles, a)
+        let particle = particles[a]
         aos = (aos + particle.x + particle.y + particle.z) % 1000000007
         a = a + 1
     }
 
-    let mut x: Vec<Int> = list_new_with_capacity(n)
-    let mut y: Vec<Int> = list_new_with_capacity(n)
-    let mut z: Vec<Int> = list_new_with_capacity(n)
-    let mut velocity: Vec<Int> = list_new_with_capacity(n)
-    let mut mass: Vec<Int> = list_new_with_capacity(n)
+    let mut x: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut y: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut z: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut velocity: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut mass: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut q = 0
     while (q < n) {
-        list_push(x, q % 1009)
-        list_push(y, q % 509)
-        list_push(z, q % 257)
-        list_push(velocity, q % 17 + 1)
-        list_push(mass, q % 31 + 1)
+        x.push(q % 1009)
+        y.push(q % 509)
+        z.push(q % 257)
+        velocity.push(q % 17 + 1)
+        mass.push(q % 31 + 1)
         q = q + 1
     }
 
@@ -302,9 +302,9 @@ public fn benchAosVsSoa(scale: Int) -> Int {
     while (soaRound < rounds) {
         let mut k = 0
         while (k < n) {
-            list_set(x, k, list_get(x, k) + list_get(velocity, k))
-            list_set(y, k, list_get(y, k) + list_get(mass, k))
-            list_set(z, k, list_get(z, k) + list_get(velocity, k) + list_get(mass, k))
+            x[k] = x[k] + velocity[k]
+            y[k] = y[k] + mass[k]
+            z[k] = z[k] + velocity[k] + mass[k]
             k = k + 1
         }
         soaRound = soaRound + 1
@@ -313,7 +313,7 @@ public fn benchAosVsSoa(scale: Int) -> Int {
     let mut soa = 0
     let mut b = 0
     while (b < n) {
-        soa = (soa + list_get(x, b) + list_get(y, b) + list_get(z, b)) % 1000000007
+        soa = (soa + x[b] + y[b] + z[b]) % 1000000007
         b = b + 1
     }
     if (aos != soa) { return -1 }
@@ -585,19 +585,19 @@ public fn benchSwitchCase(operation: Int, value: Int) -> Int {
 
 public fn benchSwitchDispatch(scale: Int) -> Int {
     let n = 250000 * scale
-    let mut sequential: Vec<Int> = list_new_with_capacity(n)
-    let mut randomized: Vec<Int> = list_new_with_capacity(n)
-    let mut biased: Vec<Int> = list_new_with_capacity(n)
+    let mut sequential: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut randomized: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut biased: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut seed: I64 = 97
     let mut i = 0
     while (i < n) {
-        list_push(sequential, i % 256)
+        sequential.push(i % 256)
         seed = benchAdversarialNext(seed)
-        list_push(randomized, (seed % 256) as Int)
+        randomized.push((seed % 256) as Int)
         if (seed % 20 == 0) {
-            list_push(biased, (seed % 256) as Int)
+            biased.push((seed % 256) as Int)
         } else {
-            list_push(biased, 7)
+            biased.push(7)
         }
         i = i + 1
     }
@@ -607,9 +607,9 @@ public fn benchSwitchDispatch(scale: Int) -> Int {
     while (round < 3) {
         let mut k = 0
         while (k < n) {
-            sum = (sum + benchSwitchCase(list_get(sequential, k), k % 1009)) % 1000000007
-            sum = (sum + benchSwitchCase(list_get(randomized, k), k % 1009)) % 1000000007
-            sum = (sum + benchSwitchCase(list_get(biased, k), k % 1009)) % 1000000007
+            sum = (sum + benchSwitchCase(sequential[k], k % 1009)) % 1000000007
+            sum = (sum + benchSwitchCase(randomized[k], k % 1009)) % 1000000007
+            sum = (sum + benchSwitchCase(biased[k], k % 1009)) % 1000000007
             k = k + 1
         }
         round = round + 1
@@ -618,25 +618,25 @@ public fn benchSwitchDispatch(scale: Int) -> Int {
 }
 
 public fn benchMemcpyMix(scale: Int) -> Int {
-    let mut sizes: Vec<Int> = list_new_with_capacity(7)
-    list_push(sizes, 2)
-    list_push(sizes, 4)
-    list_push(sizes, 8)
-    list_push(sizes, 16)
-    list_push(sizes, 64)
-    list_push(sizes, 1024)
-    list_push(sizes, 16384)
+    let mut sizes: Vec<Int> = Vec<Int>.withCapacity(7)
+    sizes.push(2)
+    sizes.push(4)
+    sizes.push(8)
+    sizes.push(16)
+    sizes.push(64)
+    sizes.push(1024)
+    sizes.push(16384)
 
     let mut checksum = 0
     let mut s = 0
-    while (s < list_len(sizes)) {
-        let count = list_get(sizes, s)
-        let mut source: Vec<Int> = list_new_with_capacity(count)
-        let mut target: Vec<Int> = list_new_with_capacity(count)
+    while (s < sizes.length) {
+        let count = sizes[s]
+        let mut source: Vec<Int> = Vec<Int>.withCapacity(count)
+        let mut target: Vec<Int> = Vec<Int>.withCapacity(count)
         let mut i = 0
         while (i < count) {
-            list_push(source, (i * 31 + count) % 4093)
-            list_push(target, 0)
+            source.push((i * 31 + count) % 4093)
+            target.push(0)
             i = i + 1
         }
 
@@ -645,25 +645,25 @@ public fn benchMemcpyMix(scale: Int) -> Int {
         while (repeat < repeats) {
             let mut k = 0
             while (k < count) {
-                list_set(target, k, list_get(source, k))
+                target[k] = source[k]
                 k = k + 1
             }
             let targetAt = repeat % count
-            list_set(target, targetAt, list_get(target, targetAt) + 1)
+            target[targetAt] = target[targetAt] + 1
 
             let mut q = 0
             while (q < count) {
-                list_set(source, q, list_get(target, q))
+                source[q] = target[q]
                 q = q + 1
             }
             let sourceAt = (repeat * 3) % count
-            list_set(source, sourceAt, list_get(source, sourceAt) + 1)
+            source[sourceAt] = source[sourceAt] + 1
             repeat = repeat + 1
         }
 
         let mut c = 0
         while (c < count) {
-            checksum = (checksum + list_get(source, c) + list_get(target, c)) % 1000000007
+            checksum = (checksum + source[c] + target[c]) % 1000000007
             c = c + 1
         }
         s = s + 1

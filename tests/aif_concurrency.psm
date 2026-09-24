@@ -82,8 +82,8 @@ fn joined_stays_local() -> Int {
 // non-atomic. A change that lands this at CrossThread has broken SPEC 11
 // item 10 whether or not anything else in the suite fails.
 fn transferred_is_not_atomic() -> Int {
-    let rs: Vec<Report> = list_new()
-    list_push(rs, Report { label: "batch", total: 7 })
+    let mut rs: Vec<Report> = []
+    rs.push(Report { label: "batch", total: 7 })
     let t = spawn tally_reports(rs)
     return join t
 }

@@ -51,11 +51,11 @@ public fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
              line: Int, col: Int, len: Int) -> UmsTarget {
     return UmsTarget {
         kind: kind,
-        name: strClone(name),
-        entry: strClone(entry),
-        sourcePath: strClone(""),
-        outputPath: strClone(""),
-        links: list_new(),
+        name: name.clone(),
+        entry: entry.clone(),
+        sourcePath: "".clone(),
+        outputPath: "".clone(),
+        links: [],
         line: line,
         col: col,
         len: len
@@ -66,7 +66,7 @@ public fn umsLinkInput(kind: UmsLinkKind, value: String,
                 line: Int, col: Int, len: Int) -> UmsLinkInput {
     return UmsLinkInput {
         kind: kind,
-        value: strClone(value),
+        value: value.clone(),
         line: line,
         col: col,
         len: len
@@ -75,8 +75,8 @@ public fn umsLinkInput(kind: UmsLinkKind, value: String,
 
 public fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
     let mut i = 0
-    while (i < list_len(target.links)) {
-        let input = list_get(target.links, i)
+    while (i < target.links.length) {
+        let input = target.links[i]
         if (input.kind == UmsLinkKind.COMPONENT and input.value.equals(name)) {
             return true
         }
@@ -87,8 +87,8 @@ public fn umsTargetHasComponent(target: UmsTarget, name: String) -> Bool {
 
 public fn umsTargetFind(targets: Vec<UmsTarget>, name: String) -> Int {
     let mut i = 0
-    while (i < list_len(targets)) {
-        if (list_get(targets, i).name.equals(name)) { return i }
+    while (i < targets.length) {
+        if (targets[i].name.equals(name)) { return i }
         i = i + 1
     }
     return -1
@@ -103,5 +103,5 @@ public fn umsTargetFind(targets: Vec<UmsTarget>, name: String) -> Int {
 // appended the suffix (compiler_default_exe_path); this is the same rule.
 public fn umsExecutablePath(path: String) -> String {
     if (host_is_windows() == 1) { return path.concat(".exe") }
-    return strClone(path)
+    return path.clone()
 }

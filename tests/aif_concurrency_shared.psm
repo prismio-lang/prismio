@@ -27,7 +27,7 @@ struct Item {
 }
 
 fn count_items(xs: Vec<Item>) -> Int {
-    return list_len(xs)
+    return xs.length
 }
 
 // **`kept` is a parameter, and it has to be.** With both containers local the
@@ -50,13 +50,13 @@ fn count_items(xs: Vec<Item>) -> Int {
 //
 // Then one container is moved into a task and the other stays here. The Item is
 // genuinely reachable from both threads, and nothing in its bindings says so.
-fn shared_element_crosses(kept: Vec<Item>) -> Int {
-    let sent: Vec<Item> = list_new()
-    list_push(kept, Item { value: 2 })
-    list_push(sent, list_get(kept, 0))
+fn shared_element_crosses(inout kept: Vec<Item>) -> Int {
+    let mut sent: Vec<Item> = []
+    kept.push(Item { value: 2 })
+    sent.push(kept[0])
 
     let t = spawn count_items(sent)
-    return join t + list_len(kept)
+    return join t + kept.length
 }
 
 // **The control is tests/test_48_aif_shared_elements.psm, and it cannot live
@@ -74,6 +74,6 @@ fn shared_element_crosses(kept: Vec<Item>) -> Int {
 // task.
 
 fn main() -> Int {
-    let kept: Vec<Item> = list_new()
+    let mut kept: Vec<Item> = []
     return shared_element_crosses(kept)
 }

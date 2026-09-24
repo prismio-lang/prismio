@@ -62,100 +62,100 @@ struct Cmd {
 }
 
 fn build_a(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_b0(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_b(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_c0(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_c(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_d0(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_d(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_g(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_e(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
 }
 
 fn build_f(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i + 1 })
+        out.push(Cmd { id: i, weight: i + 1 })
         i = i + 1
     }
     return out
@@ -170,7 +170,7 @@ fn straight_line(n: Int) -> Int {
     while (i < n) {
         let before = i * 2
         let cmds = build_a(2)
-        total = total + list_len(cmds)
+        total = total + cmds.length
         let after = i * 3
         total = total + before + after
         i = i + 1
@@ -187,7 +187,7 @@ fn exit_by_continue(n: Int) -> Int {
     let mut i = 0
     while (i < n) {
         let cmds = build_b(2)
-        total = total + list_len(cmds)
+        total = total + cmds.length
         if (i < 40) {
             i = i + 1
             continue
@@ -195,7 +195,7 @@ fn exit_by_continue(n: Int) -> Int {
         total = total + 10
         i = i + 1
     }
-    total = total + list_len(held)
+    total = total + held.length
     return total
 }
 
@@ -213,12 +213,12 @@ fn exit_by_break(n: Int) -> Int {
             if (i == 2) {
                 break
             }
-            total = total + list_len(cmds)
+            total = total + cmds.length
             i = i + 1
         }
         outer = outer + 1
     }
-    total = total + list_len(held)
+    total = total + held.length
     return total
 }
 
@@ -230,7 +230,7 @@ fn exit_by_break(n: Int) -> Int {
 fn returns_from_extent(k: Int) -> Int {
     let cmds = build_d(k)
     if (k > 0) {
-        return list_len(cmds)
+        return cmds.length
     }
     return 0
 }
@@ -248,7 +248,7 @@ fn returns_from_extent(k: Int) -> Int {
 // not have to work out why only one of them asks.
 fn returns_at_extent_end(k: Int) -> Int {
     let cmds = build_g(k)
-    return list_len(cmds)
+    return cmds.length
 }
 
 fn exit_by_return(n: Int) -> Int {
@@ -262,7 +262,7 @@ fn exit_by_return(n: Int) -> Int {
         total = total + returns_at_extent_end(3)
         i = i + 1
     }
-    total = total + list_len(held)
+    total = total + held.length
     return total
 }
 
@@ -275,10 +275,10 @@ fn nested_extents(n: Int) -> Int {
     let mut i = 0
     while (i < n) {
         let inner = build_f(2)
-        total = total + list_len(inner)
+        total = total + inner.length
         i = i + 1
     }
-    total = total + list_len(outer)
+    total = total + outer.length
     return total
 }
 

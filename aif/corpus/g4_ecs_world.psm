@@ -62,11 +62,11 @@ struct World {
 }
 
 fn make_world() -> World {
-    let p: Vec<Position> = list_new()
-    let v: Vec<Velocity> = list_new()
-    let ph: Vec<Physics> = list_new()
-    let s: Vec<Sprite> = list_new()
-    let h: Vec<Health> = list_new()
+    let p: Vec<Position> = []
+    let v: Vec<Velocity> = []
+    let ph: Vec<Physics> = []
+    let s: Vec<Sprite> = []
+    let h: Vec<Health> = []
     return World {
         positions: p,
         velocities: v,
@@ -78,10 +78,10 @@ fn make_world() -> World {
 }
 
 fn spawn(w: World, seed: Float) {
-    list_push(w.positions, Position { x: seed, y: seed, z: 0.0 })
-    list_push(w.velocities, Velocity { dx: 1.0, dy: 0.5, dz: 0.0 })
-    list_push(w.physics, Physics { mass: 1.0, drag: 0.01, restitution: 0.5 })
-    list_push(w.sprites, Sprite {
+    w.positions.push(Position { x: seed, y: seed, z: 0.0 })
+    w.velocities.push(Velocity { dx: 1.0, dy: 0.5, dz: 0.0 })
+    w.physics.push(Physics { mass: 1.0, drag: 0.01, restitution: 0.5 })
+    w.sprites.push(Sprite {
         texture_id: 1,
         layer: 0,
         tint_r: 1.0,
@@ -89,7 +89,7 @@ fn spawn(w: World, seed: Float) {
         tint_b: 1.0,
         alpha: 1.0
     })
-    list_push(w.health, Health { current: 100, maximum: 100, regen: 0.1 })
+    w.health.push(Health { current: 100, maximum: 100, regen: 0.1 })
     w.entity_count = w.entity_count + 1
 }
 
@@ -98,8 +98,8 @@ fn system_movement(w: World, dt: Float) {
     let n = w.entity_count
     let mut i = 0
     while (i < n) {
-        let p = list_get(w.positions, i)
-        let v = list_get(w.velocities, i)
+        let p = w.positions[i]
+        let v = w.velocities[i]
         p.x = p.x + v.dx * dt
         p.y = p.y + v.dy * dt
         p.z = p.z + v.dz * dt
@@ -112,8 +112,8 @@ fn system_physics(w: World, dt: Float) {
     let n = w.entity_count
     let mut i = 0
     while (i < n) {
-        let v = list_get(w.velocities, i)
-        let ph = list_get(w.physics, i)
+        let v = w.velocities[i]
+        let ph = w.physics[i]
         let k = 1.0 - ph.drag * dt
         v.dx = v.dx * k
         v.dy = v.dy * k - 9.81 * dt
@@ -128,8 +128,8 @@ fn system_render(w: World) -> Int {
     let mut drawn = 0
     let mut i = 0
     while (i < n) {
-        let p = list_get(w.positions, i)
-        let s = list_get(w.sprites, i)
+        let p = w.positions[i]
+        let s = w.sprites[i]
         if (s.alpha > 0.0 and p.y > 0.0 - 100.0) {
             drawn = drawn + 1
         }
@@ -143,7 +143,7 @@ fn system_regen(w: World) {
     let n = w.entity_count
     let mut i = 0
     while (i < n) {
-        let h = list_get(w.health, i)
+        let h = w.health[i]
         if (h.current < h.maximum) {
             h.current = h.current + 1
         }

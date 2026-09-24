@@ -39,8 +39,8 @@ private fn aifDeclaredContract(name: String, index: Int) -> Int {
     if (text.equals("consume")) { return AIF_FFI_CONSUME }
     if (text.equals("out")) { return AIF_FFI_OUT }
 
-    if (strStartsWith(text, "retain_in:")) {
-        let k = optionOr(strParseInt(strSubstring(text, 10, __builtin_string_len(text) - 10)), 0)
+    if (text.startsWith("retain_in:")) {
+        let k = optionOr(text.substring(10, __builtin_string_len(text) - 10).parseInt(), 0)
         return AIF_FFI_RETAIN_IN_BASE + k
     }
 
@@ -334,7 +334,7 @@ internal fn aifArgTypeAt(call: ASTNode, index: Int) -> String {
 // allocation, so it must not be modelled as one; `produce` says the caller owns
 // it, which is exactly what the undeclared case cannot assume.
 internal fn aifDeclaredReturnIsProduce(name: String) -> Bool {
-    return strStartsWith(aif_extern_contract(name, 0 - 1), "produce")
+    return aif_extern_contract(name, 0 - 1).startsWith("produce")
 }
 
 internal fn aifDeclaredReturnIsAlias(name: String) -> Bool {

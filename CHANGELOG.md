@@ -4,6 +4,53 @@
 
 ### Changed
 
+- **`mut` covers what a Vec or an array holds, not only the binding.** Breaking:
+  `let v: Vec<Int> = []` followed by `v.push(1)`, `v[0] = x`, `v.sort()` or
+  `v.clear()` is now ``cannot change `v`, which is not declared `mut` ``, and so is
+  `a[i] = x` on a non-`mut` array. A parameter is a borrow: a function that
+  changes a Vec or an array it was given declares that parameter `inout`, and an
+  argument to any `inout` parameter has to be a `let mut` binding or the caller's
+  own `inout` parameter -- which `control-flow.md` already claimed for iterators
+  and nothing checked. `inout` is accepted on arrays and slices as well as structs
+  and Vecs. The rule follows indexing to the root binding (`grid[i].push(x)` needs
+  `grid` mutable) and stops at a field, since struct fields stay assignable through
+  any binding. `sort`, `sortBy`, `reverse`, `extend`, `pop`, `removeAt` and
+  `mapInto`'s destination take their Vec `inout`. `inout` stays sema-only: no IR
+  moved for any program that compiles.
+- **The old free-function API is gone from programs.** Breaking:
+  - the runtime entry points under Vec, Slice and DataView -- `list_new`,
+    `list_push`, `list_get`, `list_len`, `list_set`, `list_swap`, `list_insert`,
+    `list_reserve`, `list_truncate`, `list_capacity`, `list_remove_at`,
+    `list_new_with_capacity`, `list_set_exclusive`, `slice_len`, `slice_set`,
+    `data_len` -- are refused outside `std/` with a note naming the method
+    (``note: write `v.push(x)` ``). `list_set_exclusive` gained a method,
+    `v.replace(i, x)`, and a Slice and a DataView gained `length`;
+  - the 106 `str*` and `char*` functions that shadow a `String`, `Char` or number
+    method (`strTrim`, `strFromInt`, `charIsDigit`, `strEmpty`, `strJoin`, ...) and
+    `str_with_capacity` are `internal` to `std`: write `s.trim()`, `n.toString()`,
+    `c.isDigit()`, `""`, `parts.join(sep)`. `join`, `strFromScalar` and
+    `scalarWidth` stay, having no receiver;
+  - `std.fs`'s raw `file_exists`, `read_file`, `write_file`, ... are `internal`;
+    the `Bool`-returning `fileExists`, `readFile`, `writeFile`, ... are the API;
+  - `withCapacity<T>(n)` is no longer a `std.vec` function: `Vec<T>.withCapacity(n)`
+    lowers to the runtime directly, like `[]`, and needs no import.
+  Everything in `src/`, `ums/`, `tests/`, `benchmarks/`, the corpus and both doc
+  apps was migrated.
+- **`v[i]` on a Vec is `list_get`, and so is `for x in v`.** A Vec index read
+  used to take its own lowering, which called the runtime per element and was
+  invisible to the flat-element guard and hoisting that `list_get(v, i)` got; the
+  documented spelling was the slower one. Sema now lowers the read to
+  `list_get`, as every element-reading method already did, and the binding stays
+  a borrow -- so `let x = v[i]` stored into another slot of an owned-element Vec
+  is refused instead of putting one element under two slots.
+  The benchmark suite, migrated from `list_get(v, i)`/`list_push` to `v[i]`/`v.push`,
+  compiles to the same instructions in all 635 of its functions
+  (`tools/fn_mnemonic_diff.py`); `edit_distance` and `function_call_overhead`
+  moved 1.2x between the two binaries with no instruction changed, which is
+  layout (KNOWN_ISSUES, Codegen).
+- **`for c in s` over a String reads the length field** rather than calling
+  `strLength`.
+
 - **`a..b` now includes its end; `a..<b` is the one that stops before it.**
   Breaking: `for i in 0..n` used to run `0` to `n - 1` and now runs `0` to `n`.
   Write `0..<n` for the old meaning. Slices follow the same rule --

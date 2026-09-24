@@ -42,21 +42,21 @@ struct Node {
 // makes them Shared (A-CONTAIN) and therefore T4b rather than T2. The `peer`
 // edges close the value cycle.
 fn build_cycle() -> Vec<Node> {
-    let owner: Vec<Node> = list_new()
-    list_push(owner, Node { id: 1, peer: none })
-    list_push(owner, Node { id: 2, peer: none })
+    let mut owner: Vec<Node> = []
+    owner.push(Node { id: 1, peer: none })
+    owner.push(Node { id: 2, peer: none })
 
-    let a = list_get(owner, 0)
-    let b = list_get(owner, 1)
+    let a = owner[0]
+    let b = owner[1]
     a.peer = ptr_to_node(node_to_ptr(b))
     b.peer = ptr_to_node(node_to_ptr(a))
     return owner
 }
 
-fn mirror(src: Vec<Node>, dst: Vec<Node>) {
+fn mirror(src: Vec<Node>, inout dst: Vec<Node>) {
     let mut i = 0
-    while (i < list_len(src)) {
-        list_push(dst, list_get(src, i))
+    while (i < src.length) {
+        dst.push(src[i])
         i = i + 1
     }
 }
@@ -69,9 +69,9 @@ fn mirror(src: Vec<Node>, dst: Vec<Node>) {
 // garbage, and that is the one place a candidate root is born.
 fn collected_when_unreachable() -> Int {
     let primary = build_cycle()
-    let second: Vec<Node> = list_new()
+    let mut second: Vec<Node> = []
     mirror(primary, second)
-    return list_len(primary) + list_len(second)
+    return primary.length + second.length
 }
 
 // **The load-bearing case, and the one a wrong implementation fails loudly.**
@@ -86,7 +86,7 @@ fn live_cycle_survives() -> Int {
     // `temp` dies at the closing brace, so every node's count drops from two to
     // one and each becomes a candidate root -- while `keep` still holds them.
     if (true) {
-        let temp: Vec<Node> = list_new()
+        let mut temp: Vec<Node> = []
         mirror(keep, temp)
     }
 
@@ -97,7 +97,7 @@ fn live_cycle_survives() -> Int {
     // released object reads as poison.
     cyc_collect_now()
 
-    let head = list_get(keep, 0)
+    let head = keep[0]
     let other = expect(head.peer)
     return head.id + other.id
 }

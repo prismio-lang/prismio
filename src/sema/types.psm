@@ -17,7 +17,7 @@ import std.string
 // ---------------------------------------------------------------------------
 
 private fn semaAnnotationHas(encoded: String, name: String) -> Bool {
-    return strContains(encoded, name.concat(" "))
+    return encoded.contains(name.concat(" "))
 }
 
 // The `pin:` argument used to be read back out here, by a copy of the three

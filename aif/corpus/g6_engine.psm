@@ -46,9 +46,9 @@ struct World {
 }
 
 public fn world_create() -> World {
-    let a: Vec<Actor> = list_new()
-    let t: Vec<Transform> = list_new()
-    let v: Vec<Velocity> = list_new()
+    let a: Vec<Actor> = []
+    let t: Vec<Transform> = []
+    let v: Vec<Velocity> = []
     return World {
         actors: a,
         transforms: t,
@@ -62,10 +62,10 @@ public fn world_create() -> World {
 // The retaining API: gameplay hands over data, the engine stores it forever.
 // Returns a handle, not a reference.
 public fn world_spawn(w: World, x: Float, y: Float, team: Int) -> Int {
-    let handle = list_len(w.actors)
-    list_push(w.transforms, Transform { x: x, y: y, z: 0.0, yaw: 0.0 })
-    list_push(w.velocities, Velocity { dx: 0.0, dy: 0.0, dz: 0.0 })
-    list_push(w.actors, Actor {
+    let handle = w.actors.length
+    w.transforms.push(Transform { x: x, y: y, z: 0.0, yaw: 0.0 })
+    w.velocities.push(Velocity { dx: 0.0, dy: 0.0, dz: 0.0 })
+    w.actors.push(Actor {
         transform: handle,
         velocity: handle,
         health: 100,
@@ -80,21 +80,21 @@ public fn world_spawn(w: World, x: Float, y: Float, team: Int) -> Int {
 // Borrowing accessors. The returned value is engine-owned storage; gameplay
 // reads through it and does not keep it.
 public fn world_transform(w: World, h: Int) -> Transform {
-    return list_get(w.transforms, h)
+    return w.transforms[h]
 }
 
 public fn world_actor(w: World, h: Int) -> Actor {
-    return list_get(w.actors, h)
+    return w.actors[h]
 }
 
 public fn world_set_velocity(w: World, h: Int, dx: Float, dy: Float) {
-    let v = list_get(w.velocities, h)
+    let v = w.velocities[h]
     v.dx = dx
     v.dy = dy
 }
 
 public fn world_damage(w: World, h: Int, amount: Int) -> Bool {
-    let a = list_get(w.actors, h)
+    let a = w.actors[h]
     if (a.alive == false) {
         return false
     }
@@ -111,13 +111,13 @@ public fn world_damage(w: World, h: Int, amount: Int) -> Bool {
 // Integration over the component arrays. Sequential, touches 3 of 4 Transform
 // fields and all 3 of Velocity.
 public fn world_step(w: World, dt: Float) {
-    let n = list_len(w.actors)
+    let n = w.actors.length
     let mut i = 0
     while (i < n) {
-        let a = list_get(w.actors, i)
+        let a = w.actors[i]
         if (a.alive) {
-            let t = list_get(w.transforms, a.transform)
-            let v = list_get(w.velocities, a.velocity)
+            let t = w.transforms[a.transform]
+            let v = w.velocities[a.velocity]
             t.x = t.x + v.dx * dt
             t.y = t.y + v.dy * dt
             t.z = t.z + v.dz * dt
@@ -129,11 +129,11 @@ public fn world_step(w: World, dt: Float) {
 
 // Reads 1 of 6 Actor fields -- the streaming query case.
 public fn world_count_alive(w: World) -> Int {
-    let n = list_len(w.actors)
+    let n = w.actors.length
     let mut alive = 0
     let mut i = 0
     while (i < n) {
-        let a = list_get(w.actors, i)
+        let a = w.actors[i]
         if (a.alive) {
             alive = alive + 1
         }

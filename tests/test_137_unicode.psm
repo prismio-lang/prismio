@@ -26,8 +26,8 @@ fn main() -> Int {
     if (scalarWidth(769) != 0) { return fail("a combining mark is none") }
     if (scalarWidth(9) != 0) { return fail("a control character is none") }
 
-    if (strDisplayWidth("abc") != 3) { return fail("width of ASCII") }
-    if (strDisplayWidth("日本") != 4) { return fail("width of CJK") }
+    if ("abc".displayWidth() != 3) { return fail("width of ASCII") }
+    if ("日本".displayWidth() != 4) { return fail("width of CJK") }
     if ("日本".length != 6) { return fail("bytes of CJK") }
     if ("日本".scalarCount() != 2) { return fail("scalars of CJK") }
 
@@ -35,7 +35,7 @@ fn main() -> Int {
     let decomposed = "é"
     if (decomposed.length != 3) { return fail("bytes of a decomposed é") }
     if (decomposed.scalarCount() != 2) { return fail("scalars of a decomposed é") }
-    if (strDisplayWidth(decomposed) != 1) { return fail("width of a decomposed é") }
+    if (decomposed.displayWidth() != 1) { return fail("width of a decomposed é") }
     if (decomposed.graphemeCount() != 1) { return fail("graphemes of a decomposed é") }
 
     // -- Grapheme clusters ---------------------------------------------------
@@ -52,54 +52,54 @@ fn main() -> Int {
     if ("각".graphemeCount() != 1) { return fail("Hangul jamo are one grapheme") }
 
     let parts = "a🇯🇵b".graphemes()
-    if (list_len(parts) != 3) { return fail("graphemes splits into clusters") }
+    if (parts.length != 3) { return fail("graphemes splits into clusters") }
 
     // -- Columns, not characters ---------------------------------------------
-    if (strPadEndDisplay("日本", 8, '.').equals("日本....") == false) {
+    if ("日本".padEndDisplay(8, '.').equals("日本....") == false) {
         return fail("padding to a column count")
     }
-    if (strTruncateToWidth("日本語です", 4).equals("日本") == false) {
+    if ("日本語です".truncateToWidth(4).equals("日本") == false) {
         return fail("truncating to a column count")
     }
     // Never mid-character, whatever the budget.
-    if (strTruncateToWidth("日本語", 3).equals("日") == false) {
+    if ("日本語".truncateToWidth(3).equals("日") == false) {
         return fail("an odd budget cuts at a boundary")
     }
 
     // -- Normalization -------------------------------------------------------
     let composed = "é"
     if ((composed == decomposed)) { return fail("the two spellings differ as bytes") }
-    if (strEqualsNormalized(composed, decomposed) == false) {
+    if (composed.equalsNormalized(decomposed) == false) {
         return fail("and are the same text")
     }
-    if (strNormalizeNfc(decomposed).equals(composed) == false) { return fail("NFD to NFC") }
-    if (strNormalizeNfd(composed).equals(decomposed) == false) { return fail("NFC to NFD") }
+    if (decomposed.normalizeNfc().equals(composed) == false) { return fail("NFD to NFC") }
+    if (composed.normalizeNfd().equals(decomposed) == false) { return fail("NFC to NFD") }
 
     // Idempotent, which is what makes it a normal *form*. Bound rather than
     // nested: an owned result passed straight into another call has nothing to
     // hang a drop on, which RUNTIME.md 3.1 makes a leak rather than a style
     // preference -- and this fixture runs under `--verify`.
-    let once = strNormalizeNfc(decomposed)
-    let twice = strNormalizeNfc(once)
+    let once = decomposed.normalizeNfc()
+    let twice = once.normalizeNfc()
     if (twice.equals(composed) == false) { return fail("NFC is idempotent") }
 
     // Canonical ordering: two marks in either order normalize alike.
     let dotAboveFirst = "q̣̇"
     let dotBelowFirst = "q̣̇"
-    let orderedA = strNormalizeNfd(dotAboveFirst)
-    let orderedB = strNormalizeNfd(dotBelowFirst)
+    let orderedA = dotAboveFirst.normalizeNfd()
+    let orderedB = dotBelowFirst.normalizeNfd()
     if (orderedA.equals(orderedB) == false) { return fail("marks are canonically ordered") }
 
     // Hangul composes by arithmetic rather than from a table.
-    if (strNormalizeNfc("각").equals("각") == false) { return fail("Hangul composes") }
-    if (strNormalizeNfd("각").scalarCount() != 3) { return fail("Hangul decomposes") }
+    if ("각".normalizeNfc().equals("각") == false) { return fail("Hangul composes") }
+    if ("각".normalizeNfd().scalarCount() != 3) { return fail("Hangul decomposes") }
 
     // A singleton decomposition is excluded from composition: the Angstrom sign
     // normalizes to A-with-ring and does not come back.
-    if (strNormalizeNfc("Å").equals("Å") == false) { return fail("a singleton is excluded") }
+    if ("Å".normalizeNfc().equals("Å") == false) { return fail("a singleton is excluded") }
 
     // Canonical, not compatibility: NFC must leave `ﬁ` alone.
-    if (strNormalizeNfc("ﬁ").equals("ﬁ") == false) { return fail("NFC is not NFKC") }
+    if ("ﬁ".normalizeNfc().equals("ﬁ") == false) { return fail("NFC is not NFKC") }
 
     println("test_137 ok")
     return 0

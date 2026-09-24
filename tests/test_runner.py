@@ -4823,7 +4823,7 @@ def run_target_test():
                          "struct OfString { a: String, b: String, c: String }\n"
                          "\n"
                          "fn main() -> Int {\n"
-                         "    let x = OfList { a: list_new(), b: list_new(), c: list_new() }\n"
+                         "    let x = OfList { a: [], b: [], c: [] }\n"
                          "    let z = OfString { a: \"p\", b: \"q\", c: \"r\" }\n"
                          "    println(1)\n"
                          "    return 0\n"
@@ -5026,8 +5026,8 @@ def run_jit_test():
                         '\n'
                         'fn main() -> Int {\n'
                         '    let p = Point { x: 40, y: 2 }\n'
-                        '    let items = list_new()\n'
-                        '    list_push(items, "jit")\n'
+                        '    let mut items: Vec<String> = []\n'
+                        '    items.push("jit")\n'
                         '    print("answer: ")\n'
                         '    println(total(p))\n'
                         '    print("argc: ")\n'
@@ -7935,14 +7935,9 @@ def run_module_artifact_test():
         sorter = wd / "sorter.psm"
         sorter.write_text('import std.io\nimport std.vec\n\n'
                           'fn main() -> Int {\n'
-                          '    let numbers: Vec<Int> = list_new()\n'
-                          '    list_push(numbers, 3)\n'
-                          '    list_push(numbers, 1)\n'
-                          '    list_push(numbers, 2)\n'
+                          '    let mut numbers: Vec<Int> = [3, 1, 2]\n'
                           '    sort(numbers)\n'
-                          '    let words: Vec<String> = list_new()\n'
-                          '    list_push(words, "pear")\n'
-                          '    list_push(words, "apple")\n'
+                          '    let mut words: Vec<String> = ["pear", "apple"]\n'
                           '    sort(words)\n'
                           '    if (isSorted(numbers) and isSorted(words)) { println("sorted") }\n'
                           '    return 0\n}\n')

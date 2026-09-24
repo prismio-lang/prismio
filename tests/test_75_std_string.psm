@@ -7,6 +7,10 @@
 import std.io
 import std.string
 
+// A fresh heap String the test fills itself. std keeps this entry point
+// internal, so a program that wants one raw declares it.
+extern fn str_with_capacity(length: Int) -> String produce(free)
+
 fn fail(message: String) -> Int {
     print("FAIL: ")
     println(message)
@@ -78,96 +82,96 @@ fn main() -> Int {
         return fail("compare should order a prefix before the longer string")
     }
 
-    let nativeSlice = strSubstring("abcdef", 2, 3)
+    let nativeSlice = "abcdef".substring(2, 3)
     if (nativeSlice.equals("cde") == false) {
         return fail("strSubstring should copy the requested range")
     }
     drop(nativeSlice)
-    let nativeClampedSlice = strSubstring("abcdef", 4, 99)
+    let nativeClampedSlice = "abcdef".substring(4, 99)
     if (nativeClampedSlice.equals("ef") == false) {
         return fail("strSubstring should clamp at the end")
     }
     drop(nativeClampedSlice)
-    let nativeMissingSlice = strSubstring("abcdef", 99, 2)
+    let nativeMissingSlice = "abcdef".substring(99, 2)
     if (nativeMissingSlice.equals("") == false) {
         return fail("strSubstring should be empty when start is out of range")
     }
     drop(nativeMissingSlice)
 
-    let nativeChar = strFromChar('Q')
+    let nativeChar = 'Q'.toString()
     if (nativeChar.equals("Q") == false) {
         return fail("strFromChar should produce one byte")
     }
-    let nativeNulChar = strFromChar('\0')
+    let nativeNulChar = '\0'.toString()
     if (__builtin_string_len(nativeNulChar) != 0) {
         return fail("strFromChar should map NUL to the empty string")
     }
-    let nativeClone = strClone("copy")
+    let nativeClone = "copy".clone()
     if (nativeClone.equals("copy") == false) {
-        return fail("strClone should return an equal fresh string")
+        return fail("clone should return an equal fresh string")
     }
-    let nativeEmpty = strEmpty()
+    let nativeEmpty = "".clone()
     if (nativeEmpty.equals("") == false) {
-        return fail("strEmpty should return an owned empty string")
+        return fail("an empty clone should be an owned empty string")
     }
 
-    let trimmedPadded = strTrim("  x  ")
+    let trimmedPadded = "  x  ".trim()
     if (trimmedPadded.equals("x") == false) {
         return fail("strTrim should remove padding")
     }
-    let trimmedEmpty = strTrim("")
+    let trimmedEmpty = "".trim()
     if (trimmedEmpty.equals("") == false) {
         return fail("strTrim should accept empty input")
     }
-    let trimmedWhitespace = strTrim("   ")
+    let trimmedWhitespace = "   ".trim()
     if (trimmedWhitespace.equals("") == false) {
         return fail("strTrim should empty all-whitespace input")
     }
-    let trimmedPlain = strTrim("none")
+    let trimmedPlain = "none".trim()
     if (trimmedPlain.equals("none") == false) {
         return fail("strTrim should preserve unpadded input")
     }
 
-    let replacedFirst = strReplaceFirst("a-b-c", "-", "+")
+    let replacedFirst = "a-b-c".replaceFirst("-", "+")
     if (replacedFirst.equals("a+b-c") == false) {
         return fail("strReplaceFirst should replace only the first match")
     }
-    let replacedMissing = strReplaceFirst("hello", "z", "Z")
+    let replacedMissing = "hello".replaceFirst("z", "Z")
     if (replacedMissing.equals("hello") == false) {
         return fail("strReplaceFirst should preserve input when the pattern is absent")
     }
 
-    if (strIndexOf("hello world", "world") != 6) {
+    if ("hello world".indexOf("world") != 6) {
         return fail("strIndexOf should find a suffix")
     }
-    if (strIndexOf("hello", "xyz") != 0 - 1) {
+    if ("hello".indexOf("xyz") != 0 - 1) {
         return fail("strIndexOf should return -1 on a miss")
     }
-    if (strIndexOf("aaa", "aa") != 0) {
+    if ("aaa".indexOf("aa") != 0) {
         return fail("strIndexOf should return the first overlapping match")
     }
     // Both predictive bytes occur at every four-byte candidate, but the third
     // byte rejects each one. This drives the packed-pair effectiveness check
     // into its Two-Way fallback instead of only testing the fast no-candidate
     // path.
-    let denseCandidates = strRepeat("jzxe", 80)
-    if (strIndexOf(denseCandidates, "jzde") != 0 - 1) {
+    let denseCandidates = "jzxe".repeat(80)
+    if (denseCandidates.indexOf("jzde") != 0 - 1) {
         return fail("strIndexOf should reject dense false candidates")
     }
     // Needles above the packed-pair cutoff always use Two-Way. Cover aperiodic
     // and short-period needles, both hit and miss.
     let longHaystack = "prefix-0123456789abcdefghijklmnopqrstuv-WXYZ-suffix"
     let longNeedle = "0123456789abcdefghijklmnopqrstuv-WXYZ"
-    if (strIndexOf(longHaystack, longNeedle) != 7) {
+    if (longHaystack.indexOf(longNeedle) != 7) {
         return fail("strIndexOf should find a long aperiodic needle")
     }
-    let periodicHaystack = strRepeat("ab", 96)
+    let periodicHaystack = "ab".repeat(96)
     let periodicNeedle = "abababababababababababababababababababab"
-    if (strIndexOf(periodicHaystack, periodicNeedle) != 0) {
+    if (periodicHaystack.indexOf(periodicNeedle) != 0) {
         return fail("strIndexOf should find a long periodic needle")
     }
     let longMiss = "abababababababababababababababababababac"
-    if (strIndexOf(periodicHaystack, longMiss) != 0 - 1) {
+    if (periodicHaystack.indexOf(longMiss) != 0 - 1) {
         return fail("strIndexOf should reject a long periodic miss")
     }
     // Sweep both sides of the 32-byte cutoff. Even cases slice a guaranteed
@@ -180,15 +184,15 @@ fn main() -> Int {
         let generatedHaystack = searchFixture(searchCase, hayLength)
         if (searchCase % 2 == 0) {
             let start = (searchCase * 7) % (hayLength - needleLength + 1)
-            let generatedNeedle = strSubstring(generatedHaystack, start, needleLength)
-            if (strIndexOf(generatedHaystack, generatedNeedle) !=
+            let generatedNeedle = generatedHaystack.substring(start, needleLength)
+            if (generatedHaystack.indexOf(generatedNeedle) !=
                 referenceIndexOf(generatedHaystack, generatedNeedle)) {
                 return fail("strIndexOf disagrees on a generated match")
             }
             drop(generatedNeedle)
         } else {
             let generatedNeedle = searchFixture(searchCase + 333, needleLength)
-            if (strIndexOf(generatedHaystack, generatedNeedle) !=
+            if (generatedHaystack.indexOf(generatedNeedle) !=
                 referenceIndexOf(generatedHaystack, generatedNeedle)) {
                 return fail("strIndexOf disagrees on a generated independent needle")
             }
@@ -198,69 +202,69 @@ fn main() -> Int {
         searchCase = searchCase + 1
     }
 
-    if (strContains("hello", "ell") == false) {
+    if ("hello".contains("ell") == false) {
         return fail("strContains should find an interior match")
     }
-    if (strStartsWith("hello", "he") == false) {
+    if ("hello".startsWith("he") == false) {
         return fail("strStartsWith should find a prefix")
     }
-    if (strEndsWith("hello", "lo") == false) {
+    if ("hello".endsWith("lo") == false) {
         return fail("strEndsWith should find a suffix")
     }
-    if (strStartsWith("he", "hello")) {
+    if ("he".startsWith("hello")) {
         return fail("strStartsWith should reject an overlong prefix")
     }
 
-    let formattedZero = strFromInt(0)
+    let formattedZero = (0).toString()
     if (formattedZero.equals("0") == false) {
         return fail("strFromInt should format zero")
     }
-    let formattedNegative = strFromInt(-4321)
+    let formattedNegative = (-4321).toString()
     if (formattedNegative.equals("-4321") == false) {
         return fail("strFromInt should format a negative number")
     }
-    let formattedMax = strFromInt(2147483647)
+    let formattedMax = (2147483647).toString()
     if (formattedMax.equals("2147483647") == false) {
         return fail("strFromInt should format the 32-bit maximum")
     }
 
-    let parts = strSplit("a,bb,ccc", ',')
-    if (list_len(parts) != 3) {
+    let parts = "a,bb,ccc".split(',')
+    if (parts.length != 3) {
         return fail("strSplit should produce one part per separator, plus one")
     }
-    if (list_get(parts, 2).equals("ccc") == false) {
+    if (parts[2].equals("ccc") == false) {
         return fail("strSplit should keep the final part")
     }
-    let rejoined = strJoin(parts, ",")
+    let rejoined = parts.join(",")
     if (rejoined.equals("a,bb,ccc") == false) {
         return fail("strJoin should invert strSplit on the same separator")
     }
     drop(parts)
 
-    let words = strSplitWhitespace("  a  b  c ")
-    if (list_len(words) != 3) {
+    let words = "  a  b  c ".splitWhitespace()
+    if (words.length != 3) {
         return fail("strSplitWhitespace should discard empty parts")
     }
     drop(words)
 
-    let onSep = strSplitOn("a::b::c", "::")
-    if (list_len(onSep) != 3) {
+    let onSep = "a::b::c".splitOn("::")
+    if (onSep.length != 3) {
         return fail("strSplitOn should split on a multi-character separator")
     }
     drop(onSep)
 
     // Every occurrence, and without rescanning what the replacement inserted --
     // `a` -> `aa` terminates rather than looping.
-    let replacedAll = strReplaceAll("a-b-c", "-", "+")
+    let replacedAll = "a-b-c".replaceAll("-", "+")
     if (replacedAll.equals("a+b+c") == false) {
         return fail("strReplaceAll should replace every occurrence")
     }
-    let replacementGrowth = strReplaceAll("aa", "a", "aa")
+    let replacementGrowth = "aa".replaceAll("a", "aa")
     if (replacementGrowth.equals("aaaa") == false) {
         return fail("strReplaceAll should not rescan its own replacement")
     }
 
-    let parsedPositive = strParseInt("123")
+    let parsedPositive = "123".parseInt()
     match (parsedPositive) {
         Option<Int>.Some(v) => {
             if (v != 123) { return fail("strParseInt should parse a positive integer") }
@@ -268,7 +272,7 @@ fn main() -> Int {
         Option<Int>.None => { return fail("strParseInt should accept \"123\"") }
     }
     drop(parsedPositive)
-    let parsedNegative = strParseInt("-7")
+    let parsedNegative = "-7".parseInt()
     match (parsedNegative) {
         Option<Int>.Some(v) => {
             if (v != 0 - 7) { return fail("strParseInt should parse a negative integer") }
@@ -277,55 +281,55 @@ fn main() -> Int {
     }
     drop(parsedNegative)
     // Parsing must distinguish malformed input from the valid integer zero.
-    let parsedGarbage = strParseInt("12x")
+    let parsedGarbage = "12x".parseInt()
     match (parsedGarbage) {
         Option<Int>.Some(v) => { return fail("strParseInt should reject trailing garbage") }
         Option<Int>.None => { }
     }
     drop(parsedGarbage)
-    let parsedEmpty = strParseInt("")
+    let parsedEmpty = "".parseInt()
     match (parsedEmpty) {
         Option<Int>.Some(v) => { return fail("strParseInt should reject the empty string") }
         Option<Int>.None => { }
     }
     drop(parsedEmpty)
 
-    let repeated = strRepeat("ab", 3)
+    let repeated = "ab".repeat(3)
     if (repeated.equals("ababab") == false) {
         return fail("strRepeat should concatenate n copies")
     }
-    let repeatedEmpty = strRepeat("ab", 0)
+    let repeatedEmpty = "ab".repeat(0)
     if (repeatedEmpty.equals("") == false) {
         return fail("strRepeat should produce an empty string for a count of zero")
     }
-    let reversed = strReverse("abcd")
+    let reversed = "abcd".reverse()
     if (reversed.equals("dcba") == false) {
         return fail("strReverse should reverse the bytes")
     }
-    let upper = strToUpper("aBc1")
+    let upper = "aBc1".toUpper()
     if (upper.equals("ABC1") == false) {
         return fail("strToUpper should upcase letters and leave other bytes alone")
     }
-    let lower = strToLower("AbC1")
+    let lower = "AbC1".toLower()
     if (lower.equals("abc1") == false) {
         return fail("strToLower should downcase letters and leave other bytes alone")
     }
-    let paddedStart = strPadStart("7", 3, '0')
+    let paddedStart = "7".padStart(3, '0')
     if (paddedStart.equals("007") == false) {
         return fail("strPadStart should pad on the left to the requested width")
     }
-    let paddedEnd = strPadEnd("7", 3, '.')
+    let paddedEnd = "7".padEnd(3, '.')
     if (paddedEnd.equals("7..") == false) {
         return fail("strPadEnd should pad on the right to the requested width")
     }
-    let unchangedPad = strPadStart("long", 2, '0')
+    let unchangedPad = "long".padStart(2, '0')
     if (unchangedPad.equals("long") == false) {
         return fail("strPadStart should not truncate a string wider than the target")
     }
-    if (strCountOf("abcabc", "abc") != 2) {
+    if ("abcabc".countOf("abc") != 2) {
         return fail("strCountOf should count non-overlapping occurrences")
     }
-    if (strLastIndexOf("abcabc", "abc") != 3) {
+    if ("abcabc".lastIndexOf("abc") != 3) {
         return fail("strLastIndexOf should find the rightmost occurrence")
     }
 

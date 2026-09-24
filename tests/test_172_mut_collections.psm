@@ -1,0 +1,56 @@
+// A Vec's or an array's contents change only through a binding that may change:
+// a `let mut`, or an `inout` parameter. The refusals are neg_173..neg_176; this
+// is every form that is allowed.
+import std.io
+import std.vec
+
+struct Bag { items: Vec<Int> }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn grow(inout v: Vec<Int>) { v.push(9) }
+fn fill(inout xs: [Int]) { xs[0] = 7 }
+fn total(v: Vec<Int>) -> Int {
+    let mut sum = 0
+    for x in v { sum = sum + x }
+    return sum
+}
+
+fn main() -> Int {
+    let mut v: Vec<Int> = [3, 1, 2]
+    v.push(4)
+    v[0] = 5
+    v.set(1, 6)
+    v.swap(0, 1)
+    v.insert(0, 1)
+    v.sort()
+    v.reverse()
+    grow(v)
+    if (total(v) != 27 or v.length != 6) { return fail("vec") }
+    v.truncate(2)
+    v.clear()
+    if (v.isEmpty == false) { return fail("clear") }
+
+    let mut a = [1, 2, 3]
+    a[1] = 4
+    fill(a)
+    if (a[0] + a[1] + a[2] != 14) { return fail("array") }
+
+    // A struct is reached by reference, so its Vec changes with it.
+    let bag = Bag { items: [] }
+    bag.items.push(1)
+    if (bag.items.length != 1) { return fail("field") }
+
+    let mut grid: Vec<Vec<Int>> = []
+    grid.push([1])
+    grid.push([2])
+    grid[1].push(3)
+    if (grid[1].length != 2) { return fail("nested") }
+
+    println("test_172 ok")
+    return 0
+}

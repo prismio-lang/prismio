@@ -14,18 +14,18 @@ struct UmsDiagnostic {
 }
 
 public fn umsDiagnostics() -> Vec<UmsDiagnostic> {
-    return list_new()
+    return []
 }
 
-public fn umsDiagnosticAdd(diagnostics: Vec<UmsDiagnostic>, code: String, path: String,
+public fn umsDiagnosticAdd(inout diagnostics: Vec<UmsDiagnostic>, code: String, path: String,
                     line: Int, col: Int, len: Int, message: String) {
-    list_push(diagnostics, UmsDiagnostic {
-        code: strClone(code),
-        path: strClone(path),
+    diagnostics.push(UmsDiagnostic {
+        code: code.clone(),
+        path: path.clone(),
         line: line,
         col: col,
         len: len,
-        message: strClone(message)
+        message: message.clone()
     })
 }
 
@@ -38,9 +38,9 @@ impl UmsDiagnostic {
             print(self.path)
             if (self.line > 0) {
                 print(":")
-                print(strFromInt(self.line))
+                print(self.line.toString())
                 print(":")
-                print(strFromInt(self.col))
+                print(self.col.toString())
             }
             print(": ")
         }
@@ -52,8 +52,8 @@ impl UmsDiagnostic {
 }
 public fn umsDiagnosticsPrint(diagnostics: Vec<UmsDiagnostic>) {
     let mut i = 0
-    while (i < list_len(diagnostics)) {
-        list_get(diagnostics, i).print()
+    while (i < diagnostics.length) {
+        diagnostics[i].print()
         i = i + 1
     }
 }

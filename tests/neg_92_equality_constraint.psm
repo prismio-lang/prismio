@@ -12,7 +12,7 @@ struct Sack { s: String }
 
 impl Container for Sack {
     type Item = String
-    fn size(self) -> Int { return strLength(self.s) }
+    fn size(self) -> Int { return self.s.length }
 }
 
 fn intOnly<T: Container<Item = Int>>(c: T) -> Int {

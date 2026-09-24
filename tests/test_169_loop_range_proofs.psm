@@ -21,10 +21,10 @@ import std.io
 enum Slot { Empty, At(Int) }
 
 fn ascending(n: Int, from: Int) -> Vec<Int> {
-    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(xs, from + i)
+        xs.push(from + i)
         i = i + 1
     }
     return xs
@@ -33,8 +33,8 @@ fn ascending(n: Int, from: Int) -> Vec<Int> {
 fn weighted(xs: Vec<Int>) -> Int {
     let mut acc = 0
     let mut k = 0
-    while (k < list_len(xs)) {  // range: 1/1
-        acc = acc + (k + 1) * list_get(xs, k)
+    while (k < xs.length) {  // range: 1/1
+        acc = acc + (k + 1) * xs[k]
         k = k + 1
     }
     return acc
@@ -43,43 +43,43 @@ fn weighted(xs: Vec<Int>) -> Int {
 // Three counters, two of them moving under a branch; `out` is bounded only by
 // `out - left - right` not changing on any path.
 fn merge(scratchLen: Int, low: Int, mid: Int, high: Int) -> Int {
-    let mut values: Vec<Int> = list_new_with_capacity(10)
-    list_push(values, 5)
-    list_push(values, 1)
-    list_push(values, 9)
-    list_push(values, 3)
-    list_push(values, 7)
-    list_push(values, 2)
-    list_push(values, 8)
-    list_push(values, 6)
-    list_push(values, 4)
-    list_push(values, 0)
-    let mut scratch: Vec<Int> = list_new_with_capacity(scratchLen)
+    let mut values: Vec<Int> = Vec<Int>.withCapacity(10)
+    values.push(5)
+    values.push(1)
+    values.push(9)
+    values.push(3)
+    values.push(7)
+    values.push(2)
+    values.push(8)
+    values.push(6)
+    values.push(4)
+    values.push(0)
+    let mut scratch: Vec<Int> = Vec<Int>.withCapacity(scratchLen)
     let mut z = 0
     while (z < scratchLen) {
-        list_push(scratch, 0)
+        scratch.push(0)
         z = z + 1
     }
     let mut left = low
     let mut right = mid
     let mut out = low
     while (left < mid and right < high) {  // range: 6/6
-        if (list_get(values, left) <= list_get(values, right)) {
-            list_set(scratch, out, list_get(values, left))
+        if (values[left] <= values[right]) {
+            scratch[out] = values[left]
             left = left + 1
         } else {
-            list_set(scratch, out, list_get(values, right))
+            scratch[out] = values[right]
             right = right + 1
         }
         out = out + 1
     }
     while (left < mid) {  // range: 2/2
-        list_set(scratch, out, list_get(values, left))
+        scratch[out] = values[left]
         left = left + 1
         out = out + 1
     }
     while (right < high) {  // range: 2/2
-        list_set(scratch, out, list_get(values, right))
+        scratch[out] = values[right]
         right = right + 1
         out = out + 1
     }
@@ -89,16 +89,16 @@ fn merge(scratchLen: Int, low: Int, mid: Int, high: Int) -> Int {
 // A step that is a variable, as a sieve strides. A huge step wraps the counter
 // negative with the condition still true; `cap` ends the loop.
 fn sieveStep(n: Int, start: Int, step: Int, cap: Int) -> Int {
-    let mut marks: Vec<Int> = list_new_with_capacity(n + 1)
+    let mut marks: Vec<Int> = Vec<Int>.withCapacity(n + 1)
     let mut i = 0
     while (i <= n) {
-        list_push(marks, 1)
+        marks.push(1)
         i = i + 1
     }
     let mut m = start
     let mut count = 0
     while (m <= n) {  // range: 1/1
-        list_set(marks, m, 0)
+        marks[m] = 0
         m = m + step
         count = count + 1
         if (count > cap) { break }
@@ -106,7 +106,7 @@ fn sieveStep(n: Int, start: Int, step: Int, cap: Int) -> Int {
     let mut total = 0
     let mut k = 0
     while (k <= n) {  // range: 1/1
-        total = total + list_get(marks, k)
+        total = total + marks[k]
         k = k + 1
     }
     return total * 1000 + count
@@ -121,7 +121,7 @@ fn shifted(n: Int, start: Int) -> Int {
     let mut at = start
     let mut count = 0
     while (at + 3 < n) {  // range: 1/1
-        acc = acc + list_get(xs, at)
+        acc = acc + xs[at]
         at = at + 1
         count = count + 1
         if (count > 6) { break }
@@ -131,19 +131,19 @@ fn shifted(n: Int, start: Int) -> Int {
 
 // Reads inside the condition, each bounded by the conjunct before it.
 fn matchLength(pos: Int, ref: Int, n: Int) -> Int {
-    let mut data: Vec<Int> = list_new_with_capacity(10)
-    list_push(data, 1)
-    list_push(data, 2)
-    list_push(data, 3)
-    list_push(data, 1)
-    list_push(data, 2)
-    list_push(data, 3)
-    list_push(data, 1)
-    list_push(data, 2)
-    list_push(data, 9)
-    list_push(data, 9)
+    let mut data: Vec<Int> = Vec<Int>.withCapacity(10)
+    data.push(1)
+    data.push(2)
+    data.push(3)
+    data.push(1)
+    data.push(2)
+    data.push(3)
+    data.push(1)
+    data.push(2)
+    data.push(9)
+    data.push(9)
     let mut m = 0
-    while (pos + m < n and list_get(data, pos + m) == list_get(data, ref + m) and m < 255) {  // range: 2/2
+    while (pos + m < n and data[pos + m] == data[ref + m] and m < 255) {  // range: 2/2
         m = m + 1
     }
     return m
@@ -151,19 +151,19 @@ fn matchLength(pos: Int, ref: Int, n: Int) -> Int {
 
 // Two counters closing on each other: `i < j` bounds each by the other's start.
 fn reverse(n: Int, i0: Int, j0: Int) -> Int {
-    let mut xs: Vec<Int> = list_new_with_capacity(n)
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut k = 0
     while (k < n) {
-        list_push(xs, k * 3)
+        xs.push(k * 3)
         k = k + 1
     }
     let mut i = i0
     let mut j = j0
     while (i < j) {  // range: 4/4
-        let a = list_get(xs, i)
-        let b = list_get(xs, j)
-        list_set(xs, i, b)
-        list_set(xs, j, a)
+        let a = xs[i]
+        let b = xs[j]
+        xs[i] = b
+        xs[j] = a
         i = i + 1
         j = j - 1
     }
@@ -173,15 +173,15 @@ fn reverse(n: Int, i0: Int, j0: Int) -> Int {
 // A `for` variable, and a second cursor moving in step with it.
 fn forCopy(n: Int, a: Int, b: Int, dst0: Int) -> Int {
     let src = ascending(n, 5)
-    let mut dst: Vec<Int> = list_new_with_capacity(n)
+    let mut dst: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut z = 0
     while (z < n) {
-        list_push(dst, 0)
+        dst.push(0)
         z = z + 1
     }
     let mut j = dst0
     for i in a..<b {  // range: 2/2
-        list_set(dst, j, list_get(src, i))
+        dst[j] = src[i]
         j = j + 1
     }
     return weighted(dst)
@@ -191,7 +191,7 @@ fn forStep(n: Int, a: Int, b: Int, step: Int) -> Int {
     let xs = ascending(n, 1)
     let mut acc = 0
     for i in a..b step step {  // range: 1/1
-        acc = acc + list_get(xs, i) * (i + 2)
+        acc = acc + xs[i] * (i + 2)
     }
     return acc
 }
@@ -203,7 +203,7 @@ fn divided(n: Int, a: Int, b: Int) -> Int {
     let mut acc = 0
     let mut i = a
     while (i < b) {  // range: 2/2
-        acc = acc + list_get(xs, i / 2) * 7 + list_get(xs, i % 3)
+        acc = acc + xs[i / 2] * 7 + xs[i % 3]
         i = i + 1
     }
     return acc
@@ -215,7 +215,7 @@ fn masked(n: Int, m: Int, a: Int, b: Int) -> Int {
     let mut acc = 0
     let mut i = a
     while (i < b) {  // range: 1/1
-        acc = acc + list_get(xs, (i * 7) & m)
+        acc = acc + xs[(i * 7) & m]
         i = i + 1
     }
     return acc
@@ -228,9 +228,9 @@ fn letShadow(n: Int) -> Int {
     let mut acc = 0
     let mut i = 0
     while (i < n) {  // range: 1/2
-        acc = acc + list_get(xs, k)
+        acc = acc + xs[k]
         let k = i + 1
-        acc = acc + list_get(xs, k) * 10
+        acc = acc + xs[k] * 10
         i = i + 1
     }
     return acc
@@ -245,7 +245,7 @@ fn binderShadow(n: Int, at: Int) -> Int {
     let mut i = 0
     while (i < n) {  // range: 0/1
         match (s) {
-            Slot.At(i) => { acc = acc + list_get(xs, i) }
+            Slot.At(i) => { acc = acc + xs[i] }
             Slot.Empty => { acc = acc + 1000 }
         }
         i = i + 1
@@ -259,7 +259,7 @@ fn nestedBump(n: Int) -> Int {
     let mut acc = 0
     let mut i = 0
     while (i < n) {  // range: 0/1
-        acc = acc + list_get(xs, i)
+        acc = acc + xs[i]
         let mut r = 0
         while (r < 2) {
             i = i + 1
@@ -282,7 +282,7 @@ fn bisect(n: Int, low0: Int, high0: Int, needle: Int) -> Int {
     let mut at = 0 - 1
     while (low <= high) {  // range: 1/1
         let mid = low + (high - low) / 2
-        let value = list_get(xs, mid)
+        let value = xs[mid]
         steps = steps + 1
         if (steps > 40) { break }
         if (value == needle) {
@@ -306,7 +306,7 @@ fn bisectSum(n: Int, low0: Int, high0: Int, needle: Int) -> Int {
     let mut at = 0 - 1
     while (low <= high) {  // range: 1/1
         let mid = (low + high) / 2
-        let value = list_get(xs, mid)
+        let value = xs[mid]
         steps = steps + 1
         if (steps > 40) { break }
         if (value == needle) {
@@ -331,7 +331,7 @@ fn unordered(n: Int, low0: Int, high0: Int, limit: Int) -> Int {
     let mut steps = 0
     while (low < limit) {  // range: 1/1
         let mid = low + (high - low) / 2
-        acc = acc + list_get(xs, mid)
+        acc = acc + xs[mid]
         low = low + 1
         steps = steps + 1
         if (steps > 20) { break }
@@ -348,7 +348,7 @@ fn nestedGrow(n: Int, high0: Int) -> Int {
     let mut steps = 0
     while (low <= high) {  // range: 0/1
         let mid = low + (high - low) / 2
-        acc = acc + list_get(xs, mid)
+        acc = acc + xs[mid]
         let mut r = 0
         while (r < 1) {
             high = high + 5

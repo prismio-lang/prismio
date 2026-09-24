@@ -1,80 +1,80 @@
 import std.io
 
-fn fill(xs: Vec<Int>, start: Int, end: Int) {
+fn fill(inout xs: Vec<Int>, start: Int, end: Int) {
     let mut i = start
     while (i < end) {
-        list_push(xs, (i * 7 - 13) % 997)
+        xs.push((i * 7 - 13) % 997)
         i = i + 1
     }
 }
 
-fn inclusiveFill(xs: Vec<Int>, end: Int) {
+fn inclusiveFill(inout xs: Vec<Int>, end: Int) {
     let mut i = 0
     while (i <= end) {
-        list_push(xs, i)
+        xs.push(i)
         i = i + 1
     }
 }
 
 // Compile-only: the induction variable wraps, so this function intentionally
 // has no finite trip count. Its push must never use a finite capacity promise.
-fn wrappingInclusiveFill(xs: Vec<Int>, start: Int) {
+fn wrappingInclusiveFill(inout xs: Vec<Int>, start: Int) {
     let mut i = start
     while (i <= 2147483647) {
-        list_push(xs, i)
+        xs.push(i)
         i = i + 1
     }
 }
 
-fn nearLimitFill(xs: Vec<Int>) {
+fn nearLimitFill(inout xs: Vec<Int>) {
     let mut i = 2147483583
     while (i <= 2147483646) {
-        list_push(xs, i)
+        xs.push(i)
         i = i + 1
     }
 }
 
-fn interruptedFill(xs: Vec<Int>, n: Int) {
+fn interruptedFill(inout xs: Vec<Int>, n: Int) {
     let mut i = 0
     while (i < n) {
         if (i == 70) { break }
-        list_push(xs, i)
+        xs.push(i)
         i = i + 1
     }
 }
 
-fn observedValue(xs: Vec<Int>) -> Int { return list_len(xs) }
+fn observedValue(xs: Vec<Int>) -> Int { return xs.length }
 
-fn observedFill(xs: Vec<Int>, n: Int) {
+fn observedFill(inout xs: Vec<Int>, n: Int) {
     let mut i = 0
     while (i < n) {
-        list_push(xs, observedValue(xs))
+        xs.push(observedValue(xs))
         i = i + 1
     }
 }
 
 fn checkFill(n: Int) -> Int {
-    let xs: Vec<Int> = list_new()
+    let mut xs: Vec<Int> = []
     fill(xs, 3, n + 3)
-    if (list_len(xs) != n) { return 1 }
+    if (xs.length != n) { return 1 }
     let mut k = 0
     while (k < n) {
-        if (list_get(xs, k) != ((k + 3) * 7 - 13) % 997) { return 2 }
+        if (xs[k] != ((k + 3) * 7 - 13) % 997) { return 2 }
         k = k + 1
     }
     // A populated list must keep its contents when the same fill helper is
     // called again and growth occurs during the append.
     fill(xs, 0, 129)
-    if (list_len(xs) != n + 129) { return 3 }
+    if (xs.length != n + 129) { return 3 }
     k = 0
     while (k < 129) {
-        if (list_get(xs, n + k) != (k * 7 - 13) % 997) { return 4 }
+        if (xs[n + k] != (k * 7 - 13) % 997) { return 4 }
         k = k + 1
     }
-    if (list_get(xs, -1) != 0 or list_get(xs, n + 129) != 0) { return 5 }
-    list_set(xs, -1, 900)
-    list_set(xs, n + 129, 900)
-    if (list_len(xs) != n + 129) { return 6 }
+    if (xs[-1] != 0 or xs[n + 129] != 0) { return 5 }
+    xs[-1] = 900
+    xs[n + 129] = 900
+    if (xs.length != n + 129) { return 6 }
     return 0
 }
 
@@ -82,34 +82,34 @@ struct FillPair { x: Int, y: Int }
 struct FillRow { pair: FillPair, life: Int, weight: Float }
 
 fn structFill(n: Int) -> Int {
-    let rows: Vec<FillRow> = list_new_with_capacity(n)
+    let mut rows: Vec<FillRow> = Vec<FillRow>.withCapacity(n)
     let mut i = 0
     while (i < n) {
-        list_push(rows, FillRow {
+        rows.push(FillRow {
             pair: FillPair { x: i, y: -i }, life: i + 9, weight: 2.0
         })
         i = i + 1
     }
     i = 0
     while (i < n) {
-        let r = list_get(rows, i)
+        let r = rows[i]
         if (r.pair.x != i or r.pair.y != -i or r.life != i + 9) { return 7 }
         r.life = r.life - 1
         r.weight = r.weight + 3.0
-        if (list_len(rows) != n or r.life != i + 8 or r.weight != 5.0) { return 8 }
+        if (rows.length != n or r.life != i + 8 or r.weight != 5.0) { return 8 }
         i = i + 1
     }
     return 0
 }
 
 fn queueGrowth(n: Int) -> Int {
-    let queue: Vec<Int> = list_new()
-    list_push(queue, 0)
+    let mut queue: Vec<Int> = []
+    queue.push(0)
     let mut head = 0
-    while (head < list_len(queue)) {
-        let node = list_get(queue, head)
+    while (head < queue.length) {
+        let node = queue[head]
         if (node != head) { return 9 }
-        if (node < n) { list_push(queue, node + 1) }
+        if (node < n) { queue.push(node + 1) }
         head = head + 1
     }
     if (head != n + 1) { return 10 }
@@ -120,21 +120,21 @@ fn queueGrowth(n: Int) -> Int {
 // An `i1` store is not a byte store to LLVM, and kept the fill from becoming a
 // memset (runtime/llvm-api-backend.c, element_memory_type).
 fn boolFill(n: Int) -> Int {
-    let mut marks: Vec<Bool> = list_new_with_capacity(n + 1)
+    let mut marks: Vec<Bool> = Vec<Bool>.withCapacity(n + 1)
     let mut i = 0
     while (i <= n) {
-        list_push(marks, true)
+        marks.push(true)
         i = i + 1
     }
     let mut k = 0
     while (k <= n) {
-        if (k % 3 == 0) { list_set(marks, k, false) }
+        if (k % 3 == 0) { marks.set(k, false) }
         k = k + 1
     }
     let mut count = 0
     k = 0
     while (k <= n) {
-        if (list_get(marks, k)) { count = count + 1 }
+        if (marks[k]) { count = count + 1 }
         k = k + 1
     }
     return count
@@ -146,23 +146,23 @@ fn main() -> Int {
             or checkFill(128) != 0 or checkFill(129) != 0 or checkFill(4096) != 0) {
         return 11
     }
-    let empty: Vec<Int> = list_new()
+    let mut empty: Vec<Int> = []
     fill(empty, 90, -1)
     inclusiveFill(empty, -1)
-    if (list_len(empty) != 0) { return 12 }
+    if (empty.length != 0) { return 12 }
     inclusiveFill(empty, 128)
-    if (list_len(empty) != 129 or list_get(empty, 128) != 128) { return 13 }
-    let stopped: Vec<Int> = list_new()
+    if (empty.length != 129 or empty[128] != 128) { return 13 }
+    let mut stopped: Vec<Int> = []
     interruptedFill(stopped, 200)
-    if (list_len(stopped) != 70 or list_get(stopped, 69) != 69) { return 14 }
-    let observed: Vec<Int> = list_new()
+    if (stopped.length != 70 or stopped[69] != 69) { return 14 }
+    let mut observed: Vec<Int> = []
     observedFill(observed, 129)
-    if (list_len(observed) != 129 or list_get(observed, 128) != 128) { return 15 }
+    if (observed.length != 129 or observed[128] != 128) { return 15 }
     if (structFill(129) != 0 or queueGrowth(4096) != 0) { return 16 }
-    let limit: Vec<Int> = list_new()
+    let mut limit: Vec<Int> = []
     nearLimitFill(limit)
-    if (list_len(limit) != 64 or list_get(limit, 0) != 2147483583
-            or list_get(limit, 63) != 2147483646) { return 17 }
+    if (limit.length != 64 or limit[0] != 2147483583
+            or limit[63] != 2147483646) { return 17 }
     if (boolFill(300) != 200 or boolFill(0) != 0 or boolFill(4096) != 2731) { return 18 }
     println("PASS: counted fill, struct regions, and growing queue")
     return 0

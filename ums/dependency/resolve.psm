@@ -45,7 +45,7 @@ struct UmsResolution {
 // dependency does. A reader that does not recognise it should refuse the file
 // instead of guessing at the columns.
 private fn umsLockfileVersion() -> String {
-    return strClone("1")
+    return "1".clone()
 }
 
 // Dependency resolution and the lockfile, as methods on the project they belong
@@ -64,7 +64,7 @@ impl UmsProjectModel {
     // resolving against the cwd would make the same manifest mean different things
     // depending on where it was invoked.
     private fn resolvePath(self, dependency: UmsDependency,
-                              diagnostics: Vec<UmsDiagnostic>) -> UmsResolution {
+                              inout diagnostics: Vec<UmsDiagnostic>) -> UmsResolution {
         let candidate = joinPath(self.root, dependency.path)
         let exists = directoryExists(candidate)
 
@@ -75,21 +75,21 @@ impl UmsProjectModel {
                                            "' does not name a directory: ",
                                            candidate))
             return UmsResolution {
-                name: strClone(dependency.name),
+                name: dependency.name.clone(),
                 scope: umsDependencyScopeName(dependency.scope),
-                constraint: strClone(dependency.constraint),
-                source: strClone("path"),
-                resolved: strClone(candidate),
+                constraint: dependency.constraint.clone(),
+                source: "path".clone(),
+                resolved: candidate.clone(),
                 ok: false
             }
         }
 
         return UmsResolution {
-            name: strClone(dependency.name),
+            name: dependency.name.clone(),
             scope: umsDependencyScopeName(dependency.scope),
-            constraint: strClone(dependency.constraint),
-            source: strClone("path"),
-            resolved: strClone(candidate),
+            constraint: dependency.constraint.clone(),
+            source: "path".clone(),
+            resolved: candidate.clone(),
             ok: true
         }
     }
@@ -99,7 +99,7 @@ impl UmsProjectModel {
     // row, the diagnostic -- is already correct, so standing a registry up later
     // touches this function and nothing else.
     private fn fetchRegistry(self, dependency: UmsDependency,
-                                diagnostics: Vec<UmsDiagnostic>) -> UmsResolution {
+                                inout diagnostics: Vec<UmsDiagnostic>) -> UmsResolution {
         umsDiagnosticAdd(diagnostics, "UMS2211", self.manifestPath,
             dependency.line, dependency.col, dependency.len,
             "no registry is configured, so '".concat(dependency.name,
@@ -108,11 +108,11 @@ impl UmsProjectModel {
                                                      dependency.name,
                                                      "\", \"...\", \"../path\")"))
         return UmsResolution {
-            name: strClone(dependency.name),
+            name: dependency.name.clone(),
             scope: umsDependencyScopeName(dependency.scope),
-            constraint: strClone(dependency.constraint),
-            source: strClone("registry"),
-            resolved: strClone(""),
+            constraint: dependency.constraint.clone(),
+            source: "registry".clone(),
+            resolved: "".clone(),
             ok: false
         }
     }
@@ -120,15 +120,15 @@ impl UmsProjectModel {
     // Resolves every declared dependency, in manifest order, and answers the list.
     // Order is the manifest's rather than sorted, so the lockfile reads against the
     // file that produced it.
-         public fn resolveDependencies(self, diagnostics: Vec<UmsDiagnostic>) -> Vec<UmsResolution> {
-        let resolutions: Vec<UmsResolution> = list_new()
+         public fn resolveDependencies(self, inout diagnostics: Vec<UmsDiagnostic>) -> Vec<UmsResolution> {
+        let mut resolutions: Vec<UmsResolution> = []
         let mut i = 0
-        while (i < list_len(self.dependencies)) {
-            let dependency = list_get(self.dependencies, i)
+        while (i < self.dependencies.length) {
+            let dependency = self.dependencies[i]
             if (dependency.isPath()) {
-                list_push(resolutions, self.resolvePath(dependency, diagnostics))
+                resolutions.push(self.resolvePath(dependency, diagnostics))
             } else {
-                list_push(resolutions, self.fetchRegistry(dependency, diagnostics))
+                resolutions.push(self.fetchRegistry(dependency, diagnostics))
             }
             i = i + 1
         }
@@ -145,8 +145,8 @@ impl UmsProjectModel {
         out = out.concat("\n# scope\tname\tconstraint\tsource\tresolved\n")
 
         let mut i = 0
-        while (i < list_len(resolutions)) {
-            let r = list_get(resolutions, i)
+        while (i < resolutions.length) {
+            let r = resolutions[i]
             let mut row = r.scope.concat("\t")
             row = row.concat(r.name, "\t")
             row = row.concat(r.constraint, "\t")

@@ -1,0 +1,12 @@
+// expect-error: cannot change `v`, which is not declared `mut`
+// A `let` binding's Vec keeps its contents: pushing, storing and sorting all
+// need `let mut`.
+import std.vec
+
+fn main() -> Int {
+    let v: Vec<Int> = [1, 2]
+    v.push(3)
+    v[0] = 4
+    v.sort()
+    return v.length
+}

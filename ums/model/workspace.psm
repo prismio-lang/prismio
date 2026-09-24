@@ -25,7 +25,7 @@ struct UmsWorkspace {
 private fn umsEmptyWorkspace(diagnostics: Vec<UmsDiagnostic>) -> UmsWorkspace {
     return UmsWorkspace {
         project: umsProjectModel("", "", "debug"),
-        plan: UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") },
+        plan: UmsBuildPlan { stateRoot: "".clone(), artifactRoot: "".clone() },
         diagnostics: diagnostics,
         valid: false
     }
@@ -33,16 +33,16 @@ private fn umsEmptyWorkspace(diagnostics: Vec<UmsDiagnostic>) -> UmsWorkspace {
 
 public fn umsLoadText(source: String, manifestPath: String, root: String,
                profile: String) -> UmsWorkspace {
-    let diagnostics = umsDiagnostics()
+    let mut diagnostics = umsDiagnostics()
     let tokens = umsLex(source, manifestPath, diagnostics)
     let document = umsParse(tokens, manifestPath, diagnostics)
     let project = umsLowerDocument(document, root, manifestPath, profile, diagnostics)
     project.validate(diagnostics)
-    let mut plan = UmsBuildPlan { stateRoot: strClone(""), artifactRoot: strClone("") }
-    if (list_len(diagnostics) == 0) {
+    let mut plan = UmsBuildPlan { stateRoot: "".clone(), artifactRoot: "".clone() }
+    if (diagnostics.length == 0) {
         plan = umsBuildPlanCreate(project, diagnostics)
     }
-    let valid = list_len(diagnostics) == 0
+    let valid = diagnostics.length == 0
     return UmsWorkspace {
         project: project,
         plan: plan,
@@ -52,7 +52,7 @@ public fn umsLoadText(source: String, manifestPath: String, root: String,
 }
 
 public fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
-    let diagnostics = umsDiagnostics()
+    let mut diagnostics = umsDiagnostics()
     let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
     if (__builtin_string_len(manifestPath) == 0) { return umsEmptyWorkspace(diagnostics) }
     let root = get_directory(manifestPath)
@@ -82,7 +82,7 @@ private fn umsBootstrapPrefixLength(source: String) -> Int {
         }
     }
 
-    if (strMatchesAt(source, "toolchain", pos) == false) { return 0 }
+    if (source.matchesAt("toolchain", pos) == false) { return 0 }
     pos = pos + 9
     while (pos < length and (source.charAt(pos) == ' ' or
            source.charAt(pos) == '\t' or source.charAt(pos) == '\r' or
@@ -125,7 +125,7 @@ private fn umsBootstrapPrefixLength(source: String) -> Int {
 // reads only the first `toolchain { host = "..." }` block: all remaining syntax
 // belongs to the selected host, which may implement a newer UMS.
 public fn umsProjectHost(startDirectory: String) -> String {
-    let diagnostics = umsDiagnostics()
+    let mut diagnostics = umsDiagnostics()
     let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
     if (__builtin_string_len(manifestPath) == 0) { return "" }
 
@@ -134,18 +134,17 @@ public fn umsProjectHost(startDirectory: String) -> String {
     if (prefixLength == 0) { return "" }
 
     let root = get_directory(manifestPath)
-    let prefix = strSubstring(source, 0, prefixLength)
+    let prefix = source.substring(0, prefixLength)
     let tokens = umsLex(prefix, manifestPath, diagnostics)
     let document = umsParse(tokens, manifestPath, diagnostics)
     let mut i = 0
-    while (i < list_len(document.roots)) {
-        let block = list_get(document.statements, list_get(document.roots, i))
+    while (i < document.roots.length) {
+        let block = document.statements[document.roots[i]]
         if (block.kind == UmsAstStatementKind.CALL and block.hasBlock and
-            list_len(block.arguments) == 0 and block.name.equals("toolchain")) {
+            block.arguments.length == 0 and block.name.equals("toolchain")) {
             let mut childIndex = 0
-            while (childIndex < list_len(block.children)) {
-                let property = list_get(document.statements,
-                                        list_get(block.children, childIndex))
+            while (childIndex < block.children.length) {
+                let property = document.statements[block.children[childIndex]]
                 if (property.kind == UmsAstStatementKind.ASSIGNMENT and
                     property.name.equals("host") and
                     property.value.kind == UmsAstValueKind.STRING and
@@ -165,19 +164,19 @@ public fn umsProjectHost(startDirectory: String) -> String {
 impl UmsWorkspace {
 
     public fn targetCount(self) -> Int {
-        return list_len(self.project.targets)
+        return self.project.targets.length
     }
 
     public fn target(self, index: Int) -> UmsTarget {
-        return list_get(self.project.targets, index)
+        return self.project.targets[index]
     }
 
     public fn commandCount(self) -> Int {
-        return list_len(self.project.commands)
+        return self.project.commands.length
     }
 
     public fn command(self, index: Int) -> UmsCommand {
-        return list_get(self.project.commands, index)
+        return self.project.commands[index]
     }
 
     public fn findCommand(self, name: String) -> Int {

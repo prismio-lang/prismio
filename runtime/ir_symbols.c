@@ -1083,6 +1083,10 @@ typedef struct {
     const char* slot;
     int is_global;
     int is_mutable;
+    // An `inout` parameter. Its contents may change -- an element store, a
+    // mutating Vec method -- but the binding is never rebound, because `inout`
+    // is a borrow and not a reference to the caller's slot.
+    int is_inout;
     // A boxed list may release an overwritten element only while the compiler
     // still has exclusive knowledge of the handle. This positive fact starts
     // on a local list_new binding and is cleared permanently when an element is
@@ -1355,6 +1359,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     b->type = ir_intern(type);
     b->is_global = is_global;
     b->is_mutable = 0;
+    b->is_inout = 0;
     b->is_list_exclusive = 0;
     b->is_droppable = 0;
     b->drop_kind = 0;
@@ -1433,6 +1438,16 @@ void ir_mark_mutable(const char* name) {
 int ir_var_is_mutable(const char* name) {
     int i = find_binding(name);
     return i >= 0 ? var_bindings[i].is_mutable : 1; // unknown names error elsewhere
+}
+
+void ir_mark_inout(const char* name) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].is_inout = 1;
+}
+
+int ir_var_is_inout(const char* name) {
+    int i = find_binding(name);
+    return i >= 0 ? var_bindings[i].is_inout : 0;
 }
 
 void ir_mark_list_exclusive(const char* name) {

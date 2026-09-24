@@ -21,15 +21,15 @@
 
 import std.io
 fn sum_ints() -> Int {
-    let nums: Vec<Int> = list_new()
-    list_push(nums, 42)
-    list_push(nums, 7)
-    list_push(nums, -3)
+    let mut nums: Vec<Int> = []
+    nums.push(42)
+    nums.push(7)
+    nums.push(-3)
 
     let mut total = 0
     let mut i = 0
-    while (i < list_len(nums)) {
-        total = total + list_get(nums, i)
+    while (i < nums.length) {
+        total = total + nums[i]
         i = i + 1
     }
     return total
@@ -38,20 +38,20 @@ fn sum_ints() -> Int {
 // list_set takes the element as its third argument, so the coercion has to be
 // keyed on the position and not on "the last one".
 fn overwrite() -> Int {
-    let nums: Vec<Int> = list_new()
-    list_push(nums, 1)
-    list_push(nums, 2)
-    list_set(nums, 0, 100)
-    return list_get(nums, 0) + list_get(nums, 1)
+    let mut nums: Vec<Int> = []
+    nums.push(1)
+    nums.push(2)
+    nums[0] = 100
+    return nums[0] + nums[1]
 }
 
 // The bit-exactness case. 0.5 and 2.25 are both exactly representable, so a
 // wrong answer here is a wrong *instruction* rather than a rounding difference.
 fn float_round_trip() -> Bool {
-    let fs: Vec<Float> = list_new()
-    list_push(fs, 0.5)
-    list_push(fs, 2.25)
-    let got = list_get(fs, 0) + list_get(fs, 1)
+    let mut fs: Vec<Float> = []
+    fs.push(0.5)
+    fs.push(2.25)
+    let got = fs[0] + fs[1]
     return got == 2.75
 }
 
@@ -59,15 +59,15 @@ fn float_round_trip() -> Bool {
 // and truncate on the way out, and getting the width wrong reads a neighbouring
 // byte as the flag.
 fn bools_survive() -> Int {
-    let bs: Vec<Bool> = list_new()
-    list_push(bs, true)
-    list_push(bs, false)
-    list_push(bs, true)
+    let mut bs: Vec<Bool> = []
+    bs.push(true)
+    bs.push(false)
+    bs.push(true)
 
     let mut set = 0
     let mut i = 0
-    while (i < list_len(bs)) {
-        if (list_get(bs, i)) { set = set + 1 }
+    while (i < bs.length) {
+        if (bs[i]) { set = set + 1 }
         i = i + 1
     }
     return set
@@ -77,17 +77,17 @@ fn bools_survive() -> Int {
 // scalars in it. The regrow copies `void*` slots and must not care what they
 // hold.
 fn grows_past_capacity() -> Int {
-    let nums: Vec<Int> = list_new()
+    let mut nums: Vec<Int> = []
     let mut i = 0
     while (i < 10) {
-        list_push(nums, i * i)
+        nums.push(i * i)
         i = i + 1
     }
 
     let mut total = 0
     let mut k = 0
-    while (k < list_len(nums)) {
-        total = total + list_get(nums, k)
+    while (k < nums.length) {
+        total = total + nums[k]
         k = k + 1
     }
     return total

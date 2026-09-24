@@ -74,9 +74,9 @@ struct Scene {
 }
 
 fn make_cache(budget: Int) -> AssetCache {
-    let m: Vec<Mesh> = list_new()
-    let mt: Vec<Material> = list_new()
-    let tx: Vec<Texture> = list_new()
+    let m: Vec<Mesh> = []
+    let mt: Vec<Material> = []
+    let tx: Vec<Texture> = []
     return AssetCache {
         meshes: m,
         materials: mt,
@@ -87,9 +87,9 @@ fn make_cache(budget: Int) -> AssetCache {
 }
 
 fn load_texture(cache: AssetCache, w: Int, h: Int) -> Int {
-    let handle = list_len(cache.textures)
+    let handle = cache.textures.length
     let bytes = w * h * 4
-    list_push(cache.textures, Texture {
+    cache.textures.push(Texture {
         width: w,
         height: h,
         format: 1,
@@ -103,8 +103,8 @@ fn load_texture(cache: AssetCache, w: Int, h: Int) -> Int {
 }
 
 fn load_material(cache: AssetCache, shader: Int, tex: Int, rough: Float) -> Int {
-    let handle = list_len(cache.materials)
-    list_push(cache.materials, Material {
+    let handle = cache.materials.length
+    cache.materials.push(Material {
         shader_id: shader,
         base_r: 1.0,
         base_g: 1.0,
@@ -118,9 +118,9 @@ fn load_material(cache: AssetCache, shader: Int, tex: Int, rough: Float) -> Int 
 }
 
 fn load_mesh(cache: AssetCache, verts: Int) -> Int {
-    let handle = list_len(cache.meshes)
+    let handle = cache.meshes.length
     let bytes = verts * 32
-    list_push(cache.meshes, Mesh {
+    cache.meshes.push(Mesh {
         vertex_count: verts,
         index_count: verts * 3,
         bounds_radius: 1.0,
@@ -134,23 +134,23 @@ fn load_mesh(cache: AssetCache, verts: Int) -> Int {
 
 // Manual reference counting -- the bookkeeping AIF's T3 exists to delete.
 fn acquire(cache: AssetCache, mesh_h: Int, mat_h: Int) {
-    let m = list_get(cache.meshes, mesh_h)
+    let m = cache.meshes[mesh_h]
     m.ref_count = m.ref_count + 1
-    let mt = list_get(cache.materials, mat_h)
+    let mt = cache.materials[mat_h]
     mt.ref_count = mt.ref_count + 1
-    let t = list_get(cache.textures, mt.texture)
+    let t = cache.textures[mt.texture]
     t.ref_count = t.ref_count + 1
 }
 
 fn release(cache: AssetCache, mesh_h: Int, mat_h: Int) {
-    let m = list_get(cache.meshes, mesh_h)
+    let m = cache.meshes[mesh_h]
     m.ref_count = m.ref_count - 1
     if (m.ref_count <= 0) {
         m.resident = false
     }
-    let mt = list_get(cache.materials, mat_h)
+    let mt = cache.materials[mat_h]
     mt.ref_count = mt.ref_count - 1
-    let t = list_get(cache.textures, mt.texture)
+    let t = cache.textures[mt.texture]
     t.ref_count = t.ref_count - 1
     if (t.ref_count <= 0) {
         t.resident = false
@@ -183,7 +183,7 @@ fn populate(scene: Scene, count: Int) {
     while (i < count) {
         let mesh_h = i - (i / 20) * 20
         let mat_h = i - (i / 12) * 12
-        list_push(scene.entities, Entity {
+        scene.entities.push(Entity {
             mesh: mesh_h,
             material: mat_h,
             x: f,
@@ -201,20 +201,20 @@ fn populate(scene: Scene, count: Int) {
 // This is the access pattern that decides whether Material wants AoS or SoA --
 // it reads 2 of 8 fields, over a small array, many times per frame.
 fn render_batched(scene: Scene) -> Int {
-    let n = list_len(scene.entities)
-    let mat_count = list_len(scene.cache.materials)
+    let n = scene.entities.length
+    let mat_count = scene.cache.materials.length
     let mut submitted = 0
     let mut batches = 0
 
     let mut m = 0
     while (m < mat_count) {
-        let mat = list_get(scene.cache.materials, m)
+        let mat = scene.cache.materials[m]
         let mut batch_size = 0
         let mut i = 0
         while (i < n) {
-            let e = list_get(scene.entities, i)
+            let e = scene.entities[i]
             if (e.visible and e.material == m) {
-                let mesh = list_get(scene.cache.meshes, e.mesh)
+                let mesh = scene.cache.meshes[e.mesh]
                 if (mesh.resident) {
                     submitted = submitted + 1
                     batch_size = batch_size + 1
@@ -237,10 +237,10 @@ fn render_batched(scene: Scene) -> Int {
 // cache has, and the one manual refcounting exists to drive.
 fn evict_unused(cache: AssetCache) -> Int {
     let mut evicted = 0
-    let n = list_len(cache.textures)
+    let n = cache.textures.length
     let mut i = 0
     while (i < n) {
-        let t = list_get(cache.textures, i)
+        let t = cache.textures[i]
         if (t.ref_count <= 0 and t.resident) {
             t.resident = false
             cache.resident_bytes = cache.resident_bytes - t.bytes
@@ -255,7 +255,7 @@ fn main() -> Int {
     let cache = make_cache(64 * 1024 * 1024)
     build_assets(cache)
 
-    let ents: Vec<Entity> = list_new()
+    let ents: Vec<Entity> = []
     let scene = Scene {
         entities: ents,
         cache: cache,
@@ -274,7 +274,7 @@ fn main() -> Int {
 
     let mut i = 0
     while (i < 500) {
-        let e = list_get(scene.entities, i)
+        let e = scene.entities[i]
         release(scene.cache, e.mesh, e.material)
         e.visible = false
         i = i + 1
@@ -282,7 +282,7 @@ fn main() -> Int {
     let evicted = evict_unused(scene.cache)
 
     print("entities: ")
-    println(list_len(scene.entities))
+    println(scene.entities.length)
     print("submitted: ")
     println(total)
     print("batches: ")

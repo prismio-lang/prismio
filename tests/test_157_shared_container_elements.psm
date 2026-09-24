@@ -36,20 +36,20 @@ fn fail(what: String) -> Int {
 }
 
 fn crossList() -> Int {
-    let xs: Vec<Tag> = []
-    let ys: Vec<Tag> = []
+    let mut xs: Vec<Tag> = []
+    let mut ys: Vec<Tag> = []
     xs.push(Tag { name: "alpha-long-enough-name", n: 1 })
     xs.push(Tag { name: "beta-long-enough-name", n: 2 })
     ys.push(Tag { name: "gamma-long-enough-name", n: 3 })
     ys.push(xs[0])
-    list_insert(ys, 0, list_get(xs, 1))
+    ys.insert(0, xs[1])
     ys[2] = xs[1]
     if (ys[0].n != 2 or ys[1].n != 3 or ys[2].n != 2) { return fail("cross-list values") }
     return 0
 }
 
 fn withinList() -> Int {
-    let xs: Vec<Tag> = []
+    let mut xs: Vec<Tag> = []
     xs.push(Tag { name: "alpha-long-enough-name", n: 1 })
     xs.push(Tag { name: "beta-long-enough-name", n: 2 })
     xs.push(Tag { name: "gamma-long-enough-name", n: 3 })
@@ -66,8 +66,8 @@ fn withinList() -> Int {
 }
 
 fn crossFlat() -> Int {
-    let xs: Vec<Pt> = []
-    let ys: Vec<Pt> = []
+    let mut xs: Vec<Pt> = []
+    let mut ys: Vec<Pt> = []
     xs.push(Pt { x: 1, y: 2 })
     xs.push(Pt { x: 3, y: 4 })
     ys.push(xs[0])
@@ -77,15 +77,15 @@ fn crossFlat() -> Int {
 }
 
 fn enums() -> Int {
-    let shapes: Vec<Shape> = []
-    let others: Vec<Shape> = []
+    let mut shapes: Vec<Shape> = []
+    let mut others: Vec<Shape> = []
     shapes.push(Shape.Box("alpha-long-enough-name", 1))
     others.push(Shape.Box("gamma-long-enough-name", 3))
     others.push(shapes[0])
 
     // Recursive, so T4b: the second teardown frees what the first buffered.
-    let trees: Vec<Tree> = []
-    let forest: Vec<Tree> = []
+    let mut trees: Vec<Tree> = []
+    let mut forest: Vec<Tree> = []
     trees.push(Tree.Node(Tree.Leaf, 1, Tree.Leaf))
     forest.push(Tree.Node(Tree.Leaf, 3, Tree.Leaf))
     forest.push(trees[0])

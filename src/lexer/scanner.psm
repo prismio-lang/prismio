@@ -181,7 +181,7 @@ private fn hexDigitValue(c: Char) -> Int {
 
 // One byte of a String, from its numeric value.
 private fn byteText(code: Int) -> String {
-    return strFromChar(code as Char)
+    return (code as Char).toString()
 }
 
 // A Unicode scalar value as the UTF-8 bytes a String holds it in.
@@ -303,13 +303,13 @@ private fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) 
 
             if (known == false) {
                 lexerFatal(lex, line, baseCol + i,
-                    "unknown escape sequence \\".concat(strFromChar(esc)))
+                    "unknown escape sequence \\".concat(esc.toString()))
             }
 
-            out = out.concat(strFromChar(decoded))
+            out = out.concat(decoded.toString())
             i = i + 2
         } else {
-            out = out.concat(strFromChar(ch))
+            out = out.concat(ch.toString())
             i = i + 1
         }
     }
@@ -325,7 +325,7 @@ private fn lexIdentifier(lex: Lexer) -> Token {
     while (isIdentPart(lexerCurrent(lex))) {
         lexerAdvance(lex)
     }
-    let value = strSubstring(lex.input, start, lex.pos - start)
+    let value = lex.input.substring(start, lex.pos - start)
 
     if (isKeyword(value)) {
         if (isBoolean(value)) {
@@ -398,7 +398,7 @@ private fn lexNumber(lex: Lexer) -> Token {
         if (lexRadixDigits(lex, 'x', 'X')
             or lexRadixDigits(lex, 'o', 'O')
             or lexRadixDigits(lex, 'b', 'B')) {
-            let radixText = strSubstring(lex.input, start, lex.pos - start)
+            let radixText = lex.input.substring(start, lex.pos - start)
             return lexerToken(lex, TokenType.NUMBER_LITERAL, radixText, line, col, start)
         }
     }
@@ -440,7 +440,7 @@ private fn lexNumber(lex: Lexer) -> Token {
         }
     }
 
-    let value = strSubstring(lex.input, start, lex.pos - start)
+    let value = lex.input.substring(start, lex.pos - start)
     if (isFloat) {
         return lexerToken(lex, TokenType.FLOAT_LITERAL, value, line, col, start)
     }
@@ -474,7 +474,7 @@ private fn lexStringChunk(lex: Lexer) -> String {
         lexerAdvance(lex)
     }
 
-    let mut value = strSubstring(lex.input, bodyStart, lex.pos - bodyStart)
+    let mut value = lex.input.substring(bodyStart, lex.pos - bodyStart)
     // Decoded in place rather than through a second `raw` binding: strings are
     // affine, so `let value = raw` moves and the decode call would then be
     // reading a moved-from name.
@@ -549,9 +549,9 @@ private fn lexTripleStringChunk(lex: Lexer) -> String {
         lexerAdvance(lex)
     }
 
-    let raw = strSubstring(lex.input, bodyStart, lex.pos - bodyStart)
+    let raw = lex.input.substring(bodyStart, lex.pos - bodyStart)
     if (sawCrlf) {
-        return strReplaceAll(raw, "\r\n", "\n")
+        return raw.replaceAll("\r\n", "\n")
     }
     return raw
 }
@@ -677,7 +677,7 @@ private fn lexChar(lex: Lexer) -> Token {
             "unterminated character literal (a Char holds exactly one character)")
     }
 
-    return lexerToken(lex, TokenType.CHAR_LITERAL, strFromInt(charCode(value)), line, col, start)
+    return lexerToken(lex, TokenType.CHAR_LITERAL, charCode(value).toString(), line, col, start)
 }
 
 // Whether `first` followed by `second` is a two-character operator. Shifts are
@@ -739,7 +739,7 @@ private fn lexOperator(lex: Lexer) -> Token {
         lexerAdvance(lex)
     }
 
-    let value = strSubstring(lex.input, start, lex.pos - start)
+    let value = lex.input.substring(start, lex.pos - start)
     let mut type = oneCharOperatorType(first)
     if (lex.pos - start == 2) {
         type = twoCharOperatorType(value)
@@ -753,7 +753,7 @@ private fn lexSeparator(lex: Lexer) -> Token {
     let col = lex.col
     let start = lex.pos
 
-    let value = strSubstring(lex.input, start, 1)
+    let value = lex.input.substring(start, 1)
     lexerAdvance(lex)
     return lexerToken(lex, TokenType.SEPARATOR, value, line, col, start)
 }
@@ -785,7 +785,7 @@ private fn lexUnexpected(lex: Lexer, c: Char) -> Token {
     let start = lex.pos
 
     lexerAdvance(lex)
-    lexerFatal(lex, line, col, "unexpected character ".concat(diagQuote(strFromChar(c))))
+    lexerFatal(lex, line, col, "unexpected character ".concat(diagQuote(c.toString())))
     return lexerToken(lex, TokenType.UNKNOWN, "?", line, col, start)
 }
 

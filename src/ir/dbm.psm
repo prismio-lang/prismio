@@ -13,52 +13,54 @@ let DBM_INF = 1000000000
 let DBM_LIMIT = 100000000
 
 internal fn dbmTop(n: Int) -> Vec<Int> {
-    let mut st: Vec<Int> = list_new_with_capacity(n * n + 1)
+    let mut st: Vec<Int> = []
+    st.reserve(n * n + 1)
     let mut i = 0
     while (i < n * n) {
-        list_push(st, DBM_INF)
+        st.push(DBM_INF)
         i = i + 1
     }
-    list_push(st, 0)
+    st.push(0)
     i = 0
     while (i < n) {
-        list_set(st, i * n + i, 0)
+        st[i * n + i] = 0
         i = i + 1
     }
     return st
 }
 
 internal fn dbmCopy(src: Vec<Int>) -> Vec<Int> {
-    let n = list_len(src)
-    let mut st: Vec<Int> = list_new_with_capacity(n)
+    let n = src.length
+    let mut st: Vec<Int> = []
+    st.reserve(n)
     for i in 0..<n {
-        list_push(st, list_get(src, i))
+        st.push(src[i])
     }
     return st
 }
 
-internal fn dbmCopyInto(dst: Vec<Int>, src: Vec<Int>) {
+internal fn dbmCopyInto(inout dst: Vec<Int>, src: Vec<Int>) {
     let mut i = 0
-    while (i < list_len(src)) {
-        list_set(dst, i, list_get(src, i))
+    while (i < src.length) {
+        dst[i] = src[i]
         i = i + 1
     }
 }
 
 internal fn dbmGet(n: Int, st: Vec<Int>, i: Int, j: Int) -> Int {
-    return list_get(st, i * n + j)
+    return st[i * n + j]
 }
 
-internal fn dbmPut(n: Int, st: Vec<Int>, i: Int, j: Int, value: Int) {
-    list_set(st, i * n + j, value)
+internal fn dbmPut(n: Int, inout st: Vec<Int>, i: Int, j: Int, value: Int) {
+    st[i * n + j] = value
 }
 
 internal fn dbmIsBottom(n: Int, st: Vec<Int>) -> Bool {
-    return list_get(st, n * n) != 0
+    return st[n * n] != 0
 }
 
-internal fn dbmSetBottom(n: Int, st: Vec<Int>) {
-    list_set(st, n * n, 1)
+internal fn dbmSetBottom(n: Int, inout st: Vec<Int>) {
+    st[n * n] = 1
 }
 
 internal fn dbmSum(a: Int, b: Int) -> Int {
@@ -69,7 +71,7 @@ internal fn dbmSum(a: Int, b: Int) -> Int {
 }
 
 // Floyd-Warshall. A negative cycle is a contradiction: no run reaches the state.
-internal fn dbmClose(n: Int, st: Vec<Int>) {
+internal fn dbmClose(n: Int, inout st: Vec<Int>) {
     if (dbmIsBottom(n, st)) { return }
     for k in 0..<n {
         for i in 0..<n {
@@ -90,7 +92,7 @@ internal fn dbmClose(n: Int, st: Vec<Int>) {
     }
 }
 
-internal fn dbmForget(n: Int, st: Vec<Int>, x: Int) {
+internal fn dbmForget(n: Int, inout st: Vec<Int>, x: Int) {
     for j in 0..<n {
         dbmPut(n, st, x, j, DBM_INF)
         dbmPut(n, st, j, x, DBM_INF)
@@ -99,7 +101,7 @@ internal fn dbmForget(n: Int, st: Vec<Int>, x: Int) {
 }
 
 // `x := y + c`. A closed state stays closed: x is a copy of y, moved.
-internal fn dbmAssign(n: Int, st: Vec<Int>, x: Int, y: Int, c: Int) {
+internal fn dbmAssign(n: Int, inout st: Vec<Int>, x: Int, y: Int, c: Int) {
     if (dbmIsBottom(n, st)) { return }
     if (x == y) {
         for j in 0..<n {
@@ -120,7 +122,7 @@ internal fn dbmAssign(n: Int, st: Vec<Int>, x: Int, y: Int, c: Int) {
 }
 
 // `x_a - x_b <= k`, closed incrementally: every path may now take the new edge.
-internal fn dbmAssumeLE(n: Int, st: Vec<Int>, a: Int, b: Int, k: Int) {
+internal fn dbmAssumeLE(n: Int, inout st: Vec<Int>, a: Int, b: Int, k: Int) {
     if (dbmIsBottom(n, st)) { return }
     if (k > DBM_LIMIT or k < 0 - DBM_LIMIT) { return }
     if (dbmSum(dbmGet(n, st, b, a), k) < 0) {
@@ -140,27 +142,27 @@ internal fn dbmAssumeLE(n: Int, st: Vec<Int>, a: Int, b: Int, k: Int) {
 }
 
 // Least upper bound into `dst`: the looser of each pair of bounds.
-internal fn dbmJoin(n: Int, dst: Vec<Int>, src: Vec<Int>) {
+internal fn dbmJoin(n: Int, inout dst: Vec<Int>, src: Vec<Int>) {
     if (dbmIsBottom(n, src)) { return }
     if (dbmIsBottom(n, dst)) {
         dbmCopyInto(dst, src)
         return
     }
     for i in 0..<n * n {
-        if (list_get(src, i) > list_get(dst, i)) { list_set(dst, i, list_get(src, i)) }
+        if (src[i] > dst[i]) { dst.set(i, src[i]) }
     }
 }
 
 // A bound the new iterate loosened is dropped outright, so every chain of
 // iterates is finite.
-internal fn dbmWiden(n: Int, dst: Vec<Int>, src: Vec<Int>) {
+internal fn dbmWiden(n: Int, inout dst: Vec<Int>, src: Vec<Int>) {
     if (dbmIsBottom(n, src)) { return }
     if (dbmIsBottom(n, dst)) {
         dbmCopyInto(dst, src)
         return
     }
     for i in 0..<n * n {
-        if (list_get(src, i) > list_get(dst, i)) { list_set(dst, i, DBM_INF) }
+        if (src[i] > dst[i]) { dst.set(i, DBM_INF) }
     }
 }
 
@@ -169,7 +171,7 @@ internal fn dbmLeq(n: Int, a: Vec<Int>, b: Vec<Int>) -> Bool {
     if (dbmIsBottom(n, a)) { return true }
     if (dbmIsBottom(n, b)) { return false }
     for i in 0..<n * n {
-        if (list_get(a, i) > list_get(b, i)) { return false }
+        if (a[i] > b[i]) { return false }
     }
     return true
 }

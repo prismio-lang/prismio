@@ -37,7 +37,7 @@ impl Described for Item {
 }
 
 impl Reported for Item {
-    fn report(self) -> String { return detail(self).concat(strFromInt(size(self))) }
+    fn report(self) -> String { return detail(self).concat(size(self).toString()) }
 }
 
 // A bound on the child gives the parent's methods too, because the obligation

@@ -80,11 +80,11 @@ fn make(a: Int) -> Point {
     return p
 }
 
-fn keep(box: Vec<Point>, sink p: Point) {
-    list_push(box, p)
+fn keep(inout box: Vec<Point>, sink p: Point) {
+    box.push(p)
 }
 
-fn local(a: Int, box: Vec<Point>) -> Int {
+fn local(a: Int, inout box: Vec<Point>) -> Int {
     let p = Point { x: a, y: a }
     let sum = p.x + p.y
     keep(box, p)
@@ -94,7 +94,7 @@ fn local(a: Int, box: Vec<Point>) -> Int {
 fn main() -> Int {
     let mut total = 0
     let mut i = 0
-    let box = list_new()
+    let mut box: Vec<Point> = []
     while (i < 4) {
         total = total + local(i, box)
         let m = make(i)

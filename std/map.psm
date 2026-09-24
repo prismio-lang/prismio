@@ -92,9 +92,9 @@ struct Map<K: Key + Copy, V> {
 private fn mapInitialCapacity() -> Int { return 8 }
 
 public fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
-    let k: Vec<K> = list_new()
-    let v: Vec<V> = list_new()
-    let s: Vec<Int> = list_new_with_capacity(mapInitialCapacity())
+    let mut k: Vec<K> = list_new()
+    let mut v: Vec<V> = list_new()
+    let mut s: Vec<Int> = list_new_with_capacity(mapInitialCapacity())
     let mut i = 0
     while (i < mapInitialCapacity()) {
         list_push(s, -1)

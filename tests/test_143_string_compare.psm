@@ -53,46 +53,46 @@ fn agrees(a: String, b: String) -> Bool {
 }
 
 fn main() -> Int {
-    let words: Vec<String> = list_new()
+    let mut words: Vec<String> = []
     // Inline, built whole: every length the key's two halves split at.
-    list_push(words, "")
-    list_push(words, "a")
-    list_push(words, "ab")
-    list_push(words, "abc")
-    list_push(words, "abd")
-    list_push(words, "abcdefg")
-    list_push(words, "abcdefgh")
-    list_push(words, "abcdefgi")
-    list_push(words, "abcdefghi")
-    list_push(words, "abcdefghij")
-    list_push(words, "abcdefghijkl")
-    list_push(words, "abcdefghijkm")
-    list_push(words, "abcdefghijk")
-    list_push(words, "key12345-976")
-    list_push(words, "key12345-97")
-    list_push(words, "key9-1")
-    list_push(words, "z")
-    list_push(words, "é")
-    list_push(words, "éa")
+    words.push("")
+    words.push("a")
+    words.push("ab")
+    words.push("abc")
+    words.push("abd")
+    words.push("abcdefg")
+    words.push("abcdefgh")
+    words.push("abcdefgi")
+    words.push("abcdefghi")
+    words.push("abcdefghij")
+    words.push("abcdefghijkl")
+    words.push("abcdefghijkm")
+    words.push("abcdefghijk")
+    words.push("key12345-976")
+    words.push("key12345-97")
+    words.push("key9-1")
+    words.push("z")
+    words.push("é")
+    words.push("éa")
     // Long: a thirteenth byte puts the same prefixes behind a pointer.
-    list_push(words, "abcdefghijklm")
-    list_push(words, "abcdefghijkl".concat("a"))
-    list_push(words, "abcdefghijklmnopqrstuvwxyz")
-    list_push(words, "key12345-976-and-more")
+    words.push("abcdefghijklm")
+    words.push("abcdefghijkl".concat("a"))
+    words.push("abcdefghijklmnopqrstuvwxyz")
+    words.push("key12345-976-and-more")
     // Short, on the heap: `strToLower` allocates at any length, so these carry
     // no inline tag and compare through the byte path.
-    list_push(words, strToLower("abc"))
-    list_push(words, strToLower("abcdefghijkl"))
-    list_push(words, strToLower("abcdefgh"))
-    list_push(words, strToLower("z"))
-    list_push(words, strToLower(""))
+    words.push("abc".toLower())
+    words.push("abcdefghijkl".toLower())
+    words.push("abcdefgh".toLower())
+    words.push("z".toLower())
+    words.push("".toLower())
 
-    let n = list_len(words)
+    let n = words.length
     let mut i = 0
     while (i < n) {
         let mut j = 0
         while (j < n) {
-            if (agrees(list_get(words, i), list_get(words, j)) == false) {
+            if (agrees(words[i], words[j]) == false) {
                 return fail("order of word ".concat(i.toString(), " against word ", j.toString()))
             }
             j = j + 1
@@ -113,10 +113,10 @@ fn main() -> Int {
     if (sign(head.compare("abcdefghijklm")) != 0) { return fail("a view equal to a literal") }
     let mut k = 0
     while (k < n) {
-        if (agrees(head, list_get(words, k)) == false) {
+        if (agrees(head, words[k]) == false) {
             return fail("a view against word ".concat(k.toString()))
         }
-        if (agrees(list_get(words, k), shifted) == false) {
+        if (agrees(words[k], shifted) == false) {
             return fail("word ".concat(k.toString(), " against a view"))
         }
         k = k + 1

@@ -3,13 +3,13 @@ private fn benchTransientAllocation(scale: Int) -> Int {
     let mut checksum = 0
     let mut r = 0
     while (r < rounds) {
-        let mut values: Vec<Int> = list_new()
+        let mut values: Vec<Int>
         let mut i = 0
         while (i < 4000) {
-            list_push(values, (i + r) % 997)
+            values.push((i + r) % 997)
             i = i + 1
         }
-        checksum = (checksum + list_get(values, r % 4000)) % 1000000007
+        checksum = (checksum + (values[r % 4000])) % 1000000007
         drop(values)
         r = r + 1
     }

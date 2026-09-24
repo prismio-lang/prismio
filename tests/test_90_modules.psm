@@ -42,8 +42,8 @@ fn main() -> Int {
     // import path is the qualifier: the leaf alone is ambiguous across
     // `src/{ir,parse}/expr.psm`, and it is not even stable, because the installed
     // layout stores `std/string.psm` at `stdlib/string.psm`.
-    if (std.string.strTrim("  x  ").equals("x") == false) { return fail("std.string.strTrim") }
-    if (std.string.strLength("abcd") != 4) { return fail("std.string.strLength") }
+    if (std.string.trim("  x  ").equals("x") == false) { return fail("std.string.trim") }
+    if (std.string.length("abcd") != 4) { return fail("std.string.length") }
 
     // `priv` is visible inside its own file: `visibleScale` is declared beside
     // `hiddenScale` and calls it.

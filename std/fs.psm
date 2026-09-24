@@ -122,7 +122,7 @@ public fn executableDirectory() -> String {
 // string, which is the case a plain `strSplit` gets wrong.
 public fn listModules(directory: String) -> Vec<String> {
     let listing = list_modules(directory)
-    let out: Vec<String> = list_new()
+    let mut out: Vec<String> = list_new()
     if (strLength(listing) == 0) { return out }
     let names = strSplit(listing, '\n')
     // Explicit, because the inferred drop does not fire here: `listing` is a

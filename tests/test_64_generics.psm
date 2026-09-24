@@ -34,8 +34,8 @@ fn boxUp<T>(x: T) -> Box<T> {
 }
 
 fn firstOr<T>(items: Vec<T>, fallback: T) -> T {
-    if (list_len(items) == 0) { return fallback }
-    return list_get(items, 0)
+    if (items.length == 0) { return fallback }
+    return items[0]
 }
 
 fn fail(message: String) -> Int {
@@ -79,11 +79,11 @@ fn main() -> Int {
     if (made.value != 12) { return fail("boxUp") }
 
     // A type parameter solved through a constructor rather than directly.
-    let mut xs: Vec<Int> = list_new()
-    list_push(xs, 100)
+    let mut xs: Vec<Int> = []
+    xs.push(100)
     if (firstOr(xs, 0) != 100) { return fail("firstOr through Vec<T>") }
 
-    let mut empty: Vec<Int> = list_new()
+    let mut empty: Vec<Int> = []
     if (firstOr(empty, 55) != 55) { return fail("firstOr fallback") }
 
     println("PASS: generics")

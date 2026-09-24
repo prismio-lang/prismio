@@ -98,16 +98,16 @@ public fn targetPointerBytes() -> Int {
 // maps each one to a variant by name, so reordering an enum moves no answer.
 public fn targetOsCode() -> Int {
     let triple = ir_target_triple()
-    if (strContains(triple, "windows") or strContains(triple, "mingw")) { return 1 }
-    if (strContains(triple, "linux")) { return 2 }
-    if (strContains(triple, "darwin") or strContains(triple, "macos")) { return 3 }
+    if (triple.contains("windows") or triple.contains("mingw")) { return 1 }
+    if (triple.contains("linux")) { return 2 }
+    if (triple.contains("darwin") or triple.contains("macos")) { return 3 }
     return 0
 }
 
 public fn targetArchCode() -> Int {
     let triple = ir_target_triple()
-    if (strStartsWith(triple, "x86_64") or strStartsWith(triple, "amd64")) { return 1 }
-    if (strStartsWith(triple, "aarch64") or strStartsWith(triple, "arm64")) { return 2 }
+    if (triple.startsWith("x86_64") or triple.startsWith("amd64")) { return 1 }
+    if (triple.startsWith("aarch64") or triple.startsWith("arm64")) { return 2 }
     return 0
 }
 
@@ -115,10 +115,10 @@ public fn targetArchCode() -> Int {
 // also spells `x86_64-w64-mingw32`, and both carry a `gnu` that is not glibc's.
 public fn targetEnvCode() -> Int {
     let triple = ir_target_triple()
-    if (strContains(triple, "msvc")) { return 3 }
-    if (strContains(triple, "mingw")) { return 4 }
-    if (strContains(triple, "windows") and strContains(triple, "gnu")) { return 4 }
-    if (strContains(triple, "musl")) { return 2 }
-    if (strContains(triple, "gnu")) { return 1 }
+    if (triple.contains("msvc")) { return 3 }
+    if (triple.contains("mingw")) { return 4 }
+    if (triple.contains("windows") and triple.contains("gnu")) { return 4 }
+    if (triple.contains("musl")) { return 2 }
+    if (triple.contains("gnu")) { return 1 }
     return 0
 }

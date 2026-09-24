@@ -43,10 +43,10 @@ fn fail(what: String) -> Int {
 // Bracketable. The container is this function's own, so obligation 2 holds; the
 // list leaves through the return, which obligation 3 checks in the caller.
 fn bracketable(n: Int) -> Vec<Cmd> {
-    let mut out: Vec<Cmd> = list_new()
+    let mut out: Vec<Cmd> = []
     let mut i = 0
     while (i < n) {
-        list_push(out, Cmd { id: i, weight: i * 2 })
+        out.push(Cmd { id: i, weight: i * 2 })
         i = i + 1
     }
     return out
@@ -55,16 +55,16 @@ fn bracketable(n: Int) -> Vec<Cmd> {
 // Not bracketable: obligation 2. The Cmd is stored into a container this
 // function did not allocate, so it lives exactly as long as the caller's list
 // does -- which is to say, longer than any region the call could sit in.
-fn stores_param(dest: Vec<Cmd>, id: Int) {
-    list_push(dest, Cmd { id: id, weight: id })
+fn stores_param(inout dest: Vec<Cmd>, id: Int) {
+    dest.push(Cmd { id: id, weight: id })
 }
 
 // Not bracketable: the DROP obligation. The value is released explicitly, and an
 // arena reclaims in bulk at its region's exit or not at all.
 fn drops(id: Int) -> Int {
-    let mut tmp: Vec<Cmd> = list_new()
-    list_push(tmp, Cmd { id: id, weight: 0 })
-    let n = list_len(tmp)
+    let mut tmp: Vec<Cmd> = []
+    tmp.push(Cmd { id: id, weight: 0 })
+    let n = tmp.length
     drop(tmp)
     return n
 }
@@ -83,13 +83,13 @@ fn middle(id: Int) -> Int {
 fn main() -> Int {
     let mut bad = 0
 
-    let own = bracketable(4)
-    if (list_len(own) != 4) { bad = bad + fail("bracketable length") }
+    let mut own = bracketable(4)
+    if (own.length != 4) { bad = bad + fail("bracketable length") }
 
     stores_param(own, 99)
-    if (list_len(own) != 5) { bad = bad + fail("stores_param length") }
+    if (own.length != 5) { bad = bad + fail("stores_param length") }
 
-    let last = list_get(own, 4)
+    let last = own[4]
     if (last.id != 99) { bad = bad + fail("stores_param value") }
 
     if (middle(7) != 1) { bad = bad + fail("drops length") }

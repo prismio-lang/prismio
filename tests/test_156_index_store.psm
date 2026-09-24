@@ -59,12 +59,12 @@ fn arrays() -> Int {
 }
 
 fn vectors() -> Int {
-    let ints: Vec<Int> = [1, 2, 3]
+    let mut ints: Vec<Int> = [1, 2, 3]
     ints[1] = 20
     ints[2] = ints[1] + 1
     if (ints[1] != 20 or ints[2] != 21 or ints[0] != 1) { return fail("Vec<Int> store") }
 
-    let pts: Vec<Pt> = []
+    let mut pts: Vec<Pt> = []
     pts.push(Pt { x: 1, y: 2 })
     pts.push(Pt { x: 3, y: 4 })
     pts[0] = Pt { x: 5, y: 6 }
@@ -81,13 +81,13 @@ fn vectors() -> Int {
     return 0
 }
 
-fn throughParameter(xs: Vec<Int>) -> Int {
+fn throughParameter(inout xs: Vec<Int>) -> Int {
     xs[0] = 100
     return 0
 }
 
 fn strings() -> Int {
-    let words: Vec<String> = ["alpha", "beta"]
+    let mut words: Vec<String> = ["alpha", "beta"]
     words[1] = "gamma"
     if (words[1].equals("gamma") == false) { return fail("Vec<String> store") }
     if (words[0].equals("alpha") == false) { return fail("Vec<String> neighbour") }

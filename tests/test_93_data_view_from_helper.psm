@@ -19,11 +19,11 @@ struct Row {
 }
 
 fn buildRows(count: Int) -> Vec<Row> {
-    let mut rows: Vec<Row> = list_new()
+    let mut rows: Vec<Row> = []
     let mut i = 0
     let mut f = 0.0
     while (i < count) {
-        list_push(rows, Row { a: f, b: f + 1.0, live: 1.0 })
+        rows.push(Row { a: f, b: f + 1.0, live: 1.0 })
         f = f + 1.0
         i = i + 1
     }
@@ -31,7 +31,7 @@ fn buildRows(count: Int) -> Vec<Row> {
 }
 
 fn advance(view: DataView<Row>, dt: Float) {
-    let n = data_len(view)
+    let n = view.length
     let mut i = 0
     while (i < n) {
         let r = view[i]
@@ -48,7 +48,7 @@ fn main() -> Int {
     advance(view, 0.5)
 
     let materialised = aos(view)
-    if (list_len(materialised) != 64) {
+    if (materialised.length != 64) {
         println("FAIL: materialising back gave the wrong length")
         return 1
     }

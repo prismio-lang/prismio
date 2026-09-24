@@ -24,7 +24,7 @@ struct UmsParser {
 impl UmsParser {
 
     private fn current(self) -> UmsToken {
-        return list_get(self.tokens, self.current)
+        return self.tokens[self.current]
     }
 
     private fn at(self, kind: UmsTokenKind) -> Bool {
@@ -67,7 +67,7 @@ impl UmsParser {
         if (token.kind != UmsTokenKind.EOF) { self.advance() }
         return UmsAstValue {
             kind: kind,
-            text: strClone(token.value),
+            text: token.value.clone(),
             line: token.line,
             col: token.col,
             len: token.len
@@ -77,7 +77,7 @@ impl UmsParser {
     private fn parseArguments(self, statement: UmsAstStatement) {
         if (self.take(UmsTokenKind.RIGHT_PAREN)) { return }
         loop {
-            list_push(statement.arguments, self.parseValue())
+            statement.arguments.push(self.parseValue())
             if (self.take(UmsTokenKind.RIGHT_PAREN)) { break }
             if (self.take(UmsTokenKind.COMMA) == false) {
                 self.expected("',' or ')'")
@@ -96,7 +96,7 @@ impl UmsParser {
         let opening = self.advance()
         statement.value = UmsAstValue {
             kind: UmsAstValueKind.ARRAY,
-            text: strClone(""),
+            text: "".clone(),
             line: opening.line,
             col: opening.col,
             len: opening.len
@@ -104,7 +104,7 @@ impl UmsParser {
         if (self.take(UmsTokenKind.RIGHT_BRACKET)) { return }
 
         loop {
-            list_push(statement.arrayValues, self.parseValue())
+            statement.arrayValues.push(self.parseValue())
             if (self.take(UmsTokenKind.RIGHT_BRACKET)) { break }
             if (self.take(UmsTokenKind.COMMA) == false) {
                 self.expected("',' or ']'")
@@ -139,8 +139,8 @@ impl UmsParser {
                 statement.value = self.parseValue()
             }
             self.take(UmsTokenKind.SEMICOLON)
-            let index = list_len(document.statements)
-            list_push(document.statements, statement)
+            let index = document.statements.length
+            document.statements.push(statement)
             return index
         }
 
@@ -159,7 +159,7 @@ impl UmsParser {
                 if (self.take(UmsTokenKind.SEMICOLON) == false) {
                     let child = self.parseStatement(document)
                     if (child >= 0) {
-                        list_push(statement.children, child)
+                        statement.children.push(child)
                     }
                 }
             }
@@ -169,14 +169,14 @@ impl UmsParser {
             } else {
                 self.expected("'}'")
             }
-        } else if (list_len(statement.arguments) == 0) {
+        } else if (statement.arguments.length == 0) {
             self.error(name, "UMS1102",
                 "DSL element '".concat(name.value, "' requires arguments or a block"))
         }
 
         self.take(UmsTokenKind.SEMICOLON)
-        let index = list_len(document.statements)
-        list_push(document.statements, statement)
+        let index = document.statements.length
+        document.statements.push(statement)
         return index
     }
 }
@@ -189,13 +189,13 @@ public fn umsParse(tokens: Vec<UmsToken>, path: String,
         path: path,
         current: 0
     }
-    let document = UmsAstDocument { statements: list_new(), roots: list_new() }
+    let document = UmsAstDocument { statements: [], roots: [] }
 
     while (parser.at(UmsTokenKind.EOF) == false) {
         if (parser.take(UmsTokenKind.SEMICOLON) == false) {
             let statement = parser.parseStatement(document)
             if (statement >= 0) {
-                list_push(document.roots, statement)
+                document.roots.push(statement)
             }
         }
     }

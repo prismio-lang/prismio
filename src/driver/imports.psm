@@ -146,7 +146,7 @@ private fn moduleRelativePath(moduleName: String) -> String {
         if (c == '.') {
             relative = relative.concat("/")
         } else {
-            relative = relative.concat(strFromChar(c))
+            relative = relative.concat(c.toString())
         }
     }
     return relative
@@ -172,7 +172,7 @@ private fn resolveUnder(baseDir: String, relative: String) -> String {
 
 
 private fn importBaseDir(baseDir: String, moduleName: String) -> String {
-    if (moduleName.equals("ums") or strStartsWith(moduleName, "ums.")) {
+    if (moduleName.equals("ums") or moduleName.startsWith("ums.")) {
         return get_directory(baseDir)
     }
     return baseDir
@@ -220,28 +220,27 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // merged once however many files import it, so a second file selecting from
     // an already-merged module would otherwise take everything.
     if (file_exists(importPath) == 0) {
-        let cut = strLastIndexOf(moduleName, ".")
+        let cut = moduleName.lastIndexOf(".")
         if (cut > 0) {
-            let parent = strSubstring(moduleName, 0, cut)
+            let parent = moduleName.substring(0, cut)
             if (file_exists(resolveImportPath(baseDir, parent)) == 1) {
                 ir_import_record(site.file, parent)
                 ir_select_record(site.file, parent,
-                    strSubstring(moduleName, cut + 1,
-                                 __builtin_string_len(moduleName) - cut - 1))
+                    moduleName.substring(cut + 1, __builtin_string_len(moduleName) - cut - 1))
                 return mergeNamedModule(merged, site, parent, baseDir, visited)
             }
         }
     }
 
     let key = importMemoKey(importPath)
-    if (strContains(visited, key)) {
+    if (visited.contains(key)) {
         return visited
     }
 
     let seen = visited.concat(key)
 
     let mut content = ""
-    if (strEndsWith(importPath, ".plib")) {
+    if (importPath.endsWith(".plib")) {
         content = compiler_plib_interface(importPath, moduleName)
         if (content.equals("")) {
             // Its own code, not P1001's. A `.plib` that will not open is a
@@ -314,7 +313,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
             seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
             name = ""
         } else {
-            name = name.concat(strFromChar(c))
+            name = name.concat(c.toString())
         }
     }
 
@@ -446,7 +445,7 @@ public fn standardModulePath(baseDir: String, leaf: String) -> String {
     // Installed standard modules are compiled, module-level PLIB artifacts.
     // `leaf` still arrives as `string.psm` because checkout resolution uses the
     // source spelling; replace only that suffix for the installed lookup.
-    let plibLeaf = strSubstring(leaf, 0, __builtin_string_len(leaf) - 4).concat(".plib")
+    let plibLeaf = leaf.substring(0, __builtin_string_len(leaf) - 4).concat(".plib")
     let packaged = join_path(toolchainRoot, "stdlib/".concat(plibLeaf))
     if (file_exists(packaged) == 1) { return packaged }
 
@@ -472,14 +471,14 @@ private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (file_exists(joinImportPath(baseDir, moduleName)) == 1) {
         return joinImportPath(baseDir, moduleName)
     }
-    if (strStartsWith(moduleName, "std.") == false) {
+    if (moduleName.startsWith("std.") == false) {
         return joinImportPath(baseDir, moduleName)
     }
-    let leaf = strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4).concat(".psm")
+    let leaf = moduleName.substring(4, __builtin_string_len(moduleName) - 4).concat(".psm")
     if (standardModulePath(baseDir, leaf).equals("")) {
         return joinImportPath(baseDir, moduleName)
     }
-    return standardModulePath(baseDir, strSubstring(moduleName, 4, __builtin_string_len(moduleName) - 4).concat(".psm"))
+    return standardModulePath(baseDir, moduleName.substring(4, __builtin_string_len(moduleName) - 4).concat(".psm"))
 }
 
 // The entry file is marked resolved before the walk begins, so that a package

@@ -24,6 +24,8 @@ import std.option
 internal fn semaBindingIsBorrow(node: ASTNode) -> Bool {
     if (node.kind == NodeKind.MEMBER_ACCESS_EXPR) { return true }
     if (node.kind == NodeKind.INDEX_EXPR) { return true }
+    // `v[i]` on a Vec, once sema has lowered it: the element is the Vec's.
+    if (semaIsElementRead(node)) { return true }
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         return ir_is_borrowed(node.s1) == 1
     }
@@ -79,6 +81,43 @@ internal fn semaConsumeOperand(node: ASTNode) {
         }
     }
     semaMoveOperand(node)
+}
+
+// `list_get(v, i)`: a Vec element read, which is what `v[i]` lowers to.
+internal fn semaIsElementRead(node: ASTNode) -> Bool {
+    if (node.kind != NodeKind.CALL_EXPR or nodeIsNull(node.child1) or nodeIsNull(node.child2)) {
+        return false
+    }
+    let callee = ptr_to_node(node.child1)
+    return callee.kind == NodeKind.IDENTIFIER_EXPR and callee.s1.equals("list_get")
+}
+
+// Whether the contents of `place` may change here: the Vec a mutating method or
+// an element store is applied to, an array being stored into, or an argument to
+// an `inout` parameter. Reports when they may not.
+//
+// The binding at the root decides -- a `let mut`, or an `inout` parameter -- and
+// indexing is followed to it, since `grid[i].push(x)` changes `grid`. A field is
+// not: assigning through a struct is permitted whatever its binding, and the Vec
+// a struct holds is part of that struct. Anything without a root binding is a
+// temporary, which nothing else can observe changing.
+internal fn semaCheckMutablePlace(place: ASTNode) -> Bool {
+    let mut root = place
+    loop {
+        if (root.kind == NodeKind.INDEX_EXPR and nodeExists(root.child1)) {
+            root = ptr_to_node(root.child1)
+        } else if (semaIsElementRead(root)) {
+            root = ptr_to_node(root.child2)
+        } else {
+            break
+        }
+    }
+    if (root.kind != NodeKind.IDENTIFIER_EXPR or ir_has_var_type(root.s1) == 0) { return true }
+    if (ir_var_is_mutable(root.s1) == 1 or ir_var_is_inout(root.s1) == 1) { return true }
+    if (ir_var_is_global(root.s1) == 1 and semaIsExternGlobal(root.s1)) { return true }
+    semaErrorAt(root, "cannot change ".concat(diagQuote(root.s1), ", which is not declared `mut`"))
+    diag_note("declare it `let mut`, or `inout` if it is a parameter")
+    return false
 }
 
 // Type-check a value against an expected type, allowing a bare integer literal to
@@ -164,19 +203,19 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
 // apply a default instead. So the declaration is the only place these can be
 // rejected, and they are rejected here rather than warned about.
 private fn semaContractName(encoded: String) -> String {
-    let at = strIndexOf(encoded, ":")
+    let at = encoded.indexOf(":")
     if (at < 0) {
         return encoded
     }
-    return strSubstring(encoded, 0, at)
+    return encoded.substring(0, at)
 }
 
 private fn semaContractArgument(encoded: String) -> String {
-    let at = strIndexOf(encoded, ":")
+    let at = encoded.indexOf(":")
     if (at < 0) {
         return ""
     }
-    return strSubstring(encoded, at + 1, __builtin_string_len(encoded) - at - 1)
+    return encoded.substring(at + 1, __builtin_string_len(encoded) - at - 1)
 }
 
 private fn semaIsParameterContract(name: String) -> Bool {
@@ -283,12 +322,12 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                                                diagQuote(param.s1), " is ", annotation.s1))
                     diag_note("it suppresses the NUL-terminated copy a String view would otherwise be given; no other type is copied there")
                 } else if (name.equals("retain_in")) {
-                    let target = optionOr(strParseInt(semaContractArgument(encoded)), 0)
+                    let target = optionOr(semaContractArgument(encoded).parseInt(), 0)
                     if (target < 0 or target >= arity) {
                         diag_error_at_code("P4104", param.file, param.line, param.col, __builtin_string_len(param.s1),
                             "`retain_in` names argument ".concat(semaContractArgument(encoded),
                                                                  ", but this function takes ",
-                                                                 strFromInt(arity)))
+                                                                 arity.toString()))
                         diag_note("the index is zero-based and names the container this argument is stored into")
                     } else if (target == index) {
                         diag_error_at_code("P4105", param.file, param.line, param.col, __builtin_string_len(param.s1),

@@ -13,13 +13,13 @@ import std.string
 // naming construct, so this is the same code with the receiver named as one.
 impl UmsProjectModel {
 
-    private fn lowerError(self, diagnostics: Vec<UmsDiagnostic>,
+    private fn lowerError(self, inout diagnostics: Vec<UmsDiagnostic>,
                      statement: UmsAstStatement, code: String, message: String) {
         umsDiagnosticAdd(diagnostics, code, self.manifestPath,
                          statement.line, statement.col, statement.len, message)
     }
 
-    private fn lowerString(self, diagnostics: Vec<UmsDiagnostic>,
+    private fn lowerString(self, inout diagnostics: Vec<UmsDiagnostic>,
                       statement: UmsAstStatement, description: String) -> Bool {
         if (statement.value.kind == UmsAstValueKind.STRING) { return true }
         self.lowerError(diagnostics, statement, "UMS2001",
@@ -27,7 +27,7 @@ impl UmsProjectModel {
         return false
     }
 
-    private fn lowerAuthors(self, diagnostics: Vec<UmsDiagnostic>,
+    private fn lowerAuthors(self, inout diagnostics: Vec<UmsDiagnostic>,
                        statement: UmsAstStatement) {
         if (statement.value.kind != UmsAstValueKind.ARRAY) {
             self.lowerError(diagnostics, statement, "UMS2011",
@@ -35,14 +35,14 @@ impl UmsProjectModel {
             return
         }
         let mut i = 0
-        while (i < list_len(statement.arrayValues)) {
-            let author = list_get(statement.arrayValues, i)
+        while (i < statement.arrayValues.length) {
+            let author = statement.arrayValues[i]
             if (author.kind != UmsAstValueKind.STRING) {
                 umsDiagnosticAdd(diagnostics, "UMS2012", self.manifestPath,
                                  author.line, author.col, author.len,
                                  "every project.authors item must be a string literal")
             } else {
-                list_push(self.metadata.authors, strClone(author.text))
+                self.metadata.authors.push(author.text.clone())
             }
             i = i + 1
         }
@@ -50,10 +50,10 @@ impl UmsProjectModel {
 
     private fn lowerMetadata(self, document: UmsAstDocument,
                         block: UmsAstStatement,
-                        diagnostics: Vec<UmsDiagnostic>) {
+                        inout diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
-        while (i < list_len(block.children)) {
-            let property = list_get(document.statements, list_get(block.children, i))
+        while (i < block.children.length) {
+            let property = document.statements[block.children[i]]
             if (property.kind != UmsAstStatementKind.ASSIGNMENT) {
                 self.lowerError(diagnostics, property, "UMS2003",
                               "project metadata contains properties, not nested DSL calls")
@@ -63,7 +63,7 @@ impl UmsProjectModel {
                         self.lowerError(diagnostics, property, "UMS2002",
                                       "project.name is declared more than once")
                     } else {
-                        self.metadata.name = strClone(property.value.text)
+                        self.metadata.name = property.value.text.clone()
                     }
                 }
             } else if (property.name.equals("version")) {
@@ -72,7 +72,7 @@ impl UmsProjectModel {
                         self.lowerError(diagnostics, property, "UMS2002",
                                       "project.version is declared more than once")
                     } else {
-                        self.metadata.version = strClone(property.value.text)
+                        self.metadata.version = property.value.text.clone()
                     }
                 }
             } else if (property.name.equals("prismio")) {
@@ -81,7 +81,7 @@ impl UmsProjectModel {
                         self.lowerError(diagnostics, property, "UMS2002",
                                       "project.prismio is declared more than once")
                     } else {
-                        self.metadata.prismioVersion = strClone(property.value.text)
+                        self.metadata.prismioVersion = property.value.text.clone()
                     }
                 }
             } else if (property.name.equals("description")) {
@@ -91,7 +91,7 @@ impl UmsProjectModel {
                 } else {
                     self.metadata.descriptionDeclared = true
                     if (self.lowerString(diagnostics, property, "project.description")) {
-                        self.metadata.description = strClone(property.value.text)
+                        self.metadata.description = property.value.text.clone()
                     }
                 }
             } else if (property.name.equals("license")) {
@@ -101,7 +101,7 @@ impl UmsProjectModel {
                 } else {
                     self.metadata.licenseDeclared = true
                     if (self.lowerString(diagnostics, property, "project.license")) {
-                        self.metadata.license = strClone(property.value.text)
+                        self.metadata.license = property.value.text.clone()
                     }
                 }
             } else if (property.name.equals("licenseFile")) {
@@ -111,7 +111,7 @@ impl UmsProjectModel {
                 } else {
                     self.metadata.licenseFileDeclared = true
                     if (self.lowerString(diagnostics, property, "project.licenseFile")) {
-                        self.metadata.licenseFile = strClone(property.value.text)
+                        self.metadata.licenseFile = property.value.text.clone()
                     }
                 }
             } else if (property.name.equals("authors")) {
@@ -132,10 +132,10 @@ impl UmsProjectModel {
 
     private fn lowerToolchain(self, document: UmsAstDocument,
                          block: UmsAstStatement,
-                         diagnostics: Vec<UmsDiagnostic>) {
+                         inout diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
-        while (i < list_len(block.children)) {
-            let property = list_get(document.statements, list_get(block.children, i))
+        while (i < block.children.length) {
+            let property = document.statements[block.children[i]]
             if (property.kind != UmsAstStatementKind.ASSIGNMENT or
                 property.name.equals("host") == false) {
                 self.lowerError(diagnostics, property, "UMS2401",
@@ -153,7 +153,7 @@ impl UmsProjectModel {
                     self.lowerError(diagnostics, property, "UMS2405",
                                   "toolchain.host must be relative to the project root")
                 } else {
-                    self.toolchain.host = strClone(property.value.text)
+                    self.toolchain.host = property.value.text.clone()
                 }
             }
             i = i + 1
@@ -163,17 +163,16 @@ impl UmsProjectModel {
     private fn lowerLinkBlock(self, document: UmsAstDocument,
                          block: UmsAstStatement,
                          target: UmsTarget,
-                         diagnostics: Vec<UmsDiagnostic>) {
-        if (list_len(block.arguments) != 0) {
+                         inout diagnostics: Vec<UmsDiagnostic>) {
+        if (block.arguments.length != 0) {
             self.lowerError(diagnostics, block, "UMS2107",
                           "link takes no arguments")
             return
         }
 
         let mut i = 0
-        while (i < list_len(block.children)) {
-            let declaration = list_get(document.statements,
-                                       list_get(block.children, i))
+        while (i < block.children.length) {
+            let declaration = document.statements[block.children[i]]
             let mut kind = UmsLinkKind.UNKNOWN
             if (declaration.name.equals("library")) { kind = UmsLinkKind.LIBRARY }
             else if (declaration.name.equals("search")) { kind = UmsLinkKind.SEARCH }
@@ -186,13 +185,13 @@ impl UmsProjectModel {
                 self.lowerError(diagnostics, declaration, "UMS2108",
                     "unknown link declaration '".concat(declaration.name,
                                                         "'; expected library, search, file, framework or component"))
-            } else if (list_len(declaration.arguments) != 1 or
-                       list_get(declaration.arguments, 0).kind != UmsAstValueKind.STRING) {
+            } else if (declaration.arguments.length != 1 or
+                       declaration.arguments[0].kind != UmsAstValueKind.STRING) {
                 self.lowerError(diagnostics, declaration, "UMS2109",
                     declaration.name.concat(" requires exactly one string argument"))
             } else {
-                let value = list_get(declaration.arguments, 0)
-                list_push(target.links, umsLinkInput(kind, value.text,
+                let value = declaration.arguments[0]
+                target.links.push(umsLinkInput(kind, value.text,
                           declaration.line, declaration.col, declaration.len))
             }
             i = i + 1
@@ -202,12 +201,12 @@ impl UmsProjectModel {
     private fn lowerBody(self, document: UmsAstDocument,
                     call: UmsAstStatement,
                     target: UmsTarget,
-                    diagnostics: Vec<UmsDiagnostic>) -> String {
+                    inout diagnostics: Vec<UmsDiagnostic>) -> String {
         let mut entry = ""
         let mut linkBlocks = 0
         let mut i = 0
-        while (i < list_len(call.children)) {
-            let property = list_get(document.statements, list_get(call.children, i))
+        while (i < call.children.length) {
+            let property = document.statements[call.children[i]]
             if (property.kind == UmsAstStatementKind.CALL and
                 property.hasBlock and property.name.equals("link")) {
                 linkBlocks = linkBlocks + 1
@@ -227,7 +226,7 @@ impl UmsProjectModel {
                     self.lowerError(diagnostics, property, "UMS2102",
                                   "target entry is declared more than once")
                 } else {
-                    entry = strClone(property.value.text)
+                    entry = property.value.text.clone()
                 }
             }
             i = i + 1
@@ -237,7 +236,7 @@ impl UmsProjectModel {
 
     private fn lowerTarget(self, document: UmsAstDocument,
                       call: UmsAstStatement,
-                      diagnostics: Vec<UmsDiagnostic>) {
+                      inout diagnostics: Vec<UmsDiagnostic>) {
         let mut kind = UmsTargetKind.UNKNOWN
         if (call.name.equals("executable")) { kind = UmsTargetKind.EXECUTABLE }
         else if (call.name.equals("library")) { kind = UmsTargetKind.LIBRARY }
@@ -252,18 +251,18 @@ impl UmsProjectModel {
             return
         }
 
-        if (list_len(call.arguments) != 1) {
+        if (call.arguments.length != 1) {
             self.lowerError(diagnostics, call, "UMS2104",
                           call.name.concat(" requires exactly one string name"))
             return
         }
-        let argument = list_get(call.arguments, 0)
+        let argument = call.arguments[0]
         if (argument.kind != UmsAstValueKind.STRING) {
             self.lowerError(diagnostics, call, "UMS2104",
                           call.name.concat(" requires exactly one string name"))
             return
         }
-        let targetName = strClone(argument.text)
+        let targetName = argument.text.clone()
         if (umsTargetFind(self.targets, targetName) >= 0) {
             self.lowerError(diagnostics, call, "UMS2105",
                 "target '".concat(targetName, "' is declared more than once"))
@@ -272,15 +271,15 @@ impl UmsProjectModel {
         let target = umsTarget(kind, targetName, "",
                                call.line, call.col, call.len)
         target.entry = self.lowerBody(document, call, target, diagnostics)
-        list_push(self.targets, target)
+        self.targets.push(target)
     }
 
     private fn lowerTargets(self, document: UmsAstDocument,
                        block: UmsAstStatement,
-                       diagnostics: Vec<UmsDiagnostic>) {
+                       inout diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
-        while (i < list_len(block.children)) {
-            let call = list_get(document.statements, list_get(block.children, i))
+        while (i < block.children.length) {
+            let call = document.statements[block.children[i]]
             if (call.kind != UmsAstStatementKind.CALL) {
                 self.lowerError(diagnostics, call, "UMS2106",
                               "targets contains executable(...), library(...) or test(...) declarations")
@@ -296,16 +295,16 @@ impl UmsProjectModel {
     // its position in the list, so a command can put forwarded arguments in the
     // middle of a fixed argument list rather than only at the end.
     private fn lowerStepArguments(self, call: UmsAstStatement, step: UmsCommandStep,
-                             diagnostics: Vec<UmsDiagnostic>) {
+                             inout diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 1
-        while (i < list_len(call.arguments)) {
-            let argument = list_get(call.arguments, i)
+        while (i < call.arguments.length) {
+            let argument = call.arguments[i]
             if (argument.kind == UmsAstValueKind.STRING) {
-                list_push(step.arguments, umsCommandArgument(false, argument.text,
+                step.arguments.push(umsCommandArgument(false, argument.text,
                           argument.line, argument.col, argument.len))
             } else if (argument.kind == UmsAstValueKind.IDENTIFIER and
                        argument.text.equals("args")) {
-                list_push(step.arguments, umsCommandArgument(true, "",
+                step.arguments.push(umsCommandArgument(true, "",
                           argument.line, argument.col, argument.len))
             } else {
                 umsDiagnosticAdd(diagnostics, "UMS2508", self.manifestPath,
@@ -321,7 +320,7 @@ impl UmsProjectModel {
     // command whose only step was rejected from *also* being reported as
     // declaring no steps -- one mistake, two errors, two things to go and fix.
     private fn lowerCommandStep(self, call: UmsAstStatement, command: UmsCommand,
-                           diagnostics: Vec<UmsDiagnostic>) {
+                           inout diagnostics: Vec<UmsDiagnostic>) {
         let mut kind = UmsCommandStepKind.UNKNOWN
         if (call.name.equals("build")) { kind = UmsCommandStepKind.BUILD }
         else if (call.name.equals("run")) { kind = UmsCommandStepKind.RUN }
@@ -332,52 +331,52 @@ impl UmsProjectModel {
             self.lowerError(diagnostics, call, "UMS2504",
                 "unknown command step '".concat(call.name, "'; expected build, run or shell"))
             kind = UmsCommandStepKind.UNKNOWN
-        } else if (list_len(call.arguments) == 0 or
-                   list_get(call.arguments, 0).kind != UmsAstValueKind.STRING) {
+        } else if (call.arguments.length == 0 or
+                   call.arguments[0].kind != UmsAstValueKind.STRING) {
             self.lowerError(diagnostics, call, "UMS2505",
                 call.name.concat(" requires a string as its first argument"))
             kind = UmsCommandStepKind.UNKNOWN
-        } else if (kind == UmsCommandStepKind.BUILD and list_len(call.arguments) != 1) {
+        } else if (kind == UmsCommandStepKind.BUILD and call.arguments.length != 1) {
             self.lowerError(diagnostics, call, "UMS2506",
                           "build takes exactly one target name")
             kind = UmsCommandStepKind.UNKNOWN
         }
 
         if (kind == UmsCommandStepKind.UNKNOWN) {
-            list_push(command.steps, umsCommandStep(kind, call.name,
+            command.steps.push(umsCommandStep(kind, call.name,
                       call.line, call.col, call.len))
             return
         }
 
-        let subject = list_get(call.arguments, 0)
+        let subject = call.arguments[0]
         let step = umsCommandStep(kind, subject.text, call.line, call.col, call.len)
         if (kind != UmsCommandStepKind.BUILD) {
             self.lowerStepArguments(call, step, diagnostics)
         }
-        list_push(command.steps, step)
+        command.steps.push(step)
     }
 
     private fn lowerCommand(self, document: UmsAstDocument,
                        call: UmsAstStatement,
-                       diagnostics: Vec<UmsDiagnostic>) {
+                       inout diagnostics: Vec<UmsDiagnostic>) {
         if (call.name.equals("command") == false or call.hasBlock == false) {
             self.lowerError(diagnostics, call, "UMS2501",
                 "unknown commands declaration '".concat(call.name,
                                                         "'; expected command(\"name\") { ... }"))
             return
         }
-        if (list_len(call.arguments) != 1) {
+        if (call.arguments.length != 1) {
             self.lowerError(diagnostics, call, "UMS2502",
                           "command requires exactly one string name")
             return
         }
-        let argument = list_get(call.arguments, 0)
+        let argument = call.arguments[0]
         if (argument.kind != UmsAstValueKind.STRING) {
             self.lowerError(diagnostics, call, "UMS2502",
                           "command requires exactly one string name")
             return
         }
-        let commandName = strClone(argument.text)
+        let commandName = argument.text.clone()
         if (umsCommandFind(self.commands, commandName) >= 0) {
             self.lowerError(diagnostics, call, "UMS2503",
                 "command '".concat(commandName, "' is declared more than once"))
@@ -387,8 +386,8 @@ impl UmsProjectModel {
         let command = umsCommand(commandName, call.line, call.col, call.len)
         let mut descriptions = 0
         let mut i = 0
-        while (i < list_len(call.children)) {
-            let child = list_get(document.statements, list_get(call.children, i))
+        while (i < call.children.length) {
+            let child = document.statements[call.children[i]]
             if (child.kind != UmsAstStatementKind.ASSIGNMENT) {
                 self.lowerCommandStep(child, command, diagnostics)
             } else if (child.name.equals("description") == false) {
@@ -400,20 +399,20 @@ impl UmsProjectModel {
                     self.lowerError(diagnostics, child, "UMS2507",
                                   "command description is declared more than once")
                 } else {
-                    command.description = strClone(child.value.text)
+                    command.description = child.value.text.clone()
                 }
             }
             i = i + 1
         }
-        list_push(self.commands, command)
+        self.commands.push(command)
     }
 
     private fn lowerCommands(self, document: UmsAstDocument,
                         block: UmsAstStatement,
-                        diagnostics: Vec<UmsDiagnostic>) {
+                        inout diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
-        while (i < list_len(block.children)) {
-            let call = list_get(document.statements, list_get(block.children, i))
+        while (i < block.children.length) {
+            let call = document.statements[block.children[i]]
             if (call.kind != UmsAstStatementKind.CALL) {
                 self.lowerError(diagnostics, call, "UMS2501",
                               "commands contains command(...) declarations")
@@ -440,15 +439,15 @@ impl UmsProjectModel {
 
     private fn lowerDependencies(self, document: UmsAstDocument,
                             block: UmsAstStatement,
-                            diagnostics: Vec<UmsDiagnostic>) {
+                            inout diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 0
-        while (i < list_len(block.children)) {
-            let call = list_get(document.statements, list_get(block.children, i))
+        while (i < block.children.length) {
+            let call = document.statements[block.children[i]]
             let scope = umsDependencyScope(call.name)
             if (call.kind != UmsAstStatementKind.CALL or scope == UmsDependencyScope.UNKNOWN) {
                 self.lowerError(diagnostics, call, "UMS2201",
                     "unknown dependency declaration '".concat(call.name, "'"))
-            } else if (list_len(call.arguments) < 2 or list_len(call.arguments) > 3) {
+            } else if (call.arguments.length < 2 or call.arguments.length > 3) {
                 // Two arguments is a registry dependency; a third is the local path
                 // it resolves to instead. Positional rather than named, because the
                 // DSL's calls are positional and a `path =` form would be new grammar
@@ -456,16 +455,16 @@ impl UmsProjectModel {
                 self.lowerError(diagnostics, call, "UMS2202",
                               call.name.concat(" requires package name and version constraint strings, and an optional local path"))
             } else {
-                let name = list_get(call.arguments, 0)
-                let constraint = list_get(call.arguments, 1)
-                let mut declaredPath = strClone("")
+                let name = call.arguments[0]
+                let constraint = call.arguments[1]
+                let mut declaredPath = "".clone()
                 let mut pathOk = true
-                if (list_len(call.arguments) == 3) {
-                    let third = list_get(call.arguments, 2)
+                if (call.arguments.length == 3) {
+                    let third = call.arguments[2]
                     if (third.kind != UmsAstValueKind.STRING) {
                         pathOk = false
                     } else {
-                        declaredPath = strClone(third.text)
+                        declaredPath = third.text.clone()
                     }
                 }
                 if (name.kind != UmsAstValueKind.STRING or
@@ -477,12 +476,12 @@ impl UmsProjectModel {
                         "dependency '".concat(name.text,
                                               "' is declared more than once in this scope"))
                 } else {
-                    list_push(self.dependencies, UmsDependency {
+                    self.dependencies.push(UmsDependency {
                         scope: scope,
-                        name: strClone(name.text),
-                        constraint: strClone(constraint.text),
+                        name: name.text.clone(),
+                        constraint: constraint.text.clone(),
                         path: declaredPath,
-                        resolved: strClone(""),
+                        resolved: "".clone(),
                         line: call.line,
                         col: call.col,
                         len: call.len
@@ -495,7 +494,7 @@ impl UmsProjectModel {
 }
 
 internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPath: String,
-                    profile: String, diagnostics: Vec<UmsDiagnostic>) -> UmsProjectModel {
+                    profile: String, inout diagnostics: Vec<UmsDiagnostic>) -> UmsProjectModel {
     let project = umsProjectModel(root, manifestPath, profile)
     let mut projectBlocks = 0
     let mut toolchainBlocks = 0
@@ -504,10 +503,10 @@ internal fn umsLowerDocument(document: UmsAstDocument, root: String, manifestPat
     let mut dependencyBlocks = 0
     let mut i = 0
 
-    while (i < list_len(document.roots)) {
-        let block = list_get(document.statements, list_get(document.roots, i))
+    while (i < document.roots.length) {
+        let block = document.statements[document.roots[i]]
         if (block.kind != UmsAstStatementKind.CALL or block.hasBlock == false or
-            list_len(block.arguments) != 0) {
+            block.arguments.length != 0) {
             project.lowerError(diagnostics, block, "UMS2005",
                           "top-level elements must be named blocks")
         } else if (block.name.equals("project")) {

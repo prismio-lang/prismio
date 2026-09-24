@@ -159,12 +159,12 @@ public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
     if (bits == 0 or bits > 64) { return true }
     if (bits == 1) { return true }
 
-    let negative = strStartsWith(text, "-")
+    let negative = text.startsWith("-")
     let unsigned = typeIntIsUnsigned(t)
     if (negative and unsigned) { return false }
 
     let mut at = 0
-    if (negative or strStartsWith(text, "+")) { at = 1 }
+    if (negative or text.startsWith("+")) { at = 1 }
 
     let parsed = typeIntLiteralMagnitude(text, at)
     if (optionIsNone(parsed)) { return false }
@@ -185,22 +185,22 @@ public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
 private fn typeIntLiteralMagnitude(text: String, at: Int) -> Option<U64> {
     let mut start = at
     let mut radix = 10
-    if (strByteAt(text, start) == 48 and __builtin_string_len(text) > start + 1) {
-        let marker = strByteAt(text, start + 1)
+    if (text.byteAt(start) == 48 and __builtin_string_len(text) > start + 1) {
+        let marker = text.byteAt(start + 1)
         if (marker == 120 or marker == 88) { radix = 16 }
         if (marker == 111 or marker == 79) { radix = 8 }
         if (marker == 98 or marker == 66) { radix = 2 }
         if (radix != 10) { start = start + 2 }
     }
-    let digits = strSubstring(text, start, __builtin_string_len(text) - start)
-    return strParseU64Radix(digits, radix)
+    let digits = text.substring(start, __builtin_string_len(text) - start)
+    return digits.parseU64(radix)
 }
 
 // A length written in a type -- `Array<U8, 0x100>` -- as a count: the literal's
 // value when it is a positive number that fits `Int`, and -1 otherwise, so one
 // comparison tells the caller whether to report it.
 public fn typeIntLiteralCount(text: String) -> Int {
-    if (strStartsWith(text, "-") or strStartsWith(text, "+")) { return -1 }
+    if (text.startsWith("-") or text.startsWith("+")) { return -1 }
     if (typeIntLiteralFits(text, typeInt()) == false) { return -1 }
     let parsed = typeIntLiteralMagnitude(text, 0)
     if (optionIsNone(parsed)) { return -1 }
@@ -213,13 +213,13 @@ public fn typeIntLiteralCount(text: String) -> Int {
 // negative, `U64` otherwise. The question `semaExpr` can answer about a literal
 // before anything has told it what type it is.
 public fn typeIntLiteralFitsAnyInt(text: String) -> Bool {
-    if (strStartsWith(text, "-")) { return typeIntLiteralFits(text, typeI64()) }
+    if (text.startsWith("-")) { return typeIntLiteralFits(text, typeI64()) }
     return typeIntLiteralFits(text, typeU64())
 }
 
 public fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.INT) { return false }
-    return strStartsWith(t.name, "U")
+    return t.name.startsWith("U")
 }
 
 // Move-only types are owned, heap-backed values that transfer ownership on use.
@@ -298,7 +298,7 @@ public fn typeTask(result: TypeInfo) -> TypeInfo {
 }
 
 public fn typeIsTask(t: TypeInfo) -> Bool {
-    return t.kind == TypeKind.PTR and strStartsWith(t.name, "Task<")
+    return t.kind == TypeKind.PTR and t.name.startsWith("Task<")
 }
 
 public fn typeTaskResult(t: TypeInfo) -> TypeInfo {
@@ -326,7 +326,7 @@ public fn typeChannel(elem: TypeInfo) -> TypeInfo {
 }
 
 public fn typeIsChannel(t: TypeInfo) -> Bool {
-    return t.kind == TypeKind.PTR and strStartsWith(t.name, "Channel<")
+    return t.kind == TypeKind.PTR and t.name.startsWith("Channel<")
 }
 
 public fn typeChannelElem(t: TypeInfo) -> TypeInfo {
@@ -452,8 +452,8 @@ private fn typeSpelling(t: TypeInfo, vecName: String) -> String {
         // A trait object is a synthesised struct named `dyn$Show`, and `$` cannot
         // occur in a source identifier -- so printing the internal name shows the
         // reader a type they did not write and cannot spell.
-        if (strStartsWith(t.name, "dyn$")) {
-            return "dyn ".concat(strSubstring(t.name, 4, __builtin_string_len(t.name) - 4))
+        if (t.name.startsWith("dyn$")) {
+            return "dyn ".concat(t.name.substring(4, __builtin_string_len(t.name) - 4))
         }
         return t.name
     }
@@ -468,7 +468,7 @@ private fn typeSpelling(t: TypeInfo, vecName: String) -> String {
         if (nodeExists(t.child)) {
             return vecName.concat("<", typeSpelling(ptr_to_type(t.child), vecName), ">")
         }
-        return strClone(vecName)
+        return vecName.clone()
     }
     if (t.kind == TypeKind.SLICE) {
         if (nodeExists(t.child)) {
@@ -630,7 +630,7 @@ public fn typeSemKey(t: TypeInfo) -> String {
     if (t.kind == TypeKind.ENUM) { return "enum:".concat(t.name) }
     if (t.kind == TypeKind.ARRAY) {
         let mut head = "array:"
-        if (t.length > 0) { head = "array#".concat(strFromInt(t.length), ":") }
+        if (t.length > 0) { head = "array#".concat(t.length.toString(), ":") }
         if (nodeExists(t.child)) {
             return head.concat(typeSemKey(ptr_to_type(t.child)))
         }
@@ -672,7 +672,7 @@ public fn typeSemKey(t: TypeInfo) -> String {
 private fn typeStorageKey(t: TypeInfo) -> String {
     let key = typeIrKey(t)
     if (key.equals("ptrptr")) { return "ptr" }
-    if (strStartsWith(key, "struct:")) { return "ptr" }
+    if (key.startsWith("struct:")) { return "ptr" }
     return key
 }
 
@@ -751,8 +751,8 @@ private fn typeFromIrKey(key: String) -> TypeInfo {
     if (key.equals("struct:prismio.data_element")) {
         return typeDataElement(typeInvalid())
     }
-    if (strStartsWith(key, "struct:")) {
-        return typeStruct(strSubstring(key, 7, __builtin_string_len(key) - 7))
+    if (key.startsWith("struct:")) {
+        return typeStruct(key.substring(7, __builtin_string_len(key) - 7))
     }
     return typeInvalid()
 }
@@ -774,36 +774,36 @@ public fn typeFromSemKey(key: String) -> TypeInfo {
     if (key.equals("U32")) { return typeU32() }
     if (key.equals("U64")) { return typeU64() }
     if (key.equals("Usize")) { return typeUsize() }
-    if (strStartsWith(key, "struct:")) {
-        return typeStruct(strSubstring(key, 7, __builtin_string_len(key) - 7))
+    if (key.startsWith("struct:")) {
+        return typeStruct(key.substring(7, __builtin_string_len(key) - 7))
     }
-    if (strStartsWith(key, "enum:")) {
-        return typeEnum(strSubstring(key, 5, __builtin_string_len(key) - 5))
+    if (key.startsWith("enum:")) {
+        return typeEnum(key.substring(5, __builtin_string_len(key) - 5))
     }
-    if (strStartsWith(key, "array:")) {
-        return typeArray(typeFromSemKey(strSubstring(key, 6, __builtin_string_len(key) - 6)))
+    if (key.startsWith("array:")) {
+        return typeArray(typeFromSemKey(key.substring(6, __builtin_string_len(key) - 6)))
     }
     // `array#16:U32`. The count is written by typeSemKey, so it always parses.
-    if (strStartsWith(key, "array#")) {
-        let colon = strIndexOf(key, ":")
-        let count = typeIntLiteralCount(strSubstring(key, 6, colon - 6))
-        let elem = typeFromSemKey(strSubstring(key, colon + 1, __builtin_string_len(key) - colon - 1))
+    if (key.startsWith("array#")) {
+        let colon = key.indexOf(":")
+        let count = typeIntLiteralCount(key.substring(6, colon - 6))
+        let elem = typeFromSemKey(key.substring(colon + 1, __builtin_string_len(key) - colon - 1))
         return typeArraySized(elem, count)
     }
-    if (strStartsWith(key, "list:")) {
-        return typeList(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
+    if (key.startsWith("list:")) {
+        return typeList(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
     }
-    if (strStartsWith(key, "chan:")) {
-        return typeChannel(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
+    if (key.startsWith("chan:")) {
+        return typeChannel(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
     }
-    if (strStartsWith(key, "slice:")) {
-        return typeSlice(typeFromSemKey(strSubstring(key, 6, __builtin_string_len(key) - 6)))
+    if (key.startsWith("slice:")) {
+        return typeSlice(typeFromSemKey(key.substring(6, __builtin_string_len(key) - 6)))
     }
-    if (strStartsWith(key, "view:")) {
-        return typeDataView(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
+    if (key.startsWith("view:")) {
+        return typeDataView(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
     }
-    if (strStartsWith(key, "dataelem:")) {
-        return typeDataElement(typeFromSemKey(strSubstring(key, 9, __builtin_string_len(key) - 9)))
+    if (key.startsWith("dataelem:")) {
+        return typeDataElement(typeFromSemKey(key.substring(9, __builtin_string_len(key) - 9)))
     }
     // REQUIREMENTS 4. The inverse of typeSemKey's `opt:` case, which was written
     // without one -- so every optional round-tripping through a binding decoded
@@ -822,11 +822,11 @@ public fn typeFromSemKey(key: String) -> TypeInfo {
     // lets `none` reach a typed slot with no inference pass. Decoding to
     // typeOptional(Invalid) would hand back a child that matches nothing, so
     // `let x = none` would stop being assignable to anything at all.
-    if (strStartsWith(key, "task:")) {
-        return typeTask(typeFromSemKey(strSubstring(key, 5, __builtin_string_len(key) - 5)))
+    if (key.startsWith("task:")) {
+        return typeTask(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
     }
-    if (strStartsWith(key, "opt:")) {
-        let inner = typeFromSemKey(strSubstring(key, 4, __builtin_string_len(key) - 4))
+    if (key.startsWith("opt:")) {
+        let inner = typeFromSemKey(key.substring(4, __builtin_string_len(key) - 4))
         if (typeIsValid(inner) == false) { return typeNone() }
         return typeOptional(inner)
     }

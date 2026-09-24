@@ -15,7 +15,7 @@ trait Weigh {
 }
 
 impl Show for Int {
-    fn show(self) -> String { return strFromInt(self) }
+    fn show(self) -> String { return self.toString() }
 }
 
 impl Weigh for Int {
@@ -42,7 +42,7 @@ fn heavy<T: Show>(value: T) -> Int where T: Weigh {
 }
 
 fn both<T>(value: T) -> Int where T: Show + Weigh {
-    return strLength(show(value)) + weigh(value)
+    return show(value).length + weigh(value)
 }
 
 // On an impl: the clause constrains the impl's own parameter.

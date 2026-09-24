@@ -21,7 +21,7 @@ fn rnd(seed: Int) -> Int { return (seed * 25173 + 13849) % 65521 }
 // 0 random, 1 sorted, 2 reversed, 3 all equal, 4 few distinct, 5 organ pipe,
 // 6 sawtooth, 7 sorted with a few swaps.
 fn shape(n: Int, kind: Int) -> Vec<Int> {
-    let mut out: Vec<Int> = list_new_with_capacity(n)
+    let mut out: Vec<Int> = Vec<Int>.withCapacity(n)
     let mut seed = 3
     let mut i = 0
     while (i < n) {
@@ -41,20 +41,20 @@ fn shape(n: Int, kind: Int) -> Vec<Int> {
             v = i
             if (i % 997 == 0) { v = n - i }
         }
-        list_push(out, v)
+        out.push(v)
         i = i + 1
     }
     return out
 }
 
 fn checkInts(n: Int, kind: Int) -> Int {
-    let xs = shape(n, kind)
+    let mut xs = shape(n, kind)
     let mut sum = 0
     let mut mix = 0
     let mut i = 0
     while (i < n) {
-        sum = (sum + list_get(xs, i)) % 1000000007
-        mix = (mix + list_get(xs, i) * list_get(xs, i)) % 1000000007
+        sum = (sum + xs[i]) % 1000000007
+        mix = (mix + xs[i] * xs[i]) % 1000000007
         i = i + 1
     }
     sort(xs)
@@ -62,11 +62,11 @@ fn checkInts(n: Int, kind: Int) -> Int {
     let mut afterMix = 0
     let mut k = 0
     while (k < n) {
-        if (k > 0 and list_get(xs, k - 1) > list_get(xs, k)) {
+        if (k > 0 and xs[k - 1] > xs[k]) {
             return fail("unsorted: shape ".concat(kind.toString(), " n ", n.toString()))
         }
-        after = (after + list_get(xs, k)) % 1000000007
-        afterMix = (afterMix + list_get(xs, k) * list_get(xs, k)) % 1000000007
+        after = (after + xs[k]) % 1000000007
+        afterMix = (afterMix + xs[k] * xs[k]) % 1000000007
         k = k + 1
     }
     if (after != sum or afterMix != mix) {
@@ -90,32 +90,32 @@ fn main() -> Int {
 
     // Strings: pairs that are inline and owned, with shared prefixes, sorted
     // against their own insertion order reversed.
-    let mut words: Vec<String> = list_new()
+    let mut words: Vec<String> = []
     let mut i = 0
     while (i < 3000) {
         let n = 2999 - i
         if (n % 3 == 0) {
-            list_push(words, "a shared prefix that is long ".concat(n.toString()))
+            words.push("a shared prefix that is long ".concat(n.toString()))
         } else {
-            list_push(words, "k".concat(n.toString()))
+            words.push("k".concat(n.toString()))
         }
         i = i + 1
     }
     sort(words)
     let mut k = 1
-    while (k < list_len(words)) {
-        if (list_get(words, k - 1).compare(list_get(words, k)) > 0) {
+    while (k < words.length) {
+        if (words[k - 1].compare(words[k]) > 0) {
             return fail("strings unsorted at ".concat(k.toString()))
         }
         k = k + 1
     }
-    if (list_len(words) != 3000) { return fail("string count") }
+    if (words.length != 3000) { return fail("string count") }
 
     // A comparator that is not a strict weak order must not hang or read past
     // the end; the result is merely unspecified.
     let mut noisy = shape(3000, 0)
     sortBy(noisy, |a: Int, b: Int| (a * 7 + b * 3) % 5 - 2)
-    if (list_len(noisy) != 3000) { return fail("an inconsistent comparator lost elements") }
+    if (noisy.length != 3000) { return fail("an inconsistent comparator lost elements") }
 
     println("PASS")
     return 0

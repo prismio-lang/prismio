@@ -32,7 +32,7 @@ extern fn compiler_plib_module_registered(module: String borrow) -> Int
 // only for a function a PLIB could supply, so a build from source pays nothing
 // for it.
 private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
-    let qualifier = strClone(diag_file_module(func.file))
+    let qualifier = diag_file_module(func.file).clone()
     let emissionModule = compiler_library_emission_module()
     if (emissionModule.equals("") == false) {
         // PLIBs own concrete definitions from their entry module only. Generic
@@ -729,8 +729,8 @@ private fn irChainMovesNoBlock(head: Ptr) -> Bool {
 // function, leaving LLVM to implement both ABIs on every target.
 private fn generateTaskThunk(func: ASTNode) {
     let retType = storageType(getDeclaredReturnType(func, func.child3))
-    let stringResult = isFatStringKey(strClone(retType))
-    let mut thunkRetType = strClone(retType)
+    let stringResult = isFatStringKey(retType.clone())
+    let mut thunkRetType = retType.clone()
     // The task runtime has a pointer result lane, not a `{ptr, i64}` lane.
     // Materialise String's inline/view forms into owned storage below and use
     // the pointer signature the runtime actually calls through.
@@ -740,7 +740,7 @@ private fn generateTaskThunk(func: ASTNode) {
     let mut paramPtr = func.child1
     let mut i = 0
     while (nodeExists(paramPtr)) {
-        ir_function_param("ptr", "p_task".concat(strFromInt(i)))
+        ir_function_param("ptr", "p_task".concat(i.toString()))
         paramPtr = ptr_to_node(paramPtr).next
         i = i + 1
     }
@@ -752,7 +752,7 @@ private fn generateTaskThunk(func: ASTNode) {
     while (nodeExists(argPtr)) {
         let param = ptr_to_node(argPtr)
         let paramType = storageType(mapTypeNode(ptr_to_node(param.child1)))
-        let raw = "%p_task".concat(strFromInt(j))
+        let raw = "%p_task".concat(j.toString())
         if (isFatStringKey(paramType)) {
             ir_call_arg(paramType, fatFromPtr(raw))
         } else {
@@ -766,11 +766,11 @@ private fn generateTaskThunk(func: ASTNode) {
         ir_call_end("void", functionSymbolName(func))
         ir_ret_void()
     } else {
-        let result = ir_get_temp_name(ir_call_end(strClone(retType), functionSymbolName(func)))
+        let result = ir_get_temp_name(ir_call_end(retType.clone(), functionSymbolName(func)))
         if (stringResult) {
-            ir_ret("ptr", scalarToSlot(strClone(retType), result))
+            ir_ret("ptr", scalarToSlot(retType.clone(), result))
         } else {
-            ir_ret(strClone(retType), result)
+            ir_ret(retType.clone(), result)
         }
     }
     ir_function_end()
@@ -780,7 +780,7 @@ private fn generateTaskThunk(func: ASTNode) {
 internal fn collectStringsExpr(expr: ASTNode) {
     if (expr.kind == NodeKind.LITERAL_EXPR) {
         if (expr.i1 == TokenType.STRING_LITERAL) {
-            let strName = ".str.s".concat(strFromInt(irStringCounter))
+            let strName = ".str.s".concat(irStringCounter.toString())
             irStringCounter = irStringCounter + 1
             ir_global_string(strName, expr.s1)
             expr.s2 = strName
@@ -892,14 +892,14 @@ private fn declareExternFunction(ext: ASTNode) {
 // the clause's intent read literally: a workload needing a real environment is
 // not reproducible and is therefore not a workload.
 private fn irRuntimeProvides(name: String) -> Bool {
-    if (strStartsWith(name, "str_")) { return true }
-    if (strStartsWith(name, "list_")) { return true }
-    if (strStartsWith(name, "prismio_rt_")) { return true }
-    if (strStartsWith(name, "rt_")) { return true }
-    if (strStartsWith(name, "rc_")) { return true }
-    if (strStartsWith(name, "arena_")) { return true }
-    if (strStartsWith(name, "cyc_")) { return true }
-    if (strStartsWith(name, "aif_verify_")) { return true }
+    if (name.startsWith("str_")) { return true }
+    if (name.startsWith("list_")) { return true }
+    if (name.startsWith("prismio_rt_")) { return true }
+    if (name.startsWith("rt_")) { return true }
+    if (name.startsWith("rc_")) { return true }
+    if (name.startsWith("arena_")) { return true }
+    if (name.startsWith("cyc_")) { return true }
+    if (name.startsWith("aif_verify_")) { return true }
     if (name.equals("int_to_str")) { return true }
     if (name.equals("float_to_str")) { return true }
     if (name.equals("char_code")) { return true }
@@ -934,7 +934,7 @@ private fn generateExternStub(ext: ASTNode) {
     while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
-        ir_function_param(ffiType(storageType(mapTypeNode(pTypeNode))), "p_s".concat(strFromInt(i)))
+        ir_function_param(ffiType(storageType(mapTypeNode(pTypeNode))), "p_s".concat(i.toString()))
         i = i + 1
         paramPtr = paramNode.next
     }
@@ -1007,7 +1007,7 @@ private fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_br_numbered(headLabel)
     ir_label_numbered(headLabel)
     let cur = ir_get_temp_name(ir_load("i32", counterSlot))
-    let more = ir_get_temp_name(ir_icmp_slt("i32", cur, strFromInt(workload.i1)))
+    let more = ir_get_temp_name(ir_icmp_slt("i32", cur, workload.i1.toString()))
     ir_cond_br_numbered(more, bodyLabel, doneLabel)
 
     ir_label_numbered(bodyLabel)
@@ -1029,7 +1029,7 @@ private fn generateWorkloadDriver(workload: ASTNode, profilePath: String) {
     ir_call_begin()
     ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(profilePath)))
     ir_call_arg("ptr", ir_get_temp_name(ir_const_cstring(workload.s1)))
-    ir_call_arg("i32", strFromInt(workload.i1))
+    ir_call_arg("i32", workload.i1.toString())
     ir_call_end("i32", "rt_profile_dump")
 
     ir_scope_pop()
@@ -1101,7 +1101,7 @@ private fn fieldTypeFor(module: ASTNode, typeNode: ASTNode) -> String {
     if (typeNode.i1 == 1 and nodeExists(typeNode.child2) and nodeExists(typeNode.child1)) {
         let count = typeIntLiteralCount(ptr_to_node(typeNode.child2).s1)
         let elem = storageType(mapTypeNode(ptr_to_node(typeNode.child1)))
-        return "arr:".concat(strFromInt(count), ":", elem)
+        return "arr:".concat(count.toString(), ":", elem)
     }
     let t = mapTypeNode(typeNode)
     if (isStructTypeKey(t)) {
@@ -2449,9 +2449,9 @@ private fn generateVtableDeclarationsFrom(module: ASTNode, ptr: Ptr) {
         let node = ptr_to_node(p)
         if (node.kind == NodeKind.DYN_MAKE) {
             let marker = node.s2.concat(";")
-            if (strContains(irEmittedVtables, marker) == false) {
+            if (irEmittedVtables.contains(marker) == false) {
                 irEmittedVtables = irEmittedVtables.concat(marker)
-                let traitName = strSubstring(node.s1, 4, __builtin_string_len(node.s1) - 4)
+                let traitName = node.s1.substring(4, __builtin_string_len(node.s1) - 4)
                 let traitDecl = irFindTrait(module, traitName)
                 if (nodeIsNull(node_to_ptr(traitDecl)) == false) {
                     ir_vtable_declare(node.s2, irTraitMethodCount(traitDecl))
@@ -2490,10 +2490,10 @@ private fn generateVtablesFrom(module: ASTNode, ptr: Ptr) {
 private fn generateOneVtable(module: ASTNode, make: ASTNode) {
     let name = make.s2
     let marker = name.concat(";")
-    if (strContains(irEmittedVtables, marker)) { return }
+    if (irEmittedVtables.contains(marker)) { return }
     irEmittedVtables = irEmittedVtables.concat(marker)
 
-    let traitName = strSubstring(make.s1, 4, __builtin_string_len(make.s1) - 4)
+    let traitName = make.s1.substring(4, __builtin_string_len(make.s1) - 4)
     let traitDecl = irFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return }
 
@@ -2551,7 +2551,7 @@ private fn irImplMethodSymbol(module: ASTNode, implNode: ASTNode, methodName: St
                     and fnNode.file == record.file
                     and fnNode.line == record.line
                     and fnNode.col == record.col) {
-                    return strClone(fnNode.s2)
+                    return fnNode.s2.clone()
                 }
                 fnPtr = fnNode.next
             }

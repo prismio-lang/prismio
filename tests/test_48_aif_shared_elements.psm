@@ -28,16 +28,16 @@ struct Item {
 // dead -- an argument that does not reach a container, because a container is not
 // a binding. A-CONTAIN counts containers instead.
 fn shared_between_containers() -> Int {
-    let a: Vec<Item> = list_new()
-    let b: Vec<Item> = list_new()
-    list_push(a, Item { value: 3 })
-    list_push(b, list_get(a, 0))
+    let mut a: Vec<Item> = []
+    let mut b: Vec<Item> = []
+    a.push(Item { value: 3 })
+    b.push(a[0])
 
     // Read through both, after both are live. If either container had taken
     // ownership, one of these would be reading a released value -- poison under
     // --verify, and the value check below is what notices.
-    let via_a = list_get(a, 0)
-    let via_b = list_get(b, 0)
+    let via_a = a[0]
+    let via_b = b[0]
     return via_a.value + via_b.value
 }
 
@@ -46,18 +46,18 @@ fn shared_between_containers() -> Int {
 // borrowed value -- which is an error, and neg_21 pins that. What is legal is
 // pushing what a *read* returned, which is the shape above; this one goes through
 // two reads of the same source.
-fn spread(src: Vec<Item>, x: Vec<Item>, y: Vec<Item>) {
-    list_push(x, list_get(src, 0))
-    list_push(y, list_get(src, 0))
+fn spread(src: Vec<Item>, inout x: Vec<Item>, inout y: Vec<Item>) {
+    x.push(src[0])
+    y.push(src[0])
 }
 
 fn two_hops() -> Int {
-    let src: Vec<Item> = list_new()
-    let x: Vec<Item> = list_new()
-    let y: Vec<Item> = list_new()
-    list_push(src, Item { value: 5 })
+    let mut src: Vec<Item> = []
+    let mut x: Vec<Item> = []
+    let mut y: Vec<Item> = []
+    src.push(Item { value: 5 })
     spread(src, x, y)
-    return list_len(x) + list_len(y) + list_len(src)
+    return x.length + y.length + src.length
 }
 
 // The property the count exists for, and the one no arrangement of ownership
@@ -70,16 +70,16 @@ fn two_hops() -> Int {
 // value without it, which is what makes the returned 9 an assertion rather than a
 // formality.
 fn borrow_into_temp(src: Vec<Item>) -> Int {
-    let temp: Vec<Item> = list_new()
-    list_push(temp, list_get(src, 0))
-    return list_len(temp)
+    let mut temp: Vec<Item> = []
+    temp.push(src[0])
+    return temp.length
 }
 
 fn survives_first_release() -> Int {
-    let keep: Vec<Item> = list_new()
-    list_push(keep, Item { value: 9 })
+    let mut keep: Vec<Item> = []
+    keep.push(Item { value: 9 })
     let n = borrow_into_temp(keep)
-    let e = list_get(keep, 0)
+    let e = keep[0]
     return e.value + n
 }
 
@@ -91,16 +91,16 @@ fn survives_first_release() -> Int {
 // Under OBJECT the old element leaks instead, deliberately: the container owns
 // it, but so might the binding it came from, and only a count can tell.
 fn overwrite_releases() -> Int {
-    let items: Vec<Item> = list_new()
-    list_push(items, Item { value: 1 })
-    list_push(items, Item { value: 2 })
+    let mut items: Vec<Item> = []
+    items.push(Item { value: 1 })
+    items.push(Item { value: 2 })
     // Shared, so counted: also pushed into `other` below.
-    let other: Vec<Item> = list_new()
-    list_push(other, list_get(items, 1))
-    list_set(items, 0, Item { value: 40 })
-    let a = list_get(items, 0)
-    let b = list_get(items, 1)
-    return a.value + b.value + list_len(other)
+    let mut other: Vec<Item> = []
+    other.push(items[1])
+    items[0] = Item { value: 40 }
+    let a = items[0]
+    let b = items[1]
+    return a.value + b.value + other.length
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {

@@ -21,7 +21,7 @@ fn fail(message: String) -> Int {
 }
 
 fn columnCount<T>(view: DataView<T>) -> Int {
-    return data_len(view)
+    return view.length
 }
 
 // M4.3b. Indexing does not materialise a row. `first` and `second` are two-word
@@ -50,14 +50,14 @@ fn mutateColumns(view: DataView<Sample>) {
 }
 
 fn main() -> Int {
-    let mut rows: Vec<Sample> = list_new()
-    list_push(rows, Sample {
+    let mut rows: Vec<Sample> = []
+    rows.push(Sample {
         id: 7,
         weight: 1.5,
         tag: 'a',
         pair: Pair { low: 70, mark: 'x' }
     })
-    list_push(rows, Sample {
+    rows.push(Sample {
         id: 9,
         weight: 2.75,
         tag: 'b',
@@ -70,7 +70,7 @@ fn main() -> Int {
     mutateColumns(columns)
 
     let restored: Vec<Sample> = aos(columns)
-    if (list_len(restored) != 2) { return fail("row length") }
+    if (restored.length != 2) { return fail("row length") }
     let first = restored[0]
     let second = restored[1]
     if (first.id != 17 or first.weight != 3.5 or first.tag != 'a') {

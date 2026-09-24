@@ -129,7 +129,7 @@ private fn semaCheckUniqueArgs(expr: ASTNode, fnNode: ASTNode, name: String) {
 private fn semaDottedModulePath(node: ASTNode) -> String {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (ir_has_var_type(node.s1) == 1) { return "" }
-        return strClone(node.s1)
+        return node.s1.clone()
     }
     if (node.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         let inner = semaDottedModulePath(ptr_to_node(node.child1))
@@ -212,7 +212,7 @@ private fn semaBindToStandardString(expr: ASTNode) {
 // nobody wrote.
 private fn semaBecomeCall(expr: ASTNode, name: String, args: Ptr) {
     let callee = createNode(NodeKind.IDENTIFIER_EXPR)
-    callee.s1 = strClone(name)
+    callee.s1 = name.clone()
     nodeSpanFrom(callee, expr)
 
     expr.kind = NodeKind.CALL_EXPR
@@ -308,7 +308,7 @@ internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInf
     if (count > semaListLiteralMax()) {
         semaErrorAt(valNode, "a list literal holds at most ".concat(
             semaListLiteralMax().toString(), " elements, found ", count.toString()))
-        diag_note("build a longer list with `list_new()` and `list_push`")
+        diag_note("start from `[]` and `push` the rest")
         nodeSetType(valNode, typeInvalid())
         return true
     }
@@ -456,11 +456,12 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
     let length = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(length, source)
     if (sourceT.kind == TypeKind.STRING) {
-        if (semaStringSugarAvailable(stmt, "strLength", "iterating a String") == false) {
+        // The body reads each byte with `s[i]`, which is std.string's `charAt`.
+        // The bound is the length field itself, not a library call.
+        if (semaStringSugarAvailable(stmt, "charAt", "iterating a String") == false) {
             return false
         }
-        semaBecomeCall(length, "strLength", semaForSourceArgs(source))
-        semaBindToStandardString(length)
+        semaBecomeCall(length, "__builtin_string_len", semaForSourceArgs(source))
     } else if (sourceT.kind == TypeKind.LIST) {
         semaBecomeCall(length, "list_len", semaForSourceArgs(source))
     } else if (sourceT.kind == TypeKind.SLICE) {
@@ -468,7 +469,7 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
     } else if (sourceT.kind == TypeKind.ARRAY and sourceT.length > 0) {
         length.kind = NodeKind.LITERAL_EXPR
         length.i1 = TokenType.NUMBER_LITERAL
-        length.s1 = strFromInt(sourceT.length)
+        length.s1 = sourceT.length.toString()
     } else if (sourceT.kind == TypeKind.ARRAY) {
         semaErrorAt(source, "the length of this array is not known here, so `for ... in` cannot iterate it")
         diag_note("a `[T]` parameter takes arrays of any length; pass the length too and write `for i in 0..<n`")
@@ -481,10 +482,10 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
 
     // With a pair, the first name *is* the index and needs no hidden one.
     let mut indexName = "$".concat(stmt.s1)
-    let mut elementName = strClone(stmt.s1)
+    let mut elementName = stmt.s1.clone()
     if (stmt.s2.equals("") == false) {
-        indexName = strClone(stmt.s1)
-        elementName = strClone(stmt.s2)
+        indexName = stmt.s1.clone()
+        elementName = stmt.s2.clone()
     }
 
     // let <element> = <source>[<index>], prepended to the body the user wrote.
@@ -554,8 +555,8 @@ private fn semaForHoistSource(stmt: ASTNode, isIterator: Bool) {
 
     let loopNode = createNode(NodeKind.FOR_STATEMENT)
     nodeSpanFrom(loopNode, stmt)
-    loopNode.s1 = strClone(stmt.s1)
-    loopNode.s2 = strClone(stmt.s2)
+    loopNode.s1 = stmt.s1.clone()
+    loopNode.s2 = stmt.s2.clone()
     loopNode.i1 = stmt.i1
     loopNode.child1 = node_to_ptr(semaNameNode(source, hidden))
     loopNode.child2 = stmt.child2
@@ -563,7 +564,7 @@ private fn semaForHoistSource(stmt: ASTNode, isIterator: Bool) {
     loopNode.next = stmt.next
 
     stmt.kind = NodeKind.VARIABLE_DECL
-    stmt.s1 = strClone(hidden)
+    stmt.s1 = hidden.clone()
     stmt.s2 = ""
     stmt.i1 = 0
     if (isIterator) { stmt.i1 = 1 }
@@ -577,7 +578,7 @@ private fn semaForHoistSource(stmt: ASTNode, isIterator: Bool) {
 private fn semaForPrependLet(stmt: ASTNode, name: String, value: ASTNode) {
     let bind = createNode(NodeKind.VARIABLE_DECL)
     nodeSpanFrom(bind, stmt)
-    bind.s1 = strClone(name)
+    bind.s1 = name.clone()
     bind.child2 = node_to_ptr(value)
 
     let body = ptr_to_node(stmt.child3)
@@ -593,7 +594,7 @@ private fn semaForBecomeRange(stmt: ASTNode, indexName: String, length: ASTNode)
     zero.s1 = "0"
     nodeSpanFrom(zero, length)
 
-    stmt.s1 = strClone(indexName)
+    stmt.s1 = indexName.clone()
     stmt.s2 = ""
     stmt.i1 = 0
     stmt.child1 = node_to_ptr(zero)
@@ -639,12 +640,12 @@ private fn semaForEachIterator(module: ASTNode, stmt: ASTNode, source: ASTNode) 
     let condition = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(condition, source)
     semaBecomeCall(condition, "hasNext", semaForSourceArgs(source))
-    condition.s1 = strClone("Iterator")
+    condition.s1 = "Iterator".clone()
 
     let advance = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(advance, source)
     semaBecomeCall(advance, "next", semaForSourceArgs(source))
-    advance.s1 = strClone("Iterator")
+    advance.s1 = "Iterator".clone()
 
     // `let <var> = next(it)`, prepended to the body the user wrote, exactly as
     // the indexed desugar prepends its element binding.
@@ -663,7 +664,7 @@ private fn semaForEachIterator(module: ASTNode, stmt: ASTNode, source: ASTNode) 
 // siblings are a `next` chain.
 private fn semaNameNode(at: ASTNode, name: String) -> ASTNode {
     let node = createNode(NodeKind.IDENTIFIER_EXPR)
-    node.s1 = strClone(name)
+    node.s1 = name.clone()
     nodeSpanFrom(node, at)
     return node
 }
@@ -1168,9 +1169,9 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         if (target.kind == NodeKind.IDENTIFIER_EXPR
             and semaIsTraitName(module, target.s1)) {
             let qualifiedName = createNode(NodeKind.IDENTIFIER_EXPR)
-            qualifiedName.s1 = strClone(callee.s1)
+            qualifiedName.s1 = callee.s1.clone()
             nodeSpanFrom(qualifiedName, callee)
-            expr.s1 = strClone(target.s1)
+            expr.s1 = target.s1.clone()
             expr.child1 = node_to_ptr(qualifiedName)
             return semaExpr(module, expr)
         }
@@ -1202,14 +1203,14 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let mut modulePath = semaDottedModulePath(target)
         if (target.kind == NodeKind.IDENTIFIER_EXPR) {
             let aliased = ir_import_alias_target(expr.file, target.s1)
-            if (aliased.equals("") == false) { modulePath = strClone(aliased) }
+            if (aliased.equals("") == false) { modulePath = aliased.clone() }
         }
         if (modulePath.equals("") == false
             and semaModuleDeclares(modulePath, callee.s1)) {
             let qualifiedName = createNode(NodeKind.IDENTIFIER_EXPR)
-            qualifiedName.s1 = strClone(callee.s1)
+            qualifiedName.s1 = callee.s1.clone()
             nodeSpanFrom(qualifiedName, callee)
-            expr.s1 = strClone(modulePath)
+            expr.s1 = modulePath.clone()
             expr.child1 = node_to_ptr(qualifiedName)
             return semaExpr(module, expr)
         }
@@ -1272,9 +1273,10 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             if (associated == semaVecRewritten()) { return semaExpr(module, expr) }
             if (associated == semaVecRejected()) { return typeInvalid() }
         } else if (target.kind != NodeKind.IDENTIFIER_EXPR or ir_has_var_type(target.s1) == 1) {
-            if (semaExpr(module, target).kind == TypeKind.LIST) {
-                let method = strClone(callee.s1)
-                let lowered = semaVecLower(module, expr, method, target, expr.child2)
+            let receiverKind = semaExpr(module, target).kind
+            if (semaVecLowersKind(receiverKind)) {
+                let method = callee.s1.clone()
+                let lowered = semaVecLower(module, expr, receiverKind, method, target, expr.child2)
                 if (lowered == semaVecRewritten()) { return semaExpr(module, expr) }
                 if (lowered == semaVecRejected()) { return typeInvalid() }
             }
@@ -1307,9 +1309,9 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // and for nothing else.
     if (callee.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(callee.s1) == 1) {
         let calleeT = typeFromSemKey(ir_get_var_type(callee.s1))
-        if (calleeT.kind == TypeKind.STRUCT and strStartsWith(calleeT.name, semaClosurePrefix())) {
+        if (calleeT.kind == TypeKind.STRUCT and calleeT.name.startsWith(semaClosurePrefix())) {
             let receiver = createNode(NodeKind.IDENTIFIER_EXPR)
-            receiver.s1 = strClone(callee.s1)
+            receiver.s1 = callee.s1.clone()
             nodeSpanFrom(receiver, callee)
             receiver.next = expr.child2
             callee.s1 = "call"
@@ -1368,7 +1370,12 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         // coercion; this is where it is actually built.
         semaBuildDynIfNeeded(module, argNode, paramT)
         semaCheckValue(module, argNode, paramT, diagQuote(name).concat(" argument"))
-        // Only `sink` parameters take ownership; `let`/`inout` borrow.
+        // Only `sink` parameters take ownership; `let`/`inout` borrow. An
+        // `inout` borrow may change what it is given, so that has to be
+        // something the caller may change.
+        if (paramNode.s2.equals("inout")) {
+            semaCheckMutablePlace(argNode)
+        }
         if (paramNode.s2.equals("sink")) {
             semaConsumeOperand(argNode)
         } else if (argNode.kind == NodeKind.IDENTIFIER_EXPR
@@ -1409,7 +1416,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (fnNode.s2.equals("")) {
         expr.s2 = semaFunctionSymbol(module, fnNode)
     } else {
-        expr.s2 = strClone(fnNode.s2)
+        expr.s2 = fnNode.s2.clone()
     }
     nodeSetType(expr, retT)
     return retT
@@ -1549,9 +1556,9 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // and before the failure, so a field always wins and no existing program
     // changes meaning; a struct may still have a property, which is what
     // makes `point.magnitude` available next to `point.x`.
-    if (objectT.kind == TypeKind.LIST and semaVecIsProperty(expr.s1)) {
-        let propertyName = strClone(expr.s1)
-        let loweredProperty = semaVecLower(module, expr, propertyName, objectNode, ptr_null())
+    if (semaVecLowersKind(objectT.kind) and semaVecIsProperty(objectT.kind, expr.s1)) {
+        let propertyName = expr.s1.clone()
+        let loweredProperty = semaVecLower(module, expr, objectT.kind, propertyName, objectNode, ptr_null())
         if (loweredProperty == semaVecRewritten()) { return semaExpr(module, expr) }
         if (loweredProperty == semaVecRejected()) { return typeInvalid() }
     }
@@ -1690,11 +1697,15 @@ private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return typeInvalid()
     }
     let elemT = ptr_to_type(collectionT.child)
+    // A Vec element read is `list_get`, as every method that reads an element is
+    // (src/sema/vec.psm): codegen's loop guards and hoisting recognise the call,
+    // and an INDEX_EXPR took a plainer path that called the runtime per element.
+    // The builtin's check closes the exclusive-replacement capability, and the
+    // binding stays a borrow (semaBindingIsBorrow).
     if (collectionT.kind == TypeKind.LIST) {
-        let base = ptr_to_node(expr.child1)
-        if (base.kind == NodeKind.IDENTIFIER_EXPR) {
-            ir_unmark_list_exclusive(base.s1)
-        }
+        semaBecomeCall(expr, "list_get",
+                       semaCallArgs2(ptr_to_node(expr.child1), ptr_to_node(expr.child2)))
+        return semaExpr(module, expr)
     }
     if (collectionT.kind == TypeKind.DATAVIEW) {
         let refT = typeDataElement(elemT)
@@ -1945,7 +1956,7 @@ private fn semaSeparatorCopy(sourcePtr: Ptr, anchor: ASTNode) -> ASTNode {
     let source = ptr_to_node(sourcePtr)
     let copy = createNode(source.kind)
     copy.i1 = source.i1
-    copy.s1 = strClone(source.s1)
+    copy.s1 = source.s1.clone()
     nodeSpanFrom(copy, source)
     return copy
 }
@@ -2038,7 +2049,7 @@ private fn semaSplitPrintStatement(module: ASTNode, stmt: ASTNode) {
     let head = ptr_to_node(call.child2)
     let mut valuePtr = head.next
     head.next = ptr_null()
-    callee.s1 = strClone(pieceName)
+    callee.s1 = pieceName.clone()
 
     let following = stmt.next
     let mut tail = stmt
@@ -2101,10 +2112,10 @@ private fn semaCheckArrayDecl(stmt: ASTNode, ann: ASTNode, varT: TypeInfo, initT
         if (initT.length > 0) { return typeArraySized(elemT, initT.length) }
         return varT
     }
-    let written = "`Array<".concat(typeDisplay(elemT), ", ", strFromInt(varT.length), ">`")
+    let written = "`Array<".concat(typeDisplay(elemT), ", ", varT.length.toString(), ">`")
     if (initT.length > 0 and initT.length != varT.length) {
-        semaErrorAt(init, written.concat(" holds ", strFromInt(varT.length),
-                                         " elements, and this has ", strFromInt(initT.length)))
+        semaErrorAt(init, written.concat(" holds ", varT.length.toString(),
+                                         " elements, and this has ", initT.length.toString()))
         diag_note("drop the length and write `Array<".concat(typeDisplay(elemT), ">` to take it from the value"))
     } else if (initT.length <= 0 and typeArrayCopies(varT)) {
         semaErrorAt(init, written.concat(" is filled by copying, and this array's length is not known"))
@@ -2242,7 +2253,10 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
     if (collectionT.kind == TypeKind.ARRAY) {
         let elemT = ptr_to_type(collectionT.child)
         if (typeIsValid(elemT) == false) { return true }
-        if (typeOwnsNothing(elemT)) { return false }
+        if (typeOwnsNothing(elemT)) {
+            semaCheckMutablePlace(target)
+            return false
+        }
         semaErrorAt(target, "an element of ".concat(typeDisplay(collectionT),
                                                      " cannot be replaced"))
         diag_note("an array stores only elements nobody owns this way; use a `Vec` and `v[i] = x`, or assign a field -- `a[i].f = x`")
@@ -2274,12 +2288,12 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
 // assigning to one re-points it, as before.
 private fn semaCheckArrayCopy(value: ASTNode, targetT: TypeInfo, valueT: TypeInfo) {
     if (typeArrayCopies(targetT) == false or valueT.kind != TypeKind.ARRAY) { return }
-    let holds = "this array holds ".concat(strFromInt(targetT.length), " elements")
+    let holds = "this array holds ".concat(targetT.length.toString(), " elements")
     if (valueT.length <= 0) {
         semaErrorAt(value, holds.concat(", and the length of the one assigned to it is not known"))
         diag_note("a `[T]` parameter takes any length; copy it element by element")
     } else if (valueT.length != targetT.length) {
-        semaErrorAt(value, holds.concat(", and the one assigned to it has ", strFromInt(valueT.length)))
+        semaErrorAt(value, holds.concat(", and the one assigned to it has ", valueT.length.toString()))
     }
 }
 
@@ -2386,12 +2400,12 @@ private fn semaReturn(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) 
             let returned = ptr_to_node(stmt.child1)
             let actual = nodeGetType(returned)
             if (actual.kind == TypeKind.ARRAY and actual.length != expectedReturn.length) {
-                let holds = "this function returns ".concat(strFromInt(expectedReturn.length), " elements")
+                let holds = "this function returns ".concat(expectedReturn.length.toString(), " elements")
                 if (actual.length <= 0) {
                     semaErrorAt(returned, holds.concat(", and the length of this array is not known"))
                     diag_note("a `[T]` parameter takes any length; copy it into an `Array<T, N>` first")
                 } else {
-                    semaErrorAt(returned, holds.concat(", and this array has ", strFromInt(actual.length)))
+                    semaErrorAt(returned, holds.concat(", and this array has ", actual.length.toString()))
                 }
             }
         } else if (expectedReturn.kind == TypeKind.ARRAY) {
@@ -2504,7 +2518,7 @@ private fn semaForStep(module: ASTNode, stepNode: ASTNode) {
 
     let mut notPositive = stepNode.kind == NodeKind.LITERAL_EXPR
         and stepNode.i1 == TokenType.NUMBER_LITERAL
-        and optionOr(strParseInt(stepNode.s1), 1) <= 0
+        and optionOr(stepNode.s1.parseInt(), 1) <= 0
     if (stepNode.kind == NodeKind.UNARY_EXPR and stepNode.s1.equals("-")) {
         let operand = ptr_to_node(stepNode.child1)
         notPositive = operand.kind == NodeKind.LITERAL_EXPR
@@ -2591,7 +2605,7 @@ internal fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     // declare one would bring back the exact ambiguity the reserved spelling is
     // meant to remove: a name that looks foreign or user-defined but whose call
     // is silently replaced by codegen.
-    if (strStartsWith(fnNode.s1, "__builtin_")) {
+    if (fnNode.s1.startsWith("__builtin_")) {
         semaErrorAt(fnNode, diagQuote(fnNode.s1).concat(" is reserved for a compiler builtin and cannot be declared"))
         return
     }
@@ -2778,15 +2792,20 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     while (nodeExists(paramPtr)) {
         let mut param = ptr_to_node(paramPtr)
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
-        if (param.s2.equals("inout") and typeIsMoveOnly(paramT) == false) {
+        // An array or a slice is a view of its caller's elements, so an `inout`
+        // one writes through to them as a struct or a Vec does.
+        let writesThrough = typeIsMoveOnly(paramT) or paramT.kind == TypeKind.ARRAY
+                            or paramT.kind == TypeKind.SLICE
+        if (param.s2.equals("inout") and writesThrough == false) {
             semaErrorAt(param, "inout parameter ".concat(diagQuote(param.s1),
-                                                         " must be a struct (reference) type"))
+                                                         " must be a struct, Vec, array or slice"))
         }
         // let/inout params are non-owning borrows; sink params own their value.
         if (param.s2.equals("sink") == false) {
             ir_mark_borrowed(param.s1)
         }
         ir_set_var_type(param.s1, typeSemKey(paramT))
+        if (param.s2.equals("inout")) { ir_mark_inout(param.s1) }
         nodeSetType(param, paramT)
         paramPtr = param.next
     }
@@ -2904,7 +2923,7 @@ private fn semaResolveOpaqueReturns(module: ASTNode) {
         if (stmt.kind == NodeKind.FUNCTION and nodeExists(stmt.child3)) {
             let annotation = ptr_to_node(stmt.child3)
             if (annotation.kind == NodeKind.TYPE_ANNOTATION
-                and strStartsWith(annotation.s1, "opaque$")) {
+                and annotation.s1.startsWith("opaque$")) {
                 semaResolveOneOpaqueReturn(module, stmt, annotation)
             }
         }
@@ -2933,10 +2952,10 @@ private fn semaResolveOneOpaqueReturn(module: ASTNode, fnNode: ASTNode, annotati
     // rewritten, because afterwards nothing records what was promised. The
     // opaque spelling is kept for the same reason -- it is what tells the shared
     // bound diagnostic that this was a return type and not a type parameter.
-    let opaqueName = strClone(annotation.s1)
+    let opaqueName = annotation.s1.clone()
     let concreteAnnotation = createNode(NodeKind.TYPE_ANNOTATION)
     nodeSpanFrom(concreteAnnotation, annotation)
-    concreteAnnotation.s1 = strClone(concrete)
+    concreteAnnotation.s1 = concrete.clone()
     let concreteT = semaAnnotationType(module, concreteAnnotation)
 
     // Rewritten before the remaining checks, and unconditionally. Every failure
@@ -2944,7 +2963,7 @@ private fn semaResolveOneOpaqueReturn(module: ASTNode, fnNode: ASTNode, annotati
     // turned one mistake into six: the annotation is an unknown type, so the
     // function's return type is invalid, so every call and every method on the
     // result fails too. One wrong answer beats five consequences of no answer.
-    annotation.s1 = strClone(concrete)
+    annotation.s1 = concrete.clone()
     annotation.child2 = ptr_null()
 
     if (semaReturnsAgree(module, fnNode.child2, concrete, first) == false) { return }
@@ -3017,7 +3036,7 @@ private fn semaOpaqueConcreteName(module: ASTNode, returnStatement: ASTNode) -> 
     }
     let expr = ptr_to_node(returnStatement.child1)
 
-    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) { return strClone(expr.s1) }
+    if (expr.kind == NodeKind.STRUCT_LITERAL_EXPR) { return expr.s1.clone() }
 
     if (expr.kind == NodeKind.CALL_EXPR) {
         let calleePtr = semaFindConcreteFunction(module, expr.s1)
@@ -3025,8 +3044,8 @@ private fn semaOpaqueConcreteName(module: ASTNode, returnStatement: ASTNode) -> 
             let callee = ptr_to_node(calleePtr)
             if (nodeExists(callee.child3)) {
                 let calleeReturn = ptr_to_node(callee.child3)
-                if (strStartsWith(calleeReturn.s1, "opaque$") == false) {
-                    return strClone(calleeReturn.s1)
+                if (calleeReturn.s1.startsWith("opaque$") == false) {
+                    return calleeReturn.s1.clone()
                 }
             }
         }
@@ -3064,7 +3083,7 @@ private fn semaSynthesiseDynStructs(module: ASTNode) {
 // walked every later one again: quadratic in the declarations of the whole
 // program, and a `dyn` naming no trait was reported once per earlier one.
 private fn semaSynthesiseDynIn(module: ASTNode, node: ASTNode) {
-    if (node.kind == NodeKind.TYPE_ANNOTATION and strStartsWith(node.s1, "dyn$")) {
+    if (node.kind == NodeKind.TYPE_ANNOTATION and node.s1.startsWith("dyn$")) {
         semaEnsureDynStruct(module, node)
     }
     semaSynthesiseDynFrom(module, node.child1)
@@ -3091,7 +3110,7 @@ private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
     }
 
     // `strSubstring` takes a length, not an end. "dyn$" is four characters.
-    let traitName = strSubstring(name, 4, __builtin_string_len(name) - 4)
+    let traitName = name.substring(4, __builtin_string_len(name) - 4)
     let traitDecl = semaFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
         semaErrorAt(annotation, "`dyn ".concat(traitName, "` names no trait"))
@@ -3101,7 +3120,7 @@ private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
 
     let decl = createNode(NodeKind.STRUCT_DECL)
     nodeSpanFrom(decl, annotation)
-    decl.s1 = strClone(name)
+    decl.s1 = name.clone()
     decl.child1 = node_to_ptr(semaDynField("value"))
     ptr_to_node(decl.child1).next = node_to_ptr(semaDynField("methods"))
     monoAppendDeclaration(module, decl)
@@ -3109,9 +3128,9 @@ private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
 
 private fn semaDynField(name: String) -> ASTNode {
     let field = createNode(NodeKind.STRUCT_FIELD)
-    field.s1 = strClone(name)
+    field.s1 = name.clone()
     let annotation = createNode(NodeKind.TYPE_ANNOTATION)
-    annotation.s1 = strClone("Ptr")
+    annotation.s1 = "Ptr".clone()
     field.child1 = node_to_ptr(annotation)
     return field
 }
@@ -3194,11 +3213,11 @@ private fn semaBuildDynIfNeeded(module: ASTNode, argNode: ASTNode, paramT: TypeI
     let actual = nodeGetType(argNode)
     if (semaCoercesToDyn(module, paramT, actual) == false) { return }
 
-    let traitName = strSubstring(paramT.name, 4, __builtin_string_len(paramT.name) - 4)
+    let traitName = paramT.name.substring(4, __builtin_string_len(paramT.name) - 4)
     let value = monoCopyOne(node_to_ptr(argNode))
 
     argNode.kind = NodeKind.DYN_MAKE
-    argNode.s1 = strClone(paramT.name)
+    argNode.s1 = paramT.name.clone()
     argNode.s2 = "vtable$".concat(traitName, "$", typeDisplay(actual))
     argNode.i1 = 0
     argNode.i2 = 0
@@ -3216,9 +3235,9 @@ private fn semaIsDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Bo
     let receiverT = semaExpr(module, receiver)
     if (typeIsValid(receiverT) == false) { return false }
     if (receiverT.kind != TypeKind.STRUCT) { return false }
-    if (strStartsWith(receiverT.name, "dyn$") == false) { return false }
+    if (receiverT.name.startsWith("dyn$") == false) { return false }
 
-    let traitName = strSubstring(receiverT.name, 4, __builtin_string_len(receiverT.name) - 4)
+    let traitName = receiverT.name.substring(4, __builtin_string_len(receiverT.name) - 4)
     let traitDecl = semaFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return false }
     return semaTraitMethodIndex(traitDecl, name) >= 0
@@ -3242,7 +3261,7 @@ private fn semaTraitMethodIndex(traitDecl: ASTNode, name: String) -> Int {
 private fn semaDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> TypeInfo {
     let receiver = ptr_to_node(expr.child2)
     let receiverT = nodeGetType(receiver)
-    let traitName = strSubstring(receiverT.name, 4, __builtin_string_len(receiverT.name) - 4)
+    let traitName = receiverT.name.substring(4, __builtin_string_len(receiverT.name) - 4)
     let traitDecl = semaFindTrait(module, traitName)
     let index = semaTraitMethodIndex(traitDecl, name)
 
@@ -3271,7 +3290,7 @@ private fn semaDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Type
 
     receiver.next = ptr_null()
     expr.kind = NodeKind.DYN_CALL
-    expr.s1 = strClone(name)
+    expr.s1 = name.clone()
     expr.s2 = typeSemKey(retT)
     expr.i1 = index
     expr.child1 = node_to_ptr(receiver)
@@ -3479,8 +3498,8 @@ private fn semaRejectDyn(ptr: Ptr, position: String) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
-        if (node.kind == NodeKind.TYPE_ANNOTATION and strStartsWith(node.s1, "dyn$")) {
-            let traitName = strSubstring(node.s1, 4, __builtin_string_len(node.s1) - 4)
+        if (node.kind == NodeKind.TYPE_ANNOTATION and node.s1.startsWith("dyn$")) {
+            let traitName = node.s1.substring(4, __builtin_string_len(node.s1) - 4)
             semaErrorAt(node, "`dyn ".concat(traitName,
                                              "` cannot be ",
                                              position,
@@ -3590,12 +3609,12 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
     right.next = ptr_null()
 
     let callee = createNode(NodeKind.IDENTIFIER_EXPR)
-    callee.s1 = strClone(method)
+    callee.s1 = method.clone()
     nodeSpanFrom(callee, expr)
 
     let call = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(call, expr)
-    call.s1 = strClone(traitName)
+    call.s1 = traitName.clone()
     call.child1 = node_to_ptr(callee)
     call.child2 = node_to_ptr(left)
 
@@ -3608,10 +3627,10 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
         // rewriting `expr.s1`. Overwriting it frees the string `op` is still
         // reading, which surfaced as garbage in unrelated diagnostics.
         comparand.i1 = TokenType.BOOL_LITERAL
-        comparand.s1 = strClone("true")
+        comparand.s1 = "true".clone()
     } else {
         comparand.i1 = TokenType.NUMBER_LITERAL
-        comparand.s1 = strClone("0")
+        comparand.s1 = "0".clone()
     }
 
     expr.child1 = node_to_ptr(call)
@@ -4303,7 +4322,7 @@ private fn semaAnnotationText(annotationPtr: Ptr) -> String {
         return text.concat(">")
     }
     if (annotation.i3 == 1) { return annotation.s1.concat("?") }
-    return strClone(annotation.s1)
+    return annotation.s1.clone()
 }
 
 
@@ -4357,9 +4376,9 @@ private fn semaClosureName(expr: ASTNode) -> String {
     // enough. Two instantiations of one template hold two CLOSURE_EXPRs with
     // identical spans and possibly different capture types.
     closureSerial = closureSerial + 1
-    return semaClosurePrefix().concat(strFromInt(expr.line),
+    return semaClosurePrefix().concat(expr.line.toString(),
                                       monoSeparator(),
-                                      strFromInt(closureSerial))
+                                      closureSerial.toString())
 }
 
 private fn semaClosureNamesParam(paramsPtr: Ptr, name: String) -> Bool {
@@ -4397,7 +4416,7 @@ private fn semaCollectCaptures(node: ASTNode, paramsPtr: Ptr, captures: NodeList
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
         if (semaClosureIsCapture(node.s1, paramsPtr, captures)) {
             let field = createNode(NodeKind.STRUCT_FIELD)
-            field.s1 = strClone(node.s1)
+            field.s1 = node.s1.clone()
             nodeSpanFrom(field, node)
             nodeListPush(captures, field)
         }
@@ -4487,14 +4506,14 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     // The struct, whose fields are the captures at the types they have here.
     let structDecl = createNode(NodeKind.STRUCT_DECL)
-    structDecl.s1 = strClone(name)
+    structDecl.s1 = name.clone()
     nodeSpanFrom(structDecl, expr)
     let fields = nodeList()
     let mut capturePtr = captures.head
     while (nodeExists(capturePtr)) {
         let capture = ptr_to_node(capturePtr)
         let field = createNode(NodeKind.STRUCT_FIELD)
-        field.s1 = strClone(capture.s1)
+        field.s1 = capture.s1.clone()
         nodeSpanFrom(field, capture)
         field.child1 = node_to_ptr(monoAnnotationFromType(typeFromSemKey(ir_get_var_type(capture.s1))))
         nodeListPush(fields, field)
@@ -4518,7 +4537,7 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
     selfParam.s1 = "self"
     nodeSpanFrom(selfParam, expr)
     let selfAnnotation = createNode(NodeKind.TYPE_ANNOTATION)
-    selfAnnotation.s1 = strClone(name)
+    selfAnnotation.s1 = name.clone()
     nodeSpanFrom(selfAnnotation, expr)
     selfParam.child1 = node_to_ptr(selfAnnotation)
     nodeListPush(params, selfParam)
@@ -4563,10 +4582,10 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
     while (nodeExists(initPtr)) {
         let capture = ptr_to_node(initPtr)
         let initialiser = createNode(NodeKind.STRUCT_FIELD)
-        initialiser.s1 = strClone(capture.s1)
+        initialiser.s1 = capture.s1.clone()
         nodeSpanFrom(initialiser, capture)
         let value = createNode(NodeKind.IDENTIFIER_EXPR)
-        value.s1 = strClone(capture.s1)
+        value.s1 = capture.s1.clone()
         nodeSpanFrom(value, capture)
         initialiser.child1 = node_to_ptr(value)
         nodeListPush(initialisers, initialiser)
@@ -4574,7 +4593,7 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     expr.kind = NodeKind.STRUCT_LITERAL_EXPR
-    expr.s1 = strClone(name)
+    expr.s1 = name.clone()
     expr.i2 = 0
     expr.child1 = initialisers.head
     expr.child2 = ptr_null()
@@ -4588,6 +4607,7 @@ public fn analyzeModule(module: ASTNode) {
     ir_reset_globals()
     ir_reset_fn_return_types()
     semaCheckArrayLengthPositions(module)
+    semaRefuseRuntimeCalls(module)
 
     // All three must run before anything is checked. The first lets a type
     // annotation be resolved without walking the module; the second mangles each
