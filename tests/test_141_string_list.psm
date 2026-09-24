@@ -96,7 +96,7 @@ fn main() -> Int {
     if (mapGetOr(counts, "short", 0) != 10) { return fail("a counted key") }
 
     // A slice reads and writes the list's own pairs.
-    let middle = words[2..<6]
+    let mut middle = words[2..<6]
     if (middle[0].equals("w2") == false) { return fail("a slice read") }
     middle[1] = "replaced through a slice, long enough to own"
     middle[2] = "tiny"

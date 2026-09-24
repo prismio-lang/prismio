@@ -1087,6 +1087,11 @@ typedef struct {
     // mutating Vec method -- but the binding is never rebound, because `inout`
     // is a borrow and not a reference to the caller's slot.
     int is_inout;
+    // A Slice binding that views something this scope may not change: a slice
+    // of a non-`mut` Vec, of another such view, or one returned by a function
+    // with no `inout` parameter. A store through it is refused even when the
+    // binding itself is `mut`, which only lets the view be rebound.
+    int is_readonly_view;
     // A boxed list may release an overwritten element only while the compiler
     // still has exclusive knowledge of the handle. This positive fact starts
     // on a local list_new binding and is cleared permanently when an element is
@@ -1360,6 +1365,7 @@ static void add_binding(const char* name, const char* type, int is_global) {
     b->is_global = is_global;
     b->is_mutable = 0;
     b->is_inout = 0;
+    b->is_readonly_view = 0;
     b->is_list_exclusive = 0;
     b->is_droppable = 0;
     b->drop_kind = 0;
@@ -1448,6 +1454,16 @@ void ir_mark_inout(const char* name) {
 int ir_var_is_inout(const char* name) {
     int i = find_binding(name);
     return i >= 0 ? var_bindings[i].is_inout : 0;
+}
+
+void ir_mark_readonly_view(const char* name) {
+    int i = find_binding(name);
+    if (i >= 0) var_bindings[i].is_readonly_view = 1;
+}
+
+int ir_var_is_readonly_view(const char* name) {
+    int i = find_binding(name);
+    return i >= 0 ? var_bindings[i].is_readonly_view : 0;
 }
 
 void ir_mark_list_exclusive(const char* name) {

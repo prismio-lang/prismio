@@ -399,6 +399,22 @@ public fn typeSlice(elem: TypeInfo) -> TypeInfo {
     return t
 }
 
+// A Slice that views something its holder may not change. Kept in `length`,
+// which only an array reads, so the mark reaches no key, no equality test and
+// no IR: `Slice<Int>` read-only and changeable are one type that differs only
+// in what a store through it is allowed to do. It lives on an expression's type;
+// a binding keeps its own flag (ir_mark_readonly_view), because a binding's type
+// travels as a semantic key that has no room for it.
+public fn typeSliceReadOnly(elem: TypeInfo) -> TypeInfo {
+    let mut t = typeSlice(elem)
+    t.length = 1
+    return t
+}
+
+public fn typeSliceIsReadOnly(t: TypeInfo) -> Bool {
+    return t.kind == TypeKind.SLICE and t.length == 1
+}
+
 public fn typeDataView(elem: TypeInfo) -> TypeInfo {
     let mut t = typeMake(TypeKind.DATAVIEW, "DataView", "ptr")
     t.child = type_to_ptr(elem)

@@ -1,0 +1,12 @@
+// expect-error: cannot change what `s` views: the view is read-only
+import {vec} from std
+
+// No `inout` parameter, so the view it returns can only be read.
+fn firstTwo(v: Vec<Int>) -> Slice<Int> { return v[0..<2] }
+
+fn main() -> Int {
+    let mut v: Vec<Int> = [1, 2, 3]
+    let mut s = firstTwo(v)
+    s[0] = 9
+    return 0
+}

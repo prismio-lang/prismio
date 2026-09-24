@@ -1,0 +1,10 @@
+// expect-error: a read-only view cannot replace `s`, which views something changeable
+import {vec} from std
+
+fn main() -> Int {
+    let frozen: Vec<Int> = [1, 2, 3]
+    let mut open: Vec<Int> = [4, 5]
+    let mut s = open[0..<1]
+    s = frozen[0..<1]
+    return 0
+}

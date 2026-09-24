@@ -763,15 +763,13 @@ names the file it looked for.
 
 ## Language surface
 
-**`mut` does not reach through a Slice or a struct.** Since 2026-09-24 a Vec's
-or an array's contents change only through a `let mut` binding or an `inout`
-parameter (`semaCheckMutablePlace`). Two paths still write without one. A Slice
-is a view with its own store: `let s = v[0..<2]; s[0] = 9` changes a `v` that
-is not `mut`, because the slice's binding says nothing about its base's -- the
-fix is a mutability bit on the Slice type, set from the base when it is made.
-And a struct field is assignable through any binding, so `bag.items.push(x)`
-needs no `mut` on `bag`; that is the struct-by-reference rule `variables.md`
-states, and tightening it is a language decision, not a bug fix.
+**`mut` does not reach through a struct.** Since 2026-09-24 a Vec's, an
+array's or a Slice's contents change only through a `let mut` binding or an
+`inout` parameter (`semaCheckMutablePlace`), and a Slice only when it views
+something changeable. A struct field is assignable through any binding, so
+`bag.items.push(x)` needs no `mut` on `bag`, and a Slice held in a field is
+written without the read-only check; that is the struct-by-reference rule
+`variables.md` states, and tightening it is a language decision, not a bug fix.
 
 **`default` has no user-defined form.** It is built in for the types
 `src/sema/defaults.psm` knows, plus every struct whose fields have one. A type

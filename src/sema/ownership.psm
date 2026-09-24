@@ -92,19 +92,15 @@ internal fn semaIsElementRead(node: ASTNode) -> Bool {
     return callee.kind == NodeKind.IDENTIFIER_EXPR and callee.s1.equals("list_get")
 }
 
-// Whether the contents of `place` may change here: the Vec a mutating method or
-// an element store is applied to, an array being stored into, or an argument to
-// an `inout` parameter. Reports when they may not.
-//
-// The binding at the root decides -- a `let mut`, or an `inout` parameter -- and
-// indexing is followed to it, since `grid[i].push(x)` changes `grid`. A field is
-// not: assigning through a struct is permitted whatever its binding, and the Vec
-// a struct holds is part of that struct. Anything without a root binding is a
-// temporary, which nothing else can observe changing.
-internal fn semaCheckMutablePlace(place: ASTNode) -> Bool {
+// The binding a place's contents belong to: indexing, a Vec element read and a
+// slice are followed to what they index, since `grid[i].push(x)` changes
+// `grid` and `v[0..<2][0] = x` changes `v`. A field is not followed -- the Vec
+// a struct holds is part of that struct, assignable through any binding.
+private fn semaPlaceRoot(place: ASTNode) -> ASTNode {
     let mut root = place
     loop {
-        if (root.kind == NodeKind.INDEX_EXPR and nodeExists(root.child1)) {
+        if ((root.kind == NodeKind.INDEX_EXPR or root.kind == NodeKind.SLICE_EXPR)
+                and nodeExists(root.child1)) {
             root = ptr_to_node(root.child1)
         } else if (semaIsElementRead(root)) {
             root = ptr_to_node(root.child2)
@@ -112,12 +108,80 @@ internal fn semaCheckMutablePlace(place: ASTNode) -> Bool {
             break
         }
     }
+    return root
+}
+
+// Whether a store through `place` is allowed, without reporting. Anything
+// without a root binding is a temporary, which nothing else can observe
+// changing.
+private fn semaPlaceIsChangeable(place: ASTNode) -> Bool {
+    if (semaSliceIsReadOnly(place)) { return false }
+    let root = semaPlaceRoot(place)
     if (root.kind != NodeKind.IDENTIFIER_EXPR or ir_has_var_type(root.s1) == 0) { return true }
+    if (ir_var_is_readonly_view(root.s1) == 1) { return false }
     if (ir_var_is_mutable(root.s1) == 1 or ir_var_is_inout(root.s1) == 1) { return true }
     if (ir_var_is_global(root.s1) == 1 and semaIsExternGlobal(root.s1)) { return true }
+    return false
+}
+
+// Whether the contents of `place` may change here: the Vec a mutating method or
+// an element store is applied to, an array or a slice being stored into, or an
+// argument to an `inout` parameter. Reports when they may not.
+//
+// The binding at the root decides -- a `let mut`, or an `inout` parameter
+// (semaPlaceRoot says which binding that is). A Slice binding also has to view
+// something changeable: `mut` on the view only lets it be rebound
+// (semaMarkSliceBinding).
+internal fn semaCheckMutablePlace(place: ASTNode) -> Bool {
+    if (semaPlaceIsChangeable(place)) { return true }
+    let root = semaPlaceRoot(place)
+    let rootIsName = root.kind == NodeKind.IDENTIFIER_EXPR
+    if (semaSliceIsReadOnly(place) or (rootIsName and ir_var_is_readonly_view(root.s1) == 1)) {
+        if (rootIsName) {
+            semaErrorAt(root, "cannot change what ".concat(diagQuote(root.s1), " views: the view is read-only"))
+        } else {
+            semaErrorAt(place, "cannot change what this slice views: the view is read-only")
+        }
+        diag_note("a slice of a Vec that is not `mut`, and a Slice returned by a function with no `inout` parameter, can only be read; slice a `let mut` Vec or an `inout` parameter")
+        return false
+    }
     semaErrorAt(root, "cannot change ".concat(diagQuote(root.s1), ", which is not declared `mut`"))
     diag_note("declare it `let mut`, or `inout` if it is a parameter")
     return false
+}
+
+// A Slice expression that views something its holder may not change. Read
+// from the binding for a name; otherwise from the Slice type's read-only mark,
+// which semaSliceExpr sets from its base and semaCallExpr sets on a Slice
+// returned by a function that has no `inout` parameter -- it can only have
+// viewed what it was allowed to read.
+internal fn semaSliceIsReadOnly(value: ASTNode) -> Bool {
+    if (value.kind == NodeKind.IDENTIFIER_EXPR) {
+        return ir_has_var_type(value.s1) == 1 and ir_var_is_readonly_view(value.s1) == 1
+    }
+    let t = nodeGetType(value)
+    return typeIsValid(t) and t.kind == TypeKind.SLICE and typeSliceIsReadOnly(t)
+}
+
+// The read-only mark for a slice taken from `base`, as semaSliceExpr needs it.
+internal fn semaSliceOfIsReadOnly(base: ASTNode) -> Bool {
+    if (semaSliceIsReadOnly(base)) { return true }
+    return semaPlaceIsChangeable(base) == false
+}
+
+// `let s = v[0..<2]` or `s = w[0..<2]`: a Slice binding takes on the value's
+// read-only mark. Rebinding a changeable view to a read-only one is refused,
+// since a store written earlier in a loop body would otherwise run through it
+// on the next iteration; a view that starts read-only stays so.
+internal fn semaMarkSliceBinding(name: String, value: ASTNode, isDeclaration: Bool) {
+    if (semaSliceIsReadOnly(value) == false) { return }
+    if (isDeclaration == false and ir_var_is_readonly_view(name) == 0) {
+        semaErrorAt(value, "a read-only view cannot replace ".concat(diagQuote(name),
+            ", which views something changeable"))
+        diag_note("bind it to a new name, or slice a `let mut` Vec")
+        return
+    }
+    ir_mark_readonly_view(name)
 }
 
 // Type-check a value against an expected type, allowing a bare integer literal to

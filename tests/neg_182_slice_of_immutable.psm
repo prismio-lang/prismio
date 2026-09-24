@@ -1,0 +1,9 @@
+// expect-error: cannot change what `s` views: the view is read-only
+import {vec} from std
+
+fn main() -> Int {
+    let v: Vec<Int> = [1, 2, 3]
+    let mut s = v[0..<2]
+    s[0] = 9
+    return 0
+}

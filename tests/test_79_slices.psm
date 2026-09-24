@@ -71,7 +71,7 @@ fn main() -> Int {
 
     // Overlapping mutable views are legal. Both writes resolve the current List
     // block, and the second sees the first's update through the overlap.
-    let left = points[1..<4]
+    let mut left = points[1..<4]
     let right = points[2..<5]
     left[1] = Point { x: 20, y: 2 }
     if (right[0].x != 20 or points[2].y != 2) {
@@ -82,7 +82,7 @@ fn main() -> Int {
     nums.push(7)
     nums.push(8)
     nums.push(9)
-    let numView = nums[1..<3]
+    let mut numView = nums[1..<3]
     numView[0] = 80
     if (numView[0] != 80 or nums[1] != 80) {
         return fail("scalar slice read/write")
@@ -92,7 +92,7 @@ fn main() -> Int {
     words.push("zero")
     words.push("one")
     words.push("two")
-    let wordView = words[1..<3]
+    let mut wordView = words[1..<3]
     if (wordView[1].equals("two") == false) {
         return fail("String slice read")
     }

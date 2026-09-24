@@ -1,0 +1,51 @@
+// A store through a Slice changes the Vec it views, so it needs what a store
+// into that Vec needs: a changeable binding for the view (`let mut` or
+// `inout`), and a view of something changeable. neg_182..184 are the three
+// ways to get a read-only one: a slice of a non-`mut` Vec, a Slice returned by
+// a function with no `inout` parameter, and rebinding a changeable view to one.
+import {io, vec} from std
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// Given something to change, so the view it returns may be stored through.
+fn head(inout v: Vec<Int>) -> Slice<Int> { return v[0..<2] }
+
+fn poke(inout s: Slice<Int>, value: Int) { s[0] = value }
+
+// A read-only view is still a view: reading through it needs nothing.
+fn total(s: Slice<Int>) -> Int {
+    let mut sum = 0
+    for x in s { sum = sum + x }
+    return sum
+}
+
+fn main() -> Int {
+    let mut v: Vec<Int> = [1, 2, 3]
+    let mut s = v[0..<2]
+    s[0] = 9
+    if (v[0] != 9) { return fail("a store through a `let mut` view of a `let mut` Vec") }
+
+    let mut h = head(v)
+    h[1] = 8
+    if (v[1] != 8) { return fail("a view returned by a function with an `inout` parameter") }
+
+    poke(s, 7)
+    poke(v[1..<3], 6)
+    if (v[0] != 7 or v[1] != 6) { return fail("an `inout` Slice argument") }
+
+    let mut t = s[0..<1]
+    t[0] = 5
+    if (v[0] != 5) { return fail("a view of a view") }
+
+    let frozen: Vec<Int> = [10, 20, 30]
+    let mut r = frozen[0..<1]
+    r = frozen[1..<3]
+    if (total(r) != 50) { return fail("rebinding a read-only view to another") }
+
+    println("test_174 ok")
+    return 0
+}

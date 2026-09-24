@@ -715,6 +715,7 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaErrorAt(slice, "slice_set expects a Slice, found ".concat(typeDisplay(st)))
             return true
         }
+        semaCheckMutablePlace(slice)
         let index = ptr_to_node(slice.next)
         semaCheckValue(module, index, typeInt(), "slice_set index")
         let value = ptr_to_node(index.next)

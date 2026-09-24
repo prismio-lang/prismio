@@ -17,6 +17,15 @@
   any binding. `sort`, `sortBy`, `reverse`, `extend`, `pop`, `removeAt` and
   `mapInto`'s destination take their Vec `inout`. `inout` stays sema-only: no IR
   moved for any program that compiles.
+- **A store through a Slice follows the `mut` rule.** Breaking: `s[i] = x`
+  needs `let mut s` or an `inout` Slice, and a view of something changeable.
+  A slice of a non-`mut` Vec, of an ordinary parameter or of another read-only
+  view is read-only, and so is a Slice returned by a function with no `inout`
+  parameter; `mut` on such a binding only lets it be rebound. It was a
+  documented gap: `let s = v[0..<2]; s[0] = 9` changed a `v` that was not
+  `mut`. The mark is `is_readonly_view` on a binding and a bit in the Slice
+  type's unused `length` on an expression, so no key and no IR moved.
+  test_174, neg_182..184.
 - **The old free-function API is gone from programs.** Breaking:
   - the runtime entry points under Vec, Slice and DataView -- `list_new`,
     `list_push`, `list_get`, `list_len`, `list_set`, `list_swap`, `list_insert`,

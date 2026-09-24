@@ -1418,8 +1418,23 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     } else {
         expr.s2 = fnNode.s2.clone()
     }
+    if (retT.kind == TypeKind.SLICE and semaHasInoutParam(fnNode) == false and nodeExists(retT.child)) {
+        retT = typeSliceReadOnly(ptr_to_type(retT.child))
+    }
     nodeSetType(expr, retT)
     return retT
+}
+
+// Whether a function may hand back a view it can store through: only one that
+// was given something to change.
+private fn semaHasInoutParam(fnNode: ASTNode) -> Bool {
+    let mut p = fnNode.child1
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        if (param.s2.equals("inout")) { return true }
+        p = param.next
+    }
+    return false
 }
 
     // REQUIREMENTS 15, and every restriction below is SPEC 11 item 10 made
@@ -1756,7 +1771,10 @@ private fn semaSliceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             ir_unmark_list_exclusive(base.s1)
         }
     }
-    let sliceT = typeSlice(ptr_to_type(baseT.child))
+    let mut sliceT = typeSlice(ptr_to_type(baseT.child))
+    if (semaSliceOfIsReadOnly(ptr_to_node(expr.child1))) {
+        sliceT = typeSliceReadOnly(ptr_to_type(baseT.child))
+    }
     nodeSetType(expr, sliceT)
     return sliceT
 }
@@ -2230,6 +2248,9 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     if (stmt.i1 == 1) {
         ir_mark_mutable(stmt.s1)
     }
+    if (varT.kind == TypeKind.SLICE and hasInit) {
+        semaMarkSliceBinding(stmt.s1, ptr_to_node(stmt.child2), true)
+    }
     nodeSetType(stmt, varT)
 }
 
@@ -2355,6 +2376,9 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     }
     semaMoveOperand(value)
     ir_set_reinit_target("")
+    if (target.kind == NodeKind.IDENTIFIER_EXPR and targetT.kind == TypeKind.SLICE) {
+        semaMarkSliceBinding(target.s1, value, false)
+    }
 
     if (target.kind == NodeKind.IDENTIFIER_EXPR and targetT.kind == TypeKind.LIST) {
         let replacement = ptr_to_node(stmt.child2)
