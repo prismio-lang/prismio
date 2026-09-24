@@ -61,6 +61,13 @@
   `NO_COLOR`, `TERM=dumb`, `FORCE_COLOR` and `CLICOLOR_FORCE` are honoured. On
   Windows the console is switched into escape processing rather than left
   plain.
+- **`prismio aif` is styled too.** Headings in bold, labels dimmed, and each
+  storage decision coloured by what it costs at run time -- stack green, arena
+  cyan, scoped heap blue, unique heap yellow, and counted or traced storage
+  magenta -- in the report's table, in `--why=<ID>`, and in the storage plan, which
+  gains a bar per storage class. Piped, the report is the text it was: the
+  report, `--why`, `--layout`, `--summary` and `--manifest` outputs of 188
+  programs are byte-identical.
 - **Colour in the terminal: `\e`, `\xHH`, `\u{...}` and `std.term`.** There was
   no way to write ESC in a literal, so no program could print in colour. A string
   now takes `\e` (ESC), `\xHH` (one byte) and `\u{1F600}` (a Unicode scalar,
@@ -281,6 +288,12 @@
 
 ### Fixed
 
+- **Every `-g` build warned "Linking two modules of different target
+  triples"**, once per library module. The debug-info path stamped the user
+  module with the kernel's spelling of the host (`arm64-apple-darwin27.0.0`),
+  while the runtime bitcode and every `.plib` carry the one objects are compiled
+  for (`arm64-apple-macosx27.0`). It stamps the latter now; a `-g` build is
+  silent.
 - **A `dyn` naming no trait, or a trait that cannot be an object, was reported
   once per declaration before it** -- twice in a two-function file. Once now.
 - **A function returning a String could not end in an `if`/`else` whose every

@@ -946,8 +946,22 @@ reproducibly, over two alternating 15-run A/Bs. Its function is byte-identical a
 64 bytes lower in the binary, so the same offset within a cache line: what moved is
 its placement relative to everything else, which is what the branch predictor and
 the instruction TLB see. `fft` and `knapsack` showed the same effect on 2026-09-04.
-Until the hot loops are aligned deliberately, check mnemonics with
-`fn_mnemonic_diff.py` before believing any single-workload regression.
+Check mnemonics with `fn_mnemonic_diff.py` before believing any single-workload
+regression.
+
+Aligning code wholesale does not buy it back; it moves the lottery. Over the full
+suite, against default codegen: `-align-all-functions=5` (32-byte functions)
+reads a geometric mean of 1.065x, and `=6` (64-byte) 1.024x. At 64 bytes
+`bytecode_interpreter` improves to 0.85x while `edit_distance` regresses to
+1.24x. Branch-target alignment (`-align-all-nofallthru-blocks`) and loop
+alignment (`-align-loops`) trade the same way: every setting that fixed one
+workload broke another. **Codegen stays at LLVM's defaults** until an
+alignment can be aimed at a loop that is known to be hot, rather than applied to
+every function. `PRISMIO_LLVM_ARGS` exists for that experiment: it appends LLVM's
+own options to the compiler's codegen, as rustc's `-C llvm-args` does --
+`PRISMIO_LLVM_ARGS="-align-loops=64" prismio build ...`. It is a measurement
+switch, not a supported mode, and an option LLVM does not recognise ends the
+process.
 
 **lz4's input fill is ~30% slower than an instruction-identical C loop, and the
 reason is not in the loop.** One shot per process, a standalone copy spends 312 us
