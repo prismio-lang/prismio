@@ -1088,11 +1088,25 @@ def run_ums_test():
 
             expected_entries = {"runtime"} | {f"std.{name}" for name in std_sources}
 
+            # Every stdlib key hashes the compiler binary, so a stdlib miss here
+            # usually means the host relinked to different bytes. Which bytes is
+            # what the fix depends on (a PE timestamp, a debug-info path, a
+            # temporary's name), so a failure says where they differ.
+            host_before = compiler_artifact.read_bytes()
             cached_run, reused, rebuilt = toolchain_trace(cache_env)
             if cached_run.returncode != 0 or reused != expected_entries or rebuilt:
                 print(f"{RED}[FAIL] ums: an unchanged rebuild did not reuse the "
                       f"local toolchain{RESET}")
                 print(f"reused {sorted(reused)}\nrebuilt {sorted(rebuilt)}")
+                host_after = compiler_artifact.read_bytes()
+                offsets = [i for i, (a, b) in enumerate(zip(host_before, host_after))
+                           if a != b]
+                print(f"host {len(host_before)} -> {len(host_after)} bytes, "
+                      f"{len(offsets)} differ in the common length")
+                for offset in offsets[:8]:
+                    start = max(0, offset - 16)
+                    print(f"  @{offset:#x}: {host_before[start:offset + 16]!r}")
+                    print(f"  {' ' * len(f'@{offset:#x}')}  {host_after[start:offset + 16]!r}")
                 return False
 
             # PRISMIO_TOOLCHAIN_CACHE=0 must not consult the stamp -- and must
