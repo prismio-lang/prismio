@@ -36,7 +36,6 @@ fn mapAdd(sink t: Tree, k: Int) -> Tree {
         Tree.Leaf => { return Tree.Leaf }
         Tree.Node(l, v, r) => { return Tree.Node(mapAdd(l, k), v + k, mapAdd(r, k)) }
     }
-    return Tree.Leaf
 }
 
 fn sum(t: Tree) -> Int {
@@ -44,7 +43,6 @@ fn sum(t: Tree) -> Int {
         Tree.Leaf => { return 0 }
         Tree.Node(l, v, r) => { return sum(l) + v + sum(r) }
     }
-    return 0
 }
 
 // The same workload written the way the language accepted before M2.1c, so the

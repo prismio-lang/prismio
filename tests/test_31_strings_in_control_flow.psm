@@ -21,7 +21,6 @@ fn label_for(n: Int) -> String {
         1 => { return "one" }
         _ => { return "many" }
     }
-    return "unreachable"
 }
 
 fn main() -> Int {

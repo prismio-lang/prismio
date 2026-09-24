@@ -25,7 +25,6 @@ public fn benchMemoryTreeSum(tree: BenchTree) -> Int {
             return (value + benchMemoryTreeSum(left) + benchMemoryTreeSum(right)) % 1000000007
         }
     }
-    return 0
 }
 
 public fn benchTransientAllocation(scale: Int) -> Int {
@@ -160,7 +159,6 @@ public fn benchTreeAdd(sink tree: BenchTree, amount: Int) -> BenchTree {
                                   benchTreeAdd(right, amount))
         }
     }
-    return BenchTree.Empty
 }
 
 public fn benchTreePasses(sink tree: BenchTree, passes: Int) -> BenchTree {

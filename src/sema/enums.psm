@@ -488,7 +488,7 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
     ir_scope_pop()
 }
 
-private fn semaMatchHasWildcard(stmt: ASTNode) -> Bool {
+internal fn semaMatchHasWildcard(stmt: ASTNode) -> Bool {
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         if (ptr_to_node(armPtr).s1.equals("_")) { return true }
@@ -526,7 +526,10 @@ private fn semaMatchCoversTag(stmt: ASTNode, tag: Int) -> Bool {
 // legitimately match on a subset. Extending it there is a separate decision with
 // a real chance of rejecting existing code; see HANDOFF.
 private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
-    if (semaMatchHasWildcard(stmt)) { return }
+    if (semaMatchHasWildcard(stmt)) {
+        stmt.i3 = 1
+        return
+    }
 
     let mut missing = ""
     let mut p = shadow.child1
@@ -544,7 +547,9 @@ private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
         p = variant.next
     }
 
-    if (missing.equals("") == false) {
+    if (missing.equals("")) {
+        stmt.i3 = 1
+    } else {
         semaErrorAt(stmt, "this match does not cover ".concat(missing,
                                                               " of ",
                                                               diagQuote(shadow.s1),

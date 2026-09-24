@@ -24,7 +24,6 @@ fn empty(t: OptionalTree) -> Bool {
         OptionalTree.Empty => { return true }
         OptionalTree.Node(child, n) => { return false }
     }
-    return false
 }
 
 fn genericEmpty(t: Generic<Vec<Int>>) -> Bool {
@@ -32,7 +31,6 @@ fn genericEmpty(t: Generic<Vec<Int>>) -> Bool {
         Generic.None => { return true }
         Generic.Some(xs) => { return false }
     }
-    return false
 }
 
 fn main() -> Int {

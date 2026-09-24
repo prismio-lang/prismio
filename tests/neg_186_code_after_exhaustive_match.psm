@@ -1,0 +1,12 @@
+// expect-error: unreachable code: control cannot continue past the previous statement
+import std.option
+
+fn orZero(o: Option<Int>) -> Int {
+    match (o) {
+        Option.Some(x) => { return x }
+        Option.None => { return 0 }
+    }
+    return -1
+}
+
+fn main() -> Int { return orZero(Option<Int>.None) }

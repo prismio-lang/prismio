@@ -580,7 +580,6 @@ public fn benchSwitchCase(operation: Int, value: Int) -> Int {
         255 => { return (value + 472) % 1009 }
         _ => { return 0 }
     }
-    return 0
 }
 
 public fn benchSwitchDispatch(scale: Int) -> Int {

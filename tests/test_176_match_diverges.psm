@@ -1,0 +1,46 @@
+// A `match` whose arms all return ends a function, as an `if` with an `else`
+// does -- when every value reaches an arm: a payload enum with each variant
+// covered, or any match with a `_` arm. neg_186 is the dead statement that used
+// to be required after one.
+import std.io
+import std.option
+import std.vec
+
+fn orZero(o: Option<Int>) -> Int {
+    match (o) {
+        Option.Some(x) => { return x }
+        Option.None => { return 0 }
+    }
+}
+
+fn code(c: Int) -> Int {
+    match (c) {
+        1 => { return 10 }
+        _ => { return 20 }
+    }
+}
+
+fn firstPositive(values: Vec<Int>) -> Int {
+    for v in values {
+        match (v) {
+            0 => { continue }
+            _ => { return v }
+        }
+    }
+    return -1
+}
+
+fn main() -> Int {
+    let total = orZero(Option.Some(5)) + orZero(Option<Int>.None) + code(1) + code(7)
+    if (total != 35) {
+        println("FAIL: match as a function's last statement")
+        return 1
+    }
+    let values: Vec<Int> = [0, 0, 4]
+    if (firstPositive(values) != 4) {
+        println("FAIL: a diverging match inside a loop")
+        return 1
+    }
+    println("test_176 ok")
+    return 0
+}

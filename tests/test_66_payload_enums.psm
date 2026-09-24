@@ -27,7 +27,6 @@ fn area(s: Shape) -> Int {
         Shape.Circle(r) => { return 3 * r * r }
         Shape.Rect(w, h) => { return w * h }
     }
-    return -1
 }
 
 fn describe(s: Shape) -> String {
@@ -35,7 +34,6 @@ fn describe(s: Shape) -> String {
         Shape.Circle(r) => { return "circle" }
         _ => { return "other" }
     }
-    return "unreachable"
 }
 
 fn fail(message: String) -> Int {

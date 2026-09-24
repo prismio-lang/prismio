@@ -26,6 +26,14 @@
   `mut`. The mark is `is_readonly_view` on a binding and a bit in the Slice
   type's unused `length` on an expression, so no key and no IR moved.
   test_174, neg_182..184.
+- **A `match` whose arms all return ends a function.** Breaking: when every
+  value reaches an arm -- a payload enum with each variant covered, or any match
+  with a `_` arm -- and every arm diverges, the match diverges, as an `if` with
+  an `else` does. The fallback `return` the old analysis required after one is
+  now "unreachable code". Removed from std/option.psm (6), 14 tests, three
+  benchmarks, the sandbox and the docs. The mark is `i3` on the
+  MATCH_STATEMENT; codegen already ended such a function with `unreachable`.
+  test_176, neg_186.
 - **The old free-function API is gone from programs.** Breaking:
   - the runtime entry points under Vec, Slice and DataView -- `list_new`,
     `list_push`, `list_get`, `list_len`, `list_set`, `list_swap`, `list_insert`,

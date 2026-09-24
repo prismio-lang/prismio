@@ -14,7 +14,6 @@ fn sum(t: Tree) -> Int {
         Tree.Empty => { return 0 }
         Tree.Node(l, v, r) => { return sum(l) + v + sum(r) }
     }
-    return -1
 }
 
 fn add(sink t: Tree, k: Int) -> Tree {
@@ -22,7 +21,6 @@ fn add(sink t: Tree, k: Int) -> Tree {
         Tree.Empty => { return Tree.Empty }
         Tree.Node(l, v, r) => { return Tree.Node(add(l, k), v + k, add(r, k)) }
     }
-    return Tree.Empty
 }
 
 fn reversedLength(t: Reversed) -> Int {
@@ -30,7 +28,6 @@ fn reversedLength(t: Reversed) -> Int {
         Reversed.Value(s, tail) => { return s.length() + reversedLength(tail) }
         Reversed.Empty => { return 0 }
     }
-    return -1
 }
 
 fn number(t: Maybe<Int>) -> Int {
@@ -38,7 +35,6 @@ fn number(t: Maybe<Int>) -> Int {
         Maybe.None => { return 0 }
         Maybe.Some(n) => { return n }
     }
-    return -1
 }
 
 fn nested(t: Maybe<Maybe<String>>) -> Int {
@@ -51,7 +47,6 @@ fn nested(t: Maybe<Maybe<String>>) -> Int {
             }
         }
     }
-    return -1
 }
 
 fn three(t: Three) -> Int {
@@ -60,7 +55,6 @@ fn three(t: Three) -> Int {
         Three.Text(s) => { return s.length() }
         Three.Last => { return 3 }
     }
-    return -1
 }
 
 fn wildcard(t: Tree) -> Int {
@@ -68,7 +62,6 @@ fn wildcard(t: Tree) -> Int {
         Tree.Empty => { return 1 }
         _ => { return 2 }
     }
-    return -1
 }
 
 fn makeTree(depth: Int) -> Tree {

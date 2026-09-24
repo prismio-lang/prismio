@@ -28,7 +28,6 @@ fn classify(x: Int) -> Int {
         2147483647 => { return 4 }
         _ => { return 0 }
     }
-    return -1
 }
 
 fn wide(v: I64) -> Int {
@@ -37,7 +36,6 @@ fn wide(v: I64) -> Int {
         -1 => { return 2 }
         _ => { return 0 }
     }
-    return -1
 }
 
 fn byte(b: U8) -> Int {
@@ -46,7 +44,6 @@ fn byte(b: U8) -> Int {
         255 => { return 2 }
         _ => { return 0 }
     }
-    return -1
 }
 
 fn turn(d: Dir) -> Dir {
@@ -90,7 +87,6 @@ fn nested(a: Int, b: Int) -> Int {
         2 => { return 20 }
         _ => { return 0 }
     }
-    return -1
 }
 
 fn byName(x: Int, k: Int) -> Int {
@@ -99,7 +95,6 @@ fn byName(x: Int, k: Int) -> Int {
         3 => { return 2 }
         _ => { return 0 }
     }
-    return -1
 }
 
 fn main() -> Int {

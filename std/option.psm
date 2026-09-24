@@ -28,7 +28,6 @@ public fn optionIsSome<T>(o: Option<T>) -> Bool {
         Option.Some(v) => { return true }
         Option.None => { return false }
     }
-    return false
 }
 
 public fn optionIsNone<T>(o: Option<T>) -> Bool {
@@ -36,7 +35,6 @@ public fn optionIsNone<T>(o: Option<T>) -> Bool {
         Option.Some(v) => { return false }
         Option.None => { return true }
     }
-    return true
 }
 
 // The value, or the caller's default. The only way to read an `Option` here:
@@ -47,7 +45,6 @@ public fn optionOr<T>(o: Option<T>, fallback: T) -> T {
         Option.Some(v) => { return v }
         Option.None => { return fallback }
     }
-    return fallback
 }
 
 enum Result<T, E> {
@@ -60,7 +57,6 @@ public fn resultIsOk<T, E>(r: Result<T, E>) -> Bool {
         Result.Ok(v) => { return true }
         Result.Err(e) => { return false }
     }
-    return false
 }
 
 public fn resultIsErr<T, E>(r: Result<T, E>) -> Bool {
@@ -76,7 +72,6 @@ public fn resultOr<T, E>(r: Result<T, E>, fallback: T) -> T {
         Result.Ok(v) => { return v }
         Result.Err(e) => { return fallback }
     }
-    return fallback
 }
 
 public fn resultErrOr<T, E>(r: Result<T, E>, fallback: E) -> E {
@@ -84,5 +79,4 @@ public fn resultErrOr<T, E>(r: Result<T, E>, fallback: E) -> E {
         Result.Ok(v) => { return fallback }
         Result.Err(e) => { return e }
     }
-    return fallback
 }

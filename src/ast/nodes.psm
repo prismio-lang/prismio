@@ -211,7 +211,10 @@ struct ASTNode {
     // On a FUNCTION_PARAMETER it means something unrelated -- v0.1 3.2's "this
     // was written as a bare `self` in an `impl` block" -- and the two cannot
     // collide because no node is both kinds. On a FUNCTION it is codegen's
-    // "needs a task thunk" (ir/module.psm), for the same reason.
+    // "needs a task thunk" (ir/module.psm), for the same reason. On a
+    // MATCH_STATEMENT it is sema's "every value reaches an arm" -- a payload
+    // enum's variants all covered, or a `_` arm -- which flow.psm reads to let a
+    // match whose arms all return end a function.
     i3: Int,
     child1: Ptr, // ASTNode
     child2: Ptr, // ASTNode

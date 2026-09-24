@@ -74,7 +74,6 @@ fn corners(s: Shape) -> Int {
         Shape.Cells(g) => { return g.cells[0] + g.cells[3] }
         Shape.Empty => { return 0 }
     }
-    return 0
 }
 
 fn total(xs: [Int], n: Int) -> Int {

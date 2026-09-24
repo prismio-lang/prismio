@@ -2573,6 +2573,9 @@ private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Ty
     if (scrutT.kind != TypeKind.INT and scrutT.kind != TypeKind.ENUM) {
         semaErrorAt(ptr_to_node(stmt.child1), "match scrutinee must be an integer or enum value, found ".concat(typeDisplay(scrutT)))
     }
+    // Only a `_` arm makes an integer match exhaustive: the scrutinee is not
+    // confined to the values the arms name (see semaCheckExhaustive).
+    if (semaMatchHasWildcard(stmt)) { stmt.i3 = 1 }
     let mut patExpected = typeCopy(scrutT)
     if (scrutT.kind == TypeKind.ENUM) { patExpected = typeInt() }
     let mut armPtr = stmt.child2

@@ -16,7 +16,6 @@ fn total(t: OwnedTree) -> Int {
         OwnedTree.Empty => { return 0 }
         OwnedTree.Node(left, value, right) => { return total(left) + value + total(right) }
     }
-    return -1
 }
 
 fn isEmpty(t: SharedEmpty) -> Bool {
@@ -24,7 +23,6 @@ fn isEmpty(t: SharedEmpty) -> Bool {
         SharedEmpty.Empty => { return true }
         SharedEmpty.Node(child, value) => { return false }
     }
-    return false
 }
 
 fn main() -> Int {

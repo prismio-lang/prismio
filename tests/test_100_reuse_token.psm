@@ -17,7 +17,6 @@ fn mapAdd(sink t: Tree, k: Int) -> Tree {
             return Tree.Node(mapAdd(l, k), v + k, mapAdd(r, k))
         }
     }
-    return Tree.Leaf
 }
 
 fn rootValue(t: Tree) -> Int {
@@ -25,7 +24,6 @@ fn rootValue(t: Tree) -> Int {
         Tree.Leaf => { return 0 }
         Tree.Node(l, v, r) => { return v }
     }
-    return 0
 }
 
 fn main() -> Int {

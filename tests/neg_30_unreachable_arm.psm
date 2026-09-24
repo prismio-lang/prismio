@@ -15,7 +15,6 @@ fn f(s: Shape) -> Int {
         Shape.Dot => { return 0 }
         Shape.Circle(x) => { return 99 }
     }
-    return -1
 }
 
 fn main() -> Int {

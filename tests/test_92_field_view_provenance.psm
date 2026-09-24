@@ -80,7 +80,6 @@ fn holderText(h: Holder, fallback: String) -> String {
         Holder.Full(v) => { return v }
         Holder.Empty => { return fallback }
     }
-    return fallback
 }
 
 // A scalar payload is a copy, not a view. Nothing here should change for it.
@@ -89,7 +88,6 @@ fn countValue(c: Count, fallback: Int) -> Int {
         Count.Present(n) => { return n }
         Count.Absent => { return fallback }
     }
-    return fallback
 }
 
 fn main() -> Int {
