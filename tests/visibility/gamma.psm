@@ -1,0 +1,8 @@
+// Imports `visibility.alpha` and re-exports nothing. Exists so a third file can
+// import *this* and try to reach alpha's names through it: v0.1 3.5 says an
+// import is not transitive, and this is the module in the middle that proves it.
+import visibility.alpha
+
+public fn visibilityThroughMiddle(x: Int) -> Int {
+    return visibilityUsesOwnPrivate(x)
+}

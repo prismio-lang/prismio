@@ -278,11 +278,19 @@ LLVMValueRef LLVMBuildStore(LLVMBuilderRef, LLVMValueRef Val, LLVMValueRef Ptr);
 // Type introspection, for the fat-String coercion in `coerce_for`. The enum is
 // spelled out rather than included: this header is the LLVM C API as the
 // *packaging* build sees it, and it deliberately declares only what the backend
-// uses. LLVMStructTypeKind is 5 in llvm-c/Core.h and has been since the enum was
-// introduced -- it is append-only, so the ordinal is stable.
-typedef enum { PRISMIO_LLVM_STRUCT_TYPE_KIND = 5 } PrismioLLVMTypeKindProbe;
+// uses. The enum is append-only, so the ordinals are stable: Integer 8, Struct
+// 10, Array 11, Pointer 12, Vector 13 in llvm-c/Core.h.
+//
+// **Struct was written here as 5, which is FP128.** Every struct-kind test in a
+// backend built against this header -- the packaged backend.a -- was false,
+// including coerce_for's fat-String case. Found 2026-09-24 while adding the
+// array and vector kinds below, by reading the values off the pinned Core.h
+// rather than from this comment.
+typedef enum { PRISMIO_LLVM_STRUCT_TYPE_KIND = 10 } PrismioLLVMTypeKindProbe;
 #define LLVMStructTypeKind PRISMIO_LLVM_STRUCT_TYPE_KIND
+#define LLVMArrayTypeKind 11
 #define LLVMPointerTypeKind 12
+#define LLVMVectorTypeKind 13
 // LLVMIntegerTypeKind is 8, from the same append-only enum and stable for the
 // same reason. Read by the checked-arithmetic path, which is overloaded on the
 // integer width and must refuse anything that has none.

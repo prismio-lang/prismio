@@ -396,6 +396,22 @@ static LLVMValueRef lookup_named(NamedValue *table, int count, const char *name,
 
 static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
     if (!ty) backend_fail("constant with no type", s);
+    // **An aggregate's zero is LLVMConstNull, and nothing else spells it.**
+    // A struct literal's omitted `String` field gets `none` as its zero
+    // (semaFillOmittedFields), which reached the integer path below with the
+    // `{ptr, i64}` pair as its type. LLVMConstInt on a struct is not an error
+    // without assertions -- it produced `store i33 0`, five of the sixteen
+    // bytes. `Holder.Empty`'s unused `Full` payload kept eleven bytes of
+    // whatever was in its stack slot, and `__aif_release_fields_Holder`, which
+    // releases the payload whatever the tag, freed that: CI's Windows run of
+    // test_92 died with an access violation at exit, where the same bytes
+    // happened to be zero on macOS and Linux.
+    int kind = (int)LLVMGetTypeKind(ty);
+    if (kind == LLVMStructTypeKind || kind == LLVMArrayTypeKind
+        || kind == LLVMVectorTypeKind) {
+        if (strcmp(s, "0") == 0 || strcmp(s, "null") == 0) return LLVMConstNull(ty);
+        backend_fail("non-zero constant of an aggregate type", s);
+    }
     if (ty == LLVMDoubleTypeInContext(g_ctx)) return LLVMConstReal(ty, atof(s));
     if (ty == LLVMPointerTypeInContext(g_ctx, 0)) {
         if (strcmp(s, "null") == 0 || strcmp(s, "0") == 0) return LLVMConstPointerNull(ty);
@@ -4634,7 +4650,22 @@ int ir_str_data(const char *value) {
 // The triple decides, not the host, so a cross build asks its target. An empty
 // triple means "host" (ir_target_select's fallback), which is the one case that
 // falls through to this compiler's own platform.
+//
+// **Except in the seed.** bootstrap/prismio-seed.ll is IR with no triple, so
+// that any host can compile it -- and three answers here are the host's own:
+// this accessor, the console write below, and EAGAIN. A seed refreshed on macOS
+// called `__error`, which Linux does not define, and `write`, which the Windows
+// CRT does not; CI's first run past its lint gate in two weeks failed on both.
+// tools/refresh_seed.* set PRISMIO_SEED_IR, and each of the three then names a
+// function in program_support.c that answers on the machine that compiles the
+// seed. Only the seed pays the call; every ordinary build is unchanged.
+static int seed_ir(void) {
+    const char *v = getenv("PRISMIO_SEED_IR");
+    return v && strcmp(v, "1") == 0 && !ir_target_is_explicit();
+}
+
 static const char *errno_location_symbol(void) {
+    if (seed_ir()) return "rt_seed_errno_location";
     const char *triple = ir_target_triple();
     if (!triple || !*triple) {
 #if defined(_WIN32)
@@ -4666,6 +4697,7 @@ static const char *errno_location_symbol(void) {
 // Picked from the triple for the reason errno_location_symbol gives one screen
 // up: a cross build cannot ask its host what its target calls things.
 const char *ir_console_write_symbol(void) {
+    if (seed_ir()) return "rt_seed_console_write";
     const char *triple = ir_target_triple();
     if (!triple || !*triple) {
 #if defined(_WIN32)
@@ -4690,7 +4722,9 @@ const char *ir_console_write_symbol(void) {
 // can ask for more than one holds -- so codegen widens the count for POSIX and
 // narrows the result back, and neither cast can lose a byte.
 const char *ir_console_write_word(void) {
-    return strcmp(ir_console_write_symbol(), "_write") == 0 ? "i32" : "i64";
+    const char *sym = ir_console_write_symbol();
+    return strcmp(sym, "_write") == 0 || strcmp(sym, "rt_seed_console_write") == 0
+        ? "i32" : "i64";
 }
 
 int ir_errno_load(void) {
@@ -4721,6 +4755,12 @@ int ir_errno_constant(const char *which) {
     if (which && strcmp(which, "EINTR") == 0) {
         value = 4;
     } else if (which && strcmp(which, "EAGAIN") == 0) {
+        if (seed_ir()) {
+            LLVMTypeRef fty = LLVMFunctionType(i32, NULL, 0, 0);
+            LLVMValueRef fn = LLVMGetNamedFunction(g_module, "rt_seed_errno_again");
+            if (!fn) fn = LLVMAddFunction(g_module, "rt_seed_errno_again", fty);
+            return intern_value(LLVMBuildCall2(g_builder, fty, fn, NULL, 0, ""));
+        }
         const char *sym = errno_location_symbol();
         value = strcmp(sym, "__error") == 0 ? 35 : 11;
     } else {

@@ -21,6 +21,14 @@
 #include <direct.h>
 #include <io.h>
 #include <process.h>
+// Lean, because the full <windows.h> brings in rpcndr.h and objbase.h, which
+// define `small`, `hyper`, `boolean` and `interface` as macros: CI's first
+// Windows bootstrap in two weeks failed on a local named `small` in
+// lang_runtime.c. Nothing here uses the COM, RPC, shell or winsock headers
+// that this leaves out.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #define PRISMIO_GETPID _getpid
 #define PRISMIO_MKDIR(path) _mkdir(path)

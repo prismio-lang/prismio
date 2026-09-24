@@ -177,7 +177,8 @@ def build_runtime_bitcode(clang: str, source: str, runtime_dir: Path, verify: bo
     # merged module, so the packaged IR leaves stack protection to the final
     # whole-program code-generation invocation.
     command = [clang, *target_flags(triple, sysroot), "-O2", "-fno-stack-check",
-               "-fno-stack-protector", "-Wno-deprecated-declarations", "-emit-llvm", "-c"]
+               "-fno-stack-protector", "-ffile-compilation-dir=.",
+               "-Wno-deprecated-declarations", "-emit-llvm", "-c"]
     if verify:
         command.append("-DPRISMIO_AIF_VERIFY")
     command.extend([str(REPO / "runtime" / source), "-o", str(output)])

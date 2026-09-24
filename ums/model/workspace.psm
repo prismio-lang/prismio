@@ -8,6 +8,7 @@ import ums.parser.parser
 import ums.parser.ast
 import ums.resolver.discovery
 import ums.builder.build_plan
+import ums.targets.target
 import std.string
 
 extern fn read_file(path: String borrow) -> String produce(free)
@@ -149,7 +150,7 @@ public fn umsProjectHost(startDirectory: String) -> String {
                     property.name.equals("host") and
                     property.value.kind == UmsAstValueKind.STRING and
                     __builtin_string_len(property.value.text) > 0) {
-                    return join_path(root, property.value.text)
+                    return umsExecutablePath(join_path(root, property.value.text))
                 }
                 childIndex = childIndex + 1
             }

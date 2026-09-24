@@ -103,16 +103,31 @@ jobs:
           test -s build/a.ll && test -s build/b.ll
           cmp build/a.ll build/b.ll && echo "fixpoint reached"
 
+      # **A compiler is a layout, not a file.** `build/gen2` can build compilers
+      # and nothing else: a program links the runtime as bitcode installed beside
+      # the executable, and a bare generation has none, so 201 of 376 tests
+      # failed with "Missing runtime module" the first time this job got past
+      # its lint gate. Packaging comes first, and everything that builds a
+      # program uses the package. It is also the thing a user installs.
+      - name: Package the toolchain
+        shell: bash
+        run: |
+          set -e
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          python tools/package.py --compiler "build/gen2$EXT" --out dist/Prismio
+
+      # run_suite.py tests a *copy* of the packaged toolchain: the ums fixture
+      # rebuilds a project host and the cache fixtures count what a build
+      # recompiles, and neither can be done to the compiler running the suite.
+      # `inline_runtime_default` requires the curated-module merge marker, then
+      # proves PRISMIO_INLINE_RUNTIME=0 avoids it. Keep it in this matrix: a
+      # successful fail-open build is not portability evidence.
       - name: Run the test suite
         shell: bash
         run: |
           set -e
           EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
-          cd tests
-          # `inline_runtime_default` requires the curated-module merge marker,
-          # then proves PRISMIO_INLINE_RUNTIME=0 avoids it. Keep it in this
-          # matrix: a successful fail-open build is not portability evidence.
-          PRISMIO="../build/gen2$EXT" python test_runner.py
+          python tools/run_suite.py --compiler "dist/Prismio/bin/prismio$EXT"
 
       # The allocation ledger proves Prismio's inferred releases balance; it
       # cannot detect a balanced release that happens before the last read.
@@ -127,7 +142,7 @@ jobs:
       - name: Run benchmark validation smoke
         if: runner.os == 'Linux'
         shell: bash
-        run: python benchmarks/run.py --compiler build/gen2 --runs 1 --output build/ci-benchmark.json
+        run: python benchmarks/run.py --compiler dist/Prismio/bin/prismio --runs 1 --output build/ci-benchmark.json
 
       # The AIF engine exists twice on purpose: once in the compiler and once as
       # aif/prototype/aif.py, sharing no code. A transfer function that is subtly
@@ -150,19 +165,6 @@ jobs:
           grep -q '^target ' bootstrap/prismio-seed.ll && {
             echo "seed carries a target directive; it must stay target-neutral"; exit 1; }
           echo "seed is target-neutral"
-
-      # Everything above proves the compiler in `build/`. **Nothing above proves
-      # the thing a user installs**, and the two differ in the way that matters:
-      # an uninstalled compiler falls back to the runtime sources embedded in its
-      # own binary, silently, so a packaging mistake looks like success. That is
-      # the fallback `verify_separation` exists to catch, and it had never run on
-      # Windows or Linux -- packaging was a local step before v0.1.
-      - name: Package the toolchain
-        shell: bash
-        run: |
-          set -e
-          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
-          python tools/package.py --compiler "build/gen2$EXT" --out dist/Prismio
 
       # The separation this asserts is not cosmetic: a compiled program links
       # runtime.a only, so no `ir_*` backend symbol may reach a user binary. It
@@ -187,14 +189,14 @@ jobs:
           cp -R dist/Prismio "$CLEAN/toolchain"
           cat > "$CLEAN/smoke.psm" <<'PSM'
           import std.io
-          import std.list
+          import std.vec
           import std.map
           import std.option
 
           struct Note { id: Int }
 
           fn main() -> Int {
-              let mut ids: List<Int> = list_new()
+              let mut ids: Vec<Int> = list_new()
               list_push(ids, 3)
               list_push(ids, 1)
               list_push(ids, 2)
@@ -219,8 +221,7 @@ jobs:
           }
           PSM
           cd "$CLEAN"
-          "./toolchain/bin/prismio$EXT" build smoke.psm -o smoke$EXT \
-            || "./toolchain/prismio$EXT" build smoke.psm -o smoke$EXT
+          "./toolchain/bin/prismio$EXT" build smoke.psm -o smoke$EXT
           OUT="$(./smoke$EXT)"
           echo "smoke output: $OUT"
           [ "$OUT" = "18" ] || { echo "expected 18"; exit 1; }

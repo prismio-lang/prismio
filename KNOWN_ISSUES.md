@@ -617,15 +617,24 @@ build machine's Cellar path for the `clang` its builds shelled out to.
 What is left:
 
 - **Linking still needs the platform's C toolchain**: `cc` on macOS and Linux,
-  `clang` on PATH on Windows (`PRISMIO_CC` overrides). It is where the C
-  library and the SDK come from, so shipping a linker would not remove it --
-  and on macOS it could not: LLD 23 cannot read the current SDK at all. Zig
-  avoids this by shipping libc stubs; nothing here does.
+  MSVC's `link.exe` with the Windows SDK on Windows (`PRISMIO_CC` overrides
+  both). It is where the C library and the SDK come from, so shipping a linker
+  would not remove it. **Embedding LLD was tried and stopped (2026-09-24)**: it
+  would drop `cc` and nothing else a user installs, since the Command Line
+  Tools that carry `cc` also carry the SDK, and on Linux LLD still needs the
+  C library package and gcc's `crtbegin.o`. It also needs an SDK LLD can read,
+  which the macOS 27 SDK is not: every stub lists `arm64e.x1-macos`, which
+  TextAPI 23 rejects, so a whole-SDK rewrite (6,837 stubs, keeping only the
+  targets TextAPI can name) was the price. LLD earns its place alongside
+  shipped libc/SDK stubs, as in Zig -- for cross builds with no cross
+  toolchain -- and not before.
 - **Windows was changed and not run.** Its archive ships `LLVM-C.lib`/`.dll`
   rather than bitcode, so it stays dynamic, with the DLL copied beside
   `prismio.exe` by the bootstrap, the package and the installer. The Linux path
   (libstdc++ detection, lowering) was likewise written against the macOS run.
-  CI is the first run of both.
+  The `link.exe` discovery (`link_program_msvc`: vswhere, `Windows Kits\10`,
+  a developer prompt's `LIB`) was exercised on macOS only, through a harness
+  stubbing the Win32 calls. CI is the first run of all three.
 - Darwin/x86_64 has no 23.1.x archive; setup refuses it and names `--llvm-dir`.
 
 **A struct crossing a `.plib` read its fields one slot late, and the cause was
@@ -863,39 +872,30 @@ asks for anyway.
 
 ## The AIF oracle
 
-**`tools/aif_differential.py` reports one disagreement on `src/main.psm`, and the
-compiler is the one that is right.** T1 282 vs 281, T3 384 vs 385: a single site,
-`ownedTypes` at `src/ir/expr.psm:556`, which the in-compiler engine tiers T1 and
-the Python oracle tiers T3. The run prints a second line, for the `owned=True`
-pass -- T1 282 vs 281, T2 171 vs 172 -- which is also T1 one site too high on the
-compiler's side and has not been traced to a site. Both lines were byte-identical
-before and after the struct-layout and literal-field changes.
+**Fixed 2026-09-24: the `src/main.psm` disagreement was the oracle's E-VIEW
+over-reaching on a `return`.** `ownedTypes` at `src/ir/expr.psm:557` is a local
+`List<String>` passed once, as a borrow, to `generateOwnedTemporaryReleases`; the
+compiler tiered it T1 and `aif/prototype/aif.py` T3. Traced by logging every
+write to the site's E and A in a copy of the oracle:
 
-It is a local `List<String>`. It is created with `list_new()`, pushed into, and
-passed once to `generateOwnedTemporaryReleases` — which takes it as a parameter,
-and a parameter is a borrow. It is never returned and never stored. T1 is what
-that lifetime is.
+1. `strSubstring`'s `return s` is an escape-to-caller of its parameter, and a
+   view of `ownedTypes` reaches that parameter through `list_get(types, i)`.
+   The oracle's E-VIEW raised every collection such a view points into to
+   Caller -- including one allocated in a different function, which was
+   already live across the call.
+2. Under `--copyable-collections` a List is not move-only, and it had two
+   holders (the local and the callee's parameter), so A-COPY made it Shared.
+   E=Caller with A=Shared is T3.
 
-The oracle's own answer is the evidence against the oracle. `ownedVals`,
-`ownedKinds` and `ownedTypes` are declared on three consecutive lines, pushed to
-in the same `if`, and passed to the same call. The oracle tiers the first two T1
-and only the third T3.
+The compiler already had the refinement: `aif_con_return` tags a source-level
+return with its function, and `raise_view_owners` skips a Caller target for a
+collection from another function (the three-way case analysis above it in
+`runtime/aif_support.c`). The oracle now does the same, and the differential
+passes on all 19 default sources. `ownedVals` and `ownedKinds` were T1 all along
+because no view of them reaches a returning parameter.
 
-**What moved, and when.** Splitting `generateExpression`'s sixteen kind arms into
-their own functions (2026-09-16) made the compiler *more* precise here: before the
-split it agreed with the oracle at T3, after it says T1. The oracle's numbers did
-not move at all — T1 281, T3 385, before and after. A per-arm return provenance
-is a narrower thing to union than one 1,783-line body, which is the whole reason
-the site got a better answer.
-
-**Why this is filed rather than fixed.** The gap is the prototype's, in
-`aif/prototype/aif.py`, and closing it means finding which transfer function
-keeps A=Shared on a container whose only escape is a borrowed parameter. Until
-then the differential fails on `src/main.psm` and passes on the other 18 sources,
-so run it and read the one line rather than the exit status.
-
-**A struct pushed into a Vec in a loop disagrees the same way, outside the 19
-sources.** Under `--copyable-collections` the oracle tiers it T3 (A=Shared) and
+**A struct pushed into a Vec in a loop still disagrees, outside the 19 sources,
+and is not the return case above** (it survives that fix). Under `--copyable-collections` the oracle tiers it T3 (A=Shared) and
 the compiler T1, with one more oracle round; `test_164_array_fields` shows it,
 and so does the same shape with scalar fields on 9f45814, so array fields did
 not introduce it. Neither file is a default source of the differential.
@@ -916,18 +916,17 @@ does not carry that compound workload forward. Its useful axes are isolated as
 `benchmarks/`; use their cross-language checksums and repeated medians instead
 of interpreting an old g5 result.
 
-**The AIF oracle differential still disagrees on six cases.** The compiler and
-Python oracle disagree for `src/main.psm`, `test_45_aif_affine_collections`, and
-`aif_concurrency`, each in as-is and owned modes. The original compiler and the
-2026-09-06 optimization candidate produce identical differential results; see
-`aif/evidence/critical-gaps-2026-09-06/differential-{baseline,final}.log`.
+**The AIF oracle differential passes on its 19 default sources** (2026-09-24;
+see "The AIF oracle"). The six disagreements recorded on 2026-09-06, in
+`aif/evidence/critical-gaps-2026-09-06/differential-{baseline,final}.log`, are
+gone; `test_164_array_fields`, outside the default set, still disagrees.
 
 The suite-routing defect is fixed: `tools/run_suite.py` used to name its copy
 `prismio`, silently redirecting to the older project host and making the suite
 appear green for an untested candidate. Its copy is now `suite-compiler`; the
 UMS fixture makes its own `prismio` launcher for routing checks. A named candidate
-passes 303/303 through the corrected runner. The oracle disagreement remains a
-separate, pre-existing issue.
+passes 303/303 through the corrected runner. The oracle disagreement was a
+separate issue, fixed 2026-09-24.
 
 **Phase-time a memory benchmark one shot per process.** Every `benchmarks/` entry
 runs once per process, and looping the same workload inside one process measures

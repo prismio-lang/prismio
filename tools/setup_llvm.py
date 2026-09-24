@@ -423,8 +423,12 @@ def prepare(root: Path, keep_all: bool) -> dict:
 
     rsp = out / "link.rsp"
     # One argument per line, quoted: clang and gcc both read `@file` this way,
-    # and a checkout path with a space in it must stay one argument.
-    rsp.write_text("".join(f'"{a}"\n' if not a.startswith("-") else f"{a}\n"
+    # and a checkout path with a space in it must stay one argument. Forward
+    # slashes, because clang tokenizes a response file GNU-style on Windows too,
+    # where a backslash inside quotes is an escape: CI's first Windows run read
+    # `D:\a\prismio\...\LLVM-C.lib` as `D:aprismio...LLVM-C.lib`. Every
+    # Windows API takes `/` as a separator, so nothing else needs to know.
+    rsp.write_text("".join(f'"{Path(a).as_posix()}"\n' if not a.startswith("-") else f"{a}\n"
                            for a in link_args))
 
     if not keep_all:

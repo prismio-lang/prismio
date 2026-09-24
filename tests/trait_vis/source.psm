@@ -1,0 +1,33 @@
+// A trait and its implementation in another module, with one method of the
+// implementing type kept private to this file.
+
+import std.string
+
+trait Greet {
+    fn greeting(self) -> String
+    // A default that calls a helper this module does not export.
+    fn loudly(self) -> String { return greeting(self).concat(decoration()) }
+}
+
+struct Host { n: Int }
+
+impl Greet for Host {
+    fn greeting(self) -> String { return "hello" }
+}
+
+// Private to this file. The default method above still reaches it, because the
+// default is expanded into this module, not into the importer's.
+private fn decoration() -> String { return "!" }
+
+// An associated constant and type travel across the import as well.
+trait Sized {
+    let LIMIT: Int
+    type Unit
+    fn size(self) -> Int
+}
+
+impl Sized for Host {
+    let LIMIT: Int = 42
+    type Unit = Int
+    fn size(self) -> Int { return self.n }
+}

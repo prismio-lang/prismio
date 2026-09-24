@@ -16,7 +16,9 @@ REPO = Path(__file__).resolve().parent.parent
 FORMATTED_SUFFIXES = {
     ".c", ".h", ".ps1", ".psm", ".py", ".sh", ".ums", ".yaml", ".yml"
 }
-EXCLUDED_PREFIXES = ("build/", "dist/", "graphify-out/")
+# sandbox/ is the owner's scratchpad: tracked, so it travels with the repository,
+# but not held to the repository's rules. lint.py takes its file list from here.
+EXCLUDED_PREFIXES = ("build/", "dist/", "graphify-out/", "sandbox/")
 EXCLUDED_FILES = set()
 
 

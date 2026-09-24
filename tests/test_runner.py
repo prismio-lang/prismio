@@ -11,6 +11,7 @@ import io
 import time
 import threading
 import contextlib
+import difflib
 import concurrent.futures
 from pathlib import Path
 import shutil
@@ -628,6 +629,49 @@ def run_cli_usage_test():
     return True
 
 
+def run_crlf_triple_string_test():
+    """A triple-quoted string's line breaks are `\\n` in a CRLF source too.
+
+    Written here rather than as a tests/*.psm, because git decides a checked-in
+    file's line endings: on CI's Windows runner `test_150` arrived as CRLF and
+    its string carried a `\\r` per line, while every other platform saw LF. This
+    writes the CRLF bytes itself, so every platform tests the CRLF case.
+    """
+    print(f"\n{BLUE}--- Running crlf_triple_string ---{RESET}")
+    source = (
+        'import std.io\r\n'
+        'import std.string\r\n'
+        '\r\n'
+        'fn main() -> Int {\r\n'
+        '    let s = """one\r\n'
+        'two\r\n'
+        'three"""\r\n'
+        '    if (s.equals("one\\ntwo\\nthree") == false) {\r\n'
+        '        println("FAIL: CRLF reached the string")\r\n'
+        '        return 1\r\n'
+        '    }\r\n'
+        '    println("ok")\r\n'
+        '    return 0\r\n'
+        '}\r\n'
+    )
+    with tempfile.TemporaryDirectory(prefix="prismio-crlf-") as temp_dir:
+        path = Path(temp_dir) / "crlf.psm"
+        path.write_bytes(source.encode("utf-8"))
+        exe = Path(temp_dir) / ("crlf.exe" if os.name == "nt" else "crlf")
+        built = run_command([str(PRISMIO_EXE), "build", str(path), "-o", str(exe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] a CRLF source did not build{RESET}")
+            print(elide_middle(built.stderr))
+            return False
+        ran = run_command([str(exe)])
+        if ran.returncode != 0 or ran.stdout.strip() != "ok":
+            print(f"{RED}[FAIL] a CRLF line break reached a triple-quoted string{RESET}")
+            print(ran.stdout.strip())
+            return False
+    print(f"{GREEN}[PASS] CRLF line breaks in a triple-quoted string read as \\n{RESET}")
+    return True
+
+
 def run_corpus_test():
     """Build and *run* every benchmark corpus program.
 
@@ -745,7 +789,7 @@ def preserved_project_host():
     from the snapshot to the restore, so a waiting suite never saves a host that
     is halfway through someone else's test.
     """
-    artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / "prismio"
+    artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / ("prismio.exe" if os.name == "nt" else "prismio")
     candidate = artifact.with_name(artifact.name + ".next")
 
     with project_host_lock():
@@ -906,7 +950,10 @@ def run_ums_test():
             return False
         answer_object = native / "answer.o"
         bonus_object = native / "bonus.o"
-        answer_archive = native / "libanswer.a"
+        # `library("answer")` names `answer.lib` on Windows, which is what
+        # link.exe -- and clang targeting MSVC before it -- look for, and
+        # `libanswer.a` everywhere else. The archive format is the same.
+        answer_archive = native / ("answer.lib" if os.name == "nt" else "libanswer.a")
         native_steps = [
             [clang, "-c", str(native / "answer.c"), "-o", str(answer_object)],
             [archiver, "rcs", str(answer_archive), str(answer_object)],
@@ -923,7 +970,8 @@ def run_ums_test():
             [str(PRISMIO_EXE), "build"], capture_output=True, text=True,
             cwd=str(project),
         )
-        native_exe = project / ".prismio" / "build" / "debug" / "native-link"
+        native_exe = (project / ".prismio" / "build" / "debug"
+                      / ("native-link.exe" if os.name == "nt" else "native-link"))
         if native_build.returncode != 0 or not native_exe.exists():
             print(f"{RED}[FAIL] ums: declared native inputs did not link{RESET}")
             show_run(native_build)
@@ -1041,11 +1089,25 @@ def run_ums_test():
 
             expected_entries = {"runtime"} | {f"std.{name}" for name in std_sources}
 
+            # Every stdlib key hashes the compiler binary, so a stdlib miss here
+            # usually means the host relinked to different bytes. Which bytes is
+            # what the fix depends on (a PE timestamp, a debug-info path, a
+            # temporary's name), so a failure says where they differ.
+            host_before = compiler_artifact.read_bytes()
             cached_run, reused, rebuilt = toolchain_trace(cache_env)
             if cached_run.returncode != 0 or reused != expected_entries or rebuilt:
                 print(f"{RED}[FAIL] ums: an unchanged rebuild did not reuse the "
                       f"local toolchain{RESET}")
                 print(f"reused {sorted(reused)}\nrebuilt {sorted(rebuilt)}")
+                host_after = compiler_artifact.read_bytes()
+                offsets = [i for i, (a, b) in enumerate(zip(host_before, host_after))
+                           if a != b]
+                print(f"host {len(host_before)} -> {len(host_after)} bytes, "
+                      f"{len(offsets)} differ in the common length")
+                for offset in offsets[:8]:
+                    start = max(0, offset - 16)
+                    print(f"  @{offset:#x}: {host_before[start:offset + 16]!r}")
+                    print(f"  {' ' * len(f'@{offset:#x}')}  {host_after[start:offset + 16]!r}")
                 return False
 
             # PRISMIO_TOOLCHAIN_CACHE=0 must not consult the stamp -- and must
@@ -1112,9 +1174,32 @@ def run_ums_test():
                     )
                     if produced.read_bytes() != packaged.read_bytes()
                 ]
+                if drifted:
+                    print(f"{RED}[FAIL] ums: the project-local toolchain and "
+                          f"tools/package.py disagree on {', '.join(drifted)}{RESET}")
+                    # Inside the `with`: the packaged copies are gone after it.
+                    # Bitcode is compared as IR, because a raw offset says
+                    # nothing -- and whether the two differ in a path clang
+                    # recorded or in code decides where the fix goes.
+                    llvm_dis = Path(pkg_clang).with_name(
+                        "llvm-dis.exe" if os.name == "nt" else "llvm-dis")
+                    produced_bc = local_runtime / "lang_runtime.bc"
+                    packaged_bc = drift / "runtime" / "lang_runtime.bc"
+                    if "lib/runtime/lang_runtime.bc" in drifted and llvm_dis.is_file():
+                        # `; ModuleID` is llvm-dis naming its input file.
+                        listings = [[line for line in subprocess.run(
+                                         [str(llvm_dis), str(bc), "-o", "-"],
+                                         capture_output=True, text=True).stdout.splitlines()
+                                     if not line.startswith("; ModuleID")]
+                                    for bc in (produced_bc, packaged_bc)]
+                        diff = list(difflib.unified_diff(
+                            listings[0], listings[1],
+                            "local", "package.py", n=0, lineterm=""))
+                        print("\n".join(diff[:24]) if diff
+                              else "the IR is identical; the bitcode encoding differs")
+                    print(f"local {produced_bc.stat().st_size} bytes, "
+                          f"package.py {packaged_bc.stat().st_size} bytes")
             if drifted:
-                print(f"{RED}[FAIL] ums: the project-local toolchain and "
-                      f"tools/package.py disagree on {', '.join(drifted)}{RESET}")
                 return False
 
             # The behaviour all of that is for: a program *outside* the checkout,
@@ -7975,6 +8060,7 @@ def main():
         ("cli_run_forward_slash", run_cli_test),
         ("cli_check_protocol", run_check_command_test),
         ("cli_usage", run_cli_usage_test),
+        ("crlf_triple_string", run_crlf_triple_string_test),
         ("ums", run_ums_test),
         ("corpus", run_corpus_test),
         ("aif_tiers", run_aif_test),

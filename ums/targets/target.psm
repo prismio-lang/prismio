@@ -1,4 +1,7 @@
 import std.string
+
+extern fn host_is_windows() -> Int
+
 // Appended, never inserted: the tag is the variant's position, so reordering
 // these changes the value every compiled comparison expects -- the rule
 // std/option.psm states for `Option`.
@@ -89,4 +92,16 @@ public fn umsTargetFind(targets: Vec<UmsTarget>, name: String) -> Int {
         i = i + 1
     }
     return -1
+}
+
+// The file a target or `toolchain.host` names, as this host runs it. A manifest
+// spells an executable without `.exe` so that one `build.ums` serves every
+// platform, but Windows cannot start the bare name: cmd.exe resolves an
+// extension-less command only by trying PATHEXT, so every build command that
+// named such a host failed with "not recognized", after `prismio build` had
+// already reported the host promoted. The single-file driver has always
+// appended the suffix (compiler_default_exe_path); this is the same rule.
+public fn umsExecutablePath(path: String) -> String {
+    if (host_is_windows() == 1) { return path.concat(".exe") }
+    return strClone(path)
 }

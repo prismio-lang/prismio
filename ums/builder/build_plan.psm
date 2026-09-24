@@ -25,6 +25,14 @@ private fn umsBuildProfileValid(profile: String) -> Bool {
     return true
 }
 
+private fn umsPlannedOutput(kind: UmsTargetKind, profileRoot: String, name: String) -> String {
+    let path = join_path(profileRoot, name)
+    if (kind == UmsTargetKind.EXECUTABLE or kind == UmsTargetKind.TEST) {
+        return umsExecutablePath(path)
+    }
+    return path
+}
+
 public fn umsBuildPlanCreate(project: UmsProjectModel,
                       diagnostics: Vec<UmsDiagnostic>) -> UmsBuildPlan {
     if (umsBuildProfileValid(project.build.profile) == false) {
@@ -52,7 +60,7 @@ public fn umsBuildPlanCreate(project: UmsProjectModel,
             name: strClone(target.name),
             entry: strClone(target.entry),
             sourcePath: join_path(project.root, target.entry),
-            outputPath: join_path(profileRoot, target.name),
+            outputPath: umsPlannedOutput(target.kind, profileRoot, target.name),
             links: plannedLinks,
             line: target.line,
             col: target.col,
