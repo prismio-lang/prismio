@@ -1,0 +1,84 @@
+// `default`: the value of whatever type its context expects.
+//
+// The keyword has no type of its own. It becomes the expected type's value where
+// a `let` annotation, a `return`, a struct field or an assignment names one --
+// `0`, `""`, `[]`, `none`, `Option<T>.None`, `mapNew<K, V>()`, or a struct literal
+// of its fields' defaults -- and is then checked as that expression.
+import std.io
+import std.vec
+import std.map
+import std.option
+import std.string
+
+struct Inner { name: String, count: Int, ratio: Float }
+struct Outer { inner: Inner, tags: Vec<String>, flag: Bool, code: Char, maybe: Inner? }
+struct Box<T> { value: T, items: Vec<T> }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn fresh() -> Outer { return default }
+fn zero() -> U8 { return default }
+
+// Per instantiation: `T` is concrete by the time `default` is resolved.
+fn made<T>() -> T {
+    let x: T = default
+    return x
+}
+
+fn main() -> Int {
+    let s: String = default
+    let n: Int = default
+    let small: U8 = default
+    let wide: I64 = default
+    let f: Float = default
+    let b: Bool = default
+    let c: Char = default
+    if (s.length != 0 or n != 0 or small != 0 or wide != 0) { return fail("scalar") }
+    if (f != 0.0 or b or c.code() != 0) { return fail("float, bool, char") }
+
+    let v: Vec<Int> = default
+    if (v.length != 0) { return fail("vec") }
+    let counts: Array<Int, 4> = default
+    if (counts[0] + counts[3] != 0) { return fail("numeric array") }
+    let names: Array<String, 3> = default
+    if (names[2].length != 0) { return fail("string array") }
+    let wideArray: Array<Int, 1000> = default
+    if (wideArray[999] != 0) { return fail("long numeric array") }
+
+    let absent: Inner? = default
+    if (absent != none) { return fail("optional") }
+    let opt: Option<Int> = default
+    match (opt) {
+        Option.Some(x) => { return fail("option") }
+        Option.None => { }
+    }
+
+    let mut m: Map<String, Int> = default
+    mapSet(m, "k", 3)
+    if (mapLen(m) != 1 or mapGetOr(m, "k", 0) != 3) { return fail("map") }
+
+    let outer: Outer = default
+    if (outer.inner.name.length != 0 or outer.inner.count != 0) { return fail("nested struct") }
+    if (outer.tags.length != 0 or outer.flag or outer.maybe != none) { return fail("struct fields") }
+    let bx: Box<String> = default
+    if (bx.value.length != 0 or bx.items.length != 0) { return fail("generic struct") }
+
+    if (fresh().inner.count != 0 or zero() != 0) { return fail("return") }
+    if (made<Int>() != 0 or made<String>().length != 0 or made<Vec<Int>>().length != 0) {
+        return fail("generic function")
+    }
+
+    let mut t: String = "abc"
+    t = default
+    if (t.length != 0) { return fail("assignment") }
+    let mut p = Inner { name: "x", count: default, ratio: default }
+    p.name = default
+    if (p.count != 0 or p.name.length != 0) { return fail("field") }
+
+    println("test_171 ok")
+    return 0
+}

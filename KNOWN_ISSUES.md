@@ -773,6 +773,14 @@ And a struct field is assignable through any binding, so `bag.items.push(x)`
 needs no `mut` on `bag`; that is the struct-by-reference rule `variables.md`
 states, and tightening it is a language decision, not a bug fix.
 
+**`default` has no user-defined form.** It is built in for the types
+`src/sema/defaults.psm` knows, plus every struct whose fields have one. A type
+whose fields' defaults do not make a valid value -- the way `Map`'s buckets do
+not, which the compiler special-cases to `mapNew` -- has no way to say so; that
+needs a `Default` trait with an associated constructor, and associated functions
+are only `Vec<T>.withCapacity` today. An enum has no default at all, and
+`default` cannot be an argument, since overloads are chosen from argument types.
+
 **Two kinds of array are shared by a second binding rather than copied.** An
 array of a known length whose elements own nothing is a value since 2026-09-18
 (`typeArrayCopies`): `let b = a` and `d = c` copy it. An array of arrays is not

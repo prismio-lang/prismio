@@ -86,6 +86,7 @@ private fn nodeKindName(k: NodeKind) -> String {
     else if (k == NodeKind.IMPORT_STATEMENT) { return "IMPORT_STATEMENT" }
     else if (k == NodeKind.EXTERN_FUNCTION) { return "EXTERN_FUNCTION" }
     else if (k == NodeKind.EXTERN_VARIABLE) { return "EXTERN_VARIABLE" }
+    else if (k == NodeKind.DEFAULT_EXPR) { return "DEFAULT_EXPR" }
     else if (k == NodeKind.VARIABLE_DECL) { return "VARIABLE_DECL" }
     else if (k == NodeKind.FUNCTION) { return "FUNCTION" }
     else if (k == NodeKind.STRUCT_DECL) { return "STRUCT_DECL" }

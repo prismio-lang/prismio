@@ -177,7 +177,13 @@ enum NodeKind {
     // does not know it skips it, and skipping is the right answer for all but
     // the few that name a global -- whereas a marker missed by one walk would
     // quietly emit a zero-initialised *definition* of somebody else's symbol.
-    EXTERN_VARIABLE
+    EXTERN_VARIABLE,
+
+    // `default`: the value of whatever type its context expects. It has no type
+    // of its own, so sema rewrites it in place into the expression that builds
+    // that value (src/sema/defaults.psm) and no pass after sema sees one.
+    // Appended so the committed seed's NodeKind ordinals do not move.
+    DEFAULT_EXPR
 }
 
 // Flat AST Node using String for pointers (type punning)

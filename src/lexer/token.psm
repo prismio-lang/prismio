@@ -139,6 +139,10 @@ internal fn isKeyword(word: String) -> Bool {
     // and a keyword is the honest spelling.
     if (word.equals("none")) { return true }
 
+    // `let x: String = default`. A keyword for `none`'s reason: it is a value, so
+    // a binding named `default` would change what the word means below it.
+    if (word.equals("default")) { return true }
+
     return false
 }
 

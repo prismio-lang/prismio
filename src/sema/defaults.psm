@@ -1,0 +1,242 @@
+// `default`: the value a type has before a program gives it one.
+//
+// The keyword is a DEFAULT_EXPR until its context names a type, and is then
+// rewritten in place into the expression that builds that type's value -- `0`,
+// `""`, `[]`, `none`, `Option<T>.None`, `mapNew<K, V>()`, or a struct literal of
+// its fields' defaults -- so every pass after sema sees an expression it already
+// lowers.
+//
+// **Source expressions rather than zeroed storage**, because a zero is not a
+// value for most of these types: a zeroed String is null, and a zeroed Map has
+// no buckets to probe. The one place zeroes are the answer is an array of
+// numbers in a `let`, which is exactly what that `let` does with no initializer.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+import std.string
+
+// How deep a struct's fields are followed. A struct that holds itself by value
+// has no default at any depth, and this is where that is noticed.
+private fn semaDefaultMaxDepth() -> Int { return 16 }
+
+// The longest array whose default is written out element by element. Past it
+// the literal costs more than it says; a `let` of numbers zeroes in one store.
+private fn semaDefaultMaxArray() -> Int { return 64 }
+
+// Rewrites `node`, a DEFAULT_EXPR, into `expected`'s default. Answers false after
+// reporting when the type has none; an invalid `expected` was reported where it
+// was written, so that answers false in silence.
+internal fn semaResolveDefault(module: ASTNode, node: ASTNode, expected: TypeInfo) -> Bool {
+    if (typeIsValid(expected) == false) { return false }
+    let reason = semaDefaultInto(module, node, expected, 0)
+    if (reason.equals("")) { return true }
+    semaErrorAt(node, reason)
+    diag_note("`default` is a value for numbers, `Bool`, `Char`, `String`, `Vec`, sized arrays, optionals, `Option`, `Map`, and structs whose fields all have one; an enum's value is named, not defaulted")
+    return false
+}
+
+// A `default` with no type to be the default of: an argument, whose overload is
+// chosen from argument types, or a `let` with no annotation.
+internal fn semaDefaultWithoutContext(node: ASTNode) -> TypeInfo {
+    semaErrorAt(node, "`default` needs a type from its context")
+    diag_note("write it where a type is already known: `let x: T = default`, a `return`, a struct field, or an assignment")
+    nodeSetType(node, typeInvalid())
+    return typeInvalid()
+}
+
+// Whether `let a: Array<T, N> = default` is the uninitialised `let`, which
+// zeroes the slots in place: an array of numbers, whose zero is its default.
+internal fn semaDefaultZeroesArray(init: ASTNode, t: TypeInfo) -> Bool {
+    if (init.kind != NodeKind.DEFAULT_EXPR) { return false }
+    if (t.kind != TypeKind.ARRAY or t.length <= 0 or nodeExists(t.child) == false) { return false }
+    let k = ptr_to_type(t.child).kind
+    return k == TypeKind.INT or k == TypeKind.FLOAT or k == TypeKind.BOOL or k == TypeKind.CHAR
+}
+
+// Fills `target` with the expression for `t`'s default. Answers "" when it did,
+// and otherwise why `t` has none. A field's reason travels up to the keyword and
+// is reported once there, naming the path it came through.
+private fn semaDefaultInto(module: ASTNode, target: ASTNode, t: TypeInfo, depth: Int) -> String {
+    let k = t.kind
+    if (k == TypeKind.INT) { return semaDefaultLiteral(target, TokenType.NUMBER_LITERAL, "0") }
+    if (k == TypeKind.FLOAT) { return semaDefaultLiteral(target, TokenType.FLOAT_LITERAL, "0.0") }
+    if (k == TypeKind.BOOL) { return semaDefaultLiteral(target, TokenType.BOOL_LITERAL, "false") }
+    // A char literal carries its code, so this is `'\0'`.
+    if (k == TypeKind.CHAR) { return semaDefaultLiteral(target, TokenType.CHAR_LITERAL, "0") }
+    if (k == TypeKind.STRING) { return semaDefaultLiteral(target, TokenType.STRING_LITERAL, "") }
+    if (k == TypeKind.OPTIONAL) {
+        semaDefaultReset(target, NodeKind.NONE_LITERAL_EXPR)
+        return ""
+    }
+    // `[]`, which semaListLiteral lowers against the expected element type.
+    if (k == TypeKind.LIST) {
+        semaDefaultReset(target, NodeKind.ARRAY_LITERAL_EXPR)
+        return ""
+    }
+    if (k == TypeKind.ARRAY) { return semaDefaultArray(module, target, t, depth) }
+    if (k == TypeKind.STRUCT) { return semaDefaultStruct(module, target, t, depth) }
+    if (k == TypeKind.ENUM) {
+        return diagQuote(typeDisplay(t)).concat(" is an enum, which has no default value")
+    }
+    return diagQuote(typeDisplay(t)).concat(" has no default value")
+}
+
+private fn semaDefaultReset(target: ASTNode, kind: NodeKind) {
+    target.kind = kind
+    target.s1 = ""
+    target.s2 = ""
+    target.i1 = 0
+    target.i2 = 0
+    target.i3 = 0
+    target.child1 = ptr_null()
+    target.child2 = ptr_null()
+    target.child3 = ptr_null()
+}
+
+private fn semaDefaultLiteral(target: ASTNode, token: TokenType, text: String) -> String {
+    semaDefaultReset(target, NodeKind.LITERAL_EXPR)
+    target.i1 = token
+    target.s1 = text.clone()
+    return ""
+}
+
+// A fresh node spanning `at`, for one element or field of a default. Every node
+// built here is returned or pushed before it is linked, never held in a local
+// that only `node_to_ptr` reaches: semaOmittedField (sema/types.psm) says why.
+private fn semaDefaultNode(at: ASTNode) -> ASTNode {
+    let node = createNode(NodeKind.DEFAULT_EXPR)
+    nodeSpanFrom(node, at)
+    return node
+}
+
+// A literal of `N` element defaults. The length has to be known: a `[T]`
+// parameter's type has none, and there is nothing to count.
+private fn semaDefaultArray(module: ASTNode, target: ASTNode, t: TypeInfo, depth: Int) -> String {
+    if (t.length <= 0 or nodeExists(t.child) == false) {
+        return diagQuote(typeDisplay(t)).concat(" has no default value, because its length is not known")
+    }
+    let elemT = ptr_to_type(t.child)
+    if (t.length > semaDefaultMaxArray()) {
+        let shown = "`Array<".concat(typeDisplay(elemT), ", ", t.length.toString(), ">`")
+        return shown.concat(" is longer than the ", semaDefaultMaxArray().toString(),
+                            " elements a default is written out for; fill it in a loop")
+    }
+    let elements = nodeList()
+    repeat(t.length) {
+        let element = semaDefaultNode(target)
+        let reason = semaDefaultInto(module, element, elemT, depth + 1)
+        if (reason.equals("") == false) { return reason }
+        nodeListPush(elements, element)
+    }
+    semaDefaultReset(target, NodeKind.ARRAY_LITERAL_EXPR)
+    target.child1 = elements.head
+    return ""
+}
+
+// The declaration a struct type names, or an empty node when it has none: a
+// closure's or a trait object's struct is synthesised and is not a value a
+// program builds.
+private fn semaDefaultStructDecl(name: String) -> ASTNode {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.STRUCT_DECL) { return decl }
+    }
+    return createNode(NodeKind.ERROR_NODE)
+}
+
+// The name a generic struct was instantiated from: `Map` for `Map$String$Int`.
+private fn semaDefaultTemplateName(name: String) -> String {
+    let at = name.indexOf(monoSeparator())
+    if (at < 0) { return name }
+    return name.substring(0, at)
+}
+
+private fn semaDefaultStruct(module: ASTNode, target: ASTNode, t: TypeInfo, depth: Int) -> String {
+    let shown = diagQuote(typeDisplay(t))
+    // A closure and a trait object are structs the compiler wrote: fields that
+    // default would build a value with nothing to call.
+    if (t.name.startsWith("Closure".concat(monoSeparator())) or t.name.startsWith("dyn$")) {
+        return shown.concat(" has no default value")
+    }
+    let decl = semaDefaultStructDecl(t.name)
+    if (decl.kind != NodeKind.STRUCT_DECL) { return shown.concat(" has no default value") }
+
+    let template = semaDefaultTemplateName(t.name)
+    let fromStd = semaFileIsStandardLibrary(decl.file)
+    // A payload enum is a tagged struct (sema/enums.psm). `Option`'s absent
+    // variant is the one enum value that is the obvious default.
+    if (semaStructHasField(t.name, "$tag")) {
+        if (fromStd and template.equals("Option")) { return semaDefaultOptionNone(module, target, t) }
+        return shown.concat(" is an enum, which has no default value")
+    }
+    // A Map's buckets are an invariant its fields cannot be defaulted into.
+    if (fromStd and template.equals("Map")) { return semaDefaultMapNew(module, target, t) }
+    if (depth >= semaDefaultMaxDepth()) {
+        return shown.concat(" contains itself, so it has no default value")
+    }
+
+    let fields = nodeList()
+    let mut fieldPtr = decl.child1
+    while (nodeExists(fieldPtr)) {
+        let declared = ptr_to_node(fieldPtr)
+        let field = createNode(NodeKind.STRUCT_FIELD)
+        field.s1 = declared.s1.clone()
+        nodeSpanFrom(field, target)
+        field.child1 = node_to_ptr(semaDefaultNode(target))
+        let fieldT = semaAnnotationType(module, ptr_to_node(declared.child1))
+        let reason = semaDefaultInto(module, ptr_to_node(field.child1), fieldT, depth + 1)
+        if (reason.equals("") == false) {
+            return reason.concat(", in field ", diagQuote(declared.s1), " of ", shown)
+        }
+        nodeListPush(fields, field)
+        fieldPtr = declared.next
+    }
+    semaDefaultReset(target, NodeKind.STRUCT_LITERAL_EXPR)
+    target.s1 = t.name.clone()
+    target.child1 = fields.head
+    return ""
+}
+
+// `Option<T>.None`, with `T` read back from the instantiation's payload slot.
+private fn semaDefaultOptionNone(module: ASTNode, target: ASTNode, t: TypeInfo) -> String {
+    let payloadT = semaFindStructFieldType(module, target, t.name, enumPayloadField("Some", 0))
+    semaDefaultReset(target, NodeKind.MEMBER_ACCESS_EXPR)
+    target.s1 = "None"
+    target.child1 = node_to_ptr(semaDefaultTypeArgs(target, "Option", payloadT, typeInvalid()))
+    return ""
+}
+
+// `mapNew<K, V>()`, with `K` and `V` read back from the instantiation's columns.
+private fn semaDefaultMapNew(module: ASTNode, target: ASTNode, t: TypeInfo) -> String {
+    let keyT = semaListElementType(semaFindStructFieldType(module, target, t.name, "keys"))
+    let valueT = semaListElementType(semaFindStructFieldType(module, target, t.name, "values"))
+    semaDefaultReset(target, NodeKind.CALL_EXPR)
+    target.child1 = node_to_ptr(semaDefaultCallee(target, "mapNew"))
+    target.child3 = node_to_ptr(semaDefaultTypeArgs(target, "mapNew", keyT, valueT))
+    return ""
+}
+
+private fn semaDefaultCallee(at: ASTNode, name: String) -> ASTNode {
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = name.clone()
+    nodeSpanFrom(callee, at)
+    return callee
+}
+
+// `name<a>` or `name<a, b>` as the parser writes it on a qualifier or a call;
+// `second` is left off when it is invalid.
+private fn semaDefaultTypeArgs(at: ASTNode, name: String, first: TypeInfo, second: TypeInfo) -> ASTNode {
+    let written = createNode(NodeKind.TYPE_ANNOTATION)
+    written.s1 = name.clone()
+    written.i2 = 1
+    nodeSpanFrom(written, at)
+    let args = nodeList()
+    nodeListPush(args, monoAnnotationFromType(first))
+    if (typeIsValid(second)) { nodeListPush(args, monoAnnotationFromType(second)) }
+    written.child1 = args.head
+    return written
+}

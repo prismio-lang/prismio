@@ -486,6 +486,11 @@ private fn parsePrimary(p: Parser) -> ASTNode {
         p.advance()
         return noneLiteral
     }
+    if (current.type == TokenType.KEYWORD and current.value.equals("default")) {
+        let defaultValue = p.node(NodeKind.DEFAULT_EXPR)
+        p.advance()
+        return defaultValue
+    }
 
     // v0.1 3.6. Through parseSuffixes, so that `"a,b".contains(",")` parses.
     //

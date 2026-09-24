@@ -90,6 +90,15 @@
 
 ### Added
 
+- **`default`**, the default value of whatever type its context expects:
+  `let x: String = default` is `""`. Numbers are `0`, `Bool` `false`, `Char`
+  `'\0'`, `Vec` `[]`, `T?` `none`, `Option<T>` `None`, `Map` an empty map, a
+  sized array its elements' defaults, and a struct its fields' defaults. It is a
+  keyword and a `DEFAULT_EXPR` that sema rewrites in place once an annotation, a
+  `return`, a field or an assignment names the type (`src/sema/defaults.psm`);
+  an enum, a closure, a channel and an argument position are refused with the
+  reason. test_171, neg_172, neg_173.
+
 - **`prismio bench` reports in the terminal.** Each workload prints a row as it
   finishes -- the three arms' medians, the fastest in bold, Prismio's ratio to
   C++ and to Rust coloured by the suite's 4% noise floor -- grouped by category,

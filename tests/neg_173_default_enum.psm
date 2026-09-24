@@ -1,0 +1,10 @@
+// expect-error: `Color` is an enum, which has no default value, in field `color` of `Pen`
+// An enum's value is named, not guessed -- and a struct holding one has no
+// default either, which the diagnostic traces through the field.
+enum Color { Red, Green }
+struct Pen { color: Color, width: Int }
+
+fn main() -> Int {
+    let p: Pen = default
+    return p.width
+}

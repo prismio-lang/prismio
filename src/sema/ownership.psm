@@ -123,6 +123,14 @@ internal fn semaCheckMutablePlace(place: ASTNode) -> Bool {
 // Type-check a value against an expected type, allowing a bare integer literal to
 // take on any sized integer type (so `let x: U8 = 200` and `f(200)` type-check).
 internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo, context: String) -> TypeInfo {
+    // `default` becomes the expected type's value here, and is then checked as
+    // the literal it became -- so `0` still adopts `U8` below.
+    if (valNode.kind == NodeKind.DEFAULT_EXPR) {
+        if (semaResolveDefault(module, valNode, expected) == false) {
+            nodeSetType(valNode, typeInvalid())
+            return typeInvalid()
+        }
+    }
     if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(valNode)) {
         // Adopting a type is also where the value has to fit in it. Without
         // this, `let small: U8 = 999` typed as U8 and stored 231.

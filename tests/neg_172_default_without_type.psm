@@ -1,0 +1,9 @@
+// expect-error: `default` needs a type from its context
+// An argument has no type to be the default of: the overload is chosen from the
+// argument types, so the argument cannot take its type from the overload.
+fn take(x: Int) -> Int { return x }
+
+fn main() -> Int {
+    let a = default
+    return take(default)
+}

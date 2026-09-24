@@ -1818,6 +1818,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (expr.kind == NodeKind.LITERAL_EXPR) { return semaLiteralExpr(module, expr) }
     if (expr.kind == NodeKind.IDENTIFIER_EXPR) { return semaIdentifierExpr(module, expr) }
     if (expr.kind == NodeKind.NONE_LITERAL_EXPR) { return semaNoneLiteralExpr(module, expr) }
+    if (expr.kind == NodeKind.DEFAULT_EXPR) { return semaDefaultWithoutContext(expr) }
     if (expr.kind == NodeKind.CAST_EXPR) { return semaCastExpr(module, expr) }
     if (expr.kind == NodeKind.UNARY_EXPR) { return semaUnaryExpr(module, expr) }
     if (expr.kind == NodeKind.BINARY_EXPR) { return semaBinaryExpr(module, expr) }
@@ -2142,10 +2143,14 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     semaDefaultEmptyVec(stmt)
     let mut varT = typeInvalid()
     let hasAnnotation = nodeExists(stmt.child1)
-    let hasInit = nodeExists(stmt.child2)
+    let mut hasInit = nodeExists(stmt.child2)
 
     if (hasAnnotation) {
         varT = semaAnnotationType(module, ptr_to_node(stmt.child1))
+    }
+    if (hasInit and semaDefaultZeroesArray(ptr_to_node(stmt.child2), varT)) {
+        stmt.child2 = ptr_null()
+        hasInit = false
     }
     if (hasInit) {
         if (hasAnnotation) {
@@ -2338,9 +2343,10 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     // A bare integer literal adopts the target's type, as it does in a `let`:
     // `w = 4294967296` into an I64 and `b = 200` into a U8 were refused as
     // "expected I64, found Int" until 2026-09-18. semaCheckValue is this path
-    // plus the adoption and its range check, so only a literal is sent there.
+    // plus the adoption and its range check, so only a literal is sent there --
+    // and `default`, which needs the target's type to become anything at all.
     let value = ptr_to_node(stmt.child2)
-    if (semaIsIntLiteral(value)) {
+    if (semaIsIntLiteral(value) or value.kind == NodeKind.DEFAULT_EXPR) {
         semaCheckValue(module, value, targetT, "assignment")
     } else {
         let valueT = semaValueTypeAgainst(module, value, targetT)
