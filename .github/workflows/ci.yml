@@ -189,14 +189,14 @@ jobs:
           cp -R dist/Prismio "$CLEAN/toolchain"
           cat > "$CLEAN/smoke.psm" <<'PSM'
           import std.io
-          import std.list
+          import std.vec
           import std.map
           import std.option
 
           struct Note { id: Int }
 
           fn main() -> Int {
-              let mut ids: List<Int> = list_new()
+              let mut ids: Vec<Int> = list_new()
               list_push(ids, 3)
               list_push(ids, 1)
               list_push(ids, 2)
@@ -221,8 +221,7 @@ jobs:
           }
           PSM
           cd "$CLEAN"
-          "./toolchain/bin/prismio$EXT" build smoke.psm -o smoke$EXT \
-            || "./toolchain/prismio$EXT" build smoke.psm -o smoke$EXT
+          "./toolchain/bin/prismio$EXT" build smoke.psm -o smoke$EXT
           OUT="$(./smoke$EXT)"
           echo "smoke output: $OUT"
           [ "$OUT" = "18" ] || { echo "expected 18"; exit 1; }
