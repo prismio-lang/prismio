@@ -98,6 +98,14 @@
   `return`, a field or an assignment names the type (`src/sema/defaults.psm`);
   an enum, a closure, a channel and an argument position are refused with the
   reason. test_171, neg_172, neg_173.
+- **Import groups.** `import {io, string, vec} from std` is `import std.io`,
+  `import std.string`, `import std.vec`, and an entry can carry its own alias
+  (`import {decode, encode as enc} from protocol`). An entry names a file, never
+  a declaration -- `import std.string.trim` still selects one, so braces keep a
+  single meaning -- and a declaration entry is P1072. `import * from std` is
+  `import std.*` with the directory last. `from` is contextual, not a keyword.
+  The parser expands the group into the statements its lines would have been.
+  test_173, neg_179..181.
 
 - **`prismio bench` reports in the terminal.** Each workload prints a row as it
   finishes -- the three arms' medians, the fastest in bold, Prismio's ratio to

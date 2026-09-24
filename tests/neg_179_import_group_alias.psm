@@ -1,0 +1,4 @@
+// expect-error: `as` names one module, so it goes on an entry inside the group
+import {io, string} from std as both
+
+fn main() -> Int { return 0 }

@@ -243,8 +243,20 @@ impl Parser {
     // error rather than a prefix match. Matching on partial names would make the set
     // of modules a program depends on a function of what the directory happens to
     // contain, which is exactly what a reader cannot see from the import.
+    //
+    // The three shapes read as one progression: a path names one file
+    // (`import std.io`), a directory's children by name (`import {io, vec} from
+    // std`) or all of them (`import std.*`, or `import * from std`), and a path
+    // one step past a file names a declaration inside it (`import std.string.trim`).
     internal fn parseImportStatement(self) -> ASTNode {
         self.expectVal(TokenType.KEYWORD, "import", "import statement")
+
+        if (self.checkVal(TokenType.SEPARATOR, "{")) {
+            return parseImportGroup(self)
+        }
+        if (self.checkVal(TokenType.ARITHMETIC_OPERATOR, "*")) {
+            return parseImportAllFrom(self)
+        }
 
         let importNode = self.node(NodeKind.IMPORT_STATEMENT)
         let first = self.current()
@@ -261,6 +273,12 @@ impl Parser {
                 importNode.i1 = 1
                 break
             }
+            // The path-first group other languages spell. Refused by name, so the
+            // one reader who types it learns the order rather than reading
+            // "expected a module name, found `{`".
+            if (self.checkVal(TokenType.SEPARATOR, "{")) {
+                self.fatal("an import group names the modules first and the directory after: `import {io, string} from ".concat(importNode.s1, "`"))
+            }
             importNode.s1 = importNode.s1.concat(".", parseModuleSegment(self))
         }
 
@@ -276,27 +294,115 @@ impl Parser {
         // The alias lands in `s2`; `s1` stays the real import path, so the merge,
         // the import gate and every diagnostic keep naming the module the reader
         // would find on disk.
-        if (self.matchVal(TokenType.KEYWORD, "as")) {
-            if (importNode.i1 == 1) {
-                self.fatal("`import <package>.* as <name>` has no meaning: the wildcard brings in every module in the package, and an alias can only name one")
-            }
-            let aliasToken = self.current()
-            if (aliasToken.type != TokenType.IDENTIFIER) {
-                self.fatal("expected a name after `as`, found ".concat(parserDescribe(aliasToken)))
-            }
-            importNode.s2 = aliasToken.value
-            endCol = aliasToken.col + aliasToken.len
-            self.advance()
-            // An alias is one name, not a path. `import std.io as std.io` would
-            // otherwise stop at `std` and report the `.` as a stray declaration,
-            // which points at the line after the mistake.
-            if (self.checkVal(TokenType.SEPARATOR, ".")) {
-                self.fatal("an `as` name is a single identifier, not a dotted path")
-            }
+        if (self.checkVal(TokenType.KEYWORD, "as") and importNode.i1 == 1) {
+            self.fatal("`import <package>.* as <name>` has no meaning: the wildcard brings in every module in the package, and an alias can only name one")
         }
+        endCol = parseImportAlias(self, importNode, endCol)
 
         importNode.len = endCol - importNode.col
         return importNode
+    }
+
+    // `as <name>` after an import path, into `s2`. Answers where the statement now
+    // ends, which is the alias when there is one.
+    private fn parseImportAlias(self, importNode: ASTNode, endCol: Int) -> Int {
+        if (self.matchVal(TokenType.KEYWORD, "as") == false) { return endCol }
+        let aliasToken = self.current()
+        if (aliasToken.type != TokenType.IDENTIFIER) {
+            self.fatal("expected a name after `as`, found ".concat(parserDescribe(aliasToken)))
+        }
+        importNode.s2 = aliasToken.value
+        self.advance()
+        // An alias is one name, not a path. `import std.io as std.io` would
+        // otherwise stop at `std` and report the `.` as a stray declaration,
+        // which points at the line after the mistake.
+        if (self.checkVal(TokenType.SEPARATOR, ".")) {
+            self.fatal("an `as` name is a single identifier, not a dotted path")
+        }
+        return aliasToken.col + aliasToken.len
+    }
+
+    // `from <directory>` after a group or a `*`: the dotted path the entries sit in.
+    //
+    // `from` is contextual, an identifier with that spelling in this one position,
+    // so no program that already names something `from` changes meaning.
+    private fn parseImportFrom(self, shape: String) -> String {
+        let word = self.current()
+        if (word.type != TokenType.IDENTIFIER or word.value.equals("from") == false) {
+            self.fatal("expected `from` and a directory after ".concat(shape, ", found ",
+                parserDescribe(word), ": `import {io, string} from std`"))
+        }
+        self.advance()
+        let mut path = parseModuleSegment(self)
+        while (self.matchVal(TokenType.SEPARATOR, ".")) {
+            if (self.checkVal(TokenType.ARITHMETIC_OPERATOR, "*") or self.checkVal(TokenType.SEPARATOR, "{")) {
+                self.fatal("the path after `from` names one directory")
+            }
+            path = path.concat(".", parseModuleSegment(self))
+        }
+        if (self.checkVal(TokenType.KEYWORD, "as")) {
+            self.fatal("`as` names one module, so it goes on an entry inside the group: `import {io as out} from std`")
+        }
+        return path
+    }
+
+    // `import * from std` -- `import std.*` with the directory last, so every
+    // shape that reaches into a directory can be written in one order.
+    private fn parseImportAllFrom(self) -> ASTNode {
+        let importNode = self.node(NodeKind.IMPORT_STATEMENT)
+        self.advance()
+        importNode.i1 = 1
+        importNode.s1 = parseImportFrom(self, "`import *`")
+        return importNode
+    }
+
+    // `import {io, string, vec} from std` -- several modules that sit in one
+    // directory.
+    //
+    // Each entry becomes exactly the statement its own line would have been:
+    // `import {io, string as s} from std` is `import std.io` and `import
+    // std.string as s`, chained on `next` for parseModule to splice in order,
+    // and nothing after the parser learns that groups exist.
+    //
+    // An entry is one file, never a declaration. `import std.string.trim` already
+    // selects a name, and braces that selected modules in one place and
+    // declarations in another would be one spelling for two jobs. The parser
+    // cannot tell a module from a declaration, so it marks each entry (`i2`) and
+    // the merge refuses one that does not name a file. A dotted entry is refused
+    // here: the entries are siblings, and a nested directory is its own group.
+    private fn parseImportGroup(self) -> ASTNode {
+        self.expectVal(TokenType.SEPARATOR, "{", "import group")
+        let entries = nodeList()
+        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            nodeListPush(entries, parseImportGroupEntry(self))
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        self.expectVal(TokenType.SEPARATOR, "}", "import group")
+        if (nodeIsNull(entries.head)) {
+            self.fatal("an import group names at least one module: `import {io, vec} from std`")
+        }
+        let directory = parseImportFrom(self, "an import group")
+
+        let mut entryPtr = entries.head
+        while (nodeExists(entryPtr)) {
+            let entry = ptr_to_node(entryPtr)
+            entry.s1 = directory.concat(".", entry.s1)
+            entryPtr = entry.next
+        }
+        return ptr_to_node(entries.head)
+    }
+
+    private fn parseImportGroupEntry(self) -> ASTNode {
+        let entry = self.node(NodeKind.IMPORT_STATEMENT)
+        let first = self.current()
+        entry.s1 = parseModuleSegment(self)
+        entry.i2 = 1
+        if (self.checkVal(TokenType.SEPARATOR, ".")) {
+            self.fatal("an import group names modules directly inside one directory; write a nested one as its own group, and select a declaration with its own import: `import std.string.trim`")
+        }
+        let endCol = parseImportAlias(self, entry, first.col + first.len)
+        entry.len = endCol - entry.col
+        return entry
     }
 
     public fn parseModule(self) -> ASTNode {
@@ -334,6 +440,17 @@ impl Parser {
                     method.next = ptr_null()
                     nodeListPush(declarations, method)
                     methodPtr = following
+                }
+            } else if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
+                // One node, or a group's entries chained on `next`
+                // (parseImportGroup). Read before pushing, as for methods above.
+                let mut importPtr = node_to_ptr(stmt)
+                while (nodeExists(importPtr)) {
+                    let entry = ptr_to_node(importPtr)
+                    let following = entry.next
+                    entry.next = ptr_null()
+                    nodeListPush(declarations, entry)
+                    importPtr = following
                 }
             } else if (stmt.kind != NodeKind.ERROR_NODE) {
                 // A placeholder from recovery. Dropping it here is what keeps every

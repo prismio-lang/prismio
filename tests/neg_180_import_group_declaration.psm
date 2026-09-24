@@ -1,0 +1,4 @@
+// expect-error: an import group names modules, and `std.option.Option` is a declaration inside `std.option`
+import {Option} from std.option
+
+fn main() -> Int { return 0 }

@@ -374,6 +374,25 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
     ir_import_alias_record(stmt.file, stmt.s2, stmt.s1)
 }
 
+// An entry of `import {a, b} from dir` names a file, never a declaration
+// (parseImportGroup marks it with `i2`). Refused here because only resolution
+// can see the difference: `import {Option} from std.option` would otherwise
+// reach mergeNamedModule's selective-import fallback and quietly select a name.
+// An entry that names nothing at all falls through to P1001's "no such file".
+private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) {
+    if (stmt.i2 != 1) { return }
+    if (file_exists(resolveImportPath(baseDir, stmt.s1)) == 1) { return }
+    let cut = stmt.s1.lastIndexOf(".")
+    let directory = stmt.s1.substring(0, cut)
+    if (file_exists(resolveImportPath(baseDir, directory)) == 0) { return }
+    diag_error_at_code("P1072", stmt.file, stmt.line, stmt.col, stmt.len,
+        "an import group names modules, and ".concat(diagQuote(stmt.s1), " is a declaration inside ",
+                                                     diagQuote(directory)))
+    diag_note("select a declaration with its own import: `import ".concat(stmt.s1, "`"))
+    diag_finish()
+    exit(1)
+}
+
 private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
     let mut seen = visited
 
@@ -387,6 +406,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
             if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
             } else {
+                refuseGroupDeclaration(stmt, baseDir)
                 ir_import_record(stmt.file, stmt.s1)
                 recordImportAlias(stmt, baseDir)
                 seen = mergeNamedModule(merged, stmt, stmt.s1, baseDir, seen)

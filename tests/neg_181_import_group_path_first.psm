@@ -1,0 +1,4 @@
+// expect-error: an import group names the modules first and the directory after: `import {io, string} from std`
+import std.{io, string}
+
+fn main() -> Int { return 0 }

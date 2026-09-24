@@ -1,0 +1,34 @@
+// `import {a, b, c} from pkg` -- several modules from one directory on one line,
+// and `import * from pkg`, which is `import pkg.*` with the directory last.
+//
+// Each entry is the import its own line would be, so an entry can carry its own
+// `as`: `import {io as out} from std`. An entry names a file, never a declaration;
+// neg_179..181 are the alias outside the braces, a declaration entry, and the
+// path-first spelling.
+import {io, string, vec} from std
+import {alpha, gamma as g} from visibility
+import * from visibility
+import std.option.Option
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut words: Vec<String> = ["  a ", "b"]
+    words.push("c")
+    if (words[0].trim().equals("a") == false) { return fail("std group") }
+    if (visibilityPublic(3) != 6) { return fail("a directory group") }
+    if (visibility.alpha.visibilityPublic(4) != 8) { return fail("the module keeps its own path") }
+    if (g.visibilityThroughMiddle(1) != visibilityThroughMiddle(1)) { return fail("an alias inside a group") }
+    if (visibilityFromSibling(1) != 101) { return fail("import * from a directory") }
+    let mut counts: Vec<Int> = [7]
+    match (counts.pop()) {
+        Option.Some(n) => { if (n != 7) { return fail("a selected declaration") } }
+        Option.None => { return fail("a selected declaration") }
+    }
+    println("test_173 ok")
+    return 0
+}
