@@ -23,6 +23,7 @@ argument is forwarded to the runner, so `prismio suite -k foo --list` works.
 toolchain. Exits with the runner's status.
 """
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -32,8 +33,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # The project host first, because it is the compiler the working tree just built.
 DEFAULT_CANDIDATES = (
-    REPO / ".prismio" / "build" / "debug" / "prismio",
-    REPO / "dist" / "Prismio" / "bin" / "prismio",
+    REPO / ".prismio" / "build" / "debug" / ("prismio.exe" if os.name == "nt" else "prismio"),
+    REPO / "dist" / "Prismio" / "bin" / ("prismio.exe" if os.name == "nt" else "prismio"),
 )
 
 

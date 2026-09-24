@@ -788,7 +788,7 @@ def preserved_project_host():
     from the snapshot to the restore, so a waiting suite never saves a host that
     is halfway through someone else's test.
     """
-    artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / "prismio"
+    artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / ("prismio.exe" if os.name == "nt" else "prismio")
     candidate = artifact.with_name(artifact.name + ".next")
 
     with project_host_lock():
@@ -969,7 +969,8 @@ def run_ums_test():
             [str(PRISMIO_EXE), "build"], capture_output=True, text=True,
             cwd=str(project),
         )
-        native_exe = project / ".prismio" / "build" / "debug" / "native-link"
+        native_exe = (project / ".prismio" / "build" / "debug"
+                      / ("native-link.exe" if os.name == "nt" else "native-link"))
         if native_build.returncode != 0 or not native_exe.exists():
             print(f"{RED}[FAIL] ums: declared native inputs did not link{RESET}")
             show_run(native_build)

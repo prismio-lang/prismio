@@ -61,7 +61,9 @@ Supported top-level blocks and declarations are:
 
 - `toolchain { host = ".prismio/build/debug/compiler" }` (optional; when
   present it must be the first block so an older global compiler can read this
-  stable prefix without parsing the remaining manifest)
+  stable prefix without parsing the remaining manifest). Write it without an
+  extension: on Windows the host, like every executable and test target, is
+  built as `<name>.exe`, and the path is resolved to match
 - `project { name = "..."; version = "..."; prismio = "..." }`
 - optional project metadata: `description = "..."`, `license = "MIT"`, and
   `authors = ["Name", "Another Name"]`

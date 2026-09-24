@@ -643,7 +643,8 @@ public fn dispatchToUmsHost() -> Int {
 // replaces and `toolchain.host` names a file rather than a target.
 private fn isUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget) -> Bool {
     if (__builtin_string_len(workspace.project.toolchain.host) == 0) { return false }
-    return target.outputPath.equals(join_path(workspace.project.root, workspace.project.toolchain.host))
+    let host = umsExecutablePath(join_path(workspace.project.root, workspace.project.toolchain.host))
+    return target.outputPath.equals(host)
 }
 
 private fn buildUmsTarget(workspace: UmsWorkspace, target: UmsTarget) -> Int {
