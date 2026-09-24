@@ -182,7 +182,7 @@ else
     if [ "$FETCH_CMD" = "curl" ]; then
         API_RESP="$(curl -fsSL -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/prismio-lang/prismio/releases/latest" 2>/dev/null || true)"
         TAG="$(printf '%s' "$API_RESP" | grep '"tag_name":' | head -n 1 | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' || true)"
-        
+
         # Fallback to redirect URL if API returned empty or was rate limited
         if [ -z "$TAG" ]; then
             REDIRECT_URL="$(curl -fsSL -o /dev/null -w "%{url_effective}" "https://github.com/prismio-lang/prismio/releases/latest" 2>/dev/null || true)"
@@ -235,7 +235,7 @@ elif [ -n "${PRISMIO_DOWNLOAD_URL:-}" ]; then
     fi
 else
     GITHUB_RELEASE_BASE="https://github.com/prismio-lang/prismio/releases/download/${RELEASE_TAG}"
-    
+
     CANDIDATE_NAMES="
 prismio-${VERSION}-${ARCH_TRIPLE}-${PLATFORM_TRIPLE}.tar.gz
 prismio-${VERSION}-${OS_NAME}-${ARCH_NAME}.tar.gz

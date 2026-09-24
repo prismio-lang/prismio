@@ -380,7 +380,7 @@ private fn parseArrayTypeArgs(p: Parser, typeNode: ASTNode, name: Token) {
     typeNode.i1 = 1
     typeNode.i2 = 0
     if (ok == false) {
-        diag_error_at_code("P3006", name.file, name.line, name.col, name.len,
+        diag_error_at_code("P3007", name.file, name.line, name.col, name.len,
                            "`Array` takes an element type, then optionally a length")
         diag_note("write `Array<T, N>`, or `Array<T>` when an initializer gives the length")
         // `[Invalid]`, so nothing after this reads a number as a type.
@@ -931,7 +931,7 @@ private fn parseExternVariableDecl(p: Parser) -> ASTNode {
     p.expectToken(TokenType.IDENTIFIER, "variable name")
 
     if (p.matchVal(TokenType.SEPARATOR, ":") == false) {
-        diag_error_at_code("P3004", name.file, name.line, name.col, name.len,
+        diag_error_at_code("P3008", name.file, name.line, name.col, name.len,
             "extern global ".concat(diagQuote(extNode.s1), " needs a type annotation"))
         diag_note("the definition is in foreign code, so there is no initializer to infer a type from")
         return extNode
