@@ -1045,49 +1045,78 @@ static int target_is_mach_o(void) {
 // the driver owns shell-safe spelling. Keeping this as arguments rather than a
 // raw flags string means a manifest value can never become a second command or
 // smuggle in an unrelated driver option.
+//
+// Each input is kept twice: spelled for a clang/cc driver, and spelled for
+// MSVC's link.exe, which is what links a Windows program (link_program_msvc).
+// The two differ in exactly the two inputs that name something indirectly:
+// `-lfoo` is `foo.lib`, and `-L dir` is `/LIBPATH:dir`.
 static char* g_native_link_args = NULL;
+static char* g_native_link_args_msvc = NULL;
 static int g_native_link_has_framework = 0;
 
 void compiler_link_reset(void) {
     free(g_native_link_args);
     g_native_link_args = NULL;
+    free(g_native_link_args_msvc);
+    g_native_link_args_msvc = NULL;
     g_native_link_has_framework = 0;
 }
 
-static int compiler_link_append_argument(const char* argument) {
+static int append_quoted_argument(char** args, const char* argument) {
     char* quoted = command_quote_arg(argument ? argument : "");
     if (!quoted) return 1;
 
-    size_t old_len = g_native_link_args ? strlen(g_native_link_args) : 0;
+    size_t old_len = *args ? strlen(*args) : 0;
     size_t quoted_len = strlen(quoted);
-    char* grown = (char*)realloc(g_native_link_args, old_len + quoted_len + 2);
+    char* grown = (char*)realloc(*args, old_len + quoted_len + 2);
     if (!grown) {
         free(quoted);
         return 1;
     }
-    g_native_link_args = grown;
-    g_native_link_args[old_len] = ' ';
-    memcpy(g_native_link_args + old_len + 1, quoted, quoted_len + 1);
+    *args = grown;
+    grown[old_len] = ' ';
+    memcpy(grown + old_len + 1, quoted, quoted_len + 1);
     free(quoted);
     return 0;
 }
 
-static int compiler_link_append_prefixed(const char* prefix, const char* value) {
-    size_t len = strlen(prefix) + strlen(value ? value : "") + 1;
+static int append_joined_argument(char** args, const char* prefix, const char* value,
+                                  const char* suffix) {
+    size_t len = strlen(prefix) + strlen(value ? value : "") + strlen(suffix) + 1;
     char* argument = (char*)malloc(len);
     if (!argument) return 1;
-    snprintf(argument, len, "%s%s", prefix, value ? value : "");
-    int result = compiler_link_append_argument(argument);
+    snprintf(argument, len, "%s%s%s", prefix, value ? value : "", suffix);
+    int result = append_quoted_argument(args, argument);
     free(argument);
     return result;
 }
 
+static int compiler_link_append_argument(const char* argument) {
+    return append_quoted_argument(&g_native_link_args, argument)
+        || append_quoted_argument(&g_native_link_args_msvc, argument);
+}
+
+static int has_suffix_ignoring_case(const char* text, const char* suffix) {
+    size_t n = strlen(text), m = strlen(suffix);
+    if (n < m) return 0;
+    for (size_t i = 0; i < m; i++) {
+        char a = text[n - m + i], b = suffix[i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
 int compiler_link_library(const char* name) {
-    return compiler_link_append_prefixed("-l", name);
+    const char* value = name ? name : "";
+    return append_joined_argument(&g_native_link_args, "-l", value, "")
+        || append_joined_argument(&g_native_link_args_msvc, "", value,
+                                  has_suffix_ignoring_case(value, ".lib") ? "" : ".lib");
 }
 
 int compiler_link_search(const char* path) {
-    return compiler_link_append_prefixed("-L", path);
+    return append_joined_argument(&g_native_link_args, "-L", path, "")
+        || append_joined_argument(&g_native_link_args_msvc, "/LIBPATH:", path, "");
 }
 
 int compiler_link_file(const char* path) {
@@ -1557,8 +1586,9 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj) {
 //
 // In order: PRISMIO_CC; the pinned clang, when this compiler runs from a
 // checkout that has one (so development builds link exactly as before); then
-// `cc`, or `clang` on Windows, where there is no `cc`. A cross build needs a
-// driver that takes `--target`, which `cc` is only when it is clang.
+// `cc`. A cross build needs a driver that takes `--target`, which `cc` is only
+// when it is clang. A Windows host build does not come here at all: it links
+// with MSVC's link.exe (link_program_msvc) unless PRISMIO_CC says otherwise.
 static const char* link_driver_command(void) {
     static char command[1200];
     static int ready = 0;
@@ -1580,10 +1610,229 @@ static const char* link_driver_command(void) {
     return command;
 }
 
+#ifdef _WIN32
+// Linking a Windows program with MSVC's link.exe
+//
+// This step used to run `clang` as the link driver, which meant a Windows user
+// needed LLVM installed to build a program, while macOS and Linux needed only the
+// system's `cc`. clang never did the linking itself: it found Visual Studio and
+// the Windows SDK and ran their link.exe. The libraries it links against
+// (libcmt, kernel32, the UCRT) come only from there, so a Windows machine that
+// can link a C program has link.exe already, and running it directly removes the
+// one piece of LLVM a user build still needed.
+//
+// What follows is the part of clang's MSVC toolchain the link used: find the
+// tools, find the SDK, and pass the same arguments clang did -- `-out:`,
+// `-defaultlib:libcmt -defaultlib:oldnames`, `-nologo` and the library paths.
+//
+// **A developer prompt is taken as it is.** vcvars sets VCToolsInstallDir, and
+// LIB with every library directory; clang adds no -libpath when LIB is set, and
+// neither does this. Outside one -- the usual case, and CI's -- the tools come
+// from vswhere, which every Visual Studio 2017+ and Build Tools install carries,
+// and the SDK from the newest `Windows Kits\10\Lib\10.*` that has this
+// architecture's kernel32.lib and ucrt.lib. Not from the registry, which is
+// what clang also consults: an SDK installed outside Program Files is found
+// only through WindowsSdkDir, that is, from a developer prompt.
+
+static const char* msvc_target_arch(void) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    return "arm64";
+#elif defined(_M_X64) || defined(__x86_64__)
+    return "x64";
+#else
+    return "x86";
+#endif
+}
+
+static void trim_trailing_space(char* text) {
+    for (int i = (int)strlen(text) - 1; i >= 0; i--) {
+        if (text[i] != '\n' && text[i] != '\r' && text[i] != ' ' && text[i] != '\t') break;
+        text[i] = '\0';
+    }
+}
+
+// The VC tools directory, `...\VC\Tools\MSVC\<version>`, or 0.
+static int msvc_tools_dir(char* out, size_t size, const char* exe_file) {
+    const char* env = getenv("VCToolsInstallDir");
+    if (env && *env) {
+        snprintf(out, size, "%s", env);
+        trim_trailing_space(out);
+        size_t n = strlen(out);
+        if (n > 0 && (out[n - 1] == '\\' || out[n - 1] == '/')) out[n - 1] = '\0';
+        return 1;
+    }
+
+    const char* program_files = getenv("ProgramFiles(x86)");
+    if (!program_files || !*program_files) program_files = "C:\\Program Files (x86)";
+    char vswhere[1024];
+    snprintf(vswhere, sizeof(vswhere),
+             "%s\\Microsoft Visual Studio\\Installer\\vswhere.exe", program_files);
+    if (!file_exists(vswhere)) return 0;
+
+    char* answer_path = compiler_temp_path(exe_file, "vswhere.txt");
+    char* q_vswhere = command_quote_arg(vswhere);
+    char* q_answer = command_quote_arg(answer_path);
+    char command[2560];
+    snprintf(command, sizeof(command),
+             "%s -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.%s "
+             "-property installationPath > %s",
+             q_vswhere, strcmp(msvc_target_arch(), "arm64") == 0 ? "ARM64" : "x86.x64",
+             q_answer);
+    free(q_vswhere);
+    free(q_answer);
+    char* install = execute_command(command) == 0 ? read_file(answer_path) : NULL;
+    delete_file(answer_path);
+    free(answer_path);
+    if (!install) return 0;
+    char* newline = strpbrk(install, "\r\n");
+    if (newline) *newline = '\0';
+    if (!install[0]) { free(install); return 0; }
+
+    char version_path[1400];
+    snprintf(version_path, sizeof(version_path),
+             "%s\\VC\\Auxiliary\\Build\\Microsoft.VCToolsVersion.default.txt", install);
+    char* version = read_file(version_path);
+    if (version) {
+        trim_trailing_space(version);
+        snprintf(out, size, "%s\\VC\\Tools\\MSVC\\%s", install, version);
+        free(version);
+    }
+    free(install);
+    return version != NULL;
+}
+
+// `10.0.26100.0` against `10.0.22621.0`, part by part.
+static int compare_dotted_versions(const char* a, const char* b) {
+    while (*a || *b) {
+        long x = strtol(a, (char**)&a, 10);
+        long y = strtol(b, (char**)&b, 10);
+        if (x != y) return x < y ? -1 : 1;
+        if (*a == '.') a++;
+        if (*b == '.') b++;
+        if ((*a && (*a < '0' || *a > '9')) || (*b && (*b < '0' || *b > '9'))) break;
+    }
+    return 0;
+}
+
+// The Windows 10+ SDK's `Lib\<version>` directory, or 0.
+static int windows_sdk_lib_dir(char* out, size_t size) {
+    const char* arch = msvc_target_arch();
+    char root[1024];
+    const char* env_dir = getenv("WindowsSdkDir");
+    if (env_dir && *env_dir) {
+        snprintf(root, sizeof(root), "%s", env_dir);
+    } else {
+        const char* program_files = getenv("ProgramFiles(x86)");
+        if (!program_files || !*program_files) program_files = "C:\\Program Files (x86)";
+        snprintf(root, sizeof(root), "%s\\Windows Kits\\10", program_files);
+    }
+    size_t n = strlen(root);
+    if (n > 0 && (root[n - 1] == '\\' || root[n - 1] == '/')) root[n - 1] = '\0';
+
+    char pattern[1100];
+    snprintf(pattern, sizeof(pattern), "%s\\Lib\\10.*", root);
+    WIN32_FIND_DATAA entry;
+    HANDLE search = FindFirstFileA(pattern, &entry);
+    if (search == INVALID_HANDLE_VALUE) return 0;
+    char best[MAX_PATH] = "";
+    do {
+        if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        char kernel32[1400], ucrt[1400];
+        snprintf(kernel32, sizeof(kernel32), "%s\\Lib\\%s\\um\\%s\\kernel32.lib",
+                 root, entry.cFileName, arch);
+        snprintf(ucrt, sizeof(ucrt), "%s\\Lib\\%s\\ucrt\\%s\\ucrt.lib",
+                 root, entry.cFileName, arch);
+        if (!file_exists(kernel32) || !file_exists(ucrt)) continue;
+        if (!best[0] || compare_dotted_versions(entry.cFileName, best) > 0) {
+            snprintf(best, sizeof(best), "%s", entry.cFileName);
+        }
+    } while (FindNextFileA(search, &entry));
+    FindClose(search);
+    if (!best[0]) return 0;
+    snprintf(out, size, "%s\\Lib\\%s", root, best);
+    return 1;
+}
+
+static int link_program_msvc(const char* program_obj, const char* exe_file) {
+    const char* arch = msvc_target_arch();
+    char tools[1024];
+    if (!msvc_tools_dir(tools, sizeof(tools), exe_file)) {
+        diag_progress_clear();
+        fprintf(stderr,
+                "ERROR: linking a Windows program needs Microsoft's C++ build tools, and\n"
+                "       none were found. Install Visual Studio or its Build Tools with the\n"
+                "       \"Desktop development with C++\" workload, or set PRISMIO_CC to a\n"
+                "       linker driver such as clang.\n");
+        return 1;
+    }
+    const char* host = strcmp(arch, "arm64") == 0 ? "Hostarm64"
+                     : strcmp(arch, "x64") == 0 ? "Hostx64" : "Hostx86";
+    char link_exe[1200];
+    snprintf(link_exe, sizeof(link_exe), "%s\\bin\\%s\\%s\\link.exe", tools, host, arch);
+    if (!file_exists(link_exe)) {
+        diag_progress_clear();
+        fprintf(stderr, "ERROR: the C++ build tools at %s have no %s link.exe\n", tools, arch);
+        return 1;
+    }
+
+    char* libpaths = NULL;
+    const char* lib_env = getenv("LIB");
+    if (!lib_env || !*lib_env) {
+        char sdk[1200];
+        if (!windows_sdk_lib_dir(sdk, sizeof(sdk))) {
+            diag_progress_clear();
+            fprintf(stderr,
+                    "ERROR: linking a Windows program needs the Windows SDK, and none with\n"
+                    "       %s libraries was found under Windows Kits\\10. Install it with\n"
+                    "       the \"Desktop development with C++\" workload.\n", arch);
+            return 1;
+        }
+        char dir[1400];
+        snprintf(dir, sizeof(dir), "%s\\lib\\%s", tools, arch);
+        int failed = append_joined_argument(&libpaths, "-libpath:", dir, "");
+        snprintf(dir, sizeof(dir), "%s\\ucrt\\%s", sdk, arch);
+        failed |= append_joined_argument(&libpaths, "-libpath:", dir, "");
+        snprintf(dir, sizeof(dir), "%s\\um\\%s", sdk, arch);
+        failed |= append_joined_argument(&libpaths, "-libpath:", dir, "");
+        if (failed) { free(libpaths); return 1; }
+    }
+
+    char* q_link = command_quote_arg(link_exe);
+    char* q_obj = command_quote_arg(program_obj);
+    char* out_arg = NULL;
+    append_joined_argument(&out_arg, "-out:", exe_file, "");
+    const char* native = g_native_link_args_msvc ? g_native_link_args_msvc : "";
+    size_t len = strlen(q_link) + strlen(q_obj) + (out_arg ? strlen(out_arg) : 0)
+                 + (libpaths ? strlen(libpaths) : 0) + strlen(native) + 128;
+    char* command = (char*)malloc(len);
+    int result = 1;
+    if (command && out_arg) {
+        snprintf(command, len, "%s%s -defaultlib:libcmt -defaultlib:oldnames -nologo%s %s%s",
+                 q_link, out_arg, libpaths ? libpaths : "", q_obj, native);
+        // execute_command, not run_build_command: the line starts with a quoted
+        // path, and `system` hands it to `cmd /c`, which strips the first and
+        // last quote of such a line. execute_command wraps it in `cmd /S /C`.
+        result = execute_command(command);
+    }
+    free(command);
+    free(out_arg);
+    free(libpaths);
+    free(q_link);
+    free(q_obj);
+    return result;
+}
+#endif
+
 // The runtime has already been linked into the program's LLVM module before
 // optimisation. The native link therefore receives one program object plus any
 // explicit UMS inputs; there is no opaque runtime archive at this boundary.
 static int link_program_object(const char* program_obj, const char* exe_file) {
+#ifdef _WIN32
+    const char* chosen = getenv("PRISMIO_CC");
+    if ((!chosen || !*chosen) && !ir_target_is_explicit()) {
+        return link_program_msvc(program_obj, exe_file);
+    }
+#endif
     char* q_obj = command_quote_arg(program_obj);
     char* q_exe = command_quote_arg(exe_file);
     char* target = target_clang_flags();

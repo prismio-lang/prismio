@@ -617,15 +617,24 @@ build machine's Cellar path for the `clang` its builds shelled out to.
 What is left:
 
 - **Linking still needs the platform's C toolchain**: `cc` on macOS and Linux,
-  `clang` on PATH on Windows (`PRISMIO_CC` overrides). It is where the C
-  library and the SDK come from, so shipping a linker would not remove it --
-  and on macOS it could not: LLD 23 cannot read the current SDK at all. Zig
-  avoids this by shipping libc stubs; nothing here does.
+  MSVC's `link.exe` with the Windows SDK on Windows (`PRISMIO_CC` overrides
+  both). It is where the C library and the SDK come from, so shipping a linker
+  would not remove it. **Embedding LLD was tried and stopped (2026-09-24)**: it
+  would drop `cc` and nothing else a user installs, since the Command Line
+  Tools that carry `cc` also carry the SDK, and on Linux LLD still needs the
+  C library package and gcc's `crtbegin.o`. It also needs an SDK LLD can read,
+  which the macOS 27 SDK is not: every stub lists `arm64e.x1-macos`, which
+  TextAPI 23 rejects, so a whole-SDK rewrite (6,837 stubs, keeping only the
+  targets TextAPI can name) was the price. LLD earns its place alongside
+  shipped libc/SDK stubs, as in Zig -- for cross builds with no cross
+  toolchain -- and not before.
 - **Windows was changed and not run.** Its archive ships `LLVM-C.lib`/`.dll`
   rather than bitcode, so it stays dynamic, with the DLL copied beside
   `prismio.exe` by the bootstrap, the package and the installer. The Linux path
   (libstdc++ detection, lowering) was likewise written against the macOS run.
-  CI is the first run of both.
+  The `link.exe` discovery (`link_program_msvc`: vswhere, `Windows Kits\10`,
+  a developer prompt's `LIB`) was exercised on macOS only, through a harness
+  stubbing the Win32 calls. CI is the first run of all three.
 - Darwin/x86_64 has no 23.1.x archive; setup refuses it and names `--llvm-dir`.
 
 **A struct crossing a `.plib` read its fields one slot late, and the cause was

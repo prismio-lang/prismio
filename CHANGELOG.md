@@ -320,6 +320,16 @@
   needs no LLVM and no clang. Packages drop `third_party/llvm-paths.json`.
   KNOWN_ISSUES "Toolchain layout".
 
+- **A Windows program links with MSVC's `link.exe`, not `clang`.** That made the
+  claim above true on Windows too: `clang` was only ever the driver that found
+  Visual Studio and ran its linker, so a user needed LLVM installed to build a
+  program. The compiler now finds the tools through `vswhere` and the newest
+  Windows 10+ SDK with this architecture's libraries, or takes a developer
+  prompt's `VCToolsInstallDir` and `LIB` as they are, and passes what clang
+  passed. `-lfoo` from a manifest becomes `foo.lib`, `-L` becomes `/LIBPATH:`.
+  `PRISMIO_CC` still selects a driver instead, and a cross build still uses
+  clang.
+
 - **Storing an element read into a container freed it twice.**
   `list_push(ys, list_get(xs, 0))`, `list_set(xs, i, list_get(xs, j))` and
   `v[i] = v[j]` double-freed any struct or enum literal, and the flat-struct form
