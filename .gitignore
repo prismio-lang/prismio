@@ -92,6 +92,13 @@ __pycache__/
 tests/*
 !tests/*.psm
 !tests/*.py
+# Modules a test imports live one directory down (`import visibility.gamma` is
+# tests/visibility/gamma.psm). Without these three lines the rule above ignored
+# them too, so a fixture module added after the rule never reached a commit:
+# three were missing, and six tests failed on every CI runner and passed here.
+!tests/*/
+tests/*/*
+!tests/*/*.psm
 
 # ...except this one, which is generated: run_workload_test writes it from
 # workload_static.psm with the `workload` block stripped, as the control the

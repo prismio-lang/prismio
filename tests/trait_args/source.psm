@@ -1,0 +1,18 @@
+// Generic traits live in an imported module so test_102 also proves that trait
+// parameter metadata survives import flattening.
+
+trait From<T> {
+    fn from(value: T) -> Self
+}
+
+trait ScaleBy<T> {
+    fn scaleBy(self, value: T) -> Int
+}
+
+trait Wraps<T> {
+    fn wraps(self) -> Bool
+}
+
+trait Tagged<T> {
+    fn tag(self, marker: T) -> Int
+}
