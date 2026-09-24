@@ -260,12 +260,10 @@ internal fn rangeFold(rl: RangeLoop, fact: String) {
 // ---------------------------------------------------------------------------
 
 private fn rangeVarIndex(rl: RangeLoop, name: String) -> Int {
-    let mut i = 0
     let n = list_len(rl.names)
-    while (i < n) {
+    for i in 0..<n {
         let known: String = list_get(rl.names, i)
         if (known.equals(name)) { return i }
-        i = i + 1
     }
     return 0 - 1
 }
@@ -790,10 +788,8 @@ private fn rangeVisitAccess(e: ASTNode, rl: RangeLoop) {
     let width = 2 * list_len(rl.names)
     if (rl.mode == RANGE_WALK_ENUMERATE) {
         list_push(rl.accessConj, rl.conjunct)
-        let mut k = 0
-        while (k < width) {
+        repeat(width) {
             list_push(rl.accessSpans, 0)
-            k = k + 1
         }
     } else if (rl.mode == RANGE_WALK_MEASURE and rl.column >= 0) {
         let at = rl.cursor * width + 2 * rl.column
@@ -813,10 +809,8 @@ private fn rangeVisitLet(s: ASTNode, rl: RangeLoop) {
     let width = 2 * list_len(rl.names)
     if (rl.mode == RANGE_WALK_ENUMERATE) {
         list_push(rl.letNames, strClone(s.s1))
-        let mut k = 0
-        while (k < width) {
+        repeat(width) {
             list_push(rl.letSpans, 0)
-            k = k + 1
         }
     } else if (rl.mode == RANGE_WALK_MEASURE and rl.column >= 0) {
         let at = rl.letCursor * width + 2 * rl.column
@@ -837,10 +831,8 @@ private fn rangeVisitLet(s: ASTNode, rl: RangeLoop) {
 // ---------------------------------------------------------------------------
 
 private fn rangeClearCoefs(rl: RangeLoop) {
-    let mut i = 0
-    while (i < list_len(rl.coefs)) {
+    for i in 0..<list_len(rl.coefs) {
         list_set(rl.coefs, i, 0)
-        i = i + 1
     }
 }
 
@@ -875,8 +867,7 @@ private fn rangeMeasureVars(rl: RangeLoop) {
 private fn rangeFindConditionBounds(rl: RangeLoop) {
     if (nodeIsNull(rl.condPtr)) { return }
     let count = rangeConjunctCount(rl.condPtr)
-    let mut k = 0
-    while (k < count) {
+    for k in 0..<count {
         let c = ptr_to_node(rangeConjunct(rl.condPtr, k))
         let mut i = 0
         while (i < list_len(rl.names)) {
@@ -885,7 +876,6 @@ private fn rangeFindConditionBounds(rl: RangeLoop) {
             }
             i = i + 1
         }
-        k = k + 1
     }
 }
 
@@ -982,13 +972,11 @@ private fn rangeBoundSideOk(sidePtr: Ptr, index: Int, rl: RangeLoop) -> Bool {
 // variables whose sum it moves in step with on every path that stays in the loop.
 private fn rangeFindRelations(rl: RangeLoop) {
     let n = list_len(rl.names)
-    let mut y = 0
-    while (y < n) {
+    for y in 0..<n {
         if (rangeNeedsRelation(rl, y)) {
             let mask = rangeFindRelation(rl, y)
             list_set(rl.relations, y, mask)
         }
-        y = y + 1
     }
     rangeClearCoefs(rl)
 }
@@ -1014,15 +1002,13 @@ private fn rangeFindRelation(rl: RangeLoop, y: Int) -> Int {
     let n = list_len(rl.names)
     let mut size = 1
     while (size <= RANGE_RELATION_MEMBERS) {
-        let mut mask = 1
         let limit = rangeShift(n)
-        while (mask < limit) {
+        for mask in 1..<limit {
             if (rangeBitCount(mask) == size and (mask & rangeShift(y)) == 0
                     and rangeMaskCanRelate(rl, y, mask)
                     and rangeRelationHolds(rl, y, mask)) {
                 return mask
             }
-            mask = mask + 1
         }
         size = size + 1
     }
@@ -1031,10 +1017,8 @@ private fn rangeFindRelation(rl: RangeLoop, y: Int) -> Int {
 
 private fn rangeShift(bit: Int) -> Int {
     let mut v = 1
-    let mut i = 0
-    while (i < bit) {
+    repeat(bit) {
         v = v * 2
-        i = i + 1
     }
     return v
 }
@@ -1426,11 +1410,9 @@ private fn rangeScopeLet(rl: RangeLoop, name: String) -> Int {
 
 private fn rangeLetDeclCount(rl: RangeLoop, name: String) -> Int {
     let mut count = 0
-    let mut i = 0
-    while (i < list_len(rl.letNames)) {
+    for i in 0..<list_len(rl.letNames) {
         let known: String = list_get(rl.letNames, i)
         if (known.equals(name)) { count = count + 1 }
-        i = i + 1
     }
     return count
 }

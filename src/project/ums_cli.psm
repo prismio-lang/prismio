@@ -201,8 +201,7 @@ private fn umsNativePath(root: String, value: String) -> String {
 // else becomes one safely quoted clang argument in declaration order.
 private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
     compiler_link_reset()
-    let mut i = 0
-    while (i < list_len(target.links)) {
+    for i in 0..<list_len(target.links) {
         let input = list_get(target.links, i)
         let mut result = 0
         if (input.kind == UmsLinkKind.LIBRARY) {
@@ -220,7 +219,6 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
             diag_error_code("P1058", "could not prepare native linker inputs")
             return 1
         }
-        i = i + 1
     }
     return 0
 }
@@ -309,8 +307,7 @@ public fn testUmsProject(profile: String) -> Int {
 // is reported as that rather than taken for a source path.
 public fn projectProfile(startIndex: Int) -> String {
     let mut profile = "debug"
-    let mut i = startIndex
-    while (i < process.args.count) {
+    for i in startIndex..<process.args.count {
         let flag = process.args[i]
         if (flag.equals("--release")) {
             profile = "release"
@@ -321,7 +318,6 @@ public fn projectProfile(startIndex: Int) -> String {
             diag_note("a project command takes `--release`; name a source file to build one file")
             return ""
         }
-        i = i + 1
     }
     return profile
 }
@@ -409,12 +405,10 @@ private fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int
 // the stream was never the question -- the banner simply must not be printed
 // when something is going to parse what comes back.
 private fn cliWantsMachineOutput() -> Bool {
-    let mut i = 1
-    while (i < process.args.count) {
+    for i in 1..<process.args.count {
         let flag = process.args[i]
         if (flag.equals("--manifest")) { return true }
         if (strStartsWith(flag, "--diagnostic-format=")) { return true }
-        i = i + 1
     }
     return false
 }
@@ -781,10 +775,8 @@ private fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
 // well, so one flag reaches both halves of `prismio dist --release`: the targets
 // it builds and the script it runs.
 private fn umsCommandProfile(startIndex: Int) -> String {
-    let mut i = startIndex
-    while (i < process.args.count) {
+    for i in startIndex..<process.args.count {
         if (process.args[i].equals("--release")) { return "release" }
-        i = i + 1
     }
     return "debug"
 }
@@ -807,19 +799,15 @@ private fn umsShellProgram(root: String, program: String) -> String {
 // after the command name reaches the process as arguments and never as syntax.
 private fn umsStepArguments(step: UmsCommandStep, forwardFrom: Int) -> String {
     let mut tail = ""
-    let mut index = 0
-    while (index < list_len(step.arguments)) {
+    for index in 0..<list_len(step.arguments) {
         let argument = list_get(step.arguments, index)
         if (argument.forwarded) {
-            let mut forwarded = forwardFrom
-            while (forwarded < process.args.count) {
+            for forwarded in forwardFrom..<process.args.count {
                 tail = tail.concat(" ", command_quote_arg(process.args[forwarded]))
-                forwarded = forwarded + 1
             }
         } else {
             tail = tail.concat(" ", command_quote_arg(argument.text))
         }
-        index = index + 1
     }
     return tail
 }

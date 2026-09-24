@@ -176,11 +176,9 @@ private fn monoCopyChain(ptr: Ptr) -> Ptr {
 internal fn monoParamCount(params: String) -> Int {
     if (params.equals("")) { return 0 }
     let mut count = 1
-    let mut i = 0
     let n = __builtin_string_len(params)
-    while (i < n) {
+    for i in 0..<n {
         if (params.charAt(i) == ',') { count = count + 1 }
-        i = i + 1
     }
     return count
 }
@@ -188,15 +186,13 @@ internal fn monoParamCount(params: String) -> Int {
 internal fn monoParamAt(params: String, index: Int) -> String {
     let mut start = 0
     let mut seen = 0
-    let mut i = 0
     let n = __builtin_string_len(params)
-    while (i <= n) {
+    for i in 0..n {
         if (i == n or params.charAt(i) == ',') {
             if (seen == index) { return strSubstring(params, start, i - start) }
             seen = seen + 1
             start = i + 1
         }
-        i = i + 1
     }
     return ""
 }
@@ -207,10 +203,8 @@ internal fn monoParamName(params: String, index: Int) -> String {
 
 internal fn monoParamIndex(params: String, name: String) -> Int {
     let count = monoParamCount(params)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         if (monoParamName(params, i).equals(name)) { return i }
-        i = i + 1
     }
     return -1
 }
@@ -316,8 +310,7 @@ private fn monoTraitRefsEqual(module: ASTNode, a: ASTNode, b: ASTNode) -> Bool {
 private fn monoImplBoundsHold(module: ASTNode, params: String,
                               genericInfo: Ptr, argsPtr: Ptr) -> Bool {
     let count = monoParamCount(params)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let argPtr = monoChainAt(argsPtr, i)
         if (nodeIsNull(argPtr)) { return false }
         let argT = semaAnnotationType(module, ptr_to_node(argPtr))
@@ -332,7 +325,6 @@ private fn monoImplBoundsHold(module: ASTNode, params: String,
                 boundPtr = ptr_to_node(boundPtr).next
             }
         }
-        i = i + 1
     }
     return true
 }
@@ -368,8 +360,7 @@ private fn monoImplApplies(module: ASTNode, implNode: ASTNode,
 
     let solvedArgs = nodeList()
     let count = monoParamCount(params)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let mut solved = monoMatchParam(module, target, actual, monoParamName(params, i))
         if (nodeIsNull(node_to_ptr(solved))) {
             solved = monoMatchTraitParam(module, implTrait.child1, traitRef.child1,
@@ -377,7 +368,6 @@ private fn monoImplApplies(module: ASTNode, implNode: ASTNode,
         }
         if (nodeIsNull(node_to_ptr(solved))) { return false }
         nodeListPush(solvedArgs, solved)
-        i = i + 1
     }
 
     // Solving every parameter is necessary but not sufficient. For
@@ -431,8 +421,7 @@ private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: S
                            genericInfo: Ptr, argsPtr: Ptr) -> Bool {
     let count = monoParamCount(params)
     let mut satisfied = true
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let argPtr = monoChainAt(argsPtr, i)
         if (nodeExists(argPtr)) {
             let argT = semaAnnotationType(module, ptr_to_node(argPtr))
@@ -450,7 +439,6 @@ private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: S
                 }
             }
         }
-        i = i + 1
     }
     return satisfied
 }
@@ -791,8 +779,7 @@ private fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: 
     // silently replaced by the first. Template source identity is stable on a
     // copy and distinguishes exactly the declaration being instantiated.
     let existingCount = ir_decl_count(copy.s1)
-    let mut existingIndex = 0
-    while (existingIndex < existingCount) {
+    for existingIndex in 0..<existingCount {
         let existing = ptr_to_node(ir_decl_at(copy.s1, existingIndex))
         if (existing.kind == NodeKind.FUNCTION
             and existing.file == template.file
@@ -800,7 +787,6 @@ private fn monoInstantiateFunction(module: ASTNode, template: ASTNode, argsPtr: 
             and existing.col == template.col) {
             return copy.s1
         }
-        existingIndex = existingIndex + 1
     }
 
     if (monoArgsTooDeep(template, template.s1, argsPtr)) { return template.s1 }
@@ -973,8 +959,7 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
             let count = monoParamCount(params)
             let solvedArgs = nodeList()
             let mut solvedAll = true
-            let mut i = 0
-            while (i < count) {
+            for i in 0..<count {
                 let solved = monoSolveTypeParam(module, template, callExpr.child2,
                                                 monoParamName(params, i))
                 if (nodeIsNull(node_to_ptr(solved))) {
@@ -982,7 +967,6 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
                 } else {
                     nodeListPush(solvedArgs, solved)
                 }
-                i = i + 1
             }
             if (solvedAll and monoTemplateAcceptsCall(module, template,
                                                        callExpr.child2, solvedArgs.head)) {
@@ -1287,11 +1271,9 @@ private fn monoArgsTooDeep(at: ASTNode, name: String, argsPtr: Ptr) -> Bool {
 private fn monoSeparatorCount(name: String) -> Int {
     let separator = monoSeparator().charAt(0)
     let mut count = 0
-    let mut i = 0
     let n = __builtin_string_len(name)
-    while (i < n) {
+    for i in 0..<n {
         if (name.charAt(i) == separator) { count = count + 1 }
-        i = i + 1
     }
     return count
 }
@@ -1303,10 +1285,8 @@ private fn monoElide(text: String) -> String {
     let n = __builtin_string_len(text)
     if (n <= 48) { return strClone(text) }
     let mut head = ""
-    let mut i = 0
-    while (i < 48) {
+    for i in 0..<48 {
         head = head.concat(strFromChar(text.charAt(i)))
-        i = i + 1
     }
     return head.concat("...")
 }

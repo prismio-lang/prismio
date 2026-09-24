@@ -329,8 +329,7 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
         }
     }
 
-    let mut i = 0
-    while (i < argc) {
+    for i in 0..<argc {
         let av = aif_argv_get(base, i)
         if (known) {
             aif_con_arg(aif_key_param(calleeId, i), av)
@@ -365,7 +364,6 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
                 aif_con_borrow(av)
             }
         }
-        i = i + 1
     }
 
     let aliasOf = aifFfiAliasOf(plain)
@@ -413,14 +411,12 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     // For a declared `alias`, everything the call could have reached.
     let mut aliasedAll = aifVsEmpty()
     let mut aliasedAny = false
-    let mut aI = 0
-    while (aI < argc) {
+    for aI in 0..<argc {
         let one = aif_argv_get(base, aI)
         if (aif_vs_is_empty(one) == 0) {
             aliasedAll = aif_vs_union(aliasedAll, one)
             aliasedAny = true
         }
-        aI = aI + 1
     }
     aif_argv_end(base)
 

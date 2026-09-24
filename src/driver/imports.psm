@@ -79,13 +79,11 @@ private fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
     }
 
     let count = ir_decl_count(stmt.s1)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let scan = ptr_to_node(ir_decl_at(stmt.s1, i))
         if (sameTopLevelName(scan, stmt)) {
             return true
         }
-        i = i + 1
     }
 
     return false
@@ -142,16 +140,14 @@ private fn appendStatement(module: ASTNode, stmt: ASTNode) {
 // host's separator is; join_path normalises the joined result.
 private fn moduleRelativePath(moduleName: String) -> String {
     let mut relative = ""
-    let mut i = 0
     let length = __builtin_string_len(moduleName)
-    while (i < length) {
+    for i in 0..<length {
         let c = moduleName.charAt(i)
         if (c == '.') {
             relative = relative.concat("/")
         } else {
             relative = relative.concat(strFromChar(c))
         }
-        i = i + 1
     }
     return relative
 }
@@ -308,10 +304,9 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
 
     let mut seen = visited
     let mut name = ""
-    let mut i = 0
     let length = __builtin_string_len(listing)
 
-    while (i < length) {
+    for i in 0..<length {
         let c = listing.charAt(i)
         if (c == '\n') {
             let qualified = site.s1.concat(".", name)
@@ -321,7 +316,6 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
         } else {
             name = name.concat(strFromChar(c))
         }
-        i = i + 1
     }
 
     let last = site.s1.concat(".", name)
@@ -438,15 +432,13 @@ public fn standardModulePath(baseDir: String, leaf: String) -> String {
     // parent that equals its child, and the hop count is the backstop for a path
     // shape that never reaches one.
     let mut dir = get_directory(baseDir)
-    let mut hops = 0
-    while (hops < 64) {
+    repeat(64) {
         if (file_exists(join_path(dir, "std/".concat(leaf))) == 1) {
             return join_path(dir, "std/".concat(leaf))
         }
         let parent = get_directory(dir)
         if (parent.equals(dir)) { break }
         dir = parent
-        hops = hops + 1
     }
 
     let toolchainRoot = get_directory(executable_directory())

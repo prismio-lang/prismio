@@ -121,14 +121,12 @@ private fn semaShadowsStandardLibrary(module: ASTNode, fnNode: ASTNode, signatur
     if (semaFileIsStandardLibrary(fnNode.file)) { return false }
 
     let count = ir_decl_count(fnNode.s1)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(fnNode.s1, i))
         if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) {
             let other = semaParamSignature(module, decl.child1)
             if (other.equals(signature)) { return true }
         }
-        i = i + 1
     }
     return false
 }
@@ -239,15 +237,13 @@ internal fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> AST
     let name = fnNode.s1
     let symbol = fnNode.s2
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
             if (stmt.s2.equals(symbol)) {
                 return stmt
             }
         }
-        i = i + 1
     }
     return createNode(NodeKind.MODULE)
 }
@@ -321,8 +317,7 @@ private fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr
 // `extern fn` declaration of it.
 private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let scan = ptr_to_node(ir_decl_at(name, i))
         // A method is not a definition of the free function with its name. It
         // takes a receiver, so no call that reaches the extern could reach it
@@ -334,7 +329,6 @@ private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
         if (scan.kind == NodeKind.FUNCTION and semaIsReceiverMethod(scan) == false) {
             return true
         }
-        i = i + 1
     }
     return false
 }
@@ -386,8 +380,7 @@ internal fn semaFileQualifier(file: Int) -> String {
 // `string`" and sends its author looking for a variable they never declared.
 internal fn semaModuleWithLeaf(leaf: String) -> String {
     let count = diag_file_count()
-    let mut file = 0
-    while (file < count) {
+    for file in 0..<count {
         let qualifier = semaFileQualifier(file)
         let dot = strLastIndexOf(qualifier, ".")
         if (dot >= 0) {
@@ -395,7 +388,6 @@ internal fn semaModuleWithLeaf(leaf: String) -> String {
                                     __builtin_string_len(qualifier) - dot - 1)
             if (tail.equals(leaf)) { return qualifier }
         }
-        file = file + 1
     }
     return ""
 }
@@ -405,11 +397,9 @@ internal fn semaModuleWithLeaf(leaf: String) -> String {
 // of the same name cannot be confused: a local is checked for first.
 internal fn semaModuleDeclares(qualifier: String, name: String) -> Bool {
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (semaFileQualifier(decl.file).equals(qualifier)) { return true }
-        i = i + 1
     }
     return false
 }
@@ -424,10 +414,8 @@ internal fn semaModuleDeclares(qualifier: String, name: String) -> Bool {
 // their imports.
 internal fn semaQualifierNamesModule(qualifier: String) -> Bool {
     let count = diag_file_count()
-    let mut file = 0
-    while (file < count) {
+    for file in 0..<count {
         if (semaFileQualifier(file).equals(qualifier)) { return true }
-        file = file + 1
     }
     return false
 }
@@ -552,8 +540,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     // what keeps the diagnostics identical: `bestPtr` breaks a literal-score tie
     // by keeping the first candidate seen.
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let stmtPtr = ir_decl_at(name, i)
         let stmt = ptr_to_node(stmtPtr)
         let mut isCandidate = stmt.kind == NodeKind.FUNCTION
@@ -664,7 +651,6 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
                 }
             }
         }
-        i = i + 1
     }
 
     // Each of these used to fall through to the next, which was harmless only
@@ -741,11 +727,9 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
 // here.
 internal fn semaIsExternGlobal(name: String) -> Bool {
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (decl.kind == NodeKind.EXTERN_VARIABLE) { return true }
-        i = i + 1
     }
     return false
 }
@@ -817,8 +801,7 @@ internal fn semaIsTraitName(module: ASTNode, name: String) -> Bool {
 private fn semaNoteTraitQualifiers(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) {
     let count = ir_decl_count(name)
     let mut suggestion = ""
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION and semaSignatureMatchesCall(module, stmt, argPtr)) {
             let owner = semaOwningTrait(module, stmt)
@@ -829,7 +812,6 @@ private fn semaNoteTraitQualifiers(module: ASTNode, call: ASTNode, name: String,
                 suggestion = suggestion.concat("`", owner, ".", name, "(...)`")
             }
         }
-        i = i + 1
     }
     if (suggestion.equals("") == false) {
         diag_note_at(call.file, call.line, call.col, call.len,

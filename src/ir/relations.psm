@@ -233,11 +233,9 @@ private fn relCollect(rs: RelLoop, rl: RangeLoop) {
 }
 
 private fn relSeen(rs: RelLoop, name: String) -> Int {
-    let mut i = 0
-    while (i < list_len(rs.seenNames)) {
+    for i in 0..<list_len(rs.seenNames) {
         let known: String = list_get(rs.seenNames, i)
         if (known.equals(name)) { return i }
-        i = i + 1
     }
     list_push(rs.seenNames, strClone(name))
     list_push(rs.seenDecls, 0)

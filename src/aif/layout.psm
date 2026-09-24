@@ -156,8 +156,7 @@ private fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
     let mut maxAlign = 1
 
     let n = aif_struct_nfields(decl.s1)
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         // The physical order is the search's, so the field at position i is
         // named by aif_layout_field. Its declaration is what carries the type,
         // and an inline field's width is the nested size rather than a word.
@@ -178,7 +177,6 @@ private fn aifComputeStructSize(decl: ASTNode, module: ASTNode) {
             offset = aifAlignUp(offset, align) + width
             if (align > maxAlign) { maxAlign = align }
         }
-        i = i + 1
     }
 
     // Trailing padding, so an array of these would be correctly strided. A

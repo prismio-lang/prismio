@@ -229,19 +229,15 @@ private fn stringDispatchCount(firstPtr: Ptr, subject: String) -> Int {
 }
 
 private fn stringDispatchLengthSeen(lengths: Vec<Int>, wanted: Int) -> Bool {
-    let mut i = 0
-    while (i < list_len(lengths)) {
+    for i in 0..<list_len(lengths) {
         if (list_get(lengths, i) == wanted) { return true }
-        i = i + 1
     }
     return false
 }
 
 private fn stringDispatchByteSeen(values: Vec<Int>, wanted: Int) -> Bool {
-    let mut i = 0
-    while (i < list_len(values)) {
+    for i in 0..<list_len(values) {
         if (list_get(values, i) == wanted) { return true }
-        i = i + 1
     }
     return false
 }
@@ -253,12 +249,10 @@ private fn stringDispatchByteSeen(values: Vec<Int>, wanted: Int) -> Bool {
 private fn stringDispatchBestByte(firstPtr: Ptr, count: Int, length: Int) -> Int {
     let mut bestPosition = -1
     let mut bestClasses = 1
-    let mut position = 0
-    while (position < length) {
+    for position in 0..<length {
         let mut values: Vec<Int> = list_new()
         let mut scan = firstPtr
-        let mut scanned = 0
-        while (scanned < count) {
+        repeat(count) {
             let literal = stringDispatchLiteral(ptr_to_node(scan))
             if (__builtin_string_len(literal.s1) == length) {
                 let byte = charCode(literal.s1.charAt(position))
@@ -267,13 +261,11 @@ private fn stringDispatchBestByte(firstPtr: Ptr, count: Int, length: Int) -> Int
                 }
             }
             scan = ptr_to_node(scan).next
-            scanned = scanned + 1
         }
         if (list_len(values) > bestClasses) {
             bestClasses = list_len(values)
             bestPosition = position
         }
-        position = position + 1
     }
     return bestPosition
 }
@@ -283,8 +275,7 @@ private fn generateStringDispatchCandidates(firstPtr: Ptr, count: Int,
                                              bytePosition: Int, byteValue: Int,
                                              defaultLabel: Int) {
     let mut scan = firstPtr
-    let mut scanned = 0
-    while (scanned < count) {
+    repeat(count) {
         let arm = ptr_to_node(scan)
         let literal = stringDispatchLiteral(arm)
         let matchesLength = __builtin_string_len(literal.s1) == length
@@ -306,7 +297,6 @@ private fn generateStringDispatchCandidates(firstPtr: Ptr, count: Int,
             ir_label_numbered(nextLabel)
         }
         scan = arm.next
-        scanned = scanned + 1
     }
     ir_br_numbered(defaultLabel)
 }
@@ -1484,10 +1474,8 @@ private fn generateStatement(stmt: ASTNode) {
 // same places and for the same reason as the drops -- an arena that is never
 // popped holds its chunks for the rest of the program.
 private fn generateRegionExits(count: Int) {
-    let mut i = 0
-    while (i < count) {
+    repeat(count) {
         ir_region_end()
-        i = i + 1
     }
 }
 
@@ -1555,8 +1543,7 @@ private fn generateDisplacedRelease(old: String, val: String, kind: Int, declTyp
 
 private fn generateScopeDrops(floor: Int) {
     let n = ir_drop_count(floor)
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let declType = ir_drop_type(floor, i)
         let storeType = storageType(declType)
         let loaded = ir_load(storeType, ir_drop_slot(floor, i))
@@ -1574,15 +1561,13 @@ private fn generateScopeDrops(floor: Int) {
         // caller release regresses test_49.
         let mut duplicate = "0"
         if (storeType.equals("ptr")) {
-            let mut j = 0
-            while (j < i) {
+            for j in 0..<i {
                 let earlierType = storageType(ir_drop_type(floor, j))
                 if (earlierType.equals("ptr")) {
                     let earlier = ir_get_temp_name(ir_load("ptr", ir_drop_slot(floor, j)))
                     let same = ir_get_temp_name(ir_icmp_eq("ptr", value, earlier))
                     duplicate = ir_get_temp_name(ir_or("i1", duplicate, same))
                 }
-                j = j + 1
             }
         }
 
@@ -1611,7 +1596,6 @@ private fn generateScopeDrops(floor: Int) {
         }
         ir_br_numbered(doneLabel)
         ir_label_numbered(doneLabel)
-        i = i + 1
     }
 }
 

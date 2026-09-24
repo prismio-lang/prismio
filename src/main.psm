@@ -217,8 +217,7 @@ private fn cliCheck() -> Int {
         return 1
     }
 
-    let mut checkArg = 3
-    while (checkArg < process.args.count) {
+    for checkArg in 3..<process.args.count {
         let option = process.args[checkArg]
         if (option.equals("--diagnostic-format=json")) {
             diag_set_json_mode(1)
@@ -227,7 +226,6 @@ private fn cliCheck() -> Int {
             printUsage()
             return 1
         }
-        checkArg = checkArg + 1
     }
 
     return checkCommand(process.args[2])

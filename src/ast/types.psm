@@ -135,10 +135,8 @@ public fn typeIntBits(t: TypeInfo) -> Int {
 // asking for 64 are the ones that name the boundary themselves.
 private fn typeTwoToThe(k: Int) -> U64 {
     let mut power = 1 as U64
-    let mut i = 0
-    while (i < k) {
+    repeat(k) {
         power = power * (2 as U64)
-        i = i + 1
     }
     return power
 }
@@ -944,12 +942,10 @@ public fn indexModuleDeclarations(module: ASTNode) {
 
 public fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
     let n = ir_decl_count(name)
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let p = ir_decl_at(name, i)
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.STRUCT_DECL) { return stmt }
-        i = i + 1
     }
     return ptr_to_node(ptr_null())
 }

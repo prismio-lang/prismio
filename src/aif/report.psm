@@ -100,33 +100,27 @@ private fn aifPlacement(tier: Int, site: Int) -> String {
 
 private fn aifCountTier(tier: Int) -> Int {
     let mut n = 0
-    let mut i = 0
     let total = aif_site_count()
-    while (i < total) {
+    for i in 0..<total {
         if (aif_tier_of(i) == tier) { n = n + 1 }
-        i = i + 1
     }
     return n
 }
 
 private fn aifCountKind(kind: Int) -> Int {
     let mut n = 0
-    let mut i = 0
     let total = aif_site_count()
-    while (i < total) {
+    for i in 0..<total {
         if (aif_site_kind(i) == kind) { n = n + 1 }
-        i = i + 1
     }
     return n
 }
 
 private fn aifCountKindTier(kind: Int, tier: Int) -> Int {
     let mut n = 0
-    let mut i = 0
     let total = aif_site_count()
-    while (i < total) {
+    for i in 0..<total {
         if (aif_site_kind(i) == kind and aif_tier_of(i) == tier) { n = n + 1 }
-        i = i + 1
     }
     return n
 }
@@ -318,10 +312,8 @@ private fn aifStorageBar(count: Int, total: Int, style: String) {
     let mut width = count * 30 / total
     if (width < 1) { width = 1 }
     let mut bar = ""
-    let mut i = 0
-    while (i < width) {
+    repeat(width) {
         bar = bar.concat("#")
-        i = i + 1
     }
     print("  ")
     diag_styled(style, bar)
@@ -344,13 +336,11 @@ private fn aifShortReason(site: Int) -> String {
     // need to open a derivation just to learn that a returned value reached its
     // caller; the complete witness remains available through `--why`.
     let n = aif_cause_build(site, aif_cause_domain_for(site))
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let rule = aif_rule_name(aif_cause_rule(i))
         if (rule.equals("E-RETURN")) { return "returned to the caller" }
         if (rule.equals("E-STATIC")) { return "stored in static state" }
         if (rule.equals("E-OPAQUE")) { return "foreign lifetime is unknown" }
-        i = i + 1
     }
     return "unique value escapes its scope"
 }
@@ -359,8 +349,7 @@ private fn aifHumanSiteAtId(sourcePath: String, wanted: Int) -> Int {
     if (wanted < 1) { return -1 }
     aifPrepareOrder()
     let mut id = 1
-    let mut group = 0
-    while (group < 2) {
+    for group in 0..<2 {
         let mut i = 0
         while (i < aif_order_count()) {
             let site = aif_order_site(i)
@@ -371,7 +360,6 @@ private fn aifHumanSiteAtId(sourcePath: String, wanted: Int) -> Int {
             }
             i = i + 1
         }
-        group = group + 1
     }
     return -1
 }
@@ -379,8 +367,7 @@ private fn aifHumanSiteAtId(sourcePath: String, wanted: Int) -> Int {
 private fn aifHumanIdOf(sourcePath: String, wantedSite: Int) -> Int {
     aifPrepareOrder()
     let mut id = 1
-    let mut group = 0
-    while (group < 2) {
+    for group in 0..<2 {
         let mut i = 0
         while (i < aif_order_count()) {
             let site = aif_order_site(i)
@@ -391,7 +378,6 @@ private fn aifHumanIdOf(sourcePath: String, wantedSite: Int) -> Int {
             }
             i = i + 1
         }
-        group = group + 1
     }
     return -1
 }
@@ -453,8 +439,7 @@ private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
     println("")
     diag_styled("heading", "Storage plan")
     println("")
-    let mut kind = 0
-    while (kind < 7) {
+    for kind in 0..<7 {
         let count = aifStorageClassCount(kind)
         let mut style = aifStorageClassStyle(kind)
         if (count == 0) { style = "dim" }
@@ -462,7 +447,6 @@ private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
         diag_styled(style, aifPad(aifStorageClassName(kind), 24).concat(strFromInt(count)))
         aifStorageBar(count, total, style)
         println("")
-        kind = kind + 1
     }
 
     println("")
@@ -596,8 +580,7 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
     // build converged, and calling those records exhausted too would make the
     // signal useless for deciding whether to raise the budget.
     let n = aif_order_count()
-    let mut r = 0
-    while (r < n) {
+    for r in 0..<n {
         let site = aif_order_site(r)
         let tier = aif_tier_of(site)
         // SPEC 6.2's vocabulary. `region` means the arena serving this site was
@@ -652,7 +635,6 @@ private fn aifEmitManifest(module: ASTNode, sourcePath: String, version: String,
         print(aifPad(grouping, 12))
         print(aifPad(origin, 18))
         println(aifSitePosition(site))
-        r = r + 1
     }
 
     aifEmitBrackets()
@@ -676,8 +658,7 @@ private fn aifEmitBrackets() {
 
     println("#")
     println("# bracketed calls (SPEC 5.2.1.1 regime (a)) -- a second call to one of these removes the placement")
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let scope = aif_bracket_scope(i)
         print("#   ")
         print(aifPad(aif_fn_name(aif_bracket_callee(i)), 30))
@@ -688,7 +669,6 @@ private fn aifEmitBrackets() {
                             strFromInt(aif_scope_region_line(scope)),
                             ":",
                             strFromInt(aif_scope_region_col(scope))))
-        i = i + 1
     }
 }
 
@@ -774,10 +754,8 @@ private fn aifEmitKindRow(kind: Int) {
     print("  ")
     print(aifPad(aifKindName(kind), 9))
     print(aifPad(strFromInt(n), 8))
-    let mut t = 0
-    while (t < 6) {
+    for t in 0..<6 {
         print(aifPad(strFromInt(aifCountKindTier(kind, t)), 7))
-        t = t + 1
     }
     println("")
 }
@@ -828,8 +806,7 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
     println("# tier distribution  (BENCHMARKS H1: static D over abstract values)")
 
     let mut cheap = 0
-    let mut t = 0
-    while (t < 6) {
+    for t in 0..<6 {
         let n = aifCountTier(t)
         if (t < 3) { cheap = cheap + n }
         print("  ")
@@ -837,14 +814,11 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
         print(aifPad(strFromInt(n), 8))
         print(aifPad(strFromInt(100 * n / denom).concat("%"), 6))
         let mut bar = ""
-        let mut b = 0
         let width = 60 * n / denom
-        while (b < width) {
+        repeat(width) {
             bar = bar.concat("#")
-            b = b + 1
         }
         println(bar)
-        t = t + 1
     }
 
     println("")
@@ -861,10 +835,8 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
     println("")
     println("# by allocation kind -- where the residue actually lives")
     println("  kind     sites   T0     T1     T2     T3     T4b    T4a")
-    let mut k = 0
-    while (k < 5) {
+    for k in 0..<5 {
         aifEmitKindRow(k)
-        k = k + 1
     }
 
     println("")
@@ -873,18 +845,14 @@ private fn aifEmitSummary(sourcePath: String, converged: Bool) {
     // thread modules agree" from "neither implementation has one", which is
     // what they agreed on for six sessions.
     println("# thread affinity (INFERENCE 2.3)")
-    let mut ti = 0
-    while (ti < 3) {
+    for ti in 0..<3 {
         let mut n = 0
-        let mut si = 0
-        while (si < total) {
+        for si in 0..<total {
             if (aif_site_thread(si) == ti) { n = n + 1 }
-            si = si + 1
         }
         print("  ")
         print(aifPad(aifThreadName(ti), 12))
         println(strFromInt(n))
-        ti = ti + 1
     }
 
     println("")
@@ -937,8 +905,7 @@ private fn aifEmitBracketing() {
     let mut nShared = 0
     let mut nMulti = 0
 
-    let mut f = 0
-    while (f < fnCount) {
+    for f in 0..<fnCount {
         let mask = aif_fn_bracket_blockers(f)
         if (mask / AIF_BR_B_GLOBAL % 2 == 1) { nGlobal = nGlobal + 1 }
         if (mask / AIF_BR_B_PARAM_STORE % 2 == 1) { nParam = nParam + 1 }
@@ -958,7 +925,6 @@ private fn aifEmitBracketing() {
             ok = ok + 1
             if (mask == 0) { sole = sole + 1 }
         }
-        f = f + 1
     }
 
     println("")
@@ -1449,8 +1415,7 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
     print(label)
     println(fact)
 
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let rule = aif_cause_rule(i)
         print("      <- ")
         print(aifPad(aif_rule_name(rule), 10))
@@ -1459,7 +1424,6 @@ private fn aifEmitCause(site: Int, sourcePath: String, converged: Bool,
         print(strFromInt(aif_cause_line(i)))
         print(":")
         println(strFromInt(aif_cause_col(i)))
-        i = i + 1
     }
 
     aifEmitPlacement(site)
@@ -1527,13 +1491,11 @@ public fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> I
     }
 
     let total = aif_site_count()
-    let mut i = 0
-    while (i < total) {
+    for i in 0..<total {
         if (aifSymbolOf(i).equals(selector)) {
             aifEmitCause(i, sourcePath, converged, true)
             return 1
         }
-        i = i + 1
     }
     print("no manifest record named ")
     println(selector)
@@ -1552,9 +1514,8 @@ public fn aifExplain(selector: String, sourcePath: String, converged: Bool) -> I
 // Returns the number of errors reported, so the caller can stop before codegen.
 public fn aifReportPins() -> Int {
     let n = aif_site_count()
-    let mut i = 0
     let mut errors = 0
-    while (i < n) {
+    for i in 0..<n {
         let verdict = aif_site_pin_verdict(i)
 
         if (verdict == AIF_PIN_REFUTED) {
@@ -1574,7 +1535,6 @@ public fn aifReportPins() -> Int {
         }
 
         errors = errors + aifReportPlacementPin(i)
-        i = i + 1
     }
     return errors
 }
@@ -1584,10 +1544,8 @@ public fn aifReportPins() -> Int {
 // those two call for opposite repairs.
 private fn aifRegionExists(name: String) -> Bool {
     let n = aif_budget_count()
-    let mut s = 0
-    while (s < n) {
+    for s in 0..<n {
         if (aif_scope_region(s).equals(name)) { return true }
-        s = s + 1
     }
     return false
 }
@@ -1681,9 +1639,8 @@ public fn aifReportBudgets(converged: Bool) -> Int {
     if (converged == false) { return 0 }
 
     let n = aif_budget_count()
-    let mut s = 0
     let mut errors = 0
-    while (s < n) {
+    for s in 0..<n {
         let cap = aif_scope_budget(s)
         if (cap > 0) {
             let served = aif_scope_served(s)
@@ -1698,7 +1655,6 @@ public fn aifReportBudgets(converged: Bool) -> Int {
                 errors = errors + 1
             }
         }
-        s = s + 1
     }
     return errors
 }
@@ -1725,8 +1681,7 @@ public fn aifReportInertRegions() {
     // above walks the same range for the same reason. Kept rather than renamed
     // because the name is on the FFI surface the committed seed links against.
     let n = aif_budget_count()
-    let mut s = 0
-    while (s < n) {
+    for s in 0..<n {
         let name = aif_scope_region(s)
         if (name.equals("") == false and aif_region_serves(s) == 0) {
             diag_warning_at_code("P5007", aif_scope_region_file(s), aif_scope_region_line(s),
@@ -1735,7 +1690,6 @@ public fn aifReportInertRegions() {
                                              " serves no allocation; it costs an arena push and pop per entry and reclaims nothing"))
             diag_note("an arena serves a value allocated in the same function, or one in a callee whose call this region brackets; a callee called from more than one place, or a region holding a call this compilation cannot see through, cannot reach it")
         }
-        s = s + 1
     }
 }
 
@@ -1784,8 +1738,7 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                 // whether because the model preferred it or because a veto took
                 // the cut away. The row marked `emitted` is the one the binary has.
                 let emittedHot = aif_layout_hot_count(d.s1)
-                let mut i = 0
-                while (i < n) {
+                for i in 0..<n {
                     let hot = aif_layout_cand_hot(i)
                     let total = aif_struct_nfields(d.s1)
                     let mut label = "unsplit"
@@ -1810,7 +1763,6 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
                     print(aifPad(strFromInt(aif_layout_cand_bytes(i, 1)), 8))
                     print(aifPad(strFromInt(aif_layout_cand_ratio(i)), 10))
                     println(emitted)
-                    i = i + 1
                 }
                 // A type nothing traverses has no evidence behind its ranking:
                 // every candidate scores on the footprint term alone. Saying so

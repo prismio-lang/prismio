@@ -45,8 +45,7 @@ private fn hexDigit(v: Int) -> String {
 private fn jsonString(s: String) {
     print("\"")
     let n = __builtin_string_len(s)
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let b = __builtin_string_byte_at(s, i)
         let c = charCode(b)
         if (c == 34) { print("\\\"") }
@@ -61,7 +60,6 @@ private fn jsonString(s: String) {
             print(hexDigit(c - hi * 16))
         }
         else { print(strFromChar(b)) }
-        i = i + 1
     }
     print("\"")
 }

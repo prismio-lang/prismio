@@ -179,11 +179,9 @@ private fn typeStringOther(leftT: TypeInfo, rightT: TypeInfo) -> TypeInfo {
 // declaration index is by name, so this is a lookup and not a walk.
 private fn semaDeclaresFunction(name: String) -> Bool {
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (decl.kind == NodeKind.FUNCTION) { return true }
-        i = i + 1
     }
     return false
 }
@@ -750,14 +748,12 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
 // resolution over the enclosing call.
 private fn semaPropertyReturnsOwned(module: ASTNode, name: String) -> Bool {
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (decl.kind == NodeKind.FUNCTION and semaParamCount(decl) == 1) {
             if (nodeIsNull(decl.child3)) { return false }
             return typeIsMoveOnly(semaAnnotationType(module, ptr_to_node(decl.child3)))
         }
-        i = i + 1
     }
     return false
 }
@@ -1873,11 +1869,9 @@ private fn semaPrintPieceName(name: String) -> String {
 // all: the rewrite needs both answers and they mean different things here.
 private fn semaDeclaresArity(name: String, arity: Int) -> Bool {
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (decl.kind == NodeKind.FUNCTION and semaParamCount(decl) == arity) { return true }
-        i = i + 1
     }
     return false
 }
@@ -2698,8 +2692,7 @@ private fn semaPredeclareExternGlobal(module: ASTNode, extNode: ASTNode) {
     // reported once, here, rather than again at every read the other file makes.
     let count = ir_decl_count(extNode.s1)
     let mut registered = false
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let other = ptr_to_node(ir_decl_at(extNode.s1, i))
         if (other.kind == NodeKind.VARIABLE_DECL) {
             semaErrorAt(extNode, "extern global ".concat(diagQuote(extNode.s1),
@@ -2717,7 +2710,6 @@ private fn semaPredeclareExternGlobal(module: ASTNode, extNode: ASTNode) {
                 diag_note_at(other.file, other.line, other.col, other.len, "the other declaration is here")
             }
         }
-        i = i + 1
     }
 
     if (registered == false) {
@@ -2740,8 +2732,7 @@ private fn semaExternGlobalWritable(name: String, file: Int) -> Bool {
     let mut ownMutable = false
     let mut importedFound = false
     let mut importedMutable = false
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (decl.kind == NodeKind.EXTERN_VARIABLE) {
             if (decl.file == file) {
@@ -2752,7 +2743,6 @@ private fn semaExternGlobalWritable(name: String, file: Int) -> Bool {
                 if (decl.i1 == 1) { importedMutable = true }
             }
         }
-        i = i + 1
     }
     if (ownFound) { return ownMutable }
     if (importedFound == false) { return true }
@@ -3643,10 +3633,8 @@ internal fn semaTypeImplementsNamedTrait(module: ASTNode, typeName: String,
 
 private fn semaImplParam(params: String, name: String) -> Bool {
     let count = monoParamCount(params)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         if (monoParamName(params, i).equals(name)) { return true }
-        i = i + 1
     }
     return false
 }
@@ -4143,8 +4131,7 @@ private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
         let record = ptr_to_node(recordPtr)
         if (record.s1.equals(signature.s1)) {
             let count = ir_decl_count(record.s1)
-            let mut i = 0
-            while (i < count) {
+            for i in 0..<count {
                 let candidate = ptr_to_node(ir_decl_at(record.s1, i))
                 if (candidate.kind == NodeKind.FUNCTION
                     and candidate.file == record.file
@@ -4155,7 +4142,6 @@ private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
                                             signature, candidate)) {
                     return ir_decl_at(record.s1, i)
                 }
-                i = i + 1
             }
 
             // A generic impl method is a template parked on module.child2 and

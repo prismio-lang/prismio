@@ -292,8 +292,7 @@ internal fn semaIsIntLiteral(e: ASTNode) -> Bool {
 // not by the program.
 internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
     let count = ir_decl_count(structName)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(structName, i))
         if (stmt.kind == NodeKind.STRUCT_DECL) {
             let mut fieldPtr = stmt.child1
@@ -305,7 +304,6 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
                 fieldPtr = field.next
             }
         }
-        i = i + 1
     }
 
     semaErrorAt(at, "struct ".concat(diagQuote(structName),
@@ -319,8 +317,7 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
 // right when a field is the only possibility and wrong once a property might be.
 internal fn semaStructHasField(structName: String, fieldName: String) -> Bool {
     let count = ir_decl_count(structName)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(structName, i))
         if (stmt.kind == NodeKind.STRUCT_DECL) {
             let mut fieldPtr = stmt.child1
@@ -330,15 +327,13 @@ internal fn semaStructHasField(structName: String, fieldName: String) -> Bool {
                 fieldPtr = field.next
             }
         }
-        i = i + 1
     }
     return false
 }
 
 internal fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: String) -> Bool {
     let count = ir_decl_count(enumName)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(enumName, i))
         if (stmt.kind == NodeKind.ENUM_DECL) {
             let mut variantPtr = stmt.child1
@@ -350,7 +345,6 @@ internal fn semaEnumHasVariant(module: ASTNode, enumName: String, variantName: S
                 variantPtr = variant.next
             }
         }
-        i = i + 1
     }
     return false
 }

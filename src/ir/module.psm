@@ -374,15 +374,13 @@ internal fn taskFunctionForCall(call: ASTNode) -> Ptr {
     if (call.s2.equals("") == false) { symbol = call.s2 }
 
     let count = ir_decl_count(callee.s1)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(callee.s1, i))
         if (decl.kind == NodeKind.FUNCTION) {
             if (functionSymbolName(decl).equals(symbol)) {
                 return node_to_ptr(decl)
             }
         }
-        i = i + 1
     }
     return ptr_null()
 }
@@ -1065,13 +1063,11 @@ public fn moduleWorkloadCount(module: ASTNode) -> Int {
 // answer, from the index generateModule fills.
 private fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
     let count = ir_decl_count(name)
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION) {
             return true
         }
-        i = i + 1
     }
 
     return false
@@ -1537,8 +1533,7 @@ private fn generateCyclicChildrenFn(structNode: ASTNode) {
     ir_function_body_start()
 
     let n = irFieldCountOf(structNode)
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let field = nthStructField(structNode, i)
         if (nodeExists(node_to_ptr(field))) {
             if (aif_field_is_cyclic(tname, field.s1) == 1) {
@@ -1548,7 +1543,6 @@ private fn generateCyclicChildrenFn(structNode: ASTNode) {
                 ir_call_indirect_ptr("%p_visit", ir_get_temp_name(loaded))
             }
         }
-        i = i + 1
     }
 
     ir_ret_void()
@@ -1881,11 +1875,9 @@ public fn generateModule(module: ASTNode) {
     ir_declare_function_param("i32")
     ir_declare_function_param("i64")
     ir_declare_function_param("i32")
-    let mut appendSlot = 0
-    while (appendSlot < 5) {
+    repeat(5) {
         ir_declare_function_param("ptr")
         ir_declare_function_param("i32")
-        appendSlot = appendSlot + 1
     }
     ir_declare_function_end()
 

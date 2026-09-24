@@ -280,12 +280,10 @@ private fn enumSolveArgs(module: ASTNode, template: ASTNode, variantName: String
     let params = template.s2
     let count = monoParamCount(params)
     let solved = nodeList()
-    let mut i = 0
-    while (i < count) {
+    for i in 0..<count {
         let found = enumSolveOneArg(module, variant, argPtr, monoParamAt(params, i))
         if (nodeIsNull(node_to_ptr(found))) { return ptr_null() }
         nodeListPush(solved, found)
-        i = i + 1
     }
     return solved.head
 }

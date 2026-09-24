@@ -381,10 +381,8 @@ private fn lexRadixDigits(lex: Lexer, marker: Char, alternate: Char) -> Bool {
     if (count == 0) { return false }
 
     lexerAdvance(lex)
-    let mut taken = 0
-    while (taken < count) {
+    repeat(count) {
         lexerAdvance(lex)
-        taken = taken + 1
     }
     return true
 }

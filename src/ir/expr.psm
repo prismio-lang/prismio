@@ -455,13 +455,11 @@ private fn generateOwnedTemporaryRelease(value: String, kind: Int, declType: Str
 // borrowed value"). So the caller is the last owner and this is its release
 // point.
 private fn generateOwnedTemporaryReleases(vals: Vec<String>, kinds: Vec<Int>, types: Vec<String>) {
-    let mut i = 0
-    while (i < list_len(vals)) {
+    for i in 0..<list_len(vals) {
         let value: String = list_get(vals, i)
         let kind: Int = list_get(kinds, i)
         let declType: String = list_get(types, i)
         generateOwnedTemporaryRelease(value, kind, declType)
-        i = i + 1
     }
 }
 
@@ -589,8 +587,7 @@ private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> Str
     ir_call_arg("i32", oldLen)
     ir_call_arg("i64", oldWide)
     ir_call_arg("i32", strFromInt(list_len(datas)))
-    let mut slot = 0
-    while (slot < 5) {
+    for slot in 0..<5 {
         if (slot < list_len(datas)) {
             ir_call_arg("ptr", list_get(datas, slot))
             ir_call_arg("i32", list_get(lengths, slot))
@@ -598,7 +595,6 @@ private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> Str
             ir_call_arg("ptr", "null")
             ir_call_arg("i32", "0")
         }
-        slot = slot + 1
     }
     let raw = ir_get_temp_name(ir_call_end("ptr", "str_append_reuse_many"))
     generateOwnedTemporaryReleases(ownedVals, ownedKinds, ownedTypes)
@@ -951,22 +947,18 @@ private fn fatWithLengthFlag(raw: String, len: String, flag: String) -> String {
 
 private fn callIsPrismioFn(funcName: String) -> Bool {
     let n = ir_decl_count(funcName)
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let decl = ptr_to_node(ir_decl_at(funcName, i))
         if (decl.kind == NodeKind.FUNCTION) { return true }
-        i = i + 1
     }
     return false
 }
 
 private fn callIsExtern(funcName: String) -> Bool {
     let n = ir_decl_count(funcName)
-    let mut i = 0
-    while (i < n) {
+    for i in 0..<n {
         let decl = ptr_to_node(ir_decl_at(funcName, i))
         if (decl.kind == NodeKind.EXTERN_FUNCTION) { return true }
-        i = i + 1
     }
     return false
 }
@@ -1117,12 +1109,10 @@ private fn irIsPureReceiver(recv: ASTNode) -> Bool {
 }
 
 private fn irStringListContains(xs: Vec<String>, s: String) -> Bool {
-    let mut i = 0
     let n = list_len(xs)
-    while (i < n) {
+    for i in 0..<n {
         let item: String = list_get(xs, i)
         if (item.equals(s)) { return true }
-        i = i + 1
     }
     return false
 }
@@ -2171,10 +2161,8 @@ private fn irChainMentionsHolder(head: Ptr, holders: Vec<String>) -> Bool {
 }
 
 private fn irHoldersContain(holders: Vec<String>, name: String) -> Bool {
-    let mut i = 0
-    while (i < list_len(holders)) {
+    for i in 0..<list_len(holders) {
         if (list_get(holders, i).equals(name)) { return true }
-        i = i + 1
     }
     return false
 }
@@ -2283,13 +2271,11 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
     // Every array field starts at zero, as `Array<T, N>` on its own does -- one
     // the literal names is then copied over, and LLVM drops the zeroing of it.
     let fieldCount = ir_get_struct_field_count(structName)
-    let mut z = 0
-    while (z < fieldCount) {
+    for z in 0..<fieldCount {
         let key = ir_get_struct_field_type_at(structName, z)
         if (isArrayValueKey(key)) {
             ir_array_zero_key(key, ir_get_temp_name(ir_struct_field_ptr(structName, destPtr, z)))
         }
-        z = z + 1
     }
     let mut fieldPtr = expr.child1
     while (nodeExists(fieldPtr)) {
@@ -3126,15 +3112,13 @@ private fn generateCall(expr: ASTNode) -> String {
             ir_call_arg("i32", strFromInt(elemSize))
             expr.s1 = ir_get_temp_name(ir_call_end("ptr", "data_view_begin"))
 
-            let mut field = 0
-            while (field < fieldCount) {
+            for field in 0..<fieldCount {
                 ir_call_begin()
                 ir_call_arg("ptr", expr.s1)
                 ir_call_arg("i32", strFromInt(field))
                 ir_call_arg("i32", strFromInt(ir_struct_field_offset(structName, field)))
                 ir_call_arg("i32", strFromInt(ir_struct_field_size(structName, field)))
                 ir_call_end("void", "data_view_add_column")
-                field = field + 1
             }
             ir_call_begin()
             ir_call_arg("ptr", expr.s1)
