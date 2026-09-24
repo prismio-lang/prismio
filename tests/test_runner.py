@@ -11,6 +11,7 @@ import io
 import time
 import threading
 import contextlib
+import difflib
 import concurrent.futures
 from pathlib import Path
 import shutil
@@ -1173,9 +1174,32 @@ def run_ums_test():
                     )
                     if produced.read_bytes() != packaged.read_bytes()
                 ]
+                if drifted:
+                    print(f"{RED}[FAIL] ums: the project-local toolchain and "
+                          f"tools/package.py disagree on {', '.join(drifted)}{RESET}")
+                    # Inside the `with`: the packaged copies are gone after it.
+                    # Bitcode is compared as IR, because a raw offset says
+                    # nothing -- and whether the two differ in a path clang
+                    # recorded or in code decides where the fix goes.
+                    llvm_dis = Path(pkg_clang).with_name(
+                        "llvm-dis.exe" if os.name == "nt" else "llvm-dis")
+                    produced_bc = local_runtime / "lang_runtime.bc"
+                    packaged_bc = drift / "runtime" / "lang_runtime.bc"
+                    if "lib/runtime/lang_runtime.bc" in drifted and llvm_dis.is_file():
+                        # `; ModuleID` is llvm-dis naming its input file.
+                        listings = [[line for line in subprocess.run(
+                                         [str(llvm_dis), str(bc), "-o", "-"],
+                                         capture_output=True, text=True).stdout.splitlines()
+                                     if not line.startswith("; ModuleID")]
+                                    for bc in (produced_bc, packaged_bc)]
+                        diff = list(difflib.unified_diff(
+                            listings[0], listings[1],
+                            "local", "package.py", n=0, lineterm=""))
+                        print("\n".join(diff[:24]) if diff
+                              else "the IR is identical; the bitcode encoding differs")
+                    print(f"local {produced_bc.stat().st_size} bytes, "
+                          f"package.py {packaged_bc.stat().st_size} bytes")
             if drifted:
-                print(f"{RED}[FAIL] ums: the project-local toolchain and "
-                      f"tools/package.py disagree on {', '.join(drifted)}{RESET}")
                 return False
 
             # The behaviour all of that is for: a program *outside* the checkout,
