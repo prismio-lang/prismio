@@ -396,6 +396,22 @@ static LLVMValueRef lookup_named(NamedValue *table, int count, const char *name,
 
 static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
     if (!ty) backend_fail("constant with no type", s);
+    // **An aggregate's zero is LLVMConstNull, and nothing else spells it.**
+    // A struct literal's omitted `String` field gets `none` as its zero
+    // (semaFillOmittedFields), which reached the integer path below with the
+    // `{ptr, i64}` pair as its type. LLVMConstInt on a struct is not an error
+    // without assertions -- it produced `store i33 0`, five of the sixteen
+    // bytes. `Holder.Empty`'s unused `Full` payload kept eleven bytes of
+    // whatever was in its stack slot, and `__aif_release_fields_Holder`, which
+    // releases the payload whatever the tag, freed that: CI's Windows run of
+    // test_92 died with an access violation at exit, where the same bytes
+    // happened to be zero on macOS and Linux.
+    int kind = (int)LLVMGetTypeKind(ty);
+    if (kind == LLVMStructTypeKind || kind == LLVMArrayTypeKind
+        || kind == LLVMVectorTypeKind) {
+        if (strcmp(s, "0") == 0 || strcmp(s, "null") == 0) return LLVMConstNull(ty);
+        backend_fail("non-zero constant of an aggregate type", s);
+    }
     if (ty == LLVMDoubleTypeInContext(g_ctx)) return LLVMConstReal(ty, atof(s));
     if (ty == LLVMPointerTypeInContext(g_ctx, 0)) {
         if (strcmp(s, "null") == 0 || strcmp(s, "0") == 0) return LLVMConstPointerNull(ty);
