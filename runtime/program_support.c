@@ -1226,3 +1226,27 @@ int prismio_rt_color_supported(int fd) {
     return isatty(fd) ? 1 : 0;
 #endif
 }
+
+// The seed's three answers
+//
+// bootstrap/prismio-seed.ll carries no triple, so it can be compiled on any
+// host, and three things libc spells per platform cannot be written into it:
+// errno's accessor (`__error`, `__errno_location`, `_errno`), the console write
+// (`write`, `_write`, with different word sizes) and EAGAIN (35 on Darwin, 11
+// elsewhere). A compiler emitting the seed (PRISMIO_SEED_IR, set by
+// tools/refresh_seed.*) calls these instead; see errno_location_symbol in
+// llvm-api-backend.c. Nothing else calls them, and a program's own build names
+// libc directly, so they cost an ordinary program nothing.
+#include <errno.h>
+
+int* rt_seed_errno_location(void) { return &errno; }
+
+int rt_seed_errno_again(void) { return EAGAIN; }
+
+int rt_seed_console_write(int fd, const char* bytes, int count) {
+#ifdef _WIN32
+    return _write(fd, bytes, (unsigned int)count);
+#else
+    return (int)write(fd, bytes, (size_t)count);
+#endif
+}

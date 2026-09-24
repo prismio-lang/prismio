@@ -27,6 +27,10 @@ $work = Join-Path $Repo 'build\.seed'
 New-Item -ItemType Directory -Force $work, (Join-Path $Repo 'bootstrap') | Out-Null
 $raw = Join-Path $work 'seed-raw.ll'
 
+# The three libc names that differ per platform become calls into
+# program_support.c; see refresh_seed.sh.
+$env:PRISMIO_SEED_IR = '1'
+
 & $Compiler build (Join-Path $Repo 'src\main.psm') -o $raw | Out-Null
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $raw)) {
     Write-Host 'FAILED: compiler could not build src\main.psm' -ForegroundColor Red; exit 1
@@ -55,6 +59,8 @@ $header = @(
   "; targets whatever host it runs on. That is safe here because the IR is entirely",
   "; target-neutral: every function signature uses only i1/i8/i32/ptr/void, no struct",
   "; is passed by value, and there are no byval/sret attributes or target intrinsics.",
+  "; The libc names that differ per platform -- errno's accessor, the console write,",
+  "; EAGAIN -- are calls to rt_seed_* in runtime/program_support.c (PRISMIO_SEED_IR).",
   ";",
   "; Rebuild with: tools/refresh_seed.ps1",
   ";"

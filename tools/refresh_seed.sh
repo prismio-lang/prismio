@@ -28,6 +28,12 @@ AGAIN="$WORK/seed-raw-2.ll"
 
 die() { printf '\033[31mFAILED: %s\033[0m\n' "$1" >&2; exit 1; }
 
+# PRISMIO_SEED_IR: the three libc names that differ per platform (errno's
+# accessor, the console write, EAGAIN) become calls into program_support.c, so the
+# seed does not carry this host's spelling of them. See errno_location_symbol in
+# runtime/llvm-api-backend.c.
+export PRISMIO_SEED_IR=1
+
 "$COMPILER" build "$REPO/src/main.psm" -o "$RAW" >/dev/null || die "compiler could not build src/main.psm"
 [ -f "$RAW" ] || die "no IR produced"
 
@@ -49,6 +55,8 @@ cat > "$SEED" <<'EOF'
 ; targets whatever host it runs on. That is safe here because the IR is entirely
 ; target-neutral: every function signature uses only i1/i8/i32/ptr/void, no struct
 ; is passed by value, and there are no byval/sret attributes or target intrinsics.
+; The libc names that differ per platform -- errno's accessor, the console write,
+; EAGAIN -- are calls to rt_seed_* in runtime/program_support.c (PRISMIO_SEED_IR).
 ;
 ; Rebuild with: tools/refresh_seed.sh
 ;
