@@ -2546,7 +2546,10 @@ static int build_from_toolchain_sources(const char* program_obj, const char* exe
                     }
                 }
             }
-            snprintf(command + written, command_len - written, "%s %s",
+            // /Brepro for the reason link_program_msvc passes it: this is the
+            // project host, and the local toolchain keys its stdlib on the host's
+            // bytes. A wall-clock PE timestamp made every self-rebuild a miss.
+            snprintf(command + written, command_len - written, "%s -Wl,/Brepro %s",
                      exports ? exports : "", llvm_args);
             free(exports);
 #else
