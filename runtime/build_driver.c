@@ -3060,6 +3060,10 @@ static void write_u64_le(unsigned char* p, unsigned long long value) {
 // attributes meant for immediate native code generation; they are not a portable
 // bitcode contract and can make a later backend reject the merged module, so
 // stack protection is left to the final whole-program invocation.
+// -ffile-compilation-dir=. because clang records its working directory in the
+// module's DIFile on Windows, and the two producers run from different ones: a
+// project build from wherever `prismio build` was typed, package.py from the
+// checkout root. That one line was the whole of the drift.
 static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
                                 const char* out_dir, const char* module,
                                 int verify, const char* log_path) {
@@ -3071,7 +3075,7 @@ static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
 
     char* q_src = command_quote_arg(source);
     char* q_out = command_quote_arg(output);
-    size_t len = strlen(clang) + strlen(q_src) + strlen(q_out) + 160;
+    size_t len = strlen(clang) + strlen(q_src) + strlen(q_out) + 192;
     char* command = (char*)malloc(len);
     if (!command) {
         free(q_src);
@@ -3079,7 +3083,7 @@ static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
         return 1;
     }
     snprintf(command, len,
-             "%s -O2 -fno-stack-check -fno-stack-protector "
+             "%s -O2 -fno-stack-check -fno-stack-protector -ffile-compilation-dir=. "
              "-Wno-deprecated-declarations %s-emit-llvm -c %s -o %s",
              clang, verify ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_out);
     int failed = run_quiet_build_command(command, log_path);
