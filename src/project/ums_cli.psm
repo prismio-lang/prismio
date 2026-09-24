@@ -35,8 +35,8 @@ public extern fn command_quote_arg(argument: String borrow) -> String produce(fr
 // candidate has to start before it can replace that generation, and promotion
 // is a binary rename rather than compiler_publish_file's text copy.
 public extern fn compiler_check_executable(exeFile: String borrow) -> Int
-public extern fn compiler_check_host_abi(exeFile: String borrow, abi: String borrow) -> Int
-public extern fn compiler_host_abi() -> String alias
+// Asks `exeFile --internal-host-abi` with this compiler's own token.
+public extern fn compiler_check_host_abi(exeFile: String borrow) -> Int
 // Builds `<root>/lib/runtime/*.bc` and `<root>/stdlib/*.plib` with `compiler`,
 // from the Prismio checkout that compiler was found in. Returns how many
 // standard-library modules the toolchain now has -- rebuilt here or reused from
@@ -583,7 +583,7 @@ public fn dispatchToUmsHost() -> Int {
     // itself, so rebuilding the binary that is about to be deleted buys nothing.
     let cleaning = process.args.count > 1 and process.args[1].equals("clean")
     if (cleaning == false and
-        compiler_check_host_abi(host, compiler_host_abi()) != 0) {
+        compiler_check_host_abi(host) != 0) {
         diag_warning_code("P1064", "the project compiler is from an older toolchain generation")
         diag_note("rebuilding ".concat(host, " with the global compiler first"))
 
@@ -604,7 +604,7 @@ public fn dispatchToUmsHost() -> Int {
         // the project's sources produces a host that runs and is still the wrong
         // generation. Forwarding into it would reproduce the original link error
         // with a rebuild in front of it.
-        if (compiler_check_host_abi(host, compiler_host_abi()) != 0) {
+        if (compiler_check_host_abi(host) != 0) {
             diag_error_code("P1066", "the rebuilt project compiler reports a different generation")
             diag_note("the installed compiler is older than this project's sources")
             diag_note("bootstrap one from source: tools/bootstrap.sh --seed --out build/g1")

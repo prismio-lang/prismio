@@ -2613,24 +2613,18 @@ const char* compiler_host_abi(void) {
 
 // Whether a project-local compiler emits code the current runtime still
 // defines. `--internal-host-abi` is hidden and takes the asking compiler's own
-// token, so there are three outcomes and all of them are the same answer here:
+// token -- this runtime's PRISMIO_HOST_ABI, since the asker is the binary this
+// file is linked into -- so there are three outcomes and all of them are the
+// same answer here:
 // the host agrees and exits 0; it disagrees and exits 1; or it predates the
 // command entirely, rejects the argument as unknown, and exits 1 -- which is
 // exactly the "older than the question" case, reported without the old compiler
 // having had to know it would one day be asked.
-int compiler_check_host_abi(const char* exe_file, const char* abi) {
-    char* quoted = command_quote_arg(abi);
-    size_t len = strlen(quoted) + 32;
-    char* arguments = (char*)malloc(len);
-    if (!arguments) {
-        free(quoted);
-        return 1;
-    }
-    snprintf(arguments, len, "--internal-host-abi %s", quoted);
-    int result = compiler_probe_executable(exe_file, arguments);
-    free(arguments);
-    free(quoted);
-    return result;
+//
+// The token is a literal, so the argument is too; it needs no quoting as long
+// as a bump keeps it a bare word.
+int compiler_check_host_abi(const char* exe_file) {
+    return compiler_probe_executable(exe_file, "--internal-host-abi " PRISMIO_HOST_ABI);
 }
 
 // A project-local toolchain
