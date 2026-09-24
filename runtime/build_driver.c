@@ -1813,7 +1813,13 @@ static int link_program_msvc(const char* program_obj, const char* exe_file) {
     char* command = (char*)malloc(len);
     int result = 1;
     if (command && out_arg) {
-        snprintf(command, len, "%s%s -defaultlib:libcmt -defaultlib:oldnames -nologo%s %s%s",
+        // -Brepro: without it link.exe stamps the wall clock into every PE header,
+        // so relinking identical objects gives different bytes. The local toolchain
+        // keys each stdlib .plib on the compiler binary's hash, and on Windows an
+        // unchanged `prismio build` rebuilt all of them -- ld64 and lld on the other
+        // platforms were already deterministic, which is why only Windows missed.
+        snprintf(command, len,
+                 "%s%s -defaultlib:libcmt -defaultlib:oldnames -nologo -Brepro%s %s%s",
                  q_link, out_arg, libpaths ? libpaths : "", q_obj, native);
         result = run_build_command(command);
     }
