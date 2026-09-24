@@ -733,30 +733,90 @@ def preserved_project_host():
 
     So the binary is moved aside and restored. In a `finally`, not as a tidy-up
     at the end, because every check in the test returns early on failure.
+
+    **And only one suite at a time may do it.** Two suites in one checkout -- two
+    sessions, or a suite and a loop of this test -- each delete, rebuild and
+    promote the same host, and each reads the other's work as its own: a stage-0
+    build that finds a host someone else promoted, a hosted rebuild whose
+    candidate vanishes before it is checked, a deleted `option.plib` restored by
+    the other build before the repair run looks (`rebuilt []`). Seen three times
+    in full suites and never alone, until the process list showed a second
+    session's launchers building in `ums/` during the failure. The lock is held
+    from the snapshot to the restore, so a waiting suite never saves a host that
+    is halfway through someone else's test.
     """
     artifact = PROJECT_ROOT / ".prismio" / "build" / "debug" / "prismio"
     candidate = artifact.with_name(artifact.name + ".next")
 
-    saved = None
-    if artifact.exists():
-        handle, saved = tempfile.mkstemp(prefix="prismio-host-")
-        os.close(handle)
-        # copy2 rather than copy: the executable bit has to survive the round trip.
-        shutil.copy2(artifact, saved)
+    with project_host_lock():
+        saved = None
+        if artifact.exists():
+            handle, saved = tempfile.mkstemp(prefix="prismio-host-")
+            os.close(handle)
+            # copy2 rather than copy: the executable bit has to survive the round trip.
+            shutil.copy2(artifact, saved)
 
-    try:
-        for leftover in (artifact, candidate):
-            if leftover.exists():
-                leftover.unlink()
-        yield artifact, candidate
-    finally:
-        for leftover in (artifact, candidate):
-            if leftover.exists():
-                leftover.unlink()
-        if saved is not None:
-            artifact.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(saved, artifact)
-            os.unlink(saved)
+        try:
+            for leftover in (artifact, candidate):
+                if leftover.exists():
+                    leftover.unlink()
+            yield artifact, candidate
+        finally:
+            for leftover in (artifact, candidate):
+                if leftover.exists():
+                    leftover.unlink()
+            if saved is not None:
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(saved, artifact)
+                os.unlink(saved)
+
+
+@contextlib.contextmanager
+def project_host_lock():
+    """An exclusive lock on the project host, across processes.
+
+    An OS file lock rather than a marker file: it is released when the holder
+    exits, so a suite killed mid-test cannot leave the next one waiting forever.
+    """
+    path = PROJECT_ROOT / ".prismio" / "ums-test.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            acquire = lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            release = lambda: msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            acquire = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            release = lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        announced = False
+        while True:
+            try:
+                acquire()
+                break
+            except OSError:
+                if not announced:
+                    print(f"{YELLOW}ums: another suite is using the project host; "
+                          f"waiting for it{RESET}", flush=True)
+                    announced = True
+                time.sleep(1)
+        try:
+            yield
+        finally:
+            release()
+
+
+def show_run(result):
+    """Everything a failed ums step said: its exit status and both streams.
+
+    `print(r.stdout or r.stderr)` showed a successful `Built ...` line from a
+    build whose error had gone to stderr, three times, and each time the report
+    read as "the build worked, and the check is wrong".
+    """
+    print(f"exit status {result.returncode}")
+    print(f"stdout:\n{elide_middle(result.stdout or '')}")
+    print(f"stderr:\n{elide_middle(result.stderr or '')}")
 
 
 def run_ums_test():
@@ -778,7 +838,7 @@ def run_ums_test():
         built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(exe)])
         if built.returncode != 0:
             print(f"{RED}[FAIL] ums: the test program did not build{RESET}")
-            print(built.stdout or built.stderr)
+            show_run(built)
             return False
 
         # subprocess directly rather than run_command: the fixture paths inside
@@ -787,7 +847,7 @@ def run_ums_test():
                              cwd=str(PROJECT_ROOT))
         if ran.returncode != 0 or "PASS:" not in (ran.stdout or ""):
             print(f"{RED}[FAIL] ums: manifest, resolution or lockfile assertions failed{RESET}")
-            print(ran.stdout or ran.stderr)
+            show_run(ran)
             return False
 
     # Native linkage belongs to an executable target, not to a compiler-only
@@ -856,7 +916,7 @@ def run_ums_test():
             step = subprocess.run(command, capture_output=True, text=True)
             if step.returncode != 0:
                 print(f"{RED}[FAIL] ums: native link fixture setup failed{RESET}")
-                print(step.stdout or step.stderr)
+                show_run(step)
                 return False
 
         native_build = subprocess.run(
@@ -866,12 +926,12 @@ def run_ums_test():
         native_exe = project / ".prismio" / "build" / "debug" / "native-link"
         if native_build.returncode != 0 or not native_exe.exists():
             print(f"{RED}[FAIL] ums: declared native inputs did not link{RESET}")
-            print(native_build.stdout or native_build.stderr)
+            show_run(native_build)
             return False
         native_run = subprocess.run([str(native_exe)], capture_output=True, text=True)
         if native_run.returncode != 0:
             print(f"{RED}[FAIL] ums: native-linked executable returned the wrong result{RESET}")
-            print(native_run.stdout or native_run.stderr)
+            show_run(native_run)
             return False
 
     # Prismio is itself described by the repository's build.ums. A user-facing
@@ -908,9 +968,8 @@ def run_ums_test():
                 print(f"{RED}[FAIL] ums: stage 0 did not build the first project host{RESET}")
                 # All three conditions, and both streams: printing only stdout
                 # showed a successful build and hid which check had failed.
-                print(f"exit status {project_build.returncode}, host exists "
-                      f"{compiler_artifact.exists()}")
-                print(f"stdout:\n{project_build.stdout}\nstderr:\n{project_build.stderr[-2000:]}")
+                print(f"host exists {compiler_artifact.exists()}")
+                show_run(project_build)
                 return False
 
             local_build = subprocess.run(
@@ -922,7 +981,7 @@ def run_ums_test():
                     or "staged project compiler:" not in local_build.stdout
                     or "promoted project compiler:" not in local_build.stdout):
                 print(f"{RED}[FAIL] ums: the complete build command was not hosted{RESET}")
-                print(local_build.stdout or local_build.stderr)
+                show_run(local_build)
                 return False
 
             # A host alone in a build directory can build itself and nothing
@@ -1015,7 +1074,7 @@ def run_ums_test():
                 print(f"rebuilt {sorted(repaired)}")
                 # Seen once in a full run (2026-09-24) and never in isolation, with
                 # `rebuilt []` -- which a build that failed outright also reads as.
-                print(f"exit status {repair_run.returncode}\n{repair_run.stderr[-2000:]}")
+                show_run(repair_run)
                 return False
 
             # **Two producers, one format.** `tools/package.py` builds these for
@@ -1085,7 +1144,7 @@ def run_ums_test():
                         or outside_run.stdout.strip() != "local-toolchain"):
                     print(f"{RED}[FAIL] ums: the project host cannot build a "
                           f"program outside the checkout{RESET}")
-                    print(outside_build.stdout + outside_build.stderr)
+                    show_run(outside_build)
                     return False
 
             # The generation handshake, on its own, before the routing built on
@@ -1149,7 +1208,7 @@ def run_ums_test():
                 capture_output=True, text=True)
             if stale_built.returncode != 0:
                 print(f"{RED}[FAIL] ums: could not build the stale-host stand-in{RESET}")
-                print(stale_built.stdout or stale_built.stderr)
+                show_run(stale_built)
                 return False
 
             # `clean` is the one command exempt from the repair. It removes this
@@ -1197,13 +1256,13 @@ def run_ums_test():
             if "P1064" in forwarded_version.stdout + forwarded_version.stderr:
                 print(f"{RED}[FAIL] ums: a repaired host was rebuilt again by the "
                       f"next command{RESET}")
-                print(forwarded_version.stdout + forwarded_version.stderr)
+                show_run(forwarded_version)
                 return False
             if (forwarded_version.returncode != 0
                     or "Using local toolchain" not in forwarded_version.stderr
                     or "prismio 0.1.0" not in forwarded_version.stdout):
                 print(f"{RED}[FAIL] ums: a non-build command was not forwarded to the host{RESET}")
-                print(forwarded_version.stdout or forwarded_version.stderr)
+                show_run(forwarded_version)
                 return False
 
             # A direct local invocation has no global parent waiting to promote its
@@ -1214,7 +1273,7 @@ def run_ums_test():
             )
             if self_build.returncode == 0 or "P1051" not in (self_build.stdout + self_build.stderr):
                 print(f"{RED}[FAIL] ums: a project compiler tried to replace itself{RESET}")
-                print(self_build.stdout or self_build.stderr)
+                show_run(self_build)
                 return False
 
             # A corrupt active generation falls back to stage 0 rather than becoming
@@ -1239,7 +1298,7 @@ def run_ums_test():
             if (clean.returncode != 0 or compiler_artifact.exists()
                     or "Using local toolchain" not in clean.stderr):
                 print(f"{RED}[FAIL] ums: hosted clean did not remove the compiler after it exited{RESET}")
-                print(clean.stdout or clean.stderr)
+                show_run(clean)
                 return False
 
     print(f"{GREEN}[PASS] ums: manifest lowering, validation, build planning, "
