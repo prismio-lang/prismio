@@ -107,6 +107,13 @@
 
 ### Added
 
+- **A generic enum's variant takes its type arguments from the context.**
+  `let e: Option<Int> = Option.None`, `return Result.Ok(v)` in a function
+  returning `Result<Int, String>`, a struct field, an assignment and an argument
+  (`orZero(Option.None)`) all resolve without `Option<Int>.None`; the
+  arguments only have to be written where nothing names the type. A failed
+  construction reports once, without the "unknown identifier `Option`" that
+  followed it. test_175, neg_185.
 - **`default`**, the default value of whatever type its context expects:
   `let x: String = default` is `""`. Numbers are `0`, `Bool` `false`, `Char`
   `'\0'`, `Vec` `[]`, `T?` `none`, `Option<T>` `None`, `Map` an empty map, a

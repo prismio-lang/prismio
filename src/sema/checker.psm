@@ -331,6 +331,7 @@ private fn semaVecLiteralTable(module: ASTNode) -> String {
 // does not re-type an integer literal the way a declaration does -- so the one
 // hook it needs is repeated rather than the whole of semaCheckValue moved.
 private fn semaValueTypeAgainst(module: ASTNode, valNode: ASTNode, expected: TypeInfo) -> TypeInfo {
+    enumQualifyFromExpected(module, valNode, expected)
     if (semaListLiteral(module, valNode, expected)) { return nodeGetType(valNode) }
     return semaExpr(module, valNode)
 }
@@ -1159,6 +1160,13 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
                                         expr.child2, enumExplicitArgs(target))) {
                 return semaExpr(module, expr)
             }
+            // A payload enum's variant that could not be built has said why;
+            // going on to read `Option` as a module or a trait only adds noise.
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(target.s1) == 0
+                    and enumNeedsWrittenArgs(module, target.s1)) {
+                nodeSetType(expr, typeInvalid())
+                return typeInvalid()
+            }
         }
 
         // `Loud.speak(dog)` -- a *trait*-qualified call. Tried before the
@@ -1535,6 +1543,13 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         if (enumResolveConstruction(module, expr, objectNode.s1, expr.s1, ptr_null(),
                                     enumExplicitArgs(objectNode))) {
             return semaExpr(module, expr)
+        }
+        // As for a call: the failed construction has reported, and `Option`
+        // read as a value would add "unknown identifier".
+        if (objectNode.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(objectNode.s1) == 0
+                and enumNeedsWrittenArgs(module, objectNode.s1)) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
         }
     }
 
@@ -3265,6 +3280,10 @@ private fn semaBuildDynIfNeeded(module: ASTNode, argNode: ASTNode, paramT: TypeI
 private fn semaIsDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Bool {
     if (nodeIsNull(expr.child2)) { return false }
     let receiver = ptr_to_node(expr.child2)
+    // A variant construction is never a trait object, and typing one here,
+    // before overload resolution has a parameter type to give it, would report
+    // `Option.None` as uninferable in `orZero(Option.None)`.
+    if (enumIsBareGenericConstruction(module, receiver)) { return false }
     let receiverT = semaExpr(module, receiver)
     if (typeIsValid(receiverT) == false) { return false }
     if (receiverT.kind != TypeKind.STRUCT) { return false }

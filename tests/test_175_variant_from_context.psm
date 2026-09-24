@@ -1,0 +1,55 @@
+// `Option.None` and `Result.Ok(5)` carry nothing that names every type
+// parameter, so they take their type arguments from the context: an annotation,
+// an assignment's target, a return type, a struct field, or the parameter an
+// argument is passed to. neg_185 is the one with no context at all.
+import std.io
+import std.option
+
+enum Outcome<T, E> {
+    Good(T),
+    Bad(E)
+}
+
+struct Slot {
+    held: Option<Int>
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn nothing() -> Option<String> { return Option.None }
+
+fn orZero(o: Option<Int>) -> Int {
+    match (o) {
+        Option.Some(x) => { return x }
+        Option.None => { return 0 }
+    }
+}
+
+fn main() -> Int {
+    let e: Option<Int> = Option.None
+    if (optionIsSome(e)) { return fail("an annotation") }
+
+    let mut f: Option<Int> = Option.Some(3)
+    f = Option.None
+    if (optionIsSome(f)) { return fail("an assignment") }
+
+    if (optionIsSome(nothing())) { return fail("a return type") }
+
+    let slot = Slot { held: Option.None }
+    if (optionIsSome(slot.held)) { return fail("a struct field") }
+
+    if (orZero(Option.None) + orZero(Option.Some(5)) != 5) { return fail("an argument") }
+
+    let r: Outcome<Int, String> = Outcome.Good(4)
+    match (r) {
+        Outcome.Good(x) => { if (x != 4) { return fail("a payload that names one parameter of two") } }
+        Outcome.Bad(m) => { return fail("the wrong variant") }
+    }
+
+    println("test_175 ok")
+    return 0
+}

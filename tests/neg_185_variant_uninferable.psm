@@ -1,0 +1,7 @@
+// expect-error: cannot infer the type arguments of `Option` here; write them, as `Option<...>.None`
+import std.option
+
+fn main() -> Int {
+    let e = Option.None
+    return 0
+}

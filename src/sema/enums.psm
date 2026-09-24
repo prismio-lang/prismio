@@ -327,6 +327,66 @@ private fn enumConcreteName(module: ASTNode, enumName: String, variantName: Stri
     return monoInstantiateStruct(module, enumTypeUse(enumName, solved))
 }
 
+// `Option.None` where an `Option<Int>` is expected: the written qualifier
+// becomes the instantiation the context names, which enumConcreteName accepts
+// as it stands. Without it a variant that carries nothing mentioning a type
+// parameter -- `None`, or `Result.Ok(5)` for `E` -- could only be written with
+// its arguments spelled out, even under an annotation that says them.
+//
+// Only a bare qualifier that names the expected type's own template, is not a
+// binding, and has the variant, so an unrelated expression is left untouched
+// for the ordinary mismatch to report.
+internal fn enumQualifyFromExpected(module: ASTNode, valNode: ASTNode, expected: TypeInfo) {
+    if (enumFitsExpected(module, valNode, expected) == false) { return }
+    enumQualifierOf(valNode).s1 = expected.name.clone()
+}
+
+// Whether enumQualifyFromExpected would qualify `valNode`, without touching it.
+// Overload matching asks this of an argument before any candidate is chosen:
+// typing the argument there would report "cannot infer" for the very call the
+// chosen parameter's type is about to settle.
+internal fn enumFitsExpected(module: ASTNode, valNode: ASTNode, expected: TypeInfo) -> Bool {
+    if (typeIsValid(expected) == false or expected.kind != TypeKind.STRUCT) { return false }
+    let qualifier = enumQualifierOf(valNode)
+    if (qualifier.kind != NodeKind.IDENTIFIER_EXPR or ir_has_var_type(qualifier.s1) == 1) { return false }
+
+    let at = expected.name.indexOf(monoSeparator())
+    if (at <= 0 or expected.name.substring(0, at).equals(qualifier.s1) == false) { return false }
+    let shadow = enumShadowFind(module, expected.name)
+    return nodeExists(node_to_ptr(shadow)) and enumVariantTag(shadow, enumVariantOf(valNode)) >= 0
+}
+
+// `Option.None` or `Result.Ok(x)` written with a bare generic enum's name: a
+// construction whose type arguments may still come from the context. Nothing
+// may type one before that context is known -- it would report "cannot infer".
+internal fn enumIsBareGenericConstruction(module: ASTNode, valNode: ASTNode) -> Bool {
+    let qualifier = enumQualifierOf(valNode)
+    if (qualifier.kind != NodeKind.IDENTIFIER_EXPR or ir_has_var_type(qualifier.s1) == 1) { return false }
+    let template = monoFindTypeTemplate(module, qualifier.s1)
+    return nodeExists(node_to_ptr(template)) and template.kind == NodeKind.ENUM_DECL
+}
+
+// `Option` in `Option.None` and in `Option.Some(x)`; an ERROR_NODE for any other
+// shape, which no caller accepts as a qualifier.
+private fn enumQualifierOf(valNode: ASTNode) -> ASTNode {
+    let member = enumMemberOf(valNode)
+    if (member.kind != NodeKind.MEMBER_ACCESS_EXPR or nodeIsNull(member.child1)) {
+        return createNode(NodeKind.ERROR_NODE)
+    }
+    return ptr_to_node(member.child1)
+}
+
+private fn enumVariantOf(valNode: ASTNode) -> String {
+    return enumMemberOf(valNode).s1
+}
+
+private fn enumMemberOf(valNode: ASTNode) -> ASTNode {
+    if (valNode.kind == NodeKind.CALL_EXPR and nodeExists(valNode.child1)) {
+        return ptr_to_node(valNode.child1)
+    }
+    return valNode
+}
+
 // Rewrites `Shape.Circle(5)` or `Shape.Dot` into the struct literal that
 // represents it, in place. Answers false when this expression is not a payload
 // variant, leaving it exactly as it was.
@@ -347,6 +407,8 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
                                                                            " here; write them, as ",
                                                                            diagQuote(enumName.concat("<...>.",
                                                                                                      variantName))))
+            let example = "`let x: ".concat(enumName, "<...> = ", enumName, ".", variantName).concat("`")
+            diag_note("or let the context name the type: an annotation, a parameter, a return type or a field -- ".concat(example))
         }
         return false
     }
@@ -614,7 +676,7 @@ internal fn semaMatchPayloadArms(module: ASTNode, stmt: ASTNode, scrutT: TypeInf
 // Is this name a generic enum with payloads whose arguments could not be solved?
 // Used only to decide whether a failed construction deserves a diagnostic of its
 // own, so it must stay quiet about every other name.
-private fn enumNeedsWrittenArgs(module: ASTNode, enumName: String) -> Bool {
+internal fn enumNeedsWrittenArgs(module: ASTNode, enumName: String) -> Bool {
     let template = monoFindTypeTemplate(module, enumName)
     if (nodeIsNull(node_to_ptr(template))) { return false }
     if (template.kind != NodeKind.ENUM_DECL) { return false }

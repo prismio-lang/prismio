@@ -195,6 +195,7 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
             return typeInvalid()
         }
     }
+    enumQualifyFromExpected(module, valNode, expected)
     if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(valNode)) {
         // Adopting a type is also where the value has to fit in it. Without
         // this, `let small: U8 = 999` typed as U8 and stored 231.

@@ -252,6 +252,9 @@ private fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeI
     if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(argNode)) {
         return true
     }
+    // `Option.None` for an `Option<Int>` parameter; semaCheckValue qualifies it
+    // once this candidate is chosen.
+    if (enumFitsExpected(module, argNode, expected)) { return true }
     let actual = semaExpr(module, argNode)
     if (semaTypesMatch(expected, actual)) { return true }
 
