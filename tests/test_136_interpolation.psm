@@ -43,7 +43,7 @@ fn main() -> Int {
     if (("${count}" == "42") == false) { return fail("Int") }
     if (("${count > 40}" == "true") == false) { return fail("Bool") }
     if (("${'x'}" == "x") == false) { return fail("Char") }
-    if (("${1.0 / 3.0}" == "0.3333333333333333") == false) { return fail("Float") }
+    if (("${1.0 / 3.0}" == "0.333333333333333") == false) { return fail("Float") }
     if (("${Point { x: 1, y: 2 }}" == "(1, 2)") == false) { return fail("a user type via Display") }
 
     // A struct literal's braces are counted, so the `}` that ends the

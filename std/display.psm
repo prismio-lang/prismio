@@ -33,7 +33,7 @@ impl Display for U32    { fn show(self) -> String { return strFromUnsigned(self 
 impl Display for U64    { fn show(self) -> String { return strFromUnsigned(self) } }
 impl Display for Usize  { fn show(self) -> String { return strFromUnsigned(self as U64) } }
 impl Display for Bool   { fn show(self) -> String { return strFromBool(self) } }
-// The round-trip text, the same `print(f)` writes -- see `strFromFloat`. `Float`
+// The same text `print(f)` writes -- see `strFromFloat`. `Float`
 // was absent from this set for as long as it had no conversion, which meant a
 // struct with a float field could not implement `Display` without writing the
 // digits out by hand.

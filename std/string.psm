@@ -1660,20 +1660,20 @@ public fn join(parts: Vec<String>, sep: String) -> String {
 // Float text
 // ---------------------------------------------------------------------------
 
-// **The shortest decimal text that reads back as the same double.**
+// **The shortest decimal text, at most fifteen significant digits.**
 //
 // `Float` used to be the one type a program could print and parse but never
 // convert: there was no `strFromFloat`, so a float could not be joined into a
 // line, written to a file, used as a map key's text, or built into a message.
-// The formatting itself is C, because finding the shortest round-tripping form
-// means parsing candidates back, and `strtod` is where that lives -- see
-// `prismio_format_double` in runtime/lang_runtime.c.
+// The formatting itself is C, because finding the shortest form means parsing
+// candidates back, and `strtod` is where that lives -- see
+// `prismio_format_double` in runtime/lang_runtime.c. Fifteen is DBL_DIG, so
+// every decimal literal prints as written and `0.1 + 0.2` is `0.3`; a value
+// that needs more digits to round-trip, like `1.0 / 3.0`, prints fifteen.
 //
 // **`print(f)` writes exactly this text**, because both go through that one
 // function. A value that reaches the console and the same value converted to a
-// String must not disagree, or one of the two is lying about what the program
-// holds -- which is what `%g`'s six significant digits did: `1.0 / 3.0` printed
-// as `0.333333`, and reading that back gives a different number.
+// String must not disagree.
 //
 // Wrapping an `extern` that produces is a pass-through, which normally costs the
 // caller its drop (see the note over `concat`). It does not here, and the reason
@@ -1688,8 +1688,8 @@ internal fn strFromFloat(value: Float) -> String {
 }
 
 // A fixed number of decimals, for a column rather than a value -- prices,
-// percentages, a table of timings. Not required to round-trip, which is the
-// difference: `strFromFloatFixed(1.0 / 3.0, 2)` is `0.33` and means it.
+// percentages, a table of timings: `strFromFloatFixed(1.0 / 3.0, 2)` is `0.33`,
+// and `strFromFloatFixed(2.0, 2)` keeps its zeros as `2.00`.
 // `decimals` is clamped to 0..30.
 internal fn strFromFloatFixed(value: Float, decimals: Int) -> String {
     return str_from_double_fixed(value, decimals)

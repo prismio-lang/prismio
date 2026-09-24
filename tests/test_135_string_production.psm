@@ -21,21 +21,25 @@ fn main() -> Int {
     // -- Float text ---------------------------------------------------------
     //
     // `Float` was the one type that could be printed and parsed but never
-    // converted. Round-tripping is the property that matters: the text has to
-    // name the same double, or a value written to a file comes back different.
+    // converted. The text is the shortest form with at most fifteen significant
+    // digits (DBL_DIG): every literal comes back as written, and the binary
+    // noise past that -- `0.1 + 0.2` is 0.30000000000000004 -- is not printed.
     if ((0.1).toString().equals("0.1") == false) { return fail("strFromFloat(0.1)") }
     if ((100.0).toString().equals("100") == false) { return fail("a round value is not exponential") }
-    if ((1.0 / 3.0).toString().equals("0.3333333333333333") == false) {
-        return fail("a third keeps every digit it needs")
+    if ((0.1 + 0.2).toString().equals("0.3") == false) { return fail("0.1 + 0.2 prints as 0.3") }
+    if ((1.0 / 3.0).toString().equals("0.333333333333333") == false) {
+        return fail("a third stops at fifteen digits")
     }
+    if (123456789.0.toString().equals("123456789") == false) { return fail("nine digits stay whole") }
     if (1.0e21.toString().equals("1e+21") == false) { return fail("a large value stays exponential") }
     if ((1.0 / 3.0).toString(2).equals("0.33") == false) { return fail("fixed decimals") }
     if (show(2.5).equals("2.5") == false) { return fail("Display for Float") }
     if ((2.5).toString().equals("2.5") == false) { return fail("Float.toString") }
 
-    // Format and parse are a pair or they are nothing.
-    let third = optionOr((1.0 / 3.0).toString().parseFloat(), 0.0)
-    if (third != 1.0 / 3.0) { return fail("Float round-trips through its text") }
+    // Anything written with fifteen digits or fewer reads back as the same double.
+    let fifteen = 0.123456789012345
+    let back = optionOr(fifteen.toString().parseFloat(), 0.0)
+    if (back != fifteen) { return fail("fifteen digits round-trip through the text") }
     let huge = optionOr(1.0e21.toString().parseFloat(), 0.0)
     if (huge != 1.0e21) { return fail("an exponent round-trips") }
     // Thirteen digits overflowed the old parser's 32-bit mantissa.

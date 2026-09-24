@@ -270,20 +270,23 @@ static int rt_arena_slot(void) {
     return *rt_arena_hint_state() > 0 ? arena_current_slot() : 0;
 }
 
-// **The shortest decimal text that reads back as the same double.**
+// **At most fifteen significant digits: the decimal a double certainly holds.**
 //
-// `%g` is six significant digits, so it is a *lossy* view of a value: 1/3
-// printed and parsed back is a different number, and the program has no way to
-// tell. Every shipped language resolved this the same way -- Python since 3.1,
-// Rust, Go, Swift -- by printing the shortest text that round-trips, so that
-// what you read is exactly what the program holds.
+// DBL_DIG is fifteen: any decimal of up to fifteen significant digits survives
+// text -> double -> text unchanged, so every literal a program writes prints
+// back as written. Past that, a double carries noise from the binary rounding,
+// and printing it is what made `0.1 + 0.2` show as `0.30000000000000004` --
+// the exact value, and not the one anybody wrote. C++'s default stops at six
+// digits and gets `0.3`, but also prints `123456789.0` as `1.23457e+08` and
+// `3.14159265` as `3.14159`; fifteen keeps every digit a program can mean. A
+// value that needs sixteen or seventeen to round-trip -- `1.0 / 3.0` -- prints
+// its first fifteen, so text is no longer a lossless serialisation of a Float.
 //
-// Found by search rather than by Ryu or Grisu: ask for one significant digit,
-// parse it back, and widen until it matches. Seventeen digits always suffice for
-// a binary64, which is the loop's bound. A Ryu port would be faster and is
-// several hundred lines of tables; this is two library calls per attempt and
-// converges in one for the values programs actually print -- 0.1, 2.5, 100 --
-// because those *are* one or two digits.
+// Found by search: ask for one significant digit, parse it back, and widen
+// until it matches or reaches fifteen. It converges in one or two attempts for
+// the values programs print -- 0.1, 2.5, 100 -- because those *are* one or two
+// digits, and it gives the shortest form, so 0.5 is `0.5` and not
+// `0.500000000000000`.
 //
 // The three values with no decimal form are spelled out rather than left to the
 // C library, which disagrees with itself about them: glibc gives `inf`, some
@@ -294,31 +297,30 @@ static int prismio_format_double(double value, char *out, size_t cap) {
     if (value > DBL_MAX) return snprintf(out, cap, "inf");
     if (value < -DBL_MAX) return snprintf(out, cap, "-inf");
 
-    for (int digits = 1; digits < 17; digits++) {
+    int digits = 1;
+    for (; digits < DBL_DIG; digits++) {
         int n = snprintf(out, cap, "%.*g", digits, value);
         if (n < 0 || (size_t)n >= cap) break;
-        if (strtod(out, NULL) != value) continue;
-
-        // **Fewest digits is not the same as the form a reader expects.**
-        // `%.1g` of 100 is `1e+02`, which round-trips and is the shortest digit
-        // count, and no language prints it: `%g` goes exponential as soon as the
-        // exponent reaches the precision, so one significant digit sends every
-        // round number there. Widening the precision is what brings it back --
-        // `%.3g` is `100` -- and more digits of a value that already round-trips
-        // still round-trips, so this cannot change which double is meant.
-        //
-        // Bounded by the same seventeen, which is what leaves the genuinely
-        // exponential values alone: nothing under that precision writes 1e+21 or
-        // 1e-308 in full, so they keep the form they should have.
-        if (memchr(out, 'e', (size_t)n) == NULL) return n;
-        for (int wider = digits + 1; wider <= 17; wider++) {
-            int w = snprintf(out, cap, "%.*g", wider, value);
-            if (w < 0 || (size_t)w >= cap) break;
-            if (memchr(out, 'e', (size_t)w) == NULL) return w;
-        }
-        return snprintf(out, cap, "%.*g", digits, value);
+        if (strtod(out, NULL) == value) break;
     }
-    return snprintf(out, cap, "%.17g", value);
+
+    int n = snprintf(out, cap, "%.*g", digits, value);
+    if (n < 0 || (size_t)n >= cap) return n;
+
+    // **Fewest digits is not the same as the form a reader expects.**
+    // `%.1g` of 100 is `1e+02`: `%g` goes exponential as soon as the exponent
+    // reaches the precision, so one significant digit sends every round number
+    // there. Widening the precision is what brings it back -- `%.3g` is `100` --
+    // and `%g` drops trailing zeros, so the wider form is no longer. Bounded by
+    // the same fifteen, which leaves the genuinely exponential values alone:
+    // 1e+21 and 1e-308 keep the form they should have.
+    if (memchr(out, 'e', (size_t)n) == NULL) return n;
+    for (int wider = digits + 1; wider <= DBL_DIG; wider++) {
+        int w = snprintf(out, cap, "%.*g", wider, value);
+        if (w < 0 || (size_t)w >= cap) break;
+        if (memchr(out, 'e', (size_t)w) == NULL) return w;
+    }
+    return snprintf(out, cap, "%.*g", digits, value);
 }
 
 // The same text, as a String the caller owns. `std.string`'s `strFromFloat` is

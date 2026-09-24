@@ -17,6 +17,15 @@
   any binding. `sort`, `sortBy`, `reverse`, `extend`, `pop`, `removeAt` and
   `mapInto`'s destination take their Vec `inout`. `inout` stays sema-only: no IR
   moved for any program that compiles.
+- **A Float prints with at most fifteen significant digits.** Breaking:
+  `println(0.1 + 0.2)` prints `0.3`, not `0.30000000000000004`, and `1.0 / 3.0`
+  prints `0.333333333333333`. The text is still the shortest that reads back as
+  the same double when fifteen digits or fewer can do it -- `0.1`, `2.5`, `100`,
+  `123456789` and every literal print as written -- and fifteen (DBL_DIG) is the
+  cap because it is what a double always holds. C++'s default six would also
+  turn `123456789.0` into `1.23457e+08`. Text is no longer a lossless copy of a
+  Float that needs sixteen or seventeen digits; `v.toString(decimals)` is
+  unchanged. test_135, test_136.
 - **A store through a Slice follows the `mut` rule.** Breaking: `s[i] = x`
   needs `let mut s` or an `inout` Slice, and a view of something changeable.
   A slice of a non-`mut` Vec, of an ordinary parameter or of another read-only

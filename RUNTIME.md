@@ -422,16 +422,17 @@ also turns on `ENABLE_VIRTUAL_TERMINAL_PROCESSING` for the console, answering 0
 if that cannot be set, so asking before styling is what gets colour in a legacy
 console. The styling itself is Prismio: bytes written with the string builtins.
 
-**Float text is C because round-tripping is.** `prismio_format_double` writes the
-shortest decimal that `strtod` reads back as the same double -- found by asking
-for one significant digit and widening until it matches -- and `str_from_double`
-is that text as a String the caller owns. `%g`'s six digits are not a *view* of a
-value but a different value: `1.0 / 3.0` printed that way and read back is not
-the number the program held. `strFromFloat`, `print(f)` and `Display for Float`
-all go through the one function, so none of them can disagree with the others.
-`str_double_valid` and `str_double_value` are the other direction, and are
-`strtod` for the same reason -- correctly rounded, and the exact inverse the
-formatter checks its own candidates against.
+**Float text is C because its search is.** `prismio_format_double` writes the
+shortest decimal that `strtod` reads back as the same double, with at most
+DBL_DIG (fifteen) significant digits -- found by asking for one digit and
+widening until it matches or reaches fifteen -- and `str_from_double` is that
+text as a String the caller owns. Fifteen is what a double always holds, so
+every literal prints as written and `0.1 + 0.2` prints `0.3`; a value that needs
+sixteen or seventeen digits to round-trip (`1.0 / 3.0`) prints fifteen. C++'s
+default six would also print `123456789.0` as `1.23457e+08`. `strFromFloat`,
+`print(f)` and `Display for Float` all go through the one function, so none of
+them can disagree with the others. `str_double_valid` and `str_double_value`
+are the other direction, and are `strtod` -- correctly rounded.
 
 ### Wrapped, and the wrapper is the supported API
 
