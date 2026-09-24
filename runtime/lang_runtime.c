@@ -25,6 +25,9 @@
 #endif
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN  // see prismio_platform.h
+#endif
 #include <windows.h>
 #endif
 // For the threading primitives the `--verify` ledger locks with, and for the
@@ -2923,8 +2926,8 @@ static void list_move_last(RtList* l, int index) {
     if (index >= l->len - 1) return;
     size_t stride = list_stride(l);
     unsigned char* base = (unsigned char*)l->data;
-    unsigned char small[64];
-    unsigned char* held = stride <= sizeof(small) ? small : (unsigned char*)malloc(stride);
+    unsigned char on_stack[64];
+    unsigned char* held = stride <= sizeof(on_stack) ? on_stack : (unsigned char*)malloc(stride);
     if (!held) {
         fprintf(stderr, "runtime error: out of memory inserting an element\n");
         exit(1);
@@ -2933,7 +2936,7 @@ static void list_move_last(RtList* l, int index) {
     memmove(base + (size_t)(index + 1) * stride, base + (size_t)index * stride,
             (size_t)(l->len - 1 - index) * stride);
     memcpy(base + (size_t)index * stride, held, stride);
-    if (held != small) free(held);
+    if (held != on_stack) free(held);
 }
 
 // One per push entry point, with the same argument conventions plus the index.
