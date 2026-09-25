@@ -3887,6 +3887,59 @@ def run_loop_range_proofs_test():
     return True
 
 
+def run_proved_index_nsw_test():
+    """A proved index's `+`/`-` is `nsw` exactly where nothing in it can wrap.
+
+    test_179 checks the answers, including one whose intermediate really wraps,
+    but a wrongly placed `nsw` is poison that may still print the right number.
+    So the marks are read from the IR: present on knapsack's `at - weight` and on
+    the operand of a `%` and on both ops of `base + c - 1`; absent from
+    `base + c - 2`, from `(i + k) - k` and from an index the proof cannot bound. A loop counter's own `add nsw ..., 1` is the older mark; an op
+    with two register operands is the one this places.
+    """
+    print(f"\n{BLUE}--- Running proved_index_nsw ---{RESET}")
+    source = TEST_DIR / "test_179_proved_index_nsw.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-proved-index-") as tmp:
+        ir_path = Path(tmp) / "index.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] proved index IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+    def body(name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append(f"missing function {name}")
+            return ""
+        return match.group(1)
+
+    marked_sub = r'sub nsw i32 %\S+, %\S+'
+    marked_add = r'add nsw i32 %\S+, %\S+'
+    for name in ("knapsack", "knapsackLet"):
+        if not re.search(marked_sub, body(name)):
+            problems.append(f"{name}: the proved `at - weight` is not nsw")
+    if not re.search(marked_add, body("rotated")):
+        problems.append("rotated: the `%` operand is not nsw")
+    shifted = body("shiftedBack")
+    if not re.search(marked_add, shifted) or not re.search(r'sub nsw i32 %\S+, 1\b', shifted):
+        problems.append("shiftedBack: `base + c - 1` is not nsw throughout")
+    for name in ("shiftedBackTwo", "offsetBack", "lookedUp"):
+        text = body(name)
+        if re.search(marked_sub, text) or re.search(marked_add, text):
+            problems.append(f"{name}: an index op that can wrap is nsw")
+    if "mul nsw" in ir:
+        problems.append("a multiply is nsw")
+    if problems:
+        print(f"{RED}[FAIL] proved index nsw{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] proved index arithmetic is nsw, and only there{RESET}")
+    return True
+
+
 def run_counted_fill_codegen_test():
     """The pure fill grows early; observable calls and early exits do not."""
     print(f"\n{BLUE}--- Running counted_fill_codegen ---{RESET}")
@@ -8083,6 +8136,7 @@ def main():
         ("data_view_gate", run_data_view_gate_test),
         ("counted_fill_codegen", run_counted_fill_codegen_test),
         ("loop_range_proofs", run_loop_range_proofs_test),
+        ("proved_index_nsw", run_proved_index_nsw_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

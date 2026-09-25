@@ -1,0 +1,164 @@
+// Proved index arithmetic is emitted `nsw` (src/ir/ranges.psm, rangeMarkIndex).
+//
+// `Int` wraps at 32 bits, and an index is sign-extended to 64 before it reaches
+// its address. A plain `sub i32` there hides the index's shape from LLVM: it
+// cannot tell how far `best[at - weight]` is from `best[at]`, and falls back on a
+// run-time overlap test that knapsack's two ranges always fail. `nsw` is only
+// true where nothing can wrap, so the proved loop copy marks an op only when its
+// result and both operands lie inside `Int` by facts its guard already holds.
+//
+// test_runner.py's proved_index_nsw asserts the marks in this file's IR; this
+// program asserts the answers. The shapes in between are the ones a mark must
+// not reach: `(i + k) - k` is always in range while `i + k` wraps, and runs here
+// with a `k` that does.
+
+import std.io
+import std.math
+
+fn ascending(n: Int, from: Int) -> Vec<Int> {
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut i = 0
+    while (i < n) {
+        xs.push(from + i)
+        i = i + 1
+    }
+    return xs
+}
+
+// The benchmark's shape: `0 <= at - weight < len` is in the guard, and `at` and
+// `weight` are what the loop holds, so `at - weight` cannot wrap.
+fn knapsack(capacity: Int, items: Int) -> Int {
+    let mut best = ascending(capacity + 1, 0)
+    for c in 0..capacity { best[c] = 0 }
+    for i in 1..items {
+        let weight = (i * 37) % 97 + 1
+        let value = (i * 53) % 211 + 1
+        let mut at = capacity
+        while (at >= weight) {
+            best[at] = max(best[at], best[at - weight] + value)
+            at = at - 1
+        }
+    }
+    return best[capacity]
+}
+
+// The same index through a `let`: the let's value is the index.
+fn knapsackLet(capacity: Int, items: Int) -> Int {
+    let mut best = ascending(capacity + 1, 0)
+    for c in 0..capacity { best[c] = 0 }
+    for i in 1..items {
+        let weight = (i * 37) % 97 + 1
+        let value = (i * 53) % 211 + 1
+        let mut at = capacity
+        while (at >= weight) {
+            let from = at - weight
+            best[at] = max(best[at], best[from] + value)
+            at = at - 1
+        }
+    }
+    return best[capacity]
+}
+
+// The operand of `%`: the guard keeps `i + shift` inside `Int` so that the
+// remainder is the one the loop computes, which makes the `+` markable too.
+fn rotated(xs: Vec<Int>, shift: Int) -> Int {
+    let mut acc = 0
+    let mut i = 0
+    while (i < xs.length) {
+        acc = acc + xs[(i + shift) % 8]
+        i = i + 1
+    }
+    return acc
+}
+
+// edit_distance's shape. `base + c - 1` in [0, len) puts `base + c` in
+// [1, len], inside `Int` with len an `Int`, so both ops are marked.
+fn shiftedBack(xs: Vec<Int>, base: Int) -> Int {
+    let mut acc = 0
+    let mut c = 1
+    while (c <= 10) {
+        acc = acc + xs[base + c - 1]
+        c = c + 1
+    }
+    return acc
+}
+
+// Two back is not the same: `base + c` in [2, len + 1] can be one past `Int`.
+fn shiftedBackTwo(xs: Vec<Int>, base: Int) -> Int {
+    let mut acc = 0
+    let mut c = 1
+    while (c <= 10) {
+        acc = acc + xs[base + c - 2]
+        c = c + 1
+    }
+    return acc
+}
+
+// In range for every `k`, and `i + k` wraps for a large one: neither op may be
+// marked. The index the loop computes is still `i`.
+fn offsetBack(xs: Vec<Int>, k: Int) -> Int {
+    let mut acc = 0
+    let mut i = 0
+    while (i < xs.length) {
+        acc = acc + xs[(i + k) - k]
+        i = i + 1
+    }
+    return acc
+}
+
+// An index the analysis cannot bound: the access stays checked and its
+// arithmetic stays plain.
+fn lookedUp(xs: Vec<Int>, table: Vec<Int>) -> Int {
+    let mut acc = 0
+    let mut i = 0
+    while (i < table.length) {
+        acc = acc + xs[i - table[i]]
+        i = i + 1
+    }
+    return acc
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        println(got)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let xs = ascending(1000, 1)
+
+    bad = bad + check("FAIL: knapsack", knapsack(400, 60), 2165)
+    bad = bad + check("FAIL: knapsackLet", knapsackLet(400, 60), 2165)
+    // Items heavier than the whole capacity: the inner loop never runs.
+    bad = bad + check("FAIL: knapsack empty", knapsack(0, 60), 0)
+
+    // Every index in 0..7 once per eight elements of a 1000-element list.
+    bad = bad + check("FAIL: rotated", rotated(xs, 3), 4500)
+    // Negative remainders read nothing: the guard declines, the checked copy runs.
+    bad = bad + check("FAIL: rotated negative", rotated(xs, 0 - 5), 4470)
+    // `i + shift` wraps from i = 48 on; from there each remainder is negative,
+    // and reads nothing, or zero.
+    bad = bad + check("FAIL: rotated wrapping", rotated(xs, 2147483600), 335)
+
+    // 1..10, then 2..11, and 991..1000 against the end of a 1000-element list.
+    bad = bad + check("FAIL: shiftedBack", shiftedBack(xs, 0), 55)
+    bad = bad + check("FAIL: shiftedBackTwo", shiftedBackTwo(xs, 2), 65)
+    bad = bad + check("FAIL: shiftedBack end", shiftedBack(xs, 990), 9955)
+    // `base + c` wraps at c = 1; every index is far outside and reads nothing.
+    bad = bad + check("FAIL: shiftedBack wrapping", shiftedBack(xs, 2147483647), 0)
+
+    bad = bad + check("FAIL: offsetBack", offsetBack(xs, 7), 500500)
+    // `i + k` wraps from i = 648 on; the difference is still `i`.
+    bad = bad + check("FAIL: offsetBack wrapping", offsetBack(xs, 2147483000), 500500)
+
+    let table = ascending(10, 0 - 3)
+    bad = bad + check("FAIL: lookedUp", lookedUp(xs, table), 40)
+
+    if (bad != 0) { return 1 }
+    println("PASS: proved index arithmetic")
+    return 0
+}

@@ -97,6 +97,18 @@
   Vec are stored as bytes, as clang stores `bool`: prime_sieve 0.548 -> 0.494
   (C++ 0.502). Measurements in `aif/evidence/RESULTS-loop-range-proofs.md` and
   `RESULTS-relational-tier.md`.
+- **Proved index arithmetic is `nsw`, so LLVM computes it in 64 bits.** Where
+  the range guard proves an access in range, the `+` and `-` of its index are
+  emitted `nsw` in the proved copy, when the op's result and both operands are
+  provably inside `Int` from facts the guard already holds. `Int` stays 32-bit
+  and wrapping everywhere else. Unproved arithmetic, multiplies and trip counts
+  are untouched, and no guard fact is added to earn a mark. knapsack 142.8 ->
+  37.6 us (C++ 151): its vector loop used to sit behind an overlap check that
+  always failed, in C++ with an `int` index too
+  (`aif/evidence/RESULTS-int-width.md` §9.1). edit_distance 748 -> 600 us; the
+  other 60 workloads are unchanged (geomean 1.009 against a 1.005 A/A control,
+  all 62 checksums equal). Only the ` nsw ` flag moved, in 12 of 225 programs.
+  `rangeMarkIndex` in `src/ir/ranges.psm`; test_179.
 - **The compiler builds itself about ten times faster.** On `src/main.psm`:
   `prismio check` 1.20 -> 0.13 s, emitting IR 8.8 -> 0.76 s, a full
   self-bootstrap 12.9 -> ~4.5 s. Arena placement recomputed a function's

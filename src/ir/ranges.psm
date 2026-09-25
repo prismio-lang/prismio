@@ -1303,8 +1303,94 @@ private fn rangeEmitAccess(e: ASTNode, rl: RangeLoop) {
         i = i + 1
     }
     ir_range_proof_mark(node_to_ptr(e), rl.proof, rangeDataFor(rl, list))
+    rangeMarkIndex(list.next, rl, true, 0, rangeIntMax() - 1)
     rl.proved = rl.proved + 1
 }
+
+// Marks the `+` and `-` of a proved index that cannot wrap, so the proved copy
+// emits them `nsw` and LLVM can compute the index in 64 bits. Answers whether the
+// node's value lies inside `Int`; `known` says the caller has a bound [lo, hi] for
+// it from a fact the guard already holds.
+//
+// The interval above is the loop's value only modulo 2^32, so a node's interval
+// inside `Int` is not enough: `(x + k) - k` is in range with `x + k` wrapped. A
+// node whose value is inside `Int` does hold the loop's value exactly, though,
+// since the two agree modulo 2^32. So an op is marked when its result and both
+// operands are inside `Int`: its operands are then what the loop computed, and
+// their exact sum is its result.
+//
+// The bounds come from the guard: the index is in [0, len), len being an `Int`,
+// and the operand of `/` and `%` is inside `Int`. They carry down through a
+// literal offset -- `c - 1` in [0, len) puts `c` in [1, len] -- which is what
+// marks every op of `current + c - 1`. No fact is added for a mark, since one
+// that fails at run time would send the loop to its checked copy, and nothing is
+// marked that rangeInterval did not evaluate.
+private fn rangeMarkIndex(exprPtr: Ptr, rl: RangeLoop, known: Bool, lo: I64, hi: I64) -> Bool {
+    let e = ptr_to_node(exprPtr)
+    if (rangeLiteralValue(e) >= 0) { return true }
+    if (e.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (rangeScopeLet(rl, e.s1) < 0) { return true }
+        let decl = ptr_to_node(irFindDeclInBody(rl.bodyPtr, e.s1))
+        return rangeMarkIndex(decl.child2, rl, known, lo, hi)
+    }
+    if (e.kind == NodeKind.UNARY_EXPR) {
+        rangeMarkIndex(e.child1, rl, false, 0, 0)
+        return false
+    }
+    if (e.kind != NodeKind.BINARY_EXPR) { return true }
+    let op = e.s1
+    if (op.equals("&")) { return true }
+    if (op.equals("*") and rangeIsInvariant(node_to_ptr(e), rl)) { return true }
+    if (op.equals("+") or op.equals("-")) { return rangeMarkSum(e, rl, known, lo, hi) }
+    let divides = op.equals("/") or op.equals("%")
+    let mut operand = e.child1
+    if (rangeLiteralValue(ptr_to_node(e.child2)) < 0) { operand = e.child2 }
+    rangeMarkIndex(operand, rl, divides, rangeIntMin(), rangeIntMax())
+    return divides
+}
+
+// `a + b` or `a - b` with its value in [lo, hi] when `known`. A literal operand
+// bounds the other one by the same interval, shifted.
+private fn rangeMarkSum(e: ASTNode, rl: RangeLoop, known: Bool, lo: I64, hi: I64) -> Bool {
+    let plus = e.s1.equals("+")
+    let right = rangeLiteralValue(ptr_to_node(e.child2))
+    let left = rangeLiteralValue(ptr_to_node(e.child1))
+    let mut leftInside = false
+    let mut rightInside = false
+    if (known and right >= 0) {
+        let k = right as I64
+        if (plus) {
+            leftInside = rangeMarkBounded(e.child1, rl, lo - k, hi - k)
+        } else {
+            leftInside = rangeMarkBounded(e.child1, rl, lo + k, hi + k)
+        }
+        rightInside = true
+    } else if (known and left >= 0) {
+        let k = left as I64
+        if (plus) {
+            rightInside = rangeMarkBounded(e.child2, rl, lo - k, hi - k)
+        } else {
+            rightInside = rangeMarkBounded(e.child2, rl, k - hi, k - lo)
+        }
+        leftInside = true
+    } else {
+        leftInside = rangeMarkIndex(e.child1, rl, false, 0, 0)
+        rightInside = rangeMarkIndex(e.child2, rl, false, 0, 0)
+    }
+    if (known and leftInside and rightInside) { ir_range_proof_mark(node_to_ptr(e), rl.proof, "") }
+    return known
+}
+
+// An operand whose value the caller bounds by [lo, hi], which is a bound worth
+// carrying only while it stays inside `Int`.
+private fn rangeMarkBounded(exprPtr: Ptr, rl: RangeLoop, lo: I64, hi: I64) -> Bool {
+    let inside = lo >= rangeIntMin() and hi <= rangeIntMax()
+    return rangeMarkIndex(exprPtr, rl, inside, lo, hi)
+}
+
+private fn rangeIntMin() -> I64 { return (0 - 2147483647 - 1) as I64 }
+
+private fn rangeIntMax() -> I64 { return 2147483647 as I64 }
 
 // The receiver's element base, loaded once here for every proved access to it.
 // The receiver is stable and nothing in the loop moves its block, so the base is
