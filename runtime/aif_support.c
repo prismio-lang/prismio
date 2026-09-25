@@ -4144,6 +4144,7 @@ static int site_arena_scope_full(int id, int* blockers) {
     //     decrement. The last decrement calls the deallocator, and a bump
     //     pointer is not a thing it can take.
     //   * `drop(x)` frees it explicitly, for the same reason as below.
+    //   * A `foreign` block came from `rt_base_alloc` or `malloc`, not the arena.
     //
     // T1 and T2 both pass, and T2 passing is the point: SPEC 5.2 makes the tier
     // the derived fact and the placement a codegen decision, so a bracketed site
@@ -4156,6 +4157,9 @@ static int site_arena_scope_full(int id, int* blockers) {
         int tier = aif_tier_of(id);
         if (tier != AIF_T1 && tier != AIF_T2) mask |= AIF_ARENA_B_NOT_T1;
         if (s->no_stack) mask |= AIF_ARENA_B_NO_STACK;
+        // A block the arena hint did not allocate is not reclaimed by the
+        // caller's region either; bracketing moves the arena, not the allocator.
+        if (s->foreign) mask |= AIF_ARENA_B_NO_STACK;
         if (blockers) *blockers = mask;
         return mask == 0 ? br : -1;
     }
@@ -5462,7 +5466,8 @@ static long bracket_candidate_serves(int cand, long* held, long* live) {
             if (f < 0 || f >= fn_count || !bits_test(&bracket_cand_extent, f)) continue;
             int tier = aif_tier_of(k);
             if (tier != AIF_T1 && tier != AIF_T2) continue;
-            if (sites[k].no_stack) continue;
+            // The gate's clauses, so no arena is placed for traffic it refuses.
+            if (sites[k].no_stack || sites[k].foreign) continue;
             if (site_is_loop_struct(k, e->scope)) continue;
             long w = weight_in_own_fn(sites[k].scope) * callw;
             served += w;

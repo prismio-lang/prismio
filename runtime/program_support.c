@@ -940,6 +940,134 @@ char* proc_read_all(int fd) {
     return buffer;
 }
 
+// This process's standard input, read through one buffer for the whole process:
+// what `stdin.readLine`, `stdin.lines` and `stdin.readAll` in std/io.psm read.
+//
+// **One `read` per buffer, not per line.** A line reader that asked the kernel
+// for each line would make a filter slower than `cat`; this one finds the line
+// in memory with `memchr` and copies it out, and goes back to the descriptor
+// only when the buffer holds no complete line. The buffer grows to fit a line
+// longer than it, so a line is never split.
+//
+// A pending line is `[io_stdin_start, io_stdin_line_end)`, found by
+// `io_stdin_has_line` and handed out by `io_stdin_take_line`. Two calls because
+// the iterator protocol asks "is there another?" and "give it to me" separately,
+// and because an owned String has no null to mean end of input.
+//
+// The buffer is internal and freed by nothing, so it is plain `malloc`: only the
+// line copies cross into Prismio, and those come from `rt_base_alloc`.
+//
+// **One reader.** The state is process-global and unlocked, as C's `stdin` is
+// under `getc_unlocked`: two tasks reading lines concurrently is undefined.
+// Reading descriptor 0 directly (`Stream { descriptor: 0 }`) bypasses the buffer
+// and skips whatever it already holds.
+#define IO_STDIN_CHUNK 65536
+
+static char*  io_stdin_buffer;
+static size_t io_stdin_capacity;
+static size_t io_stdin_start;
+static size_t io_stdin_end;
+static size_t io_stdin_line_end;
+static size_t io_stdin_next;
+static int    io_stdin_pending;
+static int    io_stdin_eof;
+
+// Moves the unread bytes to the front, makes room for at least one chunk, and
+// reads once. Answers the bytes read; 0 once input has ended, and on an error or
+// a failed allocation, which a reader can do nothing with but stop.
+static size_t io_stdin_fill(void) {
+    if (io_stdin_eof) return 0;
+    size_t unread = io_stdin_end - io_stdin_start;
+    if (io_stdin_start > 0) {
+        memmove(io_stdin_buffer, io_stdin_buffer + io_stdin_start, unread);
+        io_stdin_start = 0;
+        io_stdin_end = unread;
+    }
+    if (io_stdin_capacity - io_stdin_end < IO_STDIN_CHUNK) {
+        size_t grown = io_stdin_capacity ? io_stdin_capacity * 2 : IO_STDIN_CHUNK;
+        while (grown - io_stdin_end < IO_STDIN_CHUNK) grown *= 2;
+        char* bigger = (char*)realloc(io_stdin_buffer, grown);
+        if (!bigger) { io_stdin_eof = 1; return 0; }
+        io_stdin_buffer = bigger;
+        io_stdin_capacity = grown;
+    }
+    for (;;) {
+#ifdef _WIN32
+        int n = _read(0, io_stdin_buffer + io_stdin_end,
+                      (unsigned int)(io_stdin_capacity - io_stdin_end));
+#else
+        ssize_t n = read(0, io_stdin_buffer + io_stdin_end,
+                         io_stdin_capacity - io_stdin_end);
+        if (n < 0 && errno == EINTR) continue;
+#endif
+        if (n <= 0) { io_stdin_eof = 1; return 0; }
+        io_stdin_end += (size_t)n;
+        return (size_t)n;
+    }
+}
+
+// 1 when a line is pending, reading as much as it takes to find one; 0 at the
+// end of input. A last line without a terminator is still a line, and an empty
+// input has none. The terminator is `\n` or `\r\n`, and is not part of the line.
+int io_stdin_has_line(void) {
+    if (io_stdin_pending) return 1;
+    size_t scanned = 0;
+    for (;;) {
+        char* data = io_stdin_buffer + io_stdin_start;
+        char* newline = io_stdin_end > io_stdin_start + scanned
+            ? (char*)memchr(data + scanned, '\n', io_stdin_end - io_stdin_start - scanned)
+            : NULL;
+        if (newline) {
+            io_stdin_line_end = (size_t)(newline - io_stdin_buffer);
+            io_stdin_next = io_stdin_line_end + 1;
+            if (io_stdin_line_end > io_stdin_start &&
+                io_stdin_buffer[io_stdin_line_end - 1] == '\r') {
+                io_stdin_line_end--;
+            }
+            io_stdin_pending = 1;
+            return 1;
+        }
+        scanned = io_stdin_end - io_stdin_start;
+        if (io_stdin_fill() == 0) break;
+    }
+    if (io_stdin_end == io_stdin_start) return 0;
+    io_stdin_line_end = io_stdin_end;
+    io_stdin_next = io_stdin_end;
+    io_stdin_pending = 1;
+    return 1;
+}
+
+// The pending line as a String the caller owns, found first if need be, and ""
+// at the end of input -- allocated like any other line, so every path's result
+// is owned.
+char* io_stdin_take_line(void) {
+    size_t length = 0;
+    if (io_stdin_has_line()) length = io_stdin_line_end - io_stdin_start;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (!out) return NULL;
+    if (length > 0) memcpy(out, io_stdin_buffer + io_stdin_start, length);
+    out[length] = '\0';
+    if (io_stdin_pending) {
+        io_stdin_start = io_stdin_next;
+        io_stdin_pending = 0;
+    }
+    return out;
+}
+
+// Everything not yet handed out, to the end of input. A line found by
+// `io_stdin_has_line` and not yet taken is part of it.
+char* io_stdin_read_all(void) {
+    io_stdin_pending = 0;
+    while (io_stdin_fill() > 0) {}
+    size_t length = io_stdin_end - io_stdin_start;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (!out) return NULL;
+    if (length > 0) memcpy(out, io_stdin_buffer + io_stdin_start, length);
+    out[length] = '\0';
+    io_stdin_start = io_stdin_end;
+    return out;
+}
+
 //
 // REQUIREMENTS 15, and the shape is fixed by SPEC 11 item 10: *isolation*
 // concurrency, no shared mutable heap, no atomic counts on the common path.

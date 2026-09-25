@@ -6923,6 +6923,32 @@ static void mark_library_interface_functions(LLVMModuleRef program,
     }
 }
 
+// A workload build gives every extern the runtime does not provide a body that
+// calls `rt_workload_stub` (generateExternStub, src/ir/module.psm), so a
+// workload cannot reach the file system, the environment or its input. Some of
+// those names are the runtime's own capabilities -- `read_file`, `proc_*`,
+// `io_stdin_*` -- and the runtime module defines them too. Two definitions of
+// one name do not link: "symbol multiply defined", and the workload silently
+// fell back to the static profile. Every workload importing std.fs or
+// std.process did, and std.input would have made it every one reading input.
+//
+// The stub has to win. `available_externally` is the linkage that says "this
+// body is a copy of one defined elsewhere", so the linker keeps the program's
+// and discards the runtime's.
+static void yield_to_workload_stubs(LLVMModuleRef program, LLVMModuleRef library) {
+    for (LLVMValueRef function = LLVMGetFirstFunction(library); function;
+         function = LLVMGetNextFunction(function)) {
+        if (LLVMCountBasicBlocks(function) == 0) continue;
+        size_t name_len = 0;
+        const char *name = LLVMGetValueName2(function, &name_len);
+        if (!name || !name_len) continue;
+        LLVMValueRef stub = LLVMGetNamedFunction(program, name);
+        if (!stub || LLVMCountBasicBlocks(stub) == 0) continue;
+        if (!function_calls_named(stub, "rt_workload_stub")) continue;
+        LLVMSetLinkage(function, LLVMAvailableExternallyLinkage);
+    }
+}
+
 // Link every selected PLIB/runtime bitcode module in one LLVM context. Parsing
 // and printing the growing program once per input made a module-wise package
 // accidentally quadratic in serialization work; a large program crossed the
@@ -6977,6 +7003,7 @@ int ir_link_library_modules(const char *dest_ir,
 
         preserve_program_declaration_contracts(dm, sm);
         clear_packaging_target_attributes(sm);
+        yield_to_workload_stubs(dm, sm);
         mark_imported_definitions(sm);
         // Apply one structural policy to both PLIB and runtime boundaries.
         // Large or call-heavy helpers remain visible to ordinary LTO, but do

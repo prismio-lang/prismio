@@ -132,6 +132,7 @@ violations.
 | Module | Import | Covers |
 |---|---|---|
 | `std/io.psm` | `import std.io` | `print` / `println` overloads, several values in one call, and `eprint` / `eprintln` for stderr |
+| `std/input.psm` | `import std.input` | standard input: `stdin.lines()`, `stdin.readLine()`, `stdin.readAll()` |
 | `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
 | `std/fs.psm` | `import std.fs` | files, paths, directory listing |
 | `std/process.psm` | `import std.process` | arguments, environment variables (`process.env`, `setEnv`, `removeEnv`), `process.pid`, subprocesses |
@@ -453,6 +454,7 @@ are the other direction, and are `strtod` -- correctly rounded.
 | `proc_write` `proc_close` | `Stream.write` `Stream.close` | `bytes`; → `Int` |
 | `proc_env_has` `proc_env_get` | `process.env` | `borrow`; `proc_env_get` → `produce(free)`, `""` for unset (never a literal) |
 | `proc_env_set` `proc_env_remove` `proc_pid` | `process.setEnv` `removeEnv` `pid` | `borrow`; → `Int` |
+| `io_stdin_has_line` `io_stdin_take_line` `io_stdin_read_all` | `stdin.lines()` `stdin.readLine()` `stdin.readAll()` | the last two → `produce(free)`, `""` at end of input (never a literal) |
 
 The `Int` returns are normalised because the raw conventions disagree with each
 other: `file_exists` returns 1 for yes, while `delete_file` returns **0** for
@@ -467,6 +469,19 @@ contain any byte, so `Process.spawn` calls `proc_spawn_begin`, then
 one spawn under construction at a time in a process. The three stream modes are
 a wire protocol (`0` inherit, `1` pipe, `2` discard) spelled once each in
 `std/process.psm` and `runtime/program_support.c`.
+
+**Standard input is one buffer for the process**, in `program_support.c`: a
+line is found with `memchr` in memory and copied out, and the descriptor is read
+64 KiB at a time, so a line costs no system call. It is unlocked, like
+`getc_unlocked`: one reader at a time. `Stream { descriptor: 0 }.readAll()` reads
+the descriptor directly and skips whatever the buffer already holds.
+
+**A producer here is not arena memory.** Everything in this file allocates what
+it returns through `rt_base_alloc`, and only `lang_runtime.c`'s `rt_alloc` reads
+the arena hint. AIF therefore refuses an arena to every extern return except the
+runtime's own string producers (`aifFfiArenaCannotServe`,
+`src/aif/contracts.psm`). A new producer that does allocate through `rt_alloc`
+belongs on that list and on the oracle's; one that does not needs nothing.
 
 **`SpawnOut` is a Prismio struct that C reads**, which nothing else on this
 surface is: every field is `I64` so no padding question arises, and it keeps

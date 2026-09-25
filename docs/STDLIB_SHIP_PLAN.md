@@ -21,9 +21,9 @@ exists in a shape that would break every user to change later.
 
 | # | Gap | Status | Needs C | Needs compiler |
 |---|---|---|---|---|
-| 1 | [Exit, panic, assert](#1-exit-panic-assert) | done 2026-09-25 (uncommitted) | yes (`lang_runtime.c`) | yes (builtins, divergence) |
-| 2 | [Standard input](#2-standard-input) | todo | yes (`program_support.c`) | no |
-| 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 (uncommitted) | yes | no |
+| 1 | [Exit, panic, assert](#1-exit-panic-assert) | done 2026-09-25 | yes (`lang_runtime.c`) | yes (builtins, divergence) |
+| 2 | [Standard input](#2-standard-input) | done 2026-09-25 | yes (`program_support.c`) | no |
+| 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 | yes | no |
 | 4 | [`std.time`](#4-stdtime) | todo | yes (Windows half too) | no |
 | 5 | [`Option` / `Result` methods](#5-option--result-methods) | todo | no | maybe (generic `impl`) |
 | 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
@@ -125,6 +125,33 @@ reads all of stdin -- test_153 uses it. What is missing is the line-oriented API
 the runtime: one `read` per line would make a line-oriented filter slower than
 `cat`. A benchmark (line count / word frequency over a large file, against C++
 and Rust) comes with it.
+
+**Landed 2026-09-25.** `stdin` is a global in a new module, `std.input`, as
+`process` is in `std.process`. It is not in `std.io`: every printing program
+imports that module, and each would carry the global into its debug info and
+link, and `std.option`'s allocation sites into its analysis. `stdin` has
+`lines()` (an `Iterator` of String), `readLine() -> Option<String>` (not
+`String?`, matching `process.env`) and `readAll()`. All three share one 64 KiB
+runtime buffer (`io_stdin_*`, `runtime/program_support.c`), so they can be
+mixed. `\r\n` ends a line as `\n` does. test_188 covers terminators, empty input,
+mixing, and a 200,000-byte line; every stdin path reads 0 leaked under `--verify`.
+
+Measured over 3M lines / 118 MB, a median of 11 runs (aif/evidence/RESULTS-std-stdin.md):
+line count 134 ms against C++ `getline` 156 ms and Rust `lines()` 274 ms;
+line+word count 212 ms against 450 ms and 606 ms (Rust reusing its buffer: 462 ms).
+
+Found on the way, and fixed:
+- AIF let a loop's arena "serve" a C-produced value, which the arena cannot
+  allocate. Each line leaked, and each iteration paid a region push/pop that
+  served nothing (277 ms before the fix). The same fix covers `read_file`,
+  `join_path` and every application extern (KNOWN_ISSUES, Ownership).
+- The workload sandbox stubs `io_stdin_*`, as it stubs every capability, and the
+  runtime module defines them too. The driver failed to link, so any workload
+  importing `std.fs` or `std.process` had already been falling back to the static
+  profile. The runtime's definition now yields to the stub.
+
+Not done: word frequency (it measures `Map` more than input and waits on item 6);
+reading bytes rather than text; a line with a NUL byte is cut there.
 
 ## 3. Environment and process identity
 

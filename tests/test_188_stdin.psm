@@ -1,0 +1,92 @@
+// `stdin.lines()`, `stdin.readLine()` and `stdin.readAll()`.
+//
+// This binary starts itself with a mode argument and a pipe for stdin, and the
+// child reports what it read, one line per item, bracketed so an empty line and
+// a stray `\r` are visible.
+//
+// 1. `\n` and `\r\n` both end a line and neither is part of it; an empty line is
+//    a line; a last line without a terminator is a line.
+// 2. An empty input has no lines, and `readLine` on it is `None`.
+// 3. `readLine` then `readAll` gives the rest after that line: the three calls
+//    share one buffer.
+// 4. A line longer than the runtime's 64 KiB buffer arrives whole.
+
+import std.input
+import std.io
+import std.option
+import std.process
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn childLines() {
+    for line in stdin.lines() {
+        println("[".concat(line, "]"))
+    }
+}
+
+fn childFirstThenRest() {
+    let first = stdin.readLine()
+    match (first) {
+        Option.Some(line) => { println("[".concat(line, "]")) }
+        Option.None => { println("none") }
+    }
+    println("{".concat(stdin.readAll(), "}"))
+}
+
+fn childLengths() {
+    for line in stdin.lines() {
+        println(line.length)
+    }
+}
+
+// What the child printed for `input` in `mode`.
+fn run(mode: String, input: String) -> String {
+    let child = Process()
+    child.program = process.args[0]
+    child.arguments = [mode]
+    child.stdin = StreamMode.Pipe
+    child.stdout = StreamMode.Pipe
+    let running = child.spawn()
+    running.stdin.write(input)
+    running.stdin.close()
+    let seen = running.stdout.readAll()
+    running.wait()
+    return seen
+}
+
+fn check(mode: String, input: String, want: String) -> Int {
+    let seen = run(mode, input)
+    if (seen.equals(want)) { return 0 }
+    return fail(mode.concat(": got ", seen))
+}
+
+fn main() -> Int {
+    if (process.args.count > 1) {
+        let mode = process.args[1]
+        if (mode.equals("lines")) { childLines() }
+        if (mode.equals("rest")) { childFirstThenRest() }
+        if (mode.equals("lengths")) { childLengths() }
+        return 0
+    }
+
+    let mut bad = 0
+    bad = bad + check("lines", "ab\r\ncd\n\nlast", "[ab]\n[cd]\n[]\n[last]\n")
+    bad = bad + check("lines", "one\ntwo\n", "[one]\n[two]\n")
+    bad = bad + check("lines", "", "")
+    bad = bad + check("lines", "\n", "[]\n")
+    bad = bad + check("rest", "head\nbody\ntail\n", "[head]\n{body\ntail\n}\n")
+    bad = bad + check("rest", "", "none\n{}\n")
+
+    let long = "x".repeat(200000)
+    bad = bad + check("lengths", "short\n".concat(long, "\nend"), "5\n200000\n3\n")
+
+    if (bad != 0) { return 1 }
+    println("PASS: standard input")
+    return 0
+}

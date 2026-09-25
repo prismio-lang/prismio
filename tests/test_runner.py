@@ -2052,17 +2052,30 @@ def run_oracle_vocabulary_test():
     # below is part of the failure condition. Accepts either spelling, so the
     # remaining `strEquals` call sites elsewhere in the tree can migrate without
     # breaking it a third time.
-    produces = set(re.findall(
-        r'(?:strEquals\(name,\s*"([a-z_0-9]+)"\)|name\.equals\("([a-z_0-9]+)"\))'
-        r'\)\s*\{\s*return true\s*\}', contracts))
-    produces = {a or b for a, b in produces}
-    at = oracle_src.find("FFI_RETURNS_PRODUCE = {")
-    if at < 0 or not produces:
+    # Scoped to one function's body: contracts.psm holds more than one table of
+    # this shape, and scraping the whole file merges them.
+    def compiler_table(function):
+        at = contracts.find(f"fn {function}(name: String) -> Bool {{")
+        if at < 0:
+            return set()
+        body = contracts[at:contracts.index("\n}\n", at)]
+        found = re.findall(
+            r'(?:strEquals\(name,\s*"([a-z_0-9]+)"\)|name\.equals\("([a-z_0-9]+)"\))'
+            r'\)\s*\{\s*return true\s*\}', body)
+        return {a or b for a, b in found}
+
+    def oracle_table(name):
+        at = oracle_src.find(f"{name} = {{")
+        if at < 0:
+            return set()
+        return set(re.findall(r"'([a-z_0-9]+)'", oracle_src[at:oracle_src.index("}", at)]))
+
+    produces = compiler_table("aifFfiProduces")
+    oracle = oracle_table("FFI_RETURNS_PRODUCE")
+    if not produces or not oracle:
         print(f"{RED}[FAIL] could not locate both produce lists -- this check has "
               f"gone blind, which is the thing it exists to prevent{RESET}")
         return False
-    block = oracle_src[at:oracle_src.index("}", at)]
-    oracle = set(re.findall(r"'([a-z_0-9]+)'", block))
 
     missing = sorted(produces - oracle)
     extra = sorted(oracle - produces)
@@ -2076,8 +2089,26 @@ def run_oracle_vocabulary_test():
             print(f"  {name}: aif.py produces it, the compiler does not")
         return False
 
+    # The producers an arena may serve. A name on one list only is placed in an
+    # arena by one engine and not the other, and the oracle's `foreign` set --
+    # which decides T0 for a struct return -- drifts with it.
+    arena = compiler_table("aifFfiAllocatesThroughArenaHint")
+    oracle_arena = oracle_table("FFI_ALLOCATES_THROUGH_ARENA_HINT")
+    if not arena or not oracle_arena:
+        print(f"{RED}[FAIL] could not locate both arena-hint lists -- this check has "
+              f"gone blind{RESET}")
+        return False
+    if arena != oracle_arena:
+        print(f"{RED}[FAIL] the compiler and the oracle disagree about which "
+              f"runtime calls allocate through the arena hint{RESET}")
+        for name in sorted(arena - oracle_arena):
+            print(f"  {name}: only src/aif/contracts.psm lists it")
+        for name in sorted(oracle_arena - arena):
+            print(f"  {name}: only aif.py lists it")
+        return False
+
     print(f"{GREEN}[PASS] compiler and oracle agree on all {len(produces)} "
-          f"producing runtime calls{RESET}")
+          f"producing runtime calls and all {len(arena)} arena-served ones{RESET}")
     return True
 
 
@@ -4599,6 +4630,36 @@ def run_workload_test():
                 problems.append("W3: the shipped program does not declare the foreign global")
         finally:
             cleanup_files(global_src, global_ll)
+
+        # W3 for a runtime capability. `fileExists` and `stdin.lines()` reach
+        # `file_exists` and `io_stdin_*`, which the sandbox stubs -- and which the
+        # runtime module also defines. The two definitions failed to link
+        # ("symbol multiply defined"), so every workload importing std.fs,
+        # std.process or std.input fell back to the static profile. The stub
+        # has to win the link (yield_to_workload_stubs, llvm-api-backend.c).
+        capability_src = TEST_DIR / "workload_capability.psm"
+        capability_ll = TEST_DIR / "workload_capability.ll"
+        capability_src.write_text(
+            text.replace("import std.string\n",
+                         "import std.string\nimport std.fs\nimport std.input\n", 1)
+                .replace("    setup {\n",
+                         "    setup {\n        let seen = fileExists(\"/\")\n"
+                         "        for line in stdin.lines() { println(line) }\n", 1),
+            encoding="utf-8")
+        try:
+            r5 = run_command([str(PRISMIO_EXE), "build", str(capability_src),
+                              "-o", str(capability_ll)])
+            combined5 = (r5.stdout or "") + (r5.stderr or "")
+            if r5.returncode != 0:
+                problems.append("W3: a workload calling a runtime capability failed the build")
+            elif "using the static profile" in combined5:
+                problems.append("W3: a workload calling a runtime capability fell back: "
+                                + elide_middle(combined5))
+            elif "`io_stdin_has_line`, which the build sandbox does not provide" \
+                    not in combined5:
+                problems.append("W3: stdin reached a workload rather than its stub")
+        finally:
+            cleanup_files(capability_src, capability_ll)
 
         if problems:
             print(f"{RED}[FAIL] workload{RESET}")

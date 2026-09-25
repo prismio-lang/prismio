@@ -209,10 +209,21 @@ F64_BUILTIN_ARITY = {
 for _op, _arity in F64_BUILTIN_ARITY.items():
     FFI_CONTRACTS['__builtin_f64_' + _op] = {i: 'borrow' for i in range(_arity)}
 
-# Produced returns that allocate nothing here: the block was made by another
-# thread and is already live, so it can be neither a frame slot nor arena-served.
-# Kept in step with aifFfiTransfersExisting in src/aif/contracts.psm.
-FFI_RETURNS_EXISTING = {'chan_recv'}
+# The producers whose block the arena hint allocates: lang_runtime.c's `rt_alloc`
+# callers and the string builtins. Every other extern return -- `chan_recv`'s
+# block from another thread, program_support.c's `rt_base_alloc`, an
+# application's `malloc` -- can be neither a frame slot nor arena-served.
+# Kept in step with aifFfiArenaCannotServe in src/aif/contracts.psm.
+FFI_ALLOCATES_THROUGH_ARENA_HINT = {
+    'str_concat', 'str_substring', 'str_slice', 'str_with_capacity', 'str_clone',
+    'str_clone_n', 'str_own', 'str_from_double', 'str_from_double_fixed',
+    'int_to_str', 'list_new', 'list_new_with_capacity', 'soa', 'aos',
+}
+
+
+def ffi_arena_cannot_serve(name):
+    return (not name.startswith('__builtin_string_')
+            and name not in FFI_ALLOCATES_THROUGH_ARENA_HINT)
 
 # Calls whose return is a channel endpoint -- a runtime object with no site.
 # Kept in step with the chan_new/chan_share arm in src/aif/walk.psm.
@@ -317,8 +328,8 @@ FFI_RETURNS_PRODUCE = {
     'proc_read_all',
     # What comes out of a channel was allocated by the sending task and is this
     # frame's from here on -- `read_file`'s shape with the allocation on another
-    # thread instead of in libc. See FFI_RETURNS_EXISTING for the half that is
-    # *not* like read_file.
+    # thread instead of in libc. See ffi_arena_cannot_serve for what it shares
+    # with read_file that the runtime's string producers do not.
     'chan_recv',
 }
 
@@ -915,7 +926,7 @@ class Engine:
                 sid = self.new_site(ty, fn, scope, e)
                 produces = (plain in FFI_RETURNS_PRODUCE
                             or ret_contract.startswith('produce'))
-                if plain in FFI_RETURNS_EXISTING:
+                if ffi_arena_cannot_serve(plain):
                     self.constraints.append(('foreign', vs_sites(sid)))
                 if not produces:
                     # Undeclared return: provenance unknown. It may already be

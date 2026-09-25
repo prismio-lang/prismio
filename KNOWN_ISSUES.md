@@ -22,6 +22,21 @@ corpus sweep is 8 sources and 7 runnable, down from 33 and 30.
 
 ## Ownership
 
+**Fixed 2026-09-25: a C-produced value placed in an arena leaked.** AIF let an
+enclosing region serve any `produce` extern except `chan_recv`, and codegen
+bracketed the call with the arena hint. Only `lang_runtime.c`'s `rt_alloc` reads
+that hint: `read_file`, `join_path`, `proc_env_get` and the rest of
+`program_support.c` allocate through `rt_base_alloc`, and an application's C calls
+`malloc`. The region freed nothing and the site was off the drop list, so each
+call leaked. The bracketed path (a callee's sites placed in its caller's region)
+did not check `foreign` at all. `for line in stdin.lines()` leaked every line this
+way, and `test_19_runtime_split`'s `join_path` did too (3 leaked → 2; the other
+two are undeclared externs). Now `aifFfiArenaCannotServe` (`src/aif/contracts.psm`,
+mirrored in the oracle) marks every extern return `foreign` unless its C
+allocates through `rt_alloc`. The bracket gate and the bracket cost model refuse
+`foreign` sites. Of 228 programs in `tests/` and `aif/corpus/`, only test_19's IR
+moved. See `aif/evidence/RESULTS-std-stdin.md`.
+
 **A struct on the frame now owns what its fields were given; four field shapes
 still leak.** AIF places a struct that does not outlive its function in a stack
 slot (T0), and nothing released such a struct's fields. `Bag { items: [] }` leaked
@@ -954,8 +969,9 @@ only; the default owned model agrees, and the ledger is clean (4000/4000 over
 2000 `process.env` lookups). Reproduced 2026-09-25 with a compiler from before
 `process.env` existed, so `process.env` exposed it rather than caused it. The
 same payload built by a Prismio producer (`"x".concat(n)`) agrees, so it is the
-extern-produced value into a struct field, not the enum. Repro, through
-`tools/aif_differential.py`:
+extern-produced value into a struct field, not the enum. `stdin.readLine()` is
+the same shape, and test_188 shows it identically on the compiler before stdin
+existed. Repro, through `tools/aif_differential.py`:
 
 ```prismio
 fn load(path: String) -> Option<String> {

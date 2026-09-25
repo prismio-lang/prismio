@@ -34,9 +34,28 @@
   measured the same as the equivalent check in C. The builtins apply only where
   a program declares no function of the name, so an existing `extern fn exit`
   keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
+- **Standard input.** `for line in stdin.lines()`, `stdin.readLine()` →
+  `Option<String>` and `stdin.readAll()` in the new `std.input`. A line has no terminator
+  (`\n` or `\r\n`), and a last line without one still counts. The runtime reads 64 KiB
+  at a time and finds lines with `memchr`: counting 3M lines (118 MB) takes
+  134 ms against C++ `getline`'s 156 ms and Rust `lines()`'s 274 ms. test_188;
+  aif/evidence/RESULTS-std-stdin.md.
 
 ### Fixed
 
+- **A C-produced String inside a loop's region leaked.** AIF let an arena
+  "serve" the return of any `produce` extern, but only the runtime's own
+  string producers allocate from the arena. `read_file`, `join_path`,
+  `proc_env_get` and any application's `malloc`-returning C were bracketed,
+  never freed, and taken off the drop list. That included a callee's sites
+  bracketed into its caller's region, which had no such check at all. Every
+  other extern return is now refused an arena. Only one of 228 test and corpus
+  programs changed its IR.
+- **A workload calling a runtime capability fell back to the static profile.**
+  The sandbox stubs `read_file`, `proc_*` and the like, and the runtime module
+  defines them too, so the driver failed to link ("symbol multiply defined") for
+  any workload importing `std.fs` or `std.process`. The runtime's definition now
+  yields to the stub.
 - **`NaN != NaN` is true.** Float `!=` was `fcmp one` (ordered), which answers
   false when either side is NaN, so `x != x` could not detect one.
 - **`-x` keeps the sign of zero.** Unary minus on a Float was `fsub 0.0, x`, which

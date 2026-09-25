@@ -524,12 +524,11 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
         let sid = aifNewSite(ty, fnId, scope, callPtr)
         let mut produces = aifFfiProduces(plain)
         if (aifDeclaredReturnIsProduce(plain)) { produces = true }
-        // A return that hands over an allocation made somewhere else entirely
-        // owns nothing this frame can place: not a stack slot, not an arena
-        // chunk. See aifFfiTransfersExisting for why this is narrower than
-        // `produces` -- an ordinary producer allocates through `rt_alloc`, which
-        // an enclosing region really does serve.
-        if (aifFfiTransfersExisting(plain)) { aif_con_foreign(aifVsOfSite(sid)) }
+        // A return whose block the arena hint did not allocate owns nothing this
+        // frame can place: not a stack slot, not an arena chunk. Only the
+        // runtime's own string producers allocate through `rt_alloc`, which an
+        // enclosing region really does serve; see aifFfiArenaCannotServe.
+        if (aifFfiArenaCannotServe(plain)) { aif_con_foreign(aifVsOfSite(sid)) }
         if (produces == false) {
             // Undeclared return: provenance unknown. It may already be shared
             // and may already outlive this frame, so it cannot be modelled as a
