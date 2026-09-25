@@ -32,6 +32,7 @@ public extern fn list_modules(directory: String) -> String produce(free)
 public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(free)
 public extern fn compiler_plib_error() -> String produce(free)
 public extern fn executable_directory() -> String produce(free)
+extern fn current_directory() -> String produce(free)
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -49,6 +50,20 @@ let mut overlayPath = ""
 let mut overlayContents = ""
 let mut overlayRead = false
 
+// A path as read from the working directory, so one file named relatively on
+// one side of a comparison and absolutely on the other is still one file.
+// `./` is dropped; `..` is not resolved, and a path spelled with it is compared
+// as written.
+private fn absolutePath(path: String) -> String {
+    let mut relative = path.clone()
+    while (relative.startsWith("./") or relative.startsWith(".\\")) {
+        relative = relative.substring(2, __builtin_string_len(relative) - 2)
+    }
+    if (relative.startsWith("/") or relative.startsWith("\\")) { return relative }
+    if (__builtin_string_len(relative) > 1 and relative.charAt(1) == ':') { return relative }
+    return join_path(current_directory(), relative)
+}
+
 // `check --module`: the name the entry file is known by when it is a module
 // checked on its own -- `std.map` for std/map.psm -- which is what gives it its
 // package's access to that package's internals. "" for a program.
@@ -63,7 +78,7 @@ public fn entryModule() -> String {
 }
 
 public fn setSourceOverlay(path: String, contents: String) {
-    overlayPath = path.clone()
+    overlayPath = absolutePath(path)
     overlayContents = contents.clone()
     overlayRead = false
 }
@@ -75,7 +90,7 @@ public fn sourceOverlayRead() -> Bool {
 }
 
 public fn readSource(path: String) -> String {
-    if (overlayPath.equals("") == false and path.equals(overlayPath)) {
+    if (overlayPath.equals("") == false and absolutePath(path).equals(overlayPath)) {
         overlayRead = true
         return read_file(overlayContents)
     }

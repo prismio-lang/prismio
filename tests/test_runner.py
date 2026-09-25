@@ -1443,6 +1443,14 @@ def run_check_overlay_test():
         if any(d.get("file") == str(buffer) for d in edited):
             problems.append("a diagnostic names the buffer instead of the file")
 
+        # One file spelled two ways: the entry relative to the working directory, the
+        # overlay absolute, as a person typing the command may well write them.
+        buffer.write_text(area.read_text())
+        mixed = subprocess.run([str(PRISMIO_EXE), "check", "src/main.psm", "--diagnostic-format=json",
+                                "--overlay", str(area), str(buffer)], cwd=root, capture_output=True, text=True)
+        if mixed.returncode != 0 or "P1075" in mixed.stderr:
+            problems.append(f"a relative entry did not match the absolute overlay: {mixed.stderr.strip()[:300]}")
+
         code, unread = check(other, "--diagnostic-format=json", "--overlay", area, buffer)
         if not any(d.get("code") == "P1075" for d in unread):
             problems.append(f"a program that never reads the file did not say so: {unread}")
