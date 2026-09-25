@@ -47,24 +47,14 @@ public fn optionOr<T>(o: Option<T>, fallback: T) -> T {
     }
 }
 
-// The methods are the API. **Each matches for itself rather than forwarding to
-// the prefixed function above**: `return optionOr(self, fallback)` releases a
-// literal fallback when the Option came from a call -- a double free, and a
-// crash without `--verify` (KNOWN_ISSUES, "A value returned through a
-// forwarding call"). The prefixed functions stay for existing callers.
+// The methods are the API; the prefixed functions stay for existing callers.
+// Each method matches for itself rather than forwarding, which costs nothing
+// and keeps each one a single function in a `--verify` report.
 //
-// **Not here yet** (docs/STDLIB_SHIP_PLAN.md item 5):
-// - `map`, `andThen`, `mapErr`. `o.map(|x: Int| x * 2)` needs the result's `U`
-//   from the closure's return type, and a type parameter is solved only from an
-//   argument's type -- there is no `F: Fn(T) -> U` to say where `U` comes from.
-//   That is a language decision, not a library one.
-// - `okOr`, `ok`, `err`. Each moves a payload out of one enum into another, and
-//   that double-frees an owned payload today, `sink self` or not (KNOWN_ISSUES,
-//   "A match binder put into a new enum").
-// - `expect(message)`. It returns the payload and nothing else, and a function
-//   of that shape releases a *literal* payload it was handed (KNOWN_ISSUES, "A
-//   match binder returned on its own"). `unwrapOr` also returns its parameter,
-//   and that path is what keeps it sound.
+// Three of these shapes -- forwarding a result, returning a payload binder on
+// its own, and moving one into a new enum -- released memory that was not live
+// until 2026-09-25 (aif/evidence/RESULTS-ownership-shapes.md);
+// tests/*_probe.psm pin each one.
 impl<T> Option<T> {
     public prop isSome(self) -> Bool {
         match (self) {
@@ -85,6 +75,23 @@ impl<T> Option<T> {
         match (self) {
             Option.Some(v) => { return v }
             Option.None => { return fallback }
+        }
+    }
+
+    // The value, or a panic with `message` when there is none -- for the case
+    // the caller has already ruled out and wants said out loud if it happens.
+    public fn expect(self, message: String) -> T {
+        match (self) {
+            Option.Some(v) => { return v }
+            Option.None => { panic(message) }
+        }
+    }
+
+    // `Ok` of the value, or `Err(error)` when there is none.
+    public fn okOr<E>(self, error: E) -> Result<T, E> {
+        match (self) {
+            Option.Some(v) => { return Result<T, E>.Ok(v) }
+            Option.None => { return Result<T, E>.Err(error) }
         }
     }
 }
@@ -142,6 +149,30 @@ impl<T, E> Result<T, E> {
         match (self) {
             Result.Ok(v) => { return v }
             Result.Err(e) => { return fallback }
+        }
+    }
+
+    // The value, or a panic with `message` for an error.
+    public fn expect(self, message: String) -> T {
+        match (self) {
+            Result.Ok(v) => { return v }
+            Result.Err(e) => { panic(message) }
+        }
+    }
+
+    // The value as an `Option`, dropping the error.
+    public fn ok(self) -> Option<T> {
+        match (self) {
+            Result.Ok(v) => { return Option<T>.Some(v) }
+            Result.Err(e) => { return Option<T>.None }
+        }
+    }
+
+    // The error as an `Option`, dropping the value.
+    public fn err(self) -> Option<E> {
+        match (self) {
+            Result.Ok(v) => { return Option<E>.None }
+            Result.Err(e) => { return Option<E>.Some(e) }
         }
     }
 }

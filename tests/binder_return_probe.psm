@@ -1,0 +1,26 @@
+// A match binder returned on its own may be a literal payload. `payloadOr`
+// returns `v`, whose value set is every site ever stored into an Option<String>
+// payload, so it looked owned; the Option in hand holds a literal, and the
+// caller freed it. Run by `ownership_probes` under `--verify`.
+
+import std.io
+import std.option
+import std.string
+
+fn findLiteral(key: String) -> Option<String> {
+    if (key.equals("name")) { return Option<String>.Some("a literal payload, past twelve bytes") }
+    return Option<String>.None
+}
+
+fn payloadOr(o: Option<String>) -> String {
+    match (o) {
+        Option.Some(v) => { return v }
+        Option.None => { return "".concat("") }
+    }
+}
+
+fn main() -> Int {
+    let a = findLiteral("name")
+    println(payloadOr(a))
+    return 0
+}

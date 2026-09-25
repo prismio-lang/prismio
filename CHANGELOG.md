@@ -35,8 +35,9 @@
   a program declares no function of the name, so an existing `extern fn exit`
   keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
 - **`Option` and `Result` methods.** `o.isSome`, `o.isNone`, `r.isOk` and
-  `r.isErr` are properties, and `unwrapOr(fallback)` is a method on both types.
-  The prefixed functions (`optionIsSome`, `optionOr`, ...) remain. test_191.
+  `r.isErr` are properties; `unwrapOr(fallback)` and `expect(message)` are on
+  both types, `okOr(error)` on Option, and `ok()` and `err()` on Result. The
+  prefixed functions (`optionIsSome`, `optionOr`, ...) remain. test_191.
 - **More of the file system.** `listDirectory(dir)` returns every entry's
   name, sorted, without `.` and `..`. Also `appendFile`, `rename` (which
   replaces an existing destination, on Windows too), `removeDirectory` (empty
@@ -59,6 +60,13 @@
 
 ### Fixed
 
+- **Three ownership shapes freed memory that was not live** -- a crash outside
+  `--verify`. A function returning `optionOr(o, d)` for a caller's literal `d`;
+  one returning a payload binder when the payload was a literal; one moving a
+  payload binder into a new enum, which both enums then freed. Each reproduced
+  on the 0.1 tree. The first two now count as possibly returning static
+  storage; the third leaves the payload to the enum it came from.
+  `ownership_probes`.
 - **`resultIsErr` could not be called.** A `return true` after its exhaustive
   match became the "unreachable code" error with neg_186, and nothing had
   instantiated it since.

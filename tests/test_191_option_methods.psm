@@ -4,12 +4,17 @@
 //    type -- which is what semaPropertyRewrite had to learn to find.
 // 2. `unwrapOr` answers what `optionOr`/`resultOr` do, with a scalar payload and
 //    an owned String one, from a local and from a call, with a literal and an
-//    owned fallback. The ledger is checked by the suite's `option_methods`, on
-//    option_methods_probe.psm.
+//    owned fallback. The ledger is checked by the suite's `ownership_probes`.
+// 3. `expect`, `okOr`, `ok` and `err`, with String payloads -- the shapes that
+//    released a literal or freed a payload twice until 2026-09-25.
+// 4. `expect` on nothing panics with its message: this binary starts itself
+//    with an argument and checks the child's status and stderr.
 
 import std.io
 import std.option
+import std.process
 import std.string
+import std.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -33,6 +38,12 @@ fn parse(text: String) -> Result<Int, String> {
 }
 
 fn main() -> Int {
+    if (process.args.count > 1) {
+        let missing = Option<Int>.None
+        println(missing.expect("the child's value was missing"))
+        return 0
+    }
+
     let mut bad = 0
 
     let some = Option<Int>.Some(5)
@@ -70,6 +81,52 @@ fn main() -> Int {
     if (goodValue.unwrapOr(0) != 7) { bad = bad + fail("Result.unwrapOr on Ok") }
     let badValue = parse("x")
     if (badValue.unwrapOr(0) != 0) { bad = bad + fail("Result.unwrapOr on Err") }
+
+    let four = Option<Int>.Some(4)
+    if (four.expect("four") != 4) { bad = bad + fail("expect on Some") }
+    let named = findOwned("name")
+    if (named.expect("named").equals("an owned payload, name") == false) {
+        bad = bad + fail("expect with an owned String payload")
+    }
+    let literalAgain = findLiteral("name")
+    if (literalAgain.expect("literal").equals("a literal payload, past twelve bytes") == false) {
+        bad = bad + fail("expect with a literal payload")
+    }
+    let sevenAgain = parse("7")
+    if (sevenAgain.expect("seven") != 7) { bad = bad + fail("Result.expect on Ok") }
+
+    let absent = findOwned("other")
+    let asResult = absent.okOr("absent")
+    if (asResult.isErr == false) { bad = bad + fail("okOr on None") }
+    let present = findOwned("name")
+    let okResult = present.okOr("absent")
+    if (okResult.unwrapOr("").equals("an owned payload, name") == false) {
+        bad = bad + fail("okOr on Some")
+    }
+
+    let okPart = parse("7")
+    let okAsOption = okPart.ok()
+    if (okAsOption.unwrapOr(0) != 7) { bad = bad + fail("ok() on Ok") }
+    let errPart = parse("x")
+    let errAsOption = errPart.err()
+    if (errAsOption.unwrapOr("").equals("not a seven: x") == false) {
+        bad = bad + fail("err() on Err")
+    }
+    let noErr = parse("7")
+    let noErrOption = noErr.err()
+    if (noErrOption.isSome) { bad = bad + fail("err() on Ok") }
+
+    let child = Process()
+    child.program = process.args[0]
+    child.arguments = ["expect-none"]
+    child.stderr = StreamMode.Pipe
+    let running = child.spawn()
+    let said = running.stderr.readAll()
+    let status = running.wait()
+    if (status != 101) { bad = bad + fail("expect on None exited ".concat(status.toString())) }
+    if (said.contains("the child's value was missing") == false) {
+        bad = bad + fail("expect's message: ".concat(said))
+    }
 
     if (bad != 0) { return 1 }
     println("PASS: Option and Result methods")

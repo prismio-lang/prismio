@@ -1,7 +1,7 @@
 // The ledger half of test_191. `unwrapOr` written as `return optionOr(self,
 // fallback)` releases the literal it returns when the Option came from a call;
 // the method as shipped releases nothing that is not live. Run by
-// `option_methods`, which asks for exit 0, the output, and 0 violations.
+// `ownership_probes`, which asks for exit 0, the output, and 0 violations.
 //
 // Apart from test_191 because the analysis is whole-program: there, `findOwned`
 // stores an owned payload into Option<String> as well, and with it the bad

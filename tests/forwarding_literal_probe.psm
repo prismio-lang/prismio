@@ -1,0 +1,22 @@
+// A value returned through a forwarding call may be a literal the caller passed.
+// `wrap` returns `optionOr(o, d)`, which is `d` for `None`. Its return resolves
+// to the sites of every String stored in any Option<String> payload -- std's
+// `Some(substring)` among them -- so it looked owned, and the caller freed
+// "fallback", which is .rodata. Run by `ownership_probes` under `--verify`.
+
+import std.io
+import std.option
+import std.string
+
+fn findLiteral(key: String) -> Option<String> {
+    if (key.equals("name")) { return Option<String>.Some("abc") }
+    return Option<String>.None
+}
+
+fn wrap(o: Option<String>, d: String) -> String { return optionOr(o, d) }
+
+fn main() -> Int {
+    let lost = findLiteral("other")
+    println(wrap(lost, "fallback"))
+    return 0
+}

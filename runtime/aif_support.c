@@ -6263,6 +6263,95 @@ static int key_may_be_untracked(int key) {
     return bits_test(&key_untracked, key);
 }
 
+// key_may_be_untracked for one question: may a `return` hand back static
+// storage? The same closure, less one source: a literal bound straight into a
+// local. Codegen clones that literal wherever the binding is also given owned
+// values -- an owning accumulator at its declaration, any local at an assignment
+// (generateStatement) -- so `let mut out = ""; out = out + x; return out` returns
+// an allocation on every path. Counting it made every such builder "partial"
+// and leaked its result (test_140, 6 of 1,054). A literal arriving through a
+// parameter, a field or a call still counts: nothing copies those.
+//
+// What this leaves open is no wider than before it existed: a `let mut s =
+// "lit"` that is not an accumulator, later given both an owned value and an
+// unowned one that is not itself untracked, and returned.
+static Bits key_untracked_ret;
+static int key_untracked_ret_cons = -1;
+
+static int vs_is_bare_literal(const ValueSet* v) {
+    return v->untracked && v->len == 0 && v->vlen == 0;
+}
+
+static int vs_may_return_untracked(int vs);
+
+static int key_may_return_untracked(int key) {
+    if (key_untracked_ret_cons != con_count) {
+        key_untracked_ret_cons = con_count;
+        key_index_build();
+        for (int changed = 1; changed; ) {
+            changed = 0;
+            for (int i = 0; i < con_count; i++) {
+                int kind = cons[i].kind;
+                if (kind != AIF_CON_BIND && kind != AIF_CON_STORE && kind != AIF_CON_ARG) continue;
+                int into = cons[i].a;
+                if (into < 0 || bits_test(&key_untracked_ret, into)) continue;
+                int b = cons[i].b;
+                if (b < 0 || b >= vs_count) continue;
+                if (kind == AIF_CON_BIND && vs_is_bare_literal(&vsets[b])
+                    && into < key_count && key_by_id[into] != NULL
+                    && key_by_id[into]->kind == AIF_KEY_VAR) {
+                    continue;
+                }
+                if (!vs_may_return_untracked(b)) continue;
+                bits_set(&key_untracked_ret, into, "AIF untracked keys");
+                changed = 1;
+            }
+        }
+    }
+    return bits_test(&key_untracked_ret, key);
+}
+
+static int vs_may_return_untracked(int vs) {
+    if (vs < 0 || vs >= vs_count) return 0;
+    const ValueSet* v = &vsets[vs];
+    if (v->untracked) return 1;
+    for (int i = 0; i < v->len; i++) {
+        int item = v->items[i];
+        if ((item & 1) && bits_test(&key_untracked_ret, item >> 1)) return 1;
+    }
+    return 0;
+}
+
+// An enum, or a payload enum after src/sema/enums.psm has turned it into a
+// tagged struct -- which is every enum that has a payload to view, and which the
+// declaration walk therefore registers as a struct. Its tag field is `$tag`, a
+// name no source field can have.
+static int site_is_enum(int s) {
+    if (s < 0 || s >= site_count) return 0;
+    int n = nominal_find_id(base_type_id(sites[s].type));
+    if (n < 0) return 0;
+    if (nominals[n].is_enum) return 1;
+    int tag = aif_intern("$tag");
+    for (int i = 0; i < nominals[n].nfields; i++) {
+        if (nominals[n].field_name[i] == tag) return 1;
+    }
+    return 0;
+}
+
+static int field_holds_enum_view(int key) {
+    if (key < 0 || key >= pt_len) return 0;
+    const Bits* views = &key_views[key];
+    for (int w = 0; w < views->nwords; w++) {
+        Word word = views->w[w];
+        while (word) {
+            int s = w * WORD_BITS + ctz64(word);
+            word &= word - 1;
+            if (site_is_enum(s)) return 1;
+        }
+    }
+    return 0;
+}
+
 static int field_release_of(int type_name, int field_name, int declared_type) {
     int key = key_find(AIF_KEY_FIELD, type_name, field_name);
     if (key < 0 || key >= pt_len) return AIF_ELEM_NONE;
@@ -6310,6 +6399,22 @@ static int field_release_of(int type_name, int field_name, int declared_type) {
     // field as owning what it does not is what stopped the caller from owning it
     // either. See `field_inline`.
     if (field_is_inline(type_name, field_name)) return AIF_ELEM_NONE;
+
+    // **A field that may hold a view of an enum's payload does not own it.**
+    // `Option<String>.Some(e)` for a payload binder `e` stores a value that still
+    // belongs to the enum it was read out of, and an enum's release always frees
+    // its payload -- binding one out does not stop that. The sites alone cannot
+    // say so: they are the payload's sites, and the enum's own field lists them
+    // too, so both fields agreed they were the release point and the payload was
+    // freed twice (KNOWN_ISSUES, "A match binder put into a new enum"). Declining
+    // here leaves the enum as the one owner.
+    //
+    // Only an enum. A *struct* whose field value is read out and kept elsewhere
+    // is not released with that field (the rule behind "a field value read out
+    // and returned leaks"), so the holder is the one owner there: `umsParse`
+    // storing `umsLex`'s `lexer.tokens` into its parser is the case, and
+    // declining it leaked the token list.
+    if (field_holds_enum_view(key)) return AIF_ELEM_NONE;
 
     int agreed = AIF_ELEM_NONE;
     for (int s = 0; s < site_count; s++) {
@@ -6962,8 +7067,8 @@ static void node_args_reset(void) {
 //
 // So the fact is derived from the returns themselves. Every `return <expr>`
 // binds the RET key (src/aif/walk.psm), and a bind whose value set resolves to
-// **no site at all** is a path this pass cannot account for: a literal, a
-// borrowed parameter, an Int. One such return makes the function partial and its
+// **no site at all**, or may also be a literal, is a path this pass cannot
+// account for: a literal, a borrowed parameter, an Int. One such return makes the function partial and its
 // result unowned -- which is the conservative direction, a leak rather than a
 // free of something the caller never owned.
 //
@@ -6999,7 +7104,18 @@ static void ret_partial_build(void) {
         int f = kn->a;
         if (f < 0 || f >= fn_count) continue;
         resolve(cons[i].b, &ret_scratch);
-        if (bits_any(&ret_scratch)) continue;
+        // Some sites is not all of them. `return v` for a payload binder
+        // resolves to every site stored into that payload field anywhere --
+        // std's own `Some(substring)` among them -- while the Option in hand
+        // holds a literal, and `return optionOr(o, d)` resolves to the payload's
+        // sites while it may be `d`'s literal. Both read as owned and the caller
+        // freed .rodata. key_may_return_untracked follows literals through
+        // stores, binds and arguments; asking it of the return is the question
+        // "no site at all" was standing in for.
+        if (bits_any(&ret_scratch)) {
+            key_may_return_untracked(0);   // builds the closure
+            if (!vs_may_return_untracked(cons[i].b)) continue;
+        }
         fn_ret_partial[f] = 1;
     }
 }
@@ -7136,8 +7252,107 @@ static int site_may_be_param_of(int f, int s) {
 // key_views[rk] holds the sites the return is a view *of*; pt of a PARAM key
 // holds what that parameter points to. An intersection is a return that may view
 // an argument, which is exactly when the caller must not free it.
+// The same question one level in: the return is a fresh object, and a *field* of
+// it holds the view. `fn errOf(r) { match (r) { Result.Err(e) => { return
+// Option<String>.Some(e) } ... } }` returns an Option of its own whose payload
+// is `r`'s. field_release_of declines to release a field holding a view of an
+// enum's payload, so the Option does not free it; the Result still does. A caller that
+// freed its argument at scope exit while the Option lived -- `let h = parse(t);
+// return errOf(h)` -- handed back a payload already freed. Every field of every
+// object the return may reach is asked, since a struct can hold the Option.
+//
+// Field keys are per type, not per object, so this is conservative the usual
+// way: any view stored into that field anywhere counts, and the cost is a leak.
+static signed char* fn_holds_view;
+static int fn_holds_view_ready;
+static IntVec* field_keys_of_type;   // indexed by interned type name
+static int field_keys_of_type_cap;
+
+static void field_keys_index_build(void) {
+    if (field_keys_of_type) return;
+    key_index_build();
+    field_keys_of_type_cap = intern_count;
+    field_keys_of_type = (IntVec*)xcalloc((size_t)field_keys_of_type_cap + 1, sizeof(IntVec),
+                                          "AIF field keys by type");
+    for (int k = 0; k < key_count; k++) {
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL || kn->kind != AIF_KEY_FIELD) continue;
+        if (kn->a < 0 || kn->a >= field_keys_of_type_cap) continue;
+        vec_push(&field_keys_of_type[kn->a], k, "AIF field keys by type");
+    }
+}
+
+static int fn_return_holds_view_of_param(int f) {
+    if (f < 0 || f >= fn_count) return 0;
+    if (!fn_holds_view_ready) {
+        fn_holds_view_ready = 1;
+        fn_holds_view = (signed char*)xcalloc((size_t)fn_count, 1, "AIF held views");
+        for (int i = 0; i < fn_count; i++) fn_holds_view[i] = -1;
+    }
+    if (fn_holds_view[f] >= 0) return fn_holds_view[f];
+    fn_holds_view[f] = 0;
+
+    int rk = key_find(AIF_KEY_RET, f, 0);
+    if (rk < 0 || rk >= pt_len || !bits_any(&pt[rk])) return 0;
+    field_keys_index_build();
+
+    static Bits reached, held;
+    static IntVec work;
+    bits_clear(&reached);
+    bits_clear(&held);
+    work.len = 0;
+    bits_to_vec(&pt[rk], &work);
+    for (int i = 0; i < work.len; i++) bits_set(&reached, work.v[i], "AIF held views");
+    while (work.len > 0) {
+        int s = work.v[--work.len];
+        int t = base_type_id(sites[s].type);
+        if (t < 0 || t >= field_keys_of_type_cap) continue;
+        IntVec* fields = &field_keys_of_type[t];
+        for (int i = 0; i < fields->len; i++) {
+            int k = fields->v[i];
+            if (k >= pt_len) continue;
+            bits_or(&held, &key_views[k], "AIF held views");
+            for (int w = 0; w < pt[k].nwords; w++) {
+                Word word = pt[k].w[w];
+                while (word) {
+                    int s2 = w * WORD_BITS + ctz64(word);
+                    word &= word - 1;
+                    if (bits_set(&reached, s2, "AIF held views")) {
+                        vec_push(&work, s2, "AIF held views");
+                    }
+                }
+            }
+        }
+    }
+    if (!bits_any(&held)) return 0;
+
+    for (int k = 0; k < key_count && k < pt_len; k++) {
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL || kn->kind != AIF_KEY_PARAM || kn->a != f) continue;
+        int n = held.nwords < pt[k].nwords ? held.nwords : pt[k].nwords;
+        for (int w = 0; w < n; w++) {
+            Word both = held.w[w] & pt[k].w[w];
+            while (both) {
+                int site = w * WORD_BITS + ctz64(both);
+                both &= both - 1;
+                // An enum's, for field_holds_enum_view's reason: a struct whose
+                // field value was read out is not released with it, so freeing
+                // the struct leaves the value alone. Counting structs too
+                // declined `parseSource`'s lexer and parser, reached through
+                // every punned `Ptr` field of every ASTNode.
+                if (site_is_enum(site)) {
+                    fn_holds_view[f] = 1;
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static int fn_may_return_view_of_param(int f) {
     if (f < 0) return 0;
+    if (fn_return_holds_view_of_param(f)) return 1;
     int rk = key_find(AIF_KEY_RET, f, 0);
     if (rk < 0 || rk >= pt_len) return 0;
     if (!bits_any(&key_views[rk])) return 0;
@@ -7690,9 +7905,20 @@ void aif_reset(void) {
     cand_range_cap = 0;
     free(fn_ret_partial);
     fn_ret_partial = NULL;
+    free(fn_holds_view);
+    fn_holds_view = NULL;
+    fn_holds_view_ready = 0;
+    if (field_keys_of_type) {
+        for (int i = 0; i <= field_keys_of_type_cap; i++) free(field_keys_of_type[i].v);
+        free(field_keys_of_type);
+        field_keys_of_type = NULL;
+    }
+    field_keys_of_type_cap = 0;
     ret_partial_ready = 0;
     bits_free(&key_untracked);
     key_untracked_cons = -1;
+    bits_free(&key_untracked_ret);
+    key_untracked_ret_cons = -1;
     for (int i = 0; i < pt_len; i++) bits_free(&pt[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&holders[i]);
     for (int i = 0; i < holders_len; i++) bits_free(&container_of[i]);

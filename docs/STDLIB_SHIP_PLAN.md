@@ -25,7 +25,7 @@ exists in a shape that would break every user to change later.
 | 2 | [Standard input](#2-standard-input) | done 2026-09-25 | yes (`program_support.c`) | no |
 | 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 | yes | no |
 | 4 | [`std.time`](#4-stdtime) | done 2026-09-25 | yes (Windows half too) | no |
-| 5 | [`Option` / `Result` methods](#5-option--result-methods) | partly done 2026-09-25; `map` needs a language decision, `expect`/`okOr`/`ok`/`err` two compiler fixes | no | maybe (generic `impl`) |
+| 5 | [`Option` / `Result` methods](#5-option--result-methods) | done 2026-09-25 except `map`/`andThen`/`mapErr` | no | maybe (generic `impl`) |
 | 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
 | 7 | [Files](#7-files) | done 2026-09-25, except the file line reader | yes | no |
 | 8 | [Building strings](#8-building-strings) | todo | no | no (interpolation is separate) |
@@ -235,15 +235,15 @@ properties, and `unwrapOr` on both types. test_191; neg_194.
   a call. That is a violation, and a crash outside `--verify`. The suite's
   `option_methods` check pins it (KNOWN_ISSUES, Ownership).
 
-Not done, and why:
-- `map`, `andThen`, `mapErr`: `U` appears only in the result, and a type
-  parameter is solved only from an argument's type. With no `F: Fn(T) -> U`
-  there is nothing to say where `U` comes from. Inferring it from the closure's
-  body would be a new rule, so it is a language decision.
-- `expect(message)`: a function whose only return is the payload releases a
-  *literal* payload it was handed. `okOr`, `ok`, `err`: moving a payload into a
-  new enum double-frees it, `sink self` or not. Both are compiler bugs with
-  repros in KNOWN_ISSUES. The methods are two lines each once those are fixed.
+**`expect`, `okOr`, `ok`, `err` landed 2026-09-25**, after the three compiler
+fixes they were waiting on (KNOWN_ISSUES, Ownership; the suite's
+`ownership_probes`). test_191 covers each with String payloads and `expect`'s
+panic.
+
+Not done: `map`, `andThen`, `mapErr`. `U` appears only in the result, and a type
+parameter is solved only from an argument's type. With no `F: Fn(T) -> U` there
+is nothing to say where `U` comes from. Inferring it from the closure's return
+type is the plan (task below).
 
 ## 6. `Map` removal and methods
 

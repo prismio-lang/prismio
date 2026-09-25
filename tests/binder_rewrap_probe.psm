@@ -1,0 +1,37 @@
+// A match binder moved into a new enum. `errOf` returns an Option of its own
+// holding the Result's payload; both enums' releases freed it. The second half
+// returns that Option out of the function whose local owns the Result: freeing
+// the local at its scope exit would leave the Option pointing at freed memory,
+// which `--verify` cannot see and the printed text does. Run by
+// `ownership_probes`.
+
+import std.io
+import std.option
+import std.string
+
+fn parse(text: String) -> Result<Int, String> {
+    if (text.equals("7")) { return Result<Int, String>.Ok(7) }
+    return Result<Int, String>.Err("not a seven: ".concat(text))
+}
+
+fn errOf(r: Result<Int, String>) -> Option<String> {
+    match (r) {
+        Result.Ok(v) => { return Option<String>.None }
+        Result.Err(e) => { return Option<String>.Some(e) }
+    }
+}
+
+fn errFromParse(text: String) -> Option<String> {
+    let owned = parse(text)
+    return errOf(owned)
+}
+
+fn main() -> Int {
+    let h = parse("x")
+    let i = errOf(h)
+    println(optionIsSome(i))
+
+    let j = errFromParse("y")
+    println(optionOr(j, "none"))
+    return 0
+}

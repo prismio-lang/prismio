@@ -22,35 +22,33 @@ corpus sweep is 8 sources and 7 runnable, down from 33 and 30.
 
 ## Ownership
 
-**Three shapes that release memory that is not live -- violations, not leaks --
-all reproduced on `2ae70c4` and found while adding Option's methods
-(2026-09-25).** Each is a crash (`free(): invalid pointer`) outside `--verify`.
-`findLiteral` below returns `Option<String>.Some("a literal ...")` for one key
-and `None` otherwise.
+**Fixed 2026-09-25: three shapes released memory that was not live.** Each was
+a crash (`free(): invalid pointer`) outside `--verify`, and each reproduced on
+`2ae70c4`. See `aif/evidence/RESULTS-ownership-shapes.md`.
 
-- **A value returned through a forwarding call.**
-  `fn wrap(o: Option<String>, d: String) -> String { return optionOr(o, d) }`,
-  called as `wrap(findLiteral("other"), "fallback")`, releases `"fallback"`.
-  `optionOr` called directly is clean, and so is `wrap` on a local `None`; the
-  Option has to come from a call. Generic or not.
-- **A match binder returned on its own.** `fn payloadOr(o: Option<String>) ->
-  String { match (o) { Option.Some(v) => { return v } Option.None => { return
-  "".concat("") } } }`, called on `findLiteral("name")`, releases the literal
-  payload. An owned payload is clean. A function that also returns a
-  parameter (`optionOr`'s shape) is clean.
-- **A match binder put into a new enum.** `fn errOf(r: Result<Int, String>) ->
-  Option<String> { match (r) { Result.Ok(v) => { return Option<String>.None }
-  Result.Err(e) => { return Option<String>.Some(e) } } }` on an `Err("..".concat(x))`
-  double-frees the payload: the new Option and the old Result both release it.
-  Declaring `sink r` changes nothing.
+- **A value returned through a forwarding call.** `fn wrap(o, d) -> String {
+  return optionOr(o, d) }` looked owned to its caller, because its return
+  resolved to the sites stored in *any* `Option<String>` payload (std's
+  `Some(substring)` among them), and it could be `d`'s literal.
+- **A match binder returned on its own.** `return v` for a payload binder
+  resolved the same way while the Option in hand held a literal.
+- **A match binder put into a new enum.** `return Option<String>.Some(e)` for a
+  binder `e` of a Result: both enums' releases freed the payload.
 
-std.option's methods avoid all three: they match for themselves instead of
-forwarding, and `expect`, `okOr`, `ok` and `err` are not shipped until the second
-and third are fixed. `tests/option_methods_probe.psm` is the first shape as
-`unwrapOr`, and the suite's `option_methods` check fails on it if the method
-forwards again. It has to be a separate program. test_191 also stores an owned
-payload in an `Option<String>`, and with that the forwarding spelling reads
-0 violations too.
+The first two were `fn_returns_partial` asking "does a return resolve to no
+site at all?" when the question is "may it be static storage?". It now also asks
+`key_may_return_untracked`. The third: a field holding a view of an enum's
+payload is not that value's release point, and a function returning something
+that holds such a view of a parameter counts as returning a view of it, so the
+caller keeps the argument alive. What remains is a leak where there was a double
+free: `let h = parse(t); return errOf(h)` keeps `h`.
+`tests/forwarding_literal_probe.psm`, `binder_return_probe.psm`,
+`binder_rewrap_probe.psm` (the suite's `ownership_probes`).
+
+**Still open, and no wider than before:** a `let mut s = "lit"` that is not an
+owning accumulator (so the literal is not cloned), later given both an owned
+value and an unowned one that is not itself a literal source, and returned. See
+`key_may_return_untracked` in `runtime/aif_support.c`.
 
 **Fixed 2026-09-25: a C-produced value placed in an arena leaked.** AIF let an
 enclosing region serve any `produce` extern except `chan_recv`, and codegen

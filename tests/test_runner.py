@@ -4124,40 +4124,56 @@ def run_range_direction_test():
     return True
 
 
-def run_option_methods_test():
-    """Option's and Result's methods, under `--verify`: 0 violations.
+def run_ownership_probes_test():
+    """Four shapes that released memory that was not live, under `--verify`.
 
-    test_191 checks the answers; option_methods_probe.psm checks the ledger.
-    `unwrapOr` written as `return optionOr(self, fallback)` released the literal
-    it returned for an Option that came from a call: 3 violations on the probe,
-    none on test_191, whose owned payloads change the analysis's answer. A
-    violation is corruption, and a run prints the right answers through one.
+    Each probe is its own program because the analysis is whole-program: in
+    test_191, owned payloads elsewhere in the file changed its answer and the bad
+    spelling of `unwrapOr` read 0 violations. A violation is corruption, and a
+    run prints the right answer through one, so the ledger is what is checked --
+    and, for the rewrap probe, the text, since a read of freed memory is not a
+    ledger event.
+
     Leaks are not asserted: once any `Option<String>` payload is stored from a
     literal, that payload is never freed for any Option<String> (KNOWN_ISSUES,
-    Ownership).
+    Ownership), and the probes store literals on purpose.
     """
-    print(f"\n{BLUE}--- Running option_methods ---{RESET}")
+    print(f"\n{BLUE}--- Running ownership_probes ---{RESET}")
+    probes = (
+        # file, text stdout must contain
+        ("option_methods_probe.psm", "fallback"),
+        ("forwarding_literal_probe.psm", "fallback"),
+        ("binder_return_probe.psm", "a literal payload, past twelve bytes"),
+        ("binder_rewrap_probe.psm", "not a seven: y"),
+    )
+    problems = []
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
-    with tempfile.TemporaryDirectory(prefix="prismio-option-methods-") as tmp:
-        exe = Path(tmp) / ("probe" + exe_suffix)
-        built = run_command([str(PRISMIO_EXE), "build",
-                             str(TEST_DIR / "option_methods_probe.psm"),
-                             "--verify", "-o", str(exe)])
-        if built.returncode != 0:
-            print(f"{RED}[FAIL] the option methods probe did not build: "
-                  f"{elide_middle((built.stdout or '') + (built.stderr or ''))}{RESET}")
-            return False
-        ran = run_command([str(exe)])
-        output = (ran.stdout or "") + (ran.stderr or "")
-        if ran.returncode != 0 or "fallback" not in (ran.stdout or ""):
-            print(f"{RED}[FAIL] the option methods probe exited {ran.returncode}: "
-                  f"{elide_middle(output)}{RESET}")
-            return False
-        if " 0 violation(s)" not in output:
-            print(f"{RED}[FAIL] Option/Result methods released something not live: "
-                  f"{elide_middle(output)}{RESET}")
-            return False
-    print(f"{GREEN}[PASS] Option and Result methods: right answers and 0 violations{RESET}")
+    with tempfile.TemporaryDirectory(prefix="prismio-ownership-probes-") as tmp:
+        for name, want in probes:
+            exe = Path(tmp) / ("probe" + exe_suffix)
+            built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / name),
+                                 "--verify", "-o", str(exe)])
+            if built.returncode != 0:
+                problems.append(f"{name} did not build: "
+                                f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+                continue
+            # Not run_command: a read of freed memory prints bytes that are not
+            # UTF-8, and that has to be a failure here rather than a traceback.
+            ran = subprocess.run([str(exe)], capture_output=True, text=True,
+                                 errors="replace")
+            output = (ran.stdout or "") + (ran.stderr or "")
+            if ran.returncode != 0 or want not in (ran.stdout or ""):
+                problems.append(f"{name} exited {ran.returncode} without {want!r}: "
+                                f"{elide_middle(output)}")
+            elif " 0 violation(s)" not in output:
+                problems.append(f"{name} released something not live: {elide_middle(output)}")
+    if problems:
+        print(f"{RED}[FAIL] ownership probes{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] ownership probes: {len(probes)} shapes, right text and "
+          f"0 violations{RESET}")
     return True
 
 
@@ -8478,7 +8494,7 @@ def main():
         ("proved_index_nsw", run_proved_index_nsw_test),
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
-        ("option_methods", run_option_methods_test),
+        ("ownership_probes", run_ownership_probes_test),
         ("check_overlay", run_check_overlay_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),

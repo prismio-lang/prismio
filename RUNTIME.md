@@ -138,7 +138,7 @@ violations.
 | `std/fs.psm` | `import std.fs` | files, paths, `listDirectory`, `appendFile`, `rename`, `removeDirectory`, `metadata` |
 | `std/process.psm` | `import std.process` | arguments, environment variables (`process.env`, `setEnv`, `removeEnv`), `process.pid`, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>` |
-| `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>`; `isSome`/`isNone`/`isOk`/`isErr`, `unwrapOr` |
+| `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>`; `isSome`/`isNone`/`isOk`/`isErr`, `unwrapOr`, `expect`, `okOr`, `ok`, `err` |
 | `std/vec.psm` | `import std.vec` | `Vec<T>`'s library methods — `get`, `contains`, `indexOf`, `pop`, `removeAt`, `extend`, `reverse`, `clone`, `sort`, `sortBy`, `filter`, `binarySearch` — **and the Vec literal** `[a, b, c]` and `Vec<T>.withCapacity(n)` |
 | `std/key.psm` | `import std.key` | the `Key` bound `Map` needs |
 | `std/ord.psm` | `import std.ord` | the `Ord` bound `sort` needs |
