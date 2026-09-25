@@ -2984,6 +2984,16 @@ void prismio_overflow_trap(const char* op, const char* file, int line) {
     exit(1);
 }
 
+// A range `for`'s computed step, checked once where the loop is entered. The
+// range decides the direction and the step is only its size, so zero or less
+// has no meaning; sema refuses a literal one, and this is the rest.
+void prismio_step_check(int step, const char* file, int line) {
+    if (step > 0) return;
+    fprintf(stderr, "runtime error: a `step` must be positive, found %d at %s:%d\n",
+            step, (file && *file) ? file : "<unknown>", line);
+    exit(1);
+}
+
 // REQUIREMENTS 4. The checked unwrap behind `expect(x)`.
 //
 // A function rather than a branch in codegen, and returning its argument rather

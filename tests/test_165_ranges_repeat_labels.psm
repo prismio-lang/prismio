@@ -1,11 +1,12 @@
 // Ranges, `step`, `repeat`, `else if` chains, and labelled loops.
 //
-//   - `a..b` includes its end and `a..<b` stops before it. Both are empty when
-//     the start is past the end.
+//   - `a..b` includes its end and `a..<b` stops before it. Past the end, the
+//     start counts down to it instead (test_180 covers that direction).
 //   - The start, the end and the step are each evaluated once, before the first
 //     test: assigning to the end inside the body changes nothing.
-//   - `step` counts up by a positive Int. A computed step that is not positive
-//     runs the loop no times.
+//   - `step` is a positive distance; the range decides the direction. A
+//     computed step that is not positive is a run-time error (test_runner.py's
+//     range_direction).
 //   - A loop whose end is the largest Int stops there rather than wrapping.
 //   - `repeat(n)` runs its body n times and hides its counter.
 //   - `outer@ for ...` names a loop; `break@outer` and `continue@outer` leave or
@@ -83,7 +84,7 @@ fn nestedIf(a: Int, b: Int) -> Int {
 fn main() -> Int {
     if (sumRange(1, 5) != 15) { return fail("1..5 includes 5") }
     if (sumExclusive(1, 5) != 10) { return fail("1..<5 stops before 5") }
-    if (sumRange(5, 1) != 0) { return fail("5..1 is empty") }
+    if (sumRange(5, 1) != 15) { return fail("5..1 counts down") }
     if (sumRange(3, 3) != 3) { return fail("3..3 runs once") }
     if (sumExclusive(3, 3) != 0) { return fail("3..<3 is empty") }
 
@@ -117,10 +118,6 @@ fn main() -> Int {
     let mut strided = 0
     for i in 0..<16 step stride { strided += 1 }
     if (strided != 4) { return fail("a computed step") }
-    let zero = 0
-    let mut never = 0
-    for i in 0..<10 step zero { never += 1 }
-    if (never != 0) { return fail("a zero step runs no times") }
 
     // The largest Int ends the loop instead of wrapping past it.
     let mut edge = 0

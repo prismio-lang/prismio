@@ -2577,6 +2577,7 @@ private fn semaForStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     let endT = semaExpr(module, endNode)
     semaExpectAssignable(endNode, "for range end", typeInt(), endT)
     if (nodeExists(endNode.next)) { semaForStep(module, ptr_to_node(endNode.next)) }
+    if (stmt.i1 == 1) { semaForEndBeforeCount(endNode) }
     // The loop variable belongs to the loop, not to the enclosing block.
     ir_scope_push()
     ir_set_var_type(stmt.s1, typeSemKey(typeInt()))
@@ -2586,8 +2587,22 @@ private fn semaForStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     ir_scope_pop()
 }
 
-// `step` counts up, by a positive Int. A literal is checked here; a computed
-// step that is not positive at run time runs the loop no times (ir/stmt.psm).
+// `a..n - 1` over a computed `n` is how a count is written in languages whose
+// ranges only count up, and it means something else here: the range counts
+// from `a` towards its end whichever way that is, so when `n` is at or below
+// `a` it runs down to `n - 1` rather than not at all. `a..<n` is the count.
+private fn semaForEndBeforeCount(endNode: ASTNode) {
+    if (endNode.kind != NodeKind.BINARY_EXPR or endNode.s1.equals("-") == false) { return }
+    let subtracted = ptr_to_node(endNode.child2)
+    if (subtracted.kind != NodeKind.LITERAL_EXPR or subtracted.s1.equals("1") == false) { return }
+    if (ptr_to_node(endNode.child1).kind == NodeKind.LITERAL_EXPR) { return }
+    semaWarningAt(endNode, "this range counts down, not zero times, when the end is below the start")
+    diag_note("to stop before `n` and run no times when `n` is at the start, write `start..<n`")
+}
+
+// `step` is how far each iteration moves, by a positive Int; the range decides
+// which way. A literal is checked here and a computed one where the loop is
+// entered (prismio_step_check).
 private fn semaForStep(module: ASTNode, stepNode: ASTNode) {
     let stepT = semaExpr(module, stepNode)
     semaExpectAssignable(stepNode, "for step", typeInt(), stepT)
@@ -2601,7 +2616,7 @@ private fn semaForStep(module: ASTNode, stepNode: ASTNode) {
     }
     if (notPositive) {
         semaErrorAt(stepNode, "a `step` must be positive")
-        diag_note("a range counts up from its start; for a descending count, count up and subtract")
+        diag_note("the range sets the direction and `step` the distance: `10..0 step 2` counts 10, 8, 6, 4, 2, 0")
     }
 }
 

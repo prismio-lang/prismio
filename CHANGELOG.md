@@ -4,6 +4,22 @@
 
 ### Changed
 
+- **A range counts down when its start is past its end.** Breaking: `for i in
+  10..0` visits 10 down to 0 and `5..<1` visits 5, 4, 3, 2, where both ran no
+  times. `step` is now the distance and the range the direction: `10..0 step 2`
+  is 10, 8, 6, 4, 2, 0. A computed step of zero or less stops the program with
+  "a `step` must be positive" and the line (`prismio_step_check`), where it ran
+  the loop no times; a literal one stays a compile error. `repeat(n)` is a
+  count, not a range: zero or less still runs no times. Literal ends, a
+  `repeat` and `0..<` a length are settled at compile time; any other range
+  compares its ends once on entry, and only its ascending copy is guarded and
+  range-proved. An inclusive range ending `n - 1` over a computed `n` warns
+  (P4003), since it counts down to -1 when `n` is 0: write `0..<n`. Audited with
+  a compiler that reported every loop taking the descending path: across a
+  self-compile, the whole suite and all 62 benchmark workloads, only test_165's
+  own `5..1 is empty` assertion did. The benchmark suite's machine code is
+  unchanged function for function; emitting the compiler's IR takes 3.7%
+  longer. test_180, test_runner.py's range_direction.
 - **`mut` covers what a Vec or an array holds, not only the binding.** Breaking:
   `let v: Vec<Int> = []` followed by `v.push(1)`, `v[0] = x`, `v.sort()` or
   `v.clear()` is now ``cannot change `v`, which is not declared `mut` ``, and so is

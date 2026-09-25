@@ -1,0 +1,99 @@
+// A range counts from its start towards its end, whichever way that is.
+//
+//   - `10..0` counts down and includes 0; `10..<0` stops before it.
+//   - `step` is a distance: `10..0 step 2` is 10, 8, 6, 4, 2, 0.
+//   - Where the source does not settle the direction, the values do, when the
+//     loop is entered: `a..b` with a > b counts down.
+//   - `a..<a` is empty and `a..a` runs once, either way.
+//   - A loop ending at the smallest Int stops there rather than wrapping.
+//   - `repeat(n)` is a count, not a range: zero or less runs no times.
+//   - break and continue, labelled or not, leave a descending loop as they
+//     leave any other.
+import std.io
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// The values a range takes, in order, as text.
+fn trail(from: Int, to: Int, by: Int, inclusive: Bool) -> String {
+    let mut out = ""
+    if (inclusive) {
+        for i in from..to step by { out = out.concat(i.toString(), " ") }
+    } else {
+        for i in from..<to step by { out = out.concat(i.toString(), " ") }
+    }
+    return out
+}
+
+fn main() -> Int {
+    // Literal ends, so the direction is known where the loop is compiled.
+    let mut down = ""
+    for i in 10..0 step 2 { down = down.concat(i.toString(), " ") }
+    if (down.equals("10 8 6 4 2 0 ") == false) { return fail("10..0 step 2") }
+    let mut downOpen = ""
+    for i in 10..<0 step 3 { downOpen = downOpen.concat(i.toString(), " ") }
+    if (downOpen.equals("10 7 4 1 ") == false) { return fail("10..<0 step 3") }
+    let mut negative = 0
+    for i in 3..-2 { negative += i }
+    if (negative != 3) { return fail("3..-2 sums 3 + 2 + 1 + 0 - 1 - 2") }
+    let mut once = 0
+    for i in 5..5 { once += 1 }
+    if (once != 1) { return fail("5..5 runs once") }
+    let mut empty = 0
+    for i in 5..<5 { empty += 1 }
+    if (empty != 0) { return fail("5..<5 is empty") }
+
+    // Computed ends: the direction is the values'.
+    if (trail(1, 4, 1, true).equals("1 2 3 4 ") == false) { return fail("1..4") }
+    if (trail(4, 1, 1, true).equals("4 3 2 1 ") == false) { return fail("4..1") }
+    if (trail(4, 1, 1, false).equals("4 3 2 ") == false) { return fail("4..<1") }
+    if (trail(9, 0, 4, true).equals("9 5 1 ") == false) { return fail("9..0 step 4") }
+    if (trail(0, 0, 1, true).equals("0 ") == false) { return fail("0..0") }
+    if (trail(0, 0, 1, false).equals("") == false) { return fail("0..<0") }
+
+    // The smallest Int ends the loop instead of wrapping past it.
+    let floor = 0 - 2147483647 - 1
+    let mut edge = 0
+    for i in floor + 2..floor { edge += 1 }
+    if (edge != 3) { return fail("an end of Int.min") }
+    let mut edgeStep = 0
+    for i in floor + 7..floor step 5 { edgeStep += 1 }
+    if (edgeStep != 2) { return fail("a step past Int.min") }
+
+    // A count never counts down.
+    let minus = 0 - 3
+    let mut counted = 0
+    repeat(minus) { counted += 1 }
+    repeat(0) { counted += 1 }
+    if (counted != 0) { return fail("repeat of zero or less") }
+
+    // Indexing from the end.
+    let xs: Vec<Int> = [10, 20, 30]
+    let mut reversed = ""
+    for i in xs.length - 1..0 { reversed = reversed.concat(xs[i].toString(), " ") }
+    if (reversed.equals("30 20 10 ") == false) { return fail("from the last index") }
+
+    // Jumps out of and within a descending loop.
+    let mut visits = 0
+    outer@ for i in 3..0 {
+        for j in 0..<3 {
+            if (j == 1) { continue@outer }
+            visits += 1
+        }
+    }
+    if (visits != 4) { return fail("continue@outer from a descending loop") }
+    let mut stopped = 0
+    for i in 10..0 {
+        if (i == 7) { break }
+        stopped += 1
+    }
+    if (stopped != 3) { return fail("break from a descending loop") }
+
+    println("PASS: descending ranges")
+    return 0
+}

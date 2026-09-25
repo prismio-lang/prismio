@@ -894,7 +894,7 @@ private fn generateWhile(stmt: ASTNode) {
                                             ptr_to_node(stmt.child2))
         proof = irLoopRangeProofPending
     }
-    generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, "", "")
+    generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, "", "", false)
 
     irLoopFlatGuard = savedGuard.clone()
     irLoopRangeProof = savedProof
@@ -920,10 +920,11 @@ private fn generateWhile(stmt: ASTNode) {
 // loop keeps two copies -- a third is code the function pays for in register
 // pressure wherever it lives, measured at 7% on a neighbouring fill loop in
 // aos_vs_soa that the proof never touched. `plain` is the representation a loop
-// with no guard of its own inherits from the one around it.
+// with no guard of its own inherits from the one around it. `down` is a range
+// `for` counting down, which carries no range proof.
 private fn generateLoopVersions(stmt: ASTNode, endLabel: Int, flatSlot: String,
                                 rangeSlot: String, proof: Int, plain: String,
-                                forEnd: String, forStep: String) {
+                                forEnd: String, forStep: String, down: Bool) {
     let hasFlat = flatSlot.equals("") == false
     let mut hasRange = rangeSlot.equals("") == false
     let mut fastProof = 0
@@ -946,31 +947,31 @@ private fn generateLoopVersions(stmt: ASTNode, endLabel: Int, flatSlot: String,
         let checkedLabel = ir_get_label()
         ir_cond_br_numbered(ir_get_temp_name(ir_load("i1", rangeSlot)), provedLabel,
                             checkedLabel)
-        generateLoopCopy(stmt, provedLabel, endLabel, "1", proof, forEnd, forStep)
-        generateLoopCopy(stmt, checkedLabel, endLabel, "1", 0, forEnd, forStep)
+        generateLoopCopy(stmt, provedLabel, endLabel, "1", proof, forEnd, forStep, down)
+        generateLoopCopy(stmt, checkedLabel, endLabel, "1", 0, forEnd, forStep, down)
     } else if (hasFlat) {
         let flatCopy = ir_get_label()
         ir_br_numbered(flatCopy)
-        generateLoopCopy(stmt, flatCopy, endLabel, "1", fastProof, forEnd, forStep)
+        generateLoopCopy(stmt, flatCopy, endLabel, "1", fastProof, forEnd, forStep, down)
     }
     if (hasFlat) {
-        generateLoopCopy(stmt, genericLabel, endLabel, "", 0, forEnd, forStep)
+        generateLoopCopy(stmt, genericLabel, endLabel, "", 0, forEnd, forStep, down)
     }
     if (hasFlat == false and hasRange == false) {
         ir_br_numbered(genericLabel)
-        generateLoopCopy(stmt, genericLabel, endLabel, plain, 0, forEnd, forStep)
+        generateLoopCopy(stmt, genericLabel, endLabel, plain, 0, forEnd, forStep, down)
     }
 }
 
 // One copy of a `while` or a range `for`, entered at `entryLabel`, with the
 // representation fact `flat` and range proof `proof` in force for its accesses.
 private fn generateLoopCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int, flat: String,
-                            proof: Int, forEnd: String, forStep: String) {
+                            proof: Int, forEnd: String, forStep: String, down: Bool) {
     irLoopFlatGuard = flat.clone()
     irLoopRangeProof = proof
     if (stmt.kind == NodeKind.FOR_STATEMENT) {
-        if (forIsGeneral(stmt)) {
-            generateForGeneralCopy(stmt, entryLabel, endLabel, forEnd, forStep)
+        if (down or forIsGeneral(stmt)) {
+            generateForGeneralCopy(stmt, entryLabel, endLabel, forEnd, forStep, down)
         } else {
             generateForCopy(stmt, entryLabel, endLabel, forEnd)
         }
@@ -1033,22 +1034,30 @@ private fn forIsGeneral(stmt: ASTNode) -> Bool {
 
 // A range `for`. The start, the end and the step are each evaluated once, before
 // the first test, and in that order -- `for i in 0..<v.length` does not re-read
-// the length every iteration, and `repeat(f())` calls `f` once.
+// the length every iteration, and `repeat(f())` calls `f` once. A computed step
+// is then checked positive; the range, not the step, decides the direction.
 //
-// `for i in a..<b` is the plain counted loop: test `i < b`, run the body, add one.
-// The increment cannot wrap, because `i < b` held and `b` is an Int.
+// `for i in a..<b` counting up is the plain counted loop: test `i < b`, run the
+// body, add one. The increment cannot wrap, because `i < b` held and `b` is an
+// Int.
 //
-// An included end or a step takes the general form, which tests before the
-// increment instead of after it:
+// An included end, a step, or counting down takes the general form, which tests
+// before the increment instead of after it:
 //
-//     enter:  i <= end (or i < end), and step > 0 when the step is computed
-//     latch:  continue while step fits in end - i, taken as unsigned
-//     incr:   i = i + step
+//     enter:  i <= end (or i < end); i >= end (or i > end) counting down
+//     latch:  continue while step fits in the distance left, taken as unsigned
+//     incr:   i = i + step, or i - step
 //
 // That is what makes `for i in 0..Int.max` and `0..<n step 3` stop. Adding first
-// and testing after would wrap `i` past the largest Int and never exit. `end - i`
-// cannot be negative there -- `i` never passes `end` -- so read unsigned it is
-// the exact distance left even when it does not fit in a signed Int.
+// and testing after would wrap `i` past the largest Int and never exit. The
+// distance cannot be negative there -- `i` never passes `end` -- so read
+// unsigned it is exact even when it does not fit in a signed Int.
+//
+// Which way a loop counts is known here for literal ends, a `repeat` count, and
+// `0..<` a length; otherwise one comparison where the loop is entered picks the
+// copy. The ascending copy is the one every guard and proof serves. The
+// descending one is a single checked copy: a loop whose direction the source
+// does not settle rarely runs down, and each copy is the whole body again.
 private fn generateFor(stmt: ASTNode) {
     // Scoped to the loop, matching sema.
     ir_scope_push()
@@ -1067,6 +1076,7 @@ private fn generateFor(stmt: ASTNode) {
         let stepNode = ptr_to_node(endNode.next)
         stepVal = generateExpression(stepNode)
         stepIsLiteral = forStepIsLiteral(stepNode)
+        if (stepIsLiteral == false) { generateForStepCheck(stepNode, stepVal) }
     }
 
     let endLabel = ir_get_label()
@@ -1085,17 +1095,33 @@ private fn generateFor(stmt: ASTNode) {
     irLoopHoistedBoundList = ""
     irLoopHoistedBoundValue = ""
     irLoopHoistedDataValue = ""
+
+    let direction = forDirection(stmt)
+    if (direction == 0) {
+        let upLabel = ir_get_label()
+        let downLabel = ir_get_label()
+        ir_cond_br_numbered(ir_get_temp_name(ir_icmp_sle("i32", startVal, endVal)),
+                            upLabel, downLabel)
+        ir_label_numbered(downLabel)
+        generateLoopVersions(stmt, endLabel, "", "", 0, savedGuard, endVal, stepVal, true)
+        ir_label_numbered(upLabel)
+    }
     let body = ptr_to_node(stmt.child3)
     let flatSlot = generateLoopFlatGuard(ptr_null(), body)
-    let mut rangeSlot = ""
-    let mut proof = 0
-    if (flatSlot.equals("") == false or savedGuard.equals("1")) {
-        irLoopRangeProofPending = 0
-        irLoopRangeProofComplete = false
-        rangeSlot = generateForRangeGuard(stmt, endVal, stepVal, stepIsLiteral, stmt.i1 == 1)
-        proof = irLoopRangeProofPending
+    if (direction < 0) {
+        generateLoopVersions(stmt, endLabel, flatSlot, "", 0, savedGuard, endVal, stepVal, true)
+    } else {
+        let mut rangeSlot = ""
+        let mut proof = 0
+        if (flatSlot.equals("") == false or savedGuard.equals("1")) {
+            irLoopRangeProofPending = 0
+            irLoopRangeProofComplete = false
+            rangeSlot = generateForRangeGuard(stmt, endVal, stepVal, stepIsLiteral, stmt.i1 == 1)
+            proof = irLoopRangeProofPending
+        }
+        generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, endVal,
+                             stepVal, false)
     }
-    generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, endVal, stepVal)
     irLoopFlatGuard = savedGuard.clone()
     irLoopRangeProof = savedProof
     irLoopHeaderBoundList = savedHeaderList.clone()
@@ -1107,6 +1133,42 @@ private fn generateFor(stmt: ASTNode) {
 
     ir_label_numbered(endLabel)
     ir_scope_pop()
+}
+
+// Which way the loop counts, where the source settles it: 1 up, -1 down, 0 when
+// only its values at run time can say.
+private fn forDirection(stmt: ASTNode) -> Int {
+    if (stmt.i2 == 1) { return 1 }
+    let start = ptr_to_node(stmt.child1)
+    let end = ptr_to_node(stmt.child2)
+    if (forIsIntLiteral(start) and forIsIntLiteral(end)) {
+        if (forIntLiteralValue(start) <= forIntLiteralValue(end)) { return 1 }
+        return 0 - 1
+    }
+    if (forIsIntLiteral(start) and forIntLiteralValue(start) == 0 and forIsLength(end)) { return 1 }
+    return 0
+}
+
+// An integer literal, negated or not. The two fallbacks agree only when the text
+// is a number.
+private fn forIsIntLiteral(n: ASTNode) -> Bool {
+    if (n.kind == NodeKind.UNARY_EXPR and n.s1.equals("-")) {
+        return forIsIntLiteral(ptr_to_node(n.child1))
+    }
+    return n.kind == NodeKind.LITERAL_EXPR and n.i1 == TokenType.NUMBER_LITERAL
+        and n.s1.parseIntOr(0) == n.s1.parseIntOr(1)
+}
+
+private fn forIntLiteralValue(n: ASTNode) -> Int {
+    if (n.kind == NodeKind.UNARY_EXPR) { return 0 - forIntLiteralValue(ptr_to_node(n.child1)) }
+    return n.s1.parseIntOr(0)
+}
+
+// A length, which is never negative, so `0..<` it counts up.
+private fn forIsLength(n: ASTNode) -> Bool {
+    if (n.kind != NodeKind.CALL_EXPR or nodeIsNull(n.child1)) { return false }
+    let callee = ptr_to_node(n.child1).s1
+    return callee.equals("list_len") or callee.equals("slice_len") or callee.equals("data_len")
 }
 
 // The plain counted copy: test `i < end`, run the body, add one.
@@ -1143,13 +1205,21 @@ private fn forStepIsLiteral(stepNode: ASTNode) -> Bool {
     return stepNode.kind == NodeKind.LITERAL_EXPR and stepNode.i1 == TokenType.NUMBER_LITERAL
 }
 
+// A computed step of zero or less is a run-time error, reported where the loop
+// is entered: the step is a distance, and no distance of zero reaches an end.
+private fn generateForStepCheck(stepNode: ASTNode, stepVal: String) {
+    let file = ir_get_temp_name(ir_const_cstring(diag_file_path(stepNode.file)))
+    ir_call_begin()
+    ir_call_arg("i32", stepVal)
+    ir_call_arg("ptr", file)
+    ir_call_arg("i32", stepNode.line.toString())
+    ir_call_end("void", "prismio_step_check")
+}
+
 private fn generateForGeneralCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int,
-                                  endVal: String, stepVal: String) {
+                                  endVal: String, stepVal: String, down: Bool) {
     let loopVar = ir_get_var_slot(stmt.s1)
-    let endNode = ptr_to_node(stmt.child2)
     let included = stmt.i1 == 1
-    let mut stepChecked = true
-    if (nodeExists(endNode.next)) { stepChecked = forStepIsLiteral(ptr_to_node(endNode.next)) }
 
     let bodyLabel = ir_get_label()
     let latchLabel = ir_get_label()
@@ -1158,16 +1228,14 @@ private fn generateForGeneralCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int,
     ir_label_numbered(entryLabel)
     let first = ir_get_temp_name(ir_load("i32", loopVar))
     let mut enter = ""
-    if (included) {
+    if (down and included) {
+        enter = ir_get_temp_name(ir_icmp_sge("i32", first, endVal))
+    } else if (down) {
+        enter = ir_get_temp_name(ir_icmp_sgt("i32", first, endVal))
+    } else if (included) {
         enter = ir_get_temp_name(ir_icmp_sle("i32", first, endVal))
     } else {
         enter = ir_get_temp_name(ir_icmp_slt("i32", first, endVal))
-    }
-    // A step computed as zero or less would never reach the end. The loop runs
-    // no times instead, which a literal step never needs: sema refused those.
-    if (stepChecked == false) {
-        let positive = ir_get_temp_name(ir_icmp_sgt("i32", stepVal, "0"))
-        enter = ir_get_temp_name(ir_and("i1", enter, positive))
     }
     ir_cond_br_numbered(enter, bodyLabel, endLabel)
 
@@ -1182,7 +1250,12 @@ private fn generateForGeneralCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int,
 
     ir_label_numbered(latchLabel)
     let current = ir_get_temp_name(ir_load("i32", loopVar))
-    let left = ir_get_temp_name(ir_sub("i32", endVal, current))
+    let mut left = ""
+    if (down) {
+        left = ir_get_temp_name(ir_sub("i32", current, endVal))
+    } else {
+        left = ir_get_temp_name(ir_sub("i32", endVal, current))
+    }
     let mut more = ""
     if (included) {
         more = ir_get_temp_name(ir_icmp_uge("i32", left, stepVal))
@@ -1193,7 +1266,12 @@ private fn generateForGeneralCopy(stmt: ASTNode, entryLabel: Int, endLabel: Int,
 
     // The latch let it through only if `step` fits in what is left to `end`.
     ir_label_numbered(incrLabel)
-    let next = ir_add_nsw("i32", current, stepVal)
+    let mut next = 0
+    if (down) {
+        next = ir_sub_nsw("i32", current, stepVal)
+    } else {
+        next = ir_add_nsw("i32", current, stepVal)
+    }
     ir_store("i32", ir_get_temp_name(next), loopVar)
     ir_br_numbered(bodyLabel)
 }

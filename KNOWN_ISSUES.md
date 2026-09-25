@@ -391,6 +391,17 @@ path inlines without exposing allocator statics. See
 
 ## Codegen
 
+**A range counting down at run time keeps its bounds checks.** Where the source
+does not settle a range's direction -- `for i in a..b` over computed ends, not
+`0..<` a length -- `generateFor` compares the ends on entry and branches to an
+ascending copy, which the flat guard and the range proofs serve as always, or
+to one plain descending copy with neither. So `for i in hi..lo` over a Vec that
+really does run down pays a bounds check per access. A literal descending range
+(`10..0`) keeps the flat guard, and none of the 62 benchmark workloads has a
+descending loop. Fixing it means teaching `generateForRangeGuard` a `RANGE_DOWN`
+variable for the copy; it was left out because every copy is the whole body
+again, and nested run-time-direction loops multiply it.
+
 **A list literal is not accepted as a call argument.** `[a, b, c]` becomes
 `listOf(a, b, c)` where a `List<T>` is written -- an annotation, a struct field,
 the left of an assignment -- and `f(["a"])` is rejected with *"no overload of `f`

@@ -151,6 +151,7 @@ private fn parseForPair(p: Parser, forNode: ASTNode) {
 //     child2   the end, then the step when one was written, as one chain
 //     child3   the body
 //     i1       1 when the end is included (`..`), 0 when it is not (`..<`)
+//     i2       1 for a `repeat` count, which only counts up (below)
 //
 // The step rides on the end's `next` rather than taking a slot of its own
 // because an ASTNode has three children and a `for` already fills them. A chain
@@ -240,9 +241,13 @@ private fn atRepeatStatement(p: Parser) -> Bool {
 // and the counter has a name no source can spell, so the body cannot see it or
 // collide with it. Named after the position so that nested repeats each have
 // their own.
+//
+// A count is not a range, so it never counts down: `i2` marks the loop as
+// counting up only, and a count of zero or less runs the body no times.
 private fn parseRepeatStatement(p: Parser) -> ASTNode {
     let forNode = p.node(NodeKind.FOR_STATEMENT)
     forNode.s1 = "$repeat_".concat(forNode.line.toString(), "_", forNode.col.toString())
+    forNode.i2 = 1
     p.advance()
 
     p.expectVal(TokenType.SEPARATOR, "(", "repeat count")

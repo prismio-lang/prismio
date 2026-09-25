@@ -3940,6 +3940,65 @@ def run_proved_index_nsw_test():
     return True
 
 
+def run_range_direction_test():
+    """A range's direction comes from its values, settled at compile time where
+    the source settles it.
+
+    test_180 checks what the loops compute. This checks what the compiler does
+    around them: the body is emitted once where the direction is known (literal
+    ends, `0..<` a length, a `repeat` count) and twice where only the values can
+    tell; `0..n - 1` warns, since it counts down rather than not at all when `n`
+    is 0; and a computed step of zero stops the program, naming the line.
+    """
+    print(f"\n{BLUE}--- Running range_direction ---{RESET}")
+    source = TEST_DIR / "range_direction_probe.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-range-direction-") as tmp:
+        ir_path = Path(tmp) / "direction.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] range direction IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+        warned = built.stdout + built.stderr
+        if "warning[P4003]: this range counts down" not in warned:
+            problems.append("`0..n - 1` did not warn")
+        if warned.count("warning[P4003]") != 1:
+            problems.append(f"expected one range warning: {warned.strip()[:300]!r}")
+
+        for name, copies in (("literalUp", 1), ("literalDown", 1), ("lengthUp", 1),
+                             ("counted", 1), ("eitherWay", 2)):
+            match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+            if not match:
+                problems.append(f"missing function {name}")
+                continue
+            found = match.group(1).count("call void @mark__Int(")
+            if found != copies:
+                problems.append(f"{name}: the body is emitted {found} time(s), expected {copies}")
+
+        exe = Path(tmp) / ("direction.exe" if platform.system() == "Windows" else "direction")
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(exe)])
+        if built.returncode != 0:
+            problems.append(f"build failed: {built.stdout} {built.stderr}")
+        else:
+            ran = subprocess.run([str(exe)], cwd=PROJECT_ROOT, capture_output=True, text=True)
+            if ran.stdout.strip() != "012332100122210012":
+                problems.append(f"loops printed {ran.stdout.strip()!r}")
+            if ran.returncode == 0:
+                problems.append("a zero step ran to completion")
+            if "a `step` must be positive, found 0" not in ran.stderr:
+                problems.append(f"no step diagnostic: {ran.stderr.strip()[:200]!r}")
+            if "range_direction_probe.psm:24" not in ran.stderr:
+                problems.append(f"the diagnostic does not name line 24: {ran.stderr.strip()[:200]!r}")
+    if problems:
+        print(f"{RED}[FAIL] range direction{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] range direction folded where known, warned, and a zero step stopped{RESET}")
+    return True
+
+
 def run_counted_fill_codegen_test():
     """The pure fill grows early; observable calls and early exits do not."""
     print(f"\n{BLUE}--- Running counted_fill_codegen ---{RESET}")
@@ -8137,6 +8196,7 @@ def main():
         ("counted_fill_codegen", run_counted_fill_codegen_test),
         ("loop_range_proofs", run_loop_range_proofs_test),
         ("proved_index_nsw", run_proved_index_nsw_test),
+        ("range_direction", run_range_direction_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

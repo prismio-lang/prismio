@@ -1,0 +1,26 @@
+// Probed by test_runner.py's range_direction; not a fixture of its own.
+import std.io
+import std.vec
+
+fn mark(i: Int) { print(i) }
+
+fn literalUp() { for i in 0..3 { mark(i) } }
+fn literalDown() { for i in 3..0 { mark(i) } }
+fn lengthUp(xs: Vec<Int>) { for i in 0..<xs.length { mark(i) } }
+fn counted(n: Int) { repeat(n) { mark(n) } }
+fn eitherWay(a: Int, b: Int) { for i in a..b { mark(i) } }
+fn endBeforeCount(n: Int) { for i in 0..n - 1 { mark(i) } }
+
+fn main() -> Int {
+    let xs: Vec<Int> = [1, 2]
+    literalUp()
+    literalDown()
+    lengthUp(xs)
+    counted(2)
+    eitherWay(2, 0)
+    endBeforeCount(3)
+    println("")
+    let zero = xs.length - 2
+    for i in 0..10 step zero { mark(i) }
+    return 0
+}
