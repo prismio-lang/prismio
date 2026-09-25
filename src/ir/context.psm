@@ -74,6 +74,21 @@ let mut irSpawnArgCounter = 0
 // address to copy from. Dotted like `sc.` for the same reason.
 let mut irElemSpillCounter = 0
 
+// Names the binding irHoistBorrowedTemporaries gives a temporary. Dotted for the
+// same reason.
+let mut irBorrowedTempCounter = 0
+
+// Where irFindBorrowedTemporary found one: the node it hangs from, itself, and
+// the argument before it -- null when it is the first, and then irHoistSlot
+// says which child it is (1 a member access's object, 2 a call's arguments).
+let mut irHoistCall: Ptr
+let mut irHoistArg: Ptr
+let mut irHoistPrev: Ptr
+let mut irHoistSlot = 0
+
+// The bindings one irValueAliasesName query has already chased, `;`-separated.
+let mut irAliasChased = ""
+
 // LAYOUT 3.2. On only while generating a workload driver -- the instrumented
 // build the compiler produces, runs and discards. It gates every emission this
 // feature adds, and there is exactly one place it is set (runWorkloadProfile in
@@ -252,6 +267,8 @@ internal extern fn aif_fn_may_return_param(symbol: String) -> Int
 // SPEC 8.4's other way a result can be an argument: a view carries provenance
 // rather than the argument's sites, so the points-to answer above misses it.
 internal extern fn aif_fn_may_return_view_of_param(symbol: String) -> Int
+internal extern fn aif_call_arg_retained(node: Ptr, index: Int) -> Int
+internal extern fn aif_call_arg_outlives_call(node: Ptr, index: Int) -> Int
 
 // Struct-field ownership. Whether this type owns anything, and what each field
 // needs. Per field, because a struct mixes -- `World` is five owned Lists and an

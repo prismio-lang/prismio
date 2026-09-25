@@ -2994,6 +2994,44 @@ void prismio_step_check(int step, const char* file, int line) {
     exit(1);
 }
 
+// `panic`, `unreachable` and a failed `assert`: the program's own "this cannot
+// go on", with the place it was said.
+//
+// The status is 101, which is Rust's, so a crash reads differently from a
+// program that chose `exit(1)`; the runtime errors above keep 1. `exit` rather
+// than `abort`: C stdio is flushed (the Float printers still write through it)
+// and no core file is left behind for what is an ordinary, reported failure.
+//
+// Reached only down a branch codegen ends in `unreachable`, or as the last call
+// of a block sema proved control cannot leave -- so nothing after the call is
+// ever emitted, and returning would be a bug in the caller, not here.
+static void prismio_fail_at(const char* kind, const char* message,
+                            const char* file, int line, int col) {
+    fflush(stdout);
+    fprintf(stderr, "%s%s%s\n  --> %s:%d:%d\n", kind,
+            (message && *message) ? ": " : "", (message && *message) ? message : "",
+            (file && *file) ? file : "<unknown>", line, col);
+    exit(101);
+}
+
+void prismio_panic(const char* message, const char* file, int line, int col) {
+    prismio_fail_at("panic", message, file, line, col);
+}
+
+void prismio_unreachable(const char* message, const char* file, int line, int col) {
+    prismio_fail_at("panic: entered unreachable code", message, file, line, col);
+}
+
+// `source` is the assertion's source line, captured at compile time; it is what
+// is printed when the program gave no message of its own.
+void prismio_assert_failed(const char* message, const char* source,
+                           const char* file, int line, int col) {
+    if (message && *message) {
+        prismio_fail_at("assertion failed", message, file, line, col);
+    }
+    prismio_fail_at("assertion failed", source, file, line, col);
+}
+
 // REQUIREMENTS 4. The checked unwrap behind `expect(x)`.
 //
 // A function rather than a branch in codegen, and returning its argument rather

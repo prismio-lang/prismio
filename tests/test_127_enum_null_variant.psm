@@ -25,7 +25,7 @@ fn add(sink t: Tree, k: Int) -> Tree {
 
 fn reversedLength(t: Reversed) -> Int {
     match (t) {
-        Reversed.Value(s, tail) => { return s.length() + reversedLength(tail) }
+        Reversed.Value(s, tail) => { return s.length + reversedLength(tail) }
         Reversed.Empty => { return 0 }
     }
 }
@@ -43,7 +43,7 @@ fn nested(t: Maybe<Maybe<String>>) -> Int {
         Maybe.Some(inner) => {
             match (inner) {
                 Maybe.None => { return 2 }
-                Maybe.Some(s) => { return s.length() }
+                Maybe.Some(s) => { return s.length }
             }
         }
     }
@@ -52,7 +52,7 @@ fn nested(t: Maybe<Maybe<String>>) -> Int {
 fn three(t: Three) -> Int {
     match (t) {
         Three.First => { return 1 }
-        Three.Text(s) => { return s.length() }
+        Three.Text(s) => { return s.length }
         Three.Last => { return 3 }
     }
 }

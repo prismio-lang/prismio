@@ -29,7 +29,7 @@ fn main() -> Int {
         s = s + digitsOf(i % 10) + "," + "ab"
         i = i + 1
     }
-    if (s.length() != 2000) { return fail("500 four-byte appends") }
+    if (s.length != 2000) { return fail("500 four-byte appends") }
     if (s.slice(0, 8).equals("0,ab1,ab") == false) { return fail("chain order") }
     if (s.slice(1996, 2000).equals("9,ab") == false) { return fail("last chain") }
 

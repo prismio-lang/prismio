@@ -18,8 +18,8 @@ fn fail(message: String) -> Int {
 }
 
 fn naiveIndexOf(s: String, needle: String, from: Int) -> Int {
-    let slen = s.length()
-    let nlen = needle.length()
+    let slen = s.length
+    let nlen = needle.length
     let mut i = from
     if (i < 0) { i = 0 }
     if (nlen == 0) {

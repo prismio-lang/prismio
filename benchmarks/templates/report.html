@@ -156,6 +156,7 @@
                   <th class="sortable" data-col="rust">Rust Median</th>
                   <th class="sortable" data-col="vs-cpp">vs C++</th>
                   <th class="sortable" data-col="vs-rust">vs Rust</th>
+                  <th class="sortable" data-col="rss">Peak RSS</th>
                   <th class="sortable" data-col="jitter">Stability (±)</th>
                 </tr>
               </thead>
@@ -196,7 +197,17 @@
     // Math & Formatting Helpers
     const median = (item, lang) => item.languages[lang].elapsed_ns_median;
     const wallMedian = (item, lang) => item.languages[lang].wall_ns_median;
+    const rssMedian = (item, lang) => (item.languages[lang] && item.languages[lang].peak_rss_bytes_median) || 0;
     const ratio = (item, baseline) => median(item, "prismio") / Math.max(median(item, baseline), 1);
+    const rssRatio = (item, baseline) => rssMedian(item, "prismio") / Math.max(rssMedian(item, baseline), 1);
+
+    function formatBytes(bytes) {
+      if (!bytes) return "—";
+      if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+      if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+      if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${bytes} B`;
+    }
 
     function geomean(values) {
       if (!values.length) return 1;
@@ -342,18 +353,18 @@
 
         <div class="kpi-card" style="--card-accent: var(--cpp)">
           <div class="kpi-header">
-            <span>Compilation Speed</span>
+            <span>Compilation & Binary Size</span>
             <span>Release Suite</span>
           </div>
           <div class="kpi-value-row">
-            <div class="kpi-number" style="color:var(--text)">${compilePrismio ? duration(compilePrismio) : "Reused"}</div>
-            ${compileSpeedup ? `<span class="kpi-delta" style="background:var(--good-bg); color:var(--good)">${compileSpeedup}× faster vs C++</span>` : ''}
+            <div class="kpi-number" style="color:var(--text)">${report.binary_bytes && report.binary_bytes.prismio ? formatBytes(report.binary_bytes.prismio) : (compilePrismio ? duration(compilePrismio) : "Reused")}</div>
+            ${report.binary_bytes && report.binary_bytes.prismio && report.binary_bytes.cpp ? `<span class="kpi-delta" style="background:${report.binary_bytes.prismio <= report.binary_bytes.cpp ? 'var(--good-bg)' : 'var(--neutral-bg)'}; color:${report.binary_bytes.prismio <= report.binary_bytes.cpp ? 'var(--good)' : 'var(--text)'}">${(report.binary_bytes.prismio / report.binary_bytes.cpp).toFixed(2)}× vs C++</span>` : ''}
           </div>
-          <p class="kpi-desc">Time taken to build full dispatch suite from sources.</p>
+          <p class="kpi-desc">Executable size on disk and release build duration.</p>
           <div class="kpi-detail-list" style="margin-top:16px;">
-            <div class="kpi-detail-item"><span>Prismio compiler</span><strong>${compilePrismio ? duration(compilePrismio) : "cached"}</strong></div>
-            <div class="kpi-detail-item"><span>Clang++ (-O3)</span><strong>${compileCpp ? duration(compileCpp) : "cached"}</strong></div>
-            <div class="kpi-detail-item"><span>Rustc (opt-3)</span><strong>${compileRust ? duration(compileRust) : "cached"}</strong></div>
+            <div class="kpi-detail-item"><span>Prismio suite</span><strong>${report.binary_bytes && report.binary_bytes.prismio ? formatBytes(report.binary_bytes.prismio) : '—'} · ${compilePrismio ? duration(compilePrismio) : "cached"}</strong></div>
+            <div class="kpi-detail-item"><span>Clang++ (-O3)</span><strong>${report.binary_bytes && report.binary_bytes.cpp ? formatBytes(report.binary_bytes.cpp) : '—'} · ${compileCpp ? duration(compileCpp) : "cached"}</strong></div>
+            <div class="kpi-detail-item"><span>Rustc (opt-3)</span><strong>${report.binary_bytes && report.binary_bytes.rust ? formatBytes(report.binary_bytes.rust) : '—'} · ${compileRust ? duration(compileRust) : "cached"}</strong></div>
           </div>
         </div>
 
@@ -497,6 +508,7 @@
           else if (sortColumn === "rust") { valA = median(a, "rust"); valB = median(b, "rust"); }
           else if (sortColumn === "vs-cpp") { valA = ratio(a, "cpp"); valB = ratio(b, "cpp"); }
           else if (sortColumn === "vs-rust") { valA = ratio(a, "rust"); valB = ratio(b, "rust"); }
+          else if (sortColumn === "rss") { valA = rssMedian(a, "prismio"); valB = rssMedian(b, "prismio"); }
           else if (sortColumn === "jitter") {
             valA = jitterPercent(a.languages.prismio.elapsed_ns_samples, median(a, "prismio")) || 0;
             valB = jitterPercent(b.languages.prismio.elapsed_ns_samples, median(b, "prismio")) || 0;
@@ -522,7 +534,7 @@
     function renderTable(items) {
       const tbody = document.querySelector("#table-body");
       if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="10" class="empty-message">No benchmark workloads match the selected filters.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="empty-message">No benchmark workloads match the selected filters.</td></tr>`;
         return;
       }
 
@@ -531,6 +543,11 @@
         const pMed = median(item, "prismio");
         const cMed = median(item, "cpp");
         const rMed = median(item, "rust");
+
+        const pRss = rssMedian(item, "prismio");
+        const cRss = rssMedian(item, "cpp");
+        const rRss = rssMedian(item, "rust");
+        const rssDeltaCpp = cRss ? (pRss / cRss) : 1;
 
         const pSamples = item.languages.prismio.elapsed_ns_samples || [];
         const pMin = pSamples.length ? Math.min(...pSamples) : pMed;
@@ -578,10 +595,14 @@
             <td class="num-r">${duration(rMed)}</td>
             <td>${renderDeltaPill("cpp")}</td>
             <td>${renderDeltaPill("rust")}</td>
+            <td style="font-family:var(--font-mono); font-size:12px;" title="Peak RSS: Prismio ${formatBytes(pRss)} · C++ ${formatBytes(cRss)} · Rust ${formatBytes(rRss)}">
+              <span>${formatBytes(pRss)}</span>
+              ${cRss > 0 ? `<span style="font-size:10px; color:${pRss <= cRss * 1.05 ? 'var(--good)' : 'var(--bad)'}; margin-left:4px;">(${(pRss / cRss).toFixed(2)}×)</span>` : ''}
+            </td>
             <td>${stabilityHtml}</td>
           </tr>
           <tr class="drawer-row ${isExpanded ? 'open' : ''}" id="drawer-${escapeHtml(item.name)}">
-            <td colspan="10" class="drawer-cell">
+            <td colspan="11" class="drawer-cell">
               <div class="drawer-content">
                 <div class="drawer-card">
                   <div class="drawer-card-title">
@@ -622,8 +643,9 @@
                     <div class="kpi-detail-item"><span>Prismio total wall ns</span><strong>${formatNumber(wallMedian(item, "prismio"))} ns</strong></div>
                     <div class="kpi-detail-item"><span>Run consistency (MAD)</span><strong>${jitter !== null ? '±' + jitter.toFixed(1) + '%' : '—'}</strong></div>
                     <div class="kpi-detail-item"><span>Overhead (wall - compute)</span><strong>${duration(wallMedian(item, "prismio") - pMed)}</strong></div>
-                    <div class="kpi-detail-item"><span>C++ overhead</span><strong>${duration(wallMedian(item, "cpp") - cMed)}</strong></div>
-                    <div class="kpi-detail-item"><span>Rust overhead</span><strong>${duration(wallMedian(item, "rust") - rMed)}</strong></div>
+                    <div class="kpi-detail-item"><span>Prismio Peak RSS</span><strong>${formatBytes(pRss)}</strong></div>
+                    <div class="kpi-detail-item"><span>C++ Peak RSS</span><strong>${formatBytes(cRss)} ${cRss ? '(' + (pRss / cRss).toFixed(2) + '×)' : ''}</strong></div>
+                    <div class="kpi-detail-item"><span>Rust Peak RSS</span><strong>${formatBytes(rRss)} ${rRss ? '(' + (pRss / rRss).toFixed(2) + '×)' : ''}</strong></div>
                   </div>
                 </div>
 
@@ -782,18 +804,18 @@
 
     document.querySelector("#copy-table-md-btn").addEventListener("click", () => {
       const items = sortBenchmarks(getFilteredBenchmarks());
-      let md = `| Workload | Category | Profile | Prismio ns | C++ ns | Rust ns | vs C++ | vs Rust |\n|---|---|---|---:|---:|---:|---:|---:|\n`;
+      let md = `| Workload | Category | Profile | Prismio ns | C++ ns | Rust ns | vs C++ | vs Rust | Peak RSS |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n`;
       items.forEach(item => {
-        md += `| \`${item.name}\` | ${item.category} | ${item.profile} | ${median(item, "prismio")} | ${median(item, "cpp")} | ${median(item, "rust")} | ${ratio(item, "cpp").toFixed(2)}× | ${ratio(item, "rust").toFixed(2)}× |\n`;
+        md += `| \`${item.name}\` | ${item.category} | ${item.profile} | ${median(item, "prismio")} | ${median(item, "cpp")} | ${median(item, "rust")} | ${ratio(item, "cpp").toFixed(2)}× | ${ratio(item, "rust").toFixed(2)}× | ${formatBytes(rssMedian(item, "prismio"))} |\n`;
       });
       navigator.clipboard.writeText(md).then(() => showToast("Table copied as Markdown!"));
     });
 
     document.querySelector("#copy-table-csv-btn").addEventListener("click", () => {
       const items = sortBenchmarks(getFilteredBenchmarks());
-      let csv = "Workload,Category,Profile,Checksum,Prismio_ns,Cpp_ns,Rust_ns,Ratio_vs_Cpp,Ratio_vs_Rust\n";
+      let csv = "Workload,Category,Profile,Checksum,Prismio_ns,Cpp_ns,Rust_ns,Ratio_vs_Cpp,Ratio_vs_Rust,Peak_RSS_Bytes\n";
       items.forEach(item => {
-        csv += `"${item.name}","${item.category}","${item.profile}",${item.result},${median(item, "prismio")},${median(item, "cpp")},${median(item, "rust")},${ratio(item, "cpp").toFixed(3)},${ratio(item, "rust").toFixed(3)}\n`;
+        csv += `"${item.name}","${item.category}","${item.profile}",${item.result},${median(item, "prismio")},${median(item, "cpp")},${median(item, "rust")},${ratio(item, "cpp").toFixed(3)},${ratio(item, "rust").toFixed(3)},${rssMedian(item, "prismio")}\n`;
       });
       navigator.clipboard.writeText(csv).then(() => showToast("Table copied as CSV!"));
     });

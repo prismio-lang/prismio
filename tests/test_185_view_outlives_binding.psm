@@ -1,0 +1,65 @@
+// A view of a binding's contents that outlives the binding's scope.
+//
+// `optionOr(o, d)` hands back the String inside `o`. Each loop below kept that
+// view past the end of the body where `o` was dropped. The next iteration's
+// `lookup` reused the freed block, so every kept string read as the last one
+// written, and `--verify` reported nothing, because each release it saw was
+// legal:
+//
+// 1. pushed into a Vec after binding it;
+// 2. assigned to a binding declared outside the loop, and returned from there.
+//
+// `o` is now kept instead: this leaks (run_aif_verify_test pins the count) and
+// must read back the right strings with 0 violations. test_186 is the same
+// question for a view pushed without a binding -- a separate program because
+// the analysis is whole-program: on the compiler before the fix, its pushes of
+// the literal fallback changed what this loop was given, and hid the fault.
+//
+// The comparisons are against literals on purpose. Comparing against a fresh
+// `make(i)` allocates into the freed block and writes the expected bytes there,
+// and the stale view then reads correct.
+
+import std.io
+import std.option
+import std.string
+import std.vec
+
+fn make(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
+
+fn lookup(n: Int) -> Option<String> {
+    if (n % 3 == 0) { return Option<String>.None }
+    return Option<String>.Some(make(n))
+}
+
+fn lastOf(n: Int) -> String {
+    let mut outer = "initial value that is long enough"
+    for i in 0..<n {
+        let o = lookup(i)
+        let s = optionOr(o, "fallback, also longer than twelve")
+        outer = s
+    }
+    return outer
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bound: Vec<String> = Vec<String>.withCapacity(4)
+    for i in 1..<6 {
+        let o = lookup(i)
+        let s = optionOr(o, "fallback, also longer than twelve")
+        bound.push(s)
+    }
+    if (bound[0].equals("a string longer than twelve bytes 1") == false) { return fail("bound 1") }
+    if (bound[1].equals("a string longer than twelve bytes 2") == false) { return fail("bound 2") }
+    if (bound[2].equals("fallback, also longer than twelve") == false) { return fail("bound 3") }
+    if (bound[3].equals("a string longer than twelve bytes 4") == false) { return fail("bound 4") }
+
+    if (lastOf(8).equals("a string longer than twelve bytes 7") == false) { return fail("assigned outward") }
+    println("ok")
+    return 0
+}

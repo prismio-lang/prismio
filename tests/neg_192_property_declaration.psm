@@ -1,0 +1,17 @@
+// expect-error: property `label` returns an owned value, so it allocates
+// expect-error: property `scaled` must take exactly one parameter, its receiver
+// expect-error: property `touch` must return a value
+// What a `prop` may be: a read of its receiver that hands back a value and
+// allocates nothing.
+import std.io
+import std.string
+
+struct Box { size: Int }
+
+impl Box {
+    prop label(self) -> String { return "box ".concat(self.size.toString()) }
+    prop scaled(self, by: Int) -> Int { return self.size * by }
+    prop touch(self) { println("touched") }
+}
+
+fn main() -> Int { return 0 }

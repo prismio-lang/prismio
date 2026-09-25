@@ -1,0 +1,10 @@
+// expect-error: panic message: expected String, found Int
+// expect-error: assert condition: expected Bool, found Int
+// expect-error: exit status: expected Int, found String
+// expect-error: `unreachable` expects an optional message, found 2 arguments
+fn a() { panic(5) }
+fn b() { assert(1) }
+fn c() { exit("x") }
+fn d() { unreachable("a", "b") }
+
+fn main() -> Int { return 0 }

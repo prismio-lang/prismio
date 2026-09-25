@@ -128,6 +128,7 @@ typedef int LLVMBool;
 #define LLVMRealOLT 4
 #define LLVMRealOLE 5
 #define LLVMRealONE 6
+#define LLVMRealUNE 14
 
 // LLVMVerifierFailureAction
 #define LLVMAbortProcessAction 0
@@ -247,6 +248,7 @@ LLVMValueRef LLVMBuildFAdd(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const cha
 LLVMValueRef LLVMBuildFSub(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 LLVMValueRef LLVMBuildFMul(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 LLVMValueRef LLVMBuildFDiv(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
+LLVMValueRef LLVMBuildFRem(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 void LLVMSetFastMathFlags(LLVMValueRef FPMathInst, unsigned FMF);
 LLVMValueRef LLVMBuildAnd(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);
 LLVMValueRef LLVMBuildOr(LLVMBuilderRef, LLVMValueRef, LLVMValueRef, const char *Name);

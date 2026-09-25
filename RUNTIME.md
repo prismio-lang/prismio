@@ -134,7 +134,7 @@ violations.
 | `std/io.psm` | `import std.io` | `print` / `println` overloads, several values in one call, and `eprint` / `eprintln` for stderr |
 | `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
 | `std/fs.psm` | `import std.fs` | files, paths, directory listing |
-| `std/process.psm` | `import std.process` | arguments, subprocesses |
+| `std/process.psm` | `import std.process` | arguments, environment variables (`process.env`, `setEnv`, `removeEnv`), `process.pid`, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>` |
 | `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>` |
 | `std/vec.psm` | `import std.vec` | `Vec<T>`'s library methods — `get`, `contains`, `indexOf`, `pop`, `removeAt`, `extend`, `reverse`, `clone`, `sort`, `sortBy`, `filter`, `binarySearch` — **and the Vec literal** `[a, b, c]` and `Vec<T>.withCapacity(n)` |
@@ -144,6 +144,7 @@ violations.
 | `std/eq.psm` | `import std.eq` | the `Eq` bound, and `==` on a struct |
 | `std/display.psm` | `import std.display` | the `Display` bound — a value's text |
 | `std/iter.psm` | `import std.iter` | the `Iterator` bound, and `for ... in` over your own type |
+| `std/math.psm` | `import std.math` | Float's `sqrt`, rounding, `pow`, logarithms, trigonometry and IEEE constants (`Float.PI`, `Float.INFINITY`); integer `pow`, `gcd`, `floorMod`, `isqrt`; every numeric type's `MAX`/`MIN`. Lowered to LLVM intrinsics or libm through the `__builtin_f64_*` family (`src/common/float_builtins.psm`) |
 | `std/term.psm` | `import std.term` | terminal colour and text styles as String methods — `red`, `bold`, `onBlue`, `rgb`, `plain`, `forTerminal` — and `colorEnabled()` |
 
 **There is no prelude.** `std.io` is an ordinary import: a program that prints
@@ -170,8 +171,7 @@ of your own with that arity is called instead of being split.
 `separator(...)` is a marker, not a function: it is recognised as the last
 argument of one of these calls and consumed there. It takes a String literal or
 a name, because the rewrite writes it once per gap -- `separator(join(a, b))`
-would run that call per gap, and a String it returned owned would be a value
-nothing names, which §3.1 makes a leak rather than an inefficiency. A program
+would run that call per gap, allocating and freeing a String each time. A program
 that declares a `separator` of its own keeps it, and the marker turns itself off.
 
 The library reason it is a rewrite: the alternative is `fn print<A: Display,
@@ -230,40 +230,36 @@ ledger line is `N allocated, N released, N leaked, N violation(s)`.
 live — a double free or a free of memory the program does not own. A leak is
 memory never released. Leaks cost bytes; violations corrupt.
 
-### 3.1 Bind what you are given
+### 3.1 A result passed straight on
 
 ```prismio
-println(strTrim(text))            // leaks
-let trimmed = strTrim(text)       // does not
-println(trimmed)
+println(text.trim())                                // released after println
+let tail = optionOr(s.stripPrefix("Hello, "), "!")  // the Option lives to the block's end
 ```
 
-An owned result passed straight into a parameter is a value nothing names, and
-nothing names it is nothing frees it. Measured on a 13-call program: 70 allocated
-/ 57 released unbound, 58 / 58 bound.
+An owned result passed straight into a parameter is released once the call
+returns. **Until 2026-09-25 it was not**, and this section told you to bind it:
+a value nothing names was a value nothing freed, and `strJoin(strSplit(s, ','),
+"-")` leaked its Vec.
 
-The same applies to containers: `strJoin(strSplit(s, ','), "-")` leaks the
-temporary Vec, and binding it does not.
+Where the callee may hand back the argument, or a view of it, the release after
+the call would free what the result still points at. `optionOr` returns the
+String *inside* the Option it was handed. That temporary is given a hidden
+binding instead (`irHoistBorrowedTemporaries`, src/ir/expr.psm) and released
+with the block, under the same guards as a `let`: if its view is returned,
+assigned outward or kept by a container, it is kept alive and leaks rather than
+being freed under a live view. Two shapes are not given one, and still leak:
 
-**It stays a leak when the temporary owns what the callee hands back**, and that
-is a property the analysis has to earn rather than one that comes for free.
+- a temporary evaluated after another call in the same statement, which the
+  binding would have to move ahead of that call;
+- a view kept past the block, as above.
 
-```prismio
-let tail = optionOr(s.stripPrefix("Hello, "), "!")   // leaks the Option
-let maybe = s.stripPrefix("Hello, ")                 // does not
-let tail = optionOr(maybe, "!")
-```
-
-`optionOr` returns the String *inside* the Option it was handed. Releasing the
-unbound temporary would release that String while the returned value still points
-at it, so the release is withheld and the Option leaks instead. That is the
-conservative direction, and it is the direction the caller can survive.
-
-The mechanism is view provenance (SPEC 8.4). A reference-shaped value read out of
-a container — a `Vec` element, a struct field, a payload bound by a match arm —
-is recorded as a *view* of that container, and `aif_fn_may_return_view_of_param`
-is what codegen asks before releasing an argument-position temporary. A scalar
-read is a copy and carries no view, so `Option<Int>` is released normally.
+The mechanism that finds the views is view provenance (SPEC 8.4). A
+reference-shaped value read out of a container — a `Vec` element, a struct
+field, a payload bound by a match arm — is recorded as a *view* of that
+container, and `aif_fn_may_return_view_of_param` is what codegen asks before
+releasing an argument-position temporary. A scalar read is a copy and carries no
+view, so `Option<Int>` is released normally.
 
 **Both halves of that were once missing, and the result was a dangling read
 rather than a leak** — the temporary was freed between the call and the use of
@@ -273,9 +269,8 @@ ledger-legal, so a balanced ledger was not evidence. `tests/test_92_field_view_p
 is the guard, and it asserts values rather than the ledger for exactly that
 reason.
 
-**A chain of `+` is exempt, by construction.** `a + b + c` is lowered to a single
-`a.concat(b, c)` rather than to nested calls, precisely so that it has no
-unbound intermediate to lose. The pairwise form reads 2 allocated / 1 released.
+**A chain of `+` is one call.** `a + b + c` is lowered to a single
+`a.concat(b, c)`: one allocation, and no intermediate at all.
 
 ### 3.2 A container's element is a view
 
@@ -456,6 +451,8 @@ are the other direction, and are `strtod` -- correctly rounded.
 | `proc_wait` `proc_kill` | `Child.wait` `Child.kill` | → `Int` |
 | `proc_read_all` | `Stream.readAll` | `produce(free)` |
 | `proc_write` `proc_close` | `Stream.write` `Stream.close` | `bytes`; → `Int` |
+| `proc_env_has` `proc_env_get` | `process.env` | `borrow`; `proc_env_get` → `produce(free)`, `""` for unset (never a literal) |
+| `proc_env_set` `proc_env_remove` `proc_pid` | `process.setEnv` `removeEnv` `pid` | `borrow`; → `Int` |
 
 The `Int` returns are normalised because the raw conventions disagree with each
 other: `file_exists` returns 1 for yes, while `delete_file` returns **0** for

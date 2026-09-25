@@ -353,6 +353,28 @@ const char* diag_file_path(int file) {
     return g_files[file].path;
 }
 
+// One line of a registered file, without its indentation or line ending: what a
+// failed `assert` with no message of its own prints, captured while the source is
+// still in hand. Returned in a buffer that the next call overwrites -- the one
+// caller copies it into an LLVM constant at once -- and "" for a line that does
+// not exist, since a program must still build without it.
+const char* diag_source_line(int file, int line) {
+    static char buf[256];
+    buf[0] = '\0';
+    if (file < 0 || file >= g_file_count || line < 1) return buf;
+    const char* p = g_files[file].content;
+    for (int at = 1; at < line && *p; p++) {
+        if (*p == '\n') at++;
+    }
+    while (*p == ' ' || *p == '\t') p++;
+    size_t n = 0;
+    while (p[n] && p[n] != '\n' && p[n] != '\r' && n + 1 < sizeof buf) n++;
+    while (n > 0 && (p[n - 1] == ' ' || p[n - 1] == '\t')) n--;
+    memcpy(buf, p, n);
+    buf[n] = '\0';
+    return buf;
+}
+
 // The logical module path for a file, recorded by the merge as it resolves each
 // import. Set at most once per file: `diag_add_file` dedupes by path, so a module
 // reached twice through a diamond keeps the spelling it was first reached by,

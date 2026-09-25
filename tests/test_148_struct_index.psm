@@ -31,7 +31,7 @@ let held: Holder
 
 impl Squares {
     fn at(self, index: Int) -> Int { return self.scale * index * index }
-    fn count(self) -> Int { return 4 }
+    prop count(self) -> Int { return 4 }
 }
 
 impl Letters {

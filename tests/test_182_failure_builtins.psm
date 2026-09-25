@@ -1,0 +1,62 @@
+// `panic`, `unreachable`, `assert` and `exit` -- the paths that return.
+//
+// What fails is checked by `failure_builtins` in test_runner.py, which runs
+// failure_builtins_probe.psm as a subprocess once per mode and reads its stderr
+// and status. This file checks what a passing program sees:
+//
+// 1. A passing `assert` does nothing, with or without a message -- and builds
+//    no message: the message here would print if it were evaluated.
+// 2. Divergence: a function may end in `panic` instead of `return`, and a `match`
+//    whose other arm is `unreachable()` needs no fallback.
+// 3. An `assert` in a loop computes the same answer as the loop without it.
+
+import std.io
+import std.string
+
+fn noisy(label: String) -> String {
+    println("FAIL: a passing assert built its message")
+    return label
+}
+
+fn sign(n: Int) -> String {
+    if (n > 0) { return "+" }
+    if (n < 0) { return "-" }
+    panic("sign of zero")
+}
+
+fn half(n: Int) -> Int {
+    match (n % 2) {
+        0 => { return n / 2 }
+        _ => { unreachable("only even numbers reach half") }
+    }
+}
+
+fn checkedSum(xs: Vec<Int>) -> Int {
+    let mut acc = 0
+    for i in 0..<xs.length {
+        assert(xs[i] >= 0, "negative element ".concat(xs[i].toString()))
+        acc = acc + xs[i]
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    assert(true)
+    assert(1 + 1 == 2, noisy("arithmetic"))
+
+    if (sign(5).equals("+") == false) { bad = bad + 1 }
+    if (sign(-5).equals("-") == false) { bad = bad + 1 }
+    if (half(10) != 5) { bad = bad + 1 }
+
+    let mut xs: Vec<Int> = Vec<Int>.withCapacity(64)
+    for i in 0..<64 { xs.push(i) }
+    if (checkedSum(xs) != 2016) { bad = bad + 1 }
+
+    if (bad != 0) {
+        println("FAIL: failure builtins")
+        return 1
+    }
+    println("PASS: failure builtins")
+    return 0
+}

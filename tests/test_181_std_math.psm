@@ -1,0 +1,205 @@
+// `std.math` past min/max/abs: Float's functions and constants, the integer
+// helpers, the numeric limits -- and the three Float codegen fixes they needed.
+//
+// What is checked, in order:
+//
+// 1. **IEEE 754 edges the language itself gets right now.** `NaN != NaN` is
+//    true (it was `fcmp one`, false), `-0.0` keeps its sign (it was
+//    `fsub 0.0, x`, +0.0), `%` works on Float as C's fmod, and `as Int`
+//    saturates instead of producing poison.
+// 2. **Exact answers where exactness is promised**: constants to the bit,
+//    sqrt/floor/round/fma (correctly rounded by IEEE), integer helpers.
+// 3. **Tolerance answers for libm**: sin, exp, pow and the rest are the
+//    platform's, which may differ in the last bit between C libraries.
+// 4. **A loop calling them keeps its answer**: the flat-List guard looks
+//    through the builtins, and must not change what the loop computes.
+
+import std.io
+import std.math
+
+fn checkInt(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        print("FAIL: ")
+        println(label)
+        return 1
+    }
+    return 0
+}
+
+fn checkBool(label: String, got: Bool) -> Int {
+    if (got == false) {
+        print("FAIL: ")
+        println(label)
+        return 1
+    }
+    return 0
+}
+
+// Bit-exact, and able to say "equal" of two NaNs or tell -0.0 from 0.0.
+fn same(a: Float, b: Float) -> Bool {
+    if (a.isNan and b.isNan) { return true }
+    return a == b and a.copySign(1.0) == b.copySign(1.0)
+}
+
+fn near(a: Float, b: Float) -> Bool {
+    return (a - b).abs() <= 4.0 * Float.EPSILON * b.abs().max(1.0)
+}
+
+fn sumOfRoots(n: Int) -> Float {
+    let mut xs: Vec<Float> = Vec<Float>.withCapacity(n)
+    for i in 0..<n {
+        xs.push(i as Float)
+    }
+    let mut acc = 0.0
+    for i in 0..<n {
+        acc = acc + xs[i].sqrt().max(1.0).floor()
+    }
+    return acc
+}
+
+fn sumOfRootsInline(n: Int) -> Float {
+    let mut acc = 0.0
+    for i in 0..<n {
+        let mut r = __builtin_f64_sqrt(i as Float)
+        if (r < 1.0) { r = 1.0 }
+        acc = acc + __builtin_f64_floor(r)
+    }
+    return acc
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let zero = 0.0
+    let nan = zero / zero
+    let inf = 1.0 / zero
+
+    // -- 1. the language's own Float semantics --------------------------------
+    bad = bad + checkBool("NaN != NaN", nan != nan)
+    bad = bad + checkBool("NaN == NaN is false", (nan == nan) == false)
+    bad = bad + checkBool("-0.0 keeps its sign", 1.0 / -zero == -inf)
+    bad = bad + checkBool("7.5 % 2.0", same(7.5 % 2.0, 1.5))
+    bad = bad + checkBool("-7.5 % 2.0 takes the dividend's sign", same(-7.5 % 2.0, -1.5))
+    bad = bad + checkBool("x % 0.0 is NaN", (1.0 % zero).isNan)
+    bad = bad + checkInt("as Int saturates high", 1e10 as Int, Int.MAX)
+    bad = bad + checkInt("as Int saturates low", (0.0 - 1e10) as Int, Int.MIN)
+    bad = bad + checkInt("NaN as Int is 0", nan as Int, 0)
+    bad = bad + checkInt("as Int truncates", (0.0 - 2.9) as Int, -2)
+    bad = bad + checkBool("as U8 saturates", (300.0 as U8) == Int.MAX as U8)
+
+    // -- 2. exact ------------------------------------------------------------
+    bad = bad + checkBool("PI", same(Float.PI, 3.141592653589793))
+    bad = bad + checkBool("TAU", same(Float.TAU, 2.0 * Float.PI))
+    bad = bad + checkBool("INFINITY", same(Float.INFINITY, inf))
+    bad = bad + checkBool("NEG_INFINITY", same(Float.NEG_INFINITY, -inf))
+    bad = bad + checkBool("NAN", Float.NAN.isNan)
+    bad = bad + checkBool("EPSILON", 1.0 + Float.EPSILON > 1.0 and 1.0 + Float.EPSILON / 2.0 == 1.0)
+    bad = bad + checkBool("MAX * 2 overflows", (Float.MAX * 2.0).isInfinite)
+    bad = bad + checkBool("MIN is -MAX", same(Float.MIN, -Float.MAX))
+    bad = bad + checkBool("MIN_POSITIVE", Float.MIN_POSITIVE > 0.0 and Float.MIN_POSITIVE < 1e-307)
+
+    bad = bad + checkBool("isNan", nan.isNan and 1.0.isNan == false)
+    bad = bad + checkBool("isInfinite", inf.isInfinite and (-inf).isInfinite and nan.isInfinite == false)
+    bad = bad + checkBool("isFinite", 1.0.isFinite and inf.isFinite == false and nan.isFinite == false)
+
+    bad = bad + checkBool("abs", same((-2.5).abs(), 2.5) and same((-zero).abs(), 0.0))
+    bad = bad + checkBool("sign", same((-3.0).sign(), -1.0) and same(3.0.sign(), 1.0)
+                          and same((-zero).sign(), -zero) and nan.sign().isNan)
+    bad = bad + checkBool("copySign", same(2.0.copySign(-zero), -2.0))
+    bad = bad + checkBool("min/max ignore NaN", same(nan.min(2.0), 2.0) and same(2.0.max(nan), 2.0))
+    bad = bad + checkBool("free min/max on Float", same(min(1.5, 2.5), 1.5) and same(max(1.5, 2.5), 2.5))
+    bad = bad + checkBool("clamp", same(5.0.clamp(0.0, 1.0), 1.0) and same((-5.0).clamp(0.0, 1.0), 0.0)
+                          and nan.clamp(0.0, 1.0).isNan)
+
+    bad = bad + checkBool("floor", same((-2.5).floor(), -3.0))
+    bad = bad + checkBool("ceil", same((-2.5).ceil(), -2.0))
+    bad = bad + checkBool("trunc", same((-2.5).trunc(), -2.0))
+    bad = bad + checkBool("round halves away", same(2.5.round(), 3.0) and same((-2.5).round(), -3.0))
+    bad = bad + checkBool("roundEven halves to even", same(2.5.roundEven(), 2.0) and same(3.5.roundEven(), 4.0))
+    bad = bad + checkBool("fract", same((-3.75).fract(), -0.75))
+    bad = bad + checkInt("toInt", 3.99.toInt(), 3)
+    bad = bad + checkBool("toI64", 1e12.toI64() == 1000000000000 as I64)
+
+    bad = bad + checkBool("sqrt", same(2.0.sqrt(), 1.4142135623730951) and same(sqrt(16.0), 4.0))
+    bad = bad + checkBool("sqrt of -0.0", same((-zero).sqrt(), -zero))
+    bad = bad + checkBool("sqrt of negative", (-1.0).sqrt().isNan)
+    bad = bad + checkBool("cbrt", same((-8.0).cbrt(), -2.0) and same(27.0.cbrt(), 3.0))
+    bad = bad + checkBool("powi", same(2.0.powi(10), 1024.0) and same(2.0.powi(-2), 0.25)
+                          and same(5.0.powi(0), 1.0))
+    bad = bad + checkBool("powi at Int.MIN", same(1.0.powi(Int.MIN), 1.0) and same(2.0.powi(Int.MIN), 0.0))
+    bad = bad + checkBool("hypot", same(3.0.hypot(4.0), 5.0))
+    bad = bad + checkBool("hypot does not overflow", same(1e300.hypot(1e300), 1.4142135623730951e300))
+    bad = bad + checkBool("mulAdd", same(2.0.mulAdd(3.0, 1.0), 7.0))
+    // One rounding, not two: (1 + e)(1 - e) - 1 is exactly -e^2 when fused.
+    let e = Float.EPSILON
+    bad = bad + checkBool("mulAdd is fused", same((1.0 + e).mulAdd(1.0 - e, -1.0), 0.0 - e * e))
+
+    // -- 3. libm, to a few ulps ------------------------------------------------
+    bad = bad + checkBool("pow", near(2.0.pow(0.5), Float.SQRT_2) and same(2.0.pow(10.0), 1024.0))
+    bad = bad + checkBool("exp", near(1.0.exp(), Float.E))
+    bad = bad + checkBool("exp2", same(10.0.exp2(), 1024.0))
+    bad = bad + checkBool("expm1 near zero", same(1e-300.expm1(), 1e-300))
+    bad = bad + checkBool("ln", near(Float.E.ln(), 1.0) and same(1.0.ln(), 0.0))
+    bad = bad + checkBool("ln of 0 and negative", same(zero.ln(), -inf) and (-1.0).ln().isNan)
+    bad = bad + checkBool("ln1p near zero", same(1e-300.ln1p(), 1e-300))
+    bad = bad + checkBool("log2", same(1024.0.log2(), 10.0))
+    bad = bad + checkBool("log10", same(1000.0.log10(), 3.0))
+    bad = bad + checkBool("log", near(8.0.log(2.0), 3.0))
+    bad = bad + checkBool("LN_2", near(2.0.ln(), Float.LN_2) and near(10.0.ln(), Float.LN_10))
+    bad = bad + checkBool("LOG2_E", near(Float.E.log2(), Float.LOG2_E) and near(Float.E.log10(), Float.LOG10_E))
+
+    bad = bad + checkBool("sin", near((Float.PI / 2.0).sin(), 1.0) and same(zero.sin(), 0.0))
+    bad = bad + checkBool("cos", same(zero.cos(), 1.0) and near(Float.PI.cos(), -1.0))
+    bad = bad + checkBool("tan", near((Float.PI / 4.0).tan(), 1.0))
+    bad = bad + checkBool("asin/acos/atan", near(1.0.asin(), Float.PI / 2.0) and near((-1.0).acos(), Float.PI)
+                          and near(1.0.atan(), Float.PI / 4.0))
+    bad = bad + checkBool("atan2 quadrants", near(1.0.atan2(-1.0), 3.0 * Float.PI / 4.0)
+                          and near((-1.0).atan2(-1.0), -3.0 * Float.PI / 4.0))
+    bad = bad + checkBool("hyperbolic", near(1.0.sinh(), (Float.E - 1.0 / Float.E) / 2.0)
+                          and near(1.0.cosh(), (Float.E + 1.0 / Float.E) / 2.0)
+                          and near(0.5.tanh(), 0.5.sinh() / 0.5.cosh()))
+    bad = bad + checkBool("inverse hyperbolic", near(0.5.asinh().sinh(), 0.5)
+                          and near(2.0.acosh().cosh(), 2.0) and near(0.5.atanh().tanh(), 0.5))
+    bad = bad + checkBool("toRadians/toDegrees", near(180.0.toRadians(), Float.PI)
+                          and near(Float.PI.toDegrees(), 180.0))
+
+    // -- integers -------------------------------------------------------------
+    bad = bad + checkInt("Int.MAX", Int.MAX, 2147483647)
+    bad = bad + checkInt("Int.MIN", Int.MIN, 0 - 2147483647 - 1)
+    bad = bad + checkBool("I64 limits", I64.MAX == 9223372036854775807 as I64 and I64.MIN < 0 as I64)
+    bad = bad + checkBool("U64.MAX", U64.MAX == 18446744073709551615 as U64 and U64.MAX > U32.MAX as U64)
+    bad = bad + checkBool("small limits", I8.MAX as Int == 127 and I16.MIN as Int == -32768
+                          and U8.MAX as Int == 255 and U16.MAX as Int == 65535)
+
+    bad = bad + checkInt("clamp", (-5).clamp(0, 10), 0)
+    bad = bad + checkInt("sign", (-9).sign(), -1)
+    bad = bad + checkInt("pow", 3.pow(4), 81)
+    bad = bad + checkInt("pow 0", 7.pow(0), 1)
+    bad = bad + checkInt("pow negative", 2.pow(-1), 0)
+    bad = bad + checkInt("pow -1 odd", (-1).pow(-3), -1)
+    bad = bad + checkInt("gcd", 12.gcd(-18), 6)
+    bad = bad + checkInt("gcd zero", 0.gcd(5), 5)
+    bad = bad + checkInt("gcd at Int.MIN", Int.MIN.gcd(6), 2)
+    bad = bad + checkInt("lcm", 4.lcm(6), 12)
+    bad = bad + checkInt("lcm zero", 0.lcm(6), 0)
+    bad = bad + checkInt("floorDiv", (-7).floorDiv(2), -4)
+    bad = bad + checkInt("floorDiv exact", (-8).floorDiv(2), -4)
+    bad = bad + checkInt("floorMod", (-1).floorMod(5), 4)
+    bad = bad + checkInt("floorMod negative divisor", 7.floorMod(-5), -3)
+    bad = bad + checkInt("isqrt", 2147395600.isqrt(), 46340)
+    bad = bad + checkInt("isqrt at MAX", Int.MAX.isqrt(), 46340)
+    bad = bad + checkInt("isqrt negative", (-4).isqrt(), 0)
+    bad = bad + checkBool("isEven/isOdd", 4.isEven and (-3).isOdd and 0.isEven)
+    bad = bad + checkBool("isPowerOfTwo", 1.isPowerOfTwo and 1024.isPowerOfTwo and 6.isPowerOfTwo == false
+                          and 0.isPowerOfTwo == false and Int.MIN.isPowerOfTwo == false)
+    bad = bad + checkBool("toFloat", same(3.toFloat() / 2.0, 1.5))
+    bad = bad + checkBool("I64 helpers", (0 as I64 - 5).abs() == 5 as I64
+                          and (2 as I64).pow(40) == 1099511627776 as I64
+                          and (9 as I64).clamp(0 as I64, 4 as I64) == 4 as I64)
+
+    // -- 4. a guarded loop calling them ---------------------------------------
+    bad = bad + checkBool("loop through sqrt/max/floor", same(sumOfRoots(1000), sumOfRootsInline(1000)))
+
+    if (bad != 0) { return 1 }
+    println("PASS: std.math")
+    return 0
+}

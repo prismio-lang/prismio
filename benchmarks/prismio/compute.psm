@@ -1,8 +1,6 @@
 import common
+import std.math
 
-extern fn cos(value: Float) -> Float
-extern fn sin(value: Float) -> Float
-extern fn sqrt(value: Float) -> Float
 
 struct BenchParticle {
     x: Float,

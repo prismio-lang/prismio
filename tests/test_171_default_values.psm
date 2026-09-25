@@ -38,7 +38,7 @@ fn main() -> Int {
     let b: Bool = default
     let c: Char = default
     if (s.length != 0 or n != 0 or small != 0 or wide != 0) { return fail("scalar") }
-    if (f != 0.0 or b or c.code() != 0) { return fail("float, bool, char") }
+    if (f != 0.0 or b or c.code != 0) { return fail("float, bool, char") }
 
     let v: Vec<Int> = default
     if (v.length != 0) { return fail("vec") }

@@ -1,0 +1,137 @@
+// Who owns a call's result, asked of that call rather than of its allocation
+// site. `--verify` must read 0 leaked (run_aif_verify_test).
+//
+// 1. A result stored into a field or a Vec somewhere else does not cost every
+//    other result of the same producer its release. `boxed` and `listed` below
+//    are never called, and one `Box { text: make(n) }` used to refuse the drop to
+//    every temporary `concat` result in the program: `make` ends in `concat`,
+//    and one allocation site backs all of them.
+// 2. An owned temporary whose callee hands back a view of it --
+//    `optionOr(lookup(i), d)` returns the String inside the Option -- is released
+//    at the end of its statement's scope, as a `let` would be. It leaked every
+//    Option and every payload, which is what `process.env(name)` chained into
+//    `optionOr` does.
+// 3. `acc + x` copies `x`, so a binding concatenated onto an accumulator, or
+//    concatenated into a return value, is still dropped.
+// 4. A chain of one-line wrappers -- `x.toUpper().toUpper()` -- releases both
+//    results. The wrapper returns strToUpper's allocation, so in a chain that
+//    one site was in both the parameter's set and the return's, and every
+//    chained call looked like it returned its receiver (param_returns).
+// 5. A function that really returns its parameter still is one: `same(a)` is
+//    `a`, and only `a`'s binding releases it.
+// 6. A scalar read straight off a temporary -- `text.split(',').length`,
+//    `makeCounted(i).count` -- releases the temporary. Both are loads, not
+//    calls, so no call's release ever reached them.
+
+import std.io
+import std.option
+import std.string
+import std.vec
+
+struct Box { text: String }
+
+fn make(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
+
+fn boxed(n: Int) -> Box { return Box { text: make(n) } }
+
+fn listed(n: Int) -> Vec<String> {
+    let mut v: Vec<String> = Vec<String>.withCapacity(1)
+    v.push(make(n))
+    return v
+}
+
+fn lookup(n: Int) -> Option<String> {
+    if (n % 3 == 0) { return Option<String>.None }
+    return Option<String>.Some(make(n))
+}
+
+fn same(s: String) -> String { return s }
+
+struct Counted { count: Int, name: String }
+
+fn makeCounted(n: Int) -> Counted { return Counted { count: n, name: make(n) } }
+
+fn expectedLength(n: Int) -> Int {
+    return 34 + n.toString().length
+}
+
+fn joined(depth: Int) -> String {
+    if (depth == 0) { return make(depth) }
+    let left = joined(depth - 1)
+    let right = make(depth)
+    return left + " " + right
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut total = 0
+    let mut want = 0
+    for i in 0..<200 {
+        total = total + make(i).length
+        let s = make(i).concat(make(i + 1))
+        total = total + s.length
+        want = want + expectedLength(i) * 2 + expectedLength(i + 1)
+    }
+    if (total != want) { return fail("temporaries") }
+
+    let fallback = "fallback, also longer than twelve"
+    total = 0
+    want = 0
+    for i in 0..<300 {
+        total = total + optionOr(lookup(i), fallback).length
+        let t = optionOr(lookup(i), optionOr(lookup(i + 1), fallback))
+        total = total + t.length
+        if (i % 3 == 0) {
+            want = want + fallback.length
+            if ((i + 1) % 3 == 0) { want = want + fallback.length } else { want = want + expectedLength(i + 1) }
+        } else {
+            want = want + expectedLength(i) * 2
+        }
+    }
+    if (total != want) { return fail("borrowed temporaries") }
+    if (optionOr(lookup(4), fallback).equals("a string longer than twelve bytes 4") == false) {
+        return fail("the payload read through a hoisted temporary")
+    }
+
+    let mut acc = ""
+    for i in 0..<50 {
+        let line = make(i)
+        acc = acc + line
+    }
+    want = 0
+    for i in 0..<50 { want = want + expectedLength(i) }
+    if (acc.length != want) { return fail("accumulator") }
+    if (joined(6).length != 7 * 35 + 6) { return fail("joined") }
+
+    total = 0
+    want = 0
+    for i in 0..<100 {
+        let x = make(i)
+        total = total + x.toUpper().toUpper().length + x.clone().trim().length
+        let a = make(i + 1)
+        let b = same(a)
+        total = total + b.length
+        total = total + same(make(i)).length
+        want = want + expectedLength(i) * 3 + expectedLength(i + 1)
+    }
+    if (total != want) { return fail("chains and pass-throughs") }
+    if (make(7).toUpper().equals("A STRING LONGER THAN TWELVE BYTES 7") == false) { return fail("toUpper") }
+
+    total = 0
+    want = 0
+    for i in 0..<100 {
+        total = total + make(i).concat(",x,y").split(',').length
+        total = total + makeCounted(i).count
+        if (listed(i).length == 1) { total = total + 1 }
+        want = want + 3 + i + 1
+    }
+    if (total != want) { return fail("scalar reads off temporaries") }
+
+    println("ok")
+    return 0
+}

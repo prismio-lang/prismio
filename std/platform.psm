@@ -58,7 +58,7 @@ struct PlatformQuery {
 let platform: PlatformQuery
 
 impl PlatformQuery {
-    public fn current(self) -> Platform {
+    public prop current(self) -> Platform {
         let code = __builtin_target_os()
         if (code == 1) { return Platform.Windows }
         if (code == 2) { return Platform.Linux }
@@ -69,18 +69,18 @@ impl PlatformQuery {
     // Each predicate reads the builtin itself rather than calling `current()`. A
     // method that asks the target is compiled into the program; one that only
     // called another method would be taken from the `.plib` and answer the host.
-    public fn isWindows(self) -> Bool { return __builtin_target_os() == 1 }
-    public fn isLinux(self) -> Bool { return __builtin_target_os() == 2 }
-    public fn isMacOS(self) -> Bool { return __builtin_target_os() == 3 }
+    public prop isWindows(self) -> Bool { return __builtin_target_os() == 1 }
+    public prop isLinux(self) -> Bool { return __builtin_target_os() == 2 }
+    public prop isMacOS(self) -> Bool { return __builtin_target_os() == 3 }
 
-    public fn architecture(self) -> Architecture {
+    public prop architecture(self) -> Architecture {
         let code = __builtin_target_arch()
         if (code == 1) { return Architecture.X86_64 }
         if (code == 2) { return Architecture.ARM64 }
         return Architecture.Unknown
     }
 
-    public fn environment(self) -> Environment {
+    public prop environment(self) -> Environment {
         let code = __builtin_target_env()
         if (code == 1) { return Environment.GNU }
         if (code == 2) { return Environment.Musl }

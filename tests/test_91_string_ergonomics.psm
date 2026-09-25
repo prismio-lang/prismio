@@ -126,7 +126,7 @@ fn main() -> Int {
     if ((centred == "..ab..") == false) { return fail("padCenter") }
     let crlf = "a\r\nb\n".lines()
     if (crlf.length != 2) { return fail("lines strips CR and trailing NL") }
-    if (s.countIf(|c: Char| c.isUpper()) != 2) { return fail("countIf") }
+    if (s.countIf(|c: Char| c.isUpper) != 2) { return fail("countIf") }
     if (optionOr("3.5".parseFloat(), 0.0) != 3.5) { return fail("parseFloat") }
     if (optionOr("TRUE".parseBool(), false) == false) { return fail("parseBool") }
 

@@ -12,6 +12,7 @@
 // the caller owns, which no path can hand to the deallocator while it still
 // points into `argv`.
 
+import std.option
 import std.string
 import std.vec
 
@@ -41,6 +42,11 @@ private extern fn proc_read_all(descriptor: Int) -> String produce(free)
 // beside it and the callee never looks for a terminator.
 private extern fn proc_write(descriptor: Int, text: String bytes, length: Int) -> Int
 private extern fn proc_close(descriptor: Int) -> Int
+private extern fn proc_env_has(name: String borrow) -> Int
+private extern fn proc_env_get(name: String borrow) -> String produce(free)
+private extern fn proc_env_set(name: String borrow, value: String borrow) -> Int
+private extern fn proc_env_remove(name: String borrow) -> Int
+private extern fn proc_pid() -> Int
 
 private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
     let mut i = 0
@@ -82,6 +88,36 @@ struct Args {
 // anything to initialise.
 let process: ProcessQuery
 
+// The environment and this process's id, read from the runtime on each call.
+//
+// **Not thread-safe, as in C.** The environment is one table for the whole
+// process: a `setEnv` on one task racing any environment read on another is
+// undefined. Set what you need before spawning.
+impl ProcessQuery {
+    // The variable's value, or `None` when it is not set. An empty value is
+    // `Some("")`, not `None`.
+    public fn env(self, name: String) -> Option<String> {
+        if (proc_env_has(name) == 0) { return Option<String>.None }
+        return Option<String>.Some(proc_env_get(name))
+    }
+
+    // Sets it for this process and every child started afterwards. False for a
+    // name that is empty or contains `=`.
+    public fn setEnv(self, name: String, value: String) -> Bool {
+        return proc_env_set(name, value) == 1
+    }
+
+    // True when the name is unset afterwards, whether or not it was set.
+    public fn removeEnv(self, name: String) -> Bool {
+        return proc_env_remove(name) == 1
+    }
+
+    // This process's id, as the operating system numbers it.
+    public prop pid(self) -> Int {
+        return proc_pid()
+    }
+}
+
 impl Args {
     // The argument at `index`, as a string the caller owns, and `""` outside
     // `[0, count)`.
@@ -112,7 +148,7 @@ impl Args {
     }
 
     // `argc`, so the program name at 0 is counted.
-    public fn count(self) -> Int {
+    public prop count(self) -> Int {
         return prismio_argc
     }
 }
@@ -179,7 +215,7 @@ impl Stream {
         return proc_close(self.descriptor)
     }
 
-    public fn isOpen(self) -> Bool {
+    public prop isOpen(self) -> Bool {
         return self.descriptor >= 0
     }
 }

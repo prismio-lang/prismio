@@ -1,16 +1,36 @@
-// Integer min, max and absolute value.
+// Numbers past `+ - * /`: Float's roots, rounding, exponentials and
+// trigonometry, integer powers and divisors, and each numeric type's limits.
 //
-// Thin by design: each is one builtin, and the builtin is an LLVM intrinsic
-// (`llvm.smax.i32`, `llvm.smin.i32`, `llvm.abs.i32`) rather than a branch. Those
-// are on LLVM's trivially-vectorisable list, which is the difference between a
-// DP loop that widens to four elements per iteration and one that does not.
+// **Float is IEEE 754 binary64 (ISO/IEC 60559).** The basic operations and
+// `sqrt`/`mulAdd` are correctly rounded because they are the hardware's. The
+// transcendental ones -- `sin`, `exp`, `pow`, `cbrt` and the rest -- are the
+// platform C library's (ISO C Annex F), which IEEE 754 recommends but does not
+// require to round correctly, so a result may differ in its last bit between
+// macOS, glibc and Windows. Everything here says what it does with NaN, the
+// infinities and -0.0, and says the same thing the C function of that name does.
 //
-// **These are functions and that used to be a trap.** A call in a loop body made
-// `irFlatGuardCount` decline the loop's flat-List guard, and a hand-written
-// `maxInt` measured 1.79x *slower* than the branch it replaced. The guard now
-// looks through callees that call nothing and index nothing, and these qualify
-// through their builtins -- see aif/evidence/RESULTS-min-max.md.
+// **Every function is a method and a free function at once.** A function whose
+// first parameter is `self` is callable both ways, so `x.sqrt()`, `x.sqrt` and
+// `sqrt(x)` are one function; the forms differ in spelling, never in cost.
+//
+// **Nothing here is a call at run time.** Each Float function is a builtin
+// that codegen lowers to an LLVM intrinsic (`llvm.sqrt.f64` is one `fsqrt`) or,
+// where LLVM has none, to the libm function LLVM already knows to be pure
+// (src/common/float_builtins.psm). The flat-List guard looks through all of
+// them, so a loop calling `sqrt` or `max` keeps its vector form -- a helper the
+// guard could not see through measured 1.79x slower (RESULTS-min-max.md).
+//
+// **No module-level `let`.** The limits and constants are associated
+// constants (`Float.PI`, `Int.MAX`): the value is substituted where it is
+// named, so it costs nothing and puts no global in the importing program --
+// which a module `let` in std/ would (prismio-module-let-is-a-global).
 
+// ---------------------------------------------------------------------------
+// Int
+// ---------------------------------------------------------------------------
+
+// The three the loop guard was built around. `llvm.smax.i32`, `llvm.smin.i32`
+// and `llvm.abs.i32`: no branch, and on LLVM's trivially-vectorisable list.
 public fn max(a: Int, b: Int) -> Int {
     return __builtin_max(a, b)
 }
@@ -19,9 +39,360 @@ public fn min(a: Int, b: Int) -> Int {
     return __builtin_min(a, b)
 }
 
-// `abs(Int.min)` is `Int.min`. Int is signed 32-bit and wraps in release builds
+// `abs(Int.MIN)` is `Int.MIN`. Int is signed 32-bit and wraps in release builds
 // (RESULTS-int-width.md), so this is the same answer the rest of the language's
 // arithmetic gives rather than a special case.
 public fn abs(value: Int) -> Int {
     return __builtin_abs(value)
 }
+
+impl Int {
+    let MAX: Int = 2147483647
+    let MIN: Int = -2147483648
+
+    // `lo` when below it, `hi` when above it. With `lo > hi` the answer is `hi`:
+    // the upper bound is applied last.
+    public fn clamp(self, lo: Int, hi: Int) -> Int {
+        return __builtin_min(__builtin_max(self, lo), hi)
+    }
+
+    // -1, 0 or 1.
+    public fn sign(self) -> Int {
+        if (self > 0) { return 1 }
+        if (self < 0) { return -1 }
+        return 0
+    }
+
+    // `self` raised to `exponent`, by squaring: log2(exponent) multiplications.
+    // Wraps on overflow as `*` does. A negative exponent is the truncated
+    // integer answer -- 1 for a base of 1, ±1 for -1, and 0 for anything else.
+    public fn pow(self, exponent: Int) -> Int {
+        if (exponent < 0) {
+            if (self == 1) { return 1 }
+            if (self == -1) {
+                if ((exponent & 1) == 0) { return 1 }
+                return -1
+            }
+            return 0
+        }
+        let mut result = 1
+        let mut base = self
+        let mut n = exponent
+        while (n > 0) {
+            if ((n & 1) == 1) { result = result * base }
+            n = n >> 1
+            if (n > 0) { base = base * base }
+        }
+        return result
+    }
+
+    // The greatest common divisor, never negative. Computed on the magnitudes
+    // as U32, so `Int.MIN` has one; the one answer that cannot come back as an
+    // Int is gcd(Int.MIN, 0) = 2^31, which wraps to `Int.MIN`.
+    public fn gcd(self, other: Int) -> Int {
+        let mut a = __builtin_abs(self) as U32
+        let mut b = __builtin_abs(other) as U32
+        while (b != 0) {
+            let r = a % b
+            a = b
+            b = r
+        }
+        return a as Int
+    }
+
+    // The least common multiple, never negative; 0 when either is 0. Divides
+    // before it multiplies, so it overflows only when the answer does.
+    public fn lcm(self, other: Int) -> Int {
+        if (self == 0 or other == 0) { return 0 }
+        return __builtin_abs(self / self.gcd(other) * other)
+    }
+
+    // Division rounded toward negative infinity, where `/` truncates toward
+    // zero: `-7.floorDiv(2)` is -4, and `-7 / 2` is -3.
+    public fn floorDiv(self, divisor: Int) -> Int {
+        let q = self / divisor
+        if ((self % divisor != 0) and ((self < 0) != (divisor < 0))) { return q - 1 }
+        return q
+    }
+
+    // The remainder with the divisor's sign, where `%` takes the dividend's:
+    // `-1.floorMod(5)` is 4, which is what wrapping an index needs.
+    public fn floorMod(self, divisor: Int) -> Int {
+        let r = self % divisor
+        if (r != 0 and ((r < 0) != (divisor < 0))) { return r + divisor }
+        return r
+    }
+
+    // The largest `r` with `r * r <= self`; 0 for a negative number. Exact for
+    // every Int: a double holds 53 bits, and a correctly rounded square root of
+    // an integer below 2^52 never rounds up past the next integer.
+    public fn isqrt(self) -> Int {
+        if (self <= 0) { return 0 }
+        return __builtin_f64_sqrt(self as Float) as Int
+    }
+
+    public prop isEven(self) -> Bool { return (self & 1) == 0 }
+    public prop isOdd(self) -> Bool { return (self & 1) != 0 }
+
+    // One bit set: 1, 2, 4, ... Never true for zero or a negative number.
+    public prop isPowerOfTwo(self) -> Bool {
+        return self > 0 and (self & (self - 1)) == 0
+    }
+
+    public fn toFloat(self) -> Float { return self as Float }
+}
+
+// ---------------------------------------------------------------------------
+// The other integer types: their limits, and the operations that read the same
+// on every width. Written as comparisons rather than builtins; LLVM turns each
+// into the same `smax`/`smin`/`abs` it gets for Int.
+// ---------------------------------------------------------------------------
+
+impl I64 {
+    let MAX: I64 = 9223372036854775807
+    let MIN: I64 = -9223372036854775808
+
+    public fn abs(self) -> I64 {
+        if (self < 0) { return 0 - self }
+        return self
+    }
+
+    public fn min(self, other: I64) -> I64 {
+        if (other < self) { return other }
+        return self
+    }
+
+    public fn max(self, other: I64) -> I64 {
+        if (other > self) { return other }
+        return self
+    }
+
+    public fn clamp(self, lo: I64, hi: I64) -> I64 {
+        return self.max(lo).min(hi)
+    }
+
+    public fn sign(self) -> I64 {
+        if (self > 0) { return 1 }
+        if (self < 0) { return -1 }
+        return 0
+    }
+
+    // As `Int.pow`: by squaring, wrapping, truncated for a negative exponent.
+    public fn pow(self, exponent: Int) -> I64 {
+        if (exponent < 0) {
+            if (self == 1) { return 1 }
+            if (self == -1) {
+                if ((exponent & 1) == 0) { return 1 }
+                return -1
+            }
+            return 0
+        }
+        let mut result: I64 = 1
+        let mut base = self
+        let mut n = exponent
+        while (n > 0) {
+            if ((n & 1) == 1) { result = result * base }
+            n = n >> 1
+            if (n > 0) { base = base * base }
+        }
+        return result
+    }
+
+    public fn toFloat(self) -> Float { return self as Float }
+}
+
+impl I8 {
+    let MAX: I8 = 127
+    let MIN: I8 = -128
+}
+
+impl I16 {
+    let MAX: I16 = 32767
+    let MIN: I16 = -32768
+}
+
+impl U8 {
+    let MAX: U8 = 255
+    let MIN: U8 = 0
+}
+
+impl U16 {
+    let MAX: U16 = 65535
+    let MIN: U16 = 0
+}
+
+impl U32 {
+    let MAX: U32 = 4294967295
+    let MIN: U32 = 0
+}
+
+impl U64 {
+    let MAX: U64 = 18446744073709551615
+    let MIN: U64 = 0
+}
+
+// ---------------------------------------------------------------------------
+// Float
+// ---------------------------------------------------------------------------
+
+impl Float {
+    // The constants, to the double nearest each: every one folds to its exact
+    // bit pattern at compile time (PI is 0x400921FB54442D18).
+    let PI: Float = 3.141592653589793
+    let TAU: Float = 6.283185307179586
+    let E: Float = 2.718281828459045
+    let SQRT_2: Float = 1.4142135623730951
+    let LN_2: Float = 0.6931471805599453
+    let LN_10: Float = 2.302585092994046
+    let LOG2_E: Float = 1.4426950408889634
+    let LOG10_E: Float = 0.4342944819032518
+
+    let INFINITY: Float = 1.0 / 0.0
+    let NEG_INFINITY: Float = -1.0 / 0.0
+    let NAN: Float = 0.0 / 0.0
+    // The gap between 1.0 and the next Float up.
+    let EPSILON: Float = 2.220446049250313e-16
+    // The largest finite Float, and the most negative.
+    let MAX: Float = 1.7976931348623157e308
+    let MIN: Float = -1.7976931348623157e308
+    // The smallest positive *normal* Float; subnormals go below it.
+    let MIN_POSITIVE: Float = 2.2250738585072014e-308
+
+    // -- classification -----------------------------------------------------
+
+    // `x != x` is the NaN test: NaN is the one value unequal to itself.
+    public prop isNan(self) -> Bool { return self != self }
+    public prop isInfinite(self) -> Bool { return __builtin_f64_abs(self) == 1.0 / 0.0 }
+    // Neither infinite nor NaN.
+    public prop isFinite(self) -> Bool { return __builtin_f64_abs(self) < 1.0 / 0.0 }
+
+    // -- sign and magnitude ---------------------------------------------------
+
+    // Clears the sign bit, so `-0.0.abs()` is 0.0 and a NaN stays NaN.
+    public fn abs(self) -> Float { return __builtin_f64_abs(self) }
+
+    // 1.0 for a positive number, -1.0 for a negative one, and the value itself
+    // for ±0.0 and NaN.
+    public fn sign(self) -> Float {
+        if (self > 0.0) { return 1.0 }
+        if (self < 0.0) { return -1.0 }
+        return self
+    }
+
+    // `self`'s magnitude with `sign`'s sign bit -- which -0.0 and NaN have too.
+    public fn copySign(self, sign: Float) -> Float { return __builtin_f64_copysign(self, sign) }
+
+    // -- comparison -----------------------------------------------------------
+
+    // IEEE 754 minNum/maxNum: a NaN operand is ignored and the other returned,
+    // so a running minimum is not poisoned by one NaN. One instruction on
+    // AArch64 (`fminnm`), and vectorisable.
+    public fn min(self, other: Float) -> Float { return __builtin_f64_minnum(self, other) }
+    public fn max(self, other: Float) -> Float { return __builtin_f64_maxnum(self, other) }
+
+    // `lo` when below it, `hi` when above it, and NaN when `self` is NaN.
+    public fn clamp(self, lo: Float, hi: Float) -> Float {
+        if (self < lo) { return lo }
+        if (self > hi) { return hi }
+        return self
+    }
+
+    // -- rounding -------------------------------------------------------------
+
+    public fn floor(self) -> Float { return __builtin_f64_floor(self) }
+    public fn ceil(self) -> Float { return __builtin_f64_ceil(self) }
+    // Toward zero.
+    public fn trunc(self) -> Float { return __builtin_f64_trunc(self) }
+    // To the nearest integer, halves away from zero: 2.5 -> 3.0, -2.5 -> -3.0.
+    // C's `round`.
+    public fn round(self) -> Float { return __builtin_f64_round(self) }
+    // To the nearest integer, halves to the even one: 2.5 -> 2.0, 3.5 -> 4.0.
+    // IEEE 754's roundTiesToEven, which does not drift when summed. Lowered as
+    // `rint`, which is that rounding in the default mode (float_builtins.psm).
+    public fn roundEven(self) -> Float { return __builtin_f64_rint(self) }
+    // What `trunc` removed, with `self`'s sign: -3.75 -> -0.75.
+    public fn fract(self) -> Float { return self - __builtin_f64_trunc(self) }
+
+    // To Int, saturating: toward zero, clamped to Int's range, NaN -> 0. The
+    // same conversion as `as Int`, under a name.
+    public fn toInt(self) -> Int { return self as Int }
+    public fn toI64(self) -> I64 { return self as I64 }
+
+    // -- powers and roots -----------------------------------------------------
+
+    // NaN for a negative number; -0.0 for -0.0.
+    public fn sqrt(self) -> Float { return __builtin_f64_sqrt(self) }
+    // Defined for negative numbers: `-8.0.cbrt()` is -2.0.
+    public fn cbrt(self) -> Float { return __builtin_f64_cbrt(self) }
+    // C's `pow`. LLVM rewrites a constant exponent it recognises: `x.pow(2.0)`
+    // compiles to `x * x`, and `x.pow(0.5)` to a square root with pow's edge cases.
+    public fn pow(self, exponent: Float) -> Float { return __builtin_f64_pow(self, exponent) }
+
+    // An integer power by squaring: log2(n) multiplications and no libm call,
+    // so it is faster than `pow` and, for a small `n`, more accurate. A negative
+    // exponent is the reciprocal of the positive power.
+    public fn powi(self, exponent: Int) -> Float {
+        let mut n = __builtin_abs(exponent) as U32
+        let mut base = self
+        let mut result = 1.0
+        while (n != 0) {
+            if ((n & 1) == 1) { result = result * base }
+            n = n >> 1
+            if (n != 0) { base = base * base }
+        }
+        if (exponent < 0) { return 1.0 / result }
+        return result
+    }
+
+    // sqrt(self² + other²), without the overflow or underflow squaring would
+    // cause on the way.
+    public fn hypot(self, other: Float) -> Float { return __builtin_f64_hypot(self, other) }
+
+    // self * a + b with one rounding (IEEE fusedMultiplyAdd). One instruction
+    // on AArch64 and on x86-64 with FMA; a libm call on an x86-64 without it.
+    public fn mulAdd(self, a: Float, b: Float) -> Float { return __builtin_f64_fma(self, a, b) }
+
+    // -- exponentials and logarithms ------------------------------------------
+
+    public fn exp(self) -> Float { return __builtin_f64_exp(self) }
+    public fn exp2(self) -> Float { return __builtin_f64_exp2(self) }
+    // e^self - 1, accurate where `self` is near zero and `exp() - 1.0` is not.
+    public fn expm1(self) -> Float { return __builtin_f64_expm1(self) }
+
+    // The natural logarithm. -inf for 0.0, NaN for a negative number.
+    public fn ln(self) -> Float { return __builtin_f64_log(self) }
+    // ln(1 + self), accurate where `self` is near zero.
+    public fn ln1p(self) -> Float { return __builtin_f64_log1p(self) }
+    public fn log2(self) -> Float { return __builtin_f64_log2(self) }
+    public fn log10(self) -> Float { return __builtin_f64_log10(self) }
+    // The logarithm in any base; `log2` and `log10` are exact where this rounds.
+    public fn log(self, base: Float) -> Float {
+        return __builtin_f64_log(self) / __builtin_f64_log(base)
+    }
+
+    // -- trigonometry, in radians ---------------------------------------------
+
+    public fn sin(self) -> Float { return __builtin_f64_sin(self) }
+    public fn cos(self) -> Float { return __builtin_f64_cos(self) }
+    public fn tan(self) -> Float { return __builtin_f64_tan(self) }
+    public fn asin(self) -> Float { return __builtin_f64_asin(self) }
+    public fn acos(self) -> Float { return __builtin_f64_acos(self) }
+    public fn atan(self) -> Float { return __builtin_f64_atan(self) }
+    // The angle of the point (x, self) -- `y.atan2(x)`, in C's argument order --
+    // in (-PI, PI], with the quadrant the one-argument `atan` cannot know.
+    public fn atan2(self, x: Float) -> Float { return __builtin_f64_atan2(self, x) }
+
+    public fn sinh(self) -> Float { return __builtin_f64_sinh(self) }
+    public fn cosh(self) -> Float { return __builtin_f64_cosh(self) }
+    public fn tanh(self) -> Float { return __builtin_f64_tanh(self) }
+    public fn asinh(self) -> Float { return __builtin_f64_asinh(self) }
+    public fn acosh(self) -> Float { return __builtin_f64_acosh(self) }
+    public fn atanh(self) -> Float { return __builtin_f64_atanh(self) }
+
+    public fn toRadians(self) -> Float { return self * 0.017453292519943295 }
+    public fn toDegrees(self) -> Float { return self * 57.29577951308232 }
+}
+
+// Float's `min`, `max` and `abs` are methods above, so `min(a, b)` on two Floats
+// already means the same NaN-ignoring minimum; the Int overloads at the top of
+// this file keep their builtins.

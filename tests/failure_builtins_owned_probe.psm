@@ -1,0 +1,17 @@
+// Run by `failure_builtins` in test_runner.py. A program that declares its own
+// `assert` and `exit` keeps them: the builtins apply only to unclaimed names,
+// and code after the program's own `exit` is not unreachable.
+import std.io
+
+extern fn exit(code: Int)
+
+fn assert(ok: Bool, code: Int) {
+    if (ok == false) { println(code) }
+}
+
+fn main() -> Int {
+    assert(false, 42)
+    exit(3)
+    println("after the program's own exit")
+    return 0
+}

@@ -242,8 +242,8 @@ private fn unicodeWidthPrefix(s: String, columns: Int) -> Int {
         if (step <= 0) { break }
 
         // The cluster's columns, summed in place. `strDisplayWidth` of a
-        // `strSubstring` would read better and allocate a String per cluster
-        // that nothing names -- which RUNTIME.md 3.1 makes a leak, not garbage.
+        // `strSubstring` would read better and allocate and free a String per
+        // cluster.
         let mut clusterWidth = 0
         let mut at = taken
         while (at < taken + step) {
@@ -613,8 +613,8 @@ internal fn strEqualsNormalized(a: String, b: String) -> Bool {
 }
 
 impl String {
-    public fn displayWidth(self) -> Int { return strDisplayWidth(self) }
-    public fn graphemeCount(self) -> Int { return strGraphemeCount(self) }
+    public prop displayWidth(self) -> Int { return strDisplayWidth(self) }
+    public prop graphemeCount(self) -> Int { return strGraphemeCount(self) }
     public fn graphemes(self) -> Vec<String> { return strGraphemes(self) }
     public fn graphemeWidthAt(self, at: Int) -> Int { return strGraphemeWidthAt(self, at) }
     public fn truncateToWidth(self, columns: Int) -> String {

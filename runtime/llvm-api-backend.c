@@ -3534,6 +3534,9 @@ int ir_fmul(const char *type, const char *lhs, const char *rhs) {
     return intern_value(v);
 }
 BINOP(ir_fdiv, LLVMBuildFDiv)
+// C's fmod: the result takes the dividend's sign. LLVM lowers it to a libm call
+// on every target this backend knows, which is also what clang emits for fmod.
+BINOP(ir_frem, LLVMBuildFRem)
 BINOP(ir_and, LLVMBuildAnd)
 BINOP(ir_or, LLVMBuildOr)
 BINOP(ir_xor, LLVMBuildXor)
@@ -3580,6 +3583,10 @@ ICMP(ir_icmp_uge, LLVMIntUGE)
 
 FCMP(ir_fcmp_oeq, LLVMRealOEQ)
 FCMP(ir_fcmp_one, LLVMRealONE)
+// `!=` on Float. *Unordered* not-equal, so a NaN operand answers true: `x != x`
+// is the NaN test in C, Rust and Java alike, and `one` answered false for it.
+// ir_fcmp_one stays because the committed seed still calls it.
+FCMP(ir_fcmp_une, LLVMRealUNE)
 FCMP(ir_fcmp_olt, LLVMRealOLT)
 FCMP(ir_fcmp_ole, LLVMRealOLE)
 FCMP(ir_fcmp_ogt, LLVMRealOGT)

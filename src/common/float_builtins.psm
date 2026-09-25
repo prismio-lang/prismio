@@ -1,0 +1,106 @@
+// The `__builtin_f64_*` family: what std.math's Float functions lower to.
+//
+// **One table, four readers.** Sema types a call from its arity, codegen emits
+// the symbol, the flat-List guard marks every name safe, and the AIF contract
+// describes every name as reading its arguments and keeping nothing. Each of
+// those was a separate list for `__builtin_max`, and a builtin missing from one
+// of them fails quietly: the guard declines the loop, or AIF stops bracketing
+// the caller -- see prismio-adding-a-builtin in the evidence notes.
+//
+// **Two kinds of symbol, chosen by what LLVM knows.** Where LLVM has an
+// intrinsic, the builtin is that intrinsic: `llvm.sqrt.f64` is one `fsqrt`,
+// `llvm.floor.f64` one `frintm`, and both are on the trivially-vectorisable
+// list, so a loop over them widens. The transcendental intrinsics (`llvm.sin`,
+// `llvm.exp`) still become libm calls at instruction selection, but as calls
+// LLVM knows to be pure -- it folds them on constants and hoists them out of
+// loops, which a call to an `extern fn sin` it knows nothing about never gets.
+// Where no intrinsic exists (`cbrt`, `hypot`, `expm1`...), the builtin is the C
+// library's own name, and LLVM's library-function table recognises it.
+//
+// Every libm name here is C99 and present in glibc, musl, Darwin's libSystem
+// and the Windows UCRT; `target_needs_libm` in runtime/build_driver.c adds
+// `-lm` where the C library keeps them separately. **That includes what an
+// intrinsic falls back to.** On an x86-64 without SSE4.1 -- the baseline a
+// cross build targets -- `llvm.floor` is a call to `floor`, and
+// `llvm.roundeven` would be a call to C23's `roundeven`, which the UCRT does
+// not have. So ties-to-even rounding is `rint`: the same answer under the
+// default rounding mode, which Prismio never changes, and C99 everywhere.
+
+import std.string
+
+// The operations, in one order. `floatBuiltinOp(i)` enumerates them for the
+// guard's table; "" past the end.
+public fn floatBuiltinOp(index: Int) -> String {
+    if (index == 0) { return "sqrt" }
+    if (index == 1) { return "abs" }
+    if (index == 2) { return "floor" }
+    if (index == 3) { return "ceil" }
+    if (index == 4) { return "trunc" }
+    if (index == 5) { return "round" }
+    if (index == 6) { return "rint" }
+    if (index == 7) { return "exp" }
+    if (index == 8) { return "exp2" }
+    if (index == 9) { return "log" }
+    if (index == 10) { return "log2" }
+    if (index == 11) { return "log10" }
+    if (index == 12) { return "sin" }
+    if (index == 13) { return "cos" }
+    if (index == 14) { return "tan" }
+    if (index == 15) { return "asin" }
+    if (index == 16) { return "acos" }
+    if (index == 17) { return "atan" }
+    if (index == 18) { return "sinh" }
+    if (index == 19) { return "cosh" }
+    if (index == 20) { return "tanh" }
+    if (index == 21) { return "cbrt" }
+    if (index == 22) { return "expm1" }
+    if (index == 23) { return "log1p" }
+    if (index == 24) { return "asinh" }
+    if (index == 25) { return "acosh" }
+    if (index == 26) { return "atanh" }
+    if (index == 27) { return "pow" }
+    if (index == 28) { return "atan2" }
+    if (index == 29) { return "copysign" }
+    if (index == 30) { return "minnum" }
+    if (index == 31) { return "maxnum" }
+    if (index == 32) { return "hypot" }
+    if (index == 33) { return "fma" }
+    return ""
+}
+
+public fn floatBuiltinPrefix() -> String {
+    return "__builtin_f64_"
+}
+
+// How many Float operands the builtin takes; 0 when `name` is not one.
+public fn floatBuiltinArity(name: String) -> Int {
+    let prefix = floatBuiltinPrefix()
+    if (name.startsWith(prefix) == false) { return 0 }
+    let op = name.substring(prefix.length, name.length - prefix.length)
+    if (op.equals("fma")) { return 3 }
+    if (op.equals("pow") or op.equals("atan2") or op.equals("copysign")
+        or op.equals("minnum") or op.equals("maxnum") or op.equals("hypot")) {
+        return 2
+    }
+    let mut i = 0
+    while (floatBuiltinOp(i).equals("") == false) {
+        if (floatBuiltinOp(i).equals(op)) { return 1 }
+        i = i + 1
+    }
+    return 0
+}
+
+// The symbol a call to the builtin becomes. Only meaningful when
+// `floatBuiltinArity(name) > 0`.
+public fn floatBuiltinSymbol(name: String) -> String {
+    let prefix = floatBuiltinPrefix()
+    let op = name.substring(prefix.length, name.length - prefix.length)
+    // No LLVM intrinsic: the C library's function, by its own name.
+    if (op.equals("cbrt") or op.equals("expm1") or op.equals("log1p")
+        or op.equals("asinh") or op.equals("acosh") or op.equals("atanh")
+        or op.equals("hypot")) {
+        return op
+    }
+    if (op.equals("abs")) { return "llvm.fabs.f64" }
+    return "llvm.".concat(op, ".f64")
+}

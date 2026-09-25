@@ -850,6 +850,61 @@ int proc_close(int fd) {
 
 #endif
 
+// The environment, and this process's id -- what `process.env`, `setEnv`,
+// `removeEnv` and `pid` read.
+//
+// Presence and value are two calls because the value crosses as an owned String,
+// and an owned String has no null: `proc_env_get` answers "" for an unset name,
+// and std.process asks `proc_env_has` first to tell that from an empty value.
+//
+// The C library's environment is process-global and not thread-safe on any
+// platform: a `setEnv` racing a read on another task is undefined, as it is in C.
+int proc_env_has(const char* name) {
+    return (name && *name && getenv(name) != NULL) ? 1 : 0;
+}
+
+// `rt_base_alloc` on every path, the empty one included: a literal return would
+// make the whole function's result unowned (see `proc_read_all` below).
+char* proc_env_get(const char* name) {
+    const char* value = (name && *name) ? getenv(name) : NULL;
+    if (!value) value = "";
+    size_t length = strlen(value);
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (!out) return NULL;
+    memcpy(out, value, length + 1);
+    return out;
+}
+
+// 1 on success. A name that is empty or contains `=` is refused, as setenv
+// refuses it, on Windows too, where `_putenv_s` would read `A=B` as a name.
+int proc_env_set(const char* name, const char* value) {
+    if (!name || !*name || strchr(name, '=') || !value) return 0;
+#ifdef _WIN32
+    return _putenv_s(name, value) == 0 ? 1 : 0;
+#else
+    return setenv(name, value, 1) == 0 ? 1 : 0;
+#endif
+}
+
+// 1 when the name is unset afterwards, whether or not it was set before.
+// Windows spells removal as setting the empty value.
+int proc_env_remove(const char* name) {
+    if (!name || !*name || strchr(name, '=')) return 0;
+#ifdef _WIN32
+    return _putenv_s(name, "") == 0 ? 1 : 0;
+#else
+    return unsetenv(name) == 0 ? 1 : 0;
+#endif
+}
+
+int proc_pid(void) {
+#ifdef _WIN32
+    return (int)_getpid();
+#else
+    return (int)getpid();
+#endif
+}
+
 // Everything the child wrote, as a String the caller owns.
 //
 // `rt_base_alloc`, because this crosses back into Prismio and codegen emits a

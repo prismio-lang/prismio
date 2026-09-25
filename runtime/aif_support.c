@@ -2087,6 +2087,10 @@ typedef struct {
     // "a literal or an allocation" resolves exactly like "an allocation". See
     // key_may_be_untracked for the one question that needs the difference.
     int untracked;
+    // A String view: pushed into a container, it is copied into a block of its
+    // own. So the literal it may be a view of is never what that container
+    // holds -- see container_may_hold_untracked, the one reader.
+    int copied_on_keep;
 } ValueSet;
 
 static ValueSet* vsets;
@@ -2105,6 +2109,7 @@ int aif_vs_new(void) {
     v->vlen = 0;
     v->vcap = 0;
     v->untracked = 0;
+    v->copied_on_keep = 0;
     return vs_count++;
 }
 
@@ -2151,12 +2156,30 @@ void aif_vs_mark_untracked(int vs) {
     if (vs >= 0 && vs < vs_count) vsets[vs].untracked = 1;
 }
 
+void aif_vs_mark_copied_on_keep(int vs) {
+    if (vs >= 0 && vs < vs_count) vsets[vs].copied_on_keep = 1;
+}
+
 int aif_vs_is_empty(int vs) {
     return (vs < 0 || vs >= vs_count) ? 1 : (vsets[vs].len == 0);
 }
 
+// Which value set each union was built from. A union copies its operands'
+// items, so a call's result can reach a constraint under a value-set id other
+// than its own -- `let x = if (c) { f() } else { g() }` binds the union, not
+// either call. call_result_held follows these to find every consumer of a call.
+static IntVec vs_union_from, vs_union_to;
+
+static void vs_note_union(int from, int to) {
+    if (from < 0) return;
+    vec_push(&vs_union_from, from, "AIF union provenance");
+    vec_push(&vs_union_to, to, "AIF union provenance");
+}
+
 int aif_vs_union(int a, int b) {
     int out = aif_vs_new();
+    vs_note_union(a, out);
+    vs_note_union(b, out);
     if (a >= 0 && a < vs_count) {
         for (int i = 0; i < vsets[a].len; i++) vs_push(out, vsets[a].items[i]);
         for (int i = 0; i < vsets[a].vlen; i++) vs_push_view(out, vsets[a].views[i]);
@@ -2266,11 +2289,17 @@ typedef struct {
     // can name the store or the call that moved a fact (SPEC 6.3's example puts
     // a file:line on every edge of the witness path), not just which rule fired.
     int file, line, col;
+    // The function whose body the walk was in, or -1 for a module-level `let`.
+    // A key already says which function a VAR or a PARAM belongs to; an edge
+    // *out of* a RET or a FIELD key does not, and param_returns needs to know
+    // which of them a given function wrote.
+    int fn;
 } Constraint;
 
 static Constraint* cons;
 static int con_count, con_cap;
 static int con_file, con_line, con_col;
+static int con_fn = -1;
 
 static void con_add(int kind, int a, int b, int c) {
     if (con_count == con_cap) {
@@ -2280,6 +2309,7 @@ static void con_add(int kind, int a, int b, int c) {
     cons[con_count].file = con_file;
     cons[con_count].line = con_line;
     cons[con_count].col = con_col;
+    cons[con_count].fn = con_fn;
     Constraint* k = &cons[con_count++];
     k->kind = kind;
     k->a = a;
@@ -2435,6 +2465,8 @@ void aif_con_at(int file, int line, int col) {
     con_line = line;
     con_col = col;
 }
+
+void aif_con_fn(int fn) { con_fn = fn; }
 
 static void note_deriv(Deriv* d, int site, int from, int value) {
     if (!d) return;
@@ -6347,7 +6379,7 @@ static int field_declared_type(const Nominal* t, int i) {
 // four-level chain of distinct functions reclaims everything. What actually
 // blocked it was that a site is per function rather than per instance, so a
 // self-recursive constructor's root inherited its own children's "already
-// released by a field" answer. That is fixed (see in_recursive_released_field),
+// released by a field" answer. That is fixed (see plain_released_field_keys),
 // a recursively built structure is now reclaimed, and the depth this note
 // describes is reachable with nothing measuring it.
 static int* type_releases;
@@ -6525,35 +6557,33 @@ int aif_field_release(const char* type, const char* field) {
 static Bits in_released_field;
 static int in_released_field_done;
 
-// The same union, split by whether the field re-enters its owner's type.
+// The released fields again, by key rather than by the sites they hold, and
+// without those that re-enter their owner's type. call_result_held asks where
+// *one* value goes, which a site set cannot say.
 //
-// **Why the split exists.** A site is per function, not per instance, so a
-// self-recursive constructor -- `Tree.Node(build(..), v, build(..))` -- is *one*
-// site playing two roles: the root the caller is meant to own, and every
-// interior node the recursion stores into a payload field. The child role puts
-// it in `in_released_field`, and aif_owns_call_result_at_node then reads that
-// answer for the *root* and refuses the caller ownership of it. Nothing is
-// reclaimed at all: `__aif_release_Tree` is generated and never called, and the
-// structure leaks entire -- 12,282 of 12,284 on `g8_tree_rebuild.psm`.
+// **Why the recursive fields are left out.** A site is per function, not per
+// instance, so a self-recursive constructor -- `Tree.Node(build(..), v,
+// build(..))` -- is *one* site playing two roles: the root the caller is meant to
+// own, and every interior node the recursion stores into a payload field. When
+// the question was asked of sites, the child role refused the caller ownership of
+// the root: `__aif_release_Tree` was generated and never called, and the
+// structure leaked entire -- 12,282 of 12,284 on `g8_tree_rebuild.psm`. Asked of
+// flow the root still meets the field, through a pass-through's base case
+// (`insert(sink t, k)` returning `t`) whose result the recursion stores.
 //
-// **Why exempting the recursive case is not a hole.** The exclusion exists so a
-// caller does not become a *second* release point for a value some field already
-// releases. Where the field re-enters the owner's type, the field's release and
-// the caller's drop are the **same traversal**: the caller frees the root, the
-// generated release recurses to the leaves, and each block is freed once. There
-// is no second freer to collide with.
+// **Why that is not a hole.** The exclusion exists so a caller does not become a
+// *second* release point for a value some field already releases. Where the
+// field re-enters the owner's type, the field's release and the caller's drop
+// are the **same traversal**: the caller frees the root, the generated release
+// recurses to the leaves, and each block is freed once. And what such a field
+// holds is a struct, which is move-only, so no caller keeps a copy of it.
 //
 // The tree shape that argument needs is not assumed here -- field_release_of has
 // already required it. A re-entering field contributes a disposition only when
 // every site it can hold answers AIF_ELEM_TYPED or AIF_ELEM_OBJECT, which
 // declines containers and anything the collector owns. A `parent` back-reference
 // or a DAG never reaches this set in the first place.
-//
-// A site that lands in *both* kinds of field is not exempt: a value stored into
-// an ordinary owned field somewhere else has a release point the caller's drop
-// does not reach, so it keeps the original answer.
-static Bits in_recursive_released_field;
-static Bits in_plain_released_field;
+static Bits plain_released_field_keys;
 
 // Whether anything actually reclaims a value of this type.
 //
@@ -6606,12 +6636,8 @@ static void compute_released_fields(void) {
             int key = key_find(AIF_KEY_FIELD, t->name, t->field_name[i]);
             if (key < 0 || key >= pt_len) continue;
             bits_or(&in_released_field, &pt[key], "AIF released fields");
-            if (field_closes_cycle(n, field_declared_type(t, i))) {
-                bits_or(&in_recursive_released_field, &pt[key],
-                        "AIF recursive released fields");
-            } else {
-                bits_or(&in_plain_released_field, &pt[key],
-                        "AIF plain released fields");
+            if (!field_closes_cycle(n, field_declared_type(t, i))) {
+                bits_set(&plain_released_field_keys, key, "AIF released field keys");
             }
         }
     }
@@ -6620,18 +6646,6 @@ static void compute_released_fields(void) {
 static int site_in_released_field(int s) {
     compute_released_fields();
     return bits_test(&in_released_field, s);
-}
-
-// Released, and only ever through a field that re-enters its owner's type.
-//
-// Deliberately *not* folded into site_in_released_field, whose other two callers
-// are scope-exit questions (aif_frees_at_scope_node and its neighbour) where the
-// value and its container share a frame and the same-traversal argument above
-// does not apply. This one answers the call-result question only.
-static int site_only_in_recursive_released_field(int s) {
-    compute_released_fields();
-    if (!bits_test(&in_recursive_released_field, s)) return 0;
-    return !bits_test(&in_plain_released_field, s);
 }
 
 // Whether codegen should allocate this node's value through rc_alloc.
@@ -6651,6 +6665,70 @@ int aif_rc_at_node(const void* node) {
 }
 
 // What the container allocated at this node should do with its elements.
+// Containers handed a value that may be no allocation at all.
+//
+// `keep.push(optionOr(o, "fallback"))` may push the literal: `optionOr` returns
+// its parameter, and the caller passed static storage. A container whose
+// teardown frees its elements then frees `.rodata` -- 10 violations in 30 pushes
+// before this. A literal written at the push itself is not the case: codegen
+// copies that one in, so only a value that reaches the push *through* a key
+// counts.
+//
+// Declining costs the container's owned elements, the same trade field_release_of
+// makes for a field that may hold a literal.
+//
+// The closure is key_may_be_untracked's, except that it does not pass through a
+// String view: `words.push(sentence.slice(4, 25))` pushes a copy, whatever
+// `sentence` is. Reusing key_untracked as it stands declined test_141's Vec and
+// leaked five owned strings to save a literal that was never at risk.
+static Bits holds_untracked;
+static Bits key_kept_untracked;
+static int holds_untracked_ready;
+
+static int vs_keeps_untracked(int vs) {
+    if (vs < 0 || vs >= vs_count) return 0;
+    const ValueSet* v = &vsets[vs];
+    if (v->copied_on_keep) return 0;
+    if (v->untracked) return 1;
+    for (int i = 0; i < v->len; i++) {
+        int item = v->items[i];
+        if ((item & 1) && bits_test(&key_kept_untracked, item >> 1)) return 1;
+    }
+    return 0;
+}
+
+static int container_may_hold_untracked(int container) {
+    if (!holds_untracked_ready) {
+        holds_untracked_ready = 1;
+        for (int changed = 1; changed; ) {
+            changed = 0;
+            for (int i = 0; i < con_count; i++) {
+                int kind = cons[i].kind;
+                if (kind != AIF_CON_BIND && kind != AIF_CON_STORE && kind != AIF_CON_ARG) continue;
+                int into = cons[i].a;
+                if (into < 0 || bits_test(&key_kept_untracked, into)) continue;
+                if (!vs_keeps_untracked(cons[i].b)) continue;
+                bits_set(&key_kept_untracked, into, "AIF untracked keys");
+                changed = 1;
+            }
+        }
+        Bits holders_of = {0};
+        for (int ci = 0; ci < con_count; ci++) {
+            const Constraint* k = &cons[ci];
+            if (k->kind != AIF_CON_RETAIN_IN || k->a < 0 || k->a >= vs_count) continue;
+            const ValueSet* v = &vsets[k->a];
+            // A literal written at the push is copied in by codegen: untracked
+            // with no items is exactly that one.
+            if (v->untracked && v->len == 0) continue;
+            if (!vs_keeps_untracked(k->a)) continue;
+            resolve(k->b, &holders_of);
+            bits_or(&holds_untracked, &holders_of, "AIF untracked holders");
+        }
+        bits_free(&holders_of);
+    }
+    return bits_test(&holds_untracked, container);
+}
+
 int aif_elem_owner_at_node(const void* node) {
     if (node == NULL) return AIF_ELEM_NONE;
     int container = -1;
@@ -6658,6 +6736,7 @@ int aif_elem_owner_at_node(const void* node) {
         if (n->node == node) { container = n->site; break; }
     }
     if (container < 0) return AIF_ELEM_NONE;
+    if (container_may_hold_untracked(container)) return AIF_ELEM_NONE;
 
     int agreed = AIF_ELEM_NONE;
     for (int s = 0; s < site_count; s++) {
@@ -6797,6 +6876,74 @@ void aif_note_call_result(const void* node, int vs, int fn) {
     call_buckets[b] = n;
 }
 
+// Whether a call keeps the argument it is handed at `index`, by call node.
+//
+// Codegen needs it for a binding whose *view* is passed on: `keep.push(
+// optionOr(o, d))` stores the String inside `o`, so the scope drop of `o` and the
+// container's teardown both free it. The points-to flow cannot see that -- the
+// payload reaches `keep` through a field of `o`, and field keys are
+// object-insensitive -- so codegen asks it of the syntax, and needs to know which
+// arguments are kept. That is a contract for an extern (sema lowers `push` to
+// `list_push`, whose contract is `retain_in`), and the flow graph's answer for a
+// function this compilation can see.
+typedef struct NodeArgs {
+    struct NodeArgs* next;
+    const void* node;
+    int fn;             // the callee, or -1 for one only a contract describes
+    unsigned retained;  // contract-retained argument indices; bit 31 is "31 or later"
+    unsigned aliased;   // arguments an extern's result may be, or be a view into
+} NodeArgs;
+
+static NodeArgs* args_buckets[AIF_NODE_BUCKETS];
+
+static NodeArgs* node_args_find(const void* node) {
+    for (NodeArgs* n = args_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node == node) return n;
+    }
+    return NULL;
+}
+
+void aif_note_call_args(const void* node, int fn) {
+    if (node == NULL || node_args_find(node) != NULL) return;
+    unsigned b = node_hash(node);
+    NodeArgs* n = (NodeArgs*)xmalloc(sizeof(NodeArgs), "AIF call arguments");
+    n->node = node;
+    n->fn = fn;
+    n->retained = 0;
+    n->aliased = 0;
+    n->next = args_buckets[b];
+    args_buckets[b] = n;
+}
+
+void aif_note_arg_retained(const void* node, int index) {
+    NodeArgs* n = node_args_find(node);
+    if (n == NULL || index < 0) return;
+    n->retained |= 1u << (index < 31 ? index : 31);
+}
+
+// Kept apart from `retained` on purpose. Whether a callee keeps an argument is
+// what chainRetainsAliasOf asks; whether the result may *be* the argument is
+// irValueAliasesName's business, one statement later. Folding the second into
+// the first refused every binding handed to an extern with an undeclared return
+// -- line_processing leaked 8,194 of 8,209.
+void aif_note_arg_aliased(const void* node, int index) {
+    NodeArgs* n = node_args_find(node);
+    if (n == NULL || index < 0) return;
+    n->aliased |= 1u << (index < 31 ? index : 31);
+}
+
+static void node_args_reset(void) {
+    for (int i = 0; i < AIF_NODE_BUCKETS; i++) {
+        NodeArgs* n = args_buckets[i];
+        while (n) {
+            NodeArgs* next = n->next;
+            free(n);
+            n = next;
+        }
+        args_buckets[i] = NULL;
+    }
+}
+
 // FFI 5.2's `alias` question, asked of a *Prismio* function: is every value this
 // one may return an allocation it made itself?
 //
@@ -6899,6 +7046,9 @@ static int fn_returns_partial(int f) {
 // was before this predicate existed: `let t = f(); let x = <extern alias>(t);
 // return x` frees `t` at the scope exit. It is recorded in KNOWN_ISSUES.md rather than
 // closed here, because closing it is a frontend change and this is not one.
+static void flow_build(void);
+static int param_may_return(int k);
+
 static int fn_may_return_param(int f) {
     if (f < 0) return 0;
     int rk = key_find(AIF_KEY_RET, f, 0);
@@ -6909,6 +7059,8 @@ static int fn_may_return_param(int f) {
     for (int k = 0; k < key_count && k < pt_len; k++) {
         KeyNode* kn = key_by_id[k];
         if (kn == NULL || kn->kind != AIF_KEY_PARAM || kn->a != f) continue;
+        // A shared site is not a path; see param_returns.
+        if (!param_may_return(k)) continue;
         int n = pt[rk].nwords < pt[k].nwords ? pt[rk].nwords : pt[k].nwords;
         for (int w = 0; w < n; w++) {
             if (pt[rk].w[w] & pt[k].w[w]) return 1;
@@ -6955,6 +7107,9 @@ static int site_may_be_param_of(int f, int s) {
         // A move, not a borrow: see aif_note_param_consuming. The caller cannot
         // free what it no longer owns, so handing this one back is safe.
         if (bits_test(&param_consuming, k)) continue;
+        // No path from this parameter to the return: the site is shared with
+        // one, which is the chain case param_returns exists for.
+        if (!param_may_return(k)) continue;
         if (bits_test(&pt[k], s)) return 1;
     }
     return 0;
@@ -6998,6 +7153,374 @@ int aif_fn_may_return_view_of_param(const char* symbol) {
     return fn_may_return_view_of_param(aif_fn_lookup(symbol));
 }
 
+// Where one call's result goes, rather than where its allocation site has been.
+//
+// aif_owns_call_result_at_node used to refuse a call outright when any site it
+// could return was in a container or a released field **anywhere in the
+// program**. A site is per allocating function, so that bit is shared by every
+// value the function ever makes: one `Box { text: make(n) }` -- in a function
+// nobody calls -- refused every other `make(n)` its drop, and since `make` ends
+// in `concat`, every temporary `concat` result in the program with it.
+// `total = total + make(i).length` read 1,001 allocated / 1 released while such
+// a store existed and 1,001 / 1,001 without it.
+//
+// What the exclusion protects against is a *second owner of this value*. A
+// value returned by a call can have one in exactly two ways, and both are
+// questions about flow, which the constraints already record key by key:
+//
+//   - **Before it came back.** The callee (or one of its callees) stored it into
+//     a released field or a container and returned it as well, or returned what
+//     it read out of one. That is a fact about the callee alone: the keys that
+//     can flow into its RET key, and whether any of them is such a holder or
+//     also flows into one. See call_fn_result_held.
+//   - **After it came back.** The caller hands it on: binds it, passes it,
+//     stores it. That is a fact about *this call node*, and the walk gives every
+//     call a fresh value set (aifVsOfKey), so the constraints that consume that
+//     set are this node's consumers and nobody else's. See call_result_held.
+//
+// **Sound in the same direction as before.** Every path this follows is a path
+// the points-to solve propagated sites along, so any flow found here also put
+// the site into the holder's set, and the old site-level test would have refused
+// it too. What changes is that a store of *some other* value from the same site
+// no longer counts.
+//
+// **What counts as a holder** is what the site-level test counted: a field a
+// reclaimed type releases, unless it re-enters its own type (the note on
+// plain_released_field_keys), and any container element. A
+// field of a type nothing reclaims is not a release point and does not count,
+// for the reason type_is_reclaimed gives (g5_asset_cache).
+static IntVec* flow_succ;       // key -> keys a value held there can move to
+static IntVec* flow_succ_fn;    // ...and the function each of those moves is in
+static IntVec* flow_pred;
+static char* param_returns;     // PARAM key: its function may hand it back
+static char* flow_holder;       // key: a holder, as above
+static char* flow_reaches;      // key: a value here can end up in a holder
+static IntVec* vs_consumers;    // value set -> constraints taking it as the value
+static IntVec* vs_derived;      // value set -> unions built from it
+static signed char* fn_result_held;   // per fn: -1 not yet asked
+// Visited marks for the two walks below, by generation so that a query does not
+// clear an array the size of the program: both are asked once per call node.
+static int* key_mark;
+static int* vs_mark;
+static int flow_generation;
+static int flow_keys, flow_vsets, flow_fns;
+static int flow_ready;
+
+static int key_is_ret(int k) {
+    return k >= 0 && k < flow_keys && key_by_id[k] != NULL && key_by_id[k]->kind == AIF_KEY_RET;
+}
+
+static void flow_edge(int from, int to, int fn) {
+    if (from < 0 || to < 0 || from >= flow_keys || to >= flow_keys) return;
+    vec_push(&flow_succ[from], to, "AIF value flow");
+    vec_push(&flow_succ_fn[from], fn, "AIF value flow");
+    vec_push(&flow_pred[to], from, "AIF value flow");
+}
+
+// The value set a constraint moves, or -1 for the kinds that move nothing. A
+// store's owner (`c`) and a container call's holder (`b`) are where a value
+// goes, not values themselves.
+static int con_value_vs(const Constraint* k) {
+    if (k->kind == AIF_CON_BIND || k->kind == AIF_CON_ARG || k->kind == AIF_CON_STORE) return k->b;
+    if (k->kind == AIF_CON_RETAIN_IN) return k->a;
+    return -1;
+}
+
+// Whether a function may hand back what it was given as parameter `k`: a path
+// from PARAM(g, i) to RET(g) along moves g itself makes.
+//
+// This is the question the pass-through guard asks, and it used to be asked of
+// sites: a site in both the parameter's set and the return's. **Chains defeat
+// that.** `public fn toUpper(self) -> String { return strToUpper(self) }` returns
+// strToUpper's allocation, and in `x.toUpper().toUpper()` the first result is
+// the second call's argument -- so strToUpper's one site is in both sets, and
+// every chained call looked like it returned its receiver. Both results leaked,
+// 2,000 of 3,001 over 1,000 iterations, for every String method written as a
+// one-line wrapper.
+//
+// Asked of flow, a call crosses into the callee only through this same answer
+// for the callee, and comes back out along the uses g makes of its result --
+// edges out of RET(h) that g's own constraints wrote. A value that leaves g any
+// other way (stored, pushed) is not returned by this path, and a view is
+// fn_may_return_view_of_param's question. A least fixed point over all
+// parameters, since a summary can depend on its own function's.
+static int param_reaches_ret(int g, int start, int mark) {
+    int rk = key_find(AIF_KEY_RET, g, 0);
+    if (rk < 0) return 0;
+    IntVec work = {0};
+    key_mark[start] = mark;
+    vec_push(&work, start, "AIF value flow");
+    int found = 0;
+    while (work.len > 0 && !found) {
+        int k = work.v[--work.len];
+        for (int i = 0; i < flow_succ[k].len; i++) {
+            if (flow_succ_fn[k].v[i] != g) continue;
+            int t = flow_succ[k].v[i];
+            if (t == rk) { found = 1; break; }
+            KeyNode* tn = key_by_id[t];
+            if (tn == NULL) continue;
+            int next = t;
+            if (tn->kind == AIF_KEY_PARAM) {
+                // Into a callee: back out only if it hands the argument back.
+                if (!param_returns[t]) continue;
+                next = key_find(AIF_KEY_RET, tn->a, 0);
+                if (next < 0 || next >= flow_keys) continue;
+            } else if (tn->kind == AIF_KEY_RET) {
+                continue;
+            }
+            if (key_mark[next] == mark) continue;
+            key_mark[next] = mark;
+            vec_push(&work, next, "AIF value flow");
+        }
+    }
+    free(work.v);
+    return found;
+}
+
+static int param_may_return(int k) {
+    flow_build();
+    return k >= 0 && k < flow_keys && param_returns[k];
+}
+
+static void param_returns_build(void) {
+    for (int changed = 1; changed; ) {
+        changed = 0;
+        for (int k = 0; k < flow_keys; k++) {
+            KeyNode* kn = key_by_id[k];
+            if (kn == NULL || kn->kind != AIF_KEY_PARAM || param_returns[k]) continue;
+            if (!param_reaches_ret(kn->a, k, ++flow_generation)) continue;
+            param_returns[k] = 1;
+            changed = 1;
+        }
+    }
+}
+
+static void flow_build(void) {
+    if (flow_ready) return;
+    flow_ready = 1;
+    compute_released_fields();
+    key_index_build();
+
+    flow_keys = key_count;
+    flow_vsets = vs_count;
+    flow_fns = fn_count;
+    flow_succ = (IntVec*)xcalloc((size_t)(flow_keys + 1), sizeof(IntVec), "AIF value flow");
+    flow_succ_fn = (IntVec*)xcalloc((size_t)(flow_keys + 1), sizeof(IntVec), "AIF value flow");
+    param_returns = (char*)xcalloc((size_t)(flow_keys + 1), 1, "AIF value flow");
+    flow_pred = (IntVec*)xcalloc((size_t)(flow_keys + 1), sizeof(IntVec), "AIF value flow");
+    flow_holder = (char*)xcalloc((size_t)(flow_keys + 1), 1, "AIF value flow");
+    flow_reaches = (char*)xcalloc((size_t)(flow_keys + 1), 1, "AIF value flow");
+    vs_consumers = (IntVec*)xcalloc((size_t)(flow_vsets + 1), sizeof(IntVec), "AIF value flow");
+    vs_derived = (IntVec*)xcalloc((size_t)(flow_vsets + 1), sizeof(IntVec), "AIF value flow");
+    fn_result_held = (signed char*)xmalloc((size_t)(flow_fns + 1), "AIF value flow");
+    memset(fn_result_held, -1, (size_t)(flow_fns + 1));
+    key_mark = (int*)xcalloc((size_t)(flow_keys + 1), sizeof(int), "AIF value flow");
+    vs_mark = (int*)xcalloc((size_t)(flow_vsets + 1), sizeof(int), "AIF value flow");
+    flow_generation = 0;
+
+    int elem = aif_intern("@elem");
+    for (int k = 0; k < flow_keys; k++) {
+        KeyNode* kn = key_by_id[k];
+        if (kn == NULL || kn->kind != AIF_KEY_FIELD) continue;
+        if (kn->b == elem || bits_test(&plain_released_field_keys, k)) flow_holder[k] = 1;
+    }
+
+    for (int i = 0; i < vs_union_from.len; i++) {
+        int from = vs_union_from.v[i];
+        if (from < flow_vsets) vec_push(&vs_derived[from], vs_union_to.v[i], "AIF value flow");
+    }
+
+    for (int ci = 0; ci < con_count; ci++) {
+        const Constraint* k = &cons[ci];
+        int vs = con_value_vs(k);
+        if (vs < 0 || vs >= flow_vsets) continue;
+        vec_push(&vs_consumers[vs], ci, "AIF value flow");
+        const ValueSet* v = &vsets[vs];
+        for (int i = 0; i < v->len; i++) {
+            if ((v->items[i] & 1) == 0) continue;
+            int from = v->items[i] >> 1;
+            // A container call is a holder for whatever it is handed, whether or
+            // not its element key is bound as well -- except a call's result
+            // handed straight in. That is one call node's value, not every value
+            // the callee returns, and call_result_held finds it at that node.
+            if (k->kind == AIF_CON_RETAIN_IN) {
+                if (from < flow_keys && !key_is_ret(from)) flow_holder[from] = 1;
+            } else {
+                flow_edge(from, k->a, k->fn);
+            }
+        }
+    }
+
+    // Backward from every holder. Edges out of a RET key are followed like any
+    // other: a value a callee hands back through a parameter is the caller's
+    // value still, so where the callee's callers put its result is where the
+    // caller's argument may end up. It joins every caller of that callee, which
+    // is the conservative direction; only a pass-through has such an edge.
+    IntVec work = {0};
+    for (int k = 0; k < flow_keys; k++) {
+        if (!flow_holder[k]) continue;
+        flow_reaches[k] = 1;
+        vec_push(&work, k, "AIF value flow");
+    }
+    while (work.len > 0) {
+        int k = work.v[--work.len];
+        for (int i = 0; i < flow_pred[k].len; i++) {
+            int p = flow_pred[k].v[i];
+            if (flow_reaches[p]) continue;
+            flow_reaches[p] = 1;
+            vec_push(&work, p, "AIF value flow");
+        }
+    }
+    free(work.v);
+
+    param_returns_build();
+}
+
+
+// Whether anything `f` returns may also be held by a field or a container by the
+// time it returns: read out of one, or stored into one and returned as well.
+//
+// The keys that can flow into RET(f) are its cone. A holder in the cone is the
+// first case. A cone key with an edge to a key *outside* the cone that reaches a
+// holder is the second -- `let s = make(); v.push(s); return s`. An edge to a key
+// inside the cone is not a store, it is the same value on its way out, and an
+// edge into a RET key is a return: a callee's result leaving through its own
+// caller is that caller's question, asked at its own call node. Following it here
+// is what would bring back the bug this replaces -- `make2()`'s binding would
+// inherit every store any caller of `make2` makes.
+//
+// **Nor is an edge out of a RET key**, for the same reason one level up: it sits
+// in a caller of that function, and every caller's use of the result is on it.
+// `make`'s own RET key is in its cone, and `Option.Some(make(n))` in some other
+// function is an edge out of it. Skipping them is sound because an evaluated
+// call has one consumer: a result that is both stored and returned went through
+// a binding (a VAR edge, checked) or was read back out of the holder (in the
+// cone, refused).
+static int call_fn_result_held(int f) {
+    if (f < 0 || f >= flow_fns) return 1;
+    if (fn_result_held[f] >= 0) return fn_result_held[f];
+    int rk = key_find(AIF_KEY_RET, f, 0);
+    if (rk < 0 || rk >= flow_keys) { fn_result_held[f] = 0; return 0; }
+
+    int cone = ++flow_generation;
+    IntVec work = {0};
+    IntVec members = {0};
+    key_mark[rk] = cone;
+    vec_push(&work, rk, "AIF value flow");
+    while (work.len > 0) {
+        int k = work.v[--work.len];
+        vec_push(&members, k, "AIF value flow");
+        for (int i = 0; i < flow_pred[k].len; i++) {
+            int p = flow_pred[k].v[i];
+            if (key_mark[p] == cone) continue;
+            key_mark[p] = cone;
+            vec_push(&work, p, "AIF value flow");
+        }
+    }
+
+    int held = 0;
+    for (int m = 0; m < members.len && !held; m++) {
+        int k = members.v[m];
+        if (flow_holder[k]) { held = 1; break; }
+        if (key_is_ret(k)) continue;
+        for (int i = 0; i < flow_succ[k].len; i++) {
+            int t = flow_succ[k].v[i];
+            if (key_mark[t] == cone || key_is_ret(t)) continue;
+            if (flow_reaches[t]) { held = 1; break; }
+        }
+    }
+    free(work.v);
+    free(members.v);
+    fn_result_held[f] = (signed char)held;
+    return held;
+}
+
+// Whether the value this call node produced is handed to something that keeps
+// it: every constraint that takes the node's own value set, or a union built
+// from it, as the value it moves. A return is not one -- the caller that
+// receives it asks at its own node.
+static int call_result_held(const NodeCall* c) {
+    if (call_fn_result_held(c->fn)) return 1;
+    if (c->vs < 0 || c->vs >= flow_vsets) return 0;
+
+    int held = 0;
+    int seen = ++flow_generation;
+    IntVec work = {0};
+    vec_push(&work, c->vs, "AIF value flow");
+    vs_mark[c->vs] = seen;
+    while (work.len > 0 && !held) {
+        int vs = work.v[--work.len];
+        for (int i = 0; i < vs_consumers[vs].len; i++) {
+            const Constraint* k = &cons[vs_consumers[vs].v[i]];
+            if (k->kind == AIF_CON_RETAIN_IN) { held = 1; break; }
+            if (key_is_ret(k->a)) continue;
+            if (k->a >= 0 && k->a < flow_keys && flow_reaches[k->a]) { held = 1; break; }
+        }
+        for (int i = 0; i < vs_derived[vs].len; i++) {
+            int d = vs_derived[vs].v[i];
+            if (d < 0 || d >= flow_vsets || vs_mark[d] == seen) continue;
+            vs_mark[d] = seen;
+            vec_push(&work, d, "AIF value flow");
+        }
+    }
+    free(work.v);
+    return held;
+}
+
+// A call node the walk never saw answers yes: an unknown keeper is assumed, which
+// fails towards the leak.
+int aif_call_arg_retained(const void* node, int index) {
+    NodeArgs* n = node_args_find(node);
+    if (n == NULL || index < 0) return 1;
+    if (n->fn < 0) return (n->retained >> (index < 31 ? index : 31)) & 1u;
+    flow_build();
+    int k = key_find(AIF_KEY_PARAM, n->fn, index);
+    return k >= 0 && k < flow_keys && flow_reaches[k];
+}
+
+// Whether an extern's argument may be released once the call returns: neither
+// kept by its contract nor possibly the result. Only asked of externs; a
+// Prismio callee's release is irCallReleasesTemporaries's question.
+int aif_call_arg_outlives_call(const void* node, int index) {
+    NodeArgs* n = node_args_find(node);
+    if (n == NULL || index < 0 || n->fn >= 0) return 1;
+    unsigned bit = 1u << (index < 31 ? index : 31);
+    return ((n->retained | n->aliased) & bit) != 0;
+}
+
+static void flow_reset(void) {
+    for (int k = 0; k < flow_keys; k++) {
+        free(flow_succ[k].v);
+        free(flow_succ_fn[k].v);
+        free(flow_pred[k].v);
+    }
+    free(flow_succ_fn);
+    free(param_returns);
+    flow_succ_fn = NULL;
+    param_returns = NULL;
+    for (int v = 0; v < flow_vsets; v++) { free(vs_consumers[v].v); free(vs_derived[v].v); }
+    free(flow_succ);
+    free(flow_pred);
+    free(flow_holder);
+    free(flow_reaches);
+    free(vs_consumers);
+    free(vs_derived);
+    free(fn_result_held);
+    free(key_mark);
+    free(vs_mark);
+    key_mark = vs_mark = NULL;
+    flow_generation = 0;
+    flow_succ = flow_pred = vs_consumers = vs_derived = NULL;
+    flow_holder = flow_reaches = NULL;
+    fn_result_held = NULL;
+    flow_keys = flow_vsets = flow_fns = 0;
+    flow_ready = 0;
+    free(vs_union_from.v);
+    free(vs_union_to.v);
+    vs_union_from = (IntVec){0};
+    vs_union_to = (IntVec){0};
+}
+
 int aif_owns_call_result_at_node(const void* node) {
     if (node == NULL) return AIF_ELEM_NONE;
     NodeCall* c = NULL;
@@ -7005,6 +7528,12 @@ int aif_owns_call_result_at_node(const void* node) {
         if (n->node == node) { c = n; break; }
     }
     if (c == NULL) return AIF_ELEM_NONE;
+
+    // A field the type releases, or a container, is already this value's release
+    // point, so the caller must not become a second one. Asked of this call's
+    // own value rather than of the sites it may be; see call_result_held.
+    flow_build();
+    if (call_result_held(c)) return AIF_ELEM_NONE;
 
     resolve(c->vs, &query_scratch);
     int agreed = AIF_ELEM_NONE;
@@ -7043,23 +7572,6 @@ int aif_owns_call_result_at_node(const void* node) {
         // on the path from the allocation to here has already been refused
         // ownership of it, and this caller is the first that can hold it.
         if (sites[s].fn != c->fn && site_may_be_param_of(c->fn, s)) return AIF_ELEM_NONE;
-        if (sites[s].in_container) return AIF_ELEM_NONE;
-        // A field the type releases is already this value's release point, so
-        // the caller must not become a second one. The same exclusion as
-        // in_container above, and reachable the same way: a function that both
-        // stores a value into a field and returns that field.
-        //
-        // **Except where that field re-enters its owner's type**, which is not a
-        // second release point but the same one. A self-recursive constructor is
-        // one site serving both the root and every interior node, so the child
-        // role put the root in this set and refused the caller the only drop that
-        // would have reclaimed anything -- the whole structure, 12,282 of 12,284
-        // on g8. Where the field recurses, the caller's drop *is* the traversal
-        // that frees the children, once each; see the note on
-        // in_recursive_released_field for why field_release_of has already
-        // established the tree shape that needs.
-        if (site_in_released_field(s)
-            && !site_only_in_recursive_released_field(s)) return AIF_ELEM_NONE;
         if (aif_tier_of(s) != AIF_T2) return AIF_ELEM_NONE;
         int d = elem_disposition_of(s, AIF_T2);
         // A struct that owns something joins `List` here, and for the same
@@ -7277,8 +7789,13 @@ void aif_reset(void) {
     key_by_id_len = 0;
 
     bits_free(&in_released_field);
-    bits_free(&in_recursive_released_field);
-    bits_free(&in_plain_released_field);
+    bits_free(&plain_released_field_keys);
+    flow_reset();
+    node_args_reset();
+    con_fn = -1;
+    bits_free(&holds_untracked);
+    bits_free(&key_kept_untracked);
+    holds_untracked_ready = 0;
     bits_free(&param_consuming);
     in_released_field_done = 0;
     free(type_releases);

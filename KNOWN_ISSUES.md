@@ -53,10 +53,6 @@ What is still open, all leaks and none a violation:
   per type, not per object, so `let before = bag.items` anywhere raises the
   escape of every value any `Bag` holds in `items`, and each function's
   temporaries there lose their owner.
-- **One `concat` stored into a released field** makes that site — which backs
-  every `concat` in the program — the field's, so every other `concat` result,
-  even a plain `let`, is owned by nobody. The same holds for any library
-  allocation site shared by many calls.
 
 **A value read out of a parameter is a view of it, and the caller no longer frees
 the argument before reading the result.** `optionOr(s.stripPrefix("x"), "!")`
@@ -390,17 +386,6 @@ path inlines without exposing allocator statics. See
 `aif/evidence/bench/scalar_list_*.psm` programs.
 
 ## Codegen
-
-**A range counting down at run time keeps its bounds checks.** Where the source
-does not settle a range's direction -- `for i in a..b` over computed ends, not
-`0..<` a length -- `generateFor` compares the ends on entry and branches to an
-ascending copy, which the flat guard and the range proofs serve as always, or
-to one plain descending copy with neither. So `for i in hi..lo` over a Vec that
-really does run down pays a bounds check per access. A literal descending range
-(`10..0`) keeps the flat guard, and none of the 62 benchmark workloads has a
-descending loop. Fixing it means teaching `generateForRangeGuard` a `RANGE_DOWN`
-variable for the copy; it was left out because every copy is the whole body
-again, and nested run-time-direction loops multiply it.
 
 **A list literal is not accepted as a call argument.** `[a, b, c]` becomes
 `listOf(a, b, c)` where a `List<T>` is written -- an annotation, a struct field,
@@ -851,6 +836,21 @@ mapping needs Unicode tables, and can change a string's length — `ß` uppercas
 to `SS`), and there are no grapheme clusters, no normalization, and no
 display-width function, so a padded column of CJK still does not line up.
 
+**A trait cannot declare a property.** `prop` is accepted at top level and in an
+`impl`, and a trait's signatures are still `fn` only, so an `impl Trait for T`
+cannot satisfy a method by a property or the reverse. Calling a property as a
+plain function, `length(s)`, is allowed on purpose: a property is a function
+underneath, and desugarings synthesise calls that way (`semaCheckPropertySpelling`
+checks only `x.f()` and `x.f`).
+
+**A function that always fails is not known to diverge.** `panic`,
+`unreachable` and `exit` end a block for sema (`semaCallNeverReturns` in
+`src/sema/flow.psm`), but `fn fail(m: String) { eprintln(m) exit(1) }` does not:
+a caller still needs a `return` after calling it. Inferring it from the body
+would work for this shape and not across a `.plib`, where the body is not
+parsed; a `Never` return type is the planned fix (docs/STDLIB_SHIP_PLAN.md,
+tier 2).
+
 **There is no string interpolation and no iterator protocol.**
 
 **`std.process` starts a program with an argument vector, and that is all it
@@ -858,8 +858,9 @@ does.** `Process` / `Child` / `Stream` landed with the capability in
 `runtime/program_support.c` (RUNTIME.md has the surface); `runCommand` and
 `quoteArg` are gone. What is left:
 
-- **No environment, working directory or pid.** A child inherits all three, and
-  a program cannot read its own pid or an environment variable.
+- **A child has no working directory or environment of its own.** It inherits
+  this process's; `process.setEnv` before `spawn` is the way to pass a variable.
+  (Reading and setting the environment and `process.pid` landed 2026-09-25.)
 - **A stream is inherited, piped or discarded -- never a file.** Redirecting a
   child's stdout to a path needs a fourth mode on both sides of the wire
   protocol (`0` inherit, `1` pipe, `2` discard, in `std/process.psm` and
@@ -888,7 +889,8 @@ that argument, and the fact does not survive one level of indirection.**
 bounds by calling another function and then returned `strSubstring(s, a, b)` read
 **1 allocated / 0 released**, because the caller's drop of `owned` was declined
 and the view that declined it took nothing. `strStripPrefix(owned, "X")` in
-`std.string` still has this shape and leaks one allocation.
+`std.string` had this shape; bound and chained it measures clean now
+(2026-09-25, 301/301 over 100 iterations).
 
 The rule that avoids it is the one in the header of `std/string.psm`: a producer
 allocates its own result. `strScalarSubstring` and `strTruncateToWidth` copy for
@@ -896,11 +898,29 @@ this reason, at one allocation each. What is not established is why the
 inference reaches `strTrim` -- which loops and then returns a view -- and not a
 function that passes its parameter to another one on the way.
 
-**A producing call nested directly inside another leaks the inner result.**
-`strToUpper(strToUpper(x))` reads 3 allocated / 2 released, and so does the same
-shape over `strTrim` or `strClone`; `concat` is special-cased in codegen's
-argument-release gate and does not. Bind the intermediate, which RUNTIME.md 3.1
-asks for anyway.
+**Two shapes of passing a result straight on still leak** (everything else was
+fixed 2026-09-25: `optionOr(process.env("X"), d)`, `x.toUpper().toUpper()`,
+`text.split(',').length` and `println(f(x))` all measure clean; see
+aif/evidence/RESULTS-call-result-ownership.md).
+
+- **A temporary whose callee returns a view of it, evaluated after another call
+  in the same statement.** `total = total + b.length + same(make(i)).length`
+  leaks `make(i)`, 100 of 100. `irHoistBorrowedTemporaries` gives such a
+  temporary a binding only where that reorders nothing, and here `b.length` is
+  a call evaluated first. A purity fact about the earlier call would let it
+  move; nothing computes one.
+- **A view of a binding kept past its block.** `keep.push(optionOr(o, d))`,
+  `outer = optionOr(o, d)`: the binding is now kept alive, which leaks it, where
+  it used to be freed under the view and read back stale. Copying the view into
+  the keeper at that point would make it clean.
+  `tests/test_185_view_outlives_binding.psm` and `test_186` pin the counts.
+
+**A container that may be handed a string literal releases none of its
+elements.** `keep.push(optionOr(x, "fallback"))` may push the literal itself, and
+a teardown would free `.rodata`; `container_may_hold_untracked` declines the
+element release instead, which leaks the owned ones. A literal written at the
+push is copied in and does not count, nor does a String view. Copying at the push
+whenever the pushed value may be untracked would close it.
 
 ## The AIF oracle
 
@@ -925,6 +945,24 @@ collection from another function (the three-way case analysis above it in
 `runtime/aif_support.c`). The oracle now does the same, and the differential
 passes on all 19 default sources. `ownedVals` and `ownedKinds` were T1 all along
 because no view of them reaches a returning parameter.
+
+**A C-produced String stored into a payload enum disagrees in the copyable
+model, outside the 19 sources.** `Option<String>.Some(read_file(path))` -- and
+`process.env`, which is that shape -- is one site the compiler calls Shared (T3,
+"multiple owners") and the oracle unique (T2), under `--copyable-collections`
+only; the default owned model agrees, and the ledger is clean (4000/4000 over
+2000 `process.env` lookups). Reproduced 2026-09-25 with a compiler from before
+`process.env` existed, so `process.env` exposed it rather than caused it. The
+same payload built by a Prismio producer (`"x".concat(n)`) agrees, so it is the
+extern-produced value into a struct field, not the enum. Repro, through
+`tools/aif_differential.py`:
+
+```prismio
+fn load(path: String) -> Option<String> {
+    if (fileExists(path) == false) { return Option<String>.None }
+    return Option<String>.Some(read_file(path))
+}
+```
 
 **A struct pushed into a Vec in a loop still disagrees, outside the 19 sources,
 and is not the return case above** (it survives that fix). Under `--copyable-collections` the oracle tiers it T3 (A=Shared) and

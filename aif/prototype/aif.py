@@ -168,6 +168,17 @@ FFI_CONTRACTS = {
     '__builtin_target_os': {},
     '__builtin_target_arch': {},
     '__builtin_target_env': {},
+    # std.math's integer arithmetic: scalars in, a scalar out.
+    '__builtin_max': {0: 'borrow', 1: 'borrow'},
+    '__builtin_min': {0: 'borrow', 1: 'borrow'},
+    '__builtin_abs': {0: 'borrow'},
+    # The failure builtins: they read a message and end the process. Sema
+    # rewrites `panic` to `__builtin_panic` where the program declares no
+    # `panic` of its own, and the dump this reads is taken after sema.
+    '__builtin_panic': {0: 'borrow'},
+    '__builtin_unreachable': {0: 'borrow'},
+    '__builtin_assert': {0: 'borrow', 1: 'borrow'},
+    '__builtin_exit': {0: 'borrow'},
     'print':          {0: 'borrow'},
     'println':        {0: 'borrow'},
     # v0.1 concurrency. `chan_send` **consumes** its message rather than
@@ -182,6 +193,21 @@ FFI_CONTRACTS = {
     'chan_len':       {0: 'borrow'},
     'chan_free':      {0: 'borrow'},
 }
+
+# std.math's Float family, `__builtin_f64_<op>` -- the table the compiler reads
+# is src/common/float_builtins.psm, and these are its operations by arity. Each
+# reads its Float operands and keeps nothing, like `__builtin_max` above.
+F64_BUILTIN_ARITY = {
+    **{op: 1 for op in ('sqrt', 'abs', 'floor', 'ceil', 'trunc', 'round',
+                        'rint', 'exp', 'exp2', 'log', 'log2', 'log10',
+                        'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'sinh',
+                        'cosh', 'tanh', 'cbrt', 'expm1', 'log1p', 'asinh',
+                        'acosh', 'atanh')},
+    **{op: 2 for op in ('pow', 'atan2', 'copysign', 'minnum', 'maxnum', 'hypot')},
+    'fma': 3,
+}
+for _op, _arity in F64_BUILTIN_ARITY.items():
+    FFI_CONTRACTS['__builtin_f64_' + _op] = {i: 'borrow' for i in range(_arity)}
 
 # Produced returns that allocate nothing here: the block was made by another
 # thread and is already live, so it can be neither a frame slot nor arena-served.

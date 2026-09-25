@@ -26,30 +26,30 @@ fn main() -> Int {
     if (scalarWidth(769) != 0) { return fail("a combining mark is none") }
     if (scalarWidth(9) != 0) { return fail("a control character is none") }
 
-    if ("abc".displayWidth() != 3) { return fail("width of ASCII") }
-    if ("日本".displayWidth() != 4) { return fail("width of CJK") }
+    if ("abc".displayWidth != 3) { return fail("width of ASCII") }
+    if ("日本".displayWidth != 4) { return fail("width of CJK") }
     if ("日本".length != 6) { return fail("bytes of CJK") }
-    if ("日本".scalarCount() != 2) { return fail("scalars of CJK") }
+    if ("日本".scalarCount != 2) { return fail("scalars of CJK") }
 
     // A letter and its combining mark occupy the letter's column.
     let decomposed = "é"
     if (decomposed.length != 3) { return fail("bytes of a decomposed é") }
-    if (decomposed.scalarCount() != 2) { return fail("scalars of a decomposed é") }
-    if (decomposed.displayWidth() != 1) { return fail("width of a decomposed é") }
-    if (decomposed.graphemeCount() != 1) { return fail("graphemes of a decomposed é") }
+    if (decomposed.scalarCount != 2) { return fail("scalars of a decomposed é") }
+    if (decomposed.displayWidth != 1) { return fail("width of a decomposed é") }
+    if (decomposed.graphemeCount != 1) { return fail("graphemes of a decomposed é") }
 
     // -- Grapheme clusters ---------------------------------------------------
-    if ("abc".graphemeCount() != 3) { return fail("ASCII graphemes") }
+    if ("abc".graphemeCount != 3) { return fail("ASCII graphemes") }
     // A flag is a pair of regional indicators, and one character to a reader.
-    if ("🇯🇵".scalarCount() != 2) { return fail("scalars in a flag") }
-    if ("🇯🇵".graphemeCount() != 1) { return fail("a flag is one grapheme") }
+    if ("🇯🇵".scalarCount != 2) { return fail("scalars in a flag") }
+    if ("🇯🇵".graphemeCount != 1) { return fail("a flag is one grapheme") }
     // Two flags are two, which is what the pairing rule is for.
-    if ("🇯🇵🇫🇷".graphemeCount() != 2) { return fail("two flags are two graphemes") }
+    if ("🇯🇵🇫🇷".graphemeCount != 2) { return fail("two flags are two graphemes") }
     // A ZWJ sequence is one however many scalars it names.
-    if ("👨‍👩‍👧".graphemeCount() != 1) { return fail("a ZWJ family is one grapheme") }
-    if ("👍🏽".graphemeCount() != 1) { return fail("a skin tone joins its emoji") }
+    if ("👨‍👩‍👧".graphemeCount != 1) { return fail("a ZWJ family is one grapheme") }
+    if ("👍🏽".graphemeCount != 1) { return fail("a skin tone joins its emoji") }
     // Hangul jamo compose into a syllable.
-    if ("각".graphemeCount() != 1) { return fail("Hangul jamo are one grapheme") }
+    if ("각".graphemeCount != 1) { return fail("Hangul jamo are one grapheme") }
 
     let parts = "a🇯🇵b".graphemes()
     if (parts.length != 3) { return fail("graphemes splits into clusters") }
@@ -92,7 +92,7 @@ fn main() -> Int {
 
     // Hangul composes by arithmetic rather than from a table.
     if ("각".normalizeNfc().equals("각") == false) { return fail("Hangul composes") }
-    if ("각".normalizeNfd().scalarCount() != 3) { return fail("Hangul decomposes") }
+    if ("각".normalizeNfd().scalarCount != 3) { return fail("Hangul decomposes") }
 
     // A singleton decomposition is excluded from composition: the Angstrom sign
     // normalizes to A-with-ring and does not come back.

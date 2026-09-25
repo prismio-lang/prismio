@@ -1,0 +1,7 @@
+// expect-error: unreachable code: control cannot continue past the previous statement
+fn f() -> Int {
+    panic("stop")
+    return 1
+}
+
+fn main() -> Int { return f() }

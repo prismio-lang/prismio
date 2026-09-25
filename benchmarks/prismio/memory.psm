@@ -192,7 +192,7 @@ public fn benchStringJoin(scale: Int) -> Int {
     }
 
     let joined = join(parts, ",")
-    let length = joined.length()
+    let length = joined.length
 
     let mut checksum = length % 1000000007
     let mut at = 0

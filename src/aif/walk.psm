@@ -329,12 +329,24 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
         }
     }
 
+    // Which arguments this call keeps, for codegen's scope drops; see
+    // aif_call_arg_retained. A known callee is answered from the flow graph.
+    if (known) {
+        aif_note_call_args(callPtr, calleeId)
+    } else {
+        aif_note_call_args(callPtr, 0 - 1)
+    }
+
     for i in 0..<argc {
         let av = aif_argv_get(base, i)
         if (known) {
             aif_con_arg(aif_key_param(calleeId, i), av)
         } else {
             let contract = aifFfiContract(plain, i)
+            if (contract >= AIF_FFI_RETAIN_IN_BASE or contract == AIF_FFI_RETAIN
+                    or contract == AIF_FFI_CONSUME) {
+                aif_note_arg_retained(callPtr, i)
+            }
             if (contract >= AIF_FFI_RETAIN_IN_BASE) {
                 let holderIndex = contract - AIF_FFI_RETAIN_IN_BASE
                 aif_con_retain_in(av, aif_argv_get(base, holderIndex))
@@ -420,6 +432,20 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
     }
     aif_argv_end(base)
 
+    // An argument the result may be, or be a view into, outlives the call as
+    // surely as one the contract retains: codegen releases the others once an
+    // extern returns (aif_call_arg_outlives_call). An undeclared reference
+    // return may be any of them.
+    if (known == false) {
+        if (readsElement) { aif_note_arg_aliased(callPtr, elemReadOf) }
+        if (aliasOf >= 0 and aliasOf < argc) { aif_note_arg_aliased(callPtr, aliasOf) }
+        let fresh = aifFfiProduces(plain) or aifDeclaredReturnIsProduce(plain)
+        if (aifIsRef(ty) and aifFfiReturnsStatic(plain) == false
+                and (aifDeclaredReturnIsAlias(plain) or fresh == false)) {
+            for aI in 0..<argc { aif_note_arg_aliased(callPtr, aI) }
+        }
+    }
+
     if (known) {
         // Item 3. The caller may own what a known callee returned, and the escape
         // lattice cannot say so -- E is per site and a site belongs to one
@@ -434,6 +460,15 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
         return element
     }
     if (aliasOf >= 0 and aliasOf < argc) {
+        // A String view is copied into any container it is pushed into (the
+        // view form is what codegen tests), so a view of a literal is never the
+        // literal a container would free. Said on a value set of its own, so the
+        // argument's keeps meaning what it meant.
+        if (plain.equals("__builtin_string_view")) {
+            let view = aif_vs_union(aliased, aifVsEmpty())
+            aif_vs_mark_copied_on_keep(view)
+            return view
+        }
         return aliased
     }
     // v0.1 concurrency. A channel endpoint is a runtime object this compilation
@@ -1167,6 +1202,7 @@ internal fn aifBuild(module: ASTNode) {
 
             if (fid >= 0) {
                 let root = aif_scope_new(0 - 1, fid)
+                aif_con_fn(fid)
 
                 let mut paramPtr = d.child1
                 let mut index = 0
@@ -1211,6 +1247,7 @@ internal fn aifBuild(module: ASTNode) {
                 aifStmtCursor = 1
                 aifWalkChain(d.child2, fid, root)
                 aifStmtCursor = savedFnCursor
+                aif_con_fn(0 - 1)
             }
         }
         q = d.next

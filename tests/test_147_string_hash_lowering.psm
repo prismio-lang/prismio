@@ -72,7 +72,7 @@ fn main() -> Int {
     while (i < 64) {
         let key = head.concat(((1 + i % 8) as Char).toString(),
                               ((1 + i / 8) as Char).toString(), "xy")
-        if (key.length() != 12) { return fail("the degenerate key is not twelve bytes") }
+        if (key.length != 12) { return fail("the degenerate key is not twelve bytes") }
         if (keyHashBytes(key) != keyHashBytes(key.repeat(1))) {
             return fail("a degenerate key hashes differently on the heap")
         }

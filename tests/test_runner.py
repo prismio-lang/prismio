@@ -3940,14 +3940,19 @@ def run_loop_range_proofs_test():
     must report that many proved accesses out of that many, and no loop may report
     without an annotation, which is what catches a proof that silently stops
     firing or starts covering an access it must refuse.
+
+    A range `for` whose direction only its values settle is two loops, each with
+    its own proof, and emits its descending copy first; its annotation names both,
+    in that order: `// range: 1/2 2/2`.
     """
     print(f"\n{BLUE}--- Running loop_range_proofs ---{RESET}")
     source = TEST_DIR / "test_169_loop_range_proofs.psm"
     want = {}
     for number, line in enumerate(source.read_text().splitlines(), start=1):
-        found = re.search(r"// range: (\d+)/(\d+)\s*$", line)
+        found = re.search(r"// range: ((?:\d+/\d+ ?)+)\s*$", line)
         if found:
-            want[number] = (int(found.group(1)), int(found.group(2)))
+            want[number] = [tuple(int(n) for n in pair.split("/"))
+                            for pair in found.group(1).split()]
     problems = []
     with tempfile.TemporaryDirectory(prefix="prismio-range-proofs-") as tmp:
         env = os.environ.copy()
@@ -3960,12 +3965,13 @@ def run_loop_range_proofs_test():
             return False
         got = {}
         for found in re.finditer(r"range proof: line (\d+) proved (\d+) of (\d+)", built.stderr):
-            got[int(found.group(1))] = (int(found.group(2)), int(found.group(3)))
+            got.setdefault(int(found.group(1)), []).append((int(found.group(2)),
+                                                            int(found.group(3))))
     for number, counts in sorted(want.items()):
         if got.get(number) != counts:
-            problems.append(f"line {number}: expected {counts[0]}/{counts[1]}, got {got.get(number)}")
+            problems.append(f"line {number}: expected {counts}, got {got.get(number)}")
     for number in sorted(set(got) - set(want)):
-        problems.append(f"line {number}: proved {got[number][0]}/{got[number][1]} with no annotation")
+        problems.append(f"line {number}: proved {got[number]} with no annotation")
     if problems:
         print(f"{RED}[FAIL] loop range proofs{RESET}")
         for problem in problems:
@@ -4084,6 +4090,78 @@ def run_range_direction_test():
             print(f"  {problem}")
         return False
     print(f"{GREEN}[PASS] range direction folded where known, warned, and a zero step stopped{RESET}")
+    return True
+
+
+def run_failure_builtins_test():
+    """`panic`, `unreachable`, a failed `assert` and `exit`, run for real.
+
+    test_182 checks the paths that return. This runs failure_builtins_probe.psm
+    once per mode: each failure prints its kind, its message and `--> file:line:col`
+    to stderr and exits 101, and `exit(7)` exits 7 after its output. A program
+    that declares its own `assert` and `exit` keeps both. And an `assert` whose
+    message calls something keeps its loop's flat guard: the message runs only on
+    the way out of the process.
+    """
+    print(f"\n{BLUE}--- Running failure_builtins ---{RESET}")
+    problems = []
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    with tempfile.TemporaryDirectory(prefix="prismio-failure-builtins-") as tmp:
+        probe = Path(tmp) / ("probe" + exe_suffix)
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "failure_builtins_probe.psm"),
+                             "-o", str(probe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] failure builtins probe did not build: {built.stdout} {built.stderr}{RESET}")
+            return False
+        cases = (
+            # mode, status, stderr must contain, stdout must be
+            ("ok", 0, "", "done"),
+            ("panic", 101, "panic: no sign for zero\n  --> ", ""),
+            ("assert", 101, "assertion failed: if (mode.equals(\"assert\")) { assert(label.length > 9) }", ""),
+            ("assertmsg", 101, "assertion failed: custom tail\n  --> ", ""),
+            ("unreachable", 101, "panic: entered unreachable code: mode\n  --> ", ""),
+            ("exit", 7, "", "before exit"),
+        )
+        for mode, status, err, out in cases:
+            ran = subprocess.run([str(probe), mode], cwd=PROJECT_ROOT, capture_output=True, text=True)
+            if ran.returncode != status:
+                problems.append(f"{mode}: exit status {ran.returncode}, expected {status}")
+            if err and err not in ran.stderr:
+                problems.append(f"{mode}: stderr {ran.stderr.strip()[:200]!r} lacks {err!r}")
+            if ran.stdout.strip() != out:
+                problems.append(f"{mode}: stdout {ran.stdout.strip()!r}, expected {out!r}")
+        ran = subprocess.run([str(probe), "panic"], cwd=PROJECT_ROOT, capture_output=True, text=True)
+        if "failure_builtins_probe.psm:9:5" not in ran.stderr:
+            problems.append(f"panic does not name line 9 column 5: {ran.stderr.strip()[:200]!r}")
+
+        owned = Path(tmp) / ("owned" + exe_suffix)
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "failure_builtins_owned_probe.psm"),
+                             "-o", str(owned)])
+        if built.returncode != 0:
+            problems.append(f"a program's own assert/exit did not build: {built.stdout} {built.stderr}")
+        else:
+            ran = subprocess.run([str(owned)], cwd=PROJECT_ROOT, capture_output=True, text=True)
+            if ran.stdout.strip() != "42" or ran.returncode != 3:
+                problems.append(f"own assert/exit: stdout {ran.stdout.strip()!r}, status {ran.returncode}")
+
+        ir_path = Path(tmp) / "guard.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "test_182_failure_builtins.psm"),
+                             "-o", str(ir_path)])
+        if built.returncode != 0:
+            problems.append(f"test_182 IR did not build: {built.stderr}")
+        else:
+            ir = ir_path.read_text()
+            match = re.search(r'^define [^\n]*@checkedSum__[^\n]*\n(.*?)^}', ir, re.MULTILINE | re.DOTALL)
+            if not match:
+                problems.append("missing function checkedSum")
+            elif "flatguard" not in match.group(1):
+                problems.append("an assert with a calling message cost checkedSum its flat guard")
+    if problems:
+        print(f"{RED}[FAIL] failure builtins{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] panic, unreachable, assert and exit report, exit and keep the guard{RESET}")
     return True
 
 
@@ -6885,6 +6963,22 @@ def run_aif_verify_test():
         # returning a helper's allocation -- a pass-through its caller gets no
         # drop for -- which leaks both strings of every `"x".red().bold()`.
         "test_168_terminal_styling": 0,
+        # Call-result ownership asked of the call, not the allocation site
+        # (call_result_held), and a temporary whose callee returns a view of it
+        # given a binding (irHoistBorrowedTemporaries). 2,365 of 2,371 leaked
+        # before: one `Box { text: make(n) }` in an uncalled function refused
+        # the release to every `concat` result in the program.
+        "test_184_call_result_ownership": 0,
+        # A view of a binding kept past the binding's scope: pushed into a Vec,
+        # or assigned outward. These leak by design -- the binding is kept -- and
+        # what the fixture guards is the 0 violations and the strings reading
+        # back right; the compiler before 2026-09-25 aborted on it. A fall here
+        # is a copy-on-keep landing; a rise is a keeper the guards stopped seeing.
+        "test_185_view_outlives_binding": 22,
+        # The same, pushed with no binding in between, including a temporary the
+        # hoist gave one. Each Vec may be handed the literal fallback, so neither
+        # frees its elements.
+        "test_186_view_pushed_directly": 18,
     }
 
     max_allocations = {
@@ -7914,7 +8008,7 @@ def run_plib_triple_sections(compiler_source, work, env, llvm_dis, problems):
     asker = work / "cross-asker.psm"
     asker.write_text('import std.io\nimport std.string\nimport std.platform\n\n'
                      'fn main() -> Int {\n'
-                     '    if (platform.isMacOS()) { println("macos".concat("!")) }\n'
+                     '    if (platform.isMacOS) { println("macos".concat("!")) }\n'
                      '    return 0\n}\n')
     built = subprocess.run([str(compiler), "build", str(asker), "--target", target,
                             "--sysroot", sdk, "-o", str(work / "cross-asker")],
@@ -8097,9 +8191,9 @@ def run_module_artifact_test():
         asker = wd / "asker.psm"
         asker.write_text('import std.io\nimport std.platform\n\n'
                          'fn main() -> Int {\n'
-                         '    if (platform.isWindows()) { println("windows") }\n'
-                         '    if (platform.isLinux()) { println("linux") }\n'
-                         '    if (platform.isMacOS()) { println("macos") }\n'
+                         '    if (platform.isWindows) { println("windows") }\n'
+                         '    if (platform.isLinux) { println("linux") }\n'
+                         '    if (platform.isMacOS) { println("macos") }\n'
                          '    return 0\n}\n')
         asker_exe = wd / ("asker" + (".exe" if os.name == "nt" else ""))
         asked = subprocess.run([str(compiler), "build", str(asker), "-o", str(asker_exe)],
@@ -8168,7 +8262,7 @@ def run_module_artifact_test():
                             'import std.platform\nimport std.process\n\n'
                             'fn echo(word: String) -> Process {\n'
                             '    let p = Process()\n'
-                            '    if (platform.isWindows()) {\n'
+                            '    if (platform.isWindows) {\n'
                             '        p.program = "cmd"\n'
                             '        p.arguments = ["/c", "echo", word]\n'
                             '    } else {\n'
@@ -8285,6 +8379,7 @@ def main():
         ("loop_range_proofs", run_loop_range_proofs_test),
         ("proved_index_nsw", run_proved_index_nsw_test),
         ("range_direction", run_range_direction_test),
+        ("failure_builtins", run_failure_builtins_test),
         ("check_overlay", run_check_overlay_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),

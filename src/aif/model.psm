@@ -156,6 +156,8 @@ internal extern fn aif_program_has_tasks() -> Int
 
 // INFERENCE 5.6 / SPEC 6.3. The derivation, read back as a witness path.
 internal extern fn aif_con_at(file: Int, line: Int, col: Int)
+internal extern fn aif_con_fn(fnId: Int)
+internal extern fn aif_vs_mark_copied_on_keep(vs: Int)
 // M3.2. Where in its block a statement sits. A scope is a set of statements and
 // carries no order, so an extent that ends at last use has nothing to end at
 // without this. Set as the walk goes, read by the next site or call edge made.
@@ -442,6 +444,9 @@ internal extern fn aif_set_theta_mode(mode: Int)
 internal extern fn aif_theta_mode() -> Int
 internal extern fn aif_site_note_node(site: Int, node: Ptr)
 internal extern fn aif_note_call_result(node: Ptr, vs: Int, fnId: Int)
+internal extern fn aif_note_call_args(node: Ptr, fnId: Int)
+internal extern fn aif_note_arg_retained(node: Ptr, index: Int)
+internal extern fn aif_note_arg_aliased(node: Ptr, index: Int)
 internal extern fn aif_site_is_rc(site: Int) -> Int
 
 internal extern fn aif_order_add(symbol: String, site: Int)

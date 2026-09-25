@@ -1,0 +1,51 @@
+// A view pushed into a Vec with no binding of its own in between.
+//
+// test_185's question for `v.push(optionOr(o, d))`, and for the same with a
+// temporary, `v.push(optionOr(lookup(i), d))`. The second is given a hidden
+// binding by irHoistBorrowedTemporaries so it can be released, and must not be
+// released here: the Vec keeps its payload. Either one freed would be two owners
+// -- a violation under `--verify`, or strings read back wrong. Each Vec may also
+// be handed the literal fallback, so neither frees its elements; the literal used
+// to be freed as `.rodata`. The count is pinned in run_aif_verify_test.
+//
+// The comparisons are against literals on purpose. Comparing against a fresh
+// `make(i)` allocates into the freed block and writes the expected bytes there,
+// and the stale view then reads correct.
+
+import std.io
+import std.option
+import std.string
+import std.vec
+
+fn make(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
+
+fn lookup(n: Int) -> Option<String> {
+    if (n % 3 == 0) { return Option<String>.None }
+    return Option<String>.Some(make(n))
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut direct: Vec<String> = Vec<String>.withCapacity(4)
+    for i in 1..<6 {
+        let o = lookup(i)
+        direct.push(optionOr(o, "fallback, also longer than twelve"))
+    }
+    if (direct[0].equals("a string longer than twelve bytes 1") == false) { return fail("direct 1") }
+    if (direct[3].equals("a string longer than twelve bytes 4") == false) { return fail("direct 4") }
+
+    let mut temporaries: Vec<String> = Vec<String>.withCapacity(4)
+    for i in 1..<6 {
+        temporaries.push(optionOr(lookup(i), "fallback, also longer than twelve"))
+    }
+    if (temporaries[0].equals("a string longer than twelve bytes 1") == false) { return fail("temporary 1") }
+    if (temporaries[3].equals("a string longer than twelve bytes 4") == false) { return fail("temporary 4") }
+
+    println("ok")
+    return 0
+}

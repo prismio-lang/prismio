@@ -1,0 +1,85 @@
+// `process.env`, `setEnv`, `removeEnv` and `pid`.
+//
+// 1. Unset is `None` and an empty value is `Some("")` -- two different answers.
+// 2. `setEnv` refuses an empty name and one containing `=`, on every platform.
+// 3. `removeEnv` is true whether or not the name was set.
+// 4. A child started after `setEnv` inherits the variable: this binary starts
+//    itself with the argument `child`, and the child prints what it sees.
+
+import std.io
+import std.option
+import std.process
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn describe(name: String) -> String {
+    let value = process.env(name)
+    match (value) {
+        Option.Some(v) => { return "[".concat(v, "]") }
+        Option.None => { return "unset" }
+    }
+}
+
+fn main() -> Int {
+    if (process.args.count > 1) {
+        // The child: report what it inherited, and nothing else.
+        println(describe("PRISMIO_TEST_183_INHERITED"))
+        return 0
+    }
+
+    let mut bad = 0
+    if (describe("PRISMIO_TEST_183_NEVER_SET").equals("unset") == false) {
+        bad = bad + fail("an unset variable was not None")
+    }
+    if (process.setEnv("PRISMIO_TEST_183_EMPTY", "") == false) {
+        bad = bad + fail("setting an empty value was refused")
+    }
+    if (describe("PRISMIO_TEST_183_EMPTY").equals("[]") == false) {
+        bad = bad + fail("an empty value was not Some(\"\")")
+    }
+
+    let long = "a value longer than twelve bytes, so it owns its storage"
+    if (process.setEnv("PRISMIO_TEST_183_A", long) == false) { bad = bad + fail("setEnv") }
+    if (describe("PRISMIO_TEST_183_A").equals("[".concat(long, "]")) == false) {
+        bad = bad + fail("the value read back differs")
+    }
+    if (process.setEnv("PRISMIO_TEST_183_A", "second") == false) { bad = bad + fail("overwrite") }
+    if (describe("PRISMIO_TEST_183_A").equals("[second]") == false) {
+        bad = bad + fail("setEnv did not overwrite")
+    }
+
+    if (process.setEnv("BAD=NAME", "x")) { bad = bad + fail("a name with `=` was accepted") }
+    if (process.setEnv("", "x")) { bad = bad + fail("an empty name was accepted") }
+
+    if (process.removeEnv("PRISMIO_TEST_183_A") == false) { bad = bad + fail("removeEnv") }
+    if (describe("PRISMIO_TEST_183_A").equals("unset") == false) {
+        bad = bad + fail("removeEnv left the variable set")
+    }
+    if (process.removeEnv("PRISMIO_TEST_183_NEVER_SET") == false) {
+        bad = bad + fail("removing an unset name was not true")
+    }
+
+    if (process.pid <= 0) { bad = bad + fail("pid is not positive") }
+
+    process.setEnv("PRISMIO_TEST_183_INHERITED", "from the parent")
+    let child = Process()
+    child.program = process.args[0]
+    child.arguments = ["child"]
+    child.stdout = StreamMode.Pipe
+    let running = child.spawn()
+    let seen = running.stdout.readAll()
+    running.wait()
+    if (seen.trim().equals("[from the parent]") == false) {
+        bad = bad + fail("the child saw ".concat(seen.trim()))
+    }
+
+    if (bad != 0) { return 1 }
+    println("PASS: process environment")
+    return 0
+}

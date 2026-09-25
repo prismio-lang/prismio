@@ -174,13 +174,16 @@ internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode) -> String {
 // A range `for` over `name` from the value already in its slot to `endVal`,
 // advancing by `stepVal` -- a literal, or an i32 value the loop has already
 // required to be positive before it is entered. `endVal` is exclusive unless
-// `inclusive`.
+// `inclusive`. `down` counts from the start down to `endVal`, which is then the
+// low end rather than the high one.
 internal fn generateForRangeGuard(stmt: ASTNode, endVal: String, stepVal: String,
-                                  stepIsLiteral: Bool, inclusive: Bool) -> String {
+                                  stepIsLiteral: Bool, inclusive: Bool, down: Bool) -> String {
     let rl = rangeLoopNew(ptr_null(), stmt.child3)
     rl.line = stmt.line
     let index = rangeAddVar(rl, stmt.s1)
-    rl.kinds[index] = RANGE_UP
+    let mut kind = RANGE_UP
+    if (down) { kind = RANGE_DOWN }
+    rl.kinds[index] = kind
     if (stepIsLiteral) {
         if (__builtin_string_len(stepVal) > RANGE_LITERAL_DIGITS) { return "" }
         rl.forStep = stepVal.parseIntOr(0)
@@ -191,7 +194,7 @@ internal fn generateForRangeGuard(stmt: ASTNode, endVal: String, stepVal: String
     }
     rl.forVar = index
     rangeCollectVars(rl)
-    if (rl.kinds[index] != RANGE_UP) { return "" }
+    if (rl.kinds[index] != kind) { return "" }
 
     // The latch leaves the loop before it would pass `end`, so the variable is
     // never past it at the head and never wraps: no fact to fold for it.
@@ -200,12 +203,19 @@ internal fn generateForRangeGuard(stmt: ASTNode, endVal: String, stepVal: String
     let start = ir_get_temp_name(ir_sext("i32",
         ir_get_temp_name(ir_load("i32", ir_get_var_slot(stmt.s1))), "i64"))
     let end64 = ir_get_temp_name(ir_sext("i32", endVal, "i64"))
+    let mut last = end64.clone()
+    if (inclusive == false and down) {
+        last = ir_get_temp_name(ir_add("i64", end64, "1"))
+    } else if (inclusive == false) {
+        last = ir_get_temp_name(ir_sub("i64", end64, "1"))
+    }
     rl.inits[index] = start.clone()
-    rl.lows[index] = start.clone()
-    if (inclusive) {
-        rl.highs[index] = end64.clone()
+    if (down) {
+        rl.lows[index] = last.clone()
+        rl.highs[index] = start.clone()
     } else {
-        rl.highs[index] = ir_get_temp_name(ir_sub("i64", end64, "1"))
+        rl.lows[index] = start.clone()
+        rl.highs[index] = last.clone()
     }
     if (stepIsLiteral == false) {
         rl.unitValues[index] = ir_get_temp_name(ir_sext("i32", stepVal, "i64"))
@@ -503,7 +513,8 @@ private fn rangeRunWalk(rl: RangeLoop, mode: Int) {
     rangeWalkBlock(rl.bodyPtr, rl)
     if (rl.live) { rangeEndContinue(rl) }
     if (rl.forVar >= 0 and rl.contLive) {
-        let latch = rl.coefs[rl.forVar] * rl.forStep
+        let mut latch = rl.coefs[rl.forVar] * rl.forStep
+        if (rl.kinds[rl.forVar] == RANGE_DOWN) { latch = 0 - latch }
         rl.contLo = rl.contLo + latch
         rl.contHi = rl.contHi + latch
     }

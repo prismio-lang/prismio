@@ -313,6 +313,15 @@ public fn createNode(kind: NodeKind) -> ASTNode {
     }
 }
 
+// A `prop` declaration (src/parse/decl.psm). Kept in FUNCTION.i1, which is
+// otherwise codegen's: markSingleLoopCallsiteFunctions clears it before counting
+// call sites, and nothing reads the marker after sema.
+public fn nodeMarkProperty(fnNode: ASTNode) { fnNode.i1 = 4 }
+
+public fn nodeIsProperty(fnNode: ASTNode) -> Bool {
+    return fnNode.kind == NodeKind.FUNCTION and fnNode.i1 == 4
+}
+
 // Copies a span from one node to another. Used where a node is built from
 // another's position -- desugaring `x += 1`, or attributing a synthesised node to
 // the construct that implied it.

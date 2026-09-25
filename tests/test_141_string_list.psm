@@ -25,7 +25,7 @@ fn fail(message: String) -> Int {
 fn totalLength(names: Vec<String>) -> Int {
     let mut total = 0
     for name in names {
-        total = total + name.length()
+        total = total + name.length
     }
     return total
 }
@@ -62,13 +62,13 @@ fn main() -> Int {
     let sentence = "the quick brown fox jumps over the lazy dog"
     words.push(sentence.concat("!"))
     words.push(sentence.slice(4, 25))
-    if (words[102].length() != 44) { return fail("an owned long string") }
+    if (words[102].length != 44) { return fail("an owned long string") }
     if (words[103].equals("quick brown fox jumps") == false) { return fail("a pushed view") }
 
     // Iteration over every element, and a read past the end, which is the empty
     // String it always was.
     if (totalLength(words) != 426) { return fail("for-in over a Vec<String>") }
-    if (words[1000].length() != 0) { return fail("a read past the end") }
+    if (words[1000].length != 0) { return fail("a read past the end") }
 
     // Sorting moves pairs between slots, inline and owned alike.
     let mut fruit: Vec<String> = []

@@ -289,33 +289,20 @@ public fn benchKnapsack(scale: Int) -> Int {
     let capacity = 800 * scale
     let items = 180
     let mut best: Vec<Int> = Vec<Int>.withCapacity(capacity + 1)
+
     let mut c = 0
     while (c <= capacity) {
         best.push(0)
         c = c + 1
     }
-    let mut i = 1
-    while (i <= items) {
+
+    for i in 1..items {
         let weight = (i * 37) % 97 + 1
         let value = (i * 53) % 211 + 1
-        let mut at = capacity
-        while (at >= weight) {
-            // The same statement the other two arms write, now spelled the same
-            // way as well:
-            //
-            //   C++   best[at] = std::max(best[at], best[at - weight] + value);
-            //   Rust  best[at] = best[at].max(best[at - weight] + value);
-            //
-            // `max` is `std.math`'s, over `llvm.smax.i32`. An *unconditional*
-            // store is the load-bearing part -- this was an `if (candidate > ...)
-            // { list_set(...) }`, which is a different program from the other two
-            // and vectorises in none of the three languages. Written this way the
-            // loop emits 22 NEON ops and four elements per iteration, the same as
-            // C++.
+
+        for at in capacity..weight {
             best[at] = max(best[at], best[at - weight] + value)
-            at = at - 1
         }
-        i = i + 1
     }
     return best[capacity]
 }
@@ -596,7 +583,7 @@ public fn benchBuildOneExpr(depth: Int, s: BenchSeedHolder) -> String {
 }
 
 public fn benchParseSExpr(text: String, p: BenchPosHolder, inout nodes: Vec<Int>) -> Int {
-    let n = text.length()
+    let n = text.length
     while (p.val < n and (text.byteAt(p.val) == 32 or text.byteAt(p.val) == 10)) {
         p.val = p.val + 1
     }
@@ -662,7 +649,7 @@ public fn benchSExprParse(scale: Int) -> Int {
 
     let mut nodes: Vec<Int> = []
     let p = BenchPosHolder { val: 0 }
-    let n = allText.length()
+    let n = allText.length
     let mut checksum: I64 = 0
     while (p.val < n) {
         let root = benchParseSExpr(allText, p, nodes)
@@ -750,8 +737,8 @@ public fn benchSortStrings(scale: Int) -> Int {
 public fn benchEditDistance(scale: Int) -> Int {
     let left = "kitten_sitting_flitting_knitting_".repeat(6 * scale)
     let right = "sitting_kitten_blitting_knotting_".repeat(6 * scale)
-    let rows = left.length()
-    let columns = right.length()
+    let rows = left.length
+    let columns = right.length
     let stride = columns + 1
 
     // Two rows in one flat buffer, alternating by offset. A row swap would be a

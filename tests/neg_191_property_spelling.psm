@@ -1,0 +1,29 @@
+// expect-error: `length` is a property, not a method
+// expect-error: `trim` is a method, not a property
+// expect-error: `isEmpty` is a property, not a method
+// expect-error: `sqrt` is a method, not a property
+// expect-error: `area` is a property, not a method
+// A property is read without parentheses and a method is called with them;
+// each spelling of the other is an error that names the fix.
+import std.io
+import std.math
+import std.string
+import std.vec
+
+struct Square { side: Int }
+
+impl Square {
+    prop area(self) -> Int { return self.side * self.side }
+}
+
+fn main() -> Int {
+    let s = "text"
+    let v: Vec<Int> = [1, 2]
+    let sq = Square { side: 3 }
+    println(s.length())
+    println(s.trim)
+    println(v.isEmpty())
+    println(2.0.sqrt)
+    println(sq.area())
+    return 0
+}

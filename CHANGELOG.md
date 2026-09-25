@@ -2,8 +2,102 @@
 
 ## Unreleased
 
+### Added
+
+- **`std.math` is a math library.** Float gets `sqrt`, `cbrt`, `pow`, `powi`,
+  `hypot`, `mulAdd`, `floor`/`ceil`/`trunc`/`round`/`roundEven`/`fract`,
+  `exp`/`exp2`/`expm1`, `ln`/`ln1p`/`log2`/`log10`/`log`, the six trigonometric
+  functions, their hyperbolic and inverse forms, `atan2`, `min`/`max`
+  (NaN-ignoring), `clamp`, `sign`, `copySign`, `isNan`/`isInfinite`/`isFinite`,
+  `toRadians`/`toDegrees` and `toInt`. Int gets `clamp`, `sign`, `pow`, `gcd`, `lcm`,
+  `floorDiv`, `floorMod`, `isqrt`, `isEven`/`isOdd`/`isPowerOfTwo` and `toFloat`, and
+  I64 the same core. Constants are associated: `Float.PI`, `Float.E`,
+  `Float.INFINITY`, `Float.NAN`, `Float.EPSILON`, `Int.MAX`, `U64.MAX` and the rest.
+  Each Float function is a `__builtin_f64_*` lowered to an LLVM intrinsic or a libm
+  call LLVM knows is pure, so `x.sqrt()` is one `fsqrt` and a loop calling it keeps
+  its flat guard. raytracer_sphere, switched from its own `extern fn sqrt`, went
+  from 1.22x of C++ to 1.06x. aif/evidence/RESULTS-std-math.md.
+- **`%` on Float**, as C's `fmod`: the result takes the dividend's sign.
+- **Environment variables and the process id.** `process.env(name)` is
+  `Option<String>` (`None` when unset, `Some("")` when empty),
+  `process.setEnv(name, value)` and `process.removeEnv(name)` answer `Bool`, and
+  `process.pid` is this process's id. A child started after `setEnv` inherits
+  the variable. POSIX `setenv`/`unsetenv`/`getpid`, Windows `_putenv_s`/`_getpid`;
+  a name that is empty or contains `=` is refused on both. test_183.
+- **`panic`, `unreachable`, `assert` and `exit`**, with no import. A failure
+  prints its kind, message and `--> file:line:col` to stderr and exits 101; a
+  failed `assert` with no message prints its own source line; `exit(code)` ends
+  the process with `code`. `panic`, `unreachable` and `exit` never return, so a
+  function may end in one instead of a `return`, and code after one is the
+  "unreachable code" error. `assert` is on in release builds, builds its message
+  only when it fails, and leaves a loop its flat guard -- its cost in a hot loop
+  measured the same as the equivalent check in C. The builtins apply only where
+  a program declares no function of the name, so an existing `extern fn exit`
+  keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
+
+### Fixed
+
+- **`NaN != NaN` is true.** Float `!=` was `fcmp one` (ordered), which answers
+  false when either side is NaN, so `x != x` could not detect one.
+- **`-x` keeps the sign of zero.** Unary minus on a Float was `fsub 0.0, x`, which
+  gives +0.0 for -(+0.0); it is `fneg` now, and `1.0 / -0.0` is `-inf`.
+- **Float-to-integer `as` saturates.** Out of range clamps to the type's bounds
+  and NaN is 0, where a bare `fptosi` produced poison.
+- **An associated constant keeps its declared numeric type.** `I64.MAX` was
+  re-typed as `Int` where it was named and rejected as "does not fit in Int".
+- **A result passed straight into another call is released.** `println(f(x))`,
+  `optionOr(process.env("X"), "d")`, `x.trim().toUpper()` and
+  `text.split(',').length` all leaked their temporaries; each is released now,
+  after the call or -- where the callee may hand back a view of it -- at the end
+  of the block. Three causes, one per shape: ownership of a call's result was
+  asked of its allocation *site*, so one `Box { text: make(n) }` anywhere, even
+  uncalled, cost every `concat` result in the program its release (asked of the
+  call's own flow now); "may this callee return its parameter" was also asked of
+  sites, so chained one-line wrappers looked like pass-throughs (asked of the
+  path from parameter to return now); and a temporary whose callee returns a view
+  of it had no binding to be dropped by (it is given one). `s_expression_parse`
+  went from 16,105 leaked to 0; test_184 from 3,867 to 0. Two shapes still leak:
+  KNOWN_ISSUES.
+- **A view of a dropped binding is no longer read after the drop.** A value
+  from `optionOr(o, d)` pushed into a Vec, or assigned to a variable outside the
+  loop, outlived `o`'s scope-exit release: the Vec read back the last string
+  written, and `--verify` reported the run clean because each release was legal.
+  The binding is kept alive now (a leak, pinned by test_185 and test_186).
+  test_185 aborts on the previous compiler.
+- **A Vec that may hold a string literal no longer frees it.** Pushing
+  `optionOr(x, "fallback")` could push the literal, and the teardown released
+  `.rodata`; such a Vec releases no element now.
+
 ### Changed
 
+- **Properties are declared with `prop`, and `s.length()` is an error.** Any
+  one-argument function that did not allocate could be read without
+  parentheses, so `s.length` and `s.length()` were both legal and `x.sqrt` read
+  as a field. A property is now declared -- `prop length(self) -> Int` in place
+  of `fn` -- read only without parentheses, and a method only with them; the
+  wrong spelling of either is an error naming the fix. A `prop` must take only
+  its receiver, return a value and not allocate. `prop` is contextual, so it is
+  still a legal name. std's properties: String `length`, `isEmpty`,
+  `isNotEmpty`, `isBlank`, `first`, `last`, `scalarCount`, `isAscii`,
+  `isValidUtf8`, `displayWidth`, `graphemeCount`; Char `isDigit`, `isAlpha`,
+  `isAlnum`, `isSpace`, `isLower`, `isUpper`, `digitValue`, `code`; number
+  `isEven`, `isOdd`, `isPowerOfTwo`, `isNan`, `isInfinite`, `isFinite`;
+  `platform.current`, `architecture`, `environment`, `isLinux`, `isMacOS`,
+  `isWindows`; `process.pid`, `process.args.count`, a stream's `isOpen`; and the
+  collections' `length`, `capacity`, `first`, `last`, `isEmpty`, `isNotEmpty`.
+  **Breaking:** `s.length()` and `x.sqrt` no longer compile. test_187, neg_191,
+  neg_192.
+- **A range `for` counting down keeps its bounds-check-free copy.** The
+  descending copy of a loop whose direction is settled at run time was one
+  checked copy, and a literal descending range had the flat guard but no range
+  proof. knapsack's inner loop written `for at in capacity..weight` instead of
+  its `while` ran ~300 µs against ~37: two `list_get_inline_scalar` calls and a
+  `list_set_inline_scalar` per element. `generateForRangeGuard` now takes the
+  direction -- the range's end is the low bound counting down -- and each copy
+  gets its own flat guard and proof; both spellings measure 37-40 µs. The
+  benchmark suite's machine code is unchanged (fn_mnemonic_diff: 0 of 635), and
+  the compiler's own IR is 0.13% longer. test_169's `// range:` annotations name
+  one result per copy, so the descending proofs are asserted, not only answered.
 - **A range counts down when its start is past its end.** Breaking: `for i in
   10..0` visits 10 down to 0 and `5..<1` visits 5, 4, 3, 2, where both ran no
   times. `step` is now the distance and the range the direction: `10..0 step 2`
@@ -12,8 +106,8 @@
   the loop no times; a literal one stays a compile error. `repeat(n)` is a
   count, not a range: zero or less still runs no times. Literal ends, a
   `repeat` and `0..<` a length are settled at compile time; any other range
-  compares its ends once on entry, and only its ascending copy is guarded and
-  range-proved. An inclusive range ending `n - 1` over a computed `n` warns
+  compares its ends once on entry, and each copy is guarded and range-proved on
+  its own. An inclusive range ending `n - 1` over a computed `n` warns
   (P4003), since it counts down to -1 when `n` is 0: write `0..<n`. Audited with
   a compiler that reported every loop taking the descending path: across a
   self-compile, the whole suite and all 62 benchmark workloads, only test_165's

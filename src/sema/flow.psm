@@ -83,9 +83,60 @@ private fn semaIfHasBreak(stmt: ASTNode) -> Bool {
     return semaBlockHasBreak(elseNode)
 }
 
+// --- failure builtins ----------------------------------------------------------
+//
+// `panic`, `unreachable`, `assert` and `exit` are builtins **only where the
+// program has not claimed the name.** A builtin that took a name away would
+// silently change what an existing call means -- and the compiler's own sources
+// declare `extern fn exit` six times. Where the builtin applies, sema rewrites
+// the callee to its reserved `__builtin_` spelling, which no program can declare,
+// so everything after sema -- divergence, codegen, the loop guard, AIF -- keys on
+// that name alone.
+internal fn semaFailureBuiltinApplies(name: String) -> Bool {
+    if (name.equals("panic") == false and name.equals("unreachable") == false
+        and name.equals("assert") == false and name.equals("exit") == false) {
+        return false
+    }
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION or decl.kind == NodeKind.EXTERN_FUNCTION) {
+            // A method is reached through its receiver and never shadows a
+            // free call: `game.exit()` and `exit(1)` can both exist.
+            let isMethod = nodeExists(decl.child1)
+                and ptr_to_node(decl.child1).kind == NodeKind.FUNCTION_PARAMETER
+                and ptr_to_node(decl.child1).s1.equals("self")
+            if (isMethod == false) { return false }
+        }
+    }
+    return true
+}
+
+// The calls control never comes back from. `assert` is not one: it returns
+// whenever its condition holds.
+internal fn semaCallNeverReturns(name: String) -> Bool {
+    if (name.equals("__builtin_panic") or name.equals("__builtin_unreachable")
+        or name.equals("__builtin_exit")) {
+        return true
+    }
+    // Before sema has rewritten the callee.
+    if (name.equals("assert")) { return false }
+    return semaFailureBuiltinApplies(name)
+}
+
 // True when control cannot continue past this statement.
 internal fn semaStmtDiverges(stmt: ASTNode) -> Bool {
     if (stmt.kind == NodeKind.RETURN_STATEMENT) { return true }
+    // `panic("…")`, `unreachable()` or `exit(code)` as a statement of its own.
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT and nodeExists(stmt.child1)) {
+        let call = ptr_to_node(stmt.child1)
+        if (call.kind == NodeKind.CALL_EXPR and nodeExists(call.child1)) {
+            let callee = ptr_to_node(call.child1)
+            if (callee.kind == NodeKind.IDENTIFIER_EXPR and semaCallNeverReturns(callee.s1)) {
+                return true
+            }
+        }
+    }
     if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
     if (stmt.kind == NodeKind.CONTINUE_STATEMENT) { return true }
 

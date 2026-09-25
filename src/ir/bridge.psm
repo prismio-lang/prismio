@@ -86,7 +86,9 @@ public extern fn ir_fadd(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fsub(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fmul(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fdiv(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_frem(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_neg(type: String, value: String) -> Int
+public extern fn ir_fneg(type: String, value: String) -> Int
 
 // Width conversions
 public extern fn ir_zext(fromType: String, value: String, toType: String) -> Int
@@ -117,6 +119,7 @@ public extern fn ir_icmp_ugt(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_icmp_uge(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fcmp_oeq(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fcmp_one(type: String, lhs: String, rhs: String) -> Int
+public extern fn ir_fcmp_une(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fcmp_olt(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fcmp_ole(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_fcmp_ogt(type: String, lhs: String, rhs: String) -> Int

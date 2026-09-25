@@ -21,8 +21,8 @@ fn fail(message: String) -> Int {
 // length. Written as the loop it used to be, so the builtin is checked against
 // the definition rather than against itself.
 fn referenceOrder(a: String, b: String) -> Int {
-    let alen = a.length()
-    let blen = b.length()
+    let alen = a.length
+    let blen = b.length
     let mut n = alen
     if (blen < n) { n = blen }
     let mut i = 0

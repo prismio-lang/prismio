@@ -2116,9 +2116,9 @@ impl String {
     //
     // Two to six parts in **one construction**: no allocation when the result
     // fits in the inline pair, and one allocation otherwise. `a + b + c` lowers
-    // to one call rather than a nested join whose intermediate nothing names;
-    // RUNTIME.md 3.1 is that a value nothing names is a value nothing frees. Six
-    // is where it stops because `strJoin` is the right answer past that.
+    // to one call rather than a nested join, so there is no intermediate to
+    // allocate and release at all. Six is where it stops because `strJoin` is
+    // the right answer past that.
     public fn concat(self, other: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(other)
@@ -2235,16 +2235,16 @@ impl String {
     // -----------------------------------------------------------------------
     // The rest, which delegate
     // -----------------------------------------------------------------------
-    public fn length(self) -> Int { return strLength(self) }
-    public fn isEmpty(self) -> Bool { return strIsEmpty(self) }
-    public fn isNotEmpty(self) -> Bool { return strIsEmpty(self) == false }
-    public fn isBlank(self) -> Bool { return strIsBlank(self) }
+    public prop length(self) -> Int { return strLength(self) }
+    public prop isEmpty(self) -> Bool { return strIsEmpty(self) }
+    public prop isNotEmpty(self) -> Bool { return strIsEmpty(self) == false }
+    public prop isBlank(self) -> Bool { return strIsBlank(self) }
     public fn clone(self) -> String { return strClone(self) }
 
     public fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
     public fn get(self, index: Int) -> Option<Char> { return strGet(self, index) }
-    public fn first(self) -> Char { return strFirst(self) }
-    public fn last(self) -> Char { return strLast(self) }
+    public prop first(self) -> Char { return strFirst(self) }
+    public prop last(self) -> Char { return strLast(self) }
 
     public fn substring(self, start: Int, length: Int) -> String {
         return strSubstring(self, start, length)
@@ -2360,9 +2360,9 @@ impl String {
     // `substring` above are byte-indexed and stay that way; these count and cut
     // by character, which is what user text needs. See the UTF-8 section for why
     // both exist.
-    public fn isAscii(self) -> Bool { return strIsAscii(self) }
-    public fn isValidUtf8(self) -> Bool { return strIsValidUtf8(self) }
-    public fn scalarCount(self) -> Int { return strScalarCount(self) }
+    public prop isAscii(self) -> Bool { return strIsAscii(self) }
+    public prop isValidUtf8(self) -> Bool { return strIsValidUtf8(self) }
+    public prop scalarCount(self) -> Int { return strScalarCount(self) }
     public fn scalars(self) -> Vec<Int> { return strScalars(self) }
     public fn scalarAt(self, at: Int) -> Int { return strScalarAt(self, at) }
     public fn scalarWidthAt(self, at: Int) -> Int { return strScalarWidthAt(self, at) }
@@ -2387,17 +2387,17 @@ impl String {
 // note over `charCode` in src/common/text.psm for why writing that conversion out
 // by hand was once a source of silent wrongness.
 impl Char {
-    public fn isDigit(self) -> Bool { return charIsDigit(self) }
-    public fn isLower(self) -> Bool { return charIsLower(self) }
-    public fn isUpper(self) -> Bool { return charIsUpper(self) }
-    public fn isAlpha(self) -> Bool { return charIsAlpha(self) }
-    public fn isAlnum(self) -> Bool { return charIsAlnum(self) }
-    public fn isSpace(self) -> Bool { return charIsSpace(self) }
+    public prop isDigit(self) -> Bool { return charIsDigit(self) }
+    public prop isLower(self) -> Bool { return charIsLower(self) }
+    public prop isUpper(self) -> Bool { return charIsUpper(self) }
+    public prop isAlpha(self) -> Bool { return charIsAlpha(self) }
+    public prop isAlnum(self) -> Bool { return charIsAlnum(self) }
+    public prop isSpace(self) -> Bool { return charIsSpace(self) }
 
     public fn toUpper(self) -> Char { return charToUpper(self) }
     public fn toLower(self) -> Char { return charToLower(self) }
-    public fn digitValue(self) -> Int { return charDigitValue(self) }
-    public fn code(self) -> Int { return self as Int }
+    public prop digitValue(self) -> Int { return charDigitValue(self) }
+    public prop code(self) -> Int { return self as Int }
     public fn toString(self) -> String { return strFromChar(self) }
 }
 

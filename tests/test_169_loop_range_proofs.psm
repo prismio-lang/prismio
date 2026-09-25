@@ -180,7 +180,7 @@ fn forCopy(n: Int, a: Int, b: Int, dst0: Int) -> Int {
         z = z + 1
     }
     let mut j = dst0
-    for i in a..<b {  // range: 2/2
+    for i in a..<b {  // range: 1/2 2/2
         dst[j] = src[i]
         j = j + 1
     }
@@ -190,8 +190,30 @@ fn forCopy(n: Int, a: Int, b: Int, dst0: Int) -> Int {
 fn forStep(n: Int, a: Int, b: Int, step: Int) -> Int {
     let xs = ascending(n, 1)
     let mut acc = 0
-    for i in a..b step step {  // range: 1/1
+    for i in a..b step step {  // range: 1/1 1/1
         acc = acc + xs[i] * (i + 2)
+    }
+    return acc
+}
+
+// Counting down, the range's end is the variable's low bound and its start the
+// high one. A knapsack row reads behind the element it writes, so `at - w` is
+// what the low end has to keep inside the list.
+fn forDown(n: Int, cap: Int, w: Int, v: Int) -> Int {
+    let mut best = ascending(n, 1)
+    for at in cap..w {  // range: 3/3 3/3
+        best[at] = best[at] + best[at - w] + v
+    }
+    return weighted(best)
+}
+
+// A literal range that counts down is one copy, and an excluded end is the low
+// end plus one.
+fn forDownLiteral(n: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut acc = 0
+    for i in 9..<2 {  // range: 1/1
+        acc = acc * 3 + xs[i]
     }
     return acc
 }
@@ -400,6 +422,22 @@ fn main() -> Int {
     bad = bad + check("FAIL: for step", forStep(10, 0, 9, 3), 188)
     bad = bad + check("FAIL: for step one", forStep(10, 0, 9, 1), 440)
     bad = bad + check("FAIL: for step past the end", forStep(10, 4, 20, 5), 140)
+
+    bad = bad + check("FAIL: for copy down", forCopy(8, 7, 0, 0), 224)
+    bad = bad + check("FAIL: for copy down past the end", forCopy(8, 12, 3, 0), 229)
+    bad = bad + check("FAIL: for copy down before the start", forCopy(8, 7, 0 - 3, 0), 264)
+
+    bad = bad + check("FAIL: for step down", forStep(10, 9, 0, 3), 188)
+    bad = bad + check("FAIL: for step down past the end", forStep(10, 20, 4, 5), 42)
+    bad = bad + check("FAIL: for step down to Int.min", forStep(10, 5, 0 - 2147483647, 1000000000), 42)
+
+    bad = bad + check("FAIL: for down", forDown(10, 9, 3, 1), 658)
+    bad = bad + check("FAIL: for down past the end", forDown(10, 12, 3, 1), 658)
+    bad = bad + check("FAIL: for down negative weight", forDown(10, 9, 0 - 2, 1), 1080)
+    bad = bad + check("FAIL: for down one step", forDown(10, 3, 3, 1), 393)
+    bad = bad + check("FAIL: for down counting up", forDown(10, 2, 5, 1), 409)
+    bad = bad + check("FAIL: for down literal", forDownLiteral(10), 10387)
+    bad = bad + check("FAIL: for down literal past the end", forDownLiteral(5), 19)
 
     bad = bad + check("FAIL: divided", divided(8, 0, 10), 229)
     bad = bad + check("FAIL: divided negative", divided(8, 0 - 5, 6), 104)

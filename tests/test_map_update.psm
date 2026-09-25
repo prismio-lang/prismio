@@ -87,8 +87,8 @@ fn main() -> Int {
     mapSet(names, "an-owned-map-update-key", 0)
     let key = "an-owned-map-".concat("update-key")
     let capture = "an-owned-callback-".concat("capture")
-    let expected = capture.length()
-    if (mapUpdate(names, key, |v: Int| v + capture.length()) == false) { return 10 }
+    let expected = capture.length
+    if (mapUpdate(names, key, |v: Int| v + capture.length) == false) { return 10 }
     if (mapGetOr(names, key, -1) != expected) { return 11 }
 
     let countedKey = ProbeKey { id: 5, hashes: 0 }

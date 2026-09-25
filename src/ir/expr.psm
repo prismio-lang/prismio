@@ -5,6 +5,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import common.target
+import common.float_builtins
 import std.string
 import aif.model
 
@@ -295,6 +296,89 @@ internal fn chainEscapesThroughCall(head: Ptr, name: String) -> Bool {
     return false
 }
 
+// Whether `name`'s allocation, or a view of it, is handed to a call that keeps it.
+//
+// A binding passed straight to a keeper is already declined by AIF: the flow
+// reaches a container, and aif_owns_call_result_at_node says no. A *view* of it
+// is not, because it travels through a field of the binding and field keys are
+// object-insensitive:
+//
+//     let o = lookup(i)                      // dropped at the end of the body
+//     keep.push(optionOr(o, "fallback"))     // the String inside o, kept
+//
+// That freed every payload twice -- 29 violations in 29 iterations.
+private fn nodeRetainsAliasOf(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.CALL_EXPR) {
+        let mut a = n.child2
+        let mut index = 0
+        while (nodeExists(a)) {
+            if (irValueAliasesName(a, name, 0) and aif_call_arg_retained(nodePtr, index) == 1) {
+                return true
+            }
+            a = ptr_to_node(a).next
+            index = index + 1
+        }
+    }
+
+    if (chainRetainsAliasOf(n.child1, name)) { return true }
+    if (chainRetainsAliasOf(n.child2, name)) { return true }
+    return chainRetainsAliasOf(n.child3, name)
+}
+
+internal fn chainRetainsAliasOf(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (nodeRetainsAliasOf(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// Whether `name`'s allocation is assigned into some other binding.
+//
+// The third way out of the frame, beside a `return` (nodeReturnsName) and a
+// return through a call (nodeEscapesThroughCall), and the one neither sees:
+//
+//     let mut outer = "..."
+//     for i in 0..<n {
+//         let o = lookup(i)                 // dropped at the end of the body
+//         outer = optionOr(o, "fallback")   // a view of o's payload
+//     }
+//     return outer                          // read after the drop
+//
+// That printed clobbered bytes, and `--verify` reported it clean -- both
+// releases are ledger-legal. The binding assigned to may be declared anywhere;
+// telling an inner one from an outer one needs scopes this walk does not have,
+// so any other binding counts, which fails towards the leak.
+private fn nodeAssignsAliasOf(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+        let target = ptr_to_node(n.child1)
+        let other = target.kind != NodeKind.IDENTIFIER_EXPR or target.s1.equals(name) == false
+        if (other and irValueAliasesName(n.child2, name, 0)) { return true }
+    }
+
+    if (chainAssignsAliasOf(n.child1, name)) { return true }
+    if (chainAssignsAliasOf(n.child2, name)) { return true }
+    return chainAssignsAliasOf(n.child3, name)
+}
+
+internal fn chainAssignsAliasOf(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (nodeAssignsAliasOf(p, name)) { return true }
+        p = n.next
+    }
+    return false
+}
+
 // Whether the value `exprPtr` denotes may be the allocation `name` holds.
 //
 // Two expression kinds can carry it and the rest cannot. An identifier is either
@@ -324,11 +408,21 @@ private fn irCallReturnsAlias(e: ASTNode) -> Bool {
 
 private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
     if (nodeIsNull(exprPtr)) { return false }
+    if (hops == 0) { irAliasChased = ";" }
     if (hops > 8) { return true }
     let e = ptr_to_node(exprPtr)
 
     if (e.kind == NodeKind.IDENTIFIER_EXPR) {
         if (e.s1.equals(name)) { return true }
+        // A binding already being chased adds nothing: what it may hold is the
+        // union of what is written into it, and this is one of those writes
+        // coming back round. Without it `acc = mapAdd(acc, 1)` chased `acc`
+        // into the cap above, which answers yes -- and once assignments and
+        // call arguments were asked as well as returns, that refused test_74 its
+        // tree (15 leaked).
+        let chased = ";".concat(e.s1, ";")
+        if (irAliasChased.contains(chased)) { return false }
+        irAliasChased = irAliasChased.concat(chased)
         return chainBindingAliasesName(irFunctionBody, e.s1, name, hops + 1)
     }
 
@@ -352,7 +446,22 @@ private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
         // `print(value)` in std/io.psm, because `prismio_rt_print(text)` is
         // declared `borrow`. Reading the declaration costs nothing anywhere it
         // was not written.
-        if (aif_fn_may_return_param(e.s2) == 0 and irCallReturnsAlias(e) == false) {
+        //
+        // **So does a view of a parameter.** `optionOr(o, d)` hands back the
+        // String inside `o`, which is not `o`'s allocation -- fn_may_return_param
+        // compares sites, and a payload's are not the Option's -- but it lives
+        // only as long as `o` does. Freeing `o` at the scope exit while the view
+        // was returned is the same use-after-free one step removed.
+        if (aif_fn_may_return_param(e.s2) == 0 and aif_fn_may_return_view_of_param(e.s2) == 0
+                and irCallReturnsAlias(e) == false) {
+            return false
+        }
+        // concat copies every argument into a result of its own, whatever the
+        // site-level summary says -- one site backs every `+` in the program, so
+        // the summary answers yes for all of them. irCallReleasesTemporaries
+        // trusts the same contract. Without it `acc = acc + line` made `line`
+        // look assigned away, and csv_parse leaked 19,867 of 23,218.
+        if (nodeExists(e.child1) and ptr_to_node(e.child1).s1.equals("concat")) {
             return false
         }
         let mut aPtr = e.child2
@@ -420,6 +529,197 @@ private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
     // callee built it from: `g(make())` hands `g` a slot of this frame.
     if (nodeGetType(argNode).kind == TypeKind.ARRAY) { return false }
     return aif_owns_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
+}
+
+// Whether generateCall may release this call's owned temporaries once it
+// returns; the three conditions, and why concat is the exception, are spelled out
+// where it asks. irHoistBorrowedTemporaries asks the same question ahead of time,
+// and the two must not disagree: a temporary hoisted into a binding *and*
+// released after the call is freed twice.
+private fn irCallReleasesTemporaries(funcName: String, callName: String, isForeign: Bool) -> Bool {
+    if (funcName.equals("concat")) { return true }
+    if (isForeign) { return false }
+    return aif_fn_may_return_param(callName) == 0
+        and aif_fn_may_return_view_of_param(callName) == 0
+}
+
+// A Prismio call whose owned temporaries outlive it -- the callee may hand one
+// back, or a view of one -- so the release after the call is withheld.
+private fn irCallWithholdsTemporaries(call: ASTNode) -> Bool {
+    if (nodeIsNull(call.child1)) { return false }
+    let funcName = ptr_to_node(call.child1).s1
+    if (callIsPrismioFn(funcName) == false) { return false }
+    let mut callName = funcName.clone()
+    if (call.s2.equals("") == false) { callName = call.s2.clone() }
+    return irCallReleasesTemporaries(funcName, callName, false) == false
+}
+
+// An owned temporary whose release a callee withholds, given the lifetime of a
+// binding.
+//
+// `optionOr(lookup(i), d)` returns the String inside the Option it is handed, so
+// the Option cannot be released when the call returns -- where every other owned
+// temporary is -- and with no binding to drop it later, nothing released it at
+// all: 1,666 of 1,667 allocations over 1,000 iterations. Written with
+// `let o = lookup(i)` first it is 1,667 / 1,667, because a binding is dropped at
+// its scope exit, and the guards on that drop already ask whether the view
+// escapes (nodeEscapesThroughCall, chainAssignsAliasOf).
+//
+// So the temporary becomes that binding: `let bt.N = lookup(i)` spliced in ahead
+// of the statement, the argument replaced by its name, and everything after is
+// the ordinary path -- the same questions a written `let` is asked decide
+// whether it is dropped. A scalar read straight off an owned temporary --
+// `text.split(',').length`, an inline load with no call to release after -- is
+// given one for the same reason.
+//
+// **Only where that reorders nothing.** The binding runs before the whole
+// statement, so the temporary must be the statement's first effect: whatever is
+// evaluated ahead of it is a literal, a name or a field read. And only in a
+// statement that runs once -- a `let`, an expression, an assignment to a name,
+// an `if`'s condition -- never a loop condition.
+//
+// Before generation rather than during it, because the drop guards read the
+// function body by name, and a binding they cannot see is one they cannot
+// refuse.
+//
+// Spliced only into a BLOCK's statement list. Other slots hold one statement
+// that codegen generates alone -- an `else if` is an IF in its parent's else
+// slot -- and a `let` put in front of it would be all that got generated. And
+// not into a block the cost model gave an arena: its range is statement indices
+// as the AIF walk counted them (generateBlock), which a new statement shifts.
+internal fn irHoistBorrowedTemporaries(nodePtr: Ptr) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.BLOCK and aif_auto_arena_at_node(nodePtr) == 0) {
+        n.child1 = irHoistChain(n.child1)
+        return
+    }
+    irHoistWithin(n.child1)
+    irHoistWithin(n.child2)
+    irHoistWithin(n.child3)
+}
+
+private fn irHoistWithin(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        irHoistBorrowedTemporaries(p)
+        p = ptr_to_node(p).next
+    }
+}
+
+private fn irHoistChain(head: Ptr) -> Ptr {
+    let mut first = head
+    let mut prev = ptr_null()
+    let mut p = head
+    while (nodeExists(p)) {
+        irHoistBorrowedTemporaries(p)
+        // Again after each one: hoisting `h()` out of `f(g(h()))` can make
+        // `g(bt.0)` the statement's first effect.
+        loop {
+            let decl = irHoistOne(ptr_to_node(p))
+            if (nodeIsNull(decl)) { break }
+            ptr_to_node(decl).next = p
+            if (nodeIsNull(prev)) { first = decl } else { ptr_to_node(prev).next = decl }
+            prev = decl
+        }
+        prev = p
+        p = ptr_to_node(p).next
+    }
+    return first
+}
+
+private fn irHoistOne(stmt: ASTNode) -> Ptr {
+    let mut root = ptr_null()
+    if (stmt.kind == NodeKind.VARIABLE_DECL) { root = stmt.child2 }
+    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) { root = stmt.child1 }
+    if (stmt.kind == NodeKind.IF_STATEMENT) { root = stmt.child1 }
+    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(stmt.child1)) {
+        if (ptr_to_node(stmt.child1).kind == NodeKind.IDENTIFIER_EXPR) { root = stmt.child2 }
+    }
+    if (nodeIsNull(root)) { return ptr_null() }
+    if (irFindBorrowedTemporary(ptr_to_node(root)) != 1) { return ptr_null() }
+
+    let arg = ptr_to_node(irHoistArg)
+    let name = "bt.".concat(irBorrowedTempCounter.toString())
+    irBorrowedTempCounter = irBorrowedTempCounter + 1
+
+    let use = createNode(NodeKind.IDENTIFIER_EXPR)
+    nodeSpanFrom(use, arg)
+    use.s1 = name.clone()
+    use.typeInfo = arg.typeInfo
+    use.next = arg.next
+    if (nodeExists(irHoistPrev)) {
+        ptr_to_node(irHoistPrev).next = node_to_ptr(use)
+    } else if (irHoistSlot == 1) {
+        ptr_to_node(irHoistCall).child1 = node_to_ptr(use)
+    } else {
+        ptr_to_node(irHoistCall).child2 = node_to_ptr(use)
+    }
+
+    // The call node itself moves, not a copy: every AIF fact about it is keyed
+    // by this pointer.
+    arg.next = ptr_null()
+    let decl = createNode(NodeKind.VARIABLE_DECL)
+    nodeSpanFrom(decl, arg)
+    decl.s1 = name
+    decl.child2 = irHoistArg
+    decl.typeInfo = arg.typeInfo
+    return node_to_ptr(decl)
+}
+
+// 1 found, 0 nothing yet and nothing with an effect, -1 an effect comes first.
+// Evaluation order: a call's arguments left to right, then the call; a binary
+// operator's left operand, then its right -- except that `and`/`or` evaluate the
+// right one only sometimes, and a hoisted temporary would run always.
+private fn irFindBorrowedTemporary(e: ASTNode) -> Int {
+    if (e.kind == NodeKind.LITERAL_EXPR or e.kind == NodeKind.IDENTIFIER_EXPR) { return 0 }
+    if (e.kind == NodeKind.MEMBER_ACCESS_EXPR or e.kind == NodeKind.UNARY_EXPR) {
+        if (nodeIsNull(e.child1)) { return 0 }
+        let object = ptr_to_node(e.child1)
+        let inner = irFindBorrowedTemporary(object)
+        if (inner == 1) { return 1 }
+        // A scalar read straight off an owned temporary -- `text.split(',')
+        // .length` -- is an inline load, not a call, so nothing released the
+        // Vec. A scalar cannot alias what it was read from, so the temporary
+        // may die at the scope exit like any binding.
+        if (e.kind == NodeKind.MEMBER_ACCESS_EXPR and irArgumentIsOwnedTemporary(object)
+                and scalarInlineBytes(storageType(getExprType(e))) > 0) {
+            irHoistCall = node_to_ptr(e)
+            irHoistPrev = ptr_null()
+            irHoistArg = e.child1
+            irHoistSlot = 1
+            return 1
+        }
+        return inner
+    }
+    if (e.kind == NodeKind.BINARY_EXPR) {
+        if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return 0 - 1 }
+        let left = irFindBorrowedTemporary(ptr_to_node(e.child1))
+        if (left != 0) { return left }
+        if (e.s1.equals("and") or e.s1.equals("or")) { return 0 - 1 }
+        return irFindBorrowedTemporary(ptr_to_node(e.child2))
+    }
+    if (e.kind != NodeKind.CALL_EXPR) { return 0 - 1 }
+
+    let withholds = irCallWithholdsTemporaries(e)
+    let mut prev = ptr_null()
+    let mut a = e.child2
+    while (nodeExists(a)) {
+        let arg = ptr_to_node(a)
+        let inner = irFindBorrowedTemporary(arg)
+        if (inner == 1) { return 1 }
+        if (withholds and irArgumentIsOwnedTemporary(arg)) {
+            irHoistCall = node_to_ptr(e)
+            irHoistPrev = prev
+            irHoistArg = a
+            irHoistSlot = 2
+            return 1
+        }
+        if (inner != 0) { return inner }
+        prev = a
+        a = arg.next
+    }
+    return 0 - 1
 }
 
 // The declared type an owned temporary is released as. Only a typed release
@@ -994,6 +1294,20 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
     if (n.kind == NodeKind.CALL_EXPR) {
         let mut fname = ""
         if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
+        // What a failure builtin evaluates on its failing path runs only on the
+        // way out of the process, so it cannot move a block a later iteration
+        // reads. `assert` contributes its condition, which runs every time;
+        // its message, and every argument of the other three, contribute
+        // nothing -- otherwise `assert(ok, "bad: ".concat(name))` in a loop
+        // cost the loop its guard for a call that never runs while it loops.
+        if (fname.equals("__builtin_assert")) {
+            if (nodeIsNull(n.child2)) { return 0 }
+            return irFlatGuardCount(n.child2, bodyPtr)
+        }
+        if (fname.equals("__builtin_panic") or fname.equals("__builtin_unreachable")
+            or fname.equals("__builtin_exit")) {
+            return 0
+        }
         let stride = flatGetStride(n, fname)
         if (stride > 0) {
             // The receiver is evaluated a second time in the preheader, so it has
@@ -2766,11 +3080,16 @@ private fn generateCast(expr: ASTNode) -> String {
         return ir_get_temp_name(ir_sitofp(fromKey, val, toKey))
     }
 
+    // Saturating, as Rust's `as` is: out-of-range clamps to the type's bound
+    // and NaN is 0. A bare `fptosi` makes both *poison*, so `1e10 as Int` was
+    // whatever the optimiser chose. On AArch64 `fcvtzs` already saturates and
+    // the intrinsic is that one instruction; x86-64 adds a compare and select.
     if (fromKey.equals("double")) {
-        if (typeIntIsUnsigned(toT)) {
-            return ir_get_temp_name(ir_fptoui(fromKey, val, toKey))
-        }
-        return ir_get_temp_name(ir_fptosi(fromKey, val, toKey))
+        let mut conversion = "llvm.fptosi.sat."
+        if (typeIntIsUnsigned(toT)) { conversion = "llvm.fptoui.sat." }
+        ir_call_begin()
+        ir_call_arg("double", val)
+        return ir_get_temp_name(ir_call_end(toKey, conversion.concat(toKey, ".f64")))
     }
 
     // Integer-shaped on both sides, so the only question is width.
@@ -2810,10 +3129,11 @@ private fn generateUnary(expr: ASTNode) -> String {
     if (uop.equals("-")) {
         let operandType = getExprType(operandNode)
         // ir_neg emits an integer `sub 0, x`, which is not valid for a
-        // double -- floats need fsub.
+        // double. Nor is `fsub 0.0, x`, which it once was: that answers +0.0
+        // for -(+0.0), so `1.0 / -x` came out +inf. `fneg` flips the sign bit
+        // and nothing else.
         if (operandType.equals("double")) {
-            let fnegId = ir_fsub("double", "0.0", operandVal)
-            return ir_get_temp_name(fnegId)
+            return ir_get_temp_name(ir_fneg("double", operandVal))
         }
         let negId = ir_neg(operandType, operandVal)
         return ir_get_temp_name(negId)
@@ -2987,8 +3307,11 @@ private fn generateBinary(expr: ASTNode) -> String {
         if (op.equals("-")) { tempId = ir_fsub(opType, leftVal, rightVal) }
         if (op.equals("*")) { tempId = ir_fmul(opType, leftVal, rightVal) }
         if (op.equals("/")) { tempId = ir_fdiv(opType, leftVal, rightVal) }
+        if (op.equals("%")) { tempId = ir_frem(opType, leftVal, rightVal) }
         if (op.equals("==")) { tempId = ir_fcmp_oeq(opType, leftVal, rightVal) }
-        if (op.equals("!=")) { tempId = ir_fcmp_one(opType, leftVal, rightVal) }
+        // Unordered: `NaN != x` is true, as IEEE 754 and every C-family
+        // language have it. The ordered `one` made `x != x` false for a NaN.
+        if (op.equals("!=")) { tempId = ir_fcmp_une(opType, leftVal, rightVal) }
         if (op.equals("<")) { tempId = ir_fcmp_olt(opType, leftVal, rightVal) }
         if (op.equals("<=")) { tempId = ir_fcmp_ole(opType, leftVal, rightVal) }
         if (op.equals(">")) { tempId = ir_fcmp_ogt(opType, leftVal, rightVal) }
@@ -3041,7 +3364,7 @@ private fn generateBinary(expr: ASTNode) -> String {
             if (op.equals(">=")) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
         }
     }
-    if (op.equals("%")) {
+    if (op.equals("%") and opType.equals("double") == false) {
         if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
         else { tempId = ir_srem(opType, leftVal, rightVal) }
     }
@@ -3397,6 +3720,85 @@ private fn generateCall(expr: ASTNode) -> String {
         return ir_get_temp_name(ir_call_end("i32", "llvm.abs.i32"))
     }
 
+    // The failure builtins. Each failing path is a call the runtime does not
+    // return from, then `unreachable`: nothing after it in the block is emitted
+    // (every branch helper checks for a terminator), and LLVM may treat what
+    // follows as dead.
+    if (funcName.equals("__builtin_panic") or funcName.equals("__builtin_unreachable")) {
+        let mut messageVal = ""
+        if (nodeExists(expr.child2)) { messageVal = generateExpression(ptr_to_node(expr.child2)) }
+        let failFile = ir_get_temp_name(ir_const_cstring(diag_file_path(expr.file)))
+        ir_call_begin()
+        if (messageVal.equals("")) { ir_call_arg("ptr", "null") } else { ir_call_arg_cstr(messageVal, 1) }
+        ir_call_arg("ptr", failFile)
+        ir_call_arg("i32", expr.line.toString())
+        ir_call_arg("i32", expr.col.toString())
+        if (funcName.equals("__builtin_panic")) {
+            ir_call_end("void", "prismio_panic")
+        } else {
+            ir_call_end("void", "prismio_unreachable")
+        }
+        ir_unreachable()
+        return ""
+    }
+
+    // `assert`: a compare and a branch to a cold block. The message is built
+    // only on that block, so a passing assertion allocates nothing however its
+    // message is written.
+    if (funcName.equals("__builtin_assert")) {
+        let condNode = ptr_to_node(expr.child2)
+        let condVal = generateExpression(condNode)
+        let failLabel = ir_get_label()
+        let passLabel = ir_get_label()
+        ir_cond_br_numbered(condVal, passLabel, failLabel)
+        ir_label_numbered(failLabel)
+        let mut assertMessage = ""
+        if (nodeExists(condNode.next)) { assertMessage = generateExpression(ptr_to_node(condNode.next)) }
+        let assertSource = ir_get_temp_name(ir_const_cstring(diag_source_line(expr.file, expr.line)))
+        let assertFile = ir_get_temp_name(ir_const_cstring(diag_file_path(expr.file)))
+        ir_call_begin()
+        if (assertMessage.equals("")) { ir_call_arg("ptr", "null") } else { ir_call_arg_cstr(assertMessage, 1) }
+        ir_call_arg("ptr", assertSource)
+        ir_call_arg("ptr", assertFile)
+        ir_call_arg("i32", expr.line.toString())
+        ir_call_arg("i32", expr.col.toString())
+        ir_call_end("void", "prismio_assert_failed")
+        ir_unreachable()
+        ir_label_numbered(passLabel)
+        return ""
+    }
+
+    // `exit(code)`: the C library's, which flushes stdio on the way out.
+    if (funcName.equals("__builtin_exit")) {
+        let status = generateExpression(ptr_to_node(expr.child2))
+        ir_call_begin()
+        ir_call_arg("i32", status)
+        ir_call_end("void", "exit")
+        ir_unreachable()
+        return ""
+    }
+
+    // std.math's Float functions. The symbol is an LLVM intrinsic or a libm
+    // name (src/common/float_builtins.psm), called with the operands as they
+    // are: every one of them is `double` in and `double` out.
+    let floatArity = floatBuiltinArity(funcName)
+    if (floatArity > 0) {
+        let f0 = ptr_to_node(expr.child2)
+        let floatVal0 = generateExpression(f0)
+        let mut floatVal1 = ""
+        let mut floatVal2 = ""
+        if (floatArity > 1) {
+            let f1 = ptr_to_node(f0.next)
+            floatVal1 = generateExpression(f1)
+            if (floatArity > 2) { floatVal2 = generateExpression(ptr_to_node(f1.next)) }
+        }
+        ir_call_begin()
+        ir_call_arg("double", floatVal0)
+        if (floatArity > 1) { ir_call_arg("double", floatVal1) }
+        if (floatArity > 2) { ir_call_arg("double", floatVal2) }
+        return ir_get_temp_name(ir_call_end("double", floatBuiltinSymbol(funcName)))
+    }
+
     // errno, and the two numbers worth comparing it against. Builtins rather
     // than externs because `errno` has no symbol to declare: it is a macro
     // for a dereference of a per-thread location, and the accessor's name is
@@ -3495,8 +3897,17 @@ private fn generateCall(expr: ASTNode) -> String {
     if (funcName.equals("list_len") and nodeExists(expr.child2)) {
         let a0 = ptr_to_node(expr.child2)
         if (nodeExists(a0.next) == false) {
+            // Asked before generating it, as the general path asks. An owned
+            // temporary -- `text.split(',').length` -- is released once its
+            // length is read: an Int keeps nothing of it alive, and returning
+            // early here skipped the release the general path gives it.
+            let owned = irArgumentIsOwnedTemporary(a0)
+            let kind = irOwnedTemporaryKind(a0)
+            let declType = getExprType(a0)
             let listVal = generateExpression(a0)
-            return ir_get_temp_name(ir_list_len(listVal))
+            let len = ir_get_temp_name(ir_list_len(listVal.clone()))
+            if (owned) { generateOwnedTemporaryRelease(listVal, kind, declType) }
+            return len
         }
     }
 
@@ -3820,6 +4231,7 @@ private fn generateCall(expr: ASTNode) -> String {
     let mut ownedTempVals: Vec<String> = []
     let mut ownedTempKinds: Vec<Int> = []
     let mut ownedTempTypes: Vec<String> = []
+    let mut ownedTempArgs: Vec<Int> = []
 
     // Which storage key the element argument carried, so the entry-point
     // choice below can tell a scalar from a struct without re-deriving it.
@@ -3844,6 +4256,7 @@ private fn generateCall(expr: ASTNode) -> String {
             ownedTempVals.push(argVal.clone())
             ownedTempKinds.push(ownedTempKind)
             ownedTempTypes.push(ownedTempType)
+            ownedTempArgs.push(argIndex)
         }
         // Crossing into C: a String is `{ptr, i64}` here and `const char*`
         // there, so the pointer half goes and the length stays. The buffer is
@@ -4062,10 +4475,28 @@ private fn generateCall(expr: ASTNode) -> String {
     // byte-copies every argument. A shared allocation site elsewhere can
     // conservatively make those summaries say "may alias", but it cannot
     // make this particular call retain an argument.
-    let releaseTemps = funcName.equals("concat")
-        or (isForeign == false
-            and aif_fn_may_return_param(callName) == 0
-            and aif_fn_may_return_view_of_param(callName) == 0)
+    let mut releaseTemps = irCallReleasesTemporaries(funcName, callName, isForeign)
+    // An extern is described argument by argument instead: what its contract
+    // only borrows, and its result can be no part of, is released once it
+    // returns. The walk marks the rest (aif_call_arg_outlives_call). Without this
+    // `text.split(',').length` handed the Vec to the length builtin and leaked
+    // it, as did every owned temporary given to an extern.
+    if (isForeign) {
+        let mut vals: Vec<String> = []
+        let mut kinds: Vec<Int> = []
+        let mut types: Vec<String> = []
+        for i in 0..<ownedTempArgs.length {
+            if (aif_call_arg_outlives_call(node_to_ptr(expr), ownedTempArgs[i]) == 0) {
+                vals.push(ownedTempVals[i].clone())
+                kinds.push(ownedTempKinds[i])
+                types.push(ownedTempTypes[i].clone())
+            }
+        }
+        ownedTempVals = vals
+        ownedTempKinds = kinds
+        ownedTempTypes = types
+        releaseTemps = true
+    }
 
     if (retType.equals("void")) {
         ir_call_end("void", callName)

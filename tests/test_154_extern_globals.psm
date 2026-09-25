@@ -33,7 +33,7 @@ fn main() -> Int {
     if (readerArgc() != 1) { return fail("the read-only declaration disagrees") }
 
     let name = __builtin_cstring_at(prismio_argv, 0)
-    if (name.length() == 0) { return fail("argv[0] is empty") }
+    if (name.length == 0) { return fail("argv[0] is empty") }
     if (process.args[0].equals(name) == false) {
         return fail("process.args[0] is not argv[0]")
     }
@@ -41,7 +41,7 @@ fn main() -> Int {
     prismio_argc = 0
     if (process.args.count != 0) { return fail("std.process did not see the store") }
     if (readerArgc() != 0) { return fail("the read-only declaration did not see the store") }
-    if (process.args[0].length() != 0) { return fail("an index at argc was not empty") }
+    if (process.args[0].length != 0) { return fail("an index at argc was not empty") }
     prismio_argc = 1
 
     println("PASS: extern globals")

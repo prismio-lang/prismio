@@ -7,6 +7,7 @@ import ast.types
 import common.text
 import common.diagnostics
 import common.target
+import common.float_builtins
 import sema.enums
 import aif.model
 import std.string
@@ -317,6 +318,7 @@ private fn generateFunction(func: ASTNode) {
     // iteration -- and each declaration gets its own slot, which the old
     // name-keyed pre-pass could not express.
     if (nodeExists(func.child2)) {
+        irHoistBorrowedTemporaries(func.child2)
         irFunctionDecl = node_to_ptr(func)
         irFunctionBody = func.child2
 
@@ -561,6 +563,20 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     ir_mark_guard_safe_fn("__builtin_max", 1)
     ir_mark_guard_safe_fn("__builtin_min", 1)
     ir_mark_guard_safe_fn("__builtin_abs", 1)
+    // std.math's Float family, for the same reason: a square root or a sine
+    // reads two registers and writes one. A libm call among them is still no
+    // list's business -- the C library cannot reach a Prismio element block.
+    // The failure builtins end the process rather than touch a list, so an
+    // `assert` in a hot loop leaves the loop its guard.
+    ir_mark_guard_safe_fn("__builtin_panic", 1)
+    ir_mark_guard_safe_fn("__builtin_unreachable", 1)
+    ir_mark_guard_safe_fn("__builtin_assert", 1)
+    ir_mark_guard_safe_fn("__builtin_exit", 1)
+    let mut floatOp = 0
+    while (floatBuiltinOp(floatOp).equals("") == false) {
+        ir_mark_guard_safe_fn(floatBuiltinPrefix().concat(floatBuiltinOp(floatOp)), 1)
+        floatOp = floatOp + 1
+    }
     // The string builtins that only read. A `String` is a pointer and a length
     // and holds no container, so none of them can grow, restamp or free a
     // list's element block -- which is the whole of what irBodyMovesNoBlock

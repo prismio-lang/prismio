@@ -1,0 +1,25 @@
+// Run by `failure_builtins` in test_runner.py, once per mode named in argv[1].
+// The line numbers below are asserted; keep them where they are.
+import std.io
+import std.process
+import std.string
+
+fn classify(n: Int) -> String {
+    if (n > 0) { return "positive" }
+    panic("no sign for zero")
+}
+
+fn main() -> Int {
+    let mode = process.args.at(1)
+    let label = "tail"
+    if (mode.equals("panic")) { println(classify(0)) }
+    if (mode.equals("assert")) { assert(label.length > 9) }
+    if (mode.equals("assertmsg")) { assert(false, "custom ".concat(label)) }
+    if (mode.equals("unreachable")) { unreachable("mode") }
+    if (mode.equals("exit")) {
+        println("before exit")
+        exit(7)
+    }
+    println("done")
+    return 0
+}

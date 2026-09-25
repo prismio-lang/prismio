@@ -133,9 +133,11 @@ pub fn graph_bfs(scale: i32) -> i32 {
 }
 
 pub fn knapsack(scale: i32) -> i32 {
-    let capacity = 800 * scale; let mut best = vec![0; (capacity + 1) as usize];
+    let capacity = 800 * scale;
+    let mut best = vec![0; (capacity + 1) as usize];
     for i in 1..=180 {
-        let weight = (i * 37) % 97 + 1; let value = (i * 53) % 211 + 1;
+        let weight = (i * 37) % 97 + 1;
+        let value = (i * 53) % 211 + 1;
         for at in (weight..=capacity).rev() {
             best[at as usize] = best[at as usize].max(best[(at - weight) as usize] + value);
         }

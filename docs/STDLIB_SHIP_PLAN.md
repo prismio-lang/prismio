@@ -1,0 +1,200 @@
+# Standard library: what shipping needs
+
+The gaps between today's `std` and a compiler someone can write ordinary
+programs with, in the order they are being closed. Like
+[`FEATURE_BACKLOG.md`](FEATURE_BACKLOG.md), this is long-lived work, not
+session scaffolding: `KNOWN_ISSUES.md` records defects, `aif/evidence/` the
+measurements, and this file what is left and how each piece is meant to land.
+
+**How the list was made (2026-09-25).** Every public function in `std/*.psm`
+was listed. Every `extern fn` a program in this repo declares for itself was
+counted, since each one is a gap a user would hit. Each candidate API was then
+compiled against the current toolchain, so "missing" below means *the compiler
+rejects it*, not "grep did not find it".
+
+**Status key:** `todo` · `in progress` · `done <commit or date>` · `blocked: <why>`.
+
+## Tier 1 — before shipping
+
+A normal command-line program cannot be written without these, or the API
+exists in a shape that would break every user to change later.
+
+| # | Gap | Status | Needs C | Needs compiler |
+|---|---|---|---|---|
+| 1 | [Exit, panic, assert](#1-exit-panic-assert) | done 2026-09-25 (uncommitted) | yes (`lang_runtime.c`) | yes (builtins, divergence) |
+| 2 | [Standard input](#2-standard-input) | todo | yes (`program_support.c`) | no |
+| 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 (uncommitted) | yes | no |
+| 4 | [`std.time`](#4-stdtime) | todo | yes (Windows half too) | no |
+| 5 | [`Option` / `Result` methods](#5-option--result-methods) | todo | no | maybe (generic `impl`) |
+| 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
+| 7 | [Files](#7-files) | todo | yes | no |
+| 8 | [Building strings](#8-building-strings) | todo | no | no (interpolation is separate) |
+
+Items 5 and 6 go before anything that returns an `Option` or a `Map` gets
+more callers: they are the two public APIs still spelled `optionIsSome(o)` /
+`mapGet(m, k)` against the method-first rule (`s.length`, not `strLength(s)`).
+
+## Tier 2 — soon after
+
+| Gap | Notes |
+|---|---|
+| `std.random` | seeded PCG/xorshift, ranges, shuffle; no OS entropy needed for v1 |
+| `Set<T>`, `VecDeque<T>`, priority queue | `FEATURE_BACKLOG.md` item 3 is the heap |
+| `Mutex`, atomics | tasks and channels exist; shared state does not |
+| Path helpers | file name, extension, parent, normalise; today only `joinPath`, `directoryOf` |
+| Argument parsing | `process.args` exists, flags do not |
+| Test harness | `assert` (item 1) plus `prismio test` discovery |
+| Diverging user functions | a `Never` return type, so `fn fail(msg) -> Never` ends a block the way `panic` does |
+| Math follow-ups | bit counting, checked/saturating integers, `F32` — see `RESULTS-std-math.md` §4 |
+
+## Tier 3 — later
+
+Networking (`std.net`), date and calendar, JSON (`FEATURE_BACKLOG.md` item 2),
+regular expressions, hashing and cryptography, compression, logging.
+
+## Doc contradictions to fix along the way
+
+- ~~The docs sidebar lists Filesystem under "Planned · Coming Soon"~~ — fixed 2026-09-25.
+- ~~`stdlib/io.md` tells readers to write a C wrapper for file access~~ — fixed
+  2026-09-25; it now says plainly that standard input is not available yet.
+
+---
+
+## 1. Exit, panic, assert
+
+**Why first.** Three programs in this repo declare `extern fn exit` or
+`extern fn abort` for themselves, and a program has no way to fail loudly with
+a message and its location. Every later item wants `panic` for its "cannot
+happen" paths and `assert` for its tests.
+
+**Surface.** Compiler builtins, available without an import, as `expect` and
+`drop` are:
+
+| Call | Does | Returns? |
+|---|---|---|
+| `panic(message)` | prints `panic: <message>` and `  --> file:line:col` to stderr, exits 101 | never |
+| `unreachable()` / `unreachable(message)` | the same, as `entered unreachable code[: message]` | never |
+| `assert(condition)` / `assert(condition, message)` | nothing when true; otherwise `assertion failed: <message, or the source line>` with the location, exits 101 | yes |
+| `exit(code)` | ends the process with `code`, flushing C stdio | never |
+
+**Decisions.**
+- **Exit status 101** for panic, unreachable and a failed assert, Rust's choice. It
+  tells a crash apart from a program's own `exit(1)`. Existing runtime errors
+  (overflow, step) keep 1.
+- **`assert` is always on**, release builds too. A passing check is one compare and
+  a branch to a cold block. **The message is evaluated only on failure**, so
+  `assert(ok, "bad: " + name)` allocates nothing on the passing path.
+- **`exit` yields to the program's own `exit`.** A module that declares
+  `extern fn exit` (the compiler's own `src/` does, six times) keeps calling its
+  own, unchanged. The builtin applies only where no `exit` is declared.
+- **Divergence.** `panic`, `unreachable` and `exit` end a block for sema:
+  a function may end with one instead of a `return`, and code after one is the
+  existing "unreachable code" error. `assert` does not diverge.
+- **Guard-safe.** All four are in the flat-List guard's safe table, so an `assert`
+  in a hot loop does not cost the loop its guard.
+- **AIF** describes all four as borrowing their arguments (contracts and oracle).
+
+**Not in this item:** a user function that always panics is not known to
+diverge (tier 2, `Never`), and there is no unwinding or `catch`.
+
+**Done when:** a test covering each call's output, status and divergence (with
+the failing ones run as subprocesses), guard-safety of `assert` in a loop,
+suite and AIF differential green, seed fixpoint, docs (stdlib index "Available
+without imports", a page for failure and exit) updated.
+
+**Landed 2026-09-25.** test_182, neg_189, neg_190 and the `failure_builtins`
+harness test; seed fixpoint `43feb82f`. Two things found on the way:
+- An `assert` whose message called anything (`"bad: ".concat(name)`) cost its
+  loop the flat guard, because `irFlatGuardCount` saw the call. It now counts
+  only the condition: the message runs only on the way out of the process.
+- In a hot loop, one `assert` per element measured +37.6 ms over 200M elements
+  against C's +37.5 ms for the same check. Both lose vectorisation to the early
+  exit; the check itself costs what C's does.
+
+The doc contradictions listed above (filesystem sidebar, `stdlib/io.md`) were
+fixed in the same pass.
+
+## 2. Standard input
+
+Partly there, undocumented: `Stream { descriptor: 0 }.readAll()` (std.process)
+reads all of stdin -- test_153 uses it. What is missing is the line-oriented API.
+
+`std.io` is output only. Add `readLine() -> String?` (without the newline;
+`none` at end of input), `readAll() -> String`, and `for line in stdin.lines()`
+(or the closest spelling the iterator protocol allows). It must be buffered in
+the runtime: one `read` per line would make a line-oriented filter slower than
+`cat`. A benchmark (line count / word frequency over a large file, against C++
+and Rust) comes with it.
+
+## 3. Environment and process identity
+
+**Landed 2026-09-25**, picked as the smallest tier-1 gap: `process.env(name) ->
+Option<String>` (`None` unset, `Some("")` empty), `setEnv`/`removeEnv -> Bool`,
+`process.pid`. Five C functions in `runtime/program_support.c`, the wrapper in
+`std/process.psm`, test_183 (including a child that inherits a variable set by
+its parent). `Option<String>` rather than `String?`, matching `parseInt` and
+`Vec.get`. The working directory stays `currentDirectory()` in `std.fs`.
+
+Found on the way: `optionOr(process.env("X"), "d")` leaks, because a producing
+call nested in another leaks its result (KNOWN_ISSUES); bound first it is clean
+(4000/4000 over 2000 lookups). **Fixed the same day** (RESULTS-call-result-ownership.md):
+the one-expression form is clean too, 3001/3001, so it no longer blocks item 5.
+
+Not done: listing all variables at once, a child with its own environment.
+
+The AIF differential over test_183 disagrees on the one site where the C-produced
+value enters `Option.Some`, in the copyable model only. Pre-existing (reproduced
+with `read_file` on the pre-change compiler); recorded in KNOWN_ISSUES under
+"The AIF oracle".
+
+## 4. `std.time`
+
+Monotonic `Instant.now()`, `Duration` (with `elapsed`, `asMillis`,
+`asSeconds`), wall-clock seconds since the epoch, and `sleep(duration)`.
+Windows needs `QueryPerformanceCounter` where POSIX has `clock_gettime`; the
+benchmarks' own `extern fn clock_gettime` is the first caller to move over.
+Calendar and time zones are tier 3.
+
+## 5. `Option` / `Result` methods
+
+`isSome`, `isNone`, `unwrapOr`, `expect(message)`, `map`, `andThen`, `okOr`;
+`isOk`, `isErr`, `unwrapOr`, `mapErr`, `ok`, `err`. Keep the prefixed functions
+as the implementation, per the String precedent.
+
+**Probed 2026-09-25 — three compiler prerequisites, not a library-only item:**
+- `impl<T> Option<T>` works for `o.isSome()` and `o.unwrapOr(x)`.
+- `o.isSome` wants to be a property, declared `prop` (properties are declared
+  since 2026-09-25). The spelling still fails ("struct `Option$Int` has no
+  field"): `semaPropertyRewrite` asks `semaDeclaresFunction`, and a generic
+  method is a template the declaration index does not hold
+  (prismio-generic-templates-not-indexed).
+- `map<U, F>` cannot be called: `n.map<Int>(…)` does not parse (a method takes no
+  written type arguments), and `U` is not inferred from the closure's return.
+- `x.unwrapOr(d)` on a freshly produced Option was the nested-producer leak;
+  fixed 2026-09-25, `optionOr(process.env("X"), d)` measures clean, and a chain
+  of methods releases every intermediate.
+
+## 6. `Map` removal and methods
+
+`FEATURE_BACKLOG.md` item 1 (`mixed_map_removal`) is the detailed spec for
+`remove`. Add, together with it: `m.get(k)`, `m.set(k, v)`, `m.has(k)`,
+`m.length`, `m.isEmpty`, `m.clear()`, `m.keys()`, `m.values()`, `m[k]`.
+
+## 7. Files
+
+`listDirectory(path)` (today's `listModules` lists only `.psm` files),
+`appendFile`, `rename`, `removeDirectory`, `metadata` (size, modified time,
+is-directory), and a buffered line reader shared with item 2. Make the raw
+`read_file`/`join_path`/... externs `internal`: RUNTIME.md says applications do
+not call them, and today they are public beside their wrappers.
+
+## 8. Building strings
+
+**Measured 2026-09-25:** `s = s + x` on a local is already linear -- codegen's
+consuming append doubles capacity (100K, 400K, 1.6M appends all ~0.3 s). Through
+a struct field it is quadratic: `b.text = b.text + piece` via `inout` took 0.87,
+2.01, 7.79 s for 20K, 40K, 80K appends. So a builder is needed exactly where text
+accumulates in a field or across calls. Options: a `StringBuilder` over
+`Vec<Char>` (owned by Vec, so no `Drop` needed), or extend the consuming append
+to a field AIF proves owned -- which would fix every such program without a new
+type. Measure both before choosing. Interpolation is separate.

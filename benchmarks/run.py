@@ -101,6 +101,47 @@ def format_seconds(seconds):
     return "{}m{:02d}s".format(seconds // 60, seconds % 60)
 
 
+def format_bytes(bytes_count):
+    """A byte count in human-readable units (B, KB, MB, GB)."""
+    if bytes_count is None:
+        return "—"
+    if bytes_count >= 1024 * 1024 * 1024:
+        return "{:.2f} GB".format(bytes_count / (1024 * 1024 * 1024))
+    if bytes_count >= 1024 * 1024:
+        return "{:.2f} MB".format(bytes_count / (1024 * 1024))
+    if bytes_count >= 1024:
+        return "{:.1f} KB".format(bytes_count / 1024)
+    return "{:d} B".format(int(bytes_count))
+
+
+class RusagePopen(subprocess.Popen):
+    """Subprocess Popen that hooks _try_wait with os.wait4 to capture child peak RSS."""
+
+    def __init__(self, *args, **kwargs):
+        self.rusage = None
+        super().__init__(*args, **kwargs)
+
+    def _try_wait(self, wait_flags):
+        if hasattr(os, "wait4"):
+            try:
+                pid, sts, ru = os.wait4(self.pid, wait_flags)
+                if pid != 0:
+                    self.rusage = ru
+                return (pid, sts)
+            except ChildProcessError:
+                return (self.pid, 0)
+        return super()._try_wait(wait_flags)
+
+
+def normalize_rss_bytes(ru_maxrss):
+    if ru_maxrss is None:
+        return 0
+    # Darwin (macOS) ru_maxrss is in bytes; Linux and BSDs are in KiB.
+    if sys.platform == "darwin":
+        return int(ru_maxrss)
+    return int(ru_maxrss * 1024)
+
+
 def ratio_cell(ratio, width=8):
     """Prismio's time over the other arm's: below 1 is Prismio ahead. Padded
     before it is coloured, so escape codes never disturb the columns."""
@@ -267,7 +308,7 @@ def build_all(args, progress):
                 cached.append(language)
                 progress.advance("Cached {}".format(LANGUAGE_LABELS[language]))
                 status(progress, "Cached", LANGUAGE_LABELS[language] + " suite",
-                       "built earlier in " + format_ns(elapsed[language]))
+                       "built earlier in {} · {}".format(format_ns(elapsed[language]), format_bytes(binary.stat().st_size)))
                 continue
 
         progress.show("Building " + LANGUAGE_LABELS[language])
@@ -282,7 +323,8 @@ def build_all(args, progress):
         if key is not None:
             stamp.write_text(json.dumps({"key": key, "compile_ns": elapsed[language]}))
         progress.advance("Built {}".format(LANGUAGE_LABELS[language]))
-        status(progress, "Compiled", LANGUAGE_LABELS[language] + " suite", format_ns(elapsed[language]))
+        status(progress, "Compiled", LANGUAGE_LABELS[language] + " suite",
+               "{} · {}".format(format_ns(elapsed[language]), format_bytes(binary.stat().st_size)))
     return commands, elapsed, cached
 
 
@@ -310,34 +352,40 @@ def make_fixture(directory):
 def execute(executable, benchmark, input_path, output_path):
     command = [str(executable), benchmark, str(input_path), str(output_path)]
     started = time.perf_counter_ns()
-    result = run_command(command)
+    proc = RusagePopen(command, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    stdout, stderr = proc.communicate()
     wall_ns = time.perf_counter_ns() - started
-    if result.returncode:
-        raise RuntimeError("run failed:\n{}\n{}\n{}".format(command_text(command), result.stdout, result.stderr))
-    fields = parse_output(executable.name, benchmark, result.stdout)
+    if proc.returncode != 0:
+        raise RuntimeError("run failed:\n{}\n{}\n{}".format(command_text(command), stdout, stderr))
+    fields = parse_output(executable.name, benchmark, stdout)
     fields["wall_ns"] = wall_ns
+    fields["peak_rss_bytes"] = normalize_rss_bytes(proc.rusage.ru_maxrss if proc.rusage else None)
     return fields
 
 
 def table_header(progress, name_width):
-    cells = "    {:<{w}}  {:>10}  {:>10}  {:>10}  {:>8}  {:>8}".format(
-        "workload", "Prismio", "C++", "Rust", "vs C++", "vs Rust", w=name_width)
+    cells = "    {:<{w}}  {:>10}  {:>10}  {:>10}  {:>8}  {:>8}  {:>9}  {:>8}".format(
+        "workload", "Prismio", "C++", "Rust", "vs C++", "vs Rust", "RSS (P)", "RSS vs C", w=name_width)
     progress.line()
     progress.line(STYLE.bold + cells + STYLE.reset)
 
 
 def table_row(progress, measured, name_width):
-    """One workload: each arm's median, the fastest in bold, and Prismio's ratio
-    to each of the others."""
+    """One workload: each arm's median, the fastest in bold, Prismio's ratio
+    to each of the others, and peak RSS."""
     times = {language: measured["languages"][language]["elapsed_ns_median"] for language in LANGUAGES}
+    rss = {language: measured["languages"][language].get("peak_rss_bytes_median", 0) for language in LANGUAGES}
     fastest = min(times.values())
     cells = []
     for language in LANGUAGES:
         text = format_ns(times[language]).rjust(10)
         cells.append(STYLE.bold + text + STYLE.reset if times[language] == fastest else text)
     ratios = [ratio_cell(times["prismio"] / max(times[other], 1)) for other in ("cpp", "rust")]
-    progress.line("    {:<{w}}  {}  {}".format(measured["name"], "  ".join(cells), "  ".join(ratios),
-                                             w=name_width))
+    p_rss_str = format_bytes(rss["prismio"]).rjust(9)
+    rss_ratio = ratio_cell(rss["prismio"] / max(rss["cpp"], 1), width=8) if rss["cpp"] > 0 else "—".rjust(8)
+    progress.line("    {:<{w}}  {}  {}  {}  {}".format(
+        measured["name"], "  ".join(cells), "  ".join(ratios), p_rss_str, rss_ratio,
+        w=name_width))
 
 
 def geomean(values):
@@ -370,6 +418,36 @@ def print_summary(progress, report, elapsed_seconds):
     if behind:
         progress.line("  {}slowest vs C++{}  {}".format(
             STYLE.dim, STYLE.reset, ", ".join("{} {}".format(name, ratio_cell(ratio, 0)) for ratio, name in behind)))
+
+    binary_bytes = report.get("binary_bytes", {})
+    if binary_bytes and "prismio" in binary_bytes:
+        p_bin = binary_bytes["prismio"]
+        c_bin = binary_bytes.get("cpp", 1)
+        r_bin = binary_bytes.get("rust", 1)
+        progress.line()
+        progress.line("{}Binary Size{}   Prismio {} · C++ {} ({}) · Rust {} ({})".format(
+            STYLE.bold, STYLE.reset,
+            format_bytes(p_bin),
+            format_bytes(c_bin), ratio_cell(p_bin / max(c_bin, 1), 0),
+            format_bytes(r_bin), ratio_cell(p_bin / max(r_bin, 1), 0)
+        ))
+
+    has_rss = any("peak_rss_bytes_median" in item["languages"]["prismio"] for item in measured)
+    if has_rss:
+        progress.line()
+        progress.line("{}Peak RSS{}      Prismio memory vs other runtimes (lower is better)".format(
+            STYLE.bold, STYLE.reset))
+        for other in ("cpp", "rust"):
+            rss_ratios = [
+                item["languages"]["prismio"].get("peak_rss_bytes_median", 1)
+                / max(item["languages"][other].get("peak_rss_bytes_median", 1), 1)
+                for item in measured
+                if item["languages"][other].get("peak_rss_bytes_median", 0) > 0
+            ]
+            if rss_ratios:
+                progress.line("  vs {:<5} geomean {}".format(
+                    LANGUAGE_LABELS[other], ratio_cell(geomean(rss_ratios), 0)
+                ))
 
 
 def select_benchmarks(manifest, names):
@@ -441,6 +519,7 @@ def main():
     missing = [str(path) for path in executables.values() if not path.exists()]
     if missing:
         sys.exit("missing built executable(s): " + ", ".join(missing))
+    binary_bytes = {language: executables[language].stat().st_size for language in LANGUAGES}
 
     report = {
         "schema_version": 1,
@@ -448,6 +527,7 @@ def main():
         "runs": args.runs,
         "build_commands": {key: command_text(value) for key, value in (build_commands or {}).items()},
         "compile_ns": compile_ns,
+        "binary_bytes": binary_bytes,
         # Which arms were served from the previous build. Their `compile_ns` is
         # that build's, not this run's, and saying so is the difference between a
         # stale number and a wrong one.
@@ -494,6 +574,8 @@ def main():
                     "elapsed_ns_median": int(statistics.median(sample["elapsed_ns"] for sample in samples[language])),
                     "wall_ns_median": int(statistics.median(sample["wall_ns"] for sample in samples[language])),
                     "elapsed_ns_samples": [sample["elapsed_ns"] for sample in samples[language]],
+                    "peak_rss_bytes_median": int(statistics.median(sample.get("peak_rss_bytes", 0) for sample in samples[language])),
+                    "peak_rss_bytes_samples": [sample.get("peak_rss_bytes", 0) for sample in samples[language]],
                 }
             report["benchmarks"].append(measured)
             table_row(progress, measured, name_width)

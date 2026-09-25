@@ -16,6 +16,7 @@ import std.string
 public extern fn exit(code: Int)
 public extern fn diag_add_file(path: String, content: String) -> Int
 public extern fn diag_file_path(file: Int) -> String alias
+public extern fn diag_source_line(file: Int, line: Int) -> String alias
 // How many files the registry holds. Used by v0.1 3.5's name resolution to ask
 // "is this identifier a module?" without a module table of its own -- the file
 // registry already is one.

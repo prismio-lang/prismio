@@ -6,6 +6,7 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.float_builtins
 import std.string
 import std.option
 
@@ -115,6 +116,19 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (name.equals("__builtin_target_os")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_target_arch")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_target_env")) { return AIF_FFI_BORROW }
+    // std.math's arithmetic: scalars in, a scalar out, lowered to an
+    // instruction or a pure libm call. Nothing to retain and nothing to place,
+    // and described so that a function doing arithmetic stays bracketable.
+    if (name.equals("__builtin_max")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_min")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_abs")) { return AIF_FFI_BORROW }
+    if (floatBuiltinArity(name) > 0) { return AIF_FFI_BORROW }
+    // The failure builtins read their message and keep nothing; the process
+    // ends before anything could be retained.
+    if (name.equals("__builtin_panic")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_unreachable")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_assert")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_exit")) { return AIF_FFI_BORROW }
     if (name.equals("slice_len")) { return AIF_FFI_BORROW }
     if (name.equals("slice_set")) {
         if (index == 2) { return AIF_FFI_RETAIN_IN_BASE + 0 }

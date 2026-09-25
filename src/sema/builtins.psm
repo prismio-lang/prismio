@@ -5,10 +5,18 @@ import lexer.token
 import ast.types
 import ir.bridge
 import common.diagnostics
+import common.float_builtins
+import sema.flow
 import std.string
 
 internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("drop")) { return typeVoid() }
+    // The failure builtins (src/sema/flow.psm). By the time this is asked,
+    // semaCheckBuiltinCall has decided the builtin applies.
+    if (name.equals("panic") or name.equals("__builtin_panic")) { return typeVoid() }
+    if (name.equals("unreachable") or name.equals("__builtin_unreachable")) { return typeVoid() }
+    if (name.equals("assert") or name.equals("__builtin_assert")) { return typeVoid() }
+    if (name.equals("exit") or name.equals("__builtin_exit")) { return typeVoid() }
 
     // String's irreducible representation operations. These are compiler
     // builtins, not foreign functions: sema owns their signatures and codegen
@@ -22,6 +30,10 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("__builtin_max")) { return typeInt() }
     if (name.equals("__builtin_min")) { return typeInt() }
     if (name.equals("__builtin_abs")) { return typeInt() }
+    // Float's square root, rounding, exponentials and trigonometry: one family,
+    // tabled in src/common/float_builtins.psm, lowered to LLVM's intrinsic where
+    // there is one and to libm's function where there is not.
+    if (floatBuiltinArity(name) > 0) { return typeFloat() }
 
     // errno and the two numbers a retry loop compares it against. Int, because
     // errno is a C `int` and these are read to be compared with each other.
@@ -182,6 +194,8 @@ private fn semaRemovalVerdict(list: ASTNode) -> Int {
 }
 
 internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
+    if (semaCheckFailureBuiltin(module, call, name, argPtr)) { return true }
+
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
     if (name.equals("drop")) {
@@ -226,6 +240,18 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     if (name.equals("__builtin_abs")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "integer abs operand")
+        return true
+    }
+
+    let floatArity = floatBuiltinArity(name)
+    if (floatArity > 0) {
+        if (semaCheckArity(call, name, argPtr, floatArity) == false) { return true }
+        let mut operandPtr = argPtr
+        while (nodeExists(operandPtr)) {
+            let operand = ptr_to_node(operandPtr)
+            semaCheckValue(module, operand, typeFloat(), "Float operand")
+            operandPtr = operand.next
+        }
         return true
     }
 
@@ -748,4 +774,64 @@ private fn semaStructHoldsArray(module: ASTNode, name: String, depth: Int) -> Bo
         p = f.next
     }
     return false
+}
+
+// `panic(message)`, `unreachable()` / `unreachable(message)`,
+// `assert(condition)` / `assert(condition, message)` and `exit(code)`.
+//
+// The callee is rewritten to its reserved spelling the first time through, so
+// the later passes over this node -- overload resolution types an argument more
+// than once -- arrive here with `__builtin_…` and are checked the same way.
+private fn semaCheckFailureBuiltin(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
+    let mut base = name
+    if (name.startsWith("__builtin_")) {
+        base = name.substring(10, name.length - 10)
+        if (base.equals("panic") == false and base.equals("unreachable") == false
+            and base.equals("assert") == false and base.equals("exit") == false) {
+            return false
+        }
+    } else {
+        if (semaFailureBuiltinApplies(name) == false) { return false }
+        ptr_to_node(call.child1).s1 = "__builtin_".concat(name)
+    }
+
+    let mut argc = 0
+    let mut countPtr = argPtr
+    while (nodeExists(countPtr)) {
+        argc = argc + 1
+        countPtr = ptr_to_node(countPtr).next
+    }
+    if (base.equals("panic")) {
+        if (semaCheckArity(call, base, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typeString(), "panic message")
+        return true
+    }
+    if (base.equals("unreachable")) {
+        if (argc > 1) {
+            semaErrorAt(call, "`unreachable` expects an optional message, found ".concat(
+                argc.toString(), " arguments"))
+            return true
+        }
+        if (argc == 1) {
+            semaCheckValue(module, ptr_to_node(argPtr), typeString(), "unreachable message")
+        }
+        return true
+    }
+    if (base.equals("assert")) {
+        if (argc != 1 and argc != 2) {
+            semaErrorAt(call, "`assert` expects a condition and an optional message, found ".concat(
+                argc.toString(), " arguments"))
+            return true
+        }
+        let condition = ptr_to_node(argPtr)
+        semaCheckValue(module, condition, typeBool(), "assert condition")
+        if (argc == 2) {
+            semaCheckValue(module, ptr_to_node(condition.next), typeString(), "assert message")
+        }
+        return true
+    }
+    // exit
+    if (semaCheckArity(call, base, argPtr, 1) == false) { return true }
+    semaCheckValue(module, ptr_to_node(argPtr), typeInt(), "exit status")
+    return true
 }

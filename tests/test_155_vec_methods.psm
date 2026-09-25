@@ -110,7 +110,7 @@ fn strings() -> Int {
     let taken = words.removeAt(0)
     if (seen.equals(taken) == false) { return fail("removeAt String") }
     words.truncate(1)
-    if (seen.length() != 52) { return fail("a view outlived its element") }
+    if (seen.length != 52) { return fail("a view outlived its element") }
     if (words.first.equals("a string long enough to live on the heap, number two") == false) {
         return fail("first String")
     }

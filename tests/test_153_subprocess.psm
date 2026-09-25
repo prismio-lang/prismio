@@ -96,7 +96,7 @@ fn main() -> Int {
     if (never.handle >= 0) {
         return fail("spawn of a missing program should answer a negative handle")
     }
-    if (never.stdout.isOpen()) {
+    if (never.stdout.isOpen) {
         return fail("a spawn that failed should hold no descriptors")
     }
     if (missing.exec() != 0 - 1) {
@@ -110,7 +110,7 @@ fn main() -> Int {
     if (child.handle < 0) {
         return fail("spawn of this program should succeed")
     }
-    if (child.stdin.isOpen()) {
+    if (child.stdin.isOpen) {
         return fail("an inherited stdin should have no descriptor")
     }
     if (child.stdin.write("x") != 0 - 1) {
@@ -192,7 +192,7 @@ fn main() -> Int {
     // --- exec replaces the process, so the parent sees the new program's status.
     // Not on Windows: `_execvp` starts a new process and ends this one, and what
     // the original handle then reports is not the replacement's status.
-    if (platform.isWindows() == false) {
+    if (platform.isWindows == false) {
         let execer = again("exec")
         if (execer.run() != 3) {
             return fail("a child that execs should finish with the new program's status")

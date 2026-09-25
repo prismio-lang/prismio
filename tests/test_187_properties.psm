@@ -1,0 +1,47 @@
+// `prop`: a function read without parentheses.
+//
+// 1. A property declared in an `impl`, at top level, and as `public`, read as
+//    `x.name` -- and still callable as the function it is, `name(x)`.
+// 2. The standard library's: String `length`, `isEmpty`, `first`; Char
+//    `isDigit`; Int `isEven`; the collection properties the compiler provides.
+// 3. `prop` is contextual: a binding may still be called `prop`.
+import std.io
+import std.math
+import std.string
+import std.vec
+
+struct Rect { w: Int, h: Int }
+
+impl Rect {
+    prop area(self) -> Int { return self.w * self.h }
+    public prop isSquare(self) -> Bool { return self.w == self.h }
+    fn scaled(self, by: Int) -> Rect { return Rect { w: self.w * by, h: self.h * by } }
+}
+
+prop perimeter(r: Rect) -> Int { return 2 * (r.w + r.h) }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let r = Rect { w: 3, h: 4 }
+    if (r.area != 12) { return fail("impl property") }
+    if (r.isSquare) { return fail("public property") }
+    if (r.perimeter != 14) { return fail("top-level property") }
+    if (area(r) != 12) { return fail("a property is still a function") }
+    if (r.scaled(2).area != 48) { return fail("property of a method's result") }
+
+    let s = "prismio"
+    if (s.length != 7 or s.isEmpty or s.first != 'p') { return fail("String properties") }
+    if ('7'.isDigit == false or 6.isEven == false) { return fail("Char and Int properties") }
+    let v: Vec<Int> = [1, 2, 3]
+    if (v.length != 3 or v.isEmpty or v.last != 3) { return fail("Vec properties") }
+
+    let prop = 5
+    if (prop + 1 != 6) { return fail("a binding named prop") }
+    println("ok")
+    return 0
+}

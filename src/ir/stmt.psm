@@ -599,7 +599,9 @@ private fn generateVariableDecl(stmt: ASTNode) {
                     and chainAssignsName(irFunctionBody, varName) == false
                 and chainReturnsName(irFunctionBody, varName) == false
                 and chainDropsName(irFunctionBody, varName) == false
-                and chainEscapesThroughCall(irFunctionBody, varName) == false) {
+                and chainEscapesThroughCall(irFunctionBody, varName) == false
+                and chainAssignsAliasOf(irFunctionBody, varName) == false
+                and chainRetainsAliasOf(irFunctionBody, varName) == false) {
                 if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
                     ir_mark_droppable(varName, IR_DROP_DATAVIEW)
                 } else if (owned == AIF_ELEM_LIST) {
@@ -921,7 +923,7 @@ private fn generateWhile(stmt: ASTNode) {
 // pressure wherever it lives, measured at 7% on a neighbouring fill loop in
 // aos_vs_soa that the proof never touched. `plain` is the representation a loop
 // with no guard of its own inherits from the one around it. `down` is a range
-// `for` counting down, which carries no range proof.
+// `for` counting down.
 private fn generateLoopVersions(stmt: ASTNode, endLabel: Int, flatSlot: String,
                                 rangeSlot: String, proof: Int, plain: String,
                                 forEnd: String, forStep: String, down: Bool) {
@@ -1055,9 +1057,9 @@ private fn forIsGeneral(stmt: ASTNode) -> Bool {
 //
 // Which way a loop counts is known here for literal ends, a `repeat` count, and
 // `0..<` a length; otherwise one comparison where the loop is entered picks the
-// copy. The ascending copy is the one every guard and proof serves. The
-// descending one is a single checked copy: a loop whose direction the source
-// does not settle rarely runs down, and each copy is the whole body again.
+// copy. Each copy has its own flat guard and range proof. A descending copy
+// that was only checked cost knapsack's `for at in capacity..weight` 8x against
+// the `while` it replaced: two `list_get` calls and a `list_set` per element.
 private fn generateFor(stmt: ASTNode) {
     // Scoped to the loop, matching sema.
     ir_scope_push()
@@ -1088,13 +1090,9 @@ private fn generateFor(stmt: ASTNode) {
     let savedHoistedBoundList = irLoopHoistedBoundList
     let savedHoistedBoundValue = irLoopHoistedBoundValue
     let savedHoistedDataValue = irLoopHoistedDataValue
-    irLoopRangeProof = 0
     irLoopHeaderBoundList = ""
     irLoopHeaderBoundIndex = ""
     irLoopHeaderBoundActive = false
-    irLoopHoistedBoundList = ""
-    irLoopHoistedBoundValue = ""
-    irLoopHoistedDataValue = ""
 
     let direction = forDirection(stmt)
     if (direction == 0) {
@@ -1103,25 +1101,11 @@ private fn generateFor(stmt: ASTNode) {
         ir_cond_br_numbered(ir_get_temp_name(ir_icmp_sle("i32", startVal, endVal)),
                             upLabel, downLabel)
         ir_label_numbered(downLabel)
-        generateLoopVersions(stmt, endLabel, "", "", 0, savedGuard, endVal, stepVal, true)
+        generateForDirection(stmt, endLabel, savedGuard, endVal, stepVal, stepIsLiteral, true)
         ir_label_numbered(upLabel)
     }
-    let body = ptr_to_node(stmt.child3)
-    let flatSlot = generateLoopFlatGuard(ptr_null(), body)
-    if (direction < 0) {
-        generateLoopVersions(stmt, endLabel, flatSlot, "", 0, savedGuard, endVal, stepVal, true)
-    } else {
-        let mut rangeSlot = ""
-        let mut proof = 0
-        if (flatSlot.equals("") == false or savedGuard.equals("1")) {
-            irLoopRangeProofPending = 0
-            irLoopRangeProofComplete = false
-            rangeSlot = generateForRangeGuard(stmt, endVal, stepVal, stepIsLiteral, stmt.i1 == 1)
-            proof = irLoopRangeProofPending
-        }
-        generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, endVal,
-                             stepVal, false)
-    }
+    generateForDirection(stmt, endLabel, savedGuard, endVal, stepVal, stepIsLiteral,
+                         direction < 0)
     irLoopFlatGuard = savedGuard.clone()
     irLoopRangeProof = savedProof
     irLoopHeaderBoundList = savedHeaderList.clone()
@@ -1133,6 +1117,30 @@ private fn generateFor(stmt: ASTNode) {
 
     ir_label_numbered(endLabel)
     ir_scope_pop()
+}
+
+// One direction's preheader and copies. A loop whose direction is settled at run
+// time runs this twice, once in each arm of the test, so each starts from the
+// state the loop was entered with: the copies the first arm emitted leave their
+// own representation fact and proof behind.
+private fn generateForDirection(stmt: ASTNode, endLabel: Int, plain: String, endVal: String,
+                                stepVal: String, stepIsLiteral: Bool, down: Bool) {
+    irLoopFlatGuard = plain.clone()
+    irLoopRangeProof = 0
+    irLoopHoistedBoundList = ""
+    irLoopHoistedBoundValue = ""
+    irLoopHoistedDataValue = ""
+    let flatSlot = generateLoopFlatGuard(ptr_null(), ptr_to_node(stmt.child3))
+    let mut rangeSlot = ""
+    let mut proof = 0
+    if (flatSlot.equals("") == false or plain.equals("1")) {
+        irLoopRangeProofPending = 0
+        irLoopRangeProofComplete = false
+        rangeSlot = generateForRangeGuard(stmt, endVal, stepVal, stepIsLiteral, stmt.i1 == 1,
+                                          down)
+        proof = irLoopRangeProofPending
+    }
+    generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, plain, endVal, stepVal, down)
 }
 
 // Which way the loop counts, where the source settles it: 1 up, -1 down, 0 when

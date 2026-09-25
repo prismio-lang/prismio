@@ -47,7 +47,7 @@ internal fn parseDeclaration(p: Parser) -> ASTNode {
     if (p.checkVal(TokenType.KEYWORD, "import")) { return parseImportStatement(p) }
     if (p.checkVal(TokenType.KEYWORD, "let")) { return parseVariableDecl(p) }
     if (p.checkVal(TokenType.KEYWORD, "extern")) { return parseExternDecl(p) }
-    if (p.checkVal(TokenType.KEYWORD, "fn")) { return parseFunctionDecl(p) }
+    if (p.checkVal(TokenType.KEYWORD, "fn") or p.atPropDecl()) { return parseFunctionDecl(p) }
     if (p.checkVal(TokenType.KEYWORD, "struct")) { return parseStructDecl(p) }
     if (p.checkVal(TokenType.KEYWORD, "enum")) { return parseEnumDecl(p) }
     if (p.checkVal(TokenType.KEYWORD, "impl")) { return parseImplDecl(p) }
@@ -104,6 +104,7 @@ private fn visibilityLevel(p: Parser) -> Int {
     if (level < 0) { return -1 }
 
     let next = p.peek()
+    if (next.type == TokenType.IDENTIFIER and next.value.equals("prop")) { return level }
     if (next.type != TokenType.KEYWORD) { return -1 }
     if (next.value.equals("fn")) { return level }
     if (next.value.equals("extern")) { return level }
@@ -118,7 +119,24 @@ private fn visibilityLevel(p: Parser) -> Int {
 // the per-file extern table in runtime/ir_symbols.c filters.
 private fn visibilityIsEnforced(p: Parser) -> Bool {
     let next = p.peek()
-    return next.value.equals("fn") or next.value.equals("extern")
+    return next.value.equals("fn") or next.value.equals("extern") or next.value.equals("prop")
+}
+
+// `prop length(self) -> Int` -- a property: a function read as `s.length`, which
+// `s.length()` does not call (semaCheckPropertySpelling). Declared, not inferred
+// from what the function does, because an inferred rule makes the spelling a
+// caller may use depend on the body: a property that started allocating would
+// stop compiling at every use, and `x.sqrt` read as a field because nothing
+// said otherwise.
+//
+// **Contextual**, like the visibility markers: `prop` directly before a name can
+// only begin a declaration, so a program with a variable called `prop` keeps
+// compiling. Parsed as a function in every other respect -- FUNCTION.i1 says it
+// is a property (nodeIsProperty).
+private fn atPropDecl(p: Parser) -> Bool {
+    if (p.check(TokenType.IDENTIFIER) == false) { return false }
+    if (p.current().value.equals("prop") == false) { return false }
+    return p.peek().type == TokenType.IDENTIFIER
 }
 
 // ---------------------------------------------------------
@@ -951,10 +969,16 @@ private fn parseExternVariableDecl(p: Parser) -> ASTNode {
 }
 
 private fn parseFunctionDecl(p: Parser) -> ASTNode {
-    p.expectVal(TokenType.KEYWORD, "fn", "function")
+    let isProperty = p.atPropDecl()
+    if (isProperty) {
+        p.advance()
+    } else {
+        p.expectVal(TokenType.KEYWORD, "fn", "function")
+    }
 
     let fnNode = p.node(NodeKind.FUNCTION)
     fnNode.i2 = 1
+    if (isProperty) { nodeMarkProperty(fnNode) }
     let name = p.current()
     fnNode.s1 = name.value
     // `fn default() -> Config` inside an `impl`: a type's own default, called
@@ -1072,8 +1096,8 @@ private fn parseImplDecl(p: Parser) -> ASTNode {
         let methodVisibility = p.visibilityLevel()
         if (methodVisibility >= 0) { p.advance() }
 
-        if (p.checkVal(TokenType.KEYWORD, "fn") == false) {
-            p.fatal("an `impl` block holds `fn` and `let` declarations, found ".concat(parserDescribe(p.current())))
+        if (p.checkVal(TokenType.KEYWORD, "fn") == false and p.atPropDecl() == false) {
+            p.fatal("an `impl` block holds `fn`, `prop` and `let` declarations, found ".concat(parserDescribe(p.current())))
         }
         let method = parseFunctionDecl(p)
         method.s2 = parseImplMethodParams(p, header.s1, method.s2)

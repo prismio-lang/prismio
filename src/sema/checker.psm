@@ -156,8 +156,8 @@ private fn semaDottedModulePath(node: ASTNode) -> String {
 //
 // **The ownership consequence is the point, not a side effect.** `a + b`
 // allocates. Because the rewrite produces a real call to `concat`, the result
-// gets an owner exactly as `a.concat(b)` does, and RUNTIME.md 3.1's rule
-// applies to it unchanged: `println(a + b)` leaks and `let j = a + b` does not.
+// gets an owner exactly as `a.concat(b)` does, and is released like it: after
+// the call it is passed to, or by the binding it is given.
 // An operator lowered straight to IR would have had to re-derive that, and would
 // have got it wrong in a place no ledger points at.
 //
@@ -688,17 +688,13 @@ private fn semaConcatParts(expr: ASTNode, parts: NodeList) {
 
 // `a + b + c` is **one** `concat`, not two.
 //
-// Nested `a.concat(b).concat(c)` allocates an intermediate that nothing names,
-// and RUNTIME.md 3.1 is that a value nothing names is a value nothing frees --
-// measured at 2 allocated / 1 released, on the released 0.1 compiler too, so it
-// is the language's rule and not a regression. Lowering the chain pairwise would
-// therefore have made the obvious spelling of the obvious operation leak once
-// per `+`, which is not an operator worth having.
-//
-// Flattening removes the intermediate rather than leaking it, and copies each
-// byte once instead of twice. Past six parts there is no overload to call and
-// `strJoin` is the better answer anyway, so that is where it stops -- as an
-// error naming the alternative, never as a silent fallback to the leaking form.
+// Nested `a.concat(b).concat(c)` allocates an intermediate. It is released
+// after the outer call now; until 2026-09-25 it was not, and a pairwise lowering
+// then leaked once per `+`, which is how this came to exist. It is still the
+// better lowering: no intermediate at all, and each byte copied once instead of
+// twice. Past six parts there is no overload to call and `strJoin` is the better
+// answer anyway, so that is where it stops -- as an error naming the
+// alternative, never as a silent fallback to the pairwise form.
 private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (semaStringSugarAvailable(expr, "concat", "joining Strings with `+`") == false) {
         nodeSetType(expr, typeString())
@@ -735,29 +731,78 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
 // `s.length` -- a property, which is `length(s)` with the parentheses left off.
 //
-// **A property may not allocate, and that is enforced rather than documented.**
-// `s.length` reading as a field is right; `s.trim` reading as a field is a trap,
-// because it allocates and RUNTIME.md 3.1 then requires the result to be bound.
-// So the rewrite is refused when the resolved function returns an owned value,
-// with a message that says to add the parentheses. That rule needs no new
-// keyword, which matters: a `prop` marker could not be used in `std/string.psm`
-// until the committed seed understood it, and CODE_STYLE's two-step would have
-// made this a two-release feature.
+// **Only a function declared `prop` is one** (src/parse/decl.psm). This used to
+// be inferred: any one-argument function that did not allocate could be read
+// either way, so `s.length` and `s.length()` were both legal, `x.sqrt` read as a
+// field, and whether a name could be written without parentheses depended on
+// what its body did. The rewrite still happens here for any function of the
+// name -- overload resolution has not chosen one yet -- and records the spelling
+// on the callee; semaCheckPropertySpelling rejects it once the declaration is
+// known. Declaring `prop` also carries the rule that a property may not allocate
+// (semaCheckPropertyDecl): parentheses mean "this may allocate".
 //
-// The return type is read from the *declaration* rather than by typing the
-// rewritten call, so the refusal happens before any node is modified. Rewriting
-// first and complaining afterwards would report once per pass of overload
-// resolution over the enclosing call.
-private fn semaPropertyReturnsOwned(module: ASTNode, name: String) -> Bool {
-    let count = ir_decl_count(name)
-    for i in 0..<count {
-        let decl = ptr_to_node(ir_decl_at(name, i))
-        if (decl.kind == NodeKind.FUNCTION and semaParamCount(decl) == 1) {
-            if (nodeIsNull(decl.child3)) { return false }
-            return typeIsMoveOnly(semaAnnotationType(module, ptr_to_node(decl.child3)))
-        }
+// 1 when it was rewritten into a call, for the caller to re-enter semaExpr; 0
+// when there is no function of the name and the caller carries on.
+private fn semaPropertyRewrite(module: ASTNode, expr: ASTNode) -> Int {
+    let name = expr.s1
+    if (semaDeclaresFunction(name) == false) { return 0 }
+
+    let receiver = ptr_to_node(expr.child1)
+    receiver.next = ptr_null()
+    let args = nodeList()
+    nodeListPush(args, receiver)
+    semaBecomeCall(expr, name, args.head)
+    ptr_to_node(expr.child1).i3 = semaSpelledAsProperty()
+    return 1
+}
+
+// How a call was written, on its callee identifier's `i3`: `x.f()` or `x.f`. A
+// call written `f(x)`, or synthesised by a desugaring, carries neither and is
+// not checked -- a property is still a function underneath.
+private fn semaSpelledAsMethod() -> Int { return 1 }
+private fn semaSpelledAsProperty() -> Int { return 2 }
+
+// The spelling against the declaration overload resolution chose. Reported
+// once: semaExpr revisits a call, so the mark is cleared as it is reported.
+private fn semaCheckPropertySpelling(callee: ASTNode, fnNode: ASTNode) -> Bool {
+    if (fnNode.kind != NodeKind.FUNCTION) { return true }
+    let property = nodeIsProperty(fnNode)
+    if (callee.i3 == semaSpelledAsMethod() and property) {
+        callee.i3 = 0
+        semaErrorAt(callee, diagQuote(callee.s1).concat(" is a property, not a method"))
+        diag_note("read it without parentheses: `x.".concat(callee.s1, "`"))
+        return false
     }
-    return false
+    if (callee.i3 == semaSpelledAsProperty() and property == false) {
+        callee.i3 = 0
+        semaErrorAt(callee, diagQuote(callee.s1).concat(" is a method, not a property"))
+        diag_note("call it: `x.".concat(callee.s1, "()`"))
+        return false
+    }
+    return true
+}
+
+// What a `prop` declaration must be: a read of its one argument that hands back
+// a value and allocates nothing. The last is the rule that used to decide which
+// functions were properties at all; it is kept, as a check on the declaration,
+// because a field-like name hiding an allocation would hide the obligation to
+// bind the result with it.
+private fn semaCheckPropertyDecl(module: ASTNode, fnNode: ASTNode) {
+    if (nodeIsProperty(fnNode) == false) { return }
+    if (semaParamCount(fnNode) != 1) {
+        semaErrorAt(fnNode, "property ".concat(diagQuote(fnNode.s1), " must take exactly one parameter, its receiver"))
+        diag_note("a function with more arguments is a method: declare it with `fn`")
+        return
+    }
+    if (nodeIsNull(fnNode.child3)) {
+        semaErrorAt(fnNode, "property ".concat(diagQuote(fnNode.s1), " must return a value"))
+        diag_note("a function that only acts is a method: declare it with `fn`")
+        return
+    }
+    if (typeIsMoveOnly(semaAnnotationType(module, ptr_to_node(fnNode.child3)))) {
+        semaErrorAt(fnNode, "property ".concat(diagQuote(fnNode.s1), " returns an owned value, so it allocates"))
+        diag_note("a property must not allocate -- declare it with `fn` and call it with `()`")
+    }
 }
 
 private fn semaParamCount(decl: ASTNode) -> Int {
@@ -768,30 +813,6 @@ private fn semaParamCount(decl: ASTNode) -> Int {
         paramPtr = ptr_to_node(paramPtr).next
     }
     return n
-}
-
-// 0 -- not a property, the caller should carry on and report what it was going to.
-// 1 -- rewritten into a call; re-enter semaExpr.
-// 2 -- refused, **and already reported**. The caller must stop: appending
-//      "no property `trim` on String" to a message that already named the fix is
-//      two errors for one mistake, which is what this three-way answer avoids.
-private fn semaPropertyRewrite(module: ASTNode, expr: ASTNode) -> Int {
-    let name = expr.s1
-    if (semaDeclaresFunction(name) == false) { return 0 }
-
-    if (semaPropertyReturnsOwned(module, name)) {
-        semaErrorAt(expr, "property ".concat(diagQuote(name),
-                                             " returns an owned value, so it allocates; call it as a method instead"))
-        diag_note("a property must not allocate -- write `()` after the name")
-        return 2
-    }
-
-    let receiver = ptr_to_node(expr.child1)
-    receiver.next = ptr_null()
-    let args = nodeList()
-    nodeListPush(args, receiver)
-    semaBecomeCall(expr, name, args.head)
-    return 1
 }
 
 // **A literal's range is checked where its type stops changing, not where it is
@@ -1026,10 +1047,12 @@ private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // result type, so it works on every sized integer type. Hardcoding
     // typeInt() here rejected `u % 7` for any u that was not a plain Int,
     // even though codegen has always emitted the right urem/srem for it.
-    // Still integer-only -- there is no frem in codegen.
+    // On Float it is `frem`: C's `fmod`, so the result takes the dividend's
+    // sign and `x % 0.0` is NaN -- the same answer C, Rust and Java give.
     if (op.equals("%")) {
-        if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM) {
-            semaErrorAt(leftNode, "operator `%` requires integer operands")
+        if (leftT.kind != TypeKind.INT and leftT.kind != TypeKind.ENUM
+            and leftT.kind != TypeKind.FLOAT) {
+            semaErrorAt(leftNode, "operator `%` requires integer or Float operands")
         }
         semaExpectAssignable(rightNode, "operator `%`", leftT, rightT)
         nodeSetType(expr, leftT)
@@ -1315,6 +1338,14 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             let receiverKind = semaExpr(module, target).kind
             if (semaVecLowersKind(receiverKind)) {
                 let method = callee.s1.clone()
+                // `v.length()`: the collection's properties are the compiler's
+                // own, and follow the same rule as a declared `prop`.
+                if (semaVecIsProperty(receiverKind, method)) {
+                    semaErrorAt(callee, diagQuote(method).concat(" is a property, not a method"))
+                    diag_note("read it without parentheses: `x.".concat(method, "`"))
+                    nodeSetType(expr, typeInvalid())
+                    return typeInvalid()
+                }
                 let lowered = semaVecLower(module, expr, receiverKind, method, target, expr.child2)
                 if (lowered == semaVecRewritten()) { return semaExpr(module, expr) }
                 if (lowered == semaVecRejected()) { return typeInvalid() }
@@ -1325,6 +1356,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             let methodName = createNode(NodeKind.IDENTIFIER_EXPR)
             methodName.s1 = callee.s1
             nodeSpanFrom(methodName, callee)
+            methodName.i3 = semaSpelledAsMethod()
 
             let receiverPtr = callee.child1
             ptr_to_node(receiverPtr).next = expr.child2
@@ -1394,6 +1426,10 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // `let n: Int = f(...)` then added "expected Int, found Void" to the real
     // error. Invalid is the type every consumer already stays quiet about.
     if (fnNode.kind != NodeKind.FUNCTION and fnNode.kind != NodeKind.EXTERN_FUNCTION) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    if (semaCheckPropertySpelling(callee, fnNode) == false) {
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
@@ -1625,12 +1661,7 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
     if (objectT.kind != TypeKind.STRUCT or semaStructHasField(objectT.name, expr.s1) == false) {
         if (typeIsValid(objectT)) {
-            let property = semaPropertyRewrite(module, expr)
-            if (property == 1) { return semaExpr(module, expr) }
-            if (property == 2) {
-                nodeSetType(expr, typeInvalid())
-                return typeInvalid()
-            }
+            if (semaPropertyRewrite(module, expr) == 1) { return semaExpr(module, expr) }
         }
     }
 
@@ -1978,8 +2009,7 @@ private fn semaIsSeparatorMarker(arg: ASTNode) -> Bool {
 // **What a separator may be is limited by the rewrite writing it once per gap.**
 // A literal costs nothing to repeat and a name is a read; `separator(join(a, b))`
 // would run the call once per gap, and a String it returned owned would be a
-// value nothing names -- which RUNTIME.md 3.1 makes a leak per gap rather than
-// an inefficiency. Refused with the fix named, and checking returns the default
+// value allocated and freed once per gap. Refused with the fix named, and checking returns the default
 // afterwards so that one mistake is one diagnostic.
 private fn semaSeparatorArgument(marker: ASTNode) -> Ptr {
     if (nodeExists(marker.child2) == false) {
@@ -2858,6 +2888,7 @@ private fn semaExternGlobalWritable(name: String, file: Int) -> Bool {
 }
 
 private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
+    semaCheckPropertyDecl(module, fnNode)
     ir_clear_local_var_types()
     ir_clear_moved()
     ir_clear_borrowed()
@@ -4053,10 +4084,32 @@ private fn semaFindImplMember(header: ASTNode, name: String, kind: NodeKind) -> 
 // The span is deliberately not copied over. An error in the substituted value
 // belongs at the use the reader is looking at.
 private fn semaResolveAssocConst(module: ASTNode, expr: ASTNode, typeName: String) -> Bool {
-    let valuePtr = semaFindAssocConstValue(module, typeName, expr.s1)
-    if (nodeIsNull(valuePtr)) { return false }
+    let constPtr = semaFindAssocConst(module, typeName, expr.s1)
+    if (nodeIsNull(constPtr)) { return false }
+    let constNode = ptr_to_node(constPtr)
 
-    let copy = monoCopyOne(valuePtr)
+    // **A numeric value keeps the type it was declared with.** The value alone
+    // is an untyped literal, which the use re-types as `Int` -- so
+    // `I64.MAX`'s 9223372036854775807 was "does not fit in Int" wherever it was
+    // named. The use becomes `value as T`: the cast is the context that types a
+    // literal (semaCheckLiteralRange), and between equal types it emits nothing.
+    let declared = semaAnnotationType(module, ptr_to_node(constNode.child1))
+    if (typeIsNumeric(declared)) {
+        let value = monoCopyOne(constNode.child2)
+        nodeSpanFrom(value, expr)
+        expr.kind = NodeKind.CAST_EXPR
+        expr.s1 = ""
+        expr.s2 = ""
+        expr.i1 = 0
+        expr.i2 = 0
+        expr.i3 = 0
+        expr.child1 = node_to_ptr(value)
+        expr.child2 = node_to_ptr(monoCopyOne(constNode.child1))
+        expr.child3 = ptr_null()
+        return true
+    }
+
+    let copy = monoCopyOne(constNode.child2)
     expr.kind = copy.kind
     expr.s1 = copy.s1
     expr.s2 = copy.s2
@@ -4069,7 +4122,9 @@ private fn semaResolveAssocConst(module: ASTNode, expr: ASTNode, typeName: Strin
     return true
 }
 
-private fn semaFindAssocConstValue(module: ASTNode, typeName: String, constName: String) -> Ptr {
+// The ASSOC_CONST member `constName` of `typeName`'s impl: its type is
+// `child1` and its value `child2`.
+private fn semaFindAssocConst(module: ASTNode, typeName: String, constName: String) -> Ptr {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
@@ -4077,7 +4132,7 @@ private fn semaFindAssocConstValue(module: ASTNode, typeName: String, constName:
             let header = ptr_to_node(stmt.child3)
             if (semaAnnotationText(header.child1).equals(typeName)) {
                 let found = semaFindImplMember(header, constName, NodeKind.ASSOC_CONST)
-                if (nodeIsNull(found) == false) { return ptr_to_node(found).child2 }
+                if (nodeIsNull(found) == false) { return found }
             }
         }
         p = stmt.next

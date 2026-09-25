@@ -52,14 +52,14 @@ fn main() -> Int {
     // -- UTF-8 --------------------------------------------------------------
     let accented = "héllo wörld"
     if (accented.length != 13) { return fail("length is bytes") }
-    if (accented.scalarCount() != 11) { return fail("scalarCount is characters") }
-    if (accented.isValidUtf8() == false) { return fail("valid UTF-8") }
-    if (accented.isAscii()) { return fail("not ASCII") }
-    if ("plain".isAscii() == false) { return fail("ASCII") }
+    if (accented.scalarCount != 11) { return fail("scalarCount is characters") }
+    if (accented.isValidUtf8 == false) { return fail("valid UTF-8") }
+    if (accented.isAscii) { return fail("not ASCII") }
+    if ("plain".isAscii == false) { return fail("ASCII") }
 
     // Reversing bytes would put half of an `é` where a character belongs.
     if (accented.reverse().equals("dlröw olléh") == false) { return fail("reverse moves characters") }
-    if (accented.reverse().isValidUtf8() == false) { return fail("reverse leaves valid UTF-8") }
+    if (accented.reverse().isValidUtf8 == false) { return fail("reverse leaves valid UTF-8") }
     if ("abc".reverse().equals("cba") == false) { return fail("reverse on ASCII") }
 
     if (accented.scalarAt(1) != 233) { return fail("é is U+00E9") }
@@ -81,8 +81,8 @@ fn main() -> Int {
 
     // A width is characters, so a padded column lines up whatever alphabet it is
     // in. Counted in bytes, this string is two short.
-    if (accented.padStart(13, '.').scalarCount() != 13) { return fail("padStart counts characters") }
-    if (accented.padEnd(13, '.').scalarCount() != 13) { return fail("padEnd counts characters") }
+    if (accented.padStart(13, '.').scalarCount != 13) { return fail("padStart counts characters") }
+    if (accented.padEnd(13, '.').scalarCount != 13) { return fail("padEnd counts characters") }
     if ("ab".padCenter(6, '-').equals("--ab--") == false) { return fail("padCenter") }
 
     // -- Parsing, with the range checked ------------------------------------
