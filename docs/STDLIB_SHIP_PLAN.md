@@ -25,7 +25,7 @@ exists in a shape that would break every user to change later.
 | 2 | [Standard input](#2-standard-input) | done 2026-09-25 | yes (`program_support.c`) | no |
 | 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 | yes | no |
 | 4 | [`std.time`](#4-stdtime) | done 2026-09-25 | yes (Windows half too) | no |
-| 5 | [`Option` / `Result` methods](#5-option--result-methods) | todo | no | maybe (generic `impl`) |
+| 5 | [`Option` / `Result` methods](#5-option--result-methods) | partly done 2026-09-25; `map` needs a language decision, `expect`/`okOr`/`ok`/`err` two compiler fixes | no | maybe (generic `impl`) |
 | 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
 | 7 | [Files](#7-files) | done 2026-09-25, except the file line reader | yes | no |
 | 8 | [Building strings](#8-building-strings) | todo | no | no (interpolation is separate) |
@@ -217,6 +217,33 @@ as the implementation, per the String precedent.
 - `x.unwrapOr(d)` on a freshly produced Option was the nested-producer leak;
   fixed 2026-09-25, `optionOr(process.env("X"), d)` measures clean, and a chain
   of methods releases every intermediate.
+
+**Landed 2026-09-25, in part:** `isSome`, `isNone`, `isOk` and `isErr` as
+properties, and `unwrapOr` on both types. test_191; neg_194.
+- *Properties on a generic type.* `semaPropertyRewrite` now also asks
+  `monoHasTemplate`, so `o.isSome` finds the template. When every template of
+  the name takes more than its receiver, it says "`unwrapOr` is a method, not a
+  property" itself. Otherwise the rewritten call failed to resolve and read
+  "unknown function". The spelling diagnostics also name `isSome` rather than
+  its instantiation `isSome$Int`. All 231 programs in `tests/` and
+  `aif/corpus/` give byte-identical IR across the change.
+- *`resultIsErr` could not be called.* It had a `return true` after an
+  exhaustive match, which has been the "unreachable code" error since neg_186,
+  and nothing had instantiated it since.
+- *Why each method matches for itself.* Written as `return optionOr(self,
+  fallback)`, `unwrapOr` released its literal fallback when the Option came from
+  a call. That is a violation, and a crash outside `--verify`. The suite's
+  `option_methods` check pins it (KNOWN_ISSUES, Ownership).
+
+Not done, and why:
+- `map`, `andThen`, `mapErr`: `U` appears only in the result, and a type
+  parameter is solved only from an argument's type. With no `F: Fn(T) -> U`
+  there is nothing to say where `U` comes from. Inferring it from the closure's
+  body would be a new rule, so it is a language decision.
+- `expect(message)`: a function whose only return is the payload releases a
+  *literal* payload it was handed. `okOr`, `ok`, `err`: moving a payload into a
+  new enum double-frees it, `sink self` or not. Both are compiler bugs with
+  repros in KNOWN_ISSUES. The methods are two lines each once those are fixed.
 
 ## 6. `Map` removal and methods
 

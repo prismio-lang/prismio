@@ -4124,6 +4124,43 @@ def run_range_direction_test():
     return True
 
 
+def run_option_methods_test():
+    """Option's and Result's methods, under `--verify`: 0 violations.
+
+    test_191 checks the answers; option_methods_probe.psm checks the ledger.
+    `unwrapOr` written as `return optionOr(self, fallback)` released the literal
+    it returned for an Option that came from a call: 3 violations on the probe,
+    none on test_191, whose owned payloads change the analysis's answer. A
+    violation is corruption, and a run prints the right answers through one.
+    Leaks are not asserted: once any `Option<String>` payload is stored from a
+    literal, that payload is never freed for any Option<String> (KNOWN_ISSUES,
+    Ownership).
+    """
+    print(f"\n{BLUE}--- Running option_methods ---{RESET}")
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    with tempfile.TemporaryDirectory(prefix="prismio-option-methods-") as tmp:
+        exe = Path(tmp) / ("probe" + exe_suffix)
+        built = run_command([str(PRISMIO_EXE), "build",
+                             str(TEST_DIR / "option_methods_probe.psm"),
+                             "--verify", "-o", str(exe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] the option methods probe did not build: "
+                  f"{elide_middle((built.stdout or '') + (built.stderr or ''))}{RESET}")
+            return False
+        ran = run_command([str(exe)])
+        output = (ran.stdout or "") + (ran.stderr or "")
+        if ran.returncode != 0 or "fallback" not in (ran.stdout or ""):
+            print(f"{RED}[FAIL] the option methods probe exited {ran.returncode}: "
+                  f"{elide_middle(output)}{RESET}")
+            return False
+        if " 0 violation(s)" not in output:
+            print(f"{RED}[FAIL] Option/Result methods released something not live: "
+                  f"{elide_middle(output)}{RESET}")
+            return False
+    print(f"{GREEN}[PASS] Option and Result methods: right answers and 0 violations{RESET}")
+    return True
+
+
 def run_failure_builtins_test():
     """`panic`, `unreachable`, a failed `assert` and `exit`, run for real.
 
@@ -8441,6 +8478,7 @@ def main():
         ("proved_index_nsw", run_proved_index_nsw_test),
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
+        ("option_methods", run_option_methods_test),
         ("check_overlay", run_check_overlay_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),

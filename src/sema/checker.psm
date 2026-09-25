@@ -742,10 +742,24 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
 // (semaCheckPropertyDecl): parentheses mean "this may allocate".
 //
 // 1 when it was rewritten into a call, for the caller to re-enter semaExpr; 0
-// when there is no function of the name and the caller carries on.
+// when there is no function of the name and the caller carries on; 2 when it
+// was reported here.
 private fn semaPropertyRewrite(module: ASTNode, expr: ASTNode) -> Int {
     let name = expr.s1
-    if (semaDeclaresFunction(name) == false) { return 0 }
+    if (semaDeclaresFunction(name) == false) {
+        // A method of a generic type (`impl<T> Option<T>`) is a template, which
+        // the declaration index does not hold; `o.isSome` has to find it too.
+        if (monoHasTemplate(module, name, NodeKind.FUNCTION) == false) { return 0 }
+        // No template of the name takes only a receiver, so the rewritten call
+        // could not resolve, and would say "unknown function" of a method the
+        // program can plainly call. The concrete case reaches
+        // semaCheckPropertySpelling instead, through overload resolution.
+        if (monoHasTemplateOfArity(module, name, 1) == false) {
+            semaErrorAt(expr, diagQuote(name).concat(" is a method, not a property"))
+            diag_note("call it: `x.".concat(name, "()`"))
+            return 2
+        }
+    }
 
     let receiver = ptr_to_node(expr.child1)
     receiver.next = ptr_null()
@@ -767,19 +781,28 @@ private fn semaSpelledAsProperty() -> Int { return 2 }
 private fn semaCheckPropertySpelling(callee: ASTNode, fnNode: ASTNode) -> Bool {
     if (fnNode.kind != NodeKind.FUNCTION) { return true }
     let property = nodeIsProperty(fnNode)
+    // By now a generic method's callee names its instantiation, `isSome$Int`;
+    // the program wrote `isSome`.
+    let written = semaUnmangledName(callee.s1)
     if (callee.i3 == semaSpelledAsMethod() and property) {
         callee.i3 = 0
-        semaErrorAt(callee, diagQuote(callee.s1).concat(" is a property, not a method"))
-        diag_note("read it without parentheses: `x.".concat(callee.s1, "`"))
+        semaErrorAt(callee, diagQuote(written).concat(" is a property, not a method"))
+        diag_note("read it without parentheses: `x.".concat(written, "`"))
         return false
     }
     if (callee.i3 == semaSpelledAsProperty() and property == false) {
         callee.i3 = 0
-        semaErrorAt(callee, diagQuote(callee.s1).concat(" is a method, not a property"))
-        diag_note("call it: `x.".concat(callee.s1, "()`"))
+        semaErrorAt(callee, diagQuote(written).concat(" is a method, not a property"))
+        diag_note("call it: `x.".concat(written, "()`"))
         return false
     }
     return true
+}
+
+private fn semaUnmangledName(name: String) -> String {
+    let at = name.indexOf(monoSeparator().charAt(0))
+    if (at < 0) { return name.clone() }
+    return name.slice(0, at)
 }
 
 // What a `prop` declaration must be: a read of its one argument that hands back
@@ -1661,7 +1684,12 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
     if (objectT.kind != TypeKind.STRUCT or semaStructHasField(objectT.name, expr.s1) == false) {
         if (typeIsValid(objectT)) {
-            if (semaPropertyRewrite(module, expr) == 1) { return semaExpr(module, expr) }
+            let rewritten = semaPropertyRewrite(module, expr)
+            if (rewritten == 1) { return semaExpr(module, expr) }
+            if (rewritten == 2) {
+                nodeSetType(expr, typeInvalid())
+                return typeInvalid()
+            }
         }
     }
 

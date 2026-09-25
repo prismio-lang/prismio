@@ -34,6 +34,9 @@
   measured the same as the equivalent check in C. The builtins apply only where
   a program declares no function of the name, so an existing `extern fn exit`
   keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
+- **`Option` and `Result` methods.** `o.isSome`, `o.isNone`, `r.isOk` and
+  `r.isErr` are properties, and `unwrapOr(fallback)` is a method on both types.
+  The prefixed functions (`optionIsSome`, `optionOr`, ...) remain. test_191.
 - **More of the file system.** `listDirectory(dir)` returns every entry's
   name, sorted, without `.` and `..`. Also `appendFile`, `rename` (which
   replaces an existing destination, on Windows too), `removeDirectory` (empty
@@ -56,6 +59,14 @@
 
 ### Fixed
 
+- **`resultIsErr` could not be called.** A `return true` after its exhaustive
+  match became the "unreachable code" error with neg_186, and nothing had
+  instantiated it since.
+- **A property declared on a generic type is found.** `o.isSome` on an
+  `impl<T> Option<T>` property read "no field". A method spelled as a property
+  there now says "`unwrapOr` is a method, not a property" rather than "unknown
+  function", and both spelling errors name `isSome` rather than `isSome$Int`.
+  neg_194.
 - **The benchmark suite's Prismio arm reported any run over 2.1 s wrong.** It
   printed `(t1 - t0) as Int`, a 32-bit Int of nanoseconds, so a longer run
   wrapped. It also read clock 4, which is `CLOCK_MONOTONIC_RAW` on Linux, while

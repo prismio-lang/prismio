@@ -100,6 +100,22 @@ internal fn monoHasTemplate(module: ASTNode, name: String, kind: NodeKind) -> Bo
     return nodeExists(node_to_ptr(monoFindTemplate(module, name, kind)))
 }
 
+// Whether a generic function template of this name takes exactly `count`
+// parameters. A method's receiver is its first, so a property -- which takes
+// only its receiver -- is a template of one.
+internal fn monoHasTemplateOfArity(module: ASTNode, name: String, count: Int) -> Bool {
+    let mut p = module.child2
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.FUNCTION and stmt.s1.equals(name)
+            and monoChainLength(stmt.child1) == count) {
+            return true
+        }
+        p = stmt.next
+    }
+    return false
+}
+
 // Appends an instantiated declaration to the module chain.
 //
 // Walks to the tail rather than caching one. The cached tail in main.psm exists

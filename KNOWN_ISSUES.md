@@ -22,6 +22,36 @@ corpus sweep is 8 sources and 7 runnable, down from 33 and 30.
 
 ## Ownership
 
+**Three shapes that release memory that is not live -- violations, not leaks --
+all reproduced on `2ae70c4` and found while adding Option's methods
+(2026-09-25).** Each is a crash (`free(): invalid pointer`) outside `--verify`.
+`findLiteral` below returns `Option<String>.Some("a literal ...")` for one key
+and `None` otherwise.
+
+- **A value returned through a forwarding call.**
+  `fn wrap(o: Option<String>, d: String) -> String { return optionOr(o, d) }`,
+  called as `wrap(findLiteral("other"), "fallback")`, releases `"fallback"`.
+  `optionOr` called directly is clean, and so is `wrap` on a local `None`; the
+  Option has to come from a call. Generic or not.
+- **A match binder returned on its own.** `fn payloadOr(o: Option<String>) ->
+  String { match (o) { Option.Some(v) => { return v } Option.None => { return
+  "".concat("") } } }`, called on `findLiteral("name")`, releases the literal
+  payload. An owned payload is clean. A function that also returns a
+  parameter (`optionOr`'s shape) is clean.
+- **A match binder put into a new enum.** `fn errOf(r: Result<Int, String>) ->
+  Option<String> { match (r) { Result.Ok(v) => { return Option<String>.None }
+  Result.Err(e) => { return Option<String>.Some(e) } } }` on an `Err("..".concat(x))`
+  double-frees the payload: the new Option and the old Result both release it.
+  Declaring `sink r` changes nothing.
+
+std.option's methods avoid all three: they match for themselves instead of
+forwarding, and `expect`, `okOr`, `ok` and `err` are not shipped until the second
+and third are fixed. `tests/option_methods_probe.psm` is the first shape as
+`unwrapOr`, and the suite's `option_methods` check fails on it if the method
+forwards again. It has to be a separate program. test_191 also stores an owned
+payload in an `Option<String>`, and with that the forwarding spelling reads
+0 violations too.
+
 **Fixed 2026-09-25: a C-produced value placed in an arena leaked.** AIF let an
 enclosing region serve any `produce` extern except `chan_recv`, and codegen
 bracketed the call with the arena hint. Only `lang_runtime.c`'s `rt_alloc` reads

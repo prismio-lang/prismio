@@ -1,0 +1,77 @@
+// Option's and Result's methods.
+//
+// 1. `isSome`/`isNone` and `isOk`/`isErr` are properties, declared on a generic
+//    type -- which is what semaPropertyRewrite had to learn to find.
+// 2. `unwrapOr` answers what `optionOr`/`resultOr` do, with a scalar payload and
+//    an owned String one, from a local and from a call, with a literal and an
+//    owned fallback. The ledger is checked by the suite's `option_methods`, on
+//    option_methods_probe.psm.
+
+import std.io
+import std.option
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn findLiteral(key: String) -> Option<String> {
+    if (key.equals("name")) { return Option<String>.Some("a literal payload, past twelve bytes") }
+    return Option<String>.None
+}
+
+fn findOwned(key: String) -> Option<String> {
+    if (key.equals("name")) { return Option<String>.Some("an owned payload, ".concat(key)) }
+    return Option<String>.None
+}
+
+fn parse(text: String) -> Result<Int, String> {
+    if (text.equals("7")) { return Result<Int, String>.Ok(7) }
+    return Result<Int, String>.Err("not a seven: ".concat(text))
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let some = Option<Int>.Some(5)
+    let nothing = Option<Int>.None
+    if (some.isSome == false or some.isNone) { bad = bad + fail("isSome on Some") }
+    if (nothing.isSome or nothing.isNone == false) { bad = bad + fail("isNone on None") }
+
+    let three = Option<Int>.Some(3)
+    if (three.unwrapOr(9) != 3) { bad = bad + fail("unwrapOr on Some") }
+    let empty = Option<Int>.None
+    if (empty.unwrapOr(9) != 9) { bad = bad + fail("unwrapOr on None") }
+
+    let literal = findLiteral("name")
+    if (literal.unwrapOr("fallback").equals("a literal payload, past twelve bytes") == false) {
+        bad = bad + fail("unwrapOr on a literal payload")
+    }
+    let noLiteral = findLiteral("other")
+    if (noLiteral.unwrapOr("fallback").equals("fallback") == false) {
+        bad = bad + fail("unwrapOr to a literal fallback")
+    }
+    let owned = findOwned("name")
+    if (owned.unwrapOr("fallback").equals("an owned payload, name") == false) {
+        bad = bad + fail("unwrapOr on an owned payload")
+    }
+    let noOwned = findOwned("other")
+    if (noOwned.unwrapOr("an owned ".concat("fallback")).equals("an owned fallback") == false) {
+        bad = bad + fail("unwrapOr to an owned fallback")
+    }
+
+    let good = parse("7")
+    if (good.isOk == false or good.isErr) { bad = bad + fail("isOk") }
+    let failed = parse("x")
+    if (failed.isErr == false or failed.isOk) { bad = bad + fail("isErr") }
+    let goodValue = parse("7")
+    if (goodValue.unwrapOr(0) != 7) { bad = bad + fail("Result.unwrapOr on Ok") }
+    let badValue = parse("x")
+    if (badValue.unwrapOr(0) != 0) { bad = bad + fail("Result.unwrapOr on Err") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: Option and Result methods")
+    return 0
+}

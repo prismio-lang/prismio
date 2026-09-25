@@ -1,0 +1,14 @@
+// expect-error: `isSome` is a property, not a method
+// expect-error: `unwrapOr` is a method, not a property
+// The spelling rules hold for a property declared on a generic type, which
+// semaPropertyRewrite finds among the templates rather than the declaration
+// index. neg_191 is the same for a concrete type.
+import std.option
+
+fn main() -> Int {
+    let o = Option<Int>.Some(1)
+    if (o.isSome()) { return 1 }
+    let p = Option<Int>.Some(2)
+    let f = p.unwrapOr
+    return 0
+}

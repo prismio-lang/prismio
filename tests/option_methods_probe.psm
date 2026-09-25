@@ -1,0 +1,30 @@
+// The ledger half of test_191. `unwrapOr` written as `return optionOr(self,
+// fallback)` releases the literal it returns when the Option came from a call;
+// the method as shipped releases nothing that is not live. Run by
+// `option_methods`, which asks for exit 0, the output, and 0 violations.
+//
+// Apart from test_191 because the analysis is whole-program: there, `findOwned`
+// stores an owned payload into Option<String> as well, and with it the bad
+// spelling reads 0 violations too.
+
+import std.io
+import std.option
+import std.string
+
+fn findLiteral(key: String) -> Option<String> {
+    if (key.equals("name")) { return Option<String>.Some("a literal payload, past twelve bytes") }
+    return Option<String>.None
+}
+
+fn main() -> Int {
+    let a = findLiteral("other")
+    let got = a.unwrapOr("fallback")
+    println(got)
+
+    let b = findLiteral("other")
+    if (b.unwrapOr("fallback").equals("fallback") == false) { return 1 }
+
+    let c = findLiteral("name")
+    println(c.unwrapOr("fallback"))
+    return 0
+}
