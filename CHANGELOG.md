@@ -42,8 +42,9 @@
   is refused, naming both signatures. test_192; neg_195, neg_196.
 - **`Option` and `Result` methods.** `o.isSome`, `o.isNone`, `r.isOk` and
   `r.isErr` are properties; `unwrapOr(fallback)` and `expect(message)` are on
-  both types, `okOr(error)` on Option, and `ok()` and `err()` on Result. The
-  prefixed functions (`optionIsSome`, `optionOr`, ...) remain. test_191.
+  both types, `okOr(error)` on Option, `ok()` and `err()` on Result, and
+  `map`, `andThen` (both) and `mapErr` (Result), whose result type is the
+  closure's. The prefixed functions (`optionIsSome`, `optionOr`, ...) remain. test_191.
 - **More of the file system.** `listDirectory(dir)` returns every entry's
   name, sorted, without `.` and `..`. Also `appendFile`, `rename` (which
   replaces an existing destination, on Windows too), `removeDirectory` (empty

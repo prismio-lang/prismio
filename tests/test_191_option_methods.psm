@@ -7,7 +7,9 @@
 //    owned fallback. The ledger is checked by the suite's `ownership_probes`.
 // 3. `expect`, `okOr`, `ok` and `err`, with String payloads -- the shapes that
 //    released a literal or freed a payload twice until 2026-09-25.
-// 4. `expect` on nothing panics with its message: this binary starts itself
+// 4. `map`, `andThen` and `mapErr`, whose result type is the closure's
+//    (test_192 is the language half).
+// 5. `expect` on nothing panics with its message: this binary starts itself
 //    with an argument and checks the child's status and stderr.
 
 import std.io
@@ -35,6 +37,11 @@ fn findOwned(key: String) -> Option<String> {
 fn parse(text: String) -> Result<Int, String> {
     if (text.equals("7")) { return Result<Int, String>.Ok(7) }
     return Result<Int, String>.Err("not a seven: ".concat(text))
+}
+
+fn halfOf(n: Int) -> Option<Int> {
+    if (n % 2 == 0) { return Option<Int>.Some(n / 2) }
+    return Option<Int>.None
 }
 
 fn main() -> Int {
@@ -115,6 +122,31 @@ fn main() -> Int {
     let noErr = parse("7")
     let noErrOption = noErr.err()
     if (noErrOption.isSome) { bad = bad + fail("err() on Ok") }
+
+    let mapped = findOwned("name")
+    let length = mapped.map(|s: String| s.length)
+    if (length.unwrapOr(0) != 22) { bad = bad + fail("Option.map to Int") }
+    let shouted = findOwned("name")
+    let loud = shouted.map(|s: String| s.concat("!"))
+    if (loud.unwrapOr("none").equals("an owned payload, name!") == false) {
+        bad = bad + fail("Option.map to String")
+    }
+    let unmapped = findOwned("other")
+    if (unmapped.map(|s: String| s.length).isSome) { bad = bad + fail("Option.map on None") }
+    let chained = Option<Int>.Some(8)
+    if (chained.andThen(|n: Int| halfOf(n)).unwrapOr(-1) != 4) { bad = bad + fail("Option.andThen") }
+    let odd = Option<Int>.Some(7)
+    if (odd.andThen(|n: Int| halfOf(n)).isSome) { bad = bad + fail("Option.andThen to None") }
+
+    let six = parse("7")
+    if (six.map(|n: Int| n * 6).unwrapOr(0) != 42) { bad = bad + fail("Result.map") }
+    let wrong = parse("x")
+    let measured = wrong.mapErr(|m: String| m.length)
+    if (measured.err().unwrapOr(0) != 14) { bad = bad + fail("Result.mapErr") }
+    let again = parse("7")
+    if (again.andThen(|n: Int| parse(n.toString())).unwrapOr(0) != 7) {
+        bad = bad + fail("Result.andThen")
+    }
 
     let child = Process()
     child.program = process.args[0]

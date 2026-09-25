@@ -25,7 +25,7 @@ exists in a shape that would break every user to change later.
 | 2 | [Standard input](#2-standard-input) | done 2026-09-25 | yes (`program_support.c`) | no |
 | 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 | yes | no |
 | 4 | [`std.time`](#4-stdtime) | done 2026-09-25 | yes (Windows half too) | no |
-| 5 | [`Option` / `Result` methods](#5-option--result-methods) | done 2026-09-25 except `map`/`andThen`/`mapErr` | no | maybe (generic `impl`) |
+| 5 | [`Option` / `Result` methods](#5-option--result-methods) | done 2026-09-25 | no | maybe (generic `impl`) |
 | 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
 | 7 | [Files](#7-files) | done 2026-09-25, except the file line reader | yes | no |
 | 8 | [Building strings](#8-building-strings) | todo | no | no (interpolation is separate) |
@@ -240,10 +240,18 @@ fixes they were waiting on (KNOWN_ISSUES, Ownership; the suite's
 `ownership_probes`). test_191 covers each with String payloads and `expect`'s
 panic.
 
-Not done: `map`, `andThen`, `mapErr`. `U` appears only in the result, and a type
-parameter is solved only from an argument's type. With no `F: Fn(T) -> U` there
-is nothing to say where `U` comes from. Inferring it from the closure's return
-type is the plan (task below).
+**`map`, `andThen`, `mapErr` landed 2026-09-25**, with a language change:
+the closure bound `F: Fn(T) -> U`. `U` appears only in the result, and a type
+parameter used to be solved only from an argument's type. The bound names the
+closure's signature, and a parameter that appears only in its result is solved
+from the closure's return type. That is Rust's spelling, and it solves nothing
+from a function's body. It landed in two steps (syntax, then a seed refresh,
+then std), as CLAUDE.md requires. test_192 and neg_195/196 are the language
+half; test_191 is the methods.
+
+One cost, recorded rather than fixed: `mapErr` moves the Ok value into a new
+Result, so a caller keeps the Result it was called on (one leak of its payload).
+That is the conservative side of the fix for a match binder put into a new enum.
 
 ## 6. `Map` removal and methods
 

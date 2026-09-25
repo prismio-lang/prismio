@@ -94,6 +94,23 @@ impl<T> Option<T> {
             Option.None => { return Result<T, E>.Err(error) }
         }
     }
+
+    // `f` of the value, or `None`: `o.map(|x: Int| x * 2)`. `U` is the
+    // closure's return type.
+    public fn map<U, F: Fn(T) -> U>(self, f: F) -> Option<U> {
+        match (self) {
+            Option.Some(v) => { return Option<U>.Some(f(v)) }
+            Option.None => { return Option<U>.None }
+        }
+    }
+
+    // `f` of the value, which is itself an Option, or `None`: a step that can fail.
+    public fn andThen<U, F: Fn(T) -> Option<U>>(self, f: F) -> Option<U> {
+        match (self) {
+            Option.Some(v) => { return f(v) }
+            Option.None => { return Option<U>.None }
+        }
+    }
 }
 
 enum Result<T, E> {
@@ -173,6 +190,30 @@ impl<T, E> Result<T, E> {
         match (self) {
             Result.Ok(v) => { return Option<E>.None }
             Result.Err(e) => { return Option<E>.Some(e) }
+        }
+    }
+
+    // `f` of the value, or the error unchanged.
+    public fn map<U, F: Fn(T) -> U>(self, f: F) -> Result<U, E> {
+        match (self) {
+            Result.Ok(v) => { return Result<U, E>.Ok(f(v)) }
+            Result.Err(e) => { return Result<U, E>.Err(e) }
+        }
+    }
+
+    // The value unchanged, or `f` of the error.
+    public fn mapErr<G, F: Fn(E) -> G>(self, f: F) -> Result<T, G> {
+        match (self) {
+            Result.Ok(v) => { return Result<T, G>.Ok(v) }
+            Result.Err(e) => { return Result<T, G>.Err(f(e)) }
+        }
+    }
+
+    // `f` of the value, which is itself a Result, or the error unchanged.
+    public fn andThen<U, F: Fn(T) -> Result<U, E>>(self, f: F) -> Result<U, E> {
+        match (self) {
+            Result.Ok(v) => { return f(v) }
+            Result.Err(e) => { return Result<U, E>.Err(e) }
         }
     }
 }
