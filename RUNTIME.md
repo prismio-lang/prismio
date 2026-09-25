@@ -133,6 +133,7 @@ violations.
 |---|---|---|
 | `std/io.psm` | `import std.io` | `print` / `println` overloads, several values in one call, and `eprint` / `eprintln` for stderr |
 | `std/input.psm` | `import std.input` | standard input: `stdin.lines()`, `stdin.readLine()`, `stdin.readAll()` |
+| `std/time.psm` | `import std.time` | `Instant.now()` and `elapsed()` on the monotonic clock, `Duration` (`fromMillis`, `asMillis`, `asSeconds`, ...), `unixTime()`, `sleep(duration)` |
 | `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
 | `std/fs.psm` | `import std.fs` | files, paths, directory listing |
 | `std/process.psm` | `import std.process` | arguments, environment variables (`process.env`, `setEnv`, `removeEnv`), `process.pid`, subprocesses |
@@ -454,6 +455,7 @@ are the other direction, and are `strtod` -- correctly rounded.
 | `proc_write` `proc_close` | `Stream.write` `Stream.close` | `bytes`; → `Int` |
 | `proc_env_has` `proc_env_get` | `process.env` | `borrow`; `proc_env_get` → `produce(free)`, `""` for unset (never a literal) |
 | `proc_env_set` `proc_env_remove` `proc_pid` | `process.setEnv` `removeEnv` `pid` | `borrow`; → `Int` |
+| `time_monotonic_nanos` `time_unix_nanos` `time_sleep_nanos` | `Instant.now()` `unixTime()` `sleep` | → `I64` nanoseconds; POSIX `clock_gettime`/`nanosleep`, Windows `QueryPerformanceCounter`/`GetSystemTimePreciseAsFileTime`/`Sleep` |
 | `io_stdin_has_line` `io_stdin_take_line` `io_stdin_read_all` | `stdin.lines()` `stdin.readLine()` `stdin.readAll()` | the last two → `produce(free)`, `""` at end of input (never a literal) |
 
 The `Int` returns are normalised because the raw conventions disagree with each

@@ -1,0 +1,88 @@
+// Time: a monotonic clock to measure with, the wall clock, and sleeping.
+//
+//     let start = Instant.now()
+//     work()
+//     println(start.elapsed().asMillis)
+//
+//     sleep(Duration.fromMillis(250))
+//
+// **Nanoseconds in an `I64`, in both types.** That spans 292 years, and an `Int`
+// is 32 bits -- 2.1 seconds of nanoseconds -- so every count here is an `I64`.
+// A `Duration` may be negative: `a.since(b)` for a `b` after `a` is, rather than
+// a failure to handle.
+//
+// The clocks are runtime/program_support.c's `time_*`: `clock_gettime` on
+// POSIX, `QueryPerformanceCounter` and `GetSystemTimePreciseAsFileTime` on
+// Windows. Calendar dates and time zones are not here.
+
+private extern fn time_monotonic_nanos() -> I64
+private extern fn time_unix_nanos() -> I64
+private extern fn time_sleep_nanos(nanos: I64)
+
+// A span of time.
+struct Duration {
+    nanos: I64
+}
+
+impl Duration {
+    public fn fromNanos(nanos: I64) -> Duration { return Duration { nanos: nanos } }
+    public fn fromMicros(micros: I64) -> Duration { return Duration { nanos: micros * 1000 } }
+    public fn fromMillis(millis: I64) -> Duration { return Duration { nanos: millis * 1000000 } }
+    public fn fromSeconds(seconds: I64) -> Duration { return Duration { nanos: seconds * 1000000000 } }
+
+    // Rounded to the nearest nanosecond, so `fromSecondsFloat(0.1)` is exactly
+    // 100 ms rather than a nanosecond short of it.
+    public fn fromSecondsFloat(seconds: Float) -> Duration {
+        let mut scaled = seconds * 1000000000.0
+        if (scaled < 0.0) { scaled = scaled - 0.5 } else { scaled = scaled + 0.5 }
+        return Duration { nanos: scaled as I64 }
+    }
+
+    // Whole units, truncated toward zero as integer division is.
+    public prop asNanos(self) -> I64 { return self.nanos }
+    public prop asMicros(self) -> I64 { return self.nanos / 1000 }
+    public prop asMillis(self) -> I64 { return self.nanos / 1000000 }
+    public prop asSeconds(self) -> Float { return (self.nanos as Float) / 1000000000.0 }
+
+    public fn plus(self, other: Duration) -> Duration {
+        return Duration { nanos: self.nanos + other.nanos }
+    }
+
+    public fn minus(self, other: Duration) -> Duration {
+        return Duration { nanos: self.nanos - other.nanos }
+    }
+}
+
+// A reading of the monotonic clock. Its origin is unspecified -- boot, on
+// Linux -- so an `Instant` is for subtracting from another, not for printing.
+// It never steps backwards when the wall clock is set, which is why it and not
+// `unixTime` is the clock to time work with.
+struct Instant {
+    nanos: I64
+}
+
+impl Instant {
+    public fn now() -> Instant { return Instant { nanos: time_monotonic_nanos() } }
+
+    // The time from this reading until now.
+    public fn elapsed(self) -> Duration {
+        return Duration { nanos: time_monotonic_nanos() - self.nanos }
+    }
+
+    // The time from `earlier` until this reading; negative when `earlier` is
+    // the later of the two.
+    public fn since(self, earlier: Instant) -> Duration {
+        return Duration { nanos: self.nanos - earlier.nanos }
+    }
+}
+
+// The wall clock: the time since 1970-01-01 00:00:00 UTC. It can jump when the
+// system clock is set, so two readings do not measure an interval.
+public fn unixTime() -> Duration {
+    return Duration { nanos: time_unix_nanos() }
+}
+
+// Blocks this thread for at least `duration`; not at all for zero or less.
+public fn sleep(duration: Duration) {
+    time_sleep_nanos(duration.nanos)
+}

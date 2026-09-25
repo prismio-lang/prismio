@@ -9,6 +9,7 @@ import std.vec
 import std.map
 import std.process
 import std.string
+import std.time
 
 public fn benchRun(name: String, scale: Int, inputPath: String, outputPath: String) -> Int {
     if (name.equals("fibonacci")) { return benchFibonacci(scale) }
@@ -85,9 +86,9 @@ fn main() -> Int {
     let scale = 4
     let inputPath = process.args[2]
     let outputPath = process.args[3]
-    let t0 = benchNow()
+    let start = Instant.now()
     let result = benchRun(name, scale, inputPath, outputPath)
-    let t1 = benchNow()
+    let elapsed = start.elapsed().asNanos
     if (result < 0) {
         benchPrintln("unknown or failed benchmark")
         return 2
@@ -95,6 +96,6 @@ fn main() -> Int {
     benchPrint("result: ")
     benchPrintln(result)
     benchPrint("elapsed_ns: ")
-    benchPrintln((t1 - t0) as Int)
+    benchPrintln(elapsed)
     return 0
 }

@@ -1,8 +1,6 @@
 import std.string
 import std.io
 
-extern fn clock_gettime(clk: Int, stamp: BenchTimespec) -> Int
-
 // The suite does not import std.io on purpose: an imported module's allocation
 // sites enter this program's AIF analysis whether or not they ever run. So it
 // reaches the descriptor the same way std/io.psm does, with the same
@@ -15,17 +13,7 @@ private fn benchWrite(text: String) {
 public fn benchPrint(text: String) { benchWrite(text) }
 public fn benchPrintln(text: String) { benchWrite(text) benchWrite("\n") }
 public fn benchPrintln(value: Int) { benchWrite(value.toString()) benchWrite("\n") }
-
-struct BenchTimespec {
-    seconds: I64,
-    nanoseconds: I64
-}
-
-public fn benchNow() -> I64 {
-    let stamp = BenchTimespec { seconds: 0, nanoseconds: 0 }
-    clock_gettime(4, stamp)
-    return stamp.seconds * 1000000000 + stamp.nanoseconds
-}
+public fn benchPrintln(value: I64) { benchWrite(value.toString()) benchWrite("\n") }
 
 struct BenchBucket {
     values: Vec<Int>

@@ -1,0 +1,59 @@
+// std.time: Duration's units, the monotonic clock, the wall clock and sleep.
+//
+// 1. Every constructor and every `as*` agree, in both directions, with I64
+//    counts past what an Int holds.
+// 2. `sleep` sleeps at least as long as asked, measured by `Instant`.
+// 3. The monotonic clock does not go backwards.
+// 4. The wall clock is after 2024 and before 2200.
+
+import std.io
+import std.time
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    if (Duration.fromSeconds(3).asMillis != 3000) { bad = bad + fail("fromSeconds") }
+    if (Duration.fromMillis(1500).asMicros != 1500000) { bad = bad + fail("fromMillis") }
+    if (Duration.fromMicros(7).asNanos != 7000) { bad = bad + fail("fromMicros") }
+    if (Duration.fromNanos(1999999).asMillis != 1) { bad = bad + fail("asMillis truncates") }
+    if (Duration.fromSeconds(10).asNanos != 10000000000) {
+        bad = bad + fail("a count past 32 bits")
+    }
+    if (Duration.fromSecondsFloat(0.1).asNanos != 100000000) {
+        bad = bad + fail("fromSecondsFloat rounds")
+    }
+    if (Duration.fromMillis(250).asSeconds != 0.25) { bad = bad + fail("asSeconds") }
+    if (Duration.fromSeconds(1).plus(Duration.fromMillis(5)).asMillis != 1005) {
+        bad = bad + fail("plus")
+    }
+    if (Duration.fromSeconds(1).minus(Duration.fromSeconds(3)).asSeconds != -2.0) {
+        bad = bad + fail("minus goes negative")
+    }
+
+    let start = Instant.now()
+    sleep(Duration.fromMillis(20))
+    let slept = start.elapsed()
+    if (slept.asMillis < 20) { bad = bad + fail("slept less than asked") }
+    if (slept.asMillis > 5000) { bad = bad + fail("slept far longer than asked") }
+    sleep(Duration.fromNanos(0))
+    sleep(Duration.fromMillis(-5))
+
+    let first = Instant.now()
+    let second = Instant.now()
+    if (second.since(first).asNanos < 0) { bad = bad + fail("the monotonic clock went back") }
+    if (first.since(second).asNanos > 0) { bad = bad + fail("since is not signed") }
+
+    // 2024-01-01 and 2200-01-01, in seconds since the epoch.
+    let now = unixTime().asSeconds
+    if (now < 1704067200.0 or now > 7258118400.0) { bad = bad + fail("the wall clock") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: time")
+    return 0
+}

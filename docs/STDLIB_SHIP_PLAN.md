@@ -24,7 +24,7 @@ exists in a shape that would break every user to change later.
 | 1 | [Exit, panic, assert](#1-exit-panic-assert) | done 2026-09-25 | yes (`lang_runtime.c`) | yes (builtins, divergence) |
 | 2 | [Standard input](#2-standard-input) | done 2026-09-25 | yes (`program_support.c`) | no |
 | 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 | yes | no |
-| 4 | [`std.time`](#4-stdtime) | todo | yes (Windows half too) | no |
+| 4 | [`std.time`](#4-stdtime) | done 2026-09-25 | yes (Windows half too) | no |
 | 5 | [`Option` / `Result` methods](#5-option--result-methods) | todo | no | maybe (generic `impl`) |
 | 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
 | 7 | [Files](#7-files) | todo | yes | no |
@@ -182,6 +182,23 @@ Windows needs `QueryPerformanceCounter` where POSIX has `clock_gettime`; the
 benchmarks' own `extern fn clock_gettime` is the first caller to move over.
 Calendar and time zones are tier 3.
 
+**Landed 2026-09-25.** `std/time.psm` over three C functions in
+`program_support.c` (`time_monotonic_nanos`, `time_unix_nanos`,
+`time_sleep_nanos`). Counts are `I64` nanoseconds everywhere, because an `Int`
+holds 2.1 s of them. A `Duration` is signed, so `a.since(b)` with `b` later is
+negative rather than an error. The `as*` accessors are properties. `elapsed()` is
+a method because a property may not return a struct. `sleep` resumes after
+`EINTR` for what is left. test_189 covers every unit conversion, a sleep measured
+by `Instant`, monotonicity, and a sane wall clock; 0 leaked under `--verify`.
+
+The benchmark suite's Prismio arm now times with `Instant`. The move found two
+defects: it printed `(t1 - t0) as Int`, wrapping any run over 2.1 s, and it read
+`CLOCK_MONOTONIC_RAW` where the C++ and Rust arms read `CLOCK_MONOTONIC`.
+
+Not verified here: the Windows half compiles only on Windows, and this session
+ran on Linux. Not done: a calendar, formatting a time, and `Instant` arithmetic
+beyond `since`.
+
 ## 5. `Option` / `Result` methods
 
 `isSome`, `isNone`, `unwrapOr`, `expect(message)`, `map`, `andThen`, `okOr`;
@@ -225,3 +242,21 @@ accumulates in a field or across calls. Options: a `StringBuilder` over
 `Vec<Char>` (owned by Vec, so no `Drop` needed), or extend the consuming append
 to a field AIF proves owned -- which would fix every such program without a new
 type. Measure both before choosing. Interpolation is separate.
+
+**Measured again 2026-09-25, x86_64 Linux** (one run each; "piece-" appended N
+times through `inout b: Builder`):
+
+| N | `b.text = b.text + piece` | local `s = s + piece` | `b.parts.push(piece)`, then `join(b.parts, "")` |
+|---:|---:|---:|---:|
+| 20,000 | 0.77 s | 0.006 s | 0.005 s |
+| 80,000 | killed after 43 s | 0.012 s | 0.016 s |
+| 320,000 | OOM-killed at 13.8 GB RSS | 0.011 s | 0.021 s |
+
+So the field form is not only quadratic: **it leaks every intermediate**, which
+is KNOWN_ISSUES' "assigning a struct field does not release the value it
+replaces". Any builder that keeps a String in a field and reassigns it inherits
+that leak, so a `StringBuilder { buffer: String }` that regrows its buffer is
+ruled out until that issue is fixed. A `Vec<String>` of parts joined at the end
+works today, is linear, and never reassigns a field; it costs one copy per
+piece (`piece.concat("")`, because a borrowed parameter cannot be pushed).
+

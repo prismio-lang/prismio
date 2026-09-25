@@ -415,6 +415,7 @@ int execute_command(const char* command) {
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <time.h>
 extern char** environ;
 #endif
 
@@ -1066,6 +1067,68 @@ char* io_stdin_read_all(void) {
     out[length] = '\0';
     io_stdin_start = io_stdin_end;
     return out;
+}
+
+// The clocks and the sleep behind std/time.psm. Nanoseconds as `int64_t`
+// everywhere: 292 years either side of the origin, and a Prismio `Int` is 32
+// bits, so nothing narrower holds a timestamp.
+//
+// **Monotonic is the clock to measure with.** It never steps backwards when the
+// wall clock is set, and its origin is unspecified (boot, on Linux) -- which is
+// why std.time hands out an `Instant` to subtract rather than a number to read.
+//
+// Windows has no `clock_gettime`. `QueryPerformanceCounter` counts at a
+// frequency fixed at boot, and the conversion splits the count into whole
+// seconds and a remainder so `count * 1e9` cannot overflow at a 10 MHz
+// frequency after 29 years of uptime. The wall clock is a FILETIME: 100 ns
+// ticks since 1601.
+int64_t time_monotonic_nanos(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER frequency;
+    if (frequency.QuadPart == 0) QueryPerformanceFrequency(&frequency);
+    LARGE_INTEGER count;
+    QueryPerformanceCounter(&count);
+    int64_t seconds = count.QuadPart / frequency.QuadPart;
+    int64_t rest = count.QuadPart % frequency.QuadPart;
+    return seconds * 1000000000LL + rest * 1000000000LL / frequency.QuadPart;
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000000000LL + (int64_t)now.tv_nsec;
+#endif
+}
+
+int64_t time_unix_nanos(void) {
+#ifdef _WIN32
+    FILETIME now;
+    GetSystemTimePreciseAsFileTime(&now);
+    int64_t ticks = ((int64_t)now.dwHighDateTime << 32) | (int64_t)now.dwLowDateTime;
+    return (ticks - 116444736000000000LL) * 100;
+#else
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return (int64_t)now.tv_sec * 1000000000LL + (int64_t)now.tv_nsec;
+#endif
+}
+
+// Sleeps at least `nanos`, and returns at once for zero or less. A signal that
+// interrupts `nanosleep` resumes it for what is left, so a program with a
+// signal handler still sleeps as long as it asked. `Sleep` takes milliseconds,
+// rounded up so a short sleep is not a zero one.
+void time_sleep_nanos(int64_t nanos) {
+    if (nanos <= 0) return;
+#ifdef _WIN32
+    int64_t millis = (nanos + 999999) / 1000000;
+    while (millis > 0) {
+        DWORD step = millis > 0x7fffffffLL ? 0x7fffffffUL : (DWORD)millis;
+        Sleep(step);
+        millis -= (int64_t)step;
+    }
+#else
+    struct timespec want = { (time_t)(nanos / 1000000000LL), (long)(nanos % 1000000000LL) };
+    struct timespec left;
+    while (nanosleep(&want, &left) != 0 && errno == EINTR) want = left;
+#endif
 }
 
 //

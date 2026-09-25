@@ -34,6 +34,14 @@
   measured the same as the equivalent check in C. The builtins apply only where
   a program declares no function of the name, so an existing `extern fn exit`
   keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
+- **`std.time`.** `Instant.now()` and `start.elapsed()` on the monotonic clock,
+  `Duration` (`fromNanos`/`fromMicros`/`fromMillis`/`fromSeconds`/
+  `fromSecondsFloat`, `asNanos`/`asMicros`/`asMillis`/`asSeconds`, `plus`,
+  `minus`), `unixTime()` for the wall clock, and `sleep(duration)`. Counts are
+  `I64` nanoseconds. POSIX `clock_gettime`/`nanosleep`; Windows
+  `QueryPerformanceCounter`, `GetSystemTimePreciseAsFileTime`, `Sleep`. The
+  benchmark suite's Prismio arm times with it, as the C++ and Rust arms time
+  with `steady_clock` and `Instant`. test_189.
 - **Standard input.** `for line in stdin.lines()`, `stdin.readLine()` →
   `Option<String>` and `stdin.readAll()` in the new `std.input`. A line has no terminator
   (`\n` or `\r\n`), and a last line without one still counts. The runtime reads 64 KiB
@@ -43,6 +51,10 @@
 
 ### Fixed
 
+- **The benchmark suite's Prismio arm reported any run over 2.1 s wrong.** It
+  printed `(t1 - t0) as Int`, a 32-bit Int of nanoseconds, so a longer run
+  wrapped. It also read clock 4, which is `CLOCK_MONOTONIC_RAW` on Linux, while
+  the other two arms read `CLOCK_MONOTONIC`.
 - **A C-produced String inside a loop's region leaked.** AIF let an arena
   "serve" the return of any `produce` extern, but only the runtime's own
   string producers allocate from the arena. `read_file`, `join_path`,
