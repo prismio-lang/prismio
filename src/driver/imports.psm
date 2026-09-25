@@ -40,6 +40,48 @@ public extern fn executable_directory() -> String produce(free)
 // call, and a zero-filled pointer is NULL, which is the empty cache this wants.
 let mut mergeTailPtr: Ptr
 
+// `check --overlay`: an editor's unsaved text for one file of the program.
+// Wherever the merge reads `overlayPath` -- as the entry or as a module some
+// import reaches -- it reads `overlayContents` instead, so the file keeps its
+// own path, its diagnostics name it, and an import cycle back to it is the file
+// already merged rather than a second copy.
+let mut overlayPath = ""
+let mut overlayContents = ""
+let mut overlayRead = false
+
+// `check --module`: the name the entry file is known by when it is a module
+// checked on its own -- `std.map` for std/map.psm -- which is what gives it its
+// package's access to that package's internals. "" for a program.
+let mut entryModuleName = ""
+
+public fn setEntryModuleName(name: String) {
+    entryModuleName = name.clone()
+}
+
+public fn entryModule() -> String {
+    return entryModuleName.clone()
+}
+
+public fn setSourceOverlay(path: String, contents: String) {
+    overlayPath = path.clone()
+    overlayContents = contents.clone()
+    overlayRead = false
+}
+
+// Whether the program read the overlaid file at all: one it never imports was
+// not checked, and the caller has to say so rather than report it clean.
+public fn sourceOverlayRead() -> Bool {
+    return overlayRead
+}
+
+public fn readSource(path: String) -> String {
+    if (overlayPath.equals("") == false and path.equals(overlayPath)) {
+        overlayRead = true
+        return read_file(overlayContents)
+    }
+    return read_file(path)
+}
+
 // Two same-named top-level declarations of the same kind are duplicates, with one
 // exception: FUNCTION. Overloading means several `fn` nodes legitimately share a
 // name (tests/test_29_overloads.psm), and a genuinely duplicated overload has to
@@ -257,7 +299,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
             exit(1)
         }
     } else {
-        content = read_file(importPath)
+        content = readSource(importPath)
     }
     if (content.equals("") and file_exists(importPath) == 0) {
         diag_error_at_code("P1001", site.file, site.line, site.col, site.len,

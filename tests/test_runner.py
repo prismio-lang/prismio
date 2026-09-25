@@ -1391,6 +1391,86 @@ def run_ums_test():
     return True
 
 
+def run_check_overlay_test():
+    """`check --overlay` and `--module`: one file of a program, checked as the editor sees it.
+
+    A module is not a program. Its imports resolve against the entry's directory, and it may
+    use a name its program shares without importing it -- src/parse/stmt.psm uses `Parser` --
+    so an editor that checked the file alone showed errors that are not there (the first
+    assertion reproduces that). Checked through the program, with the unsaved text overlaid,
+    it is clean; an error typed into the buffer is reported on the file's own path and line;
+    an import cycle back to it does not merge it twice; and a program that never reaches it
+    says so with P1075 rather than calling it clean.
+    """
+    print(f"\n{BLUE}--- Running check_overlay ---{RESET}")
+    problems = []
+
+    def check(*args):
+        result = run_command([str(PRISMIO_EXE), "check", *[str(a) for a in args]])
+        records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
+        return result.returncode, [r for r in records if r.get("kind") == "diagnostic"]
+
+    with tempfile.TemporaryDirectory(prefix="prismio-overlay-") as tmp:
+        root = Path(tmp).resolve()
+        (root / "src" / "util").mkdir(parents=True)
+        main = root / "src" / "main.psm"
+        main.write_text("import std.io\nimport util.shapes\n\n"
+                        "fn main() -> Int {\n    println(doubled(Shape { w: 2, h: 3 }))\n    return 0\n}\n")
+        (root / "src" / "util" / "shapes.psm").write_text(
+            "import util.area\n\nstruct Shape { w: Int, h: Int }\n\n"
+            "public fn doubled(s: Shape) -> Int { return 2 * areaOf(s) }\n")
+        area = root / "src" / "util" / "area.psm"
+        # Uses `Shape` without importing util.shapes, and is reached through a cycle.
+        area.write_text("public fn areaOf(s: Shape) -> Int {\n    return s.w * s.h\n}\n")
+        other = root / "other.psm"
+        other.write_text("fn main() -> Int { return 0 }\n")
+        buffer = root / "buffer.psm"
+
+        code, alone = check(area, "--diagnostic-format=json")
+        if code == 0 or not any(d.get("severity") == "error" for d in alone):
+            problems.append(f"checked alone, area.psm should not resolve `Shape`: {alone}")
+
+        buffer.write_text(area.read_text())
+        code, clean = check(main, "--diagnostic-format=json", "--overlay", area, buffer)
+        if code != 0 or clean:
+            problems.append(f"through its program, the unchanged module is not clean: {clean}")
+
+        buffer.write_text("public fn areaOf(s: Shape) -> Int {\n    return s.w * \"wide\"\n}\n")
+        code, edited = check(main, "--diagnostic-format=json", "--overlay", area, buffer)
+        placed = [d for d in edited if d.get("severity") == "error" and d.get("file") == str(area) and d.get("line") == 2]
+        if code == 0 or not placed:
+            problems.append(f"the unsaved error is not reported on area.psm line 2: {edited}")
+        if any(d.get("file") == str(buffer) for d in edited):
+            problems.append("a diagnostic names the buffer instead of the file")
+
+        code, unread = check(other, "--diagnostic-format=json", "--overlay", area, buffer)
+        if not any(d.get("code") == "P1075" for d in unread):
+            problems.append(f"a program that never reads the file did not say so: {unread}")
+
+        code, missing = check(main, "--diagnostic-format=json", "--overlay", area)
+        if code == 0 or not any(d.get("code") == "P1073" for d in missing):
+            problems.append(f"`--overlay` with one path was accepted: {missing}")
+        code, missing = check(main, "--diagnostic-format=json", "--module")
+        if code == 0 or not any(d.get("code") == "P1076" for d in missing):
+            problems.append(f"`--module` with no name was accepted: {missing}")
+
+    std_map = PROJECT_ROOT / "std" / "map.psm"
+    code, as_module = check(std_map, "--diagnostic-format=json", "--module", "std.map")
+    if code != 0 or as_module:
+        problems.append(f"std/map.psm as std.map is not clean: {as_module[:2]}")
+    code, as_program = check(std_map, "--diagnostic-format=json")
+    if code == 0:
+        problems.append("std/map.psm checked as a program of its own reached the standard library's internals")
+
+    if problems:
+        print(f"{RED}[FAIL] check overlay{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] a module is checked through its program, with the editor's text overlaid{RESET}")
+    return True
+
+
 def run_check_command_test():
     """The analysis-only IDE boundary and its versioned JSON Lines output."""
     print(f"\n{BLUE}--- Running cli_check_protocol ---{RESET}")
@@ -8197,6 +8277,7 @@ def main():
         ("loop_range_proofs", run_loop_range_proofs_test),
         ("proved_index_nsw", run_proved_index_nsw_test),
         ("range_direction", run_range_direction_test),
+        ("check_overlay", run_check_overlay_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

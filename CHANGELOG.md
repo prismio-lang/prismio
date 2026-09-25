@@ -144,6 +144,21 @@
 
 ### Added
 
+- **`prismio check --overlay <file> <text>` and `--module <name>`: one file of a
+  program, checked as an editor sees it.** A module is not a program: its
+  imports resolve against the entry's directory, and it may use a name its
+  program shares without importing it (`src/parse/stmt.psm` uses `Parser`).
+  Checked alone, it reported errors it does not have -- the IntelliJ plugin
+  showed "cannot read imported module `lexer.token`: no such file
+  src/parse/lexer/token.psm" on a file that compiles. Now an editor checks the
+  program with the file's unsaved text overlaid: the program reads `<text>`
+  wherever it would read `<file>`, diagnostics name `<file>`, an import cycle
+  back to it finds it already merged, and a program that never reads it says so
+  (warning P1075). `--module std.map` checks a standard-library module no
+  program imports under its own name. P1073 and P1076 report a missing path or
+  name. `IDE_PROTOCOL.md` has the contract; `check_overlay` in test_runner.py.
+  Every `.psm` in the repository, checked through the plugin's rule for finding
+  a file's program, shows no error that is not really there.
 - **Type-level functions, and `Default`.** A function with no `self` in an
   `impl` belongs to the type: `impl Config { fn make() -> Config }` is called
   `Config.make()`, `Self.make()` inside the block, `Box.new(5)` or

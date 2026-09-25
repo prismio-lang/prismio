@@ -71,7 +71,8 @@ Single-file commands -- these name a source and need no manifest:
   prismio run <source.psm> [-o output.exe] [-g] [--verify] [--jit]
                            [--overflow-checks]
 
-  prismio check <source.psm> [--diagnostic-format=json]
+  prismio check <source.psm> [--diagnostic-format=json] [--overlay <file.psm> <text>]
+                             [--module <name>]
   prismio bootstrap [source.psm] [-o output.exe] [-g]
   prismio runtime-hash
   prismio dump-ast <source.psm>
@@ -94,6 +95,13 @@ Single-file commands -- these name a source and need no manifest:
       is no list of supported targets to fall out of date. --sysroot
       points clang at that target's SDK, and a cross build links
       runtime-<triple> rather than the host's runtime.
+
+      check --overlay reads <file.psm>, wherever the program reaches it, from
+      the file <text> instead -- an editor's unsaved buffer. Check a module
+      through its program's entry, since a module uses names its program
+      shares: `prismio check src/main.psm --overlay src/parse/stmt.psm buf`.
+      --module names a module checked on its own, as its importers name it:
+      `prismio check std/map.psm --module std.map`.
 
     build/run link against the installed Prismio runtime only.
     A project command is the same command with no source named: `prismio build`
@@ -217,18 +225,40 @@ private fn cliCheck() -> Int {
         return 1
     }
 
-    for checkArg in 3..<process.args.count {
+    let mut overlay = ""
+    let mut contents = ""
+    let mut module = ""
+    let mut checkArg = 3
+    while (checkArg < process.args.count) {
         let option = process.args[checkArg]
         if (option.equals("--diagnostic-format=json")) {
             diag_set_json_mode(1)
+        } else if (option.equals("--overlay")) {
+            if (checkArg + 2 >= process.args.count) {
+                diag_error_code("P1073", "`--overlay` needs the file and the file holding its text")
+                printUsage()
+                return 1
+            }
+            overlay = process.args[checkArg + 1].clone()
+            contents = process.args[checkArg + 2].clone()
+            checkArg = checkArg + 2
+        } else if (option.equals("--module")) {
+            if (checkArg + 1 >= process.args.count) {
+                diag_error_code("P1076", "`--module` needs the name the file is imported by")
+                printUsage()
+                return 1
+            }
+            module = process.args[checkArg + 1].clone()
+            checkArg = checkArg + 1
         } else {
             diag_error_code("P1026", "unknown argument ".concat(diagQuote(option)))
             printUsage()
             return 1
         }
+        checkArg = checkArg + 1
     }
 
-    return checkCommand(process.args[2])
+    return checkCommand(process.args[2], overlay, contents, module)
 }
 
 // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and

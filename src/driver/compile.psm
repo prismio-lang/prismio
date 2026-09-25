@@ -109,14 +109,15 @@ private fn checkRuntimeFreshness() {
 // because a punned pointer compares as a string and an ASTNode begins with its
 // `kind`, of which MODULE is 0. See ast.psm.
 private fn analyzedModule(path: String) -> ASTNode {
-    let content = read_file(path)
+    let content = readSource(path)
     if (content.equals("") and file_exists(path) == 0) {
         diag_error_code("P1005", "cannot read ".concat(path))
         return createNode(NodeKind.MODULE)
     }
 
     let rootFile = diag_add_file(path, content)
-    let emissionMod = compiler_library_emission_module()
+    let mut emissionMod = compiler_library_emission_module()
+    if (entryModule().equals("") == false) { emissionMod = entryModule() }
     if (emissionMod.equals("") == false) {
         diag_set_file_module(rootFile, emissionMod)
     }
@@ -164,9 +165,22 @@ public fn dumpAstCommand(path: String) -> Int {
 // The IDE-facing compile boundary: the complete frontend, with no AIF, IR,
 // native toolchain or output file. A successful JSON run still emits a summary,
 // which gives a long-lived client an explicit signal to clear stale diagnostics.
-public fn checkCommand(path: String) -> Int {
+//
+// A module is checked as part of its program, not alone: the program's modules
+// share the names the merge gives them, so `parse/stmt.psm` can use a type it
+// never imports. An editor therefore checks the program's entry, with the file
+// being edited overlaid (`overlay`, read from `contents`; both "" for none).
+// A module no program is at hand for is checked alone, as `module` ("" when
+// the file is a program).
+public fn checkCommand(path: String, overlay: String, contents: String, module: String) -> Int {
     diag_progress_begin(path)
+    if (overlay.equals("") == false) { setSourceOverlay(overlay, contents) }
+    setEntryModuleName(module)
     analyzedModule(path)
+    if (overlay.equals("") == false and sourceOverlayRead() == false) {
+        diag_warning_code("P1075", diagQuote(overlay).concat(" is not part of the program ",
+            diagQuote(path), ", so it was not checked"))
+    }
     diag_finish()
     if (diag_error_count() > 0) {
         return 1
