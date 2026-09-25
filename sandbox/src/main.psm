@@ -1,22 +1,15 @@
 import std.io
 import common
 import std.term
+import std.math
 
 fn main() -> Int {
 
-    let t0 = benchNow()
-    let mut g: I64 = 0
+//    let x: String? = none
 
-    for i in 0..20000000 {
-        g = g + i as I64
-    }
+    let x = "Hello"
 
-    let t1 = benchNow()
-    benchPrint("elapsed_ns: ")
-    benchPrintln((t1 - t0) as Int)
-    println("g".blue())
-    println("done".green())
+    println(x.length)
 
-    print(0.1 + 0.2)
     return 0
 }
