@@ -1,79 +1,44 @@
-# Security Policy
+# Security policy
 
-## Reporting a Vulnerability
+## Reporting
 
-Security issues affecting the Prismio compiler, runtime, tooling, package infrastructure, or associated ecosystem components should be reported responsibly and privately.
+Email **security@prismio.org**. Do not open a public issue for something you
+believe is exploitable.
 
-Please do not open public GitHub issues for security vulnerabilities.
+Include what you can:
 
-Instead, report vulnerabilities confidentially via email:
+- The Prismio version or commit (`prismio --version`), and the platform.
+- A minimal program or input that shows the problem, and what happens.
+- What an attacker controls, and what they gain.
 
-- security@prismio.org
+You will get an acknowledgement, and a fix or mitigation will be coordinated with
+you before anything is disclosed. The project is maintained by a small team
+before its first release, so there is no promised response time, but reports are
+treated as the first priority.
 
-Include the following information where possible:
+## What counts
 
-- A clear description of the issue
-- Steps required to reproduce it
-- Affected component(s) and platform(s)
-- Relevant proof-of-concept code, logs, screenshots, or test cases
-- Potential impact assessment
-- Contact information for follow-up communication
+A compiler's security issues are mostly about the programs it builds:
 
----
+- **Generated code that corrupts memory**: a use after free, a double free, or
+  an out-of-bounds access in a program the compiler accepted, where the input
+  that triggers it can come from outside the program. `prismio run --verify`
+  reports such a free as a *violation*.
+- **The runtime** (`runtime/*.c`): the allocator, strings, collections, files,
+  processes, channels.
+- **The toolchain and its distribution**: `install.sh`, the release archives and
+  their SHA-256 checksums, and the build driver's handling of paths and
+  subprocesses.
 
-## Scope
+A memory-safety bug you can only reach from the program's own source, with no
+outside input, is a correctness bug. Open a public issue for it, with the
+program and its `--verify` output. [KNOWN_ISSUES.md](KNOWN_ISSUES.md) lists the
+shapes already known.
 
-This policy currently applies to:
+Report vulnerabilities in LLVM, the C library or other dependencies to their
+maintainers. If Prismio's pinned LLVM needs updating as a result, tell us too.
 
-- Prismio compiler
-- Runtime library
-- LLVM bridge layer
-- Package and build tooling
-- Official Prismio infrastructure and repositories
+## Supported versions
 
-Third-party dependencies and external LLVM vulnerabilities should be reported to their respective maintainers when applicable.
-
----
-
-## Response Timeline
-
-Prismio aims to:
-
-- Acknowledge reports within 48 hours
-- Provide an initial assessment within 7 days
-- Coordinate fixes and responsible disclosure timelines where necessary
-
-Response times may vary depending on issue complexity and project activity.
-
----
-
-## Supported Versions
-
-Security support is currently focused on:
-
-| Version | Support Status |
-|---|---|
-| Latest development version | Fully supported |
-| Previous stable release | Critical issues only |
-| Older releases | Not actively supported |
-
-Users are strongly encouraged to remain on the latest stable release.
-
----
-
-## Responsible Disclosure
-
-Please avoid publicly disclosing vulnerabilities until:
-- the issue has been verified,
-- a fix or mitigation has been prepared,
-- and coordinated disclosure has been discussed.
-
-This helps protect users and downstream projects relying on the Prismio ecosystem.
-
----
-
-## Acknowledgements
-
-Responsible security disclosures that help improve the stability and safety of the Prismio ecosystem are appreciated.
-
-Thank you for helping improve the reliability and security of the project.
+Prismio has not had a release yet. Fixes land on `main`. Once 0.1.0 is
+published, security fixes will go to the latest release and `main`.

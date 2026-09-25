@@ -104,3 +104,16 @@ tests/*/*
 # workload_static.psm with the `workload` block stripped, as the control the
 # measured build is compared against.
 tests/workload_static_control.psm
+
+# The owner's scratch space: sources and notes are tracked, but a program built
+# there is an extensionless binary, which the rules above do not catch -- ten
+# Mach-O executables were committed once. Same pattern as tests/.
+sandbox/src/*
+!sandbox/src/*.psm
+scratch/*
+!scratch/*.psm
+!scratch/*.cpp
+!scratch/*.rs
+!scratch/*.json
+!scratch/*.html
+!scratch/*.css

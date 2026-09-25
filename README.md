@@ -2,228 +2,234 @@
   <img src="https://www.prismio.org/icons/prismio-banner.png" width="140" alt="Prismio"/>
 </p>
 
-<br/>
+<h1 align="center">Prismio</h1>
 
-<div align="center">
+<p align="center">
+A compiled, statically typed language where the compiler decides how memory is managed.<br/>
+No garbage collector, no <code>free</code>, no lifetime annotations.
+</p>
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-6C63FF?style=for-the-badge&logoColor=white)](LICENSE)
-[![LLVM](https://img.shields.io/badge/backend-LLVM%2023-6C63FF?style=for-the-badge&logoColor=white)]()
-[![Status](https://img.shields.io/badge/status-active%20development-6C63FF?style=for-the-badge&logoColor=white)]()
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-6C63FF?style=for-the-badge&logoColor=white)](CONTRIBUTING.md)
-
-**A statically typed, compiled systems language. The compiler is written in Prismio.**
-
-[Website](https://prismio.org) · [Documentation](https://docs.prismio.org/) · [Contributing](CONTRIBUTING.md) · [Issues](https://github.com/prismio-lang/prismio/issues)
-
-</div>
-
----
-
-## Overview
-
-Prismio is an open-source systems programming language that compiles to native machine code via LLVM IR. The compiler — including the lexer, parser, AST, import resolver, and IR generator — is written in Prismio itself.
-
-This repository contains the Prismio source files that constitute the compiler. A prebuilt bootstrap binary is used to compile them during toolchain setup; contributors do not write or modify C++.
-
-The language has no garbage collector and no implicit runtime. All allocations are explicit. The C ABI is the foreign function interface — any C function is callable via an `extern fn` declaration with no additional tooling.
-
-### Design Principles
-
-- **Explicit over implicit** — mutability, types, and allocation are always visible at the call site
-- **C ABI as the FFI** — no bindings layer, no marshalling, no overhead
-- **Self-hosting as a design constraint** — the language must be expressive enough to implement its own compiler
-- **LLVM as the backend** — no custom codegen; full access to LLVM's optimization passes and target support
+<p align="center">
+<a href="https://prismio.org">Website</a> ·
+<a href="https://docs.prismio.org/">Documentation</a> ·
+<a href="CHANGELOG.md">Changelog</a> ·
+<a href="KNOWN_ISSUES.md">Known issues</a> ·
+<a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
 ---
 
-Platform-specific contributions and CI configuration are welcome. See [Contributing](#contributing).
+Prismio compiles to native code through LLVM. Its compiler is written in Prismio and
+builds itself to a byte-identical fixpoint.
 
----
+What sets it apart is the memory model. You write ordinary code, and for every
+allocation site the compiler proves the cheapest management strategy that is safe
+for it: the stack, a bulk-freed region, a single owner with a deterministic free, or
+a reference count. It shows you each decision, and it can check them against a
+real run.
 
-## Language
+> **Status: pre-release.** 0.1.0 is being prepared ([release checklist](RELEASE_CHECKLIST.md)).
+> The language and standard library can still change in incompatible ways before 1.0.
+> Build it from source today; installers come with the 0.1.0 release.
 
-The language includes:
-- explicit mutability (`let` / `let mut`)
-- nominal type semantics
-- structs and enums
-- module imports
-- C ABI interoperability
-- control flow primitives
-- arrays and string operations
-- progressively self-hosted compiler infrastructure
+## A first look
 
-The README intentionally avoids embedding extensive language examples or syntax documentation. The full language reference, compiler behavior, type system details, runtime APIs, and architecture documentation are maintained on the official documentation site.
+```prismio
+import std.display
+import std.io
+import std.map
+import std.string
+import std.vec
 
----
-
-## Architecture
-
-### Compiler Pipeline
-
-```
-Source (.psm)
-     │
-     ▼
-  Lexer                   ← src/lexer/
-     │  Token stream
-     ▼
-  Parser                  ← src/parse/
-     │  Untyped AST
-     ▼
-  Import Resolver         ← src/main.psm
-     │  Flattens transitive imports into a single module AST
-     ▼
-  Semantic Analysis       ← src/sema/
-     │  Type checking + move/borrow/drop ownership enforcement
-     ▼
-  Allocation Inference    ← src/aif/
-     │  Assigns every allocation site a tier; drives what codegen emits
-     ▼
-  IR Generator            ← src/ir/
-     │  AST walk → LLVM IR, built through the LLVM C API
-     ▼
-  LLVM, in process
-     │  Merges the runtime and std bitcode, optimises at -O3, emits an object
-     ▼
-  System linker (cc)
-     │  Links against the platform's C library
-     ▼
-  Native binary
-```
-
-IR is built through the LLVM C API by `runtime/llvm-api-backend.c`. The compiler calls into it
-exclusively via the `extern fn` declarations in `src/ir/bridge.psm`, so the Prismio source has no
-direct LLVM dependency of its own and a second backend can be linked in its place.
-
-### Source layout
-
-Each stage of the pipeline is a directory, and a module's path is its import path — `src/ir/expr.psm`
-is `import ir.expr`, and `import ir.*` takes the whole package.
-
-| Directory | Contents |
-|---|---|
-| `src/common/` | String and character primitives; the diagnostics FFI |
-| `src/lexer/` | The token vocabulary and the scanner |
-| `src/ast/` | Node and type representations, plus the AST dump used by the AIF oracle |
-| `src/parse/` | Declarations, statements, expressions, and the parser itself |
-| `src/sema/` | Type checking, overload resolution, ownership enforcement, control-flow analysis |
-| `src/aif/` | Allocation inference: the model, the walk, layout, and reporting |
-| `src/ir/` | Type lowering, expression and statement emission, and the LLVM bridge |
-| `src/driver/` | Import resolution, workload profiling, and the compile pipeline |
-| `src/project/` | What the CLI does with a manifest, including compiler promotion |
-| `src/main.psm` | CLI parsing, usage, and command dispatch |
-| `build.ums` | Required project manifest; declares the self-hosted executable and its native linkage |
-
-For a full breakdown of compiler internals, see [Architecture](https://docs.prismio.org/architecture)
-
----
-
-## Getting Started
-
-### Prerequisites
-
-| Dependency | Version | Notes |
-|---|---|---|
-| LLVM | 23.1.1, pinned | Provisioned into `third_party/llvm` by `tools/setup_llvm.py` and linked into the compiler; nothing to install |
-| A C toolchain | — | The system linker and C library (Xcode Command Line Tools, `build-essential`, Visual Studio C++ tools) |
-| Python | 3.8+ | Test runner utilities |
-| Prismio | not required | The committed seed creates the first local compiler |
-
-### Using a Local Compiler Build
-
-With Prismio installed, the ordinary compiler-development loop is one project
-command:
-
-```bash
-prismio build
-```
-
-The repository's first, stable manifest block names its optional project host:
-
-```ums
-toolchain {
-    host = ".prismio/build/debug/prismio"
+enum Shape {
+    Circle(Float)
+    Rect(Float, Float)
 }
-```
 
-The installed compiler reads only that bootstrap block. On a fresh checkout the
-host is absent, so the installed compiler processes `build.ums` and builds it as
-stage 0. Once the host exists, global `prismio` forwards the complete command to
-it; the local compiler then parses the complete manifest, including any newer
-UMS behavior it implements. A self-build is staged and the global parent
-atomically promotes it after the host exits, so a failed edit leaves the working
-local generation intact.
-
-The committed seed remains the path for a fresh checkout with no installed
-Prismio, and named generations remain the path for bootstrap and fixed-point
-verification:
-
-```bash
-python3 tools/setup_llvm.py
-tools/bootstrap.sh --seed --out build/gen0
-tools/bootstrap.sh --compiler build/gen0 --out build/gen1
-tools/bootstrap.sh --compiler build/gen1 --out build/gen2
-```
-
-The compiler is an ordinary named executable whose dependencies are explicit:
-
-```ums
-targets {
-    executable("prismio") {
-        entry = "src/main.psm"
-        link {
-            component("prismio.backend")
-        }
+fn area(s: Shape) -> Float {
+    match (s) {
+        Shape.Circle(r) => { return 3.14159 * r * r }
+        Shape.Rect(w, h) => { return w * h }
     }
 }
+
+fn main() -> Int {
+    let shapes = [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Circle(0.5)]
+
+    let mut total = 0.0
+    for s in shapes {
+        total = total + area(s)
+    }
+    println("total area: ${total}")
+
+    let mut counts = mapNew<String, Int>()
+    for word in "a b a c b a".split(' ') {
+        counts.set(word, counts.getOr(word, 0) + 1)
+    }
+    println("a appears ${counts.getOr("a", 0)} times")
+    return 0
+}
 ```
 
-`prismio.backend` is a toolchain component: it supplies the local compiler
-backend and its LLVM dependency. It changes what the executable links, not what
-kind of artifact the target emits. Application targets can use the same
-`link` block with `library`, `search`, `file`, and (for Mach-O) `framework`
-inputs; without them, an executable links only the Prismio runtime. Use named `build/genN` binaries
-directly when the exact host generation is part of the check; use bare
-`prismio build` for the normal local development loop.
+```console
+$ prismio run shapes.psm
+Built shapes
+total area: 9.9269875
+a appears 3 times
+```
 
-### IDE integration
+The program allocates and frees memory, but no line of it says so. Ask the compiler what
+it decided:
 
-Editors can run `prismio check <source.psm> --diagnostic-format=json` for
-analysis-only validation and versioned JSON Lines diagnostics. The command runs
-the full frontend without generating IR, invoking the native linker, or creating
-an output artifact. See [IDE_PROTOCOL.md](IDE_PROTOCOL.md) for the wire contract.
+```console
+$ prismio aif shapes.psm
+Storage plan
+  Stack                   3
+  Arena                   2
+  Scoped heap             1
+  Unique heap             119
+  Shared heap             0
+  Cycle-managed heap      0
+...
+ID   location                 type            storage          reason
+1    shapes.psm:21:19         [Shape]         scoped heap      scope-bound; no arena selected
+2    shapes.psm:21:25         Shape           stack            small value does not escape
+```
 
-### Debugging
+Then run it with the inference checked against every allocation and release:
 
-`prismio build <source.psm> -g` emits DWARF — line tables, functions, lexical scopes,
-locals and struct layouts — so a program can be run under lldb or gdb. On macOS a `.dSYM`
-is written beside the binary.
+```console
+$ prismio run shapes.psm --verify
+...
+aif-verify: 13 allocated, 13 released, 0 leaked, 0 violation(s)
+```
 
-Separately, and more useful for the questions a debugger cannot answer, the memory model
-explains itself: `prismio aif <source.psm>` prints a source-oriented storage plan,
-`--why=<ID>` explains one numbered decision, and `--manifest` emits the stable
-compiler/CI form with tiers and symbols. `prismio build --verify` runs the program
-and checks the inference held. See [docs/DEBUGGING.md](docs/DEBUGGING.md).
+## The memory model
 
-### Run the Test Suite
+Each allocation site is assigned the cheapest tier the compiler can prove safe:
+
+| Tier | Strategy | Runtime cost |
+|---|---|---|
+| T0 | stack or register | none |
+| T1 | region: bump-allocated, freed in bulk | a pointer bump |
+| T2 | single owner, moved, freed deterministically | one allocation and one free |
+| T3 | shared, non-atomic reference count | a count update when sharing survives analysis |
+| T4 | atomic reference count, or cycle collection | the only real overhead, and rare |
+
+The rule is that what the analysis cannot prove costs performance, never
+correctness; a shape that breaks it is a bug, found by `--verify` and fixed as one.
+`prismio aif --why=<ID>` explains any decision, `--manifest` prints a stable form for CI to diff,
+and `--verify` builds a program whose run checks the inference held. The
+specification and the evidence behind it are in [`aif/`](aif/README.md).
+
+The model is still being tightened. Some shapes leak rather than release, and
+each is listed with a reproducer in [KNOWN_ISSUES.md](KNOWN_ISSUES.md) under
+"Ownership".
+
+## Performance
+
+On the maintained suite of 63 workloads, each written the same way in Prismio, C++
+and Rust, Prismio's geometric-mean time is **0.92× of C++ (clang -O2) and 0.92× of
+Rust (-C opt-level=3)**, with peak memory level with both. That was measured
+2026-09-25 on x86_64 Linux, 7 runs each
+([results](aif/evidence/RESULTS-v01-gate-2026-09-25.md)). It is slower on some
+workloads, `edit_distance` and `base64_codec` among them, and
+[docs/PERFORMANCE_PLAN.md](docs/PERFORMANCE_PLAN.md) lists where and why. The suite,
+and the rules that keep its three versions of each workload the same program, are
+in [`benchmarks/`](benchmarks/README.md).
+
+## Language at a glance
+
+- `let` and `let mut`; structs, enums with payloads, and `match` over them.
+- Generics with trait bounds, `impl` blocks, traits with associated types,
+  borrowed `dyn Trait`, and closures with `Fn(A) -> R` bounds.
+- `Option` and `Result` with the usual combinators; `Vec<T>`, fixed-length
+  `Array<T, N>`, `Map<K, V>`; `for ... in` over any type that implements `Iterator`.
+- String interpolation (`"${value}"`); `panic`, `assert` and `exit`.
+- Tasks (`spawn`, `join`) and typed channels.
+- C interop through `extern fn`, with ownership stated at the boundary:
+  `produce(free)`, `borrow` and `alias`.
+- Projects described in a `build.ums` manifest; `prismio init`, `build`, `run` and `test`.
+
+The standard library covers I/O and standard input, files and directories,
+processes and the environment, time, math, strings, and collections.
+[RUNTIME.md](RUNTIME.md) maps what a program can call.
+[Documentation](https://docs.prismio.org/) is the language reference.
+
+## Building from source
+
+Requirements: a C toolchain (Xcode Command Line Tools, `build-essential`, or Visual
+Studio's C++ tools) and Python 3.8 or later. LLVM is pinned and downloaded by the
+setup script; nothing on the system is used.
 
 ```bash
-PRISMIO=$PWD/.prismio/build/debug/prismio python3 tests/test_runner.py
+git clone https://github.com/prismio-lang/prismio.git
+cd prismio
+python3 tools/setup_llvm.py                              # LLVM 23.1.1 into third_party/llvm
+tools/bootstrap.sh --seed --out build/gen0               # first compiler, from the committed seed
+tools/bootstrap.sh --compiler build/gen0 --out build/gen1
+python3 tools/package.py --compiler build/gen1 --out build/dist
+export PATH="$PWD/build/dist/bin:$PATH"
 ```
 
-`PRISMIO` always wins over `PATH`, making the tested local generation
-unambiguous. Fixed-point work can set it to a named `build/genN` instead.
+`bootstrap/prismio-seed.ll` is committed LLVM IR for an earlier compiler. It is how
+a machine with no Prismio builds its first one. On Windows the script is
+`tools/bootstrap.ps1 -Seed bootstrap/prismio-seed.ll -Out build/gen0`, then
+`-Compiler build/gen0 -Out build/gen1`.
 
----
+Then start a project:
+
+```console
+$ prismio init hello && cd hello
+$ prismio run
+Hello, Prismio!
+```
+
+Or compile a single file with `prismio run file.psm` or `prismio build file.psm`.
+`prismio --help` lists every command, including `check` for editors (JSON
+diagnostics, [IDE_PROTOCOL.md](IDE_PROTOCOL.md)) and `-g` for DWARF debug info
+([docs/DEBUGGING.md](docs/DEBUGGING.md)).
+
+**Platforms.** CI builds and tests on Linux, macOS and Windows. Development happens
+on macOS (arm64) and Linux (x86_64), so Windows is the least exercised: a compiler
+self-hosted there has no export table, and some Windows-only paths are verified by
+CI alone. WebAssembly IR can be emitted but has no runtime yet. See
+[Platform](KNOWN_ISSUES.md#platform).
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| [`src/`](src/) | The compiler, in Prismio: lexer, parser, semantic analysis, allocation inference (`aif/`), IR generation |
+| [`std/`](std/) | The standard library |
+| [`runtime/`](runtime/) | The C runtime, and the LLVM C API backend the compiler calls through `src/ir/bridge.psm` |
+| [`ums/`](ums/README.md) | UMS, the build manifest and its resolver |
+| [`aif/`](aif/README.md) | The memory model: specification, reference oracle and measured evidence |
+| [`tests/`](tests/) | The compiler suite, `tests/test_runner.py` |
+| [`benchmarks/`](benchmarks/README.md) | Prismio, C++ and Rust versions of each workload |
+| [`bootstrap/`](bootstrap/) | The committed seed |
+| [`tools/`](tools/) | Bootstrap, packaging, release gate, lint, LLVM setup |
+| [`docs/`](docs/) | Plans and design notes for contributors |
+
+## Project documents
+
+| | |
+|---|---|
+| [CHANGELOG.md](CHANGELOG.md) | What changed, release by release |
+| [KNOWN_ISSUES.md](KNOWN_ISSUES.md) | What is open, with enough of each to act on |
+| [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | What is left before 0.1.0 |
+| [docs/](docs/) | Plans for the standard library, memory, performance, collections and channels |
+| [RUNTIME.md](RUNTIME.md), [STRINGS.md](STRINGS.md) | The runtime surface, and how `String` is represented |
+| [CODE_STYLE.md](CODE_STYLE.md), [C_CODE_STYLE.md](C_CODE_STYLE.md) | How the compiler and runtime are written |
 
 ## Contributing
 
-Contributions are welcome. All compiler work is done in Prismio — contributors do not need to touch C++. The most impactful work right now is infrastructure, correctness, and platform coverage.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building, testing, and what a change
+needs before review. Most compiler work is Prismio under `src/`; the runtime and
+the LLVM backend are C under `runtime/`.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide. This project follows the [Contributor Covenant](https://www.contributor-covenant.org/).
-
----
+Report security issues privately, as [SECURITY.md](SECURITY.md) describes.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+[Apache License 2.0](LICENSE).
