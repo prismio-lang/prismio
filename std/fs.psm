@@ -6,6 +6,11 @@
 // the language does not have and cannot grow without a syscall layer. What this
 // module adds is the two things the raw `extern fn` could not carry.
 //
+// **The raw functions are `internal`**: a program calls the wrappers, and the
+// wrapper is where the contract and the return convention are fixed. A program
+// that declares its own `extern fn read_file` still can -- that is its FFI, not
+// this module's.
+//
 // **The ownership contract, declared once.** `read_file`, `get_directory`,
 // `join_path`, `current_directory`, `executable_directory` and `list_modules`
 // all return `malloc`ed memory the caller must release, and only the first three
@@ -29,22 +34,24 @@
 
 import std.option
 import std.string
+import std.time
+import std.vec
 
-public extern fn file_exists(path: String borrow) -> Int
-public extern fn read_file(path: String borrow) -> String produce(free)
-public extern fn delete_file(path: String borrow) -> Int
+internal extern fn file_exists(path: String borrow) -> Int
+internal extern fn read_file(path: String borrow) -> String produce(free)
+internal extern fn delete_file(path: String borrow) -> Int
 // Both return a status rather than a pointer, so neither carries `produce` or
 // `alias`: there is nothing for a deallocator to take. `borrow` on the arguments
 // is the real contract -- the runtime reads them during the call and retains
 // neither.
-public extern fn write_file(path: String borrow, content: String borrow) -> Int
-public extern fn make_directory(path: String borrow) -> Int
-public extern fn directory_exists(path: String borrow) -> Int
-public extern fn get_directory(path: String borrow) -> String produce(free)
-public extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(free)
-public extern fn current_directory() -> String produce(free)
-public extern fn executable_directory() -> String produce(free)
-public extern fn list_modules(directory: String borrow) -> String produce(free)
+internal extern fn write_file(path: String borrow, content: String borrow) -> Int
+internal extern fn make_directory(path: String borrow) -> Int
+internal extern fn directory_exists(path: String borrow) -> Int
+internal extern fn get_directory(path: String borrow) -> String produce(free)
+internal extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(free)
+internal extern fn current_directory() -> String produce(free)
+internal extern fn executable_directory() -> String produce(free)
+internal extern fn list_modules(directory: String borrow) -> String produce(free)
 
 public fn fileExists(path: String) -> Bool {
     return file_exists(path) == 1
@@ -153,4 +160,88 @@ public fn listModules(directory: String) -> Vec<String> {
 // in src/main.psm, not a convention.
 public fn isSourcePath(path: String) -> Bool {
     return strEndsWith(path, ".psm")
+}
+
+// The rest of the file-system capability: a directory's entries, appending,
+// renaming, removing a directory, and what a path is.
+private extern fn fs_list_begin(path: String borrow) -> Int
+private extern fn fs_list_name(index: Int) -> String produce(free)
+private extern fn fs_list_end()
+// `bytes`, with the count beside it: a view crosses without the NUL-terminated
+// copy a `borrow` would make, since the callee never looks for a terminator.
+private extern fn fs_append_file(path: String borrow, content: String bytes, length: Int) -> Int
+private extern fn fs_rename(from: String borrow, to: String borrow) -> Int
+private extern fn fs_remove_directory(path: String borrow) -> Int
+private extern fn fs_metadata(path: String borrow, out: MetadataOut) -> Int
+
+// The names in `directory` -- files, directories and anything else -- sorted by
+// byte value, without `.` and `..`. Names only: `joinPath(directory, name)` is
+// the path. Empty for a directory that cannot be read; `directoryExists` tells
+// that from an empty one.
+//
+// Read one name at a time from the runtime rather than split from one string,
+// as `listModules` is, because a file name may contain a newline.
+public fn listDirectory(directory: String) -> Vec<String> {
+    let mut out: Vec<String> = []
+    let count = fs_list_begin(directory)
+    let mut i = 0
+    while (i < count) {
+        out.push(fs_list_name(i))
+        i = i + 1
+    }
+    fs_list_end()
+    return out
+}
+
+// Adds `content` to the end of `path`, creating the file if it is absent. The
+// parent directory must exist, as for `writeFile`.
+public fn appendFile(path: String, content: String) -> Bool {
+    return fs_append_file(path, content, strLength(content)) == 0
+}
+
+// Moves `from` to `to`, replacing a file already at `to` -- on Windows too.
+// Both must be on one file system; this is a rename, not a copy.
+public fn rename(from: String, to: String) -> Bool {
+    return fs_rename(from, to) == 0
+}
+
+// Removes `path` if it is an empty directory. A directory with anything in it is
+// refused rather than emptied.
+public fn removeDirectory(path: String) -> Bool {
+    return fs_remove_directory(path) == 0
+}
+
+// What `fs_metadata` writes back. Every field is 64-bit so that no padding
+// question arises between this declaration and the C one, as for `SpawnOut`.
+struct MetadataOut {
+    size: I64,
+    modifiedNanos: I64,
+    isDirectory: I64,
+    isFile: I64
+}
+
+// What a path names. A symbolic link answers for what it points at.
+//
+// `size` is in bytes, and 0 for a directory. `modified` is the last write, as a
+// time since the Unix epoch -- `m.modified.asSeconds`, or compared with
+// `unixTime()`. A path that is neither a directory nor a regular file (a device,
+// a socket) has both flags false.
+struct Metadata {
+    size: I64,
+    modified: Duration,
+    isDirectory: Bool,
+    isFile: Bool
+}
+
+// `None` when nothing is at `path`, or it cannot be examined.
+public fn metadata(path: String) -> Option<Metadata> {
+    let zero = 0 as I64
+    let out = MetadataOut { size: zero, modifiedNanos: zero, isDirectory: zero, isFile: zero }
+    if (fs_metadata(path, out) == 0) { return Option<Metadata>.None }
+    return Option<Metadata>.Some(Metadata {
+        size: out.size,
+        modified: Duration.fromNanos(out.modifiedNanos),
+        isDirectory: out.isDirectory == 1,
+        isFile: out.isFile == 1
+    })
 }

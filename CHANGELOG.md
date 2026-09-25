@@ -34,6 +34,11 @@
   measured the same as the equivalent check in C. The builtins apply only where
   a program declares no function of the name, so an existing `extern fn exit`
   keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
+- **More of the file system.** `listDirectory(dir)` returns every entry's
+  name, sorted, without `.` and `..`. Also `appendFile`, `rename` (which
+  replaces an existing destination, on Windows too), `removeDirectory` (empty
+  directories only), and `metadata(path) -> Option<Metadata>` with `size`,
+  `modified`, `isDirectory` and `isFile`. test_190.
 - **`std.time`.** `Instant.now()` and `start.elapsed()` on the monotonic clock,
   `Duration` (`fromNanos`/`fromMicros`/`fromMillis`/`fromSeconds`/
   `fromSecondsFloat`, `asNanos`/`asMicros`/`asMillis`/`asSeconds`, `plus`,
@@ -101,6 +106,10 @@
 
 ### Changed
 
+- **`std.fs`'s raw C entry points are `internal`.** `read_file`, `join_path`
+  and the other nine are no longer callable through `import std.fs`: call
+  `readFile`, `joinPath` and the other wrappers. A program's own `extern fn`
+  declaration of one still works. neg_193.
 - **Properties are declared with `prop`, and `s.length()` is an error.** Any
   one-argument function that did not allocate could be read without
   parentheses, so `s.length` and `s.length()` were both legal and `x.sqrt` read

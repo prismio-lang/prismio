@@ -27,7 +27,7 @@ exists in a shape that would break every user to change later.
 | 4 | [`std.time`](#4-stdtime) | done 2026-09-25 | yes (Windows half too) | no |
 | 5 | [`Option` / `Result` methods](#5-option--result-methods) | todo | no | maybe (generic `impl`) |
 | 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
-| 7 | [Files](#7-files) | todo | yes | no |
+| 7 | [Files](#7-files) | done 2026-09-25, except the file line reader | yes | no |
 | 8 | [Building strings](#8-building-strings) | todo | no | no (interpolation is separate) |
 
 Items 5 and 6 go before anything that returns an `Option` or a `Map` gets
@@ -231,6 +231,26 @@ as the implementation, per the String precedent.
 is-directory), and a buffered line reader shared with item 2. Make the raw
 `read_file`/`join_path`/... externs `internal`: RUNTIME.md says applications do
 not call them, and today they are public beside their wrappers.
+
+**Landed 2026-09-25**, all but the line reader. `listDirectory(dir) ->
+Vec<String>` gives every entry's name except `.` and `..`, sorted by byte, and
+an empty Vec for an unreadable directory. It reads one name at a time
+(`fs_list_begin`/`fs_list_name`/`fs_list_end`), not a newline-joined string as
+`listModules` does, because a POSIX file name may contain a newline.
+`appendFile` returns Bool. `rename` replaces an existing destination on Windows
+too (`MoveFileExA`). `removeDirectory` removes only an empty directory.
+`metadata(path) -> Option<Metadata>` gives `size`, `modified` (a `Duration`
+since the epoch, from std.time), `isDirectory` and `isFile`, and follows
+symbolic links. The eleven raw externs are `internal`; neg_193 pins that.
+test_190 runs all of it in a scratch directory; 0 leaked under `--verify`.
+
+Not done: **the buffered line reader for files.** Stdin's reader is one
+process-wide buffer on descriptor 0. A file needs a handle that is opened and
+closed, and with no destructor to hang the close on, that is an API decision
+(an explicit `close`, or a `withLines(path, f)` that closes for you) to make
+first. Until then, `readFile(path).split('\n')` reads a small file.
+Not verified here: the Windows branches (`FindFirstFileA`,
+`GetFileAttributesExA`, `MoveFileExA`).
 
 ## 8. Building strings
 

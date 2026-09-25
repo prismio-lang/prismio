@@ -135,7 +135,7 @@ violations.
 | `std/input.psm` | `import std.input` | standard input: `stdin.lines()`, `stdin.readLine()`, `stdin.readAll()` |
 | `std/time.psm` | `import std.time` | `Instant.now()` and `elapsed()` on the monotonic clock, `Duration` (`fromMillis`, `asMillis`, `asSeconds`, ...), `unixTime()`, `sleep(duration)` |
 | `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
-| `std/fs.psm` | `import std.fs` | files, paths, directory listing |
+| `std/fs.psm` | `import std.fs` | files, paths, `listDirectory`, `appendFile`, `rename`, `removeDirectory`, `metadata` |
 | `std/process.psm` | `import std.process` | arguments, environment variables (`process.env`, `setEnv`, `removeEnv`), `process.pid`, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>` |
 | `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>` |
@@ -448,6 +448,9 @@ are the other direction, and are `strtod` -- correctly rounded.
 | `current_directory` `executable_directory` | `currentDirectory` `executableDirectory` | `produce(free)` |
 | `list_modules` | `listModules` → `Vec<String>` | `produce(free)` |
 | `file_exists` `delete_file` | `fileExists` `deleteFile` | → `Bool` |
+| `fs_list_begin` `fs_list_name` `fs_list_end` | `listDirectory` → `Vec<String>` | `borrow`; `fs_list_name` → `produce(free)`; one listing at a time in a process |
+| `fs_append_file` `fs_rename` `fs_remove_directory` | `appendFile` `rename` `removeDirectory` | `bytes` for the appended text; → `Bool` |
+| `fs_metadata` | `metadata` → `Option<Metadata>` | `borrow`; `MetadataOut` written through its pointer |
 | `proc_spawn_begin` `proc_spawn_arg` `proc_spawn_run` | `Process.spawn`, `Process.run` | `borrow`; `SpawnOut` written through its pointer |
 | `proc_exec` | `Process.exec` | returns only on failure, then -1 |
 | `proc_wait` `proc_kill` | `Child.wait` `Child.kill` | → `Int` |

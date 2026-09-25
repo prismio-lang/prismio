@@ -1,0 +1,110 @@
+// std.fs: `listDirectory`, `appendFile`, `rename`, `removeDirectory`, `metadata`.
+//
+// Everything happens in a scratch directory beside this executable, named with
+// the process id so two runs cannot collide, and removed at the end -- which is
+// itself the `removeDirectory` check.
+//
+// 1. A listing is sorted, holds files and directories, omits `.` and `..`, and
+//    keeps a name with a space whole. An unreadable directory lists empty.
+// 2. `appendFile` creates, then appends, from a short (inline) String and from a
+//    long one.
+// 3. `rename` moves a file and replaces one already at the destination.
+// 4. `metadata` tells a file from a directory, has the file's size, a
+//    modification time near now, and is `None` for a missing path.
+// 5. `removeDirectory` refuses a non-empty directory and removes an empty one.
+
+import std.fs
+import std.io
+import std.option
+import std.process
+import std.string
+import std.time
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn listing(directory: String) -> String {
+    return join(listDirectory(directory), "|")
+}
+
+// Bound before the match, as RUNTIME.md 3.1 asks: a payload enum matched straight
+// off a call is not released.
+fn sizeOf(path: String) -> I64 {
+    let found = metadata(path)
+    match (found) {
+        Option.Some(m) => { return m.size }
+        Option.None => { return (0 - 1) as I64 }
+    }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let root = joinPath(executableDirectory(), "prismio_test_190_".concat(process.pid.toString()))
+    if (makeDirectory(root) == false) { return fail("could not make the scratch directory") }
+
+    let notes = joinPath(root, "notes.txt")
+    let spaced = joinPath(root, "a name.txt")
+    let sub = joinPath(root, "sub")
+
+    if (appendFile(notes, "one\n") == false) { bad = bad + fail("appendFile creating") }
+    if (appendFile(notes, "two\n") == false) { bad = bad + fail("appendFile appending") }
+    if (readFile(notes).equals("one\ntwo\n") == false) { bad = bad + fail("appended text") }
+    writeFile(spaced, "x")
+    makeDirectory(sub)
+
+    if (listing(root).equals("a name.txt|notes.txt|sub") == false) {
+        bad = bad + fail("listing: ".concat(listing(root)))
+    }
+    if (listDirectory(joinPath(root, "missing")).length != 0) {
+        bad = bad + fail("a missing directory listed something")
+    }
+
+    let notesInfo = metadata(notes)
+    match (notesInfo) {
+        Option.Some(m) => {
+            if (m.isFile == false or m.isDirectory) { bad = bad + fail("notes is not a file") }
+            if (m.size != 8) { bad = bad + fail("notes size") }
+            let age = unixTime().minus(m.modified).asSeconds
+            if (age < -60.0 or age > 600.0) { bad = bad + fail("modification time") }
+        }
+        Option.None => { bad = bad + fail("metadata of an existing file") }
+    }
+    let subInfo = metadata(sub)
+    match (subInfo) {
+        Option.Some(m) => {
+            if (m.isDirectory == false or m.isFile) { bad = bad + fail("sub is not a directory") }
+        }
+        Option.None => { bad = bad + fail("metadata of an existing directory") }
+    }
+    if (sizeOf(joinPath(root, "missing")) != (0 - 1) as I64) { bad = bad + fail("metadata of nothing") }
+
+    // Past twelve bytes a String has a pointer; at twelve or fewer it is inline.
+    let long = "a line longer than twelve bytes\n"
+    let mixed = joinPath(root, "mixed.txt")
+    appendFile(mixed, long)
+    appendFile(mixed, "short")
+    if (sizeOf(mixed) != (long.length + 5) as I64) { bad = bad + fail("mixed append size") }
+
+    let moved = joinPath(root, "moved.txt")
+    if (rename(notes, moved) == false) { bad = bad + fail("rename") }
+    if (fileExists(notes) or readFile(moved).equals("one\ntwo\n") == false) {
+        bad = bad + fail("rename did not move the file")
+    }
+    if (rename(spaced, moved) == false) { bad = bad + fail("rename over an existing file") }
+    if (readFile(moved).equals("x") == false) { bad = bad + fail("rename did not replace") }
+
+    if (removeDirectory(root)) { bad = bad + fail("removed a directory that is not empty") }
+    deleteFile(moved)
+    deleteFile(mixed)
+    if (removeDirectory(sub) == false) { bad = bad + fail("removeDirectory") }
+    if (removeDirectory(root) == false) { bad = bad + fail("removing the scratch directory") }
+    if (directoryExists(root)) { bad = bad + fail("the scratch directory is still there") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: file system entries")
+    return 0
+}

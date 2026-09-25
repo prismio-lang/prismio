@@ -299,6 +299,151 @@ char* list_modules(const char* directory) {
     return result;
 }
 
+// A directory's entries, handed out one at a time -- what `listDirectory` reads.
+//
+// Not a newline-joined string, as `list_modules` is: a file name may contain a
+// newline on POSIX, and one would split into two entries. `fs_list_begin` reads
+// and sorts every name, `fs_list_name` copies one out, `fs_list_end` frees them.
+// The names are internal temporaries, so plain `malloc`; only the copies cross.
+//
+// **One listing at a time in a process**, the constraint `proc_spawn_begin` has
+// and for the same reason: `listDirectory` is the only caller and does all three
+// in one call.
+static char** fs_list_names;
+static int    fs_list_count;
+
+void fs_list_end(void) {
+    for (int i = 0; i < fs_list_count; i++) free(fs_list_names[i]);
+    free(fs_list_names);
+    fs_list_names = NULL;
+    fs_list_count = 0;
+}
+
+static int fs_list_push(int* capacity, const char* name) {
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 1;
+    if (fs_list_count == *capacity) {
+        int grown = *capacity ? *capacity * 2 : 16;
+        char** bigger = (char**)realloc(fs_list_names, (size_t)grown * sizeof(char*));
+        if (!bigger) return 0;
+        fs_list_names = bigger;
+        *capacity = grown;
+    }
+    size_t length = strlen(name);
+    char* copy = (char*)malloc(length + 1);
+    if (!copy) return 0;
+    memcpy(copy, name, length + 1);
+    fs_list_names[fs_list_count++] = copy;
+    return 1;
+}
+
+// The number of entries, sorted by byte value; -1 when `path` cannot be read as
+// a directory. `.` and `..` are not entries.
+int fs_list_begin(const char* path) {
+    fs_list_end();
+    int capacity = 0;
+#ifdef _WIN32
+    char pattern[1024];
+    snprintf(pattern, sizeof(pattern), "%s\\*", path);
+    WIN32_FIND_DATAA entry;
+    HANDLE search = FindFirstFileA(pattern, &entry);
+    if (search == INVALID_HANDLE_VALUE) return -1;
+    do {
+        if (!fs_list_push(&capacity, entry.cFileName)) break;
+    } while (FindNextFileA(search, &entry));
+    FindClose(search);
+#else
+    DIR* dir = opendir(path);
+    if (!dir) return -1;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (!fs_list_push(&capacity, entry->d_name)) break;
+    }
+    closedir(dir);
+#endif
+    if (fs_list_count > 1) qsort(fs_list_names, fs_list_count, sizeof(char*), compare_names);
+    return fs_list_count;
+}
+
+// Entry `index` of the listing `fs_list_begin` made, and "" outside it --
+// allocated either way, so the result is always owned.
+char* fs_list_name(int index) {
+    const char* name = (index >= 0 && index < fs_list_count) ? fs_list_names[index] : "";
+    size_t length = strlen(name);
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (!out) return NULL;
+    memcpy(out, name, length + 1);
+    return out;
+}
+
+// 0 on success, as `write_file`. `length` bytes of `content` are written; the
+// caller passes the count so a view needs no terminated copy.
+int fs_append_file(const char* path, const char* content, int length) {
+    if (!path || !path[0] || length < 0) return 1;
+    FILE* file = fopen(path, "ab");
+    if (!file) return 1;
+    size_t written = length ? fwrite(content, 1, (size_t)length, file) : 0;
+    int closed = fclose(file);
+    return (written == (size_t)length && closed == 0) ? 0 : 1;
+}
+
+// 0 on success. An existing file at `to` is replaced, on Windows too, where
+// plain `rename` refuses one.
+int fs_rename(const char* from, const char* to) {
+    if (!from || !from[0] || !to || !to[0]) return 1;
+#ifdef _WIN32
+    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) ? 0 : 1;
+#else
+    return rename(from, to) == 0 ? 0 : 1;
+#endif
+}
+
+// 0 on success; only an empty directory is removed.
+int fs_remove_directory(const char* path) {
+    if (!path || !path[0]) return 1;
+    return PRISMIO_RMDIR(path) == 0 ? 0 : 1;
+}
+
+// What `metadata` answers, written through a pointer the caller owns, as
+// `SpawnOut` is -- every field 64-bit, so no padding question arises.
+typedef struct {
+    int64_t size;
+    int64_t modified_nanos;
+    int64_t is_directory;
+    int64_t is_file;
+} FsMetadataOut;
+
+// 1 when `path` exists and `out` was filled, 0 otherwise. `stat` follows a
+// symbolic link, so a link answers for what it points at.
+int fs_metadata(const char* path, FsMetadataOut* out) {
+    if (!path || !path[0] || !out) return 0;
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &data)) return 0;
+    int directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    int64_t ticks = ((int64_t)data.ftLastWriteTime.dwHighDateTime << 32)
+                  | (int64_t)data.ftLastWriteTime.dwLowDateTime;
+    out->size = directory ? 0
+              : (((int64_t)data.nFileSizeHigh << 32) | (int64_t)data.nFileSizeLow);
+    out->modified_nanos = (ticks - 116444736000000000LL) * 100;
+    out->is_directory = directory;
+    out->is_file = !directory;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    out->size = (int64_t)st.st_size;
+#if defined(__APPLE__)
+    out->modified_nanos = (int64_t)st.st_mtimespec.tv_sec * 1000000000LL
+                        + (int64_t)st.st_mtimespec.tv_nsec;
+#else
+    out->modified_nanos = (int64_t)st.st_mtim.tv_sec * 1000000000LL
+                        + (int64_t)st.st_mtim.tv_nsec;
+#endif
+    out->is_directory = S_ISDIR(st.st_mode) ? 1 : 0;
+    out->is_file = S_ISREG(st.st_mode) ? 1 : 0;
+#endif
+    return 1;
+}
+
 char* prismio_executable_directory(void) {
 #ifdef _WIN32
     char exe_path[1024];

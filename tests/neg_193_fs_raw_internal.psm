@@ -1,0 +1,11 @@
+// expect-error: `read_file` is internal to the package that declares it
+// expect-error: `join_path` is internal to the package that declares it
+// std.fs's raw C entry points are std's to call. A program calls `readFile` and
+// `joinPath`, whose contract and return convention the wrapper fixes.
+import std.fs
+
+fn main() -> Int {
+    let text = read_file("x")
+    let path = join_path("a", "b")
+    return 0
+}
