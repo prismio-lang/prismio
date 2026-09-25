@@ -122,7 +122,9 @@ fn main() -> Int {
     bad = bad + checkBool("sqrt", same(2.0.sqrt(), 1.4142135623730951) and same(sqrt(16.0), 4.0))
     bad = bad + checkBool("sqrt of -0.0", same((-zero).sqrt(), -zero))
     bad = bad + checkBool("sqrt of negative", (-1.0).sqrt().isNan)
-    bad = bad + checkBool("cbrt", same((-8.0).cbrt(), -2.0) and same(27.0.cbrt(), 3.0))
+    // `near`, not `same`: cbrt is libm's, and glibc's is not correctly rounded --
+    // it answers 3.0000000000000004 for 27.0, one ulp out.
+    bad = bad + checkBool("cbrt", near((-8.0).cbrt(), -2.0) and near(27.0.cbrt(), 3.0))
     bad = bad + checkBool("powi", same(2.0.powi(10), 1024.0) and same(2.0.powi(-2), 0.25)
                           and same(5.0.powi(0), 1.0))
     bad = bad + checkBool("powi at Int.MIN", same(1.0.powi(Int.MIN), 1.0) and same(2.0.powi(Int.MIN), 0.0))
