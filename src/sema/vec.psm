@@ -12,7 +12,7 @@
 // read, and `v.length` in a loop condition should not be a call. A Slice's and a
 // DataView's `length` are the same query on their own runtime entry point.
 //
-// COLLECTIONS.md has the approved list.
+// docs/COLLECTIONS.md has the approved list.
 
 import ast.nodes
 import lexer.token

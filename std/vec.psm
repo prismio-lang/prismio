@@ -5,7 +5,7 @@
 // function whose first parameter is the Vec -- but the ones that store an
 // element or read one (`push`, `set`, `insert`, `first`, `last` ...) and the
 // size queries are lowered by the compiler instead; src/sema/vec.psm says why.
-// What is here reads the vector, or goes through a copy. COLLECTIONS.md has the
+// What is here reads the vector, or goes through a copy. docs/COLLECTIONS.md has the
 // whole list.
 //
 // **`T: Copy` wherever an element leaves the vector.** A parameter is a borrow,

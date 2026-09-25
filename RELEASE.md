@@ -4,37 +4,44 @@ The v0.1.0 procedure, written down because the interesting part is the order:
 **nothing is tagged until three platforms have agreed on the exact commit that
 would be tagged.** A tag is the one artifact that cannot be corrected quietly.
 
+This file is *how*. What is still left before 0.1.0 can be cut is
+[RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md). The numbers a previous candidate
+produced (suite 202/202, a macOS checksum from `63a5bcf`) were removed on
+2026-09-25, because the tree has moved past that candidate. Fill them in again
+from the candidate that is tagged.
+
 ## 0 · The commit
 
-The RC is **`main`'s head at push time**. Only the v0.1 work commit touches the
-compiler; everything after it is documentation and repository cleanup. Check it:
+The RC is **`main`'s head at push time**. Check it:
 
 ```bash
 git log --oneline -1                                    # the commit CI will run on
 python tools/release_gate.py --rc build/v0.1-rc         # must be green on it
 ```
 
-Verified: a clean checkout of the RC commit, bootstrapped once, emits
-**byte-identical compiler IR** to the frozen `build/v0.1-rc`. The tag reproduces
-the RC rather than sitting beside it.
+A clean checkout of the RC commit, bootstrapped once, must emit
+**byte-identical compiler IR** to the frozen `build/v0.1-rc`. That is what makes
+the tag reproduce the RC rather than sit beside it.
 
 **Re-run the gate on the commit you are about to tag.** It takes minutes and it
 is the only thing that makes the tag mean what the release notes say it means.
 
-## 1 · The local gate — done
+## 1 · The local gate
 
 ```bash
 python tools/release_gate.py --rc build/v0.1-rc
 ```
 
-Fourteen checks, all green. `--old <compiler>` adds a per-function mnemonic diff
-against a previous build; it is optional, and `build/` holds only the RC now —
-any baseline you want is a `tools/bootstrap.sh` away from the commit that had it. Suite 202/202, two-generation byte-identical
-fixpoint, differential 19/19, corpus 30/30 built and run, `--verify` 0 leaked /
-0 violations, ASan and TSan clean, packaged toolchain separation verified.
-Evidence: `aif/evidence/RESULTS-v01-release-candidate.md`.
+Every check must be green: the two-generation byte-identical fixpoint, the RC
+reproducing, the seed, the suite, the AIF differential, the corpus built and
+run, the `--verify` sweep, the JIT, the cross target, and packaging with
+toolchain separation. `--old <compiler>` adds a per-function mnemonic diff
+against a previous build. It is optional, and any baseline is a
+`tools/bootstrap.sh` away from the commit that had it. Record the run in
+`aif/evidence/`, as the first candidate did in
+`RESULTS-v01-release-candidate.md`.
 
-## 2 · The three-platform matrix — **BLOCKED, needs authorisation**
+## 2 · The three-platform matrix — **needs authorisation**
 
 CI runs on push. The workflow (`.github/workflows/ci.yml`) does source lists, a
 three-generation bootstrap **from the committed seed**, the fixpoint, the suite
@@ -49,7 +56,7 @@ compiler falls back to the runtime sources embedded in its own binary —
 silently, so a packaging mistake looked like success.
 
 ```bash
-git push origin main                       # this is the blocked action
+git push origin main                       # needs the owner's go-ahead
 gh run watch --exit-status                 # then: wait for all three
 ```
 
@@ -70,12 +77,6 @@ separation checks, archives as `prismio-<version>-<triple>.tar.gz`, and writes a
 SHA-256 beside it. The three `.sha256` files concatenate into one manifest, which
 is what lets three machines produce one checksum file without any of them
 trusting the others.
-
-macOS arm64, built from `63a5bcf`:
-
-```
-59ceb3638e4174de8e340b90d83b0fda1516454c5fcb067ed89198ae11933e80  prismio-0.1.0-arm64-apple-darwin.tar.gz
-```
 
 **`POST_INSTALL.txt` is not dead weight.** Nothing in this repository reads it —
 the Windows `.exe` installer, which lives outside this tree, displays it after a
@@ -102,8 +103,6 @@ cd /tmp/clean && ./prismio-0.1.0-arm64-apple-darwin/bin/prismio --version
 not arbitrary — the annotated generic is the shape that did not link until this
 commit, and the channel is the feature this release adds.
 
-Done on macOS arm64: `prismio 0.1.0 / llvm 22.1.8`, output `18`.
-
 ## 5 · Tag and publish — **needs explicit authorisation**
 
 Only after steps 2–4 are green on all three platforms:
@@ -124,5 +123,6 @@ It is not what 0.1.0 releases from and it is not touched here; whether it should
 be deleted is a separate decision, and deleting a published tag is the kind of
 thing that breaks other people's checkouts.
 
-Then publish the docs site from `../docs` at `1abc716`, whose release-notes page
-must match `CHANGELOG.md`. Both were written from the same gate run.
+Then publish the docs site from `../website`, at the commit whose
+`verify-doc-examples.mjs` passed in both apps against this toolchain. Its
+release-notes page must match `CHANGELOG.md`.

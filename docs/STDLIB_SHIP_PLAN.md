@@ -14,6 +14,9 @@ rejects it*, not "grep did not find it".
 
 **Status key:** `todo` · `in progress` · `done <commit or date>` · `blocked: <why>`.
 
+Tier 1 is what 0.1 needs, and it is tracked in the root
+[RELEASE_CHECKLIST.md](../RELEASE_CHECKLIST.md) §1. Tiers 2 and 3 come after.
+
 ## Tier 1 — before shipping
 
 A normal command-line program cannot be written without these, or the API

@@ -1744,7 +1744,7 @@ def run_aif_human_report_test():
             problems.append("--manifest lost stable allocation symbols")
 
     # The report shows a vector as `Vec`; the manifest keeps the `List` key the
-    # oracle and the manifest diff compare against (COLLECTIONS.md).
+    # oracle and the manifest diff compare against (docs/COLLECTIONS.md).
     vec_fixture = TEST_DIR / "aif_vec_display.psm"
     vec_human = run_command([str(PRISMIO_EXE), "aif", str(vec_fixture)])
     vec_row = re.search(r"^(\d+)\s+aif_vec_display\.psm:\S+\s+(\S+)", vec_human.stdout, re.M)

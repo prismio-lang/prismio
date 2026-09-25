@@ -54,6 +54,10 @@ Rules:
 There is no `TODO.md` or `HANDOFF.md`. They were session scaffolding and were
 removed at 0.1.0. What replaced them:
 
+- **`RELEASE_CHECKLIST.md`** — what is left before v0.1.0 is published.
+- **`docs/*_PLAN.md`** and `docs/COLLECTIONS.md` — the planners, each split into
+  what the current release needs and what comes later. Root is not the place
+  for a new handoff or spec; a plan goes in `docs/`.
 - **`KNOWN_ISSUES.md`** — what is open, with enough of each to act on.
 - **`aif/evidence/`** — the measurements, one `RESULTS-*.md` per piece of work.
 - **`git log`** — the record. Commit messages here carry their own evidence, and

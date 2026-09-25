@@ -348,13 +348,14 @@ sharing, and in `test_144`'s shape the previous compiler reference-counted a
 plain allocations again.
 
 **Building a recursive enum from `let`-bound children double-frees. This is
-unsoundness.** `let left = build(d - 1); let right = build(d - 1); return
-Expr.Op(op, left, right)` releases a node twice -- `release of a pointer that is
-not live`, then an abort -- on the compiler at `727c704` and today alike. The
-same tree built with the children inside the constructor call, `Expr.Op(op,
-build(d - 1), build(d - 1))`, computes the right answer and leaks instead: an
-s-expression parser written that way reads `65719 allocated, 51214 released,
-14505 leaked, 0 violation(s)`. `BenchTree` uses the inline form, which is why
+unsoundness, and it blocks 0.1** (RELEASE_CHECKLIST.md). `let left = build(d -
+1); let right = build(d - 1); return Expr.Op(op, left, right)` releases a node
+twice -- `free(): double free detected` without `--verify`, a segfault with it
+-- on the compiler at `727c704` and on 2026-09-25 alike. The same tree built with
+the children inside the constructor call, `Expr.Op(op, build(d - 1), build(d -
+1))`, used to leak (an s-expression parser written that way read `65719
+allocated, 51214 released, 14505 leaked`); a depth-6 binary tree built that way
+now reads 128/128/0. `BenchTree` uses the inline form, which is why
 `tree_traversal` never met the first. Between them they are why
 `s_expression_parse`'s Prismio arm still stores its nodes in a flat `List<Int>`
 where the C++ and Rust arms allocate one per expression -- see
@@ -861,7 +862,8 @@ on a parameter: a `[T]` parameter is a view that compiles once for every length
 rather than once per length (COLLECTIONS step 3). A generic struct and an enum
 payload cannot hold an array yet.
 
-**An unsized array reached through a type argument still points into a frame.**
+**An unsized array reached through a type argument still points into a frame.
+It blocks 0.1.**
 A `[T]` struct field is refused, because it held the address of a local array
 and a returned struct read the dead frame. The same value can still be stored
 through a type argument -- `Box<[Int]>` with a field `T`, `Option<[Int]>`,
@@ -903,8 +905,6 @@ would work for this shape and not across a `.plib`, where the body is not
 parsed; a `Never` return type is the planned fix (docs/STDLIB_SHIP_PLAN.md,
 tier 2).
 
-**There is no string interpolation and no iterator protocol.**
-
 **`std.process` starts a program with an argument vector, and that is all it
 does.** `Process` / `Child` / `Stream` landed with the capability in
 `runtime/program_support.c` (RUNTIME.md has the surface); `runCommand` and
@@ -926,9 +926,9 @@ does.** `Process` / `Child` / `Stream` landed with the capability in
 - **One spawn under construction at a time.** The argument vector crosses one
   element at a time into file-local C state, the `ir_call_begin` shape, so two
   threads spawning at once interleave into one vector.
-- **A list literal needs `import std.list`.** `p.arguments = ["a"]` in a file
-  that imports only `std.process` fails with "`listOf$String` is declared in
-  `std.list`, which this file does not import" -- the spelling this API was
+- **A list literal needs `import std.vec`.** `p.arguments = ["a"]` in a file
+  that imports only `std.process` fails with "`vecOf$String` is declared in
+  `std.vec`, which this file does not import" -- the spelling this API was
   designed around, rejected for an import the program never named.
 - **Nothing reaps an unwaited `Child`.** A `Child` dropped without `wait` is a
   zombie on POSIX and an open handle on Windows.
@@ -973,6 +973,32 @@ a teardown would free `.rodata`; `container_may_hold_untracked` declines the
 element release instead, which leaks the owned ones. A literal written at the
 push is copied in and does not count, nor does a String view. Copying at the push
 whenever the pushed value may be untracked would close it.
+
+## Concurrency
+
+The plan for channels and tasks is `docs/CHANNELS_PLAN.md`.
+
+**`Channel<Int>` is accepted, and it should not be. It blocks 0.1.** RUNTIME.md
+and the comment on `typeChannel` say sema refuses a channel of a non-reference
+element. Nothing does. `chan_send(c, 5)` is emitted as `call i32
+@chan_send(ptr, i32 5)` against a C function taking `void*`, and `chan_recv`'s
+`ptr` is passed straight to `println__Int`. A probe printed the right number
+on x86-64 on 2026-09-25 only because the register's upper half was zero.
+
+**A task that cannot start runs inline, and with a channel that can deadlock.
+It blocks 0.1.** `prismio_task_spawn` calls the task on the spawning thread when
+`pthread_create` fails. Its comment argues that is equivalent because tasks
+share nothing. A channel breaks the argument: a producer run inline blocks on a
+full channel whose consumer was never started.
+
+**A send on a closed channel leaks the message.** `chan_send` answers 0, and the
+value, already moved, is neither delivered nor freed. Returning it to the
+sender is CHANNELS_PLAN Phase 0.
+
+**Nothing checks the destruction order.** `chan_share` hands back the same
+pointer, and `chan_free` assumes no one is blocked on the channel. Close, join
+every task that was given a share, then free (RUNTIME.md rule 4). Counted
+endpoints are Phase 1.
 
 ## The AIF oracle
 

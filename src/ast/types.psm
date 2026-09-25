@@ -440,7 +440,7 @@ public fn typeDisplay(t: TypeInfo) -> String {
 // The same spelling under the compiler's own name for the vector type, `List`.
 // This is a key rather than prose: AIF's site types, the AST dump the oracle
 // reads, and impl targets all compare against it, and none of them may move when
-// only the surface name does. See COLLECTIONS.md.
+// only the surface name does. See docs/COLLECTIONS.md.
 public fn typeKeyName(t: TypeInfo) -> String {
     return typeSpelling(t, "List")
 }

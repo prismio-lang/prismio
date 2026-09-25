@@ -413,7 +413,7 @@ internal fn parseTypeArgList(p: Parser, node: ASTNode) {
 // the element under `child1` -- so every pass after this one reads an array
 // exactly as it always has. A written length rides on `child2`, and sema
 // decides where one may be written (semaCheckArrayLengthPositions). `Array<T>`
-// is `[T]`: the length comes from the initializer. See COLLECTIONS.md.
+// is `[T]`: the length comes from the initializer. See docs/COLLECTIONS.md.
 private fn parseArrayTypeArgs(p: Parser, typeNode: ASTNode, name: Token) {
     let element = ptr_to_node(typeNode.child1)
     let second = element.next
@@ -635,7 +635,7 @@ internal fn parseTypeAnnotation(p: Parser) -> ASTNode {
         parseTypeArgList(p, typeNode)
         // `Vec<T>` is the spelling; the compiler's own name for the type is still
         // `List`, so every pass after this one -- type keys, mangled symbols,
-        // AIF, the oracle -- reads what it always read. See COLLECTIONS.md.
+        // AIF, the oracle -- reads what it always read. See docs/COLLECTIONS.md.
         //
         // Which is also why a written `List` is refused here rather than later:
         // this is the last place that can tell the two spellings apart.

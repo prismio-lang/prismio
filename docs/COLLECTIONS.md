@@ -2,7 +2,16 @@
 
 The design of Prismio's sequence types, and the order they land in. The decisions
 below were settled with the project owner on 2026-09-17; the status column is the
-part that moves.
+part that moves. (This file was `COLLECTIONS.md` at the root until 2026-09-25;
+one comment in `runtime/lang_runtime.c` still cites it by that name.)
+
+**What 0.1 ships:** `Vec<T>` with the full method table in §1, `Array<T, N>` as a
+sized value (locals, returns, fields), and `[T]` parameters as views. **What it
+does not:** `Vec<T, N>`/`Vec<T, Chunk>` (step 4), `Slice<T>`'s two layouts
+(step 5), a moving `pop` (1e), and the rest of step 3 -- per-length parameters,
+arrays in generic structs and enum payloads, copying arrays of arrays and of
+owning elements. The doc apps list all of these as Coming Soon. Nothing here
+blocks 0.1; KNOWN_ISSUES's "Language surface" has the user-visible edges.
 
 ```text
 Array<T, N> / [T]            fixed length, contiguous, owned
@@ -118,7 +127,7 @@ with registration on every copy added to it.
 
 ---
 
-## 2 · Order of work
+## 2 · Order of work and status
 
 Each step lands with the full loop: two generations to a fixpoint, the suite,
 `tools/aif_differential.py`, and byte-identical IR where the step preserves

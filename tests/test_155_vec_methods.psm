@@ -1,4 +1,4 @@
-// `Vec<T>` used through its methods -- COLLECTIONS.md's approved list.
+// `Vec<T>` used through its methods -- docs/COLLECTIONS.md's approved list.
 //
 // Three element representations, because each lowers differently: `Int` is an
 // inline scalar, `String` is the 16-byte pair, and `Job` is a boxed struct that

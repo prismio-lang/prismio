@@ -3,8 +3,8 @@
 How `String` is laid out, why it is laid out that way, what it cost, and what
 was tried and thrown away. Companion to [RUNTIME.md](RUNTIME.md), which is the
 map of what a program can call, and to
-[MEMORY_ALLOCATION_DEEP_DIVE.md](MEMORY_ALLOCATION_DEEP_DIVE.md), which covers
-allocation everywhere else.
+[docs/MEMORY_PLAN.md](docs/MEMORY_PLAN.md), which covers allocation everywhere
+else.
 
 Every number here was measured on this repository. The commands that produce
 them are in [§11](#11-reproducing-the-measurements).

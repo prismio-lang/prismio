@@ -294,7 +294,7 @@ read: `0 leaked, 0 violation(s)`.
 `clear` park a removed element that owns memory in the Vec's `grave`, and
 `list_release` releases it with the Vec -- exactly what the Vec would have
 released had the element stayed. Releasing at the removal where no view can be
-live is COLLECTIONS.md step 1e.
+live is docs/COLLECTIONS.md step 1e.
 
 ### 3.3 If you must write `extern fn`, write the contract
 
@@ -563,7 +563,7 @@ to write. `Channel<T>` itself is a type the compiler builds in, exactly as
 | | | |
 |---|---|---|
 | `chan_new(capacity)` | `Channel<T>` | `T` comes from the annotation, as `list_new`'s does |
-| `chan_send(c, v)` | `Int` | 1 delivered, 0 dropped because closed. **Moves `v`** |
+| `chan_send(c, v)` | `Int` | 1 delivered; 0 when closed, and then `v` is neither delivered nor freed (a leak). **Moves `v`** |
 | `chan_recv(c)` | `T?` | blocks; `none` once closed *and* drained |
 | `chan_share(c)` | `Channel<T>` | a second endpoint — not a second owner |
 | `chan_close(c)` | `Void` | wakes every blocked sender and receiver |
@@ -572,7 +572,8 @@ to write. `Channel<T>` itself is a type the compiler builds in, exactly as
 
 **`T` must be reference-shaped.** One `void*` travels per message, and the
 receive answers `T?`, which REQUIREMENTS 4 defines for references only.
-`Channel<Int>` is refused; send a one-field struct.
+Send a one-field struct, not an `Int`. `Channel<Int>` should be refused and is
+not yet: it builds with a mismatched ABI (KNOWN_ISSUES, "Concurrency").
 
 The four rules, which are also the four things that go wrong:
 
