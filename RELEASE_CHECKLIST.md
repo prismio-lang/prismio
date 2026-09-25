@@ -87,14 +87,18 @@ CHANNELS_PLAN §1.
 - [ ] `python tools/release_gate.py --rc <rc>` is green on that exact commit:
       fixpoint, the RC reproduces, seed, suite, differential, corpus,
       `--verify` sweep, JIT, cross target, packaging.
+      *Green locally on the branch head, 2026-09-25: 435/435, fixpoint, seed,
+      differential, corpus, `--verify` sweep, packaging
+      (`aif/evidence/RESULTS-v01-gate-2026-09-25.md`). Repeat on `main`.*
 - [ ] The benchmark matrix on the release candidate is recorded in
       `aif/evidence/` and compared with `RESULTS-benchmarks-2026-09-25.md`
       (PERFORMANCE_PLAN §1).
+      *Recorded for the branch head in the same file: 0.92x of C++ and of Rust.*
 - [ ] CI is green on Windows, Linux and macOS, on the exact commit to be tagged.
-      Locally on this Linux box, `test_181_std_math` (`cbrt` against this
-      libm), `target_cross` and `module_artifacts` (the system clang 18) fail on
-      the baseline too. CI is the judge of whether each is an environment
-      difference or a defect.
+      The three local failures of 2026-09-25 are settled: `test_181` was a test
+      bug (fixed), and `target_cross`/`module_artifacts` pass once the pinned
+      LLVM is first on `PATH`, which CI already does (ci.yml, "Put the
+      provisioned LLVM on PATH").
 - [ ] `tools/release.py` artifacts and SHA-256 files built on each platform
       from its own gate-green build.
 - [ ] A clean-environment smoke test of each artifact, outside the checkout.

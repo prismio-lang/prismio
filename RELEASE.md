@@ -16,7 +16,7 @@ The RC is **`main`'s head at push time**. Check it:
 
 ```bash
 git log --oneline -1                                    # the commit CI will run on
-python tools/release_gate.py --rc build/v0.1-rc         # must be green on it
+python tools/release_gate.py --rc build/v0.1-rc/bin/prismio   # must be green on it (see §1)
 ```
 
 A clean checkout of the RC commit, bootstrapped once, must emit
@@ -29,8 +29,18 @@ is the only thing that makes the tag mean what the release notes say it means.
 ## 1 · The local gate
 
 ```bash
-python tools/release_gate.py --rc build/v0.1-rc
+bash tools/bootstrap.sh --compiler <compiler> --out build/v0.1-rc-bin
+python tools/package.py --compiler build/v0.1-rc-bin --out build/v0.1-rc
+PATH=$PWD/third_party/llvm/bin:$PATH python tools/release_gate.py --rc build/v0.1-rc/bin/prismio
 ```
+
+**Two things the gate does not check for you, and both fail it wholesale.**
+The RC must be a *packaged* compiler: a bare generation has no
+`lib/runtime/*.bc`, so every program the suite, the corpus and the verify sweep
+build fails (229 suite failures, 2026-09-25). And the pinned LLVM must come
+first on `PATH`: the system's `llvm-nm` and `clang` (18 on the Linux box this
+was written on) cannot read LLVM 23 bitcode or agree on its data layout, which
+fails the packaged-toolchain check, `module_artifacts` and `target_cross`.
 
 Every check must be green: the two-generation byte-identical fixpoint, the RC
 reproducing, the seed, the suite, the AIF differential, the corpus built and
