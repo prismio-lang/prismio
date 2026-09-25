@@ -1,8 +1,32 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 -- not yet published
+
+The first release. Prismio is a self-hosted, statically typed, ahead-of-time
+compiled language with an inference-driven memory model: you write no `free`, no
+lifetimes and no reference counts, and the compiler decides per allocation site
+which of six implementation tiers a value needs.
+
+Every code sample in the documentation is compiled by this compiler as part of
+the docs build, and the compiler reaches a byte-identical two-generation fixpoint
+building itself.
+
+Everything below is in 0.1.0. The first release candidate's notes follow the
+work done since it, from "### Language" on; RELEASE_CHECKLIST.md is what is left
+before the tag.
 
 ### Added
+
+- **`readLines(path)`: a file one line at a time.** `for line in
+  readLines(path)` reads through a 64 KiB buffer, splits at `\n` and drops a
+  `\r` before it, as `stdin.lines()` does. The reader closes the file itself
+  when it reaches the end; `close()` is for a loop that stops early.
+  `tryReadLines(path)` is `None` for a file that cannot be opened. test_194.
+- **`StringBuilder`**, in `std.string`: `StringBuilder.new()`, `append`,
+  `appendLine`, `length`, `isEmpty`, `toString`. Text kept in a struct field
+  and grown with `b.text = b.text + piece` is quadratic and leaks every
+  intermediate; a builder is linear (640,000 appends in 73 ms) and releases
+  everything. test_195.
 
 - **`std.math` is a math library.** Float gets `sqrt`, `cbrt`, `pow`, `powi`,
   `hypot`, `mulAdd`, `floor`/`ceil`/`trunc`/`round`/`roundEven`/`fract`,
@@ -73,6 +97,22 @@
 
 ### Fixed
 
+- **A recursive enum built from `let`-bound children double-freed.** `let
+  left = build(d - 1); ...; return Expr.Op(d, left, right)` freed each interior
+  node twice; it now builds and releases cleanly (190/190/0 in
+  `recursive_enum_bindings_probe`). A linked list of `Node?` built the same way
+  did not link at all (`__aif_release_` was undefined) and now does.
+- **`Channel<Int>` is refused.** It compiled and sent an `i32` where the runtime
+  reads a pointer. A channel's element follows the rule for `T?`. neg_197.
+- **A task whose thread cannot start is a panic** (exit 101, with the reason),
+  instead of running inline -- which deadlocked a producer that filled a channel
+  before its consumer existed.
+- **An array as a type argument is refused** -- `Box<[Int]>`, `Option<[Int]>`,
+  `Vec<[Int]>`, written or reached through a generic's `T`. It pointed into the
+  frame that declared the array, which a returned container outlived. neg_198,
+  neg_199.
+- **A discarded owned result is released.** `make(1)` or `it.next()` as a
+  statement leaked what it returned.
 - **Three ownership shapes freed memory that was not live** -- a crash outside
   `--verify`. A function returning `optionOr(o, d)` for a caller's literal `d`;
   one returning a payload binder when the payload was a literal; one moving a
@@ -138,6 +178,9 @@
 
 ### Changed
 
+- **`PRISMIO_INLINE_ELEMS=0` is gone.** The run-time switch that ran every list
+  boxed leaked, because the element disposition it changed was fixed at compile
+  time. Lists of flat elements are always stored inline.
 - **`std.fs`'s raw C entry points are `internal`.** `read_file`, `join_path`
   and the other nine are no longer callable through `import std.fs`: call
   `readFile`, `joinPath` and the other wrappers. A program's own `extern fn`
@@ -1606,17 +1649,6 @@ receiver, so `std.string` now claims 64 unprefixed global names, and a program
 defining its own `fn isDigit(c: Char)` alongside it will not compile. Three places
 in this tree collided and were renamed. See KNOWN_ISSUES.md.
 
-
-## 0.1.0
-
-The first release. Prismio is a self-hosted, statically typed, ahead-of-time
-compiled language with an inference-driven memory model: you write no `free`, no
-lifetimes and no reference counts, and the compiler decides per allocation site
-which of six implementation tiers a value needs.
-
-Every code sample in the documentation is compiled by this compiler as part of
-the docs build, and the compiler reaches a byte-identical two-generation fixpoint
-building itself.
 
 ### Language
 

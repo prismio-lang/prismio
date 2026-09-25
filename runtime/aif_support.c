@@ -6695,6 +6695,11 @@ static int in_released_field_done;
 // or a DAG never reaches this set in the first place.
 static Bits plain_released_field_keys;
 
+// The ones left out of it: released fields that re-enter their owner's type.
+// call_result_held still asks about these, but only of a value stored into one
+// in its own frame. See vs_stored_in_recursive_field.
+static Bits recursive_released_field_keys;
+
 // Whether anything actually reclaims a value of this type.
 //
 // **A field is only a release point if its owner has one**, and that is not
@@ -6748,6 +6753,8 @@ static void compute_released_fields(void) {
             bits_or(&in_released_field, &pt[key], "AIF released fields");
             if (!field_closes_cycle(n, field_declared_type(t, i))) {
                 bits_set(&plain_released_field_keys, key, "AIF released field keys");
+            } else {
+                bits_set(&recursive_released_field_keys, key, "AIF released field keys");
             }
         }
     }
@@ -7655,6 +7662,63 @@ static int call_fn_result_held(int f) {
     return held;
 }
 
+// Whether this frame stores the value into a field that re-enters its owner's
+// type, directly or through its own bindings.
+//
+// plain_released_field_keys leaves those fields out so that a tree's root stays
+// its caller's (the note above it). The argument there is that the field's
+// release and the caller's drop are one traversal. That holds for the root. It
+// does not hold for a value this frame binds and then makes a child:
+//
+//     let left = build(d - 1)
+//     return Expr.Op(d, left, right)
+//
+// `left` became part of the returned tree, which the tree's release frees, and
+// the binding's scope drop freed it as well: a double free on every build of a
+// tree written that way. Walked only through VAR keys, so a value that reaches
+// such a field through a return or a parameter stays the question it was.
+static int vs_stored_in_recursive_field(int vs0) {
+    int found = 0;
+    int seen = ++flow_generation;
+    IntVec vwork = {0};
+    IntVec kwork = {0};
+    vec_push(&vwork, vs0, "AIF value flow");
+    vs_mark[vs0] = seen;
+    while (vwork.len > 0 && !found) {
+        int vs = vwork.v[--vwork.len];
+        for (int i = 0; i < vs_consumers[vs].len && !found; i++) {
+            const Constraint* k = &cons[vs_consumers[vs].v[i]];
+            if (k->kind != AIF_CON_BIND && k->kind != AIF_CON_STORE) continue;
+            int a = k->a;
+            if (a < 0 || a >= flow_keys || key_mark[a] == seen) continue;
+            if (bits_test(&recursive_released_field_keys, a)) { found = 1; break; }
+            if (key_by_id[a] == NULL || key_by_id[a]->kind != AIF_KEY_VAR) continue;
+            key_mark[a] = seen;
+            vec_push(&kwork, a, "AIF value flow");
+        }
+        for (int i = 0; i < vs_derived[vs].len; i++) {
+            int d = vs_derived[vs].v[i];
+            if (d < 0 || d >= flow_vsets || vs_mark[d] == seen) continue;
+            vs_mark[d] = seen;
+            vec_push(&vwork, d, "AIF value flow");
+        }
+    }
+    while (kwork.len > 0 && !found) {
+        int k = kwork.v[--kwork.len];
+        for (int i = 0; i < flow_succ[k].len; i++) {
+            int t = flow_succ[k].v[i];
+            if (t < 0 || t >= flow_keys || key_mark[t] == seen) continue;
+            if (bits_test(&recursive_released_field_keys, t)) { found = 1; break; }
+            if (key_by_id[t] == NULL || key_by_id[t]->kind != AIF_KEY_VAR) continue;
+            key_mark[t] = seen;
+            vec_push(&kwork, t, "AIF value flow");
+        }
+    }
+    free(vwork.v);
+    free(kwork.v);
+    return found;
+}
+
 // Whether the value this call node produced is handed to something that keeps
 // it: every constraint that takes the node's own value set, or a union built
 // from it, as the value it moves. A return is not one -- the caller that
@@ -7662,6 +7726,7 @@ static int call_fn_result_held(int f) {
 static int call_result_held(const NodeCall* c) {
     if (call_fn_result_held(c->fn)) return 1;
     if (c->vs < 0 || c->vs >= flow_vsets) return 0;
+    if (vs_stored_in_recursive_field(c->vs)) return 1;
 
     int held = 0;
     int seen = ++flow_generation;
@@ -8021,6 +8086,7 @@ void aif_reset(void) {
 
     bits_free(&in_released_field);
     bits_free(&plain_released_field_keys);
+    bits_free(&recursive_released_field_keys);
     flow_reset();
     node_args_reset();
     con_fn = -1;

@@ -162,6 +162,12 @@ let IR_DROP_FIELDS = 5
 // others, so a program with no such struct carries none.
 let mut irFrameReleaseTypes = ""
 
+// The struct an optional binding's typed drop releases, as `;slot=struct:T;`.
+// A `T?` slot is keyed `ptr` (see mapTypeNode), which names no release, so a drop
+// list entry for one would call `__aif_release_` -- an undefined symbol, and a
+// link failure for any program that bound a recursive `Node?` it owned.
+let mut irOptionalDropTypes = ";"
+
 // Bindings initialised from a struct literal on the frame, as `;slot@floor;`:
 // the slot, and the scope's drop floor it was declared at. A field assignment
 // made at that same floor may give its new value the same scope-exit owner the

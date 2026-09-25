@@ -1,0 +1,14 @@
+// expect-error: an array cannot be a type argument
+// The same as neg_198 with the type argument inferred: `T` solved from an array
+// argument is the pointer into this frame, and `Some` would carry it out.
+import std.option
+
+fn wrap<T>(x: T) -> Option<T> {
+    return Option<T>.Some(x)
+}
+
+fn main() -> Int {
+    let a: [Int] = [1, 2, 3]
+    let o = wrap(a)
+    return 0
+}

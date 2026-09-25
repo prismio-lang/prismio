@@ -1,0 +1,51 @@
+// A recursive enum built from `let`-bound children.
+//
+// `let left = build(d - 1); ...; return Expr.Op(d, left, right)` freed every
+// interior node twice -- once by the binding's scope drop and once by the tree's
+// release -- because a field that re-enters its owner's type is left out of the
+// fields that keep a call result from its caller (so the root stays owned), and
+// the binding took that answer too. Checked by the suite's `ownership_probes`
+// under `--verify`, held to 0 leaked as well as 0 violations.
+
+import std.io
+import std.string
+
+enum Expr {
+    Leaf(Int)
+    Op(Int, Expr, Expr)
+}
+
+// Both children bound.
+fn build(d: Int) -> Expr {
+    if (d == 0) { return Expr.Leaf(1) }
+    let left = build(d - 1)
+    let right = build(d - 1)
+    return Expr.Op(d, left, right)
+}
+
+// One bound, one inline, and the bound one passed through a second binding.
+fn buildMixed(d: Int) -> Expr {
+    if (d == 0) { return Expr.Leaf(2) }
+    let first = buildMixed(d - 1)
+    let moved = first
+    return Expr.Op(d, moved, buildMixed(d - 1))
+}
+
+fn sum(e: Expr) -> Int {
+    match (e) {
+        Expr.Leaf(v) => { return v }
+        Expr.Op(o, l, r) => { return sum(l) + sum(r) }
+    }
+}
+
+fn main() -> Int {
+    let t = build(6)
+    let m = buildMixed(5)
+    let total = sum(t) + sum(m)
+    if (total != 64 + 64) {
+        println("FAIL: sum was ".concat(total.toString()))
+        return 1
+    }
+    println("PASS: recursive enum from bindings")
+    return 0
+}

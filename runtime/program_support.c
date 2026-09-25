@@ -1086,8 +1086,9 @@ char* proc_read_all(int fd) {
     return buffer;
 }
 
-// This process's standard input, read through one buffer for the whole process:
-// what `stdin.readLine`, `stdin.lines` and `stdin.readAll` in std/io.psm read.
+// A buffered line reader over one descriptor: standard input's, which is
+// `stdin.readLine`, `stdin.lines` and `stdin.readAll` in std/input.psm, and a
+// file's, which is `readLines` in std/fs.psm.
 //
 // **One `read` per buffer, not per line.** A line reader that asked the kernel
 // for each line would make a filter slower than `cat`; this one finds the line
@@ -1095,59 +1096,55 @@ char* proc_read_all(int fd) {
 // only when the buffer holds no complete line. The buffer grows to fit a line
 // longer than it, so a line is never split.
 //
-// A pending line is `[io_stdin_start, io_stdin_line_end)`, found by
-// `io_stdin_has_line` and handed out by `io_stdin_take_line`. Two calls because
-// the iterator protocol asks "is there another?" and "give it to me" separately,
-// and because an owned String has no null to mean end of input.
+// A pending line is `[start, line_end)`, found by `line_reader_has_line` and
+// handed out by `line_reader_take_line`. Two calls because the iterator protocol
+// asks "is there another?" and "give it to me" separately, and because an owned
+// String has no null to mean end of input.
 //
-// The buffer is internal and freed by nothing, so it is plain `malloc`: only the
-// line copies cross into Prismio, and those come from `rt_base_alloc`.
-//
-// **One reader.** The state is process-global and unlocked, as C's `stdin` is
-// under `getc_unlocked`: two tasks reading lines concurrently is undefined.
-// Reading descriptor 0 directly (`Stream { descriptor: 0 }`) bypasses the buffer
-// and skips whatever it already holds.
-#define IO_STDIN_CHUNK 65536
+// The buffer is internal and freed by this file, so it is plain `malloc`: only
+// the line copies cross into Prismio, and those come from `rt_base_alloc`.
+#define LINE_READER_CHUNK 65536
 
-static char*  io_stdin_buffer;
-static size_t io_stdin_capacity;
-static size_t io_stdin_start;
-static size_t io_stdin_end;
-static size_t io_stdin_line_end;
-static size_t io_stdin_next;
-static int    io_stdin_pending;
-static int    io_stdin_eof;
+typedef struct {
+    int    fd;
+    char*  buffer;
+    size_t capacity;
+    size_t start;
+    size_t end;
+    size_t line_end;
+    size_t next;
+    int    pending;
+    int    eof;
+} LineReader;
 
 // Moves the unread bytes to the front, makes room for at least one chunk, and
 // reads once. Answers the bytes read; 0 once input has ended, and on an error or
 // a failed allocation, which a reader can do nothing with but stop.
-static size_t io_stdin_fill(void) {
-    if (io_stdin_eof) return 0;
-    size_t unread = io_stdin_end - io_stdin_start;
-    if (io_stdin_start > 0) {
-        memmove(io_stdin_buffer, io_stdin_buffer + io_stdin_start, unread);
-        io_stdin_start = 0;
-        io_stdin_end = unread;
+static size_t line_reader_fill(LineReader* r) {
+    if (r->eof) return 0;
+    size_t unread = r->end - r->start;
+    if (r->start > 0) {
+        memmove(r->buffer, r->buffer + r->start, unread);
+        r->start = 0;
+        r->end = unread;
     }
-    if (io_stdin_capacity - io_stdin_end < IO_STDIN_CHUNK) {
-        size_t grown = io_stdin_capacity ? io_stdin_capacity * 2 : IO_STDIN_CHUNK;
-        while (grown - io_stdin_end < IO_STDIN_CHUNK) grown *= 2;
-        char* bigger = (char*)realloc(io_stdin_buffer, grown);
-        if (!bigger) { io_stdin_eof = 1; return 0; }
-        io_stdin_buffer = bigger;
-        io_stdin_capacity = grown;
+    if (r->capacity - r->end < LINE_READER_CHUNK) {
+        size_t grown = r->capacity ? r->capacity * 2 : LINE_READER_CHUNK;
+        while (grown - r->end < LINE_READER_CHUNK) grown *= 2;
+        char* bigger = (char*)realloc(r->buffer, grown);
+        if (!bigger) { r->eof = 1; return 0; }
+        r->buffer = bigger;
+        r->capacity = grown;
     }
     for (;;) {
 #ifdef _WIN32
-        int n = _read(0, io_stdin_buffer + io_stdin_end,
-                      (unsigned int)(io_stdin_capacity - io_stdin_end));
+        int n = _read(r->fd, r->buffer + r->end, (unsigned int)(r->capacity - r->end));
 #else
-        ssize_t n = read(0, io_stdin_buffer + io_stdin_end,
-                         io_stdin_capacity - io_stdin_end);
+        ssize_t n = read(r->fd, r->buffer + r->end, r->capacity - r->end);
         if (n < 0 && errno == EINTR) continue;
 #endif
-        if (n <= 0) { io_stdin_eof = 1; return 0; }
-        io_stdin_end += (size_t)n;
+        if (n <= 0) { r->eof = 1; return 0; }
+        r->end += (size_t)n;
         return (size_t)n;
     }
 }
@@ -1155,63 +1152,187 @@ static size_t io_stdin_fill(void) {
 // 1 when a line is pending, reading as much as it takes to find one; 0 at the
 // end of input. A last line without a terminator is still a line, and an empty
 // input has none. The terminator is `\n` or `\r\n`, and is not part of the line.
-int io_stdin_has_line(void) {
-    if (io_stdin_pending) return 1;
+static int line_reader_has_line(LineReader* r) {
+    if (r->pending) return 1;
     size_t scanned = 0;
     for (;;) {
-        char* data = io_stdin_buffer + io_stdin_start;
-        char* newline = io_stdin_end > io_stdin_start + scanned
-            ? (char*)memchr(data + scanned, '\n', io_stdin_end - io_stdin_start - scanned)
+        char* data = r->buffer + r->start;
+        char* newline = r->end > r->start + scanned
+            ? (char*)memchr(data + scanned, '\n', r->end - r->start - scanned)
             : NULL;
         if (newline) {
-            io_stdin_line_end = (size_t)(newline - io_stdin_buffer);
-            io_stdin_next = io_stdin_line_end + 1;
-            if (io_stdin_line_end > io_stdin_start &&
-                io_stdin_buffer[io_stdin_line_end - 1] == '\r') {
-                io_stdin_line_end--;
+            r->line_end = (size_t)(newline - r->buffer);
+            r->next = r->line_end + 1;
+            if (r->line_end > r->start && r->buffer[r->line_end - 1] == '\r') {
+                r->line_end--;
             }
-            io_stdin_pending = 1;
+            r->pending = 1;
             return 1;
         }
-        scanned = io_stdin_end - io_stdin_start;
-        if (io_stdin_fill() == 0) break;
+        scanned = r->end - r->start;
+        if (line_reader_fill(r) == 0) break;
     }
-    if (io_stdin_end == io_stdin_start) return 0;
-    io_stdin_line_end = io_stdin_end;
-    io_stdin_next = io_stdin_end;
-    io_stdin_pending = 1;
+    if (r->end == r->start) return 0;
+    r->line_end = r->end;
+    r->next = r->end;
+    r->pending = 1;
     return 1;
 }
 
 // The pending line as a String the caller owns, found first if need be, and ""
 // at the end of input -- allocated like any other line, so every path's result
 // is owned.
-char* io_stdin_take_line(void) {
+static char* line_reader_take_line(LineReader* r) {
     size_t length = 0;
-    if (io_stdin_has_line()) length = io_stdin_line_end - io_stdin_start;
+    if (r && line_reader_has_line(r)) length = r->line_end - r->start;
     char* out = (char*)rt_base_alloc(length + 1);
     if (!out) return NULL;
-    if (length > 0) memcpy(out, io_stdin_buffer + io_stdin_start, length);
+    if (length > 0) memcpy(out, r->buffer + r->start, length);
     out[length] = '\0';
-    if (io_stdin_pending) {
-        io_stdin_start = io_stdin_next;
-        io_stdin_pending = 0;
+    if (r && r->pending) {
+        r->start = r->next;
+        r->pending = 0;
     }
     return out;
+}
+
+// This process's standard input, through one reader for the whole process.
+//
+// **One reader.** The state is process-global and unlocked, as C's `stdin` is
+// under `getc_unlocked`: two tasks reading lines concurrently is undefined.
+// Reading descriptor 0 directly (`Stream { descriptor: 0 }`) bypasses the buffer
+// and skips whatever it already holds.
+static LineReader io_stdin_reader = { 0 };
+
+int io_stdin_has_line(void) {
+    return line_reader_has_line(&io_stdin_reader);
+}
+
+char* io_stdin_take_line(void) {
+    return line_reader_take_line(&io_stdin_reader);
 }
 
 // Everything not yet handed out, to the end of input. A line found by
 // `io_stdin_has_line` and not yet taken is part of it.
 char* io_stdin_read_all(void) {
-    io_stdin_pending = 0;
-    while (io_stdin_fill() > 0) {}
-    size_t length = io_stdin_end - io_stdin_start;
+    LineReader* r = &io_stdin_reader;
+    r->pending = 0;
+    while (line_reader_fill(r) > 0) {}
+    size_t length = r->end - r->start;
     char* out = (char*)rt_base_alloc(length + 1);
     if (!out) return NULL;
-    if (length > 0) memcpy(out, io_stdin_buffer + io_stdin_start, length);
+    if (length > 0) memcpy(out, r->buffer + r->start, length);
     out[length] = '\0';
-    io_stdin_start = io_stdin_end;
+    r->start = r->end;
     return out;
+}
+
+// A file's lines: `readLines(path)` in std/fs.psm.
+//
+// **A handle is an Int, and it names a slot and a generation.** Prismio has no
+// destructor to close a file with, so the reader closes itself when it reaches
+// the end (`fs_lines_has_line` answering 0), which is how every `for line in`
+// loop ends; `close` is for a loop that stops early. A slot freed at the end
+// may be reused by the next `readLines`, and an iterator asked again after its
+// end must not read someone else's file -- so a handle carries the generation it
+// was opened in, and a stale one answers "no more lines".
+//
+// The table is process-global and unlocked, like stdin's reader. It holds at
+// most 65,535 open files, far more than a process's descriptor limit.
+#define FS_LINES_SLOT_BITS 16
+#define FS_LINES_MAX_SLOTS ((1 << FS_LINES_SLOT_BITS) - 1)
+
+typedef struct {
+    LineReader reader;
+    int generation;
+    int open;
+} FsLinesSlot;
+
+static FsLinesSlot* fs_lines_slots;
+static int fs_lines_slot_count;
+
+static LineReader* fs_lines_reader(int handle) {
+    if (handle < 0) return NULL;
+    int slot = handle & FS_LINES_MAX_SLOTS;
+    int generation = handle >> FS_LINES_SLOT_BITS;
+    if (slot >= fs_lines_slot_count) return NULL;
+    FsLinesSlot* s = &fs_lines_slots[slot];
+    if (!s->open || s->generation != generation) return NULL;
+    return &s->reader;
+}
+
+void fs_lines_close(int handle) {
+    LineReader* r = fs_lines_reader(handle);
+    if (!r) return;
+    FsLinesSlot* s = &fs_lines_slots[handle & FS_LINES_MAX_SLOTS];
+#ifdef _WIN32
+    _close(r->fd);
+#else
+    close(r->fd);
+#endif
+    free(r->buffer);
+    memset(r, 0, sizeof(*r));
+    s->open = 0;
+    // Wraps within 15 bits, so a handle stays a non-negative Int.
+    s->generation = (s->generation + 1) & 0x7FFF;
+}
+
+// A handle, or -1 when the file cannot be opened for reading.
+int fs_lines_open(const char* path) {
+#ifdef _WIN32
+    int fd = _open(path, _O_RDONLY | _O_BINARY);
+#else
+    int fd = open(path, O_RDONLY);
+#endif
+    if (fd < 0) return -1;
+    int slot = 0;
+    while (slot < fs_lines_slot_count && fs_lines_slots[slot].open) slot++;
+    if (slot == fs_lines_slot_count) {
+        if (slot >= FS_LINES_MAX_SLOTS) {
+#ifdef _WIN32
+            _close(fd);
+#else
+            close(fd);
+#endif
+            return -1;
+        }
+        int grown = fs_lines_slot_count ? fs_lines_slot_count * 2 : 8;
+        if (grown > FS_LINES_MAX_SLOTS) grown = FS_LINES_MAX_SLOTS;
+        FsLinesSlot* bigger = (FsLinesSlot*)realloc(fs_lines_slots,
+                                                    (size_t)grown * sizeof(FsLinesSlot));
+        if (!bigger) {
+#ifdef _WIN32
+            _close(fd);
+#else
+            close(fd);
+#endif
+            return -1;
+        }
+        memset(bigger + fs_lines_slot_count, 0,
+               (size_t)(grown - fs_lines_slot_count) * sizeof(FsLinesSlot));
+        fs_lines_slots = bigger;
+        fs_lines_slot_count = grown;
+    }
+    FsLinesSlot* s = &fs_lines_slots[slot];
+    memset(&s->reader, 0, sizeof(s->reader));
+    s->reader.fd = fd;
+    s->open = 1;
+    return (s->generation << FS_LINES_SLOT_BITS) | slot;
+}
+
+// 1 when a line is pending. At the end of the file the reader closes itself,
+// and a closed or stale handle has no lines.
+int fs_lines_has_line(int handle) {
+    LineReader* r = fs_lines_reader(handle);
+    if (!r) return 0;
+    if (line_reader_has_line(r)) return 1;
+    fs_lines_close(handle);
+    return 0;
+}
+
+// The pending line, owned by the caller; "" once there are none.
+char* fs_lines_take_line(int handle) {
+    return line_reader_take_line(fs_lines_reader(handle));
 }
 
 // The clocks and the sleep behind std/time.psm. Nanoseconds as `int64_t`
@@ -1389,15 +1510,21 @@ static void* prismio_task_entry(void* arg) {
 // Emitted by generate_expression for a SPAWN_EXPR. Returns an opaque handle;
 // the language types it `Task<R>`, where R is what `join` yields.
 //
-// A task that cannot be started runs **inline** rather than failing. SPEC 1's
-// invariant is about inference, but the same principle applies with more force
-// here: a program that silently does not run its work is worse than one that
-// runs it on the calling thread. The result is identical either way, because
-// isolation means the task shares nothing with its parent -- which is the one
-// property that makes a serial fallback observationally equivalent.
+// A task that cannot be started is a panic. It used to run **inline**, on the
+// argument that a task shares nothing with its parent, so a serial fallback
+// gives the same result. A channel breaks that argument: a producer run inline
+// blocks on a full channel whose consumer has not been spawned yet, and the
+// program deadlocks instead of reporting anything. Exit 101 with the reason,
+// as `panic` does, so the failure says what it is.
+static void prismio_task_start_failed(const char* reason) {
+    fflush(stdout);
+    fprintf(stderr, "panic: could not start a task: %s\n", reason);
+    exit(101);
+}
+
 void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2) {
     PrismioTask* t = (PrismioTask*)calloc(1, sizeof(PrismioTask));
-    if (!t) return NULL;
+    if (!t) prismio_task_start_failed("out of memory");
     t->fn = fn;
     t->rkind = rkind;
     t->nargs = (nargs < 0) ? 0 : (nargs > 3 ? 3 : nargs);
@@ -1412,13 +1539,12 @@ void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, voi
 #ifdef _WIN32
     t->thread = CreateThread(NULL, 0, prismio_task_entry, t, 0, NULL);
     t->started = (t->thread != NULL);
+    if (!t->started) prismio_task_start_failed("CreateThread failed");
 #else
-    t->started = (pthread_create(&t->thread, NULL, prismio_task_entry, t) == 0);
+    int err = pthread_create(&t->thread, NULL, prismio_task_entry, t);
+    t->started = (err == 0);
+    if (!t->started) prismio_task_start_failed(strerror(err));
 #endif
-
-    if (!t->started) {
-        prismio_task_invoke(t);
-    }
     return t;
 }
 

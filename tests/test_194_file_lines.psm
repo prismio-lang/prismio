@@ -1,0 +1,117 @@
+// std.fs: `readLines` and `tryReadLines`, a file read one line at a time.
+//
+// Everything happens in a scratch directory beside this executable, named with
+// the process id, and removed at the end.
+//
+// 1. `\n` and `\r\n` both end a line and neither is part of it; an empty line is
+//    a line; a last line without a terminator is a line; an empty file has none.
+// 2. A line longer than the runtime's 64 KiB buffer arrives whole.
+// 3. A reader closes itself at the end: 200 files read to the end in turn, and
+//    an iterator asked again after its end answers no without reading the file
+//    another reader has since opened in its slot.
+// 4. `close` ends a loop early; closing twice is harmless.
+// 5. A missing file: `readLines` has no lines, `tryReadLines` is `None`.
+
+import std.fs
+import std.io
+import std.option
+import std.process
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// Each line bracketed, so an empty line and a stray `\r` are visible.
+fn bracketed(path: String) -> String {
+    let mut out = ""
+    for line in readLines(path) {
+        out = out + "[" + line + "]"
+    }
+    return out
+}
+
+fn check(path: String, content: String, want: String) -> Int {
+    writeFile(path, content)
+    let seen = bracketed(path)
+    if (seen.equals(want)) { return 0 }
+    return fail(content.concat(" read as ", seen))
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let root = joinPath(executableDirectory(), "prismio_test_194_".concat(process.pid.toString()))
+    if (makeDirectory(root) == false) { return fail("could not make the scratch directory") }
+    let path = joinPath(root, "lines.txt")
+
+    bad = bad + check(path, "ab\r\ncd\n\nlast", "[ab][cd][][last]")
+    bad = bad + check(path, "one\ntwo\n", "[one][two]")
+    bad = bad + check(path, "", "")
+    bad = bad + check(path, "\n", "[]")
+
+    let long = "x".repeat(200000)
+    writeFile(path, "short\n".concat(long, "\nend"))
+    let mut lengths = ""
+    for line in readLines(path) {
+        lengths = lengths + line.length.toString() + ","
+    }
+    if (lengths.equals("5,200000,3,") == false) { bad = bad + fail("long line: ".concat(lengths)) }
+
+    // Far more files than would fit open at once if an ended reader stayed open.
+    writeFile(path, "a\nb\n")
+    let mut total = 0
+    let mut round = 0
+    while (round < 200) {
+        for line in readLines(path) { total = total + line.length }
+        round = round + 1
+    }
+    if (total != 400) { bad = bad + fail("200 files read in turn: ".concat(total.toString())) }
+
+    // An ended reader's slot is reused by the next one; the old handle must not
+    // see the new file.
+    let other = joinPath(root, "other.txt")
+    writeFile(other, "from the other file\n")
+    let mut drained = readLines(path)
+    while (drained.hasNext()) { let skipped = drained.next() }
+    let mut reopened = readLines(other)
+    if (drained.hasNext()) { bad = bad + fail("an ended reader read another file") }
+    let mut fromOther = ""
+    for line in reopened { fromOther = fromOther + line }
+    if (fromOther.equals("from the other file") == false) { bad = bad + fail("reopened: ".concat(fromOther)) }
+
+    // Stopping early.
+    writeFile(path, "first\nsecond\nthird\n")
+    let mut early = readLines(path)
+    let mut firstLine = ""
+    if (early.hasNext()) { firstLine = early.next() }
+    early.close()
+    early.close()
+    if (firstLine.equals("first") == false) { bad = bad + fail("early: ".concat(firstLine)) }
+    if (early.hasNext()) { bad = bad + fail("a closed reader has lines") }
+
+    let missing = joinPath(root, "missing.txt")
+    if (bracketed(missing).equals("") == false) { bad = bad + fail("a missing file has lines") }
+    let tried = tryReadLines(missing)
+    if (tried.isSome) { bad = bad + fail("tryReadLines on a missing file") }
+    let found = tryReadLines(path)
+    match (found) {
+        Option.Some(lines) => {
+            let mut count = 0
+            let mut each = lines
+            for line in each { count = count + 1 }
+            if (count != 3) { bad = bad + fail("tryReadLines read ".concat(count.toString())) }
+        }
+        Option.None => { bad = bad + fail("tryReadLines on a file that exists") }
+    }
+
+    deleteFile(path)
+    deleteFile(other)
+    if (removeDirectory(root) == false) { bad = bad + fail("removing the scratch directory") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: file lines")
+    return 0
+}

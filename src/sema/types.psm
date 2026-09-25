@@ -132,6 +132,7 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     // -- it has a TypeKind and a runtime -- and everything else is a generic
     // declaration, resolved by instantiating it into an ordinary struct.
     if (tn.i2 == 1) {
+        if (monoArgsHoldArray(tn, tn.child1)) { return typeInvalid() }
         // REQUIREMENTS 15. `Task<R>` is built in for the same reason `List<T>`
         // is: it has a runtime and a TypeKind, so there is no struct to
         // instantiate. Without this arm it fell through to
@@ -157,9 +158,19 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         // monoInstantiateStruct would resolve it to Invalid -- which matches
         // everything, so a `Channel<Job>` annotation would accept a
         // `Channel<Result>`.
+        //
+        // **The element must be a reference**, the same rule as `T?`: one `void*`
+        // travels per message and `chan_recv` answers `T?`. A `Channel<Int>` used
+        // to be accepted and sent an `i32` where the runtime reads a pointer.
         if (tn.s1.equals("Channel")) {
             if (nodeExists(tn.child1)) {
-                return typeChannel(semaAnnotationType(module, ptr_to_node(tn.child1)))
+                let elem = semaAnnotationType(module, ptr_to_node(tn.child1))
+                if (typeIsValid(elem) and typeCanBeOptional(elem) == false) {
+                    semaErrorAt(tn, "a channel carries references, and ".concat(typeDisplay(elem),
+                        " is not one; send a struct with one field of it"))
+                    return typeChannel(typeInvalid())
+                }
+                return typeChannel(elem)
             }
             return typeChannel(typeInvalid())
         }

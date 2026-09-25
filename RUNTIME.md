@@ -134,8 +134,8 @@ violations.
 | `std/io.psm` | `import std.io` | `print` / `println` overloads, several values in one call, and `eprint` / `eprintln` for stderr |
 | `std/input.psm` | `import std.input` | standard input: `stdin.lines()`, `stdin.readLine()`, `stdin.readAll()` |
 | `std/time.psm` | `import std.time` | `Instant.now()` and `elapsed()` on the monotonic clock, `Duration` (`fromMillis`, `asMillis`, `asSeconds`, ...), `unixTime()`, `sleep(duration)` |
-| `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
-| `std/fs.psm` | `import std.fs` | files, paths, `listDirectory`, `appendFile`, `rename`, `removeDirectory`, `metadata` |
+| `std/string.psm` | `import std.string` | strings, characters, parsing, `StringBuilder` — **and the String operators** |
+| `std/fs.psm` | `import std.fs` | files, paths, `readLines` (a file one line at a time), `listDirectory`, `appendFile`, `rename`, `removeDirectory`, `metadata` |
 | `std/process.psm` | `import std.process` | arguments, environment variables (`process.env`, `setEnv`, `removeEnv`), `process.pid`, subprocesses |
 | `std/map.psm` | `import std.map` | `Map<K, V>`: `get`, `set`, `has`, `remove`, `clear`, `m[k]`, `length`, `values()`, `keyAt`/`valueAt` |
 | `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>`; `isSome`/`isNone`/`isOk`/`isErr`, `unwrapOr`, `expect`, `okOr`, `ok`, `err`, `map`, `andThen`, `mapErr` |
@@ -460,6 +460,7 @@ are the other direction, and are `strtod` -- correctly rounded.
 | `proc_env_set` `proc_env_remove` `proc_pid` | `process.setEnv` `removeEnv` `pid` | `borrow`; → `Int` |
 | `time_monotonic_nanos` `time_unix_nanos` `time_sleep_nanos` | `Instant.now()` `unixTime()` `sleep` | → `I64` nanoseconds; POSIX `clock_gettime`/`nanosleep`, Windows `QueryPerformanceCounter`/`GetSystemTimePreciseAsFileTime`/`Sleep` |
 | `io_stdin_has_line` `io_stdin_take_line` `io_stdin_read_all` | `stdin.lines()` `stdin.readLine()` `stdin.readAll()` | the last two → `produce(free)`, `""` at end of input (never a literal) |
+| `fs_lines_open` `fs_lines_has_line` `fs_lines_take_line` `fs_lines_close` | `readLines` `tryReadLines` → `FileLines`, `FileLines.close` | an `Int` handle (slot and generation; -1 when the file cannot be opened); the reader closes itself at the end of the file; `fs_lines_take_line` → `produce(free)` |
 
 The `Int` returns are normalised because the raw conventions disagree with each
 other: `file_exists` returns 1 for yes, while `delete_file` returns **0** for
@@ -572,8 +573,13 @@ to write. `Channel<T>` itself is a type the compiler builds in, exactly as
 
 **`T` must be reference-shaped.** One `void*` travels per message, and the
 receive answers `T?`, which REQUIREMENTS 4 defines for references only.
-Send a one-field struct, not an `Int`. `Channel<Int>` should be refused and is
-not yet: it builds with a mismatched ABI (KNOWN_ISSUES, "Concurrency").
+The rule is the one `T?` has, so a `String`, a struct or a `Vec` may be sent.
+`Channel<Int>` is refused (neg_197); send a one-field struct.
+
+**A task that cannot start is a panic.** When the OS refuses a thread,
+`spawn` prints `panic: could not start a task: <reason>` and exits 101. It used
+to run the task inline, which deadlocks a producer that fills a channel before
+its consumer exists.
 
 The four rules, which are also the four things that go wrong:
 

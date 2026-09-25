@@ -1442,6 +1442,32 @@ private fn monoTypeDepth(ptr: Ptr) -> Int {
 // Reported against the template, which is the declaration that has to change;
 // the call site is wherever the recursion happened to be unrolled and is not
 // where the mistake lives.
+// An array as a type argument of a type: `Box<[Int]>`, `Option<[Int]>`,
+// `Vec<[Int]>`, including one a generic function builds from a `T` inferred
+// from an array. Refused for the reason
+// a `[T]` field is (semaArrayLengthsInFields): without a length the value is a
+// pointer to elements in the frame that declared them, so a container built from
+// a local array and returned read that dead frame -- a `Box<[Int]>` read 1 where
+// 2 was stored. With a length it would have to be stored by value inside the
+// instantiation, which a generic struct cannot do yet.
+//
+// **Not a generic function's own type argument.** `id<T>(x: T) -> T` on an array
+// hands the view back to the frame that owns the elements, which is sound, and
+// test_163 depends on it.
+internal fn monoArgsHoldArray(at: ASTNode, argsPtr: Ptr) -> Bool {
+    let mut p = argsPtr
+    while (nodeExists(p)) {
+        let arg = ptr_to_node(p)
+        if (arg.kind == NodeKind.TYPE_ANNOTATION and arg.i1 == 1 and arg.i3 == 0) {
+            semaErrorAt(at, "an array cannot be a type argument")
+            diag_note("it would point into the frame that declared it; use a `Vec`, or a struct with an `Array<T, N>` field")
+            return true
+        }
+        p = arg.next
+    }
+    return false
+}
+
 private fn monoArgsTooDeep(at: ASTNode, name: String, argsPtr: Ptr) -> Bool {
     let mut p = argsPtr
     while (nodeExists(p)) {

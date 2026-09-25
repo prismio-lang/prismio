@@ -7,8 +7,11 @@
 // expect-error: soa gives each field a column of scalars, and Grid holds an array
 // expect-error: an array field is stored in the struct, so it needs a length: `Array<T, N>`
 // expect-error: an enum payload cannot hold an array yet
-// expect-error: aborting due to 11 previous errors
-// What an `Array<T, N>` field refuses, one error each; the count holds that.
+// expect-error: an array cannot be a type argument
+// expect-error: aborting due to 12 previous errors
+// What an `Array<T, N>` field refuses, one error each -- except `Vec<Array<Int,
+// 4>>`, which is both a length in a type argument and an array as one -- and the
+// count holds that.
 //
 //   - Its elements are copied as bytes, so they own nothing: no String, and no
 //     struct, which is an allocation of its own.

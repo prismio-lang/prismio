@@ -29,8 +29,8 @@ The planners behind it, each split into "for 0.1" and "later":
 - [x] `Option` / `Result` methods (item 5)
 - [x] `Map` removal and methods (item 6). 0.1 ships without `m.keys()`:
       it leaks on every call (KNOWN_ISSUES), and `keyAt` reads keys in place.
-- [ ] Files (item 7): the file line reader. The rest of item 7 is done.
-- [ ] Building strings (item 8)
+- [x] Files (item 7), with the file line reader: `readLines`, `tryReadLines`
+- [x] Building strings (item 8): `StringBuilder`
 
 ## 2 · No known memory corruption
 
@@ -38,25 +38,25 @@ A leak may ship if it is documented. A violation, meaning memory freed that is
 not live or a read of a dead frame, may not. Details are in MEMORY_PLAN §1 and
 CHANNELS_PLAN §1.
 
-- [ ] A recursive enum built from `let`-bound children double-frees
-      (KNOWN_ISSUES, "Ownership").
-- [ ] An unsized array stored through a type argument reads a dead frame. Refuse
-      it, as a `[T]` field already is (KNOWN_ISSUES, "Language surface").
-- [ ] `Channel<Int>` is accepted and lowered with a mismatched ABI. Refuse it
-      (KNOWN_ISSUES, "Concurrency").
-- [ ] A task whose thread cannot start runs inline and can deadlock on a
-      channel. Make it a panic (KNOWN_ISSUES, "Concurrency").
+- [x] A recursive enum built from `let`-bound children double-freed. Fixed
+      2026-09-25; `recursive_enum_bindings_probe`, `recursive_optional_probe`.
+- [x] An unsized array stored through a type argument read a dead frame.
+      Refused 2026-09-25; neg_198, neg_199.
+- [x] `Channel<Int>` was accepted and lowered with a mismatched ABI. Refused
+      2026-09-25; neg_197.
+- [x] A task whose thread cannot start ran inline and could deadlock on a
+      channel. A panic since 2026-09-25.
 - [x] Three ownership shapes that freed memory that was not live, fixed
       2026-09-25 (`aif/evidence/RESULTS-ownership-shapes.md`).
 
 ## 3 · Loose ends
 
-- [ ] `PRISMIO_INLINE_ELEMS=0` leaks in four tests: make it a compile-time flag
-      or delete it (PERFORMANCE_PLAN §1).
+- [x] `PRISMIO_INLINE_ELEMS=0` leaked in four tests. Deleted 2026-09-25
+      (PERFORMANCE_PLAN §1).
 - [ ] KNOWN_ISSUES re-read on the release candidate: every entry still true,
       and every fixed one moved out. (Done once on 2026-09-25; repeat on the RC.)
-- [ ] `CHANGELOG.md`: fold "Unreleased" into one dated "0.1.0" section. 0.1.0
-      has never been published, so everything under "Unreleased" is part of it.
+- [x] `CHANGELOG.md`: "Unreleased" folded into "0.1.0 -- not yet published"
+      (2026-09-25). At the tag, replace "not yet published" with the date.
 - [ ] `RELEASE.md`'s numbers (suite count, gate results, checksums) re-filled
       from the release candidate's own gate run.
 - [ ] Decide what to do with the old `v1.0.0` tag (RELEASE.md §5). Deleting a
@@ -67,7 +67,10 @@ CHANNELS_PLAN §1.
 - [ ] `apps/docs` documents what landed on 2026-09-25: `std.input`,
       `std.time`, the `std.fs` additions, `Option`/`Result` methods, `Map`
       methods and `m[k]`, closure bounds `F: Fn(A) -> R`, `panic`/`assert`/
-      `exit`, `process.env`/`setEnv`/`pid`, and `std.math`.
+      `exit`, `process.env`/`setEnv`/`pid`, `std.math`, `readLines`/
+      `tryReadLines`, `StringBuilder`; and the refusals a user can now meet:
+      `Channel<Int>`, an array as a type argument. A task that cannot start
+      is a panic.
 - [ ] `stdlib/io.md` no longer says standard input is unavailable. It points to
       `std.input`.
 - [ ] `verify-doc-examples.mjs` passes in `apps/docs` and in `apps/developers`,

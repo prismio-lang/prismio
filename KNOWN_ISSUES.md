@@ -31,6 +31,17 @@ something about a String read out of the map's key list and cloned. It is why
 `Map` has no `keys()` method. Making `copyOf` for String use `concat("")` does
 not help: the map's own key copies then leak.
 
+**One allocation site backs every `concat` in a program, so its ownership is
+decided by the whole program.** When `StringBuilder` first stored `concat`
+results in its `Vec` field, that together with `listModules` doing the same
+made every `concat` result passed straight as an argument go unreleased --
+test_184 leaked 2,165 of 4,073 -- in any program that imported `std.fs` and
+`std.string`, whether it used either or not. `StringBuilder` now copies through
+a helper of its own and `concat_argument_probe.psm` pins the shape, but the
+sensitivity remains: a program that stores `concat` results in a container
+field of its own can change what is released elsewhere. The fix is
+context-sensitive sites for library producers (docs/MEMORY_PLAN.md §2.3).
+
 **Fixed 2026-09-25: three shapes released memory that was not live.** Each was
 a crash (`free(): invalid pointer`) outside `--verify`, and each reproduced on
 `2ae70c4`. See `aif/evidence/RESULTS-ownership-shapes.md`.
@@ -347,19 +358,22 @@ sharing, and in `test_144`'s shape the previous compiler reference-counted a
 `List<Pt>`'s boxes (`rc_alloc`) because of it; with the sorts swapping, those are
 plain allocations again.
 
-**Building a recursive enum from `let`-bound children double-frees. This is
-unsoundness, and it blocks 0.1** (RELEASE_CHECKLIST.md). `let left = build(d -
-1); let right = build(d - 1); return Expr.Op(op, left, right)` releases a node
-twice -- `free(): double free detected` without `--verify`, a segfault with it
--- on the compiler at `727c704` and on 2026-09-25 alike. The same tree built with
-the children inside the constructor call, `Expr.Op(op, build(d - 1), build(d -
-1))`, used to leak (an s-expression parser written that way read `65719
-allocated, 51214 released, 14505 leaked`); a depth-6 binary tree built that way
-now reads 128/128/0. `BenchTree` uses the inline form, which is why
-`tree_traversal` never met the first. Between them they are why
-`s_expression_parse`'s Prismio arm still stores its nodes in a flat `List<Int>`
-where the C++ and Rust arms allocate one per expression -- see
-benchmarks/README.md.
+**Fixed 2026-09-25: a recursive enum built from `let`-bound children
+double-freed.** `let left = build(d - 1); ...; return Expr.Op(d, left, right)`
+freed each interior node twice: once at the binding's scope exit, once in the
+tree's release. A released field that re-enters its owner's type is left out of
+the fields that keep a call result from its caller, so that a tree's root stays
+its caller's; the binding took the same answer. `call_result_held` now also asks
+whether the value is stored into such a field in its own frame, through its own
+bindings (`vs_stored_in_recursive_field`, runtime/aif_support.c). No program in
+`tests/` or `aif/corpus/` changed IR. `recursive_enum_bindings_probe.psm` pins
+it at 190/190/0. The same shape through `Node?` did not link either, since a
+`T?` slot is keyed `ptr` and the drop named `__aif_release_`;
+`recursive_optional_probe.psm` pins that one.
+
+`s_expression_parse`'s Prismio arm still stores its nodes in a flat `Vec<Int>`
+where the C++ and Rust arms allocate one per expression (benchmarks/README.md).
+It could now be written the other way.
 
 **A list that hands out an element is not released, so its owned Strings leak.**
 The escape analysis stops releasing a container it has seen return an element
@@ -522,52 +536,13 @@ versioning result. `!invariant.load` on the `List` header is still **unsound**
 because `list_push` rewrites it. See `aif/evidence/RESULTS-flat-list-view.md`
 and `aif/evidence/RESULTS-loop-unswitch.md`.
 
-**Four tests fail under `PRISMIO_INLINE_ELEMS=0`, and the switch is the defect
-rather than the boxed path.** The suite reports 281/285: `test_49_aif_struct_fields`,
-`test_53_aif_views`, `test_80_data_view_conversion` and `test_82_generic_layout`.
-All four are **leaks with 0 violations**, and every leaked block is one element
-width — 4 bytes for `Item { value: Int }`, 16 for a two-field flat struct, 24 for
-a DataView row. Checksums agree throughout, so the boxed path computes the right
-answers.
-
-**The attribution the previous version of this entry asked for is done, and the
-fifth was never a gate failure.** `test_62_split_release`'s ledger is identical
-with the gate on and off — 8205/8205 at a forced cut of 4, 4109/4109 at 12 — on
-today's compiler, on `build/aif-scalar-final`, *and* on `build/unswitch-gen4`,
-which is the compiler the original count was taken on. It is not exempt by
-declining inline storage either: it is stamped `list_set_elem_inline`, and it
-survives because codegen also emits `list_set_elem_owner`, so both
-representations are covered. The count went five to four because the list was
-recounted, not because anything changed.
-
-**Why the other four cannot be fixed by adding the missing disposition.**
-`list_inline_enabled()` is a `getenv`, read at run time; everything it
-invalidates — the element disposition, the arena placement, whether the site
-allocates at all — was decided at compile time. `test_49` allocates **3** blocks
-with the representation on and **78** with it off, from one binary, and its two
-lists that get no disposition are exactly the two the manifest places
-`region:auto`. Closing the gate means making the opt-out compile-time, or
-deleting it and keeping the `elem_size == stride` guard, which is the fallback
-that answers a fact about the program rather than about the environment. See
-`aif/evidence/RESULTS-inline-elems-gate.md`.
-
-**What is not established, and it is the next thing to settle.** That the missing
-`list_set_elem_owner` is *the* cause is inferred, not proven, and one measurement
-argues against the obvious fix. `aif --summary` on `test_49` reports **2 call
-sites bracketed, 9 sites now arena-served** — the arenas are live — and the `Item`
-site itself is `region:auto`. So under boxing those blocks *should* be
-arena-allocated and reclaimed in bulk, and they are not. Three candidates, in the
-order they are cheapest to test:
-
-1. the arena is never entered at run time on that path;
-2. it is, but `rt_alloc`'s arena hint is not set where the boxed push allocates;
-3. it is, and `--verify`'s ledger accounts for arena blocks in a way that reports
-   them as leaked.
-
-**Adding the disposition would not settle it either way**, because `list_release`
-returns on `l->arena` before it reaches the element loop — so for the two lists
-that lack a disposition, the loop that would use it never runs. Whoever picks
-this up should answer the three above before writing any codegen.
+**Fixed 2026-09-25 by deleting it: four tests leaked under
+`PRISMIO_INLINE_ELEMS=0`.** The switch was a `getenv` read at run time, and
+everything it invalidated -- the element disposition, the arena placement,
+whether a site allocates at all -- had been decided at compile time. So no
+per-call fallback could make one binary correct under both placements.
+`aif/evidence/RESULTS-inline-elems-gate.md` has the attribution. The
+`elem_size == stride` guard is the fallback that stays.
 
 **A short String key paid a call on every map lookup. Fixed** by
 `__builtin_string_hash`, which mixes an inline pair's two words where they sit
@@ -862,8 +837,8 @@ on a parameter: a `[T]` parameter is a view that compiles once for every length
 rather than once per length (COLLECTIONS step 3). A generic struct and an enum
 payload cannot hold an array yet.
 
-**An unsized array reached through a type argument still points into a frame.
-It blocks 0.1.**
+**Fixed 2026-09-25 by refusing it: an unsized array reached through a type
+argument pointed into a frame.**
 A `[T]` struct field is refused, because it held the address of a local array
 and a returned struct read the dead frame. The same value can still be stored
 through a type argument -- `Box<[Int]>` with a field `T`, `Option<[Int]>`,
@@ -871,6 +846,10 @@ through a type argument -- `Box<[Int]>` with a field `T`, `Option<[Int]>`,
 Measured with each built from a local in a function that returns it: the
 `Box<[Int]>` read 1 where 2 was stored, the `Option<[Int]>` matched `None`, and
 the Vec read correctly only because nothing had reused the frame yet.
+`monoArgsHoldArray` now refuses an array as the type argument of a type, written
+or reached through a generic function's `T` (neg_198, neg_199). A generic
+function's own `T` may still be an array -- `id<T>(x: T) -> T` hands the view
+back to the frame that owns it -- which test_163 relies on.
 
 **A resolved path dependency is not on the import search.** Vendor source below
 the entry root. Deliberately not part of 0.1.
@@ -978,18 +957,13 @@ whenever the pushed value may be untracked would close it.
 
 The plan for channels and tasks is `docs/CHANNELS_PLAN.md`.
 
-**`Channel<Int>` is accepted, and it should not be. It blocks 0.1.** RUNTIME.md
-and the comment on `typeChannel` say sema refuses a channel of a non-reference
-element. Nothing does. `chan_send(c, 5)` is emitted as `call i32
-@chan_send(ptr, i32 5)` against a C function taking `void*`, and `chan_recv`'s
-`ptr` is passed straight to `println__Int`. A probe printed the right number
-on x86-64 on 2026-09-25 only because the register's upper half was zero.
+**Fixed 2026-09-25: `Channel<Int>` was accepted.** It sent an `i32` where the
+runtime reads a pointer. The element type must now be one `T?` allows
+(neg_197).
 
-**A task that cannot start runs inline, and with a channel that can deadlock.
-It blocks 0.1.** `prismio_task_spawn` calls the task on the spawning thread when
-`pthread_create` fails. Its comment argues that is equivalent because tasks
-share nothing. A channel breaks the argument: a producer run inline blocks on a
-full channel whose consumer was never started.
+**Fixed 2026-09-25: a task that could not start ran inline**, which deadlocks a
+producer that fills a channel before its consumer is spawned. It is now a panic
+naming the reason, exit 101.
 
 **A send on a closed channel leaks the message.** `chan_send` answers 0, and the
 value, already moved, is neither delivered nor freed. Returning it to the

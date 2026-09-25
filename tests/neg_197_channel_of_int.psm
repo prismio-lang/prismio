@@ -1,0 +1,9 @@
+// expect-error: a channel carries references
+// One pointer travels per message and a receive answers `T?`, so the element
+// must be a reference -- the rule `T?` has. `Channel<Int>` used to be accepted
+// and sent an `i32` where the runtime reads a pointer.
+fn main() -> Int {
+    let c: Channel<Int> = chan_new(4)
+    chan_free(c)
+    return 0
+}

@@ -15,7 +15,7 @@ What a program can call today is RUNTIME.md §4.1: `chan_new`, `chan_send`,
 The design below is too big for 0.1, and nothing in it is needed for the
 channel 0.1 already has to be correct. What is needed:
 
-- [ ] **Refuse `Channel<Int>` and every other non-reference element type, as
+- [x] **Refuse `Channel<Int>` and every other non-reference element type, as
       RUNTIME.md already says it does.** It is accepted today. `chan_send(c, 5)`
       is emitted as `call i32 @chan_send(ptr, i32 5)` against a C function that
       takes `void*`, and `chan_recv`'s `ptr` goes straight to `println__Int`. It
@@ -24,14 +24,14 @@ channel 0.1 already has to be correct. What is needed:
       `typeChannel` (`src/ast/types.psm`) says sema refuses it. Nothing does.
       Add the refusal, with a negative test, and point the message at a
       one-field struct.
-- [ ] **A task that cannot start must not run inline.** `prismio_task_spawn`
+- [x] **A task that cannot start must not run inline.** `prismio_task_spawn`
       runs the task on the calling thread when `pthread_create` fails. Its
       comment argues that this is observationally equivalent because a task
       shares nothing with its parent. A channel breaks that argument: a
       producer run inline blocks on a full channel whose consumer has not been
       spawned yet, and the program deadlocks. Fail loudly instead: a panic with
       the reason, exit 101, as `panic` does.
-- [ ] **Say precisely what a send after close does.** `chan_send` returns 0 and
+- [x] **Say precisely what a send after close does.** `chan_send` returns 0 and
       the message is neither delivered nor freed. That is a leak, and RUNTIME.md
       calls it "dropped". Correct the doc for 0.1. Returning the value is Phase 0
       below.

@@ -418,6 +418,29 @@ internal fn listElementArgIndex(funcName: String) -> Int {
     return -1
 }
 
+// Remembers the struct an optional binding's typed drop must name. Called where
+// a binding is marked droppable; nothing to do unless the value is a `T?` of a
+// struct, which is the one reference whose IR key does not carry its type.
+internal fn noteOptionalDropType(name: String, expr: ASTNode) {
+    let t = nodeGetType(expr)
+    if (t.kind != TypeKind.OPTIONAL) { return }
+    let inner = typeIrKey(typeOptionalInner(t))
+    if (isStructTypeKey(inner) == false) { return }
+    irOptionalDropTypes = irOptionalDropTypes.concat(ir_get_var_slot(name), "=", inner, ";")
+}
+
+// The type a drop list entry releases as: its own key, unless it is an optional
+// noteOptionalDropType recorded the struct for.
+internal fn dropReleaseType(slot: String, declType: String) -> String {
+    if (isStructTypeKey(declType)) { return declType }
+    let key = ";".concat(slot, "=")
+    let at = irOptionalDropTypes.indexOf(key)
+    if (at < 0) { return declType }
+    let from = at + __builtin_string_len(key)
+    let rest = irOptionalDropTypes.substring(from, __builtin_string_len(irOptionalDropTypes) - from)
+    return rest.substring(0, rest.indexOf(";"))
+}
+
 internal fn dropKindOf(expr: ASTNode) -> Int {
     if (nodeGetType(expr).kind == TypeKind.LIST) { return IR_DROP_LIST }
     if (nodeGetType(expr).kind == TypeKind.DATAVIEW) { return IR_DROP_DATAVIEW }

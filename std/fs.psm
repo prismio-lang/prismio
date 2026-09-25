@@ -32,6 +32,7 @@
 // a trap that belongs behind a wrapper, not in a doc comment nobody reads at the
 // call site.
 
+import std.iter
 import std.option
 import std.string
 import std.time
@@ -244,4 +245,49 @@ public fn metadata(path: String) -> Option<Metadata> {
         isDirectory: out.isDirectory == 1,
         isFile: out.isFile == 1
     })
+}
+
+// A file read one line at a time, through a 64 KiB buffer: what `readLines` and
+// `tryReadLines` return, and a `for line in` loop's iterator.
+//
+// **It closes itself at the end of the file**, which is how every loop that
+// runs to the end finishes. There is no destructor to close it otherwise, so a
+// loop that stops early -- `break`, `return` -- should call `close`, or the file
+// stays open until the process exits. Closing twice, or after the end, is fine.
+//
+// Lines are split at `\n`, and a `\r` before it is dropped, as for `stdin`. A
+// last line without a terminator is still a line.
+private extern fn fs_lines_open(path: String borrow) -> Int
+private extern fn fs_lines_has_line(handle: Int) -> Int
+private extern fn fs_lines_take_line(handle: Int) -> String produce(free)
+private extern fn fs_lines_close(handle: Int)
+
+struct FileLines {
+    handle: Int
+}
+
+impl FileLines {
+    public fn close(self) {
+        fs_lines_close(self.handle)
+    }
+}
+
+impl Iterator for FileLines {
+    type Item = String
+    fn hasNext(self) -> Bool { return fs_lines_has_line(self.handle) == 1 }
+    fn next(inout self) -> Self.Item { return fs_lines_take_line(self.handle) }
+}
+
+// The lines of `path`, read as the loop asks for them. A file that cannot be
+// opened has none, as `readFile` gives "" for one; `tryReadLines` tells the two
+// apart.
+public fn readLines(path: String) -> FileLines {
+    return FileLines { handle: fs_lines_open(path) }
+}
+
+// `None` when `path` cannot be opened for reading.
+public fn tryReadLines(path: String) -> Option<FileLines> {
+    let handle = fs_lines_open(path)
+    if (handle < 0) { return Option<FileLines>.None }
+    return Option<FileLines>.Some(FileLines { handle: handle })
 }

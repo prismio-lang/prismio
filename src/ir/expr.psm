@@ -531,6 +531,15 @@ private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
     return aif_owns_call_result_at_node(node_to_ptr(argNode)) != AIF_ELEM_NONE
 }
 
+// A call statement's result, which nothing reads: `make(1)` on a line of its
+// own, or `it.next()` to skip an element. It is the degenerate `let` -- a value
+// with no uses -- so the same question decides it, and an owned one is released
+// here instead of leaking. Before this, every discarded owned result leaked.
+internal fn generateDiscardedCallRelease(e: ASTNode, value: String) {
+    if (irArgumentIsOwnedTemporary(e) == false) { return }
+    generateOwnedTemporaryRelease(value, irOwnedTemporaryKind(e), irOwnedTemporaryDeclType(e))
+}
+
 // Whether generateCall may release this call's owned temporaries once it
 // returns; the three conditions, and why concat is the exception, are spelled out
 // where it asks. irHoistBorrowedTemporaries asks the same question ahead of time,
@@ -724,7 +733,14 @@ private fn irFindBorrowedTemporary(e: ASTNode) -> Int {
 
 // The declared type an owned temporary is released as. Only a typed release
 // consults it; the object and list forms ignore it.
+// The type an owned temporary is released as. An optional struct's own key is
+// `ptr`, which names no release; the struct inside it does.
 private fn irOwnedTemporaryDeclType(argNode: ASTNode) -> String {
+    let t = nodeGetType(argNode)
+    if (t.kind == TypeKind.OPTIONAL) {
+        let inner = typeIrKey(typeOptionalInner(t))
+        if (isStructTypeKey(inner)) { return inner }
+    }
     return getExprType(argNode)
 }
 
@@ -3244,6 +3260,7 @@ private fn generateSpawn(expr: ASTNode) -> String {
             ir_alloca(store, slot)
             ir_store(store, argVal, slot)
             ir_mark_droppable(name, irOwnedTemporaryKind(argNode))
+            noteOptionalDropType(name, argNode)
             ir_call_arg("ptr", ir_get_temp_name(ir_load(store, slot)))
         } else {
             ir_call_arg("ptr", argVal)
@@ -3903,7 +3920,7 @@ private fn generateCall(expr: ASTNode) -> String {
             // early here skipped the release the general path gives it.
             let owned = irArgumentIsOwnedTemporary(a0)
             let kind = irOwnedTemporaryKind(a0)
-            let declType = getExprType(a0)
+            let declType = irOwnedTemporaryDeclType(a0)
             let listVal = generateExpression(a0)
             let len = ir_get_temp_name(ir_list_len(listVal.clone()))
             if (owned) { generateOwnedTemporaryRelease(listVal, kind, declType) }
@@ -4244,7 +4261,7 @@ private fn generateCall(expr: ASTNode) -> String {
         // consumes CALL_EXPR.s2 when it takes the resolved symbol name.
         let releaseOwnedTemp = irArgumentIsOwnedTemporary(argNode)
         let ownedTempKind = irOwnedTemporaryKind(argNode)
-        let ownedTempType = getExprType(argNode)
+        let ownedTempType = irOwnedTemporaryDeclType(argNode)
         let argVal = generateExpression(argNode)
         let argStore = storageType(getExprType(argNode))
         // Cloned: `argStore` is affine and the branches below still name it.

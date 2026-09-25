@@ -2177,7 +2177,6 @@ typedef struct {
     int grave_cap;
 } RtList;
 
-static int list_inline_enabled(void);
 
 static void* list_new_cap(int cap, int elem_size) {
     RtList* l = (RtList*)rt_alloc(sizeof(RtList));
@@ -2216,7 +2215,7 @@ __attribute__((malloc)) void* list_new(void) { return list_new_cap(0, 0); }
 // metadata requires. An untyped list stays boxed; it is never changed into a
 // different representation after an observer can acquire the handle.
 __attribute__((malloc)) void* list_new_inline(int elem_size) {
-    return list_new_cap(0, list_inline_enabled() ? elem_size : 0);
+    return list_new_cap(0, elem_size);
 }
 
 // Vec::with_capacity. A hint about size, not a bound: the list still grows by
@@ -2240,8 +2239,7 @@ __attribute__((malloc)) void* list_new_with_capacity(int n) {
 }
 
 __attribute__((malloc)) void* list_new_with_capacity_inline(int n, int elem_size) {
-    return list_new_cap(n > 0 ? n : 4,
-                        list_inline_enabled() ? elem_size : 0);
+    return list_new_cap(n > 0 ? n : 4, elem_size);
 }
 
 void list_set_elem_owner(void* lp, int mode) {
@@ -2289,17 +2287,12 @@ void rc_release(void* p);
 void cyc_release(void* p);
 void rc_release_atomic(void* p);
 
-// Opt-out, kept while the mode is measured, exactly as PRISMIO_INLINE_RUNTIME is
-// for M1.1: with it off the same binary runs every list boxed, so a result is a
-// variable away rather than a revert.
-static int list_inline_enabled(void) {
-    static int cached = -1;
-    if (cached < 0) {
-        const char* v = getenv("PRISMIO_INLINE_ELEMS");
-        cached = (v && v[0] == '0' && v[1] == 0) ? 0 : 1;
-    }
-    return cached;
-}
+// There was a run-time opt-out here, `PRISMIO_INLINE_ELEMS=0`, which ran every
+// list boxed. It was removed on 2026-09-25: the representation it switched was
+// one the compiler had already built the element disposition and the arena
+// placement around, so four tests leaked under it
+// (aif/evidence/RESULTS-inline-elems-gate.md). `elem_size == stride` is the
+// fallback that answers a fact about the program.
 
 // An element body is a handful of words, and its size is a constant at every
 // site that matters -- but it reaches the runtime as a variable, so `memcpy`
@@ -2338,7 +2331,6 @@ static void list_copy_elem(void* dst, const void* src, size_t size) {
 #ifdef PRISMIO_BOOTSTRAP_COMPAT
 void list_set_elem_inline(void* lp, int elem_size) {
     if (!lp || elem_size <= 0) return;
-    if (!list_inline_enabled()) return;
     RtList* l = (RtList*)lp;
     if (l->elem_size || l->len) return;
     // **A counted element cannot be inline.** A reference count lives in a

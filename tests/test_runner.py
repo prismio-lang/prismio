@@ -4125,7 +4125,7 @@ def run_range_direction_test():
 
 
 def run_ownership_probes_test():
-    """Four shapes that released memory that was not live, under `--verify`.
+    """Shapes that released memory that was not live, under `--verify`.
 
     Each probe is its own program because the analysis is whole-program: in
     test_191, owned payloads elsewhere in the file changed its answer and the bad
@@ -4148,6 +4148,17 @@ def run_ownership_probes_test():
         # Map removal swaps a String key to the end and truncates it: a key the
         # removal failed to release is a leak, so this one is held to 0.
         ("test_193_map_methods.psm", "PASS", True),
+        # A child bound to a `let` and then stored into a recursive payload was
+        # freed by the binding and by the tree: a double free, and a leak if the
+        # fix declines the tree's release instead.
+        ("recursive_enum_bindings_probe.psm", "PASS", True),
+        # The same through a `Node?`, which also did not link: an optional's
+        # drop named no release.
+        ("recursive_optional_probe.psm", "PASS", True),
+        ("test_195_string_builder.psm", "PASS", True),
+        # One allocation site backs every `concat`; a builder storing `concat`
+        # results stopped every `concat` argument being released.
+        ("concat_argument_probe.psm", "PASS", True),
     )
     problems = []
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
@@ -4301,20 +4312,20 @@ def run_counted_fill_codegen_test():
         if built.returncode != 0:
             problems.append(f"verify build failed: {built.stdout} {built.stderr}")
         else:
-            for boxed in (False, True):
-                env = os.environ.copy()
-                env["PRISMIO_INLINE_ELEMS"] = "0" if boxed else "1"
-                ran = subprocess.run([str(exe)], cwd=PROJECT_ROOT, env=env,
-                                     capture_output=True, text=True)
-                output = ran.stdout + ran.stderr
-                if ran.returncode or "PASS:" not in output:
-                    problems.append(f"boxed={boxed}: {output}")
-                if not re.search(r'0 leaked, 0 violation\(s\)', output):
-                    problems.append(f"boxed={boxed}: no clean verify ledger: {output}")
+            # One mode: the run-time PRISMIO_INLINE_ELEMS opt-out is gone. It
+            # changed the representation after the compiler had decided the
+            # element disposition, which is why boxed runs leaked.
+            ran = subprocess.run([str(exe)], cwd=PROJECT_ROOT,
+                                 capture_output=True, text=True)
+            output = ran.stdout + ran.stderr
+            if ran.returncode or "PASS:" not in output:
+                problems.append(f"run: {output}")
+            if not re.search(r'0 leaked, 0 violation\(s\)', output):
+                problems.append(f"no clean verify ledger: {output}")
     if problems:
         print(f"{RED}[FAIL] counted fill: " + "\n".join(problems) + RESET)
         return False
-    print(f"{GREEN}[PASS] counted fill guards, struct regions, and both verify modes{RESET}")
+    print(f"{GREEN}[PASS] counted fill guards, struct regions, and a clean verify ledger{RESET}")
     return True
 
 

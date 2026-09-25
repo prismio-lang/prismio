@@ -30,8 +30,8 @@ exists in a shape that would break every user to change later.
 | 4 | [`std.time`](#4-stdtime) | done 2026-09-25 | yes (Windows half too) | no |
 | 5 | [`Option` / `Result` methods](#5-option--result-methods) | done 2026-09-25 | no | maybe (generic `impl`) |
 | 6 | [`Map` removal and methods](#6-map-removal-and-methods) | done 2026-09-25, except `keys()` | no | maybe (generic `impl`) |
-| 7 | [Files](#7-files) | done 2026-09-25, except the file line reader | yes | no |
-| 8 | [Building strings](#8-building-strings) | todo | no | no (interpolation is separate) |
+| 7 | [Files](#7-files) | done 2026-09-25 | yes | no |
+| 8 | [Building strings](#8-building-strings) | done 2026-09-25 | no | no (interpolation is separate) |
 
 Items 5 and 6 go before anything that returns an `Option` or a `Map` gets
 more callers: they are the two public APIs still spelled `optionIsSome(o)` /
@@ -313,11 +313,19 @@ since the epoch, from std.time), `isDirectory` and `isFile`, and follows
 symbolic links. The eleven raw externs are `internal`; neg_193 pins that.
 test_190 runs all of it in a scratch directory; 0 leaked under `--verify`.
 
-Not done: **the buffered line reader for files.** Stdin's reader is one
-process-wide buffer on descriptor 0. A file needs a handle that is opened and
-closed, and with no destructor to hang the close on, that is an API decision
-(an explicit `close`, or a `withLines(path, f)` that closes for you) to make
-first. Until then, `readFile(path).split('\n')` reads a small file.
+**The line reader landed 2026-09-25**, as `readLines(path) -> FileLines` and
+`tryReadLines(path) -> Option<FileLines>`, following `readFile`/`tryReadFile`.
+The API decision was made this way: **the reader closes itself at the end of
+the file**, which is how every `for line in` loop that runs to the end
+finishes, and `close()` is there for one that stops early. `withLines(path, f)`
+was the alternative. It was set aside because a closure cannot change a
+variable it captured, so counting or collecting lines through one would need a
+fold. The buffer is stdin's reader generalised (`LineReader` in
+program_support.c). A file's handle is an `Int` carrying a slot and a
+generation, so an iterator asked again after its end cannot read a file a later
+`readLines` opened in its slot. test_194 covers line endings, a 200,000-byte
+line, 200 files read in turn, slot reuse, early close, and a missing file,
+642/642/0 under `--verify`.
 Not verified here: the Windows branches (`FindFirstFileA`,
 `GetFileAttributesExA`, `MoveFileExA`).
 
@@ -348,4 +356,14 @@ that leak, so a `StringBuilder { buffer: String }` that regrows its buffer is
 ruled out until that issue is fixed. A `Vec<String>` of parts joined at the end
 works today, is linear, and never reassigns a field; it costs one copy per
 piece (`piece.concat("")`, because a borrowed parameter cannot be pushed).
+
+**Landed 2026-09-25 as that design**: `StringBuilder` in `std.string`, with
+`new`, `append`, `appendLine`, `length`, `isEmpty` and `toString`. 640,000
+appends of long pieces took 73 ms and released all 320,023 allocations; test_195.
+**A piece is copied by a helper of its own, not by `concat`**, and this is
+load-bearing. One allocation site backs every `concat` in a program. A builder
+storing `concat` results in its `Vec` field, together with `listModules` doing
+the same, made the analysis stop releasing every `concat` result passed as an
+argument, in any program that imported both `std.fs` and `std.string`:
+test_184 went to 2,165 leaked. `concat_argument_probe.psm` pins it.
 

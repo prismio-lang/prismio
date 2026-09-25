@@ -23,12 +23,9 @@ release anyway:
       table in `aif/evidence/`, so the release notes quote a measured position
       and not an older one. The 2026-09-25 run (§2) is the baseline to compare it
       with.
-- [ ] Decide `PRISMIO_INLINE_ELEMS=0`. The switch is read at run time, but the
-      element disposition it changes was fixed at compile time. Four tests
-      therefore leak under it (KNOWN_ISSUES, "Four tests fail under
-      `PRISMIO_INLINE_ELEMS=0`"). Make it a compile-time flag, or delete it and
-      keep the `elem_size == stride` guard. Either is small. Leaving it as it is
-      means shipping a documented switch that leaks.
+- [x] `PRISMIO_INLINE_ELEMS=0` is deleted (2026-09-25). It was read at run time,
+      but the element disposition it changed was fixed at compile time, so four
+      tests leaked under it. The `elem_size == stride` guard stays.
 
 ## 2 · Current position
 
@@ -92,7 +89,7 @@ So nobody re-derives these. The evidence file is the record.
 | Item | Result | Evidence |
 |---|---|---|
 | Owner facts at calls, `spawn` and FFI (gap 1) | closed | `RESULTS-spawn-owned-argument.md`, `-extern-alias-escape`, `-passthrough-escape`, `-owned-temporary-argument`, `-pointer-return-temporary`, `-owned-return-depth2` |
-| Flat-list view per loop (gap 2) | closed, except the switch in §1 | `RESULTS-flat-list-view.md`, `-flat-list-loop-guard`, `-scalar-list-storage`, `-inline-elems-gate` |
+| Flat-list view per loop (gap 2) | closed; the run-time switch is deleted | `RESULTS-flat-list-view.md`, `-flat-list-loop-guard`, `-scalar-list-storage`, `-inline-elems-gate` |
 | Functional-update reuse (gap 6) | closed | `RESULTS-M2-reuse-token.md` |
 | Curated runtime closure (gap 10) | closed | `RESULTS-curate-scalar-write.md` |
 | Loop range guard wrap, TBAA audit (MEM-023, 024) | done | `RESULTS-loop-range-monotonicity.md` |

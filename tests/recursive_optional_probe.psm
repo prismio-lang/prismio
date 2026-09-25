@@ -1,0 +1,43 @@
+// A linked list of `Node?`, built recursively from a `let`-bound tail.
+//
+// Two defects met here. The tail was dropped at `make`'s scope exit after being
+// stored into the new node (the recursive-field double free), and `main`'s own
+// `Node?` binding named its release `__aif_release_` -- a `T?` slot is keyed
+// `ptr`, which carries no struct -- so the program did not link. Checked by the
+// suite's `ownership_probes` under `--verify`, held to 0 leaked.
+
+import std.io
+import std.string
+
+struct Node {
+    v: Int,
+    next: Node?
+}
+
+fn make(n: Int) -> Node? {
+    if (n == 0) { return none }
+    let rest = make(n - 1)
+    return Node { v: n, next: rest }
+}
+
+fn total(p: Node?) -> Int {
+    let mut s = 0
+    let mut cur = p
+    while (cur != none) {
+        let node = expect(cur)
+        s = s + node.v
+        cur = node.next
+    }
+    return s
+}
+
+fn main() -> Int {
+    let list = make(50)
+    let sum = total(list)
+    if (sum != 1275) {
+        println("FAIL: sum was ".concat(sum.toString()))
+        return 1
+    }
+    println("PASS: recursive optional list")
+    return 0
+}

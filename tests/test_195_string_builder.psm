@@ -1,0 +1,72 @@
+// `StringBuilder`: text grown from pieces, held in a struct and passed `inout`.
+//
+// 1. Pieces of both representations -- twelve bytes or fewer, inline, and
+//    longer, on the heap -- come out in order, with `appendLine`'s newlines.
+// 2. `length` counts bytes as they are appended; `toString` leaves the builder
+//    able to grow.
+// 3. A builder kept in a struct field grows through the field.
+// 4. 20,000 appends through an `inout` parameter, which is the shape
+//    `b.text = b.text + piece` made quadratic and leaky.
+// The suite's `ownership_probes` runs this under `--verify` and holds it to 0
+// leaked.
+
+import std.io
+import std.string
+
+struct Report {
+    title: String,
+    body: StringBuilder
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn fill(inout b: StringBuilder, n: Int) {
+    let mut i = 0
+    while (i < n) {
+        b.append("line ")
+        b.appendLine(i.toString())
+        i = i + 1
+    }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let mut b = StringBuilder.new()
+    if (b.isEmpty == false or b.length != 0) { bad = bad + fail("a new builder is not empty") }
+    b.append("short")
+    b.append(", then a piece longer than twelve bytes")
+    b.appendLine("!")
+    b.append("end")
+    let first = b.toString()
+    if (first.equals("short, then a piece longer than twelve bytes!\nend") == false) {
+        bad = bad + fail("text: ".concat(first))
+    }
+    if (b.length != first.length) { bad = bad + fail("length ".concat(b.length.toString())) }
+    b.append(" and more")
+    let second = b.toString()
+    if (second.endsWith("end and more") == false) { bad = bad + fail("grown: ".concat(second)) }
+
+    let mut r = Report { title: "report", body: StringBuilder.new() }
+    r.body.append("a piece past twelve bytes, in a field")
+    r.body.appendLine("")
+    if (r.body.toString().equals("a piece past twelve bytes, in a field\n") == false) {
+        bad = bad + fail("field: ".concat(r.body.toString()))
+    }
+
+    let mut many = StringBuilder.new()
+    fill(many, 20000)
+    let text = many.toString()
+    // "line " and a newline around 0..19999: 5 * 20000 + 20000 + the digits.
+    let digits = 10 + 90 * 2 + 900 * 3 + 9000 * 4 + 10000 * 5
+    if (text.length != 120000 + digits) { bad = bad + fail("20,000 appends: ".concat(text.length.toString())) }
+    if (text.startsWith("line 0\nline 1\n") == false) { bad = bad + fail("order") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: string builder")
+    return 0
+}

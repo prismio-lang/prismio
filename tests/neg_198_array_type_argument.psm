@@ -1,0 +1,17 @@
+// expect-error: an array cannot be a type argument
+// Without a length an array is a pointer to elements in the frame that declared
+// them, so a `Box<[Int]>` built from a local and returned read a dead frame: it
+// read 1 where 2 was stored. A `[T]` field was already refused for this.
+struct Box<T> {
+    value: T
+}
+
+fn boxed() -> Box<[Int]> {
+    let a: [Int] = [1, 2, 3]
+    return Box<[Int]> { value: a }
+}
+
+fn main() -> Int {
+    let b = boxed()
+    return 0
+}

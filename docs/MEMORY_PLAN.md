@@ -18,15 +18,16 @@ something that is not live, reading a dead frame, or getting a wrong answer.
 `--verify` separates the two ("leaked" against "violations"), and so does this
 list.
 
-- [ ] **A recursive enum built from `let`-bound children double-frees.**
+- [x] **A recursive enum built from `let`-bound children double-frees.** Fixed
+      2026-09-25 (`vs_stored_in_recursive_field`); the text below is the report.
       `let left = build(d - 1); let right = build(d - 1); return Expr.Op(d, left,
       right)` gives `free(): double free detected` without `--verify` and a
       segfault with it. Reproduced on 2026-09-25. The inline spelling,
       `Expr.Op(d, build(d - 1), build(d - 1))`, is now clean: 128/128/0 at depth
       6, where KNOWN_ISSUES still says it leaks. This is the natural way to write
       a tree builder, so it is the first blocker.
-- [ ] **An unsized array stored through a type argument points into a dead
-      frame.** `Box<[Int]>`, `Option<[Int]>`, `Vec<[Int]>` built from a local
+- [x] **An unsized array stored through a type argument points into a dead
+      frame.** Refused 2026-09-25 (`monoArgsHoldArray`). `Box<[Int]>`, `Option<[Int]>`, `Vec<[Int]>` built from a local
       array and returned (KNOWN_ISSUES, "An unsized array reached through a type
       argument"). A `[T]` field is already refused for exactly this reason. The
       0.1 fix is to refuse the type argument the same way, which is smaller than

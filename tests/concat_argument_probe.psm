@@ -1,0 +1,25 @@
+// A `concat` result passed straight to a function, in a program that imports
+// `std.fs` and `std.string`.
+//
+// One allocation site backs every `concat` in a program, so what the analysis
+// concludes about it is whole-program. When `StringBuilder` first stored `concat`
+// results in its `Vec` field, that together with `listModules` doing the same
+// made every `concat` result passed as an argument unreleased -- in any program
+// importing both modules, whether or not it used either. Held to 0 leaked by the
+// suite's `ownership_probes`.
+
+import std.fs
+import std.io
+import std.string
+
+fn joined(a: String, b: String) -> String {
+    return a.concat("/", b)
+}
+
+fn main() -> Int {
+    let one = joined("directory", "a file name past ".concat("twelve bytes"))
+    let two = joinPath("directory", "another name past ".concat("twelve bytes"))
+    if (one.length == 0 or two.length == 0) { return 1 }
+    println("PASS: concat argument")
+    return 0
+}

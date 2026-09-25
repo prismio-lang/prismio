@@ -608,6 +608,7 @@ private fn generateVariableDecl(stmt: ASTNode) {
                     ir_mark_droppable(varName, IR_DROP_LIST)
                 } else if (owned == AIF_ELEM_TYPED) {
                     ir_mark_droppable(varName, IR_DROP_TYPED)
+                    noteOptionalDropType(varName, ptr_to_node(stmt.child2))
                 } else {
                     ir_mark_droppable(varName, IR_DROP_OBJECT)
                 }
@@ -813,7 +814,9 @@ private fn generateReturn(stmt: ASTNode) {
 
 private fn generateExpressionStatement(stmt: ASTNode) {
     if (nodeExists(stmt.child1)) {
-        generateExpression(ptr_to_node(stmt.child1))
+        let e = ptr_to_node(stmt.child1)
+        let value = generateExpression(e)
+        if (e.kind == NodeKind.CALL_EXPR) { generateDiscardedCallRelease(e, value) }
     }
 }
 
@@ -1630,7 +1633,7 @@ private fn generateDisplacedRelease(old: String, val: String, kind: Int, declTyp
 private fn generateScopeDrops(floor: Int) {
     let n = ir_drop_count(floor)
     for i in 0..<n {
-        let declType = ir_drop_type(floor, i)
+        let declType = dropReleaseType(ir_drop_slot(floor, i), ir_drop_type(floor, i))
         let storeType = storageType(declType)
         let loaded = ir_load(storeType, ir_drop_slot(floor, i))
         let value = ir_get_temp_name(loaded)

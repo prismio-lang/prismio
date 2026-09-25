@@ -1690,6 +1690,7 @@ private fn collectStringsFunction(func: ASTNode) {
 
 public fn generateModule(module: ASTNode) {
     irFrameReleaseTypes = ""
+    irOptionalDropTypes = ";"
     irFrameStructSlots = ""
     ir_reset_globals()
     ir_reset_types()

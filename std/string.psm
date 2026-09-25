@@ -1628,6 +1628,70 @@ public fn join(parts: Vec<String>, sep: String) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Text built from pieces, in time linear in its length.
+//
+// `s = s + piece` on a local is already linear: codegen appends in place and
+// doubles the capacity. Through a struct field it is not -- `b.text = b.text +
+// piece` copies the whole text each time, and assigning a field does not release
+// the value it replaces (KNOWN_ISSUES), so 80,000 appends ran for minutes and
+// 320,000 were killed at 13.8 GB. This keeps the pieces in a Vec and joins them
+// once, at `toString`: nothing is reassigned, so nothing is left behind, and each
+// byte is copied twice however many pieces there are.
+//
+// Each piece is copied in, because a parameter is borrowed and a borrow cannot
+// be pushed. Measured 2026-09-25: 640,000 long pieces in 0.073 s, all released.
+// ---------------------------------------------------------------------------
+
+// A piece's copy, from an allocation of its own. **Not `concat`, and this is
+// load-bearing.** One allocation site backs every `concat` in a program, so what
+// the analysis concludes about it is whole-program: storing `concat` results in
+// this Vec field, together with `listModules` doing the same, stopped every
+// `concat` result passed as an argument being released, in any program that
+// imported `std.fs` and `std.string` -- 2,165 leaks in test_184.
+// concat_argument_probe.psm pins it.
+fn builderPiece(piece: String, end: String) -> String {
+    let n = __builtin_string_len(piece)
+    let m = __builtin_string_len(end)
+    if (n + m <= 12) { return __builtin_string_concat_inline2(piece, end) }
+    let out = str_with_capacity(n + m)
+    strCopyRangeInto(out, 0, piece, 0, n)
+    strCopyRangeInto(out, n, end, 0, m)
+    return out
+}
+
+struct StringBuilder {
+    parts: Vec<String>,
+    size: Int
+}
+
+impl StringBuilder {
+    public fn new() -> StringBuilder {
+        return StringBuilder { parts: [], size: 0 }
+    }
+
+    public fn append(inout self, piece: String) {
+        self.size = self.size + __builtin_string_len(piece)
+        self.parts.push(builderPiece(piece, ""))
+    }
+
+    // `piece` followed by a newline.
+    public fn appendLine(inout self, piece: String) {
+        self.size = self.size + __builtin_string_len(piece) + 1
+        self.parts.push(builderPiece(piece, "\n"))
+    }
+
+    // The length of the text so far, in bytes.
+    public prop length(self) -> Int { return self.size }
+
+    public prop isEmpty(self) -> Bool { return self.size == 0 }
+
+    // The text so far. The builder keeps its pieces, so it can go on growing.
+    public fn toString(self) -> String {
+        return strJoin(self.parts, "")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // v0.1 3.2 -- the method surface
 // ---------------------------------------------------------------------------
 //
