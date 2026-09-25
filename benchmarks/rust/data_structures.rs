@@ -30,6 +30,20 @@ pub fn key_value_update(scale: i32) -> i32 {
     checksum
 }
 
+// A third of the keys removed and reinserted each round, so every lookup after
+// the first round probes past removed buckets.
+pub fn mixed_map_removal(scale: i32) -> i32 {
+    let n = 20_000 * scale; let mut map = HashMap::new();
+    for i in 0..n { map.insert(i, i % 101); }
+    let mut checksum = 0;
+    for round in 0..10 {
+        for i in 0..n { if (i + round) % 3 == 0 && map.remove(&i).is_some() { checksum = (checksum + 1) % BENCH_MOD; } }
+        for i in 0..n { if (i + round) % 3 == 0 { map.insert(i, (i + round) % 101); } }
+    }
+    for i in 0..n { checksum = (checksum + map[&i]) % BENCH_MOD; }
+    checksum
+}
+
 pub fn flat_bitset(scale: i32) -> i32 {
     let n = 50000 * scale;
     let words = ((n + 63) / 64) as usize;

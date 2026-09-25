@@ -26,7 +26,7 @@ exists in a shape that would break every user to change later.
 | 3 | [Environment and process identity](#3-environment-and-process-identity) | done 2026-09-25 | yes | no |
 | 4 | [`std.time`](#4-stdtime) | done 2026-09-25 | yes (Windows half too) | no |
 | 5 | [`Option` / `Result` methods](#5-option--result-methods) | done 2026-09-25 | no | maybe (generic `impl`) |
-| 6 | [`Map` removal and methods](#6-map-removal-and-methods) | todo | no | maybe (generic `impl`) |
+| 6 | [`Map` removal and methods](#6-map-removal-and-methods) | done 2026-09-25, except `keys()` | no | maybe (generic `impl`) |
 | 7 | [Files](#7-files) | done 2026-09-25, except the file line reader | yes | no |
 | 8 | [Building strings](#8-building-strings) | todo | no | no (interpolation is separate) |
 
@@ -258,6 +258,37 @@ That is the conservative side of the fix for a match binder put into a new enum.
 `FEATURE_BACKLOG.md` item 1 (`mixed_map_removal`) is the detailed spec for
 `remove`. Add, together with it: `m.get(k)`, `m.set(k, v)`, `m.has(k)`,
 `m.length`, `m.isEmpty`, `m.clear()`, `m.keys()`, `m.values()`, `m[k]`.
+
+**Landed 2026-09-25.** `m.get`, `getOr`, `set`, `has`, `remove`, `clear`,
+`values()`, `keyAt`/`valueAt`, `length`, `isEmpty`, and `m[k]` (a panic for a
+missing key, as in Rust; `get` is the Option form). `mapRemove` and `mapClear`
+join the functions. Decisions, and why:
+- *Removal swap-removes the dense entry.* That makes it O(1) with nothing left
+  dead in the arrays, and the removed String key is released by the truncate.
+  Positions are insertion order until the first removal, then the moved entry
+  takes the gap: IndexMap's `swap_remove` contract. Preserving order would make
+  every removal O(n).
+- *Tombstones, plus `longest`.* A probe stops after the furthest any entry sits
+  from home. Without that, consecutive integer keys (one unbroken run of buckets
+  under the identity hash) made each reinsertion walk to the run's end:
+  `mixed_map_removal` took 155 ms, 148 of them reinserting. With it, 10.9 ms.
+- *`m[k]` needed two compiler fixes:* the index into a struct was forced to be
+  an `Int` before its `at` was consulted, and `at` on a generic type is a
+  template the declaration index does not hold (the same gap properties had).
+- *No `keys()`.* Keys copied into a returned `Vec<String>` are never freed:
+  `copyOf`/`clone` of a key read out of the map leaks, 990 of 1,173 in a
+  10-call probe, and it does so on the compiler at `2ae70c4` too. A std method that leaks
+  on every call is worse than none; `keyAt` reads keys in place. KNOWN_ISSUES
+  has the repro.
+- *Values stay unowned*, as the header has always said. `m[k] = v` is not an
+  index store; `set` is.
+
+Benchmarks, median of 21: `mixed_map_removal` 10.9 ms (C++ 12.8, Rust 16.7);
+`key_value_update` 10.7 ms against the old map's 10.9; `hashmap_insert_lookup`
+12.8 ms against 12.5, about 3% for the tombstone bookkeeping on the insert
+path. Two attempts to move that bookkeeping into the probe made
+`key_value_update` 14.8 ms: anything more in `mapProbe` stops it inlining into
+`mapSet`.
 
 ## 7. Files
 

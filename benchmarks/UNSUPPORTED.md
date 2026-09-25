@@ -58,24 +58,6 @@ prismio_status: unsupported
 ```
 
 ```text
-benchmark: mixed_map_removal
-
-status: unsupported
-
-missing_features:
-  - Map key removal API
-  - hash-table tombstone or backward-shift deletion support
-
-reason:
-  std.map is an open-addressed hash table with insertion, overwrite, lookup,
-  and iteration, but explicitly has no mapRemove operation or deletion slots.
-
-cpp_status: available
-rust_status: available
-prismio_status: unsupported
-```
-
-```text
 benchmark: json_parse
 
 status: unsupported
@@ -303,7 +285,6 @@ prismio_status: unsupported
 - LinkedList / deque — used by: `linked_list`
 - Ordered tree set/map — used by: `binary_search_tree`
 - Binary heap / priority queue — used by: `priority_queue`
-- Map deletion — used by: `mixed_map_removal`
 - User-space atomics & memory barriers — used by: `lock_free_queue`
 - Mutual exclusion locks in std — used by: `mutex_contention`
 - Persistent work-stealing thread pool — used by: `work_stealing_pool`

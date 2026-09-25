@@ -25,6 +25,7 @@ fn run(name: &str, scale: i32, input: &str, output: &str) -> i32 {
         "vector_growth" => data_structures::vector_growth(scale),
         "vector_iteration" => data_structures::vector_iteration(scale),
         "key_value_update" => data_structures::key_value_update(scale),
+        "mixed_map_removal" => data_structures::mixed_map_removal(scale),
         "matrix_multiply" => compute::matrix_multiply(scale),
         "mandelbrot" => compute::mandelbrot(scale),
         "fft" => compute::fft(scale),

@@ -18,6 +18,7 @@ int run(const std::string& name, int scale, const std::string& input, const std:
     if (name == "vector_growth") return vector_growth(scale);
     if (name == "vector_iteration") return vector_iteration(scale);
     if (name == "key_value_update") return key_value_update(scale);
+    if (name == "mixed_map_removal") return mixed_map_removal(scale);
     if (name == "matrix_multiply") return matrix_multiply(scale);
     if (name == "mandelbrot") return mandelbrot(scale);
     if (name == "fft") return fft(scale);

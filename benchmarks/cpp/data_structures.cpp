@@ -37,6 +37,20 @@ int key_value_update(int scale) {
     return checksum;
 }
 
+// A third of the keys removed and reinserted each round, so every lookup after
+// the first round probes past removed buckets.
+int mixed_map_removal(int scale) {
+    const int n = 20'000 * scale; std::unordered_map<int, int> map;
+    for (int i = 0; i < n; ++i) map[i] = i % 101;
+    int checksum = 0;
+    for (int round = 0; round < 10; ++round) {
+        for (int i = 0; i < n; ++i) if ((i + round) % 3 == 0 && map.erase(i) == 1) checksum = (checksum + 1) % BENCH_MOD;
+        for (int i = 0; i < n; ++i) if ((i + round) % 3 == 0) map[i] = (i + round) % 101;
+    }
+    for (int i = 0; i < n; ++i) checksum = (checksum + map.at(i)) % BENCH_MOD;
+    return checksum;
+}
+
 int flat_bitset(int scale) {
     const int n = 50000 * scale;
     const int words = (n + 63) / 64;

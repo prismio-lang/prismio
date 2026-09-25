@@ -2,7 +2,7 @@
 //
 // The trait a generic *container* needs, and the reason it is needed is Prismio's
 // parameter rule rather than anything about copying: **a parameter is a borrow**,
-// so a generic function cannot store its argument. `list_push(m.keys, key)` in a
+// so a generic function cannot store its argument. `list_push(m.entryKeys, key)` in a
 // `Map` is "cannot move out of borrowed value `key`", and no amount of `sink`
 // fixes it -- a `sink` parameter stored into a container is a double free that
 // `--verify` catches as "release of a pointer that is not live".

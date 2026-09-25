@@ -4140,16 +4140,19 @@ def run_ownership_probes_test():
     """
     print(f"\n{BLUE}--- Running ownership_probes ---{RESET}")
     probes = (
-        # file, text stdout must contain
-        ("option_methods_probe.psm", "fallback"),
-        ("forwarding_literal_probe.psm", "fallback"),
-        ("binder_return_probe.psm", "a literal payload, past twelve bytes"),
-        ("binder_rewrap_probe.psm", "not a seven: y"),
+        # file, text stdout must contain, and whether it must not leak either
+        ("option_methods_probe.psm", "fallback", False),
+        ("forwarding_literal_probe.psm", "fallback", False),
+        ("binder_return_probe.psm", "a literal payload, past twelve bytes", False),
+        ("binder_rewrap_probe.psm", "not a seven: y", False),
+        # Map removal swaps a String key to the end and truncates it: a key the
+        # removal failed to release is a leak, so this one is held to 0.
+        ("test_193_map_methods.psm", "PASS", True),
     )
     problems = []
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
     with tempfile.TemporaryDirectory(prefix="prismio-ownership-probes-") as tmp:
-        for name, want in probes:
+        for name, want, no_leaks in probes:
             exe = Path(tmp) / ("probe" + exe_suffix)
             built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / name),
                                  "--verify", "-o", str(exe)])
@@ -4167,6 +4170,8 @@ def run_ownership_probes_test():
                                 f"{elide_middle(output)}")
             elif " 0 violation(s)" not in output:
                 problems.append(f"{name} released something not live: {elide_middle(output)}")
+            elif no_leaks and " 0 leaked," not in output:
+                problems.append(f"{name} leaked: {elide_middle(output)}")
     if problems:
         print(f"{RED}[FAIL] ownership probes{RESET}")
         for problem in problems:

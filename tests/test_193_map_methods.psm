@@ -1,0 +1,119 @@
+// Map's methods, and removal.
+//
+// 1. The methods answer what the `map*` functions do: `length`, `isEmpty`,
+//    `has`, `get`, `getOr`, `m[k]`, `set`, `values`, `keyAt`/`valueAt`.
+// 2. `remove`: an absent key; the first, a middle and the last entry; a key
+//    whose probe passes a removed one (every key in one bucket, so each is
+//    behind the others); removing and reinserting; removing across growth and
+//    across the in-place rebuild a quarter of tombstones triggers; `clear`.
+// 3. String keys, which the map copies in and must release on removal: the
+//    suite's `map_removal_ledger` check runs this under `--verify`.
+
+import std.copy
+import std.io
+import std.key
+import std.map
+import std.option
+import std.string
+import std.vec
+
+// Every key hashes to one bucket, so each key's probe passes every key inserted
+// before it -- the chain a removal must not cut.
+struct Clash {
+    id: Int
+}
+
+impl Key for Clash {
+    fn hash(self) -> Int { return 7 }
+    fn eq(self, other: Clash) -> Bool { return self.id == other.id }
+}
+
+impl Copy for Clash {
+    fn copyOf(self) -> Clash { return Clash { id: self.id } }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn keyName(i: Int) -> String { return "key number ".concat(i.toString()) }
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let m = mapNew<String, Int>()
+    if (m.isEmpty == false or m.length != 0) { bad = bad + fail("a new map is empty") }
+    if (m.set("ada", 36)) { bad = bad + fail("set of a new key answered true") }
+    if (m.set("grace", 85) or m.set("alan", 41)) { bad = bad + fail("set of new keys") }
+    if (m.set("ada", 37) == false) { bad = bad + fail("set of an existing key answered false") }
+    if (m.length != 3 or m.isEmpty) { bad = bad + fail("length after sets") }
+    if (m.has("grace") == false or m.has("nobody")) { bad = bad + fail("has") }
+    if (m["ada"] != 37) { bad = bad + fail("m[k]") }
+    if (m.getOr("nobody", -1) != -1 or m.getOr("alan", -1) != 41) { bad = bad + fail("getOr") }
+    let found = m.get("grace")
+    if (found.unwrapOr(0) != 85) { bad = bad + fail("get of a present key") }
+    let missing = m.get("nobody")
+    if (missing.isSome) { bad = bad + fail("get of an absent key") }
+    if (m.keyAt(0).equals("ada") == false or m.keyAt(1).equals("grace") == false) {
+        bad = bad + fail("keys in insertion order")
+    }
+    let values = m.values()
+    if (values.length != 3 or values[1] != 85) { bad = bad + fail("values") }
+    if (m.keyAt(2).equals("alan") == false or m.valueAt(0) != 37) { bad = bad + fail("keyAt/valueAt") }
+
+    // Removal.
+    if (m.remove("nobody")) { bad = bad + fail("removing an absent key answered true") }
+    if (m.remove("ada") == false) { bad = bad + fail("removing the first entry") }
+    if (m.has("ada") or m.length != 2) { bad = bad + fail("the removed key is gone") }
+    // The last entry, alan, moved into the first position.
+    if (m.keyAt(0).equals("alan") == false) { bad = bad + fail("the last entry moves into the gap") }
+    if (m["grace"] != 85 or m["alan"] != 41) { bad = bad + fail("the others survive a removal") }
+    if (m.remove("alan") == false or m.remove("grace") == false) { bad = bad + fail("removing the rest") }
+    if (m.isEmpty == false) { bad = bad + fail("empty after removing every key") }
+    m.set("ada", 1)
+    if (m["ada"] != 1 or m.length != 1) { bad = bad + fail("reinsertion after removal") }
+
+    // Every key in one bucket: each removal leaves a tombstone some later key's
+    // probe must pass.
+    let c = mapNew<Clash, Int>()
+    for i in 0..<6 { c.set(Clash { id: i }, i * 10) }
+    c.remove(Clash { id: 0 })
+    c.remove(Clash { id: 3 })
+    for i in 0..<6 {
+        let there = c.has(Clash { id: i })
+        if (i == 0 or i == 3) {
+            if (there) { bad = bad + fail("a removed colliding key is still found") }
+        } else if (there == false or c[Clash { id: i }] != i * 10) {
+            bad = bad + fail("a colliding key behind a tombstone was lost: ".concat(i.toString()))
+        }
+    }
+    c.set(Clash { id: 3 }, 333)
+    if (c[Clash { id: 3 }] != 333 or c.length != 5) { bad = bad + fail("reinsertion over a tombstone") }
+
+    // Across growth, and across the rebuild a quarter of tombstones triggers.
+    let big = mapNew<String, Int>()
+    for i in 0..<500 { big.set(keyName(i), i) }
+    for i in 0..<500 {
+        if (i % 3 != 0) { big.remove(keyName(i)) }
+    }
+    if (big.length != 167) { bad = bad + fail("length after removing two thirds: ".concat(big.length.toString())) }
+    for i in 0..<500 {
+        let there = big.has(keyName(i))
+        if ((i % 3 == 0) != there) { bad = bad + fail("the wrong keys survived: ".concat(i.toString())) }
+    }
+    for i in 0..<500 { big.set(keyName(i), i + 1) }
+    if (big.length != 500 or big[keyName(499)] != 500 or big[keyName(3)] != 4) {
+        bad = bad + fail("reinserting everything")
+    }
+
+    big.clear()
+    if (big.isEmpty == false or big.has(keyName(3))) { bad = bad + fail("clear") }
+    big.set("after", 1)
+    if (big["after"] != 1) { bad = bad + fail("using a cleared map") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: map methods and removal")
+    return 0
+}

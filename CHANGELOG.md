@@ -34,6 +34,12 @@
   measured the same as the equivalent check in C. The builtins apply only where
   a program declares no function of the name, so an existing `extern fn exit`
   keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
+- **Map removal and methods.** `m.remove(k)` / `mapRemove` and `m.clear()` /
+  `mapClear`; `m.get`, `getOr`, `set`, `has`, `values()`, `keyAt`, `valueAt`,
+  `length`, `isEmpty`; and `m[k]`, which panics on a missing key. Removal is
+  O(1): tombstones in the probe table, and the last entry moves into the
+  removed one's position. The `mixed_map_removal` benchmark now runs: 10.9 ms
+  against C++ 12.8 and Rust 16.7. test_193.
 - **Closure bounds: `F: Fn(A, B) -> R`.** A type parameter bounded by a
   closure's signature, in a parameter list, a `where` clause or `impl Fn(...)`.
   A parameter that appears only in the result is solved from the closure's

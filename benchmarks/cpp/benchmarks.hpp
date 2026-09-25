@@ -28,6 +28,7 @@ int hashmap_insert_lookup(int scale);
 int vector_growth(int scale);
 int vector_iteration(int scale);
 int key_value_update(int scale);
+int mixed_map_removal(int scale);
 
 int matrix_multiply(int scale);
 int mandelbrot(int scale);

@@ -24,7 +24,18 @@ because its parser and serializer must agree on one owned recursive model.
 The heap is independent and may be implemented in parallel once the public API
 is agreed.
 
-## 1. `mixed_map_removal` — P0
+## 1. `mixed_map_removal` — P0 — done 2026-09-25
+
+**Landed.** `mapRemove` and `m.remove(k)`: tombstones in the probe table, the
+dense entry swap-removed (`list_swap`, then `list_truncate`, which releases the
+key), and an in-place rebuild once a quarter of the table is tombstones.
+Positions stay insertion order until the first removal; after one, the last
+entry takes the removed one's position (IndexMap's `swap_remove`). A `longest`
+field bounds every probe, so a miss or a reinsertion stops after the furthest
+any entry sits from home rather than walking to an empty bucket. test_193 covers
+the checklist below, `Map<String, Int>` 2,671/2,671 under `--verify`. The
+benchmark runs in all three arms: 10.9 ms against C++ 12.8 ms and Rust 16.7 ms.
+The original checklist follows for the record.
 
 **Goal.** Add key removal to [`std/map.psm`](../std/map.psm) without changing the
 language syntax or the compiler's type system. A successful delete must make

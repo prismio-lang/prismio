@@ -164,20 +164,20 @@ public `String.equals(...)` API.
 
 ## Coverage
 
-The catalog contains 78 distinct workloads across six categories. Sixty-two
-are implemented in all three languages. Sixteen remain
+The catalog contains 78 distinct workloads across six categories. Sixty-three
+are implemented in all three languages. Fifteen remain
 in the catalog as unsupported Prismio capabilities; their exact records are in
 [`UNSUPPORTED.md`](UNSUPPORTED.md).
 
 | Category | Implemented | Unsupported | Total |
 |---|---:|---:|---:|
 | Algorithms | 16 | 1 | 17 |
-| Data structures | 6 | 5 | 11 |
+| Data structures | 7 | 4 | 11 |
 | Compute | 15 | 4 | 19 |
 | Memory | 7 | 1 | 8 |
 | I/O and serialization | 6 | 5 | 11 |
 | Adversarial | 12 | 0 | 12 |
-| **Total** | **62** | **16** | **78** |
+| **Total** | **63** | **15** | **78** |
 
 Every benchmark has one canonical workload definition so results stay directly
 comparable between runs. `--runs` controls sampling without changing the work
@@ -191,10 +191,11 @@ status, and workload profile.
   `knapsack`, `tree_traversal`, `dijkstra_shortest_path`, `lz4_compress`,
   `s_expression_parse`, `word_frequency`, `sort_strings`, `edit_distance`;
   unsupported: `regex_matching`.
-- Data structures (6 implemented, 5 unsupported):
+- Data structures (7 implemented, 4 unsupported):
   `hashmap_insert_lookup`, `vector_growth`, `vector_iteration`,
-  `key_value_update`, `flat_bitset`, `trie_search`; unsupported: `linked_list`,
-  `binary_search_tree`, `priority_queue`, `mixed_map_removal`, `lock_free_queue`.
+  `key_value_update`, `mixed_map_removal`, `flat_bitset`, `trie_search`;
+  unsupported: `linked_list`, `binary_search_tree`, `priority_queue`,
+  `lock_free_queue`.
 - Compute (15 implemented, 4 unsupported): `matrix_multiply`, `mandelbrot`, `fft`,
   `numerical_integration`, `vector_dot`, `convolution`, `monte_carlo`,
   `polynomial_evaluation`, `ecs_component_update`, `parallel_reduction`,
@@ -282,7 +283,6 @@ No numeric `gN` names are used by the maintained suite.
 - LinkedList/deque: `linked_list`
 - Ordered tree set/map: `binary_search_tree`
 - Binary heap/priority queue: `priority_queue`
-- Map deletion: `mixed_map_removal`
 - User-space atomics & memory barriers: `lock_free_queue`
 - Mutual exclusion locks in std: `mutex_contention`
 - Persistent work-stealing thread pool: `work_stealing_pool`

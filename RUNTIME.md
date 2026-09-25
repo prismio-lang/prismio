@@ -137,7 +137,7 @@ violations.
 | `std/string.psm` | `import std.string` | strings, characters, parsing — **and the String operators** |
 | `std/fs.psm` | `import std.fs` | files, paths, `listDirectory`, `appendFile`, `rename`, `removeDirectory`, `metadata` |
 | `std/process.psm` | `import std.process` | arguments, environment variables (`process.env`, `setEnv`, `removeEnv`), `process.pid`, subprocesses |
-| `std/map.psm` | `import std.map` | `Map<K, V>` |
+| `std/map.psm` | `import std.map` | `Map<K, V>`: `get`, `set`, `has`, `remove`, `clear`, `m[k]`, `length`, `values()`, `keyAt`/`valueAt` |
 | `std/option.psm` | `import std.option` | `Option<T>`, `Result<T, E>`; `isSome`/`isNone`/`isOk`/`isErr`, `unwrapOr`, `expect`, `okOr`, `ok`, `err`, `map`, `andThen`, `mapErr` |
 | `std/vec.psm` | `import std.vec` | `Vec<T>`'s library methods — `get`, `contains`, `indexOf`, `pop`, `removeAt`, `extend`, `reverse`, `clone`, `sort`, `sortBy`, `filter`, `binarySearch` — **and the Vec literal** `[a, b, c]` and `Vec<T>.withCapacity(n)` |
 | `std/key.psm` | `import std.key` | the `Key` bound `Map` needs |

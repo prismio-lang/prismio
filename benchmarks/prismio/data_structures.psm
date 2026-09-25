@@ -82,6 +82,39 @@ public fn benchKeyValueUpdate(scale: Int) -> Int {
     return checksum
 }
 
+// A third of the keys removed and reinserted each round, so every lookup after
+// the first round probes past removed buckets.
+public fn benchMixedMapRemoval(scale: Int) -> Int {
+    let n = 20000 * scale
+    let map: Map<Int, Int> = mapNew<Int, Int>()
+    let mut i = 0
+    while (i < n) {
+        mapSet(map, i, i % 101)
+        i = i + 1
+    }
+    let mut checksum = 0
+    let mut round = 0
+    while (round < 10) {
+        let mut k = 0
+        while (k < n) {
+            if ((k + round) % 3 == 0 and mapRemove(map, k)) { checksum = (checksum + 1) % 1000000007 }
+            k = k + 1
+        }
+        k = 0
+        while (k < n) {
+            if ((k + round) % 3 == 0) { mapSet(map, k, (k + round) % 101) }
+            k = k + 1
+        }
+        round = round + 1
+    }
+    let mut q = 0
+    while (q < n) {
+        checksum = (checksum + mapGetOr(map, q, 0)) % 1000000007
+        q = q + 1
+    }
+    return checksum
+}
+
 public fn popcount64(val: I64) -> Int {
     let mut x = val
     let m1: I64 = 6148914691236517205

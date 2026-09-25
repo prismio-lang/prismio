@@ -26,6 +26,7 @@ public fn benchRun(name: String, scale: Int, inputPath: String, outputPath: Stri
     if (name.equals("vector_growth")) { return benchVectorGrowth(scale) }
     if (name.equals("vector_iteration")) { return benchVectorIteration(scale) }
     if (name.equals("key_value_update")) { return benchKeyValueUpdate(scale) }
+    if (name.equals("mixed_map_removal")) { return benchMixedMapRemoval(scale) }
     if (name.equals("matrix_multiply")) { return benchMatrixMultiply(scale) }
     if (name.equals("mandelbrot")) { return benchMandelbrot(scale) }
     if (name.equals("fft")) { return benchFft(scale) }

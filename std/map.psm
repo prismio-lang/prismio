@@ -49,10 +49,19 @@
 // something this file can fix, and a standard-library container that leaks its
 // contents is worse than one that says it cannot hold them.
 //
-// **Triangular probing, no tombstones, and no deletion.** There is no `mapRemove` in
-// this API, so no slot ever becomes free after being used, and the probe can stop
-// at the first empty slot. Adding deletion means adding tombstones and revisiting
-// every loop here; it is not a two-line change and it is not in v0.1.
+// **Triangular probing, with tombstones for removal.** `mapRemove` cannot empty
+// a bucket -- a later key's probe may pass through it -- so it marks the bucket
+// with the tombstone value: a lookup probes past one, an insertion reuses the
+// first it passes. Tombstones count against the load that triggers growth, and a
+// removal that leaves more than a quarter of the table tombstoned rebuilds it in
+// place, so an empty bucket always ends a probe.
+//
+// **Removal swap-removes the dense entry.** The last entry moves into the
+// removed one's position (`list_swap`, then `list_truncate`, which releases the
+// removed key), so removal is O(1) and nothing is left dead in `entryKeys`.
+// The cost is order: positions are insertion order until the first removal,
+// and after one the moved entry has the removed one's position -- the contract
+// of IndexMap's `swap_remove`.
 //
 // Integer keys were never a consolation prize for the caller this was written
 // for: runtime/aif_support.c interns every name, type and site to an `int` id
@@ -77,10 +86,23 @@ import std.option
 // `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
 // always a power of two, so `hash & mask` is the bucket.
 struct Map<K: Key + Copy, V> {
-    keys: Vec<K>,
-    values: Vec<V>,
+    entryKeys: Vec<K>,
+    entryValues: Vec<V>,
     slots: Vec<Int>,
     mask: Int,
+    // Buckets a removal emptied (MAP_TOMBSTONE), which a lookup must probe past
+    // and an insertion may reuse. Counted so the table can be rebuilt before
+    // they crowd out the empty buckets that end a probe.
+    tombstones: Int,
+    // The most buckets past its home any entry sits, so a lookup can stop after
+    // that many and a miss does not walk to an empty bucket. See mapProbe.
+    longest: Int,
+    // How far past its home the bucket the last `findSlot` probe answered is,
+    // so mapInsert need not walk the sequence again to update `longest`. A
+    // field rather than work inside mapProbe: anything more in the probe's body
+    // stops it inlining into mapSet's overwrite path, and key_value_update went
+    // from 10.7 to 14.8 ms when it did.
+    placed: Int,
     // Whether this map has measured its own probe displacement and found the
     // hashes it is being given bad enough to be worth re-mixing. See mapRehash.
     strong: Bool
@@ -91,6 +113,11 @@ struct Map<K: Key + Copy, V> {
 // is right from the start.
 private fn mapInitialCapacity() -> Int { return 8 }
 
+// A bucket's value when no entry was ever placed there, and when one was
+// removed. Every other value is an index into `entryKeys`.
+private fn mapEmpty() -> Int { return -1 }
+private fn mapTombstone() -> Int { return -2 }
+
 public fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
     let mut k: Vec<K> = list_new()
     let mut v: Vec<V> = list_new()
@@ -100,12 +127,12 @@ public fn mapNew<K: Key + Copy, V>() -> Map<K, V> {
         list_push(s, -1)
         i = i + 1
     }
-    return Map<K, V> { keys: k, values: v, slots: s, mask: mapInitialCapacity() - 1,
-                       strong: false }
+    return Map<K, V> { entryKeys: k, entryValues: v, slots: s, mask: mapInitialCapacity() - 1,
+                       tombstones: 0, longest: 0, placed: 0, strong: false }
 }
 
 public fn mapLen<K: Key + Copy, V>(m: Map<K, V>) -> Int {
-    return list_len(m.keys)
+    return list_len(m.entryKeys)
 }
 
 // **Both modes answer a hit with the dense entry index.** They differ only in
@@ -142,19 +169,63 @@ private fn mapHashOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
 private fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> Int {
     let mut at = mapHashOf(m, key) & m.mask
     let mut step = 1
+    let mut reusable = -1
+    let mut reusableStep = 0
     loop {
         let entry = list_get(m.slots, at)
         if (entry < 0) {
-            if (findSlot) { return 0 - at - 2 }
-            return -1
+            if (entry == mapEmpty()) {
+                if (findSlot) {
+                    if (reusable >= 0) {
+                        m.placed = reusableStep - 1
+                        return 0 - reusable - 2
+                    }
+                    m.placed = step - 1
+                    return 0 - at - 2
+                }
+                return -1
+            }
+            // A tombstone: the key may be further along, and a new key may go here.
+            if (reusable < 0) {
+                reusable = at
+                reusableStep = step
+            }
+        } else {
+            let existing = list_get(m.entryKeys, entry)
+            // Trait-qualified: `Eq` spells its method `eq` too, and a program that
+            // imports std.vec has both traits in scope.
+            if (Key.eq(existing, key)) { return entry }
         }
-        let existing = list_get(m.keys, entry)
-        // Trait-qualified: `Eq` spells its method `eq` too, and a program that
-        // imports std.vec has both traits in scope.
-        if (Key.eq(existing, key)) { return entry }
+        // `longest + 1` buckets probed, and no entry sits further from its home:
+        // the key is absent. **This is what makes a removal cheap to undo.**
+        // Consecutive integer keys under the identity hash fill one unbroken
+        // run of buckets, a removed key's home becomes a tombstone, and without
+        // this its reinsertion probed to the end of the run before it could
+        // reuse it -- mixed_map_removal spent 148 of its 155 ms there. An
+        // insertion that has passed a tombstone takes it; one that has not goes
+        // on to an empty bucket.
+        if (step > m.longest) {
+            if (findSlot == false) { return -1 }
+            if (reusable >= 0) {
+                m.placed = reusableStep - 1
+                return 0 - reusable - 2
+            }
+        }
         at = (at + step) & m.mask
         step = step + 1
     }
+}
+
+// The bucket holding entry `entry`, found along its key's probe chain. The
+// entry exists, so the chain reaches it.
+private fn mapBucketOfEntry<K: Key + Copy, V>(m: Map<K, V>, entry: Int) -> Int {
+    let mut at = mapHashOf(m, list_get(m.entryKeys, entry)) & m.mask
+    let mut step = 1
+    while (list_get(m.slots, at) != entry) {
+        at = (at + step) & m.mask
+        step = step + 1
+    }
+    return at
 }
 
 // The insertion-order entry index of `key`, or -1.
@@ -192,7 +263,7 @@ private fn mapRehash<K: Key + Copy, V>(m: Map<K, V>) {
     // still in it, and the strengthened hash is what is now keeping them apart.
     // A false positive costs that map its locality and nothing else, which is
     // why the threshold does not need to be delicate.
-    if (mapPlaceAll(m) > list_len(m.keys) * 3 and m.strong == false) {
+    if (mapPlaceAll(m) > list_len(m.entryKeys) * 3 and m.strong == false) {
         m.strong = true
         mapPlaceAll(m)
     }
@@ -207,15 +278,17 @@ private fn mapPlaceAll<K: Key + Copy, V>(m: Map<K, V>) -> Int {
     let capacity = m.mask + 1
     let mut j = 0
     while (j < capacity) {
-        list_set(m.slots, j, -1)
+        list_set(m.slots, j, mapEmpty())
         j = j + 1
     }
+    m.tombstones = 0
+    m.longest = 0
 
-    let n = list_len(m.keys)
+    let n = list_len(m.entryKeys)
     let mut displacement = 0
     let mut e = 0
     while (e < n) {
-        let key = list_get(m.keys, e)
+        let key = list_get(m.entryKeys, e)
         let mut at = mapHashOf(m, key) & m.mask
         let mut step = 1
         while (list_get(m.slots, at) >= 0) {
@@ -224,6 +297,7 @@ private fn mapPlaceAll<K: Key + Copy, V>(m: Map<K, V>) -> Int {
             displacement = displacement + 1
         }
         list_set(m.slots, at, e)
+        if (step - 1 > m.longest) { m.longest = step - 1 }
         e = e + 1
     }
     return displacement
@@ -241,7 +315,7 @@ public fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
 public fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
     let at = mapIndexOf(m, key)
     if (at < 0) { return Option<V>.None }
-    return Option.Some(list_get(m.values, at))
+    return Option.Some(list_get(m.entryValues, at))
 }
 
 // Absence answered with a caller-supplied value. Kept alongside mapGet for the
@@ -249,7 +323,7 @@ public fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
 public fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
     let at = mapIndexOf(m, key)
     if (at < 0) { return fallback }
-    return list_get(m.values, at)
+    return list_get(m.entryValues, at)
 }
 
 // Update an existing value with one key lookup. The callback receives the old
@@ -259,8 +333,8 @@ public fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
 public fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Bool {
     let at = mapIndexOf(m, key)
     if (at < 0) { return false }
-    let value = update.call(list_get(m.values, at))
-    list_set(m.values, at, value)
+    let value = update.call(list_get(m.entryValues, at))
+    list_set(m.entryValues, at, value)
     return true
 }
 
@@ -274,7 +348,7 @@ public fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Boo
 public fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
     let found = mapProbe(m, key, true)
     if (found >= 0) {
-        list_set(m.values, found, value)
+        list_set(m.entryValues, found, value)
         return true
     }
     mapInsert(m, key, value, 0 - found - 2)
@@ -294,27 +368,120 @@ public fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
 // land in the caller where the optimiser can look at them together.
 private fn mapInsert<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V, at: Int) {
     // The key is **copied in**, not moved: a parameter is a borrow, so
-    // `list_push(m.keys, key)` is "cannot move out of borrowed value", which is
+    // `list_push(m.entryKeys, key)` is "cannot move out of borrowed value", which is
     // exactly why an owned key needs the separate `Copy` bound. A
     // `sink` parameter pushed here would be worse than either -- codegen
     // transfers nothing, so the caller's scope exit and the list's release both
     // free it, and `--verify` reports "release of a pointer that is not live".
     //
     // The **value** is not copied, and that is the limitation below.
-    let index = list_len(m.keys)
-    list_push(m.keys, copyOf(key))
-    list_push(m.values, value)
+    let index = list_len(m.entryKeys)
+    list_push(m.entryKeys, copyOf(key))
+    list_push(m.entryValues, value)
+    if (list_get(m.slots, at) == mapTombstone()) { m.tombstones = m.tombstones - 1 }
     list_set(m.slots, at, index)
+    if (m.placed > m.longest) { m.longest = m.placed }
 
-    if ((index + 1) > (m.mask + 1) / 2) { mapRehash(m) }
+    if ((index + 1 + m.tombstones) > (m.mask + 1) / 2) { mapRehash(m) }
+}
+
+// Removes `key`, answering whether it was there. The value goes with it.
+//
+// The last entry moves into the removed one's position, so positions from
+// `mapKeyAt` are insertion order only until the first removal; see the header.
+// The removed key is released by the truncate, having been swapped to the end:
+// overwriting it with `list_set` would not release it.
+public fn mapRemove<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
+    let entry = mapProbe(m, key, false)
+    if (entry < 0) { return false }
+    let bucket = mapBucketOfEntry(m, entry)
+    let last = list_len(m.entryKeys) - 1
+    if (entry != last) {
+        list_set(m.slots, mapBucketOfEntry(m, last), entry)
+        list_swap(m.entryKeys, entry, last)
+        list_swap(m.entryValues, entry, last)
+    }
+    list_set(m.slots, bucket, mapTombstone())
+    list_truncate(m.entryKeys, last)
+    list_truncate(m.entryValues, last)
+    m.tombstones = m.tombstones + 1
+    if (m.tombstones > (m.mask + 1) / 4) { mapPlaceAll(m) }
+    return true
+}
+
+// Removes every entry and keeps the table's capacity.
+public fn mapClear<K: Key + Copy, V>(m: Map<K, V>) {
+    list_truncate(m.entryKeys, 0)
+    list_truncate(m.entryValues, 0)
+    mapPlaceAll(m)
 }
 
 // The key at a position, for iterating a map. Positions are insertion order and
 // stay valid until the next mapSet that inserts.
 public fn mapKeyAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> K {
-    return list_get(m.keys, index)
+    return list_get(m.entryKeys, index)
 }
 
 public fn mapValueAt<K: Key + Copy, V>(m: Map<K, V>, index: Int) -> V {
-    return list_get(m.values, index)
+    return list_get(m.entryValues, index)
+}
+
+// The methods are the API; the `map*` functions above are what they call.
+//
+//     let ages: Map<String, Int> = mapNew()
+//     ages.set("ada", 36)
+//     if (ages.has("ada")) { println(ages["ada"]) }
+//     ages.remove("ada")
+impl<K: Key + Copy, V> Map<K, V> {
+    public prop length(self) -> Int { return list_len(self.entryKeys) }
+    public prop isEmpty(self) -> Bool { return list_len(self.entryKeys) == 0 }
+
+    public fn has(self, key: K) -> Bool { return mapProbe(self, key, false) >= 0 }
+
+    // The value for `key`, or `None`.
+    public fn get(self, key: K) -> Option<V> {
+        let at = mapProbe(self, key, false)
+        if (at < 0) { return Option<V>.None }
+        return Option<V>.Some(list_get(self.entryValues, at))
+    }
+
+    // The value for `key`, or `fallback`.
+    public fn getOr(self, key: K, fallback: V) -> V {
+        let at = mapProbe(self, key, false)
+        if (at < 0) { return fallback }
+        return list_get(self.entryValues, at)
+    }
+
+    // `m[key]`: the value, or a panic when there is none. `get` is the spelling
+    // for a key that may be absent.
+    public fn at(self, key: K) -> V {
+        let found = mapProbe(self, key, false)
+        if (found < 0) { panic("key not in map") }
+        return list_get(self.entryValues, found)
+    }
+
+    // Insert or overwrite; true when the key was already there.
+    public fn set(self, key: K, value: V) -> Bool { return mapSet(self, key, value) }
+
+    // True when the key was there to remove. Moves the last entry into its place.
+    public fn remove(self, key: K) -> Bool { return mapRemove(self, key) }
+
+    public fn clear(self) { mapClear(self) }
+
+    // No `keys()` returning copies yet: copies of String keys pushed into a
+    // returned Vec are not released (KNOWN_ISSUES, "Copies of a Map's keys"),
+    // and a method that leaks every call is worse than none. `keyAt` reads them
+    // in place.
+
+    // The values, in position order. A value is never owned (see the header),
+    // so this copies nothing that needs releasing.
+    public fn values(self) -> Vec<V> {
+        let mut out: Vec<V> = []
+        for i in 0..<list_len(self.entryValues) { out.push(list_get(self.entryValues, i)) }
+        return out
+    }
+
+    // The key and value at a position in `[0, length)`, for iterating.
+    public fn keyAt(self, index: Int) -> K { return list_get(self.entryKeys, index) }
+    public fn valueAt(self, index: Int) -> V { return list_get(self.entryValues, index) }
 }

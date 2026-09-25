@@ -164,9 +164,8 @@
     {
       "name": "mixed_map_removal",
       "category": "data_structures",
-      "status": "unsupported",
-      "profile": "memory-allocation",
-      "missing_feature": "Map key removal API and hash-table tombstone/shift deletion in std.map"
+      "status": "implemented",
+      "profile": "memory-allocation"
     },
     {
       "name": "lock_free_queue",

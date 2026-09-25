@@ -22,6 +22,15 @@ corpus sweep is 8 sources and 7 runnable, down from 33 and 30.
 
 ## Ownership
 
+**Copies of a Map's keys pushed into a returned Vec leak.** `for i in
+0..<mapLen(m) { out.push(mapKeyAt(m, i).clone()) }; return out` (or `copyOf`
+in place of `clone`) leaks every copy: 990 of 1,173 over ten calls on a
+100-key `Map<String, Int>`, and the same on the compiler at `2ae70c4`. `.concat("")` in place
+of `.clone()` is clean, and `clone` of an owned temporary is clean, so it is
+something about a String read out of the map's key list and cloned. It is why
+`Map` has no `keys()` method. Making `copyOf` for String use `concat("")` does
+not help: the map's own key copies then leak.
+
 **Fixed 2026-09-25: three shapes released memory that was not live.** Each was
 a crash (`free(): invalid pointer`) outside `--verify`, and each reproduced on
 `2ae70c4`. See `aif/evidence/RESULTS-ownership-shapes.md`.
