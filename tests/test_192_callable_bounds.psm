@@ -1,0 +1,88 @@
+// `F: Fn(A) -> R` -- a closure bound, and a type parameter solved from a
+// closure's return type.
+//
+// 1. `U` appears only in the result, and is the closure's return type: Int,
+//    String, and a generic type (`Maybe<U>` against a closure returning one).
+// 2. Two parameters, and a closure capturing a String.
+// 3. The same bound written in a `where` clause.
+
+import std.io
+import std.string
+
+enum Maybe<T> {
+    Nothing,
+    Just(T)
+}
+
+impl<T> Maybe<T> {
+    public fn map<U, F: Fn(T) -> U>(self, f: F) -> Maybe<U> {
+        match (self) {
+            Maybe.Just(v) => { return Maybe<U>.Just(f(v)) }
+            Maybe.Nothing => { return Maybe<U>.Nothing }
+        }
+    }
+
+    public fn andThen<U, F: Fn(T) -> Maybe<U>>(self, f: F) -> Maybe<U> {
+        match (self) {
+            Maybe.Just(v) => { return f(v) }
+            Maybe.Nothing => { return Maybe<U>.Nothing }
+        }
+    }
+
+    public fn orElse(self, fallback: T) -> T {
+        match (self) {
+            Maybe.Just(v) => { return v }
+            Maybe.Nothing => { return fallback }
+        }
+    }
+}
+
+fn combine<A, B, R, F: Fn(A, B) -> R>(a: A, b: B, f: F) -> R {
+    return f(a, b)
+}
+
+fn twice<T, F>(x: T, f: F) -> T where F: Fn(T) -> T {
+    return f(f(x))
+}
+
+fn half(n: Int) -> Maybe<Int> {
+    if (n % 2 == 0) { return Maybe<Int>.Just(n / 2) }
+    return Maybe<Int>.Nothing
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let a = Maybe<Int>.Just(5)
+    let doubled = a.map(|x: Int| x * 2)
+    if (doubled.orElse(0) != 10) { bad = bad + fail("map to Int") }
+
+    let b = Maybe<Int>.Just(21)
+    let shown = b.map(|x: Int| x.toString().concat("!"))
+    if (shown.orElse("none").equals("21!") == false) { bad = bad + fail("map to String") }
+
+    let nothing = Maybe<Int>.Nothing
+    let stillNothing = nothing.map(|x: Int| x + 1)
+    if (stillNothing.orElse(-7) != -7) { bad = bad + fail("map over Nothing") }
+
+    let even = Maybe<Int>.Just(8)
+    if (even.andThen(|x: Int| half(x)).orElse(-1) != 4) { bad = bad + fail("andThen to Just") }
+    let odd = Maybe<Int>.Just(7)
+    if (odd.andThen(|x: Int| half(x)).orElse(-1) != -1) { bad = bad + fail("andThen to Nothing") }
+
+    let prefix = "sum="
+    let text = combine(3, 4, |x: Int, y: Int| prefix.concat((x + y).toString()))
+    if (text.equals("sum=7") == false) { bad = bad + fail("two parameters and a capture") }
+
+    if (twice(3, |x: Int| x * 3) != 27) { bad = bad + fail("a where-clause bound") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: callable bounds")
+    return 0
+}

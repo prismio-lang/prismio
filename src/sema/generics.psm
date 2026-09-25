@@ -269,6 +269,9 @@ private fn monoAnnotationText(annotationPtr: Ptr) -> String {
 internal fn monoTraitRefText(traitRefPtr: Ptr) -> String {
     if (nodeIsNull(traitRefPtr)) { return "" }
     let traitRef = ptr_to_node(traitRefPtr)
+    if (nodeIsCallableBound(traitRef)) {
+        return monoCallableText(traitRef.child1, traitRef.child3)
+    }
     if (traitRef.i2 == 0) { return traitRef.s1.clone() }
 
     let mut text = traitRef.s1.concat("<")
@@ -294,6 +297,136 @@ internal fn monoTraitRefText(traitRefPtr: Ptr) -> String {
         constraintPtr = constraint.next
     }
     return text.concat(">")
+}
+
+// `Fn(A, B) -> R`, from a chain of parameter annotations and a result.
+private fn monoCallableText(paramsPtr: Ptr, resultPtr: Ptr) -> String {
+    let mut text = "Fn("
+    let mut argPtr = paramsPtr
+    let mut first = true
+    while (nodeExists(argPtr)) {
+        if (first == false) { text = text.concat(", ") }
+        first = false
+        text = text.concat(monoAnnotationText(argPtr))
+        argPtr = ptr_to_node(argPtr).next
+    }
+    return text.concat(") -> ", monoAnnotationText(resultPtr))
+}
+
+// The `call` function a closure of type `t` lowered to (semaLowerClosure), or
+// null when `t` is not a closure. Its first parameter is the closure itself,
+// which is the one thing that tells one closure's `call` from another's.
+private fn monoClosureCall(t: TypeInfo) -> ASTNode {
+    if (t.kind != TypeKind.STRUCT) { return ptr_to_node(ptr_null()) }
+    let count = ir_decl_count("call")
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at("call", i))
+        if (decl.kind == NodeKind.FUNCTION and nodeExists(decl.child1)) {
+            let selfParam = ptr_to_node(decl.child1)
+            if (nodeExists(selfParam.child1) and ptr_to_node(selfParam.child1).s1.equals(t.name)) {
+                return decl
+            }
+        }
+    }
+    return ptr_to_node(ptr_null())
+}
+
+// A closure's `Fn(...) -> R` against a callable bound: the same parameter types
+// and the same result, once the bound's type parameters are substituted.
+private fn monoCheckCallableBound(module: ASTNode, at: ASTNode, name: String, param: String,
+                                  bound: ASTNode, argT: TypeInfo) -> Bool {
+    let boundText = monoTraitRefText(node_to_ptr(bound))
+    let callFn = monoClosureCall(argT)
+    if (nodeIsNull(node_to_ptr(callFn))) {
+        if (monoFirstReportOfBound(argT.name, boundText)) {
+            semaErrorAt(at, typeDisplay(argT).concat(" is not a closure, so it is not `",
+                                                     param, ": ", boundText, "`"))
+            diag_note("pass a closure: `|x: T| ...`")
+        }
+        return false
+    }
+    let mut matches = true
+    let mut wantPtr = bound.child1
+    let mut havePtr = ptr_to_node(callFn.child1).next
+    while (nodeExists(wantPtr) and nodeExists(havePtr)) {
+        let have = ptr_to_node(havePtr)
+        let wantT = semaAnnotationType(module, ptr_to_node(wantPtr))
+        let haveT = semaAnnotationType(module, ptr_to_node(have.child1))
+        if (typeEquals(wantT, haveT) == false) { matches = false }
+        wantPtr = ptr_to_node(wantPtr).next
+        havePtr = have.next
+    }
+    if (nodeExists(wantPtr) or nodeExists(havePtr)) { matches = false }
+    if (typeEquals(semaAnnotationType(module, ptr_to_node(bound.child3)),
+                   semaAnnotationType(module, ptr_to_node(callFn.child3))) == false) {
+        matches = false
+    }
+    if (matches) { return true }
+    if (monoFirstReportOfBound(argT.name, boundText)) {
+        let mut paramPtr = ptr_to_node(callFn.child1).next
+        let mut shown = ""
+        let mut first = true
+        while (nodeExists(paramPtr)) {
+            let one = ptr_to_node(paramPtr)
+            if (first == false) { shown = shown.concat(", ") }
+            first = false
+            shown = shown.concat(monoAnnotationText(one.child1))
+            paramPtr = one.next
+        }
+        let have = "this closure is `Fn(".concat(shown, ") -> ", monoAnnotationText(callFn.child3), "`")
+        semaErrorAt(at, have.concat(", and ", diagQuote(name), " needs `", boundText, "`"))
+    }
+    return false
+}
+
+// Solves what the arguments left open from the callable bounds. A type
+// parameter that appears only in a bound's result -- `U` in `F: Fn(T) -> U` --
+// has no argument to be read from, and is the closure's return type matched
+// against that result. Repeated until nothing more is solved, since one answer
+// can be what another bound's result is written in.
+//
+// `holders` is one node per type parameter, in order, its `child1` the solution
+// so far or null.
+private fn monoSolveFromCallables(module: ASTNode, template: ASTNode, holders: Ptr) {
+    loop {
+        let mut progressed = false
+        let mut holderPtr = holders
+        let mut index = 0
+        while (nodeExists(holderPtr)) {
+            let holder = ptr_to_node(holderPtr)
+            let genericParamPtr = monoGenericParamAt(template.genericInfo, index)
+            if (nodeExists(holder.child1) and nodeExists(genericParamPtr)) {
+                let callT = semaAnnotationType(module, ptr_to_node(holder.child1))
+                let callFn = monoClosureCall(callT)
+                let mut boundPtr = ptr_to_node(genericParamPtr).child1
+                while (nodeExists(boundPtr) and nodeExists(node_to_ptr(callFn))) {
+                    let bound = ptr_to_node(boundPtr)
+                    if (nodeIsCallableBound(bound)) {
+                        let resultT = semaAnnotationType(module, ptr_to_node(callFn.child3))
+                        let mut otherPtr = holders
+                        let mut j = 0
+                        while (nodeExists(otherPtr)) {
+                            let other = ptr_to_node(otherPtr)
+                            if (nodeIsNull(other.child1)) {
+                                let solved = monoMatchParam(module, ptr_to_node(bound.child3), resultT,
+                                                            monoParamName(template.s2, j))
+                                if (nodeExists(node_to_ptr(solved))) {
+                                    other.child1 = node_to_ptr(solved)
+                                    progressed = true
+                                }
+                            }
+                            otherPtr = other.next
+                            j = j + 1
+                        }
+                    }
+                    boundPtr = bound.next
+                }
+            }
+            holderPtr = holder.next
+            index = index + 1
+        }
+        if (progressed == false) { return }
+    }
 }
 
 private fn monoTraitRefHasValidArity(module: ASTNode, traitRef: ASTNode) -> Bool {
@@ -447,6 +580,7 @@ private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: S
                 while (nodeExists(boundPtr)) {
                     let concreteBound = monoCopyOne(boundPtr)
                     monoSubstituteChain(concreteBound.child1, params, argsPtr)
+                    monoSubstituteChain(concreteBound.child3, params, argsPtr)
                     if (monoCheckOneBound(module, at, name, monoParamName(params, i),
                                           concreteBound, argT) == false) {
                         satisfied = false
@@ -500,6 +634,9 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
     // second one about a bound it cannot possibly satisfy is noise. Answered
     // `false` all the same, so the instantiation still does not happen.
     if (typeIsValid(argT) == false) { return false }
+    if (nodeIsCallableBound(bound)) {
+        return monoCheckCallableBound(module, at, name, param, bound, argT)
+    }
 
     let traitDecl = monoFindTrait(module, bound.s1)
     let boundText = monoTraitRefText(node_to_ptr(bound))
@@ -995,16 +1132,25 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
         if (template.kind == NodeKind.FUNCTION and template.s1.equals(callee.s1)) {
             let params = template.s2
             let count = monoParamCount(params)
+            let holders = nodeList()
+            for i in 0..<count {
+                let holder = createNode(NodeKind.GENERIC_PARAM)
+                holder.child1 = node_to_ptr(monoSolveTypeParam(module, template, callExpr.child2,
+                                                               monoParamName(params, i)))
+                nodeListPush(holders, holder)
+            }
+            monoSolveFromCallables(module, template, holders.head)
             let solvedArgs = nodeList()
             let mut solvedAll = true
-            for i in 0..<count {
-                let solved = monoSolveTypeParam(module, template, callExpr.child2,
-                                                monoParamName(params, i))
-                if (nodeIsNull(node_to_ptr(solved))) {
+            let mut holderPtr = holders.head
+            while (nodeExists(holderPtr)) {
+                let holder = ptr_to_node(holderPtr)
+                if (nodeIsNull(holder.child1)) {
                     solvedAll = false
                 } else {
-                    nodeListPush(solvedArgs, solved)
+                    nodeListPush(solvedArgs, ptr_to_node(holder.child1))
                 }
+                holderPtr = holder.next
             }
             if (solvedAll and monoTemplateAcceptsCall(module, template,
                                                        callExpr.child2, solvedArgs.head)) {

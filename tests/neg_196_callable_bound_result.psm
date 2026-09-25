@@ -1,0 +1,8 @@
+// expect-error: a closure bound's result type
+// A closure always returns a value, and the bound says which: `Fn(Int)` alone
+// leaves nothing to solve a result type from.
+fn apply<F: Fn(Int)>(f: F, x: Int) -> Int { return 0 }
+
+fn main() -> Int {
+    return 0
+}

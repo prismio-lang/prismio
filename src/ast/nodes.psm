@@ -318,6 +318,12 @@ public fn createNode(kind: NodeKind) -> ASTNode {
 // call sites, and nothing reads the marker after sema.
 public fn nodeMarkProperty(fnNode: ASTNode) { fnNode.i1 = 4 }
 
+// A bound written `Fn(A, B) -> R` (parseCallableBound): parameter types on
+// `child1`, the result on `child3`. Every other TRAIT_REF names a trait.
+public fn nodeIsCallableBound(ref: ASTNode) -> Bool {
+    return ref.kind == NodeKind.TRAIT_REF and ref.i3 == 1
+}
+
 public fn nodeIsProperty(fnNode: ASTNode) -> Bool {
     return fnNode.kind == NodeKind.FUNCTION and fnNode.i1 == 4
 }

@@ -34,6 +34,12 @@
   measured the same as the equivalent check in C. The builtins apply only where
   a program declares no function of the name, so an existing `extern fn exit`
   keeps working. tests: test_182, neg_189, neg_190, `failure_builtins`.
+- **Closure bounds: `F: Fn(A, B) -> R`.** A type parameter bounded by a
+  closure's signature, in a parameter list, a `where` clause or `impl Fn(...)`.
+  A parameter that appears only in the result is solved from the closure's
+  return type, so `fn map<U, F: Fn(T) -> U>(self, f: F) -> Option<U>` needs no
+  written `U`. A closure whose parameter types or result differ from the bound
+  is refused, naming both signatures. test_192; neg_195, neg_196.
 - **`Option` and `Result` methods.** `o.isSome`, `o.isNone`, `r.isOk` and
   `r.isErr` are properties; `unwrapOr(fallback)` and `expect(message)` are on
   both types, `okOr(error)` on Option, and `ok()` and `err()` on Result. The

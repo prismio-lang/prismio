@@ -1,0 +1,30 @@
+// expect-error: this closure is `Fn(String) -> String`, and `map` needs `Fn(Int) -> String`
+// expect-error: Int is not a closure, so it is not `F: Fn(Int) -> Int`
+// A closure bound is checked like any other: the closure's parameter types and
+// result must be the bound's, and an argument that is not a closure is refused
+// with the bound named.
+import std.io
+import std.string
+
+enum Maybe<T> {
+    Nothing,
+    Just(T)
+}
+
+impl<T> Maybe<T> {
+    public fn map<U, F: Fn(T) -> U>(self, f: F) -> Maybe<U> {
+        match (self) {
+            Maybe.Just(v) => { return Maybe<U>.Just(f(v)) }
+            Maybe.Nothing => { return Maybe<U>.Nothing }
+        }
+    }
+}
+
+fn apply<F: Fn(Int) -> Int>(f: F, x: Int) -> Int { return f(x) }
+
+fn main() -> Int {
+    let a = Maybe<Int>.Just(5)
+    let b = a.map(|s: String| s.concat("!"))
+    let c = apply(5, 3)
+    return 0
+}

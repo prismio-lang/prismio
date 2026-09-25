@@ -175,10 +175,38 @@ private fn parseTraitRef(p: Parser) -> ASTNode {
     let name = p.current()
     traitRef.s1 = name.value
     p.expectToken(TokenType.IDENTIFIER, "a trait name in a type parameter list")
+    if (name.value.equals("Fn") and p.checkVal(TokenType.SEPARATOR, "(")) {
+        parseCallableBound(p, traitRef)
+        return traitRef
+    }
     if (p.matchVal(TokenType.RELATIONAL_OPERATOR, "<")) {
         parseTraitRefArgs(p, traitRef)
     }
     return traitRef
+}
+
+// `F: Fn(T) -> U` -- the one bound that is not a trait. A closure is a struct and
+// a `call` function (semaLowerClosure), so there is no trait for it to
+// implement. The bound says what `call` takes and returns, and a type parameter
+// that appears only in the result is solved from the closure's return type:
+// that is what lets `o.map(|x: Int| x * 2)` know its `U`.
+//
+// The result is required. A closure always returns a value, and a bound that
+// left it out would leave `U` with nothing to be solved from.
+private fn parseCallableBound(p: Parser, traitRef: ASTNode) {
+    traitRef.i3 = 1
+    p.expectVal(TokenType.SEPARATOR, "(", "a closure bound's parameter list")
+    let params = nodeList()
+    if (p.checkVal(TokenType.SEPARATOR, ")") == false) {
+        loop {
+            nodeListPush(params, parseTypeAnnotation(p))
+            if (p.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+    }
+    p.expectVal(TokenType.SEPARATOR, ")", "a closure bound's parameter list")
+    traitRef.child1 = params.head
+    p.expectVal(TokenType.ARROW, "->", "a closure bound's result type")
+    traitRef.child3 = node_to_ptr(parseTypeAnnotation(p))
 }
 
 // A trait reference's arguments, which unlike a type's may fix an associated
@@ -454,8 +482,10 @@ private fn copyTraitRefChain(ptr: Ptr) -> Ptr {
         copy.s1 = source.s1
         copy.i2 = source.i2
         nodeSpanFrom(copy, source)
+        copy.i3 = source.i3
         copy.child1 = copyTypeAnnotationChain(source.child1)
         copy.child2 = copyAssocTypeChain(source.child2)
+        copy.child3 = copyTypeAnnotationChain(source.child3)
         nodeListPush(copies, copy)
         p = source.next
     }
