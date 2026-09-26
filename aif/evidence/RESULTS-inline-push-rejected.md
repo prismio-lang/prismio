@@ -13,7 +13,7 @@ Prismio   bl _list_push_slot in the loop body, once per element
 ```
 
 `list_push_slot` cannot be curated into the caller — it reaches three `static`s
-through `rt_alloc`, which `KNOWN_ISSUES.md` has recorded since M6 — so the
+through `rt_alloc`, which `../../docs/KNOWN_ISSUES.md` has recorded since M6 — so the
 inliner never sees it. About 500 calls a frame over 20000 frames.
 
 The common case needs no allocator: when the list is stamped at this stride and

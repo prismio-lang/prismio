@@ -5,7 +5,7 @@
 reports **281/285**: four failures, **0 violations anywhere**, every one a leak.
 
 This is gap 2's own acceptance criterion in `PERFORMANCE_HANDOFF.md`. The count
-is four, as `KNOWN_ISSUES.md` says. What follows is the attribution that entry
+is four, as `../../docs/KNOWN_ISSUES.md` says. What follows is the attribution that entry
 asked for, and it changes what the gate means.
 
 ## 1 · The four, by fixture
@@ -23,7 +23,7 @@ defects. It is one shape seen four times.
 
 ## 2 · The fifth was not fixed; it was never a gate failure
 
-`KNOWN_ISSUES.md` recorded five and then four, with the forced-split object count
+`../../docs/KNOWN_ISSUES.md` recorded five and then four, with the forced-split object count
 dropping off and no explanation — "nothing in the interval targeted it".
 
 Nothing needed to. `test_62_split_release`'s ledger **does not depend on the

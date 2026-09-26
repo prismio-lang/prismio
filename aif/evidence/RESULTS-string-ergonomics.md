@@ -39,7 +39,7 @@ let j = "Hello" + ", " + "World"
 
 The leak is not new and not from the operator: the same shape written by hand,
 `strConcat(strConcat("Hello", ", "), "World")`, reads `2 allocated, 1 released`
-**on the released 0.1 compiler** (`build/v0.1-rc`). RUNTIME.md 3.1 is the rule —
+**on the released 0.1 compiler** (`build/v0.1-rc`). RUNTIME.md (now [the runtime surface](https://developers.prismio.org/runtime/supported-surface)) 3.1 is the rule —
 an owned result passed straight into a parameter is a value nothing names.
 
 Lowering pairwise would therefore have made the obvious spelling of the obvious

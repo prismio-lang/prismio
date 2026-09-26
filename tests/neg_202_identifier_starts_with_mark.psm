@@ -1,0 +1,6 @@
+// expect-error: character U+0301 can continue an identifier but not start one
+// A combining mark is XID_Continue and not XID_Start.
+fn main() -> Int {
+    let ́x = 1
+    return 0
+}

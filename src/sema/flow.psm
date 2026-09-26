@@ -29,37 +29,49 @@ public extern fn exit(code: Int)
 // the programmer knows is unreachable, which is an annoyance; the opposite
 // error would let a function fall off its end, which is a miscompile.
 
-private fn semaBlockHasBreak(block: ASTNode) -> Bool {
+// Whether a `break` in `block` leaves the loop whose body it is. `inner` holds
+// the labels of the loops between here and that one, space-delimited, and is
+// "" when there are none. Inside such a loop an unlabelled break leaves the
+// nearer loop; a labelled one leaves this loop unless it names one of them --
+// its own label and any enclosing loop's both take it out.
+//
+// Counting every break in a nested loop was the conservative answer before
+// labels, and it rejected a `loop` whose only exits are returns as falling off
+// the end when an inner `while` had a `break` of its own.
+private fn semaBlockBreaksOut(block: ASTNode, inner: String) -> Bool {
     let mut stmtPtr = block.child1
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
 
-        if (stmt.kind == NodeKind.BREAK_STATEMENT) { return true }
+        if (stmt.kind == NodeKind.BREAK_STATEMENT) {
+            if (stmt.s1.equals("")) {
+                if (inner.equals("")) { return true }
+            } else if (inner.contains(" ".concat(stmt.s1, " ")) == false) {
+                return true
+            }
+        }
 
-        // Nested loops own their own unlabelled breaks, but a `break@outer`
-        // inside one leaves this loop too. Descending into them counts both, and
-        // is conservative about the first kind rather than wrong about the second.
         if (stmt.kind == NodeKind.IF_STATEMENT) {
-            if (semaIfHasBreak(stmt)) { return true }
+            if (semaIfBreaksOut(stmt, inner)) { return true }
         }
-        if (stmt.kind == NodeKind.WHILE_STATEMENT or stmt.kind == NodeKind.LOOP_STATEMENT) {
-            let mut body = ptr_to_node(stmt.child1)
-            if (stmt.kind == NodeKind.WHILE_STATEMENT) { body = ptr_to_node(stmt.child2) }
-            if (semaBlockHasBreak(body)) { return true }
-        }
-        if (stmt.kind == NodeKind.FOR_STATEMENT) {
-            if (semaBlockHasBreak(ptr_to_node(stmt.child3))) { return true }
+        if (stmt.kind == NodeKind.WHILE_STATEMENT or stmt.kind == NodeKind.LOOP_STATEMENT
+                or stmt.kind == NodeKind.FOR_STATEMENT) {
+            let body = ptr_to_node(loopBodyOf(stmt))
+            let mut deeper = inner
+            if (deeper.equals("")) { deeper = " " }
+            deeper = deeper.concat(body.s1, " ")
+            if (semaBlockBreaksOut(body, deeper)) { return true }
         }
         // A region is not a loop, so a `break` inside one belongs to the loop
         // enclosing it and has to be visible through the block.
         if (stmt.kind == NodeKind.REGION_STATEMENT) {
-            if (semaBlockHasBreak(ptr_to_node(stmt.child1))) { return true }
+            if (semaBlockBreaksOut(ptr_to_node(stmt.child1), inner)) { return true }
         }
         if (stmt.kind == NodeKind.MATCH_STATEMENT) {
             let mut armPtr = stmt.child2
             while (nodeExists(armPtr)) {
                 let arm = ptr_to_node(armPtr)
-                if (semaBlockHasBreak(ptr_to_node(arm.child2))) { return true }
+                if (semaBlockBreaksOut(ptr_to_node(arm.child2), inner)) { return true }
                 armPtr = arm.next
             }
         }
@@ -72,15 +84,15 @@ private fn semaBlockHasBreak(block: ASTNode) -> Bool {
 // A whole `if` / `else if` / `else` chain. Recurses through the chain rather
 // than being inlined into the walk above, which had the same eight lines written
 // out twice -- once for the statement and once for the else-if that follows it.
-private fn semaIfHasBreak(stmt: ASTNode) -> Bool {
-    if (semaBlockHasBreak(ptr_to_node(stmt.child2))) { return true }
+private fn semaIfBreaksOut(stmt: ASTNode, inner: String) -> Bool {
+    if (semaBlockBreaksOut(ptr_to_node(stmt.child2), inner)) { return true }
     if (nodeIsNull(stmt.child3)) { return false }
 
     let elseNode = ptr_to_node(stmt.child3)
     if (elseNode.kind == NodeKind.IF_STATEMENT) {
-        return semaIfHasBreak(elseNode)
+        return semaIfBreaksOut(elseNode, inner)
     }
-    return semaBlockHasBreak(elseNode)
+    return semaBlockBreaksOut(elseNode, inner)
 }
 
 // --- failure builtins ----------------------------------------------------------
@@ -169,7 +181,7 @@ internal fn semaStmtDiverges(stmt: ASTNode) -> Bool {
     // A `loop` with no break never finishes. A `while` or `for` may run zero
     // times, so neither ever counts as diverging.
     if (stmt.kind == NodeKind.LOOP_STATEMENT) {
-        return semaBlockHasBreak(ptr_to_node(stmt.child1)) == false
+        return semaBlockBreaksOut(ptr_to_node(stmt.child1), "") == false
     }
 
     return false

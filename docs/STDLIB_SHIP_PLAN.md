@@ -298,7 +298,7 @@ path. Two attempts to move that bookkeeping into the probe made
 `listDirectory(path)` (today's `listModules` lists only `.psm` files),
 `appendFile`, `rename`, `removeDirectory`, `metadata` (size, modified time,
 is-directory), and a buffered line reader shared with item 2. Make the raw
-`read_file`/`join_path`/... externs `internal`: RUNTIME.md says applications do
+`read_file`/`join_path`/... externs `internal`: [the runtime surface](https://developers.prismio.org/runtime/supported-surface) says applications do
 not call them, and today they are public beside their wrappers.
 
 **Landed 2026-09-25**, all but the line reader. `listDirectory(dir) ->

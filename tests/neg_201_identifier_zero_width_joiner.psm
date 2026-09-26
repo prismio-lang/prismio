@@ -1,0 +1,7 @@
+// expect-error: invisible character U+200D cannot appear in an identifier
+// U+200D is XID_Continue since Unicode 15.1, and Prismio's profile of UAX #31
+// excludes it: `ab` and `a<ZWJ>b` would be two names that look the same.
+fn main() -> Int {
+    let a‍b = 1
+    return 0
+}

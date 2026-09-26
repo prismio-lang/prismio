@@ -372,6 +372,9 @@ public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 public extern fn ir_array_alloca_zeroed(elemType: String, count: Int) -> Int
 public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int
 public extern fn ir_array_copy_into(elemType: String, count: Int, dst: String, src: String)
+public extern fn ir_array_literal_begin()
+public extern fn ir_array_literal_elem(elemType: String, value: String)
+public extern fn ir_array_literal_end(elemType: String) -> Int
 public extern fn ir_array_load(key: String, src: String) -> Int
 public extern fn ir_array_from_value(key: String, value: String) -> Int
 public extern fn ir_array_copy_key(key: String, dst: String, src: String)
@@ -428,7 +431,8 @@ public extern fn ir_str_compare(lhs: String, rhs: String) -> Int
 // on the heap. See `ir_str_hash` in runtime/llvm-api-backend.c.
 public extern fn ir_str_hash(value: String) -> Int
 
-// An argument whose `extern fn` declares it `borrow`, which RUNTIME.md defines
+// An argument whose `extern fn` declares it `borrow`, which the contract table
+// (developers.prismio.org/runtime/supported-surface) defines
 // as "the callee reads the argument and does not retain it" -- LLVM's
 // `readonly nocapture`. Saying so is what lets a short String's materialisation
 // leave a loop that calls a foreign function per iteration.

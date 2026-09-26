@@ -1,0 +1,10 @@
+// expect-error: unescaped bidirectional control U+2066 in a comment
+// P2002 in a line comment. The comment in `main` holds a raw U+2066
+// LEFT-TO-RIGHT ISOLATE, the Trojan Source form that makes a `return` look
+// commented out. A comment has no escapes, so the advice is to remove it.
+fn main() -> Int {
+    let isAdmin = false
+    // check the role ⁦ ok⁩
+    if (isAdmin) { return 1 }
+    return 0
+}

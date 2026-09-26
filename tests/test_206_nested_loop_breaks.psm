@@ -1,0 +1,49 @@
+// A `break` leaves the nearest loop, or the loop its label names, and the
+// definite-return check reads it that way. A `loop` whose own exits are all
+// returns ends a function that returns a value, even when a loop inside it has
+// breaks of its own -- which used to be rejected as reaching the closing brace.
+// neg_207 is the other half: a `break@outer` from an inner loop leaves both.
+
+import std.io
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// The inner `while` breaks; only a return leaves the `loop`.
+fn firstAtLeast(xs: [Int], floor: Int) -> Int {
+    let mut i = 0
+    loop {
+        while (i < 4) {
+            if (xs[i] >= floor) { break }
+            i = i + 1
+        }
+        if (i < 4) { return xs[i] }
+        return 0 - 1
+    }
+}
+
+// A labelled break that names a loop inside this one leaves only that loop.
+fn rounds(n: Int) -> Int {
+    let mut i = 0
+    loop {
+        inner@ while (i < n) {
+            for k in 0..<3 {
+                if (k == i) { break@inner }
+            }
+            i = i + 1
+        }
+        if (i >= 2) { return i }
+        i = i + 1
+    }
+}
+
+fn main() -> Int {
+    if (firstAtLeast([3, 8, 1, 9], 5) != 8) { return fail("nested while break") }
+    if (firstAtLeast([3, 1, 1, 2], 5) != 0 - 1) { return fail("no element found") }
+    if (rounds(5) != 2) { return fail("labelled break to an inner loop") }
+    println("test_206 ok")
+    return 0
+}

@@ -524,8 +524,10 @@ private fn generateVariableDecl(stmt: ASTNode) {
         // loop over this string then indexes a pointer instead of asking per
         // character which half of the pair holds the byte -- five
         // instructions the tokenizer used to pay 204 000 times. Immutable
-        // bindings only: see `data_ptr` in runtime/ir_symbols.c.
-        if (isFatStringKey(storeType) and stmt.i1 == 0) {
+        // bindings only: see `data_ptr` in runtime/ir_symbols.c. And only in a
+        // function with a loop, for the reason at the parameters in
+        // generateFunction (ir/module.psm).
+        if (isFatStringKey(storeType) and stmt.i1 == 0 and irFunctionHasLoop) {
             ir_set_var_data(varName, ir_str_data(initVal))
         }
 
@@ -570,6 +572,18 @@ private fn generateVariableDecl(stmt: ASTNode) {
             // answering it there suppressed the release of every other
             // binding too -- see aif_frees_at_scope_node.
             ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
+        } else if (aif_frees_unless_returned_node(stmt.child2, varName) == 1
+            and nodeGetType(stmt).kind != TypeKind.ARRAY
+            and chainBindingCount(irFunctionBody, varName) == 1
+            and chainAssignsName(irFunctionBody, varName) == false
+            and chainDropsName(irFunctionBody, varName) == false
+            and chainReturnsAliasBeyondBare(irFunctionBody, varName) == false) {
+            // The branch above for a value some path returns with `return name`:
+            // released on every other path, and kept at those returns by
+            // generateReturn. Bound once, because the engine's binding key is
+            // per name and `let a = a` in an inner block would make two
+            // bindings one.
+            ir_mark_droppable(varName, dropKindOf(ptr_to_node(stmt.child2)))
         } else if (accumulates and chainReturnsName(irFunctionBody, varName) == false) {
             // The last value an accumulator holds needs an owner too, and the
             // assignments only ever release what they displace. A returned
@@ -593,13 +607,21 @@ private fn generateVariableDecl(stmt: ASTNode) {
             // it returned) plus the two syntactic guards the facts leave open.
             // An array is frame storage -- a returned one was copied into this
             // frame above -- so nothing here is the deallocator's.
+            //
+            // A binding some path returns is still droppable, provided each
+            // return that carries it says `return name`: generateReturn skips
+            // this binding's drop there, and every other exit releases it. And
+            // provided the name is bound once: `let a = a; return a` in an inner
+            // block returns the outer allocation under the inner name, and the
+            // drop of the outer `a` there freed what the caller received.
             let owned = aif_owns_call_result_at_node(stmt.child2)
             if (owned != AIF_ELEM_NONE
                     and nodeGetType(stmt).kind != TypeKind.ARRAY
                     and chainAssignsName(irFunctionBody, varName) == false
-                and chainReturnsName(irFunctionBody, varName) == false
                 and chainDropsName(irFunctionBody, varName) == false
-                and chainEscapesThroughCall(irFunctionBody, varName) == false
+                and chainReturnsAliasBeyondBare(irFunctionBody, varName) == false
+                and (chainReturnsName(irFunctionBody, varName) == false
+                    or chainBindingCount(irFunctionBody, varName) == 1)
                 and chainAssignsAliasOf(irFunctionBody, varName) == false
                 and chainRetainsAliasOf(irFunctionBody, varName) == false) {
                 if (nodeGetType(ptr_to_node(stmt.child2)).kind == TypeKind.DATAVIEW) {
@@ -787,8 +809,16 @@ private fn generateAssignment(stmt: ASTNode) {
 
 private fn generateReturn(stmt: ASTNode) {
     // Every scope in the function unwinds at once, so the floor is 0. The
-    // returned value is never among them: returning it puts its escape at
-    // Caller, and nothing with that escape is droppable here.
+    // returned value is not among them, with one exception: a binding returned
+    // on some paths and not others is droppable when each return that carries it
+    // is a bare `return name` (nodeReturnsAliasBeyondBare), and this is where the
+    // path that returns it keeps it. Matched by slot, so a shadowing binding of
+    // the same name is the one kept.
+    let mut keep = ""
+    if (nodeExists(stmt.child1)) {
+        let value = ptr_to_node(stmt.child1)
+        if (value.kind == NodeKind.IDENTIFIER_EXPR) { keep = ir_get_var_slot(value.s1) }
+    }
     if (nodeExists(stmt.child1)) {
         let mut retVal = generateExpression(ptr_to_node(stmt.child1))
         let mut retType = storageType(getExprType(ptr_to_node(stmt.child1)))
@@ -801,11 +831,11 @@ private fn generateReturn(stmt: ASTNode) {
                 retType = arrayReturn
             }
         }
-        generateScopeDrops(0)
+        generateScopeDrops(0, keep)
         generateRegionExits(ir_region_depth())
         ir_ret(retType, retVal)
     } else {
-        generateScopeDrops(0)
+        generateScopeDrops(0, "")
         generateRegionExits(ir_region_depth())
         ir_ret_void()
     }
@@ -1324,7 +1354,7 @@ private fn generateContinue(stmt: ASTNode) {
 
 private fn generateLoopJump(target: Int, floor: Int, regionDepth: Int) {
     if (target >= 0) {
-        generateScopeDrops(floor)
+        generateScopeDrops(floor, "")
         generateRegionExits(ir_region_depth() - regionDepth)
         ir_br_numbered(target)
         ir_set_returned()
@@ -1630,9 +1660,11 @@ private fn generateDisplacedRelease(old: String, val: String, kind: Int, declTyp
     ir_label_numbered(doneLabel)
 }
 
-private fn generateScopeDrops(floor: Int) {
+// `keep` is the slot of a binding the caller is returning, or "".
+private fn generateScopeDrops(floor: Int, keep: String) {
     let n = ir_drop_count(floor)
     for i in 0..<n {
+        if (ir_drop_slot(floor, i).equals(keep)) { continue }
         let declType = dropReleaseType(ir_drop_slot(floor, i), ir_drop_type(floor, i))
         let storeType = storageType(declType)
         let loaded = ir_load(storeType, ir_drop_slot(floor, i))
@@ -1771,7 +1803,7 @@ internal fn generateBlock(block: ASTNode) {
     // be unreachable code after a terminator -- or, worse, reachable and a
     // double free.
     if (ir_has_returned() == 0) {
-        generateScopeDrops(ir_scope_drop_floor())
+        generateScopeDrops(ir_scope_drop_floor(), "")
     }
 
     debugPopScope()

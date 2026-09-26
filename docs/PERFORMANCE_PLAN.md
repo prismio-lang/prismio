@@ -96,7 +96,7 @@ So nobody re-derives these. The evidence file is the record.
 | Container-aware layout veto (MEM-003) | done | `aifLayoutVetoListElements`, `src/aif/layout.psm` |
 | Whole-buffer copy (MEM-006) | done | `RESULTS-whole-buffer-copy.md` |
 | Enum null-pointer optimisation (MEM-031) | done for boxed recursive binary enums | `RESULTS-enum-null.md` |
-| Short strings inline (MEM-032, MEM-010's slot half) | done: German strings ship | RUNTIME.md, `STRINGS.md` |
+| Short strings inline (MEM-032, MEM-010's slot half) | done: German strings ship | [Runtime surface](https://developers.prismio.org/runtime/supported-surface), [String representation](https://developers.prismio.org/compiler/string-representation) |
 | Single-threaded cycle-lock bypass (MEM-033) | done, worth ~0 | `RESULTS-cyc-lock-bypass.md` |
 | Stencil range guards (MEM-035) | done: convolution 0.707x | `RESULTS-stencil-condition.md` |
 | Push predication (E1), scoped alias metadata (E5) | done | `RESULTS-push-predication.md`, `-scoped-alias-metadata.md` |

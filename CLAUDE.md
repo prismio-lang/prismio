@@ -16,7 +16,7 @@ rather than a leak — corruption, not lost bytes:
 
 ## Runtime surface
 
-[RUNTIME.md](RUNTIME.md) is the map of what a program can call. Applications use
+[The runtime surface](https://developers.prismio.org/runtime/supported-surface) is the map of what a program can call. Applications use
 `std.*`; `extern fn` is for foreign code an application brings itself, not for
 reaching into the Prismio runtime. When you add or change a runtime symbol, the
 wrapper and its contract in `std/` are part of the change.
@@ -58,7 +58,7 @@ removed at 0.1.0. What replaced them:
 - **`docs/*_PLAN.md`** and `docs/COLLECTIONS.md` — the planners, each split into
   what the current release needs and what comes later. Root is not the place
   for a new handoff or spec; a plan goes in `docs/`.
-- **`KNOWN_ISSUES.md`** — what is open, with enough of each to act on.
+- **`docs/KNOWN_ISSUES.md`** — what is open, with enough of each to act on.
 - **`aif/evidence/`** — the measurements, one `RESULTS-*.md` per piece of work.
 - **`git log`** — the record. Commit messages here carry their own evidence, and
   are usually better than any document summarising them.

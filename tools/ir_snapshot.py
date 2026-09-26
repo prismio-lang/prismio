@@ -71,8 +71,10 @@ def main():
         rel = os.path.relpath(path, REPO)
         name = rel.replace("/", "__").replace(".psm", ".ll")
         dest = os.path.join(out, name)
+        # errors="replace": a diagnostic quotes the source line, and a compiler
+        # that predates a source's characters can print half of one.
         r = subprocess.run([cc, "build", path, "-o", dest],
-                           capture_output=True, text=True, cwd=REPO)
+                           capture_output=True, text=True, errors="replace", cwd=REPO)
         if r.returncode != 0 or not os.path.exists(dest):
             if os.path.exists(dest):
                 os.remove(dest)

@@ -31,8 +31,9 @@ fn listing(directory: String) -> String {
     return join(listDirectory(directory), "|")
 }
 
-// Bound before the match, as RUNTIME.md 3.1 asks: a payload enum matched straight
-// off a call is not released.
+// Bound before the match: a payload enum matched straight off a call is still
+// not released. That is a different shape from an owned result passed straight
+// into a parameter, which is (developers.prismio.org/runtime/supported-surface).
 fn sizeOf(path: String) -> I64 {
     let found = metadata(path)
     match (found) {

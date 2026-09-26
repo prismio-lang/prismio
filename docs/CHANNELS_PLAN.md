@@ -6,7 +6,7 @@ was in both the root and `docs/`. It is converted here so it can be diffed and
 reviewed like everything else, and re-audited against the tree on 2026-09-25.
 The `.docx` is in `git log` (`1e338c0`).
 
-What a program can call today is RUNTIME.md §4.1: `chan_new`, `chan_send`,
+What a program can call today is [`Channel<T>` at source level](https://developers.prismio.org/runtime/tasks-and-channels#channelt-at-source-level): `chan_new`, `chan_send`,
 `chan_recv`, `chan_share`, `chan_close`, `chan_len`, `chan_free`, over a
 `Channel<T>` type the compiler builds in.
 
@@ -16,7 +16,7 @@ The design below is too big for 0.1, and nothing in it is needed for the
 channel 0.1 already has to be correct. What is needed:
 
 - [x] **Refuse `Channel<Int>` and every other non-reference element type, as
-      RUNTIME.md already says it does.** It is accepted today. `chan_send(c, 5)`
+      the runtime surface already says it does.** It is accepted today. `chan_send(c, 5)`
       is emitted as `call i32 @chan_send(ptr, i32 5)` against a C function that
       takes `void*`, and `chan_recv`'s `ptr` goes straight to `println__Int`. It
       printed the right number on x86-64 by luck, because the upper half of the
@@ -33,10 +33,10 @@ channel 0.1 already has to be correct. What is needed:
       the reason, exit 101, as `panic` does.
 - [x] **Say precisely what a send after close does.** `chan_send` returns 0 and
       the message is neither delivered nor freed. That is a leak, and RUNTIME.md
-      calls it "dropped". Correct the doc for 0.1. Returning the value is Phase 0
+      (since folded into the developer portal) called it "dropped". Correct the doc for 0.1. Returning the value is Phase 0
       below.
 - [x] Destruction order (close, join every sharer, free) is documented in
-      RUNTIME.md rule 4 and followed by every program in the corpus. The
+      [channel rule 4](https://developers.prismio.org/runtime/tasks-and-channels#the-four-channel-rules) and followed by every program in the corpus. The
       runtime cannot check it. Phase 1's endpoint counts are the fix, and they
       are not a 0.1 item.
 
@@ -74,7 +74,7 @@ lock.
 | P0 | `Channel<Int>` passes checking and produces bad IR | **still open**, worse than written: it builds and runs, with an ABI mismatch. 0.1 item. |
 | P0 | Send after close consumes the value and neither returns nor frees it | **still open.** A leak, documented for 0.1 |
 | P0 | A failed `pthread_create` runs the task inline, so a bounded producer can deadlock | **still open.** 0.1 item |
-| P0 | `chan_share` returns the same pointer, and `chan_free` assumes no waiters | **still open, by contract** (RUNTIME.md rule 4). Phase 1 |
+| P0 | `chan_share` returns the same pointer, and `chan_free` assumes no waiters | **still open, by contract** ([channel rule 4](https://developers.prismio.org/runtime/tasks-and-channels#the-four-channel-rules)). Phase 1 |
 | P1 | Allocation failure looks like an empty or closed receive; capacity 0 is clamped to 1 | still open. Phase 1 and 2 |
 | P1 | Threaded runs bypass the small-object recycler | not re-checked. Moot once messages stop being boxed |
 

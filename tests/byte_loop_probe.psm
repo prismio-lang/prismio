@@ -1,0 +1,32 @@
+// Fixture for run_byte_loop_vectorise_test. Not named `test_*.psm`: the runner
+// reads its IR twice, before and after LLVM's loop vectoriser, and that is the
+// whole test.
+import std.io
+import std.string
+
+// A loop over its parameter, so the parameter's bytes are located once at
+// entry. `byteAt` is loop-free and must not do the same: inlined here, its
+// entry block would put stores inside this loop, and the loop would not
+// vectorise.
+fn sumBytes(s: String) -> Int {
+    let mut sum = 0
+    for i in 0..<s.length {
+        sum = sum + s.byteAt(i)
+    }
+    return sum
+}
+
+// No loop, so nothing to amortise a resolution over.
+fn firstByte(s: String) -> Int {
+    return s.byteAt(0)
+}
+
+fn main() -> Int {
+    let mut built = StringBuilder.new()
+    for i in 0..<64 {
+        built.append("abcdefgh")
+    }
+    let text = built.toString()
+    println(sumBytes(text) + firstByte(text))
+    return 0
+}

@@ -5,7 +5,7 @@ checks that are supposed to catch them and do not.
 
 This is a **working tracker**, not a results file. Measurements belong in
 `aif/evidence/RESULTS-*.md`; what shipped belongs in `CHANGELOG.md`; broad
-open issues belong in `KNOWN_ISSUES.md`. What lands here is narrower: a
+open issues belong in `../docs/KNOWN_ISSUES.md`. What lands here is narrower: a
 specific memory-safety hole, a wrong or vacuous guard, or an invariant that no
 longer holds, recorded the moment it is found so it is not rediscovered.
 

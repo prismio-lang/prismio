@@ -8,6 +8,7 @@
 import std.io
 import lexer.scanner
 import lexer.token
+import lexer.identifier_security
 import common.text
 import ast.nodes
 import parse.*
@@ -130,6 +131,7 @@ private fn analyzedModule(path: String) -> ASTNode {
     diag_progress("resolving imports")
     let baseDir = get_directory(path)
     let mergedAst = resolveImports(astRoot, baseDir, path)
+    lexCheckIdentifierSecurity()
 
     // Parsing recovers, so errors may already be waiting here. Type checking a
     // module with a declaration missing produces cascades, not information.
@@ -307,6 +309,7 @@ public fn compileSource(path: String, outputFile: String, runAfterBuild: Bool, b
     diag_progress("resolving imports")
     let baseDir = get_directory(path)
     let mergedAst = resolveImports(astRoot, baseDir, path)
+    lexCheckIdentifierSecurity()
 
     // Parsing recovers, so errors may already be waiting here. Type checking a
     // module with a declaration missing produces cascades, not information.

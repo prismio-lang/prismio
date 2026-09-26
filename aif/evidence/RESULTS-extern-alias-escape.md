@@ -5,7 +5,7 @@ Silicon. Fixed point, suite **202/202**, AIF differential **19/19**, `--verify`
 sweep **0 leaked / 0 violations** on all **31** corpus programs, release gate
 PASSED.
 
-This closes the last item in `KNOWN_ISSUES.md` that was unsoundness rather than
+This closes the last item in `../../docs/KNOWN_ISSUES.md` that was unsoundness rather than
 a leak. The reproducer moved from a diagnostic nothing ran into the corpus, which
 is why the count is 31 and not 30.
 

@@ -12,6 +12,7 @@
 import std.io
 import std.string
 import std.unicode
+import std.unicode_tables
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -75,10 +76,10 @@ fn main() -> Int {
     if (decomposed.normalizeNfc().equals(composed) == false) { return fail("NFD to NFC") }
     if (composed.normalizeNfd().equals(decomposed) == false) { return fail("NFC to NFD") }
 
-    // Idempotent, which is what makes it a normal *form*. Bound rather than
-    // nested: an owned result passed straight into another call has nothing to
-    // hang a drop on, which RUNTIME.md 3.1 makes a leak rather than a style
-    // preference -- and this fixture runs under `--verify`.
+    // Idempotent, which is what makes it a normal *form*. Bound for reading, not
+    // for the ledger: an owned result passed straight into another call is
+    // released after it (developers.prismio.org/runtime/supported-surface), so
+    // the nested spelling is equally clean under `--verify`.
     let once = decomposed.normalizeNfc()
     let twice = once.normalizeNfc()
     if (twice.equals(composed) == false) { return fail("NFC is idempotent") }
@@ -100,6 +101,35 @@ fn main() -> Int {
 
     // Canonical, not compatibility: NFC must leave `ﬁ` alone.
     if ("ﬁ".normalizeNfc().equals("ﬁ") == false) { return fail("NFC is not NFKC") }
+
+    // -- The pinned database -------------------------------------------------
+    if (unicodeVersion().equals("18.0.0") == false) { return fail("tables are Unicode 18.0.0") }
+
+    // An unassigned scalar is one column. The tables once came from a Python
+    // whose database called every unassigned code point Fullwidth.
+    if (scalarWidth(888) != 1) { return fail("unassigned U+0378 is one column") }
+    // SOFT HYPHEN is a format character that terminals draw.
+    if (scalarWidth(173) != 1) { return fail("U+00AD is one column") }
+    // A syllable typed as conjoining jamo is its leading consonant's two columns.
+    if ("\u{1100}\u{1161}\u{11A8}".displayWidth != 2) { return fail("jamo take two columns") }
+
+    // An emoji sequence is one picture, two columns, however many scalars.
+    if ("👨‍👩‍👧".displayWidth != 2) { return fail("a ZWJ family is two columns") }
+    if ("👍🏽".displayWidth != 2) { return fail("a skin-toned emoji is two columns") }
+    if ("\u{A9}\u{FE0F}".displayWidth != 2) { return fail("VS16 makes an emoji two columns") }
+    if ("\u{A9}".displayWidth != 1) { return fail("text presentation stays one column") }
+
+    // -- UAX #29, the rules the old subset did not have ------------------------
+    if ("\r\n".graphemeCount != 1) { return fail("GB3: CR LF is one grapheme") }
+    if ("\n\u{301}".graphemeCount != 2) { return fail("GB4: nothing extends a control") }
+    // GB11 joins only a pictograph to a pictograph: a ZWJ between letters does not.
+    if ("a\u{200D}b".graphemeCount != 2) { return fail("GB11: ZWJ joins pictographs only") }
+    // GB9b: ARABIC NUMBER SIGN is Prepend, and joins what follows it.
+    if ("\u{600}1".graphemeCount != 1) { return fail("GB9b: Prepend joins forward") }
+    // GB9c: KA, VIRAMA, SSA is one conjunct.
+    if ("\u{915}\u{94D}\u{937}".graphemeCount != 1) { return fail("GB9c: a conjunct is one grapheme") }
+    // GB9a: a spacing mark continues its cluster.
+    if ("\u{915}\u{93F}".graphemeCount != 1) { return fail("GB9a: SpacingMark joins") }
 
     println("test_137 ok")
     return 0

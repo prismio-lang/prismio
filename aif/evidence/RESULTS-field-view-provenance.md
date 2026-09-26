@@ -90,7 +90,7 @@ this from withholding releases everywhere.
 
 The unbound form **leaks** now instead of dangling. That is the conservative
 direction, it is what the released 0.1 compiler did, and it is the rule
-RUNTIME.md 3.1 already states: an owned result passed straight into a parameter is
+RUNTIME.md (now [the runtime surface](https://developers.prismio.org/runtime/supported-surface)) 3.1 already states: an owned result passed straight into a parameter is
 a value nothing names. Binding it is correct and remains the advice.
 
 Sinking the release past the consuming call — spilling the temporary to a slot and

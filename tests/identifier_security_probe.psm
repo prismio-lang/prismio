@@ -1,0 +1,16 @@
+// Fixture for run_identifier_security_test. Not a `test_*.psm`: it compiles, and
+// what is under test is the two warnings it compiles with.
+//
+//   P2003  `ſum` holds U+017F LATIN SMALL LETTER LONG S, which UTS #39 restricts
+//          (obsolete). Line 12.
+//   P2004  `pаypal` has a Cyrillic U+0430 where `paypal` has a Latin `a`: the
+//          two skeletons are equal. Line 14, naming the one declared first.
+import std.io
+
+fn main() -> Int {
+    let paypal = 1
+    let ſum = paypal + 1
+    println(ſum)
+    let pаypal = 2
+    return pаypal - paypal - 1
+}

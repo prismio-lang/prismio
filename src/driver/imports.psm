@@ -479,7 +479,8 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
 }
 
 // Finds a standard module in a source checkout or an installed toolchain. The
-// order is RUNTIME.md's: a `std/` in the entry's directory or any enclosing one
+// order is the one developers.prismio.org/runtime/supported-surface documents:
+// a `std/` in the entry's directory or any enclosing one
 // wins over the toolchain's `stdlib/`, which is what makes a checkout of the
 // compiler build against its own tree -- and means an application's own `std/`
 // directory shadows the shipped one.

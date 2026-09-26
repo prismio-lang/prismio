@@ -161,7 +161,8 @@ private fn semaDottedModulePath(node: ASTNode) -> String {
 // An operator lowered straight to IR would have had to re-derive that, and would
 // have got it wrong in a place no ledger points at.
 //
-// **They need `import std.string`.** There is no prelude (RUNTIME.md 2): a
+// **They need `import std.string`.** There is no prelude
+// (developers.prismio.org/runtime/supported-surface): a
 // program that compares no strings links no string code, which is what lets a
 // target with no stdout link at all. Naming the missing import is a better
 // diagnostic than the "unknown function `strEquals`" the bare rewrite produces,

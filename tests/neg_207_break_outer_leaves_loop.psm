@@ -1,0 +1,16 @@
+// expect-error: must return Int on every path, but control can reach its closing brace
+// `break@outer` in the inner loop leaves the outer one too, so control can reach
+// the end of `f`. Counting only a break that names the analysed loop would miss
+// it; test_206 is the accepted half.
+fn f(n: Int) -> Int {
+    outer@ loop {
+        loop {
+            if (n > 3) { break@outer }
+            return 1
+        }
+    }
+}
+
+fn main() -> Int {
+    return f(1)
+}

@@ -11,7 +11,8 @@
 // out ordered, and can even keep a sum.
 //
 // No element is bound to a local: a struct read out of a list is read through
-// `list_get` at each use, the way RUNTIME.md asks.
+// `list_get` at each use, the way the runtime surface asks
+// (developers.prismio.org/runtime/supported-surface).
 
 import std.io
 import std.vec

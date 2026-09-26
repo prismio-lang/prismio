@@ -781,7 +781,12 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
         if (nodeExists(n.child1)) {
             let v = aifSitesOf(n.child1, fnId, scope)
             aif_con_bind(aif_key_ret(fnId), v)
-            aif_con_return(v, fnId)
+            let value = ptr_to_node(n.child1)
+            if (value.kind == NodeKind.IDENTIFIER_EXPR) {
+                aif_con_return_binding(v, fnId, aif_key_var(fnId, value.s1))
+            } else {
+                aif_con_return(v, fnId)
+            }
         }
         return
     }
@@ -971,7 +976,7 @@ private fn aifStmtEscapesUnjoined(n: ASTNode, name: String, inLoop: Bool) -> Boo
     }
     // A region is not a loop, so a break inside one belongs to whatever encloses
     // it and `inLoop` passes through unchanged -- the same reading
-    // semaBlockHasBreak takes.
+    // semaBlockBreaksOut takes.
     if (n.kind == NodeKind.REGION_STATEMENT) {
         return aifChainEscapesUnjoined(aifBlockChain(n.child1), name, inLoop)
     }

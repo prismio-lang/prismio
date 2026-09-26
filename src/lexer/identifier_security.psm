@@ -1,0 +1,147 @@
+// UTS #39 checks over a program's identifiers: what UAX #31 lets through and a
+// reader could still be fooled by.
+//
+// Two warnings, both rustc's (`uncommon_codepoints`, `confusable_idents`):
+//
+//   P2003  an identifier holds a character UTS #39's General Security Profile
+//          does not allow -- Identifier_Status=Restricted: obsolete, technical,
+//          limited-use, or not NFKC-stable.
+//   P2004  two different identifiers in the program look alike: they have the
+//          same UTS #39 skeleton, as `pаypal` with a Cyrillic `а` has `paypal`'s.
+//
+// Warnings, not errors: an identifier in a real script is sometimes both right
+// and uncommon, and a confusable pair in one codebase can be deliberate.
+//
+// **Free for a program without a non-ASCII identifier**, which is almost every
+// program: the scanner records whether it saw one, and nothing here runs unless
+// it did. When it does, every file is lexed again from the diagnostics
+// registry's copy, because a confusable pair can be an ASCII name in std and a
+// non-ASCII one in the program. A pair of ASCII names is not reported: that
+// `l` and `I` look alike is the reader's everyday problem, not an attack.
+//
+// The skeleton is UTS #39's internalSkeleton: NFD, Default_Ignorable_Code_Point
+// removed, each scalar replaced by its prototype, NFD again. The standard's
+// `skeleton` also reorders for display by the Bidirectional Algorithm first;
+// that only matters for an identifier that mixes left-to-right and
+// right-to-left letters, and is not implemented.
+
+import lexer.token
+import lexer.scanner
+import lexer.identifier_tables
+import common.text
+import common.diagnostics
+import std.string
+import std.unicode
+
+public fn lexCheckIdentifierSecurity() {
+    if (lexerSawNonAsciiIdentifier() == false) { return }
+
+    let mut names: Vec<String> = []
+    let mut skeletons: Vec<String> = []
+    let mut files: Vec<Int> = []
+    let mut lines: Vec<Int> = []
+    let mut cols: Vec<Int> = []
+    let mut widths: Vec<Int> = []
+    let mut reported: Vec<Bool> = []
+
+    // The non-ASCII identifiers, once each, where each first appears.
+    let fileCount = diag_file_count()
+    for file in 0..<fileCount {
+        let head = lexAllTokens(createLexer(diag_file_content(file), file))
+        let mut currentPtr = token_to_ptr(head)
+        loop {
+            let current = ptr_to_token(currentPtr)
+            if (current.type == TokenType.EOF) { break }
+            if (current.type == TokenType.IDENTIFIER and current.value.isAscii == false
+                    and identifierIndex(names, current.value) < 0) {
+                identifierWarnRestricted(current)
+                names.push(current.value.clone())
+                skeletons.push(identifierSkeleton(current.value))
+                files.push(current.file)
+                lines.push(current.line)
+                cols.push(current.col)
+                widths.push(current.len)
+                reported.push(false)
+            }
+            currentPtr = current.tokNext
+        }
+    }
+
+    // Each non-ASCII identifier against the ones before it.
+    let count = names.length
+    for i in 0..<count {
+        for j in 0..<i {
+            if (reported[i] == false and skeletons[i].equals(skeletons[j])) {
+                identifierWarnConfusable(names[i], names[j], files[i], lines[i], cols[i], widths[i])
+                reported[i] = true
+            }
+        }
+    }
+
+    // And against every ASCII identifier in the program.
+    for file in 0..<fileCount {
+        let head = lexAllTokens(createLexer(diag_file_content(file), file))
+        let mut currentPtr = token_to_ptr(head)
+        loop {
+            let current = ptr_to_token(currentPtr)
+            if (current.type == TokenType.EOF) { break }
+            if (current.type == TokenType.IDENTIFIER and current.value.isAscii) {
+                let skeleton = identifierSkeleton(current.value)
+                for i in 0..<count {
+                    if (reported[i] == false and skeletons[i].equals(skeleton)) {
+                        identifierWarnConfusable(names[i], current.value, files[i], lines[i],
+                                                 cols[i], widths[i])
+                        reported[i] = true
+                    }
+                }
+            }
+            currentPtr = current.tokNext
+        }
+    }
+}
+
+private fn identifierIndex(names: Vec<String>, name: String) -> Int {
+    let count = names.length
+    for i in 0..<count {
+        if (names[i].equals(name)) { return i }
+    }
+    return 0 - 1
+}
+
+// UTS #39 internalSkeleton. Two identifiers are confusable when theirs are equal.
+private fn identifierSkeleton(name: String) -> String {
+    let decomposed = name.normalizeNfd()
+    let mut built = StringBuilder.new()
+    for scalar in decomposed.scalars() {
+        if (isDefaultIgnorable(scalar) == false) {
+            let mut part = 0
+            loop {
+                let prototype = confusablePrototype(scalar, part)
+                if (prototype < 0) { break }
+                built.append(strFromScalar(prototype))
+                part = part + 1
+            }
+        }
+    }
+    let prototypes = built.toString()
+    return prototypes.normalizeNfd()
+}
+
+private fn identifierWarnRestricted(token: Token) {
+    for scalar in token.value.scalars() {
+        if (scalar >= 128 and isIdentifierAllowed(scalar) == false) {
+            diag_warning_at_code("P2003", token.file, token.line, token.col, token.len,
+                "identifier ".concat(diagQuote(token.value), " contains ",
+                    lexerScalarNotation(scalar),
+                    ", which UTS #39 restricts in identifiers: it is uncommon, obsolete or easily mistaken"))
+            return
+        }
+    }
+}
+
+private fn identifierWarnConfusable(name: String, other: String, file: Int, line: Int,
+                                    col: Int, width: Int) {
+    diag_warning_at_code("P2004", file, line, col, width,
+        "identifier ".concat(diagQuote(name), " looks like ", diagQuote(other),
+            " (UTS #39 confusables); a reader cannot tell which one is meant"))
+}

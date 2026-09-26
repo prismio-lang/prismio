@@ -1,0 +1,6 @@
+// expect-error: unescaped bidirectional control U+202E in a comment
+// P2002 in a nested block comment: the inner comment holds a raw U+202E.
+/* outer /* inner ‮ */ still outer */
+fn main() -> Int {
+    return 0
+}

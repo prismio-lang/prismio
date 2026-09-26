@@ -418,6 +418,11 @@ def print_summary(progress, report, elapsed_seconds):
     if behind:
         progress.line("  {}slowest vs C++{}  {}".format(
             STYLE.dim, STYLE.reset, ", ".join("{} {}".format(name, ratio_cell(ratio, 0)) for ratio, name in behind)))
+    for item in elimination_benchmarks(report):
+        progress.line("  {}elimination{}     {}: {}".format(
+            STYLE.dim, STYLE.reset, item["name"], " · ".join(
+                "{} {}".format(LANGUAGE_LABELS[language], elimination_cell(
+                    item["languages"][language]["elapsed_ns_median"])) for language in LANGUAGES)))
 
     binary_bytes = report.get("binary_bytes", {})
     if binary_bytes and "prismio" in binary_bytes:
@@ -459,8 +464,42 @@ def select_benchmarks(manifest, names):
     return [item for item in manifest["benchmarks"] if not requested or item["name"] in requested]
 
 
+# A workload whose correct result is that no work is left: the compiler is
+# expected to delete it, and what remains to time is the timer and the call.
+# `dead_code_elimination` compiles to `return 17` in all three languages, and
+# read 0 ns for Prismio against ~0.7 us for C++ and Rust -- overhead, not speed.
+# As a ratio that 0 is meaningless, and the HTML report's geomean, which clamps
+# a ratio to 1e-9 rather than dropping it, read ~28% low because of it. So an
+# elimination workload is reported as kept or eliminated per language and stays
+# out of every ratio. A loop that survives costs milliseconds, far past this.
+ELIMINATED_NS = 10_000
+
+
+def is_elimination(item):
+    return item.get("measure") == "elimination"
+
+
 def measured_benchmarks(report):
-    return [item for item in report["benchmarks"] if item["status"] == "implemented"]
+    return [item for item in report["benchmarks"]
+            if item["status"] == "implemented" and not is_elimination(item)]
+
+
+def elimination_benchmarks(report):
+    return [item for item in report["benchmarks"]
+            if item["status"] == "implemented" and is_elimination(item)]
+
+
+def elimination_cell(ns):
+    if ns <= ELIMINATED_NS:
+        return STYLE.green + "eliminated" + STYLE.reset
+    return STYLE.red + "kept " + format_ns(ns) + STYLE.reset
+
+
+def elimination_row(progress, measured, name_width):
+    """An elimination workload: whether each arm deleted the work, never a ratio."""
+    cells = ["{} {}".format(LANGUAGE_LABELS[language], elimination_cell(
+        measured["languages"][language]["elapsed_ns_median"])) for language in LANGUAGES]
+    progress.line("    {:<{w}}  {}".format(measured["name"], " · ".join(cells), w=name_width))
 
 
 def write_html_report(report, path, raw_data_name):
@@ -532,6 +571,9 @@ def main():
         # that build's, not this run's, and saying so is the difference between a
         # stale number and a wrong one.
         "cached_builds": cached_arms,
+        # The threshold below which an elimination workload counts as deleted,
+        # so the HTML report judges it by the same number.
+        "elimination_ns": ELIMINATED_NS,
         "benchmarks": [],
     }
     name_width = max([len("workload")] + [len(item["name"]) for item in selected])
@@ -578,7 +620,10 @@ def main():
                     "peak_rss_bytes_samples": [sample.get("peak_rss_bytes", 0) for sample in samples[language]],
                 }
             report["benchmarks"].append(measured)
-            table_row(progress, measured, name_width)
+            if is_elimination(measured):
+                elimination_row(progress, measured, name_width)
+            else:
+                table_row(progress, measured, name_width)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     html_path = args.output.parent / "report.html"
@@ -596,11 +641,12 @@ def main():
     print_summary(progress, report, time.monotonic() - progress.started)
 
     implemented = len(measured_benchmarks(report))
+    eliminations = len(elimination_benchmarks(report))
     unsupported = sum(item["status"] == "unsupported" for item in report["benchmarks"])
     sample_text = "1 run" if args.runs == 1 else "{} runs".format(args.runs)
     print()
-    print("Completed {} benchmarks ({} unsupported) · {}".format(
-        implemented, unsupported, sample_text))
+    print("Completed {} benchmarks and {} elimination check{} ({} unsupported) · {}".format(
+        implemented, eliminations, "" if eliminations == 1 else "s", unsupported, sample_text))
     print("{}Report{}   {}".format(STYLE.dim, STYLE.reset, html_path))
     print("{}Data{}     {}".format(STYLE.dim, STYLE.reset, args.output))
     if args.open:

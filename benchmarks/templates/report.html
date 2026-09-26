@@ -166,6 +166,17 @@
         </div>
       </section>
 
+      <!-- ELIMINATION CHECKS SECTION -->
+      <section id="elimination-section" aria-labelledby="elimination-title" style="margin-top: 64px;">
+        <div class="section-header">
+          <div class="section-title-wrap">
+            <h2 class="section-title" id="elimination-title">Elimination Checks</h2>
+            <p class="section-subtitle">Workloads whose correct result is that the compiler deleted them; judged eliminated or kept, and left out of every ratio</p>
+          </div>
+        </div>
+        <div class="unsupported-grid" id="elimination-grid"></div>
+      </section>
+
       <!-- UNSUPPORTED CAPABILITIES SECTION -->
       <section id="unsupported-section" aria-labelledby="unsupported-title" style="margin-top: 64px;">
         <div class="section-header">
@@ -191,7 +202,13 @@
     const report = __REPORT_DATA__;
     const languages = ["prismio", "cpp", "rust"];
     const labels = {prismio: "Prismio", cpp: "C++", rust: "Rust"};
-    const implemented = report.benchmarks.filter(b => b.status === "implemented");
+    // An elimination workload's right answer is "no work left": it is judged
+    // eliminated or kept, and never enters a ratio. Its 0 ns, clamped to 1e-9 by
+    // geomean() below, once pulled the headline geomean ~28% low.
+    const eliminationNs = report.elimination_ns || 10000;
+    const isElimination = b => b.measure === "elimination";
+    const implemented = report.benchmarks.filter(b => b.status === "implemented" && !isElimination(b));
+    const eliminations = report.benchmarks.filter(b => b.status === "implemented" && isElimination(b));
     const unsupported = report.benchmarks.filter(b => b.status === "unsupported");
 
     // Math & Formatting Helpers
@@ -679,6 +696,28 @@
     }
 
     // Render Unsupported
+    function renderEliminations() {
+      const grid = document.querySelector("#elimination-grid");
+      if (!eliminations.length) {
+        document.querySelector("#elimination-section").hidden = true;
+        return;
+      }
+      grid.innerHTML = eliminations.map(item => `
+        <div class="unsupported-card">
+          <div class="unsupported-top">
+            <span class="unsupported-name">${escapeHtml(item.name)}</span>
+          </div>
+          <div class="unsupported-meta">
+            ${languages.map(lang => {
+              const ns = median(item, lang);
+              const verdict = ns <= eliminationNs ? "eliminated" : `kept (${duration(ns)})`;
+              return `<span>${labels[lang]}: <strong>${escapeHtml(verdict)}</strong></span>`;
+            }).join("<span>·</span>")}
+          </div>
+        </div>
+      `).join("");
+    }
+
     function renderUnsupported() {
       const grid = document.querySelector("#unsupported-grid");
       if (!unsupported.length) {
@@ -823,6 +862,7 @@
     // Initial Render
     renderKPIs();
     renderCategories();
+    renderEliminations();
     renderUnsupported();
     updateFilters();
   </script>

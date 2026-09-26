@@ -482,7 +482,8 @@
       "name": "dead_code_elimination",
       "category": "adversarial",
       "status": "implemented",
-      "profile": "compiler-optimization"
+      "profile": "compiler-optimization",
+      "measure": "elimination"
     }
   ]
 }

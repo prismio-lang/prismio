@@ -1,0 +1,11 @@
+// expect-error: unescaped bidirectional control U+202E in a string literal
+// P2002 (Trojan Source, CVE-2021-42574). The string below holds a raw U+202E
+// RIGHT-TO-LEFT OVERRIDE after `user`: an editor shows the rest of the line
+// reversed, so the text a reviewer reads is not the text that compiles.
+import std.io
+
+fn main() -> Int {
+    let access = "user‮ // admin"
+    println(access)
+    return 0
+}

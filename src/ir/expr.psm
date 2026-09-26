@@ -248,13 +248,14 @@ internal fn chainReturnsName(head: Ptr, name: String) -> Bool {
     return false
 }
 
-// Whether `name`'s allocation leaves this frame through some *other* value.
+// Whether some `return` may carry `name`'s allocation in any form other than
+// `return name` itself.
 //
 // The second half of nodeReturnsName, and the reason that one alone was not
 // enough. Both exist because E cannot answer for a callee-allocated value: it is
 // already Caller, so `return` raises nothing and the escape fact stays silent.
-// nodeReturnsName supplies the syntactic guard for `return t`; this supplies it
-// for the same allocation leaving through somebody else's return --
+// This is the guard for the same allocation leaving through somebody else's
+// return --
 //
 //     let t = band(1)          // droppable by aif_owns_call_result_at_node
 //     let x = passthru(t)      // x aliases t's allocation
@@ -265,32 +266,76 @@ internal fn chainReturnsName(head: Ptr, name: String) -> Bool {
 // `retain_in` raises `in_container` on the site and aif_owns_call_result_at_node
 // already declines on it.
 //
+// **A bare `return name` is not one of them**, because it is the one form whose
+// path codegen can see: generateReturn skips exactly that binding's drop, and
+// every other exit drops it. Declining it as well leaked the binding on every
+// path that returns something else:
+//
+//     let a = seed.repeat(3)
+//     if (flag) { return a }
+//     return seed.repeat(2)          // `a` had no owner here
+//
+// Every other form keeps the refusal: `let t = a; return t` has no binding of
+// `a`'s at the return to skip.
+//
 // **Driven from the `return`, not from the argument**, and the difference is
 // precision rather than taste. "Is `name` ever passed to a callee that may hand
 // a parameter back" is the cheaper question and it is the wrong one: it declines
 // `let same = identity(items)` in test_47_aif_containers, where the alias never
 // leaves the frame and `items` is this scope's to drop. Asking which values
 // reach a `return` keeps that drop and still refuses the one above.
-private fn nodeEscapesThroughCall(nodePtr: Ptr, name: String) -> Bool {
+private fn nodeReturnsAliasBeyondBare(nodePtr: Ptr, name: String) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
 
-    if (n.kind == NodeKind.RETURN_STATEMENT) {
-        if (nodeExists(n.child1)) {
-            if (irValueAliasesName(n.child1, name, 0)) { return true }
-        }
+    if (n.kind == NodeKind.RETURN_STATEMENT and nodeExists(n.child1)) {
+        let value = ptr_to_node(n.child1)
+        let bare = value.kind == NodeKind.IDENTIFIER_EXPR and value.s1.equals(name)
+        if (bare == false and irValueAliasesName(n.child1, name, 0)) { return true }
     }
 
-    if (chainEscapesThroughCall(n.child1, name)) { return true }
-    if (chainEscapesThroughCall(n.child2, name)) { return true }
-    return chainEscapesThroughCall(n.child3, name)
+    if (chainReturnsAliasBeyondBare(n.child1, name)) { return true }
+    if (chainReturnsAliasBeyondBare(n.child2, name)) { return true }
+    return chainReturnsAliasBeyondBare(n.child3, name)
 }
 
-internal fn chainEscapesThroughCall(head: Ptr, name: String) -> Bool {
+// How many bindings of `name` the tree introduces: `let`s, loop variables, and
+// match-arm binders. Parameters are not counted; a parameter's value set holds
+// none of this function's own allocations.
+private fn nodeBindingCount(nodePtr: Ptr, name: String) -> Int {
+    if (nodeIsNull(nodePtr)) { return 0 }
+    let n = ptr_to_node(nodePtr)
+    let mut count = 0
+    if ((n.kind == NodeKind.VARIABLE_DECL or n.kind == NodeKind.FOR_STATEMENT)
+            and n.s1.equals(name)) {
+        count = 1
+    }
+    if (n.kind == NodeKind.MATCH_ARM and nodeExists(n.child1)) {
+        let mut binder = ptr_to_node(n.child1).child2
+        while (nodeExists(binder)) {
+            if (ptr_to_node(binder).s1.equals(name)) { count = count + 1 }
+            binder = ptr_to_node(binder).next
+        }
+    }
+    return count + chainBindingCount(n.child1, name) + chainBindingCount(n.child2, name)
+        + chainBindingCount(n.child3, name)
+}
+
+internal fn chainBindingCount(head: Ptr, name: String) -> Int {
+    let mut count = 0
+    let mut p = head
+    while (nodeExists(p)) {
+        count = count + nodeBindingCount(p, name)
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+internal fn chainReturnsAliasBeyondBare(head: Ptr, name: String) -> Bool {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
-        if (nodeEscapesThroughCall(p, name)) { return true }
+        if (nodeReturnsAliasBeyondBare(p, name)) { return true }
         p = n.next
     }
     return false
@@ -341,7 +386,7 @@ internal fn chainRetainsAliasOf(head: Ptr, name: String) -> Bool {
 // Whether `name`'s allocation is assigned into some other binding.
 //
 // The third way out of the frame, beside a `return` (nodeReturnsName) and a
-// return through a call (nodeEscapesThroughCall), and the one neither sees:
+// return through a call (nodeReturnsAliasBeyondBare), and the one neither sees:
 //
 //     let mut outer = "..."
 //     for i in 0..<n {
@@ -572,7 +617,7 @@ private fn irCallWithholdsTemporaries(call: ASTNode) -> Bool {
 // all: 1,666 of 1,667 allocations over 1,000 iterations. Written with
 // `let o = lookup(i)` first it is 1,667 / 1,667, because a binding is dropped at
 // its scope exit, and the guards on that drop already ask whether the view
-// escapes (nodeEscapesThroughCall, chainAssignsAliasOf).
+// escapes (nodeReturnsAliasBeyondBare, chainAssignsAliasOf).
 //
 // So the temporary becomes that binding: `let bt.N = lookup(i)` spliced in ahead
 // of the statement, the argument replaced by its name, and everything after is
@@ -2911,6 +2956,20 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
                                                structName, fieldIndex))
 }
 
+// Every element a number written as a literal: what a constant table is made of.
+private fn arrayLiteralIsNumeric(first: Ptr) -> Bool {
+    let mut elemPtr = first
+    while (nodeExists(elemPtr)) {
+        let elemNode = ptr_to_node(elemPtr)
+        if (elemNode.kind != NodeKind.LITERAL_EXPR) { return false }
+        if (elemNode.i1 != TokenType.NUMBER_LITERAL and elemNode.i1 != TokenType.FLOAT_LITERAL) {
+            return false
+        }
+        elemPtr = elemNode.next
+    }
+    return true
+}
+
 private fn generateArrayLiteral(expr: ASTNode) -> String {
     let elemCount = countListNodes(expr.child1)
     let firstElem = ptr_to_node(expr.child1)
@@ -2925,6 +2984,21 @@ private fn generateArrayLiteral(expr: ASTNode) -> String {
         elemType = storageType(typeIrKey(ptr_to_type(arrT.child)))
     } else if (firstElem.kind == NodeKind.ARRAY_LITERAL_EXPR) {
         elemType = "ptr"
+    }
+
+    // Past 64 bytes of numeric literals, the contents are a constant and the
+    // frame array is filled from it by one copy. See ir_array_literal_end.
+    if (scalarInlineBytes(elemType) * elemCount > 64
+            and elemType.equals("i1") == false
+            and arrayLiteralIsNumeric(expr.child1)) {
+        ir_array_literal_begin()
+        let mut constPtr = expr.child1
+        while (nodeExists(constPtr)) {
+            let constNode = ptr_to_node(constPtr)
+            ir_array_literal_elem(elemType, generateExpression(constNode))
+            constPtr = constNode.next
+        }
+        return ir_get_temp_name(ir_array_literal_end(elemType))
     }
 
     let base = ir_get_temp_name(ir_array_alloca(elemType, elemCount))
@@ -4336,7 +4410,8 @@ private fn generateCall(expr: ASTNode) -> String {
                 ir_call_arg_borrow("ptr", argVal)
             } else if (aif_extern_contract(funcName, argIndex).equals("borrow")) {
                 // **The contract, spent rather than merely checked.**
-                // RUNTIME.md defines `borrow` as "the callee reads the
+                // The contract table (developers.prismio.org/runtime/
+                // supported-surface) defines `borrow` as "the callee reads the
                 // argument and does not retain it", which is what LLVM
                 // spells `readonly nocapture`. Without saying so, LLVM must
                 // assume the callee writes through the pointer, and the

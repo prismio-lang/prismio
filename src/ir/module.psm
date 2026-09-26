@@ -180,6 +180,22 @@ private fn declareVecEntryPoints() {
     ir_declare_function_end()
 }
 
+// Whether a loop statement occurs anywhere under `nodePtr`. `repeat` is a
+// FOR_STATEMENT by the time it gets here (parse/stmt.psm), and a closure's body
+// is a function of its own after sema, so neither needs a case.
+private fn moduleTreeHasLoop(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.FOR_STATEMENT or node.kind == NodeKind.WHILE_STATEMENT
+            or node.kind == NodeKind.LOOP_STATEMENT) {
+        return true
+    }
+    if (moduleTreeHasLoop(node.child1)) { return true }
+    if (moduleTreeHasLoop(node.child2)) { return true }
+    if (moduleTreeHasLoop(node.child3)) { return true }
+    return moduleTreeHasLoop(node.next)
+}
+
 private fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
@@ -279,6 +295,8 @@ private fn generateFunction(func: ASTNode) {
     // Parameter scope, outside the body block, matching semaFunction.
     ir_scope_push()
 
+    irFunctionHasLoop = moduleTreeHasLoop(func.child2)
+
     let mut paramPtr2 = func.child1
     let mut paramIndex = 0
     while (nodeExists(paramPtr2)) {
@@ -297,7 +315,16 @@ private fn generateFunction(func: ASTNode) {
         // pointer rather than ask per character where the bytes are. Parameters
         // are borrows and cannot be reassigned, so the answer cannot go stale.
         // See `data_ptr` in runtime/ir_symbols.c.
-        if (isFatStringKey(pStoreType)) {
+        //
+        // **Only in a function with a loop to amortise it over.** Resolving is
+        // three stores to a scratch slot, and a loop-free function reads each
+        // byte once per call either way. What it costs there is its caller:
+        // inlined into the caller's byte loop, `strByteAt`'s entry block lands in
+        // that loop with lifetime markers around the stores, which LICM will not
+        // hoist past, and the loop stays scalar. Summing `s.byteAt(i)` over 1 MB
+        // fifty times: 18.8 ms resolved here, 0.58 ms vectorised through the
+        // per-access read (`ir_str_byte_at`), which is store-free.
+        if (isFatStringKey(pStoreType) and irFunctionHasLoop) {
             ir_set_var_data(paramNode.s1, ir_str_data("%p_".concat(paramNode.s1)))
         }
 

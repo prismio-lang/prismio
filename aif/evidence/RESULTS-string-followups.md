@@ -13,7 +13,7 @@ fixpoint. The baseline is HEAD (`727c704`) bootstrapped from the project host:
 
 **The recorded cause was wrong.** KNOWN_ISSUES put it down to the standard
 library resolving `./std` relative to the current directory. It resolves by
-walking up from the *entry file* (`standardModulePath`, and RUNTIME.md's table),
+walking up from the *entry file* (`standardModulePath`, and RUNTIME.md (now [the runtime surface](https://developers.prismio.org/runtime/supported-surface))'s table),
 and that only decides whether a build reaches the defect. The defect is in
 emission.
 
@@ -70,8 +70,8 @@ teach the compiler, refresh the seed, then use it. This step is the first two.
 The lowering is `ir_str_compare`. Two inline strings compare as one unsigned
 128-bit key, `bswap64(field 0)` above `rev32(word 1)`: the twelve bytes
 most-significant first with the length below them, which orders exactly as the
-byte loop does because an inline pair is zero past its length (STRINGS.md
-invariant 1). Every other pair takes `memcmp` over the shorter length and then
+byte loop does because an inline pair is zero past its length ([string
+invariant 1](https://developers.prismio.org/compiler/string-representation#representation-invariants)). Every other pair takes `memcmp` over the shorter length and then
 the lengths. The answer is -1, 0 or 1, spelled `(a > b) - (a < b)` so a caller
 testing only the sign folds it to one compare.
 

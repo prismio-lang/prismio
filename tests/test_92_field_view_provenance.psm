@@ -19,11 +19,14 @@
 //     typing the binder's *name* but not its *node*, so the walk could not tell
 //     a reference payload from a scalar one (src/sema/enums.psm).
 //
-// **This asserts values, not the ledger.** Every unbound form below leaks, by
-// the rule RUNTIME.md 3.1 states: an owned result passed straight into a
-// parameter is a value nothing names. Leaking is the conservative direction and
-// is what the released 0.1 compiler did. Reading freed memory is not, and that
-// is what is being guarded.
+// **This asserts values, not the ledger.** When this landed, every unbound form
+// below leaked: an owned result passed straight into a parameter was a value
+// nothing named, and leaking was the conservative direction the released 0.1
+// compiler took. Since 2026-09-25 such a result is released after the call, or
+// held to the block's end when the callee may return a view of it
+// (developers.prismio.org/runtime/supported-surface), and the ledger balances.
+// Reading freed memory is what is being guarded, and a balanced ledger cannot
+// show it: the broken compiler balanced too.
 
 import std.io
 import std.string

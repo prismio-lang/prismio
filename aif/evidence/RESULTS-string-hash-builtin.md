@@ -36,7 +36,7 @@ key; one is hashed in registers and the other in the runtime, and a map that
 placed one and looks up the other finds nothing if the two numbers differ. It is
 also why `str_hash`'s short path pads with zeros rather than using the
 overlapping loads its long path uses: an inline pair is zero past its length
-(STRINGS.md invariant 1), and only zeros reproduce it.
+([string invariant 1](https://developers.prismio.org/compiler/string-representation#representation-invariants)), and only zeros reproduce it.
 
 ## Choosing the mix
 

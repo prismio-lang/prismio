@@ -105,8 +105,9 @@ static int g_declaring; // 1 while building a `declare`, 0 for a definition
 // Call being assembled.
 typedef struct {
     LLVMValueRef args[MAX_CALL_ARGS];
-    // FFI 5.2 `borrow`, per argument: RUNTIME.md's table defines it as "the
-    // callee reads the argument and does not retain it", which is exactly what
+    // FFI 5.2 `borrow`, per argument: the contract table (developers.prismio.org/
+    // runtime/supported-surface) defines it as "the callee reads the argument and
+    // does not retain it", which is exactly what
     // LLVM spells `readonly nocapture`. Recorded here and applied to the call in
     // ir_call_end.
     int borrow[MAX_CALL_ARGS];
@@ -2362,6 +2363,64 @@ void ir_array_copy_into(const char *elem_type, int count, const char *dst, const
     array_copy_bytes(ety, arr, resolve_value(dst, "ptr"), resolve_value(src, "ptr"));
 }
 
+// An array literal whose every element is a numeric literal, built once.
+//
+// **Stored element by element, a table is rebuilt on every call.** A function
+// holding a 1642-element range table as a literal emitted 1642 stores into its
+// frame each time it ran, and a binary search over it measured 2x slower than
+// the same ranges decoded from hex digits in a string. This is the rule clang
+// applies to `const int t[] = {...}` in a function (`shouldSplitConstantStore`
+// in CGDecl.cpp): past 64 bytes, the elements are a private constant and the
+// initialisation is one memcpy from it. LLVM then drops the copy wherever the
+// frame array is only read, and indexes the constant directly.
+//
+// The array is still frame storage the program may write: the constant is only
+// where its initial contents come from, so `t[0] = 9` changes this call's copy.
+//
+// Gathered through begin/elem/end, as a call's arguments are, because the
+// element count is unbounded. The buffer is this backend's own temporary.
+static LLVMValueRef *g_array_literal = NULL;
+static int g_array_literal_count = 0;
+static int g_array_literal_capacity = 0;
+
+void ir_array_literal_begin(void) {
+    g_array_literal_count = 0;
+}
+
+void ir_array_literal_elem(const char *elem_type, const char *value) {
+    if (g_array_literal_count == g_array_literal_capacity) {
+        int capacity = g_array_literal_capacity ? g_array_literal_capacity * 2 : 256;
+        LLVMValueRef *grown = realloc(g_array_literal, (size_t)capacity * sizeof(LLVMValueRef));
+        if (!grown) backend_fail("out of memory for an array literal", NULL);
+        g_array_literal = grown;
+        g_array_literal_capacity = capacity;
+    }
+    LLVMValueRef element = resolve_value(value, elem_type);
+    // Codegen sends only numeric literals here, and a constant initializer can
+    // hold nothing else. Anything that is not one is a codegen bug to report,
+    // not a value to store at run time behind the caller's back.
+    if (!LLVMIsConstant(element)) backend_fail("array literal element is not a constant", value);
+    g_array_literal[g_array_literal_count++] = element;
+}
+
+int ir_array_literal_end(const char *elem_type) {
+    LLVMTypeRef ety = type_from_key(elem_type);
+    int count = g_array_literal_count;
+    LLVMTypeRef arr = LLVMArrayType2(ety, (uint64_t)count);
+    LLVMValueRef slot = array_slot(arr);
+
+    LLVMValueRef table = LLVMAddGlobal(g_module, arr, ".arr");
+    LLVMSetInitializer(table, LLVMConstArray2(ety, g_array_literal, (uint64_t)count));
+    LLVMSetGlobalConstant(table, 1);
+    LLVMSetLinkage(table, LLVMPrivateLinkage);
+    // No explicit alignment: a global gets at least its type's ABI alignment,
+    // which for an array is the element's, and that is what the copy assumes.
+    LLVMSetUnnamedAddr(table, 1);
+
+    array_copy_bytes(ety, arr, slot, table);
+    return array_base(arr, slot);
+}
+
 // The flat-`List` element view: `list_get_inline` with its representation test
 // answered at compile time instead of once per element.
 //
@@ -4187,10 +4246,24 @@ int ir_str_byte_at(const char *base, const char *index) {
         LLVMBuildAnd(g_builder, word, LLVMConstInt(i64, PRISMIO_STR_INLINE_TAG, 0), ""),
         LLVMConstInt(i64, 0, 0), "");
 
-    LLVMValueRef safe = LLVMBuildSelect(g_builder, inlined, str_scratch_slot(), heap, "");
-    LLVMValueRef from_heap =
-        LLVMBuildLoad2(g_builder, i8, byte_gep(safe, idx), "");
+    LLVMBasicBlockRef pair_bb = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strbyte.pair");
+    LLVMBasicBlockRef heap_bb = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strbyte.heap");
+    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(g_ctx, g_function, "strbyte.done");
+    LLVMValueRef br = LLVMBuildCondBr(g_builder, inlined, pair_bb, heap_bb);
+    LLVMTypeRef i32w = LLVMInt32TypeInContext(g_ctx);
+    LLVMMetadataRef weight_ops[3] = {
+        LLVMMDStringInContext2(g_ctx, "branch_weights", strlen("branch_weights")),
+        LLVMValueAsMetadata(LLVMConstInt(i32w, 1, 0)),
+        LLVMValueAsMetadata(LLVMConstInt(i32w, 2000, 0)),
+    };
+    LLVMSetMetadata(br, LLVMGetMDKindIDInContext(g_ctx, "prof", strlen("prof")),
+                    LLVMMetadataAsValue(g_ctx, LLVMMDNodeInContext2(g_ctx, weight_ops, 3)));
 
+    LLVMPositionBuilderAtEnd(g_builder, heap_bb);
+    LLVMValueRef from_heap = LLVMBuildLoad2(g_builder, i8, byte_gep(heap, idx), "");
+    LLVMBuildBr(g_builder, done);
+
+    LLVMPositionBuilderAtEnd(g_builder, pair_bb);
     LLVMValueRef low = LLVMBuildPtrToInt(g_builder, heap, i64, "");
     LLVMValueRef high = LLVMBuildLShr(g_builder, word, LLVMConstInt(i64, 32, 0), "");
     LLVMValueRef which = LLVMBuildSelect(
@@ -4204,8 +4277,14 @@ int ir_str_byte_at(const char *base, const char *index) {
         LLVMConstInt(i64, 3, 0), "");
     LLVMValueRef from_pair = LLVMBuildTrunc(
         g_builder, LLVMBuildLShr(g_builder, which, shift, ""), i8, "");
+    LLVMBuildBr(g_builder, done);
 
-    return intern_value(LLVMBuildSelect(g_builder, inlined, from_pair, from_heap, ""));
+    LLVMPositionBuilderAtEnd(g_builder, done);
+    LLVMValueRef byte = LLVMBuildPhi(g_builder, i8, "");
+    LLVMValueRef vals[2] = {from_heap, from_pair};
+    LLVMBasicBlockRef blocks[2] = {heap_bb, pair_bb};
+    LLVMAddIncoming(byte, vals, blocks, 2);
+    return intern_value(byte);
 }
 
 // The caller's length switch proved this String cannot use the twelve-byte

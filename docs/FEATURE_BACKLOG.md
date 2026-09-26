@@ -129,7 +129,7 @@ if a measured caller needs it, and define duplicate-key behavior explicitly
 
 - [ ] Add `std/json.psm`, importing only the modules it actually needs
   (`std.string`, `std.option`, and collection support). Add `std.json` to the
-  standard-module table in `RUNTIME.md`.
+  [standard-module table](https://developers.prismio.org/runtime/supported-surface#standard-modules).
 - [ ] Implement a byte-indexed recursive-descent parser with a single cursor.
   Accept JSON whitespace only; reject trailing non-whitespace after one value.
 - [ ] Parse all six value forms: null, booleans, strings, arrays, objects, and
@@ -188,7 +188,7 @@ the logical heap length, while the backing List may retain unused tail slots.
 ### Checklist
 
 - [ ] Add `std/priority_queue.psm` and document `import std.priority_queue` in
-  `RUNTIME.md`.
+  the [standard-module table](https://developers.prismio.org/runtime/supported-surface#standard-modules).
 - [ ] Implement index helpers (`parent`, `left`, `right`), sift-up on push, and
   sift-down on pop. Every List access must be bounded by logical `length`.
 - [ ] Implement bottom-up `heapify` in O(n), not repeated O(n log n) pushes.
@@ -212,7 +212,7 @@ For each completed item:
 
 - [ ] Run its focused tests and the normal suite using the candidate compiler.
 - [ ] Run ownership verification for recursive/owned cases where applicable.
-- [ ] Update `RUNTIME.md`, `benchmarks/benchmarks.json`,
+- [ ] Update [the runtime surface](https://developers.prismio.org/runtime/supported-surface), `benchmarks/benchmarks.json`,
   `benchmarks/UNSUPPORTED.md`, and `benchmarks/README.md` in the same change.
 - [ ] Record measured benchmark evidence under `aif/evidence/` if the change
   affects a claimed performance result.

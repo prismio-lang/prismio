@@ -4,7 +4,7 @@
 program with an argument vector, connects each of its three streams to this
 process, the null device or nothing, and hands back a `Child` to wait on, kill,
 read and write. `runCommand` and `quoteArg` are gone. KNOWN_ISSUES, "Language
-surface", lists what is still missing; RUNTIME.md has the C surface.
+surface", lists what is still missing; RUNTIME.md (now [the runtime surface](https://developers.prismio.org/runtime/supported-surface)) has the C surface.
 
 ```prismio
 let p = Process()

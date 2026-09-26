@@ -1,0 +1,33 @@
+// The other half of P2002 (neg_208 to neg_211): what it lets through.
+//
+// An escaped bidirectional control says what it is, so it compiles, and the
+// string holds the real scalar. Every bidi control's UTF-8 begins 0xE2, which is
+// the byte the scanner stops on -- so do an em dash, an arrow and an ellipsis,
+// in strings and in comments — like this one → …, and those must pass.
+
+import std.io
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let rlo = "a\u{202E}b"
+    if (rlo.length != 5) { return fail("\\u{202E} is three bytes") }
+    if (rlo.scalarAt(1) != 8238) { return fail("\\u{202E} is U+202E") }
+    let isolate = "\u{2066}x\u{2069}"
+    if (isolate.scalarCount != 3) { return fail("isolates by escape") }
+
+    let prose = "one — two → three …"
+    if (prose.scalarCount != 19) { return fail("em dash, arrow, ellipsis") }
+    let multi = """
+a — b
+"""
+    if (multi.contains("—") == false) { return fail("an em dash in a triple-quoted string") }
+
+    println("test_212 ok")
+    return 0
+}

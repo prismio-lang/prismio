@@ -1756,6 +1756,14 @@ typedef struct {
     // that point on, which is what makes a container teardown a release point --
     // and what takes the value's own binding off the drop list.
     int in_container;
+    // E by every rule except one: the E-RETURN of a bare `return name`, which
+    // raises E and leaves this alone. `ret_key` is the binding key such a return
+    // named (-1: none, -2: more than one binding). Together they say whether the
+    // value is confined to its scope on every path that does not return it,
+    // which is what aif_frees_unless_returned_node asks. E itself is unchanged
+    // by this, so every tier and the oracle's agreement are too.
+    int E_held;
+    int ret_key;
     // SPEC 5.1. `unique` asserts A = Unique and cuts the aliasing graph: a rule
     // that would raise A above Unique is suppressed rather than applied.
     int alias_axiom;
@@ -1874,6 +1882,8 @@ int aif_site_new(const char* type, int kind, int fn, int scope,
     // T >= Isolated" is a statement about the bottom element, not a rule that
     // has to fire.
     s->E = scope;
+    s->E_held = scope;
+    s->ret_key = -1;
     s->A = AIF_A_UNIQUE;
     s->C = AIF_C_ACYCLIC;
     s->T = AIF_T_ISOLATED;
@@ -2233,6 +2243,9 @@ void aif_argv_end(int base) { argv.len = base; }
 #define AIF_CON_RETAIN_IN     5
 #define AIF_CON_BORROW        6
 #define AIF_CON_ESCAPE_CALLER 7
+// ESCAPE_CALLER's `c`: 0 for an escape that is not a return, 1 for a return of
+// an expression, and this plus the binding's key for a bare `return name`.
+#define AIF_RETURN_KEY_BASE 2
 #define AIF_CON_ESCAPE_GLOBAL 8
 #define AIF_CON_NO_STACK      9
 #define AIF_CON_TRANSFERRED   24
@@ -2326,6 +2339,11 @@ void aif_con_retain_in(int vs, int holder)      { con_add(AIF_CON_RETAIN_IN, vs,
 void aif_con_borrow(int vs)                     { con_add(AIF_CON_BORROW, vs, 0, 0); }
 void aif_con_escape_caller(int vs)              { con_add(AIF_CON_ESCAPE_CALLER, vs, 0, 0); }
 void aif_con_return(int vs, int fn)              { con_add(AIF_CON_ESCAPE_CALLER, vs, fn, 1); }
+// The same rule for `return name`: `c` carries the binding's key, offset past
+// the 0/1 above so `k->c` still reads as "a source-level return" everywhere.
+void aif_con_return_binding(int vs, int fn, int key) {
+    con_add(AIF_CON_ESCAPE_CALLER, vs, fn, AIF_RETURN_KEY_BASE + key);
+}
 void aif_con_escape_global(int vs)              { con_add(AIF_CON_ESCAPE_GLOBAL, vs, 0, 0); }
 void aif_con_unique(int vs)                     { con_add(AIF_CON_UNIQUE, vs, 0, 0); }
 void aif_con_pin(int vs, int tier)              { con_add(AIF_CON_PIN, vs, tier, 0); }
@@ -2566,10 +2584,22 @@ static int moved(int site) {
 }
 
 static int raise_escape(int site, int target, int from) {
+    sites[site].E_held = escape_join(sites[site].E_held, target);
     int j = escape_join(sites[site].E, target);
     if (j == sites[site].E) return 0;
     sites[site].E = j;
     note_deriv(deriv_e, site, from, j);
+    return 1;
+}
+
+// raise_escape for the two rules E_held does not follow: a bare `return name`
+// in the site's own function, and a return or binding in another function. See
+// the E-RETURN case in the solver.
+static int raise_escape_not_held(int site, int target) {
+    int j = escape_join(sites[site].E, target);
+    if (j == sites[site].E) return 0;
+    sites[site].E = j;
+    note_deriv(deriv_e, site, -1, j);
     return 1;
 }
 
@@ -2931,8 +2961,15 @@ int aif_solve(int max_rounds) {
                     // Cross-function flow does not extend a lifetime: only a
                     // binding in the site's own function says anything about
                     // which of that function's scopes the value outlives.
-                    int target = (sites[s].fn == k->c) ? k->b : AIF_E_CALLER;
-                    if (raise_escape(s, target, -1)) changed = moved(s);
+                    //
+                    // Nor does it lift E_held: a binding in another frame holds
+                    // this value only once this frame has returned it, or during
+                    // a call this frame made. The E-RETURN case below says why.
+                    if (sites[s].fn == k->c) {
+                        if (raise_escape(s, k->b, -1)) changed = moved(s);
+                    } else if (raise_escape_not_held(s, AIF_E_CALLER)) {
+                        changed = moved(s);
+                    }
                 }
                 // E-VIEW: this binding is how long the view lives, so it is how
                 // long the collection has to.
@@ -3020,7 +3057,29 @@ int aif_solve(int max_rounds) {
                 resolve(k->a, &scratch_val);
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
-                    if (raise_escape(vec_val.v[i], AIF_E_CALLER, -1)) changed = moved(vec_val.v[i]);
+                    int s = vec_val.v[i];
+                    // E_held is not raised by two kinds of return. A bare
+                    // `return name` in the site's own function, which is recorded
+                    // instead: codegen keeps the value on exactly the paths that
+                    // take one. And any return in another function: a value
+                    // allocated here reaches another frame only by being returned
+                    // from this one (those paths again), or as an argument, whose
+                    // return hands it back to this frame and its constraints --
+                    // or through a container, field, global or task, each of
+                    // which raises E_held by its own rule. Without the second,
+                    // `toUpper(self) { return strToUpper(self) }` lifted every
+                    // site strToUpper returns.
+                    int own = k->b == sites[s].fn;
+                    if (k->c && (k->c >= AIF_RETURN_KEY_BASE || !own)) {
+                        if (own) {
+                            int key = k->c - AIF_RETURN_KEY_BASE;
+                            if (sites[s].ret_key == -1) sites[s].ret_key = key;
+                            else if (sites[s].ret_key != key) sites[s].ret_key = -2;
+                        }
+                        if (raise_escape_not_held(s, AIF_E_CALLER)) changed = moved(s);
+                    } else if (raise_escape(s, AIF_E_CALLER, -1)) {
+                        changed = moved(s);
+                    }
                 }
                 // E-VIEW, and the case the safety gap was actually about:
                 // `return list_get(l, i)` hands the caller a reference into a
@@ -3084,6 +3143,7 @@ int aif_solve(int max_rounds) {
                         // E-SPAWN. An unjoined task may outlive every scope in
                         // this function, so the value is reachable from a root
                         // this analysis cannot see the end of.
+                        sites[s].E_held = AIF_E_GLOBAL;
                         if (sites[s].E != AIF_E_GLOBAL) {
                             sites[s].E = AIF_E_GLOBAL;
                             note_deriv(deriv_e, s, -1, AIF_E_GLOBAL);
@@ -3109,6 +3169,7 @@ int aif_solve(int max_rounds) {
                 bits_to_vec(&scratch_val, &vec_val);
                 for (int i = 0; i < vec_val.len; i++) {
                     int s = vec_val.v[i];
+                    sites[s].E_held = AIF_E_GLOBAL;
                     if (sites[s].E != AIF_E_GLOBAL) {
                         sites[s].E = AIF_E_GLOBAL;
                         note_deriv(deriv_e, s, -1, AIF_E_GLOBAL);
@@ -3244,6 +3305,7 @@ static void widen_sites(const Bits* u) {
     for (int s = 0; s < site_count; s++) {
         if (u && !bits_test(u, s)) continue;
         sites[s].E = AIF_E_GLOBAL;
+        sites[s].E_held = AIF_E_GLOBAL;
         sites[s].A = AIF_A_SHARED;
         sites[s].C = AIF_C_MAYBE;
         // Top of the T lattice too -- but only where a task exists to reach
@@ -5869,6 +5931,48 @@ int aif_frees_at_scope_node(const void* node) {
     return 0;
 }
 
+static int key_find(int kind, int a, int b);
+
+// The scope-exit drop for a binding some path returns with `return name`.
+//
+// aif_frees_at_scope_node declines once E leaves the scope, and a return lifts E
+// to Caller -- correct on the path that returns the value, and a leak on every
+// path that does not:
+//
+//     let out = str_with_capacity(n)
+//     if (ascii) { return out }
+//     return mapped                  // `out` had no owner here
+//
+// So this asks E_held instead: E by every rule but the direct E-RETURN of a bare
+// `return name`. Confined by that measure, the value's only way out is a return
+// of the binding, and codegen skips the drop at exactly those returns
+// (generateReturn). `ret_key` must name `name`'s own binding: `let t = out;
+// return t` returns out's value through `t`, and the drop of `out` at that return
+// would free what the caller receives. A view returned, a field of a returned
+// object, a container, a global -- each raises E_held through its own rule, and
+// the clauses after it are aif_frees_at_scope_node's, unchanged.
+//
+// Keys are per function and name, so two bindings of one name share one. The
+// frontend declines a name bound more than once (src/ir/stmt.psm).
+int aif_frees_unless_returned_node(const void* node, const char* name) {
+    if (node == NULL || name == NULL) return 0;
+    if (aif_arena_at_node(node)) return 0;
+    for (NodeSite* n = node_buckets[node_hash(node)]; n; n = n->next) {
+        if (n->node != node) continue;
+        Site* s = &sites[n->site];
+        if (s->E_held != s->scope) return 0;
+        if (s->ret_key < 0) return 0;
+        if (s->ret_key != key_find(AIF_KEY_VAR, s->fn, aif_intern(name))) return 0;
+        if (!site_is_move_only(s)) return 0;
+        if (s->kind == AIF_K_ARRAY) return 0;
+        if (s->no_stack) return 0;
+        if (s->in_container) return 0;
+        if (site_in_released_field(n->site)) return 0;
+        return aif_tier_of(n->site) == AIF_T0 ? 0 : 1;
+    }
+    return 0;
+}
+
 // AIF Level 4, the reassignment half: may an assignment release what it displaces?
 //
 // Every clause of aif_frees_at_scope_node above applies unchanged -- an arena
@@ -7851,11 +7955,13 @@ int aif_owns_call_result_at_node(const void* node) {
         //
         // The other half -- "no intermediate frame owns it" -- needs nothing
         // computed, because **returning a value already implies not dropping
-        // it**. A frame that binds the value and returns the binding is declined
-        // by `nodeReturnsName`; one that returns it through a further call is
-        // declined by `nodeEscapesThroughCall` (src/ir/expr.psm). So every frame
-        // on the path from the allocation to here has already been refused
-        // ownership of it, and this caller is the first that can hold it.
+        // it**. A frame that binds the value and returns the binding with a bare
+        // `return name` skips that binding's drop on the path that returns it
+        // (generateReturn); one that returns it in any other form, a further
+        // call among them, is declined by `nodeReturnsAliasBeyondBare`
+        // (src/ir/expr.psm). So every frame on the path from the allocation to
+        // here has already let go of it, and this caller is the first that can
+        // hold it.
         if (sites[s].fn != c->fn && site_may_be_param_of(c->fn, s)) return AIF_ELEM_NONE;
         if (aif_tier_of(s) != AIF_T2) return AIF_ELEM_NONE;
         int d = elem_disposition_of(s, AIF_T2);

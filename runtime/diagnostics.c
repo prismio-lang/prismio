@@ -353,6 +353,15 @@ const char* diag_file_path(int file) {
     return g_files[file].path;
 }
 
+// The whole text of a registered file: the registry's own copy, which lives as
+// long as the process. The identifier-security pass re-lexes every file from
+// here, once they are all loaded, because the caller's source strings are not
+// guaranteed to outlive their parse. `alias` on the Prismio side, as the path is.
+const char* diag_file_content(int file) {
+    if (file < 0 || file >= g_file_count) return "";
+    return g_files[file].content;
+}
+
 // One line of a registered file, without its indentation or line ending: what a
 // failed `assert` with no message of its own prints, captured while the source is
 // still in hand. Returned in a buffer that the next call overwrites -- the one
@@ -442,6 +451,41 @@ static int diag_digits(int value) {
 
 static void diag_spaces(int n) {
     for (int i = 0; i < n; i++) fputc(' ', stderr);
+}
+
+// Whether `p` starts a bidirectional override or isolate, U+202A-U+202E or
+// U+2066-U+2069: E2 80 AA-AE and E2 81 A6-A9 in UTF-8. `avail` bytes remain.
+static int diag_is_bidi_control(const unsigned char* p, int avail) {
+    if (avail < 3 || p[0] != 0xE2) return 0;
+    if (p[1] == 0x80) return p[2] >= 0xAA && p[2] <= 0xAE;
+    if (p[1] == 0x81) return p[2] >= 0xA6 && p[2] <= 0xA9;
+    return 0;
+}
+
+// The source line as the snippet shows it, with each bidi control as U+FFFD.
+//
+// **Echoed raw, the error about Trojan Source was Trojan Source.** P2002 quotes
+// the line it refuses, and a terminal applies the override it holds, so the
+// snippet showed the reordered text the diagnostic exists to warn about. rustc
+// replaces them the same way.
+static void diag_print_line(const char* start, int len) {
+    const unsigned char* p = (const unsigned char*)start;
+    for (int i = 0; i < len; i++) {
+        if (diag_is_bidi_control(p + i, len - i)) {
+            fputs("\xEF\xBF\xBD", stderr);
+            i += 2;
+            continue;
+        }
+        fputc(p[i], stderr);
+    }
+}
+
+// Columns count characters, not bytes: a UTF-8 continuation byte adds none. A
+// column is one character wide, which is short by one for an East Asian wide
+// character or an emoji -- that needs the width tables std.unicode has and this
+// runtime does not.
+static int diag_is_continuation(unsigned char byte) {
+    return byte >= 0x80 && byte <= 0xBF;
 }
 
 // JSON Lines is used instead of one enclosing array so an IDE can consume each
@@ -542,19 +586,30 @@ static void diag_render_span(int file, int line, int col, int len, const char* a
     diag_spaces(gutter + 1);
     fprintf(stderr, "%s|%s\n", frame, reset);
 
-    fprintf(stderr, "%s%d |%s %.*s\n", frame, line, reset, line_len, start);
+    fprintf(stderr, "%s%d |%s ", frame, line, reset);
+    diag_print_line(start, line_len);
+    fputc('\n', stderr);
 
     diag_spaces(gutter + 1);
     fprintf(stderr, "%s|%s ", frame, reset);
 
     // Pad with the source's own whitespace so a tab-indented line keeps the
     // caret under the right character instead of drifting by seven columns.
+    // `col` and `len` are bytes (IDE_PROTOCOL.md); what is drawn is characters,
+    // or a caret after an `é` drifted a column right per `é`.
     int pad = col - 1;
     if (pad > line_len) pad = line_len;
-    for (int i = 0; i < pad; i++) fputc(start[i] == '\t' ? '\t' : ' ', stderr);
+    for (int i = 0; i < pad; i++) {
+        if (diag_is_continuation((unsigned char)start[i])) continue;
+        fputc(start[i] == '\t' ? '\t' : ' ', stderr);
+    }
 
-    int carets = len > 0 ? len : 1;
-    if (pad + carets > line_len) carets = line_len - pad;
+    int end = pad + (len > 0 ? len : 1);
+    if (end > line_len) end = line_len;
+    int carets = 0;
+    for (int i = pad; i < end; i++) {
+        if (!diag_is_continuation((unsigned char)start[i])) carets++;
+    }
     if (carets < 1) carets = 1;
     fputs(mark, stderr);
     for (int i = 0; i < carets; i++) fputc('^', stderr);

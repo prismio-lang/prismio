@@ -1,0 +1,12 @@
+// expect-error: unescaped bidirectional control U+202E in a string literal
+// P2002 in a triple-quoted string, which the scanner reads by a loop of its own.
+import std.io
+
+fn main() -> Int {
+    let text = """
+first line
+second ‮line
+"""
+    println(text)
+    return 0
+}

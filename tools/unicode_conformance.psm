@@ -1,0 +1,176 @@
+// std.unicode against the Unicode Character Database's own conformance tests.
+//
+//     unicode_conformance <GraphemeBreakTest.txt> <NormalizationTest.txt>
+//
+// Built and run by tools/unicode_conformance.py, which fetches the two files at
+// the pinned version and checks their hashes. Every line is checked; the exit
+// status is the verdict, and the first failures are printed with their line.
+//
+// Grapheme clusters: every boundary the file marks `÷`, and no other.
+// Normalization: the NFC and NFD invariants the file's header states, for each
+// line, and that every scalar Part 1 does not list is unchanged by both.
+// NFKC and NFKD are not implemented and not checked.
+
+import std.io
+import std.fs
+import std.string
+import std.process
+import std.unicode
+import std.unicode_tables
+import std.vec
+import std.display
+
+fn hexScalar(text: String) -> Int {
+    return text.parseInt(16).unwrapOr(0 - 1)
+}
+
+fn encodeScalars(fields: String) -> String {
+    let mut built = StringBuilder.new()
+    for part in fields.trim().splitWhitespace() {
+        built.append(strFromScalar(hexScalar(part)))
+    }
+    return built.toString()
+}
+
+fn report(kind: String, line: String, failures: Int) {
+    if (failures <= 10) {
+        println("FAIL ${kind}: ${line}")
+    }
+}
+
+// Where the file puts `÷`, as byte offsets into the encoded string, against
+// where walking by grapheme puts them.
+fn checkGraphemeLine(line: String) -> Bool {
+    let mut built = StringBuilder.new()
+    let mut expected: Vec<Int> = []
+    for token in line.splitWhitespace() {
+        if (token.equals("÷")) {
+            expected.push(built.length)
+        } else if (token.equals("×") == false) {
+            built.append(strFromScalar(hexScalar(token)))
+        }
+    }
+    let text = built.toString()
+
+    let mut actual: Vec<Int> = [0]
+    let mut at = 0
+    while (at < text.length) {
+        let step = text.graphemeWidthAt(at)
+        if (step <= 0) { return false }
+        at = at + step
+        actual.push(at)
+    }
+
+    if (actual.length != expected.length) { return false }
+    let mut i = 0
+    while (i < actual.length) {
+        if (actual[i] != expected[i]) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+fn graphemeConformance(path: String) -> Int {
+    let mut passed = 0
+    let mut failed = 0
+    for raw in readLines(path) {
+        let hash = raw.indexOf('#')
+        let mut line = raw.clone()
+        if (hash >= 0) { line = raw.substring(0, hash) }
+        if (line.isBlank) { continue }
+        if (checkGraphemeLine(line)) {
+            passed = passed + 1
+        } else {
+            failed = failed + 1
+            report("grapheme", raw, failed)
+        }
+    }
+    println("GraphemeBreakTest: ${passed} passed, ${failed} failed")
+    return failed
+}
+
+// NFC: c2 == NFC(c1) == NFC(c2) == NFC(c3), and c4 == NFC(c4) == NFC(c5).
+// NFD: c3 == NFD(c1) == NFD(c2) == NFD(c3), and c5 == NFD(c4) == NFD(c5).
+fn checkNormalizationLine(c1: String, c2: String, c3: String, c4: String, c5: String) -> Bool {
+    if (c1.normalizeNfc().equals(c2) == false) { return false }
+    if (c2.normalizeNfc().equals(c2) == false) { return false }
+    if (c3.normalizeNfc().equals(c2) == false) { return false }
+    if (c4.normalizeNfc().equals(c4) == false) { return false }
+    if (c5.normalizeNfc().equals(c4) == false) { return false }
+    if (c1.normalizeNfd().equals(c3) == false) { return false }
+    if (c2.normalizeNfd().equals(c3) == false) { return false }
+    if (c3.normalizeNfd().equals(c3) == false) { return false }
+    if (c4.normalizeNfd().equals(c5) == false) { return false }
+    if (c5.normalizeNfd().equals(c5) == false) { return false }
+    return true
+}
+
+fn normalizationConformance(path: String) -> Int {
+    let mut passed = 0
+    let mut failed = 0
+    let mut part = ""
+    // The scalars Part 1 lists; every other one must normalize to itself.
+    let mut listed: Vec<Bool> = []
+    let mut k = 0
+    while (k <= 1114111) {
+        listed.push(false)
+        k = k + 1
+    }
+
+    for raw in readLines(path) {
+        if (raw.startsWith("@Part")) {
+            part = raw.substring(0, 6)
+            continue
+        }
+        let hash = raw.indexOf('#')
+        let mut line = raw.clone()
+        if (hash >= 0) { line = raw.substring(0, hash) }
+        if (line.isBlank) { continue }
+
+        let fields = line.split(';')
+        if (fields.length < 5) { continue }
+        if (part.equals("@Part1")) {
+            listed[hexScalar(fields[0].trim())] = true
+        }
+        if (checkNormalizationLine(encodeScalars(fields[0]), encodeScalars(fields[1]),
+                                   encodeScalars(fields[2]), encodeScalars(fields[3]),
+                                   encodeScalars(fields[4]))) {
+            passed = passed + 1
+        } else {
+            failed = failed + 1
+            report("normalization", raw, failed)
+        }
+    }
+    println("NormalizationTest: ${passed} lines passed, ${failed} failed")
+
+    let mut invariant = 0
+    let mut changed = 0
+    let mut scalar = 0
+    while (scalar <= 1114111) {
+        let surrogate = scalar >= 55296 and scalar <= 57343
+        if (surrogate == false and listed[scalar] == false) {
+            let text = strFromScalar(scalar)
+            if (text.normalizeNfc().equals(text) and text.normalizeNfd().equals(text)) {
+                invariant = invariant + 1
+            } else {
+                changed = changed + 1
+                report("normalization invariant", scalar.toString(), changed)
+            }
+        }
+        scalar = scalar + 1
+    }
+    println("NormalizationTest Part 1 invariants: ${invariant} unchanged, ${changed} changed")
+    return failed + changed
+}
+
+fn main() -> Int {
+    if (process.args.count != 3) {
+        println("usage: unicode_conformance <GraphemeBreakTest.txt> <NormalizationTest.txt>")
+        return 2
+    }
+    println("std.unicode, Unicode ${unicodeVersion()}")
+    let failures = graphemeConformance(process.args.at(1))
+        + normalizationConformance(process.args.at(2))
+    if (failures > 0) { return 1 }
+    return 0
+}

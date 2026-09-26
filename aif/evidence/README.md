@@ -13,7 +13,7 @@ because nothing has measured them.
 > dated records, kept as written. Several cite the working measurement log
 > (`TODO.md`) and the v0.1 language plan (`V0_1_FEATURES.md`), both of which were
 > removed at the 0.1.0 release — they were session scaffolding, and what survived
-> them is here, in `KNOWN_ISSUES.md`, and in `git log`, whose commit messages carry
+> them is here, in `../../docs/KNOWN_ISSUES.md`, and in `git log`, whose commit messages carry
 > their own evidence. A citation to either is a pointer into history, not a broken
 > link to something that should exist.
 
@@ -67,6 +67,7 @@ because nothing has measured them.
 | [RESULTS-M2-reuse-token.md](RESULTS-M2-reuse-token.md) | A proved one-owner `sink` match can feed a same-tag constructor without allocating. g8 reaches **2,049 / 2,049 / 0**, p50 improves **3.66x**, workload allocator calls fall **5.44x**, and a shared-container guard proves the fallback remains semantic. |
 | [RESULTS-curate-scalar-write.md](RESULTS-curate-scalar-write.md) | Scalar set and push cross the curated boundary through an outlined cold path. The 20M set loop drops **18.929 ms to 7.721 ms** and sieve drops **6.849 ms to 3.505 ms**, with the read control flat. |
 | [RESULTS-recursive-release-depth.md](RESULTS-recursive-release-depth.md) | A generated release loops on its last direct self field. A 500,000-link chain moves from SIGSEGV after output to **500,001 / 500,001 / 0**, while binary trees preserve reverse-order recursion for the non-tail branch. |
+| [RESULTS-unicode-18.md](RESULTS-unicode-18.md) | Unicode tables from the pinned UCD 18.0.0 instead of the interpreter's 13.0.0, which called every unassigned scalar two columns wide. std.unicode passes **853/853** GraphemeBreakTest and **20,171/20,171** NormalizationTest lines (was 700 and 19,493). A numeric array literal past 64 bytes is now one constant and a `memcpy`: the readable RangeTable went from **2.4x slower** than packed hex to **4.2x faster**. Identifiers follow UAX #31. |
 
 All three are **static** distribution. `D_dynamic` — the share of *executed* allocations, which is
 what actually predicts performance — needs an instrumented run and therefore codegen.

@@ -245,7 +245,7 @@ of them.
 
 **What is kept.** The `list_push_slot_boxed` split, so the curated set stays closed
 with `list_push_slot` in it and turning this on is one line in
-`PRISMIO_CURATED_OPS`. `KNOWN_ISSUES.md` records that the blocker is now
+`PRISMIO_CURATED_OPS`. `../../docs/KNOWN_ISSUES.md` records that the blocker is now
 performance rather than linkage. The prize behind it is unchanged and still
 locked: struct-path TBAA on literal initialisers, 0.76x on g2 when the slot is
 computed inline (`RESULTS-M6-struct-path-tbaa.md`).

@@ -427,6 +427,9 @@ internal extern fn aif_con_escape_caller(vs: Int)
 // locally-created collection from one merely borrowed from this function's
 // caller.
 internal extern fn aif_con_return(vs: Int, fnId: Int)
+// E-RETURN for `return name`, naming the binding, so the engine can tell the
+// paths that return it from the ones that do not (aif_frees_unless_returned_node).
+internal extern fn aif_con_return_binding(vs: Int, fnId: Int, key: Int)
 internal extern fn aif_con_escape_global(vs: Int)
 internal extern fn aif_con_no_stack(vs: Int)
 internal extern fn aif_con_transferred(vs: Int)

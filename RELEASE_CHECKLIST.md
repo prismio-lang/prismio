@@ -3,7 +3,7 @@
 v0.1.0 is published when every box here is ticked. Each line links to where the
 work is described. This file only tracks state. How to cut the release is
 [RELEASE.md](RELEASE.md), and what is known to be open *after* the release is
-[KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+[KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md).
 
 Tick a box in the commit that does the work, and say in the commit message what
 the evidence is. Last reviewed 2026-09-25.

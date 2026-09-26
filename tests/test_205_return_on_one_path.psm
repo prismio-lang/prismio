@@ -1,0 +1,118 @@
+// A binding returned on some paths is released on the others. `--verify` must
+// read the leak count run_aif_verify_test expects, and no violation.
+//
+// Every value below is a String past twelve bytes or a Vec, so it is a heap
+// allocation the ledger sees; a short string lives inside its pair. The Vec
+// elements come from `toUpper`, not `repeat`: one site backs every `repeat` in
+// a program, and a Vec holding one makes all of them look container-held
+// (KNOWN_ISSUES, "One allocation site backs every `concat`").
+//
+// Released now:
+// 1. `pick` -- a call result returned on one path, another allocation on the
+//    other. `a` had no owner on the second path: any return of a binding took it
+//    off the drop list for every path.
+// 2. `pickLocal` -- the same with an allocation made in this frame, which the
+//    escape fact declined instead: the return put E at Caller for every path.
+// 3. `looped` -- returned from inside a loop, released on every other iteration.
+// 4. `broken` -- a `break` past the return releases it too.
+// 5. `wrapper` -- a one-line wrapper returning a callee that does (2): the
+//    wrapper's return is another frame's, and must not undo the callee's drop.
+//
+// Refused, and so leaked, because releasing would free what the caller holds:
+// 6. `aliased` -- `let t = a; return t` carries `a` out under another name.
+// 7. `rebound` -- `let a = a` in an inner block binds the name twice.
+
+import std.io
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn pick(seed: String, flag: Bool) -> String {
+    let a = seed.repeat(3)
+    if (flag) { return a }
+    let b = seed.repeat(2)
+    return b
+}
+
+fn pickLocal(seed: String, flag: Bool) -> Vec<String> {
+    let mut a: Vec<String> = []
+    a.push(seed.toUpper())
+    if (flag) { return a }
+    let mut b: Vec<String> = []
+    b.push(seed.toLower())
+    return b
+}
+
+fn looped(seed: String, k: Int) -> String {
+    for i in 0..<5 {
+        let a = seed.repeat(i + 1)
+        if (i == k) { return a }
+    }
+    return seed.repeat(9)
+}
+
+fn broken(seed: String, k: Int) -> String {
+    let a = seed.repeat(2)
+    for i in 0..<5 {
+        if (i == k) { break }
+        if (i == 4) { return a }
+    }
+    return seed.repeat(3)
+}
+
+fn wrapper(seed: String, flag: Bool) -> Vec<String> { return pickLocal(seed, flag) }
+
+fn aliased(seed: String, flag: Bool) -> String {
+    let a = seed.repeat(3)
+    let t = a
+    if (flag) { return t }
+    return seed.repeat(2)
+}
+
+fn rebound(seed: String, flag: Bool) -> String {
+    let a = seed.repeat(3)
+    if (flag) {
+        let a = a
+        return a
+    }
+    return seed.repeat(2)
+}
+
+fn main() -> Int {
+    let mut built = StringBuilder.new()
+    built.append("a seed longer than twelve")
+    let seed = built.toString()
+    let n = seed.length
+
+    let mut total = 0
+    let mut want = 0
+    for r in 0..<10 {
+        let flag = r % 2 == 0
+        total = total + pick(seed, flag).length
+        total = total + pickLocal(seed, flag).length
+        total = total + looped(seed, r % 7).length
+        total = total + broken(seed, r % 6).length
+        total = total + wrapper(seed, flag).length
+        if (flag) { want = want + n * 3 } else { want = want + n * 2 }
+        want = want + 1
+        if (r % 7 < 5) { want = want + n * (r % 7 + 1) } else { want = want + n * 9 }
+        if (r % 6 < 5) { want = want + n * 3 } else { want = want + n * 2 }
+        want = want + 1
+    }
+    if (total != want) { return fail("released shapes") }
+
+    total = 0
+    for r in 0..<10 {
+        let flag = r % 2 == 0
+        total = total + aliased(seed, flag).length + rebound(seed, flag).length
+    }
+    if (total != n * 50) { return fail("refused shapes") }
+
+    println("return on one path: ok")
+    return 0
+}

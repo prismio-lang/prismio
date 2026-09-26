@@ -591,8 +591,9 @@ int prismio_cstr_len(const char* s) {
 // nothing unless both compute the same number. So this is not "the short case of
 // the loop below" -- it is the same arithmetic on the same two words, and
 // `str_hash` builds those words by zero-padding rather than by an overlapping
-// load, because an inline pair is zero past its length (STRINGS.md invariant 1)
-// and only zeros reproduce it.
+// load, because an inline pair is zero past its length (string invariant 1,
+// developers.prismio.org/compiler/string-representation) and only zeros
+// reproduce it.
 //
 // One 64x64->128 multiply with its halves folded together, which is wyhash's
 // `mum`, and then bytes 8..11 folded down. **The fold is load-bearing.** A mum
@@ -2691,7 +2692,8 @@ typedef struct {
     long long word;
 } StrPair;
 
-// The length word (STRINGS.md 3). INLINE dominates VIEW, and a macro rather than
+// The length word (developers.prismio.org/compiler/string-representation, "The
+// 16-byte layout"). INLINE dominates VIEW, and a macro rather than
 // a function because the curated bodies below may reference no `static`.
 #define STR_WORD_INLINE 0x80000000LL
 #define STR_WORD_VIEW   0x100000000LL
@@ -3119,7 +3121,7 @@ void list_release(void* lp) {
     // per list, unlike the three hot ops, so the branch is affordable here.
     //
     // The one inline element that owns something is a String pair: an owned long
-    // form's block. INLINE and VIEW both mean there is nothing to free (STRINGS.md
+    // form's block. INLINE and VIEW both mean there is nothing to free (string
     // invariant 2), and a list never holds a view -- list_push_str copies one out.
     if (l->elem_size) {
         if (l->elem_own == AIF_ELEM_STRING && l->elem_size == (int)sizeof(StrPair) && l->data) {

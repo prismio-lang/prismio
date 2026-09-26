@@ -22,6 +22,11 @@ let mut irShortCircuitCounter = 0
 // same change is 0.97x.
 let mut irLoopDepth = 0
 
+// Whether the function being generated contains a loop anywhere in its body. A
+// String binding's data pointer is resolved once, where the binding is made, only
+// when one does: see the parameter loop in generateFunction (ir/module.psm).
+let mut irFunctionHasLoop = false
+
 // The slot holding the enclosing loop's flat-List guard, or "" outside such a
 // loop. One `i1` per loop rather than one test per `list_get`: see
 // generateLoopFlatGuard in src/ir/stmt.psm.
@@ -222,6 +227,11 @@ internal extern fn aif_frees_at_scope_node(node: Ptr) -> Int
 // confinement, because an accumulator allocates in a loop body and binds outside
 // it -- and `return out` puts E at Caller for a value no return ever carried.
 internal extern fn aif_releases_on_overwrite_node(node: Ptr) -> Int
+
+// The scope-exit question for a binding some path hands back with `return name`:
+// confined on every path that does not return it. Codegen skips the drop at the
+// returns that do (generateReturn).
+internal extern fn aif_frees_unless_returned_node(node: Ptr, name: String borrow) -> Int
 
 // Whether it may come from the enclosing `region`'s arena instead of the heap.
 // Stricter than "is inside a region block": the value must also be unable to

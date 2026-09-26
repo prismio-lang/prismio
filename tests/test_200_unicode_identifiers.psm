@@ -1,0 +1,35 @@
+// Identifiers beyond ASCII: UAX #31's XID_Start XID_Continue*, compared in NFC.
+//
+// The profile is in src/lexer/scanner.psm and the sets in
+// src/lexer/identifier_tables.psm, generated from the pinned UCD. What this
+// holds the lexer to: a name in any script is a name, `_` may start one, and two
+// canonically equivalent spellings are one name -- `café` below is declared
+// decomposed (`e` and U+0301) and read precomposed (U+00E9).
+
+import std.io
+import std.display
+
+struct Точка {
+    x: Int,
+    y: Int
+}
+
+fn 合計(左: Int, 右: Int) -> Int {
+    return 左 + 右
+}
+
+fn main() -> Int {
+    let p = Точка { x: 1, y: 2 }
+    if (合計(p.x, p.y) != 3) { return 1 }
+
+    let café = 4
+    if (café != 4) { return 2 }
+
+    let π = 3
+    let _ñ = π + 1
+    let x١ = 5
+    if (_ñ + x١ != 9) { return 3 }
+
+    println("test_200 ok")
+    return 0
+}

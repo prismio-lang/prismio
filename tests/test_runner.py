@@ -672,6 +672,33 @@ def run_crlf_triple_string_test():
     return True
 
 
+def run_source_not_utf8_test():
+    """A byte that begins no UTF-8 character is named as a byte, at its column.
+
+    Written here rather than as a tests/*.psm because the file cannot be UTF-8,
+    and tools/lint.py, tools/format_sources.py and every editor read the tests
+    directory as UTF-8.
+    """
+    print(f"\n{BLUE}--- Running source_not_utf8 ---{RESET}")
+    source = b"fn main() -> Int {\n    let \xff = 1\n    return 0\n}\n"
+    with tempfile.TemporaryDirectory(prefix="prismio-utf8-") as temp_dir:
+        path = Path(temp_dir) / "bad.psm"
+        path.write_bytes(source)
+        exe = Path(temp_dir) / ("bad.exe" if os.name == "nt" else "bad")
+        # Bytes, not text: the diagnostic quotes the source line, and that line
+        # is the one holding the byte that is not UTF-8.
+        built = subprocess.run([str(PRISMIO_EXE), "build", str(path), "-o", str(exe)],
+                               capture_output=True)
+        output = (built.stdout + built.stderr).decode("utf-8", errors="replace")
+        wanted = "invalid UTF-8: byte 255 does not begin a character"
+        if built.returncode == 0 or wanted not in output or "bad.psm:2:9" not in output:
+            print(f"{RED}[FAIL] a non-UTF-8 source byte was not reported as one{RESET}")
+            print(elide_middle(output))
+            return False
+    print(f"{GREEN}[PASS] a non-UTF-8 byte is reported by value, at its column{RESET}")
+    return True
+
+
 def run_corpus_test():
     """Build and *run* every benchmark corpus program.
 
@@ -7099,6 +7126,11 @@ def run_aif_verify_test():
         # before: one `Box { text: make(n) }` in an uncalled function refused
         # the release to every `concat` result in the program.
         "test_184_call_result_ownership": 0,
+        # Ten, and each is deliberate: `aliased` and `rebound` return the value
+        # under a name the drop cannot see, five times each, so they keep the
+        # refusal. Every other shape releases what it does not return. More than
+        # ten is that release gone; a violation is it firing on a returned path.
+        "test_205_return_on_one_path": 10,
         # A view of a binding kept past the binding's scope: pushed into a Vec,
         # or assigned outward. These leak by design -- the binding is kept -- and
         # what the fixture guards is the 0 violations and the strings reading
@@ -7654,6 +7686,142 @@ def run_overflow_checks_test():
         return False
     print(f"{GREEN}[PASS] overflow checks: default wraps and emits no intrinsic; "
           f"--overflow-checks names the operator and the line{RESET}")
+    return True
+
+
+def run_byte_loop_vectorise_test():
+    """A `byteAt` loop over a String parameter vectorises.
+
+    A String parameter's bytes are located once, in the entry block, so a byte
+    loop indexes a pointer (src/ir/module.psm). Done in a *loop-free* function,
+    that was three stores to a scratch slot, and inlining `strByteAt` into a
+    caller's loop brought them into the loop between lifetime markers LICM will
+    not hoist past: summing 1 MB with `s.byteAt(i)` measured 18.8 ms against
+    0.58 ms vectorised. So it is done only where a loop amortises it.
+
+    Three facts, and the pair of IR facts is what discriminates:
+
+      sumBytes    has a loop, so its entry resolves `s` (`%str.inline`)
+      firstByte   has none, so it does not
+      optimised   sumBytes's loop has a `vector.body`
+
+    The last alone would pass a compiler that stopped resolving anywhere, which
+    is the tokenizer's 204,000 per-character tests back; the first two alone
+    would pass one whose loop still did not vectorise. PRISMIO_LLVM_ARGS is a
+    measurement switch, and the one way to read IR after LLVM's own passes.
+    """
+    print(f"\n{BLUE}--- Running byte_loop_vectorise ---{RESET}")
+    src = TEST_DIR / "byte_loop_probe.psm"
+    problems = []
+
+    def function_body(text, symbol):
+        m = re.search(r"define [^@\n]*@" + re.escape(symbol) + r"\(.*?\n}\n", text, re.S)
+        return m.group(0) if m else ""
+
+    with tempfile.TemporaryDirectory(prefix="prismio-byte-loop-") as td:
+        ll = Path(td) / "probe.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(ll)])
+        if built.returncode != 0 or not ll.exists():
+            problems.append(f"IR build failed: "
+                            f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+        else:
+            text = ll.read_text(encoding="utf-8", errors="replace")
+            if "%str.inline" not in function_body(text, "sumBytes__String"):
+                problems.append("sumBytes no longer resolves its parameter at entry")
+            if "%str.inline" in function_body(text, "firstByte__String"):
+                problems.append("firstByte, which has no loop, resolves its parameter")
+
+        exe = Path(td) / ("probe" + (".exe" if os.name == "nt" else ""))
+        env = dict(os.environ)
+        env["PRISMIO_LLVM_ARGS"] = ("-print-after=loop-vectorize "
+                                    "-filter-print-funcs=sumBytes__String")
+        opt = subprocess.run([str(PRISMIO_EXE), "build", str(src), "-o", str(exe)],
+                             capture_output=True, text=True, errors="replace", env=env)
+        dump = (opt.stdout or "") + (opt.stderr or "")
+        if opt.returncode != 0:
+            problems.append(f"optimised build failed: {elide_middle(dump)}")
+        else:
+            if "sumBytes__String" not in dump:
+                problems.append("LLVM printed nothing for sumBytes; the switch was not honoured")
+            elif "vector.body" not in dump:
+                problems.append("sumBytes's byte loop did not vectorise")
+            ok, out, _ = run_program(exe)
+            if not ok or out.strip() != "51553":
+                problems.append(f"probe printed {out.strip()!r}, expected 51553")
+
+    if problems:
+        print(f"{RED}[FAIL] byte loop vectorisation{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] a byteAt loop vectorises; parameters resolve only where a loop is{RESET}")
+    return True
+
+
+def run_identifier_security_test():
+    """UTS #39's two warnings: P2003 (a restricted character) and P2004 (confusable
+    identifiers), from src/lexer/identifier_security.psm.
+
+    Warnings, so the program still builds and runs: the exit status is half of
+    what is asserted. The other half is where and what -- the JSON stream for the
+    code, severity and position an IDE reads, the rendered text for the message a
+    person reads. An ASCII-only program is the control: the check does not run for
+    one at all, and a pair of ASCII names is not reported.
+    """
+    print(f"\n{BLUE}--- Running identifier_security ---{RESET}")
+    probe = TEST_DIR / "identifier_security_probe.psm"
+    control = TEST_DIR / "byte_loop_probe.psm"
+    problems = []
+
+    with tempfile.TemporaryDirectory(prefix="prismio-idsec-") as td:
+        exe = Path(td) / ("probe" + (".exe" if os.name == "nt" else ""))
+        built = subprocess.run([str(PRISMIO_EXE), "build", str(probe), "-o", str(exe)],
+                               capture_output=True, text=True, errors="replace")
+        text = (built.stdout or "") + (built.stderr or "")
+        if built.returncode != 0:
+            problems.append(f"the probe did not build; warnings must not fail it: {elide_middle(text)}")
+        else:
+            ok, out, _ = run_program(exe)
+            if not ok or out.strip() != "2":
+                problems.append(f"the probe printed {out.strip()!r}, expected 2")
+        for want in ("warning[P2003]: identifier `ſum` contains U+017F",
+                     "identifier_security_probe.psm:12:9",
+                     "warning[P2004]: identifier `pаypal` looks like `paypal`",
+                     "identifier_security_probe.psm:14:9"):
+            if want not in text:
+                problems.append(f"missing from the build's output: {want!r}")
+
+    def json_diagnostics(src):
+        r = subprocess.run([str(PRISMIO_EXE), "check", str(src), "--diagnostic-format=json"],
+                           capture_output=True, text=True, errors="replace")
+        records = []
+        for line in ((r.stdout or "") + (r.stderr or "")).splitlines():
+            if line.startswith("{"):
+                records.append(json.loads(line))
+        return r.returncode, records
+
+    status, records = json_diagnostics(probe)
+    found = [(d.get("code"), d.get("severity"), d.get("line"), d.get("column"))
+             for d in records if d.get("kind") == "diagnostic"]
+    if status != 0:
+        problems.append(f"`check` exited {status} on warnings alone")
+    if sorted(found) != [("P2003", "warning", 12, 9), ("P2004", "warning", 14, 9)]:
+        problems.append(f"JSON diagnostics were {found}")
+    summary = [d for d in records if d.get("kind") == "summary"]
+    if not summary or summary[0].get("errors") != 0 or summary[0].get("warnings") != 2:
+        problems.append(f"JSON summary was {summary}")
+
+    status, records = json_diagnostics(control)
+    stray = [d for d in records if d.get("kind") == "diagnostic"]
+    if status != 0 or stray:
+        problems.append(f"the ASCII control reported {stray} (exit {status})")
+
+    if problems:
+        print(f"{RED}[FAIL] identifier security warnings{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] P2003 and P2004 warn, at the right place, and the build succeeds{RESET}")
     return True
 
 
@@ -8480,6 +8648,7 @@ def main():
         ("cli_check_protocol", run_check_command_test),
         ("cli_usage", run_cli_usage_test),
         ("crlf_triple_string", run_crlf_triple_string_test),
+        ("source_not_utf8", run_source_not_utf8_test),
         ("ums", run_ums_test),
         ("corpus", run_corpus_test),
         ("aif_tiers", run_aif_test),
@@ -8530,6 +8699,8 @@ def main():
         ("task_release", run_task_release_test),
         ("string_operator_ledger", run_string_operator_ledger_test),
         ("overflow_checks", run_overflow_checks_test),
+        ("byte_loop_vectorise", run_byte_loop_vectorise_test),
+        ("identifier_security", run_identifier_security_test),
         ("curated_closure", run_curated_closure_test),
         ("curated_emits", run_curated_emits_test),
         ("target_cross", run_target_test),

@@ -6,9 +6,11 @@
 // position because it is entered sitting on the token's first character.
 
 import lexer.token
+import lexer.identifier_tables
 import common.text
 import common.diagnostics
 import std.string
+import std.unicode
 import ast.nodes
 
 public extern fn exit(code: Int)
@@ -108,6 +110,31 @@ private fn lexerNewline(lex: Lexer) {
     lex.col = 0
 }
 
+// **Trojan Source (CVE-2021-42574).** The bidirectional overrides and isolates,
+// U+202A-U+202E and U+2066-U+2069, reorder how a line is *displayed* without
+// changing its bytes, so a comment or string holding one can make an editor or a
+// code review show code that is not the code that compiles -- a `return` that
+// reads as commented out, a check that reads as inside a string. rustc and GCC
+// refuse them unescaped for the same reason. A program that wants one writes
+// `\u{202E}`, which says so. Every one of them encodes with lead byte 0xE2 (226),
+// which is the only byte the loops test before calling this.
+private fn lexerRefuseBidiControl(lex: Lexer, place: String) {
+    let scalar = lexerScalar(lex)
+    let override = scalar >= 8234 and scalar <= 8238
+    let isolate = scalar >= 8294 and scalar <= 8297
+    if (override == false and isolate == false) { return }
+
+    let notation = lexerScalarNotation(scalar)
+    let mut advice = "write it as `\\u{".concat(notation.substring(2, 4), "}` so it is visible")
+    if (place.equals("a comment")) { advice = "remove it" }
+    diag_error_at_code("P2002", lex.file, lex.line, lex.col, 3,
+        "unescaped bidirectional control ".concat(notation, " in ", place,
+            ": it reorders how the line is displayed, so what a reader sees is not what compiles; ",
+            advice))
+    diag_finish()
+    exit(1)
+}
+
 // `/* ... */`, and they nest.
 //
 // **Nesting is the whole point.** The C form cannot comment out a region that
@@ -149,6 +176,7 @@ private fn lexerSkipBlockComment(lex: Lexer) {
             lexerAdvance(lex)
             lexerAdvance(lex)
         } else {
+            if (charCode(current) == 226) { lexerRefuseBidiControl(lex, "a comment") }
             lexerAdvance(lex)
         }
     }
@@ -161,6 +189,7 @@ private fn lexerSkipWhitespace(lex: Lexer) {
             lexerAdvance(lex)
         } else if (lexerCurrent(lex) == '/' and lexerPeek(lex, 1) == '/') {
             while (lexerCurrent(lex) != '\n' and lexerCurrent(lex) != '\0') {
+                if (charCode(lexerCurrent(lex)) == 226) { lexerRefuseBidiControl(lex, "a comment") }
                 lexerAdvance(lex)
             }
         } else if (lexerCurrent(lex) == '/' and lexerPeek(lex, 1) == '*') {
@@ -317,15 +346,80 @@ private fn lexerDecodeEscapes(lex: Lexer, raw: String, line: Int, baseCol: Int) 
     return out
 }
 
+// Identifiers are UAX #31's Default Identifiers -- XID_Start then XID_Continue*
+// -- in this profile of them:
+//
+//   - `_` may start one, as in every C-family language. It is XID_Continue only.
+//   - U+200C ZERO WIDTH NON-JOINER and U+200D ZERO WIDTH JOINER are excluded,
+//     though Unicode 15.1 added both to XID_Continue. They are invisible, so
+//     `ab` and `a<ZWJ>b` would be two names a reader cannot tell apart; UAX #31
+//     permits them only under contextual rules (UAX31-R1a) this does not apply.
+//   - Identifiers are compared in NFC (UAX31-R4): an `é` typed as one scalar and
+//     one typed as `e` plus a combining acute are the same name, as they are the
+//     same text. The token carries the normalized spelling.
+//   - Keywords are ASCII, and remain reserved in every script.
+//
+// The sets come from src/lexer/identifier_tables.psm, generated from the pinned
+// UCD; ASCII never reaches them.
+// Whether any file so far had an identifier past ASCII: what decides whether
+// src/lexer/identifier_security.psm has anything to check. A compiler global --
+// the one thing that outlives each file's Lexer.
+let mut lexerSawNonAscii = false
+
+public fn lexerSawNonAsciiIdentifier() -> Bool {
+    return lexerSawNonAscii
+}
+
+private fn lexerIsIdentifierStart(scalar: Int) -> Bool {
+    return isXidStart(scalar)
+}
+
+private fn lexerIsIdentifierContinue(scalar: Int) -> Bool {
+    if (scalar == 8204 or scalar == 8205) { return false }
+    return isXidContinue(scalar)
+}
+
+// The scalar at the scanner's position, or -1 for a byte that does not begin a
+// well-formed UTF-8 sequence.
+private fn lexerScalar(lex: Lexer) -> Int {
+    return lex.input.scalarAt(lex.pos)
+}
+
+// Past one scalar. Columns stay in UTF-8 bytes, which is what IDE_PROTOCOL.md
+// promises a plugin, so this is `lexerAdvance` once per byte.
+private fn lexerAdvanceScalar(lex: Lexer) {
+    let mut width = lex.input.scalarWidthAt(lex.pos)
+    if (width == 0) { width = 1 }
+    while (width > 0) {
+        lexerAdvance(lex)
+        width = width - 1
+    }
+}
+
 private fn lexIdentifier(lex: Lexer) -> Token {
     let line = lex.line
     let col = lex.col
     let start = lex.pos
 
-    while (isIdentPart(lexerCurrent(lex))) {
-        lexerAdvance(lex)
+    let mut ascii = true
+    loop {
+        let c = lexerCurrent(lex)
+        if (isIdentPart(c)) {
+            lexerAdvance(lex)
+        } else if (charCode(c) >= 128 and lex.pos < lex.length
+                   and (lex.pos > start or lexerIsIdentifierStart(lexerScalar(lex)))
+                   and lexerIsIdentifierContinue(lexerScalar(lex))) {
+            ascii = false
+            lexerAdvanceScalar(lex)
+        } else {
+            break
+        }
     }
-    let value = lex.input.substring(start, lex.pos - start)
+    let mut value = lex.input.substring(start, lex.pos - start)
+    if (ascii == false) {
+        value = value.normalizeNfc()
+        lexerSawNonAscii = true
+    }
 
     if (isKeyword(value)) {
         if (isBoolean(value)) {
@@ -463,6 +557,7 @@ private fn lexStringChunk(lex: Lexer) -> String {
                 "unterminated string literal; multiline strings require triple quotes \"\"\"...\"\"\"")
         }
         if (c == '$' and lexerPeek(lex, 1) == '{') { break }
+        if (charCode(c) == 226) { lexerRefuseBidiControl(lex, "a string literal") }
         if (c == '\\') {
             hasEscape = true
             lexerAdvance(lex) // consume the backslash; the pair is skipped below
@@ -543,6 +638,7 @@ private fn lexTripleStringChunk(lex: Lexer) -> String {
         if (c == '\r' and lexerPeek(lex, 1) == '\n') {
             sawCrlf = true
         }
+        if (charCode(c) == 226) { lexerRefuseBidiControl(lex, "a string literal") }
         if (c == '\n') {
             lexerNewline(lex)
         }
@@ -784,9 +880,46 @@ private fn lexUnexpected(lex: Lexer, c: Char) -> Token {
     let col = lex.col
     let start = lex.pos
 
+    if (charCode(c) >= 128) {
+        lexerFatal(lex, line, col, lexerNonAsciiMessage(lexerScalar(lex), charCode(c)))
+    }
     lexerAdvance(lex)
     lexerFatal(lex, line, col, "unexpected character ".concat(diagQuote(c.toString())))
     return lexerToken(lex, TokenType.UNKNOWN, "?", line, col, start)
+}
+
+// What to say about a non-ASCII byte outside a literal or comment. Quoting it
+// would print one byte of a multi-byte character, or a byte that is not text at
+// all, so the scalar is named by number instead.
+private fn lexerNonAsciiMessage(scalar: Int, byte: Int) -> String {
+    if (scalar < 0) {
+        return "invalid UTF-8: byte ".concat(byte.toString(),
+            " does not begin a character; a source file must be UTF-8")
+    }
+    let notation = lexerScalarNotation(scalar)
+    if (scalar == 8204 or scalar == 8205) {
+        return "invisible character ".concat(notation,
+            " cannot appear in an identifier: two names differing only by it would look the same")
+    }
+    if (lexerIsIdentifierContinue(scalar)) {
+        return "character ".concat(notation,
+            " can continue an identifier but not start one (UAX #31 XID_Start)")
+    }
+    return "unexpected character ".concat(notation)
+}
+
+// `U+00E9`: how the standard writes a scalar, with at least four hex digits.
+public fn lexerScalarNotation(scalar: Int) -> String {
+    let digits = "0123456789ABCDEF"
+    let mut text = ""
+    let mut value = scalar
+    let mut count = 0
+    while (value > 0 or count < 4) {
+        text = digits.substring(value % 16, 1).concat(text)
+        value = value / 16
+        count = count + 1
+    }
+    return "U+".concat(text)
 }
 
 private fn lexerNextToken(lex: Lexer) -> Token {
@@ -804,6 +937,9 @@ private fn lexerNextToken(lex: Lexer) -> Token {
     }
 
     if (isIdentStart(c)) { return lexIdentifier(lex) }
+    if (charCode(c) >= 128 and lexerIsIdentifierStart(lexerScalar(lex))) {
+        return lexIdentifier(lex)
+    }
     if (isDigit(c)) { return lexNumber(lex) }
     if (c == '"') {
         if (lexerPeek(lex, 1) == '"' and lexerPeek(lex, 2) == '"') {

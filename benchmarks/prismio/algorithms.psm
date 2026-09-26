@@ -499,8 +499,8 @@ public fn benchLz4Compress(scale: Int) -> Int {
     let mut input: Vec<U8> = Vec<U8>.withCapacity(n)
 
     let mut seed = 83
-    let mut i = 0
-    while (i < n) {
+
+    for i in 0..<n {
         seed = benchRandom(seed)
         if (i > 20 and (seed % 4) == 0) {
             let offset = 12 + (seed % 8)
@@ -508,10 +508,10 @@ public fn benchLz4Compress(scale: Int) -> Int {
         } else {
             input.push((32 + (seed % 95)) as U8)
         }
-        i = i + 1
     }
 
     let mut table: Vec<Int> = Vec<Int>.withCapacity(4096)
+
     let mut ti = 0
     while (ti < 4096) {
         table.push(-1)

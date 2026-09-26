@@ -183,4 +183,4 @@ python3 tools/milestone_bench.py --old build/unswitch-gen4 --new build/flat-gen3
 The boxed fallback is exercised and correct: g4's checksums are identical with it
 set. The full suite under it reports **197/202**, and the same five failures
 appear on `build/unswitch-gen4` -- they predate this change and are not evidence
-about it. They are worth their own entry; see `KNOWN_ISSUES.md`.
+about it. They are worth their own entry; see `../../docs/KNOWN_ISSUES.md`.

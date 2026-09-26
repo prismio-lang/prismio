@@ -2,16 +2,16 @@
 
 What is open in Prismio 0.1.0, with enough of each to act on. None of these is
 unsoundness unless it says so; every one was found by a measurement or a test
-rather than by reading, and the measurement is in `aif/evidence/`.
+rather than by reading, and the measurement is in `../aif/evidence`.
 
 Detail for any of these — the reproducer, what was tried, what was refuted — is
 in `git log`, which is where this project keeps its record. Commit messages carry
 their own evidence.
 
 **Paths under `aif/evidence/xlang/` no longer exist.** That tree was superseded
-by `benchmarks/` and `prismio bench` on 2026-09-03 and removed; the sources are
+by `../benchmarks` and `prismio bench` on 2026-09-03 and removed; the sources are
 recoverable from Git history. The two files in it that were *regression guards*
-rather than benchmarks are back under `tests/` and are stronger there than they
+rather than benchmarks are back under `../tests` and are stronger there than they
 were: `run_corpus_test` built and ran them for an exit status, and neither defect
 changes one — `pointer_return_temp` leaked 100 of 100 while exiting 0, and
 `extern_alias_escape` printed an empty line and exited 0 while double-owning a
@@ -44,7 +44,7 @@ context-sensitive sites for library producers (docs/MEMORY_PLAN.md §2.3).
 
 **Fixed 2026-09-25: three shapes released memory that was not live.** Each was
 a crash (`free(): invalid pointer`) outside `--verify`, and each reproduced on
-`2ae70c4`. See `aif/evidence/RESULTS-ownership-shapes.md`.
+`2ae70c4`. See `../aif/evidence/RESULTS-ownership-shapes.md`.
 
 - **A value returned through a forwarding call.** `fn wrap(o, d) -> String {
   return optionOr(o, d) }` looked owned to its caller, because its return
@@ -62,13 +62,13 @@ payload is not that value's release point, and a function returning something
 that holds such a view of a parameter counts as returning a view of it, so the
 caller keeps the argument alive. What remains is a leak where there was a double
 free: `let h = parse(t); return errOf(h)` keeps `h`.
-`tests/forwarding_literal_probe.psm`, `binder_return_probe.psm`,
+`../tests/forwarding_literal_probe.psm`, `binder_return_probe.psm`,
 `binder_rewrap_probe.psm` (the suite's `ownership_probes`).
 
 **Still open, and no wider than before:** a `let mut s = "lit"` that is not an
 owning accumulator (so the literal is not cloned), later given both an owned
 value and an unowned one that is not itself a literal source, and returned. See
-`key_may_return_untracked` in `runtime/aif_support.c`.
+`key_may_return_untracked` in `../runtime/aif_support.c`.
 
 **Fixed 2026-09-25: a C-produced value placed in an arena leaked.** AIF let an
 enclosing region serve any `produce` extern except `chan_recv`, and codegen
@@ -79,17 +79,17 @@ that hint: `read_file`, `join_path`, `proc_env_get` and the rest of
 call leaked. The bracketed path (a callee's sites placed in its caller's region)
 did not check `foreign` at all. `for line in stdin.lines()` leaked every line this
 way, and `test_19_runtime_split`'s `join_path` did too (3 leaked → 2; the other
-two are undeclared externs). Now `aifFfiArenaCannotServe` (`src/aif/contracts.psm`,
+two are undeclared externs). Now `aifFfiArenaCannotServe` (`../src/aif/contracts.psm`,
 mirrored in the oracle) marks every extern return `foreign` unless its C
 allocates through `rt_alloc`. The bracket gate and the bracket cost model refuse
-`foreign` sites. Of 228 programs in `tests/` and `aif/corpus/`, only test_19's IR
-moved. See `aif/evidence/RESULTS-std-stdin.md`.
+`foreign` sites. Of 228 programs in `../tests` and `../aif/corpus`, only test_19's IR
+moved. See `../aif/evidence/RESULTS-std-stdin.md`.
 
 **A struct on the frame now owns what its fields were given; four field shapes
 still leak.** AIF places a struct that does not outlive its function in a stack
 slot (T0), and nothing released such a struct's fields. `Bag { items: [] }` leaked
-the Vec outright, and `tests/test_167_frame_struct_fields.psm` leaked 22 of 28.
-Fixed on 2026-09-23 (`src/ir/expr.psm` `spillOwnedFieldTemporary`, `src/ir/stmt.psm`
+the Vec outright, and `../tests/test_167_frame_struct_fields.psm` leaked 22 of 28.
+Fixed on 2026-09-23 (`../src/ir/expr.psm` `spillOwnedFieldTemporary`, `../src/ir/stmt.psm`
 `frameStructOwnsFields`):
 
 - an owned temporary in a frame struct's literal, or assigned to its field in the
@@ -133,21 +133,29 @@ Two facts were missing, and either alone left the hole open:
   compares sites and a field's sites are not the struct's, so it answered a
   truthful no to a question that was not the one being asked — the same shape the
   `fn_may_return_view_of_param` fact was introduced for, one graph over.
-- A payload **arm binder** was bound to nothing at all: `src/aif/walk.psm` had no
+- A payload **arm binder** was bound to nothing at all: `../src/aif/walk.psm` had no
   `MATCH_STATEMENT` case, so `v` in `Option.Some(v) => return v` carried neither
   the scrutinee's sites nor a view of them. Sema compounded it by typing the
   binder's *name* but not its *node*, so the walk could not tell a reference
   payload from a scalar one.
 
 All three are fixed: the field read and the arm binder now record a view of what
-they were read from, and `src/sema/enums.psm` types the binder node.
+they were read from, and `../src/sema/enums.psm` types the binder node.
 `Option<Int>` is unaffected — a scalar payload is a copy and carries no view.
 
-The unbound form now **leaks** rather than dangling, which is the conservative
-direction and what the released 0.1 compiler did. Binding is still correct and
-still the rule (RUNTIME.md 3.1). Guard:
-`tests/test_92_field_view_provenance.psm`, which asserts values rather than the
+The unbound form then **leaked** rather than dangling, which is the conservative
+direction and what the released 0.1 compiler did. Since 2026-09-25 an owned result
+passed straight into a parameter is released after the call, or held to the block's
+end when the callee may return a view of it
+([an owned result passed straight on](https://developers.prismio.org/runtime/supported-surface#an-owned-result-passed-straight-on)),
+and `test_92` reports `18 allocated, 18 released, 0 leaked`. Guard:
+`../tests/test_92_field_view_provenance.psm`, which asserts values rather than the
 ledger, because the ledger is what failed to notice.
+
+**Still open: a payload enum matched straight off a call is not released.**
+`match (metadata(path)) { … }` leaks the `Option` and its payload (two leaks under
+`--verify` on 2026-09-26); binding the result first, as
+`../tests/test_190_fs_entries.psm` does, releases it.
 
 **A `spawn`ed call's owned temporary argument is released at the scope exit,
 when the join is proved.** `spawn f(g(x))` used to leak what `g` produced. The
@@ -155,7 +163,7 @@ temporary is now spilled to a slot and marked droppable, gated on the same
 E-SPAWN-J proof (`i1`) the task handle uses — so the release lands where the
 thread has demonstrably finished, not after `prismio_task_spawn` returns where
 the task may still be reading. **A spawn not proved joined still leaks**, which
-is the conservative direction. See `aif/evidence/RESULTS-spawn-owned-argument.md`.
+is the conservative direction. See `../aif/evidence/RESULTS-spawn-owned-argument.md`.
 
 **The argument-position release no longer turns on the return's kind.** It was
 withheld for every pointer or struct result, which leaked 100 of 100 allocations
@@ -163,22 +171,22 @@ where the result provably could not alias the argument. The kind test was
 standing in for the case the points-to fact misses — a callee returning a *view*
 of a parameter, which carries provenance rather than sites — and that case now
 has its own fact, `aif_fn_may_return_view_of_param`. Guard:
-`tests/pointer_return_temp.psm`, asserted at 0 leaked by
-`run_aif_verify_test`. See `aif/evidence/RESULTS-pointer-return-temporary.md`.
+`../tests/pointer_return_temp.psm`, asserted at 0 leaked by
+`run_aif_verify_test`. See `../aif/evidence/RESULTS-pointer-return-temporary.md`.
 
 **An escape through an `extern` declared `alias` was unsoundness, and is
 fixed.** A foreign function declared `alias` that returns its argument was not
 covered by the pass-through guard, which reached Prismio callees only:
 `let t = make(); let x = <extern alias>(t); return x` freed `t` at the scope exit
-and handed the caller the same pointer. `irValueAliasesName` in `src/ir/expr.psm`
+and handed the caller the same pointer. `irValueAliasesName` in `../src/ir/expr.psm`
 now reads the **declared** return contract as well as asking
 `aif_fn_may_return_param` — a written `alias` is a stated fact about one
 function, where an unknown symbol is an abstention about all of them, which is
 why the neighbouring predicate must still answer no for the latter.
-`tests/extern_alias_escape.psm` is the regression guard, and the number to read
+`../tests/extern_alias_escape.psm` is the regression guard, and the number to read
 on it is `violations` rather than `leaked`: the defect was one allocation with two
 owners. `run_aif_verify_test` fails on any violation. See
-`aif/evidence/RESULTS-extern-alias-escape.md`.
+`../aif/evidence/RESULTS-extern-alias-escape.md`.
 
 **A self-recursive producer leaked everything it built, and it is fixed.** A
 site is per function, not per instance, so a self-recursive constructor was one
@@ -199,7 +207,7 @@ drop are the same traversal. And a `sink` parameter -- a move the caller cannot
 undo -- no longer counts as a pass-through, which is what `passes(sink t, n)`
 needed. `g8_tree_rebuild` goes **2 released to 4,096**;
 `test_74_reinit_assignment` **248 leaked to 93**; violations 0 throughout,
-checksums unchanged. See `aif/evidence/RESULTS-recursive-payload-leak.md`.
+checksums unchanged. See `../aif/evidence/RESULTS-recursive-payload-leak.md`.
 
 **The remaining reuse-token leak is fixed.** g8 kept 8,188 leaks because
 `mapAdd` consumed a tree through a `sink` and nothing reclaimed the block it
@@ -212,7 +220,7 @@ The g8 ledger is now **2,049 / 2,049 / 0**, down from 12,284 / 4,096 / 8,188,
 with checksum 528891 unchanged. Its 20-run p50 is **51.94 us instead of 189.92
 us** (3.66x faster), and allocator calls inside the measured window fall
 12,539 to 2,304. `test_74_reinit_assignment` also reaches **69 / 69 / 0**.
-See `aif/evidence/RESULTS-M2-reuse-token.md`.
+See `../aif/evidence/RESULTS-M2-reuse-token.md`.
 
 **The generated recursive release no longer consumes one frame per list
 element.** M2.1a made this path reachable: a 500,000-link `Chain` built
@@ -221,32 +229,36 @@ The release now loops on its last direct self field while retaining ordinary
 recursion for earlier self fields. The same discriminator exits normally at
 **500,001 / 500,001 / 0**, 0 violations. Multiple-self-field types retain a
 stack bound through their non-tail branches; removing that requires an explicit
-worklist. See `aif/evidence/RESULTS-recursive-release-depth.md`.
+worklist. See `../aif/evidence/RESULTS-recursive-release-depth.md`.
 
-**A function cannot state that its return is its own allocation, and the
-workaround is to write the body twice.** `f(a, b) { return g(a, b) }` gets its
-caller no drop as soon as an argument is itself owned. A site is per function, so
-`f`'s return points at `g`'s one site, and passing a previous `f` result back in
-puts that same site in `f`'s parameter set; `fn_may_return_param` intersects the
-two, answers yes, and both operands leak.
+**A binding returned on some paths is released on the others -- unless it
+leaves under another name.** Fixed 2026-09-27: `let a = f(); if (c) { return a };
+return g()` leaked `a` on the second path, because a binding any `return` named
+was off the drop list for every path; and a value allocated in the frame
+(`str_with_capacity`) was declined by its escape fact, which a return lifts to
+Caller. A bare `return name` now keeps only that path's copy (`generateReturn`
+skips the binding's drop there), and the engine keeps a second escape fact,
+`E_held`, that a bare return does not raise (`aif_frees_unless_returned_node`).
+`tests/test_205_return_on_one_path.psm` pins it at 10 leaked, and those ten are
+what is left: `let t = a; return t` returns `a` under another name, and
+`let a = a` in an inner block binds the name twice, so both keep the old
+refusal -- a leak, never a double free. The second read a double free while it
+was being built; the name-bound-once guard is why it does not.
 
-Measured over 1,000 iterations of `let t = f("a","b"); let u = f(t,"c")`, on the
-0.1 compiler: delegating reads **2,001 allocated / 1 released / 2,000 leaked**,
-and a version of `f` that allocates in its own body reads **2,001 / 2,001 / 0**.
-Free function or method makes no difference; builtin or native makes no
-difference. **The obvious probe does not see it** — with only literal arguments
-there is nothing in the parameter set to intersect, and both forms read
-1,001 / 1,001 / 0.
+**A delegating function is owned by its caller** (fixed 2026-09-25 by
+`param_returns`): 1,000 iterations of `let t = f(x, y); let u = f(t, z)`, with
+`f` returning `concat`'s result and every string past twelve bytes, read
+2,001 / 2,001 / 0 on the compiler at `0064491` and since. **Probe with strings
+past twelve bytes**: a shorter one is stored inline and never reaches the ledger,
+and the same probe with one-letter literals reads 1 / 1 / 0, which says nothing.
 
-This is why `std/string.psm` writes `strToUpper` and `strToLower` out twice, and
-why the five String operator targets carry their bodies rather than delegating
-(`aif/evidence/RESULTS-string-operator-targets.md`). `produce` says exactly this
-at the FFI boundary and has no native spelling. Closing it is either a return
-contract on `fn` — frontend syntax, so a seed refresh — or narrowing
-`fn_may_return_param` from a points-to intersection to a flow question: does any
-`return` derive from a parameter. The second is better and more dangerous, since
-this predicate is what stops a caller freeing a value it does not own, so a wrong
-narrowing is a double free rather than a leak.
+**Two producers sharing one body share their allocation sites, and a site is
+decided for the whole program.** `toUpper` and `toLower` written as one
+`strCaseConverted` leaked 30 more strings in test_205 than two bodies: one test
+pushing results of each into a Vec was enough. So `std/string.psm` still writes
+the two out -- for precision now, not ownership. The fix is the same as for
+`concat` below: context-sensitive sites for library producers
+(docs/MEMORY_PLAN.md §2.3).
 
 **A struct field that could hold a string literal was freed as if it owned it.
 This was unsoundness, and it is fixed at the cost of a leak.**
@@ -366,7 +378,7 @@ the fields that keep a call result from its caller, so that a tree's root stays
 its caller's; the binding took the same answer. `call_result_held` now also asks
 whether the value is stored into such a field in its own frame, through its own
 bindings (`vs_stored_in_recursive_field`, runtime/aif_support.c). No program in
-`tests/` or `aif/corpus/` changed IR. `recursive_enum_bindings_probe.psm` pins
+`../tests` or `../aif/corpus` changed IR. `recursive_enum_bindings_probe.psm` pins
 it at 190/190/0. The same shape through `Node?` did not link either, since a
 `T?` slot is keyed `ptr` and the drop named `__aif_release_`;
 `recursive_optional_probe.psm` pins that one.
@@ -392,7 +404,7 @@ globally. A program with its own `fn isDigit(c: Char) -> Bool` is a *duplicate
 definition*, not an overload.
 
 This is not hypothetical: adding the surface broke three places in this tree at
-once — `src/common/text.psm` (renamed to `isIdentStart` / `isIdentPart`, whose
+once — `../src/common/text.psm` (renamed to `isIdentStart` / `isIdentPart`, whose
 predicates accept `_` and so were never the same function), `std/list.psm`'s
 generic `allOf` / `anyOf` (the String methods became `allChars` / `anyChars`,
 because two generic candidates could not be resolved and `test_89_closures`
@@ -448,8 +460,8 @@ behind a runtime call. The scalar write pair is curated now: set takes
 the mixed sieve improves 6.849 ms to **3.505 ms** (0.512x). Push stamping,
 fallback and growth live behind an exported cold helper, so the established-list
 path inlines without exposing allocator statics. See
-`aif/evidence/RESULTS-scalar-list-storage.md`,
-`aif/evidence/RESULTS-curate-scalar-write.md`, and the three
+`../aif/evidence/RESULTS-scalar-list-storage.md`,
+`../aif/evidence/RESULTS-curate-scalar-write.md`, and the three
 `aif/evidence/bench/scalar_list_*.psm` programs.
 
 ## Codegen
@@ -483,7 +495,7 @@ and for an assignment, and an explicitly written `takes(listOf("x", "y"))`
 resolves in argument position. So the difference is state, not placement or
 types: whoever picks this up should start by finding which of
 `monoSolveTypeParam` and `monoTemplateAcceptsCall` declines, with the outer
-call's resolution in flight. `tests/test_149_list_literal` covers the three
+call's resolution in flight. `../tests/test_149_list_literal` covers the three
 contexts that work.
 
 **A string literal in a curated runtime function breaks the link.**
@@ -499,8 +511,8 @@ during curation, or refuse to curate a function that references one.
 case.** Until it is curated, a struct literal pushed into a container cannot take
 a struct-path TBAA tag: the widened store the tag enables is a 0.76x win where the
 optimiser can see the destination and a 2.74x loss against this call. See
-`aif/evidence/RESULTS-M6-struct-path-tbaa.md` and
-`aif/evidence/bench/g2_cull_probe.c`.
+`../aif/evidence/RESULTS-M6-struct-path-tbaa.md` and
+`../aif/evidence/bench/g2_cull_probe.c`.
 
 **The closure blocker is gone; the reason it is still not curated is
 performance.** `list_push_slot_boxed` now carries `rt_alloc`'s three `static`s,
@@ -512,7 +524,7 @@ fast path into every push site and reproduces the regression
 it without the pushes-per-list profile that evidence file asks for.** The static
 proxy for that profile does not work either: g2's `cull` and g6's `plan_orders`
 both build with `list_new()`, so gating on `list_new_with_capacity` separates
-neither. See `aif/evidence/RESULTS-loop-range-monotonicity.md` §10.
+neither. See `../aif/evidence/RESULTS-loop-range-monotonicity.md` §10.
 
 **The flat-list guard is per loop, and its code-size cost is a policy question.** `list_get` on a
 flat element type now emits its own address arithmetic with the stride as an
@@ -533,15 +545,15 @@ reloads `len` and `data` per iteration and bounds-checks every element. The flag
 costs g4 16.5 KiB and buys the vectorised body. `list_set` is still untouched. Type-based alias information alone was priced at 1.73x on the ECS
 loop; scoped alias metadata was priced at 1.40x and rejected before the
 versioning result. `!invariant.load` on the `List` header is still **unsound**
-because `list_push` rewrites it. See `aif/evidence/RESULTS-flat-list-view.md`
-and `aif/evidence/RESULTS-loop-unswitch.md`.
+because `list_push` rewrites it. See `../aif/evidence/RESULTS-flat-list-view.md`
+and `../aif/evidence/RESULTS-loop-unswitch.md`.
 
 **Fixed 2026-09-25 by deleting it: four tests leaked under
 `PRISMIO_INLINE_ELEMS=0`.** The switch was a `getenv` read at run time, and
 everything it invalidated -- the element disposition, the arena placement,
 whether a site allocates at all -- had been decided at compile time. So no
 per-call fallback could make one binary correct under both placements.
-`aif/evidence/RESULTS-inline-elems-gate.md` has the attribution. The
+`../aif/evidence/RESULTS-inline-elems-gate.md` has the attribution. The
 `elem_size == stride` guard is the fallback that stays.
 
 **A short String key paid a call on every map lookup. Fixed** by
@@ -549,7 +561,7 @@ per-call fallback could make one binary correct under both placements.
 and reaches `str_hash` only for a key past twelve bytes, a view, or a short
 string on the heap. `word_frequency` is 0.72x of what it was and 0.61x of C++;
 the ten-word table the entry was about is 0.55x. The record is
-`aif/evidence/RESULTS-string-hash-builtin.md`.
+`../aif/evidence/RESULTS-string-hash-builtin.md`.
 
 What is left of it is a constraint rather than a defect, and it is worth knowing
 before touching either half: **the two halves are one hash and must answer
@@ -585,7 +597,7 @@ make `Iterator` object-safe; the equality-constraint machinery already exists.
 vocabulary: it interacts with AIF's release placement and needs its own design
 pass rather than an entry in a trait list.
 
-**`Eq` covers the builtins only.** `std/eq.psm` has no instance for `Map` or
+**`Eq` covers the builtins only.** `../std/eq.psm` has no instance for `Map` or
 `List`.
 
 **An `impl Trait` return type must be apparent in the `return`** — a struct
@@ -604,7 +616,7 @@ optimizations were tried and are recorded in `git log` with the hypotheses that
 were wrong; profile before attempting a fourth.
 
 **`prismio suite` cannot run the ums host-routing fixture.** That fixture
-deletes `.prismio/build/debug/prismio` and re-promotes it to exercise stage-0 ->
+deletes `../.prismio/build/debug/prismio` and re-promotes it to exercise stage-0 ->
 project-local promotion, and the `prismio` process running the command is using
 that file. It reports 282/283; `python3 tools/run_suite.py` reports 283/283 and
 is the release gate. `run_suite.py` already tests a *copy* of the compiler,
@@ -620,8 +632,8 @@ none.** Fixed 2026-09-18. Before, every compiler binary loaded Homebrew's
 repointed and so broke every existing binary at once, and a package recorded the
 build machine's Cellar path for the `clang` its builds shelled out to.
 
-- `tools/setup_llvm.py` downloads LLVM 23.1.1 by exact asset name, checks a pinned
-  SHA-256, and prepares it in `third_party/llvm`. It consults no installed LLVM;
+- `../tools/setup_llvm.py` downloads LLVM 23.1.1 by exact asset name, checks a pinned
+  SHA-256, and prepares it in `../third_party/llvm`. It consults no installed LLVM;
   `--llvm-dir` still adopts one, dynamically, when asked.
 - **The official macOS/Linux archives carry static archives only, and those are
   ThinLTO bitcode.** Apple's `ld` reads bitcode through Xcode's older libLTO
@@ -709,15 +721,15 @@ which is why the failure looks selective.
 
 `prismio build` now leaves the rest of the toolchain beside the host it builds
 (`.prismio/build/lib/runtime/*.bc`, `.prismio/build/stdlib/*.plib`), so the
-project host is a complete compiler again and `tools/run_suite.py` copies the
-layout rather than the binary. **A bare `tools/bootstrap.sh` generation in
-`build/` is still not one**: it builds the compiler and nothing else. Point
+project host is a complete compiler again and `../tools/run_suite.py` copies the
+layout rather than the binary. **A bare `../tools/bootstrap.sh` generation in
+`../build` is still not one**: it builds the compiler and nothing else. Point
 `tests/test_runner.py --compiler` at the project host or a packaged `dist`, or
 package the generation first.
 
-**Almost nothing in `tests/` reads a `.plib`.** `std.*` resolves by walking up
-from the *entry file* (RUNTIME.md), so every fixture under `tests/` compiles
-`std/` from source and a defect on the installed path is invisible to the suite.
+**Almost nothing in `../tests` reads a `.plib`.** `std.*` resolves by walking up
+from the *entry file* ([search order](https://developers.prismio.org/runtime/supported-surface#standard-module-search-order)), so every fixture under `../tests` compiles
+`../std` from source and a defect on the installed path is invisible to the suite.
 `sort()` failed to link from every installed stdlib for that reason, with the
 suite green: the `call` of the closure `sort` hands `sortBy` was filtered out as
 a concrete stdlib function whose body the PLIB supplies, and no PLIB had it. It
@@ -745,7 +757,7 @@ What is left:
 
 - **Nothing packages a cross target by default.** `tools/package.py --target
   <triple> --sysroot <triple>=<path>` does, and needs that target's C headers
-  to compile the runtime. `tools/release.py` builds one archive per host with
+  to compile the runtime. `../tools/release.py` builds one archive per host with
   no `--target`, so a released toolchain still cross-builds nothing -- as it
   did before, but now with a message rather than a mixed module.
 - **A triple is matched by its spelling.** `x86_64-apple-macos` and
@@ -864,10 +876,22 @@ no second reading — `std.string` now carries `scalarCount`, `scalars`,
 `scalarAt`, `scalarWidthAt`, `isCharBoundary`, `scalarSubstring`, `isValidUtf8`
 and `strFromScalar`, and `reverse` and the three `pad` functions moved to
 characters because counting bytes there produced invalid UTF-8 and misaligned
-columns. What remains: `toUpper`/`toLower`/`capitalize` are ASCII-only (full case
-mapping needs Unicode tables, and can change a string's length — `ß` uppercases
-to `SS`), and there are no grapheme clusters, no normalization, and no
-display-width function, so a padded column of CJK still does not line up.
+columns. Grapheme clusters (UAX #29), NFC/NFD (UAX #15) and terminal width are
+`std.unicode`, at Unicode 18.0.0 and passing the UCD's conformance files in full
+(`tools/unicode_conformance.py`). Case is Unicode too since 2026-09-27:
+`toUpper`, `toLower`, `capitalize` and `equalsIgnoreCase` are the Standard's
+default full mappings and full case folding (`tests/test_204_unicode_case.psm`).
+What remains is language-specific casing -- Turkish and Azeri `i`, Lithuanian
+accented `i` -- because a `String` does not know its language. And the names
+still say "char" for a byte: `chars()`, `charAt` and `Char` are the byte level,
+beside `scalars()` and `graphemes()`.
+
+**A diagnostic's carets assume one column per character.** They count
+characters rather than bytes since 2026-09-27, so a caret after `é` no longer
+drifts; an East Asian wide character or an emoji still takes two columns on a
+terminal and one caret, because the width tables are in std.unicode, not in
+`runtime/diagnostics.c`. JSON diagnostics are unaffected: their columns are
+bytes (IDE_PROTOCOL.md).
 
 **A trait cannot declare a property.** `prop` is accepted at top level and in an
 `impl`, and a trait's signatures are still `fn` only, so an `impl Trait for T`
@@ -878,7 +902,7 @@ checks only `x.f()` and `x.f`).
 
 **A function that always fails is not known to diverge.** `panic`,
 `unreachable` and `exit` end a block for sema (`semaCallNeverReturns` in
-`src/sema/flow.psm`), but `fn fail(m: String) { eprintln(m) exit(1) }` does not:
+`../src/sema/flow.psm`), but `fn fail(m: String) { eprintln(m) exit(1) }` does not:
 a caller still needs a `return` after calling it. Inferring it from the body
 would work for this shape and not across a `.plib`, where the body is not
 parsed; a `Never` return type is the planned fix (docs/STDLIB_SHIP_PLAN.md,
@@ -886,7 +910,7 @@ tier 2).
 
 **`std.process` starts a program with an argument vector, and that is all it
 does.** `Process` / `Child` / `Stream` landed with the capability in
-`runtime/program_support.c` (RUNTIME.md has the surface); `runCommand` and
+`../runtime/program_support.c` ([the runtime surface](https://developers.prismio.org/runtime/supported-surface) has it); `runCommand` and
 `quoteArg` are gone. What is left:
 
 - **A child has no working directory or environment of its own.** It inherits
@@ -894,7 +918,7 @@ does.** `Process` / `Child` / `Stream` landed with the capability in
   (Reading and setting the environment and `process.pid` landed 2026-09-25.)
 - **A stream is inherited, piped or discarded -- never a file.** Redirecting a
   child's stdout to a path needs a fourth mode on both sides of the wire
-  protocol (`0` inherit, `1` pipe, `2` discard, in `std/process.psm` and
+  protocol (`0` inherit, `1` pipe, `2` discard, in `../std/process.psm` and
   `program_support.c`).
 - **The Windows half has never been compiled.** There is no Windows SDK on the
   machine it was written on, so the first Windows CI leg is its review.
@@ -923,7 +947,7 @@ and the view that declined it took nothing. `strStripPrefix(owned, "X")` in
 `std.string` had this shape; bound and chained it measures clean now
 (2026-09-25, 301/301 over 100 iterations).
 
-The rule that avoids it is the one in the header of `std/string.psm`: a producer
+The rule that avoids it is the one in the header of `../std/string.psm`: a producer
 allocates its own result. `strScalarSubstring` and `strTruncateToWidth` copy for
 this reason, at one allocation each. What is not established is why the
 inference reaches `strTrim` -- which loops and then returns a view -- and not a
@@ -944,7 +968,7 @@ aif/evidence/RESULTS-call-result-ownership.md).
   `outer = optionOr(o, d)`: the binding is now kept alive, which leaks it, where
   it used to be freed under the view and read back stale. Copying the view into
   the keeper at that point would make it clean.
-  `tests/test_185_view_outlives_binding.psm` and `test_186` pin the counts.
+  `../tests/test_185_view_outlives_binding.psm` and `test_186` pin the counts.
 
 **A container that may be handed a string literal releases none of its
 elements.** `keep.push(optionOr(x, "fallback"))` may push the literal itself, and
@@ -955,7 +979,7 @@ whenever the pushed value may be untracked would close it.
 
 ## Concurrency
 
-The plan for channels and tasks is `docs/CHANNELS_PLAN.md`.
+The plan for channels and tasks is `CHANNELS_PLAN.md`.
 
 **Fixed 2026-09-25: `Channel<Int>` was accepted.** It sent an `i32` where the
 runtime reads a pointer. The element type must now be one `T?` allows
@@ -971,15 +995,15 @@ sender is CHANNELS_PLAN Phase 0.
 
 **Nothing checks the destruction order.** `chan_share` hands back the same
 pointer, and `chan_free` assumes no one is blocked on the channel. Close, join
-every task that was given a share, then free (RUNTIME.md rule 4). Counted
+every task that was given a share, then free ([channel rule 4](https://developers.prismio.org/runtime/tasks-and-channels#the-four-channel-rules)). Counted
 endpoints are Phase 1.
 
 ## The AIF oracle
 
-**Fixed 2026-09-24: the `src/main.psm` disagreement was the oracle's E-VIEW
+**Fixed 2026-09-24: the `../src/main.psm` disagreement was the oracle's E-VIEW
 over-reaching on a `return`.** `ownedTypes` at `src/ir/expr.psm:557` is a local
 `List<String>` passed once, as a borrow, to `generateOwnedTemporaryReleases`; the
-compiler tiered it T1 and `aif/prototype/aif.py` T3. Traced by logging every
+compiler tiered it T1 and `../aif/prototype/aif.py` T3. Traced by logging every
 write to the site's E and A in a copy of the oracle:
 
 1. `strSubstring`'s `return s` is an escape-to-caller of its parameter, and a
@@ -994,7 +1018,7 @@ write to the site's E and A in a copy of the oracle:
 The compiler already had the refinement: `aif_con_return` tags a source-level
 return with its function, and `raise_view_owners` skips a Caller target for a
 collection from another function (the three-way case analysis above it in
-`runtime/aif_support.c`). The oracle now does the same, and the differential
+`../runtime/aif_support.c`). The oracle now does the same, and the differential
 passes on all 19 default sources. `ownedVals` and `ownedKinds` were T1 all along
 because no view of them reaches a returning parameter.
 
@@ -1008,7 +1032,7 @@ only; the default owned model agrees, and the ledger is clean (4000/4000 over
 same payload built by a Prismio producer (`"x".concat(n)`) agrees, so it is the
 extern-produced value into a struct field, not the enum. `stdin.readLine()` is
 the same shape, and test_188 shows it identically on the compiler before stdin
-existed. Repro, through `tools/aif_differential.py`:
+existed. Repro, through `../tools/aif_differential.py`:
 
 ```prismio
 fn load(path: String) -> Option<String> {
@@ -1026,7 +1050,7 @@ not introduce it. Neither file is a default source of the differential.
 What rules out the other reading — that the compiler now frees something still
 live: the suite is green including `aif_verify`, whose ledger balances a real
 run rather than an analysis; the compiler self-hosts to a byte-identical
-two-generation fixpoint; and `tools/ir_snapshot.py` reports byte-identical IR for
+two-generation fixpoint; and `../tools/ir_snapshot.py` reports byte-identical IR for
 all 196 programs across the change, so nothing about what the compiler emits for
 a *program* moved with it.
 
@@ -1036,7 +1060,7 @@ a *program* moved with it.
 An A/A calibration reported `1.266x REGRESSED`, so the maintained root suite
 does not carry that compound workload forward. Its useful axes are isolated as
 `hashmap_insert_lookup`, `key_value_update`, and `nested_collection` under
-`benchmarks/`; use their cross-language checksums and repeated medians instead
+`../benchmarks`; use their cross-language checksums and repeated medians instead
 of interpreting an old g5 result.
 
 **The AIF oracle differential passes on its 19 default sources** (2026-09-24;
@@ -1044,25 +1068,25 @@ see "The AIF oracle"). The six disagreements recorded on 2026-09-06, in
 `aif/evidence/critical-gaps-2026-09-06/differential-{baseline,final}.log`, are
 gone; `test_164_array_fields`, outside the default set, still disagrees.
 
-The suite-routing defect is fixed: `tools/run_suite.py` used to name its copy
+The suite-routing defect is fixed: `../tools/run_suite.py` used to name its copy
 `prismio`, silently redirecting to the older project host and making the suite
 appear green for an untested candidate. Its copy is now `suite-compiler`; the
 UMS fixture makes its own `prismio` launcher for routing checks. A named candidate
 passes 303/303 through the corrected runner. The oracle disagreement was a
 separate issue, fixed 2026-09-24.
 
-**Phase-time a memory benchmark one shot per process.** Every `benchmarks/` entry
+**Phase-time a memory benchmark one shot per process.** Every `../benchmarks` entry
 runs once per process, and looping the same workload inside one process measures
 a different program: `benchLargeBufferCopy`'s fill settles to 0.55 ms warm and is
 2.2 ms one shot, because `rt_base_alloc` recycles the block and the pages stay
 faulted in. The difference inverts the cross-language comparison — a warm C++ arm
 reads a *slower* fill than Prismio's, purely because `std::vector`'s allocator
 returns the block to the OS between iterations.
-See `aif/evidence/RESULTS-scoped-alias-metadata.md`.
+See `../aif/evidence/RESULTS-scoped-alias-metadata.md`.
 
 **`bytecode_interpreter` moves 19% when an unrelated function changes size.**
 Lowering `match` to a `switch` shrank one function in the suite binary,
-`benchSwitchCase`, by 16 instructions, and `tools/fn_mnemonic_diff.py` finds no
+`benchSwitchCase`, by 16 instructions, and `../tools/fn_mnemonic_diff.py` finds no
 other function changed among 635 -- yet `bytecode_interpreter` read 19.2 -> 22.9 ms,
 reproducibly, over two alternating 15-run A/Bs. Its function is byte-identical and
 64 bytes lower in the binary, so the same offset within a cache line: what moved is
@@ -1094,4 +1118,4 @@ nothing, so it was reverted. Ruled out: the clock ramp (a 50 ms pre-spin moves
 neither arm), first-touch paging (a second fill in the same process is no faster),
 and the allocation (4 us). The main loop's bounds checks are not it either: a C
 model with and without them runs in the same time.
-See `aif/evidence/RESULTS-relational-tier.md`.
+See `../aif/evidence/RESULTS-relational-tier.md`.

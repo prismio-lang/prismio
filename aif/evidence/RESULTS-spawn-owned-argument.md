@@ -114,4 +114,4 @@ python tools/release_gate.py --rc build/own-gen3 --old build/flat-gen3
 The other three P0 ownership items are untouched: the argument-position release
 withheld whenever the enclosing call returns a pointer, an escape through an
 `extern` declared `alias`, and UMS resolution's allocation hygiene. See
-`KNOWN_ISSUES.md`.
+`../../docs/KNOWN_ISSUES.md`.

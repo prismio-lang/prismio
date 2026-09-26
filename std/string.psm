@@ -50,14 +50,13 @@
 // One allocation the caller writes into removed all three: 5 000 000 characters
 // now works, and a 13-call program that allocated 58 times allocates 29.
 //
-// **2. Every `return` is this function's own allocation.**
+// **2. A public producer allocates its own result.**
 //
-// `return strToLower(s)` from another function is a *pass-through*: the buffer
-// was allocated a frame down, `aif_owns_call_result_at_node` declines it because
-// from the call site a value made below is indistinguishable from one handed
-// down, and the caller gets no drop. Measured -- `strToUpper` delegating to a
-// shared body read 1 allocated / 0 released; inlined, 1/1. It is why the two
-// case-mapping loops are written out twice.
+// Not for ownership any more: `return strToLower(s)` hands the caller an owned
+// result since `param_returns` (1,000 delegating calls with an owned argument:
+// 2,001 allocated, 2,001 released). For precision: an allocation site is decided
+// for the whole program, so two producers sharing one body share every fact the
+// analysis learns about either -- see strToUpper.
 //
 // A bare `return ""` fails for a different reason: static storage contributes no
 // allocation site at all, so one such return makes the whole function's result
@@ -84,9 +83,10 @@
 // the language's rule rather than this module's, but this is where most callers
 // will meet it.
 //
-// See RUNTIME.md for which C symbols remain and why.
+// See developers.prismio.org/runtime/supported-surface for which C symbols remain and why.
 
 import std.option
+import std.unicode_case
 
 // ---------------------------------------------------------------------------
 // Primitives
@@ -845,39 +845,347 @@ internal fn strPadEnd(s: String, width: Int, pad: Char) -> String {
     return out
 }
 
-// **ASCII, and only ASCII.** `charToUpper` maps `a`-`z` and leaves every other
-// byte exactly as it was, so a multi-byte character passes through unchanged
-// rather than being mangled -- the result is always valid UTF-8, and `é` is
-// still `é`. Full case mapping needs Unicode tables this library does not carry,
-// and one of its rules is that a string can change length: `ß` uppercases to
-// `SS`, which no in-place byte loop can express.
+// **Unicode's full case mapping, locale-independent** (The Unicode Standard,
+// 3.13): `ß` uppercases to `SS`, `ﬁ` to `FI`, `İ` lowercases to `i` and a
+// combining dot, and a Greek capital sigma lowercases to `ς` at the end of a word
+// and `σ` elsewhere. The tables are std/unicode_case.psm, generated from the
+// pinned UCD. Turkish and Lithuanian rules are not applied: they depend on the
+// text's language, which a String does not carry.
 //
-// Written out twice rather than sharing a body with an `upper: Bool` flag.
-// `return strMapChars(s, true)` is a pass-through -- the buffer was allocated a
-// frame down, `aif_owns_call_result_at_node` declines it, and the caller gets no
-// drop. Measured in exactly that shape: 1 allocated, 0 released. Every other
-// builder here returns its own `str_with_capacity`, which is what makes them
-// 1/1. The duplication is eight lines and it also drops a branch from the loop.
+// Three tiers, each tried only when the one before cannot finish, and a byte
+// that is not UTF-8 is kept as it is in all of them, so the result never mangles
+// what it could not read:
+//
+// 1. ASCII, one vectorised pass (strAsciiCaseInto).
+// 2. Every scalar mapped to the width it had, one pass (strCaseMapSameLengthInto)
+//    -- most Latin, Greek and Cyrillic text.
+// 3. The rest, from the first scalar whose width changed: measured, then mapped,
+//    after the part tier 2 already finished is copied.
+//
+// Over 828 KB of Cyrillic, Greek and accented Latin: `toUpper` 1.9 ms, `toLower`
+// 1.7 ms, against Rust's `to_uppercase` 3.1 ms and `to_lowercase` 2.6 ms; one
+// `ı` at the end, which sends the last scalar to tier 3, adds nothing to either.
+//
+// **Written out twice, and the reason is allocation sites, not delegation.** A
+// function returning another's allocation is owned by its caller now; what one
+// shared body costs is that both functions' results come from one pair of
+// sites, and the analysis decides a site for the whole program. With a shared
+// `strCaseConverted`, pushing `toUpper` results into one Vec and `toLower`
+// results into another leaked 30 more strings in test_205 than two bodies do.
 internal fn strToUpper(s: String) -> String {
     let slen = __builtin_string_len(s)
     let out = str_with_capacity(slen)
-    let mut i = 0
-    while (i < slen) {
-        __builtin_string_put_byte(out, i, charToUpper(__builtin_string_byte_at(s, i)))
-        i = i + 1
-    }
-    return out
+    if (strAsciiCaseInto(out, s, true)) { return out }
+    let done = strCaseMapSameLengthInto(out, s, strCaseUpper())
+    if (done == slen) { return out }
+    let mapped = str_with_capacity(done + strCaseMappedLength(s, done, strCaseUpper()))
+    strCopyRangeInto(mapped, 0, out, 0, done)
+    strCaseMapInto(mapped, done, s, done, strCaseUpper())
+    return mapped
 }
 
 internal fn strToLower(s: String) -> String {
     let slen = __builtin_string_len(s)
     let out = str_with_capacity(slen)
+    if (strAsciiCaseInto(out, s, false)) { return out }
+    let done = strCaseMapSameLengthInto(out, s, strCaseLower())
+    if (done == slen) { return out }
+    let mapped = str_with_capacity(done + strCaseMappedLength(s, done, strCaseLower()))
+    strCopyRangeInto(mapped, 0, out, 0, done)
+    strCaseMapInto(mapped, done, s, done, strCaseLower())
+    return mapped
+}
+
+// Maps `s` into `out` byte by byte, as ASCII, and answers whether that was the
+// whole mapping: every byte below 128.
+//
+// **One pass, not a check and then a pass.** Asking `strIsAscii` first read an
+// ASCII string twice, and that second read was the whole of what the Unicode
+// mapping cost ASCII text: 1.24 ms for 50 MB against 0.85 ms for the loop alone.
+// Mapping and OR-ing in the same loop vectorises as one, and text that turns out
+// not to be ASCII throws away a pass it was about to outspend on table lookups.
+// Bytes past 127 are copied unchanged, so `out` is at worst a wasted buffer and
+// never a wrong one.
+private fn strAsciiCaseInto(out: String, s: String, upper: Bool) -> Bool {
+    let slen = __builtin_string_len(s)
+    let mut seen = 0 as U8
     let mut i = 0
     while (i < slen) {
-        __builtin_string_put_byte(out, i, charToLower(__builtin_string_byte_at(s, i)))
+        let b = __builtin_string_byte_at(s, i)
+        seen = seen | (b as U8)
+        if (upper) {
+            __builtin_string_put_byte(out, i, charToUpper(b))
+        } else {
+            __builtin_string_put_byte(out, i, charToLower(b))
+        }
         i = i + 1
     }
-    return out
+    return seen < 128
+}
+
+// Maps `s` into `out`, which is as long as `s`, while every scalar's mapping
+// takes exactly the bytes it had, and answers where that stopped: `slen` when
+// it never did.
+//
+// **The second tier, and the common one past ASCII.** Most letters of the
+// Latin, Greek and Cyrillic scripts map to a letter of the same UTF-8 width, and
+// `ß` -> `SS` is two bytes for two. `ı` -> `I` is two for one, and the caller
+// maps the rest from there; what `out` holds before that point is final.
+private fn strCaseMapSameLengthInto(out: String, s: String, kind: Int) -> Int {
+    let slen = __builtin_string_len(s)
+    let upper = kind == strCaseUpper()
+    let mut i = 0
+    while (i < slen) {
+        let b = __builtin_string_byte_at(s, i)
+        if ((b as U8) < 128) {
+            if (upper) {
+                __builtin_string_put_byte(out, i, charToUpper(b))
+            } else {
+                __builtin_string_put_byte(out, i, charToLower(b))
+            }
+            i = i + 1
+        } else {
+            let scalar = strScalarAt(s, i)
+            if (scalar < 0) {
+                __builtin_string_put_byte(out, i, b)
+                i = i + 1
+            } else {
+                let width = strScalarUtf8Length(scalar)
+                let delta = strCaseDeltaAt(kind, s, i, scalar)
+                if (strCaseMappedWidth(kind, scalar, delta) != width) { return i }
+                strCasePutMapped(out, i, kind, scalar, delta)
+                i = i + width
+            }
+        }
+    }
+    return slen
+}
+
+// `scalar`'s delta in `kind`, as unicodeCaseDelta answers it, except for Σ:
+// Final_Sigma is the one context-dependent mapping, so the text decides it here.
+// σ and ς are both one scalar, so it is always a delta.
+private fn strCaseDeltaAt(kind: Int, s: String, at: Int, scalar: Int) -> Int {
+    if (kind == strCaseLower() and scalar == 931) {
+        if (strIsFinalSigma(s, at)) { return 962 - 931 }
+        return 963 - 931
+    }
+    return unicodeCaseDelta(kind, scalar)
+}
+
+// The UTF-8 bytes `scalar`'s mapping takes, given its delta.
+private fn strCaseMappedWidth(kind: Int, scalar: Int, delta: Int) -> Int {
+    if (delta != unicodeCaseMultiple()) { return strScalarUtf8Length(scalar + delta) }
+    let mut total = 0
+    let mut part = 0
+    loop {
+        let mapped = strCaseMapPart(kind, scalar, part)
+        if (mapped < 0) { break }
+        total = total + strScalarUtf8Length(mapped)
+        part = part + 1
+    }
+    return total
+}
+
+// `scalar`'s mapping as UTF-8 at byte `at` of `out`; the byte after it.
+private fn strCasePutMapped(out: String, at: Int, kind: Int, scalar: Int, delta: Int) -> Int {
+    if (delta != unicodeCaseMultiple()) { return strPutScalar(out, at, scalar + delta) }
+    let mut next = at
+    let mut part = 0
+    loop {
+        let mapped = strCaseMapPart(kind, scalar, part)
+        if (mapped < 0) { break }
+        next = strPutScalar(out, next, mapped)
+        part = part + 1
+    }
+    return next
+}
+
+private fn strCaseLower() -> Int { return 0 }
+private fn strCaseTitle() -> Int { return 1 }
+private fn strCaseUpper() -> Int { return 2 }
+private fn strCaseFold() -> Int { return 3 }
+
+// The part-th scalar `scalar` maps to in `kind`, or -1 past the end of its
+// mapping. Without Final_Sigma: see strCaseDeltaAt.
+private fn strCaseMapPart(kind: Int, scalar: Int, part: Int) -> Int {
+    if (kind == strCaseLower()) { return unicodeLowercase(scalar, part) }
+    if (kind == strCaseTitle()) { return unicodeTitlecase(scalar, part) }
+    if (kind == strCaseUpper()) { return unicodeUppercase(scalar, part) }
+    return unicodeCaseFold(scalar, part)
+}
+
+// Final_Sigma (The Unicode Standard, table 3-17): the sigma at `at` follows a
+// cased letter and any case-ignorables, and no case-ignorables then a cased
+// letter follow it. Cased is tested before Case_Ignorable on both sides because
+// a scalar can be both, and then it counts as the letter.
+private fn strIsFinalSigma(s: String, at: Int) -> Bool {
+    let mut back = at
+    let mut cased = false
+    while (back > 0) {
+        back = back - 1
+        while (back > 0 and strByteAt(s, back) >= 128 and strByteAt(s, back) < 192) {
+            back = back - 1
+        }
+        let before = strScalarAt(s, back)
+        if (before < 0) { break }
+        if (unicodeIsCased(before)) {
+            cased = true
+            break
+        }
+        if (unicodeIsCaseIgnorable(before) == false) { break }
+    }
+    if (cased == false) { return false }
+
+    let slen = __builtin_string_len(s)
+    let mut ahead = at + strScalarWidthAt(s, at)
+    while (ahead < slen) {
+        let after = strScalarAt(s, ahead)
+        if (after < 0) { return true }
+        if (unicodeIsCased(after)) { return false }
+        if (unicodeIsCaseIgnorable(after) == false) { return true }
+        ahead = ahead + strScalarWidthAt(s, ahead)
+    }
+    return true
+}
+
+private fn strScalarUtf8Length(scalar: Int) -> Int {
+    if (scalar < 128) { return 1 }
+    if (scalar < 2048) { return 2 }
+    if (scalar < 65536) { return 3 }
+    return 4
+}
+
+// `scalar` as UTF-8 at byte `at` of `out`; the byte after it.
+private fn strPutScalar(out: String, at: Int, scalar: Int) -> Int {
+    if (scalar < 128) {
+        __builtin_string_put_byte(out, at, scalar as Char)
+        return at + 1
+    }
+    if (scalar < 2048) {
+        __builtin_string_put_byte(out, at, (192 + scalar / 64) as Char)
+        __builtin_string_put_byte(out, at + 1, (128 + scalar % 64) as Char)
+        return at + 2
+    }
+    if (scalar < 65536) {
+        __builtin_string_put_byte(out, at, (224 + scalar / 4096) as Char)
+        __builtin_string_put_byte(out, at + 1, (128 + (scalar / 64) % 64) as Char)
+        __builtin_string_put_byte(out, at + 2, (128 + scalar % 64) as Char)
+        return at + 3
+    }
+    __builtin_string_put_byte(out, at, (240 + scalar / 262144) as Char)
+    __builtin_string_put_byte(out, at + 1, (128 + (scalar / 4096) % 64) as Char)
+    __builtin_string_put_byte(out, at + 2, (128 + (scalar / 64) % 64) as Char)
+    __builtin_string_put_byte(out, at + 3, (128 + scalar % 64) as Char)
+    return at + 4
+}
+
+// The bytes `s` from byte `from` occupies once mapped, which is not the length
+// it had: `ı` (two bytes) uppercases to `I` (one), and `ΐ` (two) to three
+// scalars of six bytes.
+private fn strCaseMappedLength(s: String, from: Int, kind: Int) -> Int {
+    let slen = __builtin_string_len(s)
+    let mut total = 0
+    let mut i = from
+    while (i < slen) {
+        let scalar = strScalarAt(s, i)
+        if (scalar < 0) {
+            total = total + 1
+            i = i + 1
+        } else {
+            let delta = strCaseDeltaAt(kind, s, i, scalar)
+            total = total + strCaseMappedWidth(kind, scalar, delta)
+            i = i + strScalarUtf8Length(scalar)
+        }
+    }
+    return total
+}
+
+// Maps `s` from byte `from` into `out` from byte `at`.
+private fn strCaseMapInto(out: String, at: Int, s: String, from: Int, kind: Int) {
+    let slen = __builtin_string_len(s)
+    let mut next = at
+    let mut i = from
+    while (i < slen) {
+        let scalar = strScalarAt(s, i)
+        if (scalar < 0) {
+            __builtin_string_put_byte(out, next, __builtin_string_byte_at(s, i))
+            next = next + 1
+            i = i + 1
+        } else {
+            let delta = strCaseDeltaAt(kind, s, i, scalar)
+            next = strCasePutMapped(out, next, kind, scalar, delta)
+            i = i + strScalarUtf8Length(scalar)
+        }
+    }
+}
+
+// Whether `a` and `b` are equal once fully case-folded, a scalar at a time: a
+// byte that is not UTF-8 is compared as itself, negated so it matches only
+// itself. Walking both strings at once keeps it allocation-free where folding
+// each into a list first allocated two, and pushed every scalar into them.
+private fn strFoldedEquals(a: String, b: String) -> Bool {
+    let end = 0 - 1000
+    let alen = __builtin_string_len(a)
+    let blen = __builtin_string_len(b)
+    let mut ia = 0
+    let mut pa = 0
+    let mut ib = 0
+    let mut pb = 0
+    let mut equal = true
+    loop {
+        let mut va = end
+        while (ia < alen) {
+            let scalar = strScalarAt(a, ia)
+            if (scalar < 0) {
+                va = 0 - 1 - strByteAt(a, ia)
+                ia = ia + 1
+                break
+            }
+            let delta = unicodeCaseDelta(strCaseFold(), scalar)
+            if (delta != unicodeCaseMultiple()) {
+                va = scalar + delta
+                ia = ia + strScalarUtf8Length(scalar)
+                break
+            }
+            let folded = unicodeCaseFold(scalar, pa)
+            if (folded >= 0) {
+                va = folded
+                pa = pa + 1
+                break
+            }
+            ia = ia + strScalarUtf8Length(scalar)
+            pa = 0
+        }
+        let mut vb = end
+        while (ib < blen) {
+            let scalar = strScalarAt(b, ib)
+            if (scalar < 0) {
+                vb = 0 - 1 - strByteAt(b, ib)
+                ib = ib + 1
+                break
+            }
+            let delta = unicodeCaseDelta(strCaseFold(), scalar)
+            if (delta != unicodeCaseMultiple()) {
+                vb = scalar + delta
+                ib = ib + strScalarUtf8Length(scalar)
+                break
+            }
+            let folded = unicodeCaseFold(scalar, pb)
+            if (folded >= 0) {
+                vb = folded
+                pb = pb + 1
+                break
+            }
+            ib = ib + strScalarUtf8Length(scalar)
+            pb = 0
+        }
+        if (va != vb) {
+            equal = false
+            break
+        }
+        if (va == end) { break }
+    }
+    return equal
 }
 
 // **Characters, not bytes.** Reversing the bytes of `"héllo"` produces a string
@@ -1221,20 +1529,53 @@ internal fn strIsBlank(s: String) -> Bool {
     return true
 }
 
-// ASCII-folded equality. Not a Unicode case fold: `charToLower` maps A-Z and
-// nothing else, so this answers the question a flag or a header name asks and
-// not the one a natural-language comparison does.
+// Unicode default caseless matching (The Unicode Standard, D144): equal once
+// both are fully case-folded, so `"Straße"` matches `"STRASSE"`. Two ASCII
+// strings take the byte loop. Canonical equivalence is a separate question --
+// `é` spelled two ways folds to two spellings -- and `equalsNormalized` in
+// std.unicode is the answer to it.
 internal fn strEqualsIgnoreCase(a: String, b: String) -> Bool {
-    let alen = __builtin_string_len(a)
-    if (alen != __builtin_string_len(b)) { return false }
-    let mut i = 0
-    while (i < alen) {
-        let ca = charToLower(__builtin_string_byte_at(a, i))
-        let cb = charToLower(__builtin_string_byte_at(b, i))
-        if (ca != cb) { return false }
-        i = i + 1
+    if (__builtin_string_len(a) == __builtin_string_len(b)) {
+        let ascii = strAsciiEqualsIgnoreCase(a, b)
+        if (ascii != 2) { return ascii == 0 }
+    } else if (strIsAscii(a) and strIsAscii(b)) {
+        return false
     }
-    return true
+    return strFoldedEquals(a, b)
+}
+
+// Two strings of one length, compared as ASCII: 0 equal, 1 unequal, 2 a byte
+// past 127 somewhere, so only full folding can answer.
+//
+// **Sixty-four bytes at a time, with no exit inside a block.** An exit per byte
+// keeps a loop from vectorising, and this one was the scalar byte loop the case
+// functions' others stopped being: 29 ms for 50 MB. Within a block every byte's
+// difference and every byte's high bit are OR-ed together, and the block is
+// judged once.
+//
+// An unequal ASCII block is a final answer only because every block before it
+// was ASCII too: ASCII folds one byte to one byte, so the folded strings are
+// aligned up to it and differ there. A high byte anywhere hands the question to
+// full folding, where `ſ`, `K` or `ﬁ` can fold to ASCII.
+private fn strAsciiEqualsIgnoreCase(a: String, b: String) -> Int {
+    let n = __builtin_string_len(a)
+    let mut at = 0
+    while (at < n) {
+        let mut block = n - at
+        if (block > 64) { block = 64 }
+        let mut diff = 0 as U8
+        let mut seen = 0 as U8
+        for k in 0..<block {
+            let x = __builtin_string_byte_at(a, at + k)
+            let y = __builtin_string_byte_at(b, at + k)
+            seen = seen | (x as U8) | (y as U8)
+            diff = diff | ((charToLower(x) as U8) ^ (charToLower(y) as U8))
+        }
+        if (seen >= 128) { return 2 }
+        if (diff != 0) { return 1 }
+        at = at + block
+    }
+    return 0
 }
 
 internal fn strGet(s: String, index: Int) -> Option<Char> {
@@ -1330,11 +1671,37 @@ internal fn strCountOfChar(s: String, needle: Char) -> Int {
 // it. None of these grows a buffer, because an assignment releases nothing.
 // ---------------------------------------------------------------------------
 
-// The first byte uppercased, the rest untouched. Deliberately not "the rest
+// The first character titlecased, the rest untouched. Deliberately not "the rest
 // lowercased": that is a different operation, it destroys `"McDonald"`, and a
 // caller who wants it can spell `s.toLower().capitalize()`.
+//
+// Titlecase, not uppercase, because the two differ: `ǆ` capitalizes to `ǅ`, not
+// `Ǆ`, and `ﬁ` to `Fi`.
 internal fn strCapitalize(s: String) -> String {
     let slen = __builtin_string_len(s)
+    let first = strScalarAt(s, 0)
+    if (first >= 128) {
+        let width = strScalarWidthAt(s, 0)
+        let mut titled = 0
+        let mut part = 0
+        loop {
+            let mapped = unicodeTitlecase(first, part)
+            if (mapped < 0) { break }
+            titled = titled + strScalarUtf8Length(mapped)
+            part = part + 1
+        }
+        let out = str_with_capacity(titled + slen - width)
+        let mut at = 0
+        part = 0
+        loop {
+            let mapped = unicodeTitlecase(first, part)
+            if (mapped < 0) { break }
+            at = strPutScalar(out, at, mapped)
+            part = part + 1
+        }
+        strCopyRangeInto(out, titled, s, width, slen - width)
+        return out
+    }
     let out = str_with_capacity(slen)
     strCopyRangeInto(out, 0, s, 0, slen)
     if (slen > 0) {
@@ -1853,14 +2220,22 @@ internal fn strIsCharBoundary(s: String, at: Int) -> Bool {
     return b < 128 or b > 191
 }
 
+// An OR of every byte rather than a scan that stops at the first high one, and
+// the byte builtin rather than `strByteAt`. Either an exit in the loop or a call
+// in it keeps the loop from vectorising, and the case functions ask this of
+// every string before taking their ASCII path: in the early-exit, `strByteAt`
+// form, `toUpper` on 1 MB of ASCII measured 35x the byte loop it guards, and
+// this form is 40x faster than that one. The price is reading a non-ASCII string
+// to its end, sixteen bytes at a time.
 internal fn strIsAscii(s: String) -> Bool {
     let slen = __builtin_string_len(s)
+    let mut seen = 0 as U8
     let mut i = 0
     while (i < slen) {
-        if (strByteAt(s, i) > 127) { return false }
+        seen = seen | (__builtin_string_byte_at(s, i) as U8)
         i = i + 1
     }
-    return true
+    return seen < 128
 }
 
 // Whether every byte is part of a well-formed sequence. Worth asking once at the
@@ -2149,7 +2524,7 @@ internal fn strParseIntRadix(s: String, radix: Int) -> Option<Int> {
     let wide = strParseI64Radix(s, radix)
     if (optionIsNone(wide)) { return Option<Int>.None }
     let value = optionOr(wide, 0 as I64)
-    // `Int` is i32 (RUNTIME.md), so a value that fits an I64 and not an Int is a
+    // `Int` is i32, so a value that fits an I64 and not an Int is a
     // number this function cannot return. It says so rather than truncating.
     if (value > 2147483647 as I64) { return Option<Int>.None }
     if (value < (0 - 2147483647 - 1) as I64) { return Option<Int>.None }
@@ -2279,8 +2654,12 @@ impl String {
     // error because the range check the caller would write is the one this
     // already does; NUL is distinguishable because a Prismio string cannot
     // contain one. `self.get(index)` is the Option form.
+    // One unsigned comparison covers both ends -- a negative index is past every
+    // length as a U64 -- and a scan whose loop already proves `index < length`
+    // then has nothing left to test: written as two, the `index < 0` half stayed
+    // in the tokenizer's inner loop, a taken branch per character.
     public fn charAt(self, index: Int) -> Char {
-        if (index < 0 or index >= __builtin_string_len(self)) { return '\0' }
+        if ((index as U64) >= (__builtin_string_len(self) as U64)) { return '\0' }
         return __builtin_string_byte_at(self, index)
     }
 

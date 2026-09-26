@@ -1,7 +1,7 @@
 # v0.1 concurrency — the blocking typed `Channel<T>`, and g9's fifth arm
 
 The runtime channel has existed since REQUIREMENTS 15 and had no type, no
-ownership contract and no wrapper. `RUNTIME.md` listed `chan_new` and its six
+ownership contract and no wrapper. `RUNTIME.md` (now [the runtime surface](https://developers.prismio.org/runtime/supported-surface)) listed `chan_new` and its six
 siblings under *"not yet wrapped … `extern fn` at your own risk"*, and
 The v0.1 plan recorded the consequence: g9's hand-tuned arm was **not
 writable**, because Prismio had no way to keep a task alive past its join.

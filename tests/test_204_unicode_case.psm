@@ -1,0 +1,81 @@
+// Case mapping and caseless matching over all of Unicode, not only ASCII.
+//
+// Unicode's default case conversion (The Unicode Standard, 3.13): full mappings,
+// so a string can change length; Final_Sigma, the one context-dependent rule a
+// locale-independent library applies; and titlecase for `capitalize`, which is
+// not uppercase. The tables are std/unicode_case.psm, generated from the pinned
+// UCD, and ASCII keeps its byte loop.
+
+import std.io
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // ASCII is what it always was.
+    if ("Hello, World 42".toUpper().equals("HELLO, WORLD 42") == false) { return fail("ASCII upper") }
+    if ("Hello, World 42".toLower().equals("hello, world 42") == false) { return fail("ASCII lower") }
+
+    // Beyond ASCII, one to one.
+    if ("straße café".toUpper().equals("STRASSE CAFÉ") == false) { return fail("ß uppercases to SS") }
+    if ("ĞÜŞİÖÇ".toLower().equals("ğüşi̇öç") == false) { return fail("İ lowercases to i and a dot") }
+    if ("привет мир".toUpper().equals("ПРИВЕТ МИР") == false) { return fail("Cyrillic upper") }
+    if ("ﬁne".toUpper().equals("FINE") == false) { return fail("a ligature expands") }
+    if ("ΐ".toUpper().scalarCount != 3) { return fail("ΐ uppercases to three scalars") }
+
+    // Final_Sigma: word-final σ is ς, anywhere else σ.
+    if ("ΟΔΥΣΣΕΥΣ".toLower().equals("οδυσσευς") == false) { return fail("final sigma") }
+    if ("Σ".toLower().equals("σ") == false) { return fail("a lone sigma is not final") }
+    if ("ΑΣ.".toLower().equals("ας.") == false) { return fail("sigma before punctuation is final") }
+
+    // Titlecase, not uppercase: the digraph ǆ capitalizes to ǅ.
+    if ("ǆemal".capitalize().equals("ǅemal") == false) { return fail("capitalize titlecases") }
+    if ("ﬂow".capitalize().equals("Flow") == false) { return fail("capitalize a ligature") }
+    if ("éclair".capitalize().equals("Éclair") == false) { return fail("capitalize é") }
+    if ("mcDonald".capitalize().equals("McDonald") == false) { return fail("the rest is untouched") }
+
+    // Default caseless matching folds fully.
+    if ("Straße".equalsIgnoreCase("STRASSE") == false) { return fail("ß folds to ss") }
+    if ("ΣΊΣΥΦΟΣ".equalsIgnoreCase("σίσυφος") == false) { return fail("sigma folds alike") }
+    if ("Ǆ".equalsIgnoreCase("ǆ") == false) { return fail("digraph folds") }
+    if ("café".equalsIgnoreCase("cafe") == true) { return fail("é is not e") }
+    if ("ABC".equalsIgnoreCase("abc") == false) { return fail("ASCII still folds") }
+    if ("ſ".equalsIgnoreCase("S") == false) { return fail("long s folds to s, across lengths") }
+    if ("\u{212A}".equalsIgnoreCase("k") == false) { return fail("Kelvin sign folds to k") }
+
+    // ASCII runs through a one-pass fast path that meets non-ASCII late: the
+    // pass is thrown away and the whole string mapped again.
+    if ("a".repeat(100).concat("é").toUpper().equals("A".repeat(100).concat("É")) == false) {
+        return fail("non-ASCII after a long ASCII run, upper")
+    }
+    if ("É".concat("B".repeat(100)).toLower().equals("é".concat("b".repeat(100))) == false) {
+        return fail("non-ASCII first, lower")
+    }
+
+    // equalsIgnoreCase compares ASCII in 64-byte blocks: each side of a block
+    // boundary, and non-ASCII meeting a block that already differs.
+    for n in [0, 1, 63, 64, 65, 129] {
+        if ("q".repeat(n).equalsIgnoreCase("Q".repeat(n)) == false) { return fail("ASCII runs fold") }
+    }
+    for at in [0, 63, 64, 65, 128] {
+        let left = "a".repeat(at).concat("x", "a".repeat(128 - at))
+        let right = "A".repeat(at).concat("y", "A".repeat(128 - at))
+        if (left.equalsIgnoreCase(right)) { return fail("a mismatch at a block edge") }
+    }
+    if ("a".repeat(64).concat("ß").equalsIgnoreCase("A".repeat(64).concat("SS")) == false) {
+        return fail("an equal block, then ß against SS")
+    }
+    if ("x".concat("a".repeat(70), "ß").equalsIgnoreCase("y".concat("a".repeat(70), "ss"))) {
+        return fail("an unequal ASCII block before ß")
+    }
+    if ("ß".concat("a".repeat(70), "x").equalsIgnoreCase("ss".concat("a".repeat(70), "y"))) {
+        return fail("ß before an unequal ASCII byte")
+    }
+
+    println("test_204 ok")
+    return 0
+}
