@@ -1,0 +1,62 @@
+{
+  "version": "v1.0.0",
+  "entity": {
+    "type": "individual",
+    "role": "owner",
+    "name": "Saksham Jaiswal",
+    "email": "saksham6975@gmail.com",
+    "phone": "7979720416",
+    "description": "Prismio is an independent, open-source systems programming language and compiler project created and maintained by Saksham Jaiswal. It provides a statically typed language that compiles to native machine code through LLVM, with an Adaptive Inference Framework (AIF) for explainable memory placement, direct C interoperability, and a self-hosted compiler toolchain.",
+    "webpageUrl": {
+      "url": "https://prismio.org/"
+    }
+  },
+  "projects": [
+    {
+      "guid": "prismio",
+      "name": "Prismio",
+      "description": "Prismio is an open-source, self-hosted systems programming language and compiler that combines modern static language features with explicit systems-level control. It compiles to native code through LLVM, provides direct C ABI interoperability, and uses its Adaptive Inference Framework (AIF) to analyze and explain memory placement and ownership decisions. The project includes a native compiler, standard library, runtime verification tooling, project/build tooling, benchmarks, and developer documentation.",
+      "webpageUrl": {
+        "url": "https://prismio.org"
+      },
+      "repositoryUrl": {
+        "url": "https://github.com/prismio-lang/prismio"
+      },
+      "licenses": ["spdx:Apache-2.0"],
+      "tags": [
+        "programming-languages",
+        "compilers",
+        "systems-programming",
+        "llvm",
+        "developer-tools",
+        "memory-management",
+        "open-source"
+      ]
+    }
+  ],
+  "funding": {
+    "channels": [
+      {
+        "guid": "prismio",
+        "type": "bank",
+        "address": "Bank details will be provided directly to FOSS United upon grant approval.",
+        "description": "Bank account for receiving grant disbursements. Account and branch details will be provided directly to FOSS United upon grant approval."
+      }
+    ],
+    "plans": [
+      {
+        "guid": "prismio-grant-2026",
+        "status": "active",
+        "name": "Prismio Development Grant 2026",
+        "description": "12-month grant supporting Prismio systems compiler development: ₹1.5L for core compiler and LLVM 23 codegen; ₹1.25L for AIF memory inference and optimizations; ₹1L for concurrency, I/O, and stdlib; ₹75k for low-latency and quant finance benchmarks; ₹50k for developer tooling and CI infrastructure; and ₹50k for docs and contributor onboarding. All deliverables remain 100% open-source under Apache-2.0.",
+        "amount": 600000,
+        "currency": "INR",
+        "frequency": "one-time",
+        "channels": [
+          "prismio"
+        ]
+      }
+    ],
+    "history": []
+  }
+}
