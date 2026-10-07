@@ -16,7 +16,7 @@
 
 param(
     # One of -Compiler or -Seed is required. -Seed starts from
-    # bootstrap\prismio-seed.ll, committed LLVM IR for the compiler, which is the
+    # bootstrap\prismio-seed-0.1.0.ll, committed LLVM IR for the compiler, which is the
     # only way to build a first compiler on a machine that has none (or whose only
     # prismio is an older generation you no longer trust). Pass a path to use a
     # different seed. Mirrors --seed in tools/bootstrap.sh.
@@ -179,7 +179,7 @@ $ll = Join-Path $work 'compiler.ll'
 # frontend with, so fall back to the seed -- that is exactly the situation it is
 # committed for.
 if ([string]::IsNullOrEmpty($Compiler)) {
-    if ([string]::IsNullOrEmpty($Seed)) { $Seed = Join-Path $Repo 'bootstrap\prismio-seed.ll' }
+    if ([string]::IsNullOrEmpty($Seed)) { $Seed = Join-Path $Repo 'bootstrap\prismio-seed-0.1.0.ll' }
     if (-not (Test-Path $Seed)) { Write-Host "FAILED: seed not found: $Seed" -ForegroundColor Red; exit 1 }
     Write-Host '[seed -> ll]' -ForegroundColor DarkGray
     Copy-Item $Seed $ll -Force

@@ -31,7 +31,7 @@ Windows have not been built.
 | Compiler bug | `panic` / `unreachable` / `exit` last in a function with an owned local emitted invalid IR; fixed, test 261, six `extern fn exit` redeclarations removed |
 | Input and print | `docs/INPUT_PLAN.md` items A, B, C; `std.term` styles any `Display` |
 
-**Seed**: `bootstrap/prismio-seed.ll` was refreshed twice (global arrays; the `exit` fix).
+**Seed**: `../bootstrap/prismio-seed-0.1.0.ll` was refreshed twice (global arrays; the `exit` fix).
 **Project host**: replaced twice with a newer generation, because the old host could not build
 a source tree that needs the feature it lacks. If `prismio build` ever reports that the host
 "is not runnable", it was caught mid-suite (the `ums` fixture moves it aside), or it is older
@@ -55,7 +55,7 @@ M3, M4, M6 and M7 as written below; `TypeInfo`'s 51 free functions.
 | `impl`/`self` | only `parse/parser.psm` |
 | `extern fn` | 702 (335 LLVM bindings, 200 AIF tables, ~30 symbol tables, 11 duplicating `std.fs`) |
 
-The seed (`bootstrap/prismio-seed.ll`, refreshed 2026-10-02) already parses every
+The seed (`../bootstrap/prismio-seed-0.1.0.ll`, refreshed 2026-10-02) already parses every
 construct below, so none of this waits on a seed refresh.
 
 **Not doing:** rewriting `a.equals(b)` to `a == b` and `.concat` to `+` (decided

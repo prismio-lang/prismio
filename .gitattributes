@@ -2,5 +2,5 @@
 # core.autocrlf. A CRLF checkout of a shell script fails on macOS with an opaque
 # "bad interpreter" error, and the seed is a build input that should be byte-stable
 # across platforms so its hash means the same thing everywhere.
-bootstrap/prismio-seed.ll text eol=lf
+bootstrap/prismio-seed-0.1.0.ll text eol=lf
 *.sh                      text eol=lf

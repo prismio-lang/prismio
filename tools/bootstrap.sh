@@ -9,7 +9,7 @@
 # A normal user build consumes installed bitcode and deliberately cannot build a
 # compiler backend, so bootstrap remains the explicit source-based path.
 #
-# --seed starts from bootstrap/prismio-seed.ll, committed LLVM IR for the compiler.
+# --seed starts from bootstrap/prismio-seed-0.1.0.ll, committed LLVM IR for the compiler.
 # A host with no prismio binary cannot compile src/main.psm to get one, and that is
 # the only way out of the cycle. The seed carries no target triple, so llc targets
 # whatever host it runs on.
@@ -34,7 +34,7 @@ while [ $# -gt 0 ]; do
         --seed)
             # Optional path; bare --seed means the committed default.
             if [ $# -ge 2 ] && [ "${2#--}" = "$2" ]; then SEED="$2"; shift 2
-            else SEED="$REPO/bootstrap/prismio-seed.ll"; shift 1; fi ;;
+            else SEED="$REPO/bootstrap/prismio-seed-0.1.0.ll"; shift 1; fi ;;
         --out)  OUT="$2"; shift 2 ;;
         --repo) REPO="$2"; shift 2 ;;
         --keep) KEEP=1; shift 1 ;;

@@ -4,7 +4,7 @@ Prismio is self-hosted: the compiler is written in Prismio. That means building 
 on a new platform has a chicken-and-egg problem — you need a `prismio` binary to
 compile `src/main.psm`, and macOS has none.
 
-The way out is `bootstrap/prismio-seed.ll`: committed LLVM IR for the compiler,
+The way out is `bootstrap/prismio-seed-0.1.0.ll`: committed LLVM IR for the compiler,
 generated on a machine that already had one. `llc` turns it into a native object
 for whatever host it runs on, and from there the compiler builds itself.
 

@@ -1,4 +1,4 @@
-# Regenerate bootstrap/prismio-seed.ll from a known-good compiler.
+# Regenerate bootstrap/prismio-seed-0.1.0.ll from a known-good compiler.
 #
 #   .\tools\refresh_seed.ps1 -Compiler build\gen2.exe
 #
@@ -68,7 +68,7 @@ $header = @(
   ";"
 )
 
-$seed = Join-Path $Repo 'bootstrap\prismio-seed.ll'
+$seed = Join-Path $Repo 'bootstrap\prismio-seed-0.1.0.ll'
 [System.IO.File]::WriteAllText($seed, (($header + $body) -join "`n"))
 Remove-Item $work -Recurse -Force
 

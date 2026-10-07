@@ -86,7 +86,7 @@ jobs:
         run: |
           set -e
           if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -File tools/bootstrap.ps1 -Seed bootstrap/prismio-seed.ll -Out build/gen0.exe
+            pwsh -File tools/bootstrap.ps1 -Seed bootstrap/prismio-seed-0.1.0.ll -Out build/gen0.exe
             pwsh -File tools/bootstrap.ps1 -Compiler build/gen0.exe -Out build/gen1.exe
             pwsh -File tools/bootstrap.ps1 -Compiler build/gen1.exe -Out build/gen2.exe
           else
@@ -170,7 +170,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          grep -q '^target ' bootstrap/prismio-seed.ll && {
+          grep -q '^target ' bootstrap/prismio-seed-0.1.0.ll && {
             echo "seed carries a target directive; it must stay target-neutral"; exit 1; }
           echo "seed is target-neutral"
 
@@ -186,8 +186,8 @@ jobs:
         run: |
           set -e
           PRISMIO_SEED_IR=1 build/gen2 build src/main.psm -o build/seed-now.ll
-          if ! diff <(grep -v '^;' build/seed-now.ll) <(grep -v '^;' bootstrap/prismio-seed.ll) >/dev/null; then
-            echo "::error title=Stale seed::bootstrap/prismio-seed.ll does not match src/. Run tools/refresh_seed.sh --compiler <a fixpoint compiler> and commit the result."
+          if ! diff <(grep -v '^;' build/seed-now.ll) <(grep -v '^;' bootstrap/prismio-seed-0.1.0.ll) >/dev/null; then
+            echo "::error title=Stale seed::bootstrap/prismio-seed-0.1.0.ll does not match src/. Run tools/refresh_seed.sh --compiler <a fixpoint compiler> and commit the result."
             exit 1
           fi
           echo "seed is current"

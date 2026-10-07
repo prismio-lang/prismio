@@ -26,7 +26,7 @@ Prismio is a self-hosted systems programming language. The compiler — the lexe
 
 The LLVM backend and the runtime are C, under `runtime/` (see [C_CODE_STYLE.md](C_CODE_STYLE.md)); you only need to touch them for a backend or runtime change. The compiler produces LLVM IR, optimises and generates machine code in process with the LLVM it links (AArch64, X86 and WebAssembly), and hands the object to the system's linker.
 
-A committed seed (`bootstrap/prismio-seed.ll`) builds the first compiler on a machine that has none.
+A committed seed (`bootstrap/prismio-seed-0.1.0.ll`) builds the first compiler on a machine that has none.
 
 ---
 
@@ -74,7 +74,7 @@ From a fresh checkout with no `prismio` anywhere:
 tools/bootstrap.sh --seed --out build/gen0
 ```
 
-`bootstrap/prismio-seed.ll` is committed LLVM IR for a compiler built from an
+`bootstrap/prismio-seed-0.1.0.ll` is committed LLVM IR for a compiler built from an
 earlier tree. It is the only way out of the cycle on a host that has none.
 
 After that, one generation per command — about **4 seconds**, because the C

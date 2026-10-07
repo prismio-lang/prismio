@@ -173,7 +173,7 @@ def check_seed(rc: Path, work: Path) -> None:
     if WINDOWS:
         shell = shutil.which("pwsh") or shutil.which("powershell")
         result = run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                      REPO / "tools" / "bootstrap.ps1", "-Seed", REPO / "bootstrap" / "prismio-seed.ll",
+                      REPO / "tools" / "bootstrap.ps1", "-Seed", REPO / "bootstrap" / "prismio-seed-0.1.0.ll",
                       "-Out", work / f"seedchk{EXE}"])
     else:
         result = run(["bash", REPO / "tools" / "bootstrap.sh", "--seed",

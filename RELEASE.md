@@ -32,7 +32,7 @@ graphify update .                    # AST only, no API cost
 git status --short                   # only the intended files; no stray .prismio-* or build/
 ```
 
-The **seed** (`bootstrap/prismio-seed.ll`) is what a new machine builds the
+The **seed** (`bootstrap/prismio-seed-0.1.0.ll`) is what a new machine builds the
 compiler from. CI only checks that it can still parse `src/`, so a stale one passes
 while describing an older compiler: before the 0.1.0 refresh it was about 7,500 lines
 behind. Refresh it whenever `src/` changed since it was written, and commit it with

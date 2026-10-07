@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate bootstrap/prismio-seed.ll from a known-good compiler.
+# Regenerate bootstrap/prismio-seed-0.1.0.ll from a known-good compiler.
 #
 #   tools/refresh_seed.sh --compiler build/gen2
 #
@@ -49,7 +49,7 @@ cd "$REPO"
 "$COMPILER" build src/main.psm -o "$AGAIN" >/dev/null || die "second build failed"
 cmp -s "$RAW" "$AGAIN" || die "compiler is not deterministic"
 
-SEED="$REPO/bootstrap/prismio-seed.ll"
+SEED="$REPO/bootstrap/prismio-seed-0.1.0.ll"
 cat > "$SEED" <<'EOF'
 ; Prismio bootstrap seed -- LLVM IR for the Prismio compiler (src/main.psm).
 ;

@@ -182,7 +182,7 @@ Do not infer architecture from one function or one file.
 
 The committed seed must be able to parse `src/`.
 
-`bootstrap/prismio-seed.ll` is LLVM IR for a compiler built from an earlier tree.
+`bootstrap/prismio-seed-0.1.0.ll` is LLVM IR for a compiler built from an earlier tree.
 If new syntax is added to the compiler source and used immediately, the seed
 can no longer parse the source that it is supposed to rebuild.
 

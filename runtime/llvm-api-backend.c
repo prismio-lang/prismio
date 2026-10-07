@@ -4968,7 +4968,7 @@ int ir_str_data(const char *value) {
 // triple means "host" (ir_target_select's fallback), which is the one case that
 // falls through to this compiler's own platform.
 //
-// **Except in the seed.** bootstrap/prismio-seed.ll is IR with no triple, so
+// **Except in the seed.** bootstrap/prismio-seed-0.1.0.ll is IR with no triple, so
 // that any host can compile it -- and three answers here are the host's own:
 // this accessor, the console write below, and EAGAIN. A seed refreshed on macOS
 // called `__error`, which Linux does not define, and `write`, which the Windows
