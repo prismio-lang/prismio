@@ -1969,7 +1969,7 @@ def run_aif_test():
     Asserts the tier of each named record rather than a distribution, because a
     distribution can stay plausible while a clause is broken -- and a broken
     clause here yields a silently wrong tier rather than a crash, which is the
-    whole reason aif/prototype/aif.py is kept as an oracle.
+    whole reason tools/aif_oracle/aif.py is kept as an oracle.
 
     This is the cheap in-suite half of that. The full differential run against
     the oracle is tools/aif_differential.py.
@@ -2533,7 +2533,7 @@ def run_elem_mode_agreement_test():
 
 
 def run_oracle_vocabulary_test():
-    """The compiler and `aif/prototype/aif.py` must know the same builtins.
+    """The compiler and `tools/aif_oracle/aif.py` must know the same builtins.
 
     The differential compares *answers* on a fixed list of sources. It cannot see
     a builtin neither list happens to call -- and that is not hypothetical: when
@@ -2554,7 +2554,7 @@ def run_oracle_vocabulary_test():
     """
     print(f"\n{BLUE}--- Running oracle_vocabulary ---{RESET}")
     contracts = (PROJECT_ROOT / "src" / "aif" / "contracts.psm").read_text(encoding="utf-8")
-    oracle_src = (PROJECT_ROOT / "aif" / "prototype" / "aif.py").read_text(encoding="utf-8")
+    oracle_src = (PROJECT_ROOT / "tools" / "aif_oracle" / "aif.py").read_text(encoding="utf-8")
 
     # This scraper is the thing the check depends on seeing, and it has now gone
     # blind twice: once when the compiler moved off the C string layer in 2026-08

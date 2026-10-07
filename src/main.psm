@@ -279,7 +279,7 @@ private fn cliDumpAst() -> Int {
 }
 
 // The memory model. `--summary` prints the tier distribution in the form
-// aif/prototype/aif.py prints it, so the two can be compared directly -- that
+// tools/aif_oracle/aif.py prints it, so the two can be compared directly -- that
 // comparison is the only real defence against a transfer function that is
 // subtly wrong and yields a silently wrong tier rather than a crash.
 private fn cliAif() -> Int {
@@ -341,7 +341,7 @@ private fn cliAif() -> Int {
             }
         } else if (flag.equals("--theta-fields")) {
             // Approximate Theta_stack by field count instead of bytes, the
-            // way aif/prototype/aif.py must because a JSON dump carries no
+            // way tools/aif_oracle/aif.py must because a JSON dump carries no
             // layout. tools/aif_differential.py passes this so the two are
             // compared on their inference rather than on a threshold only
             // one of them can evaluate.
@@ -430,7 +430,7 @@ fn main() -> Int {
     // the AIF memory-model work, which analyses the real AST out-of-process.
     if (first.equals("dump-ast")) { return cliDumpAst() }
     // The memory model. `--summary` prints the tier distribution in the form
-    // aif/prototype/aif.py prints it, so the two can be compared directly --
+    // tools/aif_oracle/aif.py prints it, so the two can be compared directly --
     // that comparison is the only real defence against a transfer function that
     // is subtly wrong and yields a silently wrong tier rather than a crash.
     if (first.equals("aif")) { return cliAif() }

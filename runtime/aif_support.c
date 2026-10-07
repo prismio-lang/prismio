@@ -833,7 +833,7 @@ void aif_layout_select(void) {
     }
 }
 
-// LAYOUT 5's cost model, ported from aif/prototype/layout.py
+// LAYOUT 5's cost model, ported from tools/aif_oracle/layout.py
 // **What this is for.** LAYOUT 7.2 specifies selection as
 // `best := argmin over candidates(tau) of Cost(...)`, and until now this compiler
 // had neither half: `aif_layout_select` above runs one greedy placement and never

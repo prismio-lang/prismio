@@ -212,7 +212,7 @@ worklist (`../aif/evidence/RESULTS-recursive-release-depth.md`).
 
 ## The AIF analysis and its oracle
 
-`../aif/prototype/aif.py` is the oracle: an independent implementation that
+`../tools/aif_oracle/aif.py` is the oracle: an independent implementation that
 `../tools/aif_differential.py` compares with the in-compiler engine. They agree on all 19
 default sources (2026-10-07). Two cases outside that set disagree:
 

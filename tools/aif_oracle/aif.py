@@ -1919,7 +1919,7 @@ def report_bracketing(model, eng):
     Engine.walk. Mirroring it would mean porting placement, which would make the
     oracle a second implementation of the thing it is supposed to check rather
     than an independent one. The compiler-side number is checked instead by
-    aif/evidence/arena_census.py over the whole corpus.
+    a census over the whole test corpus.
     """
     masks = bracket_masks(model, eng)
     n = len(masks)

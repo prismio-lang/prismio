@@ -3,11 +3,11 @@
 
     python tools/aif_differential.py [--compiler build/aif2.exe]
 
-Runs `prismio aif <src> --summary` and `aif/prototype/aif.py <dump>` over the
+Runs `prismio aif <src> --summary` and `tools/aif_oracle/aif.py <dump>` over the
 same sources, under both collection-ownership settings, and compares the tier
 distribution and every excluded-site counter.
 
-Why this exists: aif/prototype/aif.py is not throwaway. The two implementations
+Why this exists: tools/aif_oracle/aif.py is not throwaway. The two implementations
 share no code, so a transfer function that is subtly wrong in one of them shows
 up here as a differing count -- and a wrong transfer function otherwise produces
 a silently wrong tier rather than a crash, months before anyone notices. AIF's
@@ -28,7 +28,7 @@ from pathlib import Path
 from executable import resolve_executable
 
 REPO = Path(__file__).resolve().parent.parent
-PROTOTYPE = REPO / "aif" / "prototype" / "aif.py"
+PROTOTYPE = REPO / "tools" / "aif_oracle" / "aif.py"
 
 # Everything compared. Tier counts are the result; the rest are the exclusions,
 # and they are compared too because a site one implementation declines to count
@@ -275,7 +275,7 @@ def main():
 
     dumps = {}
     failures = []
-    print(f"AIF differential test -- {args.compiler} vs aif/prototype/aif.py\n")
+    print(f"AIF differential test -- {args.compiler} vs tools/aif_oracle/aif.py\n")
     for src in sources:
         for owned in (False, True):
             problem = compare(args.compiler, src, owned, dumps)

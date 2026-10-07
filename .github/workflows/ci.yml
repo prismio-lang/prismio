@@ -153,7 +153,7 @@ jobs:
         run: python benchmarks/run.py --compiler dist/Prismio/bin/prismio --runs 1 --output build/ci-benchmark.json
 
       # The AIF engine exists twice on purpose: once in the compiler and once as
-      # aif/prototype/aif.py, sharing no code. A transfer function that is subtly
+      # tools/aif_oracle/aif.py, sharing no code. A transfer function that is subtly
       # wrong produces a silently wrong tier rather than a crash, so the two
       # agreeing is the only real check on either -- and it is worth nothing
       # unless something notices when they stop.

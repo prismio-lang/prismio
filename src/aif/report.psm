@@ -764,7 +764,7 @@ private fn aifEmitKindRow(kind: Int) {
 }
 
 // The distribution, in the form the oracle prints it. This is what gets compared
-// against aif/prototype/aif.py, so it reports the same quantities under the same
+// against tools/aif_oracle/aif.py, so it reports the same quantities under the same
 // names -- including the exclusions, because a site the model declines to count
 // is exactly the kind of difference that would otherwise hide a real one.
 private fn aifEmitSummary(sourcePath: String, converged: Bool) {

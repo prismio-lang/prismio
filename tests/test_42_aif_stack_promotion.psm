@@ -4,7 +4,7 @@
 // outlive its frame, so codegen emits an `alloca` and no allocation call. The
 // point of the test is that the *values* are still right: a wrong escape fact
 // shows up as a stale or clobbered read, not as a crash, which is exactly the
-// failure mode aif/prototype/aif.py exists to guard against.
+// failure mode tools/aif_oracle/aif.py exists to guard against.
 //
 // The self-host cannot cover this. The compiler's own source has zero T0 sites
 // (its structs are driven to Shared by undeclared FFI contracts), so the

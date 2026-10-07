@@ -46,7 +46,7 @@ import common.diagnostics
 //   A4  Thread affinity is modelled (REQUIREMENTS 15, 2026-08-19). It was
 //       vacuous before that: the language had no tasks, every value was
 //       Isolated, and T4a was unreachable by construction. Two decisions are
-//       shared with aif/prototype/aif.py and so cannot be checked by the
+//       shared with tools/aif_oracle/aif.py and so cannot be checked by the
 //       differential -- T-SPAWN-SHARE's premise is read as `A = Shared`, and
 //       E-SPAWN-J's "joined on every path" is decided syntactically. Both are
 //       argued at the rule in runtime/aif_support.c.
@@ -55,7 +55,7 @@ import common.diagnostics
 //       defined and requires only that it be documented -- it is, in the
 //       manifest header.
 //
-// THE ORACLE. aif/prototype/aif.py implements the same rules against the JSON
+// THE ORACLE. tools/aif_oracle/aif.py implements the same rules against the JSON
 // from `prismio dump-ast`. Both must produce the same distribution over the
 // same source. That is differential testing against an independent
 // implementation, and it is the only reliable defence against a transfer
