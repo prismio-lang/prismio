@@ -1,5 +1,5 @@
 toolchain {
-    host = ".prismio/build/debug/prismio"
+    host = ".prismio/build/release/prismio"
 }
 
 project {
@@ -68,7 +68,7 @@ commands {
     // command is running on.
     command("release") {
         description = "Cut a compiler release for this host: build, fixpoint, OS-floor check, archive, SHA-256"
-        run("tools/release.py", "--build-with", ".prismio/build/debug/prismio",
+        run("tools/release.py", "--build-with", ".prismio/build/release/prismio",
         "--out", "dist/release", args)
     }
 
@@ -79,7 +79,7 @@ commands {
     // `runtime/` changes, with no packaging step in front of it.
     command("bench") {
         description = "Run the cross-language performance benchmark suite"
-        run("benchmarks/run.py", "--compiler", ".prismio/build/debug/prismio", args)
+        run("benchmarks/run.py", "--compiler", ".prismio/build/release/prismio", args)
     }
 
     // Through tools/run_suite.py, which tests a *copy* of the compiler.

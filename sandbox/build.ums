@@ -1,5 +1,5 @@
 toolchain {
-    host = "../.prismio/build/debug/prismio"
+    host = "../.prismio/build/release/prismio"
 }
 
 project {
