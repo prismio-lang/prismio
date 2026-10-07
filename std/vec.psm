@@ -46,59 +46,59 @@ import std.option
 // element types that implement `Copy`, which is every scalar, `String`, and any
 // struct that writes the impl.
 public fn vecOf<T: Copy>(a: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(1)
     list_push(xs, copyOf(a))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(2)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(3)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(4)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(5)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(6)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(7)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(8)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     return xs
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(9)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i))
@@ -106,7 +106,7 @@ public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T) -
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(10)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i)) list_push(xs, copyOf(j))
@@ -114,7 +114,7 @@ public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(11)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i)) list_push(xs, copyOf(j)) list_push(xs, copyOf(k))
@@ -122,7 +122,7 @@ public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j
 }
 
 public fn vecOf<T: Copy>(a: T, b: T, c: T, d: T, e: T, f: T, g: T, h: T, i: T, j: T, k: T, l: T) -> Vec<T> {
-    let mut xs: Vec<T> = list_new()
+    let mut xs: Vec<T> = list_new_with_capacity(12)
     list_push(xs, copyOf(a)) list_push(xs, copyOf(b)) list_push(xs, copyOf(c)) list_push(xs, copyOf(d))
     list_push(xs, copyOf(e)) list_push(xs, copyOf(f)) list_push(xs, copyOf(g)) list_push(xs, copyOf(h))
     list_push(xs, copyOf(i)) list_push(xs, copyOf(j)) list_push(xs, copyOf(k)) list_push(xs, copyOf(l))

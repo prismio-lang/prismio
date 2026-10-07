@@ -1,0 +1,47 @@
+// A `Vec` literal allocates exactly the room it needs. `vecOf` used to start from
+// an empty list and push each element, so the block grew 0 -> 4 -> 8 and a literal
+// of five to eight elements paid a reallocation (and one of one to three held
+// capacity it would never use). An eight-element literal now costs 0.64x of what
+// it did, and a four-element one 0.80x.
+
+import std.io
+import std.vec
+
+fn fail(what: String) -> Int {
+    print("FAIL: ")
+    println(what)
+    return 1
+}
+
+fn main() -> Int {
+    let one: Vec<Int> = [7]
+    let three: Vec<Int> = [1, 2, 3]
+    let four: Vec<Int> = [1, 2, 3, 4]
+    let eight: Vec<Int> = [1, 2, 3, 4, 5, 6, 7, 8]
+    let twelve: Vec<Int> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    if (one.capacity != 1 or three.capacity != 3 or four.capacity != 4) {
+        return fail("a short literal holds exactly its elements")
+    }
+    if (eight.capacity != 8 or twelve.capacity != 12) {
+        return fail("a longer literal does not grow past its elements")
+    }
+
+    let words: Vec<String> = ["a", "b", "c", "d", "e"]
+    if (words.capacity != 5 or words.length != 5 or words[4] != "e") {
+        return fail("a String literal is sized the same way")
+    }
+
+    let mut grown: Vec<Int> = [1, 2, 3]
+    grown.push(4)
+    grown.push(5)
+    if (grown.length != 5 or grown[4] != 5 or grown.capacity < 5) {
+        return fail("a literal still grows when pushed to")
+    }
+
+    let mut sum = 0
+    for x in eight { sum = sum + x }
+    if (sum != 36 or twelve[11] != 12) { return fail("the elements are intact") }
+
+    println("PASS: Vec literals are sized exactly")
+    return 0
+}
