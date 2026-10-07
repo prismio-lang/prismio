@@ -119,6 +119,20 @@ static char g_pending_param_names[MAX_PENDING_PARAMS][NAME_LEN];
 static int g_pending_param_count;
 static int g_declaring; // 1 while building a `declare`, 0 for a definition
 
+// A function declared `-> Array<T, N>` hands its elements back by value, which for
+// a large array LLVM cannot do cheaply: it has to split a first-class `[N x T]`
+// return into one value per element before it demotes the return to an out
+// pointer, and that work grows faster than N (a million-byte array took 21 s to
+// compile at 32,000 Ints and 2 s at 16,000). So a large one is returned through
+// a hidden first parameter, `ptr sret([N x T])`, that the caller points at a frame
+// slot of its own -- the lowering LLVM would reach anyway, without the detour. It
+// is decided from the array's key alone, so a definition, a forward `declare` and
+// every call site agree without being told.
+#define SRET_ARRAY_MIN_BYTES 4096
+static int g_pending_sret;          // the function being begun returns through a pointer
+static LLVMTypeRef g_pending_sret_ty;
+static LLVMValueRef g_cur_sret;     // the definition being built: its out pointer, else NULL
+
 // Call being assembled.
 typedef struct {
     LLVMValueRef args[MAX_CALL_ARGS];
@@ -949,10 +963,28 @@ void ir_module_end(void) { /* nothing to flush -- the module is already built */
 static int g_pending_param_noalias[MAX_PENDING_PARAMS];
 static int g_pending_ret_noalias;
 
+static int array_return_via_pointer(const char *key, LLVMTypeRef *type_out) {
+    if (!key || strncmp(key, "arr:", 4) != 0) return 0;
+    LLVMTypeRef ty = type_from_key(key);
+    if (LLVMABISizeOfType(LLVMGetModuleDataLayout(g_module), ty) < SRET_ARRAY_MIN_BYTES) return 0;
+    if (type_out) *type_out = ty;
+    return 1;
+}
+
+// `sret` and `noalias` on the hidden first parameter, which is parameter 1 in
+// LLVM's attribute indexing. Clang spells it the same way.
+static void mark_sret_param(LLVMValueRef fn, LLVMTypeRef ty) {
+    unsigned sret = LLVMGetEnumAttributeKindForName("sret", 4);
+    unsigned noalias = LLVMGetEnumAttributeKindForName("noalias", 7);
+    if (sret) LLVMAddAttributeAtIndex(fn, 1u, LLVMCreateTypeAttribute(g_ctx, sret, ty));
+    if (noalias) LLVMAddAttributeAtIndex(fn, 1u, LLVMCreateEnumAttribute(g_ctx, noalias, 0));
+}
+
 void ir_function_begin(const char *name, const char *ret_type) {
     if (strlen(name) >= FN_NAME_LEN) backend_fail("function name too long", name);
     snprintf(g_pending_fn_name, sizeof(g_pending_fn_name), "%s", name);
-    g_pending_ret = type_from_key(ret_type);
+    g_pending_sret = array_return_via_pointer(ret_type, &g_pending_sret_ty);
+    g_pending_ret = g_pending_sret ? LLVMVoidTypeInContext(g_ctx) : type_from_key(ret_type);
     g_pending_param_count = 0;
     memset(g_pending_param_noalias, 0, sizeof(g_pending_param_noalias));
     g_pending_ret_noalias = 0;
@@ -1002,7 +1034,7 @@ static void apply_param_attrs(LLVMValueRef fn) {
         // buffer, but there is no pointer parameter to hang it on. Dropping the
         // attribute loses an optimisation hint; applying it is a verifier error.
         if (LLVMGetTypeKind(g_pending_params[i]) != LLVMPointerTypeKind) continue;
-        LLVMAddAttributeAtIndex(fn, (unsigned)(i + 1),
+        LLVMAddAttributeAtIndex(fn, (unsigned)(i + 1 + (g_pending_sret ? 1 : 0)),
                                 LLVMCreateEnumAttribute(g_ctx, kind, 0));
     }
 }
@@ -1044,17 +1076,22 @@ static void tag_free_fn(LLVMValueRef fn, const char *name) {
 }
 
 static LLVMValueRef materialize_function(void) {
-    LLVMTypeRef fnty = LLVMFunctionType(g_pending_ret, g_pending_params,
-                                        (unsigned)g_pending_param_count, 0);
+    LLVMTypeRef all[MAX_PENDING_PARAMS + 1];
+    unsigned n = 0;
+    if (g_pending_sret) all[n++] = LLVMPointerTypeInContext(g_ctx, 0);
+    for (int i = 0; i < g_pending_param_count; i++) all[n++] = g_pending_params[i];
+    LLVMTypeRef fnty = LLVMFunctionType(g_pending_ret, all, n, 0);
     LLVMValueRef existing = LLVMGetNamedFunction(g_module, g_pending_fn_name);
     if (existing) {
         tag_alloc_fn(existing, g_pending_fn_name);
         tag_free_fn(existing, g_pending_fn_name);
+        if (g_pending_sret) mark_sret_param(existing, g_pending_sret_ty);
         return existing; // a forward `declare` already created it
     }
     LLVMValueRef fn = LLVMAddFunction(g_module, g_pending_fn_name, fnty);
     tag_alloc_fn(fn, g_pending_fn_name);
     tag_free_fn(fn, g_pending_fn_name);
+    if (g_pending_sret) mark_sret_param(fn, g_pending_sret_ty);
     return fn;
 }
 
@@ -1097,6 +1134,7 @@ void ir_function_body_start(void) {
     g_alloca_count = 0;
     g_param_count = 0;
     g_has_returned = 0;
+    g_cur_sret = g_pending_sret ? LLVMGetParam(g_function, 0) : NULL;
 
     g_entry_block = LLVMAppendBasicBlockInContext(g_ctx, g_function, "entry");
     LLVMPositionBuilderAtEnd(g_builder, g_entry_block);
@@ -1105,7 +1143,8 @@ void ir_function_body_start(void) {
         if (!g_pending_param_names[i][0]) continue;
         strncpy(g_params[g_param_count].name, g_pending_param_names[i], NAME_LEN - 1);
         g_params[g_param_count].name[NAME_LEN - 1] = '\0';
-        g_params[g_param_count].value = LLVMGetParam(g_function, (unsigned)i);
+        g_params[g_param_count].value =
+            LLVMGetParam(g_function, (unsigned)(i + (g_pending_sret ? 1 : 0)));
         g_params[g_param_count].type = g_pending_params[i];
         g_param_count++;
     }
@@ -1264,6 +1303,18 @@ void ir_cond_br(const char *c, const char *t, const char *f) {
 
 void ir_ret(const char *type, const char *value) {
     if (block_done()) return;
+    // A large array leaves through the hidden pointer: `value` is the address of
+    // the elements (ir_array_load does not load them), copied out and then a
+    // plain `ret void`.
+    if (g_cur_sret && type && strncmp(type, "arr:", 4) == 0) {
+        LLVMTypeRef arr = type_from_key(type);
+        LLVMTargetDataRef layout = LLVMGetModuleDataLayout(g_module);
+        unsigned align = LLVMABIAlignmentOfType(layout, arr);
+        LLVMBuildMemCpy(g_builder, g_cur_sret, align, resolve_value(value, "ptr"), align,
+                        LLVMSizeOf(arr));
+        LLVMBuildRetVoid(g_builder);
+        return;
+    }
     LLVMBuildRet(g_builder, resolve_value(value, type));
 }
 
@@ -2368,14 +2419,35 @@ int ir_array_alloca(const char *elem_type, int count) {
     return array_base(arr, array_slot(arr));
 }
 
+// Zero `bytes` of `dst`, an aggregate of type `ty`. A small aggregate is one store
+// of its null constant, which LLVM promotes to registers or folds away when every
+// element is written before it is read. A large one is an explicit memset: LLVM
+// does lower the store to one eventually, but only after splitting it element by
+// element, so the compile time of `let big: Array<Int, N>` grew with N -- 1.6 s
+// at a million elements, 21 s at ten million -- for the same object code.
+// Small aggregates keep the store so that their IR, and what LLVM makes of it,
+// does not move.
+#define ZERO_MEMSET_MIN_BYTES 1024
+
+static void store_zero_aggregate(LLVMTypeRef ty, LLVMValueRef dst) {
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(g_module);
+    unsigned long long bytes = LLVMABISizeOfType(layout, ty);
+    if (bytes < ZERO_MEMSET_MIN_BYTES) {
+        LLVMBuildStore(g_builder, LLVMConstNull(ty), dst);
+        return;
+    }
+    LLVMValueRef zero = LLVMConstInt(LLVMInt8TypeInContext(g_ctx), 0, 0);
+    LLVMValueRef size = LLVMConstInt(LLVMInt64TypeInContext(g_ctx), bytes, 0);
+    LLVMBuildMemSet(g_builder, dst, zero, size, LLVMABIAlignmentOfType(layout, ty));
+}
+
 // `let m: Array<U32, 16>`. Zeroed where the declaration runs rather than where
-// the slot is, so a `let` in a loop body starts at zero on every iteration. One
-// store of the array's null constant: LLVM lowers it to a memset, and removes it
-// when every element is written before it is read.
+// the slot is, so a `let` in a loop body starts at zero on every iteration. LLVM
+// removes the zeroing when every element is written before it is read.
 int ir_array_alloca_zeroed(const char *elem_type, int count) {
     LLVMTypeRef arr = LLVMArrayType2(type_from_key(elem_type), (uint64_t)count);
     LLVMValueRef slot = array_slot(arr);
-    LLVMBuildStore(g_builder, LLVMConstNull(arr), slot);
+    store_zero_aggregate(arr, slot);
     return array_base(arr, slot);
 }
 
@@ -2401,6 +2473,9 @@ int ir_array_copy(const char *elem_type, int count, const char *src) {
 // the aggregate value `ret` hands back. LLVM demotes a large one to a hidden
 // out-pointer itself.
 int ir_array_load(const char *key, const char *src) {
+    if (g_cur_sret && array_return_via_pointer(key, NULL)) {
+        return intern_value(resolve_value(src, "ptr"));   // copied out by ir_ret
+    }
     return intern_value(LLVMBuildLoad2(g_builder, type_from_key(key),
                                        resolve_value(src, "ptr"), ""));
 }
@@ -2409,6 +2484,11 @@ int ir_array_load(const char *key, const char *src) {
 // own, so the call's value is an address like every other array's.
 int ir_array_from_value(const char *key, const char *value) {
     LLVMTypeRef arr = type_from_key(key);
+    // Returned through a pointer: ir_call_end already put the elements in a frame
+    // slot of this function, and `value` is its address.
+    if (array_return_via_pointer(key, NULL)) {
+        return array_base(arr, resolve_value(value, "ptr"));
+    }
     LLVMValueRef slot = array_slot(arr);
     LLVMBuildStore(g_builder, resolve_value(value, key), slot);
     return array_base(arr, slot);
@@ -2426,7 +2506,7 @@ void ir_array_copy_key(const char *key, const char *dst, const char *src) {
 
 void ir_array_zero_key(const char *key, const char *dst) {
     if (block_done()) return;
-    LLVMBuildStore(g_builder, LLVMConstNull(type_from_key(key)), resolve_value(dst, "ptr"));
+    store_zero_aggregate(type_from_key(key), resolve_value(dst, "ptr"));
 }
 
 // `d = c` between two arrays of one known length: into `d`'s own storage, so
@@ -4040,6 +4120,27 @@ static void release_call_temps(const CallFrame *f) {
     }
 }
 
+// A call whose result is a large array by value: a frame slot for the elements,
+// pushed in front of the arguments as the callee's hidden `sret` parameter. The
+// slot's address is the call's value, which ir_array_from_value reads back.
+static LLVMValueRef prepend_sret_slot(CallFrame *f, LLVMTypeRef arr) {
+    if (f->count >= MAX_CALL_ARGS) backend_fail("too many call arguments", "array return");
+    for (int i = f->count; i > 0; i--) {
+        f->args[i] = f->args[i - 1];
+        f->borrow[i] = f->borrow[i - 1];
+    }
+    LLVMValueRef slot = array_slot(arr);
+    f->args[0] = slot;
+    f->borrow[0] = 0;
+    f->count++;
+    return slot;
+}
+
+static void mark_sret_call(LLVMValueRef call, LLVMTypeRef arr) {
+    unsigned sret = LLVMGetEnumAttributeKindForName("sret", 4);
+    if (sret) LLVMAddCallSiteAttribute(call, 1u, LLVMCreateTypeAttribute(g_ctx, sret, arr));
+}
+
 static void apply_borrow_attrs(LLVMValueRef call, const CallFrame *f) {
     unsigned ro = LLVMGetEnumAttributeKindForName("readonly", 8);
     unsigned nc = LLVMGetEnumAttributeKindForName("nocapture", 9);
@@ -4063,6 +4164,13 @@ int ir_call_end(const char *ret_type, const char *func_name) {
     CallFrame *f = &g_calls[--g_call_depth];
 
     int is_void = (!ret_type || !*ret_type || strcmp(ret_type, "void") == 0);
+
+    LLVMTypeRef sret_ty = NULL;
+    LLVMValueRef sret_slot = NULL;
+    if (!is_void && array_return_via_pointer(ret_type, &sret_ty)) {
+        sret_slot = prepend_sret_slot(f, sret_ty);
+        is_void = 1;
+    }
 
     LLVMValueRef fn = LLVMGetNamedFunction(g_module, func_name);
     if (!fn) {
@@ -4088,8 +4196,10 @@ int ir_call_end(const char *ret_type, const char *func_name) {
     LLVMTypeRef fnty = LLVMGlobalGetValueType(fn);
     LLVMValueRef call = LLVMBuildCall2(g_builder, fnty, fn, f->args, (unsigned)f->count, "");
     apply_borrow_attrs(call, f);
+    if (sret_slot) mark_sret_call(call, sret_ty);
     release_call_temps(f);
 
+    if (sret_slot) return intern_value(sret_slot);
     return is_void ? -1 : intern_value(call);
 }
 
@@ -4111,6 +4221,13 @@ int ir_call_end_indirect(const char *ret_type, const char *fn_value) {
 
     int is_void = (!ret_type || !*ret_type || strcmp(ret_type, "void") == 0);
 
+    LLVMTypeRef sret_ty = NULL;
+    LLVMValueRef sret_slot = NULL;
+    if (!is_void && array_return_via_pointer(ret_type, &sret_ty)) {
+        sret_slot = prepend_sret_slot(f, sret_ty);
+        is_void = 1;
+    }
+
     LLVMTypeRef param_types[MAX_CALL_ARGS];
     for (int i = 0; i < f->count; i++) param_types[i] = LLVMTypeOf(f->args[i]);
     LLVMTypeRef rty = is_void ? LLVMVoidTypeInContext(g_ctx) : type_from_key(ret_type);
@@ -4119,6 +4236,10 @@ int ir_call_end_indirect(const char *ret_type, const char *fn_value) {
     LLVMValueRef callee = resolve_value(fn_value, "ptr");
     LLVMValueRef call = LLVMBuildCall2(g_builder, fn_ty, callee, f->args,
                                        (unsigned)f->count, "");
+    if (sret_slot) {
+        mark_sret_call(call, sret_ty);
+        return intern_value(sret_slot);
+    }
     return is_void ? -1 : intern_value(call);
 }
 

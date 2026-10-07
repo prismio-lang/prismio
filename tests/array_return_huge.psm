@@ -1,0 +1,15 @@
+// Compiled under a time limit by run_array_return_pointer_test. Returning an
+// Array<Int, 100000> as a first-class `[N x i32]` took LLVM minutes to compile
+// (21 s at 32,000 and growing faster than N); through a pointer it is instant.
+
+fn make() -> Array<Int, 100000> {
+    let mut a: Array<Int, 100000>
+    a[0] = 3
+    a[99999] = 9
+    return a
+}
+
+fn main() -> Int {
+    let a = make()
+    return a[0] + a[99999] - 12
+}

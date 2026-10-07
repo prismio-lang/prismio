@@ -1,0 +1,122 @@
+// `-> Array<T, N>` past 4 KiB: the elements leave through a hidden out pointer
+// (`ptr sret`) that the caller points at a frame slot of its own, instead of as a
+// first-class `[N x T]` return value, which LLVM took time superlinear in N to
+// legalise (21 s to compile a 32,000-Int return). Behaviour is the contract of
+// test_163, and this checks it on both sides of the threshold:
+//
+//   - 1,023 Ints (4,092 bytes) still return by value, 1,024 (4,096) and up by pointer;
+//   - a call's result is copied into a binding, indexed directly, passed to a
+//     `[T]` parameter, and stored into a struct field;
+//   - `return other()` forwards a large array without a binding;
+//   - a method returns one, and so does a function of 8,192 bytes of U8;
+//   - each call returns its own copy, and 2,000 calls in a loop do not grow the
+//     frame (one slot per call site).
+
+import std.io
+
+struct Holder {
+    cells: Array<Int, 1500>
+    tag: Int
+}
+
+struct Grid {
+    seed: Int
+}
+
+fn below(seed: Int) -> Array<Int, 1023> {
+    let mut a: Array<Int, 1023>
+    a[0] = seed
+    a[1022] = seed + 1
+    return a
+}
+
+fn exactly(seed: Int) -> Array<Int, 1024> {
+    let mut a: Array<Int, 1024>
+    a[0] = seed
+    a[1023] = seed + 2
+    return a
+}
+
+fn big(seed: Int) -> Array<Int, 2000> {
+    let mut a: Array<Int, 2000>
+    a[0] = seed
+    a[1999] = seed * 10
+    return a
+}
+
+fn forwarded(seed: Int) -> Array<Int, 2000> {
+    return big(seed + 1)
+}
+
+fn bytes() -> Array<U8, 8192> {
+    let mut b: Array<U8, 8192>
+    b[0] = 7
+    b[8191] = 250
+    return b
+}
+
+fn wrapped() -> Holder {
+    let mut h = Holder { tag: 3 }
+    h.cells[0] = 11
+    h.cells[1499] = 12
+    return h
+}
+
+impl Grid {
+    fn cells(self) -> Array<Int, 1200> {
+        let mut a: Array<Int, 1200>
+        a[0] = self.seed
+        a[1199] = self.seed * 2
+        return a
+    }
+}
+
+fn edges(xs: [Int], last: Int) -> Int {
+    return xs[0] + xs[last]
+}
+
+fn fail(what: String) -> Int {
+    print("FAIL: ")
+    println(what)
+    return 1
+}
+
+fn main() -> Int {
+    let lo = below(5)
+    if (lo[0] != 5 or lo[1022] != 6) { return fail("just under the threshold") }
+    let at = exactly(5)
+    if (at[0] != 5 or at[1023] != 7) { return fail("exactly at the threshold") }
+
+    let mut b = big(7)
+    b[1] = 1
+    if (b[0] + b[1] + b[1999] != 78) { return fail("a returned local") }
+    let again = big(7)
+    if (again[1] != 0) { return fail("each call returns its own copy") }
+    if (big(3)[1999] != 30) { return fail("indexing a call directly") }
+    if (edges(big(4), 1999) != 44) { return fail("passing a call to a [T] parameter") }
+
+    let f = forwarded(1)
+    if (f[0] != 2 or f[1999] != 20) { return fail("return forwards another call's array") }
+
+    let bs = bytes()
+    if ((bs[0] as Int) != 7 or (bs[8191] as Int) != 250) { return fail("8,192 bytes of U8") }
+
+    let h = wrapped()
+    if (h.cells[0] != 11 or h.cells[1499] != 12 or h.tag != 3) { return fail("an array field") }
+
+    let g = Grid { seed: 21 }
+    let gc = g.cells()
+    if (gc[0] != 21 or gc[1199] != 42) { return fail("a method return") }
+
+    let mut sum = 0
+    let mut i = 0
+    while (i < 2000) {
+        let t = big(i)
+        sum = (sum + t[0] + t[1999]) % 1000003
+        i = i + 1
+    }
+    if (sum != 988937) { return fail("2,000 returns in a loop") }
+
+    println("PASS: large arrays returned through a pointer")
+    return 0
+}

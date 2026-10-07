@@ -2090,6 +2090,91 @@ def run_aif_array_frame_test():
     return True
 
 
+def run_array_zero_fill_test():
+    """A large zeroed array is a memset; a small one stays a store.
+
+    The two halves guard opposite mistakes. Without the memset, `let big:
+    Array<Int, N>` costs compile time linear in N with a large constant -- LLVM
+    scalarises the aggregate store before it recovers the memset -- and without
+    the threshold every small array's IR would change for no benefit.
+    """
+    print(f"\n{BLUE}--- Running array_zero_fill ---{RESET}")
+    fixture = TEST_DIR / "array_zero_fill.psm"
+    out = TEST_DIR / "array_zero_fill.ll"
+    built = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(out)])
+    if built.returncode != 0:
+        print(f"{RED}[FAIL] array_zero_fill: build exited {built.returncode}{RESET}")
+        print(built.stdout or built.stderr)
+        return False
+    ir = out.read_text(encoding="utf-8", errors="replace")
+    cleanup_files(out)
+    problems = []
+    if not re.search(r"call void @llvm\.memset\.p0\.i64\(ptr align 4 %\S+, i8 0, i64 4000,", ir):
+        problems.append("no 4000-byte memset for Array<Int, 1000>")
+    if re.search(r"store \[1000 x i32\] zeroinitializer", ir):
+        problems.append("the large array is still zeroed by an aggregate store")
+    if not re.search(r"store \[4 x i32\] zeroinitializer", ir):
+        problems.append("the small array no longer zeroes by one store, so its IR moved")
+    if problems:
+        print(f"{RED}[FAIL] array zero fill{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] a large zeroed array is a memset and a small one is still a store{RESET}")
+    return True
+
+
+def run_array_return_pointer_test():
+    """A large `-> Array<T, N>` returns through `ptr sret`; a small one by value.
+
+    Two facts, because each guards a different mistake. The IR half pins the
+    threshold: 1,023 Ints (4,092 bytes) is still a `[N x i32]` return and 2,000 is
+    `void` with an `sret` pointer, so the small case's IR cannot move unnoticed.
+    The time half is the reason the change exists -- LLVM legalises a first-class
+    aggregate return in time that grows faster than N, and a 100,000-element one
+    did not finish in minutes -- so a regression shows as a timeout, not as a slow
+    test somebody has to notice.
+    """
+    print(f"\n{BLUE}--- Running array_return_pointer ---{RESET}")
+    problems = []
+    out = TEST_DIR / "array_return_pointer.ll"
+
+    built = run_command([str(PRISMIO_EXE), "build",
+                         str(TEST_DIR / "test_262_array_return_large.psm"), "-o", str(out)])
+    if built.returncode != 0:
+        problems.append(f"build exited {built.returncode}")
+    else:
+        ir = out.read_text(encoding="utf-8", errors="replace")
+        cleanup_files(out)
+        if not re.search(r"define void @big__Int\(ptr noalias sret\(\[2000 x i32\]\)", ir):
+            problems.append("`big` does not return through an sret pointer")
+        if not re.search(r"define void @exactly__Int\(ptr noalias sret\(\[1024 x i32\]\)", ir):
+            problems.append("`exactly` (4,096 bytes) is not at or over the threshold")
+        if not re.search(r"define \[1023 x i32\] @below__Int\(", ir):
+            problems.append("`below` (4,092 bytes) no longer returns by value")
+        if not re.search(r"call void @big__Int\(ptr sret\(\[2000 x i32\]\)", ir):
+            problems.append("a call to `big` does not pass the sret slot")
+
+    huge = TEST_DIR / "array_return_huge.psm"
+    try:
+        timed = subprocess.run([str(PRISMIO_EXE), "build", str(huge), "-o", str(out)],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=90)
+        if timed.returncode != 0:
+            problems.append(f"the 100,000-element return did not build: {timed.stderr.strip()[:200]}")
+    except subprocess.TimeoutExpired:
+        problems.append("a 100,000-element array return took over 90 s to compile")
+    cleanup_files(out)
+
+    if problems:
+        print(f"{RED}[FAIL] array return pointer{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] a large array returns through sret, a small one by value, and it compiles quickly{RESET}")
+    return True
+
+
 def run_aif_human_report_test():
     """The default is an interactive explanation; the manifest is explicit.
 
@@ -9134,6 +9219,8 @@ def main():
         ("aif_human_report", run_aif_human_report_test),
         ("aif_loop_bracket", run_aif_loop_bracket_test),
         ("aif_array_frame", run_aif_array_frame_test),
+        ("array_zero_fill", run_array_zero_fill_test),
+        ("array_return_pointer", run_array_return_pointer_test),
         ("aif_concurrency", run_aif_concurrency_test),
         ("aif_widening", run_aif_widening_test),
         ("aif_stack_slot", run_aif_stack_slot_test),

@@ -1,0 +1,15 @@
+// A zeroed `Array<T, N>` local is one memset when it is large and one store of the
+// null constant when it is small. LLVM does lower the aggregate store to a memset
+// eventually, but only after splitting it element by element, so the compile time
+// of a large one grew with N (1.6 s at a million elements) for identical object
+// code. The small one keeps the store so that its IR does not move.
+
+fn main() -> Int {
+    let mut big: Array<Int, 1000>
+    let mut small: Array<Int, 4>
+    big[0] = 5
+    big[999] = 6
+    small[0] = 1
+    small[3] = 2
+    return big[0] + big[999] + small[0] + small[3]
+}
