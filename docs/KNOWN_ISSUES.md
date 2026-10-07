@@ -662,6 +662,11 @@ the pages stay faulted in), and the difference inverts the cross-language compar
 reported 1.266x). Its useful axes are `hashmap_insert_lookup`, `key_value_update` and
 `nested_collection` under `../benchmarks`; use their checksums and repeated medians.
 
+**A green check can be vacuous, and a proxy is not the property.** A fixture can pass while placing no
+arena at all, so assert that the thing is present before asserting that it is correct; and a check that
+counts a symbol measures a stand-in, so when the stand-in and the property disagree it is usually the
+check that is stale.
+
 **A balanced `--verify` ledger proves less than it looks.** Two releases can both be ledger-legal and
 the answer still wrong (`optionOr(s.stripPrefix("x"), "!")` once read `4 allocated, 4 released` and
 returned `""`). Assert values as well (`../tests/test_92_field_view_provenance.psm`).
