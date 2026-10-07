@@ -113,15 +113,15 @@ it decided:
 ```console
 $ prismio aif shapes.psm
 Storage plan
-  Stack                   3
-  Arena                   5
-  Scoped heap             3
+  Stack                   9
+  Arena                   2
+  Scoped heap             0
   Unique heap             98
   Shared heap             0
   Cycle-managed heap      0
 ...
 ID   location                 type            storage          reason
-1    shapes.psm:20:19         [Shape]         scoped heap      scope-bound; no arena selected
+1    shapes.psm:20:19         [Shape]         stack            fixed-length array; lives in the frame
 2    shapes.psm:20:25         Shape           stack            small value does not escape
 ```
 
