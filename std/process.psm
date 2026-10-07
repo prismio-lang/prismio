@@ -46,6 +46,7 @@ private extern fn proc_env_has(name: String borrow) -> Int
 private extern fn proc_env_get(name: String borrow) -> String produce(free)
 private extern fn proc_env_set(name: String borrow, value: String borrow) -> Int
 private extern fn proc_env_remove(name: String borrow) -> Int
+private extern fn proc_env_all() -> String produce(free)
 private extern fn proc_pid() -> Int
 
 private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
@@ -110,6 +111,10 @@ impl ProcessQuery {
     // True when the name is unset afterwards, whether or not it was set.
     public fn removeEnv(self, name: String) -> Bool {
         return proc_env_remove(name) == 1
+    }
+
+    public fn allEnv(self) -> String {
+        return proc_env_all()
     }
 
     // This process's id, as the operating system numbers it.

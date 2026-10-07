@@ -37,7 +37,10 @@
 #else
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
+#include <pwd.h>
+#include <grp.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif

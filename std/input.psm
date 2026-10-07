@@ -120,3 +120,8 @@ impl Iterator for StdinLines {
     fn hasNext(self) -> Bool { return io_stdin_has_line() == 1 }
     fn next(inout self) -> Self.Item { return io_stdin_take_line() }
 }
+
+public fn readLine() -> Option<String> {
+    if (io_stdin_has_line() == 0) { return Option<String>.None }
+    return Option<String>.Some(io_stdin_take_line())
+}

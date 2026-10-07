@@ -173,6 +173,11 @@ private extern fn fs_list_end()
 private extern fn fs_append_file(path: String borrow, content: String bytes, length: Int) -> Int
 private extern fn fs_rename(from: String borrow, to: String borrow) -> Int
 private extern fn fs_remove_directory(path: String borrow) -> Int
+private extern fn fs_symlink(target: String borrow, linkPath: String borrow) -> Int
+private extern fn fs_readlink_exists(path: String borrow) -> Int
+private extern fn fs_readlink(path: String borrow) -> String produce(free)
+private extern fn fs_realpath_exists(path: String borrow) -> Int
+private extern fn fs_realpath(path: String borrow) -> String produce(free)
 private extern fn fs_metadata(path: String borrow, out: MetadataOut) -> Int
 
 // The names in `directory` -- files, directories and anything else -- sorted by
@@ -210,6 +215,20 @@ public fn rename(from: String, to: String) -> Bool {
 // refused rather than emptied.
 public fn removeDirectory(path: String) -> Bool {
     return fs_remove_directory(path) == 0
+}
+
+public fn createSymbolicLink(target: String, linkPath: String) -> Bool {
+    return fs_symlink(target, linkPath) == 0
+}
+
+public fn readLink(path: String) -> Option<String> {
+    if (fs_readlink_exists(path) == 0) { return Option<String>.None }
+    return Option<String>.Some(fs_readlink(path))
+}
+
+public fn realPath(path: String) -> Option<String> {
+    if (fs_realpath_exists(path) == 0) { return Option<String>.None }
+    return Option<String>.Some(fs_realpath(path))
 }
 
 // What `fs_metadata` writes back. Every field is 64-bit so that no padding

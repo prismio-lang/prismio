@@ -411,6 +411,217 @@ int fs_remove_directory(const char* path) {
     return PRISMIO_RMDIR(path) == 0 ? 0 : 1;
 }
 
+int fs_symlink(const char* target, const char* link_path) {
+    if (!target || !target[0] || !link_path || !link_path[0]) return 1;
+#ifdef _WIN32
+    DWORD attributes = GetFileAttributesA(target);
+    DWORD flags = (attributes != INVALID_FILE_ATTRIBUTES
+                   && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+                    ? SYMBOLIC_LINK_FLAG_DIRECTORY : 0;
+    return CreateSymbolicLinkA(link_path, target, flags) ? 0 : 1;
+#else
+    return symlink(target, link_path) == 0 ? 0 : 1;
+#endif
+}
+
+int fs_readlink_exists(const char* path) {
+#ifdef _WIN32
+    (void)path;
+    return 0;
+#else
+    if (!path || !path[0]) return 0;
+    char buffer[1];
+    return readlink(path, buffer, sizeof(buffer)) >= 0 ? 1 : 0;
+#endif
+}
+
+char* fs_readlink(const char* path) {
+    if (!path || !path[0]) {
+        char* empty = (char*)rt_base_alloc(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+#ifdef _WIN32
+    char* empty = (char*)rt_base_alloc(1);
+    if (empty) empty[0] = '\0';
+    return empty;
+#else
+    size_t capacity = 256;
+    for (;;) {
+        char* buffer = (char*)malloc(capacity);
+        if (!buffer) return NULL;
+        ssize_t length = readlink(path, buffer, capacity);
+        if (length < 0) {
+            free(buffer);
+            char* empty = (char*)rt_base_alloc(1);
+            if (empty) empty[0] = '\0';
+            return empty;
+        }
+        if ((size_t)length < capacity) {
+            char* result = (char*)rt_base_alloc((size_t)length + 1);
+            if (result) {
+                memcpy(result, buffer, (size_t)length);
+                result[length] = '\0';
+            }
+            free(buffer);
+            return result;
+        }
+        free(buffer);
+        capacity *= 2;
+    }
+#endif
+}
+
+int fs_realpath_exists(const char* path) {
+    if (!path || !path[0]) return 0;
+#ifdef _WIN32
+    char* resolved = _fullpath(NULL, path, 0);
+#else
+    char* resolved = realpath(path, NULL);
+#endif
+    if (!resolved) return 0;
+    free(resolved);
+    return 1;
+}
+
+char* fs_realpath(const char* path) {
+    if (!path || !path[0]) {
+        char* empty = (char*)rt_base_alloc(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+#ifdef _WIN32
+    char* resolved = _fullpath(NULL, path, 0);
+#else
+    char* resolved = realpath(path, NULL);
+#endif
+    if (!resolved) {
+        char* empty = (char*)rt_base_alloc(1);
+        if (empty) empty[0] = '\0';
+        return empty;
+    }
+    size_t length = strlen(resolved);
+    char* result = (char*)rt_base_alloc(length + 1);
+    if (result) memcpy(result, resolved, length + 1);
+    free(resolved);
+    return result;
+}
+
+char* fs_hostname(void) {
+#ifdef _WIN32
+    char buffer[256];
+    DWORD length = sizeof(buffer);
+    if (!GetComputerNameA(buffer, &length)) return NULL;
+#else
+    char buffer[256];
+    if (gethostname(buffer, sizeof(buffer) - 1) != 0) return NULL;
+    buffer[sizeof(buffer) - 1] = '\0';
+    size_t length = strlen(buffer);
+#endif
+    char* result = (char*)rt_base_alloc(length + 1);
+    if (!result) return NULL;
+    memcpy(result, buffer, length + 1);
+    return result;
+}
+
+char* proc_groups(void) {
+#ifdef _WIN32
+    char* out = (char*)rt_base_alloc(1);
+    if (out) out[0] = '\0';
+    return out;
+#else
+    int count = getgroups(0, NULL);
+    if (count < 0) return NULL;
+    gid_t* groups = count > 0 ? (gid_t*)malloc((size_t)count * sizeof(gid_t)) : NULL;
+    if (count > 0 && !groups) return NULL;
+    if (count > 0 && getgroups(count, groups) < 0) {
+        free(groups);
+        return NULL;
+    }
+    size_t capacity = (size_t)(count + 1) * 24 + 1;
+    char* out = (char*)rt_base_alloc(capacity);
+    if (!out) {
+        free(groups);
+        return NULL;
+    }
+    size_t offset = 0;
+    gid_t primary = getgid();
+    int written = snprintf(out, capacity, "%u", (unsigned)primary);
+    if (written < 0) {
+        free(groups);
+        return NULL;
+    }
+    offset = (size_t)written;
+    for (int i = 0; i < count; i++) {
+        if (groups[i] == primary) continue;
+        written = snprintf(out + offset, capacity - offset, " %u", (unsigned)groups[i]);
+        if (written < 0) {
+            free(groups);
+            return NULL;
+        }
+        offset += (size_t)written;
+    }
+    out[offset] = '\0';
+    free(groups);
+    return out;
+#endif
+}
+
+static char* proc_copy_runtime_text(const char* text) {
+    if (!text) return NULL;
+    size_t length = strlen(text);
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (!out) return NULL;
+    memcpy(out, text, length + 1);
+    return out;
+}
+
+char* proc_user_name(int uid) {
+#ifdef _WIN32
+    (void)uid;
+    return proc_copy_runtime_text("");
+#else
+    struct passwd* entry = getpwuid((uid_t)uid);
+    return entry ? proc_copy_runtime_text(entry->pw_name) : proc_copy_runtime_text("");
+#endif
+}
+
+char* proc_login_name(void) {
+#ifdef _WIN32
+    const char* name = getenv("USERNAME");
+    return proc_copy_runtime_text(name ? name : "");
+#else
+    const char* name = getlogin();
+    if (name && name[0]) return proc_copy_runtime_text(name);
+    struct passwd* entry = getpwuid(getuid());
+    return entry ? proc_copy_runtime_text(entry->pw_name) : proc_copy_runtime_text("");
+#endif
+}
+
+typedef struct {
+    int64_t block_size;
+    int64_t total_blocks;
+    int64_t available_blocks;
+    int64_t free_blocks;
+} FsDiskStatsOut;
+
+int fs_disk_stats(const char* path, FsDiskStatsOut* out) {
+#ifdef _WIN32
+    (void)path;
+    (void)out;
+    return 0;
+#else
+    if (!path || !path[0] || !out) return 0;
+    struct statvfs stats;
+    if (statvfs(path, &stats) != 0) return 0;
+    out->block_size = (int64_t)stats.f_frsize;
+    out->total_blocks = (int64_t)stats.f_blocks;
+    out->available_blocks = (int64_t)stats.f_bavail;
+    out->free_blocks = (int64_t)stats.f_bfree;
+    return 1;
+#endif
+}
+
 // What `metadata` answers, written through a pointer the caller owns, as
 // `SpawnOut` is -- every field 64-bit, so no padding question arises.
 typedef struct {
@@ -1101,6 +1312,48 @@ int proc_env_remove(const char* name) {
     return win_env_size(name) == 0 ? 1 : 0;
 #else
     return unsetenv(name) == 0 ? 1 : 0;
+#endif
+}
+
+char* proc_env_all(void) {
+#ifdef _WIN32
+    LPCH block = GetEnvironmentStringsA();
+    if (!block) return NULL;
+    size_t total = 0;
+    for (LPCH item = block; *item; item += strlen(item) + 1) {
+        total += strlen(item) + 1;
+    }
+    char* out = (char*)rt_base_alloc(total + 1);
+    if (!out) {
+        FreeEnvironmentStringsA(block);
+        return NULL;
+    }
+    size_t offset = 0;
+    for (LPCH item = block; *item; item += strlen(item) + 1) {
+        size_t length = strlen(item);
+        memcpy(out + offset, item, length);
+        offset += length;
+        out[offset++] = '\n';
+    }
+    out[offset] = '\0';
+    FreeEnvironmentStringsA(block);
+    return out;
+#else
+    size_t total = 0;
+    for (char** item = environ; item && *item; item++) {
+        total += strlen(*item) + 1;
+    }
+    char* out = (char*)rt_base_alloc(total + 1);
+    if (!out) return NULL;
+    size_t offset = 0;
+    for (char** item = environ; item && *item; item++) {
+        size_t length = strlen(*item);
+        memcpy(out + offset, *item, length);
+        offset += length;
+        out[offset++] = '\n';
+    }
+    out[offset] = '\0';
+    return out;
 #endif
 }
 
@@ -1887,7 +2140,7 @@ int prismio_rt_color_supported(int fd) {
 
 // The seed's three answers
 //
-// bootstrap/prismio-seed.ll carries no triple, so it can be compiled on any
+// bootstrap/prismio-seed-0.1.0.ll carries no triple, so it can be compiled on any
 // host, and three things libc spells per platform cannot be written into it:
 // errno's accessor (`__error`, `__errno_location`, `_errno`), the console write
 // (`write`, `_write`, with different word sizes) and EAGAIN (35 on Darwin, 11
