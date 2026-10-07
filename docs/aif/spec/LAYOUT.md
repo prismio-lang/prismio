@@ -250,7 +250,7 @@ TraversalCost(t, L) = iters(t) · n(t) · (bytes(t,L) / LINE) · μ(t,L) · π(o
 
 ### 5.2 Arithmetic and the SIMD credit
 
-*(Corrected after measurement — see [RESULTS-L1.md](../evidence/RESULTS-L1-layout.md) §4. The 1.2 text subtracted
+*(Corrected after measurement — see RESULTS-L1.md §4. The 1.2 text subtracted
 `SimdCredit` from a sum of memory-only terms, which is incoherent: an arithmetic saving has nothing
 to net against there, so `Cost(L)` could go **negative** and the ratios it produced were
 meaningless. Arithmetic must appear as a positive term for the credit to reduce.)*
@@ -280,7 +280,7 @@ AoS record is not.
 ### 5.2.1 Linked splits and indexed splits are not the same cost
 
 *(Added 2026-08-16, when §5.1 was first implemented in the compiler rather than in the prototype.
-See [RESULTS-layout.md](../evidence/RESULTS-layout.md) §5.)*
+See RESULTS-layout.md §5.)*
 
 §6's hot/cold row does not say how the cold group is *reached*, and the two possibilities have
 different costs. A split is **indexed** when the cold group is a parallel block and element `i`'s
@@ -380,7 +380,7 @@ Per type:
 Candidates per type ≈ `2 · (|fields| + 1)`. For a 10-field type that is 22, not 3.6 million.
 
 > **AoSoA was cut in 1.2.** It was three of five grouping candidates and was **never chosen once**
-> across six programs ([RESULTS-L1.md](../evidence/RESULTS-L1-layout.md)). It exists to be simultaneously
+> across six programs (RESULTS-L1.md). It exists to be simultaneously
 > vectorisable and line-local, but SoA won every sequential case and AoS won every random one, so
 > the middle ground never paid. An implementation MAY reintroduce it if a workload demonstrates a
 > case neither pure form serves; it is not worth 60% of the search space on present evidence.
@@ -555,7 +555,7 @@ large, §1's reframing is wrong and `workload` is closer to mandatory than SPEC 
 ### 10.4.1 A fabricated instance count decides the cache tier, and therefore the layout
 
 *(Added 2026-08-17, when §6's hot/cold row was first emitted rather than reported. See
-[RESULTS-layout.md](../evidence/RESULTS-layout.md) §2.2.)*
+RESULTS-layout.md §2.2.)*
 
 §5.3's `FootprintCost` and §5.1's `μ` both read `N`, the number of live instances of the type, and no
 implementation has one: the compiler substitutes a constant (2²⁰ in this one, on §2.1's "length

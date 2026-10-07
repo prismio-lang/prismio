@@ -223,7 +223,7 @@ public extern fn ir_enum_tag(name: String, value: String) -> Int
 public extern fn ir_struct_disable_path_tbaa(structName: String)
 public extern fn ir_alloc_object(structName: String) -> Int
 
-// The T0 half of the seam. aif/implementation/COMPILER-AUDIT.md 3 explains why
+// The T0 half of the seam. docs/aif/implementation/COMPILER-AUDIT.md 3 explains why
 // one hook could never express the whole ladder: T0 is an instruction, not a
 // call, and no choice of allocator name produces an `alloca`. T1's arena hook is
 // the third and does not exist yet.

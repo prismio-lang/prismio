@@ -2168,7 +2168,7 @@ long long cyc_collections_run(void) {
 // the wrong deallocator, which is a violation rather than a leak.
 //
 // They were `XEFY_ELEM_*` here until 2026-08-23, named after Xefy, the framework
-// this language is being built to carry (aif/implementation/TARGET.md). That is
+// this language is being built to carry (docs/aif/implementation/TARGET.md). That is
 // backwards -- the list belongs to Prismio, not to a consumer of it -- and the
 // odd prefix was also what made the drift invisible: a grep for
 // `AIF_ELEM_CYCLE` found two of the three sites. `run_elem_mode_agreement_test`

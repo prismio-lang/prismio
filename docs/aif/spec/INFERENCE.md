@@ -344,7 +344,7 @@ Three consequences worth stating, because they are where the populations actuall
   handler on a widget, a registered callback — has `E(f) ⊒ Global`, so by A-ESCAPE every
   captured-by-reference value becomes `Shared`. **This is the mechanism by which genuine sharing
   arises in a language without explicit shared references**, and it is why
-  [EVALUATION.md](../evidence/EVALUATION.md) §5 holds that the T3 population is unmeasurable until closures
+  EVALUATION.md §5 holds that the T3 population is unmeasurable until closures
   exist.
 - **Move-capture SHOULD be inferred, not written.** Where a captured variable is dead in the
   enclosing scope after the closure is created, K-CAPTURE-MOVE applies and `A` stays `Unique`.
@@ -698,7 +698,7 @@ Context identity is then taken **modulo the mask**: `⟨Unique, Shared⟩` and `
 are the same context if parameter 1 is irrelevant.
 
 *(Corrected in 1.2. v1.1 called this "the layer that makes `3ⁿ` survivable in practice."
-[RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md) §5 measured it and that is not what happens.)*
+RESULTS-L0.md §5 measured it and that is not what happens.)*
 
 Measured over 166 reference-taking functions in the compiler: mean reference-parameter count
 **1.48**, mean mask width **1.31**. The mask saves **15%** of the worst case — useful, not

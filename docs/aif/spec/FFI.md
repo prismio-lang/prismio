@@ -192,7 +192,7 @@ element escapes exactly as far as the container does and not one step further. M
 would sink every element of every collection to T4.
 
 **Collections are the most common FFI shape in a systems language**, so a vocabulary without this
-contract is not usable. [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md) §4.1 found the omission by measurement: with
+contract is not usable. RESULTS-L0.md §4.1 found the omission by measurement: with
 `list_push` falling back to the `borrow` default, every element pushed into a list appeared never to
 escape — *optimistic*, and therefore unsound. It is the first measured instance of §1's warning that
 a wrong contract is a safety bug rather than a slow program.

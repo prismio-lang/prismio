@@ -20,8 +20,8 @@ Companion documents:
 - [CYCLES.md](CYCLES.md) — the T4 cycle collector.
 - [FFI.md](FFI.md) — the C boundary: marshalling rules and ownership contracts.
 - [PIR.md](PIR.md) — library distribution, merging, and the ecosystem consequences.
-- [BENCHMARKS.md](../evidence/BENCHMARKS.md) — internal metrics and the falsification plan.
-- [COMPARISON.md](../evidence/COMPARISON.md) — the C++ / Rust / Swift / AIF suite.
+- BENCHMARKS.md — internal metrics and the falsification plan.
+- COMPARISON.md — the C++ / Rust / Swift / AIF suite.
 - [GAPS.md](../implementation/COMPILER-AUDIT.md) — an implementation audit against one specific compiler; see its caveat.
 - [CHANGES-1.2.md](../implementation/RATIONALE.md) — the ten design changes from 1.1 to 1.2, with reasoning.
 
@@ -268,7 +268,7 @@ storage, not a frame). The size test chooses between a frame slot and a heap blo
 there is no heap block to choose, so a size over `Θ_stack` cannot demote them, and tiering them
 T1 reports an allocation and counts an arena as serving a value no arena touches. An
 implementation that gave such a type a heap form would test it against `Θ_stack` like a struct.
-The oracle (`aif/prototype/aif.py`) and the in-compiler engine implement this identically.
+The oracle (`tools/aif_oracle/aif.py`) and the in-compiler engine implement this identically.
 
 Three properties of this function are worth stating explicitly, because each is a design result
 rather than a restatement:
@@ -484,13 +484,13 @@ static scope id. A value of `E` meaning "one activation up" does not close the g
 site T1 without giving it an arena to be T1 *in*.
 
 Measured on the reference implementation, 2026-08-14: of **234** allocation sites across
-`aif/corpus` and `aif/evidence`, 38 are arena-served and 196 are not — and **all 196 fail this
+the corpus and evidence programs of 2026-08-14 (since removed; `git log` has them), 38 are arena-served and 196 are not — and **all 196 fail this
 test**. Every one of the 38 that pass is a case where the region and the allocation share a
 function, and all 38 are in `std/io`: no user-written program in that tree has a single
 arena-served allocation. The corpus's own tuning fixture — `g2_region.psm`, a frame loop wrapped in
 `region frame_arena` — served **0 of 10 201 215 allocations** and ran **1.67× slower** than the
 unannotated program, because its allocations happen inside `cull`.
-([RESULTS-arena.md](../evidence/RESULTS-arena.md); re-derives in one command.)
+(RESULTS-arena.md; re-derives in one command.)
 
 An implementation SHALL warn when a `region` serves no allocation, naming the block. A region that
 costs a push and a pop per entry and reclaims nothing is a pessimisation, and silence about it is
@@ -563,7 +563,7 @@ describe every parameter and its return, as failing these obligations. FFI §5.1
 is an assumption adequate for assigning a tier and **not** adequate for handing a callee arena
 memory.
 
-**Measured on the reference implementation, 2026-08-16**, over `aif/corpus` and `aif/evidence`:
+**Measured on the reference implementation, 2026-08-16**, over the corpus and evidence programs of that date (since removed):
 between 4 and 11 of ~35–45 functions per program clear obligations 1, 2 and 4, of which 1 to 5 also
 satisfy regime (a). `region` is what turns that into placement: `g2_region.psm` has **2 call sites
 inside its region and both reach a qualifying callee**, while every corpus program without a
@@ -1151,7 +1151,7 @@ a reference-count operation (1–2 cycles, most elided anyway); a wrong layout d
 miss (200–300 cycles). Two orders of magnitude, in layout's favour — **when there is a layout
 decision to make.**
 
-**Often there is not.** [RESULTS-L1.md](../evidence/RESULTS-L1-layout.md) measured layout opportunity across six
+**Often there is not.** RESULTS-L1.md measured layout opportunity across six
 programs:
 
 | Program shape | Traversals | Layout benefit |

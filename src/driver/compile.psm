@@ -245,7 +245,7 @@ private fn checkedDetail() -> String {
     return warnings.toString().concat(" warnings")
 }
 
-// Runs the AIF memory model over the module and reports (aif/spec/SPEC.md 6).
+// Runs the AIF memory model over the module and reports (docs/aif/spec/SPEC.md 6).
 // Produces no IR and touches no codegen, so it cannot change what `build`
 // generates -- which is the point at this stage: the tier distribution becomes
 // measurable before any of it is risked on the self-host.

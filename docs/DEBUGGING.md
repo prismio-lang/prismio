@@ -376,9 +376,9 @@ not a default. `-g` is a normal thing to leave on during development, at the cos
 
 ## See also
 
-- `aif/spec/SPEC.md` — the memory model the manifest reports on; §5.4 for `pin`, §6.3 for
+- `docs/aif/spec/SPEC.md` — the memory model the manifest reports on; §5.4 for `pin`, §6.3 for
   minimal cause, §7.3 for `--verify`.
-- `aif/implementation/COMPILER-AUDIT.md` — what each level does and does not close.
+- `docs/aif/implementation/COMPILER-AUDIT.md` — what each level does and does not close.
 - `runtime/llvm-api-backend.c`, the "Debug information (DWARF)" section — every honest
   omission listed above, at the code that makes it.
 - `src/ir/debug.psm` — the frontend half, and the one place the "no wrong location" rule is

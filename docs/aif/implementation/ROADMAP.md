@@ -22,7 +22,7 @@ the third unlocks more than any further specification.
 
 ### ~~B13. Un-freeze the 80/20 budget rule~~ ✅ **done** — SPEC §9 now derives the split from measured traversal opportunity
 SPEC §9 freezes layout-over-lifetime as normative. Measured wrong for graph-shaped code: the
-compiler has **zero** traversals and 1.00× layout benefit ([RESULTS-L1](../evidence/RESULTS-L1-layout.md)). Make the
+compiler has **zero** traversals and 1.00× layout benefit (RESULTS-L1). Make the
 split derived from measured opportunity — the static profile already reports traversal count before
 anything is spent. *This is the one place the specification is confidently wrong.*
 
@@ -47,7 +47,7 @@ mean `n` being 1.48.
 
 ### B8. Revisit the T3/T4 design budget
 Six programs produced zero T3 — but that is because the language has no closures
-([EVALUATION.md](../evidence/EVALUATION.md) §5), not because sharing is rare. Reassess after B14.
+(EVALUATION.md §5), not because sharing is rare. Reassess after B14.
 
 ### A3. Realised context counts *(measurement)*
 BENCHMARKS H4 has only the `3ⁿ` worst case. **Low priority** — contexts contributed zero to every

@@ -818,7 +818,7 @@ impl Parser {
 }
 
 
-// FFI ownership contracts -- aif/spec/FFI.md 5.
+// FFI ownership contracts -- docs/aif/spec/FFI.md 5.
 //
 // Postfix on the type, which is the form FFI.md 5.4's own examples use:
 //

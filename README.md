@@ -149,7 +149,7 @@ The rule is that what the analysis cannot prove costs performance, never
 correctness; a shape that breaks it is a bug, found by `--verify` and fixed as one.
 `prismio aif --why=<ID>` explains any decision, `--manifest` prints a stable form for CI to diff,
 and `--verify` builds a program whose run checks the inference held. The
-specification and the evidence behind it are in [`aif/`](aif/README.md).
+specification and the design record are in [`docs/aif/`](docs/aif/README.md).
 
 The model is still being tightened. Some shapes leak rather than release, and
 each is listed with a reproducer in
@@ -252,11 +252,11 @@ WebAssembly triples; WebAssembly IR can be emitted but has no runtime yet. See
 | [`std/`](std/) | The standard library |
 | [`runtime/`](runtime/) | The C runtime, and the LLVM C API backend the compiler calls through `src/ir/bridge.psm` |
 | [`ums/`](ums/README.md) | UMS, the build manifest and its resolver |
-| [`aif/`](aif/README.md) | The memory model: specification, reference oracle and measured evidence |
+| [`docs/aif/`](docs/aif/README.md) | The memory model's specification and design record |
 | [`tests/`](tests/) | The compiler suite, `tests/test_runner.py` |
 | [`benchmarks/`](benchmarks/README.md) | Prismio, C++ and Rust versions of each workload |
 | [`bootstrap/`](bootstrap/) | The committed seed |
-| [`tools/`](tools/) | Bootstrap, packaging, release gate, lint, LLVM setup |
+| [`tools/`](tools/) | Bootstrap, packaging, release gate, lint, LLVM setup, and the AIF oracle (`aif_oracle/`) |
 | [`docs/`](docs/) | Plans and design notes for contributors |
 
 ## Project documents

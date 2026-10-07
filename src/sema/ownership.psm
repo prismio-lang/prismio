@@ -329,7 +329,7 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
     return actual
 }
 
-// FFI ownership contracts (aif/spec/FFI.md 5), checked where they are written.
+// FFI ownership contracts (docs/aif/spec/FFI.md 5), checked where they are written.
 //
 // FFI 1 is blunt about why this matters: an `extern` contract describes opaque
 // foreign code and cannot be verified, so **the FFI boundary is the one place in

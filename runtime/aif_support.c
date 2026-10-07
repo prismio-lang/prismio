@@ -8,7 +8,7 @@
 // is, how a tier becomes a manifest line. None of that is here. What is here is
 // the container layer: growable bitsets, an interning table, and a hash map
 // from key tuples to ids. Prismio has no generics, no maps and no growable
-// vectors (aif/implementation/COMPILER-AUDIT.md 4.3 calls this the finding that
+// vectors (docs/aif/implementation/COMPILER-AUDIT.md 4.3 calls this the finding that
 // most changes the schedule), so the engine would otherwise be written with
 // parallel arrays and integer indices -- in the one component where a silent
 // bug yields a wrong-tier binary rather than a crash.

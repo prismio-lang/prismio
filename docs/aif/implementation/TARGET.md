@@ -41,7 +41,7 @@ not a memory-model curiosity.**
 **Closures move from optional to blocking.** Declarative UI is closures — `onPressed`, builder
 functions, state callbacks. Xefy cannot be written without them, and closures capture, which makes
 them the main genuine source of shared ownership. This reverses the deprioritisation of T3 work
-that [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md) §3a suggested: handles eliminate T3 in *engine* code, and
+that RESULTS-L0.md §3a suggested: handles eliminate T3 in *engine* code, and
 closures reintroduce it in *framework* code.
 
 **Parent-linked persistent trees become certain, not hypothetical.** An element tree with parent
@@ -104,7 +104,7 @@ and used in one place.**
 
 ### 2.2 T3 lives in the engine, T0–T2 in the game
 
-[RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md) §6 flags that the current corpus contains no genuinely shared data
+RESULTS-L0.md §6 flags that the current corpus contains no genuinely shared data
 and therefore never exercises T3. The engine/game split explains why and where to look: **shared
 ownership is an engine-layer phenomenon.** A mesh, a texture, a material, a shader — referenced by
 many entities, owned by none of them.
@@ -163,7 +163,7 @@ fast the binary is.
 
 ## 3 · Consequences for the benchmark suite
 
-[COMPARISON.md](../evidence/COMPARISON.md)'s suite was written before this split was explicit, and it
+COMPARISON.md's suite was written before this split was explicit, and it
 under-weights the target.
 
 - **X3 (data-parallel) is the primary benchmark, not one of eight.** ECS storage is hand-rolled SoA

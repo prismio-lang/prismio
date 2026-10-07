@@ -8,7 +8,7 @@ import common.diagnostics
 
 // AIF — the Adaptive Inference Framework, Prismio's memory model.
 //
-// This is the pass aif/implementation/COMPILER-AUDIT.md 4.1 says the compiler
+// This is the pass docs/aif/implementation/COMPILER-AUDIT.md 4.1 says the compiler
 // does not have and needs first:
 //
 //     sema  ->  [ fact graph -> inference -> tier assignment -> manifest ]  ->  ir

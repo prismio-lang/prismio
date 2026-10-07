@@ -28,7 +28,7 @@ COMPILER-AUDIT's Level 4 note.
 **Measured impact: this single fact is 100% of the T3 residue in every program tested.** Turning it
 on takes all five corpora from 0–75.7% to **100% T0–T2**.
 
-*Source:* [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md) §2. Already required by SPEC §11 item 10;
+*Source:* RESULTS-L0.md §2. Already required by SPEC §11 item 10;
 `types.psm`'s own comment anticipates it.
 
 ### 2. `region { }` — keyword, arena runtime, handle threading **[done, 2026-08-07]**
@@ -209,7 +209,7 @@ AIF where being wrong is unsafe rather than slow, and nothing downstream can cat
 `pure` and `nocallback` (§5.3) are **not** implemented: they drive the fact invalidation of FFI §6,
 which AIF-1 does not model at all. They trail the declaration, so adding them later breaks nothing.
 
-The measured effect is in [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md)'s correction note: 27% →
+The measured effect is in RESULTS-L0.md's correction note: 27% →
 58% T0–T2 on the compiler from four `alias` declarations, and 72% with affine collections — the
 first time this corpus clears H1's kill criterion.
 
@@ -370,7 +370,7 @@ job-system target this moves from AIF-3 to gating: INFERENCE's E-SPAWN vs E-SPAW
 decides whether job-local data lands T1 or T4, and it needs a task model to attach to.
 
 **Done.** `spawn f(a, b)` and `join t`, both **contextual** keywords — the tree already contained
-`fn spawn(w: World, seed: Float)` in `../corpus/g4_ecs_world.psm` and a struct field named `spawn`
+`fn spawn(w: World, seed: Float)` in the g4 ECS corpus program and a struct field named `spawn`
 in `tests/test_62_split_release.psm`, and reserving the word would have stopped two existing
 programs compiling. One token of lookahead settles it exactly: a spawn is always followed by the
 *name* of the function to run.
@@ -388,7 +388,7 @@ cannot be in a task and in its parent at once — `spawn producer(c)` simply mov
 duplication is therefore spelled out loud, and it is what the aliasing module sees.
 
 The thread module (INFERENCE 4.3) is in `runtime/aif_support.c` and mirrored in
-`../prototype/aif.py`; `tools/aif_differential.py` compares the `T` distribution as well as the
+`tools/aif_oracle/aif.py`; `tools/aif_differential.py` compares the `T` distribution as well as the
 tiers, and both fixtures are in its source list. T4a is emitted for the first time, with an atomic
 count (`rc_release_atomic`) chosen at compile time rather than by a flag the runtime tests.
 
@@ -492,7 +492,7 @@ compiler's own source — 19% of the frontend and under 1% of a build. See HANDO
 
 ### 17. `Int` ↔ `Float` conversion **[minor]**
 
-No `int_to_float`. Hit while writing `../corpus/g1_particles.psm`; worked around with a float
+No `int_to_float`. Hit while writing the g1 particles corpus program; worked around with a float
 accumulator.
 
 ### 18. Struct size / layout introspection **[minor]**
@@ -564,7 +564,7 @@ Three details worth keeping:
 `tests/test_50_scalar_lists.psm` is the coverage, and the *allocation* count in the runner is the
 half that matters — 12 for six lists, two each, nothing per element.
 
-*Source:* [RESULTS-L2.md](../evidence/RESULTS-L2-boundary.md) §5, hit writing `../corpus/g6_game.psm`.
+*Source:* RESULTS-L2.md §5, hit writing the g6 game corpus program.
 
 ---
 
@@ -582,10 +582,10 @@ actual requirements on it are in that file's scope note.
 ## Already done
 
 - **`prismio dump-ast`** — emits the post-sema AST as JSON. Additive: IR is byte-identical before
-  and after, suite 57/57. `self/src/dumpast.psm` + `dump_ast_command` in `main.psm`.
+  and after, suite 57/57. `src/ast/dump.psm` + `dump_ast_command` in `main.psm`.
 
-- **Item 5, a pass between sema and codegen** — landed 2026-08-05 as `self/src/aif.psm`, with the
-  containers item 13 asks for supplied by `self/runtime/aif_support.c` rather than by the language.
+- **Item 5, a pass between sema and codegen** — landed 2026-08-05 as `src/aif/`, with the
+  containers item 13 asks for supplied by `runtime/aif_support.c` rather than by the language.
   That is the same split `ir_symbols.c` already makes and it removes item 13 from the critical path
   without removing the requirement: the engine is written in Prismio and its bitsets, interning and
   key map are written in C.
@@ -598,10 +598,10 @@ actual requirements on it are in that file's scope note.
   Scope: COMPILER-AUDIT §5 Level 0 exactly. Facts, tiers, manifest; no codegen change.
   `prismio aif <source.psm> [--summary] [--owned-collections]`.
 
-  Verified: agrees with `aif/prototype/aif.py` site-for-site on all eight sources under both
+  Verified: agrees with `tools/aif_oracle/aif.py` site-for-site on all eight sources under both
   collection settings (`python tools/aif_differential.py`); self-host reaches a fixed point from
   the committed seed; suite 58/58, the new one asserting one tier per SPEC §4.2 clause.
 
 - **A number on item 8.** The first thing the engine found on its own source is that FFI contracts,
   not affine collections, dominate the compiler's residue — 383 of 552 sites are opaque extern
-  returns. See the correction note in [RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md).
+  returns. See the correction note in RESULTS-L0.md.

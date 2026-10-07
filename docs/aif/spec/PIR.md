@@ -17,7 +17,7 @@
 > 3. **Target-neutral** (§4) — the *consuming* compiler chooses layout, because AIF says the
 >    compiler owns layout.
 > 4. **Sealed functions are internal FFI boundaries and SHALL publish contracts** (§5, §5.1) —
->    measured at 25 points of tier distribution in [RESULTS-L2.md](../evidence/RESULTS-L2-boundary.md).
+>    measured at 25 points of tier distribution in RESULTS-L2.md.
 >
 > Those four are normative for AIF. **Everything else below is reference material for whoever
 > builds the format** — retained because the design work is done and worth keeping, not because a
@@ -189,7 +189,7 @@ through a sealed function should know why they cannot make it faster.
 
 ### 5.1 Sealed surfaces SHALL publish ownership contracts
 
-*(Added after measurement — [RESULTS-L2.md](../evidence/RESULTS-L2-boundary.md) §3.)*
+*(Added after measurement — RESULTS-L2.md §3.)*
 
 A sealed function's parameters and returns SHALL carry the [FFI.md](FFI.md) §5 contract vocabulary:
 `borrow` / `retain` / `retain_in(k)` / `consume` on parameters, `alias` / `produce(free_fn)` on

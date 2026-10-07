@@ -45,7 +45,7 @@ Against SPEC §11's twelve normative items.
 | 8 | Tier manifest | **Absent** | No emission path |
 | 9 | Two-speed compilation | **Satisfied vacuously** | There is exactly one speed and it runs zero inference — which is the `debug` level of SPEC §7.2 |
 | 10 | Value semantics, isolation concurrency | **Neither** | §2.2 below; no tasks exist |
-| 11 | Deterministic RAII on T0–T2 | **Absent** | `drop(x)` is explicit ([sema.psm:629](../../../self/src/sema.psm:629)); no scope-exit drop |
+| 11 | Deterministic RAII on T0–T2 | **Absent** | `drop(x)` is explicit (sema.psm:629); no scope-exit drop |
 | 12 | Pipeline determinism | **Satisfied vacuously** | Single-threaded, no search, no budget |
 
 Three of the twelve are satisfied only because the feature they constrain does not exist yet.
@@ -55,7 +55,7 @@ That is worth naming: items 3, 9 and 12 will need real work the moment items 2, 
 
 SPEC §1 says inference failure never fails compilation. The compiler today **does** fail
 compilation on ownership violations — use-after-move, use-after-drop, drop-of-borrowed
-([sema.psm:364–379](../../../self/src/sema.psm:364), 16 negative tests enforce it).
+(sema.psm:364–379, 16 negative tests enforce it).
 
 These are not in conflict, but the spec does not say so, and someone implementing it will
 eventually delete a correct error in the name of the invariant. The distinction:
@@ -72,8 +72,8 @@ SPEC §11 item 10 requires value semantics, on the grounds that aliasing then be
 unrepresentable and most of AIF's safety is true by construction.
 
 What the compiler actually does: `STRUCT_LITERAL_EXPR` heap-allocates and yields a pointer
-([ir.psm:284](../../../self/src/ir.psm:284)); `let a = b` copies that pointer; `type_is_move_only`
-returns true for `TypeKind.STRUCT` only ([types.psm:92](../../../self/src/types.psm:92)), so the move
+(ir.psm:284); `let a = b` copies that pointer; `type_is_move_only`
+returns true for `TypeKind.STRUCT` only (types.psm:92), so the move
 checker prevents the second use.
 
 That is an **affine reference** discipline — Rust's model, roughly — not value semantics. It is
@@ -94,7 +94,7 @@ justification: affine references give the same analysis guarantee at a fraction 
 `HANDOFF.md`: *"Changing the model is therefore a change to those two policy hooks, not to
 codegen."*
 
-Here is `ir_alloc_object` ([llvm-api-backend.c:622](../../../self/runtime/llvm-api-backend.c:622)),
+Here is `ir_alloc_object` (llvm-api-backend.c:622),
 compressed:
 
 ```c
@@ -166,7 +166,7 @@ sema  →  [ fact graph build → inference → tier assignment → manifest ]  
 ```
 
 The middle stage needs a representation to hang facts on. The AST is flat and pointer-punned
-([ast.psm](../../../self/src/ast.psm), 113 lines) with `s1`/`s2`/`child1`/`next` fields — usable as a
+(ast.psm, 113 lines) with `s1`/`s2`/`child1`/`next` fields — usable as a
 node identity, but there is no side-table facility and no stable node numbering.
 
 Smallest viable version: give every AST node an integer id at parse time, and keep facts in a
@@ -175,7 +175,7 @@ side array indexed by it. That is a small change and it unblocks everything else
 ### 4.2 Scope-based drop
 
 Frozen item 11 requires RAII on T0–T2. Today `drop(x)` is a call the programmer writes
-([sema.psm:629](../../../self/src/sema.psm:629)).
+(sema.psm:629).
 
 Scope-exit drop needs drops emitted at *every* exit from a scope: fallthrough, `return`, `break`,
 `continue`, and every early return in a nested block. `ir.psm` has the block structure to do it,
@@ -192,7 +192,7 @@ INFERENCE §5.2 needs: a graph with dynamic node insertion, a per-node record of
 values, a worklist, a map from context tuples to instantiated bodies, and hashing over tuples.
 
 Prismio today has: structs, enums, fixed arrays, a hardcoded `List<T>`
-([types.psm:111](../../../self/src/types.psm:111)), function overloading, and no generics, no methods,
+(types.psm:111), function overloading, and no generics, no methods,
 no closures, and no hash maps. There is no `Option`/`Result` — failure is signalled by sentinel
 return values (`HANDOFF.md` known gaps).
 
@@ -233,7 +233,7 @@ change no codegen.** Everything still `malloc`s.
 - Prerequisite: §4.1 only.
 - This is the right first step and it is much smaller than it sounds.
 
-**It was.** `self/src/aif.psm` + `self/runtime/aif_support.c`, driven by `prismio aif`. Two notes
+**It was.** `src/aif/` + `runtime/aif_support.c`, driven by `prismio aif`. Two notes
 for whoever does Level 1:
 
 - §4.3's recommendation to land generic containers first was **not** taken, and the reason is worth
@@ -241,14 +241,14 @@ for whoever does Level 1:
   tables, so the engine is ordinary Prismio over an FFI surface rather than parallel arrays and
   integer indices. The risk §4.3 names — a silent bug in the one component where that yields a
   wrong-tier binary — is answered instead by `tools/aif_differential.py`, which holds the engine
-  against `aif/prototype/aif.py` on every corpus under both collection settings. Generic containers
+  against `tools/aif_oracle/aif.py` on every corpus under both collection settings. Generic containers
   are still worth having; they are no longer on this critical path.
 - §4.1's proposed AST node ids were not needed either. Sites are identified by the walk that creates
   them. Level 1 does need a key codegen can look a tier up by — see the note under Level 1.
 
 And it did what this section said it would: the distribution was measurable cheaply, and it
 immediately contradicted a recorded result. See the correction note atop
-[RESULTS-L0.md](../evidence/RESULTS-L0-tiers.md).
+RESULTS-L0.md.
 
 ### Level 1 — T0 — **DONE, 2026-08-05**
 

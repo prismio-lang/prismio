@@ -3,7 +3,7 @@
 Written 2026-08-25, immediately after the final benchmark
 ([`aif/evidence/RESULTS-final.md`](../aif/evidence/RESULTS-final.md)). Every prize quoted here is
 **measured on this host** unless it says *projected*; every design is attributed to the paper it
-comes from. The scope test in [`aif/implementation/ROADMAP.md`](../aif/implementation/ROADMAP.md)
+comes from. The scope test in [`docs/aif/implementation/ROADMAP.md`](aif/implementation/ROADMAP.md)
 still applies — most of §1 below is **not** AIF's work, and is filed here rather than there for
 that reason.
 
