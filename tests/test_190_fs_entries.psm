@@ -10,7 +10,7 @@
 //    long one.
 // 3. `rename` moves a file and replaces one already at the destination.
 // 4. `metadata` tells a file from a directory, has the file's size, a
-//    modification time near now, and is `None` for a missing path.
+//    modification time near now, and is `none` for a missing path.
 // 5. `removeDirectory` refuses a non-empty directory and removes an empty one.
 
 import std.fs
@@ -36,10 +36,8 @@ fn listing(directory: String) -> String {
 // into a parameter, which is (developers.prismio.org/runtime/supported-surface).
 fn sizeOf(path: String) -> I64 {
     let found = metadata(path)
-    match (found) {
-        Option.Some(m) => { return m.size }
-        Option.None => { return (0 - 1) as I64 }
-    }
+    if (found == none) { return (0 - 1) as I64 }
+    return expect(found).size
 }
 
 fn main() -> Int {
@@ -65,21 +63,21 @@ fn main() -> Int {
     }
 
     let notesInfo = metadata(notes)
-    match (notesInfo) {
-        Option.Some(m) => {
-            if (m.isFile == false or m.isDirectory) { bad = bad + fail("notes is not a file") }
-            if (m.size != 8) { bad = bad + fail("notes size") }
-            let age = unixTime().minus(m.modified).asSeconds
-            if (age < -60.0 or age > 600.0) { bad = bad + fail("modification time") }
-        }
-        Option.None => { bad = bad + fail("metadata of an existing file") }
+    if (notesInfo == none) {
+        bad = bad + fail("metadata of an existing file")
+    } else {
+        let m = expect(notesInfo)
+        if (m.isFile == false or m.isDirectory) { bad = bad + fail("notes is not a file") }
+        if (m.size != 8) { bad = bad + fail("notes size") }
+        let age = unixTime().minus(m.modified).asSeconds
+        if (age < -60.0 or age > 600.0) { bad = bad + fail("modification time") }
     }
     let subInfo = metadata(sub)
-    match (subInfo) {
-        Option.Some(m) => {
-            if (m.isDirectory == false or m.isFile) { bad = bad + fail("sub is not a directory") }
-        }
-        Option.None => { bad = bad + fail("metadata of an existing directory") }
+    if (subInfo == none) {
+        bad = bad + fail("metadata of an existing directory")
+    } else {
+        let m = expect(subInfo)
+        if (m.isDirectory == false or m.isFile) { bad = bad + fail("sub is not a directory") }
     }
     if (sizeOf(joinPath(root, "missing")) != (0 - 1) as I64) { bad = bad + fail("metadata of nothing") }
 

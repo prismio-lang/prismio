@@ -381,7 +381,7 @@ internal fn aifDeclaredReturnIsAlias(name: String) -> Bool {
 // and the rest of program_support.c allocate through `rt_base_alloc`, and C an
 // application brings calls `malloc`: an arena "serving" one of them brackets the
 // call, frees nothing at the region's exit, and the site is off the drop list --
-// one leak per call. `for line in stdin.lines()` leaked every line that way, in a
+// one leak per call. `for line in inputLines()` leaked every line that way, in a
 // callee bracketed into its caller's per-iteration arena. So the servable set is
 // the list of `rt_alloc` callers, and anything not on it is refused.
 internal fn aifFfiArenaCannotServe(name: String) -> Bool {

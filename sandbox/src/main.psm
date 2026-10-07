@@ -1,12 +1,12 @@
 import std.display
+import std.fs
 import std.input
 import std.io
+import std.option
 import std.term
 
-// The first line is a title; everything after it is the body.
-fn main() -> Int {
-    let header = stdin.readLine()
-    println("Your message:", header.blue())
-    println("body:", stdin.readAll().length, "bytes")
-    return 0
+fn main(){
+    let x = "FCK"
+
+    println(x.brightBlue())
 }

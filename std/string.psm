@@ -1508,10 +1508,8 @@ internal fn strFromInt(value: Int) -> String {
 // ---------------------------------------------------------------------------
 // Predicates and checked access
 //
-// The `Option`-returning forms here are **additions, not replacements**.
-// `strIndexOf` still answers -1 and `charAt` still answers NUL, because a
-// sentinel costs a register where `Option` costs a tagged struct and an
-// allocation (see the representation note in std/option.psm), and because the
+// The optional-returning forms here are **additions, not replacements**.
+// `strIndexOf` still answers -1 and `charAt` still answers NUL, because the
 // compiler reads them that way at 848 call sites. What these add is the spelling
 // for a caller who would rather be *made* to handle the absent case --
 // REQUIREMENTS 14's argument, offered rather than imposed.
@@ -1578,9 +1576,9 @@ private fn strAsciiEqualsIgnoreCase(a: String, b: String) -> Int {
     return 0
 }
 
-internal fn strGet(s: String, index: Int) -> Option<Char> {
-    if (index < 0 or index >= __builtin_string_len(s)) { return Option<Char>.None }
-    return Option<Char>.Some(__builtin_string_byte_at(s, index))
+internal fn strGet(s: String, index: Int) -> Char? {
+    if (index < 0 or index >= __builtin_string_len(s)) { return none }
+    return __builtin_string_byte_at(s, index)
 }
 
 // NUL on an empty string, for the same reason `charAt` answers NUL out of
@@ -1596,16 +1594,16 @@ internal fn strLast(s: String) -> Char {
     return __builtin_string_byte_at(s, slen - 1)
 }
 
-internal fn strFind(s: String, needle: String) -> Option<Int> {
+internal fn strFind(s: String, needle: String) -> Int? {
     let at = strIndexOf(s, needle)
-    if (at < 0) { return Option<Int>.None }
-    return Option<Int>.Some(at)
+    if (at < 0) { return none }
+    return at
 }
 
-internal fn strFindFrom(s: String, needle: String, from: Int) -> Option<Int> {
+internal fn strFindFrom(s: String, needle: String, from: Int) -> Int? {
     let at = strIndexOfFrom(s, needle, from)
-    if (at < 0) { return Option<Int>.None }
-    return Option<Int>.Some(at)
+    if (at < 0) { return none }
+    return at
 }
 
 // ---------------------------------------------------------------------------
@@ -1786,22 +1784,22 @@ internal fn strRemoveRange(s: String, start: Int, length: Int) -> String {
 // `None` when the prefix is absent -- which is the difference from
 // `strStartsWith` plus `strSubstring`, where the caller has to remember to test
 // first and gets a silently wrong slice if they do not.
-internal fn strStripPrefix(s: String, prefix: String) -> Option<String> {
-    if (strStartsWith(s, prefix) == false) { return Option<String>.None }
+internal fn strStripPrefix(s: String, prefix: String) -> String? {
+    if (strStartsWith(s, prefix) == false) { return none }
     let slen = __builtin_string_len(s)
     let plen = __builtin_string_len(prefix)
     let out = str_with_capacity(slen - plen)
     strCopyRangeInto(out, 0, s, plen, slen - plen)
-    return Option<String>.Some(out)
+    return out
 }
 
-internal fn strStripSuffix(s: String, suffix: String) -> Option<String> {
-    if (strEndsWith(s, suffix) == false) { return Option<String>.None }
+internal fn strStripSuffix(s: String, suffix: String) -> String? {
+    if (strEndsWith(s, suffix) == false) { return none }
     let slen = __builtin_string_len(s)
     let sufLen = __builtin_string_len(suffix)
     let out = str_with_capacity(slen - sufLen)
     strCopyRangeInto(out, 0, s, 0, slen - sufLen)
-    return Option<String>.Some(out)
+    return out
 }
 
 // Not `strSplit(s, '\n')`, and the two differences are the ones that bite when
@@ -2389,7 +2387,7 @@ private fn strRadixDigits() -> String {
 
 // Base 2 through 36, lowercase, no prefix -- a caller wanting `0x` writes it.
 // A radix outside that range is a programming error rather than a runtime one,
-// and is clamped rather than made every call site handle an `Option`.
+// and is clamped rather than made every call site handle an optional.
 internal fn strFromU64Radix(value: U64, radix: Int) -> String {
     let mut base = radix
     if (base < 2) { base = 2 }
@@ -2735,7 +2733,7 @@ impl String {
     // The byte at `index`, or NUL when out of range. Out-of-range is not an
     // error because the range check the caller would write is the one this
     // already does; NUL is distinguishable because a Prismio string cannot
-    // contain one. `self.get(index)` is the Option form.
+    // contain one. `self.get(index)` is the optional form.
     //
     // One unsigned comparison covers both ends -- a negative index is past every
     // length as a U64 -- and a scan whose loop already proves `index < length`
@@ -2769,7 +2767,7 @@ impl String {
     public fn clone(self) -> String { return strClone(self) }
 
     public fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
-    public fn get(self, index: Int) -> Option<Char> { return strGet(self, index) }
+    public fn get(self, index: Int) -> Char? { return strGet(self, index) }
     public prop first(self) -> Char { return strFirst(self) }
     public prop last(self) -> Char { return strLast(self) }
 
@@ -2817,8 +2815,8 @@ impl String {
     }
     public fn lastIndexOf(self, needle: String) -> Int { return strLastIndexOf(self, needle) }
     public fn lastIndexOf(self, needle: Char) -> Int { return strLastIndexOfChar(self, needle) }
-    public fn find(self, needle: String) -> Option<Int> { return strFind(self, needle) }
-    public fn find(self, needle: String, from: Int) -> Option<Int> {
+    public fn find(self, needle: String) -> Int? { return strFind(self, needle) }
+    public fn find(self, needle: String, from: Int) -> Int? {
         return strFindFrom(self, needle, from)
     }
     public fn count(self, needle: String) -> Int { return strCountOf(self, needle) }
@@ -2853,10 +2851,10 @@ impl String {
     public fn removeRange(self, start: Int, length: Int) -> String {
         return strRemoveRange(self, start, length)
     }
-    public fn stripPrefix(self, prefix: String) -> Option<String> {
+    public fn stripPrefix(self, prefix: String) -> String? {
         return strStripPrefix(self, prefix)
     }
-    public fn stripSuffix(self, suffix: String) -> Option<String> {
+    public fn stripSuffix(self, suffix: String) -> String? {
         return strStripSuffix(self, suffix)
     }
 

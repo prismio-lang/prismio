@@ -824,8 +824,8 @@ private fn semaStringConcatChain(module: ASTNode, expr: ASTNode) -> TypeInfo {
 private fn semaPropertyRewrite(module: ASTNode, expr: ASTNode) -> Int {
     let name = expr.s1
     if (semaDeclaresFunction(name) == false) {
-        // A method of a generic type (`impl<T> Option<T>`) is a template, which
-        // the declaration index does not hold; `o.isSome` has to find it too.
+        // A method of a generic type (`impl<T, E> Result<T, E>`) is a template, which
+        // the declaration index does not hold; `r.isOk` has to find it too.
         if (monoHasTemplate(module, name, NodeKind.FUNCTION) == false) { return 0 }
         // No template of the name takes only a receiver, so the rewritten call
         // could not resolve, and would say "unknown function" of a method the
@@ -1294,7 +1294,45 @@ private fn semaUnaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return typeInvalid()
 }
 
+// `a ?? b` -- `a`, or `b` when `a` is `none`. The left operand must be an optional;
+// the right is a `T` for a `T?` on the left, and the result is a `T`, or a `T?`
+// when the right is one too (`a ?? b ?? 0` tries `a`, then `b`, then `0`).
+//
+// **A call to std.option's `optionCoalesce`, bound to that module** as a String
+// operator is bound to std.string's, because what the result may alias is a
+// question the call machinery already answers: the value is the optional's own
+// or the fallback's, exactly as a function that returns one of its parameters.
+// Only the right operand is *not* evaluated like a call's -- codegen branches
+// around it (`generateCoalesce`), so `a ?? exit(1)` runs `exit` only when `a` is
+// absent.
+private fn semaCoalesceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    let leftNode = ptr_to_node(expr.child1)
+    let rightNode = ptr_to_node(expr.child2)
+    let leftT = semaExpr(module, leftNode)
+    if (typeIsValid(leftT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    if (leftT.kind != TypeKind.OPTIONAL or nodeIsNull(leftT.child)) {
+        semaErrorAt(leftNode, "`??` needs an optional on its left, found ".concat(typeDisplay(leftT)))
+        diag_note("`a ?? b` is `a` when it has a value, and `b` when it is `none`")
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    // A generic is on the module's template list, not in the declaration index.
+    if (monoHasTemplate(module, "optionCoalesce", NodeKind.FUNCTION) == false) {
+        semaErrorAt(expr, "`??` needs `import std.option`")
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    semaBecomeCall(expr, "optionCoalesce", semaCallArgs2(leftNode, rightNode))
+    expr.s1 = "std.option"
+    return semaExpr(module, expr)
+}
+
 private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (expr.s1.equals("??")) { return semaCoalesceExpr(module, expr) }
+
     // v0.1 3.6. A `+` spine over Strings is flattened here, **before either
     // operand is typed**, and the ordering is the whole reason this is not
     // three lines further down: typing the left operand of `a + b + c`
@@ -1812,7 +1850,9 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
     }
 
-    monoResolveGenericCall(module, expr, callee)
+    if (semaIsScalarUnwrapOr(module, callee.s1, expr.child2) == false) {
+        monoResolveGenericCall(module, expr, callee)
+    }
 
     // A bound on the template this call names is violated, and monoCheckBounds
     // has said so once. Resolving an overload for it would report the same
@@ -3423,7 +3463,12 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     ir_scope_push()
 
     let mut expectedReturn = semaDeclaredReturnType(module, fnNode.child3)
-    if (fnNode.s1.equals("main")) { expectedReturn = typeInt() }
+    if (fnNode.s1.equals("main")) {
+        if (nodeExists(fnNode.child3) and typeIsValid(expectedReturn) and expectedReturn.kind != TypeKind.INT) {
+            semaErrorAt(ptr_to_node(fnNode.child3), "`main` returns an `Int`, the exit status, or nothing")
+        }
+        expectedReturn = typeInt()
+    }
     // `-> Array<T, N>` returns the elements by value -- a byte copy out of this
     // frame -- so, like a copied array, they have to own nothing.
     if (expectedReturn.kind == TypeKind.ARRAY and expectedReturn.length > 0
@@ -3462,6 +3507,11 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     if (nodeExists(fnNode.child2)) {
         let mut body = ptr_to_node(fnNode.child2)
         semaCheckJumps(body)
+        // Only a `main` that names no return type has an implicit status: writing
+        // `-> Int` says the status is the program's, and is held to what any other
+        // `-> Int` function is.
+        let mainSaysNothing = fnNode.s1.equals("main") and nodeIsNull(fnNode.child3)
+        if (mainSaysNothing) { semaMainBareReturns(body) }
         semaBlock(module, body, expectedReturn)
 
         // Every path out of a value-returning function must return. Falling off
@@ -3469,7 +3519,10 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
         // an Int and produced invalid IR (`ret ptr 0`) for anything pointer-
         // shaped.
         if (expectedReturn.kind != TypeKind.VOID) {
-            if (semaBlockDiverges(body) == false) {
+            if (semaBlockDiverges(body) == false and mainSaysNothing) {
+                // Reaching the end of a `main` with no return type is `return 0`.
+                semaStatement(module, semaAppendMainReturn(body, fnNode), expectedReturn)
+            } else if (semaBlockDiverges(body) == false) {
                 semaErrorAt(fnNode, "function ".concat(diagQuote(fnNode.s1),
                                                        " must return ",
                                                        typeDisplay(expectedReturn),

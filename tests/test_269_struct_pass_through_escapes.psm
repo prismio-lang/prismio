@@ -1,0 +1,82 @@
+// A struct handed to a function that returns *one of* its parameters, where the
+// result outlives the scope that made the arguments: returned, pushed into a Vec,
+// assigned to an outer variable, carried round a loop.
+//
+// Which argument comes back is a run-time fact, so the other one has no owner the
+// analysis can name and is leaked -- the conservative direction. What this fixture
+// pins is that nothing is released twice (0 violations) and the answers are right;
+// the leak counts are in `run_aif_verify_test`. Releasing the loser needs a
+// release guarded by pointer equality with the result (KNOWN_ISSUES, Ownership).
+import std.io
+import std.string
+import std.vec
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn pickReturned(a: Point, b: Point) -> Point {
+    if (a.x > b.x) { return a }
+    return b
+}
+
+fn pickPushed(a: Point, b: Point) -> Point {
+    if (a.x > b.x) { return a }
+    return b
+}
+
+fn pickLoop(a: Point, b: Point) -> Point {
+    if (a.x > b.x) { return a }
+    return b
+}
+
+fn pickOuter(a: Point, b: Point) -> Point {
+    if (a.x > b.x) { return a }
+    return b
+}
+
+fn returned() -> Point {
+    let a = Point { x: 5, y: 6 }
+    let b = Point { x: 7, y: 8 }
+    return pickReturned(a, b)
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    println("FAIL ".concat(label, ": got ", got.toString(), " want ", want.toString()))
+    return 1
+}
+
+fn main() -> Int {
+    let back = returned()
+
+    let a = Point { x: 9, y: 10 }
+    let b = Point { x: 11, y: 12 }
+    let mut out: Vec<Point> = []
+    out.push(pickPushed(a, b))
+
+    let mut best = Point { x: 0, y: 0 }
+    for i in 1..<5 {
+        let cand = Point { x: i, y: i }
+        best = pickLoop(best, cand)
+    }
+
+    let mut result = Point { x: 100, y: 100 }
+    if (true) {
+        let c = Point { x: 17, y: 18 }
+        let d = Point { x: 19, y: 20 }
+        result = pickOuter(c, d)
+    }
+
+    let mut bad = 0
+    bad = bad + check("returned", back.x, 7)
+    bad = bad + check("pushed", out[0].x, 11)
+    bad = bad + check("loop", best.x, 4)
+    bad = bad + check("outer", result.x, 19)
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

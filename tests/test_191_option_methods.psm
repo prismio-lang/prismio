@@ -1,8 +1,8 @@
-// Option's and Result's methods.
+// The methods of a `T?` and of Result.
 //
-// 1. `isSome`/`isNone` and `isOk`/`isErr` are properties, declared on a generic
-//    type -- which is what semaPropertyRewrite had to learn to find.
-// 2. `unwrapOr` answers what `optionOr`/`resultOr` do, with a scalar payload and
+// 1. `!= none` and `isOk`/`isErr`: the second two are properties, declared on a
+//    generic type -- which is what semaPropertyRewrite had to learn to find.
+// 2. `unwrapOr` answers what `resultOr` does, with a scalar payload and
 //    an owned String one, from a local and from a call, with a literal and an
 //    owned fallback. The ledger is checked by the suite's `ownership_probes`.
 // 3. `expect`, `okOr`, `ok` and `err`, with String payloads -- the shapes that
@@ -24,14 +24,14 @@ fn fail(message: String) -> Int {
     return 1
 }
 
-fn findLiteral(key: String) -> Option<String> {
-    if (key.equals("name")) { return Option<String>.Some("a literal payload, past twelve bytes") }
-    return Option<String>.None
+fn findLiteral(key: String) -> String? {
+    if (key.equals("name")) { return "a literal payload, past twelve bytes" }
+    return none
 }
 
-fn findOwned(key: String) -> Option<String> {
-    if (key.equals("name")) { return Option<String>.Some("an owned payload, ".concat(key)) }
-    return Option<String>.None
+fn findOwned(key: String) -> String? {
+    if (key.equals("name")) { return "an owned payload, ".concat(key) }
+    return none
 }
 
 fn parse(text: String) -> Result<Int, String> {
@@ -39,29 +39,29 @@ fn parse(text: String) -> Result<Int, String> {
     return Result<Int, String>.Err("not a seven: ".concat(text))
 }
 
-fn halfOf(n: Int) -> Option<Int> {
-    if (n % 2 == 0) { return Option<Int>.Some(n / 2) }
-    return Option<Int>.None
+fn halfOf(n: Int) -> Int? {
+    if (n % 2 == 0) { return n / 2 }
+    return none
 }
 
 fn main() -> Int {
     if (process.args.count > 1) {
-        let missing = Option<Int>.None
+        let missing: Int? = none
         println(missing.expect("the child's value was missing"))
         return 0
     }
 
     let mut bad = 0
 
-    let some = Option<Int>.Some(5)
-    let nothing = Option<Int>.None
-    if (some.isSome == false or some.isNone) { bad = bad + fail("isSome on Some") }
-    if (nothing.isSome or nothing.isNone == false) { bad = bad + fail("isNone on None") }
+    let some: Int? = 5
+    let nothing: Int? = none
+    if (some == none) { bad = bad + fail("a present value is not none") }
+    if (nothing != none) { bad = bad + fail("none is none") }
 
-    let three = Option<Int>.Some(3)
-    if (three.unwrapOr(9) != 3) { bad = bad + fail("unwrapOr on Some") }
-    let empty = Option<Int>.None
-    if (empty.unwrapOr(9) != 9) { bad = bad + fail("unwrapOr on None") }
+    let three: Int? = 3
+    if (three.unwrapOr(9) != 3) { bad = bad + fail("unwrapOr on a value") }
+    let empty: Int? = none
+    if (empty.unwrapOr(9) != 9) { bad = bad + fail("unwrapOr on none") }
 
     let literal = findLiteral("name")
     if (literal.unwrapOr("fallback").equals("a literal payload, past twelve bytes") == false) {
@@ -89,8 +89,8 @@ fn main() -> Int {
     let badValue = parse("x")
     if (badValue.unwrapOr(0) != 0) { bad = bad + fail("Result.unwrapOr on Err") }
 
-    let four = Option<Int>.Some(4)
-    if (four.expect("four") != 4) { bad = bad + fail("expect on Some") }
+    let four: Int? = 4
+    if (four.expect("four") != 4) { bad = bad + fail("expect on a value") }
     let named = findOwned("name")
     if (named.expect("named").equals("an owned payload, name") == false) {
         bad = bad + fail("expect with an owned String payload")
@@ -104,11 +104,11 @@ fn main() -> Int {
 
     let absent = findOwned("other")
     let asResult = absent.okOr("absent")
-    if (asResult.isErr == false) { bad = bad + fail("okOr on None") }
+    if (asResult.isErr == false) { bad = bad + fail("okOr on none") }
     let present = findOwned("name")
     let okResult = present.okOr("absent")
     if (okResult.unwrapOr("").equals("an owned payload, name") == false) {
-        bad = bad + fail("okOr on Some")
+        bad = bad + fail("okOr on a value")
     }
 
     let okPart = parse("7")
@@ -121,22 +121,22 @@ fn main() -> Int {
     }
     let noErr = parse("7")
     let noErrOption = noErr.err()
-    if (noErrOption.isSome) { bad = bad + fail("err() on Ok") }
+    if (noErrOption != none) { bad = bad + fail("err() on Ok") }
 
     let mapped = findOwned("name")
     let length = mapped.map(|s: String| s.length)
-    if (length.unwrapOr(0) != 22) { bad = bad + fail("Option.map to Int") }
+    if (length.unwrapOr(0) != 22) { bad = bad + fail("map to Int") }
     let shouted = findOwned("name")
     let loud = shouted.map(|s: String| s.concat("!"))
     if (loud.unwrapOr("none").equals("an owned payload, name!") == false) {
-        bad = bad + fail("Option.map to String")
+        bad = bad + fail("map to String")
     }
     let unmapped = findOwned("other")
-    if (unmapped.map(|s: String| s.length).isSome) { bad = bad + fail("Option.map on None") }
-    let chained = Option<Int>.Some(8)
-    if (chained.andThen(|n: Int| halfOf(n)).unwrapOr(-1) != 4) { bad = bad + fail("Option.andThen") }
-    let odd = Option<Int>.Some(7)
-    if (odd.andThen(|n: Int| halfOf(n)).isSome) { bad = bad + fail("Option.andThen to None") }
+    if (unmapped.map(|s: String| s.length) != none) { bad = bad + fail("map on none") }
+    let chained: Int? = 8
+    if (chained.andThen(|n: Int| halfOf(n)).unwrapOr(-1) != 4) { bad = bad + fail("andThen") }
+    let odd: Int? = 7
+    if (odd.andThen(|n: Int| halfOf(n)) != none) { bad = bad + fail("andThen to none") }
 
     let six = parse("7")
     if (six.map(|n: Int| n * 6).unwrapOr(0) != 42) { bad = bad + fail("Result.map") }
@@ -161,6 +161,6 @@ fn main() -> Int {
     }
 
     if (bad != 0) { return 1 }
-    println("PASS: Option and Result methods")
+    println("PASS: optional and Result methods")
     return 0
 }

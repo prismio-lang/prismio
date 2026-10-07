@@ -1,7 +1,7 @@
-// expect-error: cannot infer the type arguments of `Option` here; write them, as `Option<...>.None`
+// expect-error: cannot infer the type arguments of `Result` here; write them, as `Result<...>.Ok`
 import std.option
 
 fn main() -> Int {
-    let e = Option.None
+    let e = Result.Ok(1)
     return 0
 }

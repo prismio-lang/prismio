@@ -1,0 +1,46 @@
+// `??` over Strings under `--verify`: a fresh value on the left, a literal, a bound
+// variable and a call on the right, present and absent. What the result may be --
+// the optional's own String, or the fallback -- is read from `optionCoalesce`'s
+// body like a function's, so every shape here must balance: the ledger is what
+// is checked (a violation is corruption, a leak is the release the shape lost).
+// Run by `ownership_probes`.
+
+import std.io
+import std.option
+import std.string
+import std.vec
+
+fn find(items: Vec<String>, key: String) -> String? {
+    for item in items {
+        if (item.equals(key)) { return item.clone() }
+    }
+    return none
+}
+
+fn makeStr(n: Int) -> String {
+    return "made-".concat(n.toString())
+}
+
+fn main() -> Int {
+    let items: Vec<String> = ["a", "b"]
+    let s1 = find(items, "b") ?? "dflt"
+    println(s1)
+    let s2 = find(items, "z") ?? "dflt"
+    println(s2)
+    let held = find(items, "a")
+    let s3 = held ?? "dflt"
+    println(s3)
+    let absent = find(items, "q")
+    let other = makeStr(1)
+    let s4 = absent ?? other
+    println(s4)
+    let s5 = find(items, "a") ?? makeStr(2)
+    println(s5)
+    let s6 = find(items, "nope") ?? makeStr(3)
+    println(s6)
+    println(find(items, "b") ?? makeStr(4))
+    println(find(items, "x") ?? makeStr(5))
+    println(find(items, "x") ?? find(items, "a") ?? "last")
+    println("PASS")
+    return 0
+}

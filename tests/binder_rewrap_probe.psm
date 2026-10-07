@@ -1,9 +1,9 @@
-// A match binder moved into a new enum. `errOf` returns an Option of its own
-// holding the Result's payload; both enums' releases freed it. The second half
-// returns that Option out of the function whose local owns the Result: freeing
-// the local at its scope exit would leave the Option pointing at freed memory,
-// which `--verify` cannot see and the printed text does. Run by
-// `ownership_probes`.
+// A match binder moved into an optional. `errOf` returns a `String?` of its own
+// holding the Result's payload; both the Result's release and the optional's
+// freed it. The second half returns that optional out of the function whose local
+// owns the Result: freeing the local at its scope exit would leave the optional
+// pointing at freed memory, which `--verify` cannot see and the printed text does.
+// Run by `ownership_probes`.
 
 import std.io
 import std.option
@@ -14,14 +14,14 @@ fn parse(text: String) -> Result<Int, String> {
     return Result<Int, String>.Err("not a seven: ".concat(text))
 }
 
-fn errOf(r: Result<Int, String>) -> Option<String> {
+fn errOf(r: Result<Int, String>) -> String? {
     match (r) {
-        Result.Ok(v) => { return Option<String>.None }
-        Result.Err(e) => { return Option<String>.Some(e) }
+        Result.Ok(v) => { return none }
+        Result.Err(e) => { return e }
     }
 }
 
-fn errFromParse(text: String) -> Option<String> {
+fn errFromParse(text: String) -> String? {
     let owned = parse(text)
     return errOf(owned)
 }
@@ -29,9 +29,9 @@ fn errFromParse(text: String) -> Option<String> {
 fn main() -> Int {
     let h = parse("x")
     let i = errOf(h)
-    println(optionIsSome(i))
+    println(i != none)
 
     let j = errFromParse("y")
-    println(optionOr(j, "none"))
+    println(j ?? "none")
     return 0
 }

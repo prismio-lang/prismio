@@ -32,6 +32,10 @@ private fn generateShortCircuit(expr: ASTNode) -> String {
     let rhsLabel = ir_get_label()
     let doneLabel = ir_get_label()
 
+    // The right side runs only sometimes, so the hidden slots of any `??` in it are
+    // made here, empty, ahead of the branch (coalescePrepare).
+    coalescePrepare(expr.child2)
+
     // Seed the slot with the left result, so the short-circuit path already has
     // the right answer: `false and _` is false, `true or _` is true.
     let leftVal = generateExpression(ptr_to_node(expr.child1))
@@ -603,6 +607,9 @@ private fn irCallReleasesTemporaries(funcName: String, callName: String, isForei
 private fn irCallWithholdsTemporaries(call: ASTNode) -> Bool {
     if (nodeIsNull(call.child1)) { return false }
     let funcName = ptr_to_node(call.child1).s1
+    // `expect(o)` hands its argument back, so nothing may release it once it
+    // returns -- and `expect(find(key))` has no binding to do it later.
+    if (funcName.equals("expect") and callTakesOneArgument(call)) { return true }
     if (callIsPrismioFn(funcName) == false) { return false }
     let mut callName = funcName.clone()
     if (call.s2.equals("") == false) { callName = call.s2.clone() }
@@ -757,10 +764,14 @@ private fn irFindBorrowedTemporary(e: ASTNode) -> Int {
     if (e.kind != NodeKind.CALL_EXPR) { return 0 - 1 }
 
     let withholds = irCallWithholdsTemporaries(e)
+    let coalesces = irCallIsCoalesce(e)
     let mut prev = ptr_null()
     let mut a = e.child2
     while (nodeExists(a)) {
         let arg = ptr_to_node(a)
+        // `a ?? b` evaluates `b` only sometimes, as `and`/`or` do their right
+        // side, and a hoisted temporary would run always.
+        if (coalesces and nodeExists(prev)) { return 0 - 1 }
         let inner = irFindBorrowedTemporary(arg)
         if (inner == 1) { return 1 }
         if (withholds and irArgumentIsOwnedTemporary(arg)) {
@@ -3685,6 +3696,178 @@ private fn generateUnwrapOr(expr: ASTNode) -> String {
                                       scalarOptionalField(opt, optT, 1), fallback))
 }
 
+// `a ?? b`, which sema made the call `optionCoalesce(a, b)` so that ownership sees
+// the function that answers one of its parameters. The call is not made: the
+// fallback is evaluated only on the path where `a` is absent, which is what `??`
+// promises and what a call's arguments cannot do.
+//
+// The result travels through a stack slot, as `generateShortCircuit`'s does, and
+// for the same reason (no phi primitive; mem2reg makes one). A scalar optional
+// is `{ present, value }` and a reference one is a pointer, null when absent --
+// and a `String?` is the raw pointer where a `String` is the pair, so the present
+// path measures it once, as a pointer arriving from C is.
+private fn generateCoalesce(expr: ASTNode) -> String {
+    let optNode = ptr_to_node(expr.child2)
+    let fallbackNode = ptr_to_node(optNode.next)
+    let optT = nodeGetType(optNode)
+    let resultT = nodeGetType(expr)
+    let resultKey = storageType(typeIrKey(resultT))
+
+    let slot = "co.".concat(irShortCircuitCounter.toString())
+    irShortCircuitCounter = irShortCircuitCounter + 1
+    ir_alloca(resultKey, slot)
+
+    // Hidden slots for owned temporaries that nothing hoisted. Those of a `??` in
+    // the fallback are made now, before the branch, so they are empty on the path
+    // that never reaches them (coalesceSpillFor).
+    coalescePrepareChain(optNode.next)
+    let heldSpill = coalesceSpillFor(expr, "L")
+    let fallbackSpill = coalesceSpillFor(expr, "R")
+
+    let opt = generateExpression(optNode)
+    // The left operand is evaluated first and always, so it is hoisted into a
+    // binding like any other owned temporary -- unless this `??` is itself the
+    // right side of another, which hoists nothing (irFindBorrowedTemporary).
+    if (heldSpill.equals("") == false) {
+        ir_store(coalesceSpillKeyOf(heldSpill), opt, coalesceSpillSlotOf(heldSpill))
+    }
+    let mut present = ""
+    if (typeIsValueOptional(optT)) {
+        present = scalarOptionalField(opt, optT, 0)
+    } else {
+        present = ir_get_temp_name(ir_icmp_ne("ptr", opt, "null"))
+    }
+
+    let hasLabel = ir_get_label()
+    let lacksLabel = ir_get_label()
+    let doneLabel = ir_get_label()
+    ir_cond_br_numbered(present, hasLabel, lacksLabel)
+
+    ir_label_numbered(hasLabel)
+    let mut held = opt.clone()
+    if (resultT.kind != TypeKind.OPTIONAL) {
+        if (typeIsValueOptional(optT)) {
+            held = scalarOptionalField(opt, optT, 1)
+        } else if (isFatStringKey(resultKey)) {
+            held = fatFromPtr(opt)
+        }
+    }
+    ir_store(resultKey, held, slot)
+    ir_br_numbered(doneLabel)
+
+    ir_label_numbered(lacksLabel)
+    let fallback = generateExpression(fallbackNode)
+    if (fallbackSpill.equals("") == false) {
+        ir_store(coalesceSpillKeyOf(fallbackSpill), fallback, coalesceSpillSlotOf(fallbackSpill))
+    }
+    ir_store(resultKey, fallback, slot)
+    ir_br_numbered(doneLabel)
+
+    ir_label_numbered(doneLabel)
+    return ir_get_temp_name(ir_load(resultKey, slot))
+}
+
+// --- the hidden slots of `??` --------------------------------------------------
+//
+// An owned temporary that cannot be hoisted into a binding ahead of the statement
+// -- the left operand of a `??` that is itself a fallback, a fresh owned fallback
+// -- is stored into a hidden slot that the scope exit releases, as `spawn`'s
+// arguments are. The slot has to be **empty on every path that does not fill
+// it**: a release of what a branch never stored is a release of garbage.
+//
+// So the slots of every `??` inside a branch are made before the branch is
+// entered -- by the `??` or the `and`/`or` that makes it conditional -- and zeroed
+// there, and the `??` finds its own by the position of its operator
+// (`irCoalesceSpills`, reset for each function). A `??` met outside any branch
+// makes its own at the same point.
+
+private fn coalesceSpillIdOf(call: ASTNode, side: String) -> String {
+    let origin = diag_file_path(call.file).concat(":", call.line.toString(), ":", call.col.toString())
+    return origin.concat(":", side)
+}
+
+private fn coalesceSpillKeyOf(spill: String) -> String {
+    let at = spill.indexOf("|")
+    return spill.substring(at + 1, __builtin_string_len(spill) - at - 1)
+}
+
+private fn coalesceSpillSlotOf(spill: String) -> String {
+    return spill.substring(0, spill.indexOf("|"))
+}
+
+// The operand of `call` that needs a hidden slot, or "" when it needs none.
+private fn coalesceSpillNode(call: ASTNode, side: String) -> Ptr {
+    let optNode = ptr_to_node(call.child2)
+    if (side.equals("L")) {
+        if (typeIsValueOptional(nodeGetType(optNode))) { return ptr_null() }
+        if (irArgumentIsOwnedTemporary(optNode)) { return node_to_ptr(optNode) }
+        return ptr_null()
+    }
+    let fallbackNode = ptr_to_node(optNode.next)
+    // A `??` as the fallback owns nothing of its own: its operands have their slots.
+    if (irCallIsCoalesce(fallbackNode)) { return ptr_null() }
+    let resultKey = storageType(typeIrKey(nodeGetType(call)))
+    if (isFatStringKey(resultKey) == false and resultKey.equals("ptr") == false) { return ptr_null() }
+    if (irArgumentIsOwnedTemporary(fallbackNode)) { return node_to_ptr(fallbackNode) }
+    return ptr_null()
+}
+
+// "slot|storage key" of the hidden slot for one side of `call`, made and zeroed
+// when it is not already, or "" when that side needs none.
+private fn coalesceSpillFor(call: ASTNode, side: String) -> String {
+    let nodePtr = coalesceSpillNode(call, side)
+    if (nodeIsNull(nodePtr)) { return "" }
+    let id = coalesceSpillIdOf(call, side)
+    let marker = ";".concat(id, "=")
+    let at = irCoalesceSpills.indexOf(marker)
+    if (at >= 0) {
+        let from = at + __builtin_string_len(marker)
+        let rest = irCoalesceSpills.substring(from, __builtin_string_len(irCoalesceSpills) - from)
+        return rest.substring(0, rest.indexOf(";"))
+    }
+
+    let node = ptr_to_node(nodePtr)
+    let declType = getExprType(node)
+    let key = storageType(declType)
+    let name = "coalescetmp.".concat(irElemSpillCounter.toString())
+    irElemSpillCounter = irElemSpillCounter + 1
+    ir_set_var_type(name, declType)
+    let slot = ir_get_var_slot(name)
+    ir_alloca(key, slot)
+    if (isFatStringKey(key)) {
+        ir_store(key, fatWithLength("null", "0"), slot)
+    } else {
+        ir_store(key, "null", slot)
+    }
+    ir_mark_droppable(name, irOwnedTemporaryKind(node))
+    noteOptionalDropType(name, node)
+    let spill = slot.concat("|", key)
+    irCoalesceSpills = irCoalesceSpills.concat(id, "=", spill, ";")
+    return spill
+}
+
+// Makes the slots of every `??` in an expression, the expression's own included.
+internal fn coalescePrepare(nodePtr: Ptr) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.CALL_EXPR and irCallIsCoalesce(n) and nodeExists(n.child2)
+            and nodeExists(ptr_to_node(n.child2).next)) {
+        coalesceSpillFor(n, "L")
+        coalesceSpillFor(n, "R")
+    }
+    coalescePrepareChain(n.child1)
+    coalescePrepareChain(n.child2)
+    coalescePrepareChain(n.child3)
+}
+
+internal fn coalescePrepareChain(head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        coalescePrepare(p)
+        p = ptr_to_node(p).next
+    }
+}
+
 private fn generateUnary(expr: ASTNode) -> String {
     let operandNode = ptr_to_node(expr.child1)
     let operandVal = generateExpression(operandNode)
@@ -4084,6 +4267,19 @@ private fn generateChannelRecvCopy(expr: ASTNode) -> String {
     return ir_get_temp_name(ir_load("ptr", slot))
 }
 
+// `expect(o)` is the compiler's, and `expect(o, message)` is std.option's.
+private fn callTakesOneArgument(expr: ASTNode) -> Bool {
+    if (nodeIsNull(expr.child2)) { return false }
+    return nodeIsNull(ptr_to_node(expr.child2).next)
+}
+
+// `a ?? b`, which sema made the call `optionCoalesce(a, b)` (generateCoalesce).
+private fn irCallIsCoalesce(call: ASTNode) -> Bool {
+    if (nodeIsNull(call.child1)) { return false }
+    let name = ptr_to_node(call.child1).s1
+    return name.equals("optionCoalesce") or name.startsWith("optionCoalesce$")
+}
+
 private fn generateCall(expr: ASTNode) -> String {
     let callee = ptr_to_node(expr.child1)
     let funcName = callee.s1
@@ -4429,7 +4625,9 @@ private fn generateCall(expr: ASTNode) -> String {
         return generateBitBuiltin(expr, funcName)
     }
 
-    if (funcName.equals("expect") or funcName.equals("unwrapOr")) {
+    if (irCallIsCoalesce(expr) and nodeExists(expr.child2)) { return generateCoalesce(expr) }
+
+    if ((funcName.equals("expect") and callTakesOneArgument(expr)) or funcName.equals("unwrapOr")) {
         if (nodeExists(expr.child2) and typeIsValueOptional(nodeGetType(ptr_to_node(expr.child2)))) {
             if (funcName.equals("expect")) { return generateExpectPresent(expr) }
             return generateUnwrapOr(expr)
@@ -5223,7 +5421,7 @@ private fn generateCall(expr: ASTNode) -> String {
     // REQUIREMENTS 4. The checked unwrap is an ordinary call that returns
     // its argument, which is why it needs no new control flow here: the
     // runtime aborts on a null rather than codegen branching around one.
-    if (funcName.equals("expect")) {
+    if (funcName.equals("expect") and callTakesOneArgument(expr)) {
         callName = "prismio_expect"
     }
     // A plain-data send copies the message's bytes into the ring; the runtime is

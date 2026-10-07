@@ -537,11 +537,11 @@ public fn binarySearch<T: Ord>(items: Vec<T>, needle: T) -> Int {
 // Methods
 // ---------------------------------------------------------------------------
 
-// The element at `index`, or `None` outside `[0, length)` -- where `v[i]`
+// The element at `index`, or `none` outside `[0, length)` -- where `v[i]`
 // answers the element type's zero.
-public fn get<T: Copy>(items: Vec<T>, index: Int) -> Option<T> {
-    if (index < 0 or index >= list_len(items)) { return Option<T>.None }
-    return Option<T>.Some(copyOf(list_get(items, index)))
+public fn get<T: Copy>(items: Vec<T>, index: Int) -> T? {
+    if (index < 0 or index >= list_len(items)) { return none }
+    return copyOf(list_get(items, index))
 }
 
 public fn contains<T: Eq>(items: Vec<T>, needle: T) -> Bool {
@@ -664,13 +664,13 @@ public fn vecFilled<T: Copy>(count: Int, value: T) -> Vec<T> {
     return out
 }
 
-// The last element, removed, or `None` when there is none.
-public fn pop<T: Copy>(inout items: Vec<T>) -> Option<T> {
+// The last element, removed, or `none` when there is none.
+public fn pop<T: Copy>(inout items: Vec<T>) -> T? {
     let n = list_len(items)
-    if (n == 0) { return Option<T>.None }
+    if (n == 0) { return none }
     let taken = copyOf(list_get(items, n - 1))
     list_truncate(items, n - 1)
-    return Option<T>.Some(taken)
+    return taken
 }
 
 // The element at `index`, removed, with everything after it moved down one. An
@@ -758,36 +758,36 @@ public fn all<T, F>(items: Vec<T>, keep: F) -> Bool {
 // The rest of the 0.1 table (docs/COLLECTION_METHODS_PLAN.md, 1.2)
 // ---------------------------------------------------------------------------
 
-// The smallest and the largest element, or `None` when there is none. The first
+// The smallest and the largest element, or `none` when there is none. The first
 // of equal elements wins, so `min` and `max` agree on which one they mean.
-public fn min<T: Ord + Copy>(items: Vec<T>) -> Option<T> {
+public fn min<T: Ord + Copy>(items: Vec<T>) -> T? {
     let n = list_len(items)
-    if (n == 0) { return Option<T>.None }
+    if (n == 0) { return none }
     let mut best = 0
     for i in 1..<n {
         if (cmp(list_get(items, i), list_get(items, best)) < 0) { best = i }
     }
-    return Option<T>.Some(copyOf(list_get(items, best)))
+    return copyOf(list_get(items, best))
 }
 
-public fn max<T: Ord + Copy>(items: Vec<T>) -> Option<T> {
+public fn max<T: Ord + Copy>(items: Vec<T>) -> T? {
     let n = list_len(items)
-    if (n == 0) { return Option<T>.None }
+    if (n == 0) { return none }
     let mut best = 0
     for i in 1..<n {
         if (cmp(list_get(items, i), list_get(items, best)) > 0) { best = i }
     }
-    return Option<T>.Some(copyOf(list_get(items, best)))
+    return copyOf(list_get(items, best))
 }
 
-// The first element `keep` accepts, or `None`. `T: Copy` for `get`'s reason.
-public fn find<T: Copy, F>(items: Vec<T>, keep: F) -> Option<T> {
+// The first element `keep` accepts, or `none`. `T: Copy` for `get`'s reason.
+public fn find<T: Copy, F>(items: Vec<T>, keep: F) -> T? {
     let n = list_len(items)
     for i in 0..<n {
         let element = list_get(items, i)
-        if (keep(element)) { return Option<T>.Some(copyOf(element)) }
+        if (keep(element)) { return copyOf(element) }
     }
-    return Option<T>.None
+    return none
 }
 
 // The position of the first element `keep` accepts, or -1, as `indexOf` answers.
@@ -819,12 +819,12 @@ public fn fold<T, U: Copy, F>(items: Vec<T>, initial: U, f: F) -> U {
     return accumulated
 }
 
-// The first element, removed, with the rest moved down one; `None` when empty.
-public fn removeFirst<T: Copy>(inout items: Vec<T>) -> Option<T> {
-    if (list_len(items) == 0) { return Option<T>.None }
+// The first element, removed, with the rest moved down one; `none` when empty.
+public fn removeFirst<T: Copy>(inout items: Vec<T>) -> T? {
+    if (list_len(items) == 0) { return none }
     let taken = copyOf(list_get(items, 0))
     list_remove_at(items, 0)
-    return Option<T>.Some(taken)
+    return taken
 }
 
 // The element at `index`, removed by moving the last element into its place:
@@ -962,22 +962,22 @@ public fn concat<T: Copy>(items: Vec<T>, other: Vec<T>) -> Vec<T> {
 // The element reads go through `items[i]` and not `list_get`, which a `[T]` and a
 // `Slice<T>` do not accept.
 
-public fn min<T: Ord + Copy>(items: [T], count: Int) -> Option<T> {
-    if (count == 0) { return Option<T>.None }
+public fn min<T: Ord + Copy>(items: [T], count: Int) -> T? {
+    if (count == 0) { return none }
     let mut best = 0
     for i in 1..<count {
         if (cmp(items[i], items[best]) < 0) { best = i }
     }
-    return Option<T>.Some(copyOf(items[best]))
+    return copyOf(items[best])
 }
 
-public fn max<T: Ord + Copy>(items: [T], count: Int) -> Option<T> {
-    if (count == 0) { return Option<T>.None }
+public fn max<T: Ord + Copy>(items: [T], count: Int) -> T? {
+    if (count == 0) { return none }
     let mut best = 0
     for i in 1..<count {
         if (cmp(items[i], items[best]) > 0) { best = i }
     }
-    return Option<T>.Some(copyOf(items[best]))
+    return copyOf(items[best])
 }
 
 public fn isSorted<T: Ord>(items: [T], count: Int) -> Bool {
@@ -1025,11 +1025,11 @@ public fn countWhere<T, F>(items: [T], count: Int, keep: F) -> Int {
     return found
 }
 
-public fn find<T: Copy, F>(items: [T], count: Int, keep: F) -> Option<T> {
+public fn find<T: Copy, F>(items: [T], count: Int, keep: F) -> T? {
     for i in 0..<count {
-        if (keep(items[i])) { return Option<T>.Some(copyOf(items[i])) }
+        if (keep(items[i])) { return copyOf(items[i]) }
     }
-    return Option<T>.None
+    return none
 }
 
 public fn indexWhere<T, F>(items: [T], count: Int, keep: F) -> Int {
@@ -1143,24 +1143,24 @@ public fn countOf<T: Eq>(items: Slice<T>, needle: T) -> Int {
     return found
 }
 
-public fn min<T: Ord + Copy>(items: Slice<T>) -> Option<T> {
+public fn min<T: Ord + Copy>(items: Slice<T>) -> T? {
     let n = items.length
-    if (n == 0) { return Option<T>.None }
+    if (n == 0) { return none }
     let mut best = 0
     for i in 1..<n {
         if (cmp(items[i], items[best]) < 0) { best = i }
     }
-    return Option<T>.Some(copyOf(items[best]))
+    return copyOf(items[best])
 }
 
-public fn max<T: Ord + Copy>(items: Slice<T>) -> Option<T> {
+public fn max<T: Ord + Copy>(items: Slice<T>) -> T? {
     let n = items.length
-    if (n == 0) { return Option<T>.None }
+    if (n == 0) { return none }
     let mut best = 0
     for i in 1..<n {
         if (cmp(items[i], items[best]) > 0) { best = i }
     }
-    return Option<T>.Some(copyOf(items[best]))
+    return copyOf(items[best])
 }
 
 public fn isSorted<T: Ord>(items: Slice<T>) -> Bool {
@@ -1208,11 +1208,11 @@ public fn countWhere<T, F>(items: Slice<T>, keep: F) -> Int {
     return found
 }
 
-public fn find<T: Copy, F>(items: Slice<T>, keep: F) -> Option<T> {
+public fn find<T: Copy, F>(items: Slice<T>, keep: F) -> T? {
     for i in 0..<items.length {
-        if (keep(items[i])) { return Option<T>.Some(copyOf(items[i])) }
+        if (keep(items[i])) { return copyOf(items[i]) }
     }
-    return Option<T>.None
+    return none
 }
 
 public fn indexWhere<T, F>(items: Slice<T>, keep: F) -> Int {

@@ -68,9 +68,9 @@ public fn readFile(path: String) -> String {
     return read_file(path)
 }
 
-public fn tryReadFile(path: String) -> Option<String> {
-    if (file_exists(path) == 0) { return Option<String>.None }
-    return Option<String>.Some(read_file(path))
+public fn tryReadFile(path: String) -> String? {
+    if (file_exists(path) == 0) { return none }
+    return read_file(path)
 }
 
 // Writes `content` over `path`, creating the file if it is absent. The parent
@@ -221,14 +221,14 @@ public fn createSymbolicLink(target: String, linkPath: String) -> Bool {
     return fs_symlink(target, linkPath) == 0
 }
 
-public fn readLink(path: String) -> Option<String> {
-    if (fs_readlink_exists(path) == 0) { return Option<String>.None }
-    return Option<String>.Some(fs_readlink(path))
+public fn readLink(path: String) -> String? {
+    if (fs_readlink_exists(path) == 0) { return none }
+    return fs_readlink(path)
 }
 
-public fn realPath(path: String) -> Option<String> {
-    if (fs_realpath_exists(path) == 0) { return Option<String>.None }
-    return Option<String>.Some(fs_realpath(path))
+public fn realPath(path: String) -> String? {
+    if (fs_realpath_exists(path) == 0) { return none }
+    return fs_realpath(path)
 }
 
 // What `fs_metadata` writes back. Every field is 64-bit so that no padding
@@ -253,17 +253,17 @@ struct Metadata {
     isFile: Bool
 }
 
-// `None` when nothing is at `path`, or it cannot be examined.
-public fn metadata(path: String) -> Option<Metadata> {
+// `none` when nothing is at `path`, or it cannot be examined.
+public fn metadata(path: String) -> Metadata? {
     let zero = 0 as I64
     let out = MetadataOut { size: zero, modifiedNanos: zero, isDirectory: zero, isFile: zero }
-    if (fs_metadata(path, out) == 0) { return Option<Metadata>.None }
-    return Option<Metadata>.Some(Metadata {
+    if (fs_metadata(path, out) == 0) { return none }
+    return Metadata {
         size: out.size,
         modified: Duration.fromNanos(out.modifiedNanos),
         isDirectory: out.isDirectory == 1,
         isFile: out.isFile == 1
-    })
+    }
 }
 
 // A file read one line at a time, through a 64 KiB buffer: what `readLines` and
@@ -304,9 +304,9 @@ public fn readLines(path: String) -> FileLines {
     return FileLines { handle: fs_lines_open(path) }
 }
 
-// `None` when `path` cannot be opened for reading.
-public fn tryReadLines(path: String) -> Option<FileLines> {
+// `none` when `path` cannot be opened for reading.
+public fn tryReadLines(path: String) -> FileLines? {
     let handle = fs_lines_open(path)
-    if (handle < 0) { return Option<FileLines>.None }
-    return Option<FileLines>.Some(FileLines { handle: handle })
+    if (handle < 0) { return none }
+    return FileLines { handle: handle }
 }

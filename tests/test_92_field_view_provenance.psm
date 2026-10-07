@@ -1,7 +1,7 @@
 // A value read out of a parameter is a *view* of it, and the caller must not
 // free the argument before reading the result.
 //
-// This guards a use-after-free that `--verify` cannot see. `optionOr(f(), "!")`
+// This guards a use-after-free that `--verify` cannot see. `unwrapOr(f(), "!")`
 // returns the String inside the Option it was handed; the release for that
 // unbound temporary was emitted immediately after the call and **before** the
 // expression that read its result, so the value came back empty. Both releases
@@ -14,7 +14,7 @@
 //     read from, so a function returning `b.text` looked like it returned
 //     something unrelated to `b` (src/aif/walk.psm, MEMBER_ACCESS_EXPR).
 //   * A payload **arm binder** was bound to nothing at all -- the AIF walk had
-//     no case for MATCH_STATEMENT -- so `v` in `Option.Some(v) => return v`
+//     no case for MATCH_STATEMENT -- so `v` in `v => return v`
 //     carried neither the scrutinee's sites nor a view of them. Sema was also
 //     typing the binder's *name* but not its *node*, so the walk could not tell
 //     a reference payload from a scalar one (src/sema/enums.psm).
@@ -64,8 +64,8 @@ fn makeHolder() -> Holder {
     return Holder.Full(madeText())
 }
 
-fn makeOption() -> Option<String> {
-    return Option<String>.Some(madeText())
+fn makeOption() -> String? {
+    return madeText()
 }
 
 fn makeCount() -> Count {
@@ -104,7 +104,7 @@ fn main() -> Int {
     if (holderBound.equals("abc") == false) { return fail("bound enum payload") }
 
     let heldOption = makeOption()
-    let optionBound = optionOr(heldOption, "!")
+    let optionBound = unwrapOr(heldOption, "!")
     if (optionBound.equals("abc") == false) { return fail("bound Option payload") }
 
     // Unbound temporaries -- every one of these read freed memory and answered
@@ -115,7 +115,7 @@ fn main() -> Int {
     let holderTemp = holderText(makeHolder(), "!")
     if (holderTemp.equals("abc") == false) { return fail("enum payload of an unbound temporary") }
 
-    let optionTemp = optionOr(makeOption(), "!")
+    let optionTemp = unwrapOr(makeOption(), "!")
     if (optionTemp.equals("abc") == false) { return fail("Option payload of an unbound temporary") }
 
     // Passed straight into a call rather than bound at all, which is the exact
@@ -123,7 +123,7 @@ fn main() -> Int {
     if (boxText(makeBox()).equals("abc") == false) {
         return fail("struct field passed straight into a call")
     }
-    if (optionOr(makeOption(), "!").equals("abc") == false) {
+    if (unwrapOr(makeOption(), "!").equals("abc") == false) {
         return fail("Option payload passed straight into a call")
     }
 

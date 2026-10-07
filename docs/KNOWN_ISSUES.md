@@ -6,8 +6,8 @@ leaves this file in the commit that fixes it; the commit message carries the evi
 [`aif/README.md`](aif/README.md)). Anything described as a decision is one the project has made on purpose.
 
 Nothing below is unsoundness unless it says so. As of 2026-10-07 every runnable program
-in `../tests` (266) builds with `--verify` and runs with **0
-violations**; 19 of them still leak (see [Ownership](#ownership-leaks)).
+in `../tests` (272) builds with `--verify` and runs with **0
+violations**; 21 of them still leak (see [Ownership](#ownership-leaks)).
 
 | Area | What is in it |
 |---|---|
@@ -38,25 +38,28 @@ twelve bytes**: a shorter one is stored inline, never reaches the ledger, and re
 
 ### What the test suite still leaks
 
-Counts from `--verify` on 2026-10-07 (173 leaked blocks in 19 programs, 0 violations, over 266):
+Counts from `--verify` on 2026-10-08 (171 leaked blocks in 21 programs, 0 violations, over 272):
 
 | Program | Leaked | Cause |
 |---|---|---|
 | `test_58_region_serves` | 100 | Values that escape their `region` fall back to the heap and are not released (pinned). |
-| `test_185_view_outlives_binding` | 13 | A view that outlives its base's binding keeps the base unreleased. |
+| `test_185_view_outlives_binding` | 4 | A view that outlives its base's binding keeps the base unreleased. |
 | `test_53_aif_views` | 4 | The same: a view outliving its base. |
 | `test_205_return_on_one_path` | 10 | `let t = a; return t` returns `a` under another name, and an inner `let a = a` binds the name twice; both keep the old refusal. |
-| `test_191_option_methods` | 10 | Nine `concat` results through `Option` methods, and `Process()`'s `arguments` Vec. |
+| `test_191_option_methods` | 6 | `concat` results through the `T?` and `Result` methods, and `Process()`'s `arguments` Vec. |
 | `test_127_enum_null_variant` | 6 | Recorded as one `strClone` holder/site conflation when it leaked 1; now 6, cause not re-derived. |
 | `test_100_reuse_token` | 6 | Nothing in `main` is released (reuse tokens and a collected cycle). |
 | `test_69_task_results` | 4 | A task's String result (`str_own` on the task side) and its struct. |
 | `test_251_collection_methods` | 4 | Not analysed. |
 | `fixture_slice_bounds`, `fixture_slice_escape` | 2 each | Not analysed (slices). |
 | `binder_rewrap_probe` | 2 | `let h = parse(t); return errOf(h)` keeps `h`. |
-| `range_direction_probe`, `test_254_array_and_slice_methods`, `test_259_display_print` | 2 each | Not analysed. |
+| `range_direction_probe`, `test_254_array_and_slice_methods` | 2 each | Not analysed. |
+| `test_259_display_print` | 3 | Not analysed. |
+| `test_67_option_result` | 1 | Not analysed. |
+| `binder_return_probe`, `option_methods_probe` | 1 each | A literal stored into a `String?` keeps what any other `String?` holds from being released; the probes store literals on purpose. |
 | `test_171_default_values` | 1 | `Outer.inner` holds heap `Inner`s and, elsewhere, a stack `Inner` in a stack `Outer`; the field's release cannot serve both, so it declines. |
-| `test_173_import_groups` | 1 | `match (v.pop())`: the matched `Option` temporary is never released. |
-| `test_44_aif_region`, `test_51_optional_refs` | 1 each | Pinned single leaks, each explained in `run_aif_verify_test`. |
+| `test_269_struct_pass_through_escapes` | 9 | A function that returns *one of* its parameters, with the result returned, pushed, carried round a loop or assigned outward: the argument that is not returned has no owner (below). |
+| `test_44_aif_region` | 1 | A pinned single leak, explained in `run_aif_verify_test`. |
 
 **Fixes these need**, by cause:
 
@@ -66,14 +69,35 @@ Counts from `--verify` on 2026-10-07 (173 leaked blocks in 19 programs, 0 violat
 - *Renamed return* (205): binding-level move tracking in codegen's drop list.
 - *Holder-aware fields* (171, and the `strClone` shape of 127): the engine decides a field's
   release per type, not per holder, so one type used two ways declines.
-- *`match` on a temporary* (173, and the next item): release the scrutinee after the match.
+- *One of two parameters returned* (269): a release guarded by pointer equality with the
+  result, in the scope-exit drop and in the overwrite release. See below.
+- *`match` on a temporary* (the next item): release the scrutinee after the match.
 - *Locals keyed by (function, name)*: see [Concurrency](#concurrency).
+
+### The argument a pass-through function does not return is leaked
+
+```
+fn pick(a: Point, b: Point) -> Point { if (a.x > b.x) { return a }; return b }
+let mut best = Point { x: 0, y: 0 }
+for i in 1..<5 { let cand = Point { x: i, y: i }; best = pick(best, cand) }   // 6 allocated, 1 released
+```
+
+Bound in the scope that made the arguments (`let r = pick(a, b)`) or held in a struct field,
+the call is clean: both arguments are released where they were made, and `r` is an alias
+(`../tests/test_268_struct_pass_through.psm`). When the result *outlives* that scope (returned,
+pushed into a `Vec`, assigned to an outer variable, carried round a loop) the arguments' escape
+is lifted past it, which is right for the one that comes back and a leak for the other. Which
+one that is is a run-time fact, so the fix is not a better fact but a guarded release: free each
+argument, and the value an assignment displaces, unless it equals the result. It touches the
+engine, the codegen drop list and `tools/aif_oracle/aif.py`, and it must come with a
+`--verify` fixture, because the failure direction is a double free.
+`../tests/test_269_struct_pass_through_escapes.psm` pins the current count.
 
 ### Matching an enum straight off a call leaks it
 
-`match (metadata(path)) { ... }` and `match (v.pop()) { ... }` leak the `Option` and its
-payload (3 allocated / 2 released and 4 / 3 on 2026-10-07). Binding the result first, as
-`../tests/test_190_fs_entries.psm` does, releases it.
+`match (parse(text)) { ... }` on a `Result` leaks it and its payload. Binding the result first
+releases it. (An optional is not matched: it is compared with `none` and read with `expect`, which
+`../tests/test_190_fs_entries.psm` does.)
 
 ### A frame array frees none of its elements
 
@@ -227,19 +251,13 @@ clause; `--why` on the two differing sites is where to start.
 
 ### A C-produced String stored into a payload enum, under `--copyable-collections`
 
-`Option<String>.Some(read_file(path))` (and `process.env` and `stdin.readLine()`, which are that
-shape) is one site the compiler tiers T3 ("multiple owners") and the oracle T2, **only under
-`--copyable-collections`**; the default owned model agrees, and the ledger is clean (4000/4000
-over 2000 `process.env` lookups). The same payload built by a Prismio producer agrees, so it is
-the extern-produced value going into a struct field, not the enum. Repro through
-`../tools/aif_differential.py`:
-
-```prismio
-fn load(path: String) -> Option<String> {
-    if (fileExists(path) == false) { return Option<String>.None }
-    return Option<String>.Some(read_file(path))
-}
-```
+`Option<String>.Some(read_file(path))` was one site the compiler tiered T3 ("multiple owners")
+and the oracle T2, **only under `--copyable-collections`**; the default owned model agrees, and the
+ledger was clean (4000/4000 over 2000 `process.env` lookups). `Option` is gone, and `process.env` and
+`readLine` answer a `String?`, which is the pointer and not a payload enum; the same shape
+with a payload enum is `Result<String, Int>.Ok(readFile(path))`. That form agrees in both default
+modes through `../tools/aif_differential.py`; it has not been re-measured under
+`--copyable-collections`, so treat the disagreement as open for a payload enum until it is.
 
 ### A struct pushed into a Vec in a loop, under `--copyable-collections`
 
@@ -476,7 +494,7 @@ import".
   assertion there). Descriptors are CRT `int`s from `_open_osfhandle`, in text mode.
 - Ownership: see [Struct fields that may hold a string literal](#struct-fields-that-may-hold-a-string-literal-are-never-released).
 
-**An unsized array cannot be a type argument.** `Box<[Int]>`, `Option<[Int]>` and `Vec<[Int]>` are
+**An unsized array cannot be a type argument.** `Box<[Int]>`, `Result<[Int], String>` and `Vec<[Int]>` are
 refused (`monoArgsHoldArray`; neg_198, neg_199) because the array would point into a frame that may be
 gone. A generic function's own `T` may still be an array (`id<T>(x: T) -> T` returns the view), which
 `test_163` relies on.
@@ -569,7 +587,7 @@ three-field struct with two fields of equal width is enough. `SpawnOut` is safe 
 
 **Other per-compilation decisions about a `std` type are made twice.** Which fields a type releases,
 and whether a boxed enum is null-tagged, are each decided by the library compile and again by the
-program. `Option<String>` returned by `stripPrefix` and matched in a program that also reserves
+program. A `String?` returned by `stripPrefix` and read in a program that also reserves
 null for it answered correctly out of tree; that is one probe, not an argument.
 
 **A bare `tools/bootstrap.sh` generation in `../build` is not a complete compiler.** A compiler is a

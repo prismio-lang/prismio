@@ -2,15 +2,18 @@
 //
 //     import std.input
 //
-//     for line in stdin.lines() {
+//     for line in inputLines() {
 //         println(line.length)
 //     }
 //
+// Each is a plain function: `readLine()`, `readInt()`, `readAll()`. There is no
+// `stdin` to name first, since a process has one.
+//
 // **Its own module rather than part of std.io**, because std.io is imported by
 // every program that prints, and a program carries what its imports declare:
-// the `stdin` global below (into its debug info and its link), and std.option's
-// allocation sites (into its ownership analysis). A program that reads its
-// input asks for that; one that only prints should not pay for it.
+// the reads below (into its link), and std.option's allocation sites (into its
+// ownership analysis). A program that reads its input asks for that; one that
+// only prints should not pay for it.
 //
 // **A line does not carry its terminator.** `\n` and `\r\n` both end one, and a
 // last line with neither is still a line, so `"a\nb"` and `"a\nb\n"` are the
@@ -18,7 +21,7 @@
 //
 // **Buffered once for the process, in the runtime** (`io_stdin_*`,
 // runtime/program_support.c). A line costs a scan and a copy, not a system call.
-// The three calls share the buffer, so they can be mixed: `readLine` then
+// The calls share the buffer, so they can be mixed: `readLine` then
 // `readAll` gives the rest after that line. Reading descriptor 0 directly
 // (`Stream { descriptor: 0 }` in std.process) bypasses the buffer, and it is one
 // reader at a time -- the buffer is not locked.
@@ -37,81 +40,72 @@ private extern fn io_stdin_has_line() -> Int
 private extern fn io_stdin_take_line() -> String produce(free)
 private extern fn io_stdin_read_all() -> String produce(free)
 
-struct Stdin {
+// The next line, or `none` at the end of input.
+//
+// `inputLines()` is the cheaper spelling in a loop: a `String?` is a test and an
+// unwrap per line, and the iterator returns the line bare.
+public fn readLine() -> String? {
+    if (io_stdin_has_line() == 0) { return none }
+    return io_stdin_take_line()
 }
 
-// Uninitialised, as `process` and `platform` are: there is nothing in it.
-let stdin: Stdin
-
-impl Stdin {
-    // The next line, or `None` at the end of input.
-    //
-    // `lines()` is the cheaper spelling in a loop: an `Option<String>` is an
-    // allocation of its own, and the iterator returns the line bare.
-    public fn readLine(self) -> Option<String> {
-        if (io_stdin_has_line() == 0) { return Option<String>.None }
-        return Option<String>.Some(io_stdin_take_line())
-    }
-
-    // Whether there is no line left to read. A `readLine` now would be `None`.
-    public prop isAtEnd(self) -> Bool {
-        return io_stdin_has_line() == 0
-    }
-
-    // The next line, or `fallback` at the end of input: the `match` that most
-    // programs write around `readLine`, once.
-    public fn readLineOr(self, fallback: String) -> String {
-        if (io_stdin_has_line() == 0) { return fallback.clone() }
-        return io_stdin_take_line()
-    }
-
-    // `text` written to standard output, then the next line. The prompt is not
-    // followed by a newline, and standard output is flushed when the line is read.
-    public fn prompt(self, text: String) -> Option<String> {
-        print(text)
-        return self.readLine()
-    }
-
-    // The next line as a number: `None` at the end of input, and also when the line
-    // is not one (surrounding spaces are ignored). The line is consumed either way.
-    public fn readInt(self) -> Int? {
-        if (io_stdin_has_line() == 0) { return none }
-        return io_stdin_take_line().trim().parseInt()
-    }
-
-    public fn readFloat(self) -> Float? {
-        if (io_stdin_has_line() == 0) { return none }
-        return io_stdin_take_line().trim().parseFloat()
-    }
-
-    // Every line not yet read.
-    public fn readLines(self) -> Vec<String> {
-        let mut out: Vec<String> = []
-        while (io_stdin_has_line() == 1) {
-            out.push(io_stdin_take_line())
-        }
-        return out
-    }
-
-    // The rest of the input split at spaces, tabs and line ends.
-    public fn readWords(self) -> Vec<String> {
-        return io_stdin_read_all().splitWhitespace()
-    }
-
-    // Everything not yet read, to the end of input, terminators included.
-    public fn readAll(self) -> String {
-        return io_stdin_read_all()
-    }
-
-    // The remaining lines, for a `for` loop.
-    public fn lines(self) -> StdinLines {
-        return StdinLines {}
-    }
+// The next line, or `fallback` at the end of input: what `readLine() ?? fallback`
+// says, without importing std.option.
+public fn readLineOr(fallback: String) -> String {
+    if (io_stdin_has_line() == 0) { return fallback.clone() }
+    return io_stdin_take_line()
 }
 
-// What `stdin.lines()` returns. It holds nothing: the position is the runtime's,
-// so two of these read one sequence between them, as two loops over `stdin`
-// would.
+// `text` written to standard output, then the next line. The prompt is not
+// followed by a newline, and standard output is flushed when the line is read.
+public fn prompt(text: String) -> String? {
+    print(text)
+    return readLine()
+}
+
+// The next line as a number: `none` at the end of input, and also when the line
+// is not one (surrounding spaces are ignored). The line is consumed either way.
+public fn readInt() -> Int? {
+    if (io_stdin_has_line() == 0) { return none }
+    return io_stdin_take_line().trim().parseInt()
+}
+
+public fn readFloat() -> Float? {
+    if (io_stdin_has_line() == 0) { return none }
+    return io_stdin_take_line().trim().parseFloat()
+}
+
+// Every line not yet read.
+public fn readLines() -> Vec<String> {
+    let mut out: Vec<String> = []
+    while (io_stdin_has_line() == 1) {
+        out.push(io_stdin_take_line())
+    }
+    return out
+}
+
+// The rest of the input split at spaces, tabs and line ends.
+public fn readWords() -> Vec<String> {
+    return io_stdin_read_all().splitWhitespace()
+}
+
+// Everything not yet read, to the end of input, terminators included.
+public fn readAll() -> String {
+    return io_stdin_read_all()
+}
+
+// Whether there is no line left to read. A `readLine()` now would be `none`.
+public fn atEndOfInput() -> Bool {
+    return io_stdin_has_line() == 0
+}
+
+// The remaining lines, for a `for` loop.
+public fn inputLines() -> StdinLines {
+    return StdinLines {}
+}
+
+// What `inputLines()` returns. It holds nothing: the position is the runtime's,
+// so two of these read one sequence between them, as two loops over the input would.
 struct StdinLines {
 }
 
@@ -119,9 +113,4 @@ impl Iterator for StdinLines {
     type Item = String
     fn hasNext(self) -> Bool { return io_stdin_has_line() == 1 }
     fn next(inout self) -> Self.Item { return io_stdin_take_line() }
-}
-
-public fn readLine() -> Option<String> {
-    if (io_stdin_has_line() == 0) { return Option<String>.None }
-    return Option<String>.Some(io_stdin_take_line())
 }

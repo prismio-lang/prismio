@@ -6530,8 +6530,16 @@ int aif_frees_unless_returned_node(const void* node, const char* name) {
         if (n->node != node) continue;
         Site* s = &sites[n->site];
         if (s->E_held != s->scope) return 0;
-        if (s->ret_key < 0) return 0;
-        if (s->ret_key != key_find(AIF_KEY_VAR, s->fn, aif_intern(name))) return 0;
+        // Two bindings' returns (-2) have no one name to keep the value for. None
+        // (-1) is the pass-through: E was lifted only by a return in *another*
+        // function, which hands the value back to this frame and its constraints
+        // -- `let r = pick(o, o2)` binds it again, and returning or storing `r`
+        // raises E_held or names `r`'s key, either of which declines below.
+        // Without this a struct handed to any function that returns one of its
+        // parameters was never released: E rose to Caller on the callee's return
+        // and the scope-exit test above declined for ever.
+        if (s->ret_key == -2) return 0;
+        if (s->ret_key >= 0 && s->ret_key != key_find(AIF_KEY_VAR, s->fn, aif_intern(name))) return 0;
         if (!site_is_move_only(s)) return 0;
         if (s->kind == AIF_K_ARRAY) return 0;
         if (s->no_stack) return 0;

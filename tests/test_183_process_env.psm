@@ -20,10 +20,8 @@ fn fail(message: String) -> Int {
 
 fn describe(name: String) -> String {
     let value = process.env(name)
-    match (value) {
-        Option.Some(v) => { return "[".concat(v, "]") }
-        Option.None => { return "unset" }
-    }
+    if (value == none) { return "unset" }
+    return "[".concat(expect(value), "]")
 }
 
 fn main() -> Int {

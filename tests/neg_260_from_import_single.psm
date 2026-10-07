@@ -1,0 +1,4 @@
+// expect-error: a `from` import names its modules in a group, or all of them: `from std import {io, string}` or `from std import *`
+from std import io
+
+fn main() -> Int { return 0 }

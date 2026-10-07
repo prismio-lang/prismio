@@ -2,7 +2,7 @@
 //
 // The keyword has no type of its own. It becomes the expected type's value where
 // a `let` annotation, a `return`, a struct field or an assignment names one --
-// `0`, `""`, `[]`, `none`, `Option<T>.None`, `mapNew<K, V>()`, or a struct literal
+// `0`, `""`, `[]`, `none`, `mapNew<K, V>()`, or a struct literal
 // of its fields' defaults -- and is then checked as that expression.
 import std.io
 import std.vec
@@ -51,11 +51,8 @@ fn main() -> Int {
 
     let absent: Inner? = default
     if (absent != none) { return fail("optional") }
-    let opt: Option<Int> = default
-    match (opt) {
-        Option.Some(x) => { return fail("option") }
-        Option.None => { }
-    }
+    let opt: Int? = default
+    if (opt != none) { return fail("option") }
 
     let mut m: Map<String, Int> = default
     mapSet(m, "k", 3)

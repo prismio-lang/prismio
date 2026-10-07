@@ -174,8 +174,8 @@ fn priorityQueueNew<T: Ord + Copy>() -> PriorityQueue<T>
 fn priorityQueueLen<T: Ord + Copy>(q: PriorityQueue<T>) -> Int
 fn priorityQueueIsEmpty<T: Ord + Copy>(q: PriorityQueue<T>) -> Bool
 fn priorityQueuePush<T: Ord + Copy>(q: PriorityQueue<T>, value: T)
-fn priorityQueuePeek<T: Ord + Copy>(q: PriorityQueue<T>) -> Option<T>
-fn priorityQueuePop<T: Ord + Copy>(q: PriorityQueue<T>) -> Option<T>
+fn priorityQueuePeek<T: Ord + Copy>(q: PriorityQueue<T>) -> T?
+fn priorityQueuePop<T: Ord + Copy>(q: PriorityQueue<T>) -> T?
 fn priorityQueueHeapify<T: Ord + Copy>(items: List<T>) -> PriorityQueue<T>
 ```
 
@@ -192,7 +192,7 @@ the logical heap length, while the backing List may retain unused tail slots.
 - [ ] Implement index helpers (`parent`, `left`, `right`), sift-up on push, and
   sift-down on pop. Every List access must be bounded by logical `length`.
 - [ ] Implement bottom-up `heapify` in O(n), not repeated O(n log n) pushes.
-- [ ] Define empty behavior through `Option<T>`; neither `peek` nor `pop`
+- [ ] Define empty behavior through `T?`; neither `peek` nor `pop`
   should use a sentinel.
 - [ ] Decide whether the passed list is consumed by `heapify` (recommended) or
   copied; document it and test post-call ownership/use rules.

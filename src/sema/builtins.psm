@@ -238,6 +238,22 @@ private fn semaChannelCopies(module: ASTNode, ct: TypeInfo) -> Bool {
     return found
 }
 
+private fn semaArgCountIsTwo(argPtr: Ptr) -> Bool {
+    if (nodeIsNull(argPtr)) { return false }
+    let second = ptr_to_node(argPtr).next
+    if (nodeIsNull(second)) { return false }
+    return nodeIsNull(ptr_to_node(second).next)
+}
+
+// `o.unwrapOr(fallback)` on a scalar's `T?`, which the compiler answers itself
+// (below) and which std.option's generic `unwrapOr` for a reference optional must
+// not take: that one is a template, and a template is resolved before a builtin is
+// asked, so a program that never imported std.option would be told to.
+internal fn semaIsScalarUnwrapOr(module: ASTNode, name: String, argPtr: Ptr) -> Bool {
+    if (name.equals("unwrapOr") == false) { return false }
+    return semaIsScalarOptionalArg(module, argPtr)
+}
+
 private fn semaIsScalarOptionalArg(module: ASTNode, argPtr: Ptr) -> Bool {
     if (nodeExists(argPtr) == false) { return false }
     return typeIsValueOptional(semaExpr(module, ptr_to_node(argPtr)))
@@ -265,7 +281,9 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     // held, so it transfers no ownership and the optional stays usable. Treating
     // it as a move would make `if (p != none) { use(expect(p)) }` fail on the
     // second visit to a loop body.
-    if (name.equals("expect")) {
+    // Claimed for one argument only: `o.expect("message")` is std.option's, which
+    // names why the value had to be there.
+    if (name.equals("expect") and semaArgCountIsTwo(argPtr) == false) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let a0 = ptr_to_node(argPtr)
         let ot = semaExpr(module, a0)

@@ -371,15 +371,15 @@ public fn mapHas<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool {
     return mapIndexOf(m, key) >= 0
 }
 
-// The value for `key`, or `None`.
+// The value for `key`, or `none`.
 //
 // This is the lookup that can distinguish "absent" from "present and equal to
 // the fallback", which mapGetOr cannot. It is what the earlier version of this
 // file said would arrive with REQUIREMENTS 14, and it did.
-public fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Option<V> {
+public fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> V? {
     let at = mapIndexOf(m, key)
-    if (at < 0) { return Option<V>.None }
-    return Option.Some(list_get(m.entryValues, at))
+    if (at < 0) { return none }
+    return list_get(m.entryValues, at)
 }
 
 // Absence answered with a caller-supplied value. Kept alongside mapGet for the
@@ -516,11 +516,11 @@ impl < K: Key + Copy, V > Map<K, V> {
 
     public fn has(self, key: K) -> Bool { return mapProbe(self, key, false) >= 0 }
 
-    // The value for `key`, or `None`.
-    public fn get(self, key: K) -> Option<V> {
+    // The value for `key`, or `none`.
+    public fn get(self, key: K) -> V? {
         let at = mapProbe(self, key, false)
-        if (at < 0) { return Option<V>.None }
-        return Option<V>.Some(list_get(self.entryValues, at))
+        if (at < 0) { return none }
+        return list_get(self.entryValues, at)
     }
 
     // The value for `key`, or `fallback`.

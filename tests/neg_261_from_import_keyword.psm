@@ -1,0 +1,4 @@
+// expect-error: expected `import` in a `from` import, found `{`
+from std {io, string}
+
+fn main() -> Int { return 0 }

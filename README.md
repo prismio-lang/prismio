@@ -179,8 +179,9 @@ of each workload the same program, is in [`benchmarks/`](benchmarks/README.md).
 - `let` and `let mut`; structs, enums with payloads, and `match` over them.
 - Generics with trait bounds, `impl` blocks, traits with associated types,
   borrowed `dyn Trait`, and closures with `Fn(A) -> R` bounds.
-- `Option` and `Result` with the usual combinators; `Vec<T>`, fixed-length
-  `Array<T, N>`, `Map<K, V>`; `for ... in` over any type that implements `Iterator`.
+- Optionals (`T?`, `none`, `??`, `unwrapOr`, `expect`) and `Result` with the usual
+  combinators; `Vec<T>`, fixed-length `Array<T, N>`, `Map<K, V>`; `for ... in` over any
+  type that implements `Iterator`.
 - String interpolation (`"${value}"`); `panic`, `assert` and `exit`.
 - Tasks (`spawn`, `join`) and typed channels.
 - C interop through `extern fn`, with ownership stated at the boundary:

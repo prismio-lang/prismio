@@ -6,10 +6,10 @@ import std.io
 import std.option
 import std.vec
 
-fn orZero(o: Option<Int>) -> Int {
-    match (o) {
-        Option.Some(x) => { return x }
-        Option.None => { return 0 }
+fn orZero(r: Result<Int, String>) -> Int {
+    match (r) {
+        Result.Ok(x) => { return x }
+        Result.Err(e) => { return 0 }
     }
 }
 
@@ -31,7 +31,7 @@ fn firstPositive(values: Vec<Int>) -> Int {
 }
 
 fn main() -> Int {
-    let total = orZero(Option.Some(5)) + orZero(Option<Int>.None) + code(1) + code(7)
+    let total = orZero(Result<Int, String>.Ok(5)) + orZero(Result<Int, String>.Err("no")) + code(1) + code(7)
     if (total != 35) {
         println("FAIL: match as a function's last statement")
         return 1

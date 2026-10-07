@@ -1,6 +1,6 @@
 // A view of a binding's contents that outlives the binding's scope.
 //
-// `optionOr(o, d)` hands back the String inside `o`. Each loop below kept that
+// `unwrapOr(o, d)` hands back the String inside `o`. Each loop below kept that
 // view past the end of the body where `o` was dropped. The next iteration's
 // `lookup` reused the freed block, so every kept string read as the last one
 // written, and `--verify` reported nothing, because each release it saw was
@@ -26,16 +26,16 @@ import std.vec
 
 fn make(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
 
-fn lookup(n: Int) -> Option<String> {
-    if (n % 3 == 0) { return Option<String>.None }
-    return Option<String>.Some(make(n))
+fn lookup(n: Int) -> String? {
+    if (n % 3 == 0) { return none }
+    return make(n)
 }
 
 fn lastOf(n: Int) -> String {
     let mut outer = "initial value that is long enough"
     for i in 0..<n {
         let o = lookup(i)
-        let s = optionOr(o, "fallback, also longer than twelve")
+        let s = unwrapOr(o, "fallback, also longer than twelve")
         outer = s
     }
     return outer
@@ -51,7 +51,7 @@ fn main() -> Int {
     let mut bound: Vec<String> = Vec<String>.withCapacity(4)
     for i in 1..<6 {
         let o = lookup(i)
-        let s = optionOr(o, "fallback, also longer than twelve")
+        let s = unwrapOr(o, "fallback, also longer than twelve")
         bound.push(s)
     }
     if (bound[0].equals("a string longer than twelve bytes 1") == false) { return fail("bound 1") }

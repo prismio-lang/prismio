@@ -1,0 +1,27 @@
+// `from <directory> import {a, b}` -- the import group with the directory first.
+//
+// The same statement test_173 writes as `import {a, b} from <directory>`: each
+// entry is the import its own line would be, so an entry carries its own `as`, and
+// `from <directory> import *` is `import * from <directory>`. Both orders can sit
+// in one file.
+from std import {io, string, vec}
+from visibility import {alpha, gamma as g}
+from visibility import *
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut words: Vec<String> = ["  a ", "b"]
+    words.push("c")
+    if (words[0].trim().equals("a") == false) { return fail("a std group") }
+    if (visibilityPublic(3) != 6) { return fail("from a directory, everything") }
+    if (visibility.alpha.visibilityPublic(4) != 8) { return fail("the module keeps its own path") }
+    if (g.visibilityThroughMiddle(1) != visibilityThroughMiddle(1)) { return fail("an alias inside a group") }
+    if (visibilityFromSibling(1) != 101) { return fail("from a directory import *") }
+    println("test_264 ok")
+    return 0
+}

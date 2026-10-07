@@ -917,6 +917,16 @@ impl Lexer {
         return self.token(TokenType.SEPARATOR, value, line, col, start)
     }
 
+    private fn coalesce(self) -> Token {
+        let line = self.line
+        let col = self.col
+        let start = self.pos
+
+        self.advance()
+        self.advance()
+        return self.token(TokenType.ARITHMETIC_OPERATOR, "??", line, col, start)
+    }
+
     // `..` is the inclusive range and `..<` the one that stops before its end. One
     // token kind for both, told apart by the spelling: every place that accepts a
     // range accepts either, so the parser asks the kind first and the value only
@@ -1018,6 +1028,9 @@ impl Lexer {
         // separator but ".." is not.
         if (isOperator(c)) { return self.operator() }
         if (c == '.' and self.peek(1) == '.') { return self.range() }
+        // `??`, the none-coalescing operator. One token, so `a ?? b` is a binary
+        // operator the parser's table knows and a lone `?` stays the optional suffix.
+        if (c == '?' and self.peek(1) == '?') { return self.coalesce() }
         if (isSeparator(c)) {
             if (self.interpolation != Interpolation.Off) {
                 if (c == '{') { self.interpBrace = self.interpBrace + 1 }

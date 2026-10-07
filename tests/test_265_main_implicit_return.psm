@@ -1,0 +1,23 @@
+// `main` needs neither `-> Int` nor `return 0`: no return type is the exit
+// status 0, a bare `return` is `return 0`, and reaching the closing brace is too.
+//
+// The suite reads this program's exit status, so a `main` that fell off its end
+// with garbage in the status register would fail it. The owned `Vec` and `String`
+// are here for the other half: the implicit return releases what the scope owns
+// as an explicit one does, which `--verify` would show as a leak.
+import std.io
+import std.string
+import std.vec
+
+fn total(items: Vec<Int>) -> Int {
+    let mut sum = 0
+    for item in items { sum = sum + item }
+    return sum
+}
+
+fn main() {
+    let numbers: Vec<Int> = [1, 2, 3]
+    let label = "total".concat(": ", total(numbers).toString())
+    if (total(numbers) != 6) { return }
+    println(label)
+}

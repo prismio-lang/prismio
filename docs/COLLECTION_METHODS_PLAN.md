@@ -34,7 +34,7 @@ stores an element or hands one out would be a sema rewrite instead of a function
 | Change in place | `push`, `set`, `insert`, `pop`, `removeAt`, `removeFirst`, `swapRemove`, `truncate`, `clear`, `reserve`, `extend`, `retain`, `dedup`, `fill`, `reverse`, `swap`, `sort`, `sortBy` | `sort`, `sortBy`, `reverse`, `swap`, `fill` | the same, through to the Vec it views |
 | Copy out | `clone`, `filter`, `sorted`, `reversed`, `take`, `skip`, `concat`, `mapInto`, `toVec` | `toVec` | `toVec` |
 
-- **`min`/`max`/`find`/`removeFirst`** answer an `Option` (`None` when empty), as
+- **`min`/`max`/`find`/`removeFirst`** answer a `T?` (`none` when empty), as
   `pop` and `get` do. `fold(initial, f)` takes its result type from `initial`, an
   argument, which is why it can return a value and `map` cannot (§5, item 4).
 - **`skip`, not `drop`.** `drop` is the compiler's own release builtin, and a
@@ -124,7 +124,7 @@ Each entry says what the design question is.
 | 6 | **Deriving `Eq` (and `Ord`)**, and `Eq` for fieldless enums | The compiler has no impl synthesis, and a generic body calls `Eq.eq(a, b)`, which needs an `eq` function to exist. `==` on a struct is refused outright. Opt-in derive, automatic conformance, or leave it. Also decides `Vec<Vec<Int>>.contains` and `Vec<Option<Int>>.contains`, which fail on `Copy` today. Until then: `impl Eq for Color { fn eq(self, other: Self) -> Bool { return self == other } }` |
 | 7 | **`v + w`**, and `sortDescending` | An operator overload mechanism for non-numeric types; `sortBy` covers the sort |
 | 8 | **`windows`, `chunks`, `enumerate`, `rotateLeft`, `removeRange`, `insertAll`, `lowerBound`, `unique`, `repeated`** | Mostly lazy-iterator work (`v.iter().…` is on the doc apps' *Coming Soon* list), or a plain addition once item 1 is settled |
-| 9 | **Inconsistent "absent" results** | `indexOf` answers `-1`; String's `find` and `Vec.get` answer an `Option`. Changing `indexOf` breaks a documented method, so it is a 0.2 question or never |
+| 9 | **Inconsistent "absent" results** | `indexOf` answers `-1`; String's `find` and `Vec.get` answer a `T?`. Changing `indexOf` breaks a documented method, so it is a 0.2 question or never |
 | 10 | **A moving `pop` and `removeAt`** | So a non-`Copy` element can be taken out. COLLECTIONS.md step 1e. `removeFirst` and `swapRemove` are `T: Copy` until it lands |
 
 Planned elsewhere and not repeated: `Vec<T, N>`, `VecDeque`, sets, priority queues,

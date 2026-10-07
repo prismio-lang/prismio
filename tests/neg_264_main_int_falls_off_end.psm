@@ -1,0 +1,8 @@
+// expect-error: function `main` must return Int on every path, but control can reach its closing brace
+// Only a `main` that names no return type has an implicit status. Writing `-> Int`
+// says the status is the program's, so it is held to what any `-> Int` function is.
+import std.io
+
+fn main() -> Int {
+    println("done")
+}

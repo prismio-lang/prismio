@@ -9,19 +9,60 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`a ?? b`, none-coalescing.** `a` when it has a value and `b` when it is `none`,
+  for any `T?`; `b` is a `T` (the result is a `T`) or another `T?` (the result stays
+  one, so `a ?? b ?? 0` tries each in turn). The right side is evaluated only when it
+  is needed, so `line ?? fail("no input")` runs `fail` only for `none`. It binds
+  tighter than a comparison and looser than `|` and `+`, and associates to the right.
+  It is the call `optionCoalesce(a, b)` in `std.option`, so a program using it
+  imports `std.option`.
+- **`from <directory> import {a, b}`** is `import {a, b} from <directory>` with the
+  directory first, and `from <directory> import *` is `import * from <directory>`.
+  Both orders can sit in one file.
+- **`main` needs neither `-> Int` nor `return 0`.** `fn main() { ... }` exits with
+  status 0: reaching its closing brace is `return 0`, and so is a bare `return`. Writing
+  `-> Int` says the status is the program's, so that `main` is held to the rule of
+  every `-> Int` function: each path must return a number, and falling off the end or a
+  bare `return` is an error ("function `main` must return Int on every path"). A `main`
+  that declares any other return type is refused.
+- `std.input`: every read is a plain function, so there is no `stdin` to name first:
+  `readLine()`, `readLineOr(fallback)`, `prompt(text)`, `readInt()`, `readFloat()`,
+  `readLines()`, `readWords()`, `readAll()`, `atEndOfInput()` and `inputLines()` for a
+  `for` loop.
+- **Removed: the `stdin` value** (`stdin.readLine()`, `stdin.lines()`, `stdin.isAtEnd`,
+  and the rest of its methods). Each is the plain function of the same name now:
+  `stdin.lines()` is `inputLines()` and `stdin.isAtEnd` is `atEndOfInput()`.
+- `std.option`: `unwrapOr`, `expect(o, message)`, `okOr`, `map` and `andThen` on any
+  `T?`, as ordinary generics over it (`o.unwrapOr(x)` and `unwrapOr(o, x)` are one
+  call).
 - `std.fs`: `createSymbolicLink(target, linkPath)` → `Bool`, `readLink(path)` →
-  `Option<String>` (none when the path is not a link) and `realPath(path)` →
-  `Option<String>` (none when the path does not resolve). On Windows
+  `String?` (none when the path is not a link) and `realPath(path)` →
+  `String?` (none when the path does not resolve). On Windows
   `readLink` always answers none.
 - `std.process`: `process.allEnv()` returns every environment variable as
   `NAME=value` lines.
-- `std.input`: `readLine()`, the free-function spelling of `stdin.readLine()`,
-  returning `Option<String>`.
 - Runtime groundwork in `program_support.c` for the host name, group ids, user
   and login names and disk usage (`statvfs`). No `std` wrapper exposes these yet.
 
 ### Changed
 
+- **`Option<T>` is gone; `T?` is the optional.** Two spellings of "a `T` or nothing"
+  were one more thing to learn and to convert between, and `T?` already did the same
+  work for numbers, `Bool`, `Char`, fieldless enums, `String`, `Vec`, structs and `Ptr`.
+  Every function that answered an `Option` answers a `T?` now: `Vec.get`, `pop`,
+  `min`, `max`, `find`, `removeFirst` (and the array and slice forms), `Map.get` and
+  `mapGet`, `String.get`, `find`, `stripPrefix` and `stripSuffix`, `process.env`,
+  `readLine` and `prompt`, `tryReadFile`, `tryReadLines`, `readLink`, `realPath`,
+  `metadata`, and `Result.ok()` and `err()`. A number's `T?` is a value that
+  allocates nothing; a reference's is a pointer. To migrate: `Option.Some(x)` is `x`
+  and `Option.None` is `none`; `optionOr(o, d)` and `o.unwrapOr(d)` are `o ?? d` or
+  `o.unwrapOr(d)`; `o.isSome` and `o.isNone` are `o != none` and `o == none`;
+  `optionIsSome(o)`, `optionIsNone(o)` are gone with `Option`; and `match` on an
+  `Option` becomes a test against `none` and `expect(o)`. A `T?` parameter now takes
+  its `T` from an optional argument only, so `a.map(f)` on a value that is not an
+  optional never reaches `std.option`'s `map`.
+- `println` of an optional shows the value or `none`, as before; a `String?`, an
+  `Int?` and the other scalars need `import std.display`, as before.
 - **AIF reports an array as a frame slot.** An array literal and an `Array<T, N>`
   were always an `alloca`, but the analysis tiered them as heap blocks (78 of the
   1,025 allocation sites in the tests, corpus and benchmarks) or, in a bracketed
@@ -72,6 +113,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   An array of 4 KiB or more now returns through a hidden `ptr sret` parameter that the
   caller points at a frame slot of its own (32,000 Ints: 0.09 s; 400,000: 0.07 s).
   Behaviour is unchanged.
+- **A struct handed to a function that returns one of its parameters was never
+  released** when the call's result was bound or stored in a struct field
+  (`let r = pick(a, b)`; 0 of 4 blocks released, now 4 of 4). The callee's `return`
+  lifted the argument's escape to the caller, and the scope-exit drop read that as the
+  value leaving the scope. A lift that came only from a return in another function no
+  longer declines the drop (`aif_frees_unless_returned_node`); returning or storing the
+  binding itself still does. `test_51_optional_refs` no longer leaks its one block.
+  Where the result outlives the scope that made the arguments (returned, pushed, carried
+  round a loop, assigned outward) the argument that is not returned is still leaked, and
+  `docs/KNOWN_ISSUES.md` says what releasing it needs.
+- `expect(<owned temporary>)` is hoisted so the temporary is released, and the hidden
+  slots of `a ?? b` are zeroed before the enclosing branch, so a slot stored on one path
+  is no longer released as garbage.
 - The benchmark results are refreshed (release-profile compiler, five runs).
 
 ### Repository
@@ -93,7 +147,7 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   results); the language docs say why `Int` is 32-bit and when to use `I64`; and the FFI contracts page
   records what an opaque module boundary costs the analysis.
 - `docs/KNOWN_ISSUES.md` is restructured: open items only, grouped by area, with the
-  `--verify` leak table re-measured (266 programs, 0 violations, 173 leaked blocks in
-  19 programs). What was fixed lives in `git log`.
+  `--verify` leak table re-measured (272 programs, 0 violations, 171 leaked blocks in
+  21 programs). What was fixed lives in `git log`.
 
 [0.2.0]: https://github.com/prismio-lang/prismio/compare/v0.1.0...HEAD

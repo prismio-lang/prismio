@@ -1,10 +1,9 @@
 // `Iterator` -- a sequence produced one element at a time.
 //
-// **`hasNext` and `next`, not `next() -> Option<Item>`.** The conventional shape
-// costs a payload-enum value per element, and Prismio's payload enums are not
-// tagged unions yet -- so the conventional spelling would put an allocation in
-// the innermost part of every loop. This pair answers the same two questions
-// with no per-element value at all.
+// **`hasNext` and `next`, not `next() -> Item?`.** The conventional shape answers
+// both questions with one optional per element, which the loop then has to test and
+// unwrap. This pair answers the same two questions with no per-element value at
+// all, so the innermost part of every loop is a test and a read.
 //
 // `next` takes `inout self` because advancing is a mutation, which means an
 // iterator must be a `mut` binding. That is the contract, and T18 makes it one:

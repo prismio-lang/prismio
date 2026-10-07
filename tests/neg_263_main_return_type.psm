@@ -1,0 +1,4 @@
+// expect-error: `main` returns an `Int`, the exit status, or nothing
+fn main() -> String {
+    return "done"
+}

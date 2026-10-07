@@ -13,6 +13,10 @@ import ast.types
 
 let mut irStringCounter = 0
 let mut irShortCircuitCounter = 0
+
+// The hidden slots `??` gives its owned temporaries, as ";<id>=<slot>|<storage key>;"
+// for each one made in the function being generated (coalesceSpillFor).
+let mut irCoalesceSpills = ";"
 // Names generateChannelRecvCopy's result slots, as the counter above names
 // generateShortCircuit's.
 let mut irChannelRecvCounter = 0

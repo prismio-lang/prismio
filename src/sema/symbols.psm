@@ -585,7 +585,7 @@ private fn semaReportArrayAskedVecMethod(call: ASTNode, name: String, argPtr: Pt
 // What the call was given, and, when one argument is an optional, how to get the
 // value out of it. "No overload accepts these argument types" says that something
 // is wrong with the arguments and not which, so a program that passes an
-// `Option<String>` to `println` reads as a compiler that does not know `println`.
+// `String?` to `println` reads as a compiler that does not know `println`.
 private fn semaNoteArgumentTypes(argPtr: Ptr) {
     let mut types = ""
     let mut optional = ptr_null()
@@ -597,7 +597,7 @@ private fn semaNoteArgumentTypes(argPtr: Ptr) {
         if (typeIsValid(argT) == false) { return }
         if (types.equals("") == false) { types = types.concat(", ") }
         types = types.concat(diagQuote(typeDisplay(argT)))
-        if (nodeIsNull(optional) and (argT.kind == TypeKind.OPTIONAL or argT.name.startsWith("Option$") or argT.name.startsWith("Option<"))) {
+        if (nodeIsNull(optional) and argT.kind == TypeKind.OPTIONAL) {
             optional = node_to_ptr(arg)
         }
         p = arg.next
@@ -608,11 +608,7 @@ private fn semaNoteArgumentTypes(argPtr: Ptr) {
         let arg = ptr_to_node(optional)
         let argT = nodeGetType(arg)
         let subject = diagQuote(typeDisplay(argT))
-        if (argT.kind == TypeKind.OPTIONAL) {
-            diag_note("an argument is a ".concat(subject, ", which may be absent: take the value with `expect(x)`, or `x.unwrapOr(fallback)` for a number"))
-        } else {
-            diag_note("an argument is an ".concat(subject, ", which may be absent: take the value with `x.unwrapOr(fallback)` or `x.expect(\"message\")`, or `match` on it"))
-        }
+        diag_note("an argument is a ".concat(subject, ", which may be absent: take the value with `expect(x)`, `x ?? fallback`, or `x.unwrapOr(fallback)`"))
     }
 }
 

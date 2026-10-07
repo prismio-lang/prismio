@@ -1,5 +1,12 @@
 # Reading input: what is awkward and what to change
 
+> **Status, 2026-10-07.** **D is done** and **E's `??` is done**: `Option<T>` is gone and every
+> absent-able answer is a `T?` (`readLine`, `prompt`, `tryReadFile`, `process.env`, `stripPrefix`,
+> `Vec.get`, `Map.get`, and the rest), `??` evaluates its right side only when it is needed, and the
+> reads are plain functions (`readLine()`, `readInt()`, `inputLines()`) and the `stdin` value is
+> gone. **Still open:** `let-else` and `if let` (E), the forms that would let a `T?` be read
+> without `expect`. The audit below is as it stood on 2026-10-02; read its `Option<T>` as `T?`.
+
 Audited 2026-10-02 against `std/input.psm`, `std/fs.psm`, `std/process.psm`,
 `std/string.psm`, `std/option.psm` and the language pages for optionals. Every claim
 below was run against the current compiler, not read off the docs.

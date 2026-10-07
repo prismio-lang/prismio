@@ -1,0 +1,101 @@
+// `a ?? b` -- `a` when it has a value, and `b` when it is `none`.
+//
+// 1. A number's `T?` and a reference's (String, a struct), and an optional on the
+//    right, which stays optional: `a ?? b ?? 0`.
+// 2. The right side is evaluated only when it is needed: `calls` counts the
+//    times `fallback()` ran.
+// 3. Precedence: below `+` and `|`, above `==`; and it associates to the right.
+import std.io
+import std.option
+import std.string
+import std.vec
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+let mut calls = 0
+
+fn fallback() -> Int {
+    calls = calls + 1
+    return 100
+}
+
+fn fallbackText() -> String {
+    calls = calls + 1
+    return "from fallbackText".concat("")
+}
+
+fn half(n: Int) -> Int? {
+    if (n % 2 != 0) { return none }
+    return n / 2
+}
+
+fn nameOf(id: Int) -> String? {
+    if (id == 1) { return "ada" }
+    if (id == 2) { return "grace".concat("") }
+    return none
+}
+
+fn pointFor(id: Int) -> Point? {
+    if (id == 0) { return none }
+    return Point { x: id, y: id * 2 }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // A number's optional.
+    if ((half(8) ?? 0) != 4) { return fail("a number, present") }
+    if ((half(7) ?? 0 - 1) != -1) { return fail("a number, absent") }
+    let held: Int? = 5
+    if ((held ?? 9) != 5) { return fail("a bound optional") }
+
+    // A String's.
+    if ((nameOf(1) ?? "nobody").equals("ada") == false) { return fail("a literal String, present") }
+    if ((nameOf(2) ?? "nobody").equals("grace") == false) { return fail("an owned String, present") }
+    if ((nameOf(3) ?? "nobody").equals("nobody") == false) { return fail("a String, absent") }
+    let bound = nameOf(2)
+    let chosen = bound ?? "nobody"
+    if (chosen.equals("grace") == false) { return fail("a bound String optional") }
+    let missing = nameOf(9)
+    let other = "somebody".concat("")
+    if ((missing ?? other).equals("somebody") == false) { return fail("an owned fallback") }
+
+    // A struct's.
+    let origin = Point { x: 0, y: 0 }
+    let p = pointFor(3) ?? origin
+    if (p.x != 3 or p.y != 6) { return fail("a struct, present") }
+    let q = pointFor(0) ?? origin
+    if (q.x != 0) { return fail("a struct, absent") }
+
+    // Chains: an optional on the right keeps the result optional.
+    if ((half(7) ?? half(6) ?? 99) != 3) { return fail("the second optional") }
+    if ((half(7) ?? half(5) ?? 99) != 99) { return fail("the last value") }
+    let chain = half(7) ?? half(5)
+    if (chain != none) { return fail("an optional on the right stays one") }
+    if ((nameOf(7) ?? nameOf(1) ?? "nobody").equals("ada") == false) { return fail("a String chain") }
+
+    // Only as much of the right side as is needed.
+    calls = 0
+    if ((half(8) ?? fallback()) != 4 or calls != 0) { return fail("the right side ran for a value") }
+    if ((half(7) ?? fallback()) != 100 or calls != 1) { return fail("the right side did not run for none") }
+    if ((nameOf(1) ?? fallbackText()).equals("ada") == false or calls != 1) { return fail("the right side ran for a String") }
+    if ((nameOf(8) ?? fallbackText()).equals("from fallbackText") == false or calls != 2) { return fail("the right side did not run for a String") }
+    if ((half(7) ?? half(6) ?? fallback()) != 3 or calls != 2) { return fail("the last link ran too early") }
+
+    // Precedence: `+` binds tighter than `??`, and `??` tighter than `==`.
+    if ((half(7) ?? 1 + 2) != 3) { return fail("?? below +") }
+    if ((half(8) ?? 1 + 2) != 4) { return fail("?? below +, present") }
+    if ((half(7) ?? 3 == 3) == false) { return fail("?? above ==") }
+    let sum = (half(8) ?? 0) + (half(2) ?? 0)
+    if (sum != 5) { return fail("two in one expression") }
+
+    println("test_267 ok")
+    return 0
+}

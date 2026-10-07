@@ -10,9 +10,9 @@
 // chosen.** Overlapping the variants' payloads needs the size of the widest one,
 // and the size of a type is REQUIREMENTS 18 -- still open. So the variants get
 // separate fields. The cost is space in a multi-variant payload enum and nothing
-// else: `Option<T>` pays nothing at all, since only one of its variants carries
-// anything. When 18 lands, this file is where the overlap goes, and no caller
-// changes.
+// else: a two-variant enum with one payload pays nothing at all, since only one of
+// its variants carries anything. When 18 lands, this file is where the overlap
+// goes, and no caller changes.
 //
 // The rest of the compiler learns nothing. Sema, AIF, the layout optimiser and
 // codegen see a struct, so field access is the `getelementptr` it always was --
@@ -254,7 +254,7 @@ private fn enumLiteralField(name: String, init: Ptr) -> ASTNode {
     return field
 }
 
-// `Option<Int>` as a type annotation, built from a name and a solved argument
+// `Result<Int, String>` as a type annotation, built from a name and a solved argument
 // chain, so that instantiation can go through the one path that already knows
 // how to do it.
 private fn enumTypeUse(name: String, argsPtr: Ptr) -> ASTNode {
@@ -268,10 +268,10 @@ private fn enumTypeUse(name: String, argsPtr: Ptr) -> ASTNode {
 }
 
 // Solves a generic enum's type arguments from the values passed to one of its
-// variants: `Option.Some(5)` binds `T` to `Int`.
+// variants: `Result.Ok(5)` binds `T` to `Int`.
 //
-// Answers an empty chain when a parameter cannot be solved -- `Option.None`
-// carries nothing, so nothing there mentions `T` -- and the caller then requires
+// Answers an empty chain when a parameter cannot be solved -- `Result.Ok(5)`
+// carries nothing that mentions `E` -- and the caller then requires
 // the arguments to have been written out.
 private fn enumSolveArgs(module: ASTNode, template: ASTNode, variantName: String, argPtr: Ptr) -> Ptr {
     let variant = enumVariantNode(template, variantName)
@@ -327,10 +327,10 @@ private fn enumConcreteName(module: ASTNode, enumName: String, variantName: Stri
     return monoInstantiateStruct(module, enumTypeUse(enumName, solved))
 }
 
-// `Option.None` where an `Option<Int>` is expected: the written qualifier
+// `Result.Ok(5)` where a `Result<Int, String>` is expected: the written qualifier
 // becomes the instantiation the context names, which enumConcreteName accepts
 // as it stands. Without it a variant that carries nothing mentioning a type
-// parameter -- `None`, or `Result.Ok(5)` for `E` -- could only be written with
+// parameter -- `Result.Ok(5)` for `E` -- could only be written with
 // its arguments spelled out, even under an annotation that says them.
 //
 // Only a bare qualifier that names the expected type's own template, is not a
@@ -356,7 +356,7 @@ internal fn enumFitsExpected(module: ASTNode, valNode: ASTNode, expected: TypeIn
     return nodeExists(node_to_ptr(shadow)) and enumVariantTag(shadow, enumVariantOf(valNode)) >= 0
 }
 
-// `Option.None` or `Result.Ok(x)` written with a bare generic enum's name: a
+// `Result.Ok(x)` written with a bare generic enum's name: a
 // construction whose type arguments may still come from the context. Nothing
 // may type one before that context is known -- it would report "cannot infer".
 internal fn enumIsBareGenericConstruction(module: ASTNode, valNode: ASTNode) -> Bool {
@@ -366,7 +366,7 @@ internal fn enumIsBareGenericConstruction(module: ASTNode, valNode: ASTNode) -> 
     return nodeExists(node_to_ptr(template)) and template.kind == NodeKind.ENUM_DECL
 }
 
-// `Option` in `Option.None` and in `Option.Some(x)`; an ERROR_NODE for any other
+// `Result` in `Result.Ok(x)` and in `Result.Err(e)`; an ERROR_NODE for any other
 // shape, which no caller accepts as a qualifier.
 private fn enumQualifierOf(valNode: ASTNode) -> ASTNode {
     let member = enumMemberOf(valNode)
@@ -462,8 +462,8 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
 
 // The type arguments written at a use site, when there are any.
 //
-// `Option<Int>.None` parses its qualifier as a TYPE_ANNOTATION carrying the
-// arguments; a bare `Option.None` parses it as an identifier and carries none,
+// `Result<Int, String>.Ok` parses its qualifier as a TYPE_ANNOTATION carrying the
+// arguments; a bare `Result.Ok` parses it as an identifier and carries none,
 // and then the arguments have to be solved from the payload instead.
 internal fn enumExplicitArgs(target: ASTNode) -> Ptr {
     if (target.kind != NodeKind.TYPE_ANNOTATION) { return ptr_null() }

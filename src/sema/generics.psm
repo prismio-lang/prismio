@@ -65,7 +65,7 @@ public fn monoCollectTemplates(module: ASTNode) {
 }
 
 // A generic *type* template, which may be a struct or an enum. Both spell their
-// use the same way -- `Option<Int>` and `Box<Int>` are one syntax -- so the
+// use the same way -- `Result<Int, String>` and `Box<Int>` are one syntax -- so the
 // lookup that resolves a type annotation cannot know which it wants in advance.
 internal fn monoFindTypeTemplate(module: ASTNode, name: String) -> ASTNode {
     let mut p = module.child2
@@ -1035,6 +1035,11 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
             if (nodeIsNull(actual.child)) { return ptr_to_node(ptr_null()) }
             return monoAnnotationFromType(typeOptionalInner(actual))
         }
+        // A `T?` parameter is solved from an optional, and only from one. A bare
+        // value would be wrapped by the call, but it is not evidence of what `T` is:
+        // std.option's `map<T, U, F>(o: T?, f: F)` would otherwise take `a.map(f)`
+        // for every `a` that is not an optional, ahead of the `map` it has itself.
+        if (tn.i3 == 1) { return ptr_to_node(ptr_null()) }
         return monoAnnotationFromType(actual)
     }
     if (tn.i1 == 1 and actual.kind == TypeKind.ARRAY and nodeExists(tn.child1)) {
@@ -1119,8 +1124,8 @@ internal fn monoTypeArgsFromExpected(module: ASTNode, call: ASTNode, expected: T
         let template = ptr_to_node(templatePtr)
         // A template taking a different number of arguments is not this
         // call's callee, and solving it anyway named one: `return expect(x)`
-        // on an `Int?` became `expect<Int>`, `Option<T>`'s two-parameter
-        // method, instead of the builtin.
+        // on an `Int?` became `expect<Int>`, std.option's two-parameter
+        // function, instead of the builtin.
         if (template.kind == NodeKind.FUNCTION and template.s1.equals(name)
                 and nodeExists(template.child3)
                 and monoChainLength(template.child1) == monoChainLength(call.child2)) {
@@ -1615,7 +1620,7 @@ private fn monoTypeDepth(ptr: Ptr) -> Int {
 // Reported against the template, which is the declaration that has to change;
 // the call site is wherever the recursion happened to be unrolled and is not
 // where the mistake lives.
-// An array as a type argument of a type: `Box<[Int]>`, `Option<[Int]>`,
+// An array as a type argument of a type: `Box<[Int]>`, `Result<[Int], String>`,
 // `Vec<[Int]>`, including one a generic function builds from a `T` inferred
 // from an array. Refused for the reason
 // a `[T]` field is (semaArrayLengthsInFields): without a length the value is a

@@ -285,6 +285,7 @@ private fn generateFunction(func: ASTNode) {
     }
     ir_clear_local_var_types()
     ir_clear_returned()
+    irCoalesceSpills = ";"
 
     // After ir_function_body_start, which is where the LLVM function is
     // materialised -- the subprogram's signature is read off it -- and before any

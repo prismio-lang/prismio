@@ -7,7 +7,7 @@
 //    every temporary `concat` result in the program: `make` ends in `concat`,
 //    and one allocation site backs all of them.
 // 2. An owned temporary whose callee hands back a view of it --
-//    `optionOr(lookup(i), d)` returns the String inside the Option -- is released
+//    `unwrapOr(lookup(i), d)` returns the String inside the Option -- is released
 //    at the end of its statement's scope, as a `let` would be. It leaked every
 //    Option and every payload, which is what `process.env(name)` chained into
 //    `optionOr` does.
@@ -40,9 +40,9 @@ fn listed(n: Int) -> Vec<String> {
     return v
 }
 
-fn lookup(n: Int) -> Option<String> {
-    if (n % 3 == 0) { return Option<String>.None }
-    return Option<String>.Some(make(n))
+fn lookup(n: Int) -> String? {
+    if (n % 3 == 0) { return none }
+    return make(n)
 }
 
 fn same(s: String) -> String { return s }
@@ -83,8 +83,8 @@ fn main() -> Int {
     total = 0
     want = 0
     for i in 0..<300 {
-        total = total + optionOr(lookup(i), fallback).length
-        let t = optionOr(lookup(i), optionOr(lookup(i + 1), fallback))
+        total = total + unwrapOr(lookup(i), fallback).length
+        let t = unwrapOr(lookup(i), unwrapOr(lookup(i + 1), fallback))
         total = total + t.length
         if (i % 3 == 0) {
             want = want + fallback.length
@@ -94,7 +94,7 @@ fn main() -> Int {
         }
     }
     if (total != want) { return fail("borrowed temporaries") }
-    if (optionOr(lookup(4), fallback).equals("a string longer than twelve bytes 4") == false) {
+    if (unwrapOr(lookup(4), fallback).equals("a string longer than twelve bytes 4") == false) {
         return fail("the payload read through a hoisted temporary")
     }
 

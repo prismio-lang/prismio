@@ -1,116 +1,72 @@
-// Option<T> and Result<T, E> -- signalling absence and failure without a
-// sentinel.
+// What `T?` and `Result<T, E>` need beyond the language -- signalling absence and
+// failure without a sentinel.
 //
-// REQUIREMENTS 14. Before these, a function that could fail returned a sentinel
-// -- `-1`, `0`, an empty string -- and nothing in the type said so, so nothing
-// made a caller check. `T?` (REQUIREMENTS 4) covers *reference*-shaped types
-// only: `Int?` is refused, because a scalar has no spare representation. These
-// two work for every type, because the tag is a separate field rather than a
-// value stolen from the payload's range.
+// **`T?` is the optional**, and there is no `Option<T>` beside it: a second spelling
+// of "a `T` or nothing" would be one more thing to learn and to convert between.
+// `none`, `==`, `expect(o)` and a scalar's `unwrapOr` are the compiler's; `??` is a
+// call to `optionCoalesce` below; and the functions here are the rest of what a
+// `T?` is read with -- `unwrapOr` for a reference, `expect` with a message, `map`,
+// `andThen` and `okOr`. They are generics over `T?`, so `o.unwrapOr(x)` and
+// `unwrapOr(o, x)` are one call, and they work for every `T` the optional does.
+//
+// `Result<T, E>` is the other half: a value or the error that stopped it. It is a
+// payload enum, a tagged struct, so it is move-only; `ok()` and `err()` turn one
+// side of it into a `T?`.
 //
 // **Variant order is part of the ABI here.** The tag is the variant's position,
 // so reordering the variants in this file changes the tag every compiled program
 // expects. Append, never insert.
-//
-// A note on representation: an enum with payloads becomes a tagged struct (see
-// src/sema/enums.psm), which makes these move-only owned values rather than
-// copied scalars. `Option<Int>` is two words and one allocation, not a register.
-// That is the cost of not having a tagged *union* yet, and it is REQUIREMENTS 18
-// that unlocks the smaller form.
 
-enum Option<T> {
-    None,
-    Some(T)
+// `a ?? b`: `a` when it has a value, `b` when it is `none`. The operator is this
+// call (sema/checker.psm, semaCoalesceExpr), so what it may alias is read from
+// these bodies like any function's -- and codegen branches around `b`, so it is
+// evaluated only when `a` is absent.
+public fn optionCoalesce<T>(a: T?, b: T) -> T {
+    if (a != none) { return expect(a) }
+    return b
 }
 
-public fn optionIsSome<T>(o: Option<T>) -> Bool {
-    match (o) {
-        Option.Some(v) => { return true }
-        Option.None => { return false }
-    }
+// The same with an optional on the right, which stays one: `a ?? b ?? 0`.
+public fn optionCoalesce<T>(a: T?, b: T?) -> T? {
+    if (a != none) { return a }
+    return b
 }
 
-public fn optionIsNone<T>(o: Option<T>) -> Bool {
-    match (o) {
-        Option.Some(v) => { return false }
-        Option.None => { return true }
-    }
+// What reading a `T?` takes beyond `==`, `expect(o)` and `??`, for the values a
+// reference optional holds (a scalar's `unwrapOr` is the compiler's). They are
+// ordinary generics over `T?`, so `o.unwrapOr(x)` and `unwrapOr(o, x)` are one call.
+
+// The value, or `fallback` when there is none.
+public fn unwrapOr<T>(o: T?, fallback: T) -> T {
+    if (o != none) { return expect(o) }
+    return fallback
 }
 
-// The value, or the caller's default. The only way to read an `Option` here:
-// there is deliberately no unchecked `unwrap`, because the whole point of the
-// type is that the absent case is unavoidable at the use site.
-public fn optionOr<T>(o: Option<T>, fallback: T) -> T {
-    match (o) {
-        Option.Some(v) => { return v }
-        Option.None => { return fallback }
-    }
+// The value, or a panic with `message` when there is none -- for the case the
+// caller has already ruled out and wants said out loud if it happens. The
+// message is what the panic prints, so make it specific.
+public fn expect<T>(o: T?, message: String) -> T {
+    if (o == none) { panic(message) }
+    return expect(o)
 }
 
-// The methods are the API; the prefixed functions stay for existing callers.
-// Each method matches for itself rather than forwarding, which costs nothing
-// and keeps each one a single function in a `--verify` report.
-//
-// Three of these shapes -- forwarding a result, returning a payload binder on
-// its own, and moving one into a new enum -- released memory that was not live
-// until 2026-09-25 (aif/evidence/RESULTS-ownership-shapes.md);
-// tests/*_probe.psm pin each one.
-impl<T> Option<T> {
-    public prop isSome(self) -> Bool {
-        match (self) {
-            Option.Some(v) => { return true }
-            Option.None => { return false }
-        }
-    }
+// `Ok` of the value, or `Err(error)` when there is none.
+public fn okOr<T, E>(o: T?, error: E) -> Result<T, E> {
+    if (o == none) { return Result<T, E>.Err(error) }
+    return Result<T, E>.Ok(expect(o))
+}
 
-    public prop isNone(self) -> Bool {
-        match (self) {
-            Option.Some(v) => { return false }
-            Option.None => { return true }
-        }
-    }
+// `f` of the value, or `none`: `o.map(|x: Int| x * 2)`. `U` is the closure's
+// return type.
+public fn map<T, U, F: Fn(T) -> U>(o: T?, f: F) -> U? {
+    if (o == none) { return none }
+    return f(expect(o))
+}
 
-    // The value, or `fallback` when there is none.
-    public fn unwrapOr(self, fallback: T) -> T {
-        match (self) {
-            Option.Some(v) => { return v }
-            Option.None => { return fallback }
-        }
-    }
-
-    // The value, or a panic with `message` when there is none -- for the case
-    // the caller has already ruled out and wants said out loud if it happens.
-    public fn expect(self, message: String) -> T {
-        match (self) {
-            Option.Some(v) => { return v }
-            Option.None => { panic(message) }
-        }
-    }
-
-    // `Ok` of the value, or `Err(error)` when there is none.
-    public fn okOr<E>(self, error: E) -> Result<T, E> {
-        match (self) {
-            Option.Some(v) => { return Result<T, E>.Ok(v) }
-            Option.None => { return Result<T, E>.Err(error) }
-        }
-    }
-
-    // `f` of the value, or `None`: `o.map(|x: Int| x * 2)`. `U` is the
-    // closure's return type.
-    public fn map<U, F: Fn(T) -> U>(self, f: F) -> Option<U> {
-        match (self) {
-            Option.Some(v) => { return Option<U>.Some(f(v)) }
-            Option.None => { return Option<U>.None }
-        }
-    }
-
-    // `f` of the value, which is itself an Option, or `None`: a step that can fail.
-    public fn andThen<U, F: Fn(T) -> Option<U>>(self, f: F) -> Option<U> {
-        match (self) {
-            Option.Some(v) => { return f(v) }
-            Option.None => { return Option<U>.None }
-        }
-    }
+// `f` of the value, which is itself optional, or `none`: a step that can fail.
+public fn andThen<T, U, F: Fn(T) -> U?>(o: T?, f: F) -> U? {
+    if (o == none) { return none }
+    return f(expect(o))
 }
 
 enum Result<T, E> {
@@ -177,19 +133,19 @@ impl<T, E> Result<T, E> {
         }
     }
 
-    // The value as an `Option`, dropping the error.
-    public fn ok(self) -> Option<T> {
+    // The value as a `T?`, dropping the error.
+    public fn ok(self) -> T? {
         match (self) {
-            Result.Ok(v) => { return Option<T>.Some(v) }
-            Result.Err(e) => { return Option<T>.None }
+            Result.Ok(v) => { return v }
+            Result.Err(e) => { return none }
         }
     }
 
-    // The error as an `Option`, dropping the value.
-    public fn err(self) -> Option<E> {
+    // The error as an `E?`, dropping the value.
+    public fn err(self) -> E? {
         match (self) {
-            Result.Ok(v) => { return Option<E>.None }
-            Result.Err(e) => { return Option<E>.Some(e) }
+            Result.Ok(v) => { return none }
+            Result.Err(e) => { return e }
         }
     }
 

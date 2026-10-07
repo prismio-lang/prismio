@@ -46,6 +46,7 @@ impl Parser {
         }
 
         if (self.checkVal(TokenType.KEYWORD, "import")) { return parseImportStatement(self) }
+        if (self.atFromImport()) { return parseFromImportStatement(self) }
         if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseVariableDecl() }
         if (self.checkVal(TokenType.KEYWORD, "extern")) { return self.parseExternDecl() }
         if (self.checkVal(TokenType.KEYWORD, "fn") or self.atPropDecl()) { return self.parseFunctionDecl() }
@@ -155,6 +156,21 @@ impl Parser {
         if (self.current().value.equals("cold") == false) { return false }
         let next = self.peek()
         return next.type == TokenType.KEYWORD and next.value.equals("fn")
+    }
+}
+
+
+impl Parser {
+    // `from std import {io, vec}` -- an import with the directory first.
+    //
+    // **Contextual**, as `cold` and `workload` are: `from` is not reserved, and at
+    // the top level an identifier cannot begin any other declaration, so one that
+    // is followed by a directory name is this statement and nothing else.
+    private fn atFromImport(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        if (self.current().value.equals("from") == false) { return false }
+        let next = self.peek()
+        return next.type == TokenType.IDENTIFIER or next.type == TokenType.KEYWORD
     }
 }
 

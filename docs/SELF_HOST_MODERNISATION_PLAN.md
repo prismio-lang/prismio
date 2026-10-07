@@ -37,8 +37,8 @@ a source tree that needs the feature it lacks. If `prismio build` ever reports t
 "is not runnable", it was caught mid-suite (the `ums` fixture moves it aside), or it is older
 than the tree: rerun `prismio build`, or install a current generation as the host first.
 
-**Open, in order of value**: `??` and `let-else` for `Option` / `T?` (INPUT_PLAN E); one
-optional type, finishing `T?` for references (INPUT_PLAN D); the remaining `Int` modes as
+**Open, in order of value**: `let-else` for `T?` (INPUT_PLAN E; `??` and the one optional type
+landed 2026-10-07, but are used in `src/` only once the seed knows `??`); the remaining `Int` modes as
 enums (`Parser.implPosition`, `allowStructLit`, `RangeLoop.mode`, `RelLoop.mode`);
 M3, M4, M6 and M7 as written below; `TypeInfo`'s 51 free functions.
 

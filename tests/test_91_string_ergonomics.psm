@@ -106,19 +106,19 @@ fn main() -> Int {
     if ((joined == "one-two-three") == false) { return fail("List.join") }
     if (s.count('l') != 3) { return fail("count(Char)") }
     if (s.indexOf('o', 5) != 8) { return fail("indexOf(Char, from)") }
-    if (optionOr(s.find("World"), 0 - 1) != 7) { return fail("find") }
-    if (optionOr(s.get(99), '?') != '?') { return fail("get out of range") }
+    if (unwrapOr(s.find("World"), 0 - 1) != 7) { return fail("find") }
+    if (unwrapOr(s.get(99), '?') != '?') { return fail("get out of range") }
     // Bound, not nested -- and this one is worth naming. Written as
-    // `optionOr(s.stripPrefix("Hello, "), "!")` it reads back **empty**: the
-    // unbound `Option<String>` temporary is released after `optionOr` has taken
+    // `unwrapOr(s.stripPrefix("Hello, "), "!")` it reads back **empty**: the
+    // unbound `String?` temporary is released after `unwrapOr` has taken
     // an alias into the String it owns. That is a live defect in the ownership
     // analysis rather than anything to do with `stripPrefix`, it is invisible to
     // `--verify` because both releases are ledger-legal, and it is the only place
     // in this fixture where the obvious spelling is the wrong one. See
-    // KNOWN_ISSUES.md. `Option<Int>` and `Option<Char>` above are unaffected:
+    // KNOWN_ISSUES.md. `Int?` and `Char?` above are unaffected:
     // their payloads own nothing.
     let maybeTail = s.stripPrefix("Hello, ")
-    let stripped = optionOr(maybeTail, "!")
+    let stripped = unwrapOr(maybeTail, "!")
     if ((stripped == "World") == false) { return fail("stripPrefix") }
     let capped = "mcdonald".capitalize()
     if ((capped == "Mcdonald") == false) { return fail("capitalize") }

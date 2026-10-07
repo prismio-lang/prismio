@@ -1,0 +1,8 @@
+// expect-error: return: expected Int, found Void
+// A bare `return` is `return 0` only in a `main` with no return type.
+import std.io
+
+fn main() -> Int {
+    println("done")
+    return
+}

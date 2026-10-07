@@ -48,9 +48,9 @@ fn main() -> Int {
     // apart from "present and equal to the fallback". mapGetOr cannot: a stored
     // 0 and a missing key give it the same answer.
     mapSet(m, 9, 0)
-    if (optionIsNone(mapGet(m, 9))) { return fail("a stored zero read as absent") }
-    if (optionIsSome(mapGet(m, 12345))) { return fail("a missing key read as present") }
-    if (optionOr(mapGet(m, 3), 0) != 33) { return fail("mapGet value") }
+    if ((mapGet(m, 9) == none)) { return fail("a stored zero read as absent") }
+    if ((mapGet(m, 12345) != none)) { return fail("a missing key read as present") }
+    if (unwrapOr(mapGet(m, 3), 0) != 33) { return fail("mapGet value") }
 
     println("PASS: map")
     return 0

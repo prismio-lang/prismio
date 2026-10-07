@@ -4450,9 +4450,9 @@ def run_ownership_probes_test():
     and, for the rewrap probe, the text, since a read of freed memory is not a
     ledger event.
 
-    Leaks are not asserted: once any `Option<String>` payload is stored from a
-    literal, that payload is never freed for any Option<String> (KNOWN_ISSUES,
-    Ownership), and the probes store literals on purpose.
+    Leaks are not asserted: once any `String?` is stored from a literal, that
+    value is never freed for any `String?` (KNOWN_ISSUES, Ownership), and the
+    probes store literals on purpose.
     """
     print(f"\n{BLUE}--- Running ownership_probes ---{RESET}")
     probes = (
@@ -4461,6 +4461,10 @@ def run_ownership_probes_test():
         ("forwarding_literal_probe.psm", "fallback", False),
         ("binder_return_probe.psm", "a literal payload, past twelve bytes", False),
         ("binder_rewrap_probe.psm", "not a seven: y", False),
+        # `??` over Strings: both operands' ownership is the function's, and the
+        # right side is evaluated lazily, so a fallback that never ran must not be
+        # released and one that ran must be.
+        ("coalesce_probe.psm", "PASS", True),
         # Map removal swaps a String key to the end and truncates it: a key the
         # removal failed to release is a leak, so this one is held to 0.
         ("test_193_map_methods.psm", "PASS", True),
@@ -4594,7 +4598,7 @@ def run_scalar_optional_test():
     """A scalar `T?` is a value: no allocation, and `expect` on `none` panics.
 
     test_238 checks the answers; this checks the two things an answer cannot. A
-    boxed `Option<T>` would pass test_238 too, so `half`'s IR must hold no
+    boxed payload enum would pass test_238 too, so `half`'s IR must hold no
     allocation. And the probe's `expect(none)` must exit 101 naming its line.
     """
     print(f"\n{BLUE}--- Running scalar_optional ---{RESET}")
@@ -5156,7 +5160,7 @@ def run_workload_test():
         finally:
             cleanup_files(global_src, global_ll)
 
-        # W3 for a runtime capability. `fileExists` and `stdin.lines()` reach
+        # W3 for a runtime capability. `fileExists` and `inputLines()` reach
         # `file_exists` and `io_stdin_*`, which the sandbox stubs -- and which the
         # runtime module also defines. The two definitions failed to link
         # ("symbol multiply defined"), so every workload importing std.fs,
@@ -5169,7 +5173,7 @@ def run_workload_test():
                          "import std.string\nimport std.fs\nimport std.input\n", 1)
                 .replace("    setup {\n",
                          "    setup {\n        let seen = fileExists(\"/\")\n"
-                         "        for line in stdin.lines() { println(line) }\n", 1),
+                         "        for line in inputLines() { println(line) }\n", 1),
             encoding="utf-8")
         try:
             r5 = run_command([str(PRISMIO_EXE), "build", str(capability_src),
@@ -7358,8 +7362,8 @@ def run_aif_verify_test():
         # it owned would be a violation rather than a leak, because `rt_free(42)`
         # is not a pointer the allocator ever handed out.
         "test_50_scalar_lists": 0,
-        # REQUIREMENTS 4. One heap allocation in the whole fixture, and it leaks
-        # for a reason that has nothing to do with optionals:
+        # REQUIREMENTS 4. One heap allocation in the whole fixture. It leaked until
+        # 2026-10-07, for a reason that had nothing to do with optionals:
         #
         #   16 bytes  presence_is_visible's `root`, whose escape is raised to
         #             Caller by an E-BIND in *depth_of_chain*. A field key is one
@@ -7370,9 +7374,29 @@ def run_aif_verify_test():
         #             struct field instead of a container element. INFERENCE 6's
         #             contexts are what would fix it.
         #
-        # Everything else in the fixture is T0. If this number goes to 0, contexts
-        # landed; if it goes up, something stopped being stack-promoted.
-        "test_51_optional_refs": 1,
+        # Everything else in the fixture is T0.
+        #
+        # It was 1 until 2026-10-07, and the leak was exactly the one named above:
+        # `presence_is_visible`'s `root`. Its escape was raised to Caller by the
+        # shared `Node.parent` key, through the return of `expect(cur.parent)` in
+        # *depth_of_chain* -- a return in another function, which the scope-exit
+        # drop (`aif_frees_unless_returned_node`) used to read as "this value leaves
+        # the scope". Such a lift (`ret_key == -1`) no longer declines the drop: returning
+        # or storing the binding itself still raises its own escape or names its
+        # key. Re-derived by running each function alone with the rule reverted:
+        # only `presence_is_visible` leaked, 2 allocated / 1 released. Contexts are
+        # still the general fix; this one needed only the narrower rule.
+        "test_51_optional_refs": 0,
+        # A struct handed to a function that returns one of its parameters, bound or
+        # stored in a struct field. 0 released of 4 before the same day's rule above
+        # (ret_key == -1 accepted); the fixture is the discriminating case.
+        "test_268_struct_pass_through": 0,
+        # The same where the result outlives the scope that made the arguments --
+        # returned, pushed, carried round a loop, assigned outward. Which argument
+        # comes back is a run-time fact, so the other has no owner the analysis can
+        # name: 9 leaked of 13, 0 violations. Releasing the loser needs a release
+        # guarded by pointer equality with the result (KNOWN_ISSUES, Ownership).
+        "test_269_struct_pass_through_escapes": 9,
         # AIF T4b. Zero, and it is the first number in this table that a *tracing*
         # step produced: both cycles are unreachable at exit with every count
         # sitting at one, so nothing but trial deletion can tell that the
@@ -7601,7 +7625,10 @@ def run_aif_verify_test():
         # now copied at the push (fatMarkedAsView), the copy-on-keep this comment
         # names, so the Vec owns the copy and frees it. The rest are views of a
         # binding's own storage that are kept, and still leak by design.
-        "test_185_view_outlives_binding": 13,
+        # 4 since 2026-10-07 (was 13): `lookup` answers a `String?`, a pointer, where
+        # it answered an `Option<String>`, a tagged struct holding one -- so the
+        # fixture no longer pays an `Option` allocation per kept lookup.
+        "test_185_view_outlives_binding": 4,
         # The same, pushed with no binding in between, including a temporary the
         # hoist gave one. 18 until the push copied the view (2026-10-01): each Vec
         # was declined for a view that might be a literal, so neither freed its
@@ -8486,8 +8513,10 @@ def run_string_operator_ledger_test():
         # was: std's split functions keep a part of twelve bytes or fewer in the
         # pair, and a `List<String>` stores it there, which took this fixture's
         # `split` and `lines` calls from 21 allocations to 18 without it
-        # exercising any operator less.
-        if allocated < 12:
+        # exercising any operator less. 10 since 2026-10-07: `find` and `get` answer
+        # an `Int?` and a `Char?` now, which allocate nothing, where an `Option`
+        # allocated one each.
+        if allocated < 10:
             print(f"{RED}[FAIL] string operator ledger: only {allocated} allocation(s), "
                   f"so the fixture is no longer exercising the operators and a "
                   f"balanced ledger says nothing{RESET}")

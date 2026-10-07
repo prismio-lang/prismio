@@ -25,12 +25,15 @@ private fn getOperatorPrecedence(t: Token) -> Int {
 
     if (t.value.equals("==") or t.value.equals("!=")) { return 3 }
     if (t.value.equals("<") or t.value.equals(">") or t.value.equals("<=") or t.value.equals(">=")) { return 4 }
-    if (t.value.equals("|")) { return 5 }
-    if (t.value.equals("^")) { return 6 }
-    if (t.value.equals("&")) { return 7 }
-    if (t.value.equals("<<") or t.value.equals(">>")) { return 8 }
-    if (t.value.equals("+") or t.value.equals("-")) { return 9 }
-    if (t.value.equals("*") or t.value.equals("/") or t.value.equals("%")) { return 10 }
+    // `??` sits between comparison and the bitwise operators, as Swift's does:
+    // `a ?? b + 1` is `a ?? (b + 1)`, and `a ?? b == c` is `(a ?? b) == c`.
+    if (t.value.equals("??")) { return 5 }
+    if (t.value.equals("|")) { return 6 }
+    if (t.value.equals("^")) { return 7 }
+    if (t.value.equals("&")) { return 8 }
+    if (t.value.equals("<<") or t.value.equals(">>")) { return 9 }
+    if (t.value.equals("+") or t.value.equals("-")) { return 10 }
+    if (t.value.equals("*") or t.value.equals("/") or t.value.equals("%")) { return 11 }
 
     return 0
 }
@@ -56,7 +59,11 @@ impl Parser {
             self.advance()
 
             // Left associativity: the right operand binds only tighter operators.
-            let right = self.parseExpression(operatorPrecedence + 1)
+            // `??` is the exception and associates to the right, so
+            // `a ?? b ?? c` tries `a`, then `b`, then `c`.
+            let mut rightPrecedence = operatorPrecedence + 1
+            if (op.equals("??")) { rightPrecedence = operatorPrecedence }
+            let right = self.parseExpression(rightPrecedence)
 
             // From the operator token, not from where the parser is now. The right
             // operand has been consumed by this point, so `parserCurrent` is the
@@ -676,7 +683,7 @@ impl Parser {
             // Unlike the struct-literal case this is not gated on allowStructLit.
             // That flag exists to stop `for i in 0..n {` reading `n {` as a literal,
             // and a `(` is not a block -- there is nothing for it to disambiguate.
-            // `Option<Int>.None` -- a generic enum's variant, qualified by the
+            // `Result<Int, String>.Ok` -- a generic enum's variant, qualified by the
             // instantiation. The qualifier is left as a TYPE_ANNOTATION and
             // parseSuffixes hangs the `.` off it, so sema receives the same shape it
             // gets for `Shape.Dot` with the arguments attached.

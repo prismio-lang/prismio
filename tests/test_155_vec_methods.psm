@@ -65,10 +65,8 @@ fn ints() -> Int {
 
     let popped = w.pop()
     let mut last = 0
-    match (popped) {
-        Option.Some(x) => { last = x }
-        Option.None => { return fail("pop on a full Vec") }
-    }
+    if (popped == none) { return fail("pop on a full Vec") }
+    last = expect(popped)
     if (last != 5) { return fail("pop value") }
 
     let removed = w.removeAt(0)
@@ -80,15 +78,9 @@ fn ints() -> Int {
     if (w.isNotEmpty) { return fail("clear") }
 
     let emptied = w.pop()
-    match (emptied) {
-        Option.Some(x) => { return fail("pop on an empty Vec") }
-        Option.None => { }
-    }
+    if (emptied != none) { return fail("pop on an empty Vec") }
     let outside = v.get(99)
-    match (outside) {
-        Option.Some(x) => { return fail("get out of range") }
-        Option.None => { }
-    }
+    if (outside != none) { return fail("get out of range") }
 
     let mut reserved = Vec<Int>.withCapacity(32)
     reserved.reserve(64)

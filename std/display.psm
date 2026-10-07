@@ -134,18 +134,6 @@ impl Display for String? {
     }
 }
 
-// An `Option<T>` shows as its value, or as `none` -- the text a scalar `T?` shows.
-// Here and not in std.option because an implementation lives with the trait or the
-// type it is for, and std.option cannot import this module without a cycle.
-impl<T: Display> Display for Option<T> {
-    fn show(self) -> String {
-        match (self) {
-            Option.Some(value) => { return value.show() }
-            Option.None => { return strFromNone() }
-        }
-    }
-}
-
 // The print family for anything that can show itself, so `println(version)` works
 // for a type with an `impl Display`, and for the optionals above, once this module
 // is imported. **Here and not in std.io**, which every printing program imports: a

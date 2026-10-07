@@ -34,7 +34,7 @@ internal fn semaResolveDefault(module: ASTNode, node: ASTNode, expected: TypeInf
     let reason = semaDefaultInto(module, node, expected, 0)
     if (reason.equals("")) { return true }
     semaErrorAt(node, reason)
-    diag_note("`default` is a value for numbers, `Bool`, `Char`, `String`, `Vec`, sized arrays, optionals, `Option`, `Map`, and structs whose fields all have one; an enum's value is named, not defaulted")
+    diag_note("`default` is a value for numbers, `Bool`, `Char`, `String`, `Vec`, sized arrays, optionals, `Map`, and structs whose fields all have one; an enum's value is named, not defaulted")
     return false
 }
 
@@ -169,10 +169,9 @@ private fn semaDefaultStruct(module: ASTNode, target: ASTNode, t: TypeInfo, dept
 
     let template = semaDefaultTemplateName(t.name)
     let fromStd = semaFileIsStandardLibrary(decl.file)
-    // A payload enum is a tagged struct (sema/enums.psm). `Option`'s absent
-    // variant is the one enum value that is the obvious default.
+    // A payload enum is a tagged struct (sema/enums.psm), and none of its
+    // variants is the obvious default.
     if (semaStructHasField(t.name, "$tag")) {
-        if (fromStd and template.equals("Option")) { return semaDefaultOptionNone(module, target, t) }
         return shown.concat(" is an enum, which has no default value")
     }
     // A Map's buckets are an invariant its fields cannot be defaulted into.
@@ -200,15 +199,6 @@ private fn semaDefaultStruct(module: ASTNode, target: ASTNode, t: TypeInfo, dept
     semaDefaultReset(target, NodeKind.STRUCT_LITERAL_EXPR)
     target.s1 = t.name.clone()
     target.child1 = fields.head
-    return ""
-}
-
-// `Option<T>.None`, with `T` read back from the instantiation's payload slot.
-private fn semaDefaultOptionNone(module: ASTNode, target: ASTNode, t: TypeInfo) -> String {
-    let payloadT = semaFindStructFieldType(module, target, t.name, enumPayloadField("Some", 0))
-    semaDefaultReset(target, NodeKind.MEMBER_ACCESS_EXPR)
-    target.s1 = "None"
-    target.child1 = node_to_ptr(semaDefaultTypeArgs(target, "Option", payloadT, typeInvalid()))
     return ""
 }
 

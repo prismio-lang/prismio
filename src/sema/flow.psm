@@ -278,3 +278,89 @@ private fn semaCheckJumpsAt(stmt: ASTNode, labels: String, depth: Int) {
         }
     }
 }
+
+// --- main --------------------------------------------------------------------
+//
+// `main` answers the process's exit status, and a program with nothing to say
+// about it need not say so: control reaching the closing brace is `return 0`, as
+// in C++, and so is a bare `return`. Both are written into the tree here, before
+// and after the body is typed, so nothing after sema learns that `main` is
+// special -- codegen sees the `return 0` a programmer could have written.
+//
+// A `main` that returns on every path is left alone, and so is one that returns a
+// number: only the two spellings that say nothing are filled in.
+
+private fn semaMainZero(at: ASTNode) -> ASTNode {
+    let zero = createNode(NodeKind.LITERAL_EXPR)
+    zero.i1 = TokenType.NUMBER_LITERAL as Int
+    zero.s1 = "0"
+    nodeSpanFrom(zero, at)
+    return zero
+}
+
+// Gives each bare `return` in `main`'s body the value `0`. A closure's body is an
+// expression and is never entered: its `return` is its own.
+internal fn semaMainBareReturns(block: ASTNode) {
+    let mut p = block.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        semaMainBareReturnsAt(stmt)
+        p = stmt.next
+    }
+}
+
+private fn semaMainBareReturnsAt(stmt: ASTNode) {
+    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
+        if (nodeIsNull(stmt.child1)) { stmt.child1 = node_to_ptr(semaMainZero(stmt)) }
+        return
+    }
+
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        semaMainBareReturns(ptr_to_node(stmt.child2))
+        if (nodeIsNull(stmt.child3)) { return }
+        let elseNode = ptr_to_node(stmt.child3)
+        if (elseNode.kind == NodeKind.IF_STATEMENT) {
+            semaMainBareReturnsAt(elseNode)
+        } else {
+            semaMainBareReturns(elseNode)
+        }
+        return
+    }
+
+    if (stmt.kind == NodeKind.WHILE_STATEMENT or stmt.kind == NodeKind.LOOP_STATEMENT
+            or stmt.kind == NodeKind.FOR_STATEMENT) {
+        semaMainBareReturns(ptr_to_node(loopBodyOf(stmt)))
+        return
+    }
+
+    if (stmt.kind == NodeKind.REGION_STATEMENT) {
+        semaMainBareReturns(ptr_to_node(stmt.child1))
+        return
+    }
+
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
+        let mut armPtr = stmt.child2
+        while (nodeExists(armPtr)) {
+            let arm = ptr_to_node(armPtr)
+            semaMainBareReturns(ptr_to_node(arm.child2))
+            armPtr = arm.next
+        }
+    }
+}
+
+// `return 0` after the last statement of `main`'s body, for the end it can reach.
+// Answers the statement, which the caller types like any other.
+internal fn semaAppendMainReturn(body: ASTNode, at: ASTNode) -> ASTNode {
+    let returnStatement = createNode(NodeKind.RETURN_STATEMENT)
+    nodeSpanFrom(returnStatement, at)
+    returnStatement.child1 = node_to_ptr(semaMainZero(at))
+
+    if (nodeIsNull(body.child1)) {
+        body.child1 = node_to_ptr(returnStatement)
+        return returnStatement
+    }
+    let mut tail = ptr_to_node(body.child1)
+    while (nodeExists(tail.next)) { tail = ptr_to_node(tail.next) }
+    tail.next = node_to_ptr(returnStatement)
+    return returnStatement
+}

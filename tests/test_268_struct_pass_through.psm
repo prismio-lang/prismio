@@ -1,0 +1,60 @@
+// A struct handed to a function that returns one of its parameters.
+//
+// The model lifts the struct's escape to the caller because the callee returns it,
+// and the scope-exit drop used to read that lift as "this value leaves the scope",
+// so a struct that only ever came back to the frame that made it was never
+// released. `aif_frees_unless_returned_node` now accepts a lift that came from a
+// return in another function; returning or storing the result still raises the
+// binding's own escape and declines. Each shape gets its own `pick` because a
+// function's summary is shared by all its callers. Shapes where the result outlives
+// the scope that made the arguments -- returned, pushed, assigned outward -- are in
+// test_269_struct_pass_through_escapes.
+//
+// Run with `--verify`: the suite pins this fixture to 0 leaked and 0 violations.
+import std.io
+import std.string
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+struct Holder {
+    p: Point
+}
+
+fn pickBound(a: Point, b: Point) -> Point {
+    if (a.x > b.x) { return a }
+    return b
+}
+
+fn pickHeld(a: Point, b: Point) -> Point {
+    if (a.x > b.x) { return a }
+    return b
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got == want) { return 0 }
+    println("FAIL ".concat(label, ": got ", got.toString(), " want ", want.toString()))
+    return 1
+}
+
+fn main() -> Int {
+    let a = Point { x: 1, y: 2 }
+    let b = Point { x: 3, y: 4 }
+    let bound = pickBound(a, b)
+
+    let c = Point { x: 13, y: 14 }
+    let d = Point { x: 15, y: 16 }
+    let held = Holder { p: pickHeld(c, d) }
+
+
+    let mut bad = 0
+    bad = bad + check("bound", bound.x, 3)
+    bad = bad + check("held", held.p.x, 15)
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

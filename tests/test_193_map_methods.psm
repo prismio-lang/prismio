@@ -57,7 +57,7 @@ fn main() -> Int {
     let found = m.get("grace")
     if (found.unwrapOr(0) != 85) { bad = bad + fail("get of a present key") }
     let missing = m.get("nobody")
-    if (missing.isSome) { bad = bad + fail("get of an absent key") }
+    if (missing != none) { bad = bad + fail("get of an absent key") }
     if (m.keyAt(0).equals("ada") == false or m.keyAt(1).equals("grace") == false) {
         bad = bad + fail("keys in insertion order")
     }

@@ -8,7 +8,7 @@
 import {io, string, vec} from std
 import {alpha, gamma as g} from visibility
 import * from visibility
-import std.option.Option
+import std.option.Result
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -25,9 +25,10 @@ fn main() -> Int {
     if (g.visibilityThroughMiddle(1) != visibilityThroughMiddle(1)) { return fail("an alias inside a group") }
     if (visibilityFromSibling(1) != 101) { return fail("import * from a directory") }
     let mut counts: Vec<Int> = [7]
-    match (counts.pop()) {
-        Option.Some(n) => { if (n != 7) { return fail("a selected declaration") } }
-        Option.None => { return fail("a selected declaration") }
+    let parsed = Result<Int, String>.Ok(7)
+    match (parsed) {
+        Result.Ok(n) => { if (n != 7) { return fail("a selected declaration") } }
+        Result.Err(e) => { return fail("a selected declaration") }
     }
     println("test_173 ok")
     return 0

@@ -1,6 +1,7 @@
 // The reads built on `readLine`: `readLineOr`, `prompt`, `readInt`, `readFloat`,
-// `readLines`, `readWords` and `isAtEnd`. Run as in test_188: the binary starts
-// itself with a mode and a pipe for stdin and reports what the child printed.
+// `readLines`, `readWords` and `atEndOfInput`, all plain functions. Run as in
+// test_188: the binary starts itself with a mode and a pipe for stdin and reports
+// what the child printed.
 
 import std.input
 import std.io
@@ -16,43 +17,43 @@ fn fail(message: String) -> Int {
 }
 
 fn childOr() {
-    println(stdin.readLineOr("fallback"))
-    println(stdin.readLineOr("fallback"))
-    println(stdin.readLineOr("fallback"))
+    println(readLineOr("fallback"))
+    println(readLineOr("fallback"))
+    println(readLineOr("fallback"))
 }
 
 fn childNumbers() {
-    let a = stdin.readInt()
-    let b = stdin.readInt()
-    let c = stdin.readFloat()
-    let d = stdin.readInt()
+    let a = readInt()
+    let b = readInt()
+    let c = readFloat()
+    let d = readInt()
     println(a.unwrapOr(-1))
     println(b.unwrapOr(-1))
     println(c.unwrapOr(-1.0))
     println(d.unwrapOr(-1))
-    println(stdin.isAtEnd)
+    println(atEndOfInput())
 }
 
 fn childLines() {
-    let lines = stdin.readLines()
+    let lines = readLines()
     println(lines.length)
-    println(stdin.isAtEnd)
+    println(atEndOfInput())
     for line in lines { println("[".concat(line, "]")) }
 }
 
 fn childWords() {
-    let first = stdin.readLine().unwrapOr("")
-    let words = stdin.readWords()
+    let first = readLine().unwrapOr("")
+    let words = readWords()
     println(first)
     println(words.length)
     println(words[words.length - 1])
 }
 
 fn childPrompt() {
-    let answer = stdin.prompt("name? ")
+    let answer = prompt("name? ")
     println("")
     println(answer.unwrapOr("(none)"))
-    println(stdin.prompt("again? ").isNone)
+    println(prompt("again? ") == none)
 }
 
 fn run(mode: String, input: String) -> String {
@@ -89,8 +90,8 @@ fn main() -> Int {
     let mut bad = 0
     // The line, then the fallback once the input has run out.
     bad = bad + check("or", "one\n", "one\nfallback\nfallback\n")
-    // A line with spaces round it is a number; a line that is not one is `None`
-    // and is still consumed; at the end of input `readInt` is `None` too.
+    // A line with spaces round it is a number; a line that is not one is `none`
+    // and is still consumed; at the end of input `readInt` is `none` too.
     bad = bad + check("numbers", " 42 \nhello\n2.5\n", "42\n-1\n2.5\n-1\ntrue\n")
     bad = bad + check("lines", "a\nb\r\nc", "3\ntrue\n[a]\n[b]\n[c]\n")
     bad = bad + check("lines", "", "0\ntrue\n")

@@ -10,7 +10,7 @@
 //    an iterator asked again after its end answers no without reading the file
 //    another reader has since opened in its slot.
 // 4. `close` ends a loop early; closing twice is harmless.
-// 5. A missing file: `readLines` has no lines, `tryReadLines` is `None`.
+// 5. A missing file: `readLines` has no lines, `tryReadLines` is `none`.
 
 import std.fs
 import std.io
@@ -95,16 +95,15 @@ fn main() -> Int {
     let missing = joinPath(root, "missing.txt")
     if (bracketed(missing).equals("") == false) { bad = bad + fail("a missing file has lines") }
     let tried = tryReadLines(missing)
-    if (tried.isSome) { bad = bad + fail("tryReadLines on a missing file") }
+    if (tried != none) { bad = bad + fail("tryReadLines on a missing file") }
     let found = tryReadLines(path)
-    match (found) {
-        Option.Some(lines) => {
-            let mut count = 0
-            let mut each = lines
-            for line in each { count = count + 1 }
-            if (count != 3) { bad = bad + fail("tryReadLines read ".concat(count.toString())) }
-        }
-        Option.None => { bad = bad + fail("tryReadLines on a file that exists") }
+    if (found == none) {
+        bad = bad + fail("tryReadLines on a file that exists")
+    } else {
+        let mut count = 0
+        let mut each = expect(found)
+        for line in each { count = count + 1 }
+        if (count != 3) { bad = bad + fail("tryReadLines read ".concat(count.toString())) }
     }
 
     deleteFile(path)

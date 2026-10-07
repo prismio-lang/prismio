@@ -286,6 +286,12 @@ impl Parser {
                 parserDescribe(word), ": `import {io, string} from std`"))
         }
         self.advance()
+        return parseImportDirectory(self)
+    }
+
+    // The dotted directory path both orders end up reading: after `from` in
+    // `import {io} from std`, and after it in `from std import {io}`.
+    private fn parseImportDirectory(self) -> String {
         let mut path = parseModuleSegment(self)
         while (self.matchVal(TokenType.SEPARATOR, ".")) {
             if (self.checkVal(TokenType.ARITHMETIC_OPERATOR, "*") or self.checkVal(TokenType.SEPARATOR, "{")) {
@@ -297,6 +303,33 @@ impl Parser {
             self.fatal("`as` names one module, so it goes on an entry inside the group: `import {io as out} from std`")
         }
         return path
+    }
+
+    // `from std import {io, string}` and `from std import *` -- the same two
+    // statements with the directory first, as Python and JavaScript's neighbours
+    // write them. Each lowers to exactly the nodes the `import ... from` spelling
+    // does, so nothing after the parser can tell the two orders apart.
+    //
+    // Only the grouped and the wildcard forms: `from std import io` would be a
+    // third way to write `import std.io`, and the entries are modules, which a
+    // group already says.
+    internal fn parseFromImportStatement(self) -> ASTNode {
+        self.advance()
+        let directory = parseImportDirectory(self)
+        self.expectVal(TokenType.KEYWORD, "import", "a `from` import")
+        let grouped = self.checkVal(TokenType.SEPARATOR, "{")
+        let everything = self.checkVal(TokenType.ARITHMETIC_OPERATOR, "*")
+        if (grouped == false and everything == false) {
+            self.fatal("a `from` import names its modules in a group, or all of them: `from ".concat(directory, " import {io, string}` or `from ", directory, " import *`"))
+        }
+        if (grouped) {
+            return qualifyImportGroup(self, parseImportGroupEntries(self), directory)
+        }
+        let importNode = self.node(NodeKind.IMPORT_STATEMENT)
+        self.advance()
+        importNode.i1 = 1
+        importNode.s1 = directory
+        return importNode
     }
 
     // `import * from std` -- `import std.*` with the directory last, so every
@@ -324,6 +357,13 @@ impl Parser {
     // the merge refuses one that does not name a file. A dotted entry is refused
     // here: the entries are siblings, and a nested directory is its own group.
     private fn parseImportGroup(self) -> ASTNode {
+        let entries = parseImportGroupEntries(self)
+        let directory = parseImportFrom(self, "an import group")
+        return qualifyImportGroup(self, entries, directory)
+    }
+
+    // The braces and what they hold, shared by both orders of the statement.
+    private fn parseImportGroupEntries(self) -> NodeList {
         self.expectVal(TokenType.SEPARATOR, "{", "import group")
         let entries = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
@@ -334,8 +374,11 @@ impl Parser {
         if (nodeIsNull(entries.head)) {
             self.fatal("an import group names at least one module: `import {io, vec} from std`")
         }
-        let directory = parseImportFrom(self, "an import group")
+        return entries
+    }
 
+    // Each entry's name, put under the directory: `io` from `std` is `std.io`.
+    private fn qualifyImportGroup(self, entries: NodeList, directory: String) -> ASTNode {
         let mut entryPtr = entries.head
         while (nodeExists(entryPtr)) {
             let entry = ptr_to_node(entryPtr)

@@ -1,4 +1,4 @@
-// `stdin.lines()`, `stdin.readLine()` and `stdin.readAll()`.
+// `inputLines()`, `readLine()` and `readAll()`.
 //
 // This binary starts itself with a mode argument and a pipe for stdin, and the
 // child reports what it read, one line per item, bracketed so an empty line and
@@ -6,7 +6,7 @@
 //
 // 1. `\n` and `\r\n` both end a line and neither is part of it; an empty line is
 //    a line; a last line without a terminator is a line.
-// 2. An empty input has no lines, and `readLine` on it is `None`.
+// 2. An empty input has no lines, and `readLine` on it is `none`.
 // 3. `readLine` then `readAll` gives the rest after that line: the three calls
 //    share one buffer.
 // 4. A line longer than the runtime's 64 KiB buffer arrives whole.
@@ -25,22 +25,23 @@ fn fail(message: String) -> Int {
 }
 
 fn childLines() {
-    for line in stdin.lines() {
+    for line in inputLines() {
         println("[".concat(line, "]"))
     }
 }
 
 fn childFirstThenRest() {
-    let first = stdin.readLine()
-    match (first) {
-        Option.Some(line) => { println("[".concat(line, "]")) }
-        Option.None => { println("none") }
+    let first = readLine()
+    if (first == none) {
+        println("none")
+    } else {
+        println("[".concat(expect(first), "]"))
     }
-    println("{".concat(stdin.readAll(), "}"))
+    println("{".concat(readAll(), "}"))
 }
 
 fn childLengths() {
-    for line in stdin.lines() {
+    for line in inputLines() {
         println(line.length)
     }
 }

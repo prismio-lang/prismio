@@ -95,11 +95,11 @@ let process: ProcessQuery
 // process: a `setEnv` on one task racing any environment read on another is
 // undefined. Set what you need before spawning.
 impl ProcessQuery {
-    // The variable's value, or `None` when it is not set. An empty value is
-    // `Some("")`, not `None`.
-    public fn env(self, name: String) -> Option<String> {
-        if (proc_env_has(name) == 0) { return Option<String>.None }
-        return Option<String>.Some(proc_env_get(name))
+    // The variable's value, or `none` when it is not set. An empty value is
+    // `""`, not `none`.
+    public fn env(self, name: String) -> String? {
+        if (proc_env_has(name) == 0) { return none }
+        return proc_env_get(name)
     }
 
     // Sets it for this process and every child started afterwards. False for a
@@ -133,7 +133,7 @@ impl Args {
     //
     // **Out of range and empty answer alike**, deliberately and not as a gap:
     // `count` is one property away, so the caller that cares can ask, and
-    // the `Option` form this replaced cost every caller a `match` to serve that
+    // the optional form this replaced cost every caller a check to serve that
     // one.
     //
     // **The bound is checked here** because the builtin reads whatever slot it

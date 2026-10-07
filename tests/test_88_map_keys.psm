@@ -106,8 +106,8 @@ fn main() -> Int {
 
     // mapGet still tells absent from present-and-equal-to-the-fallback.
     mapSet(counts, 999999, 0)
-    if (optionIsNone(mapGet(counts, 999999))) { return fail("a stored zero read as absent") }
-    if (optionIsSome(mapGet(counts, 999998))) { return fail("a missing key read as present") }
+    if ((mapGet(counts, 999999) == none)) { return fail("a stored zero read as absent") }
+    if ((mapGet(counts, 999998) != none)) { return fail("a missing key read as present") }
 
     println("test_88 ok")
     return 0

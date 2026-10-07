@@ -1,5 +1,5 @@
 // `print`, `println`, `eprint` and `eprintln` accept anything with an `impl Display`
-// once std.display is imported -- a user's own type, an `Option<T>`, a `String?` --
+// once std.display is imported -- a user's own type, an `Int?`, a `String?` --
 // and the multi-argument form goes through the same overloads.
 
 import std.display
@@ -36,11 +36,12 @@ fn child() {
     println(v)
     println("version:", v)
 
-    let some: Option<String> = Option<String>.Some("hi")
-    let absent: Option<String> = Option<String>.None
+    let some: String? = "hi"
+    let absent: String? = none
     println(some)
     println(absent)
-    println(Option<Int>.Some(7))
+    let seven: Int? = 7
+    println(seven)
     println("header:", some)
 
     println(maybeName(true))
