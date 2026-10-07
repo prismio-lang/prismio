@@ -4,9 +4,13 @@ Prismio is self-hosted: the compiler is written in Prismio. That means building 
 on a new platform has a chicken-and-egg problem — you need a `prismio` binary to
 compile `src/main.psm`, and macOS has none.
 
-The way out is `bootstrap/prismio-seed-0.1.0.ll`: committed LLVM IR for the compiler,
-generated on a machine that already had one. `llc` turns it into a native object
-for whatever host it runs on, and from there the compiler builds itself.
+The way out is the seed: LLVM IR for the compiler, generated on a machine that
+already had one. `llc` turns it into a native object for whatever host it runs on,
+and from there the compiler builds itself. The seed is a release asset
+(`prismio-seed-<version>.ll`), not a file in the repository; `bootstrap/seed.json`
+pins which one by version and SHA-256, and `tools/fetch_seed.py` downloads it into
+`bootstrap/`, checks it, and reuses it after that. `tools/bootstrap.sh --seed` runs it
+for you.
 
 ## What you need
 
@@ -27,7 +31,7 @@ git clone <repo> && cd prismio
 chmod +x tools/*.sh
 python3 tools/setup_llvm.py
 
-# gen0: from the committed seed IR — the only step that needs the seed.
+# gen0: from the release seed IR (fetched and checked) — the only step that needs it.
 tools/bootstrap.sh --seed --out build/gen0
 
 # gen1 and gen2: each compiler builds the next from src/main.psm.
@@ -97,8 +101,8 @@ resolving to the host.
 
 ## Refreshing the seed
 
-The seed only needs regenerating when a language or codegen change would stop the
-current one from compiling the current sources. A stale seed is harmless as long
+The seed only needs cutting again when a language or codegen change would stop the
+pinned one from compiling the current sources. A stale seed is harmless as long
 as the compiler it produces can still build the tree.
 
 ```sh
@@ -106,9 +110,11 @@ tools/refresh_seed.sh --compiler build/gen2
 ```
 
 It refuses a compiler that is not deterministic, so a mid-migration state cannot
-be frozen into the seed. The Windows equivalent is `tools\refresh_seed.ps1`; both
-strip the target directives and write the same header, so either platform can be
-the one that regenerates it.
+be frozen into the seed. It writes `bootstrap/prismio-seed-<version>.ll` (ignored by
+git), records its SHA-256 in `bootstrap/seed.json`, and prints the `gh release upload`
+that publishes it. Commit the pin; the seed itself is the release asset. The Windows
+equivalent is `tools\refresh_seed.ps1`; both strip the target directives and write the
+same header, so either platform can be the one that cuts it.
 
 ## Cross-compiling from Windows
 
@@ -128,7 +134,7 @@ removed the one `third_party/llvm/bin/clang.cfg` names). Re-run
 `xcode-select --install`, then `xcode-select -p` to confirm a valid path.
 
 **`tools/bootstrap.sh: bad interpreter`** — the scripts were checked out with CRLF
-endings. `.gitattributes` pins `*.sh` and the seed to LF, so this should not
+endings. `.gitattributes` pins `*.sh` to LF, so this should not
 happen; if it does, re-checkout with `git config core.autocrlf input`.
 
 **Tests pass but `prismio build` fails outside the repo** — you are running the

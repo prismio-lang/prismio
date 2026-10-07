@@ -1245,7 +1245,7 @@ void ir_switch_case(int switch_id, int value, int label) {
 
 // The same dispatch over a scrutinee of any integer width -- a `match` on an
 // Int, an I64, a U8 or an enum's tag. ir_switch_begin above resolves its value
-// as i32 and stays so: the committed seed calls it.
+// as i32 and stays so: the pinned seed calls it.
 //
 // The values already added to the switch being built, for the duplicate test
 // in ir_switch_case_value. Kept here rather than read back from the switch: the
@@ -3887,7 +3887,7 @@ FCMP(ir_fcmp_oeq, LLVMRealOEQ)
 FCMP(ir_fcmp_one, LLVMRealONE)
 // `!=` on Float. *Unordered* not-equal, so a NaN operand answers true: `x != x`
 // is the NaN test in C, Rust and Java alike, and `one` answered false for it.
-// ir_fcmp_one stays because the committed seed still calls it.
+// ir_fcmp_one stays because the pinned seed still calls it.
 FCMP(ir_fcmp_une, LLVMRealUNE)
 FCMP(ir_fcmp_olt, LLVMRealOLT)
 FCMP(ir_fcmp_ole, LLVMRealOLE)
@@ -5089,7 +5089,7 @@ int ir_str_data(const char *value) {
 // triple means "host" (ir_target_select's fallback), which is the one case that
 // falls through to this compiler's own platform.
 //
-// **Except in the seed.** bootstrap/prismio-seed-0.1.0.ll is IR with no triple, so
+// **Except in the seed.** The pinned seed (bootstrap/seed.json) is IR with no triple, so
 // that any host can compile it -- and three answers here are the host's own:
 // this accessor, the console write below, and EAGAIN. A seed refreshed on macOS
 // called `__error`, which Linux does not define, and `write`, which the Windows
@@ -5689,7 +5689,7 @@ static int g_di_enum_site_count;
 // anonymous address instead of printing its characters.
 //
 // Its own table rather than a fourth argument to ir_register_struct_field: that
-// function is called by the committed seed's IR, and changing its arity would
+// function is called by the pinned seed's IR, and changing its arity would
 // mean the seed could no longer link.
 typedef struct {
     char owner[NAME_LEN];

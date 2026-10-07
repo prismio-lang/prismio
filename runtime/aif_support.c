@@ -509,7 +509,7 @@ void aif_struct_add_field(const char* name, const char* field, const char* type,
 
 // The layout half of a field, told to the analysis rather than derived by it.
 // Separate from aif_struct_add_field because adding an FFI function is one step
-// and changing one is two: the committed seed's IR calls the four-argument form.
+// and changing one is two: the pinned seed's IR calls the four-argument form.
 void aif_struct_field_inline(const char* name, const char* field, int inlined) {
     int id = nominal_find(name);
     if (id < 0) return;

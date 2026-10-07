@@ -1682,7 +1682,7 @@ public fn aifReportBudgets(converged: Bool) -> Int {
 public fn aifReportInertRegions() {
     // aif_budget_count() is scope_count under a name it outgrew -- aifReportBudgets
     // above walks the same range for the same reason. Kept rather than renamed
-    // because the name is on the FFI surface the committed seed links against.
+    // because the name is on the FFI surface the pinned seed links against.
     let n = aif_budget_count()
     for s in 0..<n {
         let name = aif_scope_region(s)

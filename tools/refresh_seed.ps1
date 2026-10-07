@@ -1,12 +1,14 @@
-# Regenerate bootstrap/prismio-seed-0.1.0.ll from a known-good compiler.
+# Cut a bootstrap seed from a known-good compiler, for a release.
 #
 #   .\tools\refresh_seed.ps1 -Compiler build\gen2.exe
 #
-# The seed is committed LLVM IR for src/main.psm and is the only way to build a
-# first compiler on a host that has none. Refresh it whenever a language or codegen
-# change would stop the current seed from compiling the current sources -- not on
-# every commit, since a stale seed is harmless as long as the compiler it produces
-# can still build the tree.
+# The seed is LLVM IR for src/main.psm and is the only way to build a first
+# compiler on a host that has none. It is a release asset, not a tracked file (see
+# tools/fetch_seed.py): this writes bootstrap\prismio-seed-<version>.ll, pins its
+# SHA-256 in bootstrap\seed.json, and says how to upload it. Cut a new one whenever
+# a language or codegen change would stop the pinned seed from compiling the current
+# sources -- not on every commit, since a stale seed is harmless as long as the
+# compiler it produces can still build the tree.
 #
 # Two things make the committed file portable, and both are enforced below:
 #   * the target triple is stripped, so llc targets whatever host it runs on;
@@ -53,9 +55,10 @@ $body = $lines | Where-Object { $_ -notmatch '^target (triple|datalayout)\s*=' }
 $header = @(
   "; Prismio bootstrap seed -- LLVM IR for the Prismio compiler (src/main.psm).",
   ";",
-  "; Committed because a new platform has no prismio binary to compile src/main.psm",
-  "; with, and this is the smallest artifact that breaks that cycle. Produced by a",
-  "; compiler that had reached a byte-identical gen1/gen2 fixed point.",
+  "; Published as a release asset because a new platform has no prismio binary to",
+  "; compile src/main.psm with, and this is the smallest artifact that breaks that",
+  "; cycle. Produced by a compiler that had reached a byte-identical gen1/gen2 fixed",
+  "; point.",
   ";",
   "; Deliberately carries no 'target triple' or 'target datalayout' line, so llc",
   "; targets whatever host it runs on. That is safe here because the IR is entirely",
@@ -68,10 +71,13 @@ $header = @(
   ";"
 )
 
-$seed = Join-Path $Repo 'bootstrap\prismio-seed-0.1.0.ll'
+$version = [regex]::Match((Get-Content (Join-Path $Repo 'src\main.psm') -Raw), '(?m)^let PRISMIO_VERSION = "([^"]+)"').Groups[1].Value
+if ([string]::IsNullOrEmpty($version)) { Write-Host 'FAILED: PRISMIO_VERSION not found in src\main.psm' -ForegroundColor Red; exit 1 }
+$seed = Join-Path $Repo "bootstrap\prismio-seed-$version.ll"
 [System.IO.File]::WriteAllText($seed, (($header + $body) -join "`n"))
 Remove-Item $work -Recurse -Force
 
 $stripped = $lines.Count - $body.Count
 Write-Host ("Wrote {0} ({1:N0} bytes, {2} target directive(s) stripped)" -f $seed, (Get-Item $seed).Length, $stripped) -ForegroundColor Green
+& python (Join-Path $Repo 'tools\fetch_seed.py') --pin $seed --version $version
 Write-Host "Verify with: .\tools\bootstrap.ps1 -Compiler <any> -Out build\seedcheck.exe" -ForegroundColor DarkGray

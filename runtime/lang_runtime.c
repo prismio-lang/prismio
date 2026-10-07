@@ -574,7 +574,7 @@ char* str_slice(const char* s, int start, int length, int base_len) {
 // costs **nothing** -- 5 of them in g7's whole IR and none surviving into the
 // hot loop's machine code, because taking the low half of a register is free on
 // AArch64. Narrowing `%prismio.str` would be an ABI change across the runtime
-// struct, the backend's type construction and the committed seed, to buy a
+// struct, the backend's type construction and the pinned seed, to buy a
 // coherence argument and no measurable byte or cycle.
 //
 // So the invariant is made explicit and **checked** instead: a Prismio String is

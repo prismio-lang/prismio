@@ -33,8 +33,10 @@ cd ../website/apps/docs && PRISMIO_INTERNAL_HOSTED=1 PRISMIO=<toolchain>/bin/pri
 Two rules from it are load-bearing enough to repeat here, because breaking either one
 fails a generation later with nothing pointing at the cause:
 
-- **The committed seed must be able to parse `src/`.** New syntax lands in two steps —
-  teach the frontend, refresh the seed, *then* use it in `src/`.
+- **The pinned seed must be able to parse `src/`.** The seed is a release asset, not a
+  tracked file (`bootstrap/seed.json` pins it; `tools/fetch_seed.py` fetches it). New
+  syntax lands in two steps — teach the frontend, cut and publish a seed
+  (`tools/refresh_seed.sh`) and commit the new pin, *then* use it in `src/`.
 - **A behaviour-preserving change must produce byte-identical compiler output** for
   every program in `tests/` and `benchmarks/prismio/`. Verify with two generations to a
   fixpoint, the full suite, and `tools/aif_differential.py`.
@@ -54,7 +56,7 @@ Four hazards, each of which has cost a session:
 - **Never run `prismio build`, or edit `src/`, while `tools/run_suite.py` runs.** Its
   ums fixture moves the host aside, and some fixtures compile the working tree.
 - **A feature `src/` needs must be installed as the host first.** Teach the compiler,
-  build it, refresh the seed (`tools/refresh_seed.sh`), install that generation as the
+  build it, cut and publish a seed (`tools/refresh_seed.sh`), install that generation as the
   host, *then* use the feature in `src/`. The old host cannot build a tree that needs
   something it lacks.
 - **Name a test compiler anything but `prismio`.** It is a launcher that forwards by
@@ -67,10 +69,10 @@ Four hazards, each of which has cost a session:
 
 ## Before a release
 
-The seed and `graphify-out/` are refreshed *before* the gate, in the commit that gets
-tested: `prismio build` twice, `tools/refresh_seed.sh --compiler
-.prismio/build/debug/prismio`, `graphify update .`. CI only checks that the seed can
-still parse `src/`, so a stale one passes. The full procedure is `RELEASE.md`.
+`graphify-out/` is refreshed *before* the gate, in the commit that gets tested:
+`prismio build` twice, `graphify update .`. The seed is not: it is cut after the tag and
+uploaded to the release (`tools/refresh_seed.sh`), and the next commit pins it. The full
+procedure is `RELEASE.md`.
 
 ## graphify
 

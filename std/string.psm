@@ -2781,7 +2781,7 @@ impl String {
     // the public spelling, and `==` reaches the same answer.
     //
     // **This was a byte loop, and the reason it was one is gone.** The note here
-    // said the builtin could not be used because the committed seed did not know
+    // said the builtin could not be used because the pinned seed did not know
     // `__builtin_string_eq` and std has to compile under the seed -- true when it
     // was written, and no longer true since the seed was refreshed for
     // `__builtin_string_inline`. It also said the loop compared lengths first

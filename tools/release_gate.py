@@ -164,21 +164,23 @@ def check_rc_reproduces(rc: Path, generation_one_ir: Path, work: Path) -> None:
 
 
 def check_seed(rc: Path, work: Path) -> None:
-    """The committed seed still builds a compiler from this tree -- the path a
-    machine with no Prismio at all takes, and the one CLAUDE.md's two-step rule
-    for new syntax protects. It used to run `rc bootstrap`, which asked the RC
-    rather than the seed, and that command is gone."""
+    """The pinned release seed still builds a compiler from this tree -- the path
+    a machine with no Prismio at all takes, and the one CLAUDE.md's two-step rule
+    for new syntax protects. It fetches the seed the way that machine does
+    (tools/fetch_seed.py, checked against bootstrap/seed.json). It used to run
+    `rc bootstrap`, which asked the RC rather than the seed, and that command is
+    gone."""
     step("seed agreement")
     progress("building from the seed")
     if WINDOWS:
         shell = shutil.which("pwsh") or shutil.which("powershell")
         result = run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                      REPO / "tools" / "bootstrap.ps1", "-Seed", REPO / "bootstrap" / "prismio-seed-0.1.0.ll",
+                      REPO / "tools" / "bootstrap.ps1",
                       "-Out", work / f"seedchk{EXE}"])
     else:
         result = run(["bash", REPO / "tools" / "bootstrap.sh", "--seed",
                       "--out", work / f"seedchk{EXE}"])
-    ok("committed seed builds the compiler") if result.returncode == 0 \
+    ok("the pinned seed builds the compiler") if result.returncode == 0 \
         else bad(last_line(result.stdout + result.stderr))
 
 

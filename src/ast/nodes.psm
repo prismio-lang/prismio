@@ -100,7 +100,7 @@ enum NodeKind {
     // semaExpr runs over an argument more than once.
     //
     // Kept at the end for the reason SLICE_EXPR is: adding a kind in the middle
-    // renumbers the ordinals the committed seed and test_41 depend on.
+    // renumbers the ordinals the pinned seed and test_41 depend on.
     CLOSURE_EXPR,
 
     // A record that one function came from one `impl` block. `s1` and the source
@@ -139,7 +139,7 @@ enum NodeKind {
     // implementing type's value and rewritten in place, so the name stays out of
     // the global value namespace entirely.
     //
-    // Appended for the same reason IMPL_HEADER was: the committed seed's
+    // Appended for the same reason IMPL_HEADER was: the pinned seed's
     // existing NodeKind ordinals must not move.
     ASSOC_CONST,
 
@@ -182,7 +182,7 @@ enum NodeKind {
     // `default`: the value of whatever type its context expects. It has no type
     // of its own, so sema rewrites it in place into the expression that builds
     // that value (src/sema/defaults.psm) and no pass after sema sees one.
-    // Appended so the committed seed's NodeKind ordinals do not move.
+    // Appended so the pinned seed's NodeKind ordinals do not move.
     DEFAULT_EXPR,
 
     // `{ "a": 1, "b": 2 }`: child1 is the key chain and child2 the value chain,

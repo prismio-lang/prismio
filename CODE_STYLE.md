@@ -180,16 +180,18 @@ Do not infer architecture from one function or one file.
 
 ### Self-hosting comes first
 
-The committed seed must be able to parse `src/`.
+The pinned seed must be able to parse `src/`.
 
-`bootstrap/prismio-seed-0.1.0.ll` is LLVM IR for a compiler built from an earlier tree.
+The seed (a release asset, pinned in `bootstrap/seed.json` and fetched by
+`tools/fetch_seed.py`) is LLVM IR for a compiler built from an earlier tree.
 If new syntax is added to the compiler source and used immediately, the seed
 can no longer parse the source that it is supposed to rebuild.
 
 New syntax therefore lands in two steps:
 
 1. Teach the frontend the syntax. Do not use it in `src/`. Build and verify.
-2. Refresh the seed with `tools/refresh_seed.ps1 -Compiler <gen2>`.
+2. Cut a seed with `tools/refresh_seed.ps1 -Compiler <gen2>` (`.sh` elsewhere), publish
+   it as a release asset, and commit the new `bootstrap/seed.json`.
 3. Only then use the new syntax in `src/`.
 
 ### Judge changes by emitted behavior
@@ -819,7 +821,7 @@ Before submitting compiler code, ask:
 - Is the subtle invariant preserved where it matters?
 
 ### Correctness
-- Does the seed still parse `src/`?
+- Does the pinned seed still parse `src/`?
 - Does the compiler bootstrap?
 - Does the next generation bootstrap?
 - Did focused and full tests pass?

@@ -1,6 +1,6 @@
 # Build a prismio compiler generation from the repository sources.
 #
-#   .\tools\bootstrap.ps1 -Out build\gen0.exe                        # from the seed
+#   .\tools\bootstrap.ps1 -Out build\gen0.exe                        # from the seed (fetched)
 #   .\tools\bootstrap.ps1 -Compiler build\gen0.exe -Out build\gen1.exe
 #
 # This explicit bootstrap path links every runtime and backend source from the
@@ -15,11 +15,12 @@
 # (on Windows: MSVC Build Tools with the Windows SDK).
 
 param(
-    # One of -Compiler or -Seed is required. -Seed starts from
-    # bootstrap\prismio-seed-0.1.0.ll, committed LLVM IR for the compiler, which is the
+    # Without -Compiler this builds from the seed: LLVM IR for the compiler,
+    # published as a release asset and pinned in bootstrap\seed.json, which is the
     # only way to build a first compiler on a machine that has none (or whose only
-    # prismio is an older generation you no longer trust). Pass a path to use a
-    # different seed. Mirrors --seed in tools/bootstrap.sh.
+    # prismio is an older generation you no longer trust). tools/fetch_seed.py
+    # downloads it once, checks its SHA-256 and caches it in bootstrap\. Pass
+    # -Seed <path> to use a different one. Mirrors --seed in tools/bootstrap.sh.
     [string]$Compiler = '',
     [string]$Seed = '',
     # Required for a build, and deliberately not Mandatory: -PrintCacheKey needs
@@ -177,9 +178,12 @@ $ll = Join-Path $work 'compiler.ll'
 
 # 1. Obtain IR for the compiler. With no -Compiler there is nothing to run the
 # frontend with, so fall back to the seed -- that is exactly the situation it is
-# committed for.
+# published for.
 if ([string]::IsNullOrEmpty($Compiler)) {
-    if ([string]::IsNullOrEmpty($Seed)) { $Seed = Join-Path $Repo 'bootstrap\prismio-seed-0.1.0.ll' }
+    if ([string]::IsNullOrEmpty($Seed)) {
+        $Seed = (& python (Join-Path $Repo 'tools\fetch_seed.py') | Select-Object -Last 1)
+        if ($LASTEXITCODE -ne 0) { Write-Host 'FAILED: could not fetch the seed (tools\fetch_seed.py)' -ForegroundColor Red; exit 1 }
+    }
     if (-not (Test-Path $Seed)) { Write-Host "FAILED: seed not found: $Seed" -ForegroundColor Red; exit 1 }
     Write-Host '[seed -> ll]' -ForegroundColor DarkGray
     Copy-Item $Seed $ll -Force

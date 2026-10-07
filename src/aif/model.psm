@@ -237,7 +237,7 @@ internal extern fn aif_enum_new(name: String)
 internal extern fn aif_struct_add_field(name: String, field: String, type: String, bytes: Int)
 // The layout half of a field: 1 when its storage is the object's own -- a struct
 // value copied in rather than a pointer stored. A separate call rather than a
-// fifth argument above, because the committed seed's IR calls the four-argument
+// fifth argument above, because the pinned seed's IR calls the four-argument
 // form and changing an FFI signature is a two-step change.
 internal extern fn aif_struct_field_inline(name: String, field: String, inlined: Int)
 

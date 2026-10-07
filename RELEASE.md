@@ -27,16 +27,16 @@ never after it. A refresh after the gate makes a new commit the gate has not see
 
 ```bash
 prismio build && prismio build       # twice: the host must be a fixpoint of this src/
-tools/refresh_seed.sh --compiler .prismio/build/debug/prismio   # .ps1 on Windows
 graphify update .                    # AST only, no API cost
 git status --short                   # only the intended files; no stray .prismio-* or build/
 ```
 
-The **seed** (`bootstrap/prismio-seed-0.1.0.ll`) is what a new machine builds the
-compiler from. CI only checks that it can still parse `src/`, so a stale one passes
-while describing an older compiler: before the 0.1.0 refresh it was about 7,500 lines
-behind. Refresh it whenever `src/` changed since it was written, and commit it with
-that change. `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `manifest.json`,
+The **seed** is what a new machine builds the compiler from. It is not part of the
+tree: it is a release asset, and `bootstrap/seed.json` pins which one by version and
+SHA-256 (`tools/fetch_seed.py` downloads and checks it). The gate builds from it, so a
+commit is releasable only while the pinned seed can still parse `src/`. A new seed is
+cut *after* a tag, from the compiler that was tagged (step 5), so there is nothing to
+refresh before the gate. `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `manifest.json`,
 `graph.html`) is committed with the change that moved it.
 
 ```bash
@@ -60,7 +60,7 @@ It lints, packages the host the way a user installs it (a bare generation has no
 `lib/runtime/*.bc`, so every program the suite builds would fail), puts the pinned
 LLVM first on `PATH` (the system's `clang` and `llvm-nm` cannot read LLVM 23
 bitcode), and runs the release gate: the two-generation byte-identical fixpoint,
-the candidate reproducing, the committed seed, the suite, the AIF differential,
+the candidate reproducing, the pinned release seed, the suite, the AIF differential,
 the corpus built and run, the `--verify` sweep, the JIT, the cross target, and
 packaging with toolchain separation. Every check must be green.
 
@@ -76,8 +76,8 @@ final word.
 CI does not run on push: it is started by hand on the commit being judged.
 Once that commit is pushed, run it with `gh workflow run ci.yml --ref main` (or the
 Actions tab's **Run workflow**) and find the run with `gh run list --workflow ci.yml`.
-It does source lists, a three-generation bootstrap **from the committed
-seed**, the fixpoint, the suite, the AIF differential, the seed check, packaging,
+It does source lists, a three-generation bootstrap **from the pinned
+release seed**, the fixpoint, the suite, the AIF differential, the seed neutrality check, packaging,
 `verify_separation`, and a clean-environment smoke test of the packaged toolchain
 outside the checkout, on `windows-latest`, `ubuntu-latest` and `macos-latest`.
 
@@ -168,6 +168,19 @@ gh release create v0.1.0 \
     dist/release/prismio-0.1.0-*.tar.gz dist/release/prismio-0.1.0-*.zip \
     dist/release/prismio-0.1.0-*.sha256
 ```
+
+**Then cut the release's seed**, from the compiler that was just tagged. It is a
+release asset like the archives, and the next release's `bootstrap/seed.json` pins it:
+
+```bash
+tools/refresh_seed.sh --compiler <the tagged compiler>    # .ps1 on Windows; writes bootstrap/prismio-seed-0.1.0.ll and the pin
+gh release upload v0.1.0 bootstrap/prismio-seed-0.1.0.ll
+git add bootstrap/seed.json && git commit -m "bootstrap: pin the 0.1.0 seed"
+```
+
+The seed is never in the tagged tree (its hash cannot be known before it exists), so a
+tag always builds from the *previous* release's seed, and the gate has already proved
+that one can parse `src/`.
 
 **A `v1.0.0` tag already exists in this repository and is older than this work.**
 It is not what 0.1.0 releases from and is not touched here. Deleting a published

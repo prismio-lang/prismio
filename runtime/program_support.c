@@ -2140,7 +2140,7 @@ int prismio_rt_color_supported(int fd) {
 
 // The seed's three answers
 //
-// bootstrap/prismio-seed-0.1.0.ll carries no triple, so it can be compiled on any
+// The pinned seed (bootstrap/seed.json) carries no triple, so it can be compiled on any
 // host, and three things libc spells per platform cannot be written into it:
 // errno's accessor (`__error`, `__errno_location`, `_errno`), the console write
 // (`write`, `_write`, with different word sizes) and EAGAIN (35 on Darwin, 11

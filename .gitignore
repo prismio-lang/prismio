@@ -47,10 +47,10 @@ build/
 # when it fails to build, which is kept precisely so someone can read it.
 .prismio-*
 
-# ...but the bootstrap seed is a committed artifact, not build output. It is the
-# only way to build a first compiler on a host that has no prismio binary yet, so
-# the *.ll rule above must not swallow it.
-!bootstrap/prismio-seed-0.1.0.ll
+# The bootstrap seed is a release asset, not a tracked file: tools/fetch_seed.py
+# downloads it into bootstrap/ (and tools/refresh_seed.* writes one there). Only the
+# pin, bootstrap/seed.json, is tracked.
+bootstrap/*.ll
 
 # LLVM toolchain fetched by tools/setup_llvm.py. Multi-GB, and llvm-paths.json
 # holds absolute paths that are only valid on the machine that generated it.

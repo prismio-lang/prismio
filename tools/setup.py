@@ -507,7 +507,7 @@ def blocked(checks):
 def next_steps():
     if sys.platform == "win32":
         shell = "pwsh" if shutil.which("pwsh") else "powershell -ExecutionPolicy Bypass"
-        return (f"  {shell} -File tools/bootstrap.ps1 -Seed bootstrap/prismio-seed-0.1.0.ll -Out build/gen0.exe\n"
+        return (f"  {shell} -File tools/bootstrap.ps1 -Out build/gen0.exe\n"
                 "  (the README has the rest of the bootstrap)")
     return ("  tools/bootstrap.sh --seed --out build/gen0\n"
             "  (the README has the rest of the bootstrap)")

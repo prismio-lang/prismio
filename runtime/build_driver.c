@@ -2814,7 +2814,7 @@ static void write_dsym(const char* exe_file) {
 
 int ir_jit_run_file(const char* ir_path, const char* program_name);
 
-// What the committed seed still calls. bootstrap/prismio-seed-0.1.0.ll is IR for an
+// What the pinned seed still calls. The pinned seed (bootstrap/seed.json) is IR for an
 // earlier compiler, linked against *these* C sources, so a function it names can
 // leave only after the seed is refreshed (tools/refresh_seed.sh). Kept, like
 // `list_set_elem_inline`, only in a compiler built from repository sources:

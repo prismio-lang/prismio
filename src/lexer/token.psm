@@ -48,7 +48,7 @@ enum TokenType {
     // may carry the empty string.
     //
     // Added at the end of the enum on purpose: these are ordinals, and the
-    // committed seed and the IDE plugin both match on them by number.
+    // pinned seed and the IDE plugin both match on them by number.
     INTERP_BEGIN,
     INTERP_PART,
     INTERP_END

@@ -9,10 +9,12 @@
 # A normal user build consumes installed bitcode and deliberately cannot build a
 # compiler backend, so bootstrap remains the explicit source-based path.
 #
-# --seed starts from bootstrap/prismio-seed-0.1.0.ll, committed LLVM IR for the compiler.
-# A host with no prismio binary cannot compile src/main.psm to get one, and that is
-# the only way out of the cycle. The seed carries no target triple, so llc targets
-# whatever host it runs on.
+# --seed starts from the seed: LLVM IR for the compiler, published as a release asset
+# and pinned in bootstrap/seed.json. A host with no prismio binary cannot compile
+# src/main.psm to get one, and that is the only way out of the cycle. Bare --seed
+# runs tools/fetch_seed.py, which downloads it once, checks its SHA-256 and caches it
+# in bootstrap/; pass a path to use a different one. The seed carries no target
+# triple, so llc targets whatever host it runs on.
 #
 # Requires the LLVM that `python3 tools/setup_llvm.py` provisions into
 # third_party/llvm: its clang is the one new enough to read the seed's LLVM IR,
@@ -32,9 +34,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --compiler) COMPILER="$2"; shift 2 ;;
         --seed)
-            # Optional path; bare --seed means the committed default.
+            # Optional path; bare --seed means the pinned release seed, fetched below.
             if [ $# -ge 2 ] && [ "${2#--}" = "$2" ]; then SEED="$2"; shift 2
-            else SEED="$REPO/bootstrap/prismio-seed-0.1.0.ll"; shift 1; fi ;;
+            else SEED="fetch"; shift 1; fi ;;
         --out)  OUT="$2"; shift 2 ;;
         --repo) REPO="$2"; shift 2 ;;
         --keep) KEEP=1; shift 1 ;;
@@ -201,6 +203,9 @@ if [ -n "$COMPILER" ]; then
     [ -f "$LL" ] || die "no IR produced"
 else
     step "seed -> ll"
+    if [ "$SEED" = "fetch" ]; then
+        SEED="$(python3 "$REPO/tools/fetch_seed.py")" || die "could not fetch the seed (tools/fetch_seed.py)"
+    fi
     [ -f "$SEED" ] || die "seed not found: $SEED"
     cp "$SEED" "$LL"
 fi

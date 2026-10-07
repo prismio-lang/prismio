@@ -26,7 +26,7 @@ Prismio is a self-hosted systems programming language. The compiler — the lexe
 
 The LLVM backend and the runtime are C, under `runtime/` (see [C_CODE_STYLE.md](C_CODE_STYLE.md)); you only need to touch them for a backend or runtime change. The compiler produces LLVM IR, optimises and generates machine code in process with the LLVM it links (AArch64, X86 and WebAssembly), and hands the object to the system's linker.
 
-A committed seed (`bootstrap/prismio-seed-0.1.0.ll`) builds the first compiler on a machine that has none.
+A seed, published as a release asset and pinned in `bootstrap/seed.json`, builds the first compiler on a machine that has none.
 
 ---
 
@@ -51,7 +51,7 @@ For a list of open issues, see the [GitHub Issues tracker](https://github.com/pr
 | Python | 3.9+ | The one thing you install yourself: it runs setup, the test runner and the AIF differential |
 | A system C toolchain | — | The platform linker and C library: Xcode Command Line Tools on macOS, `build-essential` on Linux, Visual Studio's C++ tools on Windows. `python tools/setup.py` probes it by compiling and linking a program, and `--install-system-deps` installs it (asks first) |
 | LLVM | 23.1.1, pinned | Provisioned into `third_party/llvm` by `python tools/setup.py` (through `tools/setup_llvm.py`) — do not install one |
-| Prismio | any | Optional. You do not need an installed compiler — the committed seed builds the first one |
+| Prismio | any | Optional. You do not need an installed compiler — the release seed (downloaded and checked for you) builds the first one |
 
 `python tools/setup_llvm.py` downloads the pinned LLVM release, checks its SHA-256,
 and prepares it in `third_party/llvm` (about 2.5 minutes once; a no-op after
@@ -74,8 +74,10 @@ From a fresh checkout with no `prismio` anywhere:
 tools/bootstrap.sh --seed --out build/gen0
 ```
 
-`bootstrap/prismio-seed-0.1.0.ll` is committed LLVM IR for a compiler built from an
-earlier tree. It is the only way out of the cycle on a host that has none.
+The seed is LLVM IR for a compiler built from an earlier tree. It is the only way out
+of the cycle on a host that has none. It is not in the repository: `--seed` runs
+`tools/fetch_seed.py`, which downloads the release asset pinned in `bootstrap/seed.json`,
+checks its SHA-256, and caches it in `bootstrap/` (ignored by git).
 
 After that, one generation per command — about **4 seconds**, because the C
 runtime objects are cached and only the changed Prismio is recompiled:
@@ -167,15 +169,15 @@ exactly those reasons.
 
 ### If you changed the syntax
 
-New syntax lands in **two commits**, and the order is not negotiable: the
-committed seed has to be able to parse `src/`, so teach the frontend first
-without using the syntax in `src/`, then `tools/refresh_seed.sh --compiler
-build/gen2` (`tools/refresh_seed.ps1` on Windows), and only then use it. Skipping this leaves a fresh clone unable to
-build. See [CODE_STYLE.md](CODE_STYLE.md).
+New syntax lands in **two commits**, and the order is not negotiable: the pinned
+seed has to be able to parse `src/`, so teach the frontend first without using the
+syntax in `src/`, then cut a seed with `tools/refresh_seed.sh --compiler build/gen2`
+(`tools/refresh_seed.ps1` on Windows), publish it as a release asset and commit the
+new `bootstrap/seed.json`, and only then use the syntax. Skipping this leaves a fresh
+clone unable to build. See [CODE_STYLE.md](CODE_STYLE.md).
 
-A seed that can parse `src/` can still be stale: CI only checks that it parses, and
-on Linux that it matches what a built compiler emits. Refresh it whenever `src/` has
-changed since it was written and commit it with that change.
+CI only checks that the pinned seed can build the tree, not that it is recent, so a
+seed that still parses `src/` stays pinned until something needs a newer one.
 
 ---
 

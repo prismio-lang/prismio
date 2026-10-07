@@ -206,15 +206,18 @@ is used.
 git clone https://github.com/prismio-lang/prismio.git
 cd prismio
 python3 tools/setup.py                                   # check this machine, then LLVM 23.1.1 into third_party/llvm
-tools/bootstrap.sh --seed --out build/gen0               # first compiler, from the committed seed
+tools/bootstrap.sh --seed --out build/gen0               # first compiler, from the release seed (fetched)
 tools/bootstrap.sh --compiler build/gen0 --out build/gen1
 python3 tools/package.py --compiler build/gen1 --out build/dist
 export PATH="$PWD/build/dist/bin:$PATH"
 ```
 
-`bootstrap/prismio-seed-0.1.0.ll` is committed LLVM IR for an earlier compiler. It is how
-a machine with no Prismio builds its first one. On Windows the script is
-`tools/bootstrap.ps1 -Seed bootstrap/prismio-seed-0.1.0.ll -Out build/gen0`, then
+The seed is LLVM IR for an earlier compiler, and it is how a machine with no Prismio
+builds its first one. It is not in the repository: it is the `prismio-seed-<version>.ll`
+asset of a [release](https://github.com/prismio-lang/prismio/releases), pinned by
+version and SHA-256 in `bootstrap/seed.json`. The first `--seed` bootstrap runs
+`tools/fetch_seed.py`, which downloads it into `bootstrap/`, checks the hash and reuses
+the file after that. On Windows the script is `tools/bootstrap.ps1 -Out build/gen0`, then
 `-Compiler build/gen0 -Out build/gen1`.
 
 Once a compiler exists, the checkout is itself a Prismio project: `prismio build` rebuilds
@@ -255,7 +258,7 @@ WebAssembly triples; WebAssembly IR can be emitted but has no runtime yet. See
 | [`docs/aif/`](docs/aif/README.md) | The memory model's specification and design record |
 | [`tests/`](tests/) | The compiler suite, `tests/test_runner.py` |
 | [`benchmarks/`](benchmarks/README.md) | Prismio, C++ and Rust versions of each workload |
-| [`bootstrap/`](bootstrap/) | The committed seed |
+| [`bootstrap/`](bootstrap/) | The pin for the release seed (`seed.json`); the seed itself is fetched here |
 | [`tools/`](tools/) | Bootstrap, packaging, release gate, lint, LLVM setup, and the AIF oracle (`aif_oracle/`) |
 | [`docs/`](docs/) | Plans and design notes for contributors |
 

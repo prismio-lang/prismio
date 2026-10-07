@@ -1,4 +1,4 @@
-# Bootstrap the compiler from the committed seed and prove it reaches a fixed
+# Bootstrap the compiler from the release seed and prove it reaches a fixed
 # point, then run the test suite against the compiler that produced it.
 #
 # The fixpoint check is the important one and it is cheap: a compiler that does
@@ -81,12 +81,14 @@ jobs:
         run: python -c "import json;print(json.load(open('third_party/llvm-paths.json'))['bin'])" >> "$GITHUB_PATH"
 
 
+      # The seed is a release asset, not a tracked file: the bootstrap fetches it
+      # (tools/fetch_seed.py) and checks it against the SHA-256 in bootstrap/seed.json.
       - name: Bootstrap from the seed
         shell: bash
         run: |
           set -e
           if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -File tools/bootstrap.ps1 -Seed bootstrap/prismio-seed-0.1.0.ll -Out build/gen0.exe
+            pwsh -File tools/bootstrap.ps1 -Out build/gen0.exe
             pwsh -File tools/bootstrap.ps1 -Compiler build/gen0.exe -Out build/gen1.exe
             pwsh -File tools/bootstrap.ps1 -Compiler build/gen1.exe -Out build/gen2.exe
           else
@@ -165,32 +167,16 @@ jobs:
           python tools/aif_differential.py --compiler "build/gen2$EXT"
 
       # A seed that can no longer build the tree strands anyone starting from a
-      # fresh checkout, so it is checked rather than assumed.
-      - name: Check the committed seed is still usable
+      # fresh checkout. The bootstrap above already proved this one builds it; this
+      # checks the other property a seed has to keep.
+      - name: Check the pinned seed is target-neutral
         shell: bash
         run: |
           set -e
-          grep -q '^target ' bootstrap/prismio-seed-0.1.0.ll && {
+          SEED="$(python tools/fetch_seed.py --check)"
+          grep -q '^target ' "$SEED" && {
             echo "seed carries a target directive; it must stay target-neutral"; exit 1; }
           echo "seed is target-neutral"
-
-      # Usable is not current: the seed only has to parse src/, so a stale one
-      # passes the step above while describing an older compiler (the 0.1.0 seed
-      # was ~7,500 lines behind). The gen2 built from this tree, asked for seed IR
-      # from the repository root, must reproduce the committed seed exactly.
-      # Compared on Linux only: macOS and Linux were checked to agree byte for
-      # byte, Windows has not been.
-      - name: Check the committed seed is current
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -e
-          PRISMIO_SEED_IR=1 build/gen2 build src/main.psm -o build/seed-now.ll
-          if ! diff <(grep -v '^;' build/seed-now.ll) <(grep -v '^;' bootstrap/prismio-seed-0.1.0.ll) >/dev/null; then
-            echo "::error title=Stale seed::bootstrap/prismio-seed-0.1.0.ll does not match src/. Run tools/refresh_seed.sh --compiler <a fixpoint compiler> and commit the result."
-            exit 1
-          fi
-          echo "seed is current"
 
       # The separation this asserts is not cosmetic: a compiled program merges
       # the runtime bitcode only, so no `ir_*` backend symbol may reach a user

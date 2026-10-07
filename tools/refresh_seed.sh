@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Regenerate bootstrap/prismio-seed-0.1.0.ll from a known-good compiler.
+# Cut a bootstrap seed from a known-good compiler, for a release.
 #
 #   tools/refresh_seed.sh --compiler build/gen2
 #
-# POSIX counterpart of tools/refresh_seed.ps1. See that file for why the seed
-# exists and when to refresh it; the two must stay in step, since either platform
-# can be the one that regenerates the committed seed.
+# Writes bootstrap/prismio-seed-<version>.ll (untracked), pins its SHA-256 in
+# bootstrap/seed.json, and says how to upload it. The seed is a release asset, not a
+# tracked file: see tools/fetch_seed.py. POSIX counterpart of tools/refresh_seed.ps1;
+# the two must stay in step, since either platform can cut the seed.
 
 set -eu
 
@@ -36,7 +37,7 @@ export PRISMIO_SEED_IR=1
 
 # Built from the repository root with a relative path. The compiler records source
 # paths in the IR (the AIF profile keys), and an absolute one would put the
-# refreshing machine's checkout location in the committed seed.
+# refreshing machine's checkout location in the pinned seed.
 COMPILER="$(cd "$(dirname "$COMPILER")" && pwd)/$(basename "$COMPILER")"
 cd "$REPO"
 
@@ -49,13 +50,16 @@ cd "$REPO"
 "$COMPILER" build src/main.psm -o "$AGAIN" >/dev/null || die "second build failed"
 cmp -s "$RAW" "$AGAIN" || die "compiler is not deterministic"
 
-SEED="$REPO/bootstrap/prismio-seed-0.1.0.ll"
+VERSION="$(sed -n 's/^let PRISMIO_VERSION = "\([^"]*\)".*/\1/p' "$REPO/src/main.psm")"
+[ -n "$VERSION" ] || die "PRISMIO_VERSION not found in src/main.psm"
+SEED="$REPO/bootstrap/prismio-seed-$VERSION.ll"
 cat > "$SEED" <<'EOF'
 ; Prismio bootstrap seed -- LLVM IR for the Prismio compiler (src/main.psm).
 ;
-; Committed because a new platform has no prismio binary to compile src/main.psm
-; with, and this is the smallest artifact that breaks that cycle. Produced by a
-; compiler that had reached a byte-identical gen1/gen2 fixed point.
+; Published as a release asset because a new platform has no prismio binary to
+; compile src/main.psm with, and this is the smallest artifact that breaks that
+; cycle. Produced by a compiler that had reached a byte-identical gen1/gen2 fixed
+; point.
 ;
 ; Deliberately carries no 'target triple' or 'target datalayout' line, so llc
 ; targets whatever host it runs on. That is safe here because the IR is entirely
@@ -72,4 +76,5 @@ tr -d '\r' < "$RAW" | grep -vE '^target (triple|datalayout)[[:space:]]*=' >> "$S
 rm -rf "$WORK"
 
 printf '\033[32mWrote %s (%s bytes)\033[0m\n' "$SEED" "$(wc -c < "$SEED" | tr -d ' ')"
+python3 "$REPO/tools/fetch_seed.py" --pin "$SEED" --version "$VERSION"
 echo "Verify with: tools/bootstrap.sh --seed --out build/seedcheck"

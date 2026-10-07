@@ -41,10 +41,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   was 4, 4, 8 and is 1, 3, 8).
 - Compiling the compiler's own source is about 3% faster (0.677 s → 0.658 s, median of
   seven interleaved runs).
-- The bootstrap seed is now `bootstrap/prismio-seed-0.1.0.ll`, named for the
-  release it was cut at. `tools/bootstrap.*`, `tools/refresh_seed.*`,
-  `tools/release_gate.py`, CI and the docs follow the new name; the seed's
-  content is unchanged.
+- The bootstrap seed is no longer tracked in git. It is the `prismio-seed-<version>.ll`
+  asset of a release, pinned by version and SHA-256 in `bootstrap/seed.json`;
+  `tools/fetch_seed.py` downloads it into `bootstrap/` (ignored), checks the hash and
+  reuses the file, and `tools/bootstrap.*` run it for `--seed`. `tools/refresh_seed.*`
+  cut a seed, update the pin and print the `gh release upload` that publishes it. The
+  CI step that required the committed seed to match `src/` is gone: a seed is the
+  compiler as of a release, not of the working tree.
 - The project host in `build.ums` and `sandbox/build.ums` is the release build
   (`.prismio/build/release/prismio`, built by `prismio build --release`), and the
   `release` and `bench` commands use it. `verify`, `gate` and `package` still name the

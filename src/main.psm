@@ -440,7 +440,7 @@ fn main() -> Int {
     if (first.equals("bootstrap")) {
         diag_error_code("P1034", "`prismio bootstrap` has been removed")
         diag_note("build the compiler from its checkout with `prismio build`; its build.ums names the sources")
-        diag_note("with no compiler at all, tools/bootstrap.sh --seed (bootstrap.ps1 on Windows) builds one from the committed seed")
+        diag_note("with no compiler at all, tools/bootstrap.sh --seed (bootstrap.ps1 on Windows) builds one from the release seed it fetches")
         return 1
     }
 
