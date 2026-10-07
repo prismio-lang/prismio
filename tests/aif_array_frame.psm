@@ -1,0 +1,14 @@
+// An array literal is a frame slot, so it is T0 and nothing about it can pull an
+// arena into the caller. `main` calls a function that builds only an array. Before
+// arrays derived T0 the analysis counted that array as served by an arena, and the
+// call was wrapped in an arena_push/arena_pop pair that served nothing. The control
+// is aif_array_frame_vec.psm, the same shape around a Vec.
+
+fn arraySum() -> Int {
+    let a = [1, 2, 3]
+    return a[0] + a[1] + a[2]
+}
+
+fn main() -> Int {
+    return arraySum()
+}

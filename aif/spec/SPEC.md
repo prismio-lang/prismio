@@ -261,6 +261,15 @@ tier⟨s,κ⟩ =
 `Θ_stack` is implementation-defined and SHALL be documented by the implementation. It exists to
 keep stack frames bounded; it is a performance parameter, not a semantic one.
 
+**Sized aggregates (implementation clause).** A value whose representation has no heap form --
+Prismio's `Array<T, N>` and the `[T]` literal that initialises one are `[N x T]` by value -- is
+T0 whatever `size(s)` is, provided it does not bottom at `Global` (a module-level array is static
+storage, not a frame). The size test chooses between a frame slot and a heap block; for these
+there is no heap block to choose, so a size over `Θ_stack` cannot demote them, and tiering them
+T1 reports an allocation and counts an arena as serving a value no arena touches. An
+implementation that gave such a type a heap form would test it against `Θ_stack` like a struct.
+The oracle (`aif/prototype/aif.py`) and the in-compiler engine implement this identically.
+
 Three properties of this function are worth stating explicitly, because each is a design result
 rather than a restatement:
 

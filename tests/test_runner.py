@@ -1932,9 +1932,10 @@ AIF_EXPECTED = {
     "tier_two__Void#0":         "T2",
     "tier_three__Void#0":       "T3",
     "tier_four_cyclic__Void#0": "T4b",
-    # #0 is the array; #1 and #2 are the two allocations nested in its elements,
-    # which exist only if the walk descends into them.
-    "tier_array_elements__Void#0": "T1",
+    # #0 is the array, a frame slot at every tier and so T0; #1 and #2 are the two
+    # allocations nested in its elements, which exist only if the walk descends
+    # into them.
+    "tier_array_elements__Void#0": "T0",
     "tier_array_elements__Void#1": "T1",
     "tier_array_elements__Void#2": "T1",
 }
@@ -2031,6 +2032,61 @@ def run_aif_loop_bracket_test():
             print(f"  {problem}")
         return False
     print(f"{GREEN}[PASS] a per-iteration Vec keeps its own tier; a whole-call one is still bracketed{RESET}")
+    return True
+
+
+def run_aif_array_frame_test():
+    """An array literal is T0, reports as a frame array, and brings no arena.
+
+    The IR half is the one that matters. Reporting an array as a heap block was
+    harmless on its own; what it cost was that the analysis counted the array as
+    served by an arena, so a call to a function that only built an array was
+    wrapped in an arena_push/arena_pop pair serving nothing. The Vec fixture is the
+    control: a real allocation, which keeps its bracket, so the count of pushes
+    cannot fall to zero by bracketing nothing.
+    """
+    print(f"\n{BLUE}--- Running aif_array_frame ---{RESET}")
+    fixture = TEST_DIR / "aif_array_frame.psm"
+    out = TEST_DIR / "aif_array_frame.ll"
+    problems = []
+
+    report = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    found = None
+    for line in report.stdout.splitlines():
+        match = re.match(r"^\d+\s+aif_array_frame\.psm:(\d+):\d+\s+\[Int\]\s+(.+?)\s{2,}(.+)$", line)
+        if match and match.group(1) == "8":
+            found = (match.group(2).strip(), match.group(3).strip())
+    if found is None:
+        problems.append("no report row for the array literal on line 8")
+    elif found[0] != "stack":
+        problems.append(f"the array is reported as {found[0]!r}, not 'stack'")
+
+    def pushes_in(source: Path):
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(out)])
+        if built.returncode != 0:
+            problems.append(f"{source.name}: build exited {built.returncode}")
+            return None, ""
+        ir = out.read_text(encoding="utf-8", errors="replace")
+        cleanup_files(out)
+        return len(re.findall(r"call void @arena_push\(", ir)), ir
+
+    pushes, ir = pushes_in(fixture)
+    if pushes is not None:
+        if not re.search(r"alloca \[3 x i32\]", ir):
+            problems.append("the array is not an alloca, so the check below is vacuous")
+        if pushes != 0:
+            problems.append(f"{pushes} arena_push call(s) for a function that builds only an array")
+    control, _ = pushes_in(TEST_DIR / "aif_array_frame_vec.psm")
+    if control is not None and control != 1:
+        problems.append(f"the Vec control has {control} arena_push calls, expected 1, "
+                        "so the array check cannot tell a missing bracket from none")
+
+    if problems:
+        print(f"{RED}[FAIL] aif array frame{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] an array is T0 and reports as one, brings no arena, and the Vec control still does{RESET}")
     return True
 
 
@@ -9077,6 +9133,7 @@ def main():
         ("aif_tiers", run_aif_test),
         ("aif_human_report", run_aif_human_report_test),
         ("aif_loop_bracket", run_aif_loop_bracket_test),
+        ("aif_array_frame", run_aif_array_frame_test),
         ("aif_concurrency", run_aif_concurrency_test),
         ("aif_widening", run_aif_widening_test),
         ("aif_stack_slot", run_aif_stack_slot_test),

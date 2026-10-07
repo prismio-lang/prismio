@@ -1755,6 +1755,12 @@ def tier_of(model, eng, sid):
     site = model.sites[sid]
     E, A, C, T = eng.E[sid], eng.A[sid], eng.C[sid], eng.T[sid]
 
+    # An array is a frame slot at every tier (see derived_tier in aif_support.c):
+    # codegen has no heap form for it, so the size clause below has nothing to
+    # choose between. A module-level array is static storage and stays on the ladder.
+    if site.kind == 'array' and E != GLOBAL:
+        return 'T0'
+
     # in_container joins no_stack for the same reason: the container reclaims its
     # elements, and a frame slot is not something a deallocator can take.
     # Reachable whenever container and element share a scope, which leaves every

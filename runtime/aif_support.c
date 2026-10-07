@@ -3516,6 +3516,16 @@ static int fits_on_stack(const Site* s) {
 // The cheapest tier the converged facts permit. This is where SPEC 3's ladder
 // becomes a decision, and the clauses are ordered so the first match wins.
 static int derived_tier(const Site* s) {
+    // An array is a frame slot at every tier: codegen lowers an array literal to
+    // `ir_array_alloca` and an `Array<T, N>` is `[N x T]` by value, so nothing
+    // allocates, nothing is released and no arena is entered for it. SPEC 4.2's
+    // T0 clause asks for a size under Theta_stack, but that clause describes a
+    // choice between a frame slot and a heap block, and for an array there is no
+    // such choice -- so the size test cannot move it, and reading it from this
+    // function made every array report as a scoped heap block (78 of 1,025 sites
+    // in the corpus) while the IR held an alloca. A module-level array is static
+    // storage, not a frame, and keeps going through the ladder.
+    if (s->kind == AIF_K_ARRAY && s->E != AIF_E_GLOBAL) return AIF_T0;
     // in_container joins no_stack here for the same reason it sits next to it in
     // the drop predicate: the container reclaims its elements, and a frame slot is
     // not something a deallocator can take. Reachable whenever the container and

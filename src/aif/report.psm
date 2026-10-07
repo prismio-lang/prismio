@@ -326,6 +326,9 @@ private fn aifShortReason(site: Int) -> String {
     }
 
     let tier = aif_tier_of(site)
+    // A frame array is T0 because nothing else is on offer, not because it is
+    // small, so the reason says what it is rather than what a struct would say.
+    if (tier == 0 and aif_site_kind(site) == AIF_KIND_ARRAY) { return "fixed-length array; lives in the frame" }
     if (tier == 0) { return "small value does not escape" }
     if (tier == 1) { return "scope-bound; no arena selected" }
     if (tier == 3) { return "multiple owners in one thread" }

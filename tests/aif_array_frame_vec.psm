@@ -1,0 +1,15 @@
+// The control for aif_array_frame.psm: the same shape around a Vec, which is a real
+// allocation and so keeps its bracket. If this stops being bracketed the array
+// fixture's "no arena_push" proves nothing.
+
+fn vecSum() -> Int {
+    let mut v: Vec<Int> = []
+    for i in 0..<4 {
+        v.push(i)
+    }
+    return v[0] + v[3]
+}
+
+fn main() -> Int {
+    return vecSum()
+}
