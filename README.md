@@ -158,15 +158,16 @@ each is listed with a reproducer in
 ## Performance
 
 On the maintained suite of 62 workloads, each written the same way in Prismio, C++
-and Rust, Prismio's geometric-mean time is **0.87× of C++ (`clang++ -O3 -flto`) and
-0.84× of Rust (`-C opt-level=3 -C lto=fat`)**; peak memory is level with C++ and 4%
-below Rust. Measured on 2026-10-02 on an Apple M5 (arm64, macOS), 5 runs each
+and Rust, Prismio's geometric-mean time is **0.85× of C++ (`clang++ -O3 -flto`) and
+0.83× of Rust (`-C opt-level=3 -C lto=fat`)**; peak memory is level with C++ and about 5%
+below Rust. Measured on 2026-10-06 on an Apple M5 (arm64, macOS), 5 runs each
 ([report](benchmarks/results/report.html), [raw data](benchmarks/results/results.json)).
 
-Against C++ it is faster on 20 workloads, level on 40 (inside the suite's noise rule)
-and slower on 2: `prime_sieve` and `large_buffer_copy`. Against Rust it is faster on
-23, level on 34 and slower on 5: `vector_growth`, `convolution`, `large_buffer_copy`,
-`base64_codec` and `indirect_calls`. Fifteen more workloads are listed in the suite but
+Against C++ it is faster on 24 workloads, level on 33 (inside the suite's noise rule)
+and slower on 5: `prime_sieve`, `vector_growth`, `flat_bitset`, `large_buffer_copy` and
+`memcpy_mix`. Against Rust it is faster on 24, level on 32 and slower on 6:
+`vector_growth`, `vector_dot`, `convolution`, `channel_pipeline`, `large_buffer_copy` and
+`indirect_calls`. Fifteen more workloads are listed in the suite but
 not implemented yet, and are not counted. These are one machine's numbers, not a
 promise about yours: [docs/PERFORMANCE_PLAN.md](docs/PERFORMANCE_PLAN.md) lists where
 Prismio is slower and why, and the suite, with the rules that keep its three versions
@@ -225,6 +226,7 @@ With the compiler installed or built, start a project:
 ```console
 $ prismio init hello && cd hello
 $ prismio run
+Built /home/you/hello/.prismio/build/debug/hello
 Hello, Prismio!
 ```
 

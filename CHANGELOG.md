@@ -35,7 +35,9 @@ The full notes for each release, with downloads and known limits, are on the
 - README: the "Changelog" link points to the release notes, and the archive
   list now names all five platforms, with which are tested in CI and which on
   virtual machines.
-- Benchmark results are refreshed, measured with the release-profile compiler.
+- Benchmark results are refreshed, measured with the release-profile compiler:
+  0.85× of C++ and 0.83× of Rust by geometric mean over 62 workloads (was 0.87×
+  and 0.84×). The README quotes the new figures.
 
 ## [0.1.0] - 2026-10-02
 
