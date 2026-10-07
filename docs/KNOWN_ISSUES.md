@@ -519,18 +519,6 @@ undelivered message back to the sender and counted endpoints are `CHANNELS_PLAN.
 
 ## Toolchain, packaging and tests
 
-**`tests/test_runner.py`'s `ums` check assumes the debug host and fails since the host became the
-release build.** Seen 2026-10-07 on every compiler tried, the one built from HEAD included.
-`build.ums` names `.prismio/build/release/prismio` as `toolchain.host` (and so does
-`sandbox/build.ums`), but plain `prismio build` writes the debug profile and `prismio build
---release` writes the host, while `preserved_project_host` and the stage 0 -> project-local
-promotion steps in `run_ums_test` park, build and look for `.prismio/build/debug/prismio`. The
-failure is *"ums: the complete build command was not hosted"*, and the launcher says why on
-stderr: *"the project compiler was not built on this machine ... `prismio build` builds it
-here"*. Either the fixture builds with `--release` and parks the release profile, or the manifests
-go back to the debug host; `verify`, `gate` and `package` in `build.ums` and `tools/gate.py` still
-name the debug build, so the second is the smaller change. Every other check passes.
-
 **`prismio suite` cannot run the ums host-routing fixture.** That fixture deletes and re-promotes
 the project host to exercise stage-0 -> project-local promotion, and the `prismio` process running
 the command is using that file. `python3 tools/run_suite.py` tests a *copy* of the compiler, which

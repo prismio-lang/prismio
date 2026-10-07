@@ -27,6 +27,28 @@ RESET = '\033[0m'
 TEST_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TEST_DIR.parent
 
+
+def project_host_profile():
+    """The profile the root build.ums's `toolchain.host` lives in: "release" or "debug".
+
+    The fixtures below build, park and promote *the real project's host*, so they have
+    to look where the manifest says it is. They hard-coded `.prismio/build/debug`, and
+    failed all of `ums` once the manifest named `.prismio/build/release/prismio` -- plain
+    `prismio build` writes the debug profile, so nothing ever produced the host.
+    """
+    try:
+        manifest = (PROJECT_ROOT / "build.ums").read_text(encoding="utf-8")
+    except OSError:
+        return "debug"
+    found = re.search(r'host\s*=\s*"([^"]+)"', manifest)
+    if found and "/release/" in found.group(1).replace("\\", "/"):
+        return "release"
+    return "debug"
+
+
+HOST_PROFILE = project_host_profile()
+HOST_FLAGS = ["--release"] if HOST_PROFILE == "release" else []
+
 def find_prismio_exe(explicit=None):
     # --compiler wins, then $PRISMIO, so a freshly bootstrapped compiler can be
     # tested without installing it first. Without this the runner silently
@@ -800,7 +822,7 @@ def run_corpus_test():
 
 @contextlib.contextmanager
 def preserved_project_host():
-    """Put `.prismio/build/debug/prismio` back after a test that destroys it.
+    """Put the project host back after a test that destroys it.
 
     The compiler is described by the repository's own `build.ums`, so the only
     honest way to test host routing is against the real project: the launcher
@@ -829,7 +851,7 @@ def preserved_project_host():
     is halfway through someone else's test.
     """
     build_root = PROJECT_ROOT / ".prismio" / "build"
-    artifact = build_root / "debug" / ("prismio.exe" if os.name == "nt" else "prismio")
+    artifact = build_root / HOST_PROFILE / ("prismio.exe" if os.name == "nt" else "prismio")
     candidate = artifact.with_name(artifact.name + ".next")
     # **The whole debug profile directory is moved aside, not just the host.** A
     # hosted `clean` removes that directory, and the first version of this parked
@@ -839,7 +861,7 @@ def preserved_project_host():
     # Moved, never copied, and outside `.prismio/build`: the host is trusted by its
     # identity -- inode and modification time among it -- and a copy would come
     # back as a host the launcher refuses to run.
-    kept = [build_root / "debug", build_root / "lib", build_root / "stdlib"]
+    kept = [build_root / HOST_PROFILE, build_root / "lib", build_root / "stdlib"]
     parking = PROJECT_ROOT / ".prismio" / f"suite-parked-{os.getpid()}"
 
     with project_host_lock():
@@ -1262,7 +1284,7 @@ def run_ums_test():
         with preserved_project_host() as (compiler_artifact, compiler_candidate):
 
             project_build = subprocess.run(
-                [str(launcher), "build"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                [str(launcher), "build", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
             )
             if (project_build.returncode != 0 or not compiler_artifact.exists()
@@ -1275,7 +1297,7 @@ def run_ums_test():
                 return False
 
             local_build = subprocess.run(
-                [str(launcher), "build"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                [str(launcher), "build", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
             )
             if (local_build.returncode != 0
@@ -1349,7 +1371,7 @@ def run_ums_test():
 
             def toolchain_trace(env):
                 run = subprocess.run(
-                    [str(launcher), "build"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    [str(launcher), "build", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
                     cwd=str(PROJECT_ROOT / "ums"), env=env,
                 )
                 reused, rebuilt = set(), set()
@@ -1607,7 +1629,7 @@ def run_ums_test():
             shutil.copy2(stale_host, compiler_artifact)
             trust_host(compiler_artifact)
             stale_clean = subprocess.run(
-                [str(launcher), "clean"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                [str(launcher), "clean", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
             )
             stale_clean_output = stale_clean.stdout + stale_clean.stderr
@@ -1660,7 +1682,7 @@ def run_ums_test():
             # A direct local invocation has no global parent waiting to promote its
             # sibling candidate, so it must fail rather than overwrite itself.
             self_build = subprocess.run(
-                [str(compiler_artifact), "build"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                [str(compiler_artifact), "build", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(PROJECT_ROOT), env=launcher_env,
             )
             if self_build.returncode == 0 or "P1051" not in (self_build.stdout + self_build.stderr):
@@ -1676,7 +1698,7 @@ def run_ums_test():
             compiler_artifact.write_bytes(b"not a Prismio compiler\n")
             trust_host(compiler_artifact)
             fallback_build = subprocess.run(
-                [str(launcher), "build"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                [str(launcher), "build", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(PROJECT_ROOT), env=launcher_env,
             )
             fallback_output = fallback_build.stdout + fallback_build.stderr
@@ -1687,7 +1709,7 @@ def run_ums_test():
                 return False
 
             clean = subprocess.run(
-                [str(launcher), "clean"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                [str(launcher), "clean", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
                 cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
             )
             if (clean.returncode != 0 or compiler_artifact.exists()
