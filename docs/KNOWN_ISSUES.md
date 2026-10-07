@@ -252,8 +252,16 @@ two frees. The element block is sized exactly (four elements 247 -> 197 ms, eigh
 ms); the rest is the two allocations. `prismio aif` reports *no allocation sites* for the
 user's code, because the sites are inside `vecOf` and shared by every caller.
 
-Two fixes were considered and neither was built:
+Three fixes were considered and none was built:
 
+- **Retype a read-only literal as an array** (an immutable binding that is only indexed, iterated
+  or asked for `.length` is an `Array<T, N>` for free). Sound for the type system, but it **changes
+  what an out-of-range read does**: `v[7]` on a three-element `Vec` reads `0`, while on an array it
+  reads adjacent memory (`v[-1]` on `[3, 1, 4]` printed `1`), because the language does not yet
+  promise a bounds-check trap for an array index (see *Array indexing is unchecked* below). A
+  program with a latent off-by-one would silently change behaviour, so this waits for either array
+  bounds checks or a range proof for the index (`../src/ir/ranges.psm` already proves some).
+  `isEmpty` and `isNotEmpty` are also `Vec`-only, so they would block the rewrite.
 - **A frame-resident list** (header and elements in the caller's frame, no release) for a
   literal that never grows. Sema's rule that only a `let mut` or `inout` binding can change a
   Vec is not enough: a move into a `let mut` followed by `push` would grow a list whose header
@@ -398,6 +406,15 @@ counted element is freed twice. They are library functions, so a Vec they are ca
 for every length rather than once per length (`COLLECTIONS.md` step 3). A generic struct and an
 enum payload cannot hold an array yet. (`Vec<T, N>` and `Slice<T>`'s two layouts are steps 4 and
 5, not started.)
+
+**Array indexing is unchecked.** `a[i]` on an `Array<T, N>` or `[T]` is not bounds-checked in any
+profile, and the docs say so (`arrays-and-lists`: *the language does not yet promise a portable
+bounds-check trap for every array index*). An index past either end reads (or, on a `let mut`
+array, writes) the neighbouring stack slot; a negative one does the same below the array. The same
+read on a `Vec` returns `0` (observed 2026-10-07), and a `Slice` is bounds-checked, so the three do
+not agree. Checking costs the loops the benchmarks measure (`PERFORMANCE_PLAN.md`: `quicksort`'s
+partition loop is already bounds-check bound), so the fix is a range proof that elides the check
+where it can, not a blanket one.
 
 **A resolved path dependency is not on the import search.** Vendor source below the entry root. A
 build that declares a dependency says so (`P1081`).
