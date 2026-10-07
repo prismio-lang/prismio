@@ -1296,7 +1296,7 @@ void compiler_set_workload_mode(int on) { g_workload_mode = on ? 1 : 0; }
 // pipeline only -- isel, scheduling, register allocation. llc does not run the
 // IR pipeline, so mem2reg, SROA, GVN, LICM, inlining and vectorisation never
 // touched a user program: every local stayed a stack slot and every field read
-// was reloaded. Measured at 1.4x-3.0x across aif/corpus (RESULTS-xlang 3.1).
+// was reloaded. Measured at 1.4x-3.0x across the retired corpus (RESULTS-xlang 3.1).
 //
 // clang runs both pipelines in one process, is already required for the link,
 // and takes .ll directly -- which is why compiler_temp_ir_path spells the

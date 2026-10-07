@@ -15,7 +15,7 @@
 // escapes to its caller and stops being this scope's to release.
 //
 // The compiler cannot cover this itself: it has no T1 struct sites, and neither
-// does aif/corpus. See COMPILER-AUDIT's Level 2 note.
+// does the retired corpus. See COMPILER-AUDIT's Level 2 note.
 
 import std.io
 

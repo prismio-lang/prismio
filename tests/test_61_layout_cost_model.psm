@@ -26,7 +26,7 @@
 // the whole argument for scoring candidates rather than reading the ranking off
 // the counts.
 //
-// This mirrors `aif/corpus/g1_particles.psm`, where the same disagreement is
+// This mirrors the retired corpus program g1_particles, where the same disagreement is
 // 2/12 against 8/12 and 8/12 is the cut `aif/evidence/bench/layout_repr.c`
 // measures at 0.87x. It is a fixture rather than a corpus program so that the
 // assertion can name exact numbers.

@@ -74,7 +74,7 @@ This agrees with the topology result below: the lock and the signalling are not
 the cost. Phase 1 is.
 
 **Done 2026-09-30: plain-data messages copy through the ring**
-(`aif/evidence/RESULTS-typed-channels.md`). A message whose every field is a
+(the `RESULTS-typed-channels` write-up, summarised in the developer docs). A message whose every field is a
 scalar is copied into an in-place byte ring and out into storage the receiving
 frame supplies (`chan_send_copy`, `chan_recv_copy`), so AIF places the received
 value like a struct literal -- T0 in the pipeline. On the same 21-run A/B at
@@ -103,7 +103,7 @@ byte ring, which wraps with a compare. Task start is one OS thread per
 
 Topology specialisation, meaning an SPSC ring when one producer and one
 consumer are proved, was tried and is a **negative result**
-(`aif/evidence/RESULTS-g9-channel-topology.md`). The cost is the box, not the
+(the `RESULTS-g9-channel-topology` write-up, summarised in the developer docs). The cost is the box, not the
 lock.
 
 ### Correctness findings from the plan, re-checked

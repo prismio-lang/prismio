@@ -2,8 +2,8 @@
 
 What is open in the tree being prepared as 0.2.0. **Only open items are here.** An item
 leaves this file in the commit that fixes it; the commit message carries the evidence
-(`git log` is this project's record), and `../aif/evidence/RESULTS-*.md` holds the
-measurements. Anything described as a decision is one the project has made on purpose.
+(`git log` is this project's record), and the raw `RESULTS-*.md` write-ups are in Git history (see
+[`aif/README.md`](aif/README.md)). Anything described as a decision is one the project has made on purpose.
 
 Nothing below is unsoundness unless it says so. As of 2026-10-07 every runnable program
 in `../tests` and `../aif/corpus` (273) builds with `--verify` and runs with **0
@@ -22,8 +22,8 @@ violations**; 19 of them still leak (see [Ownership](#ownership-leaks)).
 | [Naming](#naming) | Global names the standard library claims |
 | [Measuring this compiler](#measuring-this-compiler) | Guidance that has prevented wrong conclusions, and one open question |
 
-Evidence under `aif/evidence/xlang/` was removed on 2026-09-03 (superseded by
-`../benchmarks`); recover it from Git history.
+The dated experiment records that older text and source comments cite as `aif/evidence/RESULTS-*.md` were
+removed on 2026-10-07 and are recoverable from Git history; `docs/aif/README.md` has the command.
 
 ---
 
@@ -206,15 +206,24 @@ widen can double-free, so it needs the owners enumerated first.
 The generated release of a recursive type loops on its last direct self field and recurses on
 the others, so a 500,001-link `Chain` frees without growing the stack, but a type with several
 self fields keeps a stack bound through its non-tail branches. Removing it needs an explicit
-worklist (`../aif/evidence/RESULTS-recursive-release-depth.md`).
+worklist (`RESULTS-recursive-release-depth.md`).
 
 ---
 
 ## The AIF analysis and its oracle
 
 `../tools/aif_oracle/aif.py` is the oracle: an independent implementation that
-`../tools/aif_differential.py` compares with the in-compiler engine. They agree on all 19
-default sources (2026-10-07). Two cases outside that set disagree:
+`../tools/aif_differential.py` compares with the in-compiler engine. They agree on all 17
+default sources (2026-10-07). Three cases outside that set disagree:
+
+### `benchmarks/prismio/suite.psm`, under `--owned-collections`
+
+The six benchmark modules agree between the engine and the oracle in both modes, but `suite.psm`, which
+imports all of them, does not in the owned mode: the compiler reports T2=162 and T3=0, the oracle T2=160
+and T3=2 (found 2026-10-07 when the corpus was replaced by the benchmark modules as differential sources).
+It is therefore not a default source. Two sites tier differently once the modules are analysed together,
+which points at a cross-module fact (a shared producer, or an import-order effect) rather than a tier
+clause; `--why` on the two differing sites is where to start.
 
 ### A C-produced String stored into a payload enum, under `--copyable-collections`
 
@@ -271,7 +280,7 @@ Three fixes were considered and none was built:
   region or frame can serve it. Regime (a) of SPEC 5.2.1 declines them today ("the body has
   more than one call site").
 
-Nothing in the tree needs it: `src/`, `std/`, `benchmarks/prismio` and `aif/corpus` contain no
+Nothing in the tree needs it: `src/`, `std/` and `benchmarks/prismio` contain no
 `let x: Vec<T> = [literal]`, and `tests/` has 33 (fixtures for the literal itself). Start from
 `../tests/test_263_vec_literal_capacity.psm` if a program turns up that does.
 
@@ -307,7 +316,7 @@ LLVM does not unswitch out of a large loop. It is predicted and cheap, but `csv_
 against the older scratch-store form, and forcing unswitching does not recover it. The fix is to
 resolve a String binding at the caller (re-resolving a `let mut` at each assignment) and let
 `byteAt`/`charAt` on a resolved binding use the pointer
-(`../aif/evidence/RESULTS-unicode-18.md` §12).
+(`RESULTS-unicode-18.md` §12).
 
 ### A string literal in a curated runtime function breaks the link
 
@@ -322,7 +331,7 @@ constants during curation or refuse to curate a function that references one.
 
 Until it is, a struct literal pushed into a container cannot take a struct-path TBAA tag: the
 widened store the tag enables is a 0.76x win where the optimiser can see the destination and a
-2.74x loss against this call (`../aif/evidence/RESULTS-M6-struct-path-tbaa.md`). The closure
+2.74x loss against this call (`RESULTS-M6-struct-path-tbaa.md`). The closure
 blocker is gone (`list_push_slot_boxed` carries `rt_alloc`'s statics), and one line in
 `PRISMIO_CURATED_OPS` would turn it on, but that inlines the fast path into every push site and
 reproduces the regression `RESULTS-inline-push-rejected.md` recorded (`world_spawn` 37 -> 115
@@ -340,7 +349,7 @@ g6: for 4.2% and 6.7%). A minimum-flat-sites threshold would decline the loops w
 does not pay and has not been tried. `-mllvm -enable-nontrivial-unswitch` cannot be removed
 (without it LLVM never clones the loop). `list_set` is still untouched, and `!invariant.load` on
 the `List` header is **unsound** because `list_push` rewrites it
-(`../aif/evidence/RESULTS-flat-list-view.md`, `RESULTS-loop-unswitch.md`).
+(`RESULTS-flat-list-view.md`, `RESULTS-loop-unswitch.md`).
 
 ### Storing an element read of a flat struct boxes and counts the whole type
 
@@ -367,7 +376,7 @@ One shot per process, a standalone copy spends 312 us of 404 in the fill (a `see
 one push per byte); a C loop with the same instructions runs it in 237 us. Versioning push loops
 on the capacity guard made Prismio's loop C++'s exactly and changed nothing. Ruled out: the clock
 ramp, first-touch paging, the allocation (4 us) and the main loop's bounds checks. The reason is
-**not found** (`../aif/evidence/RESULTS-relational-tier.md`).
+**not found** (`RESULTS-relational-tier.md`).
 
 ---
 
@@ -524,7 +533,7 @@ binding keys, in the engine and the oracle together.
 **A `spawn` not proved joined leaks its owned temporary arguments.** The temporary is released at
 the scope exit only when the join is proved (the E-SPAWN-J proof the task handle uses); otherwise
 it leaks, which is the conservative direction
-(`../aif/evidence/RESULTS-spawn-owned-argument.md`).
+(`RESULTS-spawn-owned-argument.md`).
 
 **Nothing checks the destruction order, and a send on a closed channel does not hand the value
 back.** `chan_share` returns the same pointer and `chan_free` assumes no one is blocked on the
@@ -682,7 +691,7 @@ internalises every function but `main`, and LLVM inlines an internal function's 
 its size, so a slow half kept apart by size alone is folded back into its fast half, which then grows
 too large to inline into the caller's loop (key_value_update 1.28x, quicksort 1.13x until marked).
 **Nothing diagnoses a missing marker; the benchmark suite does**
-(`../aif/evidence/RESULTS-binary-size-and-compile-time.md`).
+(`RESULTS-binary-size-and-compile-time.md`).
 
 **`s_expression_parse`'s Prismio arm** stores its nodes in a flat `Vec<Int>` where the C++ and Rust
 arms allocate one per expression (`../benchmarks/README.md`). It could now be written the other way.

@@ -64,7 +64,7 @@ the candidate reproducing, the committed seed, the suite, the AIF differential,
 the corpus built and run, the `--verify` sweep, the JIT, the cross target, and
 packaging with toolchain separation. Every check must be green.
 
-Record the run in `aif/evidence/`, as `RESULTS-v01-release-candidate.md` did.
+Record the run in the release commit's message; it carries its own evidence.
 `prismio verify` is the cheaper subset for the fast loop. Two fixtures cannot be
 trusted through the `prismio` command itself, because they replace the compiler
 the command is running on: the suite's ums host-routing test reports one failure

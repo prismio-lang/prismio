@@ -959,7 +959,7 @@ static Traversal* traversal_for(int type) {
 // **Weaker than the prototype's rule, and the difference is nameable.**
 // layout.py additionally requires the index to be an induction variable of the
 // loop, so `list_get(ps, perm[i])` -- a gather -- is random there and sequential
-// here. No loop in `tests/`, `aif/corpus/` or `aif/evidence/` indexes a container
+// here. No loop in `tests/`, the retired corpus or `aif/evidence/` indexes a container
 // by anything but its own counter, so the two rules agree on every program in
 // this tree; the divergence is recorded because the first gather written will
 // separate them, and it will do so silently.
@@ -4465,7 +4465,7 @@ static int site_arena_scope_full(int id, int* blockers) {
     // notes walked past.** `enclosing_region` walks scopes[].parent, a *lexical*
     // tree rooted per function -- scope_lca returns -1 across owners. So a site
     // in a callee can never find an arena its caller opened, however its escape
-    // is spelled. Measured 2026-08-14: of 234 allocation sites in aif/corpus and
+    // is spelled. Measured 2026-08-14: of 234 allocation sites in the retired corpus and
     // aif/evidence, 38 are served and 196 are not -- and **all 196 fail here**.
     // Every one of the 38 is a case where the region and the allocation share a
     // function. No value of E moves that number, because E holds a scope id in
@@ -6738,7 +6738,7 @@ static int elem_disposition_of(int id, int tier) {
     // placement removes exactly those two rejections, and a disposition that
     // learned about arenas in the same change as placement would be a
     // use-after-free with nothing to compare it against. Verified inert on
-    // landing -- byte-identical IR for every program in tests/, aif/corpus/ and
+    // landing -- byte-identical IR for every program in tests/, the retired corpus and
     // aif/evidence/.
     //
     // One clause rather than one per consumer, and that is the load-bearing part.

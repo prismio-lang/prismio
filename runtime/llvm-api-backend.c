@@ -5644,7 +5644,7 @@ static int g_di_depth;
 // lowers to); these are the ones already built.
 //
 // **Nothing in the tree reaches this today**, and that was checked rather than
-// assumed: no program in tests/ or aif/corpus/ emits a DILexicalBlockFile,
+// assumed: no program in tests/ or the retired corpus emits a DILexicalBlockFile,
 // because resolveImports flattens files without moving nodes between them and a
 // monomorphised clone keeps its template's file on both the body and the
 // function. It is kept because the alternative is not "no code" but "a silently

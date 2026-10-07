@@ -303,7 +303,7 @@ internal fn aifLayoutFixStandardLibrary(module: ASTNode) {
 // registry is filled by codegen and this runs during the analysis -- so asking
 // `ir_is_struct_type_name` here answers 0 for every struct in the program and the
 // veto fires for nothing. That is not hypothetical: it is what the first version
-// of this function did, and `aif/corpus/g3_scene_graph.psm` stopped building with
+// of this function did, and the retired corpus program g3_scene_graph stopped building with
 // "byte-copy of a split struct (Transform)" from the backend assertion that
 // exists for exactly this. A silent version of the same hole is two Nodes sharing
 // one Transform's cold block and a double free at the second teardown.

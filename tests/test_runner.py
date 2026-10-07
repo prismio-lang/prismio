@@ -733,90 +733,49 @@ def run_source_not_utf8_test():
     return True
 
 
-def run_corpus_test():
-    """Build and *run* every benchmark corpus program.
+def run_workloads_test():
+    """Build the benchmark suite and *run* its representative workloads, comparing checksums.
 
-    These were not executed by anything in CI. On 2026-08-30 an AIF solver change
-    emitted a double release for a List consumed into a DataView; `g1_dataview`
-    aborted in `list_release` and the entire suite still passed. The only reason
-    it surfaced was that someone happened to run a benchmark.
-
-    Building is not enough -- the failure was at run time -- so each program is
-    executed and its exit status checked. `g6_engine` and `g6_engine_tuned` are
-    library modules with no `main` and never link; they are skipped by name rather
-    than by tolerating link failures generally. 8 sources, 1 skipped, 7 run -- and
-    the count is printed rather than asserted, because a corpus that grows should
-    not need a test edit to stay green.
-
-    **This is what is left of a 33-program sweep**, and the shrinkage is not a loss
-    of guard coverage. `aif/evidence/xlang/prismio` held 25 of them and was
-    superseded by `benchmarks/` on 2026-09-03; the two files in it that were
-    *regression guards* rather than benchmarks -- `pointer_return_temp.psm` and
-    `extern_alias_escape.psm` -- are under `tests/` now and are asserted by
-    `run_aif_verify_test`, which reads their ledgers. Being run here never checked
-    either defect: both exit 0 while failing.
+    Nothing in CI used to execute the realistic programs. On 2026-08-30 an AIF solver
+    change emitted a double release for a List consumed into a DataView; a corpus program
+    aborted in `list_release` and the entire suite still passed. The only reason it
+    surfaced was that someone happened to run a benchmark. Building is not enough, so
+    each workload is run and the checksum it prints is compared with the one recorded in
+    benchmarks/results/results.json -- which the C++ and Rust arms reproduce -- so a
+    miscompile that exits 0 is a failure here too. The set is tools/release_gate.py's
+    GATE_WORKLOADS: a wide record, per-frame transients, a component world, retained
+    trees, shared maps, tasks and a channel pipeline.
     """
-    print(f"\n{BLUE}--- Running corpus ---{RESET}")
-
-    NO_MAIN = {"g6_engine", "g6_engine_tuned"}
-    # `aif/evidence/xlang/prismio` was the other root until 2026-09-03, when that
-    # tree was superseded by `benchmarks/` and `prismio bench`. It is not listed
-    # any more: the glob below skips a missing directory silently, so leaving it
-    # would have looked like coverage rather than the 25 programs it stopped
-    # contributing.
-    roots = [PROJECT_ROOT / "aif" / "corpus"]
-    sources = sorted(p for r in roots if r.is_dir() for p in r.glob("*.psm"))
-    if not sources:
-        print(f"{RED}[FAIL] corpus: no programs found{RESET}")
+    print(f"\n{BLUE}--- Running workloads ---{RESET}")
+    sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+    try:
+        from release_gate import GATE_WORKLOADS, SUITE, recorded_results
+    except ImportError as exc:
+        print(f"{RED}[FAIL] cannot import the gate's workload list: {exc}{RESET}")
         return False
 
-    # `clock_gettime_nsec_np` is an Apple libc symbol. 23 of the 33 corpus
-    # programs declare it to timestamp their measured loop, so those cannot link
-    # anywhere but macOS -- this check ran all of them and turned a green Ubuntu
-    # red. Skipped by *reading the source* for the symbol rather than by a list of
-    # names, so a program that stops using it is covered again automatically, and
-    # one that starts is skipped rather than failing the build.
-    darwin_only = sys.platform != "darwin"
-
+    expected = recorded_results()
     problems = []
-    ran = 0
-    skipped_platform = 0
-    with tempfile.TemporaryDirectory(prefix="prismio-corpus-") as temp_dir:
-        # Each program already builds to its own executable in this directory,
-        # so the only thing that made this sequential was the loop. Thirty
-        # build-and-run pairs is the second largest block in the suite after
-        # run_no_inference_test.
-        def build_and_run(src):
-            if src.stem in NO_MAIN:
-                return ("skip_nomain", None)
-            if darwin_only and "clock_gettime_nsec_np" in src.read_text(encoding="utf-8"):
-                return ("skip_platform", None)
-            exe = Path(temp_dir) / (src.stem + (".exe" if os.name == "nt" else ""))
-            built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(exe)])
-            if built.returncode != 0:
-                return ("problem", f"{src.stem}: did not build")
-            out = run_command([str(exe)])
-            if out.returncode != 0:
-                return ("problem", f"{src.stem}: exited {out.returncode}")
-            return ("ran", None)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=test_jobs()) as pool:
-            for kind, payload in pool.map(build_and_run, sources):
-                if kind == "problem":
-                    problems.append(payload)
-                elif kind == "ran":
-                    ran += 1
-                elif kind == "skip_platform":
-                    skipped_platform += 1
-
+    with tempfile.TemporaryDirectory(prefix="prismio-workloads-") as temp_dir:
+        exe = Path(temp_dir) / ("suite.exe" if os.name == "nt" else "suite")
+        built = run_command([str(PRISMIO_EXE), "build", str(PROJECT_ROOT / SUITE), "-o", str(exe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] workloads: the benchmark suite did not build{RESET}")
+            print(built.stdout or built.stderr)
+            return False
+        for name in GATE_WORKLOADS:
+            out = run_command([str(exe), name, "", ""])
+            found = re.search(r"result: (-?\d+)", out.stdout)
+            printed = found.group(1) if found else None
+            if out.returncode != 0 or printed != str(expected.get(name)):
+                problems.append(f"{name}: exited {out.returncode}, printed {printed}, "
+                                f"expected {expected.get(name)}")
     if problems:
-        print(f"{RED}[FAIL] corpus: {len(problems)} program(s) failed{RESET}")
-        for line in problems[:12]:
-            print(f"  - {line}")
+        print(f"{RED}[FAIL] workloads{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
         return False
-
-    note = f", {skipped_platform} skipped (macOS-only clock)" if skipped_platform else ""
-    print(f"{GREEN}[PASS] corpus: {ran} programs build and run{note}{RESET}")
+    print(f"{GREEN}[PASS] workloads: {len(GATE_WORKLOADS)} benchmark workloads run and agree with their recorded checksums{RESET}")
     return True
 
 
@@ -2648,7 +2607,7 @@ def run_manifest_parseable_test():
         print(f"{RED}[FAIL] cannot import the manifest differ: {exc}{RESET}")
         return False
 
-    sources = sorted((PROJECT_ROOT / "aif" / "corpus").glob("*.psm"))
+    sources = sorted((PROJECT_ROOT / "benchmarks" / "prismio").glob("*.psm"))
     sources += [TEST_DIR / "test_57_pin_tiers.psm", TEST_DIR / "test_58_region_serves.psm"]
 
     problems = []
@@ -3076,7 +3035,7 @@ def run_layout_cost_model_test():
     ranking instead of scoring it would pick 2/13 and this test would fail, which
     is the only reason the fixture has three access groups instead of two.
 
-    The same disagreement is 2/12 against 8/12 on `aif/corpus/g1_particles.psm`,
+    The same disagreement is 2/12 against 8/12 on the retired corpus program g1_particles,
     and 8/12 is the cut `aif/evidence/bench/layout_repr.c` measures at 0.87x --
     so the corpus is the evidence that the model's answer is the right one and
     this fixture is the assertion that it still gives it.
@@ -7909,7 +7868,7 @@ def run_aif_widening_test():
     """
     print(f"\n{BLUE}--- Running aif_widening ---{RESET}")
     sources = [TEST_DIR / "aif_tiers.psm"]
-    sources += sorted((TEST_DIR.parent / "aif" / "corpus").glob("*.psm"))
+    sources += sorted((TEST_DIR.parent / "benchmarks" / "prismio").glob("*.psm"))
 
     problems = []
     saw_partial = False
@@ -9236,7 +9195,7 @@ def main():
         ("source_not_utf8", run_source_not_utf8_test),
         ("ums", run_ums_test),
         ("ums_project", run_ums_project_test),
-        ("corpus", run_corpus_test),
+        ("workloads", run_workloads_test),
         ("aif_tiers", run_aif_test),
         ("aif_human_report", run_aif_human_report_test),
         ("aif_loop_bracket", run_aif_loop_bracket_test),

@@ -36,7 +36,7 @@ def run_check(command, label):
 # The first bytes of a native executable, object or static library. A program the
 # compiler builds has no extension on Unix, so `.gitignore`'s `*.exe` and `*.o` miss
 # it, and `prismio run x.psm` leaves it beside the source: `git add -A` then commits
-# a build product. Six were committed under aif/corpus/ that way.
+# a build product. Six were committed under the retired corpus that way.
 NATIVE_MAGIC = (
     b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe",  # Mach-O, fat
     b"\x7fELF", b"MZ", b"!<arch>\n",                                       # ELF, PE, ar

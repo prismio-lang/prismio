@@ -699,7 +699,7 @@ internal fn aifVsOfKey(key: Int) -> Int {
 // Inert on everything that existed before v0.1's channels: a `Node?` field is
 // filled from a `Node` literal, so no site had an optional type until `chan_recv`
 // became the first call whose *return* is one. Verified by the AIF manifests over
-// tests/ and aif/corpus/ being unchanged across this edit.
+// tests/ and the retired corpus being unchanged across this edit.
 private fn aifSiteType(ty: String) -> String {
     let n = __builtin_string_len(ty)
     if (n > 1 and ty.endsWith("?")) { return ty.substring(0, n - 1) }

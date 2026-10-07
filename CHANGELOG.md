@@ -1,12 +1,9 @@
 # Changelog
 
-All notable changes to Prismio are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
-follows [Semantic Versioning](https://semver.org/) (pre-1.0, so a minor
-release may still break things).
-
-The full notes for each release, with downloads and known limits, are on the
-[release notes page](https://docs.prismio.org/releases).
+This file records what is changing in **0.2.0**, the release being prepared. It does not carry earlier
+releases: those are on the [release notes page](https://docs.prismio.org/releases). The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
+[Semantic Versioning](https://semver.org/) (pre-1.0, so a minor release may still break things).
 
 ## [0.2.0] - Unreleased
 
@@ -35,7 +32,7 @@ The full notes for each release, with downloads and known limits, are on the
   (1,365 pops) leave the IR of the tests, corpus and benchmarks, and the arena
   counters read 183 fewer regions entered with the same 19,528 objects and
   6,863,136 bytes served. SPEC 4.2 and the Python oracle carry the same rule, and the
-  engine and oracle agree on all 19 differential sources. The README's `prismio aif`
+  engine and oracle agree on all 17 differential sources. The README's `prismio aif`
   example is regenerated.
 - **A `Vec` literal allocates exactly its length.** `vecOf` started from an empty list
   and grew it 0 → 4 → 8; each overload now starts from `list_new_with_capacity(n)`.
@@ -74,44 +71,26 @@ The full notes for each release, with downloads and known limits, are on the
   Behaviour is unchanged.
 - The benchmark results are refreshed (release-profile compiler, five runs).
 
+### Repository
+
+- **`aif/` is gone.** The oracle (`aif/prototype`) is now `tools/aif_oracle/`, the specification and
+  implementation notes are `docs/aif/`, and the 276-file evidence tree and the `g1`-`g9` corpus programs
+  are removed (they stay in Git history). The release gate, the differential, the `workloads` check in the
+  suite and `ir_snapshot` use the benchmark programs instead, and the gate now compares each workload's
+  printed checksum with the one recorded in `benchmarks/results/results.json`.
+- Build products are never tracked: six corpus executables were untracked, and `tools/lint.py` fails on
+  any tracked executable, object or static library.
+- `tests/test_runner.py`'s `ums` check follows the host profile `build.ums` names, and `install.sh` and
+  `std/input.psm` end with a newline.
+
 ### Documentation
 
+- The developer docs gain *Performance decisions and rejected experiments*, drawn from the removed evidence
+  (allocator choice, the `Int` width, layout representations, loop-guard and map-hash designs, channel
+  results); the language docs say why `Int` is 32-bit and when to use `I64`; and the FFI contracts page
+  records what an opaque module boundary costs the analysis.
 - `docs/KNOWN_ISSUES.md` is restructured: open items only, grouped by area, with the
   `--verify` leak table re-measured (273 programs, 0 violations, 173 leaked blocks in
   19 programs). What was fixed lives in `git log`.
 
-## [0.1.0] - 2026-10-02
-
-The first release. Archives for macOS arm64, Linux x64 and arm64, and Windows
-x64 and arm64, each with a `.sha256`.
-
-### Added
-
-- `std.input` (`stdin.lines()`, `readLine`, `readAll`, `readLineOr`, `prompt`,
-  `readInt`, `readFloat`, `readLines`, `readWords`, `isAtEnd`), `std.time`,
-  `std.math`, `std.term`, `std.unicode`, `StringBuilder`, `Map` methods and
-  O(1) removal, `Option` and `Result` methods, environment variables and the
-  process id, `Process`/`Child`/`Stream`, `readLines(path)`, and more of
-  `std.fs` (`listDirectory`, `appendFile`, `rename`, `removeDirectory`,
-  `metadata`).
-- `print`, `println`, `eprint` and `eprintln` accept any type with a `Display`
-  implementation, including `Option<T>`.
-- Constant array globals: a module-level `let words = ["alpha", "beta"]` is
-  read-only data and builds nothing at run time.
-- String interpolation, `"${x}"`.
-
-### Changed
-
-- The compiler links three LLVM backends (AArch64, X86, WebAssembly) instead of
-  all 25 and is about half the size; `--target` accepts those three families.
-- Compiling is faster: the allocation analysis answers its whole-program
-  questions from indexes built once, and the compiler emits its own IR in about
-  half the time with identical output.
-
-### Fixed
-
-- A function ending in `panic`, `unreachable` or `exit` while owning a value
-  emitted invalid IR.
-
 [0.2.0]: https://github.com/prismio-lang/prismio/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/prismio-lang/prismio/releases/tag/v0.1.0

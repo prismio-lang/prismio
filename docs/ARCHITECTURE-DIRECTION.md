@@ -1,7 +1,7 @@
 # Architecture direction — what to build next, and what the literature already settled
 
 Written 2026-08-25, immediately after the final benchmark
-([`aif/evidence/RESULTS-final.md`](../aif/evidence/RESULTS-final.md)). Every prize quoted here is
+(`RESULTS-final.md`). Every prize quoted here is
 **measured on this host** unless it says *projected*; every design is attributed to the paper it
 comes from. The scope test in [`docs/aif/implementation/ROADMAP.md`](aif/implementation/ROADMAP.md)
 still applies — most of §1 below is **not** AIF's work, and is filed here rather than there for
@@ -28,7 +28,7 @@ allocations not eliminated by a better representation but never forced in the fi
 **Hand-tuned Rust is still 1.45× faster on that program**, because a thread pool does not pay
 `pthread_create` per frame and Prismio has no way to express one. That is the ranked concurrency
 item now: a pool or a reusable task, not codegen. See
-[`RESULTS-concurrency.md`](../aif/evidence/RESULTS-concurrency.md).
+`RESULTS-concurrency.md`.
 
 ---
 
@@ -99,7 +99,7 @@ superset fails, a newer CPU fails, and `LLVMGetHostCPUName()` answers a differen
 picks. **Built instead as a curated `available_externally` module** (§1's Swift `@inlinable` row),
 which needs neither `-flto` nor attribute stamping and is cheaper to compile than either.
 Driver-measured corpus median **0.864×**. Full detail:
-[`aif/evidence/RESULTS-M1-lto.md`](../aif/evidence/RESULTS-M1-lto.md).
+`RESULTS-M1-lto.md`.
 
 ### What the literature says to build
 
@@ -283,7 +283,7 @@ current compiler at **0.89×–1.00× Rust RSS**, closing the investigation. The
 correctly for eight sessions — "scales with live set rather than churn" — and nobody read that
 sentence as the definition of a leak. The subsequent allocator experiment confirmed that a
 different allocator does not improve either dimension for this workload. Remove or reuse
-allocations instead. Full method and raw evidence: [`RESULTS-M5-allocator.md`](../aif/evidence/RESULTS-M5-allocator.md).
+allocations instead. Full method and raw evidence: `RESULTS-M5-allocator.md`.
 
 ---
 
@@ -342,7 +342,7 @@ their current correctness and performance evidence is recorded.
   free or a release of something never handed out — and a **read** after free is neither, so the
   ledger balances at 0 while the program segfaults. A use-after-free on the binding path had gone
   unrecorded for exactly this reason. See
-  [`RESULTS-passthrough-escape.md`](../aif/evidence/RESULTS-passthrough-escape.md).
+  `RESULTS-passthrough-escape.md`.
 
 ---
 

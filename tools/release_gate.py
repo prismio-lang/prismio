@@ -226,30 +226,57 @@ def check_differential(rc: Path) -> None:
     ok(summary) if "agree on all" in summary else bad(summary)
 
 
-def check_corpus(rc: Path, work: Path) -> None:
-    step("corpus builds and runs")
-    ran, broke = 0, []
-    sources = [source for source in sorted((REPO / "aif" / "corpus").glob("*.psm"))
-               if source.stem not in ("g6_engine", "g6_engine_tuned")]
-    for number, source in enumerate(sources, 1):
-        stem = source.stem
-        binary = work / f"{stem}{EXE}"
-        progress(f"{number}/{len(sources)} \u00b7 building {stem}")
-        if run([rc, "build", source, "-o", binary]).returncode != 0:
-            broke.append(f"build:{stem}")
-            continue
-        progress(f"{number}/{len(sources)} \u00b7 running {stem}")
-        if run([binary]).returncode != 0:
-            broke.append(f"run:{stem}")
-            continue
-        ran += 1
-    ok(f"{ran} programs") if not broke else bad(" ".join(broke))
+# The realistic programs this gate builds and runs are the benchmark suite's own
+# workloads: one binary, `suite <workload> <input> <output>`, printing `result: N`.
+# Each result is a checksum that the C++ and Rust arms also reproduce, and it is
+# recorded in benchmarks/results/results.json, so a miscompile shows as a wrong
+# number rather than only as a crash. The set spans what the old AIF corpus was for:
+# a wide record (aos_vs_soa), per-frame transients (transient_allocation), a
+# component world (ecs_component_update), retained trees, shared maps, tasks and a
+# channel pipeline.
+SUITE = "benchmarks/prismio/suite.psm"
+GATE_WORKLOADS = (
+    "ecs_component_update", "aos_vs_soa", "transient_allocation", "tree_traversal",
+    "recursive_tree_rebuild", "hashmap_insert_lookup", "nested_collection",
+    "parallel_reduction", "channel_pipeline", "word_frequency",
+)
 
 
+def recorded_results() -> dict:
+    """workload -> the checksum benchmarks/results/results.json holds for it."""
+    import json
+    report = json.loads((REPO / "benchmarks" / "results" / "results.json").read_text(encoding="utf-8"))
+    return {item["name"]: item.get("result") for item in report["benchmarks"]
+            if item.get("status") == "implemented"}
+
+
+def run_workload(binary: Path, name: str):
+    """(the `result:` it printed, the completed process); `result` is None if absent."""
+    done = run([binary, name, "", ""])
+    found = re.search(r"result: (-?\d+)", done.stdout)
+    return (found.group(1) if found else None), done
+
+
+def check_workloads(rc: Path, work: Path) -> None:
+    step("benchmark workloads build, run and agree with the recorded checksums")
+    binary = work / f"suite{EXE}"
+    progress("building the suite")
+    if run([rc, "build", SUITE, "-o", binary]).returncode != 0:
+        bad("the benchmark suite does not build")
+        return
+    expected = recorded_results()
+    wrong = []
+    for number, name in enumerate(GATE_WORKLOADS, 1):
+        progress(f"{number}/{len(GATE_WORKLOADS)} \u00b7 {name}")
+        printed, done = run_workload(binary, name)
+        if done.returncode != 0 or printed != str(expected.get(name)):
+            wrong.append(f"{name}[{printed} != {expected.get(name)}]")
+    ok(f"{len(GATE_WORKLOADS)} workloads") if not wrong else bad(" ".join(wrong))
+
+
+# Tests that are not benchmark workloads but exercise the paths they cannot: the
+# channel runtime and a generic annotation.
 VERIFY_SWEEP = [
-    "aif/corpus/g1_particles.psm", "aif/corpus/g3_scene_graph.psm",
-    "aif/corpus/g4_ecs_world.psm", "aif/corpus/g5_asset_cache.psm",
-    "aif/corpus/g6_game.psm", "aif/corpus/g9_bands.psm",
     "tests/test_96_channels.psm", "tests/test_97_generic_annotation.psm",
 ]
 
@@ -257,6 +284,10 @@ VERIFY_SWEEP = [
 def check_verify_sweep(rc: Path, work: Path) -> None:
     step("--verify sweep")
     leaky = []
+
+    def clean(line: str) -> bool:
+        return line.endswith("0 leaked, 0 violation(s)")
+
     for number, relative in enumerate(VERIFY_SWEEP, 1):
         stem = Path(relative).stem
         binary = work / f"{stem}-v{EXE}"
@@ -266,22 +297,35 @@ def check_verify_sweep(rc: Path, work: Path) -> None:
             continue
         reported = [line for line in run([binary]).stderr.splitlines() if "aif-verify:" in line]
         line = reported[-1] if reported else ""
-        if not line.endswith("0 leaked, 0 violation(s)"):
+        if not clean(line):
             leaky.append(f"{stem}[{line}]")
+
+    suite = work / f"suite-v{EXE}"
+    progress("building the suite with --verify")
+    if run([rc, "build", SUITE, "--verify", "-o", suite]).returncode != 0:
+        leaky.append("build:suite")
+    else:
+        for number, name in enumerate(GATE_WORKLOADS, 1):
+            progress(f"{number}/{len(GATE_WORKLOADS)} \u00b7 {name} (verify)")
+            reported = [line for line in run([suite, name, "", ""]).stderr.splitlines()
+                        if "aif-verify:" in line]
+            line = reported[-1] if reported else ""
+            if not clean(line):
+                leaky.append(f"{name}[{line}]")
     ok("0 leaked / 0 violations on every program") if not leaky else bad(" ".join(leaky))
 
 
-def check_environment_switch(rc: Path, work: Path, label: str, variable: str,
-                             source: str, expected: str) -> None:
+def check_environment_switch(rc: Path, work: Path, label: str, variable: str, workload: str) -> None:
     step(label)
     binary = work / (label.replace(" ", "-") + EXE)
     progress(f"building with {variable}=0")
-    built = run([rc, "build", source, "-o", binary], env={**os.environ, variable: "0"})
+    built = run([rc, "build", SUITE, "-o", binary], env={**os.environ, variable: "0"})
     if built.returncode != 0:
         bad()
         return
     progress("running it")
-    ok() if expected in run([binary]).stdout else bad()
+    printed, _ = run_workload(binary, workload)
+    ok() if printed == str(recorded_results().get(workload)) else bad(f"{workload} printed {printed}")
 
 
 def check_jit(rc: Path) -> None:
@@ -304,9 +348,9 @@ def check_cross_target(rc: Path, work: Path) -> None:
     if not sdk:
         skip("no SDK on this host")
         return
-    binary = work / f"g1-x86{EXE}"
-    progress("building g1_particles")
-    built = run([rc, "build", "aif/corpus/g1_particles.psm",
+    binary = work / f"suite-x86{EXE}"
+    progress("building the benchmark suite")
+    built = run([rc, "build", SUITE,
                  "--target", "x86_64-apple-macos", "--sysroot", sdk, "-o", binary])
     described = subprocess.run(["file", str(binary)], capture_output=True, text=True).stdout
     ok("x86_64-apple-macos built") if built.returncode == 0 and "x86_64" in described \
@@ -332,7 +376,7 @@ def check_packaging(rc: Path, work: Path) -> None:
 # improved every one of them regressed hand-tuned g4 by 46% -- 20.5ms to 30.1ms,
 # slower than the natural program -- while this gate printed green. The tuned
 # sources fuse loops and reuse buffers, so they exercise shapes the natural ones
-# do not have. See aif/evidence/RESULTS-flat-list-loop-guard.md.
+# do not have. See the flat-list loop-guard commits in `git log`.
 def mnemonic_diff(rc: Path, old: Path, work: Path) -> None:
     # Mnemonics, not `.ll` text. Alias metadata changes the IR of nearly every
     # program without changing one instruction, so a textual diff here reports 21
@@ -419,12 +463,12 @@ def main() -> int:
         lambda: check_seed(rc, work),
         lambda: check_suite(rc),
         lambda: check_differential(rc),
-        lambda: check_corpus(rc, work),
+        lambda: check_workloads(rc, work),
         lambda: check_verify_sweep(rc, work),
         lambda: check_environment_switch(rc, work, "curated runtime off", "PRISMIO_INLINE_RUNTIME",
-                                         "aif/corpus/g4_ecs_world.psm", "entities: 1500"),
+                                         "ecs_component_update"),
         lambda: check_environment_switch(rc, work, "object cache off", "PRISMIO_OBJ_CACHE",
-                                         "aif/corpus/g1_particles.psm", "alive: 2000"),
+                                         "aos_vs_soa"),
         lambda: check_jit(rc),
         lambda: check_cross_target(rc, work),
         lambda: check_packaging(rc, work),

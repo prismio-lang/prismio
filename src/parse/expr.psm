@@ -614,7 +614,7 @@ impl Parser {
             //
             // **Contextual, not reserved**, and that is not a stylistic choice: the
             // tree already contains `fn spawn(w: World, seed: Float)` in
-            // aif/corpus/g4_ecs_world.psm and a struct field named `spawn` in
+            // the retired corpus program g4_ecs_world and a struct field named `spawn` in
             // tests/test_62_split_release.psm. Reserving the word would stop both
             // compiling, and a corpus program that no longer builds fails the
             // byte-identical-output rule for a reason that has nothing to do with

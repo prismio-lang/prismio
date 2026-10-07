@@ -4,7 +4,7 @@
     python3 tools/ir_snapshot.py --compiler build/t3 --out /tmp/base
 
 A behaviour-preserving change must produce byte-identical IR (CODE_STYLE), and
-the usual check covers `tests/` and `aif/corpus/`. This also compiles the root
+the usual check covers `tests/`. This also compiles the root
 benchmark suite, so a change that moves only performance programs cannot pass
 unnoticed.
 
@@ -49,7 +49,6 @@ def under_neutral_name(compiler):
 def programs():
     found = []
     for pat in ("tests/*.psm",
-                "aif/corpus/*.psm",
                 "benchmarks/prismio/*.psm",
                 "src/main.psm"):
         found += glob.glob(os.path.join(REPO, pat))

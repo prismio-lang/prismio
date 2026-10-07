@@ -36,7 +36,7 @@ fails a generation later with nothing pointing at the cause:
 - **The committed seed must be able to parse `src/`.** New syntax lands in two steps —
   teach the frontend, refresh the seed, *then* use it in `src/`.
 - **A behaviour-preserving change must produce byte-identical compiler output** for
-  every program in `tests/` and `aif/corpus/`. Verify with two generations to a
+  every program in `tests/` and `benchmarks/prismio/`. Verify with two generations to a
   fixpoint, the full suite, and `tools/aif_differential.py`.
 
 ## Commands
@@ -93,7 +93,10 @@ removed at 0.1.0. What replaced them:
   what the current release needs and what comes later. Root is not the place
   for a new handoff or spec; a plan goes in `docs/`.
 - **`docs/KNOWN_ISSUES.md`** — what is open, with enough of each to act on.
-- **`aif/evidence/`** — the measurements, one `RESULTS-*.md` per piece of work.
+- **`docs/aif/`** — the memory model's specification and design record. Measured decisions
+  and rejected experiments are the developer docs' *Performance decisions and rejected
+  experiments* page; the raw experiment records (`aif/evidence/`, removed 2026-10-07) are in Git
+  history, see `docs/aif/README.md`.
 - **`git log`** — the record. Commit messages here carry their own evidence, and
   are usually better than any document summarising them.
 - **The docs site's release pages** (`../website/apps/*/content/releases/`) — what

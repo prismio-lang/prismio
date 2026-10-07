@@ -489,7 +489,7 @@ public fn standardModulePath(baseDir: String, leaf: String) -> String {
 
     // Then each enclosing directory, nearest first. One level was enough for as
     // long as everything that imported `std.*` sat directly under the checkout
-    // root. `aif/corpus/` is two deep, and its programs stopped resolving
+    // root. the retired corpus is two deep, and its programs stopped resolving
     // `std.io` when the project-local host became the compiler that builds them:
     // that host lives in `.prismio/build/debug/`, whose toolchain root carries
     // neither `stdlib/` nor `std/`, so neither branch below can answer either.

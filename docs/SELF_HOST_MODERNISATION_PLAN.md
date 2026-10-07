@@ -127,7 +127,7 @@ Measured 2026-10-02 (A = `1dc470f`, B = `1dc470f` + M1; macOS arm64):
 | Check | Result |
 |---|---|
 | Fixpoint (gen1 IR = gen2 IR) | holds in both arms |
-| IR of 285 programs (`tests/`, `aif/corpus/`, `benchmarks/prismio/`, `src/main.psm`) | byte-identical |
+| IR of 285 programs (`tests/`, the retired corpus, `benchmarks/prismio/`, `src/main.psm`) | byte-identical |
 | 202 non-building programs | same exit code and diagnostics |
 | String literals in the 15 files | unchanged |
 | Compiler `.ll` | 17,562,560 → 17,507,289 B (−0.31%) |

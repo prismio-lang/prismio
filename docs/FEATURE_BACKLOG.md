@@ -3,7 +3,7 @@
 This is the short, implementation-facing backlog for Prismio's next standard
 library capabilities. It is intentionally not named `TODO.md`: the project keeps
 long-lived, actionable work in `docs/`, while `KNOWN_ISSUES.md` records observed
-defects and `aif/evidence/` records measurements.
+defects and commit messages record measurements.
 
 All three items below currently appear as unsupported workloads in
 [`benchmarks/benchmarks.json`](../benchmarks/benchmarks.json) and
@@ -214,5 +214,6 @@ For each completed item:
 - [ ] Run ownership verification for recursive/owned cases where applicable.
 - [ ] Update [the runtime surface](https://developers.prismio.org/runtime/supported-surface), `benchmarks/benchmarks.json`,
   `benchmarks/UNSUPPORTED.md`, and `benchmarks/README.md` in the same change.
-- [ ] Record measured benchmark evidence under `aif/evidence/` if the change
-  affects a claimed performance result.
+- [ ] Put the measured benchmark evidence in the commit message if the change
+  affects a claimed performance result, and add an entry to the developer docs'
+  *Performance decisions and rejected experiments* page if it rejects an idea.

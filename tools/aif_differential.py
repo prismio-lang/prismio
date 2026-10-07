@@ -209,8 +209,14 @@ def main():
 
     sources = [Path(s) for s in args.sources]
     if not sources:
-        sources = [Path("src/main.psm")] + sorted(Path("aif/corpus").glob("*.psm"))
-        # No corpus program uses `region`, and a region opens a scope -- so a
+        # The benchmark modules are the realistic programs here: wide records, per-frame
+        # transients, component worlds, trees, shared maps, tasks and channels. Not
+        # `suite.psm`, which imports them all and disagrees under --owned-collections
+        # (docs/KNOWN_ISSUES.md, "The AIF analysis and its oracle").
+        sources = [Path("src/main.psm")] + [
+            Path("benchmarks/prismio") / f"{name}.psm"
+            for name in ("algorithms", "compute", "memory", "data_structures", "adversarial", "io")]
+        # No benchmark module uses `region`, and a region opens a scope -- so a
         # mismatch in how the two implementations number scopes would be
         # invisible without this, and scope ids are what Region(s) compares.
         sources.append(Path("tests/test_44_aif_region.psm"))
@@ -221,7 +227,7 @@ def main():
         # Item 3 put a container's contents behind a field key and made two
         # containers holding one value Shared. Both are edges in the points-to
         # graph rather than tier clauses, so a mismatch shows up as a wrong tier
-        # somewhere else entirely -- and no corpus program reads an element back
+        # somewhere else entirely -- and no benchmark module reads an element back
         # out of one container and pushes it into another.
         sources.append(Path("tests/test_47_aif_containers.psm"))
         sources.append(Path("tests/test_48_aif_shared_elements.psm"))
@@ -231,9 +237,9 @@ def main():
         # fixture moves exactly two sites, and view provenance is the only thing
         # that can move them.
         sources.append(Path("tests/test_53_aif_views.psm"))
-        # REQUIREMENTS 15. `aif/corpus/g9_bands.psm` spawns as of 2026-08-26 and
-        # is globbed in above, so the `T` domain is no longer reached only from
-        # here -- but g9 exercises one shape, the proved join, and these two are
+        # REQUIREMENTS 15. The benchmark modules spawn (`parallel_reduction`,
+        # `channel_pipeline`) and are listed above, so the `T` domain is no longer
+        # reached only from here -- but they exercise one shape, the proved join, and these two are
         # still the only sources that reach the rest. Without them the two
         # implementations would agree about most of the domain by never running a
         # rule of it, which is precisely the shape of agreement this script exists
@@ -257,7 +263,7 @@ def main():
         sources.append(Path("tests/test_56_list_capacity.psm"))
         # SPEC 5.2.1's bracketing summary, which both implementations now
         # compute. No source above makes a function fail obligation 2 -- the
-        # corpus stores into containers it owns -- so without this the two arms
+        # benchmarks store into containers they own -- so without this the two arms
         # would agree on `br-param: 0` by never exercising the clause, which is
         # the "check that cannot fail" mode again. Verified discriminating: with
         # the oracle's obligation-2 test removed, this source reports

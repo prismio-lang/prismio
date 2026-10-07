@@ -11,7 +11,7 @@ allocation architecture half is [MEMORY_PLAN.md](MEMORY_PLAN.md).
 Every status below was checked against the tree on 2026-09-25, not copied from
 the documents it replaces. The benchmarks those documents were written around
 (g1 to g9, `five_arm_bench.py`, `milestone_bench.py`) were retired with
-`aif/evidence/xlang/` on 2026-09-03. The maintained suite is `benchmarks/`,
+the old evidence tree on 2026-09-03. The maintained suite is `benchmarks/`,
 run with `python3 benchmarks/run.py`.
 
 ## 1 · For 0.1
@@ -20,7 +20,7 @@ run with `python3 benchmarks/run.py`.
 release anyway:
 
 - [ ] Run `benchmarks/run.py` on the release-candidate compiler and record the
-      table in `aif/evidence/`, so the release notes quote a measured position
+      table in the release commit's message, so the release notes quote a measured position
       and not an older one. The 2026-09-25 run (§2) is the baseline to compare it
       with.
 - [x] `PRISMIO_INLINE_ELEMS=0` is deleted (2026-09-25). It was read at run time,
@@ -29,7 +29,7 @@ release anyway:
 
 ## 2 · Current position
 
-Measured 2026-09-25 on x86_64 Linux: `aif/evidence/RESULTS-benchmarks-2026-09-25.md`.
+Measured 2026-09-25 on x86_64 Linux (`RESULTS-benchmarks-2026-09-25.md`, in Git history).
 Geometric mean **0.90x of C++ and 0.90x of Rust**, with peak RSS level with
 both. The largest gaps on the 2026-09-05 board (`fft`, `mergesort`,
 `prime_sieve`, `mandelbrot`, `binary_search`, `graph_bfs`, `convolution`) are
@@ -173,6 +173,6 @@ regression beyond 1.03x unless the win is large and was accepted explicitly.
 
 **The loop for any change to `src/`:** two generations to a byte-identical
 fixpoint, the suite, `tools/aif_differential.py`, byte-identical IR for every
-program in `tests/` and `aif/corpus/` if the change is meant to preserve
+program in `tests/` and `benchmarks/prismio/` if the change is meant to preserve
 behaviour, and then the benchmark. Record commands, compiler, LLVM version,
-medians and checksums in a new `aif/evidence/RESULTS-*.md`.
+medians and checksums in the commit message.

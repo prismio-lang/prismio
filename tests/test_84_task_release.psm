@@ -4,7 +4,7 @@
 // **codegen never emitted it**, so every `spawn` leaked one handle for the life
 // of the process. Nothing caught it: the handle is plain `calloc` -- correctly,
 // it is a runtime temporary the runtime frees itself -- so `--verify` never sees
-// it, and no test before this one spawned in a loop. `aif/corpus/g9_bands.psm`
+// it, and no test before this one spawned in a loop. the retired corpus program g9_bands
 // is what made it visible, at 8,201 allocations against 23 frees.
 //
 // The release is emitted at the **scope exit**, not at the join. A handle is

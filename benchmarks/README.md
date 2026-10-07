@@ -370,6 +370,6 @@ buffers, mmap log parsers, and zero-copy serialization pipelines.
   `milestone_bench.py`, `five_arm_bench.py`, and `allocator_bench.py` drivers.
   The deleted tracked content is recoverable from Git history.
 - Updated `tools/ir_snapshot.py` to compile the root Prismio benchmark source.
-- Kept the AIF arena census scoped to the actual `aif/corpus` programs.
+- Kept the AIF arena census scoped to the actual the retired corpus programs.
 - Updated active documentation to point benchmark users at this root suite.
 - Made no changes under `tests/`.
