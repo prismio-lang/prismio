@@ -8,7 +8,7 @@ release may still break things).
 The full notes for each release, with downloads and known limits, are on the
 [release notes page](https://docs.prismio.org/releases).
 
-## [Unreleased]
+## [0.2.0] - Unreleased
 
 ### Added
 
@@ -25,19 +25,60 @@ The full notes for each release, with downloads and known limits, are on the
 
 ### Changed
 
+- **AIF reports an array as a frame slot.** An array literal and an `Array<T, N>`
+  were always an `alloca`, but the analysis tiered them as heap blocks (78 of the
+  1,025 allocation sites in the tests, corpus and benchmarks) or, in a bracketed
+  call, as `arena:auto`. They are T0 now and `prismio aif` says *stack, fixed-length
+  array; lives in the frame*. The wrong tier also made the analysis count the array as
+  served by the caller's arena, so a call to a function that only built an array was
+  wrapped in an `arena_push`/`arena_pop` pair that served nothing: 520 such brackets
+  (1,365 pops) leave the IR of the tests, corpus and benchmarks, and the arena
+  counters read 183 fewer regions entered with the same 19,528 objects and
+  6,863,136 bytes served. SPEC 4.2 and the Python oracle carry the same rule, and the
+  engine and oracle agree on all 19 differential sources. The README's `prismio aif`
+  example is regenerated.
+- **A `Vec` literal allocates exactly its length.** `vecOf` started from an empty list
+  and grew it 0 → 4 → 8; each overload now starts from `list_new_with_capacity(n)`.
+  A function building a four-element literal runs in 0.80× of the time and an
+  eight-element one in 0.64× (`Vec` capacity of `[7]`, `[1, 2, 3]` and `[1, …, 8]`
+  was 4, 4, 8 and is 1, 3, 8).
+- Compiling the compiler's own source is about 3% faster (0.677 s → 0.658 s, median of
+  seven interleaved runs).
 - The bootstrap seed is now `bootstrap/prismio-seed-0.1.0.ll`, named for the
   release it was cut at. `tools/bootstrap.*`, `tools/refresh_seed.*`,
   `tools/release_gate.py`, CI and the docs follow the new name; the seed's
   content is unchanged.
 - The project host in `build.ums` and `sandbox/build.ums` is the release build
-  (`.prismio/build/release/prismio`), and the `release` and `bench` commands use
-  it. `verify`, `gate` and `package` still name the debug build.
-- README: the "Changelog" link points to the release notes, and the archive
-  list now names all five platforms, with which are tested in CI and which on
-  virtual machines.
-- Benchmark results are refreshed, measured with the release-profile compiler:
-  0.85× of C++ and 0.83× of Rust by geometric mean over 62 workloads (was 0.87×
-  and 0.84×). The README quotes the new figures.
+  (`.prismio/build/release/prismio`, built by `prismio build --release`), and the
+  `release` and `bench` commands use it. `verify`, `gate` and `package` still name the
+  debug build.
+- README: the "Changelog" link points to the release notes, the archive list names
+  all five platforms with which are tested in CI and which on virtual machines, and
+  the performance figures are those of the 2026-10-06 run: 0.85× of C++ and 0.83× of
+  Rust by geometric mean over 62 workloads (0.87× and 0.84× before). The benchmark
+  suite shows **no net change from the compiler work above** (1.006× against a 1.010×
+  drift between two runs of the same compiler); four workloads moved 7–10% with none
+  of their functions' IR changed, which is code layout.
+
+### Fixed
+
+- **`let big: Array<Int, N>` compiled in time linear in N with a large constant** (1.6 s
+  at a million elements, 21 s at ten million, over two minutes at forty million). LLVM
+  scalarises a first-class `store [N x T] zeroinitializer` before recovering the memset;
+  an aggregate of 1,024 bytes or more is now one `llvm.memset` (forty million Ints:
+  0.06 s). Smaller arrays keep the store and their IR.
+- **A function returning `Array<T, N>` took superlinear compile time** (0.65 s at 8,000
+  Ints, 2.2 s at 16,000, 21 s at 32,000; a struct holding one ran for over 27 minutes).
+  An array of 4 KiB or more now returns through a hidden `ptr sret` parameter that the
+  caller points at a frame slot of its own (32,000 Ints: 0.09 s; 400,000: 0.07 s).
+  Behaviour is unchanged.
+- The benchmark results are refreshed (release-profile compiler, five runs).
+
+### Documentation
+
+- `docs/KNOWN_ISSUES.md` is restructured: open items only, grouped by area, with the
+  `--verify` leak table re-measured (273 programs, 0 violations, 173 leaked blocks in
+  19 programs). What was fixed lives in `git log`.
 
 ## [0.1.0] - 2026-10-02
 
@@ -72,5 +113,5 @@ x64 and arm64, each with a `.sha256`.
 - A function ending in `panic`, `unreachable` or `exit` while owning a value
   emitted invalid IR.
 
-[Unreleased]: https://github.com/prismio-lang/prismio/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/prismio-lang/prismio/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/prismio-lang/prismio/releases/tag/v0.1.0

@@ -153,7 +153,7 @@ specification and the evidence behind it are in [`aif/`](aif/README.md).
 
 The model is still being tightened. Some shapes leak rather than release, and
 each is listed with a reproducer in
-[KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#ownership) under "Ownership".
+[KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md#ownership-leaks) under "Ownership: leaks".
 
 ## Performance
 
