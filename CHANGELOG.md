@@ -90,7 +90,7 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   results); the language docs say why `Int` is 32-bit and when to use `I64`; and the FFI contracts page
   records what an opaque module boundary costs the analysis.
 - `docs/KNOWN_ISSUES.md` is restructured: open items only, grouped by area, with the
-  `--verify` leak table re-measured (273 programs, 0 violations, 173 leaked blocks in
+  `--verify` leak table re-measured (266 programs, 0 violations, 173 leaked blocks in
   19 programs). What was fixed lives in `git log`.
 
 [0.2.0]: https://github.com/prismio-lang/prismio/compare/v0.1.0...HEAD

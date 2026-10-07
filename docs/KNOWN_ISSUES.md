@@ -6,7 +6,7 @@ leaves this file in the commit that fixes it; the commit message carries the evi
 [`aif/README.md`](aif/README.md)). Anything described as a decision is one the project has made on purpose.
 
 Nothing below is unsoundness unless it says so. As of 2026-10-07 every runnable program
-in `../tests` and `../aif/corpus` (273) builds with `--verify` and runs with **0
+in `../tests` (266) builds with `--verify` and runs with **0
 violations**; 19 of them still leak (see [Ownership](#ownership-leaks)).
 
 | Area | What is in it |
@@ -38,7 +38,7 @@ twelve bytes**: a shorter one is stored inline, never reaches the ledger, and re
 
 ### What the test suite still leaks
 
-Counts from `--verify` on 2026-10-07 (173 leaked blocks in 19 programs, 0 violations):
+Counts from `--verify` on 2026-10-07 (173 leaked blocks in 19 programs, 0 violations, over 266):
 
 | Program | Leaked | Cause |
 |---|---|---|
