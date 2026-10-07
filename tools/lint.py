@@ -33,8 +33,39 @@ def run_check(command, label):
     return [f"{label}:\n{details}" if details else f"{label} failed"]
 
 
+# The first bytes of a native executable, object or static library. A program the
+# compiler builds has no extension on Unix, so `.gitignore`'s `*.exe` and `*.o` miss
+# it, and `prismio run x.psm` leaves it beside the source: `git add -A` then commits
+# a build product. Six were committed under aif/corpus/ that way.
+NATIVE_MAGIC = (
+    b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe",  # Mach-O, fat
+    b"\x7fELF", b"MZ", b"!<arch>\n",                                       # ELF, PE, ar
+)
+
+
+def tracked_native_binaries():
+    """Tracked files that are executables, objects or static libraries."""
+    if shutil.which("git") is None:
+        return []
+    listed = subprocess.run(["git", "ls-files", "-z"], cwd=REPO, capture_output=True)
+    if listed.returncode != 0:
+        return []
+    found = []
+    for name in listed.stdout.decode("utf-8", "replace").split("\0"):
+        path = REPO / name
+        if not name or not path.is_file():
+            continue
+        with open(path, "rb") as handle:
+            head = handle.read(8)
+        if head.startswith(NATIVE_MAGIC):
+            found.append(name)
+    return found
+
+
 def main():
     problems = []
+    for name in tracked_native_binaries():
+        problems.append(f"tracked binary: {name} (git rm --cached it; build output is not source)")
     warnings = []
     source_files = list(format_sources.repository_files())
 
