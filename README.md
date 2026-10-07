@@ -12,7 +12,7 @@ No garbage collector, no <code>free</code>, no lifetime annotations.
 <p align="center">
 <a href="https://prismio.org">Website</a> ·
 <a href="https://docs.prismio.org/">Documentation</a> ·
-<a href="https://prismio.org/changelog">Changelog</a> ·
+<a href="https://docs.prismio.org/releases">Release notes</a> ·
 <a href="https://github.com/prismio-lang/prismio/issues">Known issues</a> ·
 <a href="CONTRIBUTING.md">Contributing</a>
 </p>
@@ -45,7 +45,7 @@ curl -fsSL https://prismio.org/install.sh | sh
 Windows: download the archive for your machine from the
 [latest release](https://github.com/prismio-lang/prismio/releases/latest), unpack it, and
 put its `bin` directory on `PATH`. Archives are named `prismio-<version>-<os>-<arch>`
-(`macos-arm64`, `linux-x64`, `windows-x64`) and come with a `.sha256`; they are not signed.
+(`macos-arm64`, `linux-x64`, `linux-arm64`, `windows-x64`, `windows-arm64`) and come with a `.sha256`; they are not signed. CI builds and tests macOS arm64, Linux x64 and Windows x64; the two ARM64 archives are built and tested on virtual machines.
 
 The compiler carries its own LLVM, but it links programs with the system's linker, so you
 also need the platform's C tools: the Xcode Command Line Tools on macOS
@@ -211,9 +211,9 @@ python3 tools/package.py --compiler build/gen1 --out build/dist
 export PATH="$PWD/build/dist/bin:$PATH"
 ```
 
-`bootstrap/prismio-seed.ll` is committed LLVM IR for an earlier compiler. It is how
+`bootstrap/prismio-seed-0.1.0.ll` is committed LLVM IR for an earlier compiler. It is how
 a machine with no Prismio builds its first one. On Windows the script is
-`tools/bootstrap.ps1 -Seed bootstrap/prismio-seed.ll -Out build/gen0`, then
+`tools/bootstrap.ps1 -Seed bootstrap/prismio-seed-0.1.0.ll -Out build/gen0`, then
 `-Compiler build/gen0 -Out build/gen1`.
 
 Once a compiler exists, the checkout is itself a Prismio project: `prismio build` rebuilds
