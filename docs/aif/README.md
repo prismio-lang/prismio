@@ -52,12 +52,11 @@ Related, elsewhere in the tree:
 
 Through 2026-10-07 this directory had a sibling, `aif/evidence/`: about 270 dated session records,
 measurement data and scratch programs. They were removed from the working tree because their conclusions
-live in the docs above and in `git log`. They remain in Git history; comments in the source that cite
-`aif/evidence/RESULTS-<name>.md` name a file there. To read one:
+live in the docs above, in the developer docs' *Performance decisions and rejected experiments* page, and
+in `git log`. They remain in Git history, and comments in the source that cite
+`aif/evidence/RESULTS-<name>.md` name a file there. The last commit that has them is `c9f71ef`:
 
 ```bash
-git show <commit>:aif/evidence/RESULTS-<name>.md
+git ls-tree -r --name-only c9f71ef aif/evidence       # what there is
+git show c9f71ef:aif/evidence/RESULTS-int-width.md     # read one
 ```
-
-where `<commit>` is the one recorded at the top of the developer docs page *Performance decisions and
-rejected experiments*.

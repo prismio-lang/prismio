@@ -112,10 +112,3 @@ tests/*/*
 # measured build is compared against.
 tests/workload_static_control.psm
 scratch/
-
-# The same for the AIF corpus: `prismio run aif/corpus/g1_particles.psm` writes the
-# executable `aif/corpus/g1_particles` beside the source, and six of those were
-# committed. Only the sources and the README belong here.
-aif/corpus/*
-!aif/corpus/*.psm
-!aif/corpus/README.md
