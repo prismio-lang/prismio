@@ -1,0 +1,523 @@
+// What the elements of a local `Array<Int, N>` can hold, so that arithmetic on one read
+// from it can be proved not to wrap. ir/nowrap.psm walks the function and asks.
+//
+// Edit distance's two rows are the case. Every store into `prev` and `cur` is a counter,
+// a copy, or `min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)`, so a store raises
+// the largest element by at most 1, and 600 x 600 of them run between two zero-fills.
+// The elements stay in [0, 360600], so `prev[j] + 1` cannot wrap, and LLVM may turn
+// `min(a + 1, b + 1)` into `min(a, b) + 1`, as it does for C, whose overflow is
+// undefined.
+//
+// The bound is an invariant over one *lifetime* of an array: from its declaration, which
+// zero-fills or initialises it every time it runs, to the end of its block. Arrays
+// declared in one block form a family, since a store into one reads the others, and
+// share one bound [L, M]; one that fails takes with it only the arrays whose stored
+// values read it. A stored value is described by a form,
+//
+//     lo = min(loC, L + loR)        hi = max(hiC, M + hiR),
+//
+// a concrete part from literals and facts, and a part relative to the family's bound
+// from the elements it reads. Then:
+//
+// - L holds if no form can go below it: every loC is at least L and every loR at least 0.
+// - M grows by at most hiR per store. Over one lifetime it stays at or below the largest
+//   initial or concrete value plus the sum of hiR x executions, and the counted loops
+//   between the declaration and each store bound the executions.
+// - A `+` or `-` inside a stored value must not wrap either, or its form is wrong, so the
+//   extremes of every one are checked against the settled bound.
+//
+// An array qualifies only when nothing but a subscript names it, in its function and
+// outside any closure, and its name is bound once there: no view, no `inout`, no copy,
+// no `for x in`, no shadowing. Anything else could write it where the walk does not look.
+
+import ast.nodes
+import ast.types
+import std.string
+
+let CONTENTS_INT_MAX = 2147483647
+
+struct ArrayContents {
+    // One slot per array declared `Array<Int, N>` in the function.
+    names: Vec<String>,
+    // The block whose declaration of it ran, numbered as the walk enters blocks, or 0
+    // before the walk reaches it; and how many loops were around that declaration.
+    family: Vec<Int>,
+    depth: Vec<Int>,
+    // The hull of its initial elements and of every store's concrete part.
+    concreteLo: Vec<Int>,
+    concreteHi: Vec<Int>,
+    // The sum of hiR x executions over its stores.
+    growth: Vec<Int>,
+    // The extremes of every `+`/`-` in a value stored into it: concrete, then relative.
+    sumLoC: Vec<Int>,
+    sumLoR: Vec<Int>,
+    sumHiC: Vec<Int>,
+    sumHiR: Vec<Int>,
+    failed: Vec<Int>,
+    // Each store's reads of its family, as (writer, read) pairs: a writer whose value
+    // read an array that failed fails too, and nothing else in the family does.
+    readWriter: Vec<Int>,
+    readSlot: Vec<Int>,
+    // The settled bound; an empty interval until settle(), and where there is none.
+    lo: Vec<Int>,
+    hi: Vec<Int>
+}
+
+// A stored value's form; see the top of this file. An absent part is
+// +-contentAbsent(), which min and max pass over.
+struct ContentForm {
+    ok: Bool,
+    loC: I64,
+    loR: I64,
+    hiC: I64,
+    hiR: I64
+}
+
+// The arrays of `func` that qualify, each still to be declared by the walk.
+internal fn contentsCollect(func: ASTNode) -> ArrayContents {
+    let c = ArrayContents {
+        names: [], family: [], depth: [], concreteLo: [], concreteHi: [], growth: [],
+        sumLoC: [], sumLoR: [], sumHiC: [], sumHiR: [], failed: [], readWriter: [], readSlot: [],
+        lo: [], hi: []
+    }
+    c.collect(func.child2)
+    if (c.names.length == 0) { return c }
+    c.countBindings(func.child1)
+    c.countBindings(func.child2)
+    c.scan(func.child2, false)
+    return c
+}
+
+impl ArrayContents {
+    // Every `let` of an `Array<Int, N>`, whatever its block.
+    private fn collect(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n)) { self.add(n.s1) }
+            self.collect(n.child1)
+            self.collect(n.child2)
+            self.collect(n.child3)
+            p = n.next
+        }
+    }
+}
+
+
+impl ArrayContents {
+    private fn add(self, name: String) {
+        if (self.slotOf(name) >= 0) {
+            self.failed[self.slotOf(name)] = 1
+            return
+        }
+        self.names.push(name.clone())
+        self.family.push(0)
+        self.depth.push(0)
+        self.concreteLo.push(CONTENTS_INT_MAX)
+        self.concreteHi.push(0 - CONTENTS_INT_MAX - 1)
+        self.growth.push(0)
+        self.sumLoC.push(CONTENTS_INT_MAX)
+        self.sumLoR.push(CONTENTS_INT_MAX)
+        self.sumHiC.push(0 - CONTENTS_INT_MAX - 1)
+        self.sumHiR.push(0 - CONTENTS_INT_MAX - 1)
+        self.failed.push(0)
+        self.lo.push(1)
+        self.hi.push(0)
+    }
+}
+
+
+// A signed `Int` element and a known length: a zero-filled or literal-initialised local.
+private fn contentsIsIntArray(decl: ASTNode) -> Bool {
+    if (nodeHasType(decl) == false) { return false }
+    let t = nodeGetType(decl)
+    if (t.kind != TypeKind.ARRAY or t.length <= 0 or nodeIsNull(t.child)) { return false }
+    let elem = ptr_to_type(t.child)
+    return elem.kind == TypeKind.INT and elem.name.equals("Int")
+}
+
+impl ArrayContents {
+    // A second binding of a name, anywhere in the function and of any kind, makes a
+    // subscript of that name ambiguous to a walk that resolves by name.
+    private fn countBindings(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            let binds = n.kind == NodeKind.VARIABLE_DECL or n.kind == NodeKind.FOR_STATEMENT
+                        or n.kind == NodeKind.FUNCTION_PARAMETER
+            if (binds) {
+                self.bindingOf(n.s1, n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n))
+                if (n.kind == NodeKind.FOR_STATEMENT) { self.bindingOf(n.s2, false) }
+            }
+            self.countBindings(n.child1)
+            self.countBindings(n.child2)
+            self.countBindings(n.child3)
+            p = n.next
+        }
+    }
+}
+
+
+impl ArrayContents {
+    // The declaration itself is the one binding allowed, and it was collected; any
+    // other binding of the name disqualifies it. Two array declarations of one name
+    // already failed in add().
+    private fn bindingOf(self, name: String, isTheArray: Bool) {
+        let slot = self.slotOf(name)
+        if (slot < 0 or isTheArray) { return }
+        self.failed[slot] = 1
+    }
+}
+
+
+impl ArrayContents {
+    // Every mention of a name that is not the base of a subscript, or is inside a
+    // closure, could read or write the array where the walk does not look.
+    private fn scan(self, head: Ptr, inClosure: Bool) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            let inner = inClosure or n.kind == NodeKind.CLOSURE_EXPR
+            if (n.kind == NodeKind.INDEX_EXPR and inClosure == false and contentsBaseName(n).equals("") == false) {
+                self.scan(n.child2, inner)
+                self.scan(n.child3, inner)
+            } else {
+                if (n.kind == NodeKind.IDENTIFIER_EXPR and self.slotOf(n.s1) >= 0) {
+                    self.failed[self.slotOf(n.s1)] = 1
+                }
+                self.scan(n.child1, inner)
+                self.scan(n.child2, inner)
+                self.scan(n.child3, inner)
+            }
+            p = n.next
+        }
+    }
+}
+
+
+// The name a subscript indexes directly, or "".
+private fn contentsBaseName(e: ASTNode) -> String {
+    if (nodeIsNull(e.child1)) { return "" }
+    let base = ptr_to_node(e.child1)
+    if (base.kind != NodeKind.IDENTIFIER_EXPR) { return "" }
+    return base.s1.clone()
+}
+
+impl ArrayContents {
+    internal fn slotOf(self, name: String) -> Int {
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name)) { return i }
+        }
+        return 0 - 1
+    }
+}
+
+
+impl ArrayContents {
+    // The slot of a qualifying array that subscript `e` indexes, or -1.
+    internal fn slotOfIndex(self, e: ASTNode) -> Int {
+        if (e.kind != NodeKind.INDEX_EXPR) { return 0 - 1 }
+        let slot = self.slotOf(contentsBaseName(e))
+        if (slot < 0 or self.failed[slot] == 1) { return 0 - 1 }
+        return slot
+    }
+}
+
+
+impl ArrayContents {
+    // The declaration ran, in block `family` under `depth` loops, with its elements in
+    // [lo, hi].
+    internal fn declare(self, slot: Int, family: Int, depth: Int, lo: I64, hi: I64) {
+        self.family[slot] = family
+        self.depth[slot] = depth
+        self.noteLow(slot, lo)
+        self.noteHigh(slot, hi)
+    }
+}
+
+
+impl ArrayContents {
+    internal fn fail(self, slot: Int) {
+        self.failed[slot] = 1
+    }
+}
+
+
+impl ArrayContents {
+    private fn noteLow(self, slot: Int, lo: I64) {
+        if (contentsFitsInt(lo) == false) {
+            self.failed[slot] = 1
+            return
+        }
+        if (lo < self.concreteLo[slot] as I64) { self.concreteLo[slot] = lo as Int }
+    }
+}
+
+
+impl ArrayContents {
+    private fn noteHigh(self, slot: Int, hi: I64) {
+        if (contentsFitsInt(hi) == false) {
+            self.failed[slot] = 1
+            return
+        }
+        if (hi > self.concreteHi[slot] as I64) { self.concreteHi[slot] = hi as Int }
+    }
+}
+
+
+impl ArrayContents {
+    // A store of a value of form `v` into the array, run at most `executions` times in
+    // one lifetime, or an unknown number of times when it is negative.
+    internal fn store(self, slot: Int, v: ContentForm, executions: I64) {
+        if (v.ok == false) {
+            self.failed[slot] = 1
+            return
+        }
+        let absent = contentAbsent()
+        if (v.loR < absent and v.loR < 0 as I64) {
+            self.failed[slot] = 1
+            return
+        }
+        if (v.loC < absent) { self.noteLow(slot, v.loC) }
+        if (v.hiC > 0 - absent) { self.noteHigh(slot, v.hiC) }
+        if (v.hiR <= 0 as I64) { return }
+        if (executions < 0 as I64) {
+            self.failed[slot] = 1
+            return
+        }
+        let total = self.growth[slot] as I64 + v.hiR * executions
+        if (total > CONTENTS_INT_MAX as I64) {
+            self.failed[slot] = 1
+            return
+        }
+        self.growth[slot] = total as Int
+    }
+}
+
+
+impl ArrayContents {
+    // A value stored into `writer`'s array read an element of `read`'s.
+    internal fn noteRead(self, writer: Int, read: Int) {
+        self.readWriter.push(writer)
+        self.readSlot.push(read)
+    }
+}
+
+
+impl ArrayContents {
+    // A `+` or `-` of form `v` inside a value stored into the array.
+    internal fn noteSum(self, slot: Int, v: ContentForm) {
+        if (v.ok == false) { return }
+        let absent = contentAbsent()
+        if (v.loC < absent) { self.sumLoC[slot] = contentsNarrowLo(self.sumLoC[slot], v.loC) }
+        if (v.loR < absent) { self.sumLoR[slot] = contentsNarrowLo(self.sumLoR[slot], v.loR) }
+        if (v.hiC > 0 - absent) { self.sumHiC[slot] = contentsWidenHi(self.sumHiC[slot], v.hiC) }
+        if (v.hiR > 0 - absent) { self.sumHiR[slot] = contentsWidenHi(self.sumHiR[slot], v.hiR) }
+    }
+}
+
+
+// The smaller of an accumulated low extreme and `v`, which saturates rather than wraps:
+// past the edge of `Int` the check in settle() fails either way.
+private fn contentsNarrowLo(acc: Int, v: I64) -> Int {
+    if (v >= acc as I64) { return acc }
+    if (contentsFitsInt(v) == false) { return 0 - CONTENTS_INT_MAX - 1 }
+    return v as Int
+}
+
+private fn contentsWidenHi(acc: Int, v: I64) -> Int {
+    if (v <= acc as I64) { return acc }
+    if (contentsFitsInt(v) == false) { return CONTENTS_INT_MAX }
+    return v as Int
+}
+
+private fn contentsFitsInt(v: I64) -> Bool {
+    return v >= (0 - CONTENTS_INT_MAX - 1) as I64 and v <= CONTENTS_INT_MAX as I64
+}
+
+impl ArrayContents {
+    // Each family's bound, from everything the walk recorded, over the arrays that did
+    // not fail: one the walk never declared, and one whose stores read one that failed.
+    internal fn settle(self) {
+        for slot in 0..<self.names.length {
+            if (self.family[slot] == 0) { self.failed[slot] = 1 }
+        }
+        let mut spread = true
+        while (spread) {
+            spread = false
+            for i in 0..<self.readWriter.length {
+                if (self.failed[self.readSlot[i]] == 1 and self.failed[self.readWriter[i]] == 0) {
+                    self.failed[self.readWriter[i]] = 1
+                    spread = true
+                }
+            }
+        }
+        for slot in 0..<self.names.length {
+            self.settleFamily(self.family[slot])
+        }
+    }
+}
+
+
+impl ArrayContents {
+    private fn settleFamily(self, family: Int) {
+        if (family == 0) { return }
+        let mut low = CONTENTS_INT_MAX as I64
+        let mut high = (0 - CONTENTS_INT_MAX - 1) as I64
+        let mut growth = 0 as I64
+        let mut sound = true
+        for i in 0..<self.names.length {
+            if (self.family[i] == family and self.failed[i] == 0) {
+                if ((self.concreteLo[i] as I64) < low) { low = self.concreteLo[i] as I64 }
+                if ((self.concreteHi[i] as I64) > high) { high = self.concreteHi[i] as I64 }
+                growth = growth + self.growth[i] as I64
+            }
+        }
+        let top = high + growth
+        for i in 0..<self.names.length {
+            if (self.family[i] == family and self.failed[i] == 0) {
+                if (self.sumsFit(i, low, top) == false) { sound = false }
+            }
+        }
+        if (sound == false or contentsFitsInt(top) == false) { return }
+        for i in 0..<self.names.length {
+            if (self.family[i] == family and self.failed[i] == 0) {
+                self.lo[i] = low as Int
+                self.hi[i] = top as Int
+            }
+        }
+    }
+}
+
+
+impl ArrayContents {
+    // Whether every `+`/`-` in a value stored into `slot` stays inside `Int` with the
+    // family's elements in [low, top].
+    private fn sumsFit(self, slot: Int, low: I64, top: I64) -> Bool {
+        let intMin = (0 - CONTENTS_INT_MAX - 1) as I64
+        let intMax = CONTENTS_INT_MAX as I64
+        // An extreme at the edge of `Int` may have been saturated from past it. The
+        // other edges are each accumulator's empty value.
+        if (self.sumLoC[slot] as I64 == intMin or self.sumHiC[slot] as I64 == intMax) { return false }
+        if (self.sumLoR[slot] as I64 == intMin or self.sumHiR[slot] as I64 == intMax) { return false }
+        if (self.sumLoR[slot] as I64 != intMax and low + (self.sumLoR[slot] as I64) < intMin) {
+            return false
+        }
+        if (self.sumHiR[slot] as I64 != intMin and top + (self.sumHiR[slot] as I64) > intMax) {
+            return false
+        }
+        return true
+    }
+}
+
+
+impl ArrayContents {
+    // Whether the elements of `slot`'s array have a settled bound.
+    internal fn bounded(self, slot: Int) -> Bool {
+        return slot >= 0 and self.lo[slot] <= self.hi[slot]
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Forms
+// ---------------------------------------------------------------------------
+
+// Further from zero than any sum of two `Int` bounds.
+internal fn contentAbsent() -> I64 {
+    return (CONTENTS_INT_MAX as I64) * (4 as I64)
+}
+
+internal fn contentFail() -> ContentForm {
+    return ContentForm { ok: false, loC: 0 as I64, loR: 0 as I64, hiC: 0 as I64, hiR: 0 as I64 }
+}
+
+// A value in [lo, hi] whatever the arrays hold.
+internal fn contentConst(lo: I64, hi: I64) -> ContentForm {
+    let absent = contentAbsent()
+    return ContentForm { ok: true, loC: lo, loR: absent, hiC: hi, hiR: 0 - absent }
+}
+
+// An element of the family being stored into: in [L, M].
+internal fn contentRead() -> ContentForm {
+    let absent = contentAbsent()
+    return ContentForm { ok: true, loC: absent, loR: 0 as I64, hiC: 0 - absent, hiR: 0 as I64 }
+}
+
+private fn contentHasRelative(v: ContentForm) -> Bool {
+    let absent = contentAbsent()
+    return v.loR < absent or v.hiR > 0 - absent
+}
+
+// `a + b`, or `a - b` when `negate`. L + L and M - M are not forms, so at most one side
+// may read the family, and only the left of a `-`.
+internal fn contentSum(a: ContentForm, b: ContentForm, negate: Bool) -> ContentForm {
+    if (a.ok == false or b.ok == false) { return contentFail() }
+    if (contentHasRelative(b)) {
+        if (negate or contentHasRelative(a)) { return contentFail() }
+        return contentShift(b, a.loC, a.hiC)
+    }
+    if (negate) { return contentShift(a, 0 - b.hiC, 0 - b.loC) }
+    return contentShift(a, b.loC, b.hiC)
+}
+
+// `v` plus a value in [lo, hi]; an absent part stays absent.
+private fn contentShift(v: ContentForm, lo: I64, hi: I64) -> ContentForm {
+    return ContentForm {
+        ok: true,
+        loC: contentPlus(v.loC, lo),
+        loR: contentPlus(v.loR, lo),
+        hiC: contentPlus(v.hiC, hi),
+        hiR: contentPlus(v.hiR, hi)
+    }
+}
+
+private fn contentPlus(part: I64, by: I64) -> I64 {
+    let absent = contentAbsent()
+    if (part >= absent or part <= 0 - absent) { return part }
+    return part + by
+}
+
+// `min(a, b)`. Its low part is exact; its high part is either operand's, since the
+// minimum is at most each, and the one taken is the one that reads less of the family.
+internal fn contentMin(a: ContentForm, b: ContentForm) -> ContentForm {
+    if (a.ok == false or b.ok == false) { return contentFail() }
+    let fromA = a.hiR < b.hiR or (a.hiR == b.hiR and a.hiC <= b.hiC)
+    let mut hiC = b.hiC
+    let mut hiR = b.hiR
+    if (fromA) {
+        hiC = a.hiC
+        hiR = a.hiR
+    }
+    return ContentForm {
+        ok: true, loC: contentLower(a.loC, b.loC), loR: contentLower(a.loR, b.loR),
+        hiC: hiC, hiR: hiR
+    }
+}
+
+// `max(a, b)`, the mirror of contentMin.
+internal fn contentMax(a: ContentForm, b: ContentForm) -> ContentForm {
+    if (a.ok == false or b.ok == false) { return contentFail() }
+    let fromA = a.loR > b.loR or (a.loR == b.loR and a.loC >= b.loC)
+    let mut loC = b.loC
+    let mut loR = b.loR
+    if (fromA) {
+        loC = a.loC
+        loR = a.loR
+    }
+    return ContentForm {
+        ok: true, loC: loC, loR: loR,
+        hiC: contentHigher(a.hiC, b.hiC), hiR: contentHigher(a.hiR, b.hiR)
+    }
+}
+
+private fn contentLower(a: I64, b: I64) -> I64 {
+    if (a < b) { return a }
+    return b
+}
+
+private fn contentHigher(a: I64, b: I64) -> I64 {
+    if (a > b) { return a }
+    return b
+}

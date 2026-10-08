@@ -95,9 +95,35 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   Rust, 9 fewer, 9 at parity and 2 more. The first run read `edit_distance` at 2.0x C, and that was the
   harness: Prismio's row copy became a call to a byte-loop `memcpy` that C's `-ffreestanding` build never
   made. The shared `memcpy`, `memmove` and `memset` now move a word at a time (aligned, so they are safe
-  with the MMU off), and the row reads 1.05x. The three rows still behind C are one cause: C's signed overflow is undefined and Prismio's wraps, so LLVM can rewrite C's arithmetic and widen its loop indices. With the C arm built `-fwrapv`, Prismio is 4 fewer, 16 level and none more across the 20.
+  with the MMU off), and the row reads 1.05x. The three rows still behind C are one cause: C's signed overflow is undefined and Prismio's wraps, so LLVM can rewrite C's arithmetic and widen its loop indices. With the C arm built `-fwrapv`, Prismio is 4 fewer, 16 level and none more across the 20. All three are recovered since, without `-fwrapv`; see *Changed*.
 
 ### Changed
+
+- **Tight integer loops get the no-wrap facts C gets from undefined overflow.** `Int` still
+  wraps. Four analyses now tell LLVM where it provably cannot:
+  - A loop over an `Array<T, N>` with no list guard is versioned on the facts that keep its
+    accesses in range (`arrays` in `src/ir/ranges.psm`). Innermost loops only, and only when the
+    proof marks arithmetic.
+  - An unchecked access to a fixed array or a `[T]` view leaves its index in `[0, Int.MAX - 1]`,
+    which marks the `+` and `-` it bounds `nsw` (`src/ir/nowrap.psm`).
+  - A counted `while` (`i < e` or `i <= e` and the like as a conjunct, and a last statement that
+    steps `i` by a literal) bounds its counter in the body and counts its iterations
+    (`src/ir/counters.psm`).
+  - A local `Array<Int, N>` that nothing but a subscript names keeps a bound on its elements
+    (`src/ir/contents.psm`): each store's value is described relative to the elements it reads, and
+    the counted loops bound how far stores can raise them in one lifetime of the array.
+
+  Freestanding, in instructions: `quicksort` 11,304,368 to 9,991,296 (C 10,096,384); `knapsack`
+  5,690,512 to 3,139,600 (C 5,122,624), because its guard holds `w >= 0`, a fact C's undefined
+  overflow never supplied; and `edit_distance` 5,900,624 to 5,540,624 (C 5,596,832), because its
+  rows stay in `[0, 360600]`, so `min(a + 1, b + 1)` becomes `min(a, b) + 1`. `sha256` moved
+  9,018,112 to 8,634,112, from code shape rather than a proof. Against C the suite reads 4 fewer,
+  16 level and none more, geomean 0.95x (it was 3, 14 and 3, 0.99x). The hosted suite's 140
+  functions are instruction-identical against a baseline without the change. The compiler's own
+  IR gains 41 `nsw` (369 to 410), and emitting it costs 0.9% more instructions. `PRISMIO_NOWRAP=0`
+  turns the marks from the last three off, as `PRISMIO_RANGE_PROOFS=0` does the proofs', to
+  separate what each buys. Because the compiler relies on it, an out-of-range index into a fixed
+  array or a `[T]` view is now specified as undefined behaviour.
 
 - **`Option<T>` is gone; `T?` is the optional.** Two spellings of "a `T` or nothing"
   were one more thing to learn and to convert between, and `T?` already did the same
@@ -208,6 +234,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   (allocator choice, the `Int` width, layout representations, loop-guard and map-hash designs, channel
   results); the language docs say why `Int` is 32-bit and when to use `I64`; and the FFI contracts page
   records what an opaque module boundary costs the analysis.
+- The developer docs gain *Wrapping integers and tight loops*: what the freestanding gap to C was made
+  of, what was built, every alternative measured (among them undefined overflow, `freeze` semantics,
+  `mustprogress` and `llvm.assume`), and the prior art. *Loop guards* describes both analyses, and
+  the specification's *Bounds and storage* states the undefined behaviour above.
 - `docs/KNOWN_ISSUES.md` is restructured: open items only, grouped by area, with the
   `--verify` leak table re-measured (272 programs, 0 violations, 171 leaked blocks in
   21 programs). What was fixed lives in `git log`.

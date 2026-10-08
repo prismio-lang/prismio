@@ -1,0 +1,227 @@
+// What a local `Array<Int, N>` can hold (src/ir/contents.psm), and the counters of
+// counted `while` loops (nowrapCounter in src/ir/nowrap.psm).
+//
+// test_runner.py's array_contents asserts which adds and subtracts are `nsw` in this
+// file's IR; this program asserts the answers. Most of it is shapes where an element or
+// a counter really goes past `Int`, so a mark there would be a wrong one.
+
+import std.io
+
+// The freestanding benchmark's rows. Zero-filled, then 40 x 40 stores of
+// `min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)` per lifetime: every element
+// stays in [0, 1640], so the three value adds cannot wrap.
+fn editRows() -> Int {
+    let mut a: Array<U8, 40>
+    let mut b: Array<U8, 40>
+    let mut s: U32 = 31337
+    let mut i = 0
+    while (i < 40) {
+        s = s * 1664525 + 1013904223
+        a[i] = ((s >> 12) & 3) as U8
+        s = s * 1664525 + 1013904223
+        b[i] = ((s >> 12) & 3) as U8
+        i = i + 1
+    }
+    let mut prev: Array<Int, 41>
+    let mut cur: Array<Int, 41>
+    let mut j = 0
+    while (j <= 40) {
+        prev[j] = j
+        j = j + 1
+    }
+    i = 1
+    while (i <= 40) {
+        cur[0] = i
+        j = 1
+        while (j <= 40) {
+            let mut cost = 1
+            if (a[i - 1] == b[j - 1]) { cost = 0 }
+            cur[j] = __builtin_min(__builtin_min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost)
+            j = j + 1
+        }
+        j = 0
+        while (j <= 40) {
+            prev[j] = cur[j]
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return prev[40]
+}
+
+// A counter's condition and its last statement bound it: `i - 2` cannot wrap.
+fn counted() -> Int {
+    let mut sum = 0
+    let mut i = 3
+    while (i <= 1000) {
+        sum = sum + (i - 2)
+        i = i + 1
+    }
+    return sum
+}
+
+// `a` takes a value no fact bounds, so it has no bound; `b` reads only itself, and
+// keeps one.
+fn independent(seed: Int) -> Int {
+    let mut a: Array<Int, 2>
+    let mut b: Array<Int, 2>
+    let mut k = 0
+    while (k < 10) {
+        a[0] = seed
+        b[1] = b[0] + 1
+        b[0] = b[1]
+        k = k + 1
+    }
+    return a[0] + (b[0] + 1)
+}
+
+// A literal's elements bound the array, negative ones included.
+fn literalInit() -> Int {
+    let table: Array<Int, 4> = [-5, 7, 100, 3]
+    let mut sum = 0
+    let mut k = 0
+    while (k < 4) {
+        sum = sum + (table[k] + 10)
+        k = k + 1
+    }
+    return sum
+}
+
+fn poke(inout v: [Int]) {
+    v[0] = 2147483647
+}
+
+// Passed as a view, the array is written where the walk does not look.
+fn escaped() -> Int {
+    let mut t: Array<Int, 2>
+    let mut k = 0
+    while (k < 1) {
+        poke(t)
+        k = k + 1
+    }
+    return t[0] + 1
+}
+
+// Two arrays under one name: the inner one's element is not the outer one's.
+fn shadowedArrays(deep: Bool) -> Int {
+    let mut t: Array<Int, 2>
+    let mut r = 0
+    let mut k = 0
+    while (k < 1) {
+        t[0] = 5
+        if (deep) {
+            let t: Array<Int, 2> = [2147483647, 0]
+            r = t[0] + 1
+        }
+        k = k + 1
+    }
+    return r + t[0]
+}
+
+// A `continue` may skip the step, so the loop has no count, and the growth no bound.
+fn continued(skip: Int) -> Int {
+    let mut t: Array<Int, 2>
+    let mut k = 0
+    while (k < 10) {
+        t[0] = t[0] + 1
+        if (k == skip) { continue }
+        k = k + 1
+    }
+    return t[0] + 1
+}
+
+// An element added to itself doubles: no form describes it, and it wraps.
+fn doubling() -> Int {
+    let mut t: Array<Int, 2> = [1, 0]
+    let mut k = 0
+    while (k < 31) {
+        t[0] = t[0] + t[0]
+        k = k + 1
+    }
+    return t[0]
+}
+
+// `b` reads `a` before the walk reaches the store that leaves `a` without a bound, so
+// `b` loses its bound only when the failure spreads to the arrays that read it.
+fn readsFailed(seed: Int) -> Int {
+    let mut a: Array<Int, 2>
+    let mut b: Array<Int, 2>
+    let mut k = 0
+    while (k < 2) {
+        b[0] = a[0] + 1
+        a[0] = seed
+        k = k + 1
+    }
+    return b[0] + 1
+}
+
+// The bound moves inside the loop, so `i < n` bounds nothing.
+fn movingBound() -> Int {
+    let mut n = 3
+    let mut i = 0
+    let mut last = 0
+    while (i < n) {
+        last = i + 2147483640
+        if (n < 20) { n = n + 1 }
+        i = i + 1
+    }
+    return last
+}
+
+// The step is not the last statement, so the condition does not bound what follows it.
+fn stepThenUse() -> Int {
+    let mut i = 0
+    let mut last = 0
+    while (i < 10) {
+        i = i + 1
+        last = i + 2147483638
+    }
+    return last
+}
+
+fn note(inout v: [Int], x: Int) -> Bool {
+    v[0] = x
+    return true
+}
+
+// A conjunct ahead of the counter's bound also runs on the last check, with the
+// counter past the bound: there `1 + i` wraps. `limit` is Int.MAX spelled as a sum,
+// because the analysis reads literals of at most nine digits.
+fn conjunctBefore(start: Int) -> Int {
+    let mut seen: Array<Int, 1>
+    let limit = 999999999 + 999999999 + 147483649
+    let mut i = start
+    while (note(seen, 1 + i) and i < limit) {
+        i = i + 1
+    }
+    return seen[0]
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        println(got)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + check("FAIL: editRows", editRows(), 24)
+    bad = bad + check("FAIL: counted", counted(), 498501)
+    bad = bad + check("FAIL: independent", independent(7), 18)
+    bad = bad + check("FAIL: literalInit", literalInit(), 145)
+    bad = bad + check("FAIL: escaped", escaped(), 0 - 2147483647 - 1)
+    bad = bad + check("FAIL: shadowedArrays", shadowedArrays(true), 0 - 2147483647 - 1 + 5)
+    bad = bad + check("FAIL: continued", continued(0 - 1), 11)
+    bad = bad + check("FAIL: doubling", doubling(), 0 - 2147483647 - 1)
+    bad = bad + check("FAIL: readsFailed", readsFailed(2147483646), 0 - 2147483647 - 1)
+    bad = bad + check("FAIL: movingBound", movingBound(), 0 - 2147483637)
+    bad = bad + check("FAIL: stepThenUse", stepThenUse(), 0 - 2147483647 - 1)
+    bad = bad + check("FAIL: conjunctBefore", conjunctBefore(2147483645), 0 - 2147483647 - 1)
+
+    if (bad != 0) { return 1 }
+    println("PASS: array contents and counted loops")
+    return 0
+}

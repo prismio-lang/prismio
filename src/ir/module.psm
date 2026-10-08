@@ -371,8 +371,11 @@ private fn generateFunction(func: ASTNode) {
         irHoistBorrowedTemporaries(func.child2)
         irFunctionDecl = node_to_ptr(func)
         irFunctionBody = func.child2
+        // Only a loop repeats arithmetic often enough for `nsw` to matter.
+        if (irFunctionHasLoop) { irNowrapPass = nowrapAnalyse(func) }
 
         generateBlock(ptr_to_node(func.child2))
+        irNowrapPass = 0
         irFunctionBody = ptr_null()
         irFunctionDecl = ptr_null()
     }

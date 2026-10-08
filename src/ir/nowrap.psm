@@ -1,0 +1,883 @@
+// No-wrap facts that an unchecked array access implies.
+//
+// An element of an `Array<T, N>` or of a `[T]` view is addressed without a check
+// (generateIndex; the store in stmt.psm), and the language requires every index
+// to lie in range (specification/behavior.md). So an access that ran had its index
+// in [0, len), and every length fits `Int`: the index was in [0, Int.MAX - 1]. The
+// fact holds until the name is assigned or bound again. A scalar cannot be passed
+// `inout` and a closure captures by value, so nothing but an assignment in this
+// function changes one of its `Int` locals.
+//
+// Two kinds of `+`/`-` become `nsw` (generateBinary):
+//
+// - One whose operands the facts bound and whose exact result lies inside `Int`.
+//   It cannot wrap, so the mark is a fact, not an assumption. Quicksort's scan
+//   `while (a[i] < p) { i = i + 1 }` adds 1 to an `i` the access left at most
+//   Int.MAX - 1.
+// - One that *is* an unchecked subscript, with its left operand (either operand of
+//   a `+`) known non-negative. Such a sum can only wrap upwards, to a negative
+//   value, so a wrapped result is out of range, and the access that is its only use
+//   is undefined anyway. Knapsack's `best[c - w]`, after `best[c]` put `c` at 0 or
+//   more.
+//
+// Measured on the freestanding suite (aarch64, instructions executed): quicksort
+// 11.30M -> 9.99M, against C's 10.10M; knapsack 5.69M -> 5.12M, C's count.
+//
+// **A counter's update is marked only when its loop's subscripts are.** `nsw` on
+// `c = c - 1` lets IndVarSimplify widen `c` to 64 bits, and a subscript computed
+// from it with a plain `-` then costs a truncation and an extension per access:
+// knapsack with `c - 1` marked and `c - w` not measured 6.26M, worse than neither.
+// The first walk records every counter some subscript in a loop combines without a
+// mark; the second marks, and leaves those counters' updates in those loops plain.
+//
+// Two more sources feed the same facts: a counted loop bounds its counter
+// (ir/counters.psm), and a local array whose stores the walk can see keeps a bound on its
+// elements (ir/contents.psm), which edit distance's `min(a + 1, b + 1)` needs.
+
+import ast.nodes
+import ast.types
+import common.text
+import std.string
+
+let NOWRAP_RECORD = 0
+let NOWRAP_MARK = 1
+
+// Literals this reads stay far from the edge of the i64 intervals are computed in.
+let NOWRAP_LITERAL_DIGITS = 9
+
+struct NowrapFacts {
+    // `names[i]` lies in [los[i], his[i]] at the walk's point. A dropped fact keeps
+    // its slot with an empty interval.
+    names: Vec<String>,
+    los: Vec<Int>,
+    his: Vec<Int>,
+    // False once every path to the walk's point has left the block: a `return`,
+    // `break` or `continue`.
+    live: Bool
+}
+
+struct NowrapWalk {
+    mode: Int,
+    pass: Int,
+    // The ordinal of every loop around the walk's point, innermost last, in the
+    // first `loopDepth` slots, and how many times each one's body can run, or -1.
+    // Loops are numbered in walk order, which the two walks share.
+    loops: Vec<Int>,
+    trips: Vec<Int>,
+    loopDepth: Int,
+    loopCount: Int,
+    // The block the walk is in, numbered as it enters them.
+    block: Int,
+    blockCount: Int,
+    // The `and` conjunct of a condition being read, numbered from 0 in evaluation order.
+    leaf: Int,
+    // What local `Int` arrays hold (ir/contents.psm): recorded by the first walk,
+    // settled between the two, read by the second.
+    contents: ArrayContents,
+    // A counter that a subscript in loop `blockedLoops[i]` combines with `+` or `-`
+    // without a mark.
+    blockedNames: Vec<String>,
+    blockedLoops: Vec<Int>,
+    // The interval the last nowrapInterval call found.
+    lo: I64,
+    hi: I64
+}
+
+// The pass whose marks the function's body carries, or 0. Run before the body is
+// generated, so that every copy of every loop in it sees the same marks.
+internal fn nowrapAnalyse(func: ASTNode) -> Int {
+    if (nodeIsNull(func.child2)) { return 0 }
+    let w = NowrapWalk {
+        mode: NOWRAP_RECORD, pass: ir_range_proof_new(), loops: [], trips: [], loopDepth: 0,
+        loopCount: 0, block: 0, blockCount: 0, leaf: 0, contents: contentsCollect(func),
+        blockedNames: [], blockedLoops: [], lo: 0 as I64, hi: 0 as I64
+    }
+    nowrapBlock(w, nowrapFactsNew(), func.child2)
+    w.contents.settle()
+    w.mode = NOWRAP_MARK
+    w.pass = ir_range_proof_new()
+    w.loopCount = 0
+    w.blockCount = 0
+    nowrapBlock(w, nowrapFactsNew(), func.child2)
+    return w.pass
+}
+
+// Whether `expr`, a `+` or `-`, is one the active pass proved cannot wrap.
+internal fn nowrapImplied(expr: ASTNode) -> Bool {
+    if (irNowrapPass == 0) { return false }
+    return ir_nowrap_of(node_to_ptr(expr)) == irNowrapPass
+}
+
+// ---------------------------------------------------------------------------
+// Facts
+// ---------------------------------------------------------------------------
+
+private fn nowrapFactsNew() -> NowrapFacts {
+    return NowrapFacts { names: [], los: [], his: [], live: true }
+}
+
+impl NowrapFacts {
+    // The slot holding a live fact on `name`, or -1.
+    internal fn find(self, name: String) -> Int {
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name) and self.los[i] <= self.his[i]) { return i }
+        }
+        return 0 - 1
+    }
+}
+
+
+impl NowrapFacts {
+    private fn copy(self) -> NowrapFacts {
+        let out = nowrapFactsNew()
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            out.names.push(known.clone())
+            out.los.push(self.los[i])
+            out.his.push(self.his[i])
+        }
+        out.live = self.live
+        return out
+    }
+}
+
+
+impl NowrapFacts {
+    // The name is an `Int`, so a bound past either edge says nothing more.
+    private fn set(self, name: String, lo: I64, hi: I64) {
+        self.kill(name)
+        self.names.push(name.clone())
+        self.los.push(nowrapClamp(lo) as Int)
+        self.his.push(nowrapClamp(hi) as Int)
+    }
+}
+
+
+private fn nowrapClamp(v: I64) -> I64 {
+    let intMin = (0 - 2147483647 - 1) as I64
+    let intMax = 2147483647 as I64
+    if (v < intMin) { return intMin }
+    if (v > intMax) { return intMax }
+    return v
+}
+
+
+impl NowrapFacts {
+    private fn kill(self, name: String) {
+        let at = self.find(name)
+        if (at < 0) { return }
+        self.los[at] = 1
+        self.his[at] = 0
+    }
+}
+
+
+impl NowrapFacts {
+    // Narrows the fact on `name` to [lo, hi], as an access does.
+    private fn narrow(self, name: String, lo: I64, hi: I64) {
+        let at = self.find(name)
+        if (at < 0) {
+            self.set(name, lo, hi)
+            return
+        }
+        if (lo > self.los[at] as I64) { self.los[at] = nowrapClamp(lo) as Int }
+        if (hi < self.his[at] as I64) { self.his[at] = nowrapClamp(hi) as Int }
+    }
+}
+
+
+impl NowrapFacts {
+    // The facts that hold where this path and `other` meet: each name both bound,
+    // in the hull of the two intervals.
+    private fn joinFrom(self, other: NowrapFacts) {
+        if (other.live == false) { return }
+        if (self.live == false) {
+            for i in 0..<self.names.length {
+                self.los[i] = 1
+                self.his[i] = 0
+            }
+            for i in 0..<other.names.length {
+                let known: String = other.names[i]
+                self.names.push(known.clone())
+                self.los.push(other.los[i])
+                self.his.push(other.his[i])
+            }
+            self.live = true
+            return
+        }
+        for i in 0..<self.names.length {
+            if (self.los[i] <= self.his[i]) {
+                let known: String = self.names[i]
+                let theirs = other.find(known)
+                if (theirs < 0) {
+                    self.los[i] = 1
+                    self.his[i] = 0
+                } else {
+                    if (other.los[theirs] < self.los[i]) { self.los[i] = other.los[theirs] }
+                    if (other.his[theirs] > self.his[i]) { self.his[i] = other.his[theirs] }
+                }
+            }
+        }
+    }
+}
+
+
+// Drops every fact on a name the subtree assigns or binds: what a loop's head
+// can still rely on, whichever iteration it is.
+private fn nowrapKillBound(f: NowrapFacts, nodePtr: Ptr) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.CLOSURE_EXPR) { return }
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+        let target = ptr_to_node(n.child1)
+        if (target.kind == NodeKind.IDENTIFIER_EXPR) { f.kill(target.s1) }
+    }
+    if (n.kind == NodeKind.VARIABLE_DECL or n.kind == NodeKind.FOR_STATEMENT) { f.kill(n.s1) }
+    // `for (i, x) in xs` binds its second name in s2.
+    if (n.kind == NodeKind.FOR_STATEMENT) { f.kill(n.s2) }
+    if (n.kind == NodeKind.MATCH_ARM) { nowrapKillNames(f, n.child1) }
+    nowrapKillBoundChain(f, n.child1)
+    nowrapKillBoundChain(f, n.child2)
+    nowrapKillBoundChain(f, n.child3)
+}
+
+private fn nowrapKillBoundChain(f: NowrapFacts, head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        nowrapKillBound(f, p)
+        p = ptr_to_node(p).next
+    }
+}
+
+// Every name a pattern mentions, any of which it may bind.
+private fn nowrapKillNames(f: NowrapFacts, nodePtr: Ptr) {
+    let mut p = nodePtr
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.IDENTIFIER_EXPR) { f.kill(n.s1) }
+        nowrapKillNames(f, n.child1)
+        nowrapKillNames(f, n.child2)
+        nowrapKillNames(f, n.child3)
+        p = n.next
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Statements
+// ---------------------------------------------------------------------------
+
+// A block in order. The names it declares go out of scope at its end, where the
+// same names mean whatever they meant before it, so their facts go too.
+private fn nowrapBlock(w: NowrapWalk, f: NowrapFacts, blockPtr: Ptr) {
+    if (nodeIsNull(blockPtr)) { return }
+    let outer = w.block
+    w.blockCount = w.blockCount + 1
+    w.block = w.blockCount
+    let mut p = ptr_to_node(blockPtr).child1
+    while (nodeExists(p) and f.live) {
+        nowrapStmt(w, f, p)
+        p = ptr_to_node(p).next
+    }
+    w.block = outer
+    let mut q = ptr_to_node(blockPtr).child1
+    while (nodeExists(q)) {
+        let s = ptr_to_node(q)
+        if (s.kind == NodeKind.VARIABLE_DECL) { f.kill(s.s1) }
+        q = s.next
+    }
+}
+
+private fn nowrapStmt(w: NowrapWalk, f: NowrapFacts, stmtPtr: Ptr) {
+    let s = ptr_to_node(stmtPtr)
+    match (s.kind) {
+        NodeKind.EXPRESSION_STATEMENT => {
+            nowrapExpr(w, f, s.child1)
+            return
+        }
+        NodeKind.VARIABLE_DECL => {
+            nowrapExpr(w, f, s.child2)
+            let known = nowrapInterval(w, f, s.child2)
+            f.kill(s.s1)
+            if (known and ir_var_is_global(s.s1) == 0) { f.set(s.s1, w.lo, w.hi) }
+            nowrapDeclared(w, f, s)
+            return
+        }
+        NodeKind.ASSIGNMENT_STATEMENT => {
+            nowrapAssign(w, f, s)
+            return
+        }
+        NodeKind.IF_STATEMENT => {
+            nowrapIf(w, f, s)
+            return
+        }
+        NodeKind.MATCH_STATEMENT => {
+            nowrapMatch(w, f, s)
+            return
+        }
+        NodeKind.WHILE_STATEMENT => {
+            nowrapLoop(w, f, s.child1, s.child2, s)
+            return
+        }
+        NodeKind.LOOP_STATEMENT => {
+            nowrapLoop(w, f, ptr_null(), s.child1, s)
+            return
+        }
+        NodeKind.FOR_STATEMENT => {
+            nowrapExpr(w, f, s.child1)
+            nowrapExprChain(w, f, s.child2)
+            f.kill(s.s1)
+            f.kill(s.s2)
+            nowrapLoop(w, f, ptr_null(), s.child3, s)
+            f.kill(s.s1)
+            f.kill(s.s2)
+            return
+        }
+        NodeKind.BLOCK => {
+            nowrapBlock(w, f, stmtPtr)
+            return
+        }
+        NodeKind.REGION_STATEMENT => {
+            nowrapBlock(w, f, s.child1)
+            return
+        }
+        NodeKind.RETURN_STATEMENT => {
+            nowrapExpr(w, f, s.child1)
+            f.live = false
+            return
+        }
+        NodeKind.BREAK_STATEMENT => {
+            f.live = false
+            return
+        }
+        NodeKind.CONTINUE_STATEMENT => {
+            f.live = false
+            return
+        }
+    }
+    // A statement this does not model: its arithmetic is still read, from a copy,
+    // nothing it may assign keeps a fact, and no array it stores into keeps a bound.
+    let inside = f.copy()
+    nowrapExprChain(w, inside, s.child1)
+    nowrapExprChain(w, inside, s.child2)
+    nowrapExprChain(w, inside, s.child3)
+    nowrapKillBound(f, stmtPtr)
+    nowrapFailStores(w, stmtPtr)
+}
+
+private fn nowrapFailStores(w: NowrapWalk, nodePtr: Ptr) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+        let slot = w.contents.slotOfIndex(ptr_to_node(n.child1))
+        if (slot >= 0) { w.contents.fail(slot) }
+    }
+    let mut p = n.child1
+    while (nodeExists(p)) {
+        nowrapFailStores(w, p)
+        p = ptr_to_node(p).next
+    }
+    let mut q = n.child2
+    while (nodeExists(q)) {
+        nowrapFailStores(w, q)
+        q = ptr_to_node(q).next
+    }
+    let mut r = n.child3
+    while (nodeExists(r)) {
+        nowrapFailStores(w, r)
+        r = ptr_to_node(r).next
+    }
+}
+
+private fn nowrapAssign(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
+    if (nodeIsNull(s.child1)) { return }
+    let target = ptr_to_node(s.child1)
+    if (target.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (nowrapIsUpdate(s)) {
+            nowrapUpdate(w, f, s)
+        } else {
+            nowrapExpr(w, f, s.child2)
+        }
+        let known = nowrapInterval(w, f, s.child2)
+        f.kill(target.s1)
+        if (known and nowrapIsIntName(target)) { f.set(target.s1, w.lo, w.hi) }
+        return
+    }
+    // `a[i] = v` evaluates the array, the subscript, then the value, then stores
+    // (generateAssignment), so the store's fact holds only after the value.
+    if (target.kind == NodeKind.INDEX_EXPR and nowrapIsUnchecked(target)) {
+        nowrapExpr(w, f, target.child1)
+        nowrapExpr(w, f, target.child2)
+        nowrapSubscript(w, f, target)
+        nowrapExpr(w, f, s.child2)
+        nowrapStored(w, f, target, s.child2)
+        nowrapAccessed(f, target)
+        return
+    }
+    nowrapExpr(w, f, s.child1)
+    nowrapExpr(w, f, s.child2)
+}
+
+// The declaration of an array ir/contents.psm follows: where its lifetime starts, and
+// what its elements start as, zero or a literal's.
+private fn nowrapDeclared(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
+    if (w.mode != NOWRAP_RECORD) { return }
+    let slot = w.contents.slotOf(s.s1)
+    if (slot < 0) { return }
+    if (nodeIsNull(s.child2)) {
+        w.contents.declare(slot, w.block, w.loopDepth, 0 as I64, 0 as I64)
+        return
+    }
+    let init = ptr_to_node(s.child2)
+    if (init.kind != NodeKind.ARRAY_LITERAL_EXPR) {
+        w.contents.fail(slot)
+        return
+    }
+    let mut lo = 2147483647 as I64
+    let mut hi = (0 - 2147483647 - 1) as I64
+    let mut p = init.child1
+    while (nodeExists(p)) {
+        if (nowrapInterval(w, f, p) == false) {
+            w.contents.fail(slot)
+            return
+        }
+        if (w.lo < lo) { lo = w.lo }
+        if (w.hi > hi) { hi = w.hi }
+        p = ptr_to_node(p).next
+    }
+    w.contents.declare(slot, w.block, w.loopDepth, lo, hi)
+}
+
+// A store into an array ir/contents.psm follows, with its value's form and how many
+// times it can run in one lifetime of the array.
+private fn nowrapStored(w: NowrapWalk, f: NowrapFacts, target: ASTNode, valuePtr: Ptr) {
+    if (w.mode != NOWRAP_RECORD) { return }
+    let slot = w.contents.slotOfIndex(target)
+    if (slot < 0) { return }
+    let form = nowrapForm(w, f, valuePtr, slot)
+    w.contents.store(slot, form, nowrapExecutions(w, w.contents.depth[slot]))
+}
+
+// How many times the walk's point can run per run of a statement `depth` loops deep:
+// the product of the counts of the loops between them, or -1.
+private fn nowrapExecutions(w: NowrapWalk, depth: Int) -> I64 {
+    let mut product = 1 as I64
+    let mut k = depth
+    while (k < w.loopDepth) {
+        if (w.trips[k] < 0) { return (0 - 1) as I64 }
+        product = product * (w.trips[k] as I64)
+        if (product > 2147483647 as I64) { return (0 - 1) as I64 }
+        k = k + 1
+    }
+    return product
+}
+
+// `x = x + e`, `x = e + x` or `x = x - e`: an update of the counter `x`.
+internal fn nowrapIsUpdate(s: ASTNode) -> Bool {
+    let name = ptr_to_node(s.child1).s1
+    if (nodeIsNull(s.child2)) { return false }
+    let rhs = ptr_to_node(s.child2)
+    if (rhs.kind != NodeKind.BINARY_EXPR) { return false }
+    if (rangeIsNamed(rhs.child1, name)) { return rhs.s1.equals("+") or rhs.s1.equals("-") }
+    return rhs.s1.equals("+") and rangeIsNamed(rhs.child2, name)
+}
+
+// An update's own sum is marked like any bounded one, except inside a loop where
+// some subscript combines the counter without a mark.
+private fn nowrapUpdate(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
+    let rhs = ptr_to_node(s.child2)
+    nowrapExpr(w, f, rhs.child1)
+    nowrapExpr(w, f, rhs.child2)
+    if (w.mode != NOWRAP_MARK or w.isBlocked(ptr_to_node(s.child1).s1)) { return }
+    nowrapArith(w, f, rhs)
+}
+
+impl NowrapWalk {
+    private fn isBlocked(self, name: String) -> Bool {
+        for i in 0..<self.blockedNames.length {
+            let known: String = self.blockedNames[i]
+            if (known.equals(name)) {
+                for k in 0..<self.loopDepth {
+                    if (self.loops[k] == self.blockedLoops[i]) { return true }
+                }
+            }
+        }
+        return false
+    }
+}
+
+
+impl NowrapWalk {
+    private fn block(self, name: String) {
+        for k in 0..<self.loopDepth {
+            self.blockedNames.push(name.clone())
+            self.blockedLoops.push(self.loops[k])
+        }
+    }
+}
+
+
+private fn nowrapIf(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
+    let taken = f.copy()
+    w.leaf = 0
+    nowrapCondition(w, taken, s.child1, nowrapNoCounter())
+    nowrapExpr(w, f, s.child1)
+    nowrapBlock(w, taken, s.child2)
+    if (nodeExists(s.child3)) {
+        if (ptr_to_node(s.child3).kind == NodeKind.IF_STATEMENT) {
+            nowrapStmt(w, f, s.child3)
+        } else {
+            nowrapBlock(w, f, s.child3)
+        }
+    }
+    f.joinFrom(taken)
+}
+
+// Every arm from the facts after the scrutinee, without what its pattern binds,
+// and the path no arm takes.
+private fn nowrapMatch(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
+    nowrapExpr(w, f, s.child1)
+    let entry = f.copy()
+    let mut arm = s.child2
+    while (nodeExists(arm)) {
+        let a = ptr_to_node(arm)
+        let inside = entry.copy()
+        nowrapKillNames(inside, a.child1)
+        nowrapBlock(w, inside, a.child2)
+        f.joinFrom(inside)
+        arm = a.next
+    }
+}
+
+// A loop's head keeps only facts on names nothing in it assigns, which hold on every
+// iteration; the body runs from the head with what its condition's accesses add,
+// and the loop leaves with the head's facts.
+private fn nowrapLoop(w: NowrapWalk, f: NowrapFacts, condPtr: Ptr, bodyPtr: Ptr, loopStmt: ASTNode) {
+    let counter = nowrapCounter(w, f, condPtr, bodyPtr)
+    nowrapKillBound(f, condPtr)
+    nowrapKillBound(f, bodyPtr)
+    let mut trips = 0 - 1
+    if (counter.trips >= 0 as I64 and counter.trips <= 2147483647 as I64) { trips = counter.trips as Int }
+    if (w.loopDepth < w.loops.length) {
+        w.loops[w.loopDepth] = w.loopCount
+        w.trips[w.loopDepth] = trips
+    } else {
+        w.loops.push(w.loopCount)
+        w.trips.push(trips)
+    }
+    w.loopDepth = w.loopDepth + 1
+    w.loopCount = w.loopCount + 1
+    let inside = f.copy()
+    w.leaf = 0
+    nowrapCondition(w, inside, condPtr, counter)
+    nowrapBlock(w, inside, bodyPtr)
+    w.loopDepth = w.loopDepth - 1
+}
+
+// The facts that hold when a condition is true: every `and` conjunct ran. A counted
+// loop's counter is bounded from its bounding conjunct on, not before it: a conjunct
+// ahead of that one also runs on the last check, with the counter past the bound.
+private fn nowrapCondition(w: NowrapWalk, f: NowrapFacts, condPtr: Ptr, counter: NowrapCounter) {
+    if (nodeIsNull(condPtr)) { return }
+    let c = ptr_to_node(condPtr)
+    if (c.kind == NodeKind.BINARY_EXPR and c.s1.equals("and")) {
+        nowrapCondition(w, f, c.child1, counter)
+        nowrapCondition(w, f, c.child2, counter)
+        return
+    }
+    nowrapExpr(w, f, condPtr)
+    if (w.leaf == counter.conjunct) { f.set(counter.name, counter.lo, counter.hi) }
+    w.leaf = w.leaf + 1
+}
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+
+private fn nowrapExprChain(w: NowrapWalk, f: NowrapFacts, head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        nowrapExpr(w, f, p)
+        p = ptr_to_node(p).next
+    }
+}
+
+// One expression in evaluation order. Facts come only from accesses that ran before
+// the point, so the part of an expression that may not run -- the right of `and`,
+// `or` and `??` -- is read from a copy.
+private fn nowrapExpr(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) {
+    if (nodeIsNull(exprPtr)) { return }
+    let e = ptr_to_node(exprPtr)
+    match (e.kind) {
+        NodeKind.LITERAL_EXPR => { return }
+        NodeKind.IDENTIFIER_EXPR => { return }
+        NodeKind.NONE_LITERAL_EXPR => { return }
+        NodeKind.CLOSURE_EXPR => { return }
+        NodeKind.BINARY_EXPR => {
+            nowrapExpr(w, f, e.child1)
+            if (e.s1.equals("and") or e.s1.equals("or")) {
+                let maybe = f.copy()
+                nowrapExpr(w, maybe, e.child2)
+                return
+            }
+            nowrapExpr(w, f, e.child2)
+            nowrapArith(w, f, e)
+            return
+        }
+        NodeKind.INDEX_EXPR => {
+            nowrapExpr(w, f, e.child1)
+            nowrapExpr(w, f, e.child2)
+            if (nowrapIsUnchecked(e)) {
+                nowrapSubscript(w, f, e)
+                nowrapAccessed(f, e)
+            }
+            return
+        }
+        NodeKind.CALL_EXPR => {
+            nowrapExpr(w, f, e.child1)
+            if (irCallIsCoalesce(e) and nodeExists(e.child2)) {
+                nowrapExpr(w, f, e.child2)
+                let maybe = f.copy()
+                nowrapExprChain(w, maybe, ptr_to_node(e.child2).next)
+                return
+            }
+            nowrapExprChain(w, f, e.child2)
+            // A list subscript is an address too: one left unmarked keeps its
+            // counters' updates plain, as an array's does.
+            if (w.mode == NOWRAP_RECORD and rangeIsAccess(e)) {
+                w.blockUnmarked(rangeAccessIndex(e))
+            }
+            return
+        }
+        NodeKind.UNARY_EXPR => {
+            nowrapExpr(w, f, e.child1)
+            return
+        }
+        NodeKind.CAST_EXPR => {
+            nowrapExpr(w, f, e.child1)
+            return
+        }
+        NodeKind.MEMBER_ACCESS_EXPR => {
+            nowrapExpr(w, f, e.child1)
+            return
+        }
+    }
+    let inside = f.copy()
+    nowrapExprChain(w, inside, e.child1)
+    nowrapExprChain(w, inside, e.child2)
+    nowrapExprChain(w, inside, e.child3)
+}
+
+// An element access no check stands in front of: a fixed array's or a view's.
+private fn nowrapIsUnchecked(e: ASTNode) -> Bool {
+    if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return false }
+    let base = ptr_to_node(e.child1)
+    if (nodeHasType(base) == false) { return false }
+    return nodeGetType(base).kind == TypeKind.ARRAY
+}
+
+// The largest index an access to `e`'s array can have run with.
+private fn nowrapLastIndex(e: ASTNode) -> I64 {
+    let length = nodeGetType(ptr_to_node(e.child1)).length
+    if (length > 0) { return (length - 1) as I64 }
+    return (2147483647 - 1) as I64
+}
+
+// What an access that ran says of its subscript: a name, or a name plus or minus
+// a literal, was inside the array.
+private fn nowrapAccessed(f: NowrapFacts, e: ASTNode) {
+    let last = nowrapLastIndex(e)
+    let sub = ptr_to_node(e.child2)
+    if (sub.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (nowrapIsIntName(sub)) { f.narrow(sub.s1, 0 as I64, last) }
+        return
+    }
+    if (sub.kind != NodeKind.BINARY_EXPR or nowrapIsIntName(sub) == false) { return }
+    let k = nowrapLiteral(ptr_to_node(sub.child2))
+    if (k < 0) { return }
+    let name = ptr_to_node(sub.child1)
+    if (name.kind != NodeKind.IDENTIFIER_EXPR or nowrapIsIntName(name) == false) { return }
+    let shift = k as I64
+    // A `name + k` that wrapped is negative, so out of range. A `name - k` that
+    // wrapped is in [Int.MAX - k + 1, Int.MAX], which a view's indices reach once
+    // k is 2: the access then ran with `name` near Int.MIN.
+    if (sub.s1.equals("+")) { f.narrow(name.s1, 0 - shift, last - shift) }
+    if (sub.s1.equals("-") and last + shift <= 2147483647 as I64) {
+        f.narrow(name.s1, shift, last + shift)
+    }
+}
+
+// A subscript's own `+`/`-`: marked when its left operand -- either operand of a
+// `+` -- is known non-negative, since then only an upward wrap is possible and it
+// lands out of range. Any sum in the subscript left plain blocks its counters'
+// updates in every loop around it.
+private fn nowrapSubscript(w: NowrapWalk, f: NowrapFacts, e: ASTNode) {
+    let sub = ptr_to_node(e.child2)
+    if (nowrapIsSum(sub) and ir_nowrap_marked(e.child2) != w.pass) {
+        let leftSafe = nowrapInterval(w, f, sub.child1) and w.lo >= 0 as I64
+        let rightSafe = nowrapInterval(w, f, sub.child2) and w.lo >= 0 as I64
+        if (leftSafe or (sub.s1.equals("+") and rightSafe)) {
+            ir_nowrap_mark(e.child2, w.pass)
+        }
+    }
+    if (w.mode == NOWRAP_RECORD) { w.blockUnmarked(e.child2) }
+}
+
+// A signed `Int` `+` or `-`, the two this marks.
+private fn nowrapIsSum(n: ASTNode) -> Bool {
+    if (n.kind != NodeKind.BINARY_EXPR) { return false }
+    if (n.s1.equals("+") == false and n.s1.equals("-") == false) { return false }
+    return nowrapIsIntName(n)
+}
+
+impl NowrapWalk {
+    // Blocks the names every unmarked sum in an address combines directly.
+    private fn blockUnmarked(self, nodePtr: Ptr) {
+        if (nodeIsNull(nodePtr)) { return }
+        let n = ptr_to_node(nodePtr)
+        if (n.kind != NodeKind.BINARY_EXPR) { return }
+        if (nowrapIsSum(n) and ir_nowrap_marked(nodePtr) != self.pass) {
+            let left = ptr_to_node(n.child1)
+            let right = ptr_to_node(n.child2)
+            if (left.kind == NodeKind.IDENTIFIER_EXPR) { self.block(left.s1) }
+            if (right.kind == NodeKind.IDENTIFIER_EXPR) { self.block(right.s1) }
+        }
+        self.blockUnmarked(n.child1)
+        self.blockUnmarked(n.child2)
+    }
+}
+
+// A `+`/`-` whose operands the facts bound, with an exact result inside `Int`.
+private fn nowrapArith(w: NowrapWalk, f: NowrapFacts, e: ASTNode) {
+    if (nowrapIsSum(e) == false) { return }
+    if (nowrapInterval(w, f, node_to_ptr(e))) { ir_nowrap_mark(node_to_ptr(e), w.pass) }
+}
+
+// The interval an `Int` expression takes here, into w.lo/w.hi, when the facts and
+// literals bound it and nothing in it can wrap.
+internal fn nowrapInterval(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) -> Bool {
+    if (nodeIsNull(exprPtr)) { return false }
+    let e = ptr_to_node(exprPtr)
+    let literal = nowrapLiteral(e)
+    if (literal >= 0) {
+        w.lo = literal as I64
+        w.hi = literal as I64
+        return true
+    }
+    let negative = nowrapNegativeLiteral(e)
+    if (negative < 0 as I64) {
+        w.lo = negative
+        w.hi = negative
+        return true
+    }
+    if (e.kind == NodeKind.UNARY_EXPR and e.s1.equals("-") and nodeExists(e.child1)) {
+        let negated = nowrapLiteral(ptr_to_node(e.child1))
+        if (negated < 0) { return false }
+        w.lo = 0 - (negated as I64)
+        w.hi = w.lo
+        return true
+    }
+    if (e.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (nowrapIsIntName(e) == false) { return false }
+        let at = f.find(e.s1)
+        if (at < 0) { return false }
+        w.lo = f.los[at] as I64
+        w.hi = f.his[at] as I64
+        return true
+    }
+    if (e.kind == NodeKind.INDEX_EXPR) {
+        let slot = w.contents.slotOfIndex(e)
+        if (w.contents.bounded(slot) == false) { return false }
+        w.lo = w.contents.lo[slot] as I64
+        w.hi = w.contents.hi[slot] as I64
+        return true
+    }
+    if (e.kind != NodeKind.BINARY_EXPR or nowrapIsIntName(e) == false) { return false }
+    if (e.s1.equals("+") == false and e.s1.equals("-") == false) { return false }
+    if (nowrapInterval(w, f, e.child1) == false) { return false }
+    let aLo = w.lo
+    let aHi = w.hi
+    if (nowrapInterval(w, f, e.child2) == false) { return false }
+    if (e.s1.equals("+")) {
+        w.lo = aLo + w.lo
+        w.hi = aHi + w.hi
+    } else {
+        let bLo = w.lo
+        w.lo = aLo - w.hi
+        w.hi = aHi - bLo
+    }
+    let intMin = (0 - 2147483647 - 1) as I64
+    let intMax = 2147483647 as I64
+    return w.lo >= intMin and w.hi <= intMax
+}
+
+// The form of a value stored into `slot`'s array (ir/contents.psm): an interval the
+// facts give, an element of the array's family, or a sum, `min` or `max` of those.
+private fn nowrapForm(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr, slot: Int) -> ContentForm {
+    if (nodeIsNull(exprPtr)) { return contentFail() }
+    if (nowrapInterval(w, f, exprPtr)) { return contentConst(w.lo, w.hi) }
+    let e = ptr_to_node(exprPtr)
+    if (e.kind == NodeKind.INDEX_EXPR) {
+        let read = w.contents.slotOfIndex(e)
+        if (read < 0 or w.contents.family[read] != w.contents.family[slot]) { return contentFail() }
+        w.contents.noteRead(slot, read)
+        return contentRead()
+    }
+    if (nowrapIsSum(e)) {
+        let sum = contentSum(nowrapForm(w, f, e.child1, slot), nowrapForm(w, f, e.child2, slot),
+                             e.s1.equals("-"))
+        w.contents.noteSum(slot, sum)
+        return sum
+    }
+    let which = nowrapMinMax(e)
+    if (which == 0) { return contentFail() }
+    let a = nowrapForm(w, f, e.child2, slot)
+    let b = nowrapForm(w, f, ptr_to_node(e.child2).next, slot)
+    if (which < 0) { return contentMin(a, b) }
+    return contentMax(a, b)
+}
+
+// -1 for a two-operand `__builtin_min`, 1 for `__builtin_max`, otherwise 0.
+private fn nowrapMinMax(e: ASTNode) -> Int {
+    if (e.kind != NodeKind.CALL_EXPR or nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return 0 }
+    let second = ptr_to_node(e.child2).next
+    if (nodeIsNull(second) or nodeExists(ptr_to_node(second).next)) { return 0 }
+    let callee = ptr_to_node(e.child1)
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR) { return 0 }
+    if (callee.s1.equals("__builtin_min")) { return 0 - 1 }
+    if (callee.s1.equals("__builtin_max")) { return 1 }
+    return 0
+}
+
+// A negative integer literal, which the parser folds from `-` and a number
+// (foldNegativeLiteral in parse/expr.psm), or 0.
+private fn nowrapNegativeLiteral(n: ASTNode) -> I64 {
+    if (n.kind != NodeKind.LITERAL_EXPR or n.i1 != TokenType.NUMBER_LITERAL as Int) { return 0 as I64 }
+    if (n.s1.startsWith("-") == false) { return 0 as I64 }
+    if (__builtin_string_len(n.s1) > NOWRAP_LITERAL_DIGITS + 1) { return 0 as I64 }
+    let value = n.s1.parseIntOr(0)
+    if (value >= 0 or value != n.s1.parseIntOr(1)) { return 0 as I64 }
+    return value as I64
+}
+
+// A non-negative integer literal of at most NOWRAP_LITERAL_DIGITS digits, or -1.
+internal fn nowrapLiteral(n: ASTNode) -> Int {
+    if (n.kind != NodeKind.LITERAL_EXPR) { return 0 - 1 }
+    if (n.i1 != TokenType.NUMBER_LITERAL as Int) { return 0 - 1 }
+    if (__builtin_string_len(n.s1) > NOWRAP_LITERAL_DIGITS) { return 0 - 1 }
+    let value = n.s1.parseIntOr(0 - 1)
+    if (value != n.s1.parseIntOr(0 - 2)) { return 0 - 1 }
+    return value
+}
+
+// A node of the signed `Int` type, which is all this reasons about: an unsigned
+// sum must not be `nsw`, and a global is not a local a callee cannot change.
+internal fn nowrapIsIntName(n: ASTNode) -> Bool {
+    if (nodeHasType(n) == false) { return false }
+    let t = nodeGetType(n)
+    if (t.kind != TypeKind.INT or t.name.equals("Int") == false) { return false }
+    if (n.kind == NodeKind.IDENTIFIER_EXPR or n.kind == NodeKind.VARIABLE_DECL) {
+        return ir_var_is_global(n.s1) == 0
+    }
+    return true
+}

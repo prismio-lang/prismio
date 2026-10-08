@@ -67,9 +67,15 @@ Configuration held equal for every arm:
 **Integer overflow is a difference, kept on purpose.** C's signed overflow is undefined and Prismio's
 `Int` wraps (so does Rust's in a release build), so LLVM may rewrite C's `min(a + 1, b + 1)` as
 `min(a, b) + 1` and widen its loop indices, and cannot for Prismio unless it can prove no overflow.
-That is the whole of the remaining gap to C on `edit_distance`, `knapsack` and `quicksort`: building the C
-arm with `-fwrapv` (add it to `C_FLAGS`) gives Prismio 4 fewer, 16 level and no more instructions across
-the 20 workloads. The suite keeps C's default because that is what C is.
+In the first results that was the whole of the gap to C on `edit_distance`, `knapsack` and `quicksort`:
+building the C arm with `-fwrapv` (add it to `C_FLAGS`) gave Prismio 4 fewer, 16 level and no more
+instructions across the 20 workloads. The compiler now proves it instead: an unchecked access bounds
+its index, which marks quicksort's scans `nsw` (11.30M to 9.99M, C 10.10M); knapsack's loop over a
+sized array is versioned on `w >= 0` (5.69M to 3.14M, C 5.12M); and edit distance's rows are local
+arrays whose elements stay in `[0, 360600]`, so `min(a + 1, b + 1)` becomes `min(a, b) + 1` (5.90M to
+5.54M, C 5.60M). `heapsort` (1.02x) is the one row left behind C; `docs/KNOWN_ISSUES.md` has it.
+`PRISMIO_NOWRAP=0` and `PRISMIO_RANGE_PROOFS=0` switch the mechanisms' marks off, to separate them.
+The suite keeps C's default because that is what C is.
 
 **A known difference, kept on purpose:** Rust indexes with bounds checks, as safe Rust does.
 C's arrays and Prismio's fixed arrays are unchecked. That is the language's price for safe

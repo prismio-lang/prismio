@@ -369,6 +369,11 @@ public extern fn ir_range_proof_of(node: Ptr) -> Int
 public extern fn ir_range_proof_marked(node: Ptr) -> Int
 public extern fn ir_range_proof_data(node: Ptr) -> String alias
 public extern fn ir_range_trace(line: Int, proved: Int, total: Int)
+// Access facts (ir/nowrap.psm): the pass that proved a `+`/`-` node cannot wrap.
+// `_of` is what codegen asks, which PRISMIO_NOWRAP=0 answers 0; `_marked` is the mark.
+public extern fn ir_nowrap_mark(node: Ptr, pass: Int)
+public extern fn ir_nowrap_of(node: Ptr) -> Int
+public extern fn ir_nowrap_marked(node: Ptr) -> Int
 public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 public extern fn ir_array_alloca_zeroed(elemType: String, count: Int) -> Int
 public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int

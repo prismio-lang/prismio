@@ -55,6 +55,10 @@ let mut irLoopRangeProof = 0
 let mut irLoopRangeProofPending = 0
 let mut irLoopRangeProofComplete = false
 
+// The access-facts pass of the function being generated, or 0 (ir/nowrap.psm). A
+// `+`/`-` node carrying it cannot wrap in any copy of any loop it is in.
+let mut irNowrapPass = 0
+
 // A narrower bounds fact for a growing-container loop:
 // `while (iv < list_len(xs))`. The condition proves only `xs[iv]`, and only
 // until the body assigns `iv`; unlike a range proof it says nothing about

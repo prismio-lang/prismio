@@ -28,6 +28,16 @@
 // inside [0, len) -- which is inside `Int` -- is the index the loop computes.
 // `/` and `%` do not commute with wrapping, and each adds the fact that its
 // operand did not wrap.
+//
+// A loop with no list guard to ride on is analysed for its sized-array accesses
+// instead (`arrays`). Those are never checked, so a proof drops nothing; what it
+// buys is its guard, which dominates the proved copy, and the `nsw` the guard
+// licenses. Knapsack's `best[c - w]` over `c` in `[w, 1500]` puts `w >= 0` in the
+// guard, and from that one fact LLVM proves the loop's reads trail its store and
+// interleaves it: 3.14M instructions against 5.69M without the guard and C's 5.12M
+// (freestanding, aarch64). The guard `w != Int.MIN` that only keeps `c - 1` from
+// wrapping measured 6.26M, worse than none: a widened `c` with an unproved
+// `c - w` costs a truncation and an extension per access.
 
 import ast.nodes
 import ast.types
@@ -62,7 +72,12 @@ struct RangeLoop {
     slot: String,
     proof: Int,
     proved: Int,
+    // Arithmetic nodes the proof marked `nsw`.
+    markedOps: Int,
     failed: Bool,
+    // Whether this serves the loop's sized-array accesses rather than its flat list
+    // accesses: a loop without a list guard, whose copies cannot read a list flat.
+    arrays: Bool,
     // The loop's own label, which a `continue@label` in its body names, and its
     // source line, for PRISMIO_RANGE_TRACE.
     label: String,
@@ -137,12 +152,12 @@ struct RangeLoop {
     conjLimit: Int
 }
 
-private fn rangeLoopNew(condPtr: Ptr, bodyPtr: Ptr) -> RangeLoop {
+private fn rangeLoopNew(condPtr: Ptr, bodyPtr: Ptr, arrays: Bool) -> RangeLoop {
     let mut label = ""
     if (nodeExists(bodyPtr)) { label = ptr_to_node(bodyPtr).s1.clone() }
     return RangeLoop {
-        condPtr: condPtr, bodyPtr: bodyPtr, slot: "", proof: 0, proved: 0,
-        failed: false, label: label, line: 0,
+        condPtr: condPtr, bodyPtr: bodyPtr, slot: "", proof: 0, proved: 0, markedOps: 0,
+        failed: false, arrays: arrays, label: label, line: 0,
         names: [], kinds: [], units: [], coefs: [],
         growth: [], boundConj: [], relations: [],
         inits: [], unitValues: [], lows: [], highs: [],
@@ -164,8 +179,9 @@ private fn rangeLoopNew(condPtr: Ptr, bodyPtr: Ptr) -> RangeLoop {
 
 // A `while` loop. Returns the guard slot for the proved copy, or "" when no access
 // could be proved; `irLoopRangeProofPending` then holds the proof to activate.
-internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode) -> String {
-    let rl = rangeLoopNew(node_to_ptr(cond), node_to_ptr(body))
+// `arrays` serves the loop's sized-array accesses instead of its list accesses.
+internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode, arrays: Bool) -> String {
+    let rl = rangeLoopNew(node_to_ptr(cond), node_to_ptr(body), arrays)
     rl.line = cond.line
     rl.collectVars()
     return rl.prove()
@@ -177,8 +193,9 @@ internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode) -> String {
 // `inclusive`. `down` counts from the start down to `endVal`, which is then the
 // low end rather than the high one.
 internal fn generateForRangeGuard(stmt: ASTNode, endVal: String, stepVal: String,
-                                  stepIsLiteral: Bool, inclusive: Bool, down: Bool) -> String {
-    let rl = rangeLoopNew(ptr_null(), stmt.child3)
+                                  stepIsLiteral: Bool, inclusive: Bool, down: Bool,
+                                  arrays: Bool) -> String {
+    let rl = rangeLoopNew(ptr_null(), stmt.child3, arrays)
     rl.line = stmt.line
     let index = rl.addVar(stmt.s1)
     let mut kind = RANGE_UP
@@ -246,6 +263,10 @@ impl RangeLoop {
         self.proof = ir_range_proof_new()
         self.runWalk(RANGE_WALK_EMIT)
         relationsProve(self)
+        // An array proof drops no check, so a loop whose arithmetic it leaves
+        // unmarked -- `for i in 0..<n { a[i] }` -- would get a second copy for
+        // nothing but a fact LLVM rarely uses.
+        if (self.arrays and self.markedOps == 0) { return "" }
         ir_range_trace(self.line, self.proved, self.accessConj.length)
         if (self.proved == 0) { return "" }
         irLoopRangeProofPending = self.proof
@@ -821,7 +842,7 @@ private fn rangeWalkExprChain(head: Ptr, rl: RangeLoop) {
 private fn rangeWalkExpr(exprPtr: Ptr, rl: RangeLoop) {
     if (nodeIsNull(exprPtr)) { return }
     let e = ptr_to_node(exprPtr)
-    if (rangeIsAccess(e)) { rangeVisitAccess(e, rl) }
+    if (rl.servesAccess(e)) { rangeVisitAccess(e, rl) }
     rangeWalkExprChain(e.child1, rl)
     rangeWalkExprChain(e.child2, rl)
     rangeWalkExprChain(e.child3, rl)
@@ -834,6 +855,121 @@ internal fn rangeIsAccess(e: ASTNode) -> Bool {
     let fname = ptr_to_node(e.child1).s1
     if (flatGetStride(e, fname) > 0) { return true }
     return flatSetScalarStride(e, fname) > 0
+}
+
+// An element of an `Array<T, N>` whose N the type carries, read or stored. A
+// `[T]` parameter's length is its caller's, which the preheader cannot know.
+internal fn rangeIsSizedArrayAccess(e: ASTNode) -> Bool {
+    if (e.kind != NodeKind.INDEX_EXPR or nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return false }
+    let base = ptr_to_node(e.child1)
+    if (nodeHasType(base) == false) { return false }
+    let t = nodeGetType(base)
+    return t.kind == TypeKind.ARRAY and t.length > 0
+}
+
+// Whether to analyse a loop without a list guard for its sized-array accesses: an
+// innermost loop with one of its own. Versioning an outer loop would copy every
+// loop inside it, for facts about its own accesses -- knapsack's item loop got a
+// second copy of the capacity loop and nothing for it.
+internal fn rangeServesArrays(condPtr: Ptr, bodyPtr: Ptr) -> Bool {
+    if (nodeIsNull(bodyPtr) or rangeHasLoopChain(ptr_to_node(bodyPtr).child1)) { return false }
+    if (rangeHasArrayAccessIn(condPtr)) { return true }
+    return rangeHasArrayAccessChain(ptr_to_node(bodyPtr).child1)
+}
+
+private fn rangeHasArrayAccessIn(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.CLOSURE_EXPR) { return false }
+    if (rangeIsSizedArrayAccess(n)) { return true }
+    if (rangeHasArrayAccessChain(n.child1)) { return true }
+    if (rangeHasArrayAccessChain(n.child2)) { return true }
+    return rangeHasArrayAccessChain(n.child3)
+}
+
+private fn rangeHasArrayAccessChain(head: Ptr) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (rangeHasArrayAccessIn(p)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+private fn rangeHasLoopChain(head: Ptr) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (rangeIsLoop(n)) { return true }
+        if (n.kind != NodeKind.CLOSURE_EXPR) {
+            if (rangeHasLoopChain(n.child1) or rangeHasLoopChain(n.child2)
+                    or rangeHasLoopChain(n.child3)) {
+                return true
+            }
+        }
+        p = n.next
+    }
+    return false
+}
+
+// The index an access the analysis serves reads: a list call's second argument,
+// or an array element's subscript.
+internal fn rangeAccessIndex(e: ASTNode) -> Ptr {
+    if (e.kind == NodeKind.INDEX_EXPR) { return e.child2 }
+    return ptr_to_node(e.child2).next
+}
+
+impl RangeLoop {
+    internal fn servesAccess(self, e: ASTNode) -> Bool {
+        if (self.arrays) { return rangeIsSizedArrayAccess(e) }
+        return rangeIsAccess(e)
+    }
+}
+
+
+impl RangeLoop {
+    // Whether the preheader can know the receiver's length for the whole run: a
+    // list the body neither rebinds nor resizes, or a sized array, whose length is
+    // its type's whatever the body does.
+    internal fn accessIsStable(self, e: ASTNode) -> Bool {
+        if (e.kind == NodeKind.INDEX_EXPR) { return true }
+        let list = ptr_to_node(e.child2)
+        if (nodeIsNull(list.next)) { return false }
+        return rangeIsStableList(list, self)
+    }
+}
+
+
+impl RangeLoop {
+    // The receiver's length as an i64 value, emitted where the caller is.
+    internal fn accessLength(self, e: ASTNode) -> String {
+        if (e.kind == NodeKind.INDEX_EXPR) {
+            return nodeGetType(ptr_to_node(e.child1)).length.toString()
+        }
+        ir_call_begin()
+        ir_call_arg("ptr", generateExpression(ptr_to_node(e.child2)))
+        return ir_get_temp_name(ir_sext("i32",
+            ir_get_temp_name(ir_call_end("i32", "list_len")), "i64"))
+    }
+}
+
+
+impl RangeLoop {
+    // What the proved copy reads the elements through: a list's base, loaded once
+    // in the preheader. An array element is addressed as it always is.
+    internal fn accessData(self, e: ASTNode) -> String {
+        if (e.kind == NodeKind.INDEX_EXPR) { return "" }
+        return self.dataFor(ptr_to_node(e.child2))
+    }
+}
+
+
+impl RangeLoop {
+    // Marks an arithmetic node `nsw` in the proved copy.
+    internal fn markOp(self, nodePtr: Ptr) {
+        ir_range_proof_mark(nodePtr, self.proof, "")
+        self.markedOps = self.markedOps + 1
+    }
 }
 
 private fn rangeVisitAccess(e: ASTNode, rl: RangeLoop) {
@@ -1347,7 +1483,7 @@ private fn rangeMarkUpdates(nodePtr: Ptr, rl: RangeLoop, name: String) {
     if (nodeIsNull(nodePtr)) { return }
     let n = ptr_to_node(nodePtr)
     if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and rangeIsNamed(n.child1, name)) {
-        ir_range_proof_mark(n.child2, rl.proof, "")
+        rl.markOp(n.child2)
     }
     rangeMarkUpdatesChain(n.child1, rl, name)
     rangeMarkUpdatesChain(n.child2, rl, name)
@@ -1381,24 +1517,19 @@ impl RangeLoop {
 // ---------------------------------------------------------------------------
 
 private fn rangeEmitAccess(e: ASTNode, rl: RangeLoop) {
-    let listPtr = e.child2
-    let list = ptr_to_node(listPtr)
-    if (nodeIsNull(list.next)) { return }
-    if (rangeIsStableList(list, rl) == false) { return }
+    if (rl.accessIsStable(e) == false) { return }
+    let indexPtr = rangeAccessIndex(e)
 
     rl.usedMask = 0
     rl.extra = "true"
     rl.conjLimit = rl.accessConj[rl.cursor]
-    if (rangeInterval(list.next, rl, rl.accessSpans, rl.cursor) == false) { return }
+    if (rangeInterval(indexPtr, rl, rl.accessSpans, rl.cursor) == false) { return }
     let lo = rl.outLo.clone()
     let hi = rl.outHi.clone()
     let extra = rl.extra.clone()
     let used = rl.usedMask
 
-    ir_call_begin()
-    ir_call_arg("ptr", generateExpression(list))
-    let len = ir_get_temp_name(ir_sext("i32",
-        ir_get_temp_name(ir_call_end("i32", "list_len")), "i64"))
+    let len = rl.accessLength(e)
     let lowOk = ir_get_temp_name(ir_icmp_sge("i64", lo, "0"))
     let highOk = ir_get_temp_name(ir_icmp_slt("i64", hi, len))
     let inside = ir_get_temp_name(ir_and("i1", lowOk, highOk))
@@ -1408,8 +1539,8 @@ private fn rangeEmitAccess(e: ASTNode, rl: RangeLoop) {
         if ((used & rangeShift(i)) != 0) { rl.foldVar(i) }
         i = i + 1
     }
-    ir_range_proof_mark(node_to_ptr(e), rl.proof, rl.dataFor(list))
-    rangeMarkIndex(list.next, rl, true, 0, rangeIntMax() - 1)
+    ir_range_proof_mark(node_to_ptr(e), rl.proof, rl.accessData(e))
+    rangeMarkIndex(indexPtr, rl, true, 0, rangeIntMax() - 1)
     rl.proved = rl.proved + 1
 }
 
@@ -1483,7 +1614,7 @@ private fn rangeMarkSum(e: ASTNode, rl: RangeLoop, known: Bool, lo: I64, hi: I64
         leftInside = rangeMarkIndex(e.child1, rl, false, 0, 0)
         rightInside = rangeMarkIndex(e.child2, rl, false, 0, 0)
     }
-    if (known and leftInside and rightInside) { ir_range_proof_mark(node_to_ptr(e), rl.proof, "") }
+    if (known and leftInside and rightInside) { rl.markOp(node_to_ptr(e)) }
     return known
 }
 

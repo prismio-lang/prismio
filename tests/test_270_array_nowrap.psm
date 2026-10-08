@@ -1,0 +1,223 @@
+// No-wrap facts from unchecked array accesses (src/ir/nowrap.psm), and loops over
+// sized arrays versioned on their accesses' facts (src/ir/ranges.psm, `arrays`).
+//
+// test_runner.py's array_nowrap asserts the marks and the versioned loop in this
+// file's IR; this program asserts the answers. Most of it is the shapes a mark
+// must not reach: arithmetic that really wraps, where no access ran first, or one
+// ran and the name was then assigned, shadowed or only maybe reached.
+
+import std.io
+import std.math
+import std.option
+
+// The freestanding benchmark's shape. `best[c]` leaves `c` in [0, 1500], so
+// `c - 1` and the subscript `c - w` cannot wrap, and the loop is versioned on
+// `w >= 0`.
+fn knapsack() -> Int {
+    let mut weight: Array<Int, 64>
+    let mut value: Array<Int, 64>
+    let mut s: U32 = 99
+    let mut i = 0
+    while (i < 64) {
+        s = s * 1664525 + 1013904223
+        weight[i] = (((s >> 8) % 37) as Int) + 3
+        s = s * 1664525 + 1013904223
+        value[i] = (((s >> 8) % 97) as Int) + 1
+        i = i + 1
+    }
+    let mut best: Array<Int, 1501>
+    i = 0
+    while (i < 64) {
+        let w = weight[i]
+        let v = value[i]
+        let mut c = 1500
+        while (c >= w) {
+            best[c] = max(best[c], best[c - w] + v)
+            c = c - 1
+        }
+        i = i + 1
+    }
+    return best[1500]
+}
+
+// Quicksort's partition over a view: the scans' `i + 1` and `j - 1` follow an
+// access to the same name, which put it in [0, Int.MAX - 1].
+fn quick(inout a: [Int], lo: Int, hi: Int) {
+    if (lo >= hi) { return }
+    let p = a[(lo + hi) / 2]
+    let mut i = lo
+    let mut j = hi
+    while (i <= j) {
+        while (a[i] < p) { i = i + 1 }
+        while (a[j] > p) { j = j - 1 }
+        if (i <= j) {
+            let t = a[i]
+            a[i] = a[j]
+            a[j] = t
+            i = i + 1
+            j = j - 1
+        }
+    }
+    quick(a, lo, j)
+    quick(a, i, hi)
+}
+
+fn sorted() -> Int {
+    let mut data: Array<Int, 512>
+    let mut s: U32 = 777
+    let mut i = 0
+    while (i < 512) {
+        s = s * 1664525 + 1013904223
+        data[i] = (s >> 20) as Int
+        i = i + 1
+    }
+    quick(data, 0, 511)
+    let mut sum = 0
+    i = 0
+    while (i < 512) {
+        sum = sum + data[i] * (i % 7 + 1)
+        if (i > 0 and data[i - 1] > data[i]) { return 0 - 1 }
+        i = i + 1
+    }
+    return sum
+}
+
+// A loop whose guard is false at run time: `i < n` with n past the array's end
+// says nothing in range, so the unproved copy runs, and leaves through `break`.
+fn earlyExit(n: Int) -> Int {
+    let mut a: Array<Int, 8>
+    let mut i = 0
+    let mut acc = 0
+    while (i < n) {
+        if (i >= 8) { break }
+        a[i] = i * 3
+        acc = acc + a[i]
+        i = i + 1
+    }
+    return acc
+}
+
+// The access ran, then the name was assigned: its fact is gone, and the
+// increment really wraps.
+fn reassigned(a: [Int]) -> Int {
+    let mut i = 0
+    let mut first = 0
+    let mut k = 0
+    while (k < 1) {
+        first = a[i]
+        i = 2147483647
+        k = k + 1
+    }
+    return first + (i + 1)
+}
+
+// A fact from the right of `and` holds only where the `and` held. With the flag
+// false the access never runs, and `i` is far outside the array.
+fn shortCircuit(a: [Int], flag: Bool) -> Int {
+    let i = 2147483647
+    let mut hits = 0
+    while (hits < 1) {
+        if (flag and a[i] > 0) { hits = hits + 10 }
+        hits = hits + 1
+    }
+    return i + 1
+}
+
+// The same for the fallback of `??`, evaluated only when the left is none.
+fn coalesced(a: [Int], o: Int?) -> Int {
+    let i = 2147483647
+    let mut r = 0
+    let mut k = 0
+    while (k < 1) {
+        r = o ?? a[i]
+        k = k + 1
+    }
+    return (i + 1) - r
+}
+
+// A `let` inside a block is another variable under the same name.
+fn shadowed(a: [Int]) -> Int {
+    let mut acc = 0
+    let mut k = 0
+    while (k < 1) {
+        let i = 3
+        acc = a[i]
+        if (acc >= 0) {
+            let i = 2147483000 + acc * 100
+            acc = i + 1000
+        }
+        k = k + 1
+    }
+    return acc
+}
+
+// A loop head keeps no fact on a name the loop assigns: the first iteration's
+// access does not cover the second iteration's `i`.
+fn headKill(a: [Int]) -> Int {
+    let mut i = 0
+    let mut n = 0
+    let mut acc = 0
+    while (n < 2) {
+        if (n == 1) { acc = i + 1 }
+        if (n == 0) {
+            acc = a[i]
+            i = 2147483647
+        }
+        n = n + 1
+    }
+    return acc
+}
+
+// A subscript whose left operand no access bounded: `x - y` wraps from far below
+// `Int` into range, and must, since the index the program computes is the wrapped one.
+fn negativeLeft(a: [Int], x: Int, y: Int) -> Int {
+    let mut acc = 0
+    let mut k = 0
+    while (k < 1) {
+        acc = a[x - y]
+        k = k + 1
+    }
+    return acc
+}
+
+// A view's indices reach Int.MAX - 1, and `i - 2` with `i` at Int.MIN + 1 wraps
+// to exactly that. So the access does not put `i` at 2 or more, and `i - 3` may wrap.
+fn viewBelow(a: [Int], i: Int) -> Int {
+    let mut acc = 0
+    let mut k = 0
+    while (k < 1) {
+        acc = a[i - 2] + (i - 3)
+        k = k + 1
+    }
+    return acc
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        println(got)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + check("FAIL: knapsack", knapsack(), 2765)
+    bad = bad + check("FAIL: sorted", sorted(), 4164279)
+    bad = bad + check("FAIL: earlyExit in range", earlyExit(5), 30)
+    bad = bad + check("FAIL: earlyExit past the end", earlyExit(100), 84)
+
+    let probe: Array<Int, 6> = [7, 1, 2, 3, 4, 5]
+    bad = bad + check("FAIL: reassigned", reassigned(probe), 7 + (0 - 2147483647 - 1))
+    bad = bad + check("FAIL: shortCircuit", shortCircuit(probe, false), 0 - 2147483647 - 1)
+    bad = bad + check("FAIL: coalesced", coalesced(probe, 5), 0 - 2147483647 - 1 - 5)
+    bad = bad + check("FAIL: shadowed", shadowed(probe), 0 - 2147482996)
+    bad = bad + check("FAIL: headKill", headKill(probe), 0 - 2147483647 - 1)
+    bad = bad + check("FAIL: negativeLeft", negativeLeft(probe, 0 - 2147483646, 2147483647), 3)
+    bad = bad + check("FAIL: viewBelow", viewBelow(probe, 4), 3)
+
+    if (bad != 0) { return 1 }
+    println("PASS: array access no-wrap facts")
+    return 0
+}

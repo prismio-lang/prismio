@@ -4679,6 +4679,142 @@ def run_proved_index_nsw_test():
     return True
 
 
+def nsw_sources(body):
+    """The variable each `add nsw`/`sub nsw` in a function's IR loaded its left operand
+    from, or `elem` for an array element and `other` for anything else.
+
+    Unoptimised IR names a local's slot after it (`%k.3`), so `k = k + 1` is
+    `load i32, ptr %k.3` then `add nsw i32 %N, 1`. An element is loaded through a
+    numbered `getelementptr` instead.
+    """
+    slots = dict(re.findall(r'^\s*(%\S+) = load i32, ptr %([A-Za-z_]\w*)\.\d+', body, re.MULTILINE))
+    elements = set(re.findall(r'^\s*(%\S+) = load i32, ptr %\d+', body, re.MULTILINE))
+    sources = []
+    for left in re.findall(r'= (?:add|sub) nsw i32 ([^,\s]+),', body):
+        sources.append(slots.get(left) or ("elem" if left in elements else "other"))
+    return sources
+
+
+def run_array_contents_test():
+    """A local array's elements and a counted loop's counter make `nsw` exactly where
+    nothing can wrap.
+
+    test_271 checks the answers, most of them from elements or counters that really
+    go past `Int`; a wrongly placed `nsw` is poison that may still print the right
+    number, so the IR is read as well. The edit-distance rows, the counter's `i - 2`,
+    the array that reads only itself and the literal-initialised one are marked; in
+    the eight where the bound is gone or never held, the one `nsw` left is the step
+    of their counted loop, and in the two whose loop does not count, none.
+    """
+    print(f"\n{BLUE}--- Running array_contents ---{RESET}")
+    source = TEST_DIR / "test_271_array_contents.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-array-contents-") as tmp:
+        ir_path = Path(tmp) / "contents.ll"
+        built = subprocess.run([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)],
+                               cwd=PROJECT_ROOT, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace")
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] array contents IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+    def sources(name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append(f"missing function {name}")
+            return []
+        return nsw_sources(match.group(1))
+
+    for name, wanted in (("editRows", 3), ("independent", 1), ("literalInit", 1)):
+        marked = sources(name).count("elem")
+        if marked < wanted:
+            problems.append(f"{name}: {marked} element adds are nsw, expected at least {wanted}")
+    if "i" not in sources("counted"):
+        problems.append("counted: the counter's `i - 2` is not nsw")
+    steps = {"escaped": "k", "shadowedArrays": "k", "continued": "k", "doubling": "k",
+             "readsFailed": "k", "movingBound": "", "stepThenUse": "", "conjunctBefore": "i"}
+    for name, step in steps.items():
+        stray = [source for source in sources(name) if source != step]
+        if stray:
+            problems.append(f"{name}: an op that can wrap is nsw ({', '.join(stray)})")
+    if problems:
+        print(f"{RED}[FAIL] array contents{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] array elements and counted loops make nsw exactly where nothing can wrap{RESET}")
+    return True
+
+
+def run_array_nowrap_test():
+    """An unchecked array access's facts make `nsw` exactly where nothing can wrap.
+
+    test_270 checks the answers, most of them programs whose arithmetic really
+    wraps, but a wrongly placed `nsw` is poison that may still print the right
+    number. So the IR is read as well: quicksort's scans and swap step and
+    knapsack's `c - w` and `c - 1` are marked; in the seven functions where the fact
+    is gone, never held or only maybe held, the one `nsw` left is the step of their
+    counted loop (`k` or `n`). The trace shows knapsack's capacity loop versioned on
+    its array's facts, and its item loop, which holds another loop, not versioned.
+    """
+    print(f"\n{BLUE}--- Running array_nowrap ---{RESET}")
+    source = TEST_DIR / "test_270_array_nowrap.psm"
+    lines = source.read_text().splitlines()
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-array-nowrap-") as tmp:
+        ir_path = Path(tmp) / "nowrap.ll"
+        env = os.environ.copy()
+        env["PRISMIO_RANGE_TRACE"] = "1"
+        built = subprocess.run([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)],
+                               cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace")
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] array nowrap IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+    def body(name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append(f"missing function {name}")
+            return ""
+        return match.group(1)
+
+    def line_of(text):
+        return next(n for n, line in enumerate(lines, start=1) if text in line)
+
+    quick = body("quick")
+    if len(re.findall(r'add nsw i32 %\S+, 1\b', quick)) < 2 or len(re.findall(r'sub nsw i32 %\S+, 1\b', quick)) < 2:
+        problems.append("quick: the scans' and the swap's steps are not all nsw")
+    knapsack = body("knapsack")
+    if not re.search(r'sub nsw i32 %\S+, %\S+', knapsack):
+        problems.append("knapsack: the subscript `c - w` is not nsw")
+    if not re.search(r'sub nsw i32 %\S+, 1\b', knapsack):
+        problems.append("knapsack: `c - 1` is not nsw")
+    for name in ("reassigned", "shortCircuit", "coalesced", "shadowed", "headKill", "negativeLeft",
+                 "viewBelow"):
+        stray = [source for source in nsw_sources(body(name)) if source not in ("k", "n")]
+        if stray:
+            problems.append(f"{name}: an op that can wrap is nsw ({', '.join(stray)})")
+    traced = {int(n): (int(p), int(t)) for n, p, t in
+              re.findall(r"range proof: line (\d+) proved (\d+) of (\d+)", built.stderr)}
+    capacity = line_of("while (c >= w)")
+    if traced.get(capacity) != (3, 3):
+        problems.append(f"knapsack's capacity loop (line {capacity}): expected 3 of 3 proved, "
+                        f"got {traced.get(capacity)}")
+    items = line_of("let w = weight[i]") - 1
+    if items in traced:
+        problems.append(f"knapsack's item loop (line {items}) was versioned around another loop")
+    if problems:
+        print(f"{RED}[FAIL] array nowrap{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] array accesses make nsw exactly where nothing can wrap{RESET}")
+    return True
+
+
 def run_range_direction_test():
     """A range's direction comes from its values, settled at compile time where
     the source settles it.
@@ -9554,6 +9690,8 @@ def main():
         ("scalar_optional", run_scalar_optional_test),
         ("loop_range_proofs", run_loop_range_proofs_test),
         ("proved_index_nsw", run_proved_index_nsw_test),
+        ("array_nowrap", run_array_nowrap_test),
+        ("array_contents", run_array_contents_test),
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
         ("freestanding", run_freestanding_test),

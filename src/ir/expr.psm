@@ -4196,6 +4196,10 @@ private fn generateBinary(expr: ASTNode) -> String {
             // cannot wrap (ir/ranges.psm).
             if (op.equals("+")) { tempId = ir_add_nsw(opType, leftVal, rightVal) }
             if (op.equals("-")) { tempId = ir_sub_nsw(opType, leftVal, rightVal) }
+        } else if (isUnsigned == false and nowrapImplied(expr)) {
+            // A sum an unchecked array access proved cannot wrap (ir/nowrap.psm).
+            if (op.equals("+")) { tempId = ir_add_nsw(opType, leftVal, rightVal) }
+            if (op.equals("-")) { tempId = ir_sub_nsw(opType, leftVal, rightVal) }
         } else {
             if (op.equals("+")) { tempId = ir_add(opType, leftVal, rightVal) }
             if (op.equals("-")) { tempId = ir_sub(opType, leftVal, rightVal) }
@@ -4353,7 +4357,7 @@ private fn callTakesOneArgument(expr: ASTNode) -> Bool {
 }
 
 // `a ?? b`, which sema made the call `optionCoalesce(a, b)` (generateCoalesce).
-private fn irCallIsCoalesce(call: ASTNode) -> Bool {
+internal fn irCallIsCoalesce(call: ASTNode) -> Bool {
     if (nodeIsNull(call.child1)) { return false }
     let name = ptr_to_node(call.child1).s1
     return name.equals("optionCoalesce") or name.startsWith("optionCoalesce$")

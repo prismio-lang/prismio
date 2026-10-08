@@ -403,41 +403,18 @@ show it: `benchmarks/hosted/prismio/suite.psm` built from the root and from an e
 same 210 symbols, the same `__text` size and an identical instruction stream (43,172 instructions, same
 hash of the mnemonics; checked 2026-10-08). The effect is specific to the `--freestanding` path.
 
-### Three freestanding workloads are 5-12% behind C, because C's signed overflow is undefined
+### `heapsort` is the one freestanding row behind C, by 1.9%
 
-`quicksort` (11,304,368 against C's 10,096,384), `knapsack` (5,690,512 against 5,122,624) and
-`edit_distance` (5,900,624 against 5,596,832), measured 2026-10-08. **All three are the difference in
-integer semantics, not code generation.** Prismio's `Int` wraps, so its `add`/`sub` carry no `nsw`
-unless a range proof supplies one; C's `int` overflow is undefined, so LLVM may assume none. Evidence:
-building the C arm with `-fwrapv` (defined wraparound, the same contract) moves it to
-`quicksort` 11,409,472 (Prismio 11,304,368), `heapsort` 10,906,704 (10,907,456), `edit_distance`
-5,956,848 (5,900,624) and `knapsack` 6,258,608 (Prismio 5,690,512, which is then ahead). With equal
-semantics Prismio is 4 fewer, 16 level and none more instructions than C across all 20 workloads.
-
-What the missing `nsw` costs, read from the disassembly:
-
-- `edit_distance`: `min(prev[j] + 1, cur[j-1] + 1)` cannot become `min(prev[j], cur[j-1]) + 1` unless the
-  adds cannot wrap, so Prismio executes one more `add` per cell (15 instructions against 14, 0.36M).
-- `knapsack`: the inner loop steps two `i32` indices (`c` and `c - w`) with `sxtw` addressing, 10
-  instructions against C's 9, where C widens the index and strength-reduces both to one pointer.
-- `quicksort`: the same family (index arithmetic); not read at the instruction level.
-
-**What making signed overflow undefined would buy, measured 2026-10-08** (a scratch compiler that marks
-every signed `+ - *` `nsw`; unsigned untouched): freestanding, Prismio goes `quicksort` 11.30M to 9.99M
-(-11.6%), `knapsack` 5.69M to 5.12M (-10.0%, exactly C's 5,122,624), `edit_distance` 5.90M to 5.54M
-(-6.1%), `heapsort` 10.91M to 10.56M (-3.2%): 3 fewer, 17 level, none more than C, checksums unchanged.
-**Hosted, nothing measurable:** Prismio/C++ geomean 0.8476 wrapping against 0.8465 undefined over 62
-workloads (0.9986x; identical runs differ by 0.994-0.997), because the hosted workloads are bound by
-memory, allocation and the runtime, and the range proofs already supply `nsw` where a loop needs it.
-So the gain is confined to tight integer loops, and the price is that an overflowing program silently
-miscompiles, so it is not worth making the default. An opt-in (a target property or flag, as C has
-`-fno-wrapv`) would capture the freestanding gain without that price; not built.
-
-Not a bug, and not fixable by making `Int` overflow undefined by default, which would change the
-language. A sound route that keeps wraparound: **version the loop on an entry guard** (`w != Int.MIN` makes `c - 1`
-provably non-wrapping inside the loop), as the flat-list guards already do, so the guarded copy gets
-`nsw` and the widened induction variable. Cost is one compare per loop entry (see "Guard cost is per
-entry" in the performance notes). Not attempted.
+`heapsort` runs 10,907,440 instructions against C's 10,702,272 (1.019x, measured 2026-10-08), inside
+the suite's +-2% parity band; every other row is level with C or ahead. It is the overflow difference
+again: `root * 2 + 1` in `sift`'s loop condition needs `nsw` to become C's code, and `root = pick` is
+no counter, so neither the access facts, the counted loops nor the guards reach it. The recipe is
+measured: a guard `start >= 0 and end >= -1` on `sift`'s parameters, plus `root >= 0` carried through
+`root = pick` (`pick` was accessed), makes the multiply and the add `nsw`, and the row reads 10,555,648
+(0.986x). That needs `mul nsw` as well (`BINOP(ir_mul_nsw, LLVMBuildNSWMul)` and a bridge extern).
+Emit it as the frontend's two loop copies: a function-level emulation measured +0.7% from pass
+ordering. It is fragile: with only the access facts off (`PRISMIO_NOWRAP=0`) the row reads
+11,108,928, because an inlining decision near its threshold flips.
 
 ### `lz4`'s input fill is ~30% slower than an instruction-identical C loop
 

@@ -1,5 +1,6 @@
 // Relational loop facts: which `Int` arithmetic in a loop provably cannot wrap,
-// and which list accesses stay in range on facts no single counter carries.
+// and which list or sized-array accesses stay in range on facts no single counter
+// carries.
 //
 // ranges.psm bounds each counter by itself: a start, a direction and a condition
 // conjunct. A bisection defeats that. `low` and `high` close on each other through
@@ -720,7 +721,7 @@ impl RelLoop {
                     let span = ir_get_temp_name(ir_sub("i64", self.upper(rl, z, 0), self.lower(rl, y, 0)))
                     rl.fold(ir_get_temp_name(ir_icmp_sle("i64", span, REL_INT_MAX)))
                 }
-                ir_range_proof_mark(node_to_ptr(diff), rl.proof, "")
+                rl.markOp(node_to_ptr(diff))
             }
             relCommit(self, rl, e, z, 0, y, 0)
             self.between(x, y, z)
@@ -749,7 +750,7 @@ impl RelLoop {
             let low = ir_get_temp_name(ir_add("i64", self.lower(rl, y, 0), self.lower(rl, z, 0)))
             rl.fold(ir_get_temp_name(ir_icmp_sle("i64", high, REL_INT_MAX)))
             rl.fold(ir_get_temp_name(ir_icmp_sge("i64", low, REL_INT_MIN)))
-            ir_range_proof_mark(node_to_ptr(sum), rl.proof, "")
+            rl.markOp(node_to_ptr(sum))
         }
         self.between(x, y, z)
         return true
@@ -845,7 +846,7 @@ impl RelLoop {
             dbmCopyInto(self.cur, entry)
             return
         }
-        if (rangeIsAccess(e)) { self.visitAccess(rl, e) }
+        if (rl.servesAccess(e)) { self.visitAccess(rl, e) }
         self.visitChain(rl, e.child1)
         self.visitChain(rl, e.child2)
         self.visitChain(rl, e.child3)
@@ -865,27 +866,24 @@ impl RelLoop {
 
 
 impl RelLoop {
-    // An access the delta tier left: its index as a bounded term, inside the list.
+    // An access the delta tier left: its index as a bounded term, inside the receiver.
     private fn visitAccess(self, rl: RangeLoop, e: ASTNode) {
         if (ir_range_proof_marked(node_to_ptr(e)) == rl.proof) { return }
         if (dbmIsBottom(self.count, self.cur)) { return }
-        let list = ptr_to_node(e.child2)
-        if (nodeIsNull(list.next) or rangeIsStableList(list, rl) == false) { return }
-        if (self.term(rl, list.next, false) == false) { return }
+        if (rl.accessIsStable(e) == false) { return }
+        let index = rangeAccessIndex(e)
+        if (self.term(rl, index, false) == false) { return }
         let v = self.termVar
         if (self.bounded(v) == false) { return }
-        self.term(rl, list.next, true)
+        self.term(rl, index, true)
         let c = self.termConst
         let low = self.lower(rl, v, c)
         let high = self.upper(rl, v, c)
-        ir_call_begin()
-        ir_call_arg("ptr", generateExpression(list))
-        let len = ir_get_temp_name(ir_sext("i32",
-            ir_get_temp_name(ir_call_end("i32", "list_len")), "i64"))
+        let len = rl.accessLength(e)
         let lowOk = ir_get_temp_name(ir_icmp_sge("i64", low, "0"))
         let highOk = ir_get_temp_name(ir_icmp_slt("i64", high, len))
         rl.fold(ir_get_temp_name(ir_and("i1", lowOk, highOk)))
-        ir_range_proof_mark(node_to_ptr(e), rl.proof, rl.dataFor(list))
+        ir_range_proof_mark(node_to_ptr(e), rl.proof, rl.accessData(e))
         rl.proved = rl.proved + 1
     }
 }
@@ -902,7 +900,7 @@ private fn relCommit(rs: RelLoop, rl: RangeLoop, node: ASTNode, high: Int, highC
     if (rs.lowerInInt(low, lowC) == false) {
         rl.fold(ir_get_temp_name(ir_icmp_sge("i64", rs.lower(rl, low, lowC), REL_INT_MIN)))
     }
-    ir_range_proof_mark(node_to_ptr(node), rl.proof, "")
+    rl.markOp(node_to_ptr(node))
 }
 
 impl RelLoop {

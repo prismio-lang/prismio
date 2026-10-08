@@ -939,11 +939,12 @@ private fn generateWhile(stmt: ASTNode) {
     let flatSlot = generateLoopFlatGuard(stmt.child1, ptr_to_node(stmt.child2))
     let mut rangeSlot = ""
     let mut proof = 0
-    if (flatSlot.equals("") == false or savedGuard.equals("1")) {
+    let servesLists = flatSlot.equals("") == false or savedGuard.equals("1")
+    if (servesLists or rangeServesArrays(stmt.child1, stmt.child2)) {
         irLoopRangeProofPending = 0
         irLoopRangeProofComplete = false
         rangeSlot = generateWhileRangeGuard(ptr_to_node(stmt.child1),
-                                            ptr_to_node(stmt.child2))
+                                            ptr_to_node(stmt.child2), servesLists == false)
         proof = irLoopRangeProofPending
     }
     generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, "", "", false)
@@ -995,12 +996,16 @@ private fn generateLoopVersions(stmt: ASTNode, endLabel: Int, flatSlot: String,
         ir_label_numbered(flatLabel)
     }
     if (hasRange) {
+        // Behind the flat guard, or an enclosing one, every list is flat; a proof
+        // over sized arrays alone says nothing about lists.
+        let mut rangeFlat = plain.clone()
+        if (hasFlat) { rangeFlat = "1" }
         let provedLabel = ir_get_label()
         let checkedLabel = ir_get_label()
         ir_cond_br_numbered(ir_get_temp_name(ir_load("i1", rangeSlot)), provedLabel,
                             checkedLabel)
-        generateLoopCopy(stmt, provedLabel, endLabel, "1", proof, forEnd, forStep, down)
-        generateLoopCopy(stmt, checkedLabel, endLabel, "1", 0, forEnd, forStep, down)
+        generateLoopCopy(stmt, provedLabel, endLabel, rangeFlat, proof, forEnd, forStep, down)
+        generateLoopCopy(stmt, checkedLabel, endLabel, rangeFlat, 0, forEnd, forStep, down)
     } else if (hasFlat) {
         let flatCopy = ir_get_label()
         ir_br_numbered(flatCopy)
@@ -1186,11 +1191,12 @@ private fn generateForDirection(stmt: ASTNode, endLabel: Int, plain: String, end
     let flatSlot = generateLoopFlatGuard(ptr_null(), ptr_to_node(stmt.child3))
     let mut rangeSlot = ""
     let mut proof = 0
-    if (flatSlot.equals("") == false or plain.equals("1")) {
+    let servesLists = flatSlot.equals("") == false or plain.equals("1")
+    if (servesLists or rangeServesArrays(ptr_null(), stmt.child3)) {
         irLoopRangeProofPending = 0
         irLoopRangeProofComplete = false
         rangeSlot = generateForRangeGuard(stmt, endVal, stepVal, stepIsLiteral, stmt.i1 == 1,
-                                          down)
+                                          down, servesLists == false)
         proof = irLoopRangeProofPending
     }
     generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, plain, endVal, stepVal, down)

@@ -165,6 +165,10 @@ typedef struct RangeProofNode {
     int proof;
     // The receiver's element base, loaded once in the preheader (interned).
     const char* data;
+    // The access-facts pass that proved this `+`/`-` cannot wrap, or 0. Kept
+    // apart from `proof`: that fact holds in every copy of the loop, and a copy
+    // re-marking the node for its own proof must not erase it.
+    int nowrap;
 } RangeProofNode;
 
 static RangeProofNode* range_proof_buckets[RANGE_PROOF_BUCKETS];
@@ -191,17 +195,53 @@ static RangeProofNode* range_proof_entry(const void* node) {
     return NULL;
 }
 
-void ir_range_proof_mark(const void* node, int proof, const char* data) {
+static RangeProofNode* range_proof_entry_or_new(const void* node) {
     RangeProofNode* n = range_proof_entry(node);
-    if (!n) {
-        unsigned bucket = range_proof_bucket(node);
-        n = (RangeProofNode*)xmalloc(sizeof(RangeProofNode), "the loop range proof table");
-        n->node = node;
-        n->next = range_proof_buckets[bucket];
-        range_proof_buckets[bucket] = n;
-    }
+    if (n) return n;
+    unsigned bucket = range_proof_bucket(node);
+    n = (RangeProofNode*)xmalloc(sizeof(RangeProofNode), "the loop range proof table");
+    n->node = node;
+    n->proof = 0;
+    n->data = ir_intern("");
+    n->nowrap = 0;
+    n->next = range_proof_buckets[bucket];
+    range_proof_buckets[bucket] = n;
+    return n;
+}
+
+void ir_range_proof_mark(const void* node, int proof, const char* data) {
+    RangeProofNode* n = range_proof_entry_or_new(node);
     n->proof = proof;
     n->data = ir_intern(data);
+}
+
+// `pass` is an ir_range_proof_new() number, never reused, for the reason a
+// proof's is.
+void ir_nowrap_mark(const void* node, int pass) {
+    range_proof_entry_or_new(node)->nowrap = pass;
+}
+
+// The mark itself, which the analysis reads back while it walks.
+int ir_nowrap_marked(const void* node) {
+    RangeProofNode* n = range_proof_entry(node);
+    return n ? n->nowrap : 0;
+}
+
+// `PRISMIO_NOWRAP=0` is a measurement switch, as PRISMIO_RANGE_PROOFS=0 is: the
+// facts are still computed and the loops still versioned, but codegen is never
+// told an op cannot wrap. It separates what the marks buy from what the guards do.
+static int nowrap_disabled(void) {
+    static int disabled = -1;
+    if (disabled < 0) {
+        const char* v = getenv("PRISMIO_NOWRAP");
+        disabled = v && strcmp(v, "0") == 0;
+    }
+    return disabled;
+}
+
+int ir_nowrap_of(const void* node) {
+    if (nowrap_disabled()) return 0;
+    return ir_nowrap_marked(node);
 }
 
 // `PRISMIO_RANGE_PROOFS=0` is a measurement switch, not a mode: every proof is
