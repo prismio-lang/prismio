@@ -89,8 +89,10 @@ public fn benchNestedCollection(scale: Int) -> Int {
     return checksum
 }
 
+let BENCH_MOD: I32 = 1_000_000_007
+
 public fn benchLargeBufferCopy(scale: Int) -> Int {
-    let n = 500000 * scale
+    let n = 500_000 * scale
     let mut source = Vec<Int>.filled(n, 0)
     let mut target = Vec<Int>.filled(n, 0)
 
@@ -107,7 +109,7 @@ public fn benchLargeBufferCopy(scale: Int) -> Int {
     let mut checksum = 0
 
     for value in target {
-        checksum = (checksum + value) % 1000000007
+        checksum = (checksum + value) % BENCH_MOD
     }
 
     return checksum

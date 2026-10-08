@@ -131,23 +131,21 @@ export fn bench_popcount(scale: U32) -> U32 {
 
 export fn bench_mandelbrot_fixed(scale: U32) -> U32 {
     let mut total: U32 = 0
-    let mut r: U32 = 0
-    while (r < 6 * scale) {
-        let mut py = 0
-        while (py < 96) {
-            let mut px = 0
-            while (px < 96) {
-                let cr = 0 - 131072 + px * 2048
-                let ci = 0 - 98304 + py * 2048
+
+    repeat(6) {
+        for py in 0..<96 as I32 {
+            for px in 0..<96 as I32 {
+
+                let cr = -131072 + px * 2048
+                let ci = -98304 + py * 2048
                 let mut zr = 0
                 let mut zi = 0
                 let mut it: U32 = 0
-                let mut live = true
-                while (it < 40 and live) {
+                while (it < 40) {
                     let zr2 = (((zr as I64) * (zr as I64)) >> 16) as Int
                     let zi2 = (((zi as I64) * (zi as I64)) >> 16) as Int
                     if (zr2 + zi2 > 262144) {
-                        live = false
+                        break
                     } else {
                         zi = ((((zr as I64) * (zi as I64)) >> 15) as Int) + ci
                         zr = zr2 - zi2 + cr
@@ -155,11 +153,8 @@ export fn bench_mandelbrot_fixed(scale: U32) -> U32 {
                     }
                 }
                 total = total + it
-                px = px + 1
             }
-            py = py + 1
         }
-        r = r + 1
     }
     return total
 }
