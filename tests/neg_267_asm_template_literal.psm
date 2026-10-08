@@ -1,0 +1,9 @@
+// Assembly text is part of the instruction stream, so it is known when the program
+// is compiled: a string literal, never a variable.
+
+fn main() -> Int {
+    let text = "nop"
+    __builtin_asm(text)
+    return 0
+}
+// expect-error: must be a string literal

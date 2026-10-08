@@ -1,0 +1,11 @@
+// `repr(C)` is the one layout besides the compiler's own.
+
+repr(Rust) struct Pair {
+    lo: U8,
+    hi: U32,
+}
+
+fn main() -> Int {
+    return 0
+}
+// expect-error: `repr` takes `C`

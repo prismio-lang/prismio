@@ -17,6 +17,10 @@ prismio_llvm.h (what the compiler initialises) and `TARGET_COMPONENTS` in
 tools/setup_llvm.py (what it links). One without the other fails the link or
 ships dead weight.
 
+The standard-library modules a freestanding program may import are written twice:
+`freestandingSafeModule` in src/driver/imports.psm (what the compiler admits) and
+`FREESTANDING_STD` in tools/package.py (what is packaged for a bare-metal triple).
+
 One value rides along because it is written down twice the same way: the macOS
 a program is built for, `PRISMIO_MACOS_FLOOR` in llvm-api-backend.c and
 `MACOS_FLOOR` in tools/package.py, which builds the runtime bitcode for it.
@@ -130,6 +134,18 @@ def llvm_targets():
             sorted(re.findall(r'"(\w+)"', py.group(1))))
 
 
+def freestanding_std():
+    """(the modules the compiler lets a freestanding program import, the modules
+    package.py gives a bare-metal section), without the `std.` prefix."""
+    c = re.search(r"private fn freestandingSafeModule\(name: String\) -> Bool \{(.*?)\n\}",
+                  read(REPO / "src" / "driver" / "imports.psm"), re.S)
+    py = re.search(r"^FREESTANDING_STD = \((.*?)\)", read(TOOLS / "package.py"), re.M)
+    if not c or not py:
+        raise Failure("could not find freestandingSafeModule / FREESTANDING_STD")
+    return (sorted(re.findall(r'"std\.(\w+)"', c.group(1))),
+            sorted(re.findall(r'"(\w+)"', py.group(1))))
+
+
 def main() -> int:
     problems = []
 
@@ -158,6 +174,8 @@ def main() -> int:
         compare("tools/package.py MACOS_FLOOR vs PRISMIO_MACOS_FLOOR", [py_floor], [c_floor])
         initialised, linked = llvm_targets()
         compare("tools/setup_llvm.py TARGET_COMPONENTS vs PRISMIO_LLVM_TARGET_LIST", linked, initialised)
+        allowed, packaged = freestanding_std()
+        compare("tools/package.py FREESTANDING_STD vs freestandingSafeModule", packaged, allowed)
         missing = [name for name in runtime if name not in compiler]
         if missing:
             problems.append("runtime sources the compiler does not compile: " + " ".join(missing))

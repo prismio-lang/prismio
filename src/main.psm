@@ -34,6 +34,23 @@ public extern fn compiler_runtime_source_hash() -> String produce(free)
    error someone spends an afternoon on.
 */
 extern fn compiler_set_sysroot(path: String borrow)
+
+/**
+   The freestanding build (`--freestanding`): a program with no operating system
+   under it. The first two are the driver's, the rest the backend's; each takes
+   effect when the object is written and the program is linked, not here.
+   `compiler_native_source` is the manifest's `native { source(...) }` for a
+   single-file build, because a kernel's boot stub is a source file and a
+   single-file build has no manifest to name it in.
+*/
+extern fn compiler_set_freestanding(on: Int)
+extern fn compiler_link_flag(flag: String borrow) -> Int
+extern fn compiler_native_source(path: String borrow) -> Int
+extern fn compiler_native_flag(flag: String borrow) -> Int
+extern fn ir_set_freestanding(on: Int)
+extern fn ir_set_no_red_zone(on: Int)
+extern fn ir_set_target_features(features: String borrow) -> Int
+extern fn ir_set_code_model(name: String borrow) -> Int
 // A `static const char*` in C, so the caller borrows it. See PRISMIO_HOST_ABI in
 // runtime/prismio_runtime.h for what the token means and when it moves.
 public extern fn compiler_host_abi() -> String alias
@@ -61,6 +78,9 @@ let USAGE =
     Single-file commands -- these name a source and need no manifest:
       prismio build <source.psm> [-o output] [-g] [-O0..-O3] [--overflow-checks]
                     [--target <triple>] [--sysroot <sdk>]
+                    [--freestanding [--native <file>]... [--native-flag <flag>]...
+                     [--link-arg <arg>]...
+                     [--target-features <list>] [--code-model <model>] [--no-red-zone]]
       prismio run <source.psm> [-o output] [-g] [--overflow-checks] [--jit]
                     [-- args...]
       prismio check <source.psm> [--diagnostic-format=json]
@@ -76,6 +96,16 @@ let USAGE =
           -g emits DWARF, so the program can be run under lldb or gdb, and
           drops the object step to -O0: a variable folded into a register is a
           variable a debugger cannot show you.
+
+          --freestanding builds for a machine with no operating system: the
+          installed runtime is not linked, no C library or startup files are,
+          and the image is static. `main` is the function your entry stub calls.
+          --native adds a C or assembly source the toolchain's clang compiles
+          and links (the boot stub), --native-flag passes one flag to that
+          compile (-mgeneral-regs-only), --link-arg passes one argument to the
+          linker (-T kernel.ld), and --target-features, --code-model and
+          --no-red-zone set what a kernel must (see docs/FREESTANDING_PLAN.md).
+          The program provides every runtime symbol it uses.
 
           --target takes an LLVM target triple -- x86_64-apple-macos,
           aarch64-linux-android, x86_64-pc-windows-msvc,
@@ -571,6 +601,53 @@ fn main() -> Int {
                 return 1
             }
             compiler_set_sysroot(process.args[argIndex + 1])
+            argIndex = argIndex + 2
+        } else if (arg.equals("--freestanding")) {
+            // No operating system and no C library under the program. The runtime
+            // is not merged, nothing is linked implicitly, and the program is
+            // static; `main` is still the function the entry stub calls.
+            compiler_set_freestanding(1)
+            ir_set_freestanding(1)
+            argIndex = argIndex + 1
+        } else if (arg.equals("--no-red-zone")) {
+            ir_set_no_red_zone(1)
+            argIndex = argIndex + 1
+        } else if (arg.equals("--link-arg") or arg.equals("--native")
+                   or arg.equals("--native-flag")
+                   or arg.equals("--target-features") or arg.equals("--code-model")) {
+            if (argIndex + 1 >= process.args.count) {
+                diag_error_code("P1090", "`".concat(arg).concat("` requires a value"))
+                return 1
+            }
+            let value = process.args[argIndex + 1]
+            let name = process.args[argIndex]
+            if (name.equals("--link-arg")) {
+                if (compiler_link_flag(value) != 0) {
+                    diag_error_code("P1091", "could not record the linker argument ".concat(diagQuote(value)))
+                    return 1
+                }
+            } else if (name.equals("--native")) {
+                if (compiler_native_source(value) != 0) {
+                    diag_error_code("P1095", "could not record the native source ".concat(diagQuote(value)))
+                    return 1
+                }
+            } else if (name.equals("--native-flag")) {
+                if (compiler_native_flag(value) != 0) {
+                    diag_error_code("P1096", "could not record the native flag ".concat(diagQuote(value)))
+                    return 1
+                }
+            } else if (name.equals("--target-features")) {
+                if (ir_set_target_features(value) != 0) {
+                    diag_error_code("P1092", "the target feature string is too long, or this compiler has no code generation")
+                    return 1
+                }
+            } else {
+                if (ir_set_code_model(value) != 0) {
+                    diag_error_code("P1093", "unknown code model ".concat(diagQuote(value)))
+                    diag_note("the models are small, kernel, medium and large")
+                    return 1
+                }
+            }
             argIndex = argIndex + 2
         } else if (arg.equals("--verify")) {
             // SPEC 7.3. Slower and heavier by design: the mode exists to be run

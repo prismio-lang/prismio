@@ -148,11 +148,15 @@ jobs:
         run: python tools/sanitizer_smoke.py --compiler build/gen2
 
       # Build the maintained three-language matrix and validate every supported
-      # workload checksum. Hosted-runner timings are recorded, not gated.
+      # workload checksum. Hosted-runner timings are recorded, not gated. Only the
+      # hosted suite: the freestanding one boots bare-metal AArch64 images under
+      # QEMU and needs lld and the Rust source component, which this runner does
+      # not install. `tests/test_runner.py`'s `freestanding_bench` runs it where
+      # they are present.
       - name: Run benchmark validation smoke
         if: runner.os == 'Linux'
         shell: bash
-        run: python benchmarks/run.py --compiler dist/Prismio/bin/prismio --runs 1 --output build/ci-benchmark.json
+        run: python benchmarks/run.py --suite hosted --compiler dist/Prismio/bin/prismio --runs 1 --output build/ci-benchmark.json
 
       # The AIF engine exists twice on purpose: once in the compiler and once as
       # tools/aif_oracle/aif.py, sharing no code. A transfer function that is subtly

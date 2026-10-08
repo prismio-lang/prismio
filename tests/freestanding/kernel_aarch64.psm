@@ -1,0 +1,31 @@
+// A program with no operating system under it. Plain Prismio: loops, integer
+// arithmetic, a struct and a fixed array, which is everything the language can do
+// without a runtime (docs/FREESTANDING_PLAN.md, section 1). The boot stub calls
+// `main` and prints what it returns.
+
+struct Pair {
+    lo: U8,
+    hi: U32,
+}
+
+fn sum(n: Int) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while (i < n) {
+        total = total + i * 3
+        i = i + 1
+    }
+    return total
+}
+
+fn main() -> Int {
+    let table: Array<Int, 4> = [1, 2, 3, 4]
+    let mut acc = 0
+    let mut i = 0
+    while (i < 4) {
+        acc = acc + table[i]
+        i = i + 1
+    }
+    let p = Pair { lo: 7, hi: 100 }
+    return sum(10) + acc + (p.lo as Int) + (p.hi as Int)
+}

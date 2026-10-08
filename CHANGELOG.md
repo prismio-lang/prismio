@@ -44,6 +44,59 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 - Runtime groundwork in `program_support.c` for the host name, group ids, user
   and login names and disk usage (`statvfs`). No `std` wrapper exposes these yet.
 
+- **Freestanding programs: a Prismio program with no operating system under it.**
+  `prismio build app.psm --target <triple> --freestanding` links no installed runtime, no C
+  library, no startup files and no `-lm`/`-lpthread`; the image is static, linked by lld.
+  A kernel boots under QEMU on AArch64 (`virt`) and 32-bit x86 from this repository's
+  tests, with the entry point, serial output, exit and panic hook written in Prismio.
+  The rest of the build is flags: `--native <file>` (a C or assembly source, such as a boot
+  stub), `--native-flag`, `--link-arg` (`-T kernel.ld`), `--target-features` (`-neon,-fp-armv8`;
+  `-sse,-sse2,-mmx,+soft-float`), `--code-model <small|kernel|medium|large>` and
+  `--no-red-zone`. A `build.ums` target declares the same with `freestanding = true`,
+  `triple`, `features`, `codeModel`, `noRedZone`, and `script("kernel.ld")` and `arg("...")`
+  in `link { }`. See `docs/FREESTANDING_PLAN.md` and the guide *Freestanding programs*.
+  - A freestanding program may import `std.option`, `std.platform` and `std.iter` and no
+    other `std` module (`P1094`): the rest are compiled against the C library.
+  - `--freestanding` adds `runtime/freestanding/panic.c`, which defines the six functions
+    generated code calls on a failure (a checked overflow, `panic`, `unreachable`, a failed
+    `assert`, a bad range step, `expect` on `none`) and forwards each to one function the
+    program supplies, `prismio_panic_hook(kind, detail, file, line, col)`. Every function in
+    it is weak, so a program may replace any of them.
+  - `tools/package.py --freestanding-target <triple>` packages the allowed `std` modules and
+    the failure core for a bare-metal triple; no sysroot is needed.
+- **Memory, atomics, assembly and port I/O as builtins**, for code that talks to hardware.
+  An address is a `Usize`, not a `Ptr`, and the width is in the name:
+  `__builtin_mem_{load,store,vload,vstore}_{u8,u16,u32,u64}` (plain and volatile),
+  `__builtin_mem_{aload,astore,aswap,aadd,asub,aand,aor,axor,acas}_*` (atomic,
+  sequentially consistent), `__builtin_mem_fence()`, `__builtin_asm(text)`,
+  `__builtin_asm_read(text) -> U64`, `__builtin_asm_write(text, value)` (the text must be a
+  string literal; `$0` is the operand), `__builtin_ptr_addr` and `__builtin_addr_ptr` (the one
+  door between `Ptr` and a number), and on x86 `__builtin_port_{in,out}_{u8,u16,u32}`.
+- **Declaration modifiers.** Before `fn`: `export` (the function is also reachable under its
+  source name, the symbol an assembler stub or a linker script writes), `naked` (no prologue
+  or epilogue; the body is `__builtin_asm`), `section("...")` and `align(n)`. Before
+  `struct`: `repr(C)` (fields in the order written, C's padding) and `packed` (and no
+  padding); an unmarked struct is still ordered by the compiler. All are contextual words, so
+  a variable may still be called `export`.
+- New diagnostics `P1090`–`P1096` (the command-line flags, and `P1094` for a refused `std`
+  import) and `UMS2116` (an unknown `codeModel`).
+
+- **Benchmarks are two suites, `hosted` and `freestanding`, in one tabbed report.** The existing
+  Prismio/C++/Rust matrix moved to `benchmarks/hosted/`. The new `benchmarks/freestanding/` runs Prismio,
+  C and Rust with no operating system: 20 integer workloads (algorithms, compute, memory, and a
+  hardware category of atomics and volatile access on raw addresses) built for bare-metal AArch64 and run
+  under QEMU with `-icount shift=0`, which makes the guest's timer count instructions. The result is an
+  exact, repeatable instruction count per workload, plus `.text` size, not a time, so there is no noise
+  model. One harness object (boot, timer, serial, exit) links into all three arms, and the runner stops if
+  their checksums disagree. The Rust arm needs no `rustup target add`: `core` is built from `rust-src`.
+  `prismio bench` runs both (`--suite hosted|freestanding`, `--scale N`); `results/results.json` is schema
+  4, one report per suite, and the HTML report and the website's benchmarks page gain Hosted and
+  Freestanding tabs. First numbers against C: 14 of 20 at parity, 3 fewer instructions and 3 more; against
+  Rust, 9 fewer, 9 at parity and 2 more. The first run read `edit_distance` at 2.0x C, and that was the
+  harness: Prismio's row copy became a call to a byte-loop `memcpy` that C's `-ffreestanding` build never
+  made. The shared `memcpy`, `memmove` and `memset` now move a word at a time (aligned, so they are safe
+  with the MMU off), and the row reads 1.05x. The three rows still behind C are one cause: C's signed overflow is undefined and Prismio's wraps, so LLVM can rewrite C's arithmetic and widen its loop indices. With the C arm built `-fwrapv`, Prismio is 4 fewer, 16 level and none more across the 20.
+
 ### Changed
 
 - **`Option<T>` is gone; `T?` is the optional.** Two spellings of "a `T` or nothing"
@@ -140,8 +193,17 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 - `tests/test_runner.py`'s `ums` check follows the host profile `build.ums` names, and `install.sh` and
   `std/input.psm` end with a newline.
 
+- `tests/freestanding/` holds the kernels and fixtures behind the `freestanding` test, which boots
+  eleven of them under QEMU (AArch64 `virt` and 32-bit x86) and skips, saying so, without `ld.lld` or
+  `qemu-system-*`; `runtime/freestanding/` holds the failure core, outside `runtime/*.c` so
+  `tools/check_source_lists.py` does not count it as a compiler source. That check now also compares
+  `freestandingSafeModule` in `src/driver/imports.psm` with `FREESTANDING_STD` in `tools/package.py`.
+
 ### Documentation
 
+- *Freestanding programs* (guide) and *Low-level programming* (language) describe the above, with the
+  flags in the CLI and manifest references; the developer docs record how the backend, the parser and the
+  packager implement it.
 - The developer docs gain *Performance decisions and rejected experiments*, drawn from the removed evidence
   (allocator choice, the `Int` width, layout representations, loop-guard and map-hash designs, channel
   results); the language docs say why `Int` is 32-bit and when to use `I64`; and the FFI contracts page

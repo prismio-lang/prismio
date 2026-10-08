@@ -27,6 +27,8 @@ import std.fs
 // each module name the externs it actually uses.
 public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(free)
 public extern fn compiler_plib_error() -> String produce(free)
+// `--freestanding`: no C library under the program, so no `std` under it either.
+extern fn compiler_is_freestanding() -> Int
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -413,6 +415,39 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
     ir_import_alias_record(stmt.file, stmt.s2, stmt.s1)
 }
 
+// The `std` modules that need neither: pure Prismio over compiler builtins, with no
+// call into the C runtime and no `import std.string`, which is the module nearly
+// everything else reaches. This is the freestanding `core` of docs/FREESTANDING_PLAN.md
+// step 5, as short as the standard library's own structure allows -- `std.string`,
+// `std.vec` and `std.ord` all lower to calls into lang_runtime.c, so a freestanding
+// `Vec` or `String` waits on the memory design (FREESTANDING_MEMORY.md), not on this
+// list. Every name here has to link with no runtime; the freestanding test imports
+// each.
+//
+// `std.math` is absent on purpose: its square root and rounding are instructions on
+// some targets and calls into a C math library on others, and a kernel that cannot
+// tell which has found the failure at link time on the wrong machine.
+private fn freestandingSafeModule(name: String) -> Bool {
+    return name.equals("std.option") or name.equals("std.platform") or name.equals("std.iter")
+}
+
+// A `std` module is compiled against the C library and an operating system, and a
+// `--freestanding` program has neither. Refused at the import, by name, rather
+// than left to fail later: inside a checkout `std` is compiled from source, so the
+// failure was a page of undefined `list_*` symbols from the linker, and from an
+// installed toolchain it was a report of a corrupted installation. Both were the
+// same mistake and neither said so.
+private fn refuseHostedImport(stmt: ASTNode) {
+    if (compiler_is_freestanding() != 1) { return }
+    if (stmt.s1.startsWith("std.") == false) { return }
+    if (freestandingSafeModule(stmt.s1)) { return }
+    diag_error_at_code("P1094", stmt.file, stmt.line, stmt.col, stmt.len,
+        diagQuote(stmt.s1).concat(" cannot be imported by a `--freestanding` program"))
+    diag_note("the standard library needs a C library and an operating system; only std.option, std.platform and std.iter do not")
+    diag_finish()
+    exit(1)
+}
+
 // An entry of `import {a, b} from dir` names a file, never a declaration
 // (parseImportGroup marks it with `i2`). Refused here because only resolution
 // can see the difference: `import {Option} from std.option` would otherwise
@@ -445,6 +480,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
             if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
             } else {
+                refuseHostedImport(stmt)
                 refuseGroupDeclaration(stmt, baseDir)
                 ir_import_record(stmt.file, stmt.s1)
                 recordImportAlias(stmt, baseDir)

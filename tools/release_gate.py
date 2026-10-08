@@ -236,7 +236,7 @@ def check_differential(rc: Path) -> None:
 # a wide record (aos_vs_soa), per-frame transients (transient_allocation), a
 # component world (ecs_component_update), retained trees, shared maps, tasks and a
 # channel pipeline.
-SUITE = "benchmarks/prismio/suite.psm"
+SUITE = "benchmarks/hosted/prismio/suite.psm"
 GATE_WORKLOADS = (
     "ecs_component_update", "aos_vs_soa", "transient_allocation", "tree_traversal",
     "recursive_tree_rebuild", "hashmap_insert_lookup", "nested_collection",
@@ -248,7 +248,9 @@ def recorded_results() -> dict:
     """workload -> the checksum benchmarks/results/results.json holds for it."""
     import json
     report = json.loads((REPO / "benchmarks" / "results" / "results.json").read_text(encoding="utf-8"))
-    return {item["name"]: item.get("result") for item in report["benchmarks"]
+    # Schema 4 holds one report per suite; the gate's workloads are the hosted ones.
+    hosted = report.get("suites", {}).get("hosted", report)
+    return {item["name"]: item.get("result") for item in hosted["benchmarks"]
             if item.get("status") == "implemented"}
 
 
@@ -385,7 +387,7 @@ def mnemonic_diff(rc: Path, old: Path, work: Path) -> None:
     # "moved" programs and says nothing about any of them. This is the diff the
     # release bar actually asks to read before a timing is believed.
     step("mnemonic diff vs " + old.name)
-    source = REPO / "benchmarks" / "prismio" / "suite.psm"
+    source = REPO / "benchmarks" / "hosted" / "prismio" / "suite.psm"
     before, after = work / f"benchmarks-old{EXE}", work / f"benchmarks-new{EXE}"
     progress("building suite \u00b7 baseline")
     if run([old, "build", source, "-o", before]).returncode != 0:

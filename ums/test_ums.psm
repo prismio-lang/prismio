@@ -110,6 +110,38 @@ fn main() -> Int {
         return umsTestFail("an executable should preserve its native sources, flags and link inputs in order")
     }
 
+    // A target with no operating system under it: `freestanding`, the machine it is
+    // for, what code generation is told, and a linker script and a bare argument in
+    // `link`. Each is kept as written, and the target stays a plain executable.
+    let kernelProject = umsLoadText(
+        "project { name = \"k\" version = \"0.1.0\" prismio = \"0.1\" } targets { executable(\"k\") { entry = \"tests/freestanding/kernel_pure_aarch64.psm\" freestanding = true triple = \"aarch64-unknown-none-elf\" features = \"-neon,-fp-armv8\" codeModel = \"small\" noRedZone = true native { source(\"runtime/freestanding/panic.c\") flag(\"-mgeneral-regs-only\") } link { script(\"tests/freestanding/link_aarch64_pure.ld\") arg(\"-z\") arg(\"noexecstack\") } } }",
+        "memory:kernel", ".", "debug")
+    let kernelTarget = kernelProject.target(0)
+    if (kernelProject.valid == false or kernelProject.targetCount() != 1 or
+        kernelTarget.kind != UmsTargetKind.EXECUTABLE or
+        kernelTarget.freestanding == false or
+        kernelTarget.triple.equals("aarch64-unknown-none-elf") == false or
+        kernelTarget.features.equals("-neon,-fp-armv8") == false or
+        kernelTarget.codeModel.equals("small") == false or
+        kernelTarget.noRedZone == false or
+        kernelTarget.links.length != 3 or
+        kernelTarget.links[0].kind != UmsLinkKind.SCRIPT or
+        kernelTarget.links[1].kind != UmsLinkKind.ARG or
+        kernelTarget.links[2].value.equals("noexecstack") == false) {
+        umsDiagnosticsPrint(kernelProject.diagnostics)
+        return umsTestFail("a freestanding target should keep its triple, code generation settings and linker inputs")
+    }
+    let hostTarget = nativeTarget
+    if (hostTarget.freestanding or hostTarget.triple.equals("") == false or hostTarget.noRedZone) {
+        return umsTestFail("a target that declares nothing freestanding should declare nothing freestanding")
+    }
+    let badModel = umsLoadText(
+        "project { name = \"k\" version = \"0.1.0\" prismio = \"0.1\" } targets { executable(\"k\") { entry = \"src/main.psm\" codeModel = \"huge\" } }",
+        "memory:bad-model", ".", "debug")
+    if (badModel.valid) {
+        return umsTestFail("an unknown code model should be rejected")
+    }
+
     let lateToolchain = umsLoadText(
         "project { name = \"prismio\" version = \"0.1.0\" prismio = \"0.1\" } toolchain { host = \".prismio/build/debug/prismio\" } targets { executable(\"prismio\") { entry = \"src/main.psm\" } }",
         "memory:late-toolchain", ".", "debug")

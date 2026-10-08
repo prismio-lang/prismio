@@ -1119,6 +1119,12 @@ static int g_native_flag_file_cap = 0;
 static int g_installed_runtime = 1;
 // Whether the executable's own symbols are visible to code it loads at run time.
 static int g_export_dynamic = 0;
+// `--freestanding`: no operating system under the program. The installed runtime
+// is not merged (it is libc code), and the link takes no C library, no startup
+// files and no `-lm`/`-lpthread`; the program's own native sources and link
+// arguments supply the entry point and the linker script. Not reset by
+// compiler_link_reset, which is per target and this is per command line.
+static int g_freestanding = 0;
 // For the one link in progress: the compiled native objects and the export
 // flags, quoted, set by compiler_build_executable around link_program_object.
 static const char* g_link_extra = "";
@@ -1261,6 +1267,16 @@ int compiler_native_response_file(const char* path) {
 }
 
 void compiler_set_installed_runtime(int on) { g_installed_runtime = on ? 1 : 0; }
+void compiler_set_freestanding(int on) { g_freestanding = on ? 1 : 0; }
+int compiler_is_freestanding(void) { return g_freestanding; }
+
+// One linker argument as written, for `--link-arg`. The same list a manifest's
+// `link { }` block feeds, so the order is the order given. Not counted as linked
+// code (compare compiler_link_file): `-T kernel.ld` adds no symbol a Prismio
+// function could be called through, so it does not stop `program_is_closed`.
+int compiler_link_flag(const char* flag) {
+    return compiler_link_append_argument(flag);
+}
 void compiler_set_export_dynamic(int on) { g_export_dynamic = on ? 1 : 0; }
 
 static int compiler_link_inputs_supported(void) {
@@ -2060,17 +2076,23 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
     const char* driver = link_driver_command();
     int len = (int)(strlen(driver) + strlen(min_os) + strlen(q_obj) + strlen(q_exe) +
                     strlen(target) + strlen(native) + strlen(g_link_extra) +
-                    strlen(stack) + 96);
+                    strlen(stack) + 128);
     char* command = (char*)malloc(len);
 
     // -dead_strip: ld64 keeps every function of every object it is given unless
     // told otherwise, and neither the runtime's nor a target's native C is
     // pruned before it gets there. Exported symbols (exportDynamic) are roots,
     // so nothing a loaded module could resolve is removed.
-    snprintf(command, len, "%s %s%s%s%s%s%s -o %s%s%s",
-             driver, target, min_os, q_obj, g_link_extra, native, stack, q_exe,
-             target_splits_libc() ? " -lm -lpthread" : "",
-             target_is_mach_o() ? " -Wl,-dead_strip" : "");
+    // Freestanding: no C library and no startup files, a static image, and lld.
+    // The system linker on a macOS or Linux host links for that host's format and
+    // cannot place an ELF kernel at the address its script names; lld takes
+    // `--target` and the script the same way on every host. `--ld-path=` through
+    // `--link-arg` picks one that is not on PATH.
+    const char* mode = g_freestanding ? "-nostdlib -static -fuse-ld=lld " : "";
+    snprintf(command, len, "%s %s%s%s%s%s%s%s -o %s%s%s",
+             driver, target, min_os, mode, q_obj, g_link_extra, native, stack, q_exe,
+             (!g_freestanding && target_splits_libc()) ? " -lm -lpthread" : "",
+             (!g_freestanding && target_is_mach_o()) ? " -Wl,-dead_strip" : "");
     int result = run_build_command(command);
 
     free(command);
@@ -2147,7 +2169,12 @@ failed:
 static char* merge_libraries_into_program(const char* ir_file,
                                           const char* exe_file) {
     char runtime[PRISMIO_RUNTIME_MODULE_COUNT][1024];
-    int runtime_count = g_installed_runtime ? PRISMIO_RUNTIME_MODULE_COUNT : 0;
+    // A freestanding program never merges the installed runtime, so the check
+    // for a per-triple copy of it (find_runtime_bitcode) is not reached either:
+    // there is no `lib/runtime/x86_64-unknown-none-elf/` and there must not need
+    // to be one.
+    int runtime_count =
+        (g_installed_runtime && !g_freestanding) ? PRISMIO_RUNTIME_MODULE_COUNT : 0;
     if (runtime_count > 0 && !find_runtime_bitcode(runtime, g_verify_mode)) return NULL;
 
     int module_count = prismio_plib_count + runtime_count;
@@ -2473,10 +2500,17 @@ static int compile_native_sources(const char* exe_file, char** objects, int* cac
     // say so -- the compiler does, for the LLVM it links (tools/setup_llvm.py).
     char min_os[64];
     macos_min_flag(min_os, sizeof(min_os));
-    size_t flags_len = strlen(target) + strlen(min_os) + strlen(declared) + 16;
+    // What compiling C for a machine with no OS means: no hosted library to
+    // assume (-ffreestanding), no GOT to load addresses through (-fno-pic), and
+    // no stack-protector canary, which reads a guard symbol the C library defines.
+    const char* freestanding =
+        g_freestanding ? " -ffreestanding -fno-pic -fno-stack-protector" : "";
+    size_t flags_len = strlen(target) + strlen(min_os) + strlen(declared) +
+                       strlen(freestanding) + 16;
     char* flags = (char*)malloc(flags_len);
     if (!flags) { free(target); return 1; }
-    snprintf(flags, flags_len, "%s%s-O2%s%s", target, min_os, g_debug_info ? " -g" : "",
+    snprintf(flags, flags_len, "%s%s-O2%s%s%s", target, min_os, freestanding,
+             g_debug_info ? " -g" : "",
              declared);
     free(target);
 
@@ -2882,7 +2916,26 @@ int compiler_jit_run(const char* ir_file, const char* program_name) {
 // runtime bitcode module are merged into the program before final
 // optimisation; the target's native sources are compiled beside it and linked
 // with the program object.
+// The failure core every freestanding program needs, added unless the program
+// brought a source of its own for it. Found in an installed toolchain's
+// `lib/runtime/freestanding/`, or in a checkout's `runtime/freestanding/`. Not
+// finding it is not an error here: a program that never fails does not reference
+// it, and one that does gets the linker's undefined-symbol report, which names the
+// function.
+static void add_freestanding_panic_core(void) {
+    if (!g_freestanding) return;
+    for (int i = 0; i < g_native_source_count; i++) {
+        if (strcmp(path_file_name(g_native_sources[i]), "panic.c") == 0) return;
+    }
+    char path[1024];
+    if (find_in_lib_dir(path, sizeof(path), "runtime/freestanding/panic.c")
+        || find_toolchain_entry(path, sizeof(path), "runtime", "freestanding/panic.c")) {
+        compiler_native_source(path);
+    }
+}
+
 int compiler_build_executable(const char* ir_file, const char* exe_file) {
+    add_freestanding_panic_core();
     if (compiler_prepare_output_path(exe_file) != 0) {
         fprintf(stderr, "ERROR: could not create output directory\n");
         return 1;
@@ -3886,6 +3939,23 @@ int compiler_emit_local_toolchain(const char* root, const char* compiler) {
     }
     if (!failed && have_runtime_key) {
         stamp_broken = stamp_broken || stamp_append(&stamp, "runtime", runtime_key);
+    }
+
+    // The failure core a `--freestanding` build adds (runtime/freestanding/panic.c),
+    // beside the runtime bitcode where an installed toolchain keeps it. Source and
+    // not bitcode: it is compiled for the program's own triple, and a copy is
+    // cheaper than a stamp entry for one file of sixty lines.
+    if (!failed) {
+        char core_source[1024];
+        if (find_toolchain_source(core_source, sizeof(core_source), "freestanding/panic.c")) {
+            char core_dir[1024];
+            char core_out[1024];
+            snprintf(core_dir, sizeof(core_dir), "%s%cfreestanding", runtime_out, PRISMIO_PATH_SEP);
+            snprintf(core_out, sizeof(core_out), "%s%cpanic.c", core_dir, PRISMIO_PATH_SEP);
+            char* text = read_file(core_source);
+            if (text && ensure_directory_exists(core_dir) == 0) write_text_file(core_out, text);
+            free(text);
+        }
     }
 
     // The host is about to become this project's compiler, so every command it

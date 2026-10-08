@@ -1,0 +1,70 @@
+// A 32-bit x86 kernel in Prismio, booted by QEMU's PVH loader. QEMU 11 refuses a
+// Multiboot header for `-kernel` and asks for a Xen PVH ELF note, which is the same
+// thing to the kernel: 32-bit protected mode, paging off, a flat address space. The
+// note is data, and a function is the only place the language lets assembly appear,
+// so it is the body of a function that is never called, placed in a section whose
+// name makes the assembler emit it as a note.
+//
+// The serial port and the exit are x86 port I/O: COM1 at 0x3F8, and QEMU's
+// `isa-debug-exit` device at 0xF4, whose written value becomes the emulator's exit
+// status as (value << 1) | 1.
+
+let MODE = 0
+
+export naked section(".note.Xen") align(4) fn pvh_note() {
+    __builtin_asm(".align 4\n.long 4\n.long 4\n.long 18\n.asciz \"Xen\"\n.long _start")
+}
+
+export naked section(".text.boot") fn _start() {
+    __builtin_asm("movl $$__stack_top, %esp\ncall main\n1: hlt\njmp 1b")
+}
+
+fn put(c: U8) {
+    __builtin_port_out_u8(0x3F8, c)
+}
+
+fn puts(text: Ptr) {
+    let mut at = __builtin_ptr_addr(text)
+    let mut byte = __builtin_mem_load_u8(at)
+    while (byte != 0) {
+        put(byte)
+        at = at + 1
+        byte = __builtin_mem_load_u8(at)
+    }
+}
+
+fn put_int(value: Int) {
+    if (value >= 10) { put_int(value / 10) }
+    put(48 + ((value % 10) as U8))
+}
+
+fn halt(status: U8) {
+    __builtin_port_out_u8(0xF4, status)
+    while (true) {}
+}
+
+export fn prismio_panic_hook(kind: Ptr, detail: Ptr, file: Ptr, line: Int, col: Int) {
+    puts(kind)
+    put(58)
+    put(32)
+    puts(detail)
+    put(10)
+    halt(1)
+}
+
+fn main() -> Int {
+    put(88)
+    put(56)
+    put(54)
+    put(58)
+    put_int(MODE * 100 + 42)
+    put(10)
+    // Port reads as well as writes: the serial port's line status register has its
+    // transmitter-empty bits set once the byte above has gone.
+    if ((__builtin_port_in_u8(0x3FD) & 0x60) == 0) { panic("line status") }
+    if (MODE == 1) {
+        panic("boom")
+    }
+    halt(0)
+    return 0
+}

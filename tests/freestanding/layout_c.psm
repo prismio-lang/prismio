@@ -1,0 +1,26 @@
+// `repr(C)` keeps the fields in the order written, with C's padding, and `packed`
+// removes the padding too. An unmarked struct is the compiler's to order. The test
+// reads the emitted type, because a program cannot take a field's address yet.
+
+repr(C) struct Gate {
+    flags: U8,
+    offset: U32,
+    selector: U16,
+}
+
+packed struct Wire {
+    tag: U8,
+    word: U32,
+}
+
+repr(C) packed struct Both {
+    tag: U8,
+    word: U32,
+}
+
+fn main() -> Int {
+    let g = Gate { flags: 1, offset: 2, selector: 3 }
+    let w = Wire { tag: 4, word: 5 }
+    let b = Both { tag: 6, word: 7 }
+    return (g.flags as Int) + (g.selector as Int) + (w.tag as Int) + (b.word as Int)
+}

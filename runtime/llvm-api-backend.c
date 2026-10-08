@@ -367,6 +367,9 @@ static char g_struct_field_keys[64][NAME_LEN];
 static int g_struct_field_count;
 static char g_struct_building[NAME_LEN];
 static int g_struct_split;
+// `packed struct`: no padding between fields and an alignment of one. Cleared with
+// the split, for the same reason.
+static int g_struct_packed;
 
 void ir_struct_type_begin(const char *name) {
     if (strlen(name) >= NAME_LEN) backend_fail("struct type name too long", name);
@@ -376,6 +379,7 @@ void ir_struct_type_begin(const char *name) {
     // Cleared here as well as in ir_struct_type_end, so a type emitted without a
     // split call cannot inherit the previous type's cut.
     g_struct_split = 0;
+    g_struct_packed = 0;
 }
 
 void ir_struct_type_field(const char *field_type) {
@@ -391,10 +395,18 @@ void ir_struct_type_field(const char *field_type) {
 // ir_struct_type_field and ir_struct_type_end.
 void ir_struct_type_split(int hot_count) { g_struct_split = hot_count; }
 
+// Called between the last ir_struct_type_field and ir_struct_type_end. A packed
+// type is never split: hot/cold needs a link word appended, and a layout fixed to
+// the byte is the one thing that must not gain a field.
+void ir_struct_type_packed(int on) { g_struct_packed = on ? 1 : 0; }
+
 void ir_struct_type_end(void) {
     StructType *s = struct_entry(g_struct_building);
     int hc = g_struct_split;
+    int packed = g_struct_packed;
     g_struct_split = 0;
+    g_struct_packed = 0;
+    if (packed) hc = 0;
     s->field_count = g_struct_field_count;
     for (int i = 0; i < g_struct_field_count; i++) {
         strncpy(s->field_keys[i], g_struct_field_keys[i], NAME_LEN - 1);
@@ -404,7 +416,7 @@ void ir_struct_type_end(void) {
     if (hc <= 0 || hc >= g_struct_field_count) {
         s->hot_count = 0;
         s->cold = NULL;
-        LLVMStructSetBody(s->type, g_struct_fields, (unsigned)g_struct_field_count, 0);
+        LLVMStructSetBody(s->type, g_struct_fields, (unsigned)g_struct_field_count, packed);
         return;
     }
 
@@ -1177,6 +1189,46 @@ void ir_function_cold(void) {
     }
 }
 
+// `naked fn`: no prologue or epilogue, so the body is the assembly and nothing
+// else. `noinline` goes with it: a naked function inlined into a caller would put
+// its assembly in the middle of a frame it assumes it does not have.
+void ir_function_naked(void) {
+    if (!g_function) return;
+    const char *names[2] = { "naked", "noinline" };
+    for (int i = 0; i < 2; i++) {
+        unsigned kind = LLVMGetEnumAttributeKindForName(names[i], strlen(names[i]));
+        if (!kind) continue;
+        LLVMAddAttributeAtIndex(g_function, ~0U, LLVMCreateEnumAttribute(g_ctx, kind, 0));
+    }
+}
+
+// `section("...")`: the object-file section the function's code goes in, which a
+// linker script names to place a boot stub or a vector table.
+void ir_function_section(const char *name) {
+    if (!g_function) return;
+    LLVMSetSection(g_function, name);
+}
+
+// `align(n)`: the function's alignment in bytes. LLVM's default is the target's
+// code alignment, 16 on x86, which is wrong for a note section a loader walks in
+// units of 4.
+void ir_function_align(int bytes) {
+    if (!g_function || bytes < 1) return;
+    LLVMSetAlignment(g_function, (unsigned)bytes);
+}
+
+// `export fn`: the function is also reachable under its source name, the symbol an
+// assembler stub or a linker script writes. An alias rather than a rename, because
+// every call inside the program already names the function by its mangled symbol
+// (`sum__Int`) and the module is built in one pass. The alias is external, so it
+// keeps the function alive through globaldce and through internalisation.
+void ir_function_export(const char *name) {
+    if (!g_function) return;
+    const char *own = LLVMGetValueName(g_function);
+    if (own && strcmp(own, name) == 0) return;
+    LLVMAddAlias2(g_module, LLVMGlobalGetValueType(g_function), 0, g_function, name);
+}
+
 void ir_function_end(void) {
     // A function whose last block has no terminator is invalid. The frontend is
     // responsible for the return, but guard anyway so the verifier reports
@@ -1691,6 +1743,81 @@ void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
     tag_scalar(store, type);
+}
+
+// Memory through an integer address, and the machine instructions Prismio has no
+// syntax for: the backend half of `__builtin_mem_*` and `__builtin_asm*`
+// (src/common/mem_builtins.psm). A freestanding program reads and writes a device
+// register at a number, and an address is a `Usize`, not a `Ptr`, so nothing here
+// is derived from a Prismio value's provenance.
+//
+// `mode` is how the access is ordered: 0 plain, 1 volatile (the compiler may not
+// drop, merge or reorder it against another volatile access), 2 atomic and
+// sequentially consistent. Every access is marked with its natural alignment,
+// which LLVM requires of an atomic one; an address that is not naturally aligned
+// is undefined behaviour, as it is in C.
+#define MEM_PLAIN 0
+#define MEM_VOLATILE 1
+#define MEM_ATOMIC 2
+
+static LLVMValueRef mem_address(const char *addr_type, const char *addr) {
+    return LLVMBuildIntToPtr(g_builder, resolve_value(addr, addr_type),
+                             LLVMPointerTypeInContext(g_ctx, 0), "");
+}
+
+static void mem_mark(LLVMValueRef access, LLVMTypeRef ty, int mode) {
+    LLVMSetAlignment(access, LLVMGetIntTypeWidth(ty) / 8);
+    if (mode == MEM_VOLATILE) LLVMSetVolatile(access, 1);
+    if (mode == MEM_ATOMIC) LLVMSetOrdering(access, LLVMAtomicOrderingSequentiallyConsistent);
+}
+
+int ir_mem_load(const char *type, const char *addr_type, const char *addr, int mode) {
+    LLVMTypeRef ty = type_from_key(type);
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, ty, mem_address(addr_type, addr), "");
+    mem_mark(load, ty, mode);
+    return intern_value(load);
+}
+
+void ir_mem_store(const char *type, const char *value, const char *addr_type,
+                  const char *addr, int mode) {
+    if (block_done()) return;
+    LLVMTypeRef ty = type_from_key(type);
+    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
+                                        mem_address(addr_type, addr));
+    mem_mark(store, ty, mode);
+}
+
+// `op` is 0 swap, 1 add, 2 sub, 3 and, 4 or, 5 xor. Answers the value that was
+// there before.
+int ir_mem_rmw(int op, const char *type, const char *addr_type, const char *addr,
+               const char *value) {
+    static const int ops[] = {
+        LLVMAtomicRMWBinOpXchg, LLVMAtomicRMWBinOpAdd, LLVMAtomicRMWBinOpSub,
+        LLVMAtomicRMWBinOpAnd, LLVMAtomicRMWBinOpOr, LLVMAtomicRMWBinOpXor,
+    };
+    if (op < 0 || op > 5) backend_fail("unknown atomic operation", NULL);
+    LLVMValueRef rmw = LLVMBuildAtomicRMW(
+        g_builder, ops[op], mem_address(addr_type, addr), resolve_value(value, type),
+        LLVMAtomicOrderingSequentiallyConsistent, 0);
+    LLVMSetAlignment(rmw, LLVMGetIntTypeWidth(type_from_key(type)) / 8);
+    return intern_value(rmw);
+}
+
+// Stores `desired` if the location holds `expected`; answers what it held, so
+// the caller compares it with `expected` to learn whether the store happened.
+int ir_mem_cmpxchg(const char *type, const char *addr_type, const char *addr,
+                   const char *expected, const char *desired) {
+    LLVMValueRef cas = LLVMBuildAtomicCmpXchg(
+        g_builder, mem_address(addr_type, addr), resolve_value(expected, type),
+        resolve_value(desired, type), LLVMAtomicOrderingSequentiallyConsistent,
+        LLVMAtomicOrderingSequentiallyConsistent, 0);
+    LLVMSetAlignment(cas, LLVMGetIntTypeWidth(type_from_key(type)) / 8);
+    return intern_value(LLVMBuildExtractValue(g_builder, cas, 0, ""));
+}
+
+void ir_mem_fence(void) {
+    if (block_done()) return;
+    LLVMBuildFence(g_builder, LLVMAtomicOrderingSequentiallyConsistent, 0, "");
 }
 
 // Initialising a slot returned by list_push_slot or its guarded inline form.
@@ -3983,6 +4110,10 @@ void ir_call_begin(void) {
 // path frees its copy the moment the call returns, so anything that held on to
 // one was already broken. `alias` externs, the ones that do hand a pointer back,
 // never reach here -- they take the punned-slot path in expr.psm instead.
+// Set by --freestanding (ir_set_freestanding, below). Declared here because the C
+// string conversion has no heap to fall back on in that mode.
+static int g_freestanding;
+
 static LLVMValueRef str_cstr_for_call(LLVMValueRef pair, LLVMValueRef *owned_out) {
     LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
     LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
@@ -4027,6 +4158,21 @@ static LLVMValueRef str_cstr_for_call(LLVMValueRef pair, LLVMValueRef *owned_out
     LLVMBuildBr(g_builder, join);
 
     LLVMPositionBuilderAtEnd(g_builder, onheap);
+    if (g_freestanding) {
+        // A view too long for the scratch buffer would need a heap block, and a
+        // freestanding program has none. The only strings it can have are literals,
+        // which take the first branch above (they are terminated already), so this
+        // block cannot run -- and naming `str_clone_n` and `rt_free` here made an
+        // unoptimised or `-g` build fail to link for a path it never takes.
+        LLVMBuildUnreachable(g_builder);
+        LLVMPositionBuilderAtEnd(g_builder, join);
+        LLVMBasicBlockRef two[2] = {from_stack, from};
+        LLVMValueRef bare = LLVMBuildPhi(g_builder, ptr, "");
+        LLVMValueRef values[2] = {slot, bytes};
+        LLVMAddIncoming(bare, values, two, 2);
+        *owned_out = NULL;
+        return bare;
+    }
     LLVMTypeRef cargs[2] = {ptr, i32};
     LLVMTypeRef cty = LLVMFunctionType(ptr, cargs, 2, 0);
     LLVMValueRef cfn = LLVMGetNamedFunction(g_module, "str_clone_n");
@@ -4240,6 +4386,27 @@ int ir_call_end_indirect(const char *ret_type, const char *fn_value) {
         mark_sret_call(call, sret_ty);
         return intern_value(sret_slot);
     }
+    return is_void ? -1 : intern_value(call);
+}
+
+// A call to inline assembly, taking the arguments pushed with ir_call_arg. It is
+// marked as having side effects, so it is never deleted or moved across another
+// one; `constraints` is LLVM's constraint string and carries `~{memory}` where
+// the assembly touches memory the compiler cannot see.
+int ir_asm_call(const char *ret_type, const char *template_text, const char *constraints) {
+    if (g_call_depth <= 0) backend_fail("asm call without begin", template_text);
+    CallFrame *f = &g_calls[--g_call_depth];
+    int is_void = (!ret_type || !*ret_type || strcmp(ret_type, "void") == 0);
+    LLVMTypeRef param_types[MAX_CALL_ARGS];
+    for (int i = 0; i < f->count; i++) param_types[i] = LLVMTypeOf(f->args[i]);
+    LLVMTypeRef rty = is_void ? LLVMVoidTypeInContext(g_ctx) : type_from_key(ret_type);
+    LLVMTypeRef fnty = LLVMFunctionType(rty, param_types, (unsigned)f->count, 0);
+    LLVMValueRef text = LLVMGetInlineAsm(fnty, template_text, strlen(template_text),
+                                         constraints, strlen(constraints), 1, 0,
+                                         LLVMInlineAsmDialectATT, 0);
+    LLVMValueRef call = LLVMBuildCall2(g_builder, fnty, text, f->args,
+                                       (unsigned)f->count, "");
+    release_call_temps(f);
     return is_void ? -1 : intern_value(call);
 }
 
@@ -7767,6 +7934,66 @@ static const char *default_target_cpu(const char *triple) {
     return "generic";
 }
 
+// What `--freestanding` changes about the object, as opposed to the link
+// (build_driver.c). Set once from the command line before any module is
+// emitted and only read afterwards, including by the codegen partition threads.
+//
+// **Static, not position-independent.** PIC is what the clang driver defaults to
+// on every hosted target, because a hosted executable may be loaded anywhere. A
+// kernel is linked at the address its linker script names and has no dynamic
+// loader to apply a GOT, so a PIC object would reference one nothing fills in.
+static int g_freestanding = 0;
+static int g_no_red_zone = 0;
+static char g_target_features[512] = "";
+static LLVMCodeModel g_code_model = LLVMCodeModelDefault;
+
+void ir_set_freestanding(int on) { g_freestanding = on ? 1 : 0; }
+void ir_set_no_red_zone(int on) { g_no_red_zone = on ? 1 : 0; }
+
+// An LLVM feature string, `+feature,-feature`, as llc's `-mattr` takes it. An
+// x86_64 kernel passes `-sse,-sse2,-mmx,+soft-float`: the interrupt path does not
+// save vector registers, so code that used one would corrupt the interrupted
+// thread. Returns 1 when it does not fit.
+int ir_set_target_features(const char *features) {
+    size_t n = features ? strlen(features) : 0;
+    if (n >= sizeof(g_target_features)) return 1;
+    if (n) memcpy(g_target_features, features, n);
+    g_target_features[n] = '\0';
+    return 0;
+}
+
+// `default`, `small`, `kernel`, `medium` or `large`. Returns 1 for anything else; the
+// caller reports it, so the list of names lives in one place.
+int ir_set_code_model(const char *name) {
+    if (strcmp(name, "default") == 0) g_code_model = LLVMCodeModelDefault;
+    else if (strcmp(name, "small") == 0) g_code_model = LLVMCodeModelSmall;
+    else if (strcmp(name, "kernel") == 0) g_code_model = LLVMCodeModelKernel;
+    else if (strcmp(name, "medium") == 0) g_code_model = LLVMCodeModelMedium;
+    else if (strcmp(name, "large") == 0) g_code_model = LLVMCodeModelLarge;
+    else return 1;
+    return 0;
+}
+
+static LLVMRelocMode object_reloc_mode(int wasm) {
+    return (wasm || g_freestanding) ? LLVMRelocStatic : LLVMRelocPIC;
+}
+
+// `noredzone` on every function the module defines. The red zone is the 128
+// bytes below %rsp that the System V ABI lets a leaf function use without moving
+// the stack pointer; an interrupt handler runs on that same stack and writes
+// over it. It is a function attribute, so it has to be on the definitions, not
+// only on the target machine.
+static void mark_functions_noredzone(LLVMModuleRef m) {
+    unsigned kind = LLVMGetEnumAttributeKindForName("noredzone", 9);
+    if (kind == 0) return;
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMAttributeRef attr = LLVMCreateEnumAttribute(ctx, kind, 0);
+    for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f)) {
+        if (LLVMCountBasicBlocks(f) == 0) continue;
+        LLVMAddAttributeAtIndex(f, LLVMAttributeFunctionIndex, attr);
+    }
+}
+
 // The macOS a host build targets: MACOSX_DEPLOYMENT_TARGET when set, as clang
 // honours it, otherwise PRISMIO_MACOS_FLOOR. The linker (link_program_object)
 // and a target's native C (compile_native_sources) are told the same version,
@@ -8172,9 +8399,9 @@ static int emit_one_partition(PartitionJob *job) {
         return 1;
     }
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
-        target, job->triple, job->cpu, "",
+        target, job->triple, job->cpu, g_target_features,
         job->opt_level > 0 ? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelNone,
-        job->wasm ? LLVMRelocStatic : LLVMRelocPIC, LLVMCodeModelDefault);
+        object_reloc_mode(job->wasm), g_code_model);
 
     LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
     LLVMErrorRef perr = failed ? NULL : LLVMRunPasses(m, "globaldce", tm, options);
@@ -8431,9 +8658,10 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
     // target; wasm has no dynamic loader to be position-independent for.
     int wasm = strncmp(chosen, "wasm", 4) == 0;
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
-        target, chosen, default_target_cpu(chosen), "",
+        target, chosen, default_target_cpu(chosen), g_target_features,
         opt_level > 0 ? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelNone,
-        wasm ? LLVMRelocStatic : LLVMRelocPIC, LLVMCodeModelDefault);
+        object_reloc_mode(wasm), g_code_model);
+    if (g_no_red_zone) mark_functions_noredzone(m);
 
     // clang overrides the module's triple with its own (the -Woverride-module
     // note in compile_ir_to_object), and so does this. The layout is the one
@@ -8529,6 +8757,13 @@ void ir_partition_object_path(const char *obj_path, int partition, char *out, si
 }
 
 const char *ir_host_macos_version(void) { return ""; }
+
+// Without code generation there is nothing for these to change, and a flag that
+// is accepted and then ignored is worse than one that is refused.
+void ir_set_freestanding(int on) { (void)on; }
+void ir_set_no_red_zone(int on) { (void)on; }
+int ir_set_target_features(const char *features) { (void)features; return 1; }
+int ir_set_code_model(const char *name) { (void)name; return 1; }
 
 void ir_hold_merged_module(int on) { (void)on; }
 void ir_release_held_module(void) {}

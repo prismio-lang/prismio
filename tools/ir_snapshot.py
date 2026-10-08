@@ -49,7 +49,7 @@ def under_neutral_name(compiler):
 def programs():
     found = []
     for pat in ("tests/*.psm",
-                "benchmarks/prismio/*.psm",
+                "benchmarks/hosted/prismio/*.psm",
                 "src/main.psm"):
         found += glob.glob(os.path.join(REPO, pat))
     return sorted(set(found))

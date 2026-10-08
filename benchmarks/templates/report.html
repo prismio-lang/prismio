@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Prismio Benchmark Intelligence Report</title>
+  <title>Prismio Benchmark Report</title>
   <link rel="stylesheet" href="report.css">
 </head>
 <body>
@@ -123,7 +123,22 @@
     </div>
   </header>
 
+  <!-- SUITE TABS: the two suites share one results file and are read one at a time -->
   <div class="shell">
+    <nav class="suite-tabs" id="suite-tabs" role="tablist" aria-label="Benchmark suite">
+      <button class="suite-tab" role="tab" id="tab-hosted" data-suite="hosted" aria-controls="suite-hosted" aria-selected="true">
+        <span class="suite-tab-name">Hosted</span>
+        <span class="suite-tab-sub">Prismio · C++ · Rust on the operating system</span>
+      </button>
+      <button class="suite-tab" role="tab" id="tab-freestanding" data-suite="freestanding" aria-controls="suite-freestanding" aria-selected="false">
+        <span class="suite-tab-name">Freestanding</span>
+        <span class="suite-tab-sub">Prismio · C · Rust with no operating system</span>
+      </button>
+    </nav>
+  </div>
+
+  <div class="shell">
+   <div id="suite-hosted" class="suite-panel" role="tabpanel" aria-labelledby="tab-hosted">
     <!-- HERO SECTION (Matching apps/web/app/benchmarks/page.tsx) -->
     <section class="hero-section">
       <div class="hero-content">
@@ -254,6 +269,113 @@
       <div class="unsupported-grid" id="unsupported-grid"></div>
     </section>
 
+   </div>
+
+   <div id="suite-freestanding" class="suite-panel" role="tabpanel" aria-labelledby="tab-freestanding" hidden>
+    <section class="hero-section">
+      <div class="hero-content">
+        <h1 class="hero-title">No operating system. The same programs.</h1>
+        <p class="hero-subtitle">
+          Prismio against C (clang -O3) and Rust (<code>no_std</code>, opt-level 3) on bare-metal AArch64: no C library,
+          no allocator, no startup files. One shared boot harness links into all three, so the only code that differs
+          is the benchmarks. Each image runs under QEMU and every workload is counted in guest instructions, which
+          is exact and repeatable, with identical checksums across all three languages.
+        </p>
+      </div>
+      <aside class="hero-aside">
+        <div class="hero-aside-header">
+          <svg class="hero-aside-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="4" y="4" width="16" height="16" rx="2"></rect>
+            <rect x="9" y="9" width="6" height="6"></rect>
+            <line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line>
+            <line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line>
+          </svg>
+          <span>Latest checked-in run</span>
+        </div>
+        <dl class="aside-stats-list" id="fs-aside-stats-list"></dl>
+      </aside>
+    </section>
+
+    <section class="kpi-section" aria-label="Freestanding KPI Overview">
+      <div class="kpi-grid" id="fs-kpi-grid"></div>
+    </section>
+
+    <section class="toolchain-section" aria-label="Freestanding toolchain metrics">
+      <div class="toolchain-header">
+        <h2 class="toolchain-title">Build &amp; Code Footprint</h2>
+        <p class="toolchain-subtitle">Time to build the suite and the machine code each compiler produced for it.</p>
+      </div>
+      <div class="toolchain-grid" id="fs-toolchain-grid"></div>
+    </section>
+
+    <section class="category-nav-section" aria-label="Freestanding categories">
+      <div class="category-pills" id="fs-category-pills"></div>
+    </section>
+
+    <div class="toolbar-container">
+      <div class="toolbar">
+        <div class="search-wrapper">
+          <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input class="search-input" id="fs-search" type="search" placeholder="Search workload or category..." autocomplete="off" spellcheck="false">
+        </div>
+        <div class="toolbar-controls-right">
+          <div class="outcome-filter-wrap">
+            <span class="outcome-label">Outcome:</span>
+            <button class="outcome-pill fs-outcome-pill active" data-val="all">All</button>
+            <button class="outcome-pill fs-outcome-pill" data-val="prismio-win">Fewer instructions</button>
+            <button class="outcome-pill fs-outcome-pill" data-val="parity">Parity</button>
+            <button class="outcome-pill fs-outcome-pill" data-val="prismio-loss">More instructions</button>
+          </div>
+          <div class="select-wrap">
+            <select class="toolbar-select" id="fs-sort" aria-label="Sort workloads">
+              <option value="catalog">Sort: Catalog Order</option>
+              <option value="prismio-fewest">Sort: Prismio Fewest First</option>
+              <option value="prismio-most">Sort: Prismio Most First</option>
+              <option value="c-best">Sort: Best vs C</option>
+              <option value="c-worst">Sort: Worst vs C</option>
+              <option value="rust-best">Sort: Best vs Rust</option>
+              <option value="rust-worst">Sort: Worst vs Rust</option>
+            </select>
+            <span class="select-arrow">▼</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="results-meta-row"><span id="fs-count">Showing 0 of 0 workloads</span></div>
+
+    <div class="table-container">
+      <div class="table-scroll">
+        <table id="fs-table">
+          <thead>
+            <tr>
+              <th>Workload</th>
+              <th>Category</th>
+              <th class="text-right" style="color:var(--prismio);">Prismio</th>
+              <th class="text-right" style="color:var(--cpp);">C (-O3)</th>
+              <th class="text-right" style="color:var(--rust);">Rust (opt-3)</th>
+              <th class="text-right" style="color:var(--cpp);">vs C</th>
+              <th class="text-right" style="color:var(--rust);">vs Rust</th>
+              <th class="text-right" style="cursor:default;">Details</th>
+            </tr>
+          </thead>
+          <tbody id="fs-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <section class="section-wrap" id="fs-method">
+      <div class="section-head">
+        <h2 class="section-title">How to read this</h2>
+        <p class="section-sub">What the number is, what it leaves out, and what is held equal.</p>
+      </div>
+      <div class="fs-notes" id="fs-notes"></div>
+    </section>
+   </div>
+
     <!-- FOOTER -->
     <footer>
       <div class="footer-inner">
@@ -266,7 +388,14 @@
   <div class="toast" id="toast" role="status" aria-live="polite">Copied to clipboard!</div>
 
   <script>
-    const report = __REPORT_DATA__;
+    // results.json holds one report per suite. A file written before the suites were
+    // split is the hosted report itself.
+    const bundle = __REPORT_DATA__;
+    const suites = bundle.suites || {hosted: bundle};
+    const hasHosted = Boolean(suites.hosted && suites.hosted.benchmarks);
+    const report = hasHosted ? suites.hosted : {benchmarks: [], runs: 0};
+    const fsReport = suites.freestanding && suites.freestanding.benchmarks ? suites.freestanding : null;
+    let activeSuite = "hosted";
     const languages = ["prismio", "cpp", "rust"];
     const labels = {prismio: "Prismio", cpp: "C++", rust: "Rust"};
     const eliminationNs = report.elimination_ns || 10000;
@@ -1055,6 +1184,7 @@
 
     // Export Handlers
     document.querySelector("#copy-summary-btn").addEventListener("click", () => {
+      if (activeSuite === "freestanding") return fsExport("summary");
       const summaryMd = `### Prismio Performance Benchmark Summary
 - **Overall vs C++ (Clang -O3)**: **${cppGeomean.toFixed(2)}×** (${cppSpeedupPct >= 0 ? '+' + cppSpeedupPct.toFixed(1) + '% faster' : Math.abs(cppSpeedupPct).toFixed(1) + '% slower'})
 - **Overall vs Rust (rustc opt-3)**: **${rustGeomean.toFixed(2)}×** (${rustSpeedupPct >= 0 ? '+' + rustSpeedupPct.toFixed(1) + '% faster' : Math.abs(rustSpeedupPct).toFixed(1) + '% slower'})
@@ -1065,6 +1195,7 @@
     });
 
     document.querySelector("#copy-table-md-btn").addEventListener("click", () => {
+      if (activeSuite === "freestanding") return fsExport("markdown");
       const items = sortBenchmarks(getFilteredBenchmarks());
       let md = `| Workload | Category | Profile | Prismio ns | C++ ns | Rust ns | vs C++ | vs Rust | Peak RSS |\n|---|---|---|---:|---:|---:|---:|---:|---:|\n`;
       items.forEach(item => {
@@ -1074,6 +1205,7 @@
     });
 
     document.querySelector("#copy-table-csv-btn").addEventListener("click", () => {
+      if (activeSuite === "freestanding") return fsExport("csv");
       const items = sortBenchmarks(getFilteredBenchmarks());
       let csv = "Workload,Category,Profile,Checksum,Prismio_ns,Cpp_ns,Rust_ns,Ratio_vs_Cpp,Ratio_vs_Rust,Peak_RSS_Bytes\n";
       items.forEach(item => {
@@ -1082,12 +1214,270 @@
       navigator.clipboard.writeText(csv).then(() => showToast("Table copied as CSV!"));
     });
 
+    // ------------------------------------------------------------------ freestanding
+    // The bare-metal suite (benchmarks/freestanding/suite.py). Its metric is the number
+    // of guest instructions a workload took, which is exact, so there are no samples,
+    // no spread and no noise model here: a verdict is a fixed tolerance on the ratio.
+    const FS_ARMS = [["prismio", "Prismio", "var(--prismio)"], ["c", "C (clang -O3)", "var(--cpp)"], ["rust", "Rust (opt-3)", "var(--rust)"]];
+    let fsCategory = "all", fsOutcome = "all", fsQuery = "", fsSort = "catalog";
+    const fsExpanded = new Set();
+    const fsInstr = (item, lang) => (item.languages[lang] && item.languages[lang].instructions) || 0;
+    const fsRatio = (item, other) => fsInstr(item, "prismio") / Math.max(fsInstr(item, other), 1);
+    const fsVerdict = (item, other) => (item.verdict && item.verdict[other]) ? item.verdict[other].outcome : "parity";
+    function fmtCount(n) {
+      if (n >= 1e9) return `${(n / 1e9).toFixed(2)} G`;
+      if (n >= 1e6) return `${(n / 1e6).toFixed(2)} M`;
+      if (n >= 1e3) return `${(n / 1e3).toFixed(1)} K`;
+      return `${n}`;
+    }
+    function fsOutcomeOf(item) {
+      const outcomes = ["c", "rust"].map(o => fsVerdict(item, o));
+      if (outcomes.includes("loss")) return "prismio-loss";
+      if (outcomes.includes("win")) return "prismio-win";
+      return "parity";
+    }
+    function fsCounts(other) {
+      const all = fsReport.benchmarks;
+      const n = k => all.filter(i => fsVerdict(i, other) === k).length;
+      return {win: n("win"), parity: n("parity"), loss: n("loss"), geo: geomean(all.map(i => fsRatio(i, other)))};
+    }
+    function fsDelta(item, other) {
+      const r = fsRatio(item, other);
+      if (!r || !isFinite(r)) return `<span class="delta-pill parity">—</span>`;
+      const pct = Math.round((r - 1) * 100);
+      const label = pct === 0 ? `${r.toFixed(2)}× (parity)` : `${r.toFixed(2)}× (${pct > 0 ? "+" : ""}${pct}%)`;
+      const v = item.verdict && item.verdict[other];
+      const why = v ? `Exact count; judged against ±${(v.tolerance * 100).toFixed(0)}%` : "";
+      return `<span class="delta-pill ${PILL[fsVerdict(item, other)]}" title="${escapeHtml(why)}">${label}</span>`;
+    }
+    function fsFiltered() {
+      const q = fsQuery.toLowerCase().trim();
+      let items = fsReport.benchmarks.filter(item => {
+        if (fsCategory !== "all" && item.category !== fsCategory) return false;
+        if (q && !item.name.toLowerCase().includes(q) && !item.category.toLowerCase().includes(q)) return false;
+        if (fsOutcome !== "all" && fsOutcomeOf(item) !== fsOutcome) return false;
+        return true;
+      });
+      const by = {
+        "prismio-fewest": (a, b) => fsInstr(a, "prismio") - fsInstr(b, "prismio"),
+        "prismio-most": (a, b) => fsInstr(b, "prismio") - fsInstr(a, "prismio"),
+        "c-best": (a, b) => fsRatio(a, "c") - fsRatio(b, "c"),
+        "c-worst": (a, b) => fsRatio(b, "c") - fsRatio(a, "c"),
+        "rust-best": (a, b) => fsRatio(a, "rust") - fsRatio(b, "rust"),
+        "rust-worst": (a, b) => fsRatio(b, "rust") - fsRatio(a, "rust"),
+      }[fsSort];
+      return by ? items.slice().sort(by) : items;
+    }
+    function fsBars(values, format) {
+      const max = Math.max(...FS_ARMS.map(a => values[a[0]] || 0), 1);
+      return FS_ARMS.map(([key, name, color]) => `
+        <div class="toolchain-bar-row">
+          <div class="toolchain-bar-label"><span style="color:${color};">${name}</span><span style="color:var(--text${key === "prismio" ? "" : "-muted"});">${values[key] ? format(values[key]) : "—"}</span></div>
+          <div class="toolchain-track"><div class="toolchain-fill ${key === "c" ? "cpp" : key}" style="width:${Math.round((values[key] || 0) / max * 100)}%;"></div></div>
+        </div>`).join("");
+    }
+    function renderFreestanding() {
+      if (!fsReport) return;
+      const r = fsReport, items = r.benchmarks;
+      const c = fsCounts("c"), ru = fsCounts("rust");
+      const text = lang => r.images && r.images[lang] ? r.images[lang].text : 0;
+      const date = r.generated_at ? new Date(r.generated_at).toLocaleDateString("en-US", {month: "short", day: "numeric", year: "numeric"}) : "Checked in";
+      const tc = (r.environment && r.environment.toolchains) || {};
+      document.querySelector("#fs-aside-stats-list").innerHTML = `
+        <div class="aside-stat-row"><dt>Generated</dt><dd>${date}</dd></div>
+        <div class="aside-stat-row"><dt>Metric</dt><dd>guest instructions</dd></div>
+        <div class="aside-stat-row"><dt>Boots per arm</dt><dd>${r.runs} (${r.deterministic ? "identical" : "differ"})</dd></div>
+        <div class="aside-stat-row"><dt>Workloads</dt><dd style="color:var(--prismio);">${items.length}</dd></div>
+        <div class="aside-stat-row"><dt>Target</dt><dd>${escapeHtml(r.target || "")}</dd></div>
+        <div class="aside-stat-row"><dt>Emulator</dt><dd>QEMU ${escapeHtml(tc.qemu || "")}</dd></div>
+        <div class="aside-stat-row"><dt>Code size</dt><dd>${formatBytes(text("prismio"))}</dd></div>`;
+
+      const card = (title, tag, tagColor, ctr, who, k) => {
+        const pct = ctr.geo <= 1 ? `${((1 - ctr.geo) * 100).toFixed(1)}% fewer` : `${((ctr.geo - 1) * 100).toFixed(1)}% more`;
+        const total = items.length;
+        const w = x => ((x / total) * 100).toFixed(1);
+        return `
+        <div class="kpi-card"><div>
+          <div class="kpi-card-header"><span class="kpi-card-title">${title}</span><span class="kpi-card-tag" style="color:${tagColor}">${tag}</span></div>
+          <div class="kpi-value-row"><div class="kpi-number">${ctr.geo.toFixed(2)}×</div>
+            <span class="kpi-delta" style="background:${ctr.geo <= 1 ? "var(--good-bg)" : "var(--bad-bg)"}; color:${ctr.geo <= 1 ? "var(--good)" : "var(--bad)"}">${pct} instructions</span></div>
+          <p class="kpi-desc">Geometric mean of Prismio's instruction count over ${who}'s, across ${total} workloads. Below 1.00× is fewer instructions.</p></div>
+          <div><div class="distribution-bar">
+            <div class="dist-seg win" style="width:${w(ctr.win)}%" title="${ctr.win} fewer"></div>
+            <div class="dist-seg tie" style="width:${w(ctr.parity)}%" title="${ctr.parity} parity"></div>
+            <div class="dist-seg loss" style="width:${w(ctr.loss)}%" title="${ctr.loss} more"></div></div>
+          <div class="distribution-legend"><span>${ctr.win} fewer</span><span>${ctr.parity} parity</span><span>${ctr.loss} more</span></div></div>
+        </div>`;
+      };
+      const textC = text("c"), textR = text("rust"), textP = text("prismio");
+      document.querySelector("#fs-kpi-grid").innerHTML =
+        card("Overall vs C", "clang -O3", "var(--cpp)", c, "C", "c") +
+        card("Overall vs Rust", "rustc opt-3", "var(--rust)", ru, "Rust", "rust") + `
+        <div class="kpi-card"><div>
+          <div class="kpi-card-header"><span class="kpi-card-title">Code Size</span><span class="kpi-card-tag" style="color:var(--prismio)">.text</span></div>
+          <div class="kpi-value-row"><div class="kpi-number">${formatBytes(textP)}</div>
+            ${textC ? `<span class="kpi-delta" style="background:${textP <= textC ? "var(--good-bg)" : "var(--neutral-bg)"}; color:${textP <= textC ? "var(--good)" : "var(--text)"}">${(textP / textC).toFixed(2)}× vs C</span>` : ""}</div>
+          <p class="kpi-desc">Machine code in the linked image, ${formatBytes(r.harness_text_bytes || 0)} of it the shared harness. Rust: ${textR ? (textP / textR).toFixed(2) + "× of its size" : "—"}.</p></div>
+          <div style="font-size:11px; color:var(--text-faint); border-top:1px solid var(--border-subtle); padding-top:10px;">Dead code removed by the linker (<code>--gc-sections</code>) in all three arms.</div>
+        </div>
+        <div class="kpi-card"><div>
+          <div class="kpi-card-header"><span class="kpi-card-title">Repeatable</span><span class="kpi-card-tag" style="color:var(--rust)" title="${escapeHtml(r.machine || "")}">QEMU -icount</span></div>
+          <div class="kpi-value-row"><div class="kpi-number" style="color:var(--prismio)">${r.deterministic ? "Exact" : "Varies"}</div>
+            <span class="kpi-delta" style="background:var(--good-bg); color:var(--good)">${r.runs} boots agree</span></div>
+          <p class="kpi-desc">The virtual clock advances one nanosecond per instruction, so a timer tick is ${r.tick_instructions} instructions and a repeat boot returns the same count.</p></div>
+          <div style="font-size:11px; color:var(--text-faint); border-top:1px solid var(--border-subtle); padding-top:10px;">Counts are to the nearest ${r.tick_instructions} instructions.</div>
+        </div>`;
+
+      const compile = r.compile_ns || {};
+      document.querySelector("#fs-toolchain-grid").innerHTML = `
+        <div class="toolchain-card">
+          <div class="toolchain-card-header"><div class="toolchain-card-title-wrap"><span>Compilation Speed</span></div>
+            <span style="font-family:var(--font-mono); color:var(--text-faint);">Compile and link</span></div>
+          <div class="kpi-value-row"><div class="kpi-number">${compile.prismio ? duration(compile.prismio) : "—"}</div></div>
+          <p class="kpi-desc">Each arm built from source and linked with the shared harness. Prismio compiles the whole suite as one program.</p>
+          <div class="toolchain-bars">${fsBars(compile, duration)}</div>
+        </div>
+        <div class="toolchain-card">
+          <div class="toolchain-card-header"><div class="toolchain-card-title-wrap"><span>Image Size</span></div>
+            <span style="font-family:var(--font-mono); color:var(--text-faint);">.text of the image</span></div>
+          <div class="kpi-value-row"><div class="kpi-number">${textP ? formatBytes(textP) : "—"}</div></div>
+          <p class="kpi-desc">Executable code, including ${formatBytes(r.harness_text_bytes || 0)} of harness common to all three.</p>
+          <div class="toolchain-bars">${fsBars({prismio: textP, c: textC, rust: textR}, formatBytes)}</div>
+        </div>`;
+
+      const notes = [
+        ["What the number is", `Guest instructions executed, read from the generic timer under QEMU's <code>-icount shift=0</code> (${r.tick_instructions} instructions per tick). It is exact and repeatable, so there is no median, spread or noise model: a verdict is a fixed ±${((r.parity || 0.02) * 100).toFixed(0)}% on the ratio.`],
+        ["What it leaves out", "It models no cache, pipeline or branch predictor. A workload dominated by memory stalls, such as <code>pointer_chase</code> or <code>mem_copy</code>, costs more on real silicon than its count says, and a count cannot show a vectorised loop's advantage. It shows how much code each compiler asked the machine to run."],
+        ["Held equal", "One harness object for all three arms, built once. No floating point or SIMD (the entry code leaves the unit off) and strict alignment (the MMU is off, so an unaligned access faults), for every arm. The same algorithm in each language, checked by identical checksums."],
+        ["Known difference", "Rust indexes with bounds checks, as safe Rust does; C and Prismio's fixed arrays are unchecked. That is the language's price for safe indexing, so it stays in the number."],
+        ["Toolchains", Object.entries(tc).map(([k, v]) => typeof v === "object"
+          ? `${escapeHtml(k)} ${escapeHtml(v.version || "")}${v.profile ? ` (${escapeHtml(v.profile)} build)` : ""}`
+          : `${escapeHtml(k)} ${escapeHtml(v)}`).join(" · ") || "—"],
+      ];
+      document.querySelector("#fs-notes").innerHTML = notes.map(([h, t]) => `
+        <div class="fs-note"><div class="fs-note-head">${h}</div><div class="fs-note-body">${t}</div></div>`).join("");
+      updateFsFilters();
+    }
+    function renderFsPills() {
+      const cats = [...new Set(fsReport.benchmarks.map(b => b.category))];
+      const box = document.querySelector("#fs-category-pills");
+      const pill = (key, label, count) => `<button class="cat-pill ${fsCategory === key ? "active" : ""}" data-cat="${key}"><span style="text-transform:capitalize;">${escapeHtml(label)}</span><span class="cat-pill-badge">${count}</span></button>`;
+      box.innerHTML = pill("all", "All Workloads", fsReport.benchmarks.length) +
+        cats.map(cat => pill(cat, cat.replace(/_/g, " "), fsReport.benchmarks.filter(b => b.category === cat).length)).join("");
+      box.querySelectorAll(".cat-pill").forEach(p => p.addEventListener("click", () => { fsCategory = p.dataset.cat; updateFsFilters(); }));
+    }
+    function updateFsFilters() {
+      if (!fsReport) return;
+      renderFsPills();
+      const items = fsFiltered();
+      document.querySelector("#fs-count").innerHTML = `Showing <strong style="color:var(--text);">${items.length}</strong> of ${fsReport.benchmarks.length} workloads`;
+      const body = document.querySelector("#fs-body");
+      if (!items.length) {
+        body.innerHTML = `<tr><td colspan="8" style="padding:48px; text-align:center; color:var(--text-faint);">No workloads match the selected filters.</td></tr>`;
+        return;
+      }
+      body.innerHTML = items.map(item => {
+        const open = fsExpanded.has(item.name);
+        const counts = Object.fromEntries(FS_ARMS.map(([k]) => [k, fsInstr(item, k)]));
+        const best = Math.min(...Object.values(counts));
+        const cell = (k, cls) => `<td class="text-right ${cls}"${counts[k] === best ? ' style="font-weight:700;"' : ""}>${fmtCount(counts[k])}</td>`;
+        const arm = ([k, name, color]) => `
+          <div class="drawer-arm-card">
+            <div class="drawer-arm-head"><span style="font-weight:600; color:${color};">${name}</span><span style="font-family:var(--font-mono); font-size:10px; color:var(--text-faint);">${item.languages[k].ticks} ticks</span></div>
+            <div class="drawer-stat-grid"><div><div class="drawer-stat-label">Instructions</div><div class="drawer-stat-val">${formatNumber(counts[k])}</div></div>
+            <div><div class="drawer-stat-label">vs Prismio</div><div class="drawer-stat-val">${k === "prismio" ? "—" : (counts.prismio / Math.max(counts[k], 1)).toFixed(3) + "×"}</div></div></div>
+          </div>`;
+        return `
+          <tr class="data-row ${open ? "expanded" : ""}" data-name="${escapeHtml(item.name)}">
+            <td><div class="cell-workload"><span class="workload-chevron">${open ? "▼" : "▶"}</span><div><span class="workload-name">${escapeHtml(item.name)}</span><span class="workload-profile" style="margin-left:6px;">${escapeHtml(item.profile || "")}</span></div></div></td>
+            <td style="color:var(--text-faint); text-transform:capitalize;">${escapeHtml(item.category.replace(/_/g, " "))}</td>
+            ${cell("prismio", "num-p")}${cell("c", "num-c")}${cell("rust", "num-r")}
+            <td class="text-right">${fsDelta(item, "c")}</td>
+            <td class="text-right">${fsDelta(item, "rust")}</td>
+            <td class="text-right"><span class="inspect-btn">${open ? "Hide" : "Inspect"}</span></td>
+          </tr>
+          <tr class="drawer-row ${open ? "open" : ""}"><td colspan="8" class="drawer-cell"><div class="drawer-content"><div class="drawer-inner-card">
+            <div class="drawer-top-bar"><div class="drawer-top-left"><span class="drawer-top-title">${escapeHtml(item.name)}</span><span class="workload-profile">${escapeHtml(item.profile || "")}</span></div>
+              <div style="font-family:var(--font-mono); font-size:11px; color:var(--text-faint);">Checksum: <span style="color:var(--text);">${formatNumber(item.result)}</span> <span style="color:var(--good); margin-left:6px;">(Verified Identical ✓)</span></div></div>
+            <p class="kpi-desc" style="margin:0 0 10px;">${escapeHtml(item.description || "")}</p>
+            <div class="drawer-columns-grid">${FS_ARMS.map(arm).join("")}</div>
+          </div></div></td></tr>`;
+      }).join("");
+      body.querySelectorAll("tr.data-row").forEach(row => row.addEventListener("click", () => {
+        const name = row.dataset.name;
+        if (fsExpanded.has(name)) fsExpanded.delete(name); else fsExpanded.add(name);
+        updateFsFilters();
+      }));
+    }
+    function fsExport(kind) {
+      const r = fsReport;
+      if (!r) return showToast("No freestanding results in this file");
+      const items = fsFiltered();
+      const c = fsCounts("c"), ru = fsCounts("rust");
+      let out;
+      if (kind === "summary") {
+        out = `### Prismio Freestanding Benchmark Summary
+- **Overall vs C (clang -O3)**: **${c.geo.toFixed(2)}×** instructions (${c.win} fewer / ${c.parity} parity / ${c.loss} more)
+- **Overall vs Rust (rustc opt-3, no_std)**: **${ru.geo.toFixed(2)}×** instructions (${ru.win} fewer / ${ru.parity} parity / ${ru.loss} more)
+- **Code size (.text)**: Prismio ${formatBytes(r.images.prismio.text)}, C ${formatBytes(r.images.c.text)}, Rust ${formatBytes(r.images.rust.text)}
+- **Method**: bare-metal ${r.target} under QEMU, guest instructions via \`-icount shift=0\`; exact and repeatable across ${r.runs} boots.
+- **Integrity**: identical checksums across all three languages for all ${r.benchmarks.length} workloads.`;
+      } else if (kind === "markdown") {
+        out = "| Workload | Category | Prismio | C | Rust | vs C | vs Rust |\n|---|---|---:|---:|---:|---:|---:|\n" +
+          items.map(i => `| \`${i.name}\` | ${i.category} | ${fsInstr(i, "prismio")} | ${fsInstr(i, "c")} | ${fsInstr(i, "rust")} | ${fsRatio(i, "c").toFixed(2)}× | ${fsRatio(i, "rust").toFixed(2)}× |`).join("\n") + "\n";
+      } else {
+        out = "Workload,Category,Checksum,Prismio_instructions,C_instructions,Rust_instructions,Ratio_vs_C,Ratio_vs_Rust\n" +
+          items.map(i => `"${i.name}","${i.category}",${i.result},${fsInstr(i, "prismio")},${fsInstr(i, "c")},${fsInstr(i, "rust")},${fsRatio(i, "c").toFixed(3)},${fsRatio(i, "rust").toFixed(3)}`).join("\n") + "\n";
+      }
+      navigator.clipboard.writeText(out).then(() => showToast(kind === "summary" ? "Summary markdown copied to clipboard!" : kind === "markdown" ? "Table copied as Markdown!" : "Table copied as CSV!"));
+    }
+    document.querySelector("#fs-search").addEventListener("input", e => { fsQuery = e.target.value; updateFsFilters(); });
+    document.querySelector("#fs-sort").addEventListener("change", e => { fsSort = e.target.value; updateFsFilters(); });
+    document.querySelectorAll(".fs-outcome-pill").forEach(pill => pill.addEventListener("click", () => {
+      document.querySelectorAll(".fs-outcome-pill").forEach(p => p.classList.remove("active"));
+      pill.classList.add("active");
+      fsOutcome = pill.dataset.val;
+      updateFsFilters();
+    }));
+
+    // ------------------------------------------------------------------ tabs
+    function selectSuite(name, remember) {
+      if (name === "freestanding" && !fsReport) name = "hosted";
+      if (name === "hosted" && !hasHosted && fsReport) name = "freestanding";
+      activeSuite = name;
+      document.querySelectorAll(".suite-tab").forEach(tab => tab.setAttribute("aria-selected", String(tab.dataset.suite === name)));
+      document.querySelector("#suite-hosted").hidden = name !== "hosted";
+      document.querySelector("#suite-freestanding").hidden = name !== "freestanding";
+      document.querySelector("#footer-verified").textContent = name === "freestanding"
+        ? "All freestanding workloads verified with identical canonical checksums across Prismio, C and Rust."
+        : "All implemented benchmarks verified with identical canonical checksums across all 3 languages.";
+      if (remember) history.replaceState(null, "", name === "hosted" ? location.pathname + location.search : "#" + name);
+    }
+    document.querySelectorAll(".suite-tab").forEach(tab => {
+      const available = tab.dataset.suite === "hosted" ? hasHosted : Boolean(fsReport);
+      tab.disabled = !available;
+      if (!available) tab.title = tab.dataset.suite === "hosted" ? "No hosted results in this file" : "No freestanding results in this file: run the suite with QEMU, lld and the Rust source installed";
+      tab.addEventListener("click", () => selectSuite(tab.dataset.suite, true));
+    });
+    document.querySelector("#suite-tabs").addEventListener("keydown", e => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const tabs = [...document.querySelectorAll(".suite-tab:not(:disabled)")];
+      const at = tabs.findIndex(t => t.dataset.suite === activeSuite);
+      const next = tabs[(at + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+      if (next) { next.focus(); selectSuite(next.dataset.suite, true); }
+    });
+
     // Initial Render
-    renderHeroAside();
-    renderKPIs();
-    renderToolchain();
-    renderUnsupported();
-    updateFilters();
+    if (hasHosted) {
+      renderHeroAside();
+      renderKPIs();
+      renderToolchain();
+      renderUnsupported();
+      updateFilters();
+    }
+    renderFreestanding();
+    selectSuite(location.hash === "#freestanding" ? "freestanding" : "hosted", false);
+    window.addEventListener("hashchange", () => selectSuite(location.hash === "#freestanding" ? "freestanding" : "hosted", false));
   </script>
 </body>
 </html>

@@ -1,0 +1,16 @@
+// The failure paths of a program with no operating system. `seed` is defined by
+// the boot stub (-DSEED=n) and is `volatile` there, so which path runs is not
+// known when this is compiled: 1 overflows a checked `+`, 2 panics, anything else
+// returns normally.
+
+extern let seed: Int
+
+fn main() -> Int {
+    if (seed == 1) {
+        return seed * 2147483647 + 2147483647
+    }
+    if (seed == 2) {
+        panic("boom")
+    }
+    return 7
+}

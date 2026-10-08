@@ -4,9 +4,90 @@ import std.input
 import std.io
 import std.option
 import std.term
+import std.time
+import std.vec
 
+let seed = 25379418342
+let target = 10000
 fn main(){
-    let x = "FCK"
+    let genesis = Block {
+        header: Header {
+            prev_hash: none,
+            nonce: 0,
+            merkle: 0
+        },
+        txs: []
+    }
+    genesis.mine()
 
-    println(x.brightBlue())
+    let mut chain: Vec<Block> = []
+    chain.push(genesis)
+    for i in 1..5 {
+        let block = Block {
+            header: Header {
+                prev_hash: chain[i - 1].header.digest(),
+                nonce: 0,
+                merkle: 0
+            },
+            txs: []
+        }
+        block.add_tx(rng())
+        block.add_tx(rng())
+        block.mine()
+        println("block " + i.show() + " nonce " + block.header.nonce.show())
+        chain.push(block)
+    }
+}
+
+struct Block {
+    header: Header,
+    txs: Vec<Int>
+}
+
+struct Header {
+    prev_hash: Int?,
+    nonce: Int,
+    merkle: Int,
+}
+
+impl Header {
+    fn digest(self) -> Int {
+        return hash([self.prev_hash ?? 0, self.nonce, self.merkle].toVec())
+    }
+}
+
+impl Block {
+    fn add_tx(self, i: Int) {
+        if (self.txs.length == 0) {
+            self.header.merkle = hash([i, self.header.merkle].toVec())
+        }
+        self.header.merkle = i ^ self.header.merkle
+        self.txs.push(i)
+    }
+
+    fn mine(self) {
+        loop {
+            self.header.nonce = 1 + self.header.nonce
+            if (self.validate()) {
+                return
+            }
+        }
+    }
+
+    fn validate(self) -> Bool{
+        return hash([self.header.nonce, self.header.merkle].toVec()) < target
+    }  // if hash < target
+}
+
+fn rng() -> Int {
+    return seed ^ Instant.now().nanos as Int
+}
+
+fn hash(v: Vec<Int>) -> Int {
+    let mut r = seed
+    for i in v {
+        r = (r ^ i) * 1000003
+        r ^= r >> 15
+    }
+    return r & 0x7FFFFFFF
 }

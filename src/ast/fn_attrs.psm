@@ -1,0 +1,74 @@
+import ast.nodes
+import std.string
+import std.option
+
+// Function attributes the AST has no field for: `export fn`, `naked fn` and
+// `section("...") fn` (src/parse/decl.psm).
+//
+// A table beside the AST rather than a field on it: FUNCTION.i1 already holds one
+// state at a time (inline, property, cold), and a new field on every node costs the
+// whole compiler for the sake of a few boot-stub declarations. Keyed by where the
+// `fn` keyword is, which is unique per declaration and survives the copy a generic
+// instantiation makes. One record per line, `file:line:col|flags|align|section`;
+// flags are 1 export and 2 naked, and align is 0 when none was written.
+let mut fnAttrTable = ""
+
+private fn fnAttrKey(fnNode: ASTNode) -> String {
+    let position = fnNode.file.toString().concat(":", fnNode.line.toString(), ":")
+    return "\n".concat(position, fnNode.col.toString(), "|")
+}
+
+public fn nodeSetFnAttrs(fnNode: ASTNode, flags: Int, align: Int, section: String) {
+    let head = fnAttrKey(fnNode).concat(flags.toString(), "|", align.toString())
+    fnAttrTable = fnAttrTable.concat(head, "|", section)
+}
+
+// "" when the function carries none, else `flags|section`.
+private fn fnAttrRecord(fnNode: ASTNode) -> String {
+    if (fnAttrTable.equals("")) { return "" }
+    let key = fnAttrKey(fnNode)
+    let at = fnAttrTable.indexOf(key)
+    if (at < 0) { return "" }
+    let start = at + key.length
+    let rest = fnAttrTable.substring(start, fnAttrTable.length - start)
+    let end = rest.indexOf("\n")
+    if (end < 0) { return rest.clone() }
+    return rest.substring(0, end)
+}
+
+// The field after the `n`th bar of the record, "" when there is none.
+private fn fnAttrField(record: String, n: Int) -> String {
+    let mut rest = record.clone()
+    let mut i = 0
+    while (i < n) {
+        let bar = rest.indexOf("|")
+        if (bar < 0) { return "" }
+        rest = rest.substring(bar + 1, rest.length - bar - 1)
+        i = i + 1
+    }
+    let end = rest.indexOf("|")
+    if (end < 0) { return rest }
+    return rest.substring(0, end)
+}
+
+public fn nodeFnAttrFlags(fnNode: ASTNode) -> Int {
+    let record = fnAttrRecord(fnNode)
+    if (record.equals("")) { return 0 }
+    return fnAttrField(record, 0).parseInt().unwrapOr(0)
+}
+
+public fn nodeFnAlign(fnNode: ASTNode) -> Int {
+    let record = fnAttrRecord(fnNode)
+    if (record.equals("")) { return 0 }
+    return fnAttrField(record, 1).parseInt().unwrapOr(0)
+}
+
+// The section is last, so a name that contains a bar is still whole.
+public fn nodeFnSection(fnNode: ASTNode) -> String {
+    let record = fnAttrRecord(fnNode)
+    if (record.equals("")) { return "" }
+    let first = record.indexOf("|")
+    let second = record.substring(first + 1, record.length - first - 1).indexOf("|")
+    let start = first + second + 2
+    return record.substring(start, record.length - start)
+}

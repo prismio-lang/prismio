@@ -479,6 +479,22 @@ public extern fn ir_str_inline_concat6(a: String, b: String, c: String, d: Strin
 public extern fn ir_str_from_int(value: String) -> Int
 public extern fn ir_global_str_var(name: String, strGlobal: String, length: Int)
 
+// Memory through an integer address, atomics, a fence and inline assembly: the
+// backend half of `__builtin_mem_*` and `__builtin_asm*` (src/common/mem_builtins.psm).
+// `mode` is 0 plain, 1 volatile, 2 atomic; `op` is ir_mem_rmw's numbering there.
+// `naked`, `section("...")`, `export` on a function being emitted, and `packed` on
+// the struct type being declared (src/parse/decl.psm).
+public extern fn ir_function_naked()
+public extern fn ir_function_section(name: String)
+public extern fn ir_function_align(bytes: Int)
+public extern fn ir_function_export(name: String)
+public extern fn ir_struct_type_packed(on: Int)
+public extern fn ir_mem_load(type: String, addrType: String, addr: String, mode: Int) -> Int
+public extern fn ir_mem_store(type: String, value: String, addrType: String, addr: String, mode: Int)
+public extern fn ir_mem_rmw(op: Int, type: String, addrType: String, addr: String, value: String) -> Int
+public extern fn ir_mem_cmpxchg(type: String, addrType: String, addr: String, expected: String, desired: String) -> Int
+public extern fn ir_mem_fence()
+public extern fn ir_asm_call(retType: String, text: String, constraints: String) -> Int
 public extern fn ir_load_ptr(type: String, ptrValue: String) -> Int
 public extern fn ir_store_ptr(type: String, value: String, ptrValue: String)
 public extern fn ir_list_store_ptr(type: String, value: String, ptrValue: String)

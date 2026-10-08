@@ -1,0 +1,86 @@
+// Memory behaviour: dependent loads, a queue, and bulk movement through raw
+// addresses. The same programs as ../c/memory.c and ../rust/memory.rs.
+
+export fn bench_pointer_chase(scale: U32) -> U32 {
+    let mut order: Array<U32, 2048>
+    let mut next: Array<U32, 2048>
+    let mut i = 0
+    while (i < 2048) {
+        order[i] = i as U32
+        i = i + 1
+    }
+    let mut s: U32 = 9001
+    i = 2047
+    while (i > 0) {
+        s = s * 1664525 + 1013904223
+        let j = ((s >> 8) % ((i as U32) + 1)) as Int
+        let t = order[i]
+        order[i] = order[j]
+        order[j] = t
+        i = i - 1
+    }
+    let mut k = 0
+    while (k < 2048) {
+        next[order[k] as Int] = order[(k + 1) % 2048]
+        k = k + 1
+    }
+    let mut at = order[0]
+    let mut sum: U32 = 0
+    let mut step: U32 = 0
+    while (step < 2400000 * scale) {
+        at = next[at as Int]
+        sum = sum + at
+        step = step + 1
+    }
+    return sum
+}
+
+export fn bench_ring_buffer(scale: U32) -> U32 {
+    let mut slots: Array<U32, 1024>
+    let mut head: U32 = 0
+    let mut tail: U32 = 0
+    let mut s: U32 = 321
+    let mut sum: U32 = 0
+    let mut popped: U32 = 0
+    let mut i: U32 = 0
+    while (i < 300000 * scale) {
+        s = s * 1664525 + 1013904223
+        if (head - tail < 1024) {
+            slots[(head & 1023) as Int] = s
+            head = head + 1
+        }
+        if (((s >> 8) & 1) == 0 and head != tail) {
+            sum = sum + slots[(tail & 1023) as Int]
+            tail = tail + 1
+            popped = popped + 1
+        }
+        i = i + 1
+    }
+    return sum ^ popped
+}
+
+export fn bench_mem_copy(scale: U32) -> U32 {
+    let mut o: Usize = 0
+    while (o < 32768) {
+        __builtin_mem_store_u64(0x44000000 + o, ((o as U64) * 0x9E3779B97F4A7C15) ^ 0x5555)
+        o = o + 8
+    }
+    let mut r: U32 = 0
+    while (r < 288 * scale) {
+        o = 0
+        while (o < 32768) {
+            let v = __builtin_mem_load_u64(0x44000000 + o)
+            __builtin_mem_store_u64(0x45000000 + o, v)
+            __builtin_mem_store_u64(0x44000000 + o, v + (r as U64) + 1)
+            o = o + 8
+        }
+        r = r + 1
+    }
+    let mut sum: U64 = 0
+    o = 0
+    while (o < 32768) {
+        sum = sum + __builtin_mem_load_u64(0x45000000 + o)
+        o = o + 8
+    }
+    return ((sum & 0xFFFFFFFF) as U32) ^ ((sum >> 32) as U32)
+}

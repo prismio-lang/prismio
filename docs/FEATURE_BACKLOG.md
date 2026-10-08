@@ -6,8 +6,8 @@ long-lived, actionable work in `docs/`, while `KNOWN_ISSUES.md` records observed
 defects and commit messages record measurements.
 
 All three items below currently appear as unsupported workloads in
-[`benchmarks/benchmarks.json`](../benchmarks/benchmarks.json) and
-[`benchmarks/UNSUPPORTED.md`](../benchmarks/UNSUPPORTED.md). Do not change either
+[`benchmarks/hosted/benchmarks.json`](../benchmarks/hosted/benchmarks.json) and
+[`benchmarks/hosted/UNSUPPORTED.md`](../benchmarks/hosted/UNSUPPORTED.md). Do not change either
 record to `implemented` until its benchmark runs in all three implementations,
 has a cross-language checksum, and passes the normal suite.
 
@@ -212,8 +212,8 @@ For each completed item:
 
 - [ ] Run its focused tests and the normal suite using the candidate compiler.
 - [ ] Run ownership verification for recursive/owned cases where applicable.
-- [ ] Update [the runtime surface](https://developers.prismio.org/runtime/supported-surface), `benchmarks/benchmarks.json`,
-  `benchmarks/UNSUPPORTED.md`, and `benchmarks/README.md` in the same change.
+- [ ] Update [the runtime surface](https://developers.prismio.org/runtime/supported-surface), `benchmarks/hosted/benchmarks.json`,
+  `benchmarks/hosted/UNSUPPORTED.md`, and `benchmarks/README.md` in the same change.
 - [ ] Put the measured benchmark evidence in the commit message if the change
   affects a claimed performance result, and add an entry to the developer docs'
   *Performance decisions and rejected experiments* page if it rejects an idea.

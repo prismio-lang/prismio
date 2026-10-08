@@ -1,0 +1,59 @@
+// A program that talks to the machine in Prismio: a device register through
+// `volatile` stores, atomics on RAM, a fence, and system-register access through
+// inline assembly. The boot stub (boot_aarch64_virt.c) now only sets the stack,
+// calls `main` and exits. `main` returns how many checks failed.
+
+// QEMU `virt`'s PL011 UART. Each store must reach the device, and two to the same
+// address must be two characters: a plain store could be merged into one, which is
+// what `vstore` exists to forbid.
+fn put(c: U8) {
+    __builtin_mem_vstore_u32(0x09000000, c as U32)
+}
+
+fn check(ok: Bool) -> Int {
+    if (ok) { return 0 }
+    return 1
+}
+
+fn main() -> Int {
+    put(80)
+    put(65)
+    put(65)
+    put(10)
+
+    // RAM the linker script leaves alone. Within the 128 MiB `virt` has by default.
+    let word: Usize = 0x42000000
+    let mut bad = 0
+
+    __builtin_mem_astore_u32(word, 5)
+    bad = bad + check(__builtin_mem_aadd_u32(word, 3) == 5)
+    bad = bad + check(__builtin_mem_aload_u32(word) == 8)
+    bad = bad + check(__builtin_mem_acas_u32(word, 8, 20) == 8)
+    bad = bad + check(__builtin_mem_aload_u32(word) == 20)
+    // A compare-and-swap that fails leaves the value and answers what it found.
+    bad = bad + check(__builtin_mem_acas_u32(word, 8, 99) == 20)
+    bad = bad + check(__builtin_mem_aswap_u32(word, 1) == 20)
+    bad = bad + check(__builtin_mem_asub_u32(word, 1) == 1)
+    bad = bad + check(__builtin_mem_aor_u32(word, 6) == 0)
+    bad = bad + check(__builtin_mem_aand_u32(word, 3) == 6)
+    bad = bad + check(__builtin_mem_axor_u32(word, 3) == 2)
+    bad = bad + check(__builtin_mem_load_u32(word) == 1)
+
+    // Every width, and little-endian byte order.
+    __builtin_mem_store_u64(word + 8, 0x1122334455667788)
+    bad = bad + check(__builtin_mem_load_u64(word + 8) == 0x1122334455667788)
+    bad = bad + check(__builtin_mem_load_u8(word + 8) == 0x88)
+    bad = bad + check(__builtin_mem_load_u16(word + 8) == 0x7788)
+    __builtin_mem_store_u8(word + 16, 255)
+    bad = bad + check(__builtin_mem_load_u8(word + 16) == 255)
+
+    __builtin_mem_fence()
+    __builtin_asm("nop")
+
+    // A system register round trip: the value goes in through `$0` and comes back.
+    __builtin_asm_write("msr tpidr_el0, $0", 12345)
+    bad = bad + check(__builtin_asm_read("mrs $0, tpidr_el0") == 12345)
+    // The exception level QEMU enters at: EL1, which CurrentEL holds as 1 << 2.
+    bad = bad + check(__builtin_asm_read("mrs $0, CurrentEL") == 4)
+    return bad
+}

@@ -1,0 +1,17 @@
+// The `std` modules a freestanding program may import: std.option and std.platform
+// are pure Prismio, and with them a scalar `T?` keeps its `unwrapOr` and a program
+// can ask what it was built for. Linking with no runtime is the assertion.
+
+import std.option
+import std.platform
+
+fn pick(flag: Bool) -> Int? {
+    if (flag) { return 7 }
+    return none
+}
+
+fn main() -> Int {
+    let wanted = pick(true).unwrapOr(0) + pick(false).unwrapOr(35)
+    if (platform.architecture == Architecture.ARM64) { return wanted }
+    return wanted
+}

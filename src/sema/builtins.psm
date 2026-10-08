@@ -7,6 +7,8 @@ import ir.bridge
 import common.diagnostics
 import common.float_builtins
 import common.int_builtins
+import common.mem_builtins
+import common.target
 import sema.flow
 import std.string
 
@@ -45,6 +47,21 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // tabled in src/common/float_builtins.psm, lowered to LLVM's intrinsic where
     // there is one and to libm's function where there is not.
     if (floatBuiltinArity(name) > 0) { return typeFloat() }
+    // Memory through an integer address, atomics and inline assembly
+    // (src/common/mem_builtins.psm): a load answers the width it names, a store and
+    // a fence answer nothing, and a read-modify-write answers what was there.
+    if (memBuiltinIsFence(name)) { return typeVoid() }
+    if (memBuiltinArity(name) > 0) {
+        if (memBuiltinIsStore(name)) { return typeVoid() }
+        return semaMemValueType(memBuiltinWidth(name))
+    }
+    let asmKind = asmBuiltinKind(name)
+    if (asmKind == 2) { return typeU64() }
+    if (asmKind > 0) { return typeVoid() }
+    if (portBuiltinDir(name) == 2) { return semaMemValueType(portBuiltinWidth(name)) }
+    if (portBuiltinDir(name) == 1) { return typeVoid() }
+    if (addrBuiltinKind(name) == 1) { return typeUsize() }
+    if (addrBuiltinKind(name) == 2) { return typePtr() }
 
     // errno and the two numbers a retry loop compares it against. Int, because
     // errno is a C `int` and these are read to be compared with each other.
@@ -259,6 +276,88 @@ private fn semaIsScalarOptionalArg(module: ASTNode, argPtr: Ptr) -> Bool {
     return typeIsValueOptional(semaExpr(module, ptr_to_node(argPtr)))
 }
 
+private fn semaMemValueType(width: Int) -> TypeInfo {
+    if (width == 8) { return typeU8() }
+    if (width == 16) { return typeU16() }
+    if (width == 32) { return typeU32() }
+    return typeU64()
+}
+
+// `__builtin_mem_*` and `__builtin_asm*`. The address is a `Usize`; the value is
+// the unsigned type of the width in the name, so `__builtin_mem_vstore_u8(a, 65)`
+// adopts U8 for its literal and a `U32` handed to it is refused rather than
+// truncated. An assembly template has to be known at compile time, because it is
+// part of the instruction stream: a string literal, never a variable.
+private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
+    if (memBuiltinIsFence(name)) {
+        semaCheckArity(call, name, argPtr, 0)
+        return true
+    }
+    let arity = memBuiltinArity(name)
+    if (arity > 0) {
+        if (semaCheckArity(call, name, argPtr, arity) == false) { return true }
+        let address = ptr_to_node(argPtr)
+        semaCheckValue(module, address, typeUsize(), "memory address")
+        let valueType = semaMemValueType(memBuiltinWidth(name))
+        let mut operandPtr = address.next
+        while (nodeExists(operandPtr)) {
+            let operand = ptr_to_node(operandPtr)
+            semaCheckValue(module, operand, valueType, "memory operand")
+            operandPtr = operand.next
+        }
+        return true
+    }
+
+    let portDir = portBuiltinDir(name)
+    if (portDir > 0) {
+        // Port I/O is an x86 instruction. Refused on every other target rather than
+        // assembled into something the assembler rejects with a line number inside
+        // generated text.
+        let triple = ir_target_triple()
+        if (triple.startsWith("x86_64") == false and triple.startsWith("i386") == false
+            and triple.startsWith("i686") == false and triple.startsWith("amd64") == false) {
+            semaErrorAt(call, diagQuote(name).concat(" is an x86 instruction, and the target is ", diagQuote(triple)))
+            return true
+        }
+        let mut arity = 2
+        if (portDir == 2) { arity = 1 }
+        if (semaCheckArity(call, name, argPtr, arity) == false) { return true }
+        let port = ptr_to_node(argPtr)
+        semaCheckValue(module, port, typeU16(), "port")
+        if (portDir == 1) {
+            semaCheckValue(module, ptr_to_node(port.next), semaMemValueType(portBuiltinWidth(name)), "port value")
+        }
+        return true
+    }
+
+    let addrKind = addrBuiltinKind(name)
+    if (addrKind > 0) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        if (addrKind == 1) {
+            semaCheckValue(module, ptr_to_node(argPtr), typePtr(), "pointer")
+        } else {
+            semaCheckValue(module, ptr_to_node(argPtr), typeUsize(), "address")
+        }
+        return true
+    }
+
+    let asmKind = asmBuiltinKind(name)
+    if (asmKind == 0) { return false }
+    let mut expected = 1
+    if (asmKind == 3) { expected = 2 }
+    if (semaCheckArity(call, name, argPtr, expected) == false) { return true }
+    let template = ptr_to_node(argPtr)
+    if (template.kind != NodeKind.LITERAL_EXPR or template.i1 != TokenType.STRING_LITERAL as Int) {
+        semaErrorAt(template, "the assembly text of ".concat(diagQuote(name), " must be a string literal"))
+        return true
+    }
+    semaExpr(module, template)
+    if (asmKind == 3) {
+        semaCheckValue(module, ptr_to_node(template.next), typeU64(), "assembly operand")
+    }
+    return true
+}
+
 internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     if (semaCheckFailureBuiltin(module, call, name, argPtr)) { return true }
 
@@ -338,6 +437,8 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         }
         return true
     }
+
+    if (semaCheckMemBuiltin(module, call, name, argPtr)) { return true }
 
     let floatArity = floatBuiltinArity(name)
     if (floatArity > 0) {

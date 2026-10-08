@@ -185,12 +185,14 @@ impl UmsProjectModel {
             else if (declaration.name.equals("file")) { kind = UmsLinkKind.FILE }
             else if (declaration.name.equals("framework")) { kind = UmsLinkKind.FRAMEWORK }
             else if (declaration.name.equals("responseFile")) { kind = UmsLinkKind.RESPONSE_FILE }
+            else if (declaration.name.equals("script")) { kind = UmsLinkKind.SCRIPT }
+            else if (declaration.name.equals("arg")) { kind = UmsLinkKind.ARG }
 
             if (declaration.kind != UmsAstStatementKind.CALL or
                 declaration.hasBlock or kind == UmsLinkKind.UNKNOWN) {
                 self.lowerError(diagnostics, declaration, "UMS2108",
                     "unknown link declaration '".concat(declaration.name,
-                                                        "'; expected library, search, file, framework or responseFile"))
+                                                        "'; expected library, search, file, framework, responseFile, script or arg"))
             } else if (declaration.arguments.length != 1 or
                        declaration.arguments[0].kind != UmsAstValueKind.STRING) {
                 self.lowerError(diagnostics, declaration, "UMS2109",
@@ -259,6 +261,7 @@ impl UmsProjectModel {
         let mut nativeBlocks = 0
         let mut runtimeDeclared = false
         let mut exportDeclared = false
+        let mut declared = ""
         let mut i = 0
         while (i < call.children.length) {
             let property = document.statements[call.children[i]]
@@ -307,11 +310,50 @@ impl UmsProjectModel {
                     exportDeclared = true
                     target.exportDynamic = property.value.text.equals("true")
                 }
+            } else if (property.kind == UmsAstStatementKind.ASSIGNMENT and
+                       (property.name.equals("freestanding") or property.name.equals("noRedZone"))) {
+                // Booleans, each declared once. `declared` is the set of freestanding
+                // properties seen, so a repeat is one error and not a silent override.
+                if (declared.contains("|".concat(property.name, "|"))) {
+                    self.lowerError(diagnostics, property, "UMS2102",
+                                  "target ".concat(property.name, " is declared more than once"))
+                } else if (property.value.kind != UmsAstValueKind.BOOLEAN) {
+                    self.lowerError(diagnostics, property, "UMS2115",
+                                  "target ".concat(property.name, " must be true or false"))
+                } else {
+                    declared = declared.concat("|", property.name, "|")
+                    if (property.name.equals("freestanding")) {
+                        target.freestanding = property.value.text.equals("true")
+                    } else {
+                        target.noRedZone = property.value.text.equals("true")
+                    }
+                }
+            } else if (property.kind == UmsAstStatementKind.ASSIGNMENT and
+                       (property.name.equals("triple") or property.name.equals("features")
+                        or property.name.equals("codeModel"))) {
+                if (declared.contains("|".concat(property.name, "|"))) {
+                    self.lowerError(diagnostics, property, "UMS2102",
+                                  "target ".concat(property.name, " is declared more than once"))
+                } else if (self.lowerString(diagnostics, property, "target ".concat(property.name))) {
+                    declared = declared.concat("|", property.name, "|")
+                    if (property.name.equals("triple")) {
+                        target.triple = property.value.text.clone()
+                    } else if (property.name.equals("features")) {
+                        target.features = property.value.text.clone()
+                    } else if (property.value.text.equals("small") or property.value.text.equals("kernel")
+                               or property.value.text.equals("medium") or property.value.text.equals("large")) {
+                        target.codeModel = property.value.text.clone()
+                    } else {
+                        self.lowerError(diagnostics, property, "UMS2116",
+                            "target codeModel is small, kernel, medium or large, not \"".concat(
+                                property.value.text, "\""))
+                    }
+                }
             } else if (property.kind != UmsAstStatementKind.ASSIGNMENT or
                        property.name.equals("entry") == false) {
                 self.lowerError(diagnostics, property, "UMS2101",
                     "unknown target property '".concat(property.name,
-                                                       "'; expected entry, runtime, exportDynamic, native or link"))
+                                                       "'; expected entry, runtime, exportDynamic, freestanding, triple, features, codeModel, noRedZone, native or link"))
             } else if (self.lowerString(diagnostics, property, "target entry")) {
                 if (__builtin_string_len(entry) > 0) {
                     self.lowerError(diagnostics, property, "UMS2102",

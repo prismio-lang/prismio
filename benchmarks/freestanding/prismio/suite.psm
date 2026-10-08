@@ -1,0 +1,12 @@
+// The Prismio arm of the freestanding suite: every workload is an `export fn`
+// named `bench_<name>`, which is the symbol the shared harness (../harness)
+// calls. `main` exists because every program has one; nothing runs it.
+
+import algorithms
+import compute
+import memory
+import hardware
+
+fn main() -> Int {
+    return 0
+}

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Build, validate, and measure the Prismio/C++/Rust benchmark matrix."""
+"""Build, validate, and measure the benchmark suites.
+
+Two suites share this runner. `hosted` is the Prismio/C++/Rust matrix on the host
+operating system; `freestanding` is Prismio/C/Rust with no operating system, run
+under QEMU and counted in instructions (freestanding/suite.py). Both land in one
+results file and one report, in tabs.
+"""
 
 import argparse
 from datetime import datetime, timezone
@@ -26,13 +32,16 @@ except ImportError:     # Windows: no rusage, so no CPU time
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-MANIFEST = HERE / "benchmarks.json"
-BUILD = HERE / "build"
+HOSTED = HERE / "hosted"
+FREESTANDING = HERE / "freestanding"
+MANIFEST = HOSTED / "benchmarks.json"
+BUILD = HERE / "build" / "hosted"
 RESULTS = HERE / "results"
 TEMPLATES = HERE / "templates"
+SUITES = ("hosted", "freestanding")
 LANGUAGES = ("prismio", "cpp", "rust")
 LANGUAGE_LABELS = {"prismio": "Prismio", "cpp": "C++", "rust": "Rust"}
-CPP_SOURCES = tuple(HERE / "cpp" / name for name in (
+CPP_SOURCES = tuple(HOSTED / "cpp" / name for name in (
     "suite.cpp",
     "algorithms.cpp",
     "data_structures.cpp",
@@ -122,6 +131,9 @@ def verdicts(item):
 # `verdict` per workload and `noise_model`, so every reader judges a result by the
 # rule above rather than by its own percentage.
 SCHEMA_VERSION = 3
+# The combined results file. 4 holds one report per suite under `suites`; each
+# suite's own report keeps the schema it was written with.
+RESULTS_SCHEMA_VERSION = 4
 HARNESS = "benchmarks/run.py"
 
 
@@ -323,11 +335,11 @@ def portable_command(command):
     return " ".join(portable_part(part) for part in command)
 
 
-def run_command(command, *, env=None):
-    return subprocess.run(command, cwd=REPO, env=env, capture_output=True, text=True)
+def run_command(command, *, env=None, cwd=None):
+    return subprocess.run(command, cwd=cwd or REPO, env=env, capture_output=True, text=True)
 
 
-def run_timed(command, *, env=None):
+def run_timed(command, *, env=None, cwd=None):
     """(result, wall_ns, cpu_ns) of one build.
 
     CPU time is user plus system over the child and everything it spawned, and it
@@ -338,7 +350,7 @@ def run_timed(command, *, env=None):
     """
     before = resource.getrusage(resource.RUSAGE_CHILDREN) if resource else None
     started = time.perf_counter_ns()
-    result = run_command(command, env=env)
+    result = run_command(command, env=env, cwd=cwd)
     wall = time.perf_counter_ns() - started
     if not resource:
         return result, wall, 0
@@ -437,7 +449,7 @@ def build_key(language, command, env):
     digest.update(b"\0")
     digest.update(toolchain_version(command, env).encode("utf-8"))
     for pattern in CACHED_INPUTS[language]:
-        for path in sorted(HERE.glob(pattern)):
+        for path in sorted(HOSTED.glob(pattern)):
             digest.update(path.name.encode("utf-8"))
             digest.update(b"\0")
             digest.update(path.read_bytes())
@@ -465,10 +477,10 @@ def build_all(args, progress):
     env["PRISMIO_INTERNAL_HOSTED"] = "1"
     cxx = str(llvm_bin / "clang++") if llvm_bin and (llvm_bin / "clang++").exists() else "clang++"
     commands = {
-        "prismio": [str(Path(args.compiler).resolve()), "build", str(HERE / "prismio/suite.psm"), "-o", str(BUILD / "prismio-suite")],
+        "prismio": [str(Path(args.compiler).resolve()), "build", str(HOSTED / "prismio/suite.psm"), "-o", str(BUILD / "prismio-suite")],
         "cpp": [cxx, "-O3", *cpp_lto_flags(cxx, env), "-std=c++20", "-pthread", *(str(path) for path in CPP_SOURCES),
                 "-o", str(BUILD / "cpp-suite")],
-        "rust": ["rustc", "-C", "opt-level=3", "-C", "lto=fat", "-C", "codegen-units=1", "--edition=2021", str(HERE / "rust/suite.rs"), "-o", str(BUILD / "rust-suite")],
+        "rust": ["rustc", "-C", "opt-level=3", "-C", "lto=fat", "-C", "codegen-units=1", "--edition=2021", str(HOSTED / "rust/suite.rs"), "-o", str(BUILD / "rust-suite")],
     }
     elapsed = {}
     cpu = {}
@@ -814,57 +826,26 @@ def write_html_report(report, path, raw_data_name):
         shutil.copy2(css_src, path.parent / "report.css")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--compiler", default=os.environ.get("PRISMIO"), help="Prismio compiler executable (or set PRISMIO)")
-    parser.add_argument("--llvm-bin", help="LLVM bin directory prepended to PATH for Prismio and C++ builds")
-    parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument("--only", action="append", metavar="NAME", help="run one benchmark; repeat the option for more")
-    parser.add_argument("--skip-build", action="store_true")
-    parser.add_argument("--rebuild", action="store_true",
-                        help="rebuild the C++ and Rust arms even when their sources and toolchains are unchanged")
-    parser.add_argument("--compile-runs", type=int, default=1, metavar="N",
-                        help="build every arm N times and report the median compile time (default 1)")
-    parser.add_argument("--reuse-reference-builds", action="store_true",
-                        help="reuse the C++ and Rust builds (and the compile times) of an earlier run when "
-                             "their sources and toolchains are unchanged; the report says so")
-    parser.add_argument("--allow-stale-compiler", action="store_true",
-                        help="measure the project compiler even when its sources are newer than it")
-    parser.add_argument("--list", action="store_true")
-    parser.add_argument("--output", type=Path, default=RESULTS / "results.json")
-    parser.add_argument("--open", action="store_true", help="open the generated HTML report in the default browser")
-    args = parser.parse_args()
-
+def run_hosted(args, only):
+    """The hosted matrix: Prismio, C++ and Rust on this operating system. Returns the
+    report; writing it is main's job, because the report shares a file with the
+    other suite."""
     manifest = json.loads(MANIFEST.read_text())
-    selected = select_benchmarks(manifest, args.only)
-    if args.list:
-        for item in selected:
-            print("{category:16} {status:11} {name}".format(**item))
-        return
-    if args.runs < 1:
-        sys.exit("--runs must be positive")
+    selected = select_benchmarks(manifest, only)
     if not args.skip_build and not args.compiler:
         sys.exit("--compiler is required (or set PRISMIO)")
 
     build_steps = 0 if args.skip_build else len(LANGUAGES)
     workload_steps = sum(1 if item["status"] == "unsupported" else args.runs * len(LANGUAGES)
                          for item in selected)
-    artifact_steps = 2
-    progress = Progress(build_steps + workload_steps + artifact_steps)
+    progress = Progress(build_steps + workload_steps)
     implemented_count = sum(item["status"] != "unsupported" for item in selected)
-    progress.line("{}Prismio benchmarks{}  {} workload{} · {} run{} each · Prismio, C++ and Rust".format(
+    progress.line("{}Hosted benchmarks{}  {} workload{} · {} run{} each · Prismio, C++ and Rust".format(
         STYLE.bold, STYLE.reset, implemented_count, "" if implemented_count == 1 else "s",
         args.runs, "" if args.runs == 1 else "s"))
     progress.line()
     progress.show("Preparing benchmark suite")
 
-    if not args.skip_build and args.compiler:
-        newer = stale_compiler_sources(args.compiler)
-        if newer and not args.allow_stale_compiler:
-            sys.exit("the compiler is older than its sources, so these numbers would describe the compiler "
-                     "from before your edits.\n  newest: {}{}\n  Rebuild it (`prismio build`) and run the "
-                     "bench again, or pass --allow-stale-compiler.".format(
-                         ", ".join(newer[:4]), " and {} more".format(len(newer) - 4) if len(newer) > 4 else ""))
     if args.skip_build:
         print("warning: --skip-build: the executables are from an earlier run and no compile time is measured", file=sys.stderr)
     build_commands = None
@@ -971,18 +952,6 @@ def main():
             else:
                 table_row(progress, measured, name_width)
 
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    html_path = args.output.parent / "report.html"
-    report["artifacts"] = {
-        "html_report": portable_part(html_path),
-        "raw_data": portable_part(args.output),
-    }
-    progress.show("Writing JSON results")
-    args.output.write_text(json.dumps(report, indent=2) + "\n")
-    progress.advance("Wrote JSON results")
-    progress.show("Rendering HTML report")
-    write_html_report(report, html_path, args.output.name)
-    progress.advance("Complete")
     progress.finish()
     print_summary(progress, report, time.monotonic() - progress.started)
 
@@ -991,8 +960,164 @@ def main():
     unsupported = sum(item["status"] == "unsupported" for item in report["benchmarks"])
     sample_text = "1 run" if args.runs == 1 else "{} runs".format(args.runs)
     print()
-    print("Completed {} benchmarks and {} elimination check{} ({} unsupported) · {}".format(
+    print("Completed {} hosted benchmarks and {} elimination check{} ({} unsupported) · {}".format(
         implemented, eliminations, "" if eliminations == 1 else "s", unsupported, sample_text))
+    return report
+
+
+def load_freestanding_suite():
+    """benchmarks/freestanding/suite.py, loaded by path: the directory is a suite and
+    not a package, and its name should not shadow anything importable."""
+    import importlib.util
+    if "freestanding_suite" in sys.modules:
+        return sys.modules["freestanding_suite"]     # one module, so one Unavailable
+    spec = importlib.util.spec_from_file_location("freestanding_suite", FREESTANDING / "suite.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class FreestandingUI:
+    """What suite.py needs of this module, handed over rather than imported: its
+    progress bar, colours and formatters."""
+
+    def __init__(self, progress):
+        self.progress = progress
+        self.style = STYLE
+        self.show = progress.show
+        self.advance = progress.advance
+        self.line = progress.line
+        self.format_ns = format_ns
+        self.format_bytes = format_bytes
+
+    @staticmethod
+    def ratio(value, width=8, outcome=None):
+        return ratio_cell(value, width, outcome)
+
+
+def run_freestanding(args, only):
+    """The bare-metal suite. Returns the report, or raises its module's Unavailable
+    naming the missing prerequisite."""
+    suite = load_freestanding_suite()
+    if not args.compiler:
+        sys.exit("--compiler is required (or set PRISMIO)")
+    progress = Progress(suite.step_count(args))
+    progress.line("{}Freestanding benchmarks{}  bare-metal AArch64 under QEMU · Prismio, C and Rust · "
+                  "guest instructions".format(STYLE.bold, STYLE.reset))
+    progress.line()
+    progress.show("Preparing freestanding suite")
+    try:
+        report = suite.run(args, str(Path(args.compiler).resolve()), llvm_bin_from(args),
+                           collect_environment(args), FreestandingUI(progress), run_timed,
+                           portable_command, only=only)
+    finally:
+        progress.finish()
+    print()
+    print("Completed {} freestanding benchmarks · deterministic instruction counts".format(
+        len(report["benchmarks"])))
+    return report
+
+
+def existing_suites(path):
+    """The reports a results file already holds, so running one suite leaves the
+    other as it was. A file from before the suites were split is the hosted report."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if isinstance(data.get("suites"), dict):
+        return dict(data["suites"])
+    if "benchmarks" in data:
+        return {"hosted": data}
+    return {}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--suite", choices=("all",) + SUITES, default="all",
+                        help="which suite to run (default: both; the freestanding suite is skipped, "
+                             "with a note, when its tools are not installed)")
+    parser.add_argument("--compiler", default=os.environ.get("PRISMIO"), help="Prismio compiler executable (or set PRISMIO)")
+    parser.add_argument("--llvm-bin", help="LLVM bin directory prepended to PATH for Prismio, C and C++ builds")
+    parser.add_argument("--runs", type=int, default=5,
+                        help="samples per hosted arm; the freestanding suite is exact and boots each arm "
+                             "min(runs, 3) times")
+    parser.add_argument("--only", action="append", metavar="NAME", help="run one benchmark; repeat the option for more")
+    parser.add_argument("--scale", type=int, default=1, metavar="N",
+                        help="multiply every freestanding workload's size by N (default 1)")
+    parser.add_argument("--skip-build", action="store_true",
+                        help="hosted only: use the executables an earlier run built")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="rebuild the C++ and Rust arms even when their sources and toolchains are unchanged")
+    parser.add_argument("--compile-runs", type=int, default=1, metavar="N",
+                        help="build every hosted arm N times and report the median compile time (default 1)")
+    parser.add_argument("--reuse-reference-builds", action="store_true",
+                        help="reuse the C++ and Rust builds (and the compile times) of an earlier run when "
+                             "their sources and toolchains are unchanged; the report says so")
+    parser.add_argument("--allow-stale-compiler", action="store_true",
+                        help="measure the project compiler even when its sources are newer than it")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--output", type=Path, default=RESULTS / "results.json")
+    parser.add_argument("--open", action="store_true", help="open the generated HTML report in the default browser")
+    args = parser.parse_args()
+
+    catalogs = {
+        "hosted": json.loads(MANIFEST.read_text()),
+        "freestanding": json.loads((FREESTANDING / "benchmarks.json").read_text()),
+    }
+    names = {suite: {item["name"] for item in catalogs[suite]["benchmarks"]} for suite in SUITES}
+    wanted = list(SUITES) if args.suite == "all" else [args.suite]
+    if args.only:
+        unknown = sorted(set(args.only) - names["hosted"] - names["freestanding"])
+        if unknown:
+            sys.exit("unknown benchmark(s): " + ", ".join(unknown))
+    if args.list:
+        for suite in wanted:
+            for item in catalogs[suite]["benchmarks"]:
+                print("{suite:12} {category:16} {status:11} {name}".format(suite=suite, **item))
+        return
+    if args.runs < 1:
+        sys.exit("--runs must be positive")
+
+    if not args.skip_build and args.compiler:
+        newer = stale_compiler_sources(args.compiler)
+        if newer and not args.allow_stale_compiler:
+            sys.exit("the compiler is older than its sources, so these numbers would describe the compiler "
+                     "from before your edits.\n  newest: {}{}\n  Rebuild it (`prismio build`) and run the "
+                     "bench again, or pass --allow-stale-compiler.".format(
+                         ", ".join(newer[:4]), " and {} more".format(len(newer) - 4) if len(newer) > 4 else ""))
+
+    reports = {}
+    for suite in wanted:
+        only = [name for name in (args.only or []) if name in names[suite]]
+        if args.only and not only:
+            continue            # every named workload belongs to the other suite
+        if suite == "hosted":
+            reports[suite] = run_hosted(args, only or None)
+        else:
+            try:
+                reports[suite] = run_freestanding(args, only or None)
+            except load_freestanding_suite().Unavailable as missing:
+                if args.suite == "freestanding":
+                    sys.exit(str(missing))
+                print("{}note{}: skipping the freestanding suite: {}".format(STYLE.yellow, STYLE.reset, missing))
+    if not reports:
+        sys.exit("nothing to run")
+
+    merged = existing_suites(args.output)
+    merged.update(reports)
+    html_path = args.output.parent / "report.html"
+    bundle = {
+        "schema_version": RESULTS_SCHEMA_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "suites": {suite: merged[suite] for suite in SUITES if suite in merged},
+        "artifacts": {"html_report": portable_part(html_path), "raw_data": portable_part(args.output)},
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(bundle, indent=2) + "\n")
+    write_html_report(bundle, html_path, args.output.name)
+    print()
     print("{}Report{}   {}".format(STYLE.dim, STYLE.reset, html_path))
     print("{}Data{}     {}".format(STYLE.dim, STYLE.reset, args.output))
     if args.open:

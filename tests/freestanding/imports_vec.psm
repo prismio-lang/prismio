@@ -1,0 +1,11 @@
+// Refused with a message that names the import: `std.vec` is compiled against the
+// C library, and a freestanding program has none. Before the gate this reported a
+// corrupted installation.
+
+import std.vec
+
+fn main() -> Int {
+    let mut v: Vec<Int> = []
+    v.push(1)
+    return v.length
+}

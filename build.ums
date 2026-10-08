@@ -78,7 +78,7 @@ commands {
     // this measures the working tree, including uncommitted `std/` and
     // `runtime/` changes, with no packaging step in front of it.
     command("bench") {
-        description = "Run the cross-language performance benchmark suite"
+        description = "Run the benchmark suites: hosted (Prismio, C++, Rust) and freestanding (Prismio, C, Rust)"
         run("benchmarks/run.py", "--compiler", ".prismio/build/release/prismio", args)
     }
 

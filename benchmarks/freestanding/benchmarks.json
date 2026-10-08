@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "suite": "freestanding",
+  "benchmarks": [
+    {
+      "name": "fibonacci",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu",
+      "description": "Recursive Fibonacci(27): call and return overhead with no loop to hide it.",
+      "scale": 1
+    },
+    {
+      "name": "prime_sieve",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "Sieve of Eratosthenes over a 200,000-byte array in the frame.",
+      "scale": 1
+    },
+    {
+      "name": "gcd_lcm",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu",
+      "description": "Euclid's algorithm over every pair up to 400: a data-dependent loop of divisions.",
+      "scale": 1
+    },
+    {
+      "name": "binary_search",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "100,000 lookups in a sorted 4,096-entry table.",
+      "scale": 1
+    },
+    {
+      "name": "quicksort",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "Recursive Hoare quicksort of 2,048 words, four times.",
+      "scale": 1
+    },
+    {
+      "name": "heapsort",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "Heapsort of 2,048 words, four times.",
+      "scale": 1
+    },
+    {
+      "name": "knapsack",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "0/1 knapsack, 64 items, capacity 1,500: a branch-free DP update.",
+      "scale": 1
+    },
+    {
+      "name": "edit_distance",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "Levenshtein distance of two 600-byte strings with two rolling rows.",
+      "scale": 1
+    },
+    {
+      "name": "matrix_multiply",
+      "category": "algorithms",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "64x64 integer matrix multiply.",
+      "scale": 1
+    },
+    {
+      "name": "crc32",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "Table-driven CRC-32 over a 32 KiB buffer, four times.",
+      "scale": 1
+    },
+    {
+      "name": "sha256",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "description": "SHA-256 compression of 24 blocks: rotates, schedule, 64 rounds.",
+      "scale": 1
+    },
+    {
+      "name": "popcount",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "description": "Bit counting with the clear-lowest-bit loop.",
+      "scale": 1
+    },
+    {
+      "name": "mandelbrot_fixed",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "description": "Mandelbrot set on a 96x96 grid in Q16.16 fixed point.",
+      "scale": 1
+    },
+    {
+      "name": "bytecode_interpreter",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu",
+      "description": "A four-register machine, 400,000 dispatched instructions.",
+      "scale": 1
+    },
+    {
+      "name": "pointer_chase",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "memory",
+      "description": "A shuffled 2,048-entry cycle followed for 400,000 dependent loads.",
+      "scale": 1
+    },
+    {
+      "name": "ring_buffer",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "cpu-memory",
+      "description": "A 1,024-slot ring with a pseudo-random producer and consumer.",
+      "scale": 1
+    },
+    {
+      "name": "mem_copy",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "memory",
+      "description": "Word-at-a-time copy of 32 KiB between two RAM regions, addressed by number.",
+      "scale": 1
+    },
+    {
+      "name": "atomic_counter",
+      "category": "hardware",
+      "status": "implemented",
+      "profile": "atomic",
+      "description": "500,000 sequentially consistent fetch-adds on one word.",
+      "scale": 1
+    },
+    {
+      "name": "spinlock",
+      "category": "hardware",
+      "status": "implemented",
+      "profile": "atomic",
+      "description": "200,000 acquire, increment and release cycles on a compare-and-swap lock.",
+      "scale": 1
+    },
+    {
+      "name": "volatile_registers",
+      "category": "hardware",
+      "status": "implemented",
+      "profile": "volatile",
+      "description": "300,000 read-modify-write cycles on a 64-register file with volatile access.",
+      "scale": 1
+    }
+  ]
+}

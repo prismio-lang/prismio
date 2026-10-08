@@ -1,0 +1,9 @@
+// A section is a name the linker script writes, known when the program is compiled.
+
+section(42) fn boot() {
+}
+
+fn main() -> Int {
+    return 0
+}
+// expect-error: `section` takes the section's name as a string literal

@@ -11,15 +11,19 @@ allocation architecture half is [MEMORY_PLAN.md](MEMORY_PLAN.md).
 Every status below was checked against the tree on 2026-09-25, not copied from
 the documents it replaces. The benchmarks those documents were written around
 (g1 to g9, `five_arm_bench.py`, `milestone_bench.py`) were retired with
-the old evidence tree on 2026-09-03. The maintained suite is `benchmarks/`,
-run with `python3 benchmarks/run.py`.
+the old evidence tree on 2026-09-03. The maintained suites are in `benchmarks/`
+and run with `python3 benchmarks/run.py` (`--suite hosted|freestanding|all`):
+`benchmarks/hosted/` is the Prismio, C++ and Rust matrix on the host operating
+system, timed; `benchmarks/freestanding/` is Prismio, C and Rust on bare-metal
+AArch64 under QEMU, counted in guest instructions (exact, no noise model). Every
+table and number in this document is the hosted suite unless it says otherwise.
 
 ## 1 · For 0.1
 
 **Nothing on the performance side blocks 0.1.** Two things belong to the
 release anyway:
 
-- [ ] Run `benchmarks/run.py` on the release-candidate compiler and record the
+- [ ] Run `benchmarks/run.py` (both suites) on the release-candidate compiler and record the
       table in the release commit's message, so the release notes quote a measured position
       and not an older one. The 2026-09-25 run (§2) is the baseline to compare it
       with.
@@ -173,6 +177,6 @@ regression beyond 1.03x unless the win is large and was accepted explicitly.
 
 **The loop for any change to `src/`:** two generations to a byte-identical
 fixpoint, the suite, `tools/aif_differential.py`, byte-identical IR for every
-program in `tests/` and `benchmarks/prismio/` if the change is meant to preserve
+program in `tests/` and `benchmarks/hosted/prismio/` if the change is meant to preserve
 behaviour, and then the benchmark. Record commands, compiler, LLVM version,
 medians and checksums in the commit message.

@@ -103,11 +103,11 @@ The repository itself is a Prismio project. For the ordinary edit loop, bare
 `prismio build` reads the stable first block of the root manifest:
 
 ```ums
-toolchain { host = ".prismio/build/debug/prismio" }
+toolchain { host = ".prismio/build/release/prismio" }
 ```
 
-On the first run that host is absent, so global Prismio processes `build.ums`
-and builds it as stage 0. On later runs global Prismio forwards the complete
+On the first run that host is absent, so run `prismio build --release` once: global
+Prismio processes `build.ums` and builds the host as stage 0. On later runs global Prismio forwards the complete
 command to the last known-good project host. The host—not the older installed
 compiler—then parses the complete manifest and builds a sibling candidate. The
 global parent atomically promotes that candidate only after the host exits.
@@ -120,7 +120,7 @@ separate: application executables link only the runtime unless their own
 `link { ... }` block names additional libraries, search paths, files, or
 platform frameworks.
 Do not run a project build
-through `.prismio/build/debug/prismio` itself; it is the host generation being
+through `.prismio/build/release/prismio` itself; it is the host generation being
 replaced, while the installed stage-0 process is the orchestrator.
 
 **Two generations before believing it.** A compiler that links may only have
@@ -142,7 +142,7 @@ checkout is a Prismio project and `build.ums` declares its commands:
 
 | Command | What it does |
 |---|---|
-| `prismio build` | builds the compiler this checkout runs (`.prismio/build/debug/prismio`) |
+| `prismio build [--release]` | builds the compiler: the debug profile (`.prismio/build/debug/prismio`) that `suite`, `verify` and `gate` test, or with `--release` the project host (`.prismio/build/release/prismio`) that runs every command |
 | `prismio suite` | the test suite, for the fast loop |
 | `prismio verify` | suite, source lists, externs, AIF differential |
 | `prismio gate` | lint, then the whole release gate on a packaged candidate |

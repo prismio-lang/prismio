@@ -15,7 +15,7 @@ def write(path, text):
     path.write_text(text.rstrip() + "\n")
 
 
-cpp_dir = ROOT / "benchmarks/cpp"
+cpp_dir = ROOT / "benchmarks/hosted/cpp"
 cpp = (cpp_dir / "suite.cpp").read_text()
 cpp_header = r'''#pragma once
 
@@ -96,7 +96,7 @@ cpp_main = cpp[cpp.index("int main("):].strip()
 write(cpp_dir / "suite.cpp", '#include "benchmarks.hpp"\n\n#include <chrono>\n#include <iostream>\n\n' + cpp_run + "\n" + cpp_main)
 
 
-rust_dir = ROOT / "benchmarks/rust"
+rust_dir = ROOT / "benchmarks/hosted/rust"
 rust = (rust_dir / "suite.rs").read_text()
 rust_common = r'''pub const BENCH_MOD: i32 = 1_000_000_007;
 
@@ -208,7 +208,7 @@ fn main() {
 write(rust_dir / "suite.rs", rust_suite)
 
 
-prismio_dir = ROOT / "benchmarks/prismio"
+prismio_dir = ROOT / "benchmarks/hosted/prismio"
 prismio = (prismio_dir / "suite.psm").read_text()
 prismio_common = r'''import std.string
 

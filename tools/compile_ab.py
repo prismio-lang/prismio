@@ -2,7 +2,7 @@
 """A/B the compile time of two compilers on one source, with an A/A control.
 
     python3 tools/compile_ab.py --a build/genA --b build/genB
-    python3 tools/compile_ab.py --a old --b new --source benchmarks/prismio/suite.psm --runs 21
+    python3 tools/compile_ab.py --a old --b new --source benchmarks/hosted/prismio/suite.psm --runs 21
     python3 tools/compile_ab.py --a old --b new --cwd ../head-worktree
 
 Builds `--source` to LLVM IR with each compiler, alternating A, B, B, A, ... so

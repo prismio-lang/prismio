@@ -1,0 +1,6 @@
+// A compare-and-swap takes the address, the value expected and the value wanted.
+
+fn main() -> Int {
+    return __builtin_mem_acas_u32(0x1000, 1) as Int
+}
+// expect-error: expects 3 arguments, found 2

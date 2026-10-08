@@ -342,6 +342,41 @@ void LLVMAddAttributeAtIndex(LLVMValueRef F, unsigned Idx, LLVMAttributeRef A);
 // contract is written at its `extern fn` declaration in Prismio, and the place
 // codegen can act on it is the call it is emitting -- see ir_call_arg_borrow.
 void LLVMAddCallSiteAttribute(LLVMValueRef C, unsigned Idx, LLVMAttributeRef A);
+// Memory access with an ordering, atomic read-modify-write, a fence, and inline
+// assembly: what the `__builtin_mem_*` and `__builtin_asm*` builtins lower to
+// (src/common/mem_builtins.psm). The enum values are LLVM's, stable since the
+// C API gained them.
+//
+// LLVMAtomicOrdering
+#define LLVMAtomicOrderingNotAtomic 0
+#define LLVMAtomicOrderingSequentiallyConsistent 7
+// LLVMAtomicRMWBinOp
+#define LLVMAtomicRMWBinOpXchg 0
+#define LLVMAtomicRMWBinOpAdd 1
+#define LLVMAtomicRMWBinOpSub 2
+#define LLVMAtomicRMWBinOpAnd 3
+#define LLVMAtomicRMWBinOpOr 5
+#define LLVMAtomicRMWBinOpXor 6
+// LLVMInlineAsmDialect
+#define LLVMInlineAsmDialectATT 0
+const char *LLVMGetValueName(LLVMValueRef Val);
+void LLVMSetSection(LLVMValueRef Global, const char *Section);
+LLVMValueRef LLVMAddAlias2(LLVMModuleRef M, LLVMTypeRef ValueTy, unsigned AddrSpace,
+                           LLVMValueRef Aliasee, const char *Name);
+void LLVMSetVolatile(LLVMValueRef MemoryAccessInst, LLVMBool IsVolatile);
+void LLVMSetOrdering(LLVMValueRef MemoryAccessInst, int Ordering);
+void LLVMSetAlignment(LLVMValueRef V, unsigned Bytes);
+LLVMValueRef LLVMBuildAtomicRMW(LLVMBuilderRef, int Op, LLVMValueRef Ptr,
+                                LLVMValueRef Val, int Ordering, LLVMBool SingleThread);
+LLVMValueRef LLVMBuildAtomicCmpXchg(LLVMBuilderRef, LLVMValueRef Ptr, LLVMValueRef Cmp,
+                                    LLVMValueRef New, int SuccessOrdering,
+                                    int FailureOrdering, LLVMBool SingleThread);
+LLVMValueRef LLVMBuildFence(LLVMBuilderRef, int Ordering, LLVMBool SingleThread,
+                            const char *Name);
+LLVMValueRef LLVMGetInlineAsm(LLVMTypeRef Ty, const char *AsmString, size_t AsmStringSize,
+                              const char *Constraints, size_t ConstraintsSize,
+                              LLVMBool HasSideEffects, LLVMBool IsAlignStack,
+                              int Dialect, LLVMBool CanThrow);
 typedef struct LLVMOpaqueTargetData *LLVMTargetDataRef;
 LLVMTargetDataRef LLVMGetModuleDataLayout(LLVMModuleRef M);
 unsigned LLVMABIAlignmentOfType(LLVMTargetDataRef, LLVMTypeRef Ty);

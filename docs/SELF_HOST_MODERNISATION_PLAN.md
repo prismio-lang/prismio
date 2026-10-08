@@ -98,7 +98,7 @@ kept if it is correct and not slower or larger beyond the noise floor.
    - T2: one compiler compiling A's `src/` against B's `src/` (does the *source
      form* cost the frontend anything).
    - T3: `clang -O2 -c` on each arm's compiler IR (does the backend mind).
-   - T4: each compiler on `benchmarks/prismio/suite.psm` (user-program compile).
+   - T4: each compiler on `benchmarks/hosted/prismio/suite.psm` (user-program compile).
 6. **Decision rule.** Keep a step when 2 and 3 pass, T1/T3/T4 sit within the A/A
    spread (about ±0.5%) or better, and `__text` does not grow by more than 0.1%.
    A step that moves a function's code must be explained by `fn_mnemonic_diff`
@@ -127,7 +127,7 @@ Measured 2026-10-02 (A = `1dc470f`, B = `1dc470f` + M1; macOS arm64):
 | Check | Result |
 |---|---|
 | Fixpoint (gen1 IR = gen2 IR) | holds in both arms |
-| IR of 285 programs (`tests/`, the retired corpus, `benchmarks/prismio/`, `src/main.psm`) | byte-identical |
+| IR of 285 programs (`tests/`, the retired corpus, `benchmarks/hosted/prismio/`, `src/main.psm`) | byte-identical |
 | 202 non-building programs | same exit code and diagnostics |
 | String literals in the 15 files | unchanged |
 | Compiler `.ll` | 17,562,560 → 17,507,289 B (−0.31%) |
@@ -140,7 +140,7 @@ Measured 2026-10-02 (A = `1dc470f`, B = `1dc470f` + M1; macOS arm64):
 | T1 compiler speed on `src/main.psm` | 0.995 | 0.993 | 1.004 |
 | T2 source form, `src/` as `match` | 0.992 | 0.990 | 1.004 |
 | T3 `clang -O2` on the compiler IR | 0.999 | 1.004 | 1.004 |
-| T4 `benchmarks/prismio/suite.psm` | 0.999 | 0.998 | 1.004 |
+| T4 `benchmarks/hosted/prismio/suite.psm` | 0.999 | 0.998 | 1.004 |
 
 **Reading.** Neutral. LLVM's `-O2` already turned these chains into switches, so
 the machine code is the same size, and none of the four timings leaves the A/A
@@ -187,7 +187,7 @@ Measured against arm B (M1, old C), macOS arm64, 15 interleaved runs:
 | Time | B/C min | B/C median | A/A (median) |
 |---|---|---|---|
 | T1 compiling `src/main.psm` (41.7k lines) | 0.726 | 0.726 | 0.999 |
-| T4 `benchmarks/prismio/suite.psm` | 0.933 | 0.954 | n/a |
+| T4 `benchmarks/hosted/prismio/suite.psm` | 0.933 | 0.954 | n/a |
 | T5 `tests/test_48_aif_shared_elements.psm` (8 ms) | 0.982 | 0.982 | n/a |
 
 **Reading.** This is the AIF pass inside `prismio build`, so it applies to every
@@ -218,7 +218,7 @@ for 285 programs, `tools/aif_differential.py`, and 504 / 504 in `tools/run_suite
 | Time, 15 interleaved runs, old AIF (arm B) / new | min | median | A/A (median) |
 |---|---|---|---|
 | T1 `src/main.psm` to IR (41.7k lines) | 0.481 | 0.481 | 1.000 |
-| T4 `benchmarks/prismio/suite.psm` to IR | 0.857 | 0.853 | n/a |
+| T4 `benchmarks/hosted/prismio/suite.psm` to IR | 0.857 | 0.853 | n/a |
 | T5 an 8 ms program | 0.961 | 0.962 | n/a |
 
 Through `prismio bench`, the suite's *whole* build (IR, LLVM `-O3`, link): 863 to
@@ -265,7 +265,7 @@ Measured against arm B (M1, old C), macOS arm64, 15 interleaved runs:
 | Time | B/C min | B/C median | A/A (median) |
 |---|---|---|---|
 | T1 compiling `src/main.psm` (41.7k lines) | 0.726 | 0.726 | 0.999 |
-| T4 `benchmarks/prismio/suite.psm` | 0.933 | 0.954 | n/a |
+| T4 `benchmarks/hosted/prismio/suite.psm` | 0.933 | 0.954 | n/a |
 | T5 `tests/test_48_aif_shared_elements.psm` (8 ms) | 0.982 | 0.982 | n/a |
 
 **Reading.** This is the AIF pass inside `prismio build`, so it applies to every

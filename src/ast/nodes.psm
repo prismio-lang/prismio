@@ -345,6 +345,20 @@ public fn nodeIsCold(fnNode: ASTNode) -> Bool {
     return fnNode.kind == NodeKind.FUNCTION and fnNode.i1 == 16
 }
 
+// `repr(C)` and `packed` on a struct (src/parse/decl.psm), kept in STRUCT_DECL.i1
+// as bits. Either keeps the fields in the order they were written -- the layout a
+// hardware table or a C structure has -- and `packed` also removes the padding.
+public fn nodeMarkReprC(structNode: ASTNode) { structNode.i1 = structNode.i1 | 1 }
+public fn nodeMarkPacked(structNode: ASTNode) { structNode.i1 = structNode.i1 | 2 }
+
+public fn nodeStructIsReprC(structNode: ASTNode) -> Bool {
+    return structNode.kind == NodeKind.STRUCT_DECL and (structNode.i1 & 1) == 1
+}
+
+public fn nodeStructIsPacked(structNode: ASTNode) -> Bool {
+    return structNode.kind == NodeKind.STRUCT_DECL and (structNode.i1 & 2) == 2
+}
+
 // Copies a span from one node to another. Used where a node is built from
 // another's position -- desugaring `x += 1`, or attributing a synthesised node to
 // the construct that implied it.

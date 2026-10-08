@@ -1,0 +1,50 @@
+// What only freestanding code does: atomic operations on a raw address, a lock,
+// and volatile access to a register file. The same programs as ../c/hardware.c and
+// ../rust/hardware.rs, written with the compiler's own builtins.
+
+export fn bench_atomic_counter(scale: U32) -> U32 {
+    __builtin_mem_vstore_u32(0x44100000, 0)
+    let mut i: U32 = 0
+    while (i < 500000 * scale) {
+        __builtin_mem_aadd_u32(0x44100000, 1 + (i & 3))
+        i = i + 1
+    }
+    return __builtin_mem_aload_u32(0x44100000)
+}
+
+export fn bench_spinlock(scale: U32) -> U32 {
+    __builtin_mem_vstore_u32(0x44100010, 0)
+    __builtin_mem_vstore_u32(0x44100020, 0)
+    let mut i: U32 = 0
+    while (i < 800000 * scale) {
+        while (__builtin_mem_acas_u32(0x44100010, 0, 1) != 0) {}
+        __builtin_mem_store_u32(0x44100020, __builtin_mem_load_u32(0x44100020) + 1)
+        __builtin_mem_astore_u32(0x44100010, 0)
+        i = i + 1
+    }
+    return __builtin_mem_load_u32(0x44100020)
+}
+
+export fn bench_volatile_registers(scale: U32) -> U32 {
+    let mut i: Usize = 0
+    while (i < 64) {
+        __builtin_mem_vstore_u32(0x44200000 + i * 4, 0)
+        i = i + 1
+    }
+    let mut acc: U32 = 0
+    let mut n: U32 = 0
+    while (n < 900000 * scale) {
+        let slot = ((n * 7) & 63) as Usize
+        let v = __builtin_mem_vload_u32(0x44200000 + slot * 4)
+        __builtin_mem_vstore_u32(0x44200000 + slot * 4, v + n)
+        acc = acc + v
+        n = n + 1
+    }
+    let mut sum: U32 = 0
+    i = 0
+    while (i < 64) {
+        sum = sum + __builtin_mem_vload_u32(0x44200000 + i * 4)
+        i = i + 1
+    }
+    return acc ^ sum
+}

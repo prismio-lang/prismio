@@ -1,8 +1,31 @@
 # Prismio performance benchmarks
 
-This is the maintained cross-language performance suite for Prismio, C++, and
+This is the maintained cross-language performance suite for Prismio, C/C++, and
 Rust. It lives at repository root because it evaluates the language as a whole;
 it is not compiler correctness coverage and has no dependency on `tests/`.
+
+## Two suites
+
+| Suite | Compares | Measures | Directory |
+| --- | --- | --- | --- |
+| **hosted** | Prismio, C++, Rust on the host operating system | time: median of several runs, with a noise model | [`hosted/`](hosted) |
+| **freestanding** | Prismio, C, Rust on bare-metal AArch64, no operating system | guest instructions under QEMU: exact and repeatable | [`freestanding/`](freestanding) |
+
+They share this directory's runner (`run.py`), its results file
+(`results/results.json`) and one report (`results/report.html`), which has a tab for each.
+Everything below describes the **hosted** suite unless it says otherwise; the freestanding
+suite, what it measures and why that is not time, is described in
+[`freestanding/README.md`](freestanding/README.md).
+
+```text
+benchmarks/
+  run.py            builds, runs and reports either suite
+  hosted/           benchmarks.json, UNSUPPORTED.md, prismio/, cpp/, rust/
+  freestanding/     benchmarks.json, harness/, prismio/, c/, rust/, suite.py
+  templates/        report.html and report.css, the tabbed report
+  results/          results.json (schema 4: one report per suite) and report.html
+  build/            hosted/ and freestanding/ build products (not tracked)
+```
 
 The former `aif/evidence/xlang` programs were built to answer specific AIF
 research questions. Their useful workload intent is represented here under
@@ -102,14 +125,21 @@ prismio bench
 ```
 
 This uses `.prismio/build/debug/prismio`, defaults to the medium size and five
-runs, and automatically uses Homebrew LLVM when it is installed. Runner options
+runs, and automatically uses Homebrew LLVM when it is installed. It runs **both
+suites**; the freestanding one is skipped, with a note, when its tools (`qemu-system-aarch64`,
+a working `ld.lld`, `rustc` with `rust-src`) are not installed. Runner options
 can be appended when needed:
 
 ```bash
 prismio bench --list
+prismio bench --suite hosted
+prismio bench --suite freestanding
 prismio bench --runs 1 --only prime_sieve
 prismio bench --open
 ```
+
+`--only` takes workloads from either suite. Running one suite leaves the other's
+last results in `results.json`, so a freestanding run does not discard the hosted numbers.
 
 During execution, the command maintains one progress line instead of printing
 every workload. On completion it writes two files to `benchmarks/results/`:
@@ -149,7 +179,7 @@ and toolchains each run, and a probe that finds nothing leaves its key out.
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | `3`. Bumped when a field is added or changes meaning. |
+| `schema_version` | `4`. The file holds one report per suite under `suites` (`hosted`, `freestanding`), plus `generated_at` and `artifacts`. A file from before the split is the hosted report itself, and the report reads that too. Each suite's report keeps its own `schema_version` (the fields below are the hosted report's, `3`). |
 | `generated_at`, `runs` | When the run finished (UTC) and the samples taken per arm. |
 | `parity`, `noise_model` | The flat fraction (`0.04`) and the rest of the rule a verdict is decided by: a floor in nanoseconds for very short runs and the spread measure. See below. |
 | `elimination_ns` | Below this an elimination workload counts as deleted. |
@@ -207,9 +237,9 @@ time are recorded separately.
 Release compilation:
 
 ```text
-Prismio: <compiler> build benchmarks/prismio/suite.psm -o benchmarks/build/prismio-suite
-C++:     clang++ -O3 -flto -std=c++20 -pthread benchmarks/cpp/{suite,algorithms,data_structures,compute,memory,io,adversarial}.cpp -o benchmarks/build/cpp-suite
-Rust:    rustc -C opt-level=3 -C lto=fat -C codegen-units=1 --edition=2021 benchmarks/rust/suite.rs -o benchmarks/build/rust-suite
+Prismio: <compiler> build benchmarks/hosted/prismio/suite.psm -o benchmarks/build/hosted/prismio-suite
+C++:     clang++ -O3 -flto -std=c++20 -pthread benchmarks/hosted/cpp/{suite,algorithms,data_structures,compute,memory,io,adversarial}.cpp -o benchmarks/build/hosted/cpp-suite
+Rust:    rustc -C opt-level=3 -C lto=fat -C codegen-units=1 --edition=2021 benchmarks/hosted/rust/suite.rs -o benchmarks/build/hosted/rust-suite
 ```
 
 The C++ and Rust arms are built with whole-program optimisation (`-flto`, fat LTO
@@ -231,7 +261,7 @@ public `String.equals(...)` API.
 The catalog contains 78 distinct workloads across six categories. Sixty-three
 are implemented in all three languages. Fifteen remain
 in the catalog as unsupported Prismio capabilities; their exact records are in
-[`UNSUPPORTED.md`](UNSUPPORTED.md).
+[`hosted/UNSUPPORTED.md`](hosted/UNSUPPORTED.md).
 
 | Category | Implemented | Unsupported | Total |
 |---|---:|---:|---:|

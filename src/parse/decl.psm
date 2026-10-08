@@ -4,6 +4,7 @@
 import lexer.token
 import common.text
 import ast.nodes
+import ast.fn_attrs
 import common.diagnostics
 import std.string
 import std.option
@@ -51,6 +52,8 @@ impl Parser {
         if (self.checkVal(TokenType.KEYWORD, "extern")) { return self.parseExternDecl() }
         if (self.checkVal(TokenType.KEYWORD, "fn") or self.atPropDecl()) { return self.parseFunctionDecl() }
         if (self.atColdDecl()) { return self.parseColdFunctionDecl() }
+        if (self.atFnModifiers()) { return self.parseModifiedFunctionDecl() }
+        if (self.atStructModifiers()) { return self.parseModifiedStructDecl() }
         if (self.checkVal(TokenType.KEYWORD, "struct")) { return self.parseStructDecl() }
         if (self.checkVal(TokenType.KEYWORD, "enum")) { return self.parseEnumDecl() }
         if (self.checkVal(TokenType.KEYWORD, "impl")) { return self.parseImplDecl() }
@@ -112,6 +115,8 @@ impl Parser {
         let next = self.peek()
         if (next.type == TokenType.IDENTIFIER and next.value.equals("prop")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("cold")) { return level }
+        if (next.type == TokenType.IDENTIFIER and self.isFnModifierWord(next.value)) { return level }
+        if (next.type == TokenType.IDENTIFIER and self.isStructModifierWord(next.value)) { return level }
         if (next.type != TokenType.KEYWORD) { return -1 }
         if (next.value.equals("fn")) { return level }
         if (next.value.equals("extern")) { return level }
@@ -130,7 +135,7 @@ impl Parser {
     private fn visibilityIsEnforced(self) -> Bool {
         let next = self.peek()
         return next.value.equals("fn") or next.value.equals("extern") or next.value.equals("prop")
-            or next.value.equals("cold")
+            or next.value.equals("cold") or self.isFnModifierWord(next.value)
     }
 }
 
@@ -171,6 +176,158 @@ impl Parser {
         if (self.current().value.equals("from") == false) { return false }
         let next = self.peek()
         return next.type == TokenType.IDENTIFIER or next.type == TokenType.KEYWORD
+    }
+}
+
+
+impl Parser {
+    // The words that may stand before `fn` to say something about the symbol
+    // rather than the function's behaviour (docs/FREESTANDING_PLAN.md, step 4):
+    //
+    //   export          the function is also reachable as its source name, the
+    //                   symbol an assembler stub or a linker script writes
+    //   naked           no prologue or epilogue; the body is `__builtin_asm`
+    //   section("...")  the object-file section its code goes in
+    //   align(n)        its alignment in bytes, a power of two
+    //
+    // **Contextual**, like `cold`: each is a modifier only where a declaration can
+    // begin and the next token continues one, so a variable named `export` keeps
+    // compiling. They combine in any order, `export naked section(".text.boot") fn`.
+    private fn isFnModifierWord(self, word: String) -> Bool {
+        return word.equals("export") or word.equals("naked") or word.equals("section")
+            or word.equals("align")
+    }
+
+    private fn atFnModifiers(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        let word = self.current().value
+        let next = self.peek()
+        if (word.equals("section") or word.equals("align")) {
+            return next.type == TokenType.SEPARATOR and next.value.equals("(")
+        }
+        if (word.equals("export") == false and word.equals("naked") == false) { return false }
+        if (next.type == TokenType.KEYWORD) { return next.value.equals("fn") }
+        if (next.type != TokenType.IDENTIFIER) { return false }
+        return self.isFnModifierWord(next.value) or next.value.equals("cold")
+    }
+
+    private fn parseModifiedFunctionDecl(self) -> ASTNode {
+        let mut flags = 0
+        let mut section = ""
+        let mut align = 0
+        let mut cold = false
+        while (self.checkVal(TokenType.KEYWORD, "fn") == false) {
+            if (self.check(TokenType.IDENTIFIER) == false) {
+                self.error("expected `fn` after a function modifier")
+                break
+            }
+            let word = self.current().value
+            if (word.equals("export")) {
+                flags = flags | 1
+                self.advance()
+            } else if (word.equals("naked")) {
+                flags = flags | 2
+                self.advance()
+            } else if (word.equals("cold")) {
+                cold = true
+                self.advance()
+            } else if (word.equals("align")) {
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, "(", "alignment")
+                let size = self.current()
+                let parsed = size.value.parseInt().unwrapOr(0)
+                if (size.type != TokenType.NUMBER_LITERAL or parsed < 1 or (parsed & (parsed - 1)) != 0) {
+                    self.error("`align` takes a power of two, such as `align(4)`")
+                } else {
+                    align = parsed
+                }
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, ")", "alignment")
+            } else if (word.equals("section")) {
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, "(", "section name")
+                let name = self.current()
+                if (name.type != TokenType.STRING_LITERAL or name.value.equals("")) {
+                    self.error("`section` takes the section's name as a string literal, such as `section(\".text.boot\")`")
+                    self.advance()
+                } else {
+                    section = name.value
+                    self.advance()
+                }
+                self.expectVal(TokenType.SEPARATOR, ")", "section name")
+            } else {
+                self.error("expected `fn` after a function modifier")
+                break
+            }
+        }
+        let fnNode = self.parseFunctionDecl()
+        if (cold) { nodeMarkCold(fnNode) }
+        if (flags != 0 or align != 0 or section.equals("") == false) {
+            nodeSetFnAttrs(fnNode, flags, align, section)
+        }
+        return fnNode
+    }
+}
+
+
+impl Parser {
+    // `repr(C)` and `packed` before `struct`: the fields stay in the order they are
+    // written, with C's padding for `repr(C)` and none for `packed`. Without either,
+    // the compiler chooses the order (LAYOUT 7.2), which is right for a program's
+    // own data and wrong for a descriptor table, a page-table entry or anything
+    // else the hardware reads.
+    //
+    // **Contextual**, as the function modifiers are. `repr` is a modifier only when
+    // a `(` follows, `packed` only when `struct` or `repr` does.
+    private fn isStructModifierWord(self, word: String) -> Bool {
+        return word.equals("repr") or word.equals("packed")
+    }
+
+    private fn atStructModifiers(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        let word = self.current().value
+        let next = self.peek()
+        if (word.equals("repr")) {
+            return next.type == TokenType.SEPARATOR and next.value.equals("(")
+        }
+        if (word.equals("packed") == false) { return false }
+        if (next.type == TokenType.KEYWORD) { return next.value.equals("struct") }
+        return next.type == TokenType.IDENTIFIER and next.value.equals("repr")
+    }
+
+    private fn parseModifiedStructDecl(self) -> ASTNode {
+        let mut reprC = false
+        let mut packed = false
+        while (self.checkVal(TokenType.KEYWORD, "struct") == false) {
+            if (self.check(TokenType.IDENTIFIER) == false) {
+                self.error("expected `struct` after `repr(C)` or `packed`")
+                break
+            }
+            let word = self.current().value
+            if (word.equals("packed")) {
+                packed = true
+                self.advance()
+            } else if (word.equals("repr")) {
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, "(", "repr")
+                let kind = self.current()
+                if (kind.type != TokenType.IDENTIFIER or kind.value.equals("C") == false) {
+                    self.error("`repr` takes `C`: the only layout besides the compiler's own")
+                    self.advance()
+                } else {
+                    reprC = true
+                    self.advance()
+                }
+                self.expectVal(TokenType.SEPARATOR, ")", "repr")
+            } else {
+                self.error("expected `struct` after `repr(C)` or `packed`")
+                break
+            }
+        }
+        let structNode = self.parseStructDecl()
+        if (reprC) { nodeMarkReprC(structNode) }
+        if (packed) { nodeMarkPacked(structNode) }
+        return structNode
     }
 }
 

@@ -82,7 +82,7 @@ fn area(s: Shape) -> Float {
     }
 }
 
-fn main() -> Int {
+fn main() {
     let shapes = [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Circle(0.5)]
 
     let mut total = 0.0
@@ -96,7 +96,6 @@ fn main() -> Int {
         counts.set(word, counts.getOr(word, 0) + 1)
     }
     println("a appears ${counts.getOr("a", 0)} times")
-    return 0
 }
 ```
 
@@ -116,7 +115,7 @@ Storage plan
   Stack                   9
   Arena                   2
   Scoped heap             0
-  Unique heap             98
+  Unique heap             88
   Shared heap             0
   Cycle-managed heap      0
 ...
@@ -139,7 +138,7 @@ Each allocation site is assigned the cheapest tier the compiler can prove safe:
 
 | Tier | Strategy | Runtime cost |
 |---|---|---|
-| T0 | stack or register | none |
+| T0 | stack or register (a fixed-length array is T0 too) | none |
 | T1 | region: bump-allocated, freed in bulk | a pointer bump |
 | T2 | single owner, moved, freed deterministically | one allocation and one free |
 | T3 | shared, non-atomic reference count | a count update when sharing survives analysis |
@@ -221,13 +220,13 @@ version and SHA-256 in `bootstrap/seed.json`. The first `--seed` bootstrap runs
 the file after that. On Windows the script is `tools/bootstrap.ps1 -Out build/gen0`, then
 `-Compiler build/gen0 -Out build/gen1`.
 
-Once a compiler exists, the checkout is itself a Prismio project: `prismio build` rebuilds
-the compiler, `prismio suite` and `prismio verify` test it, and `prismio gate` is the
+Once a compiler exists, the checkout is itself a Prismio project: `prismio build --release`
+builds the project's own compiler (run it first, and again after pulling changes to `src/`), `prismio build` the one under test, `prismio suite` and `prismio verify` test it, and `prismio gate` is the
 check to run before a push ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
 With the compiler installed or built, start a project:
 
-```console
+```bash
 $ prismio init hello && cd hello
 $ prismio run
 Built /home/you/hello/.prismio/build/debug/hello

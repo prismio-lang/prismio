@@ -38,7 +38,7 @@ fails a generation later with nothing pointing at the cause:
   syntax lands in two steps — teach the frontend, cut and publish a seed
   (`tools/refresh_seed.sh`) and commit the new pin, *then* use it in `src/`.
 - **A behaviour-preserving change must produce byte-identical compiler output** for
-  every program in `tests/` and `benchmarks/prismio/`. Verify with two generations to a
+  every program in `tests/` and `benchmarks/hosted/prismio/`. Verify with two generations to a
   fixpoint, the full suite, and `tools/aif_differential.py`.
 
 ## Commands

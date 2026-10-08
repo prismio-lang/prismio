@@ -8,6 +8,7 @@ import common.text
 import common.diagnostics
 import common.float_builtins
 import common.int_builtins
+import common.mem_builtins
 import std.string
 import std.option
 
@@ -125,6 +126,9 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (name.equals("__builtin_abs")) { return AIF_FFI_BORROW }
     if (intBitCountBuiltin(name) or intRotateBuiltin(name)) { return AIF_FFI_BORROW }
     if (floatBuiltinArity(name) > 0) { return AIF_FFI_BORROW }
+    // Memory, atomics and assembly: integers in, an integer out, nothing retained
+    // and nothing placed. Described so that a function using them stays bracketable.
+    if (memBuiltinAny(name)) { return AIF_FFI_BORROW }
     // The failure builtins read their message and keep nothing; the process
     // ends before anything could be retained.
     if (name.equals("__builtin_panic")) { return AIF_FFI_BORROW }

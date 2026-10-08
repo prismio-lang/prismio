@@ -214,7 +214,7 @@ def main():
         # `suite.psm`, which imports them all and disagrees under --owned-collections
         # (docs/KNOWN_ISSUES.md, "The AIF analysis and its oracle").
         sources = [Path("src/main.psm")] + [
-            Path("benchmarks/prismio") / f"{name}.psm"
+            Path("benchmarks/hosted/prismio") / f"{name}.psm"
             for name in ("algorithms", "compute", "memory", "data_structures", "adversarial", "io")]
         # No benchmark module uses `region`, and a region opens a scope -- so a
         # mismatch in how the two implementations number scopes would be

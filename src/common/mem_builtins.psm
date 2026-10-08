@@ -1,0 +1,186 @@
+// The `__builtin_mem_*` and `__builtin_asm*` families: what a freestanding program
+// uses to touch a device register, take a lock and run an instruction the language
+// has no syntax for (docs/FREESTANDING_PLAN.md, step 3).
+//
+// **One table, four readers**, for float_builtins.psm's reason: sema types a call,
+// codegen emits it, and AIF describes it, and a name one of them misses fails
+// quietly. tools/aif_oracle/aif.py keeps a fourth copy of the AIF half.
+//
+// **An address is a `Usize`, not a `Ptr`.** `Ptr` is an opaque foreign handle with
+// no arithmetic and no provenance rules, and a register at 0x09000000 has neither.
+// These builtins take the number, and do not pretend it came from a value.
+//
+// The width is in the name, `__builtin_mem_load_u32`, because a builtin is not
+// generic and the width is the whole point: a device register is read at exactly
+// its width, and a wider load of an adjacent byte is a bus error.
+//
+//   load / store      plain, the compiler may drop, merge or reorder them
+//   vload / vstore    volatile: never dropped, merged, or reordered against
+//                     another volatile access. Device registers.
+//   aload / astore    atomic, sequentially consistent
+//   aswap aadd asub aand aor axor
+//                     atomic read-modify-write; answers the value that was there
+//   acas              compare-and-swap; answers the value that was there
+//   fence             a full barrier, no operands, no width
+//
+//   __builtin_asm(text)            run the instructions; memory is clobbered
+//   __builtin_asm_read(text) -> U64    `$0` is the result
+//   __builtin_asm_write(text, v: U64)  `$0` is the operand
+//
+// The text is a string literal in LLVM's inline-assembly syntax, AT&T on x86.
+
+import std.string
+
+public fn memBuiltinPrefix() -> String {
+    return "__builtin_mem_"
+}
+
+// The operation part of `__builtin_mem_<op>_<width>`, or "" when `name` is not
+// one. `fence` has no width and is answered by memBuiltinIsFence instead.
+public fn memBuiltinOp(name: String) -> String {
+    let prefix = memBuiltinPrefix()
+    if (name.startsWith(prefix) == false) { return "" }
+    let rest = name.substring(prefix.length, name.length - prefix.length)
+    let cut = rest.lastIndexOf("_")
+    if (cut < 0) { return "" }
+    let op = rest.substring(0, cut)
+    if (memOpArity(op) == 0) { return "" }
+    if (memWidthOfSuffix(rest.substring(cut + 1, rest.length - cut - 1)) == 0) { return "" }
+    return op
+}
+
+// Operands including the address; 0 for a name that is not an operation.
+private fn memOpArity(op: String) -> Int {
+    if (op.equals("load") or op.equals("vload") or op.equals("aload")) { return 1 }
+    if (op.equals("store") or op.equals("vstore") or op.equals("astore")) { return 2 }
+    if (op.equals("aswap") or op.equals("aadd") or op.equals("asub")
+        or op.equals("aand") or op.equals("aor") or op.equals("axor")) { return 2 }
+    if (op.equals("acas")) { return 3 }
+    return 0
+}
+
+private fn memWidthOfSuffix(suffix: String) -> Int {
+    if (suffix.equals("u8")) { return 8 }
+    if (suffix.equals("u16")) { return 16 }
+    if (suffix.equals("u32")) { return 32 }
+    if (suffix.equals("u64")) { return 64 }
+    return 0
+}
+
+// 0 when `name` is not a width-suffixed memory builtin.
+public fn memBuiltinArity(name: String) -> Int {
+    return memOpArity(memBuiltinOp(name))
+}
+
+public fn memBuiltinWidth(name: String) -> Int {
+    if (memBuiltinOp(name).equals("")) { return 0 }
+    let cut = name.lastIndexOf("_")
+    return memWidthOfSuffix(name.substring(cut + 1, name.length - cut - 1))
+}
+
+// A store answers nothing.
+public fn memBuiltinIsStore(name: String) -> Bool {
+    let op = memBuiltinOp(name)
+    return op.equals("store") or op.equals("vstore") or op.equals("astore")
+}
+
+public fn memBuiltinIsFence(name: String) -> Bool {
+    return name.equals("__builtin_mem_fence")
+}
+
+// How the access is ordered, in the numbering ir_mem_load and ir_mem_store take.
+public fn memBuiltinMode(name: String) -> Int {
+    let op = memBuiltinOp(name)
+    if (op.equals("vload") or op.equals("vstore")) { return 1 }
+    if (op.equals("aload") or op.equals("astore")) { return 2 }
+    return 0
+}
+
+// The read-modify-write operation in ir_mem_rmw's numbering; -1 for anything else.
+public fn memBuiltinRmw(name: String) -> Int {
+    let op = memBuiltinOp(name)
+    if (op.equals("aswap")) { return 0 }
+    if (op.equals("aadd")) { return 1 }
+    if (op.equals("asub")) { return 2 }
+    if (op.equals("aand")) { return 3 }
+    if (op.equals("aor")) { return 4 }
+    if (op.equals("axor")) { return 5 }
+    return -1
+}
+
+public fn memBuiltinIsCas(name: String) -> Bool {
+    return memBuiltinOp(name).equals("acas")
+}
+
+// An address and a `Ptr` convert to each other here and nowhere else. `Ptr` stays
+// an opaque handle for foreign code; this is the one door between it and a number,
+// so a program that never calls these never has a `Ptr` it can do arithmetic on.
+// 1 `__builtin_ptr_addr` (Ptr -> Usize), 2 `__builtin_addr_ptr` (Usize -> Ptr).
+public fn addrBuiltinKind(name: String) -> Int {
+    if (name.equals("__builtin_ptr_addr")) { return 1 }
+    if (name.equals("__builtin_addr_ptr")) { return 2 }
+    return 0
+}
+
+// x86 port I/O: `__builtin_port_out_u8(port: U16, value: U8)` and
+// `__builtin_port_in_u8(port: U16) -> U8`, and the 16- and 32-bit forms. They are
+// builtins and not `__builtin_asm` because `out` and `in` name their registers:
+// the value must be in `al`, `ax` or `eax` and the port in `dx`, which the generic
+// asm builtins cannot ask for. 1 for `out`, 2 for `in`, 0 for anything else.
+public fn portBuiltinDir(name: String) -> Int {
+    if (portBuiltinWidth(name) == 0) { return 0 }
+    if (name.startsWith("__builtin_port_out_")) { return 1 }
+    return 2
+}
+
+public fn portBuiltinWidth(name: String) -> Int {
+    if (name.startsWith("__builtin_port_out_") == false and name.startsWith("__builtin_port_in_") == false) {
+        return 0
+    }
+    let cut = name.lastIndexOf("_")
+    return memWidthOfSuffix(name.substring(cut + 1, name.length - cut - 1))
+}
+
+// The instruction and constraints for each, which differ by width only in the
+// register's name.
+public fn portBuiltinAsm(dir: Int, width: Int) -> String {
+    if (dir == 1) {
+        if (width == 8) { return "outb %al, %dx" }
+        if (width == 16) { return "outw %ax, %dx" }
+        return "outl %eax, %dx"
+    }
+    if (width == 8) { return "inb %dx, %al" }
+    if (width == 16) { return "inw %dx, %ax" }
+    return "inl %dx, %eax"
+}
+
+public fn portBuiltinConstraints(dir: Int, width: Int) -> String {
+    let mut reg = "eax"
+    if (width == 8) { reg = "al" }
+    if (width == 16) { reg = "ax" }
+    if (dir == 1) { return "{".concat(reg, "},{dx},~{memory}") }
+    return "={".concat(reg, "},{dx},~{memory}")
+}
+
+// Anything in either family, for the one question the AIF contract asks.
+public fn memBuiltinAny(name: String) -> Bool {
+    return memBuiltinArity(name) > 0 or memBuiltinIsFence(name) or asmBuiltinKind(name) > 0
+        or addrBuiltinKind(name) > 0 or portBuiltinDir(name) > 0
+}
+
+// 1 `__builtin_asm`, 2 `__builtin_asm_read`, 3 `__builtin_asm_write`; 0 otherwise.
+public fn asmBuiltinKind(name: String) -> Int {
+    if (name.equals("__builtin_asm")) { return 1 }
+    if (name.equals("__builtin_asm_read")) { return 2 }
+    if (name.equals("__builtin_asm_write")) { return 3 }
+    return 0
+}
+
+// LLVM's constraint string for each. `~{memory}` is what stops the optimiser
+// moving a load or store across the instruction; without it `cli` followed by a
+// store could be reordered into a store followed by `cli`.
+public fn asmBuiltinConstraints(kind: Int) -> String {
+    if (kind == 2) { return "=r,~{memory}" }
+    if (kind == 3) { return "r,~{memory}" }
+    return "~{memory}"
+}

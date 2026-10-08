@@ -616,6 +616,304 @@ def run_cli_test():
     return False
 
 
+def run_freestanding_test():
+    """`--freestanding`: a program with no operating system under it.
+
+    Three things, in the order they can fail. The language core links with no
+    runtime at all (docs/FREESTANDING_PLAN.md, section 1: this is the regression
+    guard for that measurement). A `std` import is refused with a message that
+    names it. And the programs actually run: on QEMU's `virt` board, with the
+    boot stub in tests/freestanding/, the exit status and the serial output are
+    what the program computed.
+
+    Needs `ld.lld` and `qemu-system-aarch64`, neither of which a Prismio install
+    ships; without them the test says so and passes, as `curated closure` does
+    without clang.
+    """
+    print(f"\n{BLUE}--- Running freestanding ---{RESET}")
+    lld = shutil.which("ld.lld")
+    qemu = shutil.which("qemu-system-aarch64")
+    # A `ld.lld` that is on PATH and cannot run is not a linker: the LLVM tarball's
+    # was built against another distribution's ICU, and on Ubuntu it dies loading
+    # libicui18n. GNU ld links a bare-metal ELF for its own architecture, so on an
+    # AArch64 Linux host the AArch64 kernels fall back to it (`-fuse-ld=bfd`, which
+    # a later flag overrides the default with) and the x86 ones, which need a
+    # linker that targets another architecture, are skipped.
+    lld_runs = False
+    if lld:
+        try:
+            lld_runs = subprocess.run([lld, "--version"], capture_output=True,
+                                      timeout=30).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            lld_runs = False
+    link_fallback = []
+    if not lld_runs:
+        if (sys.platform.startswith("linux") and platform.machine() in ("aarch64", "arm64")
+                and shutil.which("ld.bfd")):
+            link_fallback = ["--link-arg", "-fuse-ld=bfd"]
+        else:
+            lld = None
+    if not lld_runs and not link_fallback or not qemu:
+        missing = ", ".join(n for n, p in (("a working ld.lld", lld), ("qemu-system-aarch64", qemu)) if not p)
+        print(f"{YELLOW}[SKIP] freestanding: {missing} not found{RESET}")
+        return True
+
+    fixtures = TEST_DIR / "freestanding"
+    out_dir = TEST_DIR / "freestanding_out"
+    shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir()
+    env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
+    target = ["--target", "aarch64-unknown-none-elf", "--freestanding"]
+    failures = []
+
+    def build(source, output, extra=()):
+        return subprocess.run(
+            [str(PRISMIO_EXE), "build", str(fixtures / source), *target, *link_fallback, *extra,
+             "-o", str(output)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env=env, cwd=str(fixtures))
+
+    def boot(output):
+        try:
+            run = subprocess.run(
+                [qemu, "-M", "virt", "-cpu", "cortex-a57", "-nographic", "-semihosting",
+                 "-kernel", str(output)],
+                capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            return None, "(the kernel did not exit: a fault with no vector table hangs silently)"
+        return run.returncode, run.stdout
+
+    # 1. No runtime at all: linking succeeds, and lld refuses an undefined symbol,
+    # so success is the absence of every libc and runtime import.
+    bare = build("kernel_aarch64.psm", out_dir / "bare.elf")
+    if bare.returncode != 0:
+        failures.append(f"a scalar-only program did not link without a runtime:\n{bare.stderr}")
+
+    # 1b. The `std` modules that need nothing: they import, and the program links.
+    core = build("imports_core.psm", out_dir / "core.elf")
+    if core.returncode != 0:
+        failures.append(f"a program importing std.option and std.platform did not link:\n{core.stderr}")
+
+    # 2. The import gate.
+    gated = build("imports_vec.psm", out_dir / "gated.elf")
+    if gated.returncode == 0 or "`std.vec` cannot be imported by a `--freestanding` program" not in gated.stderr:
+        failures.append("importing std.vec was not refused by name:\n" + gated.stderr)
+
+    # 3. Running. The stub and linker script are the same in each; the failure core
+    # (runtime/freestanding/panic.c) is added by `--freestanding` itself.
+    stub = [
+        "--native", "boot_aarch64_virt.c",
+        "--native-flag", "-mgeneral-regs-only",
+        "--target-features", "-neon,-fp-armv8",
+        "--link-arg", "-T", "--link-arg", "link_aarch64_virt.ld",
+    ]
+    cases = [
+        # (source, seed, extra flags, expected exit status, text in the output).
+        # The failure site is matched by file and line without the directory: the
+        # hook prints the path the compiler was given.
+        ("kernel_aarch64.psm", 0, [], 0, ["result=252\n"]),
+        ("kernel_trap_aarch64.psm", 0, ["--overflow-checks"], 0, ["result=7\n"]),
+        ("kernel_trap_aarch64.psm", 1, ["--overflow-checks"], 1,
+         ["integer overflow: + at ", "kernel_trap_aarch64.psm:10"]),
+        # The same program without the check wraps, which is what `Int` means
+        # in a release build.
+        ("kernel_trap_aarch64.psm", 1, [], 0, ["result=-2\n"]),
+        ("kernel_trap_aarch64.psm", 2, [], 1, ["panic: boom at ", "kernel_trap_aarch64.psm:13"]),
+        # The same machine reached from Prismio itself: volatile stores to the UART,
+        # atomics, a fence and inline assembly, with the stub doing none of it.
+        ("kernel_mmio_aarch64.psm", 0, [], 0, ["PAA\nresult=0\n"]),
+    ]
+    for index, (source, seed, extra, status, expected) in enumerate(cases):
+        elf = out_dir / f"case{index}.elf"
+        built = build(source, elf, [*stub, "--native-flag", f"-DSEED={seed}", *extra])
+        if built.returncode != 0:
+            failures.append(f"{source} (seed {seed}) did not build:\n{built.stderr}")
+            continue
+        code, output = boot(elf)
+        if code != status or any(part not in output for part in expected):
+            failures.append(f"{source} (seed {seed}): exit {code}, output {output!r}; "
+                            f"wanted exit {status} containing {expected!r}")
+
+    # 4. A kernel with no C of its own but the failure core: entry stub, serial
+    # output, exit and panic hook all Prismio. Two builds of one source, the second
+    # with the constant changed so `main` panics.
+    pure_stub = [
+        "--native-flag", "-mgeneral-regs-only",
+        "--target-features", "-neon,-fp-armv8",
+        "--link-arg", "-T", "--link-arg", "link_aarch64_pure.ld",
+    ]
+    pure_source = (fixtures / "kernel_pure_aarch64.psm").read_text(encoding="utf-8")
+    for mode, status, expected in ((0, 0, "PM:42\n"), (1, 1, "PM:142\npanic: boom\n")):
+        patched = out_dir / f"pure{mode}.psm"
+        patched.write_text(pure_source.replace("let MODE = 0", f"let MODE = {mode}"),
+                           encoding="utf-8")
+        elf = out_dir / f"pure{mode}.elf"
+        built = subprocess.run(
+            [str(PRISMIO_EXE), "build", str(patched), *target, *link_fallback, *pure_stub,
+             "-o", str(elf)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env=env, cwd=str(fixtures))
+        if built.returncode != 0:
+            failures.append(f"kernel_pure_aarch64.psm (mode {mode}) did not build:\n{built.stderr}")
+            continue
+        code, output = boot(elf)
+        if code != status or output != expected:
+            failures.append(f"kernel_pure_aarch64.psm (mode {mode}): exit {code}, output "
+                            f"{output!r}; wanted exit {status} and {expected!r}")
+
+    # 4b. 32-bit x86, through port I/O. QEMU's x86 loader wants a Xen PVH note and
+    # the board has no semihosting, so the exit is the `isa-debug-exit` device: the
+    # status written to port 0xF4 comes back as (status << 1) | 1.
+    qemu_x86 = shutil.which("qemu-system-i386") if lld_runs else None
+    if qemu_x86:
+        x86_stub = [
+            "--native-flag", "-mno-sse", "--native-flag", "-mno-mmx",
+            "--target-features", "-sse,-sse2,-mmx",
+            "--link-arg", "-T", "--link-arg", "link_i686.ld",
+        ]
+        x86_source = (fixtures / "kernel_i686.psm").read_text(encoding="utf-8")
+        for mode, status, expected in ((0, 1, "X86:42\n"), (1, 3, "X86:142\npanic: boom\n")):
+            patched = out_dir / f"x86_{mode}.psm"
+            patched.write_text(x86_source.replace("let MODE = 0", f"let MODE = {mode}"),
+                               encoding="utf-8")
+            elf = out_dir / f"x86_{mode}.elf"
+            built = subprocess.run(
+                [str(PRISMIO_EXE), "build", str(patched), "--target", "i686-unknown-none-elf",
+                 "--freestanding", *x86_stub, "-o", str(elf)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                env=env, cwd=str(fixtures))
+            if built.returncode != 0:
+                failures.append(f"kernel_i686.psm (mode {mode}) did not build:\n{built.stderr}")
+                continue
+            try:
+                run = subprocess.run(
+                    [qemu_x86, "-kernel", str(elf), "-display", "none", "-serial", "stdio",
+                     "-monitor", "none", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+                     "-no-reboot"],
+                    capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                failures.append(f"kernel_i686.psm (mode {mode}) did not exit")
+                continue
+            if run.returncode != status or run.stdout != expected:
+                failures.append(f"kernel_i686.psm (mode {mode}): exit {run.returncode}, output "
+                                f"{run.stdout!r}; wanted exit {status} and {expected!r}"
+                                f" ({run.stderr.strip()})")
+
+    # 4c. The same kernel declared in a manifest: the triple, code generation
+    # settings, a linker script and a native source in `build.ums`, built by the
+    # project command with its debug profile (-g and overflow checks), which is the
+    # configuration a user's first build is in.
+    project = out_dir / "project"
+    project.mkdir()
+    shutil.copy(fixtures / "kernel_pure_aarch64.psm", project / "kernel.psm")
+    shutil.copy(fixtures / "link_aarch64_pure.ld", project / "link.ld")
+    shutil.copy(TEST_DIR.parent / "runtime" / "freestanding" / "panic.c", project / "panic.c")
+    (project / "build.ums").write_text(
+        'project {\n    name = "kernel"\n    version = "0.1.0"\n    prismio = "0.1.0"\n}\n\n'
+        'targets {\n    executable("kernel") {\n        entry = "kernel.psm"\n'
+        '        freestanding = true\n        triple = "aarch64-unknown-none-elf"\n'
+        '        features = "-neon,-fp-armv8"\n'
+        '        native {\n            source("panic.c")\n            flag("-mgeneral-regs-only")\n        }\n'
+        '        link {\n            script("link.ld")\n'
+        + ('            arg("-fuse-ld=bfd")\n' if link_fallback else "")
+        + '        }\n    }\n}\n',
+        encoding="utf-8")
+    managed = subprocess.run(
+        [str(PRISMIO_EXE), "build"], capture_output=True, text=True, encoding="utf-8",
+        errors="replace", env=env, cwd=str(project))
+    kernel = project / ".prismio" / "build" / "debug" / "kernel"
+    if managed.returncode != 0 or not kernel.is_file():
+        failures.append("a freestanding target in build.ums did not build:\n"
+                        + managed.stdout + managed.stderr)
+    else:
+        code, output = boot(kernel)
+        if code != 0 or output != "PM:42\n":
+            failures.append(f"the build.ums kernel: exit {code}, output {output!r}; "
+                            "wanted exit 0 and 'PM:42\\n'")
+
+    # 5. Layout. A program cannot take a field's address, so the emitted type is
+    # what is read: declaration order for `repr(C)`, no padding for `packed`.
+    layout = subprocess.run(
+        [str(PRISMIO_EXE), "build", str(fixtures / "layout_c.psm"), "-o", str(out_dir / "layout.ll")],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
+    ir = (out_dir / "layout.ll").read_text(encoding="utf-8") if layout.returncode == 0 else ""
+    for want in ("%Gate = type { i8, i32, i16 }", "%Wire = type <{ i8, i32 }>",
+                 "%Both = type <{ i8, i32 }>"):
+        if want not in ir:
+            failures.append(f"layout_c.psm: the IR does not declare `{want}`:\n"
+                            + (layout.stderr or ir[:600]))
+
+    shutil.rmtree(out_dir, ignore_errors=True)
+    if failures:
+        print(f"{RED}[FAIL] freestanding:{RESET}")
+        for failure in failures:
+            print(failure)
+        return False
+    print(f"{GREEN}[PASS] freestanding: no runtime for the core, std imports refused, "
+          f"{len(cases) + 3 + (2 if qemu_x86 else 0)} kernels booted under QEMU, struct layout{RESET}")
+    return True
+
+
+def run_freestanding_bench_test():
+    """The freestanding benchmark suite builds, boots and agrees with itself.
+
+    Runs `benchmarks/run.py --suite freestanding`: the C, Rust and Prismio arms are built
+    for bare-metal AArch64, each boots under QEMU, and the runner refuses to report a
+    workload whose three arms return different checksums. This asserts that it did, that
+    every workload in the catalog was measured in all three languages, and that the counts
+    are deterministic across boots. It does not assert a ratio: performance is recorded,
+    not gated.
+
+    The suite needs clang, a linker that runs, qemu-system-aarch64 and rustc with the
+    Rust source component. Without them the runner says what is missing and this test
+    skips, as `freestanding` does.
+    """
+    print(f"\n{BLUE}--- Running freestanding_bench ---{RESET}")
+    runner = PROJECT_ROOT / "benchmarks" / "run.py"
+    catalog = json.loads((PROJECT_ROOT / "benchmarks" / "freestanding" / "benchmarks.json")
+                         .read_text(encoding="utf-8"))["benchmarks"]
+    with tempfile.TemporaryDirectory(prefix="prismio-fsbench-") as temp_dir:
+        output = Path(temp_dir) / "results.json"
+        done = subprocess.run(
+            [sys.executable, str(runner), "--suite", "freestanding", "--compiler", str(PRISMIO_EXE),
+             "--runs", "2", "--allow-stale-compiler", "--output", str(output)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            env=dict(os.environ, PRISMIO_INTERNAL_HOSTED="1"), cwd=str(PROJECT_ROOT))
+        text = (done.stdout or "") + (done.stderr or "")
+        if done.returncode != 0 and "the freestanding suite needs" in text:
+            print(f"{YELLOW}[SKIP] freestanding_bench: {text.strip().splitlines()[-1]}{RESET}")
+            return True
+        if done.returncode != 0:
+            print(f"{RED}[FAIL] freestanding_bench: the runner failed{RESET}")
+            print(text[-2500:])
+            return False
+        report = json.loads(output.read_text(encoding="utf-8"))["suites"]["freestanding"]
+
+    problems = []
+    measured = {item["name"]: item for item in report["benchmarks"]}
+    for entry in catalog:
+        item = measured.get(entry["name"])
+        if item is None:
+            problems.append(f"{entry['name']} was not measured")
+            continue
+        for language in ("prismio", "c", "rust"):
+            count = item["languages"].get(language, {}).get("instructions", 0)
+            if count <= 0:
+                problems.append(f"{entry['name']}: no instruction count for {language}")
+        if "result" not in item:
+            problems.append(f"{entry['name']}: no checksum recorded")
+    if not report.get("deterministic"):
+        problems.append("repeated boots of one image gave different counts")
+    if problems:
+        print(f"{RED}[FAIL] freestanding_bench:{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] freestanding_bench: {len(measured)} workloads in Prismio, C and Rust agree "
+          f"on every checksum, and the counts repeat{RESET}")
+    return True
+
+
 def run_cli_usage_test():
     """CLI usage text presentation and exit codes across help and error paths."""
     print(f"\n{BLUE}--- Running cli_usage ---{RESET}")
@@ -2607,7 +2905,7 @@ def run_manifest_parseable_test():
         print(f"{RED}[FAIL] cannot import the manifest differ: {exc}{RESET}")
         return False
 
-    sources = sorted((PROJECT_ROOT / "benchmarks" / "prismio").glob("*.psm"))
+    sources = sorted((PROJECT_ROOT / "benchmarks" / "hosted" / "prismio").glob("*.psm"))
     sources += [TEST_DIR / "test_57_pin_tiers.psm", TEST_DIR / "test_58_region_serves.psm"]
 
     problems = []
@@ -7895,7 +8193,7 @@ def run_aif_widening_test():
     """
     print(f"\n{BLUE}--- Running aif_widening ---{RESET}")
     sources = [TEST_DIR / "aif_tiers.psm"]
-    sources += sorted((TEST_DIR.parent / "benchmarks" / "prismio").glob("*.psm"))
+    sources += sorted((TEST_DIR.parent / "benchmarks" / "hosted" / "prismio").glob("*.psm"))
 
     problems = []
     saw_partial = False
@@ -9258,6 +9556,8 @@ def main():
         ("proved_index_nsw", run_proved_index_nsw_test),
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
+        ("freestanding", run_freestanding_test),
+        ("freestanding_bench", run_freestanding_bench_test),
         ("ownership_probes", run_ownership_probes_test),
         ("check_overlay", run_check_overlay_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),

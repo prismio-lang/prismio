@@ -3,6 +3,7 @@
 // before any of them.
 
 import ast.nodes
+import ast.fn_attrs
 import ast.types
 import common.text
 import common.diagnostics
@@ -283,6 +284,13 @@ private fn generateFunction(func: ASTNode) {
     if (nodeIsCold(func)) {
         ir_function_cold()
     }
+    // `export`, `naked` and `section("...")` (src/parse/decl.psm), which say what the
+    // symbol is rather than how the function runs.
+    let attrFlags = nodeFnAttrFlags(func)
+    if ((attrFlags & 1) == 1) { ir_function_export(func.s1) }
+    if ((attrFlags & 2) == 2) { ir_function_naked() }
+    if (nodeFnSection(func).equals("") == false) { ir_function_section(nodeFnSection(func)) }
+    if (nodeFnAlign(func) > 0) { ir_function_align(nodeFnAlign(func)) }
     ir_clear_local_var_types()
     ir_clear_returned()
     irCoalesceSpills = ";"
@@ -1301,9 +1309,14 @@ private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
     //
     // "" means AIF did not run, which is SPEC 7.1's zero-analysis mode: fall back
     // to declaration order, which is what this did before a layout existed.
+    //
+    // **Not for `repr(C)` or `packed`.** Those are the declaration order by
+    // definition, and the search never sees them as a choice: a hardware table read
+    // in the order the compiler preferred is the "silently" this comment warns of.
+    let keepsOrder = nodeStructIsReprC(structNode) or nodeStructIsPacked(structNode)
     let mut i = 0
     let mut emitted = 0
-    while (i < irFieldCountOf(structNode)) {
+    while (i < irFieldCountOf(structNode) and keepsOrder == false) {
         let chosen = aif_layout_field(structNode.s1, i)
         if (chosen.equals("") == false) {
             let field = findStructField(structNode, chosen)
@@ -1333,6 +1346,7 @@ private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
         // order, which is SPEC 7.1's zero-analysis mode -- there is no cut to
         // apply, and applying one to a different order would put arbitrary fields
         // behind the cold pointer.
+        if (nodeStructIsPacked(structNode)) { ir_struct_type_packed(1) }
         ir_struct_type_end()
         return
     }

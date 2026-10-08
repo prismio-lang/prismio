@@ -1,0 +1,9 @@
+// The width is in the name, and the value must be exactly that width: a U32 handed
+// to a U8 store is refused rather than truncated.
+
+fn main() -> Int {
+    let wide: U32 = 300
+    __builtin_mem_vstore_u8(0x1000, wide)
+    return 0
+}
+// expect-error: memory operand: expected U8, found U32

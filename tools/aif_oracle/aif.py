@@ -222,6 +222,28 @@ F64_BUILTIN_ARITY = {
 for _op, _arity in F64_BUILTIN_ARITY.items():
     FFI_CONTRACTS['__builtin_f64_' + _op] = {i: 'borrow' for i in range(_arity)}
 
+# `__builtin_mem_<op>_<width>`, `__builtin_mem_fence` and `__builtin_asm*` -- the
+# table the compiler reads is src/common/mem_builtins.psm. Integers in, an integer
+# out, nothing retained.
+MEM_BUILTIN_ARITY = {
+    'load': 1, 'vload': 1, 'aload': 1,
+    'store': 2, 'vstore': 2, 'astore': 2,
+    'aswap': 2, 'aadd': 2, 'asub': 2, 'aand': 2, 'aor': 2, 'axor': 2,
+    'acas': 3,
+}
+for _op, _arity in MEM_BUILTIN_ARITY.items():
+    for _width in ('u8', 'u16', 'u32', 'u64'):
+        FFI_CONTRACTS['__builtin_mem_%s_%s' % (_op, _width)] = {i: 'borrow' for i in range(_arity)}
+FFI_CONTRACTS['__builtin_mem_fence'] = {}
+for _w in ('u8', 'u16', 'u32'):
+    FFI_CONTRACTS['__builtin_port_out_' + _w] = {0: 'borrow', 1: 'borrow'}
+    FFI_CONTRACTS['__builtin_port_in_' + _w] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_ptr_addr'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_addr_ptr'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_asm'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_asm_read'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_asm_write'] = {0: 'borrow', 1: 'borrow'}
+
 # The producers whose block the arena hint allocates: lang_runtime.c's `rt_alloc`
 # callers and the string builtins. Every other extern return -- `chan_recv`'s
 # block from another thread, program_support.c's `rt_base_alloc`, an

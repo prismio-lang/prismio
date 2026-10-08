@@ -17,6 +17,7 @@ import ums.model.diagnostic
 import ums.model.validation
 import ums.targets.target
 import ums.dependency.resolve
+import common.target
 import project.host
 import project.commands
 import std.fs
@@ -41,6 +42,12 @@ public extern fn compiler_native_response_file(path: String borrow) -> Int
 public extern fn compiler_native_source(path: String borrow) -> Int
 public extern fn compiler_set_export_dynamic(on: Int)
 public extern fn compiler_set_installed_runtime(on: Int)
+public extern fn compiler_link_flag(flag: String borrow) -> Int
+public extern fn compiler_set_freestanding(on: Int)
+public extern fn ir_set_freestanding(on: Int)
+public extern fn ir_set_no_red_zone(on: Int)
+public extern fn ir_set_target_features(features: String borrow) -> Int
+public extern fn ir_set_code_model(name: String borrow) -> Int
 // Everything under a directory except the running executable; see
 // runtime/build_driver.c.
 public extern fn compiler_remove_tree(path: String borrow) -> Int
@@ -193,6 +200,13 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
             UmsLinkKind.RESPONSE_FILE => {
                 failed = failed + compiler_link_response_file(umsNativePath(root, input.value))
             }
+            UmsLinkKind.SCRIPT => {
+                failed = failed + compiler_link_flag("-T")
+                failed = failed + compiler_link_flag(umsNativePath(root, input.value))
+            }
+            UmsLinkKind.ARG => {
+                failed = failed + compiler_link_flag(input.value)
+            }
         }
     }
     for i in 0..<target.natives.length {
@@ -220,6 +234,33 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
     }
     if (target.exportDynamic) {
         compiler_set_export_dynamic(1)
+    }
+    // Everything a bare-metal target changes is set here and cleared the same way for
+    // the next one: a project may build a kernel and a host tool in one process, and
+    // the triple, the feature string and the red zone belong to the target that
+    // declared them. A target with no triple is the host.
+    compiler_set_freestanding(0)
+    ir_set_freestanding(0)
+    ir_set_no_red_zone(0)
+    ir_set_target_features("")
+    ir_set_code_model("default")
+    targetSelect("")
+    if (target.triple.equals("") == false) {
+        if (targetSelect(target.triple) == false) {
+            diag_error_code("P1097", "unknown target triple ".concat(diagQuote(target.triple)))
+            return 1
+        }
+    }
+    if (target.freestanding) {
+        compiler_set_freestanding(1)
+        ir_set_freestanding(1)
+    }
+    if (target.noRedZone) { ir_set_no_red_zone(1) }
+    if (target.features.equals("") == false) {
+        failed = failed + ir_set_target_features(target.features)
+    }
+    if (target.codeModel.equals("") == false) {
+        failed = failed + ir_set_code_model(target.codeModel)
     }
     if (failed != 0) {
         diag_error_code("P1058", "could not prepare native linker inputs")

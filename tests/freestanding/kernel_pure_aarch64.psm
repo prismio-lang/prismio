@@ -1,0 +1,74 @@
+// A kernel with no C in it but the shared failure core. The entry point, the
+// serial output, the exit and the panic hook are all Prismio: `export` gives a
+// function the plain symbol an assembler or a linker script writes, `naked` takes
+// away the prologue so the body can be the assembly, and `section` puts the code
+// where the linker script starts the image.
+//
+// What it prints depends on `seed`, a word in RAM nothing has written: zero, so
+// QEMU's cleared memory. The test patches nothing; it builds three kernels from
+// three values of the constant below.
+
+let MODE = 0
+
+// QEMU `virt`'s PL011 UART.
+fn put(c: U8) {
+    __builtin_mem_vstore_u32(0x09000000, c as U32)
+}
+
+// A C string: bytes at an address up to a zero.
+fn puts(text: Ptr) {
+    let mut at = __builtin_ptr_addr(text)
+    let mut byte = __builtin_mem_load_u8(at)
+    while (byte != 0) {
+        put(byte)
+        at = at + 1
+        byte = __builtin_mem_load_u8(at)
+    }
+}
+
+fn put_int(value: Int) {
+    if (value < 0) {
+        put(45)
+        put_int(0 - value)
+        return
+    }
+    if (value >= 10) { put_int(value / 10) }
+    put(48 + ((value % 10) as U8))
+}
+
+// ARM semihosting SYS_EXIT: QEMU's exit status becomes the program's. The two-word
+// parameter block lives in RAM the linker script leaves alone.
+fn halt(status: Int) {
+    __builtin_mem_store_u64(0x42000000, 0x20026)
+    __builtin_mem_store_u64(0x42000008, status as U64)
+    __builtin_asm("mov x0, #0x18\nmovz x1, #0x4200, lsl #16\nhlt #0xf000")
+    while (true) {}
+}
+
+export naked section(".text.boot") fn _start() {
+    __builtin_asm("ldr x0, =__stack_top\nmov sp, x0\nbl main\n1: wfi\nb 1b")
+}
+
+// The one thing the failure core asks of a program. `kind` and `detail` are C
+// strings, which is what `Ptr` is for.
+export fn prismio_panic_hook(kind: Ptr, detail: Ptr, file: Ptr, line: Int, col: Int) {
+    puts(kind)
+    put(58)
+    put(32)
+    puts(detail)
+    put(10)
+    halt(1)
+}
+
+fn main() -> Int {
+    put(80)
+    put(77)
+    put(58)
+    put_int(MODE * 100 + 42)
+    put(10)
+    if (MODE == 1) {
+        panic("boom")
+    }
+    halt(0)
+    return 0
+}

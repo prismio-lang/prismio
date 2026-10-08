@@ -23,7 +23,12 @@ enum UmsLinkKind {
     SEARCH,
     FILE,
     FRAMEWORK,
-    RESPONSE_FILE
+    RESPONSE_FILE,
+    // `script("kernel.ld")`: a linker script, passed as `-T <path>` with the path
+    // resolved against the manifest. `arg("-z")`: one linker argument as written.
+    // Both appended, for the reason the comment above gives.
+    SCRIPT,
+    ARG
 }
 
 // What a target's `native { ... }` block declares: C sources to compile with the
@@ -69,6 +74,16 @@ struct UmsTarget {
     outputPath: String,
     runtime: String,
     exportDynamic: Bool,
+    // A program with no operating system under it (docs/FREESTANDING_PLAN.md): the
+    // installed runtime is not linked, no C library or startup files are, and
+    // `triple` names the machine. `features`, `codeModel` and `noRedZone` are what a
+    // kernel asks of code generation; the empty string leaves each at the target's
+    // default.
+    freestanding: Bool,
+    triple: String,
+    features: String,
+    codeModel: String,
+    noRedZone: Bool,
     links: Vec<UmsLinkInput>,
     natives: Vec<UmsNativeInput>,
     line: Int,
@@ -86,6 +101,11 @@ public fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
         outputPath: "".clone(),
         runtime: "installed".clone(),
         exportDynamic: false,
+        freestanding: false,
+        triple: "".clone(),
+        features: "".clone(),
+        codeModel: "".clone(),
+        noRedZone: false,
         links: [],
         natives: [],
         line: line,

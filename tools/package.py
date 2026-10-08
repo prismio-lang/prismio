@@ -179,6 +179,15 @@ def build_plib_ir(clang: str, compiler: Path, source: Path, work: Path,
     return bitcode.read_bytes()
 
 
+# The `std` modules a freestanding program may import (`freestandingSafeModule` in
+# src/driver/imports.psm is the source of truth, and tools/check_source_lists.py
+# fails if the two disagree). Their `.plib` carries a section for each
+# --freestanding-target and the other modules' does not: a freestanding triple has
+# no C library to compile the rest against, and the compiler refuses their import
+# before it would look for the section.
+FREESTANDING_STD = ("option", "platform", "iter")
+
+
 def build_plib(clang: str, compiler: Path, source: Path, stdlib: Path, work: Path,
                targets: tuple = ()) -> None:
     """PLIB v3, the layout runtime/build_driver.c reads and, for the host-only
@@ -237,6 +246,9 @@ def main() -> int:
                         help="also package the runtime and stdlib for this triple")
     parser.add_argument("--sysroot", action="append", default=[], metavar="TRIPLE=PATH",
                         help="where this machine keeps the C headers for a --target")
+    parser.add_argument("--freestanding-target", action="append", default=[], metavar="TRIPLE",
+                        help="package the freestanding subset of the stdlib, and the failure "
+                             "core, for this bare-metal triple; needs no sysroot")
     args = parser.parse_args()
 
     # Set, not defaulted: the package is used by programs built without the
@@ -254,6 +266,8 @@ def main() -> int:
         sysroots[triple] = path
     if len(set(args.target)) != len(args.target):
         die("a --target was given twice")
+    if set(args.target) & set(args.freestanding_target):
+        die("a triple cannot be both a --target and a --freestanding-target")
 
     global REPO
     if args.repo:
@@ -330,7 +344,15 @@ def main() -> int:
     # frontend interface/generic templates and its non-generic LLVM bitcode, once
     # for the host and once for each --target.
     for module in sorted((REPO / "std").glob("*.psm")):
-        build_plib(clang, compiler, module, stdlib, work, args.target)
+        extra = tuple(args.freestanding_target) if module.stem in FREESTANDING_STD else ()
+        build_plib(clang, compiler, module, stdlib, work, (*args.target, *extra))
+
+    # What `--freestanding` adds to every build: the failure core, as source, because
+    # it is compiled for the program's own triple and carries no libc dependency.
+    if args.freestanding_target:
+        core_dir = runtime_bc / "freestanding"
+        core_dir.mkdir(exist_ok=True)
+        shutil.copyfile(REPO / "runtime" / "freestanding" / "panic.c", core_dir / "panic.c")
 
     shutil.rmtree(work)
 

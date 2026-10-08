@@ -7,6 +7,7 @@ import common.diagnostics
 import common.target
 import common.float_builtins
 import common.int_builtins
+import common.mem_builtins
 import std.string
 import aif.model
 
@@ -2689,6 +2690,84 @@ private fn inlineOpName(funcName: String) -> String {
 // call returns before touching it. That is an inherited invariant rather than a
 // new one -- the boxed path already passes the scalar *punned into* a pointer to
 // the same function, and has always relied on the same answer.
+// `__builtin_mem_*` and `__builtin_asm*` (src/common/mem_builtins.psm). Every
+// operand is generated before the instruction that uses it, left to right, so a
+// side effect in an operand happens once and before the access. The address is
+// whatever integer type `Usize` is on the target; the value is the width in the
+// name. A void builtin answers "", like the failure builtins.
+private fn generateMemBuiltin(expr: ASTNode, funcName: String) -> String {
+    if (memBuiltinIsFence(funcName)) {
+        ir_mem_fence()
+        return ""
+    }
+
+    let portDir = portBuiltinDir(funcName)
+    if (portDir > 0) {
+        let width = portBuiltinWidth(funcName)
+        let key = "i".concat(width.toString())
+        let port = ptr_to_node(expr.child2)
+        let portVal = generateExpression(port)
+        let mut value = ""
+        if (portDir == 1) { value = generateExpression(ptr_to_node(port.next)) }
+        ir_call_begin()
+        if (portDir == 1) { ir_call_arg(key, value) }
+        ir_call_arg("i16", portVal)
+        let text = portBuiltinAsm(portDir, width)
+        let constraints = portBuiltinConstraints(portDir, width)
+        if (portDir == 1) {
+            ir_asm_call("void", text, constraints)
+            return ""
+        }
+        return ir_get_temp_name(ir_asm_call(key, text, constraints))
+    }
+
+    let addrKind = addrBuiltinKind(funcName)
+    if (addrKind > 0) {
+        let operand = generateExpression(ptr_to_node(expr.child2))
+        let addrKey = typeIrKey(typeUsize())
+        if (addrKind == 1) { return ir_get_temp_name(ir_ptr_to_int(operand, addrKey)) }
+        return ir_get_temp_name(ir_int_to_ptr(addrKey, operand))
+    }
+
+    let asmKind = asmBuiltinKind(funcName)
+    if (asmKind > 0) {
+        let template = ptr_to_node(expr.child2)
+        // The operand before the call opens, as every other builtin does it: an
+        // operand that is itself a call would otherwise open a frame inside this
+        // one.
+        let mut operand = ""
+        if (asmKind == 3) { operand = generateExpression(ptr_to_node(template.next)) }
+        ir_call_begin()
+        if (asmKind == 3) { ir_call_arg("i64", operand) }
+        let constraints = asmBuiltinConstraints(asmKind)
+        if (asmKind == 2) {
+            return ir_get_temp_name(ir_asm_call("i64", template.s1, constraints))
+        }
+        ir_asm_call("void", template.s1, constraints)
+        return ""
+    }
+
+    let key = "i".concat(memBuiltinWidth(funcName).toString())
+    let address = ptr_to_node(expr.child2)
+    let addrKey = typeIrKey(nodeGetType(address))
+    let addrVal = generateExpression(address)
+    let first = ptr_to_node(address.next)
+
+    if (memBuiltinArity(funcName) == 1) {
+        return ir_get_temp_name(ir_mem_load(key, addrKey, addrVal, memBuiltinMode(funcName)))
+    }
+    let operand = generateExpression(first)
+    if (memBuiltinIsStore(funcName)) {
+        ir_mem_store(key, operand, addrKey, addrVal, memBuiltinMode(funcName))
+        return ""
+    }
+    if (memBuiltinIsCas(funcName)) {
+        let desired = generateExpression(ptr_to_node(first.next))
+        return ir_get_temp_name(ir_mem_cmpxchg(key, addrKey, addrVal, operand, desired))
+    }
+    return ir_get_temp_name(ir_mem_rmw(memBuiltinRmw(funcName), key, addrKey, addrVal, operand))
+}
+
 // Integer bit operations at the operand's own width, each one LLVM intrinsic:
 // `ctpop`, `ctlz` and `cttz` for the counts -- with zero defined, so a zero's
 // leading zeros are its width -- and a funnel shift of the value with itself for
@@ -4697,6 +4776,9 @@ private fn generateCall(expr: ASTNode) -> String {
         ir_set_returned()
         return ""
     }
+
+    // Memory through an integer address, atomics and inline assembly.
+    if (memBuiltinAny(funcName)) { return generateMemBuiltin(expr, funcName) }
 
     // std.math's Float functions. The symbol is an LLVM intrinsic or a libm
     // name (src/common/float_builtins.psm), called with the operands as they
