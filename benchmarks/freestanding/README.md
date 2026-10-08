@@ -77,6 +77,11 @@ arrays whose elements stay in `[0, 360600]`, so `min(a + 1, b + 1)` becomes `min
 `PRISMIO_NOWRAP=0` and `PRISMIO_RANGE_PROOFS=0` switch the mechanisms' marks off, to separate them.
 The suite keeps C's default because that is what C is.
 
+**Branch merging is a compiler setting, not a difference in the programs.** LLVM 23's AArch64
+backend merges a branch on two conditions into one, even when one is a single bit test; Rust's LLVM
+22 does not, which made `ring_buffer` 1.18x Rust. Prismio raises `-aarch64-br-merging-cbz-tbnz-bias`
+to 8 and matches Rust's count; the C arm keeps clang's default.
+
 **A known difference, kept on purpose:** Rust indexes with bounds checks, as safe Rust does.
 C's arrays and Prismio's fixed arrays are unchecked. That is the language's price for safe
 indexing, and it is visible in `binary_search`, `heapsort`, `pointer_chase` and `knapsack`.

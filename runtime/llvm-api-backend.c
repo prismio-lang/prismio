@@ -8059,6 +8059,19 @@ static void ensure_codegen_initialized(void) {
     const char *argv[34] = { "prismio", "-enable-nontrivial-unswitch" };
     int argc = 2;
     const char *extra = getenv("PRISMIO_LLVM_ARGS");
+    // LLVM 23's AArch64 backend lowers a branch on two `and`/`or`-ed conditions as
+    // one branch on both computed together, unless its cost model says split. With
+    // one condition a single bit test it still merged, so `if (bit == 0 and h != t)`
+    // cost `ubfx; cmp; csinc; tbnz` on every pass instead of `tbnz` alone half the
+    // time; LLVM 22, and so rustc, split it. A bias of 8 (default 6) splits that
+    // shape and nothing else in the freestanding suite: ring_buffer 4,429,696 ->
+    // 3,753,472 instructions, Rust's count. On the hosted suite 11 of 140 functions
+    // change and the timings do not (geomean 0.999, an identical-binary control
+    // 1.001), nor does compiling the compiler (+0.1% cycles, inside its spread).
+    // An option LLVM sees twice is an error, so PRISMIO_LLVM_ARGS may override it.
+    if (!extra || !strstr(extra, "aarch64-br-merging-cbz-tbnz-bias")) {
+        argv[argc++] = "-aarch64-br-merging-cbz-tbnz-bias=8";
+    }
     if (extra && *extra) {
         snprintf(args_copy, sizeof(args_copy), "%s", extra);
         for (char *tok = strtok(args_copy, " \t"); tok && argc < 34; tok = strtok(NULL, " \t")) {

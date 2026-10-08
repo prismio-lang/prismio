@@ -125,6 +125,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   separate what each buys. Because the compiler relies on it, an out-of-range index into a fixed
   array or a `[T]` view is now specified as undefined behaviour.
 
+- **On AArch64, a branch on two conditions splits again when one is a single bit test.** LLVM 23's
+  AArch64 backend gained a cost model that computes `a and b` together and branches once, and it
+  merged even where one condition is a lone `tbnz`: `ring_buffer`'s
+  `if (((s >> 8) & 1) == 0 and head != tail)` cost `ubfx; cmp; csinc; tbnz` on every iteration,
+  where LLVM 22, and so rustc, emit `tbnz` and stop half the time. The compiler now passes
+  `-aarch64-br-merging-cbz-tbnz-bias=8` (LLVM's default is 6), which splits that shape. Freestanding,
+  `ring_buffer` runs 4,429,696 to 3,753,472 instructions (C 4,429,312, Rust 3,753,472), no other row
+  moves, and the suite reads 5 fewer, 15 level and none more against C (geomean 0.95x) and 9, 11 and
+  none against Rust (0.85x). Hosted, 11 of 140 functions change and the timings do not: geomean 0.999
+  over 52 workloads, against 1.001 for an identical-binary control in the same interleaved runs.
+  Compiling the compiler moves by +0.1% in cycles, inside its spread. `PRISMIO_LLVM_ARGS` overrides
+  the option.
+
 - **`Option<T>` is gone; `T?` is the optional.** Two spellings of "a `T` or nothing"
   were one more thing to learn and to convert between, and `T?` already did the same
   work for numbers, `Bool`, `Char`, fieldless enums, `String`, `Vec`, structs and `Ptr`.
