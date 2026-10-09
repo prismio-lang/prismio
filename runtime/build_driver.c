@@ -1425,8 +1425,7 @@ static const char* const PRISMIO_CURATED_OPS[] = {
     "rc_retain", "rc_release", "list_push",
     "list_str_data", "list_str_word", "list_push_str", "list_set_str",
     "data_view_check_index", "data_view_column", "data_view_len",
-    "mem_bytes_data", "mem_bytes_load", "mem_bytes_store",
-    "mem_bytes_load_f64", "mem_bytes_store_f64",
+    "mem_bytes_data", "mem_bytes_address",
 };
 #define PRISMIO_CURATED_OP_COUNT \
     ((int)(sizeof(PRISMIO_CURATED_OPS) / sizeof(PRISMIO_CURATED_OPS[0])))

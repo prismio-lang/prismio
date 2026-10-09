@@ -2769,15 +2769,24 @@ private fn generateMemBuiltin(expr: ASTNode, funcName: String) -> String {
 }
 
 // Integer bit operations at the operand's own width, each one LLVM intrinsic:
-// `ctpop`, `ctlz` and `cttz` for the counts -- with zero defined, so a zero's
-// leading zeros are its width -- and a funnel shift of the value with itself for
-// a rotation, which is one `ror` on AArch64 and x86. The distance is taken
-// modulo the width, as the funnel shift defines it; a count is widened or
-// narrowed to Int.
+// `bswap` for a byte swap, `ctpop`, `ctlz` and `cttz` for the counts -- with zero
+// defined, so a zero's leading zeros are its width -- and a funnel shift of the
+// value with itself for a rotation, which is one `ror` on AArch64 and x86. The
+// distance is taken modulo the width, as the funnel shift defines it; a count is
+// widened or narrowed to Int. A Float and its bits are one bitcast either way.
 private fn generateBitBuiltin(expr: ASTNode, funcName: String) -> String {
     let operand = ptr_to_node(expr.child2)
     let key = typeIrKey(nodeGetType(operand))
     let value = generateExpression(operand)
+    let floatBits = floatBitsBuiltin(funcName)
+    if (floatBits == 1) { return ir_get_temp_name(ir_bitcast("double", value, "i64")) }
+    if (floatBits == 2) { return ir_get_temp_name(ir_bitcast("i64", value, "double")) }
+    if (intSwapBytesBuiltin(funcName)) {
+        if (key.equals("i8")) { return value }
+        ir_call_begin()
+        ir_call_arg(key, value)
+        return ir_get_temp_name(ir_call_end(key.clone(), "llvm.bswap.".concat(key)))
+    }
     if (intRotateBuiltin(funcName)) {
         let mut distance = generateExpression(ptr_to_node(operand.next))
         if (key.equals("i64")) {
@@ -4704,7 +4713,8 @@ private fn generateCall(expr: ASTNode) -> String {
         return ir_get_temp_name(ir_call_end("i32", "llvm.abs.i32"))
     }
 
-    if (intBitCountBuiltin(funcName) or intRotateBuiltin(funcName)) {
+    if (intBitCountBuiltin(funcName) or intRotateBuiltin(funcName) or intSwapBytesBuiltin(funcName)
+            or floatBitsBuiltin(funcName) > 0) {
         return generateBitBuiltin(expr, funcName)
     }
 

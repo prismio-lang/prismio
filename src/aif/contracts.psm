@@ -124,7 +124,8 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (name.equals("__builtin_max")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_min")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_abs")) { return AIF_FFI_BORROW }
-    if (intBitCountBuiltin(name) or intRotateBuiltin(name)) { return AIF_FFI_BORROW }
+    if (intBitCountBuiltin(name) or intRotateBuiltin(name) or intSwapBytesBuiltin(name)) { return AIF_FFI_BORROW }
+    if (floatBitsBuiltin(name) > 0) { return AIF_FFI_BORROW }
     if (floatBuiltinArity(name) > 0) { return AIF_FFI_BORROW }
     // Memory, atomics and assembly: integers in, an integer out, nothing retained
     // and nothing placed. Described so that a function using them stays bracketable.

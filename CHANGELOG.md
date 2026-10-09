@@ -128,6 +128,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `arena_bump` read 1.61× until `Arena.alloc`'s failure messages moved into `cold`
   functions and the block's address and length were read once at construction;
   built in place, the messages stopped `alloc` inlining and gave it a 240-byte frame.
+- **`__builtin_swap_bytes`, `__builtin_float_bits` and `__builtin_float_from_bits`**:
+  byte order reversed at any integer width (one `rev`/`bswap`), and a Float and its
+  64 bits reinterpreted either way. **`__builtin_mem_uload_*`/`ustore_*`**: loads and
+  stores at any alignment, of memory the compiler may treat as byte storage only.
+  They carry a type-based alias tag of their own, so a store through one does not
+  force LLVM to reload a list's length or data pointer. `std.mem`'s typed Buffer
+  accesses are built from them: `binary_codec` went 1.03× → 1.00× C++, with every
+  bounds check gone from both of its loops.
 - **`x[i] = v` on a struct calls its `set`**, as `x[i]` already called its `at`. A struct
   with an `at` and no `set` keeps the error, which now says to write
   `fn set(inout self, index, value)`. A generic struct's `set` is not reached yet, so a

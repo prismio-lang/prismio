@@ -15,6 +15,11 @@
 // its width, and a wider load of an adjacent byte is a bus error.
 //
 //   load / store      plain, the compiler may drop, merge or reorder them
+//   uload / ustore    plain, at any alignment, and typed as byte storage: the
+//                     compiler assumes the bytes are not also a struct field, a
+//                     Vec element or a list header it reads as another type.
+//                     std.mem's Buffer accesses, so a store to the buffer does not
+//                     make LLVM reload the buffer's length and data pointer.
 //   vload / vstore    volatile: never dropped, merged, or reordered against
 //                     another volatile access. Device registers.
 //   aload / astore    atomic, sequentially consistent
@@ -52,7 +57,8 @@ public fn memBuiltinOp(name: String) -> String {
 // Operands including the address; 0 for a name that is not an operation.
 private fn memOpArity(op: String) -> Int {
     if (op.equals("load") or op.equals("vload") or op.equals("aload")) { return 1 }
-    if (op.equals("store") or op.equals("vstore") or op.equals("astore")) { return 2 }
+    if (op.equals("uload")) { return 1 }
+    if (op.equals("store") or op.equals("vstore") or op.equals("astore") or op.equals("ustore")) { return 2 }
     if (op.equals("aswap") or op.equals("aadd") or op.equals("asub")
         or op.equals("aand") or op.equals("aor") or op.equals("axor")) { return 2 }
     if (op.equals("acas")) { return 3 }
@@ -81,18 +87,20 @@ public fn memBuiltinWidth(name: String) -> Int {
 // A store answers nothing.
 public fn memBuiltinIsStore(name: String) -> Bool {
     let op = memBuiltinOp(name)
-    return op.equals("store") or op.equals("vstore") or op.equals("astore")
+    return op.equals("store") or op.equals("vstore") or op.equals("astore") or op.equals("ustore")
 }
 
 public fn memBuiltinIsFence(name: String) -> Bool {
     return name.equals("__builtin_mem_fence")
 }
 
-// How the access is ordered, in the numbering ir_mem_load and ir_mem_store take.
+// How the access is ordered, in the numbering ir_mem_load and ir_mem_store take:
+// 3 is the unaligned byte-storage access, which is ordered as a plain one.
 public fn memBuiltinMode(name: String) -> Int {
     let op = memBuiltinOp(name)
     if (op.equals("vload") or op.equals("vstore")) { return 1 }
     if (op.equals("aload") or op.equals("astore")) { return 2 }
+    if (op.equals("uload") or op.equals("ustore")) { return 3 }
     return 0
 }
 

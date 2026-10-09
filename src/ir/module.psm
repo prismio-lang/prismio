@@ -623,6 +623,9 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     ir_mark_guard_safe_fn("__builtin_trailing_zeros", 1)
     ir_mark_guard_safe_fn("__builtin_rotate_left", 1)
     ir_mark_guard_safe_fn("__builtin_rotate_right", 1)
+    ir_mark_guard_safe_fn("__builtin_swap_bytes", 1)
+    ir_mark_guard_safe_fn("__builtin_float_bits", 1)
+    ir_mark_guard_safe_fn("__builtin_float_from_bits", 1)
     // std.math's Float family, for the same reason: a square root or a sine
     // reads two registers and writes one. A libm call among them is still no
     // list's business -- the C library cannot reach a Prismio element block.

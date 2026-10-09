@@ -1,10 +1,11 @@
 // The integer bit operations: what std.math's `countOnes`, `leadingZeros`,
-// `trailingZeros`, `rotateLeft` and `rotateRight` lower to, on every width.
+// `trailingZeros`, `rotateLeft`, `rotateRight` and `swapBytes` lower to, on every
+// width, and the two reinterpretations between a Float and its bits.
 //
 // Here rather than in sema for float_builtins.psm's reason: sema types a call,
 // codegen emits it and AIF describes it, and a name one of them misses fails
-// quietly. Each is one LLVM intrinsic (`ctpop`, `ctlz`, `cttz`, `fshl`, `fshr`),
-// so none is a call at run time.
+// quietly. Each is one LLVM intrinsic (`ctpop`, `ctlz`, `cttz`, `fshl`, `fshr`,
+// `bswap`) or a bitcast, so none is a call at run time.
 
 import std.string
 
@@ -17,4 +18,20 @@ public fn intBitCountBuiltin(name: String) -> Bool {
 // The rotations, which answer the operand's own type.
 public fn intRotateBuiltin(name: String) -> Bool {
     return name.equals("__builtin_rotate_left") or name.equals("__builtin_rotate_right")
+}
+
+// Byte order reversed, answering the operand's own type; a byte is its own swap.
+// What std.mem's big-endian reads and writes are, so each is one `rev` on AArch64
+// and one `bswap` or `movbe` on x86.
+public fn intSwapBytesBuiltin(name: String) -> Bool {
+    return name.equals("__builtin_swap_bytes")
+}
+
+// 1 `__builtin_float_bits` (Float -> U64), 2 `__builtin_float_from_bits` (U64 ->
+// Float): the same 64 bits under the other type, as C's memcpy into a uint64_t.
+// 0 for anything else.
+public fn floatBitsBuiltin(name: String) -> Int {
+    if (name.equals("__builtin_float_bits")) { return 1 }
+    if (name.equals("__builtin_float_from_bits")) { return 2 }
+    return 0
 }

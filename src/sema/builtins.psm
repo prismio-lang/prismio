@@ -36,7 +36,9 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // Integer bit operations on any width: a count answers an Int, a rotation
     // the operand's own type, so `x.rotateLeft(7)` on a U64 stays a U64.
     if (intBitCountBuiltin(name)) { return typeInt() }
-    if (intRotateBuiltin(name)) {
+    if (floatBitsBuiltin(name) == 1) { return typeU64() }
+    if (floatBitsBuiltin(name) == 2) { return typeFloat() }
+    if (intRotateBuiltin(name) or intSwapBytesBuiltin(name)) {
         if (nodeExists(argPtr)) {
             let rotated = nodeGetType(ptr_to_node(argPtr))
             if (rotated.kind == TypeKind.INT) { return rotated }
@@ -423,7 +425,18 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
 
     // The operand keeps its own width -- the count of a U8's leading zeros is
     // out of 8 -- so it is typed by semaExpr rather than checked against Int.
-    if (intBitCountBuiltin(name) or intRotateBuiltin(name)) {
+    let floatBits = floatBitsBuiltin(name)
+    if (floatBits > 0) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        if (floatBits == 1) {
+            semaCheckValue(module, ptr_to_node(argPtr), typeFloat(), "Float operand")
+        } else {
+            semaCheckValue(module, ptr_to_node(argPtr), typeU64(), "bits operand")
+        }
+        return true
+    }
+
+    if (intBitCountBuiltin(name) or intRotateBuiltin(name) or intSwapBytesBuiltin(name)) {
         let mut arity = 1
         if (intRotateBuiltin(name)) { arity = 2 }
         if (semaCheckArity(call, name, argPtr, arity) == false) { return true }

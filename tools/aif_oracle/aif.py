@@ -181,6 +181,9 @@ FFI_CONTRACTS = {
     '__builtin_trailing_zeros': {0: 'borrow'},
     '__builtin_rotate_left': {0: 'borrow', 1: 'borrow'},
     '__builtin_rotate_right': {0: 'borrow', 1: 'borrow'},
+    '__builtin_swap_bytes': {0: 'borrow'},
+    '__builtin_float_bits': {0: 'borrow'},
+    '__builtin_float_from_bits': {0: 'borrow'},
     # The failure builtins: they read a message and end the process. Sema
     # rewrites `panic` to `__builtin_panic` where the program declares no
     # `panic` of its own, and the dump this reads is taken after sema.
@@ -228,6 +231,7 @@ for _op, _arity in F64_BUILTIN_ARITY.items():
 MEM_BUILTIN_ARITY = {
     'load': 1, 'vload': 1, 'aload': 1,
     'store': 2, 'vstore': 2, 'astore': 2,
+    'uload': 1, 'ustore': 2,
     'aswap': 2, 'aadd': 2, 'asub': 2, 'aand': 2, 'aor': 2, 'axor': 2,
     'acas': 3,
 }

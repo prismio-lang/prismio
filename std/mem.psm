@@ -33,6 +33,13 @@
 // The C half is runtime/lang_runtime.c's `mem_*`. `borrow` on a Vec here means
 // "does not retain", and the `mem_bytes_*` writers do write through it: the
 // backend's `readonly` is applied to String arguments only, and must stay so.
+//
+// **A typed Buffer access is a checked address and a tagged access.** The address
+// is `mem_bytes_address`, curated so its bounds check inlines; the access is
+// `__builtin_mem_uload`/`ustore`, unaligned and tagged as byte storage, which is
+// what lets LLVM keep the list's length and data pointer in registers across a
+// store (src/common/mem_builtins.psm). Big-endian is `__builtin_swap_bytes`, one
+// `rev`; a Float is its bits through `__builtin_float_bits`.
 
 import std.eq
 import std.string
@@ -46,10 +53,7 @@ private extern fn mem_fill(address: Usize, value: Int, count: Usize)
 private extern fn mem_compare(a: Usize, b: Usize, count: Usize) -> Int
 
 private extern fn mem_bytes_data(bytes: Vec<U8> borrow) -> Usize
-private extern fn mem_bytes_load(bytes: Vec<U8> borrow, offset: Int, width: Int, big: Int) -> U64
-private extern fn mem_bytes_store(bytes: Vec<U8> borrow, offset: Int, width: Int, big: Int, value: U64)
-private extern fn mem_bytes_load_f64(bytes: Vec<U8> borrow, offset: Int, big: Int) -> Float
-private extern fn mem_bytes_store_f64(bytes: Vec<U8> borrow, offset: Int, big: Int, value: Float)
+private extern fn mem_bytes_address(bytes: Vec<U8> borrow, offset: Int, count: Int) -> Usize
 private extern fn mem_bytes_resize(bytes: Vec<U8> borrow, length: Int)
 private extern fn mem_bytes_fill(bytes: Vec<U8> borrow, value: Int, offset: Int, count: Int)
 private extern fn mem_bytes_copy(to: Vec<U8> borrow, toOffset: Int, from: Vec<U8> borrow,
@@ -95,15 +99,8 @@ struct Buffer {
     bytes: Vec<U8>
 }
 
-// The width and byte order are constants at every call, and the runtime half is
-// inlined (PRISMIO_CURATED_OPS), so each of these is one check and one load.
-private fn bufferLoad(b: Buffer, offset: Int, width: Int, big: Bool) -> U64 {
-    if (big) { return mem_bytes_load(b.bytes, offset, width, 1) }
-    return mem_bytes_load(b.bytes, offset, width, 0)
-}
-
-private fn bufferStore(b: Buffer, offset: Int, width: Int, big: Bool, value: U64) {
-    if (big) { mem_bytes_store(b.bytes, offset, width, 1, value) } else { mem_bytes_store(b.bytes, offset, width, 0, value) }
+private fn bufferAt(b: Buffer, offset: Int, count: Int) -> Usize {
+    return mem_bytes_address(b.bytes, offset, count)
 }
 
 private fn bufferCheckLength(length: Int, what: String) {
@@ -147,43 +144,61 @@ impl Buffer {
     public prop address(self) -> Usize { return mem_bytes_data(self.bytes) }
 
     // `b[i]` and `b[i] = x`.
-    public fn at(self, index: Int) -> U8 { return mem_bytes_load(self.bytes, index, 1, 0) as U8 }
-    public fn set(inout self, index: Int, value: U8) { mem_bytes_store(self.bytes, index, 1, 0, value as U64) }
+    public fn at(self, index: Int) -> U8 { return __builtin_mem_uload_u8(bufferAt(self, index, 1)) }
+    public fn set(inout self, index: Int, value: U8) { __builtin_mem_ustore_u8(bufferAt(self, index, 1), value) }
 
-    public fn readU8(self, offset: Int) -> U8 { return bufferLoad(self, offset, 1, false) as U8 }
-    public fn readI8(self, offset: Int) -> I8 { return (bufferLoad(self, offset, 1, false) as U8) as I8 }
-    public fn readU16LE(self, offset: Int) -> U16 { return bufferLoad(self, offset, 2, false) as U16 }
-    public fn readU16BE(self, offset: Int) -> U16 { return bufferLoad(self, offset, 2, true) as U16 }
-    public fn readI16LE(self, offset: Int) -> I16 { return (bufferLoad(self, offset, 2, false) as U16) as I16 }
-    public fn readI16BE(self, offset: Int) -> I16 { return (bufferLoad(self, offset, 2, true) as U16) as I16 }
-    public fn readU32LE(self, offset: Int) -> U32 { return bufferLoad(self, offset, 4, false) as U32 }
-    public fn readU32BE(self, offset: Int) -> U32 { return bufferLoad(self, offset, 4, true) as U32 }
+    public fn readU8(self, offset: Int) -> U8 { return __builtin_mem_uload_u8(bufferAt(self, offset, 1)) }
+    public fn readI8(self, offset: Int) -> I8 { return __builtin_mem_uload_u8(bufferAt(self, offset, 1)) as I8 }
+    public fn readU16LE(self, offset: Int) -> U16 { return __builtin_mem_uload_u16(bufferAt(self, offset, 2)) }
+    public fn readU16BE(self, offset: Int) -> U16 {
+        return __builtin_swap_bytes(__builtin_mem_uload_u16(bufferAt(self, offset, 2)))
+    }
+    public fn readI16LE(self, offset: Int) -> I16 { return self.readU16LE(offset) as I16 }
+    public fn readI16BE(self, offset: Int) -> I16 { return self.readU16BE(offset) as I16 }
+    public fn readU32LE(self, offset: Int) -> U32 { return __builtin_mem_uload_u32(bufferAt(self, offset, 4)) }
+    public fn readU32BE(self, offset: Int) -> U32 {
+        return __builtin_swap_bytes(__builtin_mem_uload_u32(bufferAt(self, offset, 4)))
+    }
     // `Int` is the 32-bit signed type, so these are the I32 reads.
-    public fn readI32LE(self, offset: Int) -> Int { return (bufferLoad(self, offset, 4, false) as U32) as Int }
-    public fn readI32BE(self, offset: Int) -> Int { return (bufferLoad(self, offset, 4, true) as U32) as Int }
-    public fn readU64LE(self, offset: Int) -> U64 { return bufferLoad(self, offset, 8, false) }
-    public fn readU64BE(self, offset: Int) -> U64 { return bufferLoad(self, offset, 8, true) }
-    public fn readI64LE(self, offset: Int) -> I64 { return bufferLoad(self, offset, 8, false) as I64 }
-    public fn readI64BE(self, offset: Int) -> I64 { return bufferLoad(self, offset, 8, true) as I64 }
-    public fn readFloatLE(self, offset: Int) -> Float { return mem_bytes_load_f64(self.bytes, offset, 0) }
-    public fn readFloatBE(self, offset: Int) -> Float { return mem_bytes_load_f64(self.bytes, offset, 1) }
+    public fn readI32LE(self, offset: Int) -> Int { return self.readU32LE(offset) as Int }
+    public fn readI32BE(self, offset: Int) -> Int { return self.readU32BE(offset) as Int }
+    public fn readU64LE(self, offset: Int) -> U64 { return __builtin_mem_uload_u64(bufferAt(self, offset, 8)) }
+    public fn readU64BE(self, offset: Int) -> U64 {
+        return __builtin_swap_bytes(__builtin_mem_uload_u64(bufferAt(self, offset, 8)))
+    }
+    public fn readI64LE(self, offset: Int) -> I64 { return self.readU64LE(offset) as I64 }
+    public fn readI64BE(self, offset: Int) -> I64 { return self.readU64BE(offset) as I64 }
+    public fn readFloatLE(self, offset: Int) -> Float { return __builtin_float_from_bits(self.readU64LE(offset)) }
+    public fn readFloatBE(self, offset: Int) -> Float { return __builtin_float_from_bits(self.readU64BE(offset)) }
 
-    public fn writeU8(inout self, offset: Int, value: U8) { bufferStore(self, offset, 1, false, value as U64) }
-    public fn writeI8(inout self, offset: Int, value: I8) { bufferStore(self, offset, 1, false, (value as U8) as U64) }
-    public fn writeU16LE(inout self, offset: Int, value: U16) { bufferStore(self, offset, 2, false, value as U64) }
-    public fn writeU16BE(inout self, offset: Int, value: U16) { bufferStore(self, offset, 2, true, value as U64) }
-    public fn writeI16LE(inout self, offset: Int, value: I16) { bufferStore(self, offset, 2, false, (value as U16) as U64) }
-    public fn writeI16BE(inout self, offset: Int, value: I16) { bufferStore(self, offset, 2, true, (value as U16) as U64) }
-    public fn writeU32LE(inout self, offset: Int, value: U32) { bufferStore(self, offset, 4, false, value as U64) }
-    public fn writeU32BE(inout self, offset: Int, value: U32) { bufferStore(self, offset, 4, true, value as U64) }
-    public fn writeI32LE(inout self, offset: Int, value: Int) { bufferStore(self, offset, 4, false, (value as U32) as U64) }
-    public fn writeI32BE(inout self, offset: Int, value: Int) { bufferStore(self, offset, 4, true, (value as U32) as U64) }
-    public fn writeU64LE(inout self, offset: Int, value: U64) { bufferStore(self, offset, 8, false, value) }
-    public fn writeU64BE(inout self, offset: Int, value: U64) { bufferStore(self, offset, 8, true, value) }
-    public fn writeI64LE(inout self, offset: Int, value: I64) { bufferStore(self, offset, 8, false, value as U64) }
-    public fn writeI64BE(inout self, offset: Int, value: I64) { bufferStore(self, offset, 8, true, value as U64) }
-    public fn writeFloatLE(inout self, offset: Int, value: Float) { mem_bytes_store_f64(self.bytes, offset, 0, value) }
-    public fn writeFloatBE(inout self, offset: Int, value: Float) { mem_bytes_store_f64(self.bytes, offset, 1, value) }
+    public fn writeU8(inout self, offset: Int, value: U8) { __builtin_mem_ustore_u8(bufferAt(self, offset, 1), value) }
+    public fn writeI8(inout self, offset: Int, value: I8) { self.writeU8(offset, value as U8) }
+    public fn writeU16LE(inout self, offset: Int, value: U16) {
+        __builtin_mem_ustore_u16(bufferAt(self, offset, 2), value)
+    }
+    public fn writeU16BE(inout self, offset: Int, value: U16) {
+        __builtin_mem_ustore_u16(bufferAt(self, offset, 2), __builtin_swap_bytes(value))
+    }
+    public fn writeI16LE(inout self, offset: Int, value: I16) { self.writeU16LE(offset, value as U16) }
+    public fn writeI16BE(inout self, offset: Int, value: I16) { self.writeU16BE(offset, value as U16) }
+    public fn writeU32LE(inout self, offset: Int, value: U32) {
+        __builtin_mem_ustore_u32(bufferAt(self, offset, 4), value)
+    }
+    public fn writeU32BE(inout self, offset: Int, value: U32) {
+        __builtin_mem_ustore_u32(bufferAt(self, offset, 4), __builtin_swap_bytes(value))
+    }
+    public fn writeI32LE(inout self, offset: Int, value: Int) { self.writeU32LE(offset, value as U32) }
+    public fn writeI32BE(inout self, offset: Int, value: Int) { self.writeU32BE(offset, value as U32) }
+    public fn writeU64LE(inout self, offset: Int, value: U64) {
+        __builtin_mem_ustore_u64(bufferAt(self, offset, 8), value)
+    }
+    public fn writeU64BE(inout self, offset: Int, value: U64) {
+        __builtin_mem_ustore_u64(bufferAt(self, offset, 8), __builtin_swap_bytes(value))
+    }
+    public fn writeI64LE(inout self, offset: Int, value: I64) { self.writeU64LE(offset, value as U64) }
+    public fn writeI64BE(inout self, offset: Int, value: I64) { self.writeU64BE(offset, value as U64) }
+    public fn writeFloatLE(inout self, offset: Int, value: Float) { self.writeU64LE(offset, __builtin_float_bits(value)) }
+    public fn writeFloatBE(inout self, offset: Int, value: Float) { self.writeU64BE(offset, __builtin_float_bits(value)) }
 
     // Every byte, or `count` of them from `offset`.
     public fn fill(inout self, value: U8) { mem_bytes_fill(self.bytes, value as Int, 0, self.bytes.length) }

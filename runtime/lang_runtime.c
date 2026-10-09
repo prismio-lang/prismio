@@ -3428,15 +3428,19 @@ int mem_compare(uintptr_t a, uintptr_t b, size_t n) {
 // but a struct literal can hand it either, so the check is one load of a field
 // beside `data` and a branch that never fails in a program that used them.
 //
-// The hot ones are curated (PRISMIO_CURATED_OPS in build_driver.c), so the width
-// and byte order, which every caller passes as constants, fold away and a read
-// is one bounds check and one unaligned load.
-PRISMIO_NOINLINE void mem_bytes_not_bytes(void) {
+// `mem_bytes_address` is curated (PRISMIO_CURATED_OPS in build_driver.c), and the
+// load or store after it is std.mem's `__builtin_mem_uload`/`ustore`, an
+// unaligned access the backend tags as byte storage. So a typed read is the
+// header's length and data pointer, one bounds check and one load, and because
+// the tag says the access cannot be the header, a loop of them keeps both in
+// registers -- including a loop of writes. When the load and store were memcpy
+// here, an untagged store could have been the header, and every write reloaded it.
+PRISMIO_NOINLINE __attribute__((noreturn)) void mem_bytes_not_bytes(void) {
     fprintf(stderr, "runtime error: a Buffer's bytes must be a Vec<U8> it built itself\n");
     exit(1);
 }
 
-PRISMIO_NOINLINE void mem_bytes_out_of_range(int offset, int count, int length) {
+PRISMIO_NOINLINE __attribute__((noreturn)) void mem_bytes_out_of_range(int offset, int count, int length) {
     fprintf(stderr, "runtime error: %d byte(s) at offset %d are out of range for a Buffer of %d\n",
             count, offset, length);
     exit(1);
@@ -3455,50 +3459,9 @@ uintptr_t mem_bytes_data(void* lp) {
     return (uintptr_t)mem_bytes_at(lp, 0, 0);
 }
 
-// `width` is 1, 2, 4 or 8 bytes and the value is zero-extended; the caller
-// narrows it, and sign-extends for the signed reads. Every supported target is
-// little-endian, so `big` is the one that swaps.
-uint64_t mem_bytes_load(void* lp, int offset, int width, int big) {
-    const unsigned char* p = mem_bytes_at(lp, offset, width);
-    if (width == 1) return p[0];
-    if (width == 2) {
-        uint16_t v; memcpy(&v, p, 2);
-        return big ? __builtin_bswap16(v) : v;
-    }
-    if (width == 4) {
-        uint32_t v; memcpy(&v, p, 4);
-        return big ? __builtin_bswap32(v) : v;
-    }
-    uint64_t v; memcpy(&v, p, 8);
-    return big ? __builtin_bswap64(v) : v;
-}
-
-void mem_bytes_store(void* lp, int offset, int width, int big, uint64_t value) {
-    unsigned char* p = mem_bytes_at(lp, offset, width);
-    if (width == 1) { p[0] = (unsigned char)value; return; }
-    if (width == 2) {
-        uint16_t v = big ? __builtin_bswap16((uint16_t)value) : (uint16_t)value;
-        memcpy(p, &v, 2);
-        return;
-    }
-    if (width == 4) {
-        uint32_t v = big ? __builtin_bswap32((uint32_t)value) : (uint32_t)value;
-        memcpy(p, &v, 4);
-        return;
-    }
-    uint64_t v = big ? __builtin_bswap64(value) : value;
-    memcpy(p, &v, 8);
-}
-
-double mem_bytes_load_f64(void* lp, int offset, int big) {
-    uint64_t bits = mem_bytes_load(lp, offset, 8, big);
-    double d; memcpy(&d, &bits, 8);
-    return d;
-}
-
-void mem_bytes_store_f64(void* lp, int offset, int big, double value) {
-    uint64_t bits; memcpy(&bits, &value, 8);
-    mem_bytes_store(lp, offset, 8, big, bits);
+// The address of `count` bytes at `offset`, checked.
+uintptr_t mem_bytes_address(void* lp, int offset, int count) {
+    return (uintptr_t)mem_bytes_at(lp, offset, count);
 }
 
 // Growth is zero-filled; shrinking keeps the capacity. A byte owns nothing, so

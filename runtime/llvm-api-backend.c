@@ -1759,6 +1759,14 @@ void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
 #define MEM_PLAIN 0
 #define MEM_VOLATILE 1
 #define MEM_ATOMIC 2
+// `uload`/`ustore`: plain, at alignment 1, and tagged as byte storage. The tag is
+// a leaf of its own under clang's root, so LLVM knows a store through it cannot
+// change an `int` or a pointer -- in particular the list header the curated
+// `mem_bytes_address` reads before each access. Untagged, every Buffer write made
+// the next one reload the header, which was the whole of `binary_codec`'s encode
+// gap to C++. Every width shares the one leaf, so a 2-byte store and a 4-byte load
+// of overlapping bytes still alias each other.
+#define MEM_BYTES 3
 
 static LLVMValueRef mem_address(const char *addr_type, const char *addr) {
     return LLVMBuildIntToPtr(g_builder, resolve_value(addr, addr_type),
@@ -1766,6 +1774,12 @@ static LLVMValueRef mem_address(const char *addr_type, const char *addr) {
 }
 
 static void mem_mark(LLVMValueRef access, LLVMTypeRef ty, int mode) {
+    if (mode == MEM_BYTES) {
+        LLVMSetAlignment(access, 1);
+        unsigned kind = LLVMGetMDKindIDInContext(g_ctx, "tbaa", strlen("tbaa"));
+        LLVMSetMetadata(access, kind, scalar_tbaa_tag("prismio bytes"));
+        return;
+    }
     LLVMSetAlignment(access, LLVMGetIntTypeWidth(ty) / 8);
     if (mode == MEM_VOLATILE) LLVMSetVolatile(access, 1);
     if (mode == MEM_ATOMIC) LLVMSetOrdering(access, LLVMAtomicOrderingSequentiallyConsistent);

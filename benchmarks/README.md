@@ -134,10 +134,19 @@ The arena is hand-written in the C++ and Rust arms rather than taken from
 same capacity check. `custom_allocator_churn` stays unsupported: an `Arena` hands
 out addresses, and a `Vec` or `Map` still cannot be given one to allocate from.
 
-First numbers (Apple M-series, 9 runs): `binary_codec` 1.03× C++ and Rust,
-`manual_alloc_churn` 0.98×, `arena_bump` 1.00×. `arena_bump` read 1.61× until
-`Arena.alloc`'s panic messages moved into `cold` functions: built in place they
-kept `alloc` from inlining and gave it a 240-byte frame on every call.
+Numbers (Apple M-series, 9 runs): `binary_codec` 1.00× C++ and Rust,
+`manual_alloc_churn` 0.98–1.01×, `arena_bump` 1.00×. Two fixes got them there:
+
+- `arena_bump` read 1.61× until `Arena.alloc`'s panic messages moved into `cold`
+  functions: built in place they kept `alloc` from inlining and gave it a
+  240-byte frame on every call.
+- `binary_codec` read 1.03×, all of it in the encode: each typed write was a
+  `memcpy` in C, untagged, so LLVM had to assume it could be the list header and
+  reloaded the length and data pointer before the next one. The access is now
+  `__builtin_mem_ustore`, tagged as byte storage; LLVM keeps the header in
+  registers, sees the length is `n * 16`, and drops every bounds check in both
+  loops. The decode loop is now the C++ arm's instruction for instruction
+  (19 per record); encode went 860 µs → 500 µs at n = 400,000.
 
 ## Run
 
