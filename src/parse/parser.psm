@@ -46,12 +46,16 @@ struct Parser {
     // return is one concrete type the body picks -- so the type parser cannot
     // decide between them from the token alone, and anywhere else is an error
     // rather than a third meaning.
-    implPosition: Int
+    implPosition: Int,
+    // The line of the token `advance` last stepped past, which is what tells a
+    // suffix on the same line from a statement that begins on the next one --
+    // see parseSuffixes.
+    lastLine: Int
 }
 
 public fn parserCreate(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null(),
-                    implParams: ptr_null(), implParamSeq: 0, implPosition: 0 }
+                    implParams: ptr_null(), implParamSeq: 0, implPosition: 0, lastLine: tokens.line }
 }
 impl Parser {
 
@@ -67,6 +71,7 @@ impl Parser {
     internal fn advance(self) {
         let current = ptr_to_token(self.current)
         if (current.type != TokenType.EOF) {
+            self.lastLine = current.line
             self.current = current.tokNext
         }
     }

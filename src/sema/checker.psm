@@ -191,6 +191,24 @@ private fn semaDeclaresFunction(name: String) -> Bool {
     return false
 }
 
+// Whether `name` is declared with a receiver of the struct `typeName`, by the
+// first parameter's written type. Unlike `at`'s global test, the store has to ask
+// the struct: without a `set` of its own, `x[i] = v` keeps its refusal, which
+// says what to write, rather than becoming a call to some other type's `set`. A
+// generic type's methods are templates and not in the index, so `Map` keeps
+// `m.set(k, v)`.
+private fn semaStructDeclaresMethod(typeName: String, name: String) -> Bool {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION and nodeExists(decl.child1)) {
+            let receiver = ptr_to_node(decl.child1).child1
+            if (nodeExists(receiver) and ptr_to_node(receiver).s1.equals(typeName)) { return true }
+        }
+    }
+    return false
+}
+
 // **An operator's lowering is bound to the library, not to whatever is in
 // scope.** `a + b` is `concat(a, b)` in std.string, and once a program may
 // declare its own `concat(String, String)` -- which it may, since a name a
@@ -2901,9 +2919,14 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
             return true
         }
         TypeKind.STRUCT => {
+            if (semaStructDeclaresMethod(collectionT.name, "set")) {
+                let call = semaVecLowerIndexStore(stmt, target, "set")
+                semaExpr(module, call)
+                return true
+            }
             semaErrorAt(target, "`x[i]` on ".concat(typeDisplay(collectionT),
                                                      " reads through `at`, and has no assignment form"))
-            diag_note("give the type a method that stores, and call it")
+            diag_note("`x[i] = v` is `set(x, i, v)` -- write `fn set(inout self, index: Int, value: T)` in its impl")
             return true
         }
     }

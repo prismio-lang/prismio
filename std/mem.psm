@@ -1,0 +1,276 @@
+// Memory a program manages itself: a byte `Buffer`, raw blocks named by their
+// address, and an `Arena` to carve them from.
+//
+//     let mut header = Buffer(16)
+//     header.writeU32BE(0, 0x89504E47)
+//     let magic = header.readU32BE(0)
+//
+//     let block = alloc(64)
+//     block.storeU32(7)
+//     free(block)
+//
+//     let mut scratch = Arena(4096)
+//     let node = scratch.alloc(24, 8)
+//     scratch.reset()
+//
+// **Two kinds of ownership, and only one is checked.** A `Buffer` and an `Arena`
+// are ordinary values: their bytes are a `Vec<U8>`, released when the value is,
+// exactly as any Vec is. An address from `alloc` is a number. Nothing releases
+// it, nothing stops a use after `free`, and a load or store through it is
+// unchecked, as it is in C. What a program gets is the ledger: the blocks are on
+// the runtime's allocator seam, so `--verify` reports one never freed as a leak
+// and one freed twice as a violation.
+//
+// **Offsets and lengths are `Int`; addresses and raw sizes are `Usize`.** A
+// Buffer is indexed like a Vec, and an address is the pointer-wide number the
+// `__builtin_mem_*` family takes, which the `load*`/`store*` methods below call.
+//
+// **Little-endian is the machine's order** on every target Prismio builds for
+// (AArch64, x86, WebAssembly), so a `…LE` access is one load and a `…BE` one is a
+// load and a byte swap. Buffer accesses need no alignment; raw `load*`/`store*`
+// need natural alignment, because they are the builtins.
+//
+// The C half is runtime/lang_runtime.c's `mem_*`. `borrow` on a Vec here means
+// "does not retain", and the `mem_bytes_*` writers do write through it: the
+// backend's `readonly` is applied to String arguments only, and must stay so.
+
+import std.eq
+import std.string
+
+private extern fn mem_alloc(size: Usize) -> Usize
+private extern fn mem_alloc_zeroed(size: Usize) -> Usize
+private extern fn mem_realloc(address: Usize, size: Usize) -> Usize
+private extern fn mem_free(address: Usize)
+private extern fn mem_copy(to: Usize, from: Usize, count: Usize)
+private extern fn mem_fill(address: Usize, value: Int, count: Usize)
+private extern fn mem_compare(a: Usize, b: Usize, count: Usize) -> Int
+
+private extern fn mem_bytes_data(bytes: Vec<U8> borrow) -> Usize
+private extern fn mem_bytes_load(bytes: Vec<U8> borrow, offset: Int, width: Int, big: Int) -> U64
+private extern fn mem_bytes_store(bytes: Vec<U8> borrow, offset: Int, width: Int, big: Int, value: U64)
+private extern fn mem_bytes_load_f64(bytes: Vec<U8> borrow, offset: Int, big: Int) -> Float
+private extern fn mem_bytes_store_f64(bytes: Vec<U8> borrow, offset: Int, big: Int, value: Float)
+private extern fn mem_bytes_resize(bytes: Vec<U8> borrow, length: Int)
+private extern fn mem_bytes_fill(bytes: Vec<U8> borrow, value: Int, offset: Int, count: Int)
+private extern fn mem_bytes_copy(to: Vec<U8> borrow, toOffset: Int, from: Vec<U8> borrow,
+                                 fromOffset: Int, count: Int)
+private extern fn mem_bytes_equal(a: Vec<U8> borrow, b: Vec<U8> borrow) -> Int
+private extern fn mem_bytes_index_of(bytes: Vec<U8> borrow, value: Int, from: Int) -> Int
+private extern fn mem_bytes_write_text(bytes: Vec<U8> borrow, offset: Int, text: String bytes, count: Int)
+private extern fn mem_bytes_text(bytes: Vec<U8> borrow, offset: Int, count: Int) -> String produce(free)
+
+// Manual memory. Each allocation answers a fresh block's address, never 0: a
+// program out of memory stops with a message instead of handing back a value
+// every caller would have to test.
+public fn alloc(size: Usize) -> Usize { return mem_alloc(size) }
+public fn allocZeroed(size: Usize) -> Usize { return mem_alloc_zeroed(size) }
+
+// The block at `address` grown or shrunk to `size`, possibly moved; the old
+// address is dead afterwards. An address of 0 allocates.
+public fn realloc(address: Usize, size: Usize) -> Usize { return mem_realloc(address, size) }
+
+// Returns a block from `alloc`, `allocZeroed` or `realloc`. 0 is ignored.
+public fn free(address: Usize) { mem_free(address) }
+
+// memmove: the two ranges may overlap.
+public fn copy(to: Usize, from: Usize, count: Usize) { mem_copy(to, from, count) }
+public fn fill(address: Usize, value: U8, count: Usize) { mem_fill(address, value as Int, count) }
+
+// -1, 0 or 1 as the first differing byte of `a` is below, equal to or above `b`'s.
+public fn compare(a: Usize, b: Usize, count: Usize) -> Int { return mem_compare(a, b, count) }
+
+// Naturally aligned loads and stores at an address, as methods: `a.loadU32()`.
+public fn loadU8(address: Usize) -> U8 { return __builtin_mem_load_u8(address) }
+public fn loadU16(address: Usize) -> U16 { return __builtin_mem_load_u16(address) }
+public fn loadU32(address: Usize) -> U32 { return __builtin_mem_load_u32(address) }
+public fn loadU64(address: Usize) -> U64 { return __builtin_mem_load_u64(address) }
+public fn storeU8(address: Usize, value: U8) { __builtin_mem_store_u8(address, value) }
+public fn storeU16(address: Usize, value: U16) { __builtin_mem_store_u16(address, value) }
+public fn storeU32(address: Usize, value: U32) { __builtin_mem_store_u32(address, value) }
+public fn storeU64(address: Usize, value: U64) { __builtin_mem_store_u64(address, value) }
+
+// A run of bytes with a length, read and written at byte offsets. Every access is
+// bounds-checked and a bad one stops the program with the offset and the length.
+struct Buffer {
+    bytes: Vec<U8>
+}
+
+// The width and byte order are constants at every call, and the runtime half is
+// inlined (PRISMIO_CURATED_OPS), so each of these is one check and one load.
+private fn bufferLoad(b: Buffer, offset: Int, width: Int, big: Bool) -> U64 {
+    if (big) { return mem_bytes_load(b.bytes, offset, width, 1) }
+    return mem_bytes_load(b.bytes, offset, width, 0)
+}
+
+private fn bufferStore(b: Buffer, offset: Int, width: Int, big: Bool, value: U64) {
+    if (big) { mem_bytes_store(b.bytes, offset, width, 1, value) } else { mem_bytes_store(b.bytes, offset, width, 0, value) }
+}
+
+private fn bufferCheckLength(length: Int, what: String) {
+    if (length < 0) { panic(what.concat(" must not be negative, found ", length.toString())) }
+}
+
+impl Buffer {
+    // `Buffer(n)`: `n` zero bytes.
+    public fn new(length: Int) -> Buffer {
+        bufferCheckLength(length, "a Buffer's length")
+        return Buffer { bytes: Vec<U8>.filled(length, 0) }
+    }
+
+    // Empty, with room for `capacity` bytes before `push` or `append` reallocates.
+    public fn withCapacity(capacity: Int) -> Buffer {
+        bufferCheckLength(capacity, "a Buffer's capacity")
+        return Buffer { bytes: Vec<U8>.withCapacity(capacity) }
+    }
+
+    // The String's bytes, UTF-8, with no terminator.
+    public fn fromString(text: String) -> Buffer {
+        let count = text.length
+        let b = Buffer { bytes: Vec<U8>.filled(count, 0) }
+        mem_bytes_write_text(b.bytes, 0, text, count)
+        return b
+    }
+
+    public prop length(self) -> Int { return self.bytes.length }
+    public prop capacity(self) -> Int { return self.bytes.capacity }
+    public prop isEmpty(self) -> Bool { return self.bytes.length == 0 }
+
+    // Where the bytes are now, for `__builtin_mem_*` or a C function. A resize,
+    // `push` or `append` may move them, and the Buffer's release frees them.
+    public prop address(self) -> Usize { return mem_bytes_data(self.bytes) }
+
+    // `b[i]` and `b[i] = x`.
+    public fn at(self, index: Int) -> U8 { return mem_bytes_load(self.bytes, index, 1, 0) as U8 }
+    public fn set(inout self, index: Int, value: U8) { mem_bytes_store(self.bytes, index, 1, 0, value as U64) }
+
+    public fn readU8(self, offset: Int) -> U8 { return bufferLoad(self, offset, 1, false) as U8 }
+    public fn readI8(self, offset: Int) -> I8 { return (bufferLoad(self, offset, 1, false) as U8) as I8 }
+    public fn readU16LE(self, offset: Int) -> U16 { return bufferLoad(self, offset, 2, false) as U16 }
+    public fn readU16BE(self, offset: Int) -> U16 { return bufferLoad(self, offset, 2, true) as U16 }
+    public fn readI16LE(self, offset: Int) -> I16 { return (bufferLoad(self, offset, 2, false) as U16) as I16 }
+    public fn readI16BE(self, offset: Int) -> I16 { return (bufferLoad(self, offset, 2, true) as U16) as I16 }
+    public fn readU32LE(self, offset: Int) -> U32 { return bufferLoad(self, offset, 4, false) as U32 }
+    public fn readU32BE(self, offset: Int) -> U32 { return bufferLoad(self, offset, 4, true) as U32 }
+    // `Int` is the 32-bit signed type, so these are the I32 reads.
+    public fn readI32LE(self, offset: Int) -> Int { return (bufferLoad(self, offset, 4, false) as U32) as Int }
+    public fn readI32BE(self, offset: Int) -> Int { return (bufferLoad(self, offset, 4, true) as U32) as Int }
+    public fn readU64LE(self, offset: Int) -> U64 { return bufferLoad(self, offset, 8, false) }
+    public fn readU64BE(self, offset: Int) -> U64 { return bufferLoad(self, offset, 8, true) }
+    public fn readI64LE(self, offset: Int) -> I64 { return bufferLoad(self, offset, 8, false) as I64 }
+    public fn readI64BE(self, offset: Int) -> I64 { return bufferLoad(self, offset, 8, true) as I64 }
+    public fn readFloatLE(self, offset: Int) -> Float { return mem_bytes_load_f64(self.bytes, offset, 0) }
+    public fn readFloatBE(self, offset: Int) -> Float { return mem_bytes_load_f64(self.bytes, offset, 1) }
+
+    public fn writeU8(inout self, offset: Int, value: U8) { bufferStore(self, offset, 1, false, value as U64) }
+    public fn writeI8(inout self, offset: Int, value: I8) { bufferStore(self, offset, 1, false, (value as U8) as U64) }
+    public fn writeU16LE(inout self, offset: Int, value: U16) { bufferStore(self, offset, 2, false, value as U64) }
+    public fn writeU16BE(inout self, offset: Int, value: U16) { bufferStore(self, offset, 2, true, value as U64) }
+    public fn writeI16LE(inout self, offset: Int, value: I16) { bufferStore(self, offset, 2, false, (value as U16) as U64) }
+    public fn writeI16BE(inout self, offset: Int, value: I16) { bufferStore(self, offset, 2, true, (value as U16) as U64) }
+    public fn writeU32LE(inout self, offset: Int, value: U32) { bufferStore(self, offset, 4, false, value as U64) }
+    public fn writeU32BE(inout self, offset: Int, value: U32) { bufferStore(self, offset, 4, true, value as U64) }
+    public fn writeI32LE(inout self, offset: Int, value: Int) { bufferStore(self, offset, 4, false, (value as U32) as U64) }
+    public fn writeI32BE(inout self, offset: Int, value: Int) { bufferStore(self, offset, 4, true, (value as U32) as U64) }
+    public fn writeU64LE(inout self, offset: Int, value: U64) { bufferStore(self, offset, 8, false, value) }
+    public fn writeU64BE(inout self, offset: Int, value: U64) { bufferStore(self, offset, 8, true, value) }
+    public fn writeI64LE(inout self, offset: Int, value: I64) { bufferStore(self, offset, 8, false, value as U64) }
+    public fn writeI64BE(inout self, offset: Int, value: I64) { bufferStore(self, offset, 8, true, value as U64) }
+    public fn writeFloatLE(inout self, offset: Int, value: Float) { mem_bytes_store_f64(self.bytes, offset, 0, value) }
+    public fn writeFloatBE(inout self, offset: Int, value: Float) { mem_bytes_store_f64(self.bytes, offset, 1, value) }
+
+    // Every byte, or `count` of them from `offset`.
+    public fn fill(inout self, value: U8) { mem_bytes_fill(self.bytes, value as Int, 0, self.bytes.length) }
+    public fn fill(inout self, value: U8, offset: Int, count: Int) {
+        mem_bytes_fill(self.bytes, value as Int, offset, count)
+    }
+
+    // `count` bytes of `source` from `sourceOffset` into this Buffer at `offset`.
+    // `source` may be this Buffer, and the ranges may overlap.
+    public fn copyFrom(inout self, source: Buffer, sourceOffset: Int, offset: Int, count: Int) {
+        mem_bytes_copy(self.bytes, offset, source.bytes, sourceOffset, count)
+    }
+
+    // A new Buffer holding a copy of `count` bytes from `offset`.
+    public fn slice(self, offset: Int, count: Int) -> Buffer {
+        bufferCheckLength(count, "a slice's count")
+        let out = Buffer { bytes: Vec<U8>.filled(count, 0) }
+        mem_bytes_copy(out.bytes, 0, self.bytes, offset, count)
+        return out
+    }
+
+    // Longer with zero bytes, or shorter; the capacity is kept either way.
+    public fn resize(inout self, length: Int) {
+        bufferCheckLength(length, "a Buffer's length")
+        mem_bytes_resize(self.bytes, length)
+    }
+
+    public fn clear(inout self) { mem_bytes_resize(self.bytes, 0) }
+
+    public fn push(inout self, value: U8) { self.bytes.push(value) }
+
+    public fn append(inout self, other: Buffer) {
+        let at = self.bytes.length
+        let count = other.bytes.length
+        mem_bytes_resize(self.bytes, at + count)
+        mem_bytes_copy(self.bytes, at, other.bytes, 0, count)
+    }
+
+    // The first offset holding `value`, at or after `from`; -1 when none does.
+    public fn indexOf(self, value: U8) -> Int { return mem_bytes_index_of(self.bytes, value as Int, 0) }
+    public fn indexOf(self, value: U8, from: Int) -> Int {
+        return mem_bytes_index_of(self.bytes, value as Int, from)
+    }
+
+    // The bytes as text. A String ends at its first zero byte, so this does too.
+    public fn toString(self) -> String { return mem_bytes_text(self.bytes, 0, self.bytes.length) }
+}
+
+// `a == b`: the same length and the same bytes.
+impl Eq for Buffer {
+    fn eq(self, other: Self) -> Bool { return mem_bytes_equal(self.bytes, other.bytes) != 0 }
+}
+
+// A bump allocator over one block: `alloc` hands out the next aligned range, and
+// `reset` takes them all back at once. Nothing is freed one at a time, which is
+// the point -- a frame's or a request's scratch memory goes in one step, at a
+// cost of one comparison per allocation.
+//
+// The block is a Buffer's and is never resized, so an address stays valid until
+// the next `reset` or until the Arena is released. Memory handed out again after
+// a `reset` holds whatever was written into it before.
+struct Arena {
+    block: Buffer,
+    top: Int
+}
+
+impl Arena {
+    // `Arena(capacity)`: `capacity` zero bytes, none of them handed out yet.
+    public fn new(capacity: Int) -> Arena {
+        return Arena { block: Buffer.new(capacity), top: 0 }
+    }
+
+    public prop capacity(self) -> Int { return self.block.length }
+    public prop used(self) -> Int { return self.top }
+    public prop remaining(self) -> Int { return self.block.length - self.top }
+
+    // `size` bytes at an address that is a multiple of `align`, a power of two.
+    // Stops the program when the block cannot fit them.
+    public fn alloc(inout self, size: Int, align: Int) -> Usize {
+        if (align <= 0 or (align & (align - 1)) != 0) {
+            panic("Arena.alloc: align must be a power of two, found ".concat(align.toString()))
+        }
+        bufferCheckLength(size, "Arena.alloc's size")
+        let base = self.block.address
+        let mask = (align - 1) as Usize
+        let start = (((base + self.top as Usize) + mask) & ~mask) - base
+        if (start > self.block.length as Usize or self.block.length as Usize - start < size as Usize) {
+            let room = self.remaining.toString().concat(" of ", self.block.length.toString(), " remain")
+            panic("Arena.alloc: ".concat(size.toString(), " bytes do not fit; ", room))
+        }
+        self.top = (start as Int) + size
+        return base + start
+    }
+
+    // Every allocation back at once.
+    public fn reset(inout self) { self.top = 0 }
+}

@@ -3366,6 +3366,209 @@ int list_len(void* lp) {
     return l->len;
 }
 
+// std.mem's manual memory: blocks a program allocates and frees itself, named by
+// their address. On the seam, not on bare malloc, so `--verify` counts them: a
+// missing `free` reads as a leak and a second one as a violation, which is the
+// whole of what a program gets for checking its own frees.
+//
+// **Never 0.** A caller that has to test every allocation is a caller that
+// forgets to; exhaustion stops the program here, once, with a message. A request
+// for zero bytes still returns a block, because malloc(0) may answer NULL and a
+// NULL would be indistinguishable from failure.
+PRISMIO_NOINLINE static void mem_exhausted(size_t size) {
+    fprintf(stderr, "runtime error: out of memory allocating %zu bytes\n", size);
+    exit(1);
+}
+
+uintptr_t mem_alloc(size_t size) {
+    void* p = rt_base_alloc(size ? size : 1);
+    if (!p) mem_exhausted(size);
+    return (uintptr_t)p;
+}
+
+uintptr_t mem_alloc_zeroed(size_t size) {
+    uintptr_t a = mem_alloc(size);
+    memset((void*)a, 0, size);
+    return a;
+}
+
+// 0 is a fresh allocation, as realloc(NULL, n) is.
+uintptr_t mem_realloc(uintptr_t a, size_t size) {
+    if (!a) return mem_alloc(size);
+    void* p = rt_base_realloc((void*)a, size ? size : 1);
+    if (!p) mem_exhausted(size);
+    return (uintptr_t)p;
+}
+
+void mem_free(uintptr_t a) {
+    rt_free((void*)a);
+}
+
+void mem_copy(uintptr_t dst, uintptr_t src, size_t n) {
+    if (n) memmove((void*)dst, (const void*)src, n);
+}
+
+void mem_fill(uintptr_t a, int byte, size_t n) {
+    if (n) memset((void*)a, byte, n);
+}
+
+int mem_compare(uintptr_t a, uintptr_t b, size_t n) {
+    int c = n ? memcmp((const void*)a, (const void*)b, n) : 0;
+    return (c > 0) - (c < 0);
+}
+
+// std.mem's `Buffer`: a `Vec<U8>` read and written at byte offsets. Every
+// function here takes the Vec itself, so the bytes are wherever the list keeps
+// them now and a resize cannot leave a stale address behind.
+//
+// **A byte list is checked, not assumed.** A Vec<U8> built in typed code is born
+// inline, one byte per element; one built through a generic `T` is not, and holds
+// each byte in an eight-byte slot. Reading the second as the first would read the
+// slots' padding as data. Buffer's constructors only ever make the first kind,
+// but a struct literal can hand it either, so the check is one load of a field
+// beside `data` and a branch that never fails in a program that used them.
+//
+// The hot ones are curated (PRISMIO_CURATED_OPS in build_driver.c), so the width
+// and byte order, which every caller passes as constants, fold away and a read
+// is one bounds check and one unaligned load.
+PRISMIO_NOINLINE void mem_bytes_not_bytes(void) {
+    fprintf(stderr, "runtime error: a Buffer's bytes must be a Vec<U8> it built itself\n");
+    exit(1);
+}
+
+PRISMIO_NOINLINE void mem_bytes_out_of_range(int offset, int count, int length) {
+    fprintf(stderr, "runtime error: %d byte(s) at offset %d are out of range for a Buffer of %d\n",
+            count, offset, length);
+    exit(1);
+}
+
+static inline unsigned char* mem_bytes_at(void* lp, int offset, int count) {
+    RtList* l = (RtList*)lp;
+    if (l->elem_size != 1) mem_bytes_not_bytes();
+    if (offset < 0 || count < 0 || offset > l->len - count) {
+        mem_bytes_out_of_range(offset, count, l->len);
+    }
+    return (unsigned char*)l->data + offset;
+}
+
+uintptr_t mem_bytes_data(void* lp) {
+    return (uintptr_t)mem_bytes_at(lp, 0, 0);
+}
+
+// `width` is 1, 2, 4 or 8 bytes and the value is zero-extended; the caller
+// narrows it, and sign-extends for the signed reads. Every supported target is
+// little-endian, so `big` is the one that swaps.
+uint64_t mem_bytes_load(void* lp, int offset, int width, int big) {
+    const unsigned char* p = mem_bytes_at(lp, offset, width);
+    if (width == 1) return p[0];
+    if (width == 2) {
+        uint16_t v; memcpy(&v, p, 2);
+        return big ? __builtin_bswap16(v) : v;
+    }
+    if (width == 4) {
+        uint32_t v; memcpy(&v, p, 4);
+        return big ? __builtin_bswap32(v) : v;
+    }
+    uint64_t v; memcpy(&v, p, 8);
+    return big ? __builtin_bswap64(v) : v;
+}
+
+void mem_bytes_store(void* lp, int offset, int width, int big, uint64_t value) {
+    unsigned char* p = mem_bytes_at(lp, offset, width);
+    if (width == 1) { p[0] = (unsigned char)value; return; }
+    if (width == 2) {
+        uint16_t v = big ? __builtin_bswap16((uint16_t)value) : (uint16_t)value;
+        memcpy(p, &v, 2);
+        return;
+    }
+    if (width == 4) {
+        uint32_t v = big ? __builtin_bswap32((uint32_t)value) : (uint32_t)value;
+        memcpy(p, &v, 4);
+        return;
+    }
+    uint64_t v = big ? __builtin_bswap64(value) : value;
+    memcpy(p, &v, 8);
+}
+
+double mem_bytes_load_f64(void* lp, int offset, int big) {
+    uint64_t bits = mem_bytes_load(lp, offset, 8, big);
+    double d; memcpy(&d, &bits, 8);
+    return d;
+}
+
+void mem_bytes_store_f64(void* lp, int offset, int big, double value) {
+    uint64_t bits; memcpy(&bits, &value, 8);
+    mem_bytes_store(lp, offset, 8, big, bits);
+}
+
+// Growth is zero-filled; shrinking keeps the capacity. A byte owns nothing, so
+// neither direction has an element to release.
+void mem_bytes_resize(void* lp, int n) {
+    RtList* l = (RtList*)lp;
+    mem_bytes_at(lp, 0, 0);
+    if (n < 0) n = 0;
+    if (n > l->len) {
+        list_reserve(lp, n);
+        memset((unsigned char*)l->data + l->len, 0, (size_t)(n - l->len));
+    }
+    l->len = n;
+}
+
+// The zero-count returns below are not an optimisation. An empty Vec may have no
+// block at all, and memset, memmove and memcmp declare their pointers nonnull
+// even for a length of zero.
+void mem_bytes_fill(void* lp, int byte, int from, int count) {
+    unsigned char* p = mem_bytes_at(lp, from, count);
+    if (count == 0) return;
+    memset(p, byte, (size_t)count);
+}
+
+// memmove, so a copy within one Buffer may overlap itself.
+void mem_bytes_copy(void* dst, int dst_off, void* src, int src_off, int count) {
+    unsigned char* to = mem_bytes_at(dst, dst_off, count);
+    const unsigned char* from = mem_bytes_at(src, src_off, count);
+    if (count == 0) return;
+    memmove(to, from, (size_t)count);
+}
+
+int mem_bytes_equal(void* a, void* b) {
+    int n = ((RtList*)a)->len;
+    if (n != ((RtList*)b)->len) return 0;
+    if (n == 0) return 1;
+    return memcmp(mem_bytes_at(a, 0, n), mem_bytes_at(b, 0, n), (size_t)n) == 0;
+}
+
+// The first offset at or after `from` holding `byte`, or -1.
+int mem_bytes_index_of(void* lp, int byte, int from) {
+    RtList* l = (RtList*)lp;
+    if (from < 0) from = 0;
+    if (from >= l->len) return -1;
+    const unsigned char* base = mem_bytes_at(lp, 0, l->len);
+    const unsigned char* hit = memchr(base + from, byte, (size_t)(l->len - from));
+    return hit ? (int)(hit - base) : -1;
+}
+
+// A String's bytes into the Buffer. `text` is the String's own pointer (the
+// `bytes` contract), so it carries no terminator and `count` is the length.
+void mem_bytes_write_text(void* lp, int offset, const char* text, int count) {
+    unsigned char* p = mem_bytes_at(lp, offset, count);
+    if (count == 0) return;
+    memcpy(p, text, (size_t)count);
+}
+
+// The other direction allocates the String Prismio releases, so it is on the
+// seam. A String ends at its first zero byte, and so does the copy.
+char* mem_bytes_text(void* lp, int from, int count) {
+    const unsigned char* p = mem_bytes_at(lp, from, count);
+    const unsigned char* zero = count ? memchr(p, 0, (size_t)count) : NULL;
+    size_t n = zero ? (size_t)(zero - p) : (size_t)count;
+    char* out = (char*)rt_base_alloc(n + 1);
+    if (!out) mem_exhausted(n + 1);
+    if (n) memcpy(out, p, n);
+    out[n] = '\0';
+    return out;
+}
+
 // M4.3 -- explicit AoS <-> SoA data views. `soa` consumes one ordinary
 // List<T> at one program point and builds one allocation per physical field;
 // `aos` consumes that view and materialises rows again.

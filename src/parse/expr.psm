@@ -448,13 +448,24 @@ impl Parser {
 
 impl Parser {
     // The suffixes that bind tightest, applied left to right: `f(x)[i].field`.
+    //
+    // **A `(` or `[` that starts a line starts a statement.** Statements have no
+    // terminator, so without this
+    //
+    //     a.store(7)
+    //     (a + 4).store(7)
+    //
+    // read as a call of the first statement's result, and the error named a
+    // function with no name. A `.` still continues across lines, which is how a
+    // method chain is broken up.
     private fn parseSuffixes(self, base: ASTNode) -> ASTNode {
         let mut expr = base
 
         loop {
-            if (self.matchVal(TokenType.SEPARATOR, "(")) {
+            let adjoins = self.current().line == self.lastLine
+            if (adjoins and self.matchVal(TokenType.SEPARATOR, "(")) {
                 expr = self.parseCall(expr)
-            } else if (self.matchVal(TokenType.SEPARATOR, "[")) {
+            } else if (adjoins and self.matchVal(TokenType.SEPARATOR, "[")) {
                 // The RANGE token is not a binary operator, so parsing the first
                 // bound stops immediately before `..`. That makes one production
                 // cover both `a[i]` and SPEC 8.4's `a[start..end]` without making

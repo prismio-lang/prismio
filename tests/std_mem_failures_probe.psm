@@ -1,0 +1,33 @@
+// Run by `std_mem_failures` in test_runner.py, once per mode named in argv[1]:
+// the ways std.mem stops a program, and the two a `--verify` build reports.
+import std.io
+import std.mem
+import std.process
+import std.string
+
+fn main() -> Int {
+    let mode = process.args.at(1)
+    let b = Buffer(16)
+    if (mode.equals("range")) { println(b.readU32LE(13)) }
+    if (mode.equals("index")) { println(b[16]) }
+    if (mode.equals("negative")) { println(b.slice(4, -1).length) }
+    if (mode.equals("align")) {
+        let mut a = Arena(64)
+        println(a.alloc(8, 3))
+    }
+    if (mode.equals("full")) {
+        let mut a = Arena(64)
+        a.alloc(40, 8)
+        println(a.alloc(40, 8))
+    }
+    // A block never freed, and one freed twice: a `--verify` build's ledger
+    // reports the first as leaked and the second as a violation.
+    if (mode.equals("leak")) { alloc(24).storeU8(1) }
+    if (mode.equals("double")) {
+        let a = alloc(24)
+        free(a)
+        free(a)
+    }
+    println("done")
+    return 0
+}

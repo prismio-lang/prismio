@@ -96,6 +96,34 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   harness: Prismio's row copy became a call to a byte-loop `memcpy` that C's `-ffreestanding` build never
   made. The shared `memcpy`, `memmove` and `memset` now move a word at a time (aligned, so they are safe
   with the MMU off), and the row reads 1.05x. The three rows still behind C are one cause: C's signed overflow is undefined and Prismio's wraps, so LLVM can rewrite C's arithmetic and widen its loop indices. With the C arm built `-fwrapv`, Prismio is 4 fewer, 16 level and none more across the 20. All three are recovered since, without `-fwrapv`; see *Changed*.
+- **`std.mem`: buffers and manual memory.** Three tools, in one import:
+  - **`Buffer`**, a run of bytes with a length that is freed like any `Vec`. `Buffer(n)`
+    (zeroed), `Buffer.withCapacity(n)`, `Buffer.fromString(s)`; `b[i]` and `b[i] = x`;
+    typed reads and writes at any byte offset, little- and big-endian, for `U8`/`I8`
+    through `U64`/`I64` and `Float` (`readU32BE`, `writeI16LE`, `readFloatLE`, ...);
+    `fill`, `copyFrom` (overlap-safe), `slice`, `resize`, `push`, `append`, `clear`,
+    `indexOf`, `toString`, `==`, and `b.address` for the builtins or C. Every access is
+    bounds-checked, and a bad one exits with the offset and the length. The byte
+    accessors are curated into the program, so a `readU32LE` in a loop compiles to one
+    unaligned load per iteration with the check lifted out (AArch64: two `ldr`s per
+    unrolled pair, no branch).
+  - **`alloc`, `allocZeroed`, `realloc` and `free`** on `Usize` addresses, with `copy`,
+    `fill`, `compare`, and `a.loadU8()` ... `a.storeU64(v)` over the `__builtin_mem_*`
+    loads and stores. An allocation never returns 0; running out of memory exits with
+    a message. The blocks go through the runtime's allocator seam, so a `--verify` build
+    reports a block never freed as **leaked** and one freed twice as a **violation**.
+  - **`Arena(capacity)`**, a bump allocator: `alloc(size, align)` answers an aligned
+    address, `reset()` takes everything back at once, and `used`, `remaining` and
+    `capacity` report on it. An allocation that does not fit, or an alignment that is
+    not a power of two, panics.
+  `tests/test_274_std_mem.psm` covers the surface and is held to 0 leaked and 0
+  violations under `--verify` (55 allocated, 55 released); `std_mem_failures` checks
+  each failure message and the two ledger answers. `sizeOf<T>()` is not part of it:
+  a type's size is not exposed yet.
+- **`x[i] = v` on a struct calls its `set`**, as `x[i]` already called its `at`. A struct
+  with an `at` and no `set` keeps the error, which now says to write
+  `fn set(inout self, index, value)`. A generic struct's `set` is not reached yet, so a
+  `Map` is still assigned with `m.set(k, v)`.
 
 ### Changed
 
@@ -219,6 +247,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   slots of `a ?? b` are zeroed before the enclosing branch, so a slot stored on one path
   is no longer released as garbage.
 - The benchmark results are refreshed (release-profile compiler, five runs).
+- **A line that starts with `(` or `[` was read as a call or an index of the line
+  before.** Statements have no terminator, so `a.storeU32(7)` followed by
+  `(a + 4).storeU32(7)` parsed as one expression and failed with an "unknown
+  function" error naming a function with no name. Such a line now starts a new statement; a `.` still
+  continues a method chain across lines, and a call's arguments still wrap. No program
+  in `tests/`, `benchmarks/` or `src/` relied on the old reading: their IR is
+  byte-identical (`tests/test_275_line_start_paren.psm`).
 
 ### Repository
 
@@ -254,5 +289,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 - `docs/KNOWN_ISSUES.md` is restructured: open items only, grouped by area, with the
   `--verify` leak table re-measured (272 programs, 0 violations, 171 leaked blocks in
   21 programs). What was fixed lives in `git log`.
+- The language docs gain *Memory and buffers* (`std.mem`, with runnable examples for
+  each tool); *Methods* describes `at` and `set`; *Lexical structure* states the
+  line-start rule; *Low-level programming* points at `std.mem` for allocation. The
+  developer docs' *supported surface* lists the `mem_*` runtime symbols and records
+  that `borrow` becomes `readonly` on `String` arguments only, which `std.mem`'s writers
+  depend on.
 
 [0.2.0]: https://github.com/prismio-lang/prismio/compare/v0.1.0...HEAD

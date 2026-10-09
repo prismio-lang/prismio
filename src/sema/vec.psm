@@ -220,6 +220,7 @@ internal fn semaVecLower(module: ASTNode, expr: ASTNode, kind: TypeKind, name: S
 // its checks and its ownership. The target's own collection and index become
 // the arguments; nothing else refers to the target once the statement is a
 // call (`v[i] += 1` is refused by the parser, so no right-hand side shares it).
+// A struct with a `set` of its own goes the same way, to `set(x, i, v)`.
 internal fn semaVecLowerIndexStore(stmt: ASTNode, target: ASTNode, store: String) -> ASTNode {
     let base = ptr_to_node(target.child1)
     let index = ptr_to_node(target.child2)

@@ -1,0 +1,43 @@
+// A `(` that begins a line begins a statement (parseSuffixes in
+// src/parse/expr.psm). Statements have no terminator, so this file's `step(1)`
+// followed by a line opening with `(` was a call of step's result, rejected as
+// "unknown function ``". A `.` still continues a line, and a call's own `(`
+// still opens its arguments wherever they wrap.
+
+import std.io
+import std.string
+
+struct Counter {
+    total: Int
+}
+
+impl Counter {
+    fn add(inout self, n: Int) -> Counter {
+        self.total = self.total + n
+        return Counter { total: self.total }
+    }
+}
+
+fn step(n: Int) -> Int { return n + 1 }
+
+fn main() -> Int {
+    let mut c = Counter { total: 0 }
+    step(1)
+    // add(3) goes to the copy add(2) returns, so `c` sees 2, 4 and 5.
+    (c.add(2)).add(3)
+    c.add(4)
+    (c).add(5)
+
+    let chained = "  a,b  "
+        .trim()
+        .toUpper()
+    let wrapped = step(
+        step(1))
+
+    if (c.total != 11 or chained != "A,B" or wrapped != 3) {
+        println("FAIL ".concat(c.total.toString(), " ", chained))
+        return 1
+    }
+    println("PASS")
+    return 0
+}

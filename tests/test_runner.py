@@ -4923,6 +4923,10 @@ def run_ownership_probes_test():
         # Map literals: a computed String key is an argument temporary, and a
         # literal of plain keys is a producer, clean in a field and a return.
         ("test_223_map_literals.psm", "ok", True),
+        # std.mem: Buffers and Arenas release their bytes like any Vec, and the
+        # test frees every raw block it allocates, so a leak here is a wrong
+        # release or a Buffer that kept its bytes.
+        ("test_274_std_mem.psm", "PASS", True),
     )
     problems = []
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
@@ -5026,6 +5030,63 @@ def run_failure_builtins_test():
         return False
     print(f"{GREEN}[PASS] panic, unreachable, assert and exit report, exit and keep the guard{RESET}")
     return True
+
+def run_std_mem_failures_test():
+    """std.mem's checked failures, and what `--verify` says about manual memory.
+
+    A Buffer access out of range is a runtime error naming the offset and the
+    length; an Arena that cannot fit an allocation, or is asked for an alignment
+    that is not a power of two, panics. The raw blocks are the program's to free,
+    so the ledger is the check: a block never freed reads as leaked, and one
+    freed twice as a violation -- the two answers `alloc` and `free` going through
+    the runtime's allocator seam, rather than bare malloc, exist to give.
+    """
+    print(f"\n{BLUE}--- Running std_mem_failures ---{RESET}")
+    problems = []
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    source = str(TEST_DIR / "std_mem_failures_probe.psm")
+    with tempfile.TemporaryDirectory(prefix="prismio-std-mem-") as tmp:
+        probe = Path(tmp) / ("probe" + exe_suffix)
+        verified = Path(tmp) / ("verified" + exe_suffix)
+        for exe, extra in ((probe, []), (verified, ["--verify"])):
+            built = run_command([str(PRISMIO_EXE), "build", source, *extra, "-o", str(exe)])
+            if built.returncode != 0:
+                print(f"{RED}[FAIL] std.mem failure probe did not build {extra}: "
+                      f"{built.stdout} {built.stderr}{RESET}")
+                return False
+        cases = (
+            # mode, status, stderr must contain
+            ("range", 1, "4 byte(s) at offset 13 are out of range for a Buffer of 16"),
+            ("index", 1, "1 byte(s) at offset 16 are out of range for a Buffer of 16"),
+            ("negative", 101, "a slice's count must not be negative, found -1"),
+            ("align", 101, "Arena.alloc: align must be a power of two, found 3"),
+            ("full", 101, "Arena.alloc: 40 bytes do not fit; 24 of 64 remain"),
+        )
+        for mode, status, err in cases:
+            ran = subprocess.run([str(probe), mode], capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace")
+            if ran.returncode != status or err not in ran.stderr:
+                problems.append(f"{mode}: status {ran.returncode} (expected {status}), "
+                                f"stderr {ran.stderr.strip()[:200]!r} lacks {err!r}")
+        ledgers = (
+            # mode, the ledger must say
+            ("leak", " 1 leaked, 0 violation(s)"),
+            ("double", " 1 violation(s)"),
+        )
+        for mode, want in ledgers:
+            ran = subprocess.run([str(verified), mode], capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace")
+            output = (ran.stdout or "") + (ran.stderr or "")
+            if want not in output:
+                problems.append(f"{mode} under --verify: {elide_middle(output)!r} lacks {want!r}")
+    if problems:
+        print(f"{RED}[FAIL] std.mem failures{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] std.mem reports a bad access, a full arena, a leak and a double free{RESET}")
+    return True
+
 
 
 def run_scalar_optional_test():
@@ -9694,6 +9755,7 @@ def main():
         ("array_contents", run_array_contents_test),
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
+        ("std_mem_failures", run_std_mem_failures_test),
         ("freestanding", run_freestanding_test),
         ("freestanding_bench", run_freestanding_bench_test),
         ("ownership_probes", run_ownership_probes_test),

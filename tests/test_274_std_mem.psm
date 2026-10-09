@@ -1,0 +1,161 @@
+// std.mem: Buffer, the raw blocks behind alloc/free, and Arena.
+//
+// test_runner.py's ownership_probes builds this under `--verify` and holds it to
+// 0 leaked and 0 violations, so every `alloc` here is paired with a `free` and a
+// missing one is a failure. The out-of-range paths, a forgotten `free` and a
+// double one are std_mem_failures, each its own program.
+//
+// The resize inside the loop below is also a guard on the backend: the C side
+// writes through a `Vec<U8> borrow`, and a `readonly` on that argument would let
+// LLVM keep the old length across the call.
+
+import std.io
+import std.mem
+
+fn check(ok: Bool, what: String) -> Int {
+    if (ok) { return 0 }
+    println("FAIL ".concat(what))
+    return 1
+}
+
+fn buffers() -> Int {
+    let mut bad = 0
+    let mut b = Buffer(16)
+    bad = bad + check(b.length == 16 and b.isEmpty == false, "length")
+    bad = bad + check(b[3] == 0, "zeroed")
+
+    b[3] = 200
+    bad = bad + check(b[3] == 200, "index store")
+
+    b.writeU32BE(0, 0x89504E47)
+    bad = bad + check(b[0] == 0x89 and b[3] == 0x47, "big-endian bytes")
+    bad = bad + check(b.readU32BE(0) == 0x89504E47, "readU32BE")
+    bad = bad + check(b.readU32LE(0) == 0x474E5089, "readU32LE")
+    bad = bad + check(b.readU16BE(1) == 0x504E, "readU16BE at an odd offset")
+
+    b.writeI32LE(5, -2)
+    bad = bad + check(b.readI32LE(5) == -2, "readI32LE")
+    bad = bad + check(b.readU8(5) == 0xFE and b.readI8(5) == -2, "readI8")
+    b.writeI16BE(9, -300)
+    bad = bad + check(b.readI16BE(9) == -300 and b.readI16LE(9) != -300, "readI16")
+
+    b.writeU64LE(8, 0x0102030405060708)
+    bad = bad + check(b[8] == 8 and b[15] == 1, "U64 little-endian layout")
+    bad = bad + check(b.readU64BE(8) == 0x0807060504030201, "readU64BE")
+    b.writeI64BE(8, -5)
+    bad = bad + check(b.readI64BE(8) == -5, "readI64BE")
+
+    b.writeFloatLE(3, 2.5)
+    bad = bad + check(b.readFloatLE(3) == 2.5, "readFloatLE")
+    b.writeFloatBE(1, -0.125)
+    bad = bad + check(b.readFloatBE(1) == -0.125, "readFloatBE")
+
+    b.fill(7)
+    bad = bad + check(b[0] == 7 and b[15] == 7, "fill")
+    b.fill(1, 4, 2)
+    bad = bad + check(b[3] == 7 and b[4] == 1 and b[5] == 1 and b[6] == 7, "fill a range")
+    bad = bad + check(b.indexOf(1) == 4 and b.indexOf(1, 5) == 5 and b.indexOf(9) == -1, "indexOf")
+
+    b.copyFrom(b, 3, 4, 4)
+    bad = bad + check(b[4] == 7 and b[5] == 1 and b[6] == 1 and b[7] == 7, "overlapping copyFrom")
+
+    let part = b.slice(4, 3)
+    bad = bad + check(part.length == 3 and part[1] == 1, "slice")
+    bad = bad + check(part == b.slice(4, 3) and part != b.slice(3, 3), "equality")
+    return bad
+}
+
+fn growth() -> Int {
+    let mut bad = 0
+    let mut b = Buffer.withCapacity(2)
+    bad = bad + check(b.isEmpty and b.capacity >= 2, "withCapacity")
+    for i in 0..<100 {
+        b.push(i as U8)
+    }
+    bad = bad + check(b.length == 100 and b[99] == 99, "push")
+
+    let mut sum = 0
+    for i in 0..<20 {
+        b.resize(b.length + 3)
+        sum = sum + b.length
+    }
+    bad = bad + check(sum == 2630 and b[159] == 0, "resize in a loop")
+    b.resize(10)
+    bad = bad + check(b.length == 10 and b[9] == 9, "shrink")
+
+    let tail = Buffer.fromString("xyz")
+    b.append(tail)
+    bad = bad + check(b.length == 13 and b[12] == 'z' as U8, "append")
+    b.clear()
+    bad = bad + check(b.isEmpty, "clear")
+
+    let text = Buffer.fromString("hello, buffer")
+    bad = bad + check(text.length == 13 and text.toString() == "hello, buffer", "String round trip")
+    let mut cut = text.slice(0, 5)
+    cut.push(0)
+    cut.push('!' as U8)
+    bad = bad + check(cut.toString() == "hello", "toString stops at a zero byte")
+    return bad
+}
+
+fn rawMemory() -> Int {
+    let mut bad = 0
+    let a = alloc(32)
+    a.storeU32(0xDEADBEEF)
+    (a + 4).storeU32(7)
+    bad = bad + check(a.loadU32() == 0xDEADBEEF and (a + 4).loadU32() == 7, "load and store")
+    bad = bad + check((a + 4).loadU8() == 7 and a.loadU16() == 0xBEEF, "narrow loads")
+
+    let z = allocZeroed(64)
+    bad = bad + check((z + 56).loadU64() == 0, "allocZeroed")
+    copy(z, a, 8)
+    bad = bad + check(compare(z, a, 8) == 0 and (z + 4).loadU32() == 7, "copy")
+    fill(z, 255, 8)
+    bad = bad + check(compare(z, a, 8) == 1 and compare(a, z, 8) == -1, "fill and compare")
+
+    let grown = realloc(a, 4096)
+    bad = bad + check((grown + 4).loadU32() == 7, "realloc keeps the contents")
+    (grown + 4088).storeU64(42)
+    bad = bad + check((grown + 4088).loadU64() == 42, "realloc grows")
+
+    let fresh = realloc(0, 8)
+    fresh.storeU8(1)
+    free(fresh)
+    free(grown)
+    free(z)
+    free(0)
+
+    let b = Buffer(8)
+    b.address.storeU32(0x01020304)
+    bad = bad + check(b.readU32LE(0) == 0x01020304, "a Buffer through its address")
+    return bad
+}
+
+fn arenas() -> Int {
+    let mut bad = 0
+    let mut scratch = Arena(256)
+    bad = bad + check(scratch.capacity == 256 and scratch.used == 0, "new")
+    let one = scratch.alloc(3, 1)
+    let two = scratch.alloc(8, 8)
+    bad = bad + check(two % 8 == 0 and two >= one + 3, "aligned")
+    two.storeU64(99)
+    let three = scratch.alloc(16, 16)
+    bad = bad + check(three % 16 == 0 and two.loadU64() == 99, "kept apart")
+    bad = bad + check(scratch.used + scratch.remaining == 256, "accounting")
+    let mut count = 0
+    for i in 0..<300 {
+        if (scratch.remaining < 24) { break }
+        scratch.alloc(8, 8)
+        count = count + 1
+    }
+    bad = bad + check(count > 20, "filled")
+    scratch.reset()
+    bad = bad + check(scratch.used == 0 and scratch.alloc(256, 1) == one, "reset")
+    return bad
+}
+
+fn main() -> Int {
+    let bad = buffers() + growth() + rawMemory() + arenas()
+    if (bad == 0) { println("PASS") }
+    return bad
+}
