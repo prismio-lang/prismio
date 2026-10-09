@@ -43,6 +43,9 @@ public fn benchRun(name: String, scale: Int, inputPath: String, outputPath: Stri
     if (name.equals("nested_collection")) { return benchNestedCollection(scale) }
     if (name.equals("large_buffer_copy")) { return benchLargeBufferCopy(scale) }
     if (name.equals("recursive_tree_rebuild")) { return benchRecursiveTreeRebuild(scale) }
+    if (name.equals("binary_codec")) { return benchBinaryCodec(scale) }
+    if (name.equals("manual_alloc_churn")) { return benchManualAllocChurn(scale) }
+    if (name.equals("arena_bump")) { return benchArenaBump(scale) }
     if (name.equals("file_read")) { return benchFileRead(inputPath) }
     if (name.equals("file_write")) { return benchFileWrite(scale, outputPath) }
     if (name.equals("line_processing")) { return benchLineProcessing(inputPath) }

@@ -47,6 +47,9 @@ int allocation_mutation(int scale);
 int nested_collection(int scale);
 int large_buffer_copy(int scale);
 int recursive_tree_rebuild(int scale);
+int binary_codec(int scale);
+int manual_alloc_churn(int scale);
+int arena_bump(int scale);
 
 int file_read(const std::string& path);
 int file_write(int scale, const std::string& path);

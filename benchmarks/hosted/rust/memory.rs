@@ -81,3 +81,114 @@ pub fn string_join(scale: i32) -> i32 {
     }
     checksum
 }
+
+// std.mem's three tools, as the same programs in Rust (see memory.psm).
+fn put_bytes<const N: usize>(buf: &mut [u8], off: usize, bytes: [u8; N]) {
+    buf[off..off + N].copy_from_slice(&bytes);
+}
+
+fn get_bytes<const N: usize>(buf: &[u8], off: usize) -> [u8; N] {
+    buf[off..off + N].try_into().unwrap()
+}
+
+pub fn binary_codec(scale: i32) -> i32 {
+    let n = 100_000 * scale;
+    let mut buf = vec![0u8; n as usize * 16];
+    for i in 0..n {
+        let off = (i * 16) as usize;
+        put_bytes(&mut buf, off, (((i * 7) % 65536) as u16).to_be_bytes());
+        put_bytes(&mut buf, off + 2, ((i * 13) % 100000 - 50000).to_be_bytes());
+        put_bytes(&mut buf, off + 6, (((i % 1000) as f64) * 0.5).to_be_bytes());
+        put_bytes(&mut buf, off + 14, ((i % 251) as u16).to_le_bytes());
+    }
+    let mut checksum = 0i32;
+    for round in 0..8 {
+        for i in 0..n {
+            let off = (i * 16) as usize;
+            let v = u16::from_be_bytes(get_bytes(&buf, off)) as i32
+                + i32::from_be_bytes(get_bytes(&buf, off + 2))
+                + f64::from_be_bytes(get_bytes(&buf, off + 6)) as i32
+                + u16::from_le_bytes(get_bytes(&buf, off + 14)) as i32
+                + round;
+            checksum = (checksum + v) % BENCH_MOD;
+        }
+    }
+    checksum
+}
+
+pub fn manual_alloc_churn(scale: i32) -> i32 {
+    use std::alloc::{alloc, dealloc, Layout};
+    let n = 400_000 * scale;
+    let mut blocks = [std::ptr::null_mut::<u8>(); 64];
+    let mut sizes = [0i32; 64];
+    let mut checksum = 0i32;
+    unsafe {
+        for i in 0..n {
+            let slot = (i % 64) as usize;
+            let old = blocks[slot];
+            if !old.is_null() {
+                let first = (old as *const u32).read_unaligned() as i32;
+                let second = (old.add(8) as *const u32).read_unaligned() as i32;
+                checksum = (checksum + first + second + sizes[slot]) % BENCH_MOD;
+                dealloc(old, Layout::from_size_align_unchecked(sizes[slot] as usize, 8));
+            }
+            let size = 16 + (i * 37) % 241;
+            let block = alloc(Layout::from_size_align_unchecked(size as usize, 8));
+            if block.is_null() { std::process::abort(); }
+            (block as *mut u32).write_unaligned((i % 65521) as u32);
+            (block.add(8) as *mut u32).write_unaligned(size as u32);
+            blocks[slot] = block;
+            sizes[slot] = size;
+        }
+        for slot in 0..64 {
+            let old = blocks[slot];
+            if !old.is_null() {
+                checksum = (checksum + (old as *const u32).read_unaligned() as i32) % BENCH_MOD;
+                dealloc(old, Layout::from_size_align_unchecked(sizes[slot] as usize, 8));
+            }
+        }
+    }
+    checksum
+}
+
+struct BumpArena { block: Vec<u8>, top: usize }
+
+impl BumpArena {
+    fn new(capacity: usize) -> Self { BumpArena { block: vec![0u8; capacity], top: 0 } }
+
+    fn alloc(&mut self, size: usize, align: usize) -> usize {
+        let base = self.block.as_mut_ptr() as usize;
+        let mask = align - 1;
+        let start = ((base + self.top + mask) & !mask) - base;
+        if start > self.block.len() || self.block.len() - start < size { std::process::abort(); }
+        self.top = start + size;
+        base + start
+    }
+}
+
+pub fn arena_bump(scale: i32) -> i32 {
+    let mut arena = BumpArena::new(1 << 20);
+    let rounds = 300 * scale;
+    let mut checksum = 0i32;
+    for r in 0..rounds {
+        let mut head: usize = 0;
+        for i in 0..20000 {
+            let node = arena.alloc(24, 8);
+            unsafe {
+                (node as *mut u64).write_unaligned(head as u64);
+                ((node + 8) as *mut u32).write_unaligned(((i + r) % 1009) as u32);
+            }
+            head = node;
+            if i % 16 == 0 { arena.alloc(5, 1); }
+        }
+        let mut at = head;
+        while at != 0 {
+            unsafe {
+                checksum = (checksum + ((at + 8) as *const u32).read_unaligned() as i32) % BENCH_MOD;
+                at = (at as *const u64).read_unaligned() as usize;
+            }
+        }
+        arena.top = 0;
+    }
+    checksum
+}

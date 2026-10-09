@@ -118,6 +118,27 @@ rather than hand-built. Where a language has no such facility the arm writes the
 loop the library would: C++ has no `join`, so `string_join`'s C++ arm sizes the
 result and copies once, which is what the other two do internally.
 
+### Manual memory: `std.mem`
+
+Three workloads measure what a program does when it manages memory itself, which
+every other memory benchmark leaves to the compiler:
+
+| Benchmark | `std.mem` tool | C++ / Rust arm |
+| --- | --- | --- |
+| `binary_codec` | `Buffer`'s typed writes and reads: 16-byte records, three fields big-endian and one little-endian, encoded once and decoded eight times | `memcpy` and `__builtin_bswap*` over a `std::vector<unsigned char>` / `to_be_bytes` and `from_be_bytes` over a `Vec<u8>` |
+| `manual_alloc_churn` | `alloc` and `free` in a window of 64 live blocks of 16 to 256 bytes | `malloc`/`free` / `std::alloc::alloc`/`dealloc` |
+| `arena_bump` | a 20,000-node linked list built in an `Arena` per round, walked, then `reset` | a hand-written bump arena over a byte vector, the same in both |
+
+The arena is hand-written in the C++ and Rust arms rather than taken from
+`std::pmr` or a crate, so all three run the same alignment arithmetic and the
+same capacity check. `custom_allocator_churn` stays unsupported: an `Arena` hands
+out addresses, and a `Vec` or `Map` still cannot be given one to allocate from.
+
+First numbers (Apple M-series, 9 runs): `binary_codec` 1.03× C++ and Rust,
+`manual_alloc_churn` 0.98×, `arena_bump` 1.00×. `arena_bump` read 1.61× until
+`Arena.alloc`'s panic messages moved into `cold` functions: built in place they
+kept `alloc` from inlining and gave it a 240-byte frame on every call.
+
 ## Run
 
 ```bash
@@ -258,7 +279,7 @@ public `String.equals(...)` API.
 
 ## Coverage
 
-The catalog contains 78 distinct workloads across six categories. Sixty-three
+The catalog contains 81 distinct workloads across six categories. Sixty-six
 are implemented in all three languages. Fifteen remain
 in the catalog as unsupported Prismio capabilities; their exact records are in
 [`hosted/UNSUPPORTED.md`](hosted/UNSUPPORTED.md).
@@ -268,10 +289,10 @@ in the catalog as unsupported Prismio capabilities; their exact records are in
 | Algorithms | 16 | 1 | 17 |
 | Data structures | 7 | 4 | 11 |
 | Compute | 15 | 4 | 19 |
-| Memory | 7 | 1 | 8 |
+| Memory | 10 | 1 | 11 |
 | I/O and serialization | 6 | 5 | 11 |
 | Adversarial | 12 | 0 | 12 |
-| **Total** | **63** | **15** | **78** |
+| **Total** | **66** | **15** | **81** |
 
 Every benchmark has one canonical workload definition so results stay directly
 comparable between runs. `--runs` controls sampling without changing the work
@@ -296,9 +317,10 @@ status, and workload profile.
   `sha256`, `blake3_chunk`, `raytracer_sphere`, `channel_pipeline`,
   `bytecode_interpreter`; unsupported: `async_event_loop`, `mutex_contention`, `work_stealing_pool`,
   `simd_vector_ops`.
-- Memory (7 implemented, 1 unsupported): `transient_allocation`, `struct_creation`,
+- Memory (10 implemented, 1 unsupported): `transient_allocation`, `struct_creation`,
   `allocation_mutation`, `nested_collection`, `large_buffer_copy`,
-  `recursive_tree_rebuild`, `string_join`; unsupported: `custom_allocator_churn`.
+  `recursive_tree_rebuild`, `string_join`, `binary_codec`, `manual_alloc_churn`,
+  `arena_bump`; unsupported: `custom_allocator_churn`.
 - I/O and serialization (6 implemented, 5 unsupported): `file_read`,
   `file_write`, `line_processing`, `tokenization`, `base64_codec`, `csv_parse`;
   unsupported: `json_parse`, `json_serialize`, `tcp_echo_server`, `mmap_file_io`,

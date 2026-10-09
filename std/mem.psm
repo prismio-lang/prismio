@@ -107,7 +107,14 @@ private fn bufferStore(b: Buffer, offset: Int, width: Int, big: Bool, value: U64
 }
 
 private fn bufferCheckLength(length: Int, what: String) {
-    if (length < 0) { panic(what.concat(" must not be negative, found ", length.toString())) }
+    if (length < 0) { bufferNegative(length, what) }
+}
+
+// The failure halves are `cold` so that what calls them stays small enough to
+// inline: built in place, the message's concatenations made Arena.alloc a call
+// with a 240-byte frame, and arena_bump ran 1.61x C++.
+private cold fn bufferNegative(length: Int, what: String) {
+    panic(what.concat(" must not be negative, found ", length.toString()))
 }
 
 impl Buffer {
@@ -237,38 +244,49 @@ impl Eq for Buffer {
 //
 // The block is a Buffer's and is never resized, so an address stays valid until
 // the next `reset` or until the Arena is released. Memory handed out again after
-// a `reset` holds whatever was written into it before.
+// a `reset` holds whatever was written into it before. `base` and `limit` are the
+// block's address and length, read once: the block never moves, and reading them
+// through the Buffer on every allocation was two dependent loads and a check.
 struct Arena {
     block: Buffer,
+    base: Usize,
+    limit: Int,
     top: Int
+}
+
+private cold fn arenaBadAlign(align: Int) {
+    panic("Arena.alloc: align must be a power of two, found ".concat(align.toString()))
+}
+
+private cold fn arenaFull(size: Int, remaining: Int, capacity: Int) {
+    let room = remaining.toString().concat(" of ", capacity.toString(), " remain")
+    panic("Arena.alloc: ".concat(size.toString(), " bytes do not fit; ", room))
 }
 
 impl Arena {
     // `Arena(capacity)`: `capacity` zero bytes, none of them handed out yet.
     public fn new(capacity: Int) -> Arena {
-        return Arena { block: Buffer.new(capacity), top: 0 }
+        let block = Buffer.new(capacity)
+        let base = block.address
+        return Arena { block: block, base: base, limit: capacity, top: 0 }
     }
 
-    public prop capacity(self) -> Int { return self.block.length }
+    public prop capacity(self) -> Int { return self.limit }
     public prop used(self) -> Int { return self.top }
-    public prop remaining(self) -> Int { return self.block.length - self.top }
+    public prop remaining(self) -> Int { return self.limit - self.top }
 
     // `size` bytes at an address that is a multiple of `align`, a power of two.
     // Stops the program when the block cannot fit them.
     public fn alloc(inout self, size: Int, align: Int) -> Usize {
-        if (align <= 0 or (align & (align - 1)) != 0) {
-            panic("Arena.alloc: align must be a power of two, found ".concat(align.toString()))
-        }
+        if (align <= 0 or (align & (align - 1)) != 0) { arenaBadAlign(align) }
         bufferCheckLength(size, "Arena.alloc's size")
-        let base = self.block.address
         let mask = (align - 1) as Usize
-        let start = (((base + self.top as Usize) + mask) & ~mask) - base
-        if (start > self.block.length as Usize or self.block.length as Usize - start < size as Usize) {
-            let room = self.remaining.toString().concat(" of ", self.block.length.toString(), " remain")
-            panic("Arena.alloc: ".concat(size.toString(), " bytes do not fit; ", room))
+        let start = (((self.base + self.top as Usize) + mask) & ~mask) - self.base
+        if (start > self.limit as Usize or self.limit as Usize - start < size as Usize) {
+            arenaFull(size, self.limit - self.top, self.limit)
         }
         self.top = (start as Int) + size
-        return base + start
+        return self.base + start
     }
 
     // Every allocation back at once.

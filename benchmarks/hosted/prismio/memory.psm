@@ -1,4 +1,5 @@
 import common
+import std.mem
 import std.string
 
 struct BenchMemoryParticle {
@@ -158,6 +159,91 @@ public fn benchStringJoin(scale: Int) -> Int {
     let mut checksum = length % 1000000007
     for at in 0..<length step 997 {
         checksum = (checksum + (joined.charAt(at) as Int)) % 1000000007
+    }
+    return checksum
+}
+
+// std.mem's three tools. Each arm is the same program: C++ writes the byte order
+// with memcpy and __builtin_bswap, Rust with to_be_bytes/from_be_bytes, and the
+// arena and the allocation window are hand-written the same way in all three.
+
+// Buffer's typed writes and reads: 16-byte records, big-endian but for the last
+// field, encoded once and decoded eight times.
+public fn benchBinaryCodec(scale: Int) -> Int {
+    let n = 100_000 * scale
+    let mut buf = Buffer(n * 16)
+    for i in 0..<n {
+        let off = i * 16
+        buf.writeU16BE(off, ((i * 7) % 65536) as U16)
+        buf.writeI32BE(off + 2, (i * 13) % 100000 - 50000)
+        buf.writeFloatBE(off + 6, ((i % 1000) as Float) * 0.5)
+        buf.writeU16LE(off + 14, (i % 251) as U16)
+    }
+    let mut checksum = 0
+    for round in 0..<8 {
+        for i in 0..<n {
+            let off = i * 16
+            let v = (buf.readU16BE(off) as Int) + buf.readI32BE(off + 2)
+                + (buf.readFloatBE(off + 6) as Int) + (buf.readU16LE(off + 14) as Int) + round
+            checksum = (checksum + v) % BENCH_MOD
+        }
+    }
+    return checksum
+}
+
+// alloc and free in a sliding window of 64 live blocks of 16 to 256 bytes: each
+// slot's block is read and freed before the slot is refilled.
+public fn benchManualAllocChurn(scale: Int) -> Int {
+    let n = 400_000 * scale
+    let mut blocks: Array<Usize, 64>
+    let mut sizes: Array<Int, 64>
+    let mut checksum = 0
+    for i in 0..<n {
+        let slot = i % 64
+        let old = blocks[slot]
+        if (old != 0) {
+            checksum = (checksum + (old.loadU32() as Int) + ((old + 8).loadU32() as Int) + sizes[slot]) % BENCH_MOD
+            free(old)
+        }
+        let size = 16 + (i * 37) % 241
+        let block = alloc(size as Usize)
+        block.storeU32((i % 65521) as U32)
+        (block + 8).storeU32(size as U32)
+        blocks[slot] = block
+        sizes[slot] = size
+    }
+    for slot in 0..<64 {
+        let old = blocks[slot]
+        if (old != 0) {
+            checksum = (checksum + (old.loadU32() as Int)) % BENCH_MOD
+            free(old)
+        }
+    }
+    return checksum
+}
+
+// A linked list of 20,000 nodes built in an Arena, walked, and taken back with
+// one reset, per round. Every sixteenth node is followed by a 5-byte piece, so
+// the next node's 8-byte alignment is real work.
+public fn benchArenaBump(scale: Int) -> Int {
+    let mut arena = Arena(1 << 20)
+    let rounds = 300 * scale
+    let mut checksum = 0
+    for r in 0..<rounds {
+        let mut head: Usize = 0
+        for i in 0..<20000 {
+            let node = arena.alloc(24, 8)
+            node.storeU64(head as U64)
+            (node + 8).storeU32(((i + r) % 1009) as U32)
+            head = node
+            if (i % 16 == 0) { arena.alloc(5, 1) }
+        }
+        let mut at = head
+        while (at != 0) {
+            checksum = (checksum + ((at + 8).loadU32() as Int)) % BENCH_MOD
+            at = at.loadU64() as Usize
+        }
+        arena.reset()
     }
     return checksum
 }

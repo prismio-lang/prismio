@@ -120,6 +120,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   violations under `--verify` (55 allocated, 55 released); `std_mem_failures` checks
   each failure message and the two ledger answers. `sizeOf<T>()` is not part of it:
   a type's size is not exposed yet.
+- **Benchmarks for `std.mem`**, in the hosted memory category, each the same program in
+  Prismio, C++ and Rust: `binary_codec` (Buffer's typed big- and little-endian reads
+  and writes), `manual_alloc_churn` (`alloc`/`free` against `malloc`/`free` and
+  `std::alloc`) and `arena_bump` (a linked list built in an `Arena` and reset, against
+  a hand-written bump arena). First numbers against C++: 1.03×, 0.98× and 1.00×.
+  `arena_bump` read 1.61× until `Arena.alloc`'s failure messages moved into `cold`
+  functions and the block's address and length were read once at construction;
+  built in place, the messages stopped `alloc` inlining and gave it a 240-byte frame.
 - **`x[i] = v` on a struct calls its `set`**, as `x[i]` already called its `at`. A struct
   with an `at` and no `set` keeps the error, which now says to write
   `fn set(inout self, index, value)`. A generic struct's `set` is not reached yet, so a

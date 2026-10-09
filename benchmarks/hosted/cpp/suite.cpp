@@ -35,6 +35,9 @@ int run(const std::string& name, int scale, const std::string& input, const std:
     if (name == "nested_collection") return nested_collection(scale);
     if (name == "large_buffer_copy") return large_buffer_copy(scale);
     if (name == "recursive_tree_rebuild") return recursive_tree_rebuild(scale);
+    if (name == "binary_codec") return binary_codec(scale);
+    if (name == "manual_alloc_churn") return manual_alloc_churn(scale);
+    if (name == "arena_bump") return arena_bump(scale);
     if (name == "file_read") return file_read(input);
     if (name == "file_write") return file_write(scale, output);
     if (name == "line_processing") return line_processing(input);

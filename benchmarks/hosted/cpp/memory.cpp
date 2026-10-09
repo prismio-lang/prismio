@@ -1,5 +1,8 @@
 #include "benchmarks.hpp"
 
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -143,5 +146,145 @@ int string_join(int scale)
     int checksum = length % BENCH_MOD;
     for (int at = 0; at < length; at += 997)
         checksum = (checksum + static_cast<int>(static_cast<unsigned char>(joined[at]))) % BENCH_MOD;
+    return checksum;
+}
+
+// std.mem's three tools, as the same programs in C++ (see memory.psm).
+namespace
+{
+    template <class T> void put_bytes(std::vector<unsigned char>& buf, int off, T value)
+    {
+        std::memcpy(buf.data() + off, &value, sizeof value);
+    }
+
+    template <class T> T get_bytes(const std::vector<unsigned char>& buf, int off)
+    {
+        T value;
+        std::memcpy(&value, buf.data() + off, sizeof value);
+        return value;
+    }
+
+    double float_from_bits(uint64_t bits)
+    {
+        double d;
+        std::memcpy(&d, &bits, 8);
+        return d;
+    }
+
+    uint64_t bits_from_float(double d)
+    {
+        uint64_t bits;
+        std::memcpy(&bits, &d, 8);
+        return bits;
+    }
+
+    struct BumpArena
+    {
+        std::vector<unsigned char> block;
+        size_t top = 0;
+
+        explicit BumpArena(size_t capacity) : block(capacity, 0) {}
+
+        uintptr_t alloc(size_t size, size_t align)
+        {
+            uintptr_t base = reinterpret_cast<uintptr_t>(block.data());
+            uintptr_t mask = align - 1;
+            uintptr_t start = ((base + top + mask) & ~mask) - base;
+            if (start > block.size() || block.size() - start < size) std::abort();
+            top = start + size;
+            return base + start;
+        }
+    };
+} // namespace
+
+int binary_codec(int scale)
+{
+    const int n = 100'000 * scale;
+    std::vector<unsigned char> buf(static_cast<size_t>(n) * 16, 0);
+    for (int i = 0; i < n; ++i) {
+        const int off = i * 16;
+        put_bytes<uint16_t>(buf, off, __builtin_bswap16(static_cast<uint16_t>((i * 7) % 65536)));
+        put_bytes<uint32_t>(buf, off + 2, __builtin_bswap32(static_cast<uint32_t>((i * 13) % 100000 - 50000)));
+        put_bytes<uint64_t>(buf, off + 6, __builtin_bswap64(bits_from_float(static_cast<double>(i % 1000) * 0.5)));
+        put_bytes<uint16_t>(buf, off + 14, static_cast<uint16_t>(i % 251));
+    }
+    int checksum = 0;
+    for (int round = 0; round < 8; ++round) {
+        for (int i = 0; i < n; ++i) {
+            const int off = i * 16;
+            const int v = static_cast<int>(__builtin_bswap16(get_bytes<uint16_t>(buf, off)))
+                + static_cast<int>(__builtin_bswap32(get_bytes<uint32_t>(buf, off + 2)))
+                + static_cast<int>(float_from_bits(__builtin_bswap64(get_bytes<uint64_t>(buf, off + 6))))
+                + static_cast<int>(get_bytes<uint16_t>(buf, off + 14)) + round;
+            checksum = (checksum + v) % BENCH_MOD;
+        }
+    }
+    return checksum;
+}
+
+int manual_alloc_churn(int scale)
+{
+    const int n = 400'000 * scale;
+    uintptr_t blocks[64] = {};
+    int sizes[64] = {};
+    int checksum = 0;
+    for (int i = 0; i < n; ++i) {
+        const int slot = i % 64;
+        const uintptr_t old = blocks[slot];
+        if (old != 0) {
+            uint32_t first, second;
+            std::memcpy(&first, reinterpret_cast<void*>(old), 4);
+            std::memcpy(&second, reinterpret_cast<void*>(old + 8), 4);
+            checksum = (checksum + static_cast<int>(first) + static_cast<int>(second) + sizes[slot]) % BENCH_MOD;
+            std::free(reinterpret_cast<void*>(old));
+        }
+        const int size = 16 + (i * 37) % 241;
+        void* block = std::malloc(static_cast<size_t>(size));
+        if (!block) std::abort();
+        const uint32_t first = static_cast<uint32_t>(i % 65521), second = static_cast<uint32_t>(size);
+        std::memcpy(block, &first, 4);
+        std::memcpy(static_cast<unsigned char*>(block) + 8, &second, 4);
+        blocks[slot] = reinterpret_cast<uintptr_t>(block);
+        sizes[slot] = size;
+    }
+    for (int slot = 0; slot < 64; ++slot) {
+        const uintptr_t old = blocks[slot];
+        if (old != 0) {
+            uint32_t first;
+            std::memcpy(&first, reinterpret_cast<void*>(old), 4);
+            checksum = (checksum + static_cast<int>(first)) % BENCH_MOD;
+            std::free(reinterpret_cast<void*>(old));
+        }
+    }
+    return checksum;
+}
+
+int arena_bump(int scale)
+{
+    BumpArena arena(1 << 20);
+    const int rounds = 300 * scale;
+    int checksum = 0;
+    for (int r = 0; r < rounds; ++r) {
+        uintptr_t head = 0;
+        for (int i = 0; i < 20000; ++i) {
+            const uintptr_t node = arena.alloc(24, 8);
+            const uint64_t next = head;
+            const uint32_t value = static_cast<uint32_t>((i + r) % 1009);
+            std::memcpy(reinterpret_cast<void*>(node), &next, 8);
+            std::memcpy(reinterpret_cast<void*>(node + 8), &value, 4);
+            head = node;
+            if (i % 16 == 0) arena.alloc(5, 1);
+        }
+        uintptr_t at = head;
+        while (at != 0) {
+            uint32_t value;
+            std::memcpy(&value, reinterpret_cast<void*>(at + 8), 4);
+            checksum = (checksum + static_cast<int>(value)) % BENCH_MOD;
+            uint64_t next;
+            std::memcpy(&next, reinterpret_cast<void*>(at), 8);
+            at = static_cast<uintptr_t>(next);
+        }
+        arena.top = 0;
+    }
     return checksum;
 }

@@ -329,6 +329,24 @@
       "profile": "allocation"
     },
     {
+      "name": "binary_codec",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "memory"
+    },
+    {
+      "name": "manual_alloc_churn",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation"
+    },
+    {
+      "name": "arena_bump",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation-memory"
+    },
+    {
       "name": "custom_allocator_churn",
       "category": "memory",
       "status": "unsupported",
