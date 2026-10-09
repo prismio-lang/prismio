@@ -185,7 +185,8 @@ def build_plib_ir(clang: str, compiler: Path, source: Path, work: Path,
 # --freestanding-target and the other modules' does not: a freestanding triple has
 # no C library to compile the rest against, and the compiler refuses their import
 # before it would look for the section.
-FREESTANDING_STD = ("option", "platform", "iter")
+FREESTANDING_STD = ("option", "platform", "iter", "mem", "string", "unicode_case", "unicode",
+                    "unicode_tables", "eq", "ord", "copy", "key", "default", "vec", "map")
 
 
 def build_plib(clang: str, compiler: Path, source: Path, stdlib: Path, work: Path,
@@ -347,12 +348,17 @@ def main() -> int:
         extra = tuple(args.freestanding_target) if module.stem in FREESTANDING_STD else ()
         build_plib(clang, compiler, module, stdlib, work, (*args.target, *extra))
 
-    # What `--freestanding` adds to every build: the failure core, as source, because
-    # it is compiled for the program's own triple and carries no libc dependency.
+    # What `--freestanding` adds to every build, as source, because each is compiled
+    # for the program's own triple and carries no libc dependency: the failure core,
+    # the weak C library core, and the runtime, which is lang_runtime.c under
+    # PRISMIO_FREESTANDING and so needs that file and its two headers beside it.
     if args.freestanding_target:
         core_dir = runtime_bc / "freestanding"
         core_dir.mkdir(exist_ok=True)
-        shutil.copyfile(REPO / "runtime" / "freestanding" / "panic.c", core_dir / "panic.c")
+        for name in ("panic.c", "libc.c", "runtime.c"):
+            shutil.copyfile(REPO / "runtime" / "freestanding" / name, core_dir / name)
+        for name in ("lang_runtime.c", "prismio_runtime.h", "prismio_freestanding.h"):
+            shutil.copyfile(REPO / "runtime" / name, core_dir / name)
 
     shutil.rmtree(work)
 

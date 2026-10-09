@@ -61,3 +61,33 @@ __attribute__((weak)) void* prismio_expect(void* p) {
     if (!p) prismio_panic_hook("expect() called on a `none` value", "", "", 0, 0);
     return p;
 }
+
+// A DataView conversion or access that failed (the hosted runtime's are in
+// program_support.c, which a freestanding program does not link).
+__attribute__((weak, noreturn)) void data_view_fail(const char* message) {
+    prismio_panic_hook("invalid DataView conversion", message, "", 0, 0);
+}
+
+__attribute__((weak, noreturn)) void data_view_access_fail(int reason) {
+    data_view_fail(reason == 1 ? "view is not ready for access" : "element index out of range");
+}
+
+// The allocator the freestanding runtime and std.mem allocate through. A program
+// that uses `Vec`, `String` or std.mem defines all three -- in Prismio with
+// `export fn`, or in C -- and the defaults here stop the machine, so one that
+// never allocates defines none. None of them may return null: a kernel decides
+// what running out of memory means, here, once.
+__attribute__((weak)) void* prismio_alloc(unsigned long size) {
+    (void)size;
+    prismio_panic_hook("no allocator", "define prismio_alloc, prismio_realloc and prismio_free", "", 0, 0);
+}
+
+__attribute__((weak)) void* prismio_realloc(void* p, unsigned long size) {
+    (void)p; (void)size;
+    prismio_panic_hook("no allocator", "define prismio_alloc, prismio_realloc and prismio_free", "", 0, 0);
+}
+
+__attribute__((weak)) void prismio_free(void* p) {
+    (void)p;
+    prismio_panic_hook("no allocator", "define prismio_alloc, prismio_realloc and prismio_free", "", 0, 0);
+}

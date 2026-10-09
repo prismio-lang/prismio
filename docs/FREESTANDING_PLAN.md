@@ -2,8 +2,8 @@
 
 The plan for compiling Prismio programs that run with no operating system under
 them: a kernel, a bootloader stage, firmware. Written 2026-10-08, with a
-dependency probe (section 1) as its starting measurement. **Steps 0-5 and most of
-step 7 are built** (section 3); step 6 is designed (FREESTANDING_MEMORY.md) and not built.
+dependency probe (section 1) as its starting measurement. **Steps 0-6 and most of
+step 7 are built** (section 3); step 6, the heap, landed 2026-10-09 (FREESTANDING_MEMORY.md).
 
 A Prismio program now boots under QEMU's `aarch64` `virt` board and on a 32-bit x86
 machine with no operating system and no C library, prints through a volatile store
@@ -261,20 +261,25 @@ with the boot code, serial output and panic path in Prismio. A 64-bit x86 kernel
 
 - [x] `std.option`, `std.platform` and `std.iter` import and link with no runtime, on both architectures,
       from a checkout and from a packaged toolchain. Every other `std` module is `P1094`.
-- [ ] Anything else. `std.string`, `std.vec`, `std.ord` and the modules that import them lower to calls into
-      `lang_runtime.c`, so the rest of the list waits on step 6, not on this one. `std.math` is excluded for a
-      second reason: some of its functions are instructions on one target and C library calls on another.
+- [x] The modules over `Vec` and `String`, once step 6 gave them a runtime: `std.mem`, `std.string`,
+      `std.vec`, `std.map`, `std.eq`, `std.ord`, `std.copy`, `std.key`, `std.default`, `std.unicode*`.
+- [ ] `std.io`, `std.display`, `std.input`, `std.fs`, `std.process`, `std.time`, `std.term`: each needs a
+      console, files, processes or clocks. `std.math` is excluded for a second reason: some of its functions
+      are instructions on one target and C library calls on another.
 
-### Step 6 · A heap in freestanding mode — designed, not built
+### Step 6 · A heap in freestanding mode — built 2026-10-09
 
-[FREESTANDING_MEMORY.md](FREESTANDING_MEMORY.md) holds the design and the measurement behind it:
-`lang_runtime.c` needs 48 libc symbols, in six groups, each with a freestanding answer. The recommendation
-is a freestanding build of the runtime over a program-supplied allocator (`prismio_alloc`,
-`prismio_realloc`, `prismio_free`), with the diagnostics and process code compiled out and the mutexes
-reduced to no-ops. It touches neither the language nor the analysis.
+[FREESTANDING_MEMORY.md](FREESTANDING_MEMORY.md) holds the design, the measurement behind it, and section
+7, what was built and where it departed from the design.
 
 - [x] The design and the measurement.
-- [ ] Everything in its section 5, starting with the compile probe.
+- [x] Everything in its section 5. `lang_runtime.c` compiles with `PRISMIO_FREESTANDING` for AArch64 (with
+      and without the FP unit) and i686; a kernel with a Prismio bump allocator uses `Vec`, `String` and
+      std.mem under QEMU (`kernel_mem_aarch64.psm`); a kernel that imports none of them links what it did
+      before.
+- [ ] A spinlock spelling of the mutex seam, for a kernel that runs the runtime on several cores.
+- [ ] Float text (`toString` on a Float, `parseFloat`) in a freestanding program: the hosted runtime's
+      is `snprintf`/`strtod`. Today a kernel that calls one gets the linker's undefined-symbol error.
 
 ### Step 7 · Cross targets and shipping — partly built
 

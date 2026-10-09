@@ -128,6 +128,17 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `arena_bump` read 1.61× until `Arena.alloc`'s failure messages moved into `cold`
   functions and the block's address and length were read once at construction;
   built in place, the messages stopped `alloc` inlining and gave it a 240-byte frame.
+- **A heap in `--freestanding` programs: `Vec`, `String`, `Map` and `std.mem` in a kernel.** The
+  program defines `prismio_alloc`, `prismio_realloc` and `prismio_free` (in Prismio with `export fn`, or
+  in C), and the build compiles `lang_runtime.c` for the program's own triple and CPU features with
+  `PRISMIO_FREESTANDING`: no C library, `runtime/freestanding/libc.c`'s weak `memcpy` family and `qsort`,
+  runtime errors through `prismio_panic_hook`, no locks. Only a program that imports a module over `Vec`
+  or `String` gets it; one that imports none links what it did before. Every `std` module but `io`,
+  `display`, `input`, `fs`, `process`, `time`, `term` and `math` is now importable (was `option`,
+  `platform`, `iter`). A freestanding program is internalised like a closed hosted one, since its C
+  reaches Prismio only through `main` and `export`; the freestanding benchmarks did not move (0.95× C).
+  Float text is not available there yet. `kernel_mem_aarch64.psm` boots under QEMU with a bump allocator
+  written in Prismio, and a Buffer read out of range reaches the panic hook. FREESTANDING_PLAN step 6.
 - **`__builtin_swap_bytes`, `__builtin_float_bits` and `__builtin_float_from_bits`**:
   byte order reversed at any integer width (one `rev`/`bswap`), and a Float and its
   64 bits reinterpreted either way. **`__builtin_mem_uload_*`/`ustore_*`**: loads and

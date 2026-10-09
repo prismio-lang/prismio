@@ -4,7 +4,12 @@
 // Runtime state that follows the executing task rather than the process. C11's
 // spelling works with clang/gcc; clang-cl accepts the MSVC spelling on the one
 // target where `_Thread_local` is not consistently available in the C runtime.
-#if defined(_MSC_VER)
+//
+// A freestanding program has one core and no `spawn`, so per-thread state is
+// process state: no TLS register to set up, and nothing for a kernel to provide.
+#if defined(PRISMIO_FREESTANDING)
+#define PRISMIO_THREAD_LOCAL
+#elif defined(_MSC_VER)
 #define PRISMIO_THREAD_LOCAL __declspec(thread)
 #else
 #define PRISMIO_THREAD_LOCAL _Thread_local
@@ -72,7 +77,9 @@
 // through the ledger would record an allocation that no generated release ever
 // pairs with, which reads as a leak.
 #ifndef rt_base_alloc
+#ifndef PRISMIO_FREESTANDING
 #include <stdlib.h>
+#endif
 #include <stddef.h>
 #ifdef PRISMIO_AIF_VERIFY
 void* aif_verify_alloc(size_t size);
@@ -228,7 +235,15 @@ long long rt_workload_stub(const char* name);
 // and the counts did not, which is the shape of a data race and not of a leak.
 //
 // One spelling, per C_CODE_STYLE.md's rule for a constant shared across the seam.
-#ifdef _WIN32
+#if defined(PRISMIO_FREESTANDING)
+// One core and no threads: a lock is nothing to take. A kernel that runs the
+// runtime on several cores needs spinlocks here, over the atomics it now has.
+#define PRISMIO_MUTEX_T            int
+#define PRISMIO_MUTEX_INIT(m)      ((void)(m))
+#define PRISMIO_MUTEX_DESTROY(m)   ((void)(m))
+#define PRISMIO_MUTEX_LOCK(m)      ((void)(m))
+#define PRISMIO_MUTEX_UNLOCK(m)    ((void)(m))
+#elif defined(_WIN32)
 #define PRISMIO_THREAD_T           HANDLE
 #define PRISMIO_MUTEX_T            CRITICAL_SECTION
 #define PRISMIO_COND_T             CONDITION_VARIABLE

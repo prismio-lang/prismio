@@ -27,8 +27,10 @@ import std.fs
 // each module name the externs it actually uses.
 public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(free)
 public extern fn compiler_plib_error() -> String produce(free)
-// `--freestanding`: no C library under the program, so no `std` under it either.
+// `--freestanding`: no C library under the program, and only the `std` modules
+// freestandingSafeModule names over it.
 extern fn compiler_is_freestanding() -> Int
+extern fn compiler_use_freestanding_runtime()
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -417,18 +419,29 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
 
 // The `std` modules that need neither: pure Prismio over compiler builtins, with no
 // call into the C runtime and no `import std.string`, which is the module nearly
-// everything else reaches. This is the freestanding `core` of docs/FREESTANDING_PLAN.md
-// step 5, as short as the standard library's own structure allows -- `std.string`,
-// `std.vec` and `std.ord` all lower to calls into lang_runtime.c, so a freestanding
-// `Vec` or `String` waits on the memory design (FREESTANDING_MEMORY.md), not on this
-// list. Every name here has to link with no runtime; the freestanding test imports
-// each.
+// everything else reaches, and the modules over `Vec` and `String`, which call into
+// lang_runtime.c: a freestanding build merges runtime/freestanding/runtime.c, that
+// file compiled with no C library over the program's own allocator
+// (docs/FREESTANDING_MEMORY.md). What stays out needs an operating system -- a
+// console, files, processes, clocks -- or, for std.display, the Float printing a
+// freestanding runtime does not have. The freestanding test imports each name here.
 //
 // `std.math` is absent on purpose: its square root and rounding are instructions on
 // some targets and calls into a C math library on others, and a kernel that cannot
 // tell which has found the failure at link time on the wrong machine.
 private fn freestandingSafeModule(name: String) -> Bool {
     return name.equals("std.option") or name.equals("std.platform") or name.equals("std.iter")
+        or name.equals("std.mem") or name.equals("std.string") or name.equals("std.unicode_case")
+        or name.equals("std.unicode") or name.equals("std.unicode_tables")
+        or name.equals("std.eq") or name.equals("std.ord") or name.equals("std.copy")
+        or name.equals("std.key") or name.equals("std.default")
+        or name.equals("std.vec") or name.equals("std.map")
+}
+
+// The three that are pure Prismio link nothing; the rest call into lang_runtime.c.
+private fn freestandingNeedsRuntime(name: String) -> Bool {
+    return name.equals("std.option") == false and name.equals("std.platform") == false
+        and name.equals("std.iter") == false
 }
 
 // A `std` module is compiled against the C library and an operating system, and a
@@ -440,10 +453,13 @@ private fn freestandingSafeModule(name: String) -> Bool {
 private fn refuseHostedImport(stmt: ASTNode) {
     if (compiler_is_freestanding() != 1) { return }
     if (stmt.s1.startsWith("std.") == false) { return }
-    if (freestandingSafeModule(stmt.s1)) { return }
+    if (freestandingSafeModule(stmt.s1)) {
+        if (freestandingNeedsRuntime(stmt.s1)) { compiler_use_freestanding_runtime() }
+        return
+    }
     diag_error_at_code("P1094", stmt.file, stmt.line, stmt.col, stmt.len,
         diagQuote(stmt.s1).concat(" cannot be imported by a `--freestanding` program"))
-    diag_note("the standard library needs a C library and an operating system; only std.option, std.platform and std.iter do not")
+    diag_note("std.io, std.display, std.input, std.fs, std.process, std.time, std.term and std.math need an operating system or a C library")
     diag_finish()
     exit(1)
 }

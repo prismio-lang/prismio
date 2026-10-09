@@ -1125,6 +1125,11 @@ static int g_export_dynamic = 0;
 // arguments supply the entry point and the linker script. Not reset by
 // compiler_link_reset, which is per target and this is per command line.
 static int g_freestanding = 0;
+// Whether a freestanding program imported a `std` module over `Vec` or `String`,
+// said by the import resolver (src/driver/imports.psm). Only then does the build
+// merge the freestanding runtime and link libc.c, so a kernel that imports none
+// links exactly what it did before either existed. Per target, like the link state.
+static int g_freestanding_runtime = 0;
 // For the one link in progress: the compiled native objects and the export
 // flags, quoted, set by compiler_build_executable around link_program_object.
 static const char* g_link_extra = "";
@@ -1167,6 +1172,7 @@ void compiler_link_reset(void) {
     free_string_list(&g_native_flag_files, &g_native_flag_file_count, &g_native_flag_file_cap);
     g_installed_runtime = 1;
     g_export_dynamic = 0;
+    g_freestanding_runtime = 0;
 }
 
 static int append_quoted_argument(char** args, const char* argument) {
@@ -1269,6 +1275,8 @@ int compiler_native_response_file(const char* path) {
 void compiler_set_installed_runtime(int on) { g_installed_runtime = on ? 1 : 0; }
 void compiler_set_freestanding(int on) { g_freestanding = on ? 1 : 0; }
 int compiler_is_freestanding(void) { return g_freestanding; }
+
+void compiler_use_freestanding_runtime(void) { g_freestanding_runtime = 1; }
 
 // One linker argument as written, for `--link-arg`. The same list a manifest's
 // `link { }` block feeds, so the order is the order given. Not counted as linked
@@ -1673,8 +1681,17 @@ static void macos_min_flag(char* out, size_t size) {
 // all but `main` can be internal (internalize_executable, llvm-api-backend.c).
 // C the target compiles or links may call a Prismio function by its symbol, and
 // exportDynamic exists so that code loaded at run time can.
+//
+// A freestanding program is closed whatever C it links. Its boot stub, the failure
+// core and the libc core reach Prismio only through `main` and `export` names, and
+// an export is an alias, which internalisation leaves external: a kernel's C cannot
+// know a mangled name. Left external, every function a checkout compiles from
+// `std` source survived to the link, unused ones included, with their references to
+// the Float text a freestanding runtime does not have.
 static int program_is_closed(void) {
-    return g_native_source_count == 0 && !g_native_link_has_code && !g_export_dynamic;
+    if (g_export_dynamic) return 0;
+    if (g_freestanding) return 1;
+    return g_native_source_count == 0 && !g_native_link_has_code;
 }
 
 // `*extra_objects` is how many objects beyond `program_obj` the in-process
@@ -2167,6 +2184,8 @@ failed:
 // module, then merge the complete library graph in one LLVM context. Keeping
 // artifacts module-wise is a distribution concern; reparsing and reprinting the
 // growing program once per artifact was unnecessary compile-time work.
+static int freestanding_runtime_bitcode(const char* exe_file, char** bitcode, int* cached);
+
 static char* merge_libraries_into_program(const char* ir_file,
                                           const char* exe_file) {
     char runtime[PRISMIO_RUNTIME_MODULE_COUNT][1024];
@@ -2178,7 +2197,18 @@ static char* merge_libraries_into_program(const char* ir_file,
         (g_installed_runtime && !g_freestanding) ? PRISMIO_RUNTIME_MODULE_COUNT : 0;
     if (runtime_count > 0 && !find_runtime_bitcode(runtime, g_verify_mode)) return NULL;
 
-    int module_count = prismio_plib_count + runtime_count;
+    // A freestanding program merges its own build of the runtime instead, so a
+    // kernel can have `Vec`, `String` and std.mem; whatever it never calls is
+    // pruned below with the rest of the imported definitions.
+    char* fs_runtime = NULL;
+    int fs_cached = 0;
+    if (g_installed_runtime && g_freestanding && g_freestanding_runtime
+            && freestanding_runtime_bitcode(exe_file, &fs_runtime, &fs_cached) != 0) {
+        return NULL;
+    }
+    int fs_count = fs_runtime ? 1 : 0;
+
+    int module_count = prismio_plib_count + runtime_count + fs_count;
     const char** modules =
         (const char**)calloc((size_t)module_count, sizeof(const char*));
     int* modes = (int*)calloc((size_t)module_count, sizeof(int));
@@ -2208,6 +2238,10 @@ static char* merge_libraries_into_program(const char* ir_file,
         modules[prismio_plib_count + i] = runtime[i];
         modes[prismio_plib_count + i] = 0;
     }
+    if (fs_runtime) {
+        modules[prismio_plib_count + runtime_count] = fs_runtime;
+        modes[prismio_plib_count + runtime_count] = 0;
+    }
 
     char suffix[96];
     snprintf(suffix, sizeof(suffix), "libraries-%d.ll", PRISMIO_GETPID());
@@ -2228,6 +2262,10 @@ static char* merge_libraries_into_program(const char* ir_file,
     free(extracted);
     free(modules);
     free(modes);
+    if (fs_runtime) {
+        if (!fs_cached) delete_file(fs_runtime);
+        free(fs_runtime);
+    }
 
     if (failed) {
         if (merged) {
@@ -2492,9 +2530,10 @@ static char* object_cache_temp_path(const char* entry) {
 // `objects[i]` receives each object's path and `cached[i]` whether it belongs to
 // the cache (and so must outlive the build). Answers 0, or 1 once a compile
 // failed.
-static int compile_native_sources(const char* exe_file, char** objects, int* cached) {
-    if (g_native_source_count == 0) return 0;
-
+// The flags every native source of this build compiles with: the target's, then
+// what a machine with no OS needs, then what the target declared. Freshly
+// allocated.
+static char* native_compile_flags(void) {
     char* target = target_clang_flags();
     const char* declared = g_native_flags ? g_native_flags : "";
     // Before the target's own flags, so a target that needs a newer macOS can
@@ -2509,75 +2548,115 @@ static int compile_native_sources(const char* exe_file, char** objects, int* cac
     size_t flags_len = strlen(target) + strlen(min_os) + strlen(declared) +
                        strlen(freestanding) + 16;
     char* flags = (char*)malloc(flags_len);
-    if (!flags) { free(target); return 1; }
-    snprintf(flags, flags_len, "%s%s-O2%s%s%s", target, min_os, freestanding,
-             g_debug_info ? " -g" : "",
-             declared);
+    if (flags) {
+        snprintf(flags, flags_len, "%s%s-O2%s%s%s", target, min_os, freestanding,
+                 g_debug_info ? " -g" : "",
+                 declared);
+    }
     free(target);
+    return flags;
+}
 
+// Compiles one native source with `flags`, through the object cache. `*object` is
+// what was produced and `*cached` whether it now lives in the cache (and must not
+// be deleted after the link). Answers 0 on success.
+static int compile_native_source(const char* source, const char* flags, int index,
+                                 const char* exe_file, char** object, int* cached) {
+    char* role = path_without_extension(path_file_name(source));
+    char* entry = NULL;
+    if (object_cache_disabled()) {
+        if (object_cache_trace()) fprintf(stderr, "[objcache off] %s\n", role);
+    } else {
+        entry = native_object_entry(role, source, flags);
+        if (entry && file_exists(entry) && native_deps_current(entry)) {
+            if (object_cache_trace()) fprintf(stderr, "[objcache hit] %s\n", role);
+            *object = entry;
+            *cached = 1;
+            free(role);
+            return 0;
+        }
+        if (object_cache_trace()) fprintf(stderr, "[objcache miss] %s\n", role);
+    }
+
+    // Compiled to a pid-qualified temporary beside the cache entry and moved
+    // into place, never written at the entry directly: two builds racing on
+    // one entry would otherwise link a half-written object.
+    char unique[160];
+    snprintf(unique, sizeof(unique), "native%d-%s", index, role);
+    char* out = entry ? object_cache_temp_path(entry) : compiler_temp_obj_path(exe_file, unique);
+    size_t dep_len = strlen(out) + 3;
+    char* dep = (char*)malloc(dep_len);
+    char* q_src = command_quote_arg(source);
+    char* q_out = command_quote_arg(out);
+    char* q_dep = dep ? (snprintf(dep, dep_len, "%s.d", out), command_quote_arg(dep)) : NULL;
+    size_t command_len = strlen(native_clang_command()) + strlen(flags) + strlen(q_src)
+                         + strlen(q_out) + (q_dep ? strlen(q_dep) : 0) + 64;
+    char* command = (char*)malloc(command_len);
+    int result = 0;
+    if (!dep || !q_dep || !command) {
+        result = 1;
+    } else {
+        snprintf(command, command_len, "%s %s -MD -MF %s -c %s -o %s",
+                 native_clang_command(), flags, q_dep, q_src, q_out);
+        double t0 = build_trace_ms();
+        diag_progress("compiling native sources");
+        if (run_build_command(command) != 0) result = 1;
+        build_trace_stage(role, t0);
+    }
+
+    if (result == 0 && entry && native_deps_record(entry, dep) == 0 &&
+            fs_rename(out, entry) == 0) {
+        // A failed install is not a failed build: the temporary is linked
+        // and the compile is paid for again next time.
+        free(out);
+        out = entry;
+        entry = NULL;
+        *cached = 1;
+    }
+    *object = out;
+    if (dep) { delete_file(dep); free(dep); }
+    free(q_dep);
+    free(q_src);
+    free(q_out);
+    free(command);
+    free(entry);
+    free(role);
+    return result;
+}
+
+static int compile_native_sources(const char* exe_file, char** objects, int* cached) {
+    if (g_native_source_count == 0) return 0;
+    char* flags = native_compile_flags();
+    if (!flags) return 1;
     int result = 0;
     for (int i = 0; i < g_native_source_count && result == 0; i++) {
-        const char* source = g_native_sources[i];
-        char* role = path_without_extension(path_file_name(source));
-        char* entry = NULL;
-        if (object_cache_disabled()) {
-            if (object_cache_trace()) fprintf(stderr, "[objcache off] %s\n", role);
-        } else {
-            entry = native_object_entry(role, source, flags);
-            if (entry && file_exists(entry) && native_deps_current(entry)) {
-                if (object_cache_trace()) fprintf(stderr, "[objcache hit] %s\n", role);
-                objects[i] = entry;
-                cached[i] = 1;
-                free(role);
-                continue;
-            }
-            if (object_cache_trace()) fprintf(stderr, "[objcache miss] %s\n", role);
-        }
-
-        // Compiled to a pid-qualified temporary beside the cache entry and moved
-        // into place, never written at the entry directly: two builds racing on
-        // one entry would otherwise link a half-written object.
-        char unique[160];
-        snprintf(unique, sizeof(unique), "native%d-%s", i, role);
-        char* out = entry ? object_cache_temp_path(entry) : compiler_temp_obj_path(exe_file, unique);
-        size_t dep_len = strlen(out) + 3;
-        char* dep = (char*)malloc(dep_len);
-        char* q_src = command_quote_arg(source);
-        char* q_out = command_quote_arg(out);
-        char* q_dep = dep ? (snprintf(dep, dep_len, "%s.d", out), command_quote_arg(dep)) : NULL;
-        size_t command_len = strlen(native_clang_command()) + strlen(flags) + strlen(q_src)
-                             + strlen(q_out) + (q_dep ? strlen(q_dep) : 0) + 64;
-        char* command = (char*)malloc(command_len);
-        if (!dep || !q_dep || !command) {
-            result = 1;
-        } else {
-            snprintf(command, command_len, "%s %s -MD -MF %s -c %s -o %s",
-                     native_clang_command(), flags, q_dep, q_src, q_out);
-            double t0 = build_trace_ms();
-            diag_progress("compiling native sources");
-            if (run_build_command(command) != 0) result = 1;
-            build_trace_stage(role, t0);
-        }
-
-        if (result == 0 && entry && native_deps_record(entry, dep) == 0 &&
-                fs_rename(out, entry) == 0) {
-            // A failed install is not a failed build: the temporary is linked
-            // and the compile is paid for again next time.
-            free(out);
-            out = entry;
-            entry = NULL;
-            cached[i] = 1;
-        }
-        objects[i] = out;
-        if (dep) { delete_file(dep); free(dep); }
-        free(q_dep);
-        free(q_src);
-        free(q_out);
-        free(command);
-        free(entry);
-        free(role);
+        result = compile_native_source(g_native_sources[i], flags, i, exe_file,
+                                       &objects[i], &cached[i]);
     }
     free(flags);
+    return result;
+}
+
+// The freestanding runtime (runtime/freestanding/runtime.c) as bitcode for this
+// program's triple and CPU features, compiled like a native source and cached
+// beside them. `*bitcode` stays NULL when the toolchain has no source for it,
+// which is not an error: a program that uses no runtime function links without
+// one, and one that does gets the linker's undefined-symbol report naming it.
+static int freestanding_runtime_bitcode(const char* exe_file, char** bitcode, int* cached) {
+    char path[1024];
+    if (!find_in_lib_dir(path, sizeof(path), "runtime/freestanding/runtime.c")
+            && !find_toolchain_entry(path, sizeof(path), "runtime", "freestanding/runtime.c")) {
+        return 0;
+    }
+    char* flags = native_compile_flags();
+    if (!flags) return 1;
+    size_t len = strlen(flags) + 16;
+    char* bitcode_flags = (char*)malloc(len);
+    if (!bitcode_flags) { free(flags); return 1; }
+    snprintf(bitcode_flags, len, "%s -emit-llvm", flags);
+    free(flags);
+    int result = compile_native_source(path, bitcode_flags, -1, exe_file, bitcode, cached);
+    free(bitcode_flags);
     return result;
 }
 
@@ -2923,16 +3002,27 @@ int compiler_jit_run(const char* ir_file, const char* program_name) {
 // finding it is not an error here: a program that never fails does not reference
 // it, and one that does gets the linker's undefined-symbol report, which names the
 // function.
-static void add_freestanding_panic_core(void) {
-    if (!g_freestanding) return;
+static void add_freestanding_core_file(const char* name) {
     for (int i = 0; i < g_native_source_count; i++) {
-        if (strcmp(path_file_name(g_native_sources[i]), "panic.c") == 0) return;
+        if (strcmp(path_file_name(g_native_sources[i]), name) == 0) return;
     }
+    char lib_entry[128];
+    char toolchain_entry[128];
+    snprintf(lib_entry, sizeof(lib_entry), "runtime/freestanding/%s", name);
+    snprintf(toolchain_entry, sizeof(toolchain_entry), "freestanding/%s", name);
     char path[1024];
-    if (find_in_lib_dir(path, sizeof(path), "runtime/freestanding/panic.c")
-        || find_toolchain_entry(path, sizeof(path), "runtime", "freestanding/panic.c")) {
+    if (find_in_lib_dir(path, sizeof(path), lib_entry)
+        || find_toolchain_entry(path, sizeof(path), "runtime", toolchain_entry)) {
         compiler_native_source(path);
     }
+}
+
+// Both cores: panic.c, and libc.c with the weak `memcpy` family LLVM lowers copies
+// to and the freestanding runtime calls.
+static void add_freestanding_panic_core(void) {
+    if (!g_freestanding) return;
+    add_freestanding_core_file("panic.c");
+    if (g_freestanding_runtime) add_freestanding_core_file("libc.c");
 }
 
 int compiler_build_executable(const char* ir_file, const char* exe_file) {

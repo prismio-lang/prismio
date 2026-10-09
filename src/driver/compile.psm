@@ -45,6 +45,7 @@ public extern fn compiler_set_debug_info(on: Int)
 // pointed at the verify shims, so the strings and lists it allocates are in the
 // same accounting as everything ir_alloc_object handed out.
 public extern fn compiler_set_verify_mode(on: Int)
+extern fn compiler_is_freestanding() -> Int
 public extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(free)
 // `run --jit`: merges the imported standard-library bitcode into `irFile`, as a
 // build does, and runs `main` in this process.
@@ -460,6 +461,13 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
         // every string a program drops reports as a release of something that was
         // never live.
         compiler_set_verify_mode(1)
+    }
+
+    // A freestanding program has no `malloc`. An object comes from the runtime's
+    // seam instead, which the freestanding runtime routes to the program's own
+    // `prismio_alloc`; `rt_free` is already the release half, so the pairing holds.
+    if (compiler_is_freestanding() == 1 and options.verify == false) {
+        ir_set_alloc_function("rt_base_alloc")
     }
 
     // Before generateModule, because the first thing it does after starting the

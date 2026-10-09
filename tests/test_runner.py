@@ -621,8 +621,8 @@ def run_freestanding_test():
 
     Three things, in the order they can fail. The language core links with no
     runtime at all (docs/FREESTANDING_PLAN.md, section 1: this is the regression
-    guard for that measurement). A `std` import is refused with a message that
-    names it. And the programs actually run: on QEMU's `virt` board, with the
+    guard for that measurement). A `std` import that needs an operating system is
+    refused with a message that names it. And the programs actually run: on QEMU's `virt` board, with the
     boot stub in tests/freestanding/, the exit status and the serial output are
     what the program computed.
 
@@ -694,10 +694,10 @@ def run_freestanding_test():
     if core.returncode != 0:
         failures.append(f"a program importing std.option and std.platform did not link:\n{core.stderr}")
 
-    # 2. The import gate.
-    gated = build("imports_vec.psm", out_dir / "gated.elf")
-    if gated.returncode == 0 or "`std.vec` cannot be imported by a `--freestanding` program" not in gated.stderr:
-        failures.append("importing std.vec was not refused by name:\n" + gated.stderr)
+    # 2. The import gate: a module that needs an operating system.
+    gated = build("imports_io.psm", out_dir / "gated.elf")
+    if gated.returncode == 0 or "`std.io` cannot be imported by a `--freestanding` program" not in gated.stderr:
+        failures.append("importing std.io was not refused by name:\n" + gated.stderr)
 
     # 3. Running. The stub and linker script are the same in each; the failure core
     # (runtime/freestanding/panic.c) is added by `--freestanding` itself.
@@ -722,6 +722,12 @@ def run_freestanding_test():
         # The same machine reached from Prismio itself: volatile stores to the UART,
         # atomics, a fence and inline assembly, with the stub doing none of it.
         ("kernel_mmio_aarch64.psm", 0, [], 0, ["PAA\nresult=0\n"]),
+        # A heap: std.mem, `Vec` and `String` over the freestanding runtime and an
+        # allocator the kernel writes in Prismio; and a Buffer read past its end,
+        # which the runtime reports through the panic hook.
+        ("kernel_mem_aarch64.psm", 0, [], 0, ["result=0\n"]),
+        ("kernel_mem_aarch64.psm", 1, [], 1,
+         ["runtime error: %d byte(s) at offset %d are out of range for a Buffer of %d"]),
     ]
     for index, (source, seed, extra, status, expected) in enumerate(cases):
         elf = out_dir / f"case{index}.elf"

@@ -139,7 +139,7 @@ def freestanding_std():
     package.py gives a bare-metal section), without the `std.` prefix."""
     c = re.search(r"private fn freestandingSafeModule\(name: String\) -> Bool \{(.*?)\n\}",
                   read(REPO / "src" / "driver" / "imports.psm"), re.S)
-    py = re.search(r"^FREESTANDING_STD = \((.*?)\)", read(TOOLS / "package.py"), re.M)
+    py = re.search(r"^FREESTANDING_STD = \((.*?)\)", read(TOOLS / "package.py"), re.M | re.S)
     if not c or not py:
         raise Failure("could not find freestandingSafeModule / FREESTANDING_STD")
     return (sorted(re.findall(r'"std\.(\w+)"', c.group(1))),

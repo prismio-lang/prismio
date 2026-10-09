@@ -1,0 +1,91 @@
+// A kernel with a heap: std.mem, `Vec` and `String` with no operating system under
+// them. `--freestanding` merges the freestanding runtime (runtime/freestanding/
+// runtime.c), which allocates through the three functions below -- a bump
+// allocator over RAM the linker script leaves alone, written in Prismio.
+//
+// `seed` comes from the boot stub (-DSEED=n): 1 reads past a Buffer's end, which
+// the runtime reports through the panic hook; anything else runs the checks and
+// returns how many failed.
+
+import std.mem
+import std.string
+
+extern let seed: Int
+
+// Within the 128 MiB `virt` has by default, above the image and its stack.
+let HEAP_BASE: Usize = 0x44000000
+
+// Zero until the first allocation: a global's initialiser cannot run code.
+let mut heapTop: Usize
+
+// Each block carries its size in the eight bytes before it, which is what lets
+// `prismio_realloc` copy the old contents. Sixteen bytes keep every block aligned
+// for any type.
+export fn prismio_alloc(size: Usize) -> Ptr {
+    if (heapTop == 0) { heapTop = HEAP_BASE }
+    let block = heapTop + 16
+    (block - 8).storeU64(size as U64)
+    heapTop = block + ((size + 15) & ~(15 as Usize))
+    return __builtin_addr_ptr(block)
+}
+
+export fn prismio_realloc(p: Ptr, size: Usize) -> Ptr {
+    let fresh = prismio_alloc(size)
+    let old = __builtin_ptr_addr(p)
+    if (old != 0) {
+        let oldSize = (old - 8).loadU64() as Usize
+        let mut count = oldSize
+        if (size < count) { count = size }
+        copy(__builtin_ptr_addr(fresh), old, count)
+    }
+    return fresh
+}
+
+export fn prismio_free(p: Ptr) {}
+
+fn check(ok: Bool) -> Int {
+    if (ok) { return 0 }
+    return 1
+}
+
+fn main() -> Int {
+    let mut b = Buffer(16)
+    if (seed == 1) {
+        return b.readU32LE(13) as Int
+    }
+    let mut bad = 0
+
+    b.writeU32BE(0, 0xCAFEBABE)
+    b[5] = 7
+    b.writeU64LE(8, 0x0102030405060708)
+    bad = bad + check(b.readU32BE(0) == 0xCAFEBABE and b[0] == 0xCA and b[5] == 7)
+    bad = bad + check(b.readU16LE(8) == 0x0708 and b.indexOf(7) == 5)
+    let tail = b.slice(8, 8)
+    bad = bad + check(tail.readU64LE(0) == 0x0102030405060708 and tail == b.slice(8, 8))
+
+    for i in 0..<40 { b.push(i as U8) }
+    bad = bad + check(b.length == 56 and b[55] == 39)
+
+    let mut squares: Vec<Int> = []
+    for i in 0..<100 { squares.push(i * i) }
+    let mut total = 0
+    for s in squares { total = total + s }
+    bad = bad + check(total == 328350 and squares.length == 100)
+
+    let word = "free".concat("standing")
+    bad = bad + check(word.length == 12 and word.startsWith("free"))
+
+    let block = alloc(64)
+    block.storeU64(42)
+    let grown = realloc(block, 4096)
+    bad = bad + check(grown.loadU64() == 42)
+    free(grown)
+
+    let mut scratch = Arena(512)
+    let node = scratch.alloc(24, 8)
+    node.storeU64(9)
+    bad = bad + check(node % 8 == 0 and scratch.used == 24 and node.loadU64() == 9)
+    scratch.reset()
+    bad = bad + check(scratch.alloc(8, 8) == node)
+    return bad
+}

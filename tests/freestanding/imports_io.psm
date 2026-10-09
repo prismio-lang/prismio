@@ -1,0 +1,10 @@
+// Refused with a message that names the import: `std.io` writes to a console
+// through the operating system, and a freestanding program has none. `std.vec`
+// was the module here until the freestanding runtime made it importable.
+
+import std.io
+
+fn main() -> Int {
+    println("hello")
+    return 0
+}

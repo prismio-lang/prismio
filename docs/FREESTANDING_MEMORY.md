@@ -1,9 +1,10 @@
 # Freestanding memory: what a heap means with no operating system
 
 The design for `Vec`, `String` and `Map` in a `--freestanding` program, which is step 6 of
-[FREESTANDING_PLAN.md](FREESTANDING_PLAN.md). Written 2026-10-08. **Nothing here is built.**
-It exists because the plan said not to start this step with code: what ownership means with no
-global heap shapes the language, and the measurements below were taken first.
+[FREESTANDING_PLAN.md](FREESTANDING_PLAN.md). Written 2026-10-08, **built 2026-10-09**: section 7
+says what was built and where it departed from the design. It existed first because the plan said not
+to start this step with code: what ownership means with no global heap shapes the language, and the
+measurements below were taken first.
 
 ## 1 · Where the program stands
 
@@ -115,3 +116,36 @@ Each step ends with a test that fails before and passes after.
   measuring step 5's bitcode.
 - **Threads.** `spawn` and `Channel<T>` are `program_support.c` and `lang_runtime.c`'s task code and
   stay out of a freestanding program.
+
+## 7 · What was built (2026-10-09)
+
+Choice (b), as recommended. The departures from section 5, each for a reason found on the way:
+
+- **Source, not packaged bitcode.** Step 5 planned a `lang_runtime.freestanding.bc` per bare-metal triple.
+  The failure core already showed the better shape: `runtime/freestanding/runtime.c` is `lang_runtime.c`
+  with `PRISMIO_FREESTANDING` defined, compiled by the build for the program's own triple and CPU
+  features (`-neon,-fp-armv8`, `-mgeneral-regs-only`), cached with the native objects, and merged into the
+  program like the hosted runtime. No triple has to be packaged in advance, and a kernel's FP-off flags
+  reach the runtime too. `tools/package.py` ships the source beside the failure core.
+- **Only when used.** The import resolver tells the build when a freestanding program imports a `std`
+  module over `Vec` or `String` (`compiler_use_freestanding_runtime`); only then are the runtime merged and
+  `runtime/freestanding/libc.c` linked. A kernel that imports nothing links what it did before.
+- **A freestanding program is internalised.** Every function but `main` and the `export` aliases becomes
+  internal, as in a closed hosted program, because a kernel's C can only call those names. Without it, a
+  checkout -- which compiles `std` from source into the program -- kept every unused `std` function and
+  their references to Float text. The freestanding benchmarks did not move: 5 fewer, 15 level, 0 more
+  against C, as before.
+- **`prismio_freestanding.h`** stands in for the C headers: the allocator is `prismio_alloc`,
+  `prismio_realloc`, `prismio_free` (weak defaults in `panic.c` that stop the machine); the byte and string
+  functions and `qsort` are `libc.c`'s, weak; `fprintf` keeps its format and `exit` hands it to
+  `prismio_panic_hook`, so a runtime error still says what went wrong, without its numbers; locks and
+  thread-locals are nothing.
+- **Objects come from `rt_base_alloc`.** Codegen allocates objects with `malloc` in a hosted build, for the
+  aliasing facts LLVM knows about that name; a freestanding build names the runtime's seam instead
+  (`src/driver/compile.psm`), and `rt_free` was already the release half.
+- **Float text is compiled out**, not stubbed: `str_from_double` and the rest are absent, so a kernel that
+  formats a Float fails at link time naming the function, rather than printing nothing at run time.
+- **The string hash builds its 128-bit product from four 32-bit ones** where there is no `__int128`
+  (i686), and agrees with codegen's inline hash bit for bit (checked over 10 million pairs).
+- **`int_to_str` formats its digits by hand** instead of `sprintf`, in every build.
+

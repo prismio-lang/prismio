@@ -10,6 +10,12 @@
 // define its own copy of the two macros ahead of that include, which the
 // header's `#ifndef` guard tolerated -- two definitions that happened to agree.
 // One definition cannot disagree.
+// A `--freestanding` build has no C library: runtime/freestanding/runtime.c
+// compiles this file with PRISMIO_FREESTANDING, and prismio_freestanding.h stands
+// in for every header below.
+#ifdef PRISMIO_FREESTANDING
+#include "prismio_freestanding.h"
+#else
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -17,8 +23,11 @@
 // DBL_MAX, for the two infinities the round-trip search cannot reach.
 #include <float.h>
 #include <errno.h>
+#endif
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+// `__ARM_NEON` rather than the architecture alone: a kernel builds AArch64 with
+// NEON off (`-neon,-fp-armv8`), and the vector path must then compile out.
+#if (defined(__aarch64__) && defined(__ARM_NEON)) || defined(_M_ARM64)
 #include <arm_neon.h>
 #elif defined(__SSE2__)
 #include <emmintrin.h>
@@ -287,6 +296,12 @@ static int rt_arena_slot(void) {
     return *rt_arena_hint_state() > 0 ? arena_current_slot() : 0;
 }
 
+// Float text is the C library's `snprintf` and `strtod`, which a freestanding
+// program does not have, so the functions from here to the console printers are
+// not in its runtime. A kernel that formats or parses a Float gets the linker's
+// undefined-symbol error naming the function, at build time.
+#ifndef PRISMIO_FREESTANDING
+
 // **At most fifteen significant digits: the decimal a double certainly holds.**
 //
 // DBL_DIG is fifteen: any decimal of up to fifteen significant digits survives
@@ -464,6 +479,8 @@ void prismio_rt_eprintln_float(double value) {
     fflush(stderr);
 }
 
+#endif  // PRISMIO_FREESTANDING
+
 int str_equals(const char* s1, const char* s2) {
     return strcmp(s1, s2) == 0 ? 1 : 0;
 }
@@ -622,12 +639,25 @@ int prismio_cstr_len(const char* s) {
 // zeroed at all: `hi`'s low half is a length of at most twelve and K2's is
 // 0x6659FD93.
 //
-// Every target this compiler emits for is 64-bit (src/common/target.psm), so the
-// 128-bit product is the machine's own widening multiply and nothing more.
+// On a 64-bit target the 128-bit product is the machine's own widening multiply
+// and nothing more. A freestanding i686 kernel has no `__int128`, so there it is
+// built from four 32x32 products -- the same value, which it has to be: codegen
+// emits this hash inline for a short key, and both must agree.
 static inline int str_hash_words(uint64_t lo, uint64_t hi) {
-    unsigned __int128 product = (unsigned __int128)(lo ^ 0xBF58476D1CE4E5B9ULL)
-                              * (uint64_t)(hi ^ 0xD6E8FEB86659FD93ULL);
-    uint64_t h = (uint64_t)product ^ (uint64_t)(product >> 64) ^ (hi >> 32);
+    uint64_t a = lo ^ 0xBF58476D1CE4E5B9ULL;
+    uint64_t b = hi ^ 0xD6E8FEB86659FD93ULL;
+#ifdef __SIZEOF_INT128__
+    unsigned __int128 product = (unsigned __int128)a * b;
+    uint64_t low = (uint64_t)product;
+    uint64_t high = (uint64_t)(product >> 64);
+#else
+    uint64_t a0 = (uint32_t)a, a1 = a >> 32, b0 = (uint32_t)b, b1 = b >> 32;
+    uint64_t p00 = a0 * b0, p01 = a0 * b1, p10 = a1 * b0, p11 = a1 * b1;
+    uint64_t mid = (p00 >> 32) + (uint32_t)p01 + (uint32_t)p10;
+    uint64_t low = (mid << 32) | (uint32_t)p00;
+    uint64_t high = p11 + (p01 >> 32) + (p10 >> 32) + (mid >> 32);
+#endif
+    uint64_t h = low ^ high ^ (hi >> 32);
     return (int)(h & 0x7FFFFFFF);
 }
 
@@ -728,7 +758,7 @@ int str_find_byte(const char* s, int from, char b) {
 static inline int str_pair_scan(const char* s, int from, int last,
                                 int offset1, char byte1, int offset2, char byte2) {
     int i = from;
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if (defined(__aarch64__) && defined(__ARM_NEON)) || defined(_M_ARM64)
     uint8x16_t want1 = vdupq_n_u8((uint8_t)byte1);
     uint8x16_t want2 = vdupq_n_u8((uint8_t)byte2);
     // A two-vector unroll gives the core two independent load/compare chains;
@@ -1022,9 +1052,21 @@ char* str_append_reuse(char* base, int base_length, long long base_word,
                                  NULL, 0, NULL, 0, NULL, 0, NULL, 0);
 }
 
+// Digits by hand rather than sprintf, which a freestanding program has none of.
+// The magnitude is taken as unsigned, so INT_MIN negates without overflow.
 char* int_to_str(int n) {
     char* result = (char*)rt_alloc(32);  // enough for any int
-    sprintf(result, "%d", n);
+    char digits[12];
+    int count = 0;
+    unsigned magnitude = n < 0 ? 0u - (unsigned)n : (unsigned)n;
+    do {
+        digits[count++] = (char)('0' + magnitude % 10);
+        magnitude /= 10;
+    } while (magnitude);
+    int at = 0;
+    if (n < 0) result[at++] = '-';
+    while (count) result[at++] = digits[--count];
+    result[at] = '\0';
     return result;
 }
 
@@ -1461,6 +1503,9 @@ static void aif_ledger_enter(void) {
     InitOnceExecuteOnce(&aif_ledger_once, aif_ledger_init, NULL, NULL);
     PRISMIO_MUTEX_LOCK(&aif_ledger_lock);
 }
+#elif defined(PRISMIO_FREESTANDING)
+static PRISMIO_MUTEX_T aif_ledger_lock;
+static void aif_ledger_enter(void) { PRISMIO_MUTEX_LOCK(&aif_ledger_lock); }
 #else
 static PRISMIO_MUTEX_T aif_ledger_lock = PTHREAD_MUTEX_INITIALIZER;
 static void aif_ledger_enter(void) { PRISMIO_MUTEX_LOCK(&aif_ledger_lock); }
@@ -1853,6 +1898,9 @@ static void cyc_leave(void) {
     if (!prismio_memory_threads_are_enabled()) return;
     LeaveCriticalSection(&cyc_state_lock);
 }
+#elif defined(PRISMIO_FREESTANDING)
+static void cyc_enter(void) {}
+static void cyc_leave(void) {}
 #else
 static pthread_once_t cyc_lock_once = PTHREAD_ONCE_INIT;
 static pthread_mutex_t cyc_state_lock;
