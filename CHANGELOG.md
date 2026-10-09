@@ -227,6 +227,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   A function building a four-element literal runs in 0.80× of the time and an
   eight-element one in 0.64× (`Vec` capacity of `[7]`, `[1, 2, 3]` and `[1, …, 8]`
   was 4, 4, 8 and is 1, 3, 8).
+- **A copy loop is one `memcpy`, and a repeated one is deleted.** `for i in a..<n
+  { dst[i] = src[i] }` on two flat `Vec`s now becomes a single block transfer under
+  a length guard, as the `while` spelling already did. The transfer is a `memcpy`
+  skipped when both names are one list, and it tells LLVM the two blocks are
+  separate allocations, so a copy nothing reads before the next identical one is
+  deleted — which is what C++ and Rust do with `std::vector` and `Vec`.
+  `large_buffer_copy` (eight identical rounds) goes from 1.16× of C++ and 1.17× of
+  Rust to 1.00× and 1.02× (6.5 → 5.6 ms, three interleaved pairs).
 - Compiling the compiler's own source is about 3% faster (0.677 s → 0.658 s, median of
   seven interleaved runs).
 - The bootstrap seed is no longer tracked in git. It is the `prismio-seed-<version>.ll`
@@ -270,6 +278,31 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   Where the result outlives the scope that made the arguments (returned, pushed, carried
   round a loop, assigned outward) the argument that is not returned is still leaked, and
   `docs/KNOWN_ISSUES.md` says what releasing it needs.
+- **A `match` arm that returned the payload it bound returned freed memory** when the
+  scrutinee was bound first: `let r = parse(t); match (r) { Result.Ok(v) => { return v } }`
+  printed eight NUL bytes where the text started (`--verify` does not show it, since its
+  allocator does not reuse a freed block at once). The drop guards followed `let`s and
+  assignments but not match binders, so `return v` was not seen to return `r`'s allocation
+  and `r` was dropped at the scope exit. A binder now counts as an alias of its scrutinee,
+  and a scalar identifier never does. The `Result` is kept alive on that path, which is a
+  leak and not a free: `test_273_match_payload_returned` pins 300 of 400 blocks and asserts
+  the values.
+- **An owned temporary read by index in a condition, or matched on, leaked.**
+  `if (v.sorted()[0] != 1)` (a `Vec` index is `list_get`, which the temporary-hoisting pass
+  did not treat as a scalar read) and `match (parse(text)) { ... }` (the scrutinee was
+  itself the temporary) now get a binding like the `let` the program could have written
+  (`test_251` 4 of 45 blocks leaked, now 0). A temporary on the right of `and`/`or` is
+  still not hoisted.
+- **`p.arguments = [...]` on a fresh `Process()` leaked the list the constructor made**, one
+  56-byte block per spawn. An assignment now releases the list it displaces when the
+  receiver is a local declared in the same block, nothing has touched it since (a store to
+  another field does not count), the right-hand side does not mention it, and the type is
+  reclaimed and releases that field as a list. `test_153`, `test_183`, `test_188`,
+  `test_258` and `test_259` read clean (33 blocks); a parameter, a loop, a second assignment
+  or any earlier read keeps the old behaviour. Across `tests/` under `--verify`: 192 leaked
+  blocks in 25 programs before, 163 in 19 after (plus the 300 pinned above), 0 violations.
+- `test_259_display_print` no longer fails its own stderr check under `--verify`, where the
+  child's ledger lands in the stderr it compares.
 - `expect(<owned temporary>)` is hoisted so the temporary is released, and the hidden
   slots of `a ?? b` are zeroed before the enclosing branch, so a slot stored on one path
   is no longer released as garbage.

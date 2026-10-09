@@ -115,7 +115,7 @@ fn main() -> Int {
     // analysis rather than anything to do with `stripPrefix`, it is invisible to
     // `--verify` because both releases are ledger-legal, and it is the only place
     // in this fixture where the obvious spelling is the wrong one. See
-    // KNOWN_ISSUES.md. `Int?` and `Char?` above are unaffected:
+    // KNOWN_ISSUES.md, "Measuring". `Int?` and `Char?` above are unaffected:
     // their payloads own nothing.
     let maybeTail = s.stripPrefix("Hello, ")
     let stripped = unwrapOr(maybeTail, "!")

@@ -1,0 +1,27 @@
+// Probe for run_repeated_copy_test in test_runner.py: `large_buffer_copy`'s
+// shape. The eight rounds copy the same block, so seven are dead stores, and
+// deleting them takes knowing the two blocks are separate allocations.
+
+import std.io.println
+
+fn rounds(n: Int) -> Int {
+    let mut source = Vec<Int>.filled(n, 0)
+    let mut target = Vec<Int>.filled(n, 0)
+    for i in 0..<n {
+        source[i] = i % 97
+    }
+    for _ in 0..<8 {
+        for i in 0..<n {
+            target[i] = source[i]
+        }
+    }
+    let mut sum = 0
+    for value in target {
+        sum = sum + value
+    }
+    return sum
+}
+
+fn main() {
+    println(rounds(1000))
+}

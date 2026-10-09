@@ -1,5 +1,6 @@
-// MEM-006: `while (k < n) { list_set(dst, k, list_get(src, k)); k = k + 1 }` is
-// lowered to one `llvm.memmove` under a preheader guard.
+// MEM-006: `while (k < n) { list_set(dst, k, list_get(src, k)); k = k + 1 }`, and
+// `for k in a..<n { dst[k] = src[k] }`, are lowered to one `llvm.memcpy` under a
+// preheader guard. Two names for one list fail the guard and run the loop.
 //
 // The guard has to carry every precondition the loop satisfied implicitly, and
 // each arm below is one of them. `list_get` and `list_set` are total, so a bound
@@ -51,6 +52,48 @@ fn copyFrom(inout dst: Vec<Int>, src: Vec<Int>, start: Int, n: Int) -> Int {
         k = k + 1
     }
     return k
+}
+
+// The range `for` spellings of the two above. A `for` whose start is past its end
+// counts down, which is not a block move, so `copyFromFor(j, i2, 20, 16)` runs
+// the loop: 20, 19, 18, 17, every one of them past both lengths.
+fn copyAllFor(inout dst: Vec<Int>, src: Vec<Int>, n: Int) {
+    for k in 0..<n {
+        dst[k] = src[k]
+    }
+}
+
+fn copyFromFor(inout dst: Vec<Int>, src: Vec<Int>, start: Int, n: Int) {
+    for k in start..<n {
+        dst[k] = src[k]
+    }
+}
+
+// The benchmark's shape, with the source changed between rounds: only the last
+// round's copy is dead-store-free, and a transfer deleted as a repeat of the one
+// before it would leave the first round's values behind.
+fn copyRounds(inout dst: Vec<Int>, inout src: Vec<Int>, n: Int) -> Int {
+    let mut seen = 0
+    for round in 0..<3 {
+        for k in 0..<n {
+            dst[k] = src[k]
+        }
+        seen = seen + dst[0]
+        src[0] = src[0] + 10 + round
+    }
+    return seen
+}
+
+fn copyBytes(inout dst: Vec<Bool>, src: Vec<Bool>, n: Int) {
+    for k in 0..<n {
+        dst[k] = src[k]
+    }
+}
+
+fn copyFloats(inout dst: Vec<Float>, src: Vec<Float>, n: Int) {
+    for k in 0..<n {
+        dst[k] = src[k]
+    }
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {
@@ -121,6 +164,71 @@ fn main() -> Int {
     let mut p = filled(8, 0)
     bad = bad + check("FAIL: negative bound", copyAll(p, o, 0 - 5), 0)
     bad = bad + check("FAIL: negative bound content", digest(p), digest(filled(8, 0)))
+
+    // The same arms through the range `for`.
+    let fa = filled(64, 100)
+    let mut fb = filled(64, 0)
+    copyAllFor(fb, fa, 64)
+    bad = bad + check("FAIL: for copyAll content", digest(fb), digest(fa))
+
+    let fc = filled(32, 200)
+    let mut fd = filled(8, 0)
+    copyAllFor(fd, fc, 32)
+    bad = bad + check("FAIL: for short dst length", fd.length, 8)
+    bad = bad + check("FAIL: for short dst content", digest(fd), digest(filled(8, 200)))
+
+    let fe = filled(8, 300)
+    let mut ff = filled(32, 7)
+    copyAllFor(ff, fe, 32)
+    bad = bad + check("FAIL: for short src boundary", ff[7], 307)
+    bad = bad + check("FAIL: for short src tail", ff[8], 0)
+
+    let fg = filled(16, 400)
+    let mut fh = filled(16, 0)
+    copyFromFor(fh, fg, 4, 16)
+    bad = bad + check("FAIL: for copyFrom below start", fh[3], 3)
+    bad = bad + check("FAIL: for copyFrom at start", fh[4], 404)
+    bad = bad + check("FAIL: for copyFrom end", fh[15], 415)
+
+    let fi = filled(16, 500)
+    let mut fj = filled(16, 0)
+    copyFromFor(fj, fi, 20, 16)
+    bad = bad + check("FAIL: for descending range content", digest(fj), digest(filled(16, 0)))
+
+    let mut fk = filled(16, 600)
+    copyAllFor(fk, fk, 16)
+    bad = bad + check("FAIL: for aliased content", digest(fk), digest(filled(16, 600)))
+
+    let fl = filled(0, 0)
+    let mut fm = filled(0, 0)
+    copyAllFor(fm, fl, 0)
+    bad = bad + check("FAIL: for empty lists", fm.length, 0)
+
+    let fo = filled(8, 700)
+    let mut fp = filled(8, 0)
+    // `0..<-5` counts down from 0, so only element 0 is ever in range.
+    copyAllFor(fp, fo, 0 - 5)
+    bad = bad + check("FAIL: for negative bound head", fp[0], 700)
+    bad = bad + check("FAIL: for negative bound rest", fp[1], 1)
+
+    let mut rs = filled(4, 1)
+    let mut rd = filled(4, 0)
+    bad = bad + check("FAIL: rounds see each copy", copyRounds(rd, rs, 4), 1 + 11 + 22)
+    bad = bad + check("FAIL: rounds keep the last copy", rd[0], 22)
+    bad = bad + check("FAIL: rounds source", rs[0], 34)
+
+    let mut bs = Vec<Bool>.filled(9, false)
+    bs[3] = true
+    bs[8] = true
+    let mut bd = Vec<Bool>.filled(9, true)
+    copyBytes(bd, bs, 9)
+    bad = bad + check("FAIL: bytes copied", (bd[3] as Int) + (bd[8] as Int) * 2 + (bd[0] as Int) * 4, 3)
+
+    let mut xs = Vec<Float>.filled(5, 1.5)
+    xs[4] = 2.25
+    let mut xd = Vec<Float>.filled(5, 0.0)
+    copyFloats(xd, xs, 5)
+    bad = bad + check("FAIL: floats copied", (xd[0] * 4.0 + xd[4] * 4.0) as Int, 15)
 
     if (bad != 0) { return 1 }
     println("PASS: whole buffer copy")

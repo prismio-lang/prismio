@@ -5037,6 +5037,7 @@ def run_failure_builtins_test():
     print(f"{GREEN}[PASS] panic, unreachable, assert and exit report, exit and keep the guard{RESET}")
     return True
 
+
 def run_std_mem_failures_test():
     """std.mem's checked failures, and what `--verify` says about manual memory.
 
@@ -5092,7 +5093,6 @@ def run_std_mem_failures_test():
         return False
     print(f"{GREEN}[PASS] std.mem reports a bad access, a full arena, a leak and a double free{RESET}")
     return True
-
 
 
 def run_scalar_optional_test():
@@ -7758,6 +7758,15 @@ def run_aif_verify_test():
     expected_leaks = {
         # 2026-09-30: every case in it leaked, dangled or failed to compile.
         "test_236_owned_temporaries_and_literals": 0,
+        # 2026-10-09: an index read off an owned temporary in an `if`
+        # (`v.sorted()[0]`) and a `match` on an owned call result each get a
+        # binding now. Before, every use leaked a header and an element block.
+        "test_272_temporary_hoists": 0,
+        # 2026-10-09: 300 of 400, pinned. The arm returns the matched payload, so
+        # the `Result` it was bound out of must outlive the match and is not
+        # released -- a leak where the bound spelling used to return freed memory.
+        # If this goes to 0, check the values first: the fixture asserts them.
+        "test_273_match_payload_returned": 300,
         # 2026-09-30: scalar T? in every container, as values; Vec<Int?> did
         # not pass the LLVM verifier before.
         "test_238_scalar_optionals": 0,
@@ -8691,6 +8700,59 @@ def run_overflow_checks_test():
         return False
     print(f"{GREEN}[PASS] overflow checks: default wraps and emits no intrinsic; "
           f"--overflow-checks names the operator and the line{RESET}")
+    return True
+
+
+def run_repeated_copy_test():
+    """A block copy repeated eight times leaves one `memcpy`.
+
+    `for i in 0..<n { target[i] = source[i] }` is MEM-006's block transfer, and
+    in `large_buffer_copy` it runs eight identical rounds. C++ and Rust keep one:
+    their buffers are `noalias` allocations, so DSE sees each round overwrite the
+    last without reading it. A Prismio buffer is a load out of a list header, and
+    without `separate_storage` on the copy LLVM kept all eight -- 1.16x of C++.
+
+    Exactly one, read in the optimised IR of the probe's function: none means the
+    `for` form no longer reaches the block copy, and eight means the rounds are
+    no longer deleted. The output checks that what was kept is the right copy.
+    """
+    print(f"\n{BLUE}--- Running repeated_copy ---{RESET}")
+    src = TEST_DIR / "repeated_copy_probe.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-repeated-copy-") as td:
+        ll = Path(td) / "probe.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(src), "-O3", "-o", str(ll)])
+        if built.returncode != 0 or not ll.exists():
+            problems.append(f"IR build failed: "
+                            f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+        else:
+            text = ll.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"define [^@\n]*@rounds__Int\(.*?\n}\n", text, re.S)
+            body = m.group(0) if m else ""
+            copies = body.count("call void @llvm.memcpy")
+            if not body:
+                problems.append("rounds__Int is not in the IR")
+            elif copies != 1:
+                problems.append(f"rounds__Int has {copies} memcpy calls, expected 1")
+            elif "separate_storage" not in body:
+                problems.append("the copy is not behind a separate_storage assume")
+
+        exe = Path(td) / ("probe" + (".exe" if os.name == "nt" else ""))
+        built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(exe)])
+        if built.returncode != 0:
+            problems.append(f"build failed: "
+                            f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+        else:
+            ok, out, _ = run_program(exe)
+            if not ok or out.strip() != "46995":
+                problems.append(f"probe printed {out.strip()!r}, expected 46995")
+
+    if problems:
+        print(f"{RED}[FAIL] repeated copy{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] repeated copy{RESET}")
     return True
 
 
@@ -9785,6 +9847,7 @@ def main():
         ("string_operator_ledger", run_string_operator_ledger_test),
         ("overflow_checks", run_overflow_checks_test),
         ("byte_loop_vectorise", run_byte_loop_vectorise_test),
+        ("repeated_copy", run_repeated_copy_test),
         ("cold_function", run_cold_function_test),
         ("identifier_security", run_identifier_security_test),
         ("curated_closure", run_curated_closure_test),

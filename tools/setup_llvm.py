@@ -7,7 +7,7 @@ recorded below, and prepares it under `third_party/llvm`. Nothing already
 installed -- Homebrew, apt, `llvm-config` on PATH -- is consulted. That used to
 be the default, and it meant every compiler binary loaded Homebrew's
 `libLLVM-C.dylib` by an absolute path that a `brew upgrade llvm` repointed
-(KNOWN_ISSUES "Toolchain layout", 2026-09-17).
+(fixed 2026-09-17; the LLVM is vendored).
 
 What the backend (runtime/llvm-api-backend.c) needs from it:
 

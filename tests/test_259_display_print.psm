@@ -72,7 +72,10 @@ fn main() -> Int {
 
     let want = "1.4\nversion: 1.4\nhi\nnone\n7\nheader: hi\nada\nnone\nname: ada\n1.4 7\n"
     if (out.equals(want) == false) { return fail("stdout: ".concat(out)) }
-    if (err.equals("1.4\n") == false) { return fail("stderr: ".concat(err)) }
+    // Exactly "1.4\n" -- except under `--verify`, where the child appends its own
+    // `aif-` ledger lines to the stderr it was started with.
+    if (err.startsWith("1.4\n") == false) { return fail("stderr: ".concat(err)) }
+    if (err.length != 4 and err.contains("aif-") == false) { return fail("stderr: ".concat(err)) }
 
     println("PASS: display print")
     return 0

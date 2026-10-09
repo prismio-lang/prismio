@@ -2832,30 +2832,43 @@ int ir_list_is_flat(const char *list, int stride) {
                                       LLVMConstInt(i32, (unsigned long long)stride, 0), ""));
 }
 
-// The whole-buffer copy, as one `llvm.memmove`.
+// The whole-buffer copy, as one `llvm.memcpy` LLVM is told the operands of.
 //
-// `while (k < n) { list_set(dst, k, list_get(src, k)); k = k + 1 }` is a block
-// move written a word at a time. LLVM vectorises it -- four `ldp q`/`stp q` a
-// turn -- and that is still not what libc does for a megabyte: `memmove` on this
-// target picks its own width, prefetch distance and non-temporal hint from the
-// length, which no unrolled loop in the caller can. The caller's guard has
-// already proved both containers are flat at this stride and that `count` is
-// within both lengths, so the transfer is exactly `(count - from) * stride`
-// bytes and the totality of `list_get`/`list_set` cannot be observed.
+// `list_set(dst, k, list_get(src, k))` over `[from, count)` is a block move
+// written a word at a time. LLVM vectorises it -- four `ldp q`/`stp q` a turn --
+// and that is still not what libc does for a megabyte: `memcpy` on this target
+// picks its own width, prefetch distance and non-temporal hint from the length,
+// which no unrolled loop in the caller can. The caller's guard has already
+// proved both containers are flat at this stride and that `count` is within both
+// lengths, so the transfer is exactly `(count - from) * stride` bytes and the
+// totality of `list_get`/`list_set` cannot be observed.
 //
-// **`memmove`, not `memcpy`, and not out of caution.** `dst` and `src` are two
-// names, and nothing stops them being two bindings of the same list; a `memcpy`
-// whose regions coincide exactly is undefined even though every implementation
-// would survive it. On this target both land in the same libsystem entry for a
-// disjoint copy, so the choice costs nothing measurable and removes the
-// obligation to prove disjointness.
+// **The guard has also proved `dst->data != src->data`, and that makes the two
+// blocks separate allocations.** Every `data` is its own `rt_alloc` or arena bump
+// (E5, and every `l->data =` in lang_runtime.c), so two element blocks are one
+// block or disjoint; two bindings of one list are the only overlap there is, and
+// the guard sends those to the loop. Separate allocations is a fact LLVM can be
+// given and alias analysis then answers from: `separate_storage`. Calling this
+// without that test in the guard is undefined behaviour, not a slow path.
+//
+// That fact is what lets the copy be deleted when nothing reads it. Without it
+// LLVM keeps every one of `large_buffer_copy`'s eight identical rounds, even
+// fully unrolled into eight straight-line `memcpy`s: DSE cannot prove the second
+// round's read of `src` does not observe the first round's write to `dst`. C++
+// and Rust get one copy because their buffers are `noalias` allocation results
+// in the caller; a Prismio buffer is a load out of a header, and no metadata on
+// that load answers the question -- LoopIdiom and DSE both ask BasicAA without
+// AA tags, and a single `memcpy` carries one tag set for both operands.
+// Measured on the benchmark's shape in IR at -O3: `memmove` 8, `memcpy` 8,
+// `memcpy` behind `separate_storage` 1.
 void ir_list_flat_copy(const char *dst, const char *src, const char *from,
                        const char *count, int stride) {
     if (block_done()) return;
     LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(g_ctx);
     LLVMTypeRef i8 = LLVMInt8TypeInContext(g_ctx);
-    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(g_ctx);
+    LLVMTypeRef voidty = LLVMVoidTypeInContext(g_ctx);
     LLVMTypeRef listty = rt_list_header_type();
 
     LLVMValueRef dst_hdr = resolve_value(dst, "ptr");
@@ -2873,29 +2886,32 @@ void ir_list_flat_copy(const char *dst, const char *src, const char *from,
         LLVMBuildStructGEP2(g_builder, listty, src_hdr, RT_LIST_FIELD_DATA, ""), "");
     tag_list_header(src_data, "ptr");
 
+    LLVMTypeRef assume_ty = LLVMFunctionType(voidty, &i1, 1, 0);
+    LLVMValueRef assume = LLVMGetNamedFunction(g_module, "llvm.assume");
+    if (!assume) assume = LLVMAddFunction(g_module, "llvm.assume", assume_ty);
+    LLVMValueRef blocks[2] = {dst_data, src_data};
+    LLVMOperandBundleRef separate =
+        LLVMCreateOperandBundle("separate_storage", strlen("separate_storage"), blocks, 2);
+    LLVMValueRef yes = LLVMConstInt(i1, 1, 0);
+    LLVMBuildCallWithOperandBundles(g_builder, assume_ty, assume, &yes, 1, &separate, 1, "");
+    LLVMDisposeOperandBundle(separate);
+
     LLVMValueRef offset = LLVMBuildMul(g_builder, begin, width, "");
     LLVMValueRef dst_at = LLVMBuildGEP2(g_builder, i8, dst_data, &offset, 1, "");
     LLVMValueRef src_at = LLVMBuildGEP2(g_builder, i8, src_data, &offset, 1, "");
     LLVMValueRef bytes = LLVMBuildMul(
         g_builder, LLVMBuildSub(g_builder, end, begin, ""), width, "");
 
-    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "llvm.memmove.p0.p0.i64");
-    if (!fn) {
-        LLVMTypeRef params[4] = {ptrty, ptrty, i64, LLVMInt1TypeInContext(g_ctx)};
-        LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);
-        fn = LLVMAddFunction(g_module, "llvm.memmove.p0.p0.i64", fnty);
-    }
-    LLVMTypeRef params[4] = {ptrty, ptrty, i64, LLVMInt1TypeInContext(g_ctx)};
-    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 4, 0);
-    LLVMValueRef args[4] = {
-        dst_at, src_at, bytes, LLVMConstInt(LLVMInt1TypeInContext(g_ctx), 0, 0)
-    };
-    LLVMValueRef move = LLVMBuildCall2(g_builder, fnty, fn, args, 4, "");
+    LLVMTypeRef params[4] = {ptrty, ptrty, i64, i1};
+    LLVMTypeRef memcpy_ty = LLVMFunctionType(voidty, params, 4, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "llvm.memcpy.p0.p0.i64");
+    if (!fn) fn = LLVMAddFunction(g_module, "llvm.memcpy.p0.p0.i64", memcpy_ty);
+    LLVMValueRef args[4] = {dst_at, src_at, bytes, LLVMConstInt(i1, 0, 0)};
+    LLVMValueRef move = LLVMBuildCall2(g_builder, memcpy_ty, fn, args, 4, "");
     // Both ends are element blocks, so the transfer says nothing about any
     // header -- which is what lets the length load feeding the caller's loop
     // bound stay hoisted across it.
     tag_list_region(move, 1);
-    (void)i32;
 }
 
 void ir_list_flat_zero_append(const char *list, const char *count, int stride) {

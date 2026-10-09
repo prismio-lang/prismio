@@ -49,7 +49,7 @@ now at or under parity.
 | `lz4_compress` | 1.28x | 1.23x | match search over bytes |
 | `string_search` | 1.27x | 0.75x | as for `edit_distance`: a gap against one reference only |
 | `key_value_update` | 1.25x | 0.39x | §3.1: inlining across the map's calls |
-| `large_buffer_copy` | 1.14x | 1.02x | the fill phase is page-fault bound (E4) |
+| `large_buffer_copy` | 1.00x | 1.02x | closed 2026-10-09 (was 1.16x/1.17x): C++ and Rust fold the 8 identical copy rounds into one `memcpy`, and so does Prismio now that the block copy reaches the range `for` and carries `separate_storage` (MEM-006 below) |
 
 Against Rust, `memcpy_mix` (2.01x) and `vector_growth` (1.41x) are the only
 other large ratios. Both are at parity with C++.
@@ -98,7 +98,7 @@ So nobody re-derives these. The evidence file is the record.
 | Curated runtime closure (gap 10) | closed | `RESULTS-curate-scalar-write.md` |
 | Loop range guard wrap, TBAA audit (MEM-023, 024) | done | `RESULTS-loop-range-monotonicity.md` |
 | Container-aware layout veto (MEM-003) | done | `aifLayoutVetoListElements`, `src/aif/layout.psm` |
-| Whole-buffer copy (MEM-006) | done | `RESULTS-whole-buffer-copy.md` |
+| Whole-buffer copy (MEM-006) | done, for `while` and range `for`; a `memcpy` behind `separate_storage`, so repeats are dead stores | `RESULTS-whole-buffer-copy.md`, `ir_list_flat_copy` |
 | Enum null-pointer optimisation (MEM-031) | done for boxed recursive binary enums | `RESULTS-enum-null.md` |
 | Short strings inline (MEM-032, MEM-010's slot half) | done: German strings ship | [Runtime surface](https://developers.prismio.org/runtime/supported-surface), [String representation](https://developers.prismio.org/compiler/string-representation) |
 | Single-threaded cycle-lock bypass (MEM-033) | done, worth ~0 | `RESULTS-cyc-lock-bypass.md` |
@@ -147,8 +147,12 @@ just give the same checksum (`benchmarks/README.md`).
 
 **A changed IR is not a result.** Look at the machine code
 (`tools/fn_mnemonic_diff.py`), then run a balanced A/B. Phase-time a benchmark
-before choosing a lever (E4): `large_buffer_copy`'s fill phase is page-fault
-bound, which no instruction-level change can reach.
+before choosing a lever (E4): `large_buffer_copy`'s fill phase was assumed to be
+page-fault bound and is 0.2 ms; the 1 ms gap was in the copy phase, where the
+other two arms delete seven of eight identical rounds. A per-phase probe found
+that in minutes, and an instruction-level change could not have reached it. What
+closed it was an aliasing fact, tested first in hand-written IR with `opt -O3`:
+`memmove` 8 copies, `memcpy` 8, `memcpy` behind `separate_storage` 1.
 
 **Correctness before timing.** A speedup does not prove ownership. The verifier,
 the differential, sanitizers and a negative test do. Reject a corpus median

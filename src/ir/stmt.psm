@@ -648,6 +648,30 @@ private fn generateVariableDecl(stmt: ASTNode) {
     }
 }
 
+// `p.items = other` releases the list it displaces when all of these hold:
+//
+//   * irMarkDisplacedFieldStores flagged the statement (`i3`): `p` is fresh in this
+//     block and untouched since, so no view of the old list is live and nothing
+//     else holds it;
+//   * the struct's type is reclaimed and releases its fields, and this field is
+//     released as a list. That is the same disposition the type's own release
+//     function (generateOwnedFieldRelease) uses, so the two cannot disagree about
+//     whether the field owns what it holds. A type nobody reclaims is the other
+//     case: its field values keep the owners they had (frameFieldAssignmentNeedsOwner),
+//     and freeing one here would be a second free;
+//   * the field is not counted -- that store has its own retain/release above.
+//
+// A Vec of owned elements is released by list_release as it is at the struct's
+// teardown. Anything else keeps leaking the displaced value, which is never wrong.
+private fn fieldStoreReleasesDisplaced(stmt: ASTNode, structName: String, field: String,
+                                       fieldType: String) -> Bool {
+    if (stmt.i3 != 1) { return false }
+    if (aif_type_releases(structName) != 1 or aif_type_is_reclaimed(structName) != 1) { return false }
+    if (aif_field_is_counted(structName, field) == 1) { return false }
+    if (isStructTypeKey(fieldType) or isArrayValueKey(fieldType)) { return false }
+    return aif_field_release(structName, field) == AIF_ELEM_LIST
+}
+
 private fn generateAssignment(stmt: ASTNode) {
     let targetNode = ptr_to_node(stmt.child1)
     if (targetNode.kind == NodeKind.IDENTIFIER_EXPR) {
@@ -781,6 +805,15 @@ private fn generateAssignment(stmt: ASTNode) {
         let slot = ir_struct_field_ptr(structName, objectVal, fieldIndex)
         irProfileField(structName, targetNode.s1, true)
         irProfileRange(structName, targetNode.s1, fieldType, val)
+        // The value this store displaces, read before the store overwrites it. Only
+        // for an assignment irMarkDisplacedFieldStores flagged and a field whose
+        // struct owns a list: see fieldStoreReleasesDisplaced.
+        let releasesDisplaced = fieldStoreReleasesDisplaced(stmt, structName, targetNode.s1, fieldType)
+        let mut displaced = ""
+        if (releasesDisplaced) {
+            displaced = ir_get_temp_name(ir_struct_load_ptr("ptr", ir_get_temp_name(slot),
+                                                            structName, fieldIndex))
+        }
         // CYCLES 3, the assignment half. Retain before releasing, so a store
         // of a value into the slot it already occupies does not free it
         // between the two.
@@ -806,6 +839,9 @@ private fn generateAssignment(stmt: ASTNode) {
         } else {
             ir_struct_store_ptr(fieldType, val, ir_get_temp_name(slot),
                                 structName, fieldIndex)
+        }
+        if (releasesDisplaced) {
+            generateDisplacedRelease(displaced, val, IR_DROP_LIST, "")
         }
     }
     if (targetNode.kind == NodeKind.IDENTIFIER_EXPR
@@ -1187,6 +1223,10 @@ private fn generateForDirection(stmt: ASTNode, endLabel: Int, plain: String, end
     irLoopHoistedBoundList = ""
     irLoopHoistedBoundValue = ""
     irLoopHoistedDataValue = ""
+    // MEM-006, before any guard of the loop's own, as in generateWhile.
+    if (down == false and forIsGeneral(stmt) == false) {
+        generateForBufferCopy(stmt, endVal, endLabel)
+    }
     irLoopPushGuard = generateForPushGuard(stmt, endVal, down)
     let flatSlot = generateLoopFlatGuard(ptr_null(), ptr_to_node(stmt.child3))
     let mut rangeSlot = ""

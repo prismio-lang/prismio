@@ -6,7 +6,7 @@
 // a key is released like any argument.
 //
 // Only one `Map<String, _>` here holds an owned key: two instantiations that
-// both do leak one (KNOWN_ISSUES, "Two `Map<String, _>` instantiations").
+// both used to leak one; the ledger reads clean now (fixed 2026-10-07).
 
 import std.io
 import std.map

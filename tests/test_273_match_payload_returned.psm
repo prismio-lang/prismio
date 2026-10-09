@@ -1,0 +1,69 @@
+// A `match` arm that returns the payload it bound: `Result.Ok(v) => { return v }`.
+//
+// The String leaves the function while the `Result` it was bound out of is still
+// the function's to drop, so the drop has to be declined -- a match binder is a
+// view of the scrutinee's payload, as `let v = r.field` is. Until 2026-10-09 the
+// alias walk (irValueAliasesName) did not see binders, and the bound form
+//
+//     let r = parse(text)
+//     match (r) { Result.Ok(v) => { return v } ... }
+//
+// returned freed memory: the first eight bytes of the String printed as NULs.
+// `--verify` does not show it (its allocator does not reuse the block at once), so
+// this fixture asserts the *values*, and is also run as an ordinary build by the
+// suite. The ledger is pinned below in run_aif_verify_test: the `Result` that must
+// outlive the match is not released, which is a leak and never a free.
+//
+// Both spellings are checked and must agree: `match (parse(text))` takes the
+// binding the hoist makes (irHoistBorrowedTemporaries), the other is written out.
+
+import std.io
+import std.option
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn parse(text: String) -> Result<String, String> {
+    if (text.length > 3) {
+        return Result<String, String>.Ok(text.concat("-parsed-with-a-long-suffix"))
+    }
+    return Result<String, String>.Err("an error message that is long enough to allocate")
+}
+
+fn payload(text: String) -> String {
+    match (parse(text)) {
+        Result.Ok(v) => { return v }
+        Result.Err(e) => { return e }
+    }
+}
+
+fn payloadBound(text: String) -> String {
+    let r = parse(text)
+    match (r) {
+        Result.Ok(v) => { return v }
+        Result.Err(e) => { return e }
+    }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    for i in 0..<50 {
+        let word = "an input word ".concat(i.toString())
+        let want = word.concat("-parsed-with-a-long-suffix")
+        if (payload(word).equals(want) == false) { bad = bad + fail("payload of an Ok") }
+        if (payloadBound(word).equals(want) == false) { bad = bad + fail("bound payload of an Ok") }
+        if (payload("ab").equals("an error message that is long enough to allocate") == false) {
+            bad = bad + fail("payload of an Err")
+        }
+        if (payloadBound("ab").equals("an error message that is long enough to allocate") == false) {
+            bad = bad + fail("bound payload of an Err")
+        }
+    }
+    if (bad != 0) { return 1 }
+    println("PASS: match payload returned")
+    return 0
+}

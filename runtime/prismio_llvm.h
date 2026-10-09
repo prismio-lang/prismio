@@ -111,6 +111,7 @@ typedef struct LLVMOpaqueValue *LLVMValueRef;
 typedef struct LLVMOpaqueBasicBlock *LLVMBasicBlockRef;
 typedef struct LLVMOpaqueBuilder *LLVMBuilderRef;
 typedef struct LLVMOpaqueMetadata *LLVMMetadataRef;
+typedef struct LLVMOpaqueOperandBundle *LLVMOperandBundleRef;
 
 typedef int LLVMBool;
 
@@ -400,6 +401,13 @@ LLVMValueRef LLVMBuildStructGEP2(LLVMBuilderRef, LLVMTypeRef Ty, LLVMValueRef Po
                                  unsigned Idx, const char *Name);
 LLVMValueRef LLVMBuildCall2(LLVMBuilderRef, LLVMTypeRef, LLVMValueRef Fn,
                             LLVMValueRef *Args, unsigned NumArgs, const char *Name);
+LLVMOperandBundleRef LLVMCreateOperandBundle(const char *Tag, size_t TagLen,
+                                             LLVMValueRef *Args, unsigned NumArgs);
+void LLVMDisposeOperandBundle(LLVMOperandBundleRef Bundle);
+LLVMValueRef LLVMBuildCallWithOperandBundles(LLVMBuilderRef, LLVMTypeRef, LLVMValueRef Fn,
+                                             LLVMValueRef *Args, unsigned NumArgs,
+                                             LLVMOperandBundleRef *Bundles,
+                                             unsigned NumBundles, const char *Name);
 LLVMValueRef LLVMBuildRet(LLVMBuilderRef, LLVMValueRef V);
 LLVMValueRef LLVMBuildRetVoid(LLVMBuilderRef);
 LLVMValueRef LLVMBuildBr(LLVMBuilderRef, LLVMBasicBlockRef Dest);

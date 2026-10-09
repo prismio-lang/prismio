@@ -1,0 +1,74 @@
+// Owned temporaries that nothing named, in two statement heads that were not
+// given a binding until 2026-10-09. The harness (run_aif_verify_test) runs this
+// under `--verify` and requires 0 leaked and 0 violations.
+//
+//   * A scalar read by index off an owned temporary in an `if` condition:
+//     `v.sorted()[0] != 1`. The member form (`text.split(',').length`) had a
+//     binding already; the index form fell through to "an effect comes first".
+//   * A `match` whose scrutinee is an owned call result: `match (parse(text))`.
+//     Bound first (`let r = parse(text)`), the same program was clean.
+//
+// Each case is looped, so a leak of one block per use reads as dozens, and each
+// returns a value that is checked: a balanced ledger does not show that the
+// wrong thing was released. A match whose arm *returns* the payload is
+// test_273_match_payload_returned.
+
+import std.io
+import std.option
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn parse(text: String) -> Result<String, String> {
+    if (text.length > 3) {
+        return Result<String, String>.Ok(text.concat("-parsed-with-a-long-suffix"))
+    }
+    return Result<String, String>.Err("an error message that is long enough to allocate")
+}
+
+// The scrutinee is a call; each arm reads the payload.
+fn measure(text: String) -> Int {
+    match (parse(text)) {
+        Result.Ok(v) => { return v.length }
+        Result.Err(e) => { return 0 - e.length }
+    }
+}
+
+// A match used for effect only, with a mutable local written in the arms.
+fn classify(text: String) -> Int {
+    let mut kind = 0
+    match (parse(text)) {
+        Result.Ok(v) => { kind = 1 }
+        Result.Err(e) => { kind = 2 }
+    }
+    return kind
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let v: Vec<Int> = [3, 1, 2, 5, 4]
+
+    for i in 0..<50 {
+        if (v.sorted()[i % 5] != i % 5 + 1) { bad = bad + fail("sorted()[i]") }
+        if (v.reversed()[0] != 4) { bad = bad + fail("reversed()[0]") }
+        if (v.toVec().length != 5) { bad = bad + fail("toVec().length") }
+        if (v.sorted()[0] != 1 or v[0] != 3) { bad = bad + fail("sorted()[0] or a plain read") }
+    }
+    if (v[0] != 3 or v[4] != 4) { bad = bad + fail("the source Vec was changed") }
+
+    for i in 0..<50 {
+        let word = "an input word ".concat(i.toString())
+        if (measure(word) != word.length + 26) { bad = bad + fail("measure of an Ok") }
+        if (measure("ab") != 0 - 48) { bad = bad + fail("measure of an Err") }
+        if (classify(word) != 1 or classify("ab") != 2) { bad = bad + fail("classify") }
+    }
+
+    if (bad != 0) { return 1 }
+    println("PASS: temporary hoists")
+    return 0
+}

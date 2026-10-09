@@ -61,7 +61,7 @@ Configuration held equal for every arm:
 | Alignment | strict (`-mstrict-align`, `+strict-align`): with the MMU off every access is to device memory and an unaligned one faults. Without this clang merges adjacent loads into a wider one and the guest dies at the exception vector |
 | Optimisation | C `-O3`, Rust `opt-level=3` with fat LTO and one codegen unit, Prismio's default pipeline |
 | Linking | the same script (`harness/link.ld`), `--gc-sections` |
-| Build directory | Prismio builds from `benchmarks/build/freestanding`, not the repository root: a working directory containing `runtime/` makes the compiler use that source tree's runtime and internalise nothing, which costs it code and instructions |
+| Build directory | Prismio builds from `benchmarks/build/freestanding`, not the repository root, to keep the build away from the source tree. An earlier version of this note said a working directory containing `runtime/` made the compiler internalise nothing (512 bytes, 200,000 instructions on `heapsort`); that did not reproduce on 2026-10-09, when the suite built byte-identical (87,120 bytes) from the root and from an empty directory, with the runner's environment |
 | Allocation | none. Every workload keeps its arrays in the frame |
 
 **Integer overflow is a difference, kept on purpose.** C's signed overflow is undefined and Prismio's

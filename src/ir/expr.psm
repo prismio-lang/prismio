@@ -465,6 +465,11 @@ private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
 
     if (e.kind == NodeKind.IDENTIFIER_EXPR) {
         if (e.s1.equals(name)) { return true }
+        // A scalar -- an `Int` payload read out of a match, say -- is a value and
+        // not a pointer, so it cannot be the allocation `name` holds.
+        if (nodeHasType(e) and scalarInlineBytes(storageType(typeIrKey(nodeGetType(e)))) > 0) {
+            return false
+        }
         // A binding already being chased adds nothing: what it may hold is the
         // union of what is written into it, and this is one of those writes
         // coming back round. Without it `acc = mapAdd(acc, 1)` chased `acc`
@@ -545,9 +550,34 @@ private fn nodeBindingAliasesName(nodePtr: Ptr, boundName: String, name: String,
         }
     }
 
+    // A match arm binds names to the scrutinee's payload: `Result.Ok(v)` makes `v`
+    // a view of what `r` holds, as `let v = r.field` would. Without this a
+    // `return v` was not seen to return `r`'s allocation, `r` was dropped at the
+    // scope exit, and the caller read freed memory.
+    if (n.kind == NodeKind.MATCH_STATEMENT and irMatchBindsName(n, boundName)) {
+        if (irValueAliasesName(n.child1, name, hops)) { return true }
+    }
+
     if (chainBindingAliasesName(n.child1, boundName, name, hops)) { return true }
     if (chainBindingAliasesName(n.child2, boundName, name, hops)) { return true }
     return chainBindingAliasesName(n.child3, boundName, name, hops)
+}
+
+// Whether some arm of this match binds `boundName` out of its pattern.
+private fn irMatchBindsName(stmt: ASTNode, boundName: String) -> Bool {
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (arm.kind == NodeKind.MATCH_ARM and nodeExists(arm.child1)) {
+            let mut binder = ptr_to_node(arm.child1).child2
+            while (nodeExists(binder)) {
+                if (ptr_to_node(binder).s1.equals(boundName)) { return true }
+                binder = ptr_to_node(binder).next
+            }
+        }
+        armPtr = arm.next
+    }
+    return false
 }
 
 private fn chainBindingAliasesName(head: Ptr, boundName: String, name: String, hops: Int) -> Bool {
@@ -655,11 +685,125 @@ internal fn irHoistBorrowedTemporaries(nodePtr: Ptr) {
     let n = ptr_to_node(nodePtr)
     if (n.kind == NodeKind.BLOCK and aif_auto_arena_at_node(nodePtr) == 0) {
         n.child1 = irHoistChain(n.child1)
+        irMarkDisplacedFieldStores(n.child1)
         return
     }
     irHoistWithin(n.child1)
     irHoistWithin(n.child2)
     irHoistWithin(n.child3)
+}
+
+// `p.items = other` on a struct this block made, as its first use of `p`: the value
+// the field held is the struct's alone and nothing can still be reading it, so the
+// assignment may release it (generateAssignment reads the flag left in `i3`).
+//
+// The proof is syntactic and short on purpose. The field's disposition says the
+// struct owns whatever the field holds, and the type-level facts that decide that
+// are checked where the release is emitted; what they cannot say is whether a view
+// of the old value is live across the store, and a view needs a first use of `p`:
+//
+//   * `p` is declared in this very block by a struct literal or by a call whose
+//     result this scope owns, so it is fresh and not a parameter, a global or a
+//     name for something else;
+//   * no statement between that declaration and the assignment mentions `p` -- no
+//     read of the field, no call that was handed `p`, no alias made of it;
+//   * the right-hand side does not mention `p` either: `p.items = f(p.items)` would
+//     store a value that is, or contains, the one being released;
+//   * the assignment is a direct statement of that block, so nothing loops between
+//     the declaration and the store. A second assignment to the same field is not
+//     flagged, because the first one is a mention.
+//
+// An assignment the block does not flag keeps the old behaviour, which leaks the
+// displaced value and is never wrong.
+private fn irMarkDisplacedFieldStores(head: Ptr) {
+    let mut p = head
+    let mut index = 0
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT and irDisplacedFieldStoreIsFresh(head, index)) {
+            stmt.i3 = 1
+        }
+        p = stmt.next
+        index = index + 1
+    }
+}
+
+// `index` is the assignment's position in the list; a position and not a pointer,
+// because two Ptrs compare by the bytes of the nodes they name.
+private fn irDisplacedFieldStoreIsFresh(head: Ptr, index: Int) -> Bool {
+    let mut at = head
+    for i in 0..<index { at = ptr_to_node(at).next }
+    let stmt = ptr_to_node(at)
+    if (nodeIsNull(stmt.child1) or nodeIsNull(stmt.child2)) { return false }
+    let target = ptr_to_node(stmt.child1)
+    if (target.kind != NodeKind.MEMBER_ACCESS_EXPR or nodeIsNull(target.child1)) { return false }
+    let object = ptr_to_node(target.child1)
+    if (object.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let name = object.s1.clone()
+    if (irNodeMentionsName(stmt.child2, name)) { return false }
+
+    // Walk to the assignment, remembering whether the latest declaration of `name`
+    // in this list is fresh and whether anything has touched it since.
+    let mut found = false
+    let mut fresh = false
+    let mut touched = false
+    let mut q = head
+    for i in 0..<index {
+        let before = ptr_to_node(q)
+        if (before.kind == NodeKind.VARIABLE_DECL and before.s1.equals(name)) {
+            found = true
+            touched = false
+            fresh = irInitializerIsFresh(before.child2)
+        } else if (found and irNodeMentionsName(q, name)
+                and irIsOtherFieldStore(before, name, target.s1) == false) {
+            touched = true
+        }
+        q = before.next
+    }
+    return found and fresh and touched == false
+}
+
+// `name.other = value` with a value that does not mention `name`: it writes a
+// different field and reads nothing of the struct, so it cannot have taken a view
+// of the one being replaced. This is the common order -- `p.program = ...` ahead of
+// `p.arguments = ...` -- and treating it as a touch would decline nearly every use.
+private fn irIsOtherFieldStore(stmt: ASTNode, name: String, field: String) -> Bool {
+    if (stmt.kind != NodeKind.ASSIGNMENT_STATEMENT) { return false }
+    if (nodeIsNull(stmt.child1) or nodeIsNull(stmt.child2)) { return false }
+    let target = ptr_to_node(stmt.child1)
+    if (target.kind != NodeKind.MEMBER_ACCESS_EXPR or nodeIsNull(target.child1)) { return false }
+    if (target.s1.equals(field)) { return false }
+    let object = ptr_to_node(target.child1)
+    if (object.kind != NodeKind.IDENTIFIER_EXPR or object.s1.equals(name) == false) { return false }
+    return irNodeMentionsName(stmt.child2, name) == false
+}
+
+// A struct literal, or a call whose result the caller owns (`Process()`).
+private fn irInitializerIsFresh(init: Ptr) -> Bool {
+    if (nodeIsNull(init)) { return false }
+    let e = ptr_to_node(init)
+    if (e.kind == NodeKind.STRUCT_LITERAL_EXPR) { return true }
+    if (e.kind != NodeKind.CALL_EXPR) { return false }
+    return aif_owns_call_result_at_node(init) != AIF_ELEM_NONE
+}
+
+// Whether `name` appears anywhere under this statement or expression.
+private fn irNodeMentionsName(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR and n.s1.equals(name)) { return true }
+    if (irChainMentionsName(n.child1, name)) { return true }
+    if (irChainMentionsName(n.child2, name)) { return true }
+    return irChainMentionsName(n.child3, name)
+}
+
+private fn irChainMentionsName(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (irNodeMentionsName(p, name)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
 }
 
 private fn irHoistWithin(head: Ptr) {
@@ -699,8 +843,21 @@ private fn irHoistOne(stmt: ASTNode) -> Ptr {
     if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(stmt.child1)) {
         if (ptr_to_node(stmt.child1).kind == NodeKind.IDENTIFIER_EXPR) { root = stmt.child2 }
     }
+    if (stmt.kind == NodeKind.MATCH_STATEMENT) { root = stmt.child1 }
     if (nodeIsNull(root)) { return ptr_null() }
-    if (irFindBorrowedTemporary(ptr_to_node(root)) != 1) { return ptr_null() }
+    if (irFindBorrowedTemporary(ptr_to_node(root)) != 1) {
+        // `match (parse(text)) { ... }`: the scrutinee is itself the owned
+        // temporary. It is evaluated before anything else in the statement, so
+        // binding it first reorders nothing, and the binding is dropped at the
+        // scope exit like the `let r = parse(text)` the program could have
+        // written -- which is the shape that was already clean.
+        if (stmt.kind != NodeKind.MATCH_STATEMENT) { return ptr_null() }
+        if (irArgumentIsOwnedTemporary(ptr_to_node(root)) == false) { return ptr_null() }
+        irHoistCall = node_to_ptr(stmt)
+        irHoistPrev = ptr_null()
+        irHoistArg = root
+        irHoistSlot = 1
+    }
 
     let arg = ptr_to_node(irHoistArg)
     let name = "bt.".concat(irBorrowedTempCounter.toString())
@@ -728,6 +885,18 @@ private fn irHoistOne(stmt: ASTNode) -> Ptr {
     decl.child2 = irHoistArg
     decl.typeInfo = arg.typeInfo
     return node_to_ptr(decl)
+}
+
+// A scalar element read off a Vec: `v.sorted()[0]` is sema's `list_get(sorted(v), 0)`,
+// and an `Int` read cannot alias the list it came from, so the list may die at the
+// scope exit like any binding. It is the index spelling of the field read
+// `text.split(',').length` that irFindBorrowedTemporary already hoists; sema turns
+// every Vec index into this call (semaIndexExpr), so an INDEX_EXPR never has a Vec
+// for an object by the time this runs.
+private fn irCallIsScalarElementRead(call: ASTNode) -> Bool {
+    if (nodeIsNull(call.child1) or nodeIsNull(call.child2)) { return false }
+    if (ptr_to_node(call.child1).s1.equals("list_get") == false) { return false }
+    return scalarInlineBytes(storageType(typeIrKey(nodeGetType(call)))) > 0
 }
 
 // 1 found, 0 nothing yet and nothing with an effect, -1 an effect comes first.
@@ -766,6 +935,7 @@ private fn irFindBorrowedTemporary(e: ASTNode) -> Int {
 
     let withholds = irCallWithholdsTemporaries(e)
     let coalesces = irCallIsCoalesce(e)
+    let scalarRead = irCallIsScalarElementRead(e)
     let mut prev = ptr_null()
     let mut a = e.child2
     while (nodeExists(a)) {
@@ -775,7 +945,7 @@ private fn irFindBorrowedTemporary(e: ASTNode) -> Int {
         if (coalesces and nodeExists(prev)) { return 0 - 1 }
         let inner = irFindBorrowedTemporary(arg)
         if (inner == 1) { return 1 }
-        if (withholds and irArgumentIsOwnedTemporary(arg)) {
+        if ((withholds or (scalarRead and nodeIsNull(prev))) and irArgumentIsOwnedTemporary(arg)) {
             irHoistCall = node_to_ptr(e)
             irHoistPrev = prev
             irHoistArg = a
@@ -1992,10 +2162,11 @@ private fn irStableReceiver(p: Ptr, bodyPtr: Ptr) -> Bool {
 }
 
 // MEM-006. `while (k < n) { list_set(dst, k, list_get(src, k)); k = k + 1 }` is a
-// block move written a word at a time, and the loop range guard is what makes it
-// safe to say so: with `[k, n)` inside both lengths, every iteration is a plain
-// load and a plain store at the same offset, and `list_get`/`list_set` totality
-// is never reached.
+// block move written a word at a time, and so is `for k in a..<n { dst[k] = src[k] }`,
+// which sema has already rewritten into the same call. The loop range guard is
+// what makes it safe to say so: with `[k, n)` inside both lengths, every
+// iteration is a plain load and a plain store at the same offset, and
+// `list_get`/`list_set` totality is never reached.
 //
 // Emitted as a *version*, exactly like the range guard: the ordinary loop is
 // still there on the false arm, so a receiver that is not flat at this stride, a
@@ -2017,61 +2188,94 @@ internal fn generateWholeBufferCopy(cond: ASTNode, body: ASTNode, endLabel: Int)
 
     let callPtr = irLoneCall(body, iv)
     if (nodeIsNull(callPtr)) { return false }
-    let setCall = ptr_to_node(callPtr)
-    if (nodeIsNull(setCall.child1)) { return false }
-    let stride = flatSetScalarStride(setCall, ptr_to_node(setCall.child1).s1)
+    let stride = irBlockCopyStride(ptr_to_node(callPtr), iv, bodyPtr)
+    if (stride <= 0) { return false }
+    if (storageType(getExprType(ivNode)).equals("i32") == false) { return false }
+
+    emitWholeBufferCopy(ptr_to_node(callPtr), stride, generateExpression(ivNode),
+                        generateExpression(boundNode), ir_get_var_slot(iv), endLabel)
+    return true
+}
+
+// The range `for` form: counting up to an excluded end with no step, and a body
+// that is the copy and nothing else. `endVal` was evaluated once before the loop
+// and the loop variable already holds the start. A step is a strided copy and a
+// descending range a different order, so neither reaches here.
+internal fn generateForBufferCopy(stmt: ASTNode, endVal: String, endLabel: Int) -> Bool {
+    let first = ptr_to_node(stmt.child3).child1
+    if (nodeIsNull(first)) { return false }
+    let only = ptr_to_node(first)
+    if (nodeExists(only.next)) { return false }
+    if (only.kind != NodeKind.EXPRESSION_STATEMENT or nodeIsNull(only.child1)) { return false }
+    let call = ptr_to_node(only.child1)
+    if (call.kind != NodeKind.CALL_EXPR) { return false }
+    let stride = irBlockCopyStride(call, stmt.s1, stmt.child3)
     if (stride <= 0) { return false }
 
-    let dstPtr = irCallArg(setCall, 0)
-    let setIndex = irCallArg(setCall, 1)
+    let slot = ir_get_var_slot(stmt.s1)
+    emitWholeBufferCopy(call, stride, ir_get_temp_name(ir_load("i32", slot)), endVal, slot,
+                        endLabel)
+    return true
+}
+
+// The stride of `list_set(dst, iv, list_get(src, iv))` between two lists flat at
+// the same scalar width, whose names the body never rebinds; 0 for any other call.
+private fn irBlockCopyStride(setCall: ASTNode, iv: String, bodyPtr: Ptr) -> Int {
+    if (nodeIsNull(setCall.child1)) { return 0 }
+    let stride = flatSetScalarStride(setCall, ptr_to_node(setCall.child1).s1)
+    if (stride <= 0) { return 0 }
+    if (irStableReceiver(irCallArg(setCall, 0), bodyPtr) == false) { return 0 }
+    if (irIsNamed(irCallArg(setCall, 1), iv) == false) { return 0 }
+
     let valuePtr = irCallArg(setCall, 2)
-    if (nodeIsNull(valuePtr)) { return false }
-    if (irStableReceiver(dstPtr, bodyPtr) == false) { return false }
-    if (irIsNamed(setIndex, iv) == false) { return false }
-
+    if (nodeIsNull(valuePtr)) { return 0 }
     let getCall = ptr_to_node(valuePtr)
-    if (getCall.kind != NodeKind.CALL_EXPR or nodeIsNull(getCall.child1)) { return false }
-    if (flatGetStride(getCall, ptr_to_node(getCall.child1).s1) != stride) { return false }
-    let srcPtr = irCallArg(getCall, 0)
-    if (irStableReceiver(srcPtr, bodyPtr) == false) { return false }
-    if (irIsNamed(irCallArg(getCall, 1), iv) == false) { return false }
+    if (getCall.kind != NodeKind.CALL_EXPR or nodeIsNull(getCall.child1)) { return 0 }
+    if (flatGetStride(getCall, ptr_to_node(getCall.child1).s1) != stride) { return 0 }
+    if (irStableReceiver(irCallArg(getCall, 0), bodyPtr) == false) { return 0 }
+    if (irIsNamed(irCallArg(getCall, 1), iv) == false) { return 0 }
+    return stride
+}
 
-    let ivType = storageType(getExprType(ivNode))
-    if (ivType.equals("i32") == false) { return false }
-
-    let dstNode = ptr_to_node(dstPtr)
-    let srcNode = ptr_to_node(srcPtr)
+// The guard and the transfer. `from` and `count` are i32 values computed before
+// the loop. The induction variable is left at `count`, as the loop it replaces
+// leaves it: code after a `while` may read it.
+private fn emitWholeBufferCopy(setCall: ASTNode, stride: Int, from: String, count: String,
+                               ivSlot: String, endLabel: Int) {
+    let dstNode = ptr_to_node(irCallArg(setCall, 0))
+    let srcNode = ptr_to_node(irCallArg(ptr_to_node(irCallArg(setCall, 2)), 0))
     let copyLabel = ir_get_label()
     let skipLabel = ir_get_label()
 
     // `from >= 0 && from <= count <= len(dst) && count <= len(src)`, plus both
-    // representations, in i64 so no widening can wrap.
-    let from64 = ir_get_temp_name(ir_sext("i32", generateExpression(ivNode), "i64"))
+    // representations, in i64 so no widening can wrap -- and two blocks, not one.
+    let from64 = ir_get_temp_name(ir_sext("i32", from, "i64"))
     let mut ok = ir_get_temp_name(ir_icmp_sge("i64", from64, "0"))
     ok = ir_get_temp_name(ir_and("i1", ok, ir_get_temp_name(
-        ir_icmp_sle("i64", ir_get_temp_name(ir_sext("i32", generateExpression(ivNode), "i64")),
-                    ir_get_temp_name(ir_sext("i32", generateExpression(boundNode), "i64"))))))
+        ir_icmp_sle("i64", from64, ir_get_temp_name(ir_sext("i32", count, "i64"))))))
     ok = ir_get_temp_name(ir_and("i1", ok, ir_get_temp_name(
         ir_list_is_flat(generateExpression(dstNode), stride))))
     ok = ir_get_temp_name(ir_and("i1", ok, ir_get_temp_name(
         ir_list_is_flat(generateExpression(srcNode), stride))))
-    ok = ir_get_temp_name(ir_and("i1", ok,
-        irWithinLength(dstNode, generateExpression(boundNode))))
-    ok = ir_get_temp_name(ir_and("i1", ok,
-        irWithinLength(srcNode, generateExpression(boundNode))))
+    ok = ir_get_temp_name(ir_and("i1", ok, irWithinLength(dstNode, count)))
+    ok = ir_get_temp_name(ir_and("i1", ok, irWithinLength(srcNode, count)))
+    // Two names for one list run the loop, which copies each element onto itself.
+    // Tested here rather than around the transfer: a second branch there merged
+    // back into the loop and cost memcpy_mix 1.03x -> 1.08x of C++ in spills.
+    let dstData = ir_get_temp_name(ir_list_data(generateExpression(dstNode)))
+    let srcData = ir_get_temp_name(ir_list_data(generateExpression(srcNode)))
+    ok = ir_get_temp_name(ir_and("i1", ok, ir_get_temp_name(
+        ir_icmp_ne("ptr", dstData, srcData))))
 
     ir_cond_br_numbered(ok, copyLabel, skipLabel)
 
     ir_label_numbered(copyLabel)
-    ir_list_flat_copy(generateExpression(dstNode), generateExpression(srcNode),
-                      generateExpression(ivNode), generateExpression(boundNode), stride)
-    // The loop it replaces leaves the induction variable at the bound, and code
-    // after the loop may read it.
-    ir_store(ivType, generateExpression(boundNode), ir_get_var_slot(iv))
+    ir_list_flat_copy(generateExpression(dstNode), generateExpression(srcNode), from, count,
+                      stride)
+    ir_store("i32", count, ivSlot)
     ir_br_numbered(endLabel)
 
     ir_label_numbered(skipLabel)
-    return true
 }
 
 private fn irIsZeroScalar(nodePtr: Ptr) -> Bool {
@@ -2136,10 +2340,14 @@ internal fn generateWholeBufferZeroFill(cond: ASTNode, body: ASTNode,
 }
 
 // `count <= list_len(receiver)`, in i64.
+//
+// The length is read with ir_list_len, a load in the header region, and not as a
+// `list_len` call: inlined at link time that call is an *unscoped* load, which
+// the copy's element-region `memcpy` may clobber. The guard then re-reads both
+// lengths after every transfer, and a loop that repeats the copy cannot have its
+// repeats deleted -- `large_buffer_copy` kept all eight rounds that way.
 private fn irWithinLength(recv: ASTNode, count: String) -> String {
-    ir_call_begin()
-    ir_call_arg("ptr", generateExpression(recv))
-    let len = ir_get_temp_name(ir_call_end("i32", "list_len"))
+    let len = ir_get_temp_name(ir_list_len(generateExpression(recv)))
     let len64 = ir_get_temp_name(ir_sext("i32", len, "i64"))
     let count64 = ir_get_temp_name(ir_sext("i32", count, "i64"))
     return ir_get_temp_name(ir_icmp_sle("i64", count64, len64))

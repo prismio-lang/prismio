@@ -37,7 +37,7 @@ fn fail(message: String) -> Int {
 // The heap Job that makes Job's fields a release point. Its title is a literal:
 // a `concat` stored into a released field would make that one site -- which
 // backs every `concat` in the program -- the field's, and the frame structs'
-// `concat` names below would lose their owner (KNOWN_ISSUES).
+// `concat` names below would lose their owner (KNOWN_ISSUES, "Library producers").
 fn makeJob() -> Job {
     return Job { title: "heap", tags: [1] }
 }

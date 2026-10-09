@@ -274,11 +274,12 @@ def build_arms(args, tools, compiler, run_timed, ui):
         ui.show("Building " + LABELS[language] + " (freestanding)")
         wall_total = cpu_total = 0
         for command in steps[language]:
-            # Prismio builds from outside the checkout. A working directory that holds
-            # `runtime/` makes the compiler resolve its runtime from that source tree, the
-            # program is no longer closed, and nothing is internalised: the same suite.psm
-            # built from the repository root was 512 bytes larger and `heapsort` ran 200,000
-            # instructions longer. The other two arms do not care where they build.
+            # Prismio builds from outside the checkout, away from the source tree. An
+            # earlier version of this comment said a working directory that holds
+            # `runtime/` stopped the compiler internalising and cost `heapsort` 200,000
+            # instructions; that did not reproduce on 2026-10-09 (the same suite.psm built
+            # byte-identical from the root and from an empty directory), so this is
+            # isolation and not a requirement. The other two arms do not care either.
             result, wall, cpu = run_timed(command, env=prismio_env if language == "prismio" else env,
                                           cwd=BUILD if language == "prismio" else None)
             if result.returncode:

@@ -5,7 +5,7 @@
 // allocation the ledger sees; a short string lives inside its pair. The Vec
 // elements come from `toUpper`, not `repeat`: one site backs every `repeat` in
 // a program, and a Vec holding one makes all of them look container-held
-// (KNOWN_ISSUES, "One allocation site backs every `concat`").
+// (KNOWN_ISSUES, "Library producers share one allocation site").
 //
 // Released now:
 // 1. `pick` -- a call result returned on one path, another allocation on the
