@@ -854,6 +854,15 @@ internal fn monoAnnotationFromType(t: TypeInfo) -> ASTNode {
             return tn
         }
     }
+    // A future is a PTR with a name and a child, so the name alone would write
+    // `Future<Int>` as one identifier. Spelled as the applied type it is, a lifted
+    // `spawn` block that captured a future can name its parameter.
+    if (typeIsTask(t)) {
+        tn.i2 = 1
+        tn.s1 = "Future"
+        if (nodeExists(t.child)) { tn.child1 = node_to_ptr(monoAnnotationFromType(ptr_to_type(t.child))) }
+        return tn
+    }
     tn.s1 = t.name
     return tn
 }

@@ -688,10 +688,10 @@ impl Parser {
                     let spawnNode = self.node(NodeKind.SPAWN_EXPR)
                     self.advance()
                     let callee = self.parsePrimary()
-                    if (callee.kind != NodeKind.CALL_EXPR) {
-                        diag_error_at_code("P3101", spawnNode.file, spawnNode.line, spawnNode.col, spawnNode.len,
-                                      "`spawn` needs a call: write `spawn f(args)`, naming the function the task runs")
-                    }
+                    // SPAWN_EXPR.i2: 0 runs a named function on a task now. 3 starts a
+                    // future that already exists -- `spawn f` where `f` is a `Future<T>`
+                    // -- and sema checks that it is one.
+                    if (callee.kind != NodeKind.CALL_EXPR) { spawnNode.i2 = 3 }
                     spawnNode.child1 = node_to_ptr(callee)
                     return spawnNode
                 }
@@ -701,6 +701,30 @@ impl Parser {
                     joinNode.child1 = node_to_ptr(self.parsePrimary())
                     return joinNode
                 }
+                // `await f(x)`, async/await. The same node as `join`, with i2 = 1: what
+                // differs is where it may be written (an `async fn` or a `spawn` block)
+                // and that awaiting the *direct call* of an `async fn` is just the call.
+                // Contextual for the reason `join` is.
+                if (current.value.equals("await")) {
+                    let awaitNode = self.node(NodeKind.JOIN_EXPR)
+                    self.advance()
+                    awaitNode.i2 = 1
+                    awaitNode.child1 = node_to_ptr(self.parsePrimary())
+                    return awaitNode
+                }
+            }
+
+            // `spawn { ... }`: a task whose body is written where it starts, the way a
+            // closure's is. Only where a struct literal could stand, because `for x in
+            // spawn { ... }` is a loop over a variable that happens to be called `spawn`.
+            // SPAWN_EXPR.i2 = 2 until sema lifts the block into a function of its own.
+            if (next.type == TokenType.SEPARATOR and next.value.equals("{")
+                    and current.value.equals("spawn") and self.allowStructLit == 1) {
+                let blockSpawn = self.node(NodeKind.SPAWN_EXPR)
+                self.advance()
+                blockSpawn.i2 = 2
+                blockSpawn.child1 = node_to_ptr(self.parseBlock())
+                return blockSpawn
             }
 
             let opensStruct = next.type == TokenType.SEPARATOR and next.value.equals("{")

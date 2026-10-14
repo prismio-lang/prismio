@@ -1,0 +1,16 @@
+// A `spawn { }` block is lifted into a function of its own, and that function is not
+// inside the scope the block was written in: the scope waits for the task, and the task
+// is not waiting for anything it starts. A block inside a block needs a scope of its own.
+// expect-error: `spawn { }` needs an enclosing `scope`
+
+import std.io
+extern fn println(s: String)
+
+fn main() -> Int {
+    scope {
+        spawn {
+            spawn { println("nobody waits for this one") }
+        }
+    }
+    return 0
+}

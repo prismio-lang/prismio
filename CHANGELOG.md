@@ -9,6 +9,30 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`async fn`, `Future<T>` and `await`.** Calling an `async fn` does not run it: the call is a
+  `Future<T>`, a task that has not started, and the body runs where it is awaited. `await f(x)` is
+  the call itself, with no handle and no allocation; a held future is one small allocation, and a
+  future that is built and never awaited does no work. It works on methods, on generic functions
+  and on recursion, a `Vec<Future<Int>>` can be collected and awaited in a loop, `async fn main`
+  is allowed, and a function that is not `async` runs a future with `join`. `Future<T>` is the
+  type `Task<T>` already was (both spellings are accepted); `spawn` now takes an `async fn` and a
+  scalar argument or result of any width, through a thunk that converts each to and from the
+  runtime's word, so `async fn half(x: Float) -> Float` needs nothing in the runtime.
+- **`scope { }` and `spawn { }`.** A scope cannot be left until every task started inside it has
+  finished, on every way out: the closing brace, `return`, `break` and `continue`, nested scopes
+  included. `spawn { ... }` starts a task whose body is the block and is only allowed inside a
+  scope; it captures what it reads from the enclosing function by value, up to three, moving
+  anything that owns something, and answers with the block's last expression. `spawn fut` starts
+  a future built earlier. A spawn used as a statement is waited for by the scope with no handle
+  to keep. 4,200 tasks in a loop leave no leak (`leaks`). Eight new negative fixtures
+  (`neg_271`-`neg_278`) hold the diagnostics. See `docs/ASYNC_PLAN.md`.
+
+  Known limits: an `await` of a task running on another thread blocks its thread (a task is
+  still an operating-system thread), a task or held future takes three arguments, and a struct or
+  String that came back through a handle is not freed by the awaiter (`docs/KNOWN_ISSUES.md`).
+- **`spawn` of a function defined below it.** The target's address is taken before its
+  definition exists, which failed with `address of unknown function`; the spawn now declares it
+  first. This also affected the `spawn f(x)` form before, and every lifted block needs it.
 - **A condition needs no parentheses.** `if x == 3 { }`, `while n < 10 { }` and
   `if o == none { }` read as written, and `if (x == 3) { }` is the parenthesised
   expression it always was. A struct literal in a bare condition has to be

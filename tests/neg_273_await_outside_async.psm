@@ -1,0 +1,12 @@
+// `await` is for code that can suspend. A function that is not `async` runs a future with
+// `join`, and says so in the note.
+// expect-error: `await` is only allowed inside an `async fn` or a `spawn` block
+
+async fn answer() -> Int {
+    return 42
+}
+
+fn main() -> Int {
+    let v = await answer()
+    return v
+}

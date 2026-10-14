@@ -52,6 +52,7 @@ impl Parser {
         if (self.checkVal(TokenType.KEYWORD, "extern")) { return self.parseExternDecl() }
         if (self.checkVal(TokenType.KEYWORD, "fn") or self.atPropDecl()) { return self.parseFunctionDecl() }
         if (self.atColdDecl()) { return self.parseColdFunctionDecl() }
+        if (self.atAsyncDecl()) { return self.parseAsyncFunctionDecl() }
         if (self.atFnModifiers()) { return self.parseModifiedFunctionDecl() }
         if (self.atStructModifiers()) { return self.parseModifiedStructDecl() }
         if (self.checkVal(TokenType.KEYWORD, "struct")) { return self.parseStructDecl() }
@@ -115,6 +116,7 @@ impl Parser {
         let next = self.peek()
         if (next.type == TokenType.IDENTIFIER and next.value.equals("prop")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("cold")) { return level }
+        if (next.type == TokenType.IDENTIFIER and next.value.equals("async")) { return level }
         if (next.type == TokenType.IDENTIFIER and self.isFnModifierWord(next.value)) { return level }
         if (next.type == TokenType.IDENTIFIER and self.isStructModifierWord(next.value)) { return level }
         if (next.type != TokenType.KEYWORD) { return -1 }
@@ -150,7 +152,7 @@ impl Parser {
         let next = self.peek()
         return next.value.equals("fn") or next.value.equals("extern") or next.value.equals("prop")
             or next.value.equals("let") or next.value.equals("struct") or self.isStructModifierWord(next.value)
-            or next.value.equals("cold") or self.isFnModifierWord(next.value)
+            or next.value.equals("cold") or next.value.equals("async") or self.isFnModifierWord(next.value)
     }
 }
 
@@ -352,6 +354,31 @@ impl Parser {
         self.advance()
         let fnNode = self.parseFunctionDecl()
         nodeMarkCold(fnNode)
+        return fnNode
+    }
+}
+
+
+impl Parser {
+    // `async fn fetch(id: Int) -> User { ... }` -- a function that can be awaited. Calling
+    // it does not run it: the call is a `Future<User>`, and the body runs when that
+    // future is awaited, or when a `spawn` starts it on a task of its own.
+    //
+    // **Contextual**, like `cold` and `prop`: `async` is a marker only directly before
+    // `fn`, so a variable or a function called `async` keeps compiling. The flag goes
+    // in the attribute table beside `export` and `naked`, keyed by where the `fn` is,
+    // so a generic instantiation's copy of the declaration is still async.
+    private fn atAsyncDecl(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        if (self.current().value.equals("async") == false) { return false }
+        let next = self.peek()
+        return next.type == TokenType.KEYWORD and next.value.equals("fn")
+    }
+
+    private fn parseAsyncFunctionDecl(self) -> ASTNode {
+        self.advance()
+        let fnNode = self.parseFunctionDecl()
+        nodeSetFnAttrs(fnNode, 4, 0, "")
         return fnNode
     }
 }
@@ -1542,11 +1569,14 @@ impl Parser {
 
             let methodIsCold = self.atColdDecl()
             if (methodIsCold) { self.advance() }
+            let methodIsAsync = self.atAsyncDecl()
+            if (methodIsAsync) { self.advance() }
             if (self.checkVal(TokenType.KEYWORD, "fn") == false and self.atPropDecl() == false) {
                 self.fatal("an `impl` block holds `fn`, `prop` and `let` declarations, found ".concat(parserDescribe(self.current())))
             }
             let method = self.parseFunctionDecl()
             if (methodIsCold) { nodeMarkCold(method) }
+            if (methodIsAsync) { nodeSetFnAttrs(method, 4, 0, "") }
             method.s2 = self.parseImplMethodParams(header.s1, method.s2)
             // A function with no `self` belongs to the type: `impl Config { fn
             // make() -> Config }` is `Config.make()`, and its name says so, so two

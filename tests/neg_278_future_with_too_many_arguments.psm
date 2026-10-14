@@ -1,0 +1,12 @@
+// A future holds its arguments in the task's three slots. `await f(a, b, c, d)` is only a
+// call and takes any number; a future that is *held* is a task, and a task takes three.
+// expect-error: a task takes at most 3 arguments
+
+async fn four(a: Int, b: Int, c: Int, d: Int) -> Int {
+    return a + b + c + d
+}
+
+async fn main() -> Int {
+    let f = four(1, 2, 3, 4)
+    return await f
+}

@@ -4,6 +4,7 @@
 import ast.nodes
 import lexer.token
 import ast.types
+import ast.fn_attrs
 import ir.bridge
 import common.diagnostics
 import std.string
@@ -35,42 +36,53 @@ internal fn semaWarningAt(node: ASTNode, message: String) {
     diag_warning_at_code("P4003", node.file, node.line, node.col, node.len, message)
 }
 
-// REQUIREMENTS 15. What may cross a task boundary as an argument.
+// REQUIREMENTS 15. What may cross a task boundary, as an argument or as the result.
 //
-// The predicate is "lowers to a pointer", not "is move-only", and the two are
-// not the same set: `Ptr` is copyable and is admitted, an array is not admitted
-// even though it is a reference, because an array literal is frame storage
+// A task is started through three `void*` slots and answers through one word, so a
+// value qualifies when it fits one: a reference, a String, or a scalar. The runtime
+// still calls through a correctly-typed pointer -- it has three families, int,
+// pointer and void -- and what it does not have is an arm per scalar width. A scalar
+// argument or result therefore goes through a thunk that converts it to and from its
+// slot (scalarToSlot, slotToScalar: the conversions a `Vec` already uses), and the
+// task's function is called with its own honest types. That is how an `async fn`
+// can take an `Int` and give back a `Float` without the runtime learning either.
+//
+// Arrays, slices and data views are excluded: an array literal is frame storage
 // (typeIsMoveOnly says why) and a frame does not outlive the spawn.
-//
-// Enums and scalars are excluded because they lower to an integer. That is an
-// ABI fact here, but it lines up with a memory-model one worth stating: a
-// scalar registers no allocation site, so it is precisely the case AIF's `T`
-// domain has nothing to say about, and admitting it would widen the surface
-// without widening what the analysis can prove.
-// What `prismio_task_invoke` has a correctly-typed function pointer for.
-// Float and the sized integers are absent because each would need its own arm
-// there rather than a cast -- calling an i32-returning function through a
-// pointer declared to return something wider leaves the upper half undefined,
-// which is the one class of bug a task runtime must not have.
-private fn semaTaskResultAllowed(t: TypeInfo) -> Bool {
+private fn semaTaskSlotAllowed(t: TypeInfo) -> Bool {
     match (t.kind) {
-        TypeKind.VOID => { return true }
-        TypeKind.INT => { return t.name.equals("Int") }
-        TypeKind.STRUCT => { return true }
-        TypeKind.STRING => { return true }
-        TypeKind.LIST => { return true }
+        TypeKind.ARRAY => { return false }
+        TypeKind.SLICE => { return false }
+        TypeKind.DATAVIEW => { return false }
+        TypeKind.DATAELEMENT => { return false }
+        TypeKind.FUNCTION => { return false }
+        TypeKind.VOID => { return false }
+        TypeKind.INVALID => { return false }
     }
-    return t.kind == TypeKind.PTR
+    let key = typeIrKey(t)
+    if (key.equals("ptr") or key.equals("struct:prismio.str") or key.equals("double")) { return true }
+    if (key.startsWith("opt:") or key.startsWith("struct:")) { return true }
+    return key.equals("i1") or key.equals("i8") or key.equals("i16") or key.equals("i32") or key.equals("i64")
+}
+
+private fn semaTaskResultAllowed(t: TypeInfo) -> Bool {
+    if (t.kind == TypeKind.VOID) { return true }
+    return semaTaskSlotAllowed(t)
 }
 
 private fn semaSpawnArgAllowed(t: TypeInfo) -> Bool {
-    match (t.kind) {
-        TypeKind.STRUCT => { return true }
-        TypeKind.STRING => { return true }
-        TypeKind.LIST => { return true }
-    }
-    return t.kind == TypeKind.PTR
+    return semaTaskSlotAllowed(t)
 }
+
+// Async/await. Whether the function being checked may `await`: an `async fn`, or the
+// function a `spawn { }` block was lifted into. Set by semaFunction, and held at 1
+// while a spawn block's body is checked in place.
+let mut semaAsyncContext = 0
+
+// How many `scope { }` blocks enclose the statement being checked, in the current
+// function. A `spawn { }` needs one; a lifted block is a function of its own and
+// starts again from zero.
+let mut semaScopeDepth = 0
 
 internal fn semaTypeErrorAt(node: ASTNode, context: String, expected: TypeInfo, actual: TypeInfo) {
     semaErrorAt(node, context.concat(": expected ",
@@ -1982,6 +1994,15 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     if (retT.kind == TypeKind.SLICE and semaHasInoutParam(fnNode) == false and nodeExists(retT.child)) {
         retT = typeSliceReadOnly(ptr_to_type(retT.child))
     }
+    // An `async fn` called here is a future, unless the caller is `await` or `spawn`,
+    // which say so with i3 = 7 and want the call itself.
+    if (fnNode.kind == NodeKind.FUNCTION and nodeIsAsync(fnNode)) {
+        if (expr.i3 == 7) {
+            expr.i3 = 8
+        } else {
+            return semaLazyFuture(module, expr, retT)
+        }
+    }
     nodeSetType(expr, retT)
     return retT
 }
@@ -2008,55 +2029,35 @@ private fn semaHasInoutParam(fnNode: ASTNode) -> Bool {
     // T-SPAWN-MOVE rather than T-SPAWN-SHARE the rule that fires, and it is
     // therefore what keeps T3's counter non-atomic. Delete it and the whole
     // isolation argument becomes a comment.
+    //
+    // Three more spellings reach here, and each ends as the first:
+    //
+    //   spawn { ... }   i2 = 2, a block, lifted into a function of its own that takes
+    //                   what it captures as arguments (semaSpawnBlock);
+    //   spawn fut       i2 = 3, a `Future` that already exists, started now;
+    //   f(x)            an `async fn` called with no `await`, which semaCallExpr
+    //                   rewrites into a SPAWN_EXPR with i2 = 1: the same task, not
+    //                   started until something awaits or spawns it.
 private fn semaSpawnExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (expr.i2 == 2) { return semaSpawnBlock(module, expr) }
+    if (expr.i2 == 3) { return semaSpawnFuture(module, expr) }
+
     let call = ptr_to_node(expr.child1)
     if (call.kind != NodeKind.CALL_EXPR) {
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
 
+    // An `async fn` named here is being run on a task, not wrapped in a future that
+    // might never run. CALL_EXPR.i3 = 7 says so to semaCallExpr, which answers with
+    // the plain call (and 8 once it has seen the callee is async).
+    if (call.i3 == 0) { call.i3 = 7 }
     let retT = semaExpr(module, call)
+    if (call.i3 == 7) { call.i3 = 0 }
 
-    // Not a restriction on tasks so much as a restriction on this
-    // *lowering*: prismio_task_spawn calls through a function pointer whose
-    // type it has to know statically, and a builtin or an overload set does
-    // not give it an address. Naming the reason matters -- it is the thing
-    // that would have to change to lift the ceiling, and it is not the task
-    // model.
-    if (call.s2.equals("")) {
-        semaErrorAt(expr, "`spawn` needs a named Prismio function; a builtin has no address to hand a task")
-    }
-
-    // Any result the runtime has an honestly-typed function pointer for:
-    // an Int, a reference, or nothing. What is excluded is Float and the
-    // sized integers, because those come back in a different register class
-    // or width and would need their own arm rather than a cast.
-    if (typeIsValid(retT) and semaTaskResultAllowed(retT) == false) {
-        semaErrorAt(expr, "a spawned function cannot return ".concat(typeDisplay(retT),
-                                                                     "; a task result must be Int, a reference type, or nothing"))
-    }
-
-    let mut argPtr = call.child2
-    let mut argc = 0
-    while (nodeExists(argPtr)) {
-        let argNode = ptr_to_node(argPtr)
-        let argT = nodeGetType(argNode)
-        // Pointer-lowered types only. A task's arguments cross a thread
-        // boundary through three void* slots, and an Int would need a
-        // fourth signature; more to the point, a scalar has no allocation
-        // site, so it is exactly the case the T domain has nothing to say
-        // about.
-        if (typeIsValid(argT) and semaSpawnArgAllowed(argT) == false) {
-            semaErrorAt(argNode, "a spawned argument must be a reference type, found ".concat(typeDisplay(argT),
-                                                                                              "; tasks own what they are given, and a scalar has nothing to own"))
-        }
-        semaConsumeOperand(argNode)
-        argc = argc + 1
-        argPtr = argNode.next
-    }
-
-    if (argc > 3) {
-        semaErrorAt(expr, "`spawn` takes at most 3 arguments; pack the rest into a struct and move that")
+    if (semaCheckSpawnedCall(expr, call, retT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
     }
 
     // `Task<R>`, where R is what the spawned function returns. The handle
@@ -2068,16 +2069,278 @@ private fn semaSpawnExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return taskT
 }
 
+// What a task call has to satisfy, shared by `spawn f(x)` and by an `async fn` called
+// without `await`: both hand a call to a task, and the task owns what it is given.
+private fn semaCheckSpawnedCall(site: ASTNode, call: ASTNode, retT: TypeInfo) -> Bool {
+    // Not a restriction on tasks so much as a restriction on this
+    // *lowering*: prismio_task_spawn calls through a function pointer whose
+    // type it has to know statically, and a builtin or an overload set does
+    // not give it an address. Naming the reason matters -- it is the thing
+    // that would have to change to lift the ceiling, and it is not the task
+    // model.
+    if (call.s2.equals("")) {
+        semaErrorAt(site, "`spawn` needs a named Prismio function; a builtin has no address to hand a task")
+        return false
+    }
+
+    // Any result that fits the word a task answers in: nothing, a reference, a
+    // String or a scalar. What is excluded is an array and the other frame types.
+    if (typeIsValid(retT) and semaTaskResultAllowed(retT) == false) {
+        semaErrorAt(site, "a spawned function cannot return ".concat(typeDisplay(retT),
+                                                                     "; a task result must be a scalar, a reference type, or nothing"))
+    }
+
+    let mut argPtr = call.child2
+    let mut argc = 0
+    while (nodeExists(argPtr)) {
+        let argNode = ptr_to_node(argPtr)
+        let argT = nodeGetType(argNode)
+        // A task's arguments cross a thread boundary through three void* slots.
+        // A scalar is carried as the bits of its slot; what cannot be is a frame.
+        if (typeIsValid(argT) and semaSpawnArgAllowed(argT) == false) {
+            semaErrorAt(argNode, "a spawned argument cannot be ".concat(typeDisplay(argT),
+                                                                        "; a task's arguments are values or references it can own, not frame storage"))
+        }
+        semaConsumeOperand(argNode)
+        argc = argc + 1
+        argPtr = argNode.next
+    }
+
+    if (argc > 3) {
+        semaErrorAt(site, "a task takes at most 3 arguments; pack the rest into a struct and move that")
+    }
+    return true
+}
+
+// `spawn fut`: start a future that was built earlier, so it runs beside whatever the
+// spawner does next rather than where it is awaited. The result is that same future.
+private fn semaSpawnFuture(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    let target = ptr_to_node(expr.child1)
+    let targetT = semaExpr(module, target)
+    if (typeIsValid(targetT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    if (typeIsTask(targetT) == false) {
+        semaErrorAt(target, "`spawn` needs a call or a `Future`, found ".concat(typeDisplay(targetT)))
+        diag_note("write `spawn f(args)` to run a function on a task, or `spawn fut` to start a future built earlier")
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    nodeSetType(expr, targetT)
+    return targetT
+}
+
+// An `async fn` called and not awaited. Its result is a future: the function's
+// arguments are captured now and moved into it, and nothing runs until `await` or
+// `spawn` asks. The call node becomes a SPAWN_EXPR with i2 = 1 around a copy of
+// itself, so everything after sema -- ownership, codegen -- sees the one task shape
+// it already knows, and the only new fact is that the thread is not started.
+private fn semaLazyFuture(module: ASTNode, expr: ASTNode, retT: TypeInfo) -> TypeInfo {
+    if (semaCheckSpawnedCall(expr, expr, retT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+
+    let inner = createNode(NodeKind.CALL_EXPR)
+    inner.s1 = expr.s1.clone()
+    inner.s2 = expr.s2.clone()
+    inner.i1 = expr.i1
+    inner.i2 = expr.i2
+    inner.i3 = 8
+    inner.child1 = expr.child1
+    inner.child2 = expr.child2
+    inner.child3 = expr.child3
+    inner.line = expr.line
+    inner.col = expr.col
+    inner.len = expr.len
+    inner.file = expr.file
+    nodeSetType(inner, retT)
+
+    expr.kind = NodeKind.SPAWN_EXPR
+    expr.s1 = ""
+    expr.s2 = ""
+    expr.i1 = 0
+    expr.i2 = 1
+    expr.i3 = 0
+    expr.child1 = node_to_ptr(inner)
+    expr.child2 = ptr_null()
+    expr.child3 = ptr_null()
+
+    let futureT = typeTask(retT)
+    nodeSetType(expr, futureT)
+    return futureT
+}
+
+// `spawn { ... }`, inside a `scope`. The block is lifted into a function of its own
+// and the spawn becomes `spawn that_function(captures)`, which is a spawn the rest of
+// the compiler already understands -- so a capture is moved into the task exactly as
+// an argument is, and is borrowed by the body exactly as a parameter is.
+//
+// Lifted rather than closed over for the reason a closure is a struct and a method:
+// there is no function value to hand a thread. What a closure would add here is the
+// struct, and a task's arguments are already the struct's fields.
+//
+// A capture is a local of the enclosing function the body reads, found the way a
+// closure's are (semaCollectCaptures). At most three, because a task has three slots.
+private fn semaSpawnBlock(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (semaScopeDepth == 0) {
+        semaErrorAt(expr, "`spawn { }` needs an enclosing `scope`")
+        diag_note("a `scope` is what guarantees the task has finished before the values around it go away; `spawn f(x)` stands on its own")
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    let body = ptr_to_node(expr.child1)
+
+    let captures = nodeList()
+    let declared = nodeList()
+    semaClosureDeclaredNames(body, declared)
+    semaCollectCaptures(body, ptr_null(), captures, declared)
+
+    // Which captures were already moved, so that checking the body (which may consume
+    // one) does not make the move that the spawn itself is about to make look like a
+    // second one.
+    let movedBefore = nodeList()
+    let mut capturePtr = captures.head
+    while (nodeExists(capturePtr)) {
+        let capture = ptr_to_node(capturePtr)
+        if (ir_is_moved(capture.s1) == 1) {
+            let marker = createNode(NodeKind.STRUCT_FIELD)
+            marker.s1 = capture.s1.clone()
+            nodeListPush(movedBefore, marker)
+        }
+        capturePtr = capture.next
+    }
+
+    // The body's type, checked as the function it will become: async, and with no
+    // scope around it, so a nested `spawn { }` is refused for want of its own.
+    let probe = createNode(NodeKind.CLOSURE_EXPR)
+    nodeSpanFrom(probe, expr)
+    probe.child1 = ptr_null()
+    probe.child2 = node_to_ptr(body)
+    let savedAsync = semaAsyncContext
+    let savedScope = semaScopeDepth
+    semaAsyncContext = 1
+    semaScopeDepth = 0
+    let bodyT = semaClosureBodyType(module, probe)
+    semaAsyncContext = savedAsync
+    semaScopeDepth = savedScope
+
+    capturePtr = captures.head
+    while (nodeExists(capturePtr)) {
+        let capture = ptr_to_node(capturePtr)
+        if (semaClosureHasCapture(movedBefore, capture.s1) == false) { ir_unmark_moved(capture.s1) }
+        capturePtr = capture.next
+    }
+
+    if (typeIsValid(bodyT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+
+    closureSerial = closureSerial + 1
+    let name = "Spawn".concat(monoSeparator(), expr.line.toString(), monoSeparator(), closureSerial.toString())
+
+    let lifted = createNode(NodeKind.FUNCTION)
+    lifted.s1 = name.clone()
+    nodeSpanFrom(lifted, expr)
+
+    let params = nodeList()
+    let args = nodeList()
+    capturePtr = captures.head
+    while (nodeExists(capturePtr)) {
+        let capture = ptr_to_node(capturePtr)
+        let param = createNode(NodeKind.FUNCTION_PARAMETER)
+        param.s1 = capture.s1.clone()
+        nodeSpanFrom(param, capture)
+        param.child1 = node_to_ptr(monoAnnotationFromType(typeFromSemKey(ir_get_var_type(capture.s1))))
+        nodeListPush(params, param)
+
+        let arg = createNode(NodeKind.IDENTIFIER_EXPR)
+        arg.s1 = capture.s1.clone()
+        nodeSpanFrom(arg, capture)
+        nodeListPush(args, arg)
+        capturePtr = capture.next
+    }
+    lifted.child1 = params.head
+
+    // As a closure's block is: its last expression is the value the task answers with.
+    if (bodyT.kind == TypeKind.VOID) {
+        lifted.child3 = ptr_null()
+    } else {
+        let mut lastPtr = body.child1
+        while (nodeExists(ptr_to_node(lastPtr).next)) { lastPtr = ptr_to_node(lastPtr).next }
+        let last = ptr_to_node(lastPtr)
+        if (last.kind == NodeKind.EXPRESSION_STATEMENT) { last.kind = NodeKind.RETURN_STATEMENT }
+        lifted.child3 = node_to_ptr(monoAnnotationFromType(bodyT))
+    }
+    lifted.child2 = node_to_ptr(body)
+    lifted.genericInfo = closureEnclosingGenerics
+    nodeSetFnAttrs(lifted, 4, 0, "")
+
+    monoAppendDeclaration(module, lifted)
+    indexTopLevel(lifted)
+    lifted.s2 = semaFunctionSymbol(module, lifted)
+    semaPredeclareFunction(module, lifted)
+
+    let call = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(call, expr)
+    let callee = createNode(NodeKind.IDENTIFIER_EXPR)
+    callee.s1 = name.clone()
+    nodeSpanFrom(callee, expr)
+    call.child1 = node_to_ptr(callee)
+    call.child2 = args.head
+
+    expr.child1 = node_to_ptr(call)
+    expr.i2 = 0
+    return semaSpawnExpr(module, expr)
+}
+
+// `join t` and `await t` read the same handle; `await` is the one that is a statement
+// about the *function* -- it may only be written where the function can suspend -- and
+// `join` is the synchronous bridge for code that cannot. They are one node with i2
+// telling them apart, because after sema they are one operation.
 private fn semaJoinExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let handle = ptr_to_node(expr.child1)
+    let isAwait = expr.i2 == 1
+    if (isAwait and semaAsyncContext == 0) {
+        semaErrorAt(expr, "`await` is only allowed inside an `async fn` or a `spawn` block")
+        diag_note("a function that is not `async` can run a future to completion with `join`")
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+
+    // `await f(x)` with an `async fn` for `f` never needs the future at all: it is
+    // the call, made here, on this thread. i3 = 7 asks semaCallExpr for that.
+    let direct = isAwait and handle.kind == NodeKind.CALL_EXPR and handle.i3 == 0
+    if (direct) { handle.i3 = 7 }
     let handleT = semaExpr(module, handle)
+    if (direct and handle.i3 == 7) { handle.i3 = 0 }
     if (typeIsValid(handleT) == false) {
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
+    if (direct and handle.i3 == 8) {
+        expr.kind = NodeKind.CALL_EXPR
+        expr.s1 = handle.s1.clone()
+        expr.s2 = handle.s2.clone()
+        expr.i1 = handle.i1
+        expr.i2 = handle.i2
+        expr.i3 = 0
+        expr.child1 = handle.child1
+        expr.child2 = handle.child2
+        expr.child3 = handle.child3
+        nodeSetType(expr, handleT)
+        return handleT
+    }
     if (typeIsTask(handleT) == false) {
-        semaErrorAt(handle, "`join` needs a task handle, found ".concat(typeDisplay(handleT),
-                                                                        "; only `spawn` produces one"))
+        if (isAwait) {
+            semaErrorAt(handle, "`await` needs a `Future`, found ".concat(typeDisplay(handleT),
+                                                                          "; an `async fn` call and `spawn` produce them"))
+        } else {
+            semaErrorAt(handle, "`join` needs a task handle, found ".concat(typeDisplay(handleT),
+                                                                            "; only `spawn` produces one"))
+        }
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
@@ -3177,7 +3440,11 @@ private fn semaLoopStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Typ
     // about types or ownership -- SPEC 5.2 makes it a placement pin, and the
     // escape fact it would assert is one the analysis already has.
 private fn semaRegionStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
+    // `scope { }` is the same statement with i3 = 1. What it adds is a count of how
+    // many of them enclose a `spawn { }`, which is allowed only inside one.
+    if (stmt.i3 == 1) { semaScopeDepth = semaScopeDepth + 1 }
     semaBlock(module, ptr_to_node(stmt.child1), expectedReturn)
+    if (stmt.i3 == 1) { semaScopeDepth = semaScopeDepth - 1 }
 }
 
 private fn semaForStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
@@ -3535,6 +3802,9 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
     ir_clear_moved()
     ir_clear_borrowed()
     closureEnclosingGenerics = fnNode.genericInfo
+    semaAsyncContext = 0
+    if (nodeIsAsync(fnNode)) { semaAsyncContext = 1 }
+    semaScopeDepth = 0
 
     // Parameters live in a scope of their own, outside the body block, so the
     // body may shadow a parameter name without clobbering it.
@@ -3621,6 +3891,8 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
 
     ir_scope_pop()
     closureEnclosingGenerics = ptr_null()
+    semaAsyncContext = 0
+    semaScopeDepth = 0
 }
 
 // ---------------------------------------------------------

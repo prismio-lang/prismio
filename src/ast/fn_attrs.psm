@@ -10,7 +10,7 @@ import std.option
 // whole compiler for the sake of a few boot-stub declarations. Keyed by where the
 // `fn` keyword is, which is unique per declaration and survives the copy a generic
 // instantiation makes. One record per line, `file:line:col|flags|align|section`;
-// flags are 1 export and 2 naked, and align is 0 when none was written.
+// flags are 1 export, 2 naked and 4 async, and align is 0 when none was written.
 let mut fnAttrTable = ""
 
 private fn fnAttrKey(fnNode: ASTNode) -> String {
@@ -55,6 +55,14 @@ public fn nodeFnAttrFlags(fnNode: ASTNode) -> Int {
     let record = fnAttrRecord(fnNode)
     if (record.equals("")) { return 0 }
     return fnAttrField(record, 0).parseInt().unwrapOr(0)
+}
+
+// `async fn`. A call to one does not run it: it yields a `Future<R>`, and the body
+// runs when that future is awaited or spawned. The body itself is compiled as an
+// ordinary function returning R, which is why a flag is all the declaration needs.
+public fn nodeIsAsync(fnNode: ASTNode) -> Bool {
+    if (fnAttrTable.equals("")) { return false }
+    return (nodeFnAttrFlags(fnNode) & 4) == 4
 }
 
 public fn nodeFnAlign(fnNode: ASTNode) -> Int {

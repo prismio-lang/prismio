@@ -4308,6 +4308,7 @@ private fn generateNoneLiteral(expr: ASTNode) -> String {
     // landed T4a gets an atomic one -- which is the entire point of putting the
     // distinction in the solver rather than in the lowering.
 private fn generateSpawn(expr: ASTNode) -> String {
+    if (expr.i2 == 3) { return generateSpawnFuture(expr) }
     let call = ptr_to_node(expr.child1)
     let callee = ptr_to_node(call.child1)
     let mut target = callee.s1
@@ -4316,6 +4317,7 @@ private fn generateSpawn(expr: ASTNode) -> String {
     if (nodeExists(taskFunc)) {
         let func = ptr_to_node(taskFunc)
         if (functionNeedsTaskThunk(func)) { target = taskThunkName(func) }
+        declareTaskTarget(func, target)
     }
 
     // Which of prismio_task_invoke's three families the runtime must call
@@ -4323,11 +4325,20 @@ private fn generateSpawn(expr: ASTNode) -> String {
     // known statically -- so the type the task produces and the type read
     // back out of the join agree by construction.
     let resultT = typeTaskResult(nodeGetType(expr))
-    let mut rkind = 0
-    if (resultT.kind == TypeKind.VOID) { rkind = 2 }
-    else if (resultT.kind != TypeKind.INT) { rkind = 1 }
+    let rkind = taskResultLane(resultT)
+
+    // `async fn` called and not awaited (i2 = 1): the task is built and not started,
+    // and whoever awaits it runs it. Otherwise inside a `scope`, the task is started
+    // and also registered with it, so the scope's end can wait for it. A spawn outside
+    // any scope is the plain one.
+    let lazy = expr.i2 == 1
+    let mut scopeSlot = ""
+    if (lazy == false) { scopeSlot = irTaskScopeInnermost() }
 
     ir_call_begin()
+    if (scopeSlot.equals("") == false) {
+        ir_call_arg("ptr", ir_get_temp_name(ir_load("ptr", scopeSlot)))
+    }
     ir_call_arg("ptr", ir_get_temp_name(ir_func_addr(target)))
     ir_call_arg("i32", rkind.toString())
 
@@ -4367,7 +4378,12 @@ private fn generateSpawn(expr: ASTNode) -> String {
     while (nodeExists(argPtr)) {
         let argNode = ptr_to_node(argPtr)
         let argVal = generateExpression(argNode)
-        if (spawnJoined and irArgumentIsOwnedTemporary(argNode)) {
+        let argStore = storageType(getExprType(argNode))
+        if (taskSlotIsScalar(argStore)) {
+            // A scalar owns nothing, so it needs no release and no slot of its own: its
+            // bits go in the word, and the thunk reads them back out.
+            ir_call_arg("ptr", scalarToSlot(argStore, argVal))
+        } else if (spawnJoined and irArgumentIsOwnedTemporary(argNode)) {
             let declType = getExprType(argNode)
             let store = storageType(declType)
             let name = "spawnarg.".concat(irSpawnArgCounter.toString())
@@ -4400,18 +4416,53 @@ private fn generateSpawn(expr: ASTNode) -> String {
         emitted = emitted + 1
     }
 
+    if (lazy) { return ir_get_temp_name(ir_call_end("ptr", "prismio_future_new")) }
+    if (scopeSlot.equals("") == false) { return ir_get_temp_name(ir_call_end("ptr", "prismio_scope_spawn")) }
     return ir_get_temp_name(ir_call_end("ptr", "prismio_task_spawn"))
+}
+
+// Which of the runtime's three result families a task is called through: 0 returns an
+// i32 (an `Int`, directly), 2 returns nothing, and 1 returns a word. Every other result
+// -- a Float, a Bool, a sized integer, a String -- is carried in that word, by the thunk
+// on the way out and by slotToScalar on the way in.
+internal fn taskResultLane(resultT: TypeInfo) -> Int {
+    if (resultT.kind == TypeKind.VOID) { return 2 }
+    if (storageType(typeIrKey(resultT)).equals("i32")) { return 0 }
+    return 1
+}
+
+// Whether a storage type crosses a task slot as converted bits rather than as the
+// pointer or String it already is.
+internal fn taskSlotIsScalar(store: String) -> Bool {
+    if (store.equals("ptr")) { return false }
+    return store.equals("struct:prismio.str") == false
+}
+
+// `spawn fut`: starts a future built earlier -- registering it with the innermost
+// `scope` if there is one -- and answers with that same future.
+private fn generateSpawnFuture(expr: ASTNode) -> String {
+    let handle = generateExpression(ptr_to_node(expr.child1))
+    let scopeSlot = irTaskScopeInnermost()
+    ir_call_begin()
+    if (scopeSlot.equals("")) {
+        ir_call_arg("ptr", "null")
+    } else {
+        ir_call_arg("ptr", ir_get_temp_name(ir_load("ptr", scopeSlot)))
+    }
+    ir_call_arg("ptr", handle)
+    return ir_get_temp_name(ir_call_end("ptr", "prismio_task_start"))
 }
 
 private fn generateJoin(expr: ASTNode) -> String {
     let handle = generateExpression(ptr_to_node(expr.child1))
     let resultT = nodeGetType(expr)
+    let lane = taskResultLane(resultT)
     ir_call_begin()
     ir_call_arg("ptr", handle)
-    if (resultT.kind == TypeKind.VOID) {
+    if (lane == 2) {
         return ir_get_temp_name(ir_call_end("void", "prismio_task_join_v"))
     }
-    if (resultT.kind == TypeKind.INT) {
+    if (lane == 0) {
         return ir_get_temp_name(ir_call_end("i32", "prismio_task_join"))
     }
     // A task's result crosses back through `void*`, so a `Task<String>`
@@ -4420,7 +4471,10 @@ private fn generateJoin(expr: ASTNode) -> String {
     if (typeIrKey(resultT).equals("struct:prismio.str")) {
         return fatFromPtr(ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p")))
     }
-    return ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p"))
+    let word = ir_get_temp_name(ir_call_end("ptr", "prismio_task_join_p"))
+    let store = storageType(typeIrKey(resultT))
+    if (store.equals("ptr")) { return word }
+    return slotToScalar(store, word)
 }
 
 private fn generateBinary(expr: ASTNode) -> String {

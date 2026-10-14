@@ -1,0 +1,219 @@
+// `scope { }` and `spawn { }`: structured concurrency.
+//
+// A `scope` is a block that cannot be left until every task started inside it has
+// finished. That is the whole feature, and it is what lets a `spawn { }` exist at all: the
+// block is lifted into a function of its own and handed what it captures, and a task that
+// might outlive the code that started it would be handed values that code is about to
+// release. So `spawn { }` is refused outside a scope (neg_271), and inside one the end of
+// the scope waits.
+//
+// "Waits" has to hold on *every* way out, which is what most of this file is:
+//
+//   fall-through     the plain end of the block
+//   return           out of the function, through the scope
+//   break / continue out of a loop that contains the scope
+//   nested scopes    the inner one ends first
+//
+// Each is observed through a global that a task writes and that is read only after the
+// scope has been left. Reading it earlier would race; reading it after is ordered by the
+// join, so a task that was *not* waited for shows up as a stale value, not as a flake.
+//
+// Also covered: what a spawn block captures (a scalar by value, a String moved in), what
+// it answers with (a scalar, a String), a task that nobody holds a handle to, a handle
+// awaited out of order, and `spawn fut` -- starting a future that was built earlier.
+
+import std.io
+import std.string
+extern fn print(s: String)
+extern fn println(s: String)
+
+let mut done = 0
+let mut marks = 0
+
+async fn square(n: Int) -> Int {
+    return n * n
+}
+
+async fn greet(name: String) -> String {
+    return "hello ".concat(name)
+}
+
+async fn slow_mark(value: Int) -> Int {
+    // Enough work that a scope which did not wait would be seen to return first.
+    let mut spin = 0
+    let mut i = 0
+    while (i < 2000000) {
+        spin = spin + (i & 1)
+        i = i + 1
+    }
+    marks = value + spin - spin
+    return value
+}
+
+fn fall_through() -> Int {
+    done = 0
+    scope {
+        spawn { done = await slow_mark(11) }
+    }
+    return done
+}
+
+fn early_return(flag: Bool) -> Int {
+    done = 0
+    scope {
+        spawn { done = await slow_mark(22) }
+        if (flag) { return done * 0 + 1 }
+    }
+    return 2
+}
+
+// `break` skips the `seen` line for the iteration that breaks, so `seen` is one task's
+// answer; what shows the task of the *breaking* iteration was waited for is `done`, read
+// after the loop, which that task wrote.
+fn break_out() -> Int {
+    let mut seen = 0
+    for i in 0..<3 {
+        done = 0
+        scope {
+            spawn { done = await slow_mark(33) }
+            if (i == 1) { break }
+        }
+        seen = seen + done
+    }
+    return seen + done * 1000
+}
+
+// The same for `continue`: iteration 1 skips its `seen` line but its task still finished,
+// and the loop's last iteration leaves `done` at 4 once its own scope has ended.
+fn continue_out() -> Int {
+    let mut seen = 0
+    for i in 0..<3 {
+        done = 0
+        scope {
+            spawn { done = await slow_mark(4) }
+            if (i == 1) { continue }
+        }
+        seen = seen + done
+    }
+    return seen + done * 1000
+}
+
+async fn nested_scopes() -> Int {
+    let mut r = 0
+    scope {
+        let a = spawn { await square(6) }
+        scope {
+            let b = spawn { await square(7) }
+            r = (await a) + (await b)
+        }
+    }
+    return r
+}
+
+async fn the_example() -> Int {
+    let mut total = 0
+    scope {
+        let a = spawn { await square(3) }
+        let b = spawn { await square(4) }
+
+        let first = await a
+        let second = await b
+        total = first + second
+    }
+    return total
+}
+
+async fn captures() -> Int {
+    let name = "wor".concat("ld")
+    let k = 10
+    let mut answer = 0
+    let mut text = 0
+    scope {
+        let t = spawn { await greet(name) }
+        let u = spawn { (await square(k)) + 1 }
+        if ((await t).equals("hello world") == false) { text = 1 }
+        answer = await u
+    }
+    if (text != 0) { return 1 }
+    if (answer != 101) { return 2 }
+    return 0
+}
+
+// A loop variable is captured by value: each task sees its own `i`.
+async fn loop_tasks() -> Int {
+    marks = 0
+    let mut total = 0
+    scope {
+        let a = spawn { await square(1) }
+        let b = spawn { await square(2) }
+        let c = spawn { await square(3) }
+        let d = spawn { await square(4) }
+        total = (await d) + (await c) + (await b) + (await a)
+    }
+    return total
+}
+
+// Tasks nobody holds a handle to. The scope's end is the only thing that waits for them.
+async fn detached() -> Int {
+    done = 0
+    scope {
+        for i in 0..<8 {
+            spawn { done = done * 0 + (await square(i)) * 0 + 1 }
+        }
+    }
+    return done
+}
+
+async fn start_prebuilt_futures() -> Int {
+    let f = square(9)
+    let g = square(2)
+    scope {
+        spawn f
+        spawn g
+    }
+    return (await f) + (await g)
+}
+
+// A spawn that is not inside a scope is the older form, `spawn f(x)`, and keeps meaning
+// what it meant. It takes an `async fn` too: the task runs the body, and `await` is the
+// join.
+async fn bare_spawn_of_async_fn() -> Int {
+    let t = spawn square(8)
+    return await t
+}
+
+fn check(name: String, got: Int, want: Int) -> Int {
+    if (got == want) {
+        return 0
+    }
+    print("FAIL ")
+    print(name)
+    print(": got ")
+    print(got.toString())
+    print(" want ")
+    println(want.toString())
+    return 1
+}
+
+async fn main() -> Int {
+    let mut bad = 0
+    bad = bad + check("fall through", fall_through(), 11)
+    bad = bad + check("early return", early_return(true), 1)
+    bad = bad + check("early return, task joined", done, 22)
+    bad = bad + check("early return, not taken", early_return(false), 2)
+    bad = bad + check("break", break_out(), 33 + 33 * 1000)
+    bad = bad + check("continue", continue_out(), 8 + 4 * 1000)
+    bad = bad + check("nested", await nested_scopes(), 85)
+    bad = bad + check("example", await the_example(), 25)
+    bad = bad + check("captures", await captures(), 0)
+    bad = bad + check("four tasks", await loop_tasks(), 30)
+    bad = bad + check("detached", await detached(), 1)
+    bad = bad + check("prebuilt futures", await start_prebuilt_futures(), 85)
+    bad = bad + check("bare spawn", await bare_spawn_of_async_fn(), 64)
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

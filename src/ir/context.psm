@@ -182,6 +182,14 @@ let IR_DROP_FIELDS = 5
 // others, so a program with no such struct carries none.
 let mut irFrameReleaseTypes = ""
 
+// The `scope { }` blocks open in the function being emitted, as `;level=slot;`: the
+// region depth each was entered at, and the slot holding its runtime scope. An exit
+// that leaves a level (return, break, continue) ends that scope instead of popping
+// an arena, and a `spawn` registers with the innermost one. Empty outside any scope,
+// which is every function that does not write one.
+let mut irTaskScopes = ""
+let mut irTaskScopeCounter = 0
+
 // The struct an optional binding's typed drop releases, as `;slot=struct:T;`.
 // A `T?` slot is keyed `ptr` (see mapTypeNode), which names no release, so a drop
 // list entry for one would call `__aif_release_` -- an undefined symbol, and a

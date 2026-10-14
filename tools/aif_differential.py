@@ -251,6 +251,10 @@ def main():
         # therefore one this script can only check the *consequences* of.
         sources.append(Path("tests/aif_concurrency.psm"))
         sources.append(Path("tests/aif_concurrency_shared.psm"))
+        # async/await: a lazy future, a spawn block, `scope` and `spawn fut`, which are the
+        # four ways a task now comes to exist and the only sources that reach them.
+        sources.append(Path("tests/test_289_async_await.psm"))
+        sources.append(Path("tests/test_290_scope_spawn.psm"))
         # A **builtin** is the one runtime function whose contract the oracle
         # cannot read off the AST: every extern a source declares carries its
         # own, so aif.py's fallback tables only fire for names nobody declares.

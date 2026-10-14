@@ -832,6 +832,10 @@ class Engine:
         if k == 'SPAWN_EXPR':
             if not e['c1']:
                 return VS_EMPTY
+            # `spawn fut` (i2 = 3) starts a future that already exists; its arguments
+            # crossed, and its constraint was recorded, where it was built.
+            if e.get('i2') == 3:
+                return VS_EMPTY
             call = e['c1'][0]
             self.sites_of(call, fn, scope)
             args = VS_EMPTY

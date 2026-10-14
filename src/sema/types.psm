@@ -141,7 +141,7 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         // `let t: Task<Int> = spawn describe(j)` type-checked against a
         // Task<String>. A type nobody can spell is a type nobody can get wrong;
         // one that resolves to Invalid is worse than either.
-        if (tn.s1.equals("Task")) {
+        if (tn.s1.equals("Task") or tn.s1.equals("Future")) {
             if (nodeExists(tn.child1)) {
                 return typeTask(semaAnnotationType(module, ptr_to_node(tn.child1)))
             }

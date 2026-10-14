@@ -156,6 +156,33 @@ impl Parser {
 
 
 impl Parser {
+    // `scope { ... }` -- every task spawned inside is finished before the scope is left,
+    // on every path out of it, so a task cannot outlive the code that started it.
+    //
+    // **A REGION_STATEMENT with i3 = 1.** It is a block that is entered and left, and
+    // every pass that walks a region -- flow, assignment, ranges, the AIF scope tree --
+    // already treats it as exactly that. What sets it apart is only what happens on the
+    // way out, which codegen and the AIF walk read from the flag.
+    //
+    // Contextual: `scope` begins a statement only when `{` follows, so a variable called
+    // `scope` keeps compiling.
+    private fn atScopeStatement(self) -> Bool {
+        if (self.checkVal(TokenType.IDENTIFIER, "scope") == false) { return false }
+        let open = self.peek()
+        return open.type == TokenType.SEPARATOR and open.value.equals("{")
+    }
+
+    private fn parseScopeStatement(self) -> ASTNode {
+        let scopeNode = self.node(NodeKind.REGION_STATEMENT)
+        self.advance()
+        scopeNode.i3 = 1
+        scopeNode.child1 = node_to_ptr(self.parseBlock())
+        return scopeNode
+    }
+}
+
+
+impl Parser {
     // `region <name> { ... }` (SPEC 5.2). The name is a label, not a binding: it
     // identifies the arena in the manifest so that a reader can tell which `region`
     // in the source a `region:parse` placement refers to.
@@ -460,6 +487,7 @@ impl Parser {
         if (self.checkVal(TokenType.KEYWORD, "region")) { return self.parseRegionStatement() }
         if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseVariableDecl() }
         if (self.atRepeatStatement()) { return self.parseRepeatStatement() }
+        if (self.atScopeStatement()) { return self.parseScopeStatement() }
 
         // Held before anything is consumed: every node built below is built *after*
         // its own text has been parsed, so `parserCurrent` is by then the token that

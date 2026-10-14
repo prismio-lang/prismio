@@ -1,0 +1,7 @@
+// `await` takes a `Future<T>`, which is what an `async fn` call and a `spawn` produce.
+// expect-error: `await` needs a `Future`, found Int
+
+async fn main() -> Int {
+    let n = 5
+    return await n
+}

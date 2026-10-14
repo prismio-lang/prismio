@@ -1777,6 +1777,13 @@ typedef struct {
     void* result_p;
     int joined;
     int started;
+    // 1 when `started` means a thread exists to be waited for, 0 when the task ran
+    // inline on whichever thread awaited it (an `async fn` future nobody spawned).
+    int threaded;
+    // Who is still holding the handle: the binding that got it, and a `scope` that
+    // registered it. `prismio_task_release` frees at zero, so a scope's end and a
+    // binding's drop may come in either order.
+    int refs;
 } PrismioTask;
 
 static void prismio_task_invoke(PrismioTask* t) {
@@ -1836,7 +1843,11 @@ static void prismio_task_start_failed(const char* reason) {
     exit(101);
 }
 
-void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2) {
+// A task that exists and has not started. `spawn f(x)` creates one and starts it at
+// once; an `async fn` called without `await` creates one and leaves it, so that
+// awaiting it runs the body where the await is and spawning it runs the body beside the
+// spawner. Nothing is allocated for the arguments: the three slots are the task's own.
+static PrismioTask* prismio_task_make(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2) {
     PrismioTask* t = (PrismioTask*)calloc(1, sizeof(PrismioTask));
     if (!t) prismio_task_start_failed("out of memory");
     t->fn = fn;
@@ -1845,6 +1856,14 @@ void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, voi
     t->a[0] = a0;
     t->a[1] = a1;
     t->a[2] = a2;
+    t->refs = 1;
+    return t;
+}
+
+// Puts the task on a thread of its own. Idempotent: starting a task that has started
+// is a no-op, which is what makes `spawn fut` safe to write twice.
+static int prismio_task_begin(PrismioTask* t) {
+    if (t->started) return 0;
 
     // Publish the switch before the OS can run the new thread. Programs that
     // never spawn retain the direct process-local arena fast path.
@@ -1859,17 +1878,37 @@ void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, voi
     t->started = (err == 0);
     if (!t->started) prismio_task_start_failed(strerror(err));
 #endif
+    t->threaded = 1;
+    return 1;
+}
+
+void* prismio_task_spawn(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2) {
+    PrismioTask* t = prismio_task_make(fn, rkind, nargs, a0, a1, a2);
+    prismio_task_begin(t);
     return t;
+}
+
+// `async fn` called and not awaited: the task, not started.
+void* prismio_future_new(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2) {
+    return prismio_task_make(fn, rkind, nargs, a0, a1, a2);
 }
 
 // The wait itself, shared by the three typed accessors below. Split out because
 // joining twice must not wait on a dead thread: the language does not stop a
 // program from doing it -- a handle is copyable -- so the runtime has to.
+//
+// A task that never started is run here, on this thread, and that is `await` on a
+// future: the body executes where the await is, with this thread's stack and arenas,
+// exactly as a call would. Nothing waits and nothing is created, which is why awaiting
+// a future costs a call and not a thread.
 static PrismioTask* prismio_task_await(void* handle) {
     PrismioTask* t = (PrismioTask*)handle;
     if (!t) return NULL;
     if (!t->joined) {
-        if (t->started) {
+        if (!t->started) {
+            t->started = 1;
+            prismio_task_invoke(t);
+        } else if (t->threaded) {
 #ifdef _WIN32
             WaitForSingleObject(t->thread, INFINITE);
             CloseHandle(t->thread);
@@ -1880,6 +1919,68 @@ static PrismioTask* prismio_task_await(void* handle) {
         t->joined = 1;
     }
     return t;
+}
+
+// ---------------------------------------------------------------------------
+// scope { }
+// ---------------------------------------------------------------------------
+//
+// A scope is the list of tasks started inside it. Its end waits for all of them, so
+// nothing a `scope` started can run after the code around it has moved on -- which is
+// what makes it safe for such a task to be given values that the scope's own owner will
+// release. The scope holds a reference to each task, so a binding that drops its handle
+// early does not free a task the scope is still going to wait for.
+typedef struct {
+    PrismioTask** tasks;
+    int len;
+    int cap;
+} PrismioScope;
+
+void* prismio_scope_new(void) {
+    PrismioScope* sc = (PrismioScope*)calloc(1, sizeof(PrismioScope));
+    if (!sc) prismio_task_start_failed("out of memory");
+    return sc;
+}
+
+static void prismio_scope_add(PrismioScope* sc, PrismioTask* t) {
+    if (sc->len == sc->cap) {
+        int cap = sc->cap ? sc->cap * 2 : 4;
+        PrismioTask** grown = (PrismioTask**)realloc(sc->tasks, (size_t)cap * sizeof(PrismioTask*));
+        if (!grown) prismio_task_start_failed("out of memory");
+        sc->tasks = grown;
+        sc->cap = cap;
+    }
+    t->refs++;
+    sc->tasks[sc->len++] = t;
+}
+
+void* prismio_scope_spawn(void* scope, void* fn, int rkind, int nargs, void* a0, void* a1, void* a2) {
+    PrismioTask* t = prismio_task_make(fn, rkind, nargs, a0, a1, a2);
+    prismio_task_begin(t);
+    if (scope) prismio_scope_add((PrismioScope*)scope, t);
+    return t;
+}
+
+// `spawn fut`: starts a future that was built earlier, and answers with it. The scope,
+// when there is one, takes its reference only if this call is what started the task.
+void* prismio_task_start(void* scope, void* handle) {
+    PrismioTask* t = (PrismioTask*)handle;
+    if (!t) return handle;
+    if (prismio_task_begin(t) && scope) prismio_scope_add((PrismioScope*)scope, t);
+    return handle;
+}
+
+void prismio_task_release(void* handle);
+
+void prismio_scope_end(void* scope) {
+    PrismioScope* sc = (PrismioScope*)scope;
+    if (!sc) return;
+    for (int i = 0; i < sc->len; i++) {
+        prismio_task_await(sc->tasks[i]);
+        prismio_task_release(sc->tasks[i]);
+    }
+    free(sc->tasks);
+    free(sc);
 }
 
 // Three accessors rather than one returning a word the caller reinterprets.
@@ -1903,7 +2004,9 @@ void prismio_task_join_v(void* handle) {
 // The join is the synchronisation edge, so the handle is dead the moment it
 // returns and the caller has nothing left to free by hand.
 void prismio_task_release(void* handle) {
-    if (handle) free(handle);
+    PrismioTask* t = (PrismioTask*)handle;
+    if (!t) return;
+    if (--t->refs <= 0) free(t);
 }
 
 // `bytes` is the in-place ring a plain-data channel uses instead of `slots`:

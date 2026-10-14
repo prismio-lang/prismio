@@ -432,8 +432,22 @@ internal fn functionReturnsString(func: ASTNode) -> Bool {
     return isFatStringKey(storageType(getDeclaredReturnType(func, func.child3)))
 }
 
+// A task is started through `void*` slots and answers through an i32, a word or
+// nothing. A function whose own signature is not that -- a String in or out, a scalar
+// that is not an `Int` result, any scalar argument -- is called through a thunk with
+// the runtime's shape, which converts each value to and from its slot and then makes
+// an ordinary, honestly typed call.
 internal fn functionNeedsTaskThunk(func: ASTNode) -> Bool {
-    return functionHasStringParam(func) or functionReturnsString(func)
+    if (functionHasStringParam(func) or functionReturnsString(func)) { return true }
+    let mut paramPtr = func.child1
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        if (storageType(mapTypeNode(ptr_to_node(param.child1))).equals("ptr") == false) { return true }
+        paramPtr = param.next
+    }
+    let retType = storageType(getDeclaredReturnType(func, func.child3))
+    if (retType.equals("void") or retType.equals("ptr") or retType.equals("i32")) { return false }
+    return true
 }
 
 internal fn taskFunctionForCall(call: ASTNode) -> Ptr {
@@ -823,6 +837,34 @@ private fn irChainMovesNoBlock(head: Ptr) -> Bool {
     return true
 }
 
+// A task's function is named by *address*, and an address needs the function to exist in
+// the module -- which a call does not (a call synthesises its declaration), so a program
+// could call a function defined below it but not spawn one. `async fn`s made that the
+// ordinary case: a `spawn { }` block is lifted to the end of the module. So the spawn
+// declares its target first, with exactly the signature the definition will give it, and
+// the definition fills in the declaration it finds.
+internal fn declareTaskTarget(func: ASTNode, target: String) {
+    let retType = storageType(getDeclaredReturnType(func, func.child3))
+    let thunked = target.equals(taskThunkName(func))
+    let mut declaredRet = retType.clone()
+    if (thunked and retType.equals("void") == false and retType.equals("ptr") == false
+            and retType.equals("i32") == false) {
+        declaredRet = "ptr"
+    }
+    ir_declare_function_begin(target, declaredRet)
+    let mut paramPtr = func.child1
+    while (nodeExists(paramPtr)) {
+        let param = ptr_to_node(paramPtr)
+        if (thunked) {
+            ir_declare_function_param("ptr")
+        } else {
+            ir_declare_function_param(storageType(mapTypeNode(ptr_to_node(param.child1))))
+        }
+        paramPtr = param.next
+    }
+    ir_declare_function_end()
+}
+
 // A task crosses the C runtime through up to three `void*` slots. A String does
 // not: its native Prismio signature is `{ptr, i64}`, and passing only its pointer
 // half happened to work until code read the length. The thunk has the runtime's
@@ -830,12 +872,12 @@ private fn irChainMovesNoBlock(head: Ptr) -> Bool {
 // function, leaving LLVM to implement both ABIs on every target.
 private fn generateTaskThunk(func: ASTNode) {
     let retType = storageType(getDeclaredReturnType(func, func.child3))
-    let stringResult = isFatStringKey(retType.clone())
+    // The result lanes are the runtime's: i32, a word, or nothing. Anything else comes
+    // back in the word, converted to it below.
+    let wordResult = retType.equals("void") == false and retType.equals("ptr") == false
+                     and retType.equals("i32") == false
     let mut thunkRetType = retType.clone()
-    // The task runtime has a pointer result lane, not a `{ptr, i64}` lane.
-    // Materialise String's inline/view forms into owned storage below and use
-    // the pointer signature the runtime actually calls through.
-    if (stringResult) { thunkRetType = "ptr" }
+    if (wordResult) { thunkRetType = "ptr" }
     ir_function_begin(taskThunkName(func), thunkRetType)
 
     let mut paramPtr = func.child1
@@ -856,8 +898,10 @@ private fn generateTaskThunk(func: ASTNode) {
         let raw = "%p_task".concat(j.toString())
         if (isFatStringKey(paramType)) {
             ir_call_arg(paramType, fatFromPtr(raw))
-        } else {
+        } else if (paramType.equals("ptr")) {
             ir_call_arg(paramType, raw)
+        } else {
+            ir_call_arg(paramType, slotToScalar(paramType, raw))
         }
         argPtr = param.next
         j = j + 1
@@ -868,7 +912,7 @@ private fn generateTaskThunk(func: ASTNode) {
         ir_ret_void()
     } else {
         let result = ir_get_temp_name(ir_call_end(retType.clone(), functionSymbolName(func)))
-        if (stringResult) {
+        if (wordResult) {
             ir_ret("ptr", scalarToSlot(retType.clone(), result))
         } else {
             ir_ret(retType.clone(), result)
@@ -909,7 +953,11 @@ internal fn collectStringsExpr(expr: ASTNode) {
         }
     }
     if (expr.kind == NodeKind.SPAWN_EXPR) {
-        if (nodeExists(expr.child1)) {
+        // `spawn fut` (i2 = 3) names a future, not a call: nothing to thunk, and the
+        // future's own creation already did.
+        if (expr.i2 == 3) {
+            collectStringsExpr(ptr_to_node(expr.child1))
+        } else if (nodeExists(expr.child1)) {
             let call = ptr_to_node(expr.child1)
             let target = taskFunctionForCall(call)
             if (nodeExists(target)) {

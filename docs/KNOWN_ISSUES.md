@@ -723,6 +723,34 @@ is released at the scope exit only when the join is proved (the E-SPAWN-J proof 
 uses); otherwise it leaks, which is the conservative direction
 (`RESULTS-spawn-owned-argument.md`).
 
+**A struct or String that comes back through a task handle is never freed by the awaiter.** *Re-run
+2026-10-14.* `join` yields no allocation site to the solver, so a result that is not an `Int` leaks one
+block per await. `await f(x)` of an `async fn` call is not affected, because it is the call.
+
+```
+fn wrap(r: Report) -> Report { return Report { label: r.label, total: r.total + 1 } }
+fn main() -> Int {
+    let t = spawn wrap(Report { label: "x", total: 1 })
+    let r = join t            // 1 allocated, 0 released, 1 leaked
+    return r.total - 2
+}
+```
+
+`let a = spawn { await fetchUser(1) }` followed by `await a` leaks the `User` the same way. The
+obstacle is the handle, not the join: it is copyable, so two awaits of one handle yield one
+object, and giving the result an owner would free it twice. It needs the handle to be affine, or
+the join to hand back a copy, and the solver's model of a join to change in the engine and in the
+oracle together.
+
+**A held `Future` or a task takes at most three arguments.** The runtime has three slots.
+`await f(a, b, c, d)` is only a call and takes any number; `let f = f(a, b, c, d)` is refused with a
+message that says to pack the rest in a struct. Packing them into a heap record the thunk unpacks
+is the fix.
+
+**`await` blocks its thread when the task it awaits is running elsewhere.** There is no suspension
+point to give the thread back at; a pool and a state machine are what would provide one
+(`ASYNC_PLAN.md` section 4).
+
 **Nothing checks the destruction order, and a send on a closed channel does not hand the value
 back.** A `send` on a closed channel answers `false` and releases the message
 (`../tests/test_235_channel_owned_messages.psm`); handing it back to the sender is not done.

@@ -1,0 +1,12 @@
+// A `Future<Int>` is not a `Future<Bool>`: the type carries what `await` yields.
+// expect-error: expected Future<Bool>, found Future<Int>
+
+async fn answer() -> Int {
+    return 42
+}
+
+async fn main() -> Int {
+    let f = answer()
+    let g: Future<Bool> = f
+    return 0
+}

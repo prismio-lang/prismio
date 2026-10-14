@@ -307,14 +307,19 @@ public fn typeOptional(inner: TypeInfo) -> TypeInfo {
 // kind would have to be added to all of them to arrive at the same behaviour.
 // What the name and the `child` add is the one thing a bare `Ptr` could not
 // carry -- what comes back out of the join.
+//
+// `Future<R>` is the same type, spelled for async/await: a call to an `async fn` is
+// a task that has not started, and `await` runs it. It was named `Task<R>` until
+// that spelling stopped being what a reader meets first, so the display name is
+// `Future<R>` and both are accepted where a type is written.
 public fn typeTask(result: TypeInfo) -> TypeInfo {
-    let mut t = typeMake(TypeKind.PTR, "Task<".concat(result.name, ">"), "ptr")
+    let mut t = typeMake(TypeKind.PTR, "Future<".concat(result.name, ">"), "ptr")
     t.child = type_to_ptr(result)
     return t
 }
 
 public fn typeIsTask(t: TypeInfo) -> Bool {
-    return t.kind == TypeKind.PTR and t.name.startsWith("Task<")
+    return t.kind == TypeKind.PTR and t.name.startsWith("Future<")
 }
 
 public fn typeTaskResult(t: TypeInfo) -> TypeInfo {

@@ -1,0 +1,12 @@
+// Calling an `async fn` gives the future, not the answer; writing the answer's type there
+// is the mistake the type exists to catch.
+// expect-error: expected Int, found Future<Int>
+
+async fn answer() -> Int {
+    return 42
+}
+
+async fn main() -> Int {
+    let n: Int = answer()
+    return n
+}

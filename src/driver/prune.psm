@@ -159,7 +159,7 @@ private fn pruneScanNode(node: ASTNode) {
 private fn pruneIsRoot(func: ASTNode) -> Bool {
     if (pruneIsLibrary(func) == false) { return true }
     if (nodeExists(func.genericInfo)) { return true }
-    return nodeFnAttrFlags(func) != 0
+    return (nodeFnAttrFlags(func) & 3) != 0
 }
 
 // **Not while a `.plib` is being built.** The module being emitted is the entry

@@ -1,0 +1,223 @@
+// `async fn`, `Future<T>` and `await`.
+//
+// An `async fn` is declared like any function and called like any function, and what
+// differs is what the call is: not the result but a `Future<T>`, a task that has not
+// started. Nothing runs until something awaits it, which is the part of Rust's model that
+// matters here -- `let f = fetch(1)` costs one handle and does no work, so a future that
+// is built and dropped is free, and the work happens where `await` is, on that thread.
+//
+// What is asserted, in order:
+//
+//   direct await     `await f(x)` is the call itself: no handle, no task, and the same
+//                    ownership as any call -- a String or struct result is owned.
+//   laziness         a counter the body bumps is still zero after the call, and one after
+//                    the await. Not "eventually": at those two lines, on this thread.
+//   scalar results   Float, Bool and Int cross a task through the word the runtime hands
+//                    back, so each is tested -- a result that came back through the wrong
+//                    register reads as garbage rather than failing.
+//   methods, generics, recursion, and a Vec of futures awaited in a loop.
+//   `join`           the synchronous bridge: a `fn` that is not async cannot `await`, and
+//                    runs a future to completion with the keyword it already had.
+
+import std.io
+import std.string
+extern fn print(s: String)
+extern fn println(s: String)
+
+struct User {
+    id: Int,
+    name: String
+}
+
+struct Client {
+    base: String
+}
+
+// Bumped by the body of `tick`, so the test can see *when* a future's body runs.
+let mut ticks = 0
+
+async fn tick() -> Int {
+    ticks = ticks + 1
+    return ticks
+}
+
+async fn fetchUser(id: Int) -> User {
+    return User { id: id, name: "user-".concat(id.toString()) }
+}
+
+async fn describe(id: Int) -> String {
+    let u = await fetchUser(id)
+    return u.name.concat("!")
+}
+
+async fn half(x: Float) -> Float {
+    return x / 2.0
+}
+
+async fn isEven(n: Int) -> Bool {
+    return n % 2 == 0
+}
+
+async fn nothing(n: Int) {
+    ticks = ticks + n
+}
+
+async fn fact(n: Int) -> Int {
+    if (n <= 1) { return 1 }
+    return n * (await fact(n - 1))
+}
+
+async fn identity<T>(x: T) -> T {
+    return x
+}
+
+impl Client {
+    async fn get(self, id: Int) -> String {
+        return self.base.concat("/", id.toString())
+    }
+
+    async fn size(self) -> Int {
+        return self.base.length
+    }
+}
+
+async fn direct_await() -> Int {
+    let u = await fetchUser(7)
+    if (u.id != 7) { return 1 }
+    if (u.name.equals("user-7") == false) { return 2 }
+    if ((await describe(3)).equals("user-3!") == false) { return 3 }
+    return 0
+}
+
+async fn lazy_until_awaited() -> Int {
+    ticks = 0
+    let f = tick()
+    if (ticks != 0) { return 1 }
+    let g = tick()
+    if (ticks != 0) { return 2 }
+    // Awaited out of order: the body runs where the await is, not where the call was.
+    let second = await g
+    if (ticks != 1 or second != 1) { return 3 }
+    let first = await f
+    if (ticks != 2 or first != 2) { return 4 }
+    // A second await is the first one's answer, not a second run.
+    let again = await f
+    if (ticks != 2 or again != 2) { return 5 }
+    return 0
+}
+
+async fn dropped_future_never_runs() -> Int {
+    ticks = 0
+    let unused = tick()
+    return ticks
+}
+
+async fn scalar_results() -> Int {
+    if ((await half(5.0)) != 2.5) { return 1 }
+    if ((await isEven(4)) == false) { return 2 }
+    if (await isEven(5)) { return 3 }
+    // The same results through a held future, which is the path that crosses the
+    // runtime's result word.
+    let h = half(9.0)
+    let e = isEven(10)
+    if ((await h) != 4.5) { return 4 }
+    if ((await e) == false) { return 5 }
+    return 0
+}
+
+async fn void_result() -> Int {
+    ticks = 0
+    await nothing(5)
+    if (ticks != 5) { return 1 }
+    let f = nothing(2)
+    if (ticks != 5) { return 2 }
+    await f
+    if (ticks != 7) { return 3 }
+    return 0
+}
+
+async fn methods() -> Int {
+    let c = Client { base: "http://x".concat("yz") }
+    if ((await c.get(4)).equals("http://xyz/4") == false) { return 1 }
+    if ((await c.size()) != 10) { return 2 }
+    return 0
+}
+
+async fn generics_and_recursion() -> Int {
+    if ((await identity(41)) != 41) { return 1 }
+    if ((await identity("s".concat("t"))).equals("st") == false) { return 2 }
+    if ((await fact(5)) != 120) { return 3 }
+    return 0
+}
+
+async fn vec_of_futures() -> Int {
+    let mut futures = Vec<Future<Int>>()
+    for i in 1..<5 {
+        futures.push(fact(i))
+    }
+    let mut total = 0
+    for f in futures {
+        total = total + (await f)
+    }
+    if (total != 33) { return 1 }
+    return 0
+}
+
+// A future as a value: passed to a function, which awaits it.
+async fn consume(f: Future<Int>) -> Int {
+    return (await f) + 100
+}
+
+async fn future_as_argument() -> Int {
+    let r = await consume(fact(4))
+    if (r != 124) { return 1 }
+    return 0
+}
+
+// Written out, so a `Future<Int>` that is really a `Future<Bool>` is refused rather than
+// matched against Invalid.
+async fn written_annotation() -> Int {
+    let f: Future<Int> = fact(3)
+    if ((await f) != 6) { return 1 }
+    return 0
+}
+
+// `await` is for `async` code. The function that is not async runs a future with `join`,
+// and it is the same future: one type, two ways to wait.
+fn synchronous_bridge() -> Int {
+    let f = fact(5)
+    if ((join f) != 120) { return 1 }
+    return 0
+}
+
+fn check(name: String, got: Int) -> Int {
+    if (got == 0) {
+        return 0
+    }
+    print("FAIL ")
+    print(name)
+    print(": ")
+    println(got.toString())
+    return 1
+}
+
+async fn main() -> Int {
+    let mut bad = 0
+    bad = bad + check("direct await", await direct_await())
+    bad = bad + check("lazy", await lazy_until_awaited())
+    bad = bad + check("dropped", await dropped_future_never_runs())
+    bad = bad + check("scalars", await scalar_results())
+    bad = bad + check("void", await void_result())
+    bad = bad + check("methods", await methods())
+    bad = bad + check("generics", await generics_and_recursion())
+    bad = bad + check("vec of futures", await vec_of_futures())
+    bad = bad + check("argument", await future_as_argument())
+    bad = bad + check("annotation", await written_annotation())
+    bad = bad + check("join", synchronous_bridge())
+
+    if (bad == 0) {
+        println("PASS")
+        return 0
+    }
+    return 1
+}

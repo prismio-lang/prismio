@@ -231,6 +231,9 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
     // release -- the same reason `none` returns empty two cases up.
         NodeKind.SPAWN_EXPR => {
             if (nodeIsNull(e.child1)) { return aifVsEmpty() }
+            // `spawn fut` starts a future that already exists; its arguments crossed
+            // when it was built, and that is where the constraint was recorded.
+            if (e.i2 == 3) { return aifVsEmpty() }
             let call = ptr_to_node(e.child1)
             aifCallSites(e.child1, fnId, scope)
 
@@ -720,6 +723,13 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
     // allocation whose escape bottoms at or below this scope may be served from
     // an arena rather than the heap, and the manifest can say which one.
         NodeKind.REGION_STATEMENT => {
+            // `scope { }` (i3 = 1) is a block, not an arena: it has no name to place
+            // under and nothing it serves may live on a region, because the tasks it
+            // starts run on other threads. Its body is walked as the block it is.
+            if (n.i3 == 1) {
+                aifWalk(n.child1, fnId, scope)
+                return
+            }
             let inner = aif_scope_new(scope, fnId)
             aif_scope_set_region(inner, n.s1)
             aif_scope_set_region_span(inner, n.file, n.line, n.col)

@@ -1,0 +1,12 @@
+// `spawn { }` hands a block to a task that may run after the code around it has moved on.
+// What makes that safe is `scope`, whose end waits; with no scope there is nothing to wait,
+// so the block is refused rather than leaked into the background.
+// expect-error: `spawn { }` needs an enclosing `scope`
+
+import std.io
+extern fn println(s: String)
+
+fn main() -> Int {
+    let t = spawn { println("who waits for me?") }
+    return 0
+}

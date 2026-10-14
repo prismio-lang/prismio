@@ -1,6 +1,6 @@
 {
   "schema_version": 4,
-  "generated_at": "2026-10-14T10:37:52.592807+00:00",
+  "generated_at": "2026-10-14T11:05:48.031085+00:00",
   "suites": {
     "hosted": {
       "schema_version": 3,
@@ -5576,7 +5576,7 @@
     "freestanding": {
       "suite": "freestanding",
       "schema_version": 1,
-      "generated_at": "2026-10-14T10:37:52.591435+00:00",
+      "generated_at": "2026-10-14T11:05:48.025925+00:00",
       "metric": "instructions",
       "metric_note": "Guest instructions executed, from QEMU `-icount shift=0` read through the generic timer (1 tick = 16 instructions). Exact and repeatable; not a time, and it models no cache or pipeline.",
       "tick_instructions": 16,
@@ -5615,7 +5615,7 @@
           "lld": "22.1.8"
         },
         "source": {
-          "commit": "a201a2f",
+          "commit": "3e0c5d9",
           "dirty": true
         },
         "harness": {
@@ -5637,23 +5637,23 @@
         ]
       },
       "compile_ns": {
-        "prismio": 138035208,
-        "c": 129482041,
-        "rust": 251139916
+        "prismio": 193285542,
+        "c": 119048959,
+        "rust": 411162376
       },
       "compile_cpu_ns": {
-        "prismio": 128603000,
-        "c": 124532000,
-        "rust": 208030999
+        "prismio": 130062999,
+        "c": 107043000,
+        "rust": 197136999
       },
       "images": {
         "prismio": {
-          "text": 16768,
-          "rodata": 1408,
+          "text": 17292,
+          "rodata": 1900,
           "data": 0,
           "bss": 16,
-          "file": 86928,
-          "code_net": 7216
+          "file": 88632,
+          "code_net": 7740
         },
         "c": {
           "text": 15264,
@@ -6347,12 +6347,12 @@
           "scale": 1,
           "languages": {
             "prismio": {
-              "ticks": 465627,
-              "instructions": 7450032,
+              "ticks": 465628,
+              "instructions": 7450048,
               "instructions_samples": [
-                7450032,
-                7450032,
-                7450032
+                7450048,
+                7450048,
+                7450048
               ]
             },
             "c": {
@@ -6447,12 +6447,12 @@
           "scale": 1,
           "languages": {
             "prismio": {
-              "ticks": 234591,
-              "instructions": 3753456,
+              "ticks": 234592,
+              "instructions": 3753472,
               "instructions_samples": [
-                3753456,
-                3753456,
-                3753456
+                3753472,
+                3753472,
+                3753472
               ]
             },
             "c": {
@@ -6647,12 +6647,12 @@
           "scale": 1,
           "languages": {
             "prismio": {
-              "ticks": 562525,
-              "instructions": 9000400,
+              "ticks": 562526,
+              "instructions": 9000416,
               "instructions_samples": [
-                9000400,
-                9000400,
-                9000400
+                9000416,
+                9000416,
+                9000416
               ]
             },
             "c": {

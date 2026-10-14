@@ -183,7 +183,8 @@ of each workload the same program, is in [`benchmarks/`](benchmarks/README.md).
   combinators; `Vec<T>`, fixed-length `Array<T, N>`, `Map<K, V>`; `for ... in` over any
   type that implements `Iterator`.
 - String interpolation (`"${value}"`); `panic`, `assert` and `exit`.
-- Tasks (`spawn`, `join`) and typed channels.
+- Tasks (`spawn`, `join`), `async fn` with lazy `Future<T>` and `await`, `scope { }` and
+  `spawn { }` for tasks that cannot outlive the block that started them, and typed channels.
 - C interop through `extern fn`, with ownership stated at the boundary:
   `produce(free)`, `borrow` and `alias`.
 - Projects described in a `build.ums` manifest; `prismio init`, `build`, `run` and `test`.

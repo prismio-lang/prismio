@@ -1,0 +1,16 @@
+// What a `spawn { }` block captures is moved into the task, exactly as `spawn f(x)` moves
+// its argument: the task owns it, and the parent's binding is dead from there on.
+// expect-error: use of moved value `s`
+
+import std.io
+import std.string
+extern fn println(s: String)
+
+fn main() -> Int {
+    let s = "ab".concat("cd")
+    scope {
+        spawn { println(s) }
+    }
+    println(s)
+    return 0
+}

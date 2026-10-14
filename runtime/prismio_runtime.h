@@ -187,6 +187,16 @@ void* prismio_task_join_p(void* handle);
 void  prismio_task_join_v(void* handle);
 void  prismio_task_release(void* handle);
 
+// async/await. `prismio_future_new` builds a task and leaves it unstarted; awaiting it
+// (`prismio_task_join*`) runs it inline, and `prismio_task_start` puts it on a thread.
+// A `scope { }` is `prismio_scope_new` ... `prismio_scope_end`, and a spawn inside it
+// registers with it (`prismio_scope_spawn`) so the end can wait.
+void* prismio_future_new(void* fn, int rkind, int nargs, void* a0, void* a1, void* a2);
+void* prismio_task_start(void* scope, void* handle);
+void* prismio_scope_new(void);
+void* prismio_scope_spawn(void* scope, void* fn, int rkind, int nargs, void* a0, void* a1, void* a2);
+void  prismio_scope_end(void* scope);
+
 // Called around native task startup. The fast path stays process-local until a
 // program actually spawns, while every runtime-created worker gets isolated
 // arena state before it can execute generated code.

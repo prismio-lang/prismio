@@ -198,13 +198,14 @@ unsound aliasing rule after the fact.
 | 0 · Contract | written semantics (ownership, close, endpoint clones, error types, blocking); `Channel<Int>` refused or lowered properly; spawn failure explicit; send after close returns the value; teardown tests with live waiters | the compiler's tests pass; a leak probe on send after close passes; every failure has a result type |
 | 1 · Typed bounded channel | **partly done 2026-09-30:** the in-place ring and "no allocation per message" for plain-data messages, `channel_pipeline` at 0.94x of C++. Remaining: type descriptors, an aligned in-place ring, `Sender`/`Receiver` with counted endpoints, direct handoff, a wrap without division | the primitive pipeline makes no allocation per message; `channel_pipeline` near the inline C++ control; the state machine's tests pass |
 | 2 · Complete blocking API | rendezvous, try, timeouts, cancellation, one-shot, per-platform parkers (futex, `WaitOnAddress`, `os_sync_wait_on_address`) | no lost value or orphaned waiter under stress; deterministic timeouts in tests |
-| 3 · Runtime integration | structured task scopes, a bounded worker pool, park and unpark through the scheduler, select, permits | a blocked channel does not pin a worker; select commits exactly one arm |
+| 3 · Runtime integration | structured task scopes (**done 2026-10-14 on OS threads**, [ASYNC_PLAN.md](ASYNC_PLAN.md)), a bounded worker pool, park and unpark through the scheduler, select, permits | a blocked channel does not pin a worker; select commits exactly one arm |
 | 4 · Specialisation | SPSC and MPSC fast paths, batches, an atomic MPMC ring (Vyukov; SCQ/wCQ), broadcast, watch, unbounded with a memory policy | each justified by a benchmark and a correctness case. Remember the SPSC negative result |
 
 The **0.1 items in §1 are the part of Phase 0 that a program can hit today.**
 The rest of Phase 0 starts after 0.1.
 
-**The task runtime.** Today it is one OS thread per `spawn`. In transition, a
+**The task runtime.** Today it is one OS thread per `spawn`, and a `scope { }` waits for the
+tasks started in it ([ASYNC_PLAN.md](ASYNC_PLAN.md)). In transition, a
 worker pool that compensates for blocked workers, and never runs a failed spawn
 inline. The target is a work-stealing scheduler with structured scopes, where
 tasks park through the Parker and a scope owns its tasks, their cancellation,
