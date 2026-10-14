@@ -106,10 +106,13 @@ commands {
         run("tools/check_externs.py", "--dist", "dist/Prismio")
     }
 
+    // --freestanding-target: the suite's freestanding_bench links the failure
+    // core (prismio_panic) into a bare-metal build, which a package carries only
+    // for a triple it was asked for.
     command("verify") {
         description = "The full acceptance gate: suite, source lists, externs, AIF differential"
         run("tools/package.py", "--compiler", ".prismio/build/debug/prismio",
-        "--out", "dist/Prismio")
+        "--out", "dist/Prismio", "--freestanding-target", "aarch64-unknown-none-elf")
         run("tools/run_suite.py", "--compiler", "dist/Prismio/bin/prismio")
         run("tools/check_source_lists.py")
         run("tools/check_externs.py", "--dist", "dist/Prismio")

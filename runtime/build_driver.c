@@ -1015,6 +1015,17 @@ static int g_debug_info = 0;
 
 void compiler_set_debug_info(int on) { g_debug_info = on ? 1 : 0; }
 
+int ir_requested_opt_level(void);
+const char* ir_opt_level_flag(int level);
+
+// The level the program's object step runs at: the -O flag when one was given,
+// otherwise 3, or 0 for -g. An explicit `-O2 -g` is optimised and debuggable.
+static int program_opt_level(void) {
+    int requested = ir_requested_opt_level();
+    if (requested >= 0) return requested;
+    return g_debug_info ? 0 : 3;
+}
+
 // Cross-compilation
 // The triple is not stored here: llvm-api-backend.c already holds it, because
 // that is where LLVM answered the question, and a second copy is a second thing
@@ -1133,6 +1144,9 @@ static int g_freestanding_runtime = 0;
 // For the one link in progress: the compiled native objects and the export
 // flags, quoted, set by compiler_build_executable around link_program_object.
 static const char* g_link_extra = "";
+// How many of the program's codegen partitions beyond its first object
+// g_link_extra names, for link_with_cached_ld to put back in its line.
+static int g_link_partitions = 0;
 
 static void free_string_list(char*** items, int* count, int* cap) {
     for (int i = 0; i < *count; i++) free((*items)[i]);
@@ -1701,14 +1715,15 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj,
     *extra_objects = 0;
     // In process first. The clang command below is what this reproduces, flag
     // for flag, and stays as the fallback for a backend built without headers.
-    diag_progress(g_debug_info ? "generating code" : "optimizing");
+    int opt_level = program_opt_level();
+    diag_progress(opt_level == 0 ? "generating code" : "optimizing");
     if (!codegen_uses_clang()) {
         double t0 = build_trace_ms();
         int emitted = ir_emit_object(ir_file, program_obj,
                                      ir_target_is_explicit() ? ir_target_triple() : NULL,
-                                     g_debug_info ? 0 : 3, program_is_closed(),
+                                     opt_level, program_is_closed(),
                                      extra_objects);
-        build_trace_stage("program -O3 (whole program, in process)", t0);
+        build_trace_stage("program (whole program, in process)", t0);
         if (emitted >= 0) return emitted;
     }
 
@@ -1767,11 +1782,12 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj,
     snprintf(command, len,
              "%s %s-Wno-override-module %s -c %s -o %s",
              native_clang_command(), target,
-             g_debug_info ? "-O0" : "-O3 -mllvm -enable-nontrivial-unswitch",
+             opt_level == 3 ? "-O3 -mllvm -enable-nontrivial-unswitch"
+                            : ir_opt_level_flag(opt_level),
              q_ir, q_obj);
     double t0 = build_trace_ms();
     int result = run_build_command(command);
-    build_trace_stage("program -O3 (whole program)", t0);
+    build_trace_stage("program (whole program)", t0);
     free(command);
     free(target);
     free(q_ir);
@@ -2242,10 +2258,31 @@ static int link_with_cached_ld(const char* keyed, const char* real,
             && run_build_command(command) == 0;
         char* text = asked ? read_file(log) : NULL;
         int parsed = text && link_args_from_driver_output(text, &args);
-        int has_object = 0, has_output = 0;
+        int has_object = 0, has_output = 0, object_at = -1, partitions = 0;
         for (int i = 0; parsed && i < args.count; i++) {
             const char* mark = NULL;
-            if (strcmp(args.items[i], program_obj) == 0) { mark = LINK_OBJECT_MARK; has_object++; }
+            // The other partitions follow the first object, last partition first
+            // (the order the build prepends them to g_link_extra), and are put back
+            // after its marker in that order; a line that has them anywhere else is
+            // not kept.
+            int partition = 0;
+            for (int p = 1; p <= g_link_partitions && !partition; p++) {
+                char path[1200];
+                ir_partition_object_path(program_obj, p, path, sizeof(path));
+                if (strcmp(args.items[i], path) == 0) partition = p;
+            }
+            if (partition) {
+                partitions++;
+                if (partition != g_link_partitions - partitions + 1 || i != object_at + partitions) {
+                    parsed = 0;
+                }
+                continue;
+            }
+            if (strcmp(args.items[i], program_obj) == 0) {
+                mark = LINK_OBJECT_MARK;
+                has_object++;
+                object_at = i;
+            }
             else if (strcmp(args.items[i], exe_file) == 0) { mark = LINK_OUTPUT_MARK; has_output++; }
             // A path the line also spells inside another argument could not be
             // substituted back, so such a line is not kept.
@@ -2256,8 +2293,18 @@ static int link_with_cached_ld(const char* keyed, const char* real,
                 strcpy(args.items[i], mark);
             }
         }
-        if (parsed && has_object == 1 && has_output == 1) link_cache_write(cache, &args);
-        else link_args_free(&args);
+        if (parsed && partitions > 0) {
+            // Drop the partitions' own paths: the cached line names the object once.
+            for (int i = object_at + 1; i <= object_at + partitions; i++) free(args.items[i]);
+            memmove(args.items + object_at + 1, args.items + object_at + 1 + partitions,
+                    (size_t)(args.count - object_at - 1 - partitions) * sizeof(char*));
+            args.count -= partitions;
+        }
+        if (parsed && has_object == 1 && has_output == 1 && partitions == g_link_partitions) {
+            link_cache_write(cache, &args);
+        } else {
+            link_args_free(&args);
+        }
         free(text);
         if (log) delete_file(log);
         free(log);
@@ -2268,21 +2315,34 @@ static int link_with_cached_ld(const char* keyed, const char* real,
         return 1;
     }
 
-    char** argv = (char**)malloc((size_t)args.count * sizeof(char*));
+    int argc = args.count + g_link_partitions;
+    char** argv = (char**)malloc((size_t)argc * sizeof(char*));
+    char (*partition_paths)[1200] = g_link_partitions > 0
+        ? malloc((size_t)g_link_partitions * sizeof(*partition_paths)) : NULL;
+    int at = 0;
     for (int i = 0; i < args.count; i++) {
         const char* item = args.items[i];
-        if (strcmp(item, LINK_OBJECT_MARK) == 0) item = program_obj;
-        else if (strcmp(item, LINK_OUTPUT_MARK) == 0) item = exe_file;
-        argv[i] = (char*)item;
+        if (strcmp(item, LINK_OBJECT_MARK) == 0) {
+            argv[at++] = (char*)program_obj;
+            for (int p = g_link_partitions; p >= 1; p--) {
+                ir_partition_object_path(program_obj, p, partition_paths[p - 1],
+                                         sizeof(partition_paths[p - 1]));
+                argv[at++] = partition_paths[p - 1];
+            }
+            continue;
+        }
+        if (strcmp(item, LINK_OUTPUT_MARK) == 0) item = exe_file;
+        argv[at++] = (char*)item;
     }
     double t0 = build_trace_ms();
-    int status = spawn_and_wait(argv[0], argv + 1, args.count - 1, NULL, 1);
+    int status = spawn_and_wait(argv[0], argv + 1, at - 1, NULL, 1);
     build_trace_stage("link (ld)", t0);
     // Not this program's fault, as far as anything here can tell, so the driver
     // links it and says why if it cannot -- and a line that failed is not kept.
     if (status != 0) delete_file(cache);
     free(cache);
     free(argv);
+    free(partition_paths);
     link_args_free(&args);
     return status == 0 ? 0 : 1;
 }
@@ -2319,6 +2379,13 @@ static char* driver_link_command(const char* program_obj, const char* exe_file) 
     // told otherwise, and neither the runtime's nor a target's native C is
     // pruned before it gets there. Exported symbols (exportDynamic) are roots,
     // so nothing a loaded module could resolve is removed.
+    // -fixup_chains: ld64 turns chained fixups on by itself only for newer
+    // deployment targets, and at ours it binds lazily instead. Lazy binding is
+    // `__la_symbol_ptr`, `__stub_helper` and `__dyld_private`, which give `__DATA`
+    // file contents and so a whole 16 KiB page: hello was 50,504 bytes, 33,960
+    // with chained fixups (C's is 33,424), its `__DATA` left with only zero-fill.
+    // dyld has read them since before the macOS floor (ld64 back-deployed them
+    // to iOS 13.4), and ld64 obeys the flag at any deployment target.
     // Freestanding: no C library and no startup files, a static image, and lld.
     // The system linker on a macOS or Linux host links for that host's format and
     // cannot place an ELF kernel at the address its script names; lld takes
@@ -2328,7 +2395,7 @@ static char* driver_link_command(const char* program_obj, const char* exe_file) 
     snprintf(command, len, "%s %s%s%s%s%s%s%s -o %s%s%s",
              driver, target, min_os, mode, q_obj, g_link_extra, native, stack, q_exe,
              (!g_freestanding && target_splits_libc()) ? " -lm -lpthread" : "",
-             (!g_freestanding && target_is_mach_o()) ? " -Wl,-dead_strip" : "");
+             (!g_freestanding && target_is_mach_o()) ? " -Wl,-dead_strip -Wl,-fixup_chains" : "");
     free(target);
     free(q_obj);
     free(q_exe);
@@ -2348,11 +2415,17 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
 #endif
     char* command = driver_link_command(program_obj, exe_file);
 #ifndef _WIN32
+    // With no native objects and no exports, g_link_extra is the program's other
+    // codegen partitions or nothing. The key leaves them out -- their paths are
+    // temporary -- and link_with_cached_ld puts them back after the object.
     int plain = !g_freestanding && target_is_mach_o() && g_native_source_count == 0
         && !g_native_link_args && !g_native_link_has_code && !g_export_dynamic
-        && g_link_extra[0] == '\0';
+        && (g_link_extra[0] == '\0' || g_link_partitions > 0);
     if (plain) {
+        const char* extra = g_link_extra;
+        g_link_extra = "";
         char* keyed = driver_link_command(LINK_OBJECT_MARK, LINK_OUTPUT_MARK);
+        g_link_extra = extra;
         int linked = keyed && link_with_cached_ld(keyed, command, program_obj, exe_file) == 0;
         free(keyed);
         if (linked) {
@@ -3345,8 +3418,10 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
 
     if (result == 0) {
         g_link_extra = extra ? extra : "";
+        g_link_partitions = partition_objects;
         result = link_program_object(program_obj, exe_file);
         g_link_extra = "";
+        g_link_partitions = 0;
     }
     if (g_export_rsp) {
         delete_file(g_export_rsp);

@@ -6910,41 +6910,44 @@ void ir_debug_field_type(const char *o, const char *f, const char *t) {
 
 #endif // PRISMIO_DWARF
 
-// Verifies before writing. This is the check the text backend never had: a
-// malformed module is reported here, against the code that built it, instead of
-// surfacing later as an llc parse error pointing at generated text.
-// -O level, 0 by default -- unoptimized, which is what shipped before this
-// existed: no pass pipeline was ever run over the generated module.
-static int g_opt_level = 0;
+// The -O flag: -1 when none was given, 0..3, or IR_OPT_SIZE / IR_OPT_MIN_SIZE
+// for -Os / -Oz. It sets the level the program's object step runs at
+// (program_opt_level in build_driver.c), and the JIT's.
+//
+// **It used to run a second pipeline instead.** -O<n> ran `default<O<n>>` over
+// the frontend's module before it was written, and the object step then ran its
+// own fixed `default<O3>` (0 for -g) regardless. So -O0 was a fully optimised
+// build and -O3 optimised twice: the hosted benchmark program built in 0.86 s
+// with no flag, 0.89 s at -O0 and 1.15 s at -O3 (2026-10-14).
+#define IR_OPT_SIZE 4
+#define IR_OPT_MIN_SIZE 5
+static int g_opt_level = -1;
 
 void ir_set_opt_level(int level) {
     if (level < 0) level = 0;
-    if (level > 3) level = 3;
+    if (level > IR_OPT_MIN_SIZE) level = IR_OPT_MIN_SIZE;
     g_opt_level = level;
 }
 
-// Runs LLVM's standard pipeline over the module before it is written.
-//
-// The frontend emits a load/store through a stack slot for every binding, so
-// even -O1 (which includes mem2reg/SROA) is a large improvement over the raw
-// output. No TargetMachine is passed: these are the target-independent passes,
-// and llc still does target-specific work afterwards.
-static int run_optimization(void) {
-    if (g_opt_level == 0) return 0;
+int ir_requested_opt_level(void) {
+    return g_opt_level;
+}
 
-    char pipeline[32];
-    snprintf(pipeline, sizeof(pipeline), "default<O%d>", g_opt_level);
+// The clang flag for a level, for the PRISMIO_CODEGEN=clang fallback and for
+// the build trace.
+const char *ir_opt_level_flag(int level) {
+    static const char *flags[] = {"-O0", "-O1", "-O2", "-O3", "-Os", "-Oz"};
+    if (level < 0 || level > IR_OPT_MIN_SIZE) level = 3;
+    return flags[level];
+}
 
-    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
-    LLVMErrorRef err = LLVMRunPasses(g_module, pipeline, NULL, options);
-    LLVMDisposePassBuilderOptions(options);
-
-    if (err) {
-        char *msg = LLVMGetErrorMessage(err);
-        fprintf(stderr, "error: optimization pipeline failed: %s\n", msg ? msg : "?");
-        return 1;
-    }
-    return 0;
+// The `default<...>` pipeline for a level. LLVM 23 has no Os or Oz pipeline
+// ("Use O2 in conjunction with the optsize attribute instead"), so the size
+// levels run O2 over functions mark_functions_for_size has marked.
+static const char *pipeline_level(int level) {
+    static const char *names[] = {"O0", "O1", "O2", "O3", "O2", "O2"};
+    if (level < 0 || level > IR_OPT_MIN_SIZE) level = 3;
+    return names[level];
 }
 
 // PRISMIO_DUMP_BAD_IR=<file>: where to write the module when it fails verification.
@@ -6965,22 +6968,11 @@ static void dump_bad_module(void) {
 int ir_write_file(const char *filename) {
     char *err = NULL;
 
-    // Verify first: optimizing an already-invalid module produces far worse
-    // diagnostics than reporting the original problem.
     if (LLVMVerifyModule(g_module, LLVMReturnStatusAction, &err)) {
         fprintf(stderr, "error: generated module failed verification\n");
         if (err) fprintf(stderr, "%s\n", err);
         if (err) LLVMDisposeMessage(err);
         dump_bad_module();
-        return 1;
-    }
-    if (err) { LLVMDisposeMessage(err); err = NULL; }
-
-    if (run_optimization() != 0) return 1;
-    if (LLVMVerifyModule(g_module, LLVMReturnStatusAction, &err)) {
-        fprintf(stderr, "error: generated module failed verification\n");
-        if (err) fprintf(stderr, "%s\n", err);
-        if (err) LLVMDisposeMessage(err);
         return 1;
     }
     if (err) LLVMDisposeMessage(err);
@@ -6992,6 +6984,49 @@ int ir_write_file(const char *filename) {
         return 1;
     }
     return 0;
+}
+
+// -Os and -Oz: what clang writes on every function it defines at those levels.
+// The pipeline's own heuristics (inlining, unrolling) read `optsize`; `minsize`
+// is also what turns on AArch64's machine outliner, which a speed build must
+// not have: on the hosted benchmarks it took 9.2% off `__text` and cost 4.1%
+// geomean time, `sort_strings` 43% (2026-10-14).
+static void mark_functions_for_size(LLVMModuleRef m, int minimum) {
+    unsigned optsize = LLVMGetEnumAttributeKindForName("optsize", 7);
+    unsigned minsize = LLVMGetEnumAttributeKindForName("minsize", 7);
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMAttributeRef a_opt = LLVMCreateEnumAttribute(ctx, optsize, 0);
+    LLVMAttributeRef a_min = LLVMCreateEnumAttribute(ctx, minsize, 0);
+    for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f)) {
+        if (LLVMCountBasicBlocks(f) == 0) continue;
+        LLVMAddAttributeAtIndex(f, LLVMAttributeFunctionIndex, a_opt);
+        if (minimum) LLVMAddAttributeAtIndex(f, LLVMAttributeFunctionIndex, a_min);
+    }
+}
+
+// `build -o x.ll`: the IR is the output, so the -O level applies to it here.
+// It is the program's module alone -- the standard library's bitcode is merged
+// only on the way to an object -- and no target machine is passed, so these are
+// the target-independent passes. On the way to an object or the JIT the level
+// is applied later, once, to the merged module.
+int ir_write_output_file(const char *filename) {
+    if (g_opt_level > 0) {
+        if (g_opt_level >= IR_OPT_SIZE) {
+            mark_functions_for_size(g_module, g_opt_level == IR_OPT_MIN_SIZE);
+        }
+        char pipeline[24];
+        snprintf(pipeline, sizeof(pipeline), "default<%s>", pipeline_level(g_opt_level));
+        LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+        LLVMErrorRef err = LLVMRunPasses(g_module, pipeline, NULL, options);
+        LLVMDisposePassBuilderOptions(options);
+        if (err) {
+            char *msg = LLVMGetErrorMessage(err);
+            fprintf(stderr, "error: optimization pipeline failed: %s\n", msg ? msg : "?");
+            LLVMDisposeErrorMessage(msg);
+            return 1;
+        }
+    }
+    return ir_write_file(filename);
 }
 
 void ir_print(void) {
@@ -8173,6 +8208,24 @@ int ir_jit_run_file(const char *ir_path, const char *program_name) {
         return 1;
     }
 
+    // -O<n> optimises what the JIT compiles; with no flag it runs unoptimised,
+    // as it always has. The ORC default compile layer runs no IR passes.
+    if (g_opt_level > 0) {
+        if (g_opt_level >= IR_OPT_SIZE) {
+            mark_functions_for_size(jitted, g_opt_level == IR_OPT_MIN_SIZE);
+        }
+        char pipeline[24];
+        snprintf(pipeline, sizeof(pipeline), "default<%s>", pipeline_level(g_opt_level));
+        LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+        LLVMErrorRef perr = LLVMRunPasses(jitted, pipeline, NULL, options);
+        LLVMDisposePassBuilderOptions(options);
+        if (perr) {
+            LLVMContextDispose(jit_ctx);
+            LLVMOrcDisposeLLJIT(jit);
+            return jit_failed("the optimisation pipeline failed", perr);
+        }
+    }
+
     LLVMOrcThreadSafeContextRef tsc =
         LLVMOrcCreateNewThreadSafeContextFromLLVMContext(jit_ctx);
     LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(jitted, tsc);
@@ -8388,6 +8441,14 @@ static void mark_functions_noredzone(LLVMModuleRef m) {
     }
 }
 
+// The machine-code level for an -O level, as clang's driver maps them.
+static LLVMCodeGenOptLevel codegen_opt_level(int opt_level) {
+    if (opt_level == 0) return LLVMCodeGenLevelNone;
+    if (opt_level == 1) return LLVMCodeGenLevelLess;
+    if (opt_level == 3) return LLVMCodeGenLevelAggressive;
+    return LLVMCodeGenLevelDefault;
+}
+
 // The macOS a host build targets: MACOSX_DEPLOYMENT_TARGET when set, as clang
 // honours it, otherwise PRISMIO_MACOS_FLOOR. The linker (link_program_object)
 // and a target's native C (compile_native_sources) are told the same version,
@@ -8545,12 +8606,16 @@ static int is_local_linkage(LLVMLinkage linkage) {
     return linkage == LLVMInternalLinkage || linkage == LLVMPrivateLinkage;
 }
 
-// How many partitions this module is worth, or 1 to emit it as it is. A -g
-// build stays whole: its DWARF names one compile unit, and dsymutil's debug map
-// expects to find it in one object.
+// How many partitions this module is worth, or 1 to emit it as it is.
+//
+// **A -g or -O0 build is partitioned too.** Each partition keeps the compile
+// unit and the subprograms of the functions it emits, so the program carries one
+// compile unit per partition, all named for the source, which is how an LTO
+// partitioned link looks to dsymutil and lldb. Kept whole until 2026-10-14 on the
+// belief that the debug map wanted one object; the compiler's own -g build spent
+// 561 ms of 2.23 s emitting on one thread.
 static int codegen_partition_count(LLVMModuleRef m, int opt_level) {
-    if (opt_level == 0) return 1;
-    if (LLVMGetModuleFlag(m, "Debug Info Version", 18)) return 1;
+    (void)opt_level;
     if (LLVMGetFirstGlobalAlias(m) || LLVMGetFirstGlobalIFunc(m)) return 1;
     size_t asm_len = 0;
     LLVMGetModuleInlineAsm(m, &asm_len);
@@ -8718,17 +8783,68 @@ typedef struct {
     const char *triple;
     const char *cpu;
     int opt_level;
+    int optimize;       // run the second half of the IR pipeline here (split_pipeline)
     int wasm;
     char obj_path[1200];
     char error[512];
     int failed;
 } PartitionJob;
 
+#ifdef PRISMIO_LLVM_BRIDGE
+// One half of `<prefix>,default<O<n>>` for an -O level, with cc1's tuning:
+// unrolling, interleaving and both vectorizers from -O2 up; -Oz leaves the loop
+// vectorizer off (shouldEnableVectorizerAtOLevel). See prismio_llvm_run_default_half.
+static int run_pipeline_half(LLVMModuleRef m, LLVMTargetMachineRef tm, const char *prefix,
+                             int opt_level, int half, char *error, size_t error_size) {
+    int vectorize = opt_level >= 2;
+    char *msg = NULL;
+    int level = opt_level >= IR_OPT_SIZE ? 2 : opt_level;
+    if (prismio_llvm_run_default_half(m, tm, prefix, level, half, vectorize, vectorize,
+                                      vectorize && opt_level != IR_OPT_MIN_SIZE, vectorize,
+                                      &msg) != 0) {
+        snprintf(error, error_size, "%s", msg ? msg : "the optimisation pipeline failed");
+        free(msg);
+        return 1;
+    }
+    return 0;
+}
+#endif
+
 static int emit_one_partition(PartitionJob *job) {
     LLVMContextRef ctx = LLVMContextCreate();
     LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRange(
         job->bitcode, job->bitcode_size, "prismio-partition", 0);
     LLVMModuleRef m = NULL;
+#ifdef PRISMIO_LLVM_BRIDGE
+    // Lazily, and only this partition's bodies are read. Every partition used to
+    // parse the whole module and then delete seven-eighths of it: on the
+    // compiler's own build that was ~120 ms of parse and ~50 of deletion per
+    // partition before any code was emitted, and at -g, where the module is
+    // larger and emission cheaper, ~200 ms of parse against ~110 of emission.
+    // The module owns `buf` from here on.
+    if (LLVMGetBitcodeModuleInContext2(ctx, buf, &m) != 0) {
+        snprintf(job->error, sizeof(job->error), "could not re-read the optimised module");
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f)) {
+        int owner = function_partition(f);
+        if (owner < 0) continue;
+        if (owner != job->partition) {
+            prismio_llvm_drop_body(f);
+            continue;
+        }
+        char *merr = NULL;
+        if (prismio_llvm_materialize(f, &merr) != 0) {
+            snprintf(job->error, sizeof(job->error), "could not read a function: %.400s",
+                     merr ? merr : "?");
+            free(merr);
+            LLVMDisposeModule(m);
+            LLVMContextDispose(ctx);
+            return 1;
+        }
+    }
+#else
     if (LLVMParseBitcodeInContext2(ctx, buf, &m) != 0) {
         snprintf(job->error, sizeof(job->error), "could not re-read the optimised module");
         LLVMDisposeMemoryBuffer(buf);
@@ -8736,6 +8852,7 @@ static int emit_one_partition(PartitionJob *job) {
         return 1;
     }
     LLVMDisposeMemoryBuffer(buf);
+#endif
 
     // Bodies other partitions own become declarations. Then, and only once
     // every such body is gone, the locals among them go too: nothing left in
@@ -8807,9 +8924,14 @@ static int emit_one_partition(PartitionJob *job) {
     }
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
         target, job->triple, job->cpu, g_target_features,
-        job->opt_level > 0 ? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelNone,
+        codegen_opt_level(job->opt_level),
         object_reloc_mode(job->wasm), g_code_model);
 
+#ifdef PRISMIO_LLVM_BRIDGE
+    if (!failed && job->optimize) {
+        failed = run_pipeline_half(m, tm, "", job->opt_level, 2, job->error, sizeof(job->error));
+    }
+#endif
     LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
     LLVMErrorRef perr = failed ? NULL : LLVMRunPasses(m, "globaldce", tm, options);
     LLVMDisposePassBuilderOptions(options);
@@ -8852,7 +8974,7 @@ void ir_partition_object_path(const char *obj_path, int partition, char *out, si
 // `obj_path` receives partition 0; partition k > 0 goes to the path
 // ir_partition_object_path names, and the driver links them all.
 static int emit_partitioned(LLVMModuleRef m, int partitions, const char *triple,
-                            const char *cpu, int opt_level, int wasm,
+                            const char *cpu, int opt_level, int optimize, int wasm,
                             const char *obj_path) {
     if (assign_partitions(m, partitions) != 0) return 1;
     promote_cross_partition_locals(m);
@@ -8868,6 +8990,7 @@ static int emit_partitioned(LLVMModuleRef m, int partitions, const char *triple,
         jobs[p].triple = triple;
         jobs[p].cpu = cpu;
         jobs[p].opt_level = opt_level;
+        jobs[p].optimize = optimize;
         jobs[p].wasm = wasm;
         ir_partition_object_path(obj_path, p, jobs[p].obj_path, sizeof(jobs[p].obj_path));
     }
@@ -9000,9 +9123,34 @@ static void internalize_executable(LLVMModuleRef m) {
     }
 }
 
+// Whether the IR pipeline runs split (prismio_llvm_run_default_half): its first
+// half on the whole program, its second in each codegen partition, on that
+// partition's thread. The second half is the module optimisation pipeline --
+// loop rotation, vectorisation, unrolling and their cleanups, one function at a
+// time -- and was ~650 ms of the compiler's 3.4 s pipeline, all on one thread.
+// Every inlining decision is still made on the whole program.
+//
+// It is not byte-identical to one `default<O3>`: the analyses the first half
+// leaves cached (InstCombine's last-run tracking among them) cannot cross into
+// another thread's context, so the second half recomputes them and InstCombine
+// runs where it would have been skipped. Measured 2026-10-14 on 47 hosted
+// workloads at 10x their size: geomean 0.995 against 1.000 for an identical-binary
+// control, every result equal. A program too small to partition keeps the single
+// pipeline and its exact output. PRISMIO_SPLIT_PIPELINE=0 turns it off.
+static int split_pipeline_enabled(int opt_level) {
+#ifdef PRISMIO_LLVM_BRIDGE
+    if (opt_level == 0) return 0;
+    const char *v = getenv("PRISMIO_SPLIT_PIPELINE");
+    return !(v && v[0] == '0' && v[1] == '\0');
+#else
+    (void)opt_level;
+    return 0;
+#endif
+}
+
 // Compile the IR in `ir_path` to an object file. `triple` is the target the
-// user named, or NULL for the host. `opt_level` is 3, or 0 for a -g build --
-// the same pair compile_ir_to_object gave clang. `internalize` is set for a
+// user named, or NULL for the host. `opt_level` is 0..3, IR_OPT_SIZE or
+// IR_OPT_MIN_SIZE (program_opt_level in build_driver.c). `internalize` is set for a
 // program with no caller outside this module; see internalize_executable.
 // Returns 0 on success.
 int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple,
@@ -9066,7 +9214,7 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
     int wasm = strncmp(chosen, "wasm", 4) == 0;
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
         target, chosen, default_target_cpu(chosen), g_target_features,
-        opt_level > 0 ? LLVMCodeGenLevelAggressive : LLVMCodeGenLevelNone,
+        codegen_opt_level(opt_level),
         object_reloc_mode(wasm), g_code_model);
     if (g_no_red_zone) mark_functions_noredzone(m);
 
@@ -9094,35 +9242,68 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
 
     // globaldce first, so nothing unreachable from `main` is optimised at all.
     if (internalize) internalize_executable(m);
-    // cc1's pipeline tuning at -O2 and above: unrolling and interleaving on,
-    // both vectorizers on. SLP is the one PipelineTuningOptions defaults off.
-    char pipeline[48];
-    snprintf(pipeline, sizeof(pipeline), "%sdefault<O%d>",
-             internalize ? "globaldce," : "", opt_level);
-    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
-    int vectorize = opt_level >= 2;
-    LLVMPassBuilderOptionsSetLoopUnrolling(options, vectorize);
-    LLVMPassBuilderOptionsSetLoopInterleaving(options, vectorize);
-    LLVMPassBuilderOptionsSetLoopVectorization(options, vectorize);
-    LLVMPassBuilderOptionsSetSLPVectorization(options, vectorize);
+    if (opt_level >= IR_OPT_SIZE) mark_functions_for_size(m, opt_level == IR_OPT_MIN_SIZE);
+    int failed = 0;
     double t_opt = emit_trace_ms();
-    LLVMErrorRef perr = LLVMRunPasses(m, pipeline, tm, options);
-    LLVMDisposePassBuilderOptions(options);
+    // Split only a program that will be partitioned: counted after globaldce,
+    // before optimisation, which is the larger of the two counts.
+    int split = split_pipeline_enabled(opt_level);
+    if (split && internalize) {
+        LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+        LLVMErrorRef perr = LLVMRunPasses(m, "globaldce", tm, options);
+        LLVMDisposePassBuilderOptions(options);
+        if (perr) {
+            LLVMConsumeError(perr);
+            split = 0;
+        }
+    }
+    if (split) split = codegen_partition_count(m, opt_level) > 1;
+    if (!split) {
+        // cc1's pipeline tuning at -O2 and above: unrolling and interleaving on,
+        // both vectorizers on. SLP is the one PipelineTuningOptions defaults off.
+        // -Os and -Oz count as -O2 here, as in clang, except that -Oz leaves the
+        // loop vectorizer off (shouldEnableVectorizerAtOLevel).
+        char pipeline[48];
+        snprintf(pipeline, sizeof(pipeline), "%sdefault<%s>",
+                 internalize ? "globaldce," : "", pipeline_level(opt_level));
+        LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+        int vectorize = opt_level >= 2;
+        LLVMPassBuilderOptionsSetLoopUnrolling(options, vectorize);
+        LLVMPassBuilderOptionsSetLoopInterleaving(options, vectorize);
+        LLVMPassBuilderOptionsSetLoopVectorization(options, vectorize && opt_level != IR_OPT_MIN_SIZE);
+        LLVMPassBuilderOptionsSetSLPVectorization(options, vectorize);
+        LLVMErrorRef perr = LLVMRunPasses(m, pipeline, tm, options);
+        LLVMDisposePassBuilderOptions(options);
+        if (perr) {
+            char *msg = LLVMGetErrorMessage(perr);
+            fprintf(stderr, "ERROR: the optimisation pipeline failed: %s\n", msg ? msg : "?");
+            LLVMDisposeErrorMessage(msg);
+            failed = 1;
+        }
+    }
+#ifdef PRISMIO_LLVM_BRIDGE
+    else {
+        char error[512];
+        failed = run_pipeline_half(m, tm, "", opt_level, 1, error, sizeof(error));
+        if (failed) fprintf(stderr, "ERROR: the optimisation pipeline failed: %s\n", error);
+    }
+#endif
     emit_trace_stage("IR pipeline", t_opt);
 
-    int failed = 0;
-    if (perr) {
-        char *msg = LLVMGetErrorMessage(perr);
-        fprintf(stderr, "ERROR: the optimisation pipeline failed: %s\n", msg ? msg : "?");
-        LLVMDisposeErrorMessage(msg);
-        failed = 1;
-    }
-
     int partitions = failed ? 1 : codegen_partition_count(m, opt_level);
+#ifdef PRISMIO_LLVM_BRIDGE
+    // Split, and the optimised module came out too small to partition after all:
+    // the second half runs here, on the whole module.
+    if (!failed && split && partitions <= 1) {
+        char error[512];
+        failed = run_pipeline_half(m, tm, "", opt_level, 2, error, sizeof(error));
+        if (failed) fprintf(stderr, "ERROR: the optimisation pipeline failed: %s\n", error);
+    }
+#endif
     if (partitions > 1) {
         double t_emit = emit_trace_ms();
         failed = emit_partitioned(m, partitions, chosen, default_target_cpu(chosen),
-                                  opt_level, wasm, obj_path);
+                                  opt_level, split, wasm, obj_path);
         if (emit_trace_enabled()) {
             fprintf(stderr, "[build trace]   %d codegen partitions\n", partitions);
         }

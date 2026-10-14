@@ -20,7 +20,14 @@
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Linker/Linker.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Passes/StandardInstrumentations.h>
 #include <llvm/Support/Error.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Transforms/IPO/Annotation2Metadata.h>
+#include <llvm/Transforms/IPO/ForceFunctionAttrs.h>
+#include <llvm/Transforms/IPO/MemProfContextDisambiguation.h>
+#include <llvm/Transforms/Scalar/AnnotationRemarks.h>
 
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +48,79 @@ extern "C" int prismio_llvm_materialize(LLVMValueRef function, char** error) {
         else llvm::consumeError(std::move(err));
         return 1;
     }
+    return 0;
+}
+
+// Makes a function of a lazily loaded module a declaration without reading its
+// body. LLVM-C has no deleteBody, and deleting a body block by block cannot reach
+// one that was never materialised: the function would stay materialisable, which
+// codegen reads as a definition with no blocks.
+extern "C" void prismio_llvm_drop_body(LLVMValueRef function) {
+    llvm::unwrap<llvm::Function>(function)->deleteBody();
+}
+
+// Runs one half of `<prefix>,default<O<level>>`, set up exactly as LLVMRunPasses
+// sets it up (PassBuilderBindings.cpp, LLVM 23.1.1). Half 1 is everything up to
+// and including the module simplification pipeline -- the inliner and the
+// function simplification it drives, which must see the whole program. Half 2 is
+// the module optimisation pipeline -- loop rotation, vectorisation, unrolling and
+// their cleanups -- which works one function at a time, so a codegen partition
+// can run it on its own functions. Between them they are what
+// buildPerModuleDefaultPipeline builds for ThinOrFullLTOPhase::None:
+//
+//     MemProfRemoveInfo, Annotation2Metadata, ForceFunctionAttrs,
+//     [pipeline-start callbacks: none registered here],
+//     buildModuleSimplificationPipeline          <- end of half 1
+//     buildModuleOptimizationPipeline,
+//     function(AnnotationRemarks)                <- end of half 2
+//
+// with the statistics-only InstCount passes left out, as they are when
+// statistics are off. `prefix` (may be empty) runs first in half 1.
+extern "C" int prismio_llvm_run_default_half(LLVMModuleRef module, LLVMTargetMachineRef machine,
+                                             const char* prefix, int level, int half,
+                                             int unroll, int interleave, int vectorize_loops,
+                                             int vectorize_slp, char** error) {
+    llvm::Module* m = llvm::unwrap(module);
+    llvm::PipelineTuningOptions pto;
+    pto.LoopUnrolling = unroll != 0;
+    pto.LoopInterleaving = interleave != 0;
+    pto.LoopVectorization = vectorize_loops != 0;
+    pto.SLPVectorization = vectorize_slp != 0;
+    llvm::PassInstrumentationCallbacks pic;
+    llvm::PassBuilder pb(reinterpret_cast<llvm::TargetMachine*>(machine), pto, std::nullopt, &pic);
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+    pb.registerLoopAnalyses(lam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerModuleAnalyses(mam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+    llvm::StandardInstrumentations si(m->getContext(), false, false);
+    si.registerCallbacks(pic, &mam);
+
+    llvm::OptimizationLevel opt = level <= 1 ? llvm::OptimizationLevel::O1
+                                : level == 2 ? llvm::OptimizationLevel::O2
+                                             : llvm::OptimizationLevel::O3;
+    llvm::ModulePassManager mpm;
+    if (half == 1) {
+        if (prefix && *prefix) {
+            if (llvm::Error err = pb.parsePassPipeline(mpm, prefix)) {
+                if (error) *error = bridge_message(llvm::toString(std::move(err)));
+                else llvm::consumeError(std::move(err));
+                return 1;
+            }
+        }
+        mpm.addPass(llvm::MemProfRemoveInfo());
+        mpm.addPass(llvm::Annotation2MetadataPass());
+        mpm.addPass(llvm::ForceFunctionAttrsPass());
+        mpm.addPass(pb.buildModuleSimplificationPipeline(opt, llvm::ThinOrFullLTOPhase::None));
+    } else {
+        mpm.addPass(pb.buildModuleOptimizationPipeline(opt, llvm::ThinOrFullLTOPhase::None));
+        mpm.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::AnnotationRemarksPass()));
+    }
+    mpm.run(*m, mam);
     return 0;
 }
 

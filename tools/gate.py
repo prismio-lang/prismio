@@ -158,7 +158,9 @@ def main() -> int:
     stages = [
         ("Lint", "repository lint", [sys.executable, "tools/lint.py"], summarize_lint),
         ("Package the candidate", "toolchain layout",
-         [sys.executable, "tools/package.py", "--compiler", args.compiler, "--out", out, *cross],
+         [sys.executable, "tools/package.py", "--compiler", args.compiler, "--out", out, *cross,
+          # freestanding_bench links the failure core into a bare-metal build.
+          "--freestanding-target", "aarch64-unknown-none-elf"],
          summarize_package),
         ("Release gate", "",
          [sys.executable, "tools/release_gate.py", "--embedded", "--rc",

@@ -502,7 +502,16 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     diag_progress("generating IR")
     generateModule(mergedAst)
 
-    if (ir_write_file(outFile) != 0) {
+    // `-o x.ll` with -O<n>: the IR is the output, so it is optimised as it is
+    // written. Otherwise the level is applied later, to the module with the
+    // standard library merged in (ir_emit_object, ir_jit_run_file).
+    let mut written = 0
+    if (emitIrOnly and options.jit == false) {
+        written = ir_write_output_file(outFile)
+    } else {
+        written = ir_write_file(outFile)
+    }
+    if (written != 0) {
         diag_error_code("P1010", "cannot write LLVM IR to ".concat(outFile))
         return 1
     }

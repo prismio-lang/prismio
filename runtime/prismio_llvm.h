@@ -108,6 +108,15 @@ extern "C" {
 // Materialises one function of a lazily loaded module. 0 on success; otherwise
 // `*error`, when given, is a malloc'd message.
 int prismio_llvm_materialize(LLVMValueRef function, char** error);
+// Turns a function of a lazily loaded module into a declaration, unread.
+void prismio_llvm_drop_body(LLVMValueRef function);
+// One half of `<prefix>,default<O<level>>`: 1 = through the inliner's
+// simplification, 2 = the per-function optimisation pipeline after it. See
+// llvm_bridge.cpp. 0 on success.
+int prismio_llvm_run_default_half(LLVMModuleRef module, LLVMTargetMachineRef machine,
+                                  const char* prefix, int level, int half,
+                                  int unroll, int interleave, int vectorize_loops,
+                                  int vectorize_slp, char** error);
 // LLVMLinkModules2 with Linker::LinkOnlyNeeded: only the definitions `dst`
 // declares, and what they reach, are linked. Consumes `src`. 0 on success.
 int prismio_llvm_link_only_needed(LLVMModuleRef dst, LLVMModuleRef src);
@@ -360,6 +369,13 @@ LLVMAttributeRef LLVMCreateEnumAttribute(LLVMContextRef, unsigned KindID, unsign
 LLVMAttributeRef LLVMCreateStringAttribute(LLVMContextRef C, const char *K, unsigned KLength,
                                            const char *V, unsigned VLength);
 void LLVMAddAttributeAtIndex(LLVMValueRef F, unsigned Idx, LLVMAttributeRef A);
+// -Os and -Oz mark every defined function (mark_functions_for_size).
+enum { LLVMAttributeFunctionIndex = ~0U };
+LLVMContextRef LLVMGetModuleContext(LLVMModuleRef M);
+LLVMValueRef LLVMGetFirstFunction(LLVMModuleRef M);
+LLVMValueRef LLVMGetNextFunction(LLVMValueRef Fn);
+unsigned LLVMCountBasicBlocks(LLVMValueRef Fn);
+void LLVMDisposeErrorMessage(char *ErrMsg);
 // Attributes on one call rather than on the callee. A foreign function's
 // contract is written at its `extern fn` declaration in Prismio, and the place
 // codegen can act on it is the call it is emitting -- see ir_call_arg_borrow.

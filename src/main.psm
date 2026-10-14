@@ -78,7 +78,7 @@ let USAGE =
       prismio <name> [args...]                   run a command the manifest declares
 
     Single-file commands -- these name a source and need no manifest:
-      prismio build <source.psm> [-o output] [-g] [-O0..-O3] [--overflow-checks]
+      prismio build <source.psm> [-o output] [-g] [-O0..-O3|-Os|-Oz] [--overflow-checks]
                     [--target <triple>] [--sysroot <sdk>]
                     [--freestanding [--native <file>]... [--native-flag <flag>]...
                      [--link-arg <arg>]...
@@ -98,6 +98,10 @@ let USAGE =
           -g emits DWARF, so the program can be run under lldb or gdb, and
           drops the object step to -O0: a variable folded into a register is a
           variable a debugger cannot show you.
+
+          -O0..-O3 set how much the program is optimised: -O3 without -g, -O0
+          with it, when none is given. -Os and -Oz optimise for size; -Oz also
+          outlines repeated machine code, smaller and usually slower.
 
           --freestanding builds for a machine with no operating system: the
           installed runtime is not linked, no C library or startup files are,
@@ -566,10 +570,22 @@ fn main() -> Int {
             outputFile = process.args[argIndex + 1]
             argIndex = argIndex + 2
         } else if (arg.startsWith("-O") and arg.length == 3) {
-            // -O0..-O3. Runs LLVM's standard pipeline over the module before it
-            // is written; without it the output keeps a load/store per binding.
-            let level = arg.substring(2, 1).parseInt().unwrapOr(0)
-            if (level < 0 or level > 3) {
+            // -O0..-O3, -Os, -Oz: the level the program's object step runs at
+            // (program_opt_level, runtime/build_driver.c). 4 and 5 are -Os and
+            // -Oz there.
+            let letter = arg.substring(2, 1)
+            let mut level = -1
+            if (letter.equals("s")) {
+                level = 4
+            } else if (letter.equals("z")) {
+                level = 5
+            } else {
+                level = letter.parseInt().unwrapOr(-1)
+                if (level > 3) {
+                    level = -1
+                }
+            }
+            if (level < 0) {
                 diag_error_code("P1041", "unknown optimization level ".concat(diagQuote(arg)))
                 return 1
             }

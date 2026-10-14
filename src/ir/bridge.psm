@@ -4,6 +4,7 @@
 public extern fn ir_reset()
 public extern fn ir_print()
 public extern fn ir_write_file(filename: String) -> Int
+public extern fn ir_write_output_file(filename: String) -> Int
 public extern fn ir_append(text: String)
 public extern fn ir_append_line(text: String)
 public extern fn ir_get_temp() -> Int

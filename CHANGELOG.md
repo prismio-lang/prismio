@@ -211,8 +211,48 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `fn set(inout self, index, value)`. A generic struct's `set` is not reached yet, so a
   `Map` is still assigned with `m.set(k, v)`.
 
+- **`-Os` and `-Oz`.** Size levels for `prismio build`: every function is marked `optsize`
+  (`-Oz` also `minsize`, which turns on AArch64's machine outliner) and runs LLVM's O2 pipeline,
+  since LLVM 23 has no Os pipeline of its own; `-Oz` also leaves the loop vectorizer off, as
+  clang does. On the hosted benchmark program `__text` goes from 181,320 bytes to 115,368 at
+  `-Os` and 81,532 at `-Oz` (the file from 242 KB to 177 KB and 152 KB). Not a default: the
+  outliner alone cost 4.1% geomean time on the hosted benchmarks (`sort_strings` 43%).
+
 ### Changed
 
+- **The second half of the IR pipeline runs in the codegen partitions, in parallel.** `default<O3>`
+  is now run in two halves through the C++ bridge (`prismio_llvm_run_default_half`, built exactly as
+  `buildPerModuleDefaultPipeline` builds it): the module simplification pipeline -- the inliner and
+  everything it drives -- on the whole program, then the module optimisation pipeline (loop
+  rotation, vectorisation, unrolling and their cleanups, one function at a time) inside each
+  partition, on its thread. Every inlining decision is still made on the whole program. On the
+  compiler's own build the pipeline plus machine code takes 3.63 s (was 4.30 s), on the hosted
+  benchmark program 552 ms (was 662). It is not byte-identical to one `default<O3>` -- analyses the
+  first half leaves cached cannot cross into another thread -- so it was measured: 47 hosted
+  workloads at ten times their size, geomean 0.995 against 1.000 for an identical-binary control,
+  every result equal. A program too small to partition keeps the single pipeline and its exact
+  output. `PRISMIO_SPLIT_PIPELINE=0` turns it off; Windows, with no bridge yet, runs it whole.
+- **Machine code is emitted in parallel for `-g` and `-O0` builds too, and every partition reads
+  only its own functions.** A `-g` build used to emit on one thread, on the belief that the
+  debug map wanted one object; each partition now carries the compile unit and the subprograms
+  of what it emits, as an LTO-partitioned link does (`dwarfdump --verify` clean, breakpoints,
+  locals and globals in lldb identical to a one-partition build). Each partition also used to
+  parse the whole module and delete seven-eighths of it; it now loads the bitcode lazily and
+  materialises only its own bodies (`prismio_llvm_drop_body` in the bridge drops the rest
+  unread). On the compiler's own build, machine code takes 216 ms at `-g` (was 512) and 608 ms
+  in release (was 754), with byte-identical output. Windows, which has no bridge yet, parses
+  whole as before.
+- **macOS programs bind through chained fixups, and a small one is 16 KB smaller.** At the
+  deployment floor ld64 used lazy binding, whose `__la_symbol_ptr`, `__stub_helper` and
+  `__dyld_private` gave `__DATA` file contents and so a whole 16 KiB page. Linked with
+  `-fixup_chains`, hello is 33,952 bytes (was 50,504; C's is 33,424) and its `__DATA` is
+  zero-fill only. A program whose `__DATA` has initialised data of its own keeps the page.
+- **A build big enough for parallel codegen links through `ld` directly too.** The cached
+  `ld` line (2026-10-10) took only a program with one object, so every build split into
+  codegen partitions went back through the `cc` driver: the hosted benchmark program linked
+  in 29.9 ms, now 16.9 ms, as hello does. The cached line names the first object once and
+  the build puts the other partitions back after it, in the order the driver had them, so the
+  executable is byte-identical to the driver's.
 - **A local may be declared without a value, and every read the compiler cannot prove
   follows an assignment is an error** (`sema/assign.psm`): ``` `r` may be used before it
   is assigned ```. Branches join, a path that returns, breaks, continues or panics
@@ -435,6 +475,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **`-O0`..`-O3` did not set how the program was optimised.** The program's object step was
+  fixed at O3 (O0 with `-g`); the flag only ran a second `default<O<n>>` over the frontend's
+  module before it. So `-O0` was a fully optimised build and `-O3` optimised twice: the hosted
+  benchmark program built in 0.86 s with no flag, 0.89 s at `-O0` and 1.15 s at `-O3`. The flag
+  now sets the object step's level (and the machine-code level, as clang maps it): `-O0` 0.30 s,
+  `-O1` 0.58 s, `-O2` 0.81 s, `-O3` 0.86 s, all 66 workloads agreeing. With no flag nothing
+  changes. `-g -O2` is an optimised build with DWARF. `-o x.ll -O<n>` still writes optimised IR,
+  and `run --jit -O<n>` now optimises the merged module rather than the program alone.
 - **A trait-object call in a loop could reallocate the Vec the loop read through its
   flat guard.** The guard analyses judged calls by `CALL_EXPR`, and a `dyn` call is a
   `DYN_CALL`, so it fell through as an ordinary expression: an impl that pushed to the list
@@ -500,6 +548,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Repository
 
+- **`prismio verify` and `prismio gate` package the freestanding failure core.** Neither passed
+  `--freestanding-target`, so the candidate they tested had no `lib/runtime/freestanding`, and any
+  freestanding benchmark with a failure path (`prismio_panic`) failed to link in `freestanding_bench`,
+  while the project's own toolchain, which has the core, built it. Both now package
+  `aarch64-unknown-none-elf`. `prismio release` still does not.
 - **`aif/` is gone.** The oracle (`aif/prototype`) is now `tools/aif_oracle/`, the specification and
   implementation notes are `docs/aif/`, and the 276-file evidence tree and the `g1`-`g9` corpus programs
   are removed (they stay in Git history). The release gate, the differential, the `workloads` check in the
