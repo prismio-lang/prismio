@@ -1,0 +1,198 @@
+// A counted loop that fills one list among other statements reserves the list's
+// final size before the first iteration, as a loop whose body is the push alone
+// already did. `vector_growth` is the shape: a `let`, the push, an accumulator.
+//
+// The reservation is observable from inside the loop -- the capacity read on the
+// first iteration is the whole trip when the loop was prepared and the first
+// doubling when it was not -- so each arm asserts which one it got, and a test
+// that passed without the reservation happening is not possible. A body that
+// can stop early must not reserve its trip: a `break` after three pushes of a
+// hundred million would otherwise hold 400 MB for twelve bytes.
+
+import std.io
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// Read through a function, which the guard looks through: a capacity read
+// written in the loop itself is a call it does not judge, and would decline the
+// loop's guard -- and with it the reservation this probes for.
+fn capacityOf(xs: Vec<Int>) -> Int {
+    return xs.capacity
+}
+
+fn overran(xs: Vec<Int>) -> Bool {
+    return xs.length > xs.capacity
+}
+
+// The benchmark's shape: prepared, so the first iteration already sees room
+// for every push.
+fn growth(n: Int) -> Int {
+    let mut xs: Vec<Int> = []
+    let mut checksum = 0
+    let mut firstCap = 0
+    for i in 0..<n {
+        let value = i % 997
+        xs.push(value)
+        if (i == 0) { firstCap = capacityOf(xs) }
+        checksum = (checksum + value) % 1000000007
+    }
+    if (overran(xs) or xs.length != n or xs[n - 1] != (n - 1) % 997) { return -1 }
+    if (firstCap < n) { return -2 }
+    return checksum + xs.length
+}
+
+// Two pushes per iteration: twice the trip.
+fn pairs(n: Int) -> Int {
+    let mut xs: Vec<Int> = []
+    let mut firstCap = 0
+    for i in 0..<n {
+        let a = i * 2
+        xs.push(a)
+        xs.push(a + 1)
+        if (i == 0) { firstCap = capacityOf(xs) }
+    }
+    if (overran(xs) or xs.length != 2 * n or xs[2 * n - 1] != 2 * n - 1) { return -1 }
+    if (firstCap < 2 * n) { return -2 }
+    return xs.length
+}
+
+// The `while` form, induction update last.
+fn whileFill(n: Int) -> Int {
+    let mut xs: Vec<Int> = []
+    let mut firstCap = 0
+    let mut i = 0
+    while (i < n) {
+        let v = i * i % 13
+        xs.push(v)
+        if (i == 0) { firstCap = capacityOf(xs) }
+        i = i + 1
+    }
+    if (overran(xs) or xs.length != n) { return -1 }
+    if (firstCap < n) { return -2 }
+    return xs.length
+}
+
+// A `break` declines: the loop stops after three pushes of a huge trip.
+fn stopsEarly() -> Int {
+    let mut xs: Vec<Int> = []
+    for i in 0..<100000000 {
+        let v = i + 1
+        xs.push(v)
+        if (i == 2) { break }
+    }
+    if (xs.length != 3 or xs[2] != 3) { return -1 }
+    if (xs.capacity > 64) { return -2 }
+    return xs.length
+}
+
+// So does a `continue`, which makes a later push conditional.
+fn skips(n: Int) -> Int {
+    let mut xs: Vec<Int> = []
+    for i in 0..<n {
+        let v = i
+        if (v % 2 == 0) { continue }
+        xs.push(v)
+    }
+    if (overran(xs) or xs.length != n / 2 or xs[0] != 1) { return -1 }
+    return xs.length
+}
+
+// A push inside an `if` is not a statement of the body: the count is an upper
+// bound, and a filter that keeps one in a hundred must not reserve the trip.
+fn filters(n: Int) -> Int {
+    let mut xs: Vec<Int> = []
+    let mut firstCap = -1
+    for i in 0..<n {
+        let v = i * 7
+        if (v % 100 == 0) { xs.push(v) }
+        if (i == 0) { firstCap = capacityOf(xs) }
+    }
+    if (overran(xs) or xs.length != n / 100) { return -1 }
+    if (firstCap > 64) { return -2 }
+    return xs.length
+}
+
+// Each receiver is reserved for its own statement count.
+fn twoLists(n: Int) -> Int {
+    let mut xs: Vec<Int> = []
+    let mut ys: Vec<Int> = []
+    let mut xCap = 0
+    let mut yCap = 0
+    for i in 0..<n {
+        let v = i + 5
+        xs.push(v)
+        ys.push(v * 2)
+        ys.push(v * 3)
+        if (i == 0) {
+            xCap = capacityOf(xs)
+            yCap = capacityOf(ys)
+        }
+    }
+    if (overran(xs) or overran(ys) or xs.length != n or ys.length != 2 * n) { return -1 }
+    if (ys[2 * n - 1] != 3 * (n + 4)) { return -1 }
+    if (xCap < n or yCap < 2 * n) { return -2 }
+    return xs.length + ys.length
+}
+
+// A push in an arm beside one at the top level: the reservation is the top-level
+// count, a lower bound, and the guard -- which needs room for both -- declines,
+// so the arm's pushes grow the list as they always did.
+fn tailAndArm(n: Int) -> Int {
+    let mut xs: Vec<Int> = []
+    let mut firstCap = 0
+    for i in 0..<n {
+        let v = i
+        if (v % 4 == 0) { xs.push(0 - v) }
+        xs.push(v)
+        if (i == 0) { firstCap = capacityOf(xs) }
+    }
+    if (overran(xs) or xs.length != n + n / 4 or xs[0] != 0 or xs[2] != 1) { return -1 }
+    if (firstCap < n) { return -2 }
+    return xs.length
+}
+
+// A list that already holds elements keeps the ordinary path.
+fn populated(n: Int) -> Int {
+    let mut xs: Vec<Int> = [1, 2, 3]
+    for i in 0..<n {
+        let v = i
+        xs.push(v)
+    }
+    if (overran(xs) or xs.length != n + 3 or xs[n + 2] != n - 1) { return -1 }
+    return xs.length
+}
+
+fn main() -> Int {
+    let n = 5000
+    let g = growth(n)
+    if (g == -2) { return fail("growth was not prepared") }
+    if (g < 0) { return fail("growth") }
+    let p = pairs(n)
+    if (p == -2) { return fail("pairs were not prepared for twice the trip") }
+    if (p < 0) { return fail("pairs") }
+    let w = whileFill(n)
+    if (w == -2) { return fail("while fill was not prepared") }
+    if (w < 0) { return fail("while fill") }
+    let s = stopsEarly()
+    if (s == -2) { return fail("a break reserved the trip") }
+    if (s < 0) { return fail("break") }
+    if (skips(n) < 0) { return fail("continue") }
+    let f = filters(n)
+    if (f == -2) { return fail("a conditional push reserved the trip") }
+    if (f < 0) { return fail("filter") }
+    let t = twoLists(n)
+    if (t == -2) { return fail("two lists were not each prepared") }
+    if (t < 0) { return fail("two lists") }
+    let a = tailAndArm(n)
+    if (a == -2) { return fail("the top-level push was not prepared") }
+    if (a < 0) { return fail("tail and arm") }
+    if (populated(n) < 0) { return fail("populated") }
+    println(growth(1000))
+    println("ok")
+    return 0
+}

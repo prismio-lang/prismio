@@ -386,6 +386,32 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   deleted — which is what C++ and Rust do with `std::vector` and `Vec`.
   `large_buffer_copy` (eight identical rounds) goes from 1.16× of C++ and 1.17× of
   Rust to 1.00× and 1.02× (6.5 → 5.6 ms, three interleaved pairs).
+- **A counted fill reserves its final size whatever else the body does.** `for i in
+  0..<n { let v = i % 997  xs.push(v)  sum = sum + v }` used to reserve nothing,
+  because the reservation required the push to be the loop's only statement, and
+  the empty list then failed the capacity guard: every push was an out-of-line
+  call. Any push that is a statement of the body (not in an `if`) now counts, in a
+  body with no `break`, `continue` or `return`, and the reservation is one exact
+  `list_reserve` rather than a doubling loop from 4. `vector_growth` goes from
+  11.34 to 9.63 ms (0.85×; 1.06× of C++ to 0.90×) with peak RSS 34.7 → 17.1 MB, and
+  `transient_allocation` from 0.593 to 0.395 ms (0.67×); minima of 15 interleaved
+  pairs, checksums equal, 15 other changed benchmarks within ±1%.
+- **A heap `Vec` grows by `realloc`.** `list_inline_grow` and `list_push_grow` allocated
+  a block twice the size, copied and freed the old one; a list with no arena now asks
+  the allocator to extend its block, which it can do in place or, for a large block,
+  by remapping pages. A list from an arena, or grown while an arena hint is active,
+  keeps the old path. `word_frequency` runs in 0.90× (31 interleaved pairs); the other
+  hosted benchmarks are within noise, most of their fills being reserved up front by
+  the change above.
+- **A remainder by a literal is a conditional step when its dividend allows.** A
+  local that a loop assigns only remainders by a literal keeps that remainder's range
+  at the loop's head, and a `%` whose dividend then lies in (-2m, 2m) becomes compares
+  and selects instead of a multiply-by-magic-constant `srem` (`src/ir/residues.psm`).
+  `checksum = (checksum + value) % 1000000007` is the case: `vector_growth` goes from
+  9.67 to 4.06 ms (0.42×), and in the suite from 1.06× of C++ to 0.46× (0.50× of
+  Rust) with the reservation above; `polynomial_evaluation` 0.91×,
+  `recursive_tree_rebuild` 0.97×; minima of 21 interleaved pairs, checksums equal.
+  A dividend whose range is not bounded, or does not fit `Int`, keeps the `srem`.
 - Compiling the compiler's own source is about 3% faster (0.677 s → 0.658 s, median of
   seven interleaved runs).
 - The bootstrap seed is no longer tracked in git. It is the `prismio-seed-<version>.ll`

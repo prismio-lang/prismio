@@ -555,8 +555,11 @@ private fn nowrapMatch(w: NowrapWalk, f: NowrapFacts, s: ASTNode) {
 // and the loop leaves with the head's facts.
 private fn nowrapLoop(w: NowrapWalk, f: NowrapFacts, condPtr: Ptr, bodyPtr: Ptr, loopStmt: ASTNode) {
     let counter = nowrapCounter(w, f, condPtr, bodyPtr)
+    let residues = loopResidues(condPtr, bodyPtr)
+    let entry = f.copy()
     nowrapKillBound(f, condPtr)
     nowrapKillBound(f, bodyPtr)
+    nowrapKeepResidues(f, entry, residues)
     let mut trips = 0 - 1
     if (counter.trips >= 0 as I64 and counter.trips <= 2147483647 as I64) { trips = counter.trips as Int }
     if (w.loopDepth < w.loops.length) {
@@ -573,6 +576,19 @@ private fn nowrapLoop(w: NowrapWalk, f: NowrapFacts, condPtr: Ptr, bodyPtr: Ptr,
     nowrapCondition(w, inside, condPtr, counter)
     nowrapBlock(w, inside, bodyPtr)
     w.loopDepth = w.loopDepth - 1
+}
+
+// What the head keeps of the names the loop assigns only remainders: each one's range
+// where the loop was entered, widened to the remainder's.
+private fn nowrapKeepResidues(f: NowrapFacts, entry: NowrapFacts, residues: LoopResidues) {
+    let range = residueRangeNew()
+    for i in 0..<residues.names.length {
+        let name: String = residues.names[i]
+        let at = entry.find(name)
+        if (at >= 0 and residues.headRange(name, entry.los[at] as I64, entry.his[at] as I64, range)) {
+            f.set(name, range.lo, range.hi)
+        }
+    }
 }
 
 // The facts that hold when a condition is true: every `and` conjunct ran. A counted
@@ -623,6 +639,7 @@ private fn nowrapExpr(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) {
             }
             nowrapExpr(w, f, e.child2)
             nowrapArith(w, f, e)
+            nowrapMarkRemainder(w, f, e)
             return
         }
         NodeKind.INDEX_EXPR => {
@@ -794,6 +811,8 @@ internal fn nowrapInterval(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) -> Bool 
         return true
     }
     if (e.kind != NodeKind.BINARY_EXPR or nowrapIsIntName(e) == false) { return false }
+    let divisor = remainderDivisor(e)
+    if (divisor > 0) { return nowrapRemainder(w, f, e, divisor) }
     if (e.s1.equals("+") == false and e.s1.equals("-") == false) { return false }
     if (nowrapInterval(w, f, e.child1) == false) { return false }
     let aLo = w.lo
@@ -810,6 +829,44 @@ internal fn nowrapInterval(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) -> Bool 
     let intMin = (0 - 2147483647 - 1) as I64
     let intMax = 2147483647 as I64
     return w.lo >= intMin and w.hi <= intMax
+}
+
+// A remainder by `m`: inside (-m, m) with the dividend's sign, whether or not the
+// facts bound the dividend (ir/residues.psm), and no wider than a bounded one.
+private fn nowrapRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode, m: Int) -> Bool {
+    let bound = (m - 1) as I64
+    if (nowrapInterval(w, f, e.child1) == false) {
+        w.lo = 0 - bound
+        w.hi = bound
+        return true
+    }
+    if (w.lo >= 0 as I64) {
+        w.lo = 0 as I64
+    } else if (w.lo < 0 - bound) {
+        w.lo = 0 - bound
+    }
+    if (w.hi <= 0 as I64) {
+        w.hi = 0 as I64
+    } else if (w.hi > bound) {
+        w.hi = bound
+    }
+    return true
+}
+
+// A `%` by a literal whose dividend the facts bound tightly enough to drop the
+// remainder for a conditional add or subtract (ir/residues.psm).
+private fn nowrapMarkRemainder(w: NowrapWalk, f: NowrapFacts, e: ASTNode) {
+    if (w.mode != NOWRAP_MARK) { return }
+    let m = remainderDivisor(e)
+    if (m < 2 or nowrapInterval(w, f, e.child1) == false) { return }
+    let form = remainderForm(w.lo, w.hi, m)
+    if (form != REM_KEEP) { ir_rem_form_mark(node_to_ptr(e), w.pass, form) }
+}
+
+// The form the active pass gave a `%`, or REM_KEEP.
+internal fn nowrapRemainderForm(expr: ASTNode) -> Int {
+    if (irNowrapPass == 0) { return REM_KEEP }
+    return ir_rem_form_of(node_to_ptr(expr), irNowrapPass)
 }
 
 // The form of a value stored into `slot`'s array (ir/contents.psm): an interval the

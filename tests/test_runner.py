@@ -5297,11 +5297,16 @@ def run_counted_fill_codegen_test():
                 return ""
             return match.group(1)
 
+        # The preparation is one exact `list_reserve`, not a doubling loop
+        # around `list_inline_grow`; either call in a declined loop is a
+        # speculative reservation.
         for name in ("fill", "inclusiveFill"):
-            if "call void @list_inline_grow(" not in body(name):
+            if "call void @list_reserve(" not in body(name):
                 problems.append(f"{name} did not prepare its empty buffer")
-        for name in ("interruptedFill", "observedFill", "queueGrowth"):
             if "call void @list_inline_grow(" in body(name):
+                problems.append(f"{name} prepared its buffer by doubling")
+        for name in ("interruptedFill", "observedFill", "queueGrowth"):
+            if re.search(r"call void @list_(reserve|inline_grow)\(", body(name)):
                 problems.append(f"{name} speculatively grew its buffer")
         if not re.search(r'store i32 .*alias.scope .*noalias', body("structFill")):
             problems.append("struct element initialisation has no region proof")
@@ -5337,6 +5342,52 @@ def run_counted_fill_codegen_test():
         print(f"{RED}[FAIL] counted fill: " + "\n".join(problems) + RESET)
         return False
     print(f"{GREEN}[PASS] counted fill guards, struct regions, and a clean verify ledger{RESET}")
+    return True
+
+
+def run_remainder_steps_codegen_test():
+    """A `%` by a literal whose dividend the facts bound is a conditional step.
+
+    test_288 checks that the reduced and unreduced remainders agree; this checks
+    that the reduced ones were reduced, which a pass of two `srem`s would also
+    satisfy, and that the ones that must stay remainders did.
+    """
+    print(f"\n{BLUE}--- Running remainder_steps_codegen ---{RESET}")
+    source = TEST_DIR / "test_288_remainder_steps.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-remainder-") as tmp:
+        ir_path = Path(tmp) / "remainder.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] remainder steps IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+        def body(name):
+            match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}',
+                              ir, re.MULTILINE | re.DOTALL)
+            if not match:
+                problems.append(f"missing function {name}")
+                return ""
+            return match.group(1)
+
+        def srem_by(name, divisor):
+            return re.search(rf'srem i32 [^,\n]+, {divisor}\b', body(name)) is not None
+
+        for name, divisor in (("checksumValue", 1000000007), ("checksumBoth", 1000000007),
+                              ("smallBoth", 11), ("subtractOnly", 17), ("identity", 13),
+                              ("nested", 997)):
+            if srem_by(name, divisor):
+                problems.append(f"{name} kept its % {divisor}")
+        if not re.search(r'icmp sle i32 [^,\n]+, -11\b', body("smallBoth")):
+            problems.append("smallBoth has no add step for a negative dividend")
+        for name, divisor in (("notKept", 1009), ("edge", 2147483647)):
+            if not srem_by(name, divisor):
+                problems.append(f"{name} lost a % {divisor} its facts do not bound")
+    if problems:
+        print(f"{RED}[FAIL] remainder steps: " + "\n".join(problems) + RESET)
+        return False
+    print(f"{GREEN}[PASS] bounded remainders by a literal are steps; unbounded ones stay `srem`{RESET}")
     return True
 
 
@@ -9981,6 +10032,7 @@ def main():
         ("slice_gate", run_slice_gate_test),
         ("data_view_gate", run_data_view_gate_test),
         ("counted_fill_codegen", run_counted_fill_codegen_test),
+        ("remainder_steps_codegen", run_remainder_steps_codegen_test),
         ("channel_copies", run_channel_copies_test),
         ("scalar_optional", run_scalar_optional_test),
         ("loop_range_proofs", run_loop_range_proofs_test),

@@ -380,6 +380,9 @@ public extern fn ir_range_trace(line: Int, proved: Int, total: Int)
 public extern fn ir_nowrap_mark(node: Ptr, pass: Int)
 public extern fn ir_nowrap_of(node: Ptr) -> Int
 public extern fn ir_nowrap_marked(node: Ptr) -> Int
+// The same pass's form for a `%` by a literal (ir/residues.psm), 0 to keep it.
+public extern fn ir_rem_form_mark(node: Ptr, pass: Int, form: Int)
+public extern fn ir_rem_form_of(node: Ptr, pass: Int) -> Int
 public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 public extern fn ir_array_alloca_zeroed(elemType: String, count: Int) -> Int
 public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int

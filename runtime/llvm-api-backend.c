@@ -3146,10 +3146,17 @@ int ir_list_has_room(const char *list, const char *need) {
                                       resolve_value(need, "i64"), ""));
 }
 
-// A pure, counted scalar fill can grow an empty buffer before its loop. Reuse
-// the ordinary growth path so arenas, verification and boxed opt-out retain
-// their existing allocation policy. No live elements are moved here. The
-// bound keeps both capacity doubling and byte sizes representable on wasm32.
+// A counted scalar fill can reserve an empty buffer's final size before its loop:
+// one `list_reserve` to exactly `need`, rather than doubling up to it. The
+// runtime call keeps arenas, verification and boxed opt-out on their existing
+// allocation policy, and no live elements are moved because the list is empty.
+//
+// One call, and no loop. The doubling form was a `cap < need` loop around
+// `list_inline_grow` -- a second loop in front of every fill, ~20 allocations and
+// frees for a 4M-element one, and a capacity rounded up to a power of two.
+//
+// The bound keeps both later capacity doubling and byte sizes representable on
+// wasm32.
 void ir_list_prepare_fill(const char *list, const char *need, int stride) {
     if (block_done() || stride <= 0) return;
     LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
@@ -3170,7 +3177,7 @@ void ir_list_prepare_fill(const char *list, const char *need, int stride) {
     LLVMValueRef eligible = LLVMBuildAnd(g_builder, LLVMBuildAnd(g_builder, empty, flat, ""),
         LLVMBuildAnd(g_builder, enough, bounded, ""), "");
     int check = ir_get_label();
-    int grow = ir_get_label();
+    int reserve = ir_get_label();
     int done = ir_get_label();
     LLVMBuildCondBr(g_builder, eligible, block_for(check), block_for(done));
 
@@ -3179,14 +3186,16 @@ void ir_list_prepare_fill(const char *list, const char *need, int stride) {
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_CAP, ""), "");
     LLVMValueRef room = LLVMBuildICmp(g_builder, LLVMIntSGE,
         LLVMBuildSExt(g_builder, cap, i64, ""), count, "");
-    LLVMBuildCondBr(g_builder, room, block_for(done), block_for(grow));
+    LLVMBuildCondBr(g_builder, room, block_for(done), block_for(reserve));
 
-    LLVMPositionBuilderAtEnd(g_builder, block_for(grow));
-    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), &ptrty, 1, 0);
-    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_inline_grow");
-    if (!fn) fn = LLVMAddFunction(g_module, "list_inline_grow", fnty);
-    LLVMBuildCall2(g_builder, fnty, fn, &hdr, 1, "");
-    LLVMBuildBr(g_builder, block_for(check));
+    LLVMPositionBuilderAtEnd(g_builder, block_for(reserve));
+    LLVMTypeRef params[2] = { ptrty, i32 };
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 2, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, "list_reserve");
+    if (!fn) fn = LLVMAddFunction(g_module, "list_reserve", fnty);
+    LLVMValueRef args[2] = { hdr, LLVMBuildTrunc(g_builder, count, i32, "") };
+    LLVMBuildCall2(g_builder, fnty, fn, args, 2, "");
+    LLVMBuildBr(g_builder, block_for(done));
     LLVMPositionBuilderAtEnd(g_builder, block_for(done));
 }
 

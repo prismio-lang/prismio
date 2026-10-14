@@ -1,0 +1,150 @@
+// A `%` by a literal whose dividend the facts place within one step of the result
+// becomes a conditional subtract or add (src/ir/residues.psm). Each function below
+// computes the same remainders twice: once by the literal, which the walk may reduce,
+// and once by a parameter, which it cannot, since only a literal divisor is read.
+// The two must agree for every dividend the loop produces -- including the negative
+// ones a range counting down gives, where a signed remainder keeps the sign and only
+// the add step is right.
+//
+// The test harness (`remainder_steps_codegen`) reads this file's IR and checks that
+// the literal sides were in fact reduced, so a pass here cannot be a pass of two
+// `srem`s.
+
+import std.io
+
+let BIG = 1000000007
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// The benchmark's shape; `n` may be negative, which makes `i`, and so `value`,
+// negative too. (-2m, 2m): both steps.
+fn checksumBoth(n: Int, m: Int) -> Bool {
+    let mut fast = 0
+    let mut slow = 0
+    for i in 0..<n {
+        let value = i % 997
+        fast = (fast + value) % 1000000007
+        slow = (slow + value) % m
+    }
+    if (fast != slow) { return false }
+    return true
+}
+
+// A small modulus, so the steps are taken often in both directions.
+fn smallBoth(n: Int, m: Int) -> Bool {
+    let mut fast = 0
+    let mut slow = 0
+    for i in 0..<n {
+        let value = i % 7
+        fast = (fast - value) % 11
+        slow = (slow - value) % m
+        if (fast != slow) { return false }
+    }
+    return true
+}
+
+// Non-negative dividends only: a counted `while` from 0 keeps `i` up, so the
+// remainder by 13 is in [0, 12] and the sum in [0, 2m - 2]: the subtract step.
+fn subtractOnly(n: Int, m: Int) -> Bool {
+    let mut fast = 0
+    let mut slow = 0
+    let mut i = 0
+    while (i < n) {
+        fast = (fast + i % 13) % 17
+        slow = (slow + i % 13) % m
+        if (fast != slow) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// A remainder of a remainder: `i % 7` is in (-7, 7), inside (-13, 13), so the
+// outer `% 13` is the identity.
+fn identity(n: Int, m: Int) -> Bool {
+    for i in 0..<n {
+        let a = (i % 7) % 13
+        let b = (i % 7) % m
+        if (a != b) { return false }
+    }
+    return true
+}
+
+// The accumulator is also assigned something that is not a remainder, so the loop
+// keeps no range for it and the `%` stays a remainder: the answers must still agree.
+fn notKept(n: Int, m: Int) -> Bool {
+    let mut fast = 0
+    let mut slow = 0
+    for i in 0..<n {
+        fast = (fast + i) % 1009
+        slow = (slow + i) % m
+        if (i == n / 2) {
+            fast = fast * 3
+            slow = slow * 3
+        }
+        if (fast != slow) { return false }
+    }
+    return true
+}
+
+// Nested loops: the outer head keeps the range the inner loop also keeps.
+fn nested(n: Int, m: Int) -> Bool {
+    let mut fast = 0
+    let mut slow = 0
+    for i in 0..<n {
+        for j in 0..<n {
+            let v = (i * j) % 101
+            fast = (fast + v) % 997
+            slow = (slow + v) % m
+        }
+        if (fast != slow) { return false }
+    }
+    return true
+}
+
+// A divisor at the edge of `Int`: twice it does not fit, and nothing may assume it
+// does. The dividend's range then reaches past `Int`, so it is left a remainder.
+fn edge(n: Int, m: Int) -> Bool {
+    let mut fast = 0
+    let mut slow = 0
+    for i in 0..<n {
+        let v = i % 5
+        fast = (fast + v) % 2147483647
+        slow = (slow + v) % m
+        if (fast != slow) { return false }
+    }
+    return true
+}
+
+// What the benchmark's loop leaves, by the literal: printed, so the IR keeps the
+// reduced form live in a function the harness can name.
+fn checksumValue(n: Int) -> Int {
+    let mut checksum = 0
+    for i in 0..<n {
+        let value = i % 997
+        checksum = (checksum + value) % 1000000007
+    }
+    return checksum
+}
+
+fn main() -> Int {
+    if (checksumBoth(100000, BIG) == false) { return fail("checksum, counting up") }
+    if (checksumBoth(-100000, BIG) == false) { return fail("checksum, counting down") }
+    if (checksumBoth(0, BIG) == false) { return fail("checksum, empty") }
+    if (smallBoth(5000, 11) == false) { return fail("small modulus, counting up") }
+    if (smallBoth(-5000, 11) == false) { return fail("small modulus, counting down") }
+    if (subtractOnly(5000, 17) == false) { return fail("subtract step") }
+    if (identity(3000, 13) == false) { return fail("identity, up") }
+    if (identity(-3000, 13) == false) { return fail("identity, down") }
+    if (notKept(4000, 1009) == false) { return fail("assigned a non-remainder") }
+    if (nested(300, 997) == false) { return fail("nested") }
+    if (nested(-300, 997) == false) { return fail("nested, down") }
+    if (edge(1000, 2147483647) == false) { return fail("divisor at Int.MAX") }
+    println(checksumValue(4000000))
+    println(checksumValue(-4000000))
+    println("ok")
+    return 0
+}

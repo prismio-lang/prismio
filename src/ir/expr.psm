@@ -2573,7 +2573,7 @@ internal fn generateLoopPushGuard(cond: ASTNode, body: ASTNode) -> String {
         preparedTrip = ir_get_temp_name(ir_mul("i64", trip, valid))
     }
 
-    return generateTripPushGuard(bodyPtr, trip, finite, preparedTrip, irLoneCall(body, iv))
+    return generateTripPushGuard(bodyPtr, trip, finite, preparedTrip)
 }
 
 // The range `for` half of E1. A range knows its trip count without reading it
@@ -2604,40 +2604,101 @@ internal fn generateForPushGuard(stmt: ASTNode, endVal: String, down: Bool) -> S
     if (stmt.i1 == 1) {
         trip = ir_get_temp_name(ir_add("i64", span, "1"))
     }
-    return generateTripPushGuard(bodyPtr, trip, "true", trip,
-                                 irOnlyCall(ptr_to_node(bodyPtr)))
+    return generateTripPushGuard(bodyPtr, trip, "true", trip)
 }
 
-// A loop body that is one call statement and nothing else: a `for` body's lone
-// append, whose induction update is the loop's own rather than a statement.
-private fn irOnlyCall(body: ASTNode) -> Ptr {
-    let first = body.child1
-    if (nodeExists(first) == false) { return ptr_null() }
-    let stmt = ptr_to_node(first)
-    if (stmt.kind != NodeKind.EXPRESSION_STATEMENT) { return ptr_null() }
-    if (nodeIsNull(stmt.child1) or nodeExists(stmt.next)) { return ptr_null() }
+// Capacity for the lists a counted loop fills, reserved once at their final size
+// instead of reached by doubling.
+//
+// A push that is a statement of the body itself -- outside any `if` -- with a
+// value no call computes runs once per iteration, so a receiver pushed by `k`
+// such statements appends at least `k * trip` elements: other pushes, in an arm
+// or anywhere else, only add to that. The reservation is therefore never more
+// than the loop appends, provided it runs to the end, and a body with a `break`,
+// `continue` or `return` anywhere is declined: a loop that stops after a few
+// pushes would otherwise hold a reservation the size of its trip.
+//
+// Nothing here decides whether the body may skip its capacity checks. The guard
+// that follows still tests every receiver against its upper bound, so reserving
+// the lower one is safe whatever it gets wrong. Populated and tiny lists are
+// declined at run time by ir_list_prepare_fill itself.
+private fn irPrepareFills(bodyPtr: Ptr, preparedTrip: String) {
+    let head = ptr_to_node(bodyPtr).child1
+    if (irBodyMayLeave(head)) { return }
+    let mut p = head
+    let mut at = 0
+    while (nodeExists(p)) {
+        let fillPtr = irStatementFill(p)
+        if (nodeExists(fillPtr) and irFillsBefore(head, at, irFillReceiver(fillPtr)) == 0) {
+            let fill = ptr_to_node(fillPtr)
+            let fills = irFillsBefore(head, -1, irFillReceiver(fillPtr))
+            let mut need = preparedTrip
+            if (fills > 1) {
+                need = ir_get_temp_name(ir_mul("i64", preparedTrip, fills.toString()))
+            }
+            ir_list_prepare_fill(generateExpression(ptr_to_node(fill.child2)), need,
+                                 flatPushStride(fill, ptr_to_node(fill.child1).s1))
+        }
+        p = ptr_to_node(p).next
+        at = at + 1
+    }
+}
+
+// How many of the chain's first `limit` statements -- all of them for a negative
+// `limit` -- are fills of `recv`.
+private fn irFillsBefore(head: Ptr, limit: Int, recv: String) -> Int {
+    let mut count = 0
+    let mut at = 0
+    let mut p = head
+    while (nodeExists(p) and (limit < 0 or at < limit)) {
+        let fillPtr = irStatementFill(p)
+        if (nodeExists(fillPtr) and irFillReceiver(fillPtr).equals(recv)) { count = count + 1 }
+        p = ptr_to_node(p).next
+        at = at + 1
+    }
+    return count
+}
+
+private fn irFillReceiver(fillPtr: Ptr) -> String {
+    return ptr_to_node(ptr_to_node(fillPtr).child2).s1
+}
+
+// The flat scalar push a body statement is, or null.
+private fn irStatementFill(stmtPtr: Ptr) -> Ptr {
+    let stmt = ptr_to_node(stmtPtr)
+    if (stmt.kind != NodeKind.EXPRESSION_STATEMENT or nodeIsNull(stmt.child1)) {
+        return ptr_null()
+    }
     let call = ptr_to_node(stmt.child1)
-    if (call.kind != NodeKind.CALL_EXPR) { return ptr_null() }
+    if (call.kind != NodeKind.CALL_EXPR or nodeIsNull(call.child1)) { return ptr_null() }
+    if (flatPushStride(call, ptr_to_node(call.child1).s1) <= 0) { return ptr_null() }
+    if (irScalarFillValue(irCallArg(call, 1)) == false) { return ptr_null() }
     return node_to_ptr(call)
 }
 
-// The guard itself, once a loop's trip count is known: the lone scalar fill's
-// capacity preparation, then one conjunct per push site into a fresh slot.
-private fn generateTripPushGuard(bodyPtr: Ptr, trip: String, finite: String,
-                                 preparedTrip: String, fillPtr: Ptr) -> String {
-    // Exactly one unconditional append, followed by the induction update.
-    // No call in its value, early exit, aliasing receiver, or extra statement
-    // can observe the earlier growth. Populated and tiny lists are declined
-    // at runtime, and retain the ordinary checked push path.
-    if (nodeExists(fillPtr)) {
-        let fill = ptr_to_node(fillPtr)
-        if (nodeExists(fill.child1)) {
-            let stride = flatPushStride(fill, ptr_to_node(fill.child1).s1)
-            if (stride > 0 and irScalarFillValue(irCallArg(fill, 1))) {
-                ir_list_prepare_fill(generateExpression(ptr_to_node(fill.child2)), preparedTrip, stride)
-            }
+// Whether anything under a statement chain can end an iteration early.
+private fn irBodyMayLeave(head: Ptr) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.RETURN_STATEMENT or n.kind == NodeKind.BREAK_STATEMENT
+                or n.kind == NodeKind.CONTINUE_STATEMENT) {
+            return true
         }
+        if (irBodyMayLeave(n.child1) or irBodyMayLeave(n.child2)
+                or irBodyMayLeave(n.child3)) {
+            return true
+        }
+        p = n.next
     }
+    return false
+}
+
+// The guard itself, once a loop's trip count is known: the fill's capacity
+// preparation, then one conjunct per push site into a fresh slot.
+private fn generateTripPushGuard(bodyPtr: Ptr, trip: String, finite: String,
+                                 preparedTrip: String) -> String {
+    irPrepareFills(bodyPtr, preparedTrip)
 
     let name = "pushguard.".concat(irLoopPushGuardCounter.toString())
     irLoopPushGuardCounter = irLoopPushGuardCounter + 1
@@ -4459,7 +4520,9 @@ private fn generateBinary(expr: ASTNode) -> String {
         }
     }
     if (op.equals("%") and opType.equals("double") == false) {
+        let form = nowrapRemainderForm(expr)
         if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
+        else if (form != REM_KEEP) { tempId = reducedRemainder(form, opType, leftVal, rightVal) }
         else { tempId = ir_srem(opType, leftVal, rightVal) }
     }
 
@@ -4477,6 +4540,28 @@ private fn generateBinary(expr: ASTNode) -> String {
     // above, before either operand has been evaluated.
 
     return ir_get_temp_name(tempId)
+}
+
+// A `%` by the literal `m` whose dividend ir/residues.psm placed in one step of the
+// result: the dividend itself, less `m` from `m` up, plus `m` from `-m` down. Plain
+// `add` and `sub`, because the arm a select discards may wrap. The identity is an
+// `add` of 0 only so that it has an instruction to answer with; it folds away.
+private fn reducedRemainder(form: Int, opType: String, x: String, m: String) -> Int {
+    if (form == REM_IDENTITY) { return ir_add(opType, x, "0") }
+    if (form == REM_ADD) { return remainderAddStep(opType, x, x, m) }
+    let high = ir_get_temp_name(ir_icmp_sge(opType, x, m))
+    let less = ir_get_temp_name(ir_sub(opType, x, m))
+    let stepped = ir_select(opType, high, less, x)
+    if (form == REM_SUBTRACT) { return stepped }
+    return remainderAddStep(opType, x, ir_get_temp_name(stepped), m)
+}
+
+// `x <= -m ? x + m : otherwise`.
+private fn remainderAddStep(opType: String, x: String, otherwise: String, m: String) -> Int {
+    let negated = ir_get_temp_name(ir_sub(opType, "0", m))
+    let low = ir_get_temp_name(ir_icmp_sle(opType, x, negated))
+    let more = ir_get_temp_name(ir_add(opType, x, m))
+    return ir_select(opType, low, more, otherwise)
 }
 
 // Whether argument `index` of a foreign call is consumed: the callee keeps it

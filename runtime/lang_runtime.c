@@ -2525,6 +2525,21 @@ void list_set_elem_inline(void* lp, int elem_size) {
 // layout that *did* keep addresses stable was measured first, and cost 1.14x
 // against this one on the corpus: two dependent loads and a count-leading-zeros
 // per access, against a load and a multiply-add.
+// A heap list grows by `realloc`, not by allocate, copy, free. The allocator can
+// extend a block in place, and a large one it moves by remapping pages rather
+// than copying them (macOS's large zone, glibc's `mremap`). In a C model of
+// `vector_growth`'s loop -- 4M i32 pushes from empty, one shot per process,
+// minimum of nine -- allocate-copy-free read 10.8 ms (median 12.0) and `realloc`
+// 9.93 (median 9.95), against 9.74 for a block reserved at its final size.
+//
+// Only a heap list, and only while no arena hint is active: an arena block is
+// not the allocator's to resize, and under a hint `rt_alloc` would have served
+// the block from the arena, which `realloc` cannot. `rt_base_realloc` is the
+// ledger's own under `--verify`, so the pairing it checks is unchanged.
+static int list_grows_by_realloc(RtList* l) {
+    return !l->arena && *rt_arena_hint_state() <= 0;
+}
+
 // The cold half of the inline push path, outlined for the curated module just
 // as `list_push_grow` is for boxed lists. A curated caller is copied into the
 // program module, so anything it still calls must have external linkage in the
@@ -2534,6 +2549,11 @@ PRISMIO_NOINLINE void list_inline_grow(void* lp) {
     RtList* l = (RtList*)lp;
     int nc = l->cap ? l->cap * 2 : 4;
     size_t bytes = (size_t)nc * (size_t)l->elem_size;
+    if (list_grows_by_realloc(l)) {
+        l->data = (void**)rt_base_realloc(l->data, bytes);
+        l->cap = nc;
+        return;
+    }
     unsigned char* nd = l->arena ? (unsigned char*)arena_alloc_at(l->arena, bytes)
                                  : (unsigned char*)rt_alloc(bytes);
     if (l->data) list_copy_elem(nd, l->data, (size_t)l->len * (size_t)l->elem_size);
@@ -3247,6 +3267,11 @@ void* prismio_expect(void* p) {
 PRISMIO_NOINLINE void list_push_grow(void* lp) {
     RtList* l = (RtList*)lp;
     int nc = l->cap ? l->cap * 2 : 4;
+    if (list_grows_by_realloc(l)) {
+        l->data = (void**)rt_base_realloc(l->data, sizeof(void*) * (size_t)nc);
+        l->cap = nc;
+        return;
+    }
     // Back into the arena that owns this list, not into whatever the hint
     // says right now: the push is usually outside the bracket that created
     // the list, so rt_alloc here would take the heap and the block below

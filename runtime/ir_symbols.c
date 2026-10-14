@@ -176,6 +176,11 @@ typedef struct RangeProofNode {
     // apart from `proof`: that fact holds in every copy of the loop, and a copy
     // re-marking the node for its own proof must not erase it.
     int nowrap;
+    // The same pass's answer for a `%` by a literal: which conditional add or
+    // subtract replaces the remainder (REM_* in src/ir/residues.psm), and the
+    // pass that gave it.
+    int rem_pass;
+    int rem_form;
 } RangeProofNode;
 
 static RangeProofNode* range_proof_buckets[RANGE_PROOF_BUCKETS];
@@ -211,6 +216,8 @@ static RangeProofNode* range_proof_entry_or_new(const void* node) {
     n->proof = 0;
     n->data = ir_intern("");
     n->nowrap = 0;
+    n->rem_pass = 0;
+    n->rem_form = 0;
     n->next = range_proof_buckets[bucket];
     range_proof_buckets[bucket] = n;
     return n;
@@ -249,6 +256,20 @@ static int nowrap_disabled(void) {
 int ir_nowrap_of(const void* node) {
     if (nowrap_disabled()) return 0;
     return ir_nowrap_marked(node);
+}
+
+void ir_rem_form_mark(const void* node, int pass, int form) {
+    RangeProofNode* n = range_proof_entry_or_new(node);
+    n->rem_pass = pass;
+    n->rem_form = form;
+}
+
+// The form `pass` gave this `%`, or 0 (keep the remainder). PRISMIO_NOWRAP=0 answers
+// 0 here too: the forms come from the same facts as the `nsw` marks.
+int ir_rem_form_of(const void* node, int pass) {
+    if (nowrap_disabled()) return 0;
+    RangeProofNode* n = range_proof_entry(node);
+    return n && n->rem_pass == pass ? n->rem_form : 0;
 }
 
 // `PRISMIO_RANGE_PROOFS=0` is a measurement switch, not a mode: every proof is
