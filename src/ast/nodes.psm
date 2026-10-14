@@ -200,12 +200,12 @@ enum NodeKind {
 // runtime/diagnostics.c rather than a path, because `resolveImports` flattens
 // every module into one AST -- after that, a node's file is knowable only from
 // the node itself.
-struct ASTNode {
-    kind: NodeKind,
-    s1: String,
-    s2: String,
-    i1: Int,
-    i2: Int,
+public struct ASTNode {
+    public kind: NodeKind,
+    public s1: String,
+    public s2: String,
+    public i1: Int,
+    public i2: Int,
     // REQUIREMENTS 4. On a TYPE_ANNOTATION, whether the type was written `T?`.
     // Its own slot rather than a bit in i2, because i1 and i2 already mean
     // "array" and "list" and a nullable list is both.
@@ -222,21 +222,21 @@ struct ASTNode {
     // MATCH_STATEMENT it is sema's "every value reaches an arm" -- a payload
     // enum's variants all covered, or a `_` arm -- which flow.psm reads to let a
     // match whose arms all return end a function.
-    i3: Int,
-    child1: Ptr, // ASTNode
-    child2: Ptr, // ASTNode
-    child3: Ptr, // ASTNode
-    next: Ptr,   // ASTNode (for linked lists)
-    typeInfo: Ptr, // TypeInfo assigned by sema
-    line: Int,
-    col: Int,
-    len: Int,
-    file: Int,
+    public i3: Int,
+    public child1: Ptr, // ASTNode
+    public child2: Ptr, // ASTNode
+    public child3: Ptr, // ASTNode
+    public next: Ptr,   // ASTNode (for linked lists)
+    public typeInfo: Ptr, // TypeInfo assigned by sema
+    public line: Int,
+    public col: Int,
+    public len: Int,
+    public file: Int,
     // Declaration-only metadata, kept out of child1/2/3 because those slots are
     // part of the executable AST shape. It points to a GENERIC_PARAM chain on a
     // generic function, type, trait, or impl header and is otherwise absent.
     // Trailing placement preserves every established AST field offset.
-    genericInfo: Ptr
+    public genericInfo: Ptr
 }
 
 // Both are the identity on a pointer (runtime/lang_runtime.c), so the result is
@@ -378,8 +378,8 @@ public fn nodeSpanFrom(target: ASTNode, source: ASTNode) {
 // individually trivial and collectively the easiest place in the frontend to make
 // a silent mistake: link through the wrong tail and the list simply ends early,
 // with no diagnostic and no crash.
-struct NodeList {
-    head: Ptr,
+public struct NodeList {
+    public head: Ptr,
     tail: Ptr
 }
 

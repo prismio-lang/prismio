@@ -1,0 +1,211 @@
+// Drops the standard-library functions a program cannot reach, between type
+// checking and the ownership analysis. `PRISMIO_PRUNE=0` turns it off, to measure
+// it.
+//
+// Importing `std.io` merges every function in it, whether or not the program
+// prints anything. Type checking has to see them all, but nothing after it needs
+// the ones nothing calls: the ownership analysis would analyse them, and codegen
+// would walk them. Measured on a program that prints one line, ownership and IR
+// generation were a third of the compile, and most of that was code the program
+// does not run.
+//
+// **Only functions from a `std` module are ever removed.** A user's function is
+// type checked, analysed and reported on whether or not anything calls it, and
+// `main` and every `export` are roots, so a diagnostic never depends on this.
+//
+// Reachability is read off what type checking resolved. A call carries the
+// mangled symbol of its target in `s2` (`println__Int`), so `println(1)` keeps
+// the `Int` overload and not the other eighteen. Anything that names a function
+// without calling it -- a function passed as a value, a closure's body -- is a
+// string in `s1` or `s2` that equals a symbol, and is matched as one. A trait
+// object keeps every method of the impl its vtable is built from.
+//
+// The marks are `i3` on the FUNCTION node, which is otherwise only the thunk
+// mark generateModule clears before it reads it.
+//
+// **It changes code, and on purpose: a function nothing calls must not decide how
+// one that is called compiles.** LLVM never saw the dead ones -- a closed program
+// runs `globaldce` before `default<O3>` -- but three whole-module facts the
+// frontend computes did. Guard-safe verdicts were keyed by source name, so
+// `Buffer.eq` calling an extern took the flat guard from every `Map` probe in a
+// program importing `std.mem`; `region_confined` counted dead callers, so an
+// unused `eprintln` overload loosened the opaque-call obligation into placing an
+// arena; and call-site counts included dead callers. On a program that prints one
+// line the ownership analysis goes from 0.61 ms to 0.09 and IR generation from
+// 0.95 to 0.24. In the benchmark binary four functions change instructions (the
+// sort partitions gain their guards, sort_strings 5.5% faster); `gcd_lcm` and
+// `edit_distance` moved 10% with identical instructions at another address.
+
+import ast.nodes
+import ast.fn_attrs
+import ast.types
+import common.diagnostics
+import std.string
+
+let REACHED = 7
+
+extern fn compiler_library_emission_module() -> String produce(free)
+extern fn compiler_prune_enabled() -> Int
+
+let mut pruneModulePtr: Ptr
+
+// The key a function is filed under here, apart from the source-name keys the
+// declaration index holds: `$sym$` and the mangled symbol.
+private fn pruneKey(symbol: String) -> String {
+    return "$sym$".concat(symbol)
+}
+
+private fn pruneSymbol(func: ASTNode) -> String {
+    if (func.s2.equals("")) { return func.s1.clone() }
+    return func.s2.clone()
+}
+
+private fn pruneIsLibrary(func: ASTNode) -> Bool {
+    return diag_file_module(func.file).startsWith("std.")
+}
+
+private fn pruneMark(func: ASTNode) {
+    if (func.i3 == REACHED) { return }
+    func.i3 = REACHED
+    pruneScan(func.child2)
+}
+
+private fn pruneMarkSymbol(symbol: String) {
+    let key = pruneKey(symbol)
+    let count = ir_decl_count(key)
+    for i in 0..<count {
+        pruneMark(ptr_to_node(ir_decl_at(key, i)))
+    }
+}
+
+// The methods of the impl a trait object's vtable is built from. The records
+// kept on the impl name each method by the position it was declared at.
+private fn pruneMarkVtable(module: ASTNode, make: ASTNode) {
+    if (make.s1.length < 4) { return }
+    let traitName = make.s1.substring(4, make.s1.length - 4)
+    let mut declPtr = module.child1
+    while (nodeExists(declPtr)) {
+        let decl = ptr_to_node(declPtr)
+        if (decl.kind == NodeKind.IMPL_DECL and decl.s2.equals(traitName)) {
+            let candidate = "vtable$".concat(traitName, "$", decl.s1)
+            if (candidate.equals(make.s2)) {
+                pruneMarkImpl(module, decl)
+            }
+        }
+        declPtr = decl.next
+    }
+}
+
+private fn pruneMarkImpl(module: ASTNode, implDecl: ASTNode) {
+    let mut recordPtr = implDecl.child2
+    while (nodeExists(recordPtr)) {
+        let record = ptr_to_node(recordPtr)
+        if (record.kind == NodeKind.IMPL_METHOD) {
+            let mut fnPtr = module.child1
+            while (nodeExists(fnPtr)) {
+                let func = ptr_to_node(fnPtr)
+                if (func.kind == NodeKind.FUNCTION and func.file == record.file
+                        and func.line == record.line and func.col == record.col) {
+                    pruneMark(func)
+                }
+                fnPtr = func.next
+            }
+        }
+        recordPtr = record.next
+    }
+}
+
+private fn pruneScan(nodePtr: Ptr) {
+    let mut p = nodePtr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        pruneScanNode(node)
+        p = node.next
+    }
+}
+
+private fn pruneScanNode(node: ASTNode) {
+    if (node.kind == NodeKind.CALL_EXPR) {
+        // The callee's own name is the overload set, not the overload called:
+        // `s2` is the one type checking chose.
+        let mut symbol = node.s2.clone()
+        let mut calleeIsName = false
+        if (nodeExists(node.child1)) {
+            let callee = ptr_to_node(node.child1)
+            if (callee.kind == NodeKind.IDENTIFIER_EXPR) {
+                calleeIsName = true
+                if (symbol.equals("")) { symbol = callee.s1.clone() }
+            }
+        }
+        if (symbol.equals("") == false) { pruneMarkSymbol(symbol) }
+        if (calleeIsName == false) { pruneScan(node.child1) }
+        pruneScan(node.child2)
+        pruneScan(node.child3)
+        return
+    }
+    if (node.kind == NodeKind.DYN_MAKE) {
+        pruneMarkVtable(ptr_to_node(pruneModulePtr), node)
+    }
+    if (node.s1.equals("") == false) { pruneMarkSymbol(node.s1) }
+    if (node.s2.equals("") == false) { pruneMarkSymbol(node.s2) }
+    pruneScan(node.child1)
+    pruneScan(node.child2)
+    pruneScan(node.child3)
+}
+
+// The roots: every function that is not the library's, plus any `export`ed one,
+// and a generic template, whose instantiations are what the program calls but
+// whose declaration other passes read.
+private fn pruneIsRoot(func: ASTNode) -> Bool {
+    if (pruneIsLibrary(func) == false) { return true }
+    if (nodeExists(func.genericInfo)) { return true }
+    return nodeFnAttrFlags(func) != 0
+}
+
+// **Not while a `.plib` is being built.** The module being emitted is the entry
+// file and reads as a library module, so nothing in it would be a root and the
+// archive would come out empty.
+public fn pruneUnreachableLibrary(module: ASTNode) {
+    if (compiler_prune_enabled() == 0) { return }
+    if (compiler_library_emission_module().equals("") == false) { return }
+    pruneModulePtr = node_to_ptr(module)
+    let mut indexPtr = module.child1
+    while (nodeExists(indexPtr)) {
+        let decl = ptr_to_node(indexPtr)
+        if (decl.kind == NodeKind.FUNCTION) {
+            decl.i3 = 0
+            ir_index_decl(pruneKey(pruneSymbol(decl)), node_to_ptr(decl))
+        }
+        indexPtr = decl.next
+    }
+
+    let mut rootPtr = module.child1
+    while (nodeExists(rootPtr)) {
+        let decl = ptr_to_node(rootPtr)
+        if (decl.kind == NodeKind.FUNCTION and pruneIsRoot(decl)) { pruneMark(decl) }
+        // Anything but a function can name one: a global's initialiser, a
+        // workload, a trait impl's default.
+        if (decl.kind != NodeKind.FUNCTION) { pruneScanNode(decl) }
+        rootPtr = decl.next
+    }
+
+    let mut previous = ptr_null()
+    let mut declPtr = module.child1
+    while (nodeExists(declPtr)) {
+        let decl = ptr_to_node(declPtr)
+        let following = decl.next
+        if (decl.kind == NodeKind.FUNCTION and decl.i3 != REACHED) {
+            if (nodeExists(previous)) {
+                let before = ptr_to_node(previous)
+                before.next = following
+            } else {
+                module.child1 = following
+            }
+        } else {
+            decl.i3 = 0
+            previous = declPtr
+        }
+        declPtr = following
+    }
+    indexModuleDeclarations(module)
+}

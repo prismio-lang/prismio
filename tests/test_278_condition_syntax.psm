@@ -1,0 +1,77 @@
+// A condition is any expression, with or without parentheses, and `is` / `not` are
+// the words for `==` / `!=` and `!`. The parser reads them into the same nodes as
+// the symbols (parse/expr.psm), so everything after it sees one spelling.
+//
+// The one thing a bare condition has to get right is the `{`: it opens the body,
+// never a struct literal, until a bracket opens (`parseCondition` in parse/stmt.psm).
+
+import std.io
+import std.string
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+fn origin() -> Point { return Point { x: 0, y: 0 } }
+fn same(a: Point, b: Point) -> Bool { return a.x == b.x and a.y == b.y }
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn main() -> Int {
+    let mut x = 3
+    let none_int: Int? = none
+
+    // With and without parentheses; the same statement.
+    let mut hits = 0
+    if x == 3 { hits = hits + 1 }
+    if (x == 3) { hits = hits + 1 }
+    if (x == 3) and (x < 9) { hits = hits + 1 }
+    if x == 3 and x < 9 { hits = hits + 1 }
+    if hits != 4 { return fail("a condition without parentheses") }
+
+    // `none` needs no parentheses either.
+    if none_int == none { hits = hits + 1 } else { return fail("x == none") }
+    if none_int is none { hits = hits + 1 } else { return fail("x is none") }
+
+    // `is`, `is not`, `not`.
+    if x is 3 { hits = hits + 1 } else { return fail("is") }
+    if x is not 4 { hits = hits + 1 } else { return fail("is not") }
+    if not (x == 4) { hits = hits + 1 } else { return fail("not") }
+    if not (x is not 3) { hits = hits + 1 } else { return fail("not (is not)") }
+    let flag = x is 3
+    if flag and not (flag is false) { hits = hits + 1 } else { return fail("is as a value") }
+    if hits != 11 { return fail("the words are the symbols") }
+
+    // `not` is `!`: it binds to the next operand, so `not x == y` negates `x` alone.
+    // (A Bool compared with `==` is what makes this one type-check.)
+    let t = true
+    if not t == false { hits = hits + 1 } else { return fail("not binds like !") }
+
+    // A struct literal inside a bracket is still a literal; the `{` after the
+    // closing bracket is the body.
+    if (Point { x: 1, y: 2 }).x == 1 { hits = hits + 1 } else { return fail("literal in parentheses") }
+    if same(Point { x: 5, y: 6 }, Point { x: 5, y: 6 }) { hits = hits + 1 } else { return fail("literal in arguments") }
+    if same(origin(), Point { x: 0, y: 0 }) is true { hits = hits + 1 } else { return fail("call, then is") }
+    if hits != 15 { return fail("struct literals in conditions") }
+
+    // `while` takes the same.
+    let mut n = 0
+    while n < 3 { n = n + 1 }
+    while (n < 6) { n = n + 1 }
+    while not (n is 9) { n = n + 1 }
+    while n is not 12 { n = n + 1 }
+    if n != 12 { return fail("while conditions") }
+
+    // `else if` chains.
+    let grade = 70
+    let mut label = ""
+    if grade > 90 { label = "A" } else if grade > 60 { label = "B" } else { label = "C" }
+    if label != "B" { return fail("else if without parentheses") }
+
+    println("ok")
+    return 0
+}

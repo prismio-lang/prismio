@@ -7,15 +7,15 @@ import std.string
 import std.fs
 
 
-struct UmsBuildPlan {
-    stateRoot: String,
-    artifactRoot: String
+public struct UmsBuildPlan {
+    public stateRoot: String,
+    public artifactRoot: String
 }
 
 private fn umsBuildProfileValid(profile: String) -> Bool {
-    if (__builtin_string_len(profile) == 0) { return false }
+    if (profile.length == 0) { return false }
     let mut i = 0
-    while (i < __builtin_string_len(profile)) {
+    while (i < profile.length) {
         let current = profile.charAt(i)
         if (umsIsAlnum(current) == false and current != '-' and current != '_') {
             return false

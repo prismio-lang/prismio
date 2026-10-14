@@ -1,0 +1,69 @@
+// A closure may take a block as its body, and the block's last expression is its
+// value -- the one place a final expression answers; a function body returns only
+// through `return`. The block is the closure's `call` function, so locals, loops
+// and early `return` work in it, and a `let` that reuses the name of an outer local
+// shadows it rather than capturing it.
+
+import std.io
+import std.string
+
+fn run<F>(f: F, x: Int) -> Int { return f(x) }
+fn each<F>(f: F) { f(1)
+    f(2) }
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn main() -> Int {
+    let base = 100
+
+    let a = run(|x: Int| {
+        let y = x + 1
+        y * 2
+    }, 5)
+    if a != 12 { return fail("the last expression is the value") }
+
+    let b = run(|x: Int| {
+        let doubled = x * 2
+        doubled + base
+    }, 5)
+    if b != 110 { return fail("a capture inside a block") }
+
+    let c = run(|x: Int| { return x + 1 }, 5)
+    if c != 6 { return fail("an explicit return still works") }
+
+    let mut total = 0
+    each(|n: Int| {
+        let step = n * 10
+        println(step)
+    })
+
+    // A `let` in the block shadows the outer local of the same name.
+    let y = 50
+    let d = run(|x: Int| {
+        let y = x
+        y + 1
+    }, 7)
+    if d != 8 or y != 50 { return fail("shadowing in a closure block") }
+
+    // A loop in the block, then its value.
+    let e = run(|n: Int| {
+        let mut sum = 0
+        let mut i = 1
+        while i <= n {
+            sum = sum + i
+            i = i + 1
+        }
+        sum
+    }, 10)
+    if e != 55 { return fail("a loop in a closure block") }
+
+    // An expression body is unchanged.
+    if run(|x: Int| x + 3, 10) != 13 { return fail("an expression body") }
+
+    total = a + b + c + d + e
+    println(total)
+    return 0
+}

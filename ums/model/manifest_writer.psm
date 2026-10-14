@@ -13,8 +13,8 @@ import ums.parser.parser
 // edit from a refused duplicate or a malformed manifest without comparing two
 // affine strings.
 struct UmsManifestEdit {
-    text: String,
-    changed: Bool
+    public text: String,
+    public changed: Bool
 }
 
 private fn umsManifestUnchanged(source: String) -> UmsManifestEdit {
@@ -38,7 +38,7 @@ private fn umsManifestScopeName(scope: UmsDependencyScope) -> String {
 private fn umsManifestEscape(value: String) -> String {
     let mut escaped = ""
     let mut i = 0
-    while (i < __builtin_string_len(value)) {
+    while (i < value.length) {
         let c = value.charAt(i)
         if (c == '\\') { escaped = escaped.concat("\\\\") }
         else if (c == '"') { escaped = escaped.concat("\\\"") }
@@ -60,7 +60,7 @@ private fn umsManifestDependencyText(scope: UmsDependencyScope, name: String,
     text = text.concat("\", \"")
     let escapedConstraint = umsManifestEscape(constraint)
     text = text.concat(escapedConstraint)
-    if (__builtin_string_len(localPath) > 0) {
+    if (localPath.length > 0) {
         text = text.concat("\", \"")
         let escapedPath = umsManifestEscape(localPath)
         text = text.concat(escapedPath)
@@ -139,7 +139,7 @@ private fn umsManifestAppendDependencyBlock(source: String,
                                              declaration: String) -> String {
     let newline = umsManifestNewline(source)
     let mut separator = ""
-    let length = __builtin_string_len(source)
+    let length = source.length
     if (length > 0) {
         let blankLine = newline.concat(newline)
         if (source.endsWith(blankLine) == false) {
@@ -198,7 +198,7 @@ public fn umsManifestAddDependency(source: String, manifestPath: String,
                             constraint: String, localPath: String,
                             inout diagnostics: Vec<UmsDiagnostic>) -> UmsManifestEdit {
     let scopeName = umsManifestScopeName(scope)
-    if (__builtin_string_len(scopeName) == 0) {
+    if (scopeName.length == 0) {
         umsDiagnosticAdd(diagnostics, "UMS2401", manifestPath, 0, 0, 0,
                          "cannot write a dependency with an unknown scope")
         return umsManifestUnchanged(source)
@@ -208,7 +208,7 @@ public fn umsManifestAddDependency(source: String, manifestPath: String,
             "invalid dependency name '".concat(name, "'"))
         return umsManifestUnchanged(source)
     }
-    if (__builtin_string_len(constraint) == 0) {
+    if (constraint.length == 0) {
         umsDiagnosticAdd(diagnostics, "UMS2403", manifestPath, 0, 0, 0,
             "dependency '".concat(name, "' has an empty version constraint"))
         return umsManifestUnchanged(source)

@@ -55,10 +55,10 @@ let mut overlayRead = false
 private fn absolutePath(path: String) -> String {
     let mut relative = path.clone()
     while (relative.startsWith("./") or relative.startsWith(".\\")) {
-        relative = relative.substring(2, __builtin_string_len(relative) - 2)
+        relative = relative.substring(2, relative.length - 2)
     }
     if (relative.startsWith("/") or relative.startsWith("\\")) { return relative }
-    if (__builtin_string_len(relative) > 1 and relative.charAt(1) == ':') { return relative }
+    if (relative.length > 1 and relative.charAt(1) == ':') { return relative }
     return joinPath(currentDirectory(), relative)
 }
 
@@ -195,7 +195,7 @@ private fn appendStatement(module: ASTNode, stmt: ASTNode) {
 // host's separator is; join_path normalises the joined result.
 private fn moduleRelativePath(moduleName: String) -> String {
     let mut relative = ""
-    let length = __builtin_string_len(moduleName)
+    let length = moduleName.length
     for i in 0..<length {
         let c = moduleName.charAt(i)
         if (c == '.') {
@@ -281,7 +281,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
             if (fileExists(resolveImportPath(baseDir, parent))) {
                 ir_import_record(site.file, parent)
                 ir_select_record(site.file, parent,
-                    moduleName.substring(cut + 1, __builtin_string_len(moduleName) - cut - 1))
+                    moduleName.substring(cut + 1, moduleName.length - cut - 1))
                 return mergeNamedModule(merged, site, parent, baseDir, visited)
             }
         }
@@ -435,13 +435,16 @@ private fn freestandingSafeModule(name: String) -> Bool {
         or name.equals("std.unicode") or name.equals("std.unicode_tables")
         or name.equals("std.eq") or name.equals("std.ord") or name.equals("std.copy")
         or name.equals("std.key") or name.equals("std.default")
-        or name.equals("std.vec") or name.equals("std.map")
+        or name.equals("std.vec") or name.equals("std.map") or name.equals("std.float_text")
+        or name.equals("std.port") or name.equals("std.asm") or name.equals("std.raw")
 }
 
-// The three that are pure Prismio link nothing; the rest call into lang_runtime.c.
+// The seven that are pure Prismio link nothing; the rest call into lang_runtime.c.
 private fn freestandingNeedsRuntime(name: String) -> Bool {
     return name.equals("std.option") == false and name.equals("std.platform") == false
-        and name.equals("std.iter") == false
+        and name.equals("std.iter") == false and name.equals("std.float_text") == false
+        and name.equals("std.port") == false and name.equals("std.asm") == false
+        and name.equals("std.raw") == false
 }
 
 // A `std` module is compiled against the C library and an operating system, and a
@@ -565,7 +568,7 @@ public fn standardModulePath(baseDir: String, leaf: String) -> String {
     // Installed standard modules are compiled, module-level PLIB artifacts.
     // `leaf` still arrives as `string.psm` because checkout resolution uses the
     // source spelling; replace only that suffix for the installed lookup.
-    let plibLeaf = leaf.substring(0, __builtin_string_len(leaf) - 4).concat(".plib")
+    let plibLeaf = leaf.substring(0, leaf.length - 4).concat(".plib")
     let packaged = joinPath(toolchainRoot, "stdlib/".concat(plibLeaf))
     if (fileExists(packaged)) { return packaged }
 
@@ -594,11 +597,11 @@ private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (moduleName.startsWith("std.") == false) {
         return joinImportPath(baseDir, moduleName)
     }
-    let leaf = moduleName.substring(4, __builtin_string_len(moduleName) - 4).concat(".psm")
+    let leaf = moduleName.substring(4, moduleName.length - 4).concat(".psm")
     if (standardModulePath(baseDir, leaf).equals("")) {
         return joinImportPath(baseDir, moduleName)
     }
-    return standardModulePath(baseDir, moduleName.substring(4, __builtin_string_len(moduleName) - 4).concat(".psm"))
+    return standardModulePath(baseDir, moduleName.substring(4, moduleName.length - 4).concat(".psm"))
 }
 
 // The entry file is marked resolved before the walk begins, so that a package

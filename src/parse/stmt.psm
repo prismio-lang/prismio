@@ -15,6 +15,8 @@ impl Parser {
         let blockNode = self.node(NodeKind.BLOCK)
 
         let statements = nodeList()
+        let hoistMark = self.hoistTail
+        let mut declaredNested = false
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
             // Without this the loop spins at EOF until some inner parser happens to
             // fail, and blames whatever it was looking at instead of the brace that
@@ -25,8 +27,14 @@ impl Parser {
                 diag_finish()
                 exit(1)
             }
+            if (self.atNestedFn()) {
+                self.parseNestedFn()
+                declaredNested = true
+                continue
+            }
             nodeListPush(statements, self.parseStatement())
         }
+        if (declaredNested) { self.renameNestedCalls(statements.head, hoistMark) }
 
         // The closing brace, before it is consumed. A block's own span starts at `{`
         // and there was nothing recording where it ended, so every scope drop, arena
@@ -85,13 +93,29 @@ impl Parser {
 
 
 impl Parser {
+    // The condition of an `if` or a `while`: any expression, with or without
+    // parentheses, ended by the `{` of the body. `if (a) { }` is the parenthesised
+    // expression `(a)`, and `if x == none { }` needs nothing around it. Struct
+    // literals are off until a bracket opens, or `Foo {` would swallow the body.
+    private fn parseCondition(self, what: String) -> ASTNode {
+        if (self.checkVal(TokenType.SEPARATOR, "{")) {
+            self.fatal("expected a condition in ".concat(what, ", found `{`"))
+        }
+        let saved = self.allowStructLit
+        self.allowStructLit = 0
+        let condition = self.parseExpression(0)
+        self.allowStructLit = saved
+        return condition
+    }
+}
+
+
+impl Parser {
     private fn parseIfStatement(self) -> ASTNode {
         self.expectVal(TokenType.KEYWORD, "if", "if statement")
         let ifNode = self.node(NodeKind.IF_STATEMENT)
 
-        self.expectVal(TokenType.SEPARATOR, "(", "if condition")
-        ifNode.child1 = node_to_ptr(self.parseExpression(0))
-        self.expectVal(TokenType.SEPARATOR, ")", "if condition")
+        ifNode.child1 = node_to_ptr(self.parseCondition("if condition"))
 
         ifNode.child2 = node_to_ptr(self.parseBlock())
 
@@ -113,9 +137,7 @@ impl Parser {
         self.expectVal(TokenType.KEYWORD, "while", "while statement")
         let whileNode = self.node(NodeKind.WHILE_STATEMENT)
 
-        self.expectVal(TokenType.SEPARATOR, "(", "while condition")
-        whileNode.child1 = node_to_ptr(self.parseExpression(0))
-        self.expectVal(TokenType.SEPARATOR, ")", "while condition")
+        whileNode.child1 = node_to_ptr(self.parseCondition("while condition"))
 
         whileNode.child2 = node_to_ptr(self.parseBlock())
         return whileNode
@@ -480,7 +502,7 @@ impl Parser {
         }
 
         let operatorToken = self.current()
-        if (operatorToken.type == TokenType.ASSIGNMENT_OPERATOR and __builtin_string_len(operatorToken.value) == 2) {
+        if (operatorToken.type == TokenType.ASSIGNMENT_OPERATOR and operatorToken.value.length == 2) {
             return self.parseCompoundAssignment(expr, operatorToken, first)
         }
 

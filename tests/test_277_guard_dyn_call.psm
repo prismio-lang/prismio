@@ -1,0 +1,51 @@
+// A trait-object call inside a loop that reads a Vec, where the impl pushes to
+// that Vec.
+//
+// The loop's flat guard reads the element base once, in the preheader, and is
+// only sound when nothing in the body can reallocate the block. The guard
+// analyses judged calls by CALL_EXPR, and a `dyn` call is a DYN_CALL, so it fell
+// through as an ordinary expression: the guarded copy kept reading the freed
+// block after the first push grew the list, and `walk` summed garbage (27 for the
+// 28 below). The same analyses now refuse DYN_CALL, SPAWN_EXPR and JOIN_EXPR
+// (irIsUnjudgedCall).
+
+import std.io
+
+trait Grower {
+    fn grow(self, inout v: Vec<Int>) -> Int
+}
+
+struct Pusher { n: Int }
+
+impl Grower for Pusher {
+    fn grow(self, inout v: Vec<Int>) -> Int {
+        for k in 0..<self.n { v.push(1000 + k) }
+        return 0
+    }
+}
+
+fn walk(inout v: Vec<Int>, g: dyn Grower) -> Int {
+    let mut sum = 0
+    let mut i = 0
+    while (i < 8) {
+        sum = sum + v[i] + g.grow(v)
+        i = i + 1
+    }
+    return sum
+}
+
+fn main() -> Int {
+    let mut v: Vec<Int> = []
+    for i in 0..<8 { v.push(i) }
+    let p = Pusher { n: 64 }
+    let sum = walk(v, p)
+    if (sum != 28 or v.length != 8 + 8 * 64) {
+        print("FAIL: sum ")
+        print(sum)
+        print(", length ")
+        println(v.length)
+        return 1
+    }
+    println("PASS: guard dyn call")
+    return 0
+}

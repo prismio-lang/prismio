@@ -378,6 +378,44 @@ private fn semaRuntimeCallSpelling(name: String) -> String {
     return ""
 }
 
+// The standard-library spelling of a compiler builtin, or "" when there is none
+// worth naming. Every `__builtin_*` is the standard library's: it is how std/ says
+// what it implements, not a language a program writes, and each has a wrapper that
+// does.
+private fn semaBuiltinSpelling(name: String) -> String {
+    if (name.equals("__builtin_string_len")) { return "s.length" }
+    if (name.equals("__builtin_string_eq")) { return "a == b" }
+    if (name.equals("__builtin_string_compare")) { return "a.compare(b)" }
+    if (name.equals("__builtin_string_byte_at")) { return "s.byteAt(i)" }
+    if (name.equals("__builtin_min")) { return "min(a, b)` from `std.math" }
+    if (name.equals("__builtin_max")) { return "max(a, b)` from `std.math" }
+    if (name.equals("__builtin_abs")) { return "abs(x)` from `std.math" }
+    if (name.equals("__builtin_count_ones")) { return "x.countOnes()` from `std.math" }
+    if (name.equals("__builtin_leading_zeros")) { return "x.leadingZeros()` from `std.math" }
+    if (name.equals("__builtin_trailing_zeros")) { return "x.trailingZeros()` from `std.math" }
+    if (name.equals("__builtin_rotate_left")) { return "x.rotateLeft(n)` from `std.math" }
+    if (name.equals("__builtin_rotate_right")) { return "x.rotateRight(n)` from `std.math" }
+    if (name.equals("__builtin_f64_sqrt")) { return "x.sqrt()` from `std.math" }
+    if (name.equals("__builtin_f64_floor")) { return "x.floor()` from `std.math" }
+    if (name.equals("__builtin_float_bits")) { return "x.bits` from `std.mem" }
+    if (name.equals("__builtin_float_from_bits")) { return "Float.fromBits(bits)` from `std.mem" }
+    if (name.equals("__builtin_ptr_addr")) { return "addressOf(pointer)` from `std.mem" }
+    if (name.equals("__builtin_addr_ptr")) { return "pointerAt(address)` from `std.mem" }
+    if (name.equals("__builtin_mem_fence")) { return "fence()` from `std.mem" }
+    if (name.equals("__builtin_asm")) { return "asm(text)` from `std.asm" }
+    if (name.equals("__builtin_asm_read")) { return "asmRead(text)` from `std.asm" }
+    if (name.equals("__builtin_asm_write")) { return "asmWrite(text, value)` from `std.asm" }
+    if (name.startsWith("__builtin_port_in_")) { return "portInU8(port)` from `std.port" }
+    if (name.startsWith("__builtin_port_out_")) { return "portOutU8(port, value)` from `std.port" }
+    if (name.startsWith("__builtin_mem_load_")) { return "loadU32(address)` from `std.mem" }
+    if (name.startsWith("__builtin_mem_store_")) { return "storeU32(address, value)` from `std.mem" }
+    if (name.startsWith("__builtin_mem_vload_")) { return "volatileLoadU32(address)` from `std.mem" }
+    if (name.startsWith("__builtin_mem_vstore_")) { return "volatileStoreU32(address, value)` from `std.mem" }
+    if (name.startsWith("__builtin_mem_a")) { return "atomicLoadU32(address)`, `atomicAddU32(address, value)` and the rest of `atomic...` from `std.mem" }
+    if (name.startsWith("__builtin_target_")) { return "platform.current`, `platform.architecture` and `platform.environment` from `std.platform" }
+    return ""
+}
+
 // Refuses a runtime entry point written outside std/.
 //
 // **Syntactic, and first in analyzeModule**, because the lowerings above write
@@ -414,6 +452,14 @@ private fn semaRuntimeCallsIn(head: Ptr) {
             if (callee.kind == NodeKind.IDENTIFIER_EXPR and spelling.equals("") == false) {
                 semaErrorAt(callee, diagQuote(callee.s1).concat(" is internal to the standard library"))
                 diag_note("write `".concat(spelling, "`"))
+            } else if (callee.kind == NodeKind.IDENTIFIER_EXPR and callee.s1.startsWith("__builtin_")) {
+                semaErrorAt(callee, diagQuote(callee.s1).concat(" is internal to the standard library"))
+                let wrapper = semaBuiltinSpelling(callee.s1)
+                if (wrapper.equals("")) {
+                    diag_note("the standard library wraps every builtin; look for the operation in `std.*`")
+                } else {
+                    diag_note("write `".concat(wrapper, "`"))
+                }
             }
         }
         if (n.kind != NodeKind.TYPE_ANNOTATION) {

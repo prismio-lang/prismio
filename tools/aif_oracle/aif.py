@@ -176,6 +176,9 @@ FFI_CONTRACTS = {
     '__builtin_min': {0: 'borrow', 1: 'borrow'},
     '__builtin_abs': {0: 'borrow'},
     # Integer bit operations: a scalar in (and a distance), a scalar out.
+    '__builtin_range_count': {0: 'borrow', 1: 'borrow', 2: 'borrow', 3: 'borrow'},
+    '__builtin_index_int': {0: 'borrow'},
+    '__builtin_range_at': {0: 'borrow', 1: 'borrow', 2: 'borrow', 3: 'borrow'},
     '__builtin_count_ones': {0: 'borrow'},
     '__builtin_leading_zeros': {0: 'borrow'},
     '__builtin_trailing_zeros': {0: 'borrow'},

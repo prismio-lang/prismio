@@ -1,0 +1,8 @@
+// expect-error: `GLOBAL_PRIVATE` is private to the file that declares it
+import std.io
+import visibility.globals
+
+fn main() -> Int {
+    println(GLOBAL_PRIVATE)
+    return 0
+}

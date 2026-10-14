@@ -4,38 +4,34 @@
 
 export fn bench_crc32(scale: U32) -> U32 {
     let mut table: Array<U32, 256>
-    let mut i = 0
-    while (i < 256) {
+
+    for i in 0..<256 {
         let mut c = i as U32
-        let mut k = 0
-        while (k < 8) {
+
+        for _ in 0..<8 {
             if ((c & 1) != 0) {
                 c = 0xEDB88320 ^ (c >> 1)
             } else {
                 c = c >> 1
             }
-            k = k + 1
         }
         table[i] = c
-        i = i + 1
     }
+
     let mut buffer: Array<U8, 32768>
     let mut s: U32 = 2024
-    i = 0
-    while (i < 32768) {
+
+    for i in 0..<32768  {
         s = s * 1664525 + 1013904223
         buffer[i] = (s >> 24) as U8
-        i = i + 1
     }
+
     let mut crc: U32 = 0xFFFFFFFF
-    let mut r: U32 = 0
-    while (r < 32 * scale) {
-        i = 0
-        while (i < 32768) {
+
+    for _ in 0..<32 * scale as Int {
+        for i in 0..<32768 {
             crc = table[((crc ^ (buffer[i] as U32)) & 255) as Int] ^ (crc >> 8)
-            i = i + 1
         }
-        r = r + 1
     }
     return crc ^ 0xFFFFFFFF
 }
@@ -132,7 +128,7 @@ export fn bench_popcount(scale: U32) -> U32 {
 export fn bench_mandelbrot_fixed(scale: U32) -> U32 {
     let mut total: U32 = 0
 
-    repeat(6) {
+    for _ in 0..<6 {
         for py in 0..<96 as I32 {
             for px in 0..<96 as I32 {
 

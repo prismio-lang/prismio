@@ -1,0 +1,8 @@
+// expect-error: cannot assign to `r`, which is not declared `mut` and could be assigned again by this loop
+import std.io
+
+fn main() -> Int {
+    let r: Int
+    for i in 0..<3 { r = i }
+    return 0
+}

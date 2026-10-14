@@ -2061,17 +2061,235 @@ static int target_splits_libc(void) {
 // The runtime has already been linked into the program's LLVM module before
 // optimisation. The native link therefore receives one program object plus any
 // explicit UMS inputs; there is no opaque runtime archive at this boundary.
-static int link_program_object(const char* program_obj, const char* exe_file) {
-#ifdef _WIN32
-    // Native objects, a response file and an export table are all spelled for a
-    // clang driver, so a target with any of them links through one.
-    int needs_driver = g_native_source_count > 0 || g_native_link_needs_driver ||
-                       g_export_dynamic;
-    const char* chosen = getenv("PRISMIO_CC");
-    if ((!chosen || !*chosen) && !ir_target_is_explicit() && !needs_driver) {
-        return link_program_msvc(program_obj, exe_file);
+#ifndef _WIN32
+static int spawn_and_wait(const char* program, char** arguments, int count,
+                          const char* directory, int quiet);
+static int host_identity(const char* path, char* out, size_t size);
+
+// The link without the two processes in front of it.
+//
+// A link through the driver is `system()` -> `/bin/sh` -> `cc` -> `ld`, and on a
+// program that prints one line that was 25 ms of a 46 ms build: `ld` itself takes
+// 16.5, and the shell and the driver deciding what to hand it take the rest, the
+// same answer every time. So the driver is asked once, with `-###`, and its `ld`
+// line is kept in a cache of its own with the object and the output replaced by
+// markers. The binary is byte-identical either way; only the processes differ.
+//
+// **The line names the SDK, the linker and the compiler runtime archive by path,
+// and an Xcode update moves them.** Every absolute path in it is recorded with its
+// identity (host_identity: device, inode, size, mtime) and a hit is used only when
+// all of them still match. A miss or a mismatch asks the driver again.
+//
+// Only for a link the driver's line can describe completely: a Mach-O program with
+// no native objects, link arguments or exports of its own. Anything else, and any
+// failure here, takes the driver path, which is also the one that reports errors.
+#define LINK_OBJECT_MARK "<prismio-link-object>"
+#define LINK_OUTPUT_MARK "<prismio-link-output>"
+
+typedef struct {
+    char** items;
+    int count;
+    int cap;
+} LinkArgs;
+
+static void link_args_push(LinkArgs* args, const char* text, size_t len) {
+    if (args->count == args->cap) {
+        args->cap = args->cap ? args->cap * 2 : 32;
+        args->items = (char**)realloc(args->items, (size_t)args->cap * sizeof(char*));
     }
+    char* copy = (char*)malloc(len + 1);
+    memcpy(copy, text, len);
+    copy[len] = '\0';
+    args->items[args->count++] = copy;
+}
+
+static void link_args_free(LinkArgs* args) {
+    free_string_list(&args->items, &args->count, &args->cap);
+}
+
+// The last command a `-###` run printed, which for a link is `ld`'s: clang writes
+// each one on a line of its own, indented by a space, every argument quoted with
+// `"` and `\` escaped. 0 when there is no such line.
+static int link_args_from_driver_output(const char* text, LinkArgs* out) {
+    const char* line = NULL;
+    for (const char* p = text; *p; ) {
+        if (p[0] == ' ' && p[1] == '"') line = p + 1;
+        const char* nl = strchr(p, '\n');
+        if (!nl) break;
+        p = nl + 1;
+    }
+    if (!line) return 0;
+    char token[4096];
+    for (const char* p = line; *p && *p != '\n'; ) {
+        if (*p == ' ') { p++; continue; }
+        if (*p != '"') return 0;
+        size_t n = 0;
+        for (p++; *p && *p != '"'; p++) {
+            if (*p == '\\' && p[1]) p++;
+            if (*p == '\n' || n + 1 >= sizeof(token)) return 0;
+            token[n++] = *p;
+        }
+        if (*p != '"') return 0;
+        p++;
+        link_args_push(out, token, n);
+    }
+    return out->count > 0;
+}
+
+// Beside the object cache rather than in it: an ordinary build writes nothing
+// there, and run_runtime_object_from_ir_test reads an empty object cache as the
+// proof that no runtime C was compiled. PRISMIO_LINK_CACHE=0 links through the
+// driver every time.
+static char* link_cache_path(const char* driver_command) {
+    const char* off = getenv("PRISMIO_LINK_CACHE");
+    if (off && off[0] == '0' && off[1] == '\0') return NULL;
+    const char* base = getenv("TMPDIR");
+    if (!base || !base[0]) base = "/tmp";
+    char* dir = join_path(base, "prismio-link-cache");
+    if (!dir || ensure_directory_exists(dir) != 0) { free(dir); return NULL; }
+    // The variables that steer the driver to another toolchain, SDK or deployment
+    // version are part of what it was asked.
+    unsigned long long key = fnv1a_bytes(PRISMIO_FNV_OFFSET, (const unsigned char*)driver_command);
+    const char* steering[] = {"DEVELOPER_DIR", "SDKROOT", "MACOSX_DEPLOYMENT_TARGET"};
+    for (size_t i = 0; i < sizeof(steering) / sizeof(steering[0]); i++) {
+        const char* value = getenv(steering[i]);
+        key = fnv1a_bytes(key, (const unsigned char*)steering[i]);
+        key = fnv1a_bytes(key, (const unsigned char*)(value ? value : ""));
+    }
+    char name[64];
+    snprintf(name, sizeof(name), "link-%016llx.args", key);
+    char* path = join_path(dir, name);
+    free(dir);
+    return path;
+}
+
+// A cached line whose every recorded path is still the file it was, or 0.
+static int link_cache_read(const char* path, LinkArgs* out) {
+    char* text = file_exists(path) ? read_file(path) : NULL;
+    if (!text) return 0;
+    int valid = strncmp(text, "prismio-ld 1\n", 13) == 0;
+    for (char* p = text + 13; valid && *p; ) {
+        char* nl = strchr(p, '\n');
+        if (!nl) { valid = 0; break; }
+        *nl = '\0';
+        if (p[0] == 'a' && p[1] == ' ') {
+            link_args_push(out, p + 2, strlen(p + 2));
+        } else if (p[0] == 's' && p[1] == ' ') {
+            char* tab = strchr(p + 2, '\t');
+            char now[160];
+            if (!tab) { valid = 0; break; }
+            *tab = '\0';
+            if (!host_identity(p + 2, now, sizeof(now))) snprintf(now, sizeof(now), "absent");
+            valid = strcmp(now, tab + 1) == 0;
+        } else {
+            valid = 0;
+        }
+        p = nl + 1;
+    }
+    free(text);
+    return valid && out->count > 0;
+}
+
+static void link_cache_write(const char* path, const LinkArgs* args) {
+    size_t size = 256;
+    for (int i = 0; i < args->count; i++) size += 2 * strlen(args->items[i]) + 200;
+    char* text = (char*)malloc(size);
+    if (!text) return;
+    size_t at = (size_t)snprintf(text, size, "prismio-ld 1\n");
+    for (int i = 0; i < args->count; i++) {
+        at += (size_t)snprintf(text + at, size - at, "a %s\n", args->items[i]);
+    }
+    // `xcode-select --switch` moves this link, and with it the toolchain `cc` picks,
+    // without touching any path the line names.
+    const char* selected = "/var/db/xcode_select_link";
+    for (int i = -1; i < args->count; i++) {
+        const char* item = i < 0 ? selected : args->items[i];
+        char identity[160];
+        if (item[0] != '/') continue;
+        if (!host_identity(item, identity, sizeof(identity))) {
+            if (i >= 0) continue;
+            // Absent until a selection is made, and making one has to be noticed.
+            snprintf(identity, sizeof(identity), "absent");
+        }
+        at += (size_t)snprintf(text + at, size - at, "s %s\t%s\n", item, identity);
+    }
+    // Written beside the entry and moved into place: two builds racing on one
+    // entry must not read half a line.
+    char tmp[1200];
+    snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, (int)PRISMIO_GETPID());
+    if (write_text_file(tmp, text) != 0 || fs_rename(tmp, path) != 0) delete_file(tmp);
+    free(text);
+}
+
+// `keyed` is the link the driver would run with the object and the output spelled
+// as the two markers, which is what the cache is keyed on; `real` is the same
+// line with the real paths, which is what `-###` is asked about, since the driver
+// refuses an input that does not exist. 0 when the program is linked.
+static int link_with_cached_ld(const char* keyed, const char* real,
+                               const char* program_obj, const char* exe_file) {
+    char* cache = link_cache_path(keyed);
+    if (!cache) return 1;
+    LinkArgs args = {0};
+    if (!link_cache_read(cache, &args)) {
+        link_args_free(&args);
+        char suffix[64];
+        snprintf(suffix, sizeof(suffix), "link-plan-%d.txt", (int)PRISMIO_GETPID());
+        char* log = compiler_temp_path(exe_file, suffix);
+        size_t len = strlen(real) + (log ? strlen(log) : 0) + 32;
+        char* command = (char*)malloc(len);
+        int asked = log && command
+            && snprintf(command, len, "%s -### > %s 2>&1", real, log) > 0
+            && run_build_command(command) == 0;
+        char* text = asked ? read_file(log) : NULL;
+        int parsed = text && link_args_from_driver_output(text, &args);
+        int has_object = 0, has_output = 0;
+        for (int i = 0; parsed && i < args.count; i++) {
+            const char* mark = NULL;
+            if (strcmp(args.items[i], program_obj) == 0) { mark = LINK_OBJECT_MARK; has_object++; }
+            else if (strcmp(args.items[i], exe_file) == 0) { mark = LINK_OUTPUT_MARK; has_output++; }
+            // A path the line also spells inside another argument could not be
+            // substituted back, so such a line is not kept.
+            else if (strstr(args.items[i], program_obj) || strstr(args.items[i], exe_file)) parsed = 0;
+            if (mark) {
+                free(args.items[i]);
+                args.items[i] = (char*)malloc(strlen(mark) + 1);
+                strcpy(args.items[i], mark);
+            }
+        }
+        if (parsed && has_object == 1 && has_output == 1) link_cache_write(cache, &args);
+        else link_args_free(&args);
+        free(text);
+        if (log) delete_file(log);
+        free(log);
+        free(command);
+    }
+    if (args.count == 0) {
+        free(cache);
+        return 1;
+    }
+
+    char** argv = (char**)malloc((size_t)args.count * sizeof(char*));
+    for (int i = 0; i < args.count; i++) {
+        const char* item = args.items[i];
+        if (strcmp(item, LINK_OBJECT_MARK) == 0) item = program_obj;
+        else if (strcmp(item, LINK_OUTPUT_MARK) == 0) item = exe_file;
+        argv[i] = (char*)item;
+    }
+    double t0 = build_trace_ms();
+    int status = spawn_and_wait(argv[0], argv + 1, args.count - 1, NULL, 1);
+    build_trace_stage("link (ld)", t0);
+    // Not this program's fault, as far as anything here can tell, so the driver
+    // links it and says why if it cannot -- and a line that failed is not kept.
+    if (status != 0) delete_file(cache);
+    free(cache);
+    free(argv);
+    link_args_free(&args);
+    return status == 0 ? 0 : 1;
+}
 #endif
+
+// The driver line that links `program_obj` into `exe_file`, malloc'd.
+static char* driver_link_command(const char* program_obj, const char* exe_file) {
     char* q_obj = command_quote_arg(program_obj);
     char* q_exe = command_quote_arg(exe_file);
     char* target = target_clang_flags();
@@ -2111,12 +2329,42 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
              driver, target, min_os, mode, q_obj, g_link_extra, native, stack, q_exe,
              (!g_freestanding && target_splits_libc()) ? " -lm -lpthread" : "",
              (!g_freestanding && target_is_mach_o()) ? " -Wl,-dead_strip" : "");
-    int result = run_build_command(command);
-
-    free(command);
     free(target);
     free(q_obj);
     free(q_exe);
+    return command;
+}
+
+static int link_program_object(const char* program_obj, const char* exe_file) {
+#ifdef _WIN32
+    // Native objects, a response file and an export table are all spelled for a
+    // clang driver, so a target with any of them links through one.
+    int needs_driver = g_native_source_count > 0 || g_native_link_needs_driver ||
+                       g_export_dynamic;
+    const char* chosen = getenv("PRISMIO_CC");
+    if ((!chosen || !*chosen) && !ir_target_is_explicit() && !needs_driver) {
+        return link_program_msvc(program_obj, exe_file);
+    }
+#endif
+    char* command = driver_link_command(program_obj, exe_file);
+#ifndef _WIN32
+    int plain = !g_freestanding && target_is_mach_o() && g_native_source_count == 0
+        && !g_native_link_args && !g_native_link_has_code && !g_export_dynamic
+        && g_link_extra[0] == '\0';
+    if (plain) {
+        char* keyed = driver_link_command(LINK_OBJECT_MARK, LINK_OUTPUT_MARK);
+        int linked = keyed && link_with_cached_ld(keyed, command, program_obj, exe_file) == 0;
+        free(keyed);
+        if (linked) {
+            free(command);
+            return 0;
+        }
+    }
+#endif
+    double t0 = build_trace_ms();
+    int result = run_build_command(command);
+    build_trace_stage("link (driver)", t0);
+    free(command);
     return result;
 }
 

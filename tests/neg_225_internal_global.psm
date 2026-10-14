@@ -1,0 +1,8 @@
+// expect-error: `GLOBAL_INTERNAL` is internal to the package that declares it
+import std.io
+import visibility.globals
+
+fn main() -> Int {
+    println(GLOBAL_INTERNAL)
+    return 0
+}

@@ -61,7 +61,7 @@ fi
 
 # Must match the native sources of the prismio target in build.ums; checked by
 # tools/check_source_lists.py.
-RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c aif_containers.c aif_support.c diagnostics.c llvm-api-backend.c"
+RUNTIME_SOURCES="lang_runtime.c program_support.c build_driver.c ir_symbols.c aif_containers.c aif_support.c diagnostics.c llvm-api-backend.c llvm_bridge.cpp"
 
 green() { printf '\033[32m%s\033[0m\n' "$1"; }
 step()  { printf '\033[90m[%s]\033[0m\n' "$1"; }

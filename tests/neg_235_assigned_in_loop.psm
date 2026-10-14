@@ -1,0 +1,14 @@
+// expect-error: `r` may be used before it is assigned
+// A loop that may run no times assigns nothing as far as the code after it can tell.
+import std.io
+
+fn main() -> Int {
+    let mut r: Int
+    let mut i = 0
+    while i < 3 {
+        r = i
+        i = i + 1
+    }
+    println(r)
+    return 0
+}

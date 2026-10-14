@@ -16,8 +16,8 @@ enum UmsCommandStepKind {
 // are different commands -- so the marker is a member of the argument list rather
 // than a flag on the step.
 struct UmsCommandArgument {
-    forwarded: Bool,
-    text: String,
+    public forwarded: Bool,
+    public text: String,
     line: Int,
     col: Int,
     len: Int
@@ -26,22 +26,22 @@ struct UmsCommandArgument {
 // A step is one action in declaration order. `subject` is the target name for
 // BUILD and RUN and the program for SHELL, because all three are a name plus an
 // optional argument list and a second field would be empty in two of the three.
-struct UmsCommandStep {
-    kind: UmsCommandStepKind,
-    subject: String,
-    arguments: Vec<UmsCommandArgument>,
-    line: Int,
-    col: Int,
-    len: Int
+public struct UmsCommandStep {
+    public kind: UmsCommandStepKind,
+    public subject: String,
+    public arguments: Vec<UmsCommandArgument>,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
-struct UmsCommand {
-    name: String,
-    description: String,
-    steps: Vec<UmsCommandStep>,
-    line: Int,
-    col: Int,
-    len: Int
+public struct UmsCommand {
+    public name: String,
+    public description: String,
+    public steps: Vec<UmsCommandStep>,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
 public fn umsCommand(name: String, line: Int, col: Int, len: Int) -> UmsCommand {

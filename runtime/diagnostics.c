@@ -162,6 +162,34 @@ void diag_progress_begin(const char* subject) {
     snprintf(g_progress_subject, sizeof(g_progress_subject), "%s", subject ? subject : "");
 }
 
+// src/driver/prune.psm runs unless PRISMIO_PRUNE=0, which is the A/B switch for
+// measuring what the standard library a program does not call still costs.
+int compiler_prune_enabled(void) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* v = getenv("PRISMIO_PRUNE");
+        enabled = !(v && v[0] == '0' && v[1] == '\0');
+    }
+    return enabled;
+}
+
+// PRISMIO_PHASE_TIMES=1 prints how long each phase took, on stderr, when the next
+// one starts and when the result line is written. The phases are the names
+// diag_progress already carries, so this costs a getenv per phase and says where
+// a compile's time went without a profiler.
+static const char* g_phase_name = NULL;
+static double g_phase_start = 0.0;
+
+static void diag_phase_time(const char* next) {
+    static int enabled = -1;
+    if (enabled < 0) enabled = diag_env_set("PRISMIO_PHASE_TIMES");
+    if (!enabled) return;
+    double now = diag_now_ms();
+    if (g_phase_name) fprintf(stderr, "phase %-20s %8.3f ms\n", g_phase_name, now - g_phase_start);
+    g_phase_name = next;
+    g_phase_start = now;
+}
+
 // The phase now running, as one line rewritten in place on stderr:
 //
 //      Compiling main.psm (checking types)
@@ -171,6 +199,7 @@ void diag_progress_begin(const char* subject) {
 // everything it would have. ASCII, because a Windows console that decodes VT
 // sequences may still not be on a UTF-8 code page.
 void diag_progress(const char* phase) {
+    diag_phase_time(phase);
     if (!diag_tty_styled(2) || !diag_is_terminal(2) || g_progress_subject[0] == '\0') return;
     fprintf(stderr, "\r\033[2K" SGR_CYAN "%12s" SGR_RESET " %s " SGR_DIM "(%s)" SGR_RESET,
             "Compiling", g_progress_subject, phase ? phase : "");
@@ -197,6 +226,7 @@ static void diag_elapsed(char* out, size_t size) {
 //          in bold green, cargo's shape.
 void diag_result(const char* plain, const char* verb, const char* subject,
                  const char* detail) {
+    diag_phase_time(NULL);
     diag_progress_clear();
     if (!subject) subject = "";
     if (!diag_tty_styled(1)) {

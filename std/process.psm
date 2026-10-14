@@ -59,8 +59,8 @@ private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
 
 // The type of `process`. It holds only the argument accessor, which holds
 // nothing either: every answer is the runtime's.
-struct ProcessQuery {
-    args: Args
+public struct ProcessQuery {
+    public args: Args
 }
 
 // The command line, as the process was given it.
@@ -81,7 +81,7 @@ struct ProcessQuery {
 // (src/sema/checker.psm), and `count` is an ordinary property. Both read the two
 // globals directly, so neither builds a list to answer a question about one
 // element.
-struct Args {
+public struct Args {
 }
 
 // Uninitialised on purpose, as `platform` is. A global cannot be initialised by
@@ -193,8 +193,8 @@ struct SpawnOut {
 // reading it gives "" and writing it gives -1, rather than failing. That is the
 // shape a caller wants: `child.stdout.readAll()` on an inherited stdout is
 // empty, not an error to handle.
-struct Stream {
-    descriptor: Int
+public struct Stream {
+    public descriptor: Int
 }
 
 impl Stream {
@@ -230,11 +230,11 @@ impl Stream {
 // `wait` reaps it. **Nothing here reaps it otherwise** -- there is no destructor
 // to hang that on, and a `Child` dropped unwaited leaves a zombie on POSIX and an
 // open handle on Windows. A program that spawns in a loop must wait in that loop.
-struct Child {
-    handle: I64,
-    stdin: Stream,
-    stdout: Stream,
-    stderr: Stream
+public struct Child {
+    public handle: I64,
+    public stdin: Stream,
+    public stdout: Stream,
+    public stderr: Stream
 }
 
 impl Child {
@@ -269,12 +269,12 @@ impl Child {
 // quoted by the caller -- which is what `quoteArg` was for, and why it is gone
 // too. Here an argument containing a space, a quote or a newline is one
 // argument.
-struct Process {
-    program: String,
-    arguments: Vec<String>,
-    stdin: StreamMode,
-    stdout: StreamMode,
-    stderr: StreamMode
+public struct Process {
+    public program: String,
+    public arguments: Vec<String>,
+    public stdin: StreamMode,
+    public stdout: StreamMode,
+    public stderr: StreamMode
 }
 
 // A `Process` with nothing set and all three streams inherited.

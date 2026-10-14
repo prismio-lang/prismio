@@ -79,7 +79,7 @@ fn local_accumulator(n: Int) -> Int {
         out = out.concat("xyz")
         i = i + 1
     }
-    return __builtin_string_len(out)
+    return out.length
 }
 
 // A literal assigned into an owning slot, then displaced. Aborts in libc if the
@@ -105,9 +105,9 @@ fn literal_mid_loop(n: Int) -> String {
 // afterwards.
 fn borrow_reassign(h: Holder) -> Int {
     let mut s = "own".concat("ed")
-    let first = __builtin_string_len(s)
+    let first = s.length
     s = h.name
-    return first + __builtin_string_len(s) + __builtin_string_len(h.name)
+    return first + s.length + h.name.length
 }
 
 // Two accumulators in one scope, overwritten in the same iteration, and returned
@@ -152,7 +152,7 @@ fn callee_accumulator(n: Int) -> String {
 // pair and the bug disappears.
 fn cloned_literal_keeps_length() -> String {
     let mut s = "inferred"
-    if (__builtin_string_len(s) != 8) { return "bad".concat("") }
+    if (s.length != 8) { return "bad".concat("") }
     s = s.concat("")
     return s
 }
@@ -170,7 +170,7 @@ fn main() -> Int {
 
     // 6 iterations of "ab"
     let built = returned_accumulator(6)
-    if (__builtin_string_len(built) != 12) {
+    if (built.length != 12) {
         println("FAIL returned_accumulator")
         failures = failures + 1
     }
@@ -184,7 +184,7 @@ fn main() -> Int {
     // whatever the loop did, the survivor is "resettail". Bound rather than passed
     // straight to the length builtin, so the caller owns it and it is not a leak of its own.
     let lit = literal_mid_loop(5)
-    if (__builtin_string_len(lit) != 9) {
+    if (lit.length != 9) {
         println("FAIL literal_mid_loop")
         failures = failures + 1
     }
@@ -198,20 +198,20 @@ fn main() -> Int {
 
     // "eeff" plus "ccdd" with four empty concats appended
     let pair = two_accumulators(4)
-    if (__builtin_string_len(pair) != 8) {
+    if (pair.length != 8) {
         println("FAIL two_accumulators")
         failures = failures + 1
     }
 
     // 6 displaced "piece" values released, one survivor returned to main
     let piece = callee_accumulator(6)
-    if (__builtin_string_len(piece) != 5) {
+    if (piece.length != 5) {
         println("FAIL callee_accumulator")
         failures = failures + 1
     }
 
     let cloned = cloned_literal_keeps_length()
-    if (__builtin_string_len(cloned) != 8) {
+    if (cloned.length != 8) {
         println("FAIL cloned literal length")
         failures = failures + 1
     }

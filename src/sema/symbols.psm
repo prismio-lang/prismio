@@ -287,7 +287,7 @@ internal fn semaCoercesToDyn(module: ASTNode, expected: TypeInfo, actual: TypeIn
     if (expected.name.startsWith("dyn$") == false) { return false }
     if (actual.kind == TypeKind.STRUCT and actual.name.startsWith("dyn$")) { return false }
 
-    let traitName = expected.name.substring(4, __builtin_string_len(expected.name) - 4)
+    let traitName = expected.name.substring(4, expected.name.length - 4)
     return semaTypeImplementsNamedTrait(module, typeKeyName(actual), traitName)
 }
 
@@ -422,7 +422,7 @@ internal fn semaModuleWithLeaf(leaf: String) -> String {
         let qualifier = semaFileQualifier(file)
         let dot = qualifier.lastIndexOf(".")
         if (dot >= 0) {
-            let tail = qualifier.substring(dot + 1, __builtin_string_len(qualifier) - dot - 1)
+            let tail = qualifier.substring(dot + 1, qualifier.length - dot - 1)
             if (tail.equals(leaf)) { return qualifier }
         }
     }
@@ -540,7 +540,7 @@ private fn semaTypeFunctionOwner(module: ASTNode, name: String) -> String {
         while (nodeExists(p)) {
             let stmt = ptr_to_node(p)
             if (stmt.kind == NodeKind.FUNCTION and stmt.s1.endsWith(suffix)) {
-                return stmt.s1.substring(0, __builtin_string_len(stmt.s1) - __builtin_string_len(suffix))
+                return stmt.s1.substring(0, stmt.s1.length - suffix.length)
             }
             p = stmt.next
         }
@@ -871,6 +871,33 @@ internal fn semaIsExternGlobal(name: String) -> Bool {
         if (decl.kind == NodeKind.EXTERN_VARIABLE) { return true }
     }
     return false
+}
+
+// The visibility of a Prismio global, which is the rule a function has: `private` is
+// the declaring file, `internal` its package, `public` everywhere. Unlike a function a
+// global with no marker is open to every file -- v0.1 programs read each other's
+// globals freely, and flipping that default would be a rename of the tree for no
+// bug -- so only a marker narrows one. Asked only of a name ir_var_is_global
+// already answered for.
+internal fn semaCheckGlobalAccess(expr: ASTNode) {
+    let count = ir_decl_count(expr.s1)
+    let mut declared = false
+    let mut hidden = 0
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(expr.s1, i))
+        if (decl.kind != NodeKind.VARIABLE_DECL) { continue }
+        declared = true
+        if (semaDeclVisibleFrom(decl, expr.file)) { return }
+        hidden = decl.i2
+    }
+    if (declared == false) { return }
+    if (hidden == 1) {
+        semaErrorAt(expr, diagQuote(expr.s1).concat(" is private to the file that declares it"))
+        diag_note("mark it `public` to make it part of its module's surface, or `internal` to share it within its package")
+        return
+    }
+    semaErrorAt(expr, diagQuote(expr.s1).concat(" is internal to the package that declares it"))
+    diag_note("mark it `public` to make it part of that package's surface")
 }
 
 // v0.1 3.5 for an `extern let`: the same per-file rule an `extern fn` call

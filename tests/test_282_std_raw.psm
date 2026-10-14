@@ -1,0 +1,68 @@
+// The hardware wrappers in std.raw and std.asm: volatile access, atomics on a word,
+// the fence, an address and the pointer it names, a Float's bits, and an assembly
+// instruction written where it runs. They are one builtin each, so this checks the
+// answers and the widths -- a wrapper that picked the wrong width or returned the
+// new value where the old one is promised fails here.
+
+import std.io
+import std.mem
+import std.raw
+import std.asm
+import std.string
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn main() -> Int {
+    let word = alloc(32)
+    word.storeU64(0)
+
+    // Atomics answer the value the word held before the change.
+    atomicStoreU32(word, 5)
+    if atomicAddU32(word, 3) != 5 { return fail("atomicAdd answers the old value") }
+    if atomicLoadU32(word) != 8 { return fail("atomicLoad") }
+    if atomicCompareExchangeU32(word, 8, 20) != 8 { return fail("compare-exchange that succeeds") }
+    if atomicLoadU32(word) != 20 { return fail("compare-exchange stored") }
+    if atomicCompareExchangeU32(word, 8, 99) != 20 { return fail("compare-exchange that fails") }
+    if atomicLoadU32(word) != 20 { return fail("a failed compare-exchange stores nothing") }
+    if atomicSwapU32(word, 1) != 20 { return fail("atomicSwap") }
+    if atomicSubU32(word, 1) != 1 { return fail("atomicSub") }
+    if atomicOrU32(word, 6) != 0 { return fail("atomicOr") }
+    if atomicAndU32(word, 3) != 6 { return fail("atomicAnd") }
+    if atomicXorU32(word, 3) != 2 { return fail("atomicXor") }
+    if atomicLoadU32(word) != 1 { return fail("the word after the chain") }
+    fence()
+
+    // Volatile access at each width, and the plain load seeing the same bytes.
+    volatileStoreU64(word + 8, 0x1122334455667788)
+    if volatileLoadU64(word + 8) != 0x1122334455667788 { return fail("volatile u64") }
+    if volatileLoadU32(word + 8) != 0x55667788 { return fail("volatile u32 is the low half") }
+    if volatileLoadU16(word + 8) != 0x7788 { return fail("volatile u16") }
+    if volatileLoadU8(word + 8) != 0x88 { return fail("volatile u8") }
+    volatileStoreU8(word + 16, 255)
+    volatileStoreU16(word + 18, 0xBEEF)
+    volatileStoreU32(word + 20, 0xDEADBEEF)
+    if (word + 16).loadU8() != 255 or (word + 18).loadU16() != 0xBEEF
+       or (word + 20).loadU32() != 0xDEADBEEF {
+        return fail("volatile stores read back")
+    }
+
+    // An address and its pointer are each other's inverse.
+    if addressOf(pointerAt(word)) != word { return fail("addressOf(pointerAt(a))") }
+    if addressOf(pointerAt(word + 5)) != word + 5 { return fail("an address that is not the block's start") }
+
+    // A Float's bits keep everything, including the sign of zero.
+    if 1.0.bits != 0x3FF0000000000000 { return fail("1.0 bits") }
+    if Float.fromBits(0x4000000000000000) != 2.0 { return fail("fromBits") }
+    if (-0.0).bits != 0x8000000000000000 { return fail("negative zero keeps its sign bit") }
+    if Float.fromBits(0.1.bits) != 0.1 { return fail("round trip") }
+
+    // Assembly text is part of the instruction stream; `nop` runs on every target.
+    asm("nop")
+
+    free(word)
+    println("ok")
+    return 0
+}

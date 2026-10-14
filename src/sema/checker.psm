@@ -233,7 +233,7 @@ private fn semaBindToStandardString(expr: ASTNode) {
 // and a BINARY_EXPR carries its operator in `s1`, which is where a CALL_EXPR
 // keeps its module qualifier; leaving either behind gives the call a qualifier
 // nobody wrote.
-private fn semaBecomeCall(expr: ASTNode, name: String, args: Ptr) {
+internal fn semaBecomeCall(expr: ASTNode, name: String, args: Ptr) {
     let callee = createNode(NodeKind.IDENTIFIER_EXPR)
     callee.s1 = name.clone()
     nodeSpanFrom(callee, expr)
@@ -671,7 +671,7 @@ private fn semaForHoistSource(stmt: ASTNode, isIterator: Bool) {
 }
 
 // `let <name> = <value>`, ahead of every statement the user wrote in the body.
-private fn semaForPrependLet(stmt: ASTNode, name: String, value: ASTNode) {
+internal fn semaForPrependLet(stmt: ASTNode, name: String, value: ASTNode) {
     let bind = createNode(NodeKind.VARIABLE_DECL)
     nodeSpanFrom(bind, stmt)
     bind.s1 = name.clone()
@@ -758,7 +758,7 @@ private fn semaForEachIterator(module: ASTNode, stmt: ASTNode, source: ASTNode) 
 // A fresh identifier node. Fresh rather than reused: the source appears three
 // times in the rewrite, and one node cannot be in three places in a tree whose
 // siblings are a `next` chain.
-private fn semaNameNode(at: ASTNode, name: String) -> ASTNode {
+internal fn semaNameNode(at: ASTNode, name: String) -> ASTNode {
     let node = createNode(NodeKind.IDENTIFIER_EXPR)
     node.s1 = name.clone()
     nodeSpanFrom(node, at)
@@ -1002,6 +1002,7 @@ private fn semaIdentifierExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
     if (ir_var_is_global(expr.s1) == 1) {
         semaCheckExternGlobalAccess(expr)
+        semaCheckGlobalAccess(expr)
     }
     let mut t = typeFromSemKey(ir_get_var_type(expr.s1))
     nodeSetType(expr, t)
@@ -1883,6 +1884,12 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         return typeInvalid()
     }
 
+    // `asm("nop")` from `import std.asm` is the compiler's own instruction, written
+    // where the text is: see semaStdAsmBuiltin.
+    semaCheckStdPortCall(callee)
+    let lowered = semaStdAsmBuiltin(callee.s1)
+    if (lowered.equals("") == false) { callee.s1 = lowered }
+
     let name = callee.s1
 
     if (semaCheckBuiltinCall(module, expr, name, expr.child2)) {
@@ -2242,14 +2249,48 @@ private fn semaArrayLiteralExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     return arrT2
 }
 
+// A built-in collection is indexed by an `Int`, but an index of another integer
+// type is the common case once a loop counts in `Usize` or a length is a `U32`, and
+// a program should not have to write `as Int` to say so. The index is converted
+// where it stands: by a plain cast when every value of its type is an `Int`, and
+// by `__builtin_index_int` otherwise, which saturates a value no `Int` holds --
+// out of range for any collection, so it is refused as an index and never wrapped
+// into one.
+private fn semaIndexOperandAsInt(module: ASTNode, owner: ASTNode) -> TypeInfo {
+    let indexT = semaExpr(module, ptr_to_node(owner.child2))
+    if (indexT.kind != TypeKind.INT or indexT.name.equals("Int")) { return indexT }
+
+    let index = ptr_to_node(owner.child2)
+    let bits = typeIntBits(indexT)
+    let fitsInt = bits < 32 or (bits == 32 and typeIntIsUnsigned(indexT) == false)
+
+    if (fitsInt) {
+        let cast = createNode(NodeKind.CAST_EXPR)
+        nodeSpanFrom(cast, index)
+        cast.child1 = node_to_ptr(index)
+        cast.child2 = node_to_ptr(monoAnnotationFromType(typeInt()))
+        owner.child2 = node_to_ptr(cast)
+        return semaExpr(module, cast)
+    }
+    let clamped = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(clamped, index)
+    index.next = ptr_null()
+    semaBecomeCall(clamped, "__builtin_index_int", node_to_ptr(index))
+    owner.child2 = node_to_ptr(clamped)
+    return semaExpr(module, clamped)
+}
+
 private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let collectionT = semaExpr(module, ptr_to_node(expr.child1))
-    let indexT = semaExpr(module, ptr_to_node(expr.child2))
     // A struct's index is whatever its `at` takes -- a Map's is a key -- so
     // overload resolution checks it below, and only the built-in collections
     // are indexed by an Int.
+    let mut indexT = typeInvalid()
     if (collectionT.kind != TypeKind.STRUCT) {
+        indexT = semaIndexOperandAsInt(module, expr)
         semaExpectAssignable(ptr_to_node(expr.child2), "collection index", typeInt(), indexT)
+    } else {
+        indexT = semaExpr(module, ptr_to_node(expr.child2))
     }
     // v0.1 3.6. `s[i]` is `s.charAt(i)`, which answers NUL rather than
     // trapping out of range -- the bounds check the caller would write is the
@@ -2406,6 +2447,7 @@ private fn semaStructLiteralExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         semaMoveOperand(value)
         fieldPtr = field.next
     }
+    semaCheckStructLiteralVisible(expr)
     semaFillOmittedFields(module, expr, expr.s1)
 
     let structT = typeStruct(expr.s1)
@@ -2864,7 +2906,11 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     }
     // i1 carries `mut` from the parser. Nothing read it before, so
     // "explicit mutability" was advertised and entirely unenforced.
-    if (stmt.i1 == 1) {
+    //
+    // A local declared without a value is marked assignable whatever its `let` says:
+    // its first assignment gives it the value, and sema/assign.psm is what refuses a
+    // second one, and a read before the first.
+    if (stmt.i1 == 1 or (hasAnnotation and hasInit == false and varT.kind != TypeKind.ARRAY)) {
         ir_mark_mutable(stmt.s1)
     }
     if (varT.kind == TypeKind.SLICE and hasInit) {
@@ -2890,6 +2936,7 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
     if (collectionT.kind == TypeKind.LIST) { store = "list_set" }
     if (collectionT.kind == TypeKind.SLICE) { store = "slice_set" }
     if (store.equals("") == false) {
+        semaIndexOperandAsInt(module, target)
         let call = semaVecLowerIndexStore(stmt, target, store)
         semaExpr(module, call)
         return true
@@ -3153,9 +3200,16 @@ private fn semaForStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Type
         return
     }
     let startT = semaExpr(module, ptr_to_node(stmt.child1))
-    semaExpectAssignable(ptr_to_node(stmt.child1), "for range start", typeInt(), startT)
     let endNode = ptr_to_node(stmt.child2)
     let endT = semaExpr(module, endNode)
+    // A range of another integer type is the `Int` loop over a count (sema/ranges.psm).
+    let boundT = semaRangeBoundType(startT, endT)
+    if (typeIsValid(boundT)) {
+        semaForTypedRange(module, stmt, boundT)
+        semaStatement(module, stmt, expectedReturn)
+        return
+    }
+    semaExpectAssignable(ptr_to_node(stmt.child1), "for range start", typeInt(), startT)
     semaExpectAssignable(endNode, "for range end", typeInt(), endT)
     if (nodeExists(endNode.next)) { semaForStep(module, ptr_to_node(endNode.next)) }
     if (stmt.i1 == 1) { semaForEndBeforeCount(endNode) }
@@ -3184,7 +3238,7 @@ private fn semaForEndBeforeCount(endNode: ASTNode) {
 // `step` is how far each iteration moves, by a positive Int; the range decides
 // which way. A literal is checked here and a computed one where the loop is
 // entered (prismio_step_check).
-private fn semaForStep(module: ASTNode, stepNode: ASTNode) {
+internal fn semaForStep(module: ASTNode, stepNode: ASTNode) {
     let stepT = semaExpr(module, stepNode)
     semaExpectAssignable(stepNode, "for step", typeInt(), stepT)
 
@@ -3372,10 +3426,11 @@ private fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
         let init = ptr_to_node(varNode.child2)
         if (init.kind == NodeKind.ARRAY_LITERAL_EXPR) {
             semaCheckGlobalArray(varNode, init)
-        } else if (init.kind != NodeKind.LITERAL_EXPR) {
+        } else if (init.kind != NodeKind.LITERAL_EXPR
+                   and (varT.kind == TypeKind.INT and semaFoldConstantInitializer(module, init, varT)) == false) {
             semaErrorAt(init, "global ".concat(diagQuote(varNode.s1),
                                                " needs a constant initializer"))
-            diag_note("nothing runs before main, so a global cannot be initialized by an expression; move the computation into a function")
+            diag_note("nothing runs before main, so a global is a literal, or for an integer arithmetic on other constants; move the computation into a function")
         }
     }
     if (typeIsValid(varT) == false) {
@@ -3536,6 +3591,7 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
         let mainSaysNothing = fnNode.s1.equals("main") and nodeIsNull(fnNode.child3)
         if (mainSaysNothing) { semaMainBareReturns(body) }
         semaBlock(module, body, expectedReturn)
+        semaCheckDefiniteAssignment(body)
 
         // Every path out of a value-returning function must return. Falling off
         // the end used to emit `ret <type> 0`, which silently returned zero for
@@ -3550,6 +3606,15 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
                                                        " must return ",
                                                        typeDisplay(expectedReturn),
                                                        " on every path, but control can reach its closing brace"))
+                // A function body does not answer with its last expression, which is
+                // what a closure's block does: the mistake is writing `a + 1` where
+                // `return a + 1` was meant, so say so.
+                let mut lastPtr = body.child1
+                while (nodeExists(lastPtr) and nodeExists(ptr_to_node(lastPtr).next)) { lastPtr = ptr_to_node(lastPtr).next }
+                if (nodeExists(lastPtr) and ptr_to_node(lastPtr).kind == NodeKind.EXPRESSION_STATEMENT) {
+                    diag_note_at(ptr_to_node(lastPtr).file, ptr_to_node(lastPtr).line, ptr_to_node(lastPtr).col, ptr_to_node(lastPtr).len,
+                                 "a function body returns only through `return`; this last expression is not returned (a closure's block is the one place a final expression is the value)")
+                }
             }
         }
     }
@@ -3835,7 +3900,7 @@ private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
     }
 
     // `strSubstring` takes a length, not an end. "dyn$" is four characters.
-    let traitName = name.substring(4, __builtin_string_len(name) - 4)
+    let traitName = name.substring(4, name.length - 4)
     let traitDecl = semaFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
         semaErrorAt(annotation, "`dyn ".concat(traitName, "` names no trait"))
@@ -3938,7 +4003,7 @@ private fn semaBuildDynIfNeeded(module: ASTNode, argNode: ASTNode, paramT: TypeI
     let actual = nodeGetType(argNode)
     if (semaCoercesToDyn(module, paramT, actual) == false) { return }
 
-    let traitName = paramT.name.substring(4, __builtin_string_len(paramT.name) - 4)
+    let traitName = paramT.name.substring(4, paramT.name.length - 4)
     let value = monoCopyOne(node_to_ptr(argNode))
 
     argNode.kind = NodeKind.DYN_MAKE
@@ -3966,7 +4031,7 @@ private fn semaIsDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Bo
     if (receiverT.kind != TypeKind.STRUCT) { return false }
     if (receiverT.name.startsWith("dyn$") == false) { return false }
 
-    let traitName = receiverT.name.substring(4, __builtin_string_len(receiverT.name) - 4)
+    let traitName = receiverT.name.substring(4, receiverT.name.length - 4)
     let traitDecl = semaFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return false }
     return semaTraitMethodIndex(traitDecl, name) >= 0
@@ -3990,7 +4055,7 @@ private fn semaTraitMethodIndex(traitDecl: ASTNode, name: String) -> Int {
 private fn semaDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> TypeInfo {
     let receiver = ptr_to_node(expr.child2)
     let receiverT = nodeGetType(receiver)
-    let traitName = receiverT.name.substring(4, __builtin_string_len(receiverT.name) - 4)
+    let traitName = receiverT.name.substring(4, receiverT.name.length - 4)
     let traitDecl = semaFindTrait(module, traitName)
     let index = semaTraitMethodIndex(traitDecl, name)
 
@@ -4233,7 +4298,7 @@ private fn semaRejectDyn(ptr: Ptr, position: String) {
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
         if (node.kind == NodeKind.TYPE_ANNOTATION and node.s1.startsWith("dyn$")) {
-            let traitName = node.s1.substring(4, __builtin_string_len(node.s1) - 4)
+            let traitName = node.s1.substring(4, node.s1.length - 4)
             semaErrorAt(node, "`dyn ".concat(traitName,
                                              "` cannot be ",
                                              position,
@@ -5179,25 +5244,50 @@ private fn semaClosureIsCapture(name: String, paramsPtr: Ptr, captures: NodeList
     return semaClosureHasCapture(captures, name) == false
 }
 
-private fn semaCollectCaptures(node: ASTNode, paramsPtr: Ptr, captures: NodeList) {
+// A name the closure's own block declares, with `let` or as a `for` variable. It
+// cannot be a capture even when the enclosing function has a local of the same name:
+// the block shadows that one, and capturing it would move a value the closure never
+// reads.
+private fn semaClosureDeclaredNames(node: ASTNode, declared: NodeList) {
+    if (node.kind == NodeKind.VARIABLE_DECL or node.kind == NodeKind.FOR_STATEMENT) {
+        let field = createNode(NodeKind.STRUCT_FIELD)
+        field.s1 = node.s1.clone()
+        nodeListPush(declared, field)
+    }
+    semaClosureDeclaredChain(node.child1, declared)
+    semaClosureDeclaredChain(node.child2, declared)
+    semaClosureDeclaredChain(node.child3, declared)
+}
+
+private fn semaClosureDeclaredChain(ptr: Ptr, declared: NodeList) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        semaClosureDeclaredNames(node, declared)
+        p = node.next
+    }
+}
+
+private fn semaCollectCaptures(node: ASTNode, paramsPtr: Ptr, captures: NodeList, declared: NodeList) {
     if (node.kind == NodeKind.IDENTIFIER_EXPR) {
-        if (semaClosureIsCapture(node.s1, paramsPtr, captures)) {
+        if (semaClosureHasCapture(declared, node.s1) == false
+            and semaClosureIsCapture(node.s1, paramsPtr, captures)) {
             let field = createNode(NodeKind.STRUCT_FIELD)
             field.s1 = node.s1.clone()
             nodeSpanFrom(field, node)
             nodeListPush(captures, field)
         }
     }
-    semaCollectCapturesChain(node.child1, paramsPtr, captures)
-    semaCollectCapturesChain(node.child2, paramsPtr, captures)
-    semaCollectCapturesChain(node.child3, paramsPtr, captures)
+    semaCollectCapturesChain(node.child1, paramsPtr, captures, declared)
+    semaCollectCapturesChain(node.child2, paramsPtr, captures, declared)
+    semaCollectCapturesChain(node.child3, paramsPtr, captures, declared)
 }
 
-private fn semaCollectCapturesChain(ptr: Ptr, paramsPtr: Ptr, captures: NodeList) {
+private fn semaCollectCapturesChain(ptr: Ptr, paramsPtr: Ptr, captures: NodeList, declared: NodeList) {
     let mut p = ptr
     while (nodeExists(p)) {
         let node = ptr_to_node(p)
-        semaCollectCaptures(node, paramsPtr, captures)
+        semaCollectCaptures(node, paramsPtr, captures, declared)
         p = node.next
     }
 }
@@ -5254,14 +5344,41 @@ private fn semaClosureBodyType(module: ASTNode, expr: ASTNode) -> TypeInfo {
         nodeSetType(param, paramT)
         paramPtr = param.next
     }
-    let bodyT = semaExpr(module, ptr_to_node(expr.child2))
+    let body = ptr_to_node(expr.child2)
+    if (body.kind != NodeKind.BLOCK) {
+        let bodyT = semaExpr(module, body)
+        ir_scope_pop()
+        return bodyT
+    }
+
+    // A block body: everything before the last statement is checked as it will be
+    // inside `call`, and the closure's type is what the last one yields. An `Int`
+    // expression yields an Int; a `return v` yields v's type; anything else, nothing.
+    // An early `return` is checked against that type once `call` itself is analysed.
+    let mut statementPtr = body.child1
+    let mut bodyT = typeVoid()
+    while (nodeExists(statementPtr)) {
+        let statement = ptr_to_node(statementPtr)
+        if (nodeExists(statement.next)) {
+            semaStatement(module, statement, typeInvalid())
+        } else if (statement.kind == NodeKind.EXPRESSION_STATEMENT) {
+            bodyT = semaExpr(module, ptr_to_node(statement.child1))
+        } else if (statement.kind == NodeKind.RETURN_STATEMENT and nodeExists(statement.child1)) {
+            bodyT = semaExpr(module, ptr_to_node(statement.child1))
+        } else {
+            semaStatement(module, statement, typeInvalid())
+        }
+        statementPtr = statement.next
+    }
     ir_scope_pop()
     return bodyT
 }
 
 private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let captures = nodeList()
-    semaCollectCaptures(ptr_to_node(expr.child2), expr.child1, captures)
+    let declared = nodeList()
+    semaClosureDeclaredNames(ptr_to_node(expr.child2), declared)
+    semaCollectCaptures(ptr_to_node(expr.child2), expr.child1, captures, declared)
 
     let bodyT = semaClosureBodyType(module, expr)
     if (typeIsValid(bodyT) == false) {
@@ -5319,9 +5436,24 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
     callFn.child1 = params.head
 
-    let body = createNode(NodeKind.BLOCK)
+    let written = ptr_to_node(expr.child2)
+    let mut body = createNode(NodeKind.BLOCK)
     nodeSpanFrom(body, expr)
-    if (bodyT.kind == TypeKind.VOID) {
+    if (written.kind == NodeKind.BLOCK) {
+        // The block as written is the function's body. Its last expression becomes
+        // the `return` the closure answers through, so `call` is an ordinary function
+        // that returns on every path.
+        body = written
+        if (bodyT.kind == TypeKind.VOID) {
+            callFn.child3 = ptr_null()
+        } else {
+            let mut lastPtr = body.child1
+            while (nodeExists(ptr_to_node(lastPtr).next)) { lastPtr = ptr_to_node(lastPtr).next }
+            let last = ptr_to_node(lastPtr)
+            if (last.kind == NodeKind.EXPRESSION_STATEMENT) { last.kind = NodeKind.RETURN_STATEMENT }
+            callFn.child3 = node_to_ptr(monoAnnotationFromType(bodyT))
+        }
+    } else if (bodyT.kind == TypeKind.VOID) {
         // A closure whose body answers nothing, `|x| println(x)`: its `call` has no
         // return type, and the body is a statement. Void is not a type a function
         // can name, so the annotation below would be "unknown type `Void`".

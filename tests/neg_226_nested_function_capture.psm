@@ -1,0 +1,10 @@
+// expect-error: unknown identifier `k`
+// A nested function captures nothing: it is a function, not a closure.
+import std.io
+
+fn main() -> Int {
+    let k = 3
+    fn add(a: Int) -> Int { return a + k }
+    println(add(1))
+    return 0
+}

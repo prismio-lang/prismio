@@ -4,7 +4,7 @@
 import std.io
 import std.string
 
-struct UmsDiagnostic {
+public struct UmsDiagnostic {
     code: String,
     path: String,
     line: Int,
@@ -34,7 +34,7 @@ public fn umsDiagnosticAdd(inout diagnostics: Vec<UmsDiagnostic>, code: String, 
 impl UmsDiagnostic {
 
     private fn print(self) {
-        if (__builtin_string_len(self.path) > 0) {
+        if (self.path.length > 0) {
             print(self.path)
             if (self.line > 0) {
                 print(":")

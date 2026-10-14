@@ -42,6 +42,7 @@
 import ast.nodes
 import ast.types
 import common.text
+import common.diagnostics
 import std.string
 
 let RANGE_OPAQUE = 0
@@ -51,6 +52,10 @@ let RANGE_PENDING = 3
 
 let RANGE_INT_MAX = "2147483647"
 let RANGE_INT_MIN = "-2147483648"
+
+// The largest magnitude whose square fits `Int`: 46340^2 = 2147395600.
+let RANGE_SQUARE_EDGE = "46340"
+let RANGE_SQUARE_EDGE_LOW = "-46340"
 
 // Every literal this reads -- a step, a shift, a multiplier -- is at most six
 // digits, so no product or sum of them with 32-bit values can approach the edge of
@@ -67,11 +72,11 @@ let RANGE_WALK_MEASURE = 1
 let RANGE_WALK_EMIT = 2
 
 struct RangeLoop {
-    condPtr: Ptr,
-    bodyPtr: Ptr,
+    internal condPtr: Ptr,
+    internal bodyPtr: Ptr,
     slot: String,
-    proof: Int,
-    proved: Int,
+    internal proof: Int,
+    internal proved: Int,
     // Arithmetic nodes the proof marked `nsw`.
     markedOps: Int,
     failed: Bool,
@@ -79,9 +84,10 @@ struct RangeLoop {
     // accesses: a loop without a list guard, whose copies cannot read a list flat.
     arrays: Bool,
     // The loop's own label, which a `continue@label` in its body names, and its
-    // source line, for PRISMIO_RANGE_TRACE.
-    label: String,
+    // source line and file, for PRISMIO_RANGE_TRACE.
+    internal label: String,
     line: Int,
+    file: Int,
 
     // The induction variables, indexed alike across every field below.
     names: Vec<String>,
@@ -109,7 +115,7 @@ struct RangeLoop {
     folded: Vec<Int>,
 
     // The `for` variable's index, or -1, and how far its latch moves it in units.
-    forVar: Int,
+    internal forVar: Int,
     forStep: Int,
 
     // Per access, in walk order: the conjunct it sits in (-1 in the body), then a
@@ -157,7 +163,7 @@ private fn rangeLoopNew(condPtr: Ptr, bodyPtr: Ptr, arrays: Bool) -> RangeLoop {
     if (nodeExists(bodyPtr)) { label = ptr_to_node(bodyPtr).s1.clone() }
     return RangeLoop {
         condPtr: condPtr, bodyPtr: bodyPtr, slot: "", proof: 0, proved: 0, markedOps: 0,
-        failed: false, arrays: arrays, label: label, line: 0,
+        failed: false, arrays: arrays, label: label, line: 0, file: 0,
         names: [], kinds: [], units: [], coefs: [],
         growth: [], boundConj: [], relations: [],
         inits: [], unitValues: [], lows: [], highs: [],
@@ -183,6 +189,7 @@ private fn rangeLoopNew(condPtr: Ptr, bodyPtr: Ptr, arrays: Bool) -> RangeLoop {
 internal fn generateWhileRangeGuard(cond: ASTNode, body: ASTNode, arrays: Bool) -> String {
     let rl = rangeLoopNew(node_to_ptr(cond), node_to_ptr(body), arrays)
     rl.line = cond.line
+    rl.file = cond.file
     rl.collectVars()
     return rl.prove()
 }
@@ -197,12 +204,13 @@ internal fn generateForRangeGuard(stmt: ASTNode, endVal: String, stepVal: String
                                   arrays: Bool) -> String {
     let rl = rangeLoopNew(ptr_null(), stmt.child3, arrays)
     rl.line = stmt.line
+    rl.file = stmt.file
     let index = rl.addVar(stmt.s1)
     let mut kind = RANGE_UP
     if (down) { kind = RANGE_DOWN }
     rl.kinds[index] = kind
     if (stepIsLiteral) {
-        if (__builtin_string_len(stepVal) > RANGE_LITERAL_DIGITS) { return "" }
+        if (stepVal.length > RANGE_LITERAL_DIGITS) { return "" }
         rl.forStep = stepVal.parseIntOr(0)
         if (rl.forStep <= 0) { return "" }
     } else {
@@ -267,7 +275,12 @@ impl RangeLoop {
         // unmarked -- `for i in 0..<n { a[i] }` -- would get a second copy for
         // nothing but a fact LLVM rarely uses.
         if (self.arrays and self.markedOps == 0) { return "" }
-        ir_range_trace(self.line, self.proved, self.accessConj.length)
+        // A line number means nothing across files, and the fixtures that read this
+        // trace match loops by their own lines, so a standard library loop is not
+        // reported.
+        if (diag_file_module(self.file).startsWith("std.") == false) {
+            ir_range_trace(self.line, self.proved, self.accessConj.length)
+        }
         if (self.proved == 0) { return "" }
         irLoopRangeProofPending = self.proof
         irLoopRangeProofComplete = self.proved == self.accessConj.length
@@ -468,7 +481,7 @@ private fn rangeUpdateStep(rhsPtr: Ptr, name: String) -> Ptr {
 private fn rangeLiteralValue(n: ASTNode) -> Int {
     if (n.kind != NodeKind.LITERAL_EXPR) { return 0 - 1 }
     if (n.i1 != TokenType.NUMBER_LITERAL as Int) { return 0 - 1 }
-    if (__builtin_string_len(n.s1) > RANGE_LITERAL_DIGITS) { return 0 - 1 }
+    if (n.s1.length > RANGE_LITERAL_DIGITS) { return 0 - 1 }
     return n.s1.parseIntOr(0 - 1)
 }
 
@@ -1118,7 +1131,8 @@ private fn rangeIsComparison(op: String) -> Bool {
 //
 //     x < B    x <= B    B > x    x + E < B    E + x < B    x < y    x <= y
 //
-// and their mirrors for a variable counting down.
+// and their mirrors for a variable counting down; and, for one counting up,
+// `x * x < B` and `x * x <= B` (emitSquareBound).
 private fn rangeFactBounds(c: ASTNode, rl: RangeLoop, index: Int) -> Bool {
     if (c.kind != NodeKind.BINARY_EXPR or rangeIsComparison(c.s1) == false) { return false }
     let name: String = rl.names[index]
@@ -1129,7 +1143,25 @@ private fn rangeFactBounds(c: ASTNode, rl: RangeLoop, index: Int) -> Bool {
     if (rangeSideHas(c.child2, name, rl)) {
         return rangeOpBounds(rangeFlipped(c.s1), up) and rangeBoundSideOk(c.child1, index, rl)
     }
+    if (up and rangeIsSquareOf(c.child1, name)) {
+        return rangeOpBounds(c.s1, up) and rangeIsInvariant(c.child2, rl)
+    }
+    if (up and rangeIsSquareOf(c.child2, name)) {
+        return rangeOpBounds(rangeFlipped(c.s1), up) and rangeIsInvariant(c.child1, rl)
+    }
     return false
+}
+
+// `name * name`.
+private fn rangeIsSquareOf(sidePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(sidePtr)) { return false }
+    let side = ptr_to_node(sidePtr)
+    if (side.kind != NodeKind.BINARY_EXPR or side.s1.equals("*") == false) { return false }
+    return rangeIsNamed(side.child1, name) and rangeIsNamed(side.child2, name)
+}
+
+private fn rangeIsSquareBound(c: ASTNode, name: String) -> Bool {
+    return rangeIsSquareOf(c.child1, name) or rangeIsSquareOf(c.child2, name)
 }
 
 private fn rangeOpBounds(op: String, up: Bool) -> Bool {
@@ -1336,6 +1368,10 @@ impl RangeLoop {
     private fn emitConditionBound(self, i: Int) {
         let c = ptr_to_node(rangeConjunct(self.condPtr, self.boundConj[i]))
         let name: String = self.names[i]
+        if (rangeIsSquareBound(c, name)) {
+            self.emitSquareBound(i, c)
+            return
+        }
         let up = self.kinds[i] == RANGE_UP
         let mut op = c.s1.clone()
         let mut varSide = c.child1
@@ -1379,6 +1415,44 @@ impl RangeLoop {
             self.fold(rangeWithinInt(first))
             self.fold(rangeWithinInt(reach))
         }
+    }
+}
+
+
+impl RangeLoop {
+    // `x * x <= B`. The condition squares in wrapping `Int`, so the fact says nothing
+    // until the square is exact, which it is for |x| <= RANGE_SQUARE_EDGE. The guard
+    // keeps `x` there at every head: a start inside the edge, and one iteration's
+    // growth past isqrt(B) still inside it. In the body `x` is then at most
+    // isqrt(B) -- through `llvm.sqrt.f64`, which is correctly rounded, so for a B
+    // below 2^52 the truncated root is exact. A negative B is clamped to 0 first:
+    // the loop never enters then, and the root of a negative is NaN, which
+    // `fptosi` would turn into a poison guard.
+    //
+    // A sieve's `while (p * p <= n)` needs this and nothing else: it proves
+    // `prime[p]`, and the folded facts let `p = p + 1` be `nsw`, without which LLVM
+    // cannot count the inner `multiple += p` loop and leaves it uninterleaved.
+    private fn emitSquareBound(self, i: Int, c: ASTNode) {
+        let mut op = c.s1.clone()
+        let mut boundSide = c.child2
+        if (rangeIsSquareOf(c.child1, self.names[i]) == false) {
+            op = rangeFlipped(c.s1)
+            boundSide = c.child1
+        }
+        let mut bound = rangeInvariantValue(ptr_to_node(boundSide))
+        if (op.equals("<")) { bound = ir_get_temp_name(ir_sub("i64", bound, "1")) }
+        let positive = ir_get_temp_name(ir_icmp_sgt("i64", bound, "0"))
+        let radicand = ir_get_temp_name(ir_select("i64", positive, bound, "0"))
+        ir_call_begin()
+        ir_call_arg("double", ir_get_temp_name(ir_sitofp("i64", radicand, "double")))
+        let root = ir_get_temp_name(ir_call_end("double", "llvm.sqrt.f64"))
+        let high = ir_get_temp_name(ir_fptosi("double", root, "i64"))
+        self.highs[i] = high.clone()
+
+        let start: String = self.inits[i]
+        self.fold(ir_get_temp_name(ir_icmp_sge("i64", start, RANGE_SQUARE_EDGE_LOW)))
+        self.fold(ir_get_temp_name(ir_icmp_sle("i64", start, RANGE_SQUARE_EDGE)))
+        self.fold(ir_get_temp_name(ir_icmp_sle("i64", self.reach(i, high), RANGE_SQUARE_EDGE)))
     }
 }
 
@@ -1504,6 +1578,7 @@ impl RangeLoop {
     private fn boundingVar(self, i: Int) -> Int {
         let c = ptr_to_node(rangeConjunct(self.condPtr, self.boundConj[i]))
         let name: String = self.names[i]
+        if (rangeIsSquareBound(c, name)) { return 0 - 1 }
         let mut boundSide = c.child2
         if (rangeSideHas(c.child1, name, self) == false) { boundSide = c.child1 }
         if (rangeIsInvariant(boundSide, self)) { return 0 - 1 }

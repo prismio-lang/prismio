@@ -51,17 +51,17 @@ enum TypeKind {
     DATAELEMENT
 }
 
-struct TypeInfo {
-    kind: TypeKind,
-    name: String,
+public struct TypeInfo {
+    public kind: TypeKind,
+    public name: String,
     llvm: String,
-    child: Ptr,
-    next: Ptr,
+    public child: Ptr,
+    public next: Ptr,
     // An array's element count, when the type knows it: from a literal, or
     // written as `Array<T, N>`. 0 is "not known" -- a `[T]` parameter, which
     // takes any length, and everything bound from one. A known length is what
     // lets a binding copy the array rather than alias it (COLLECTIONS step 3).
-    length: Int
+    public length: Int
 }
 
 // The identity on a pointer, like ptr_to_node -- see ast.psm for why declaring
@@ -185,14 +185,14 @@ public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
 private fn typeIntLiteralMagnitude(text: String, at: Int) -> U64? {
     let mut start = at
     let mut radix = 10
-    if (text.byteAt(start) == 48 and __builtin_string_len(text) > start + 1) {
+    if (text.byteAt(start) == 48 and text.length > start + 1) {
         let marker = text.byteAt(start + 1)
         if (marker == 120 or marker == 88) { radix = 16 }
         if (marker == 111 or marker == 79) { radix = 8 }
         if (marker == 98 or marker == 66) { radix = 2 }
         if (radix != 10) { start = start + 2 }
     }
-    let digits = text.substring(start, __builtin_string_len(text) - start)
+    let digits = text.substring(start, text.length - start)
     return digits.parseU64(radix)
 }
 
@@ -207,6 +207,18 @@ public fn typeIntLiteralCount(text: String) -> Int {
     let count = expect(parsed) as Int
     if (count < 1) { return -1 }
     return count
+}
+
+// An integer literal's value when it is non-negative and below 2^62, and -1
+// otherwise: wide enough for constant arithmetic on lengths, narrow enough that a
+// sum or a product of two of them cannot overflow an I64.
+public fn typeIntLiteralValue(text: String) -> I64 {
+    if (text.startsWith("-") or text.startsWith("+")) { return -1 as I64 }
+    let parsed = typeIntLiteralMagnitude(text, 0)
+    if (parsed == none) { return -1 as I64 }
+    let magnitude = expect(parsed)
+    if (magnitude > 4611686018427387903) { return -1 as I64 }
+    return magnitude as I64
 }
 
 // Whether any 64-bit integer type could hold this literal: `I64` when it is
@@ -469,7 +481,7 @@ private fn typeInstancesAsWritten(spelled: String) -> String {
     if (spelled.contains("$") == false) { return spelled }
     let mut out = ""
     let mut word = ""
-    let n = __builtin_string_len(spelled)
+    let n = spelled.length
     for i in 0..<n {
         let c = spelled.charAt(i)
         if (isIdentPart(c) or c == '$') {
@@ -489,8 +501,8 @@ private fn typeInstanceWord(word: String) -> String {
     for i in 1..<parts.length {
         if (i > 1) { out = out.concat(", ") }
         let arg = parts[i]
-        if (arg.startsWith("Struct_")) { out = out.concat(arg.substring(7, __builtin_string_len(arg) - 7)) }
-        else if (arg.startsWith("Enum_")) { out = out.concat(arg.substring(5, __builtin_string_len(arg) - 5)) }
+        if (arg.startsWith("Struct_")) { out = out.concat(arg.substring(7, arg.length - 7)) }
+        else if (arg.startsWith("Enum_")) { out = out.concat(arg.substring(5, arg.length - 5)) }
         else { out = out.concat(arg) }
     }
     return out.concat(">")
@@ -535,7 +547,7 @@ private fn typeSpelling(t: TypeInfo, vecName: String) -> String {
             // occur in a source identifier -- so printing the internal name shows the
             // reader a type they did not write and cannot spell.
             if (t.name.startsWith("dyn$")) {
-                return "dyn ".concat(t.name.substring(4, __builtin_string_len(t.name) - 4))
+                return "dyn ".concat(t.name.substring(4, t.name.length - 4))
             }
             return t.name
         }
@@ -843,7 +855,7 @@ private fn typeFromIrKey(key: String) -> TypeInfo {
         return typeDataElement(typeInvalid())
     }
     if (key.startsWith("struct:")) {
-        return typeStruct(key.substring(7, __builtin_string_len(key) - 7))
+        return typeStruct(key.substring(7, key.length - 7))
     }
     return typeInvalid()
 }
@@ -866,35 +878,35 @@ public fn typeFromSemKey(key: String) -> TypeInfo {
     if (key.equals("U64")) { return typeU64() }
     if (key.equals("Usize")) { return typeUsize() }
     if (key.startsWith("struct:")) {
-        return typeStruct(key.substring(7, __builtin_string_len(key) - 7))
+        return typeStruct(key.substring(7, key.length - 7))
     }
     if (key.startsWith("enum:")) {
-        return typeEnum(key.substring(5, __builtin_string_len(key) - 5))
+        return typeEnum(key.substring(5, key.length - 5))
     }
     if (key.startsWith("array:")) {
-        return typeArray(typeFromSemKey(key.substring(6, __builtin_string_len(key) - 6)))
+        return typeArray(typeFromSemKey(key.substring(6, key.length - 6)))
     }
     // `array#16:U32`. The count is written by typeSemKey, so it always parses.
     if (key.startsWith("array#")) {
         let colon = key.indexOf(":")
         let count = typeIntLiteralCount(key.substring(6, colon - 6))
-        let elem = typeFromSemKey(key.substring(colon + 1, __builtin_string_len(key) - colon - 1))
+        let elem = typeFromSemKey(key.substring(colon + 1, key.length - colon - 1))
         return typeArraySized(elem, count)
     }
     if (key.startsWith("list:")) {
-        return typeList(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
+        return typeList(typeFromSemKey(key.substring(5, key.length - 5)))
     }
     if (key.startsWith("chan:")) {
-        return typeChannel(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
+        return typeChannel(typeFromSemKey(key.substring(5, key.length - 5)))
     }
     if (key.startsWith("slice:")) {
-        return typeSlice(typeFromSemKey(key.substring(6, __builtin_string_len(key) - 6)))
+        return typeSlice(typeFromSemKey(key.substring(6, key.length - 6)))
     }
     if (key.startsWith("view:")) {
-        return typeDataView(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
+        return typeDataView(typeFromSemKey(key.substring(5, key.length - 5)))
     }
     if (key.startsWith("dataelem:")) {
-        return typeDataElement(typeFromSemKey(key.substring(9, __builtin_string_len(key) - 9)))
+        return typeDataElement(typeFromSemKey(key.substring(9, key.length - 9)))
     }
     // REQUIREMENTS 4. The inverse of typeSemKey's `opt:` case, which was written
     // without one -- so every optional round-tripping through a binding decoded
@@ -914,10 +926,10 @@ public fn typeFromSemKey(key: String) -> TypeInfo {
     // typeOptional(Invalid) would hand back a child that matches nothing, so
     // `let x = none` would stop being assignable to anything at all.
     if (key.startsWith("task:")) {
-        return typeTask(typeFromSemKey(key.substring(5, __builtin_string_len(key) - 5)))
+        return typeTask(typeFromSemKey(key.substring(5, key.length - 5)))
     }
     if (key.startsWith("opt:")) {
-        let inner = typeFromSemKey(key.substring(4, __builtin_string_len(key) - 4))
+        let inner = typeFromSemKey(key.substring(4, key.length - 4))
         if (typeIsValid(inner) == false) { return typeNone() }
         return typeOptional(inner)
     }
@@ -981,6 +993,7 @@ public extern fn ir_index_decl(name: String, node: Ptr)
 public extern fn ir_decl_count(name: String) -> Int
 public extern fn ir_decl_at(name: String, index: Int) -> String alias
 public extern fn ir_extern_decl_record(file: Int, name: String, visibility: Int)
+public extern fn ir_same_package(fileA: Int, fileB: Int) -> Int
 
 // Which top-level statements have a name worth indexing. Also the import
 // merge's duplicate rule (main.psm), and it has to be the same predicate: the

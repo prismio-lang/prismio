@@ -1,0 +1,217 @@
+// A `for` over a range of any integer type: `for i in 0..<MATRIX` with a `Usize`
+// bound, or `for b in 0..255` over a `U8`.
+//
+// The loop that counts is always the `Int` one, which carries every proof the
+// compiler makes about loops, so a range of another type is that loop over a count
+// plus a conversion:
+//
+//     let $lo: T = <start>
+//     let $hi: T = <end>
+//     let $n = <how many values lo..hi visits>        // refused past what Int counts
+//     for $k in 0..<$n { let i: T = <$lo moved $k steps>  <body> }
+//
+// Both ends are evaluated once and in order, the step is a positive `Int`, and the
+// direction comes from the values, exactly as for an `Int` range (the two builtins
+// that do the arithmetic are in ir/range_values.psm). Nothing wraps: a range up to
+// the largest value of its type visits that value and stops.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ir.bridge
+import common.diagnostics
+import std.string
+
+// The type both bounds share, when this loop is over a non-`Int` integer range: the
+// type of whichever bound is written as one. A bound that is a bare literal takes
+// the other's type, and `Invalid` is answered when neither bound names one, so an
+// ordinary `Int` range is left to its own path.
+internal fn semaRangeBoundType(startT: TypeInfo, endT: TypeInfo) -> TypeInfo {
+    if (startT.kind == TypeKind.INT and startT.name.equals("Int") == false) { return startT }
+    if (endT.kind == TypeKind.INT and endT.name.equals("Int") == false) { return endT }
+    return typeInvalid()
+}
+
+private fn rangeNumber(at: ASTNode, text: String) -> ASTNode {
+    let literal = createNode(NodeKind.LITERAL_EXPR)
+    nodeSpanFrom(literal, at)
+    literal.i1 = TokenType.NUMBER_LITERAL as Int
+    literal.s1 = text.clone()
+    return literal
+}
+
+private fn rangeBool(at: ASTNode, value: Bool) -> ASTNode {
+    let literal = createNode(NodeKind.LITERAL_EXPR)
+    nodeSpanFrom(literal, at)
+    literal.i1 = TokenType.BOOL_LITERAL as Int
+    literal.s1 = "false"
+    if (value) { literal.s1 = "true" }
+    return literal
+}
+
+private fn rangeLet(at: ASTNode, name: String, annotation: Ptr, value: ASTNode) -> ASTNode {
+    let decl = createNode(NodeKind.VARIABLE_DECL)
+    nodeSpanFrom(decl, at)
+    decl.s1 = name.clone()
+    decl.child1 = annotation
+    decl.child2 = node_to_ptr(value)
+    return decl
+}
+
+// A call whose arguments are `a`, `b`, `c` and `d`, in that order.
+private fn rangeCall4(at: ASTNode, name: String, a: ASTNode, b: ASTNode, c: ASTNode, d: ASTNode) -> ASTNode {
+    a.next = node_to_ptr(b)
+    b.next = node_to_ptr(c)
+    c.next = node_to_ptr(d)
+    d.next = ptr_null()
+    let call = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(call, at)
+    semaBecomeCall(call, name, node_to_ptr(a))
+    return call
+}
+
+private fn rangeCompare(at: ASTNode, op: String, left: ASTNode, right: ASTNode) -> ASTNode {
+    left.next = ptr_null()
+    right.next = ptr_null()
+    let compare = createNode(NodeKind.BINARY_EXPR)
+    nodeSpanFrom(compare, at)
+    compare.s1 = op.clone()
+    compare.child1 = node_to_ptr(left)
+    compare.child2 = node_to_ptr(right)
+    return compare
+}
+
+// `if <condition> { panic(<message>) }`.
+private fn rangeRefuse(at: ASTNode, condition: ASTNode, message: String) -> ASTNode {
+    let text = createNode(NodeKind.LITERAL_EXPR)
+    nodeSpanFrom(text, at)
+    text.i1 = TokenType.STRING_LITERAL as Int
+    text.s1 = message.clone()
+    let failure = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(failure, at)
+    semaBecomeCall(failure, "panic", node_to_ptr(text))
+    let statement = createNode(NodeKind.EXPRESSION_STATEMENT)
+    nodeSpanFrom(statement, at)
+    statement.child1 = node_to_ptr(failure)
+    let block = createNode(NodeKind.BLOCK)
+    nodeSpanFrom(block, at)
+    block.child1 = node_to_ptr(statement)
+    let guard = createNode(NodeKind.IF_STATEMENT)
+    nodeSpanFrom(guard, at)
+    guard.child1 = node_to_ptr(condition)
+    guard.child2 = node_to_ptr(block)
+    return guard
+}
+
+// Rewrites the FOR_STATEMENT `stmt` in place into the statements above, ending in
+// the `Int` loop, and answers true when it did. The caller checks the statement
+// again as what it now is.
+internal fn semaForTypedRange(module: ASTNode, stmt: ASTNode, boundT: TypeInfo) -> Bool {
+    let start = ptr_to_node(stmt.child1)
+    let end = ptr_to_node(stmt.child2)
+    semaCheckValue(module, start, boundT, "for range start")
+    semaCheckValue(module, end, boundT, "for range end")
+    let hasStep = nodeExists(end.next)
+    if (hasStep) { semaForStep(module, ptr_to_node(end.next)) }
+
+    let key = "$range_".concat(stmt.line.toString(), "_", stmt.col.toString())
+    let lo = key.concat("_lo")
+    let hi = key.concat("_hi")
+    let step = key.concat("_step")
+    let count = key.concat("_count")
+    let down = key.concat("_down")
+    let counter = key.concat("_k")
+    let steps = key.concat("_n")
+
+    let following = stmt.next
+    let loopBody = ptr_to_node(stmt.child3)
+    let included = stmt.i1 == 1
+    let name = stmt.s1.clone()
+    let stepNode = end.next
+    end.next = ptr_null()
+
+    let first = rangeLet(stmt, lo, node_to_ptr(monoAnnotationFromType(boundT)), start)
+    let second = rangeLet(stmt, hi, node_to_ptr(monoAnnotationFromType(boundT)), end)
+    first.next = node_to_ptr(second)
+
+    // A step that is not a literal is checked here, where the loop is entered.
+    let mut stepValue = rangeNumber(stmt, "1")
+    let mut tail = second
+    if (hasStep) {
+        let stepDecl = rangeLet(stmt, step, node_to_ptr(monoAnnotationFromType(typeInt())),
+                                ptr_to_node(stepNode))
+        tail.next = node_to_ptr(stepDecl)
+        tail = stepDecl
+        let refusal = rangeRefuse(stmt,
+                                  rangeCompare(stmt, "<=", semaNameNode(stmt, step), rangeNumber(stmt, "0")),
+                                  "a `step` must be positive")
+        tail.next = node_to_ptr(refusal)
+        tail = refusal
+    }
+
+    let downDecl = rangeLet(stmt, down, node_to_ptr(monoAnnotationFromType(typeBool())),
+                            rangeCompare(stmt, ">", semaNameNode(stmt, lo), semaNameNode(stmt, hi)))
+    tail.next = node_to_ptr(downDecl)
+
+    let countDecl = rangeLet(stmt, count, node_to_ptr(monoAnnotationFromType(typeU64())),
+                             rangeCall4(stmt, "__builtin_range_count",
+                                        semaNameNode(stmt, lo), semaNameNode(stmt, hi),
+                                        semaRangeStep(stmt, hasStep, step), rangeBool(stmt, included)))
+    downDecl.next = node_to_ptr(countDecl)
+
+    // The check is left out where it cannot fail, so that a freestanding program with
+    // constant ranges references no failure routine: a type of 16 bits or fewer has
+    // at most 65,536 values, and constant bounds have a count known now.
+    let known = semaConstantRangeCount(module, start, end, stepNode, included)
+    let cannotFail = typeIntBits(boundT) <= 16 or (known >= 0 as I64 and known <= 2147483647 as I64)
+    let mut previous = node_to_ptr(countDecl)
+    if (cannotFail == false) {
+        let tooLong = rangeRefuse(stmt,
+                                  rangeCompare(stmt, ">", semaNameNode(stmt, count), rangeNumber(stmt, "2147483647")),
+                                  "this range has more values than a `for` loop can count")
+        countDecl.next = node_to_ptr(tooLong)
+        previous = node_to_ptr(tooLong)
+    }
+
+    let cast = createNode(NodeKind.CAST_EXPR)
+    nodeSpanFrom(cast, stmt)
+    cast.child1 = node_to_ptr(semaNameNode(stmt, count))
+    cast.child2 = node_to_ptr(monoAnnotationFromType(typeInt()))
+    let stepsDecl = rangeLet(stmt, steps, node_to_ptr(monoAnnotationFromType(typeInt())), cast)
+    ptr_to_node(previous).next = node_to_ptr(stepsDecl)
+
+    // The loop variable of the user's body is the converted counter.
+    let value = rangeCall4(stmt, "__builtin_range_at",
+                           semaNameNode(stmt, lo), semaNameNode(stmt, counter),
+                           semaRangeStep(stmt, hasStep, step), semaNameNode(stmt, down))
+    semaForPrependLet(stmt, name, value)
+    let bound = ptr_to_node(ptr_to_node(stmt.child3).child1)
+    bound.child1 = node_to_ptr(monoAnnotationFromType(boundT))
+
+    let counted = createNode(NodeKind.FOR_STATEMENT)
+    nodeSpanFrom(counted, stmt)
+    counted.s1 = counter.clone()
+    counted.child1 = node_to_ptr(rangeNumber(stmt, "0"))
+    counted.child2 = node_to_ptr(semaNameNode(stmt, steps))
+    counted.child3 = stmt.child3
+    counted.next = following
+    stepsDecl.next = node_to_ptr(counted)
+
+    // `stmt` becomes the first declaration; every other node above is new.
+    stmt.kind = NodeKind.VARIABLE_DECL
+    stmt.s1 = first.s1.clone()
+    stmt.s2 = ""
+    stmt.i1 = 0
+    stmt.i2 = 0
+    stmt.child1 = first.child1
+    stmt.child2 = first.child2
+    stmt.child3 = ptr_null()
+    stmt.next = first.next
+    return true
+}
+
+// The step as an argument: the declared one by name, or a fresh `1`.
+private fn semaRangeStep(at: ASTNode, hasStep: Bool, step: String) -> ASTNode {
+    if (hasStep) { return semaNameNode(at, step) }
+    return rangeNumber(at, "1")
+}

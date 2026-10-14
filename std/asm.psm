@@ -1,0 +1,27 @@
+// Inline assembly, for freestanding programs: a boot stub, a system register, a
+// barrier the language has no word for.
+//
+//     import std.asm
+//
+//     asm("nop")
+//     asmWrite("msr tpidr_el0, $0", 12345)
+//     let level: U64 = asmRead("mrs $0, CurrentEL")
+//
+// **The text must be a string literal**, because it is part of the instruction
+// stream: it is assembled where it is written, not passed to a function. That is
+// why these three are not ordinary functions -- the compiler lowers a call to one
+// in place (the declarations below only give the names, and the types of their
+// arguments, something to resolve against; none of them is ever run). The text is
+// LLVM's inline-assembly syntax, AT&T on x86: `$$` writes a literal `$` and `\n`
+// separates instructions. `$0` is the value `asmRead` answers and the operand
+// `asmWrite` takes. Memory is treated as clobbered, so a load or store is never
+// moved across one of these; registers other than `$0` are yours to preserve.
+
+// Runs the instructions.
+public fn asm(text: String) { }
+
+// Runs them and answers `$0`.
+public fn asmRead(text: String) -> U64 { return 0 }
+
+// Runs them with `$0` set to `value`.
+public fn asmWrite(text: String, value: U64) { }

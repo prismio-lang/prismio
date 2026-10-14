@@ -9,7 +9,7 @@ trait Greet {
     fn loudly(self) -> String { return greeting(self).concat(decoration()) }
 }
 
-struct Host { n: Int }
+public struct Host { public n: Int }
 
 impl Greet for Host {
     fn greeting(self) -> String { return "hello" }

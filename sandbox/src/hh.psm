@@ -1,0 +1,6 @@
+import std.io
+
+fn main() {
+    let x = 4+6+2
+    println(x)
+}

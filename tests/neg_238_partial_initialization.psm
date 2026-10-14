@@ -1,0 +1,11 @@
+// expect-error: `p` may be used before it is assigned
+// Assigning one field is not assigning the struct.
+import std.io
+
+struct Pair { x: Int, y: Int }
+
+fn main() -> Int {
+    let p: Pair
+    p.x = 1
+    return 0
+}

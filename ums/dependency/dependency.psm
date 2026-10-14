@@ -15,15 +15,15 @@ enum UmsDependencyScope {
 // two are kept apart rather than one field overwritten, because the lockfile has
 // to record both what was asked for and what it turned into -- that difference is
 // the whole point of writing a lockfile.
-struct UmsDependency {
-    scope: UmsDependencyScope,
-    name: String,
-    constraint: String,
-    path: String,
-    resolved: String,
-    line: Int,
-    col: Int,
-    len: Int
+public struct UmsDependency {
+    public scope: UmsDependencyScope,
+    public name: String,
+    public constraint: String,
+    public path: String,
+    public resolved: String,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
 // Whether this dependency names a local path rather than a registry entry.

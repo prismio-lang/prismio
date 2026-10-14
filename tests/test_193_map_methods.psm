@@ -21,7 +21,7 @@ import std.vec
 
 // Every key hashes to one bucket, so each key's probe passes every key inserted
 // before it -- the chain a removal must not cut.
-struct Clash {
+public struct Clash {
     id: Int
 }
 

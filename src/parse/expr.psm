@@ -21,6 +21,8 @@ import std.string
 private fn getOperatorPrecedence(t: Token) -> Int {
     if (t.value.equals("or")) { return 1 }
     if (t.value.equals("and")) { return 2 }
+    // `is` compares like `==`, one level with it.
+    if (t.type == TokenType.KEYWORD and t.value.equals("is")) { return 3 }
     if (t.type == TokenType.KEYWORD) { return 0 }
 
     if (t.value.equals("==") or t.value.equals("!=")) { return 3 }
@@ -41,6 +43,7 @@ private fn getOperatorPrecedence(t: Token) -> Int {
 private fn isBinaryOperator(t: Token) -> Bool {
     if (t.type == TokenType.ARITHMETIC_OPERATOR) { return true }
     if (t.type == TokenType.RELATIONAL_OPERATOR) { return true }
+    if (t.type == TokenType.KEYWORD and t.value.equals("is")) { return true }
     return t.value.equals("and") or t.value.equals("or")
 }
 
@@ -54,9 +57,17 @@ impl Parser {
 
             let operatorPrecedence = getOperatorPrecedence(operatorToken)
             if (operatorPrecedence == 0 or operatorPrecedence < precedence) { break }
+            if (self.lengthDepth > 0 and operatorToken.value.equals(">>")) { break }
 
-            let op = operatorToken.value
+            let mut op = operatorToken.value
             self.advance()
+
+            // `a is b` is `a == b` and `a is not b` is `a != b`: the word is read here
+            // and the node carries the symbol, so every later stage sees one spelling.
+            if (operatorToken.type == TokenType.KEYWORD and op.equals("is")) {
+                op = "=="
+                if (self.matchVal(TokenType.KEYWORD, "not")) { op = "!=" }
+            }
 
             // Left associativity: the right operand binds only tighter operators.
             // `??` is the exception and associates to the right, so
@@ -121,14 +132,16 @@ impl Parser {
         let current = self.current()
 
         let isNegate = current.type == TokenType.ARITHMETIC_OPERATOR and current.value.equals("-")
-        let isNot = current.type == TokenType.NEGATION and current.value.equals("!")
+        let isNot = (current.type == TokenType.NEGATION and current.value.equals("!"))
+                    or (current.type == TokenType.KEYWORD and current.value.equals("not"))
         let isComplement = current.type == TokenType.ARITHMETIC_OPERATOR and current.value.equals("~")
 
         if (isNegate == false and isNot == false and isComplement == false) {
             return self.parsePrimary()
         }
 
-        let op = current.value
+        let mut op = current.value
+        if (isNot) { op = "!" }
         self.advance()
         let operand = self.parseUnary()
 
@@ -140,6 +153,24 @@ impl Parser {
         unary.s1 = op
         unary.child1 = node_to_ptr(operand)
         return unary
+    }
+}
+
+
+impl Parser {
+    // An expression inside brackets of its own -- parentheses, a call's arguments, an
+    // index, an array or map literal. A bare `if x == Foo { ... }` must read the `{`
+    // as the body, so a condition switches struct literals off; inside a bracket there
+    // is no body to mistake, and `if (a == Foo { n: 1 }) { ... }` has to work.
+    internal fn parseBracketed(self) -> ASTNode {
+        let saved = self.allowStructLit
+        let savedLength = self.lengthDepth
+        self.allowStructLit = 1
+        self.lengthDepth = 0
+        let node = self.parseExpression(0)
+        self.allowStructLit = saved
+        self.lengthDepth = savedLength
+        return node
     }
 }
 
@@ -251,7 +282,7 @@ impl Parser {
     // is two parts rather than five, which matters because `concat` is an overload
     // set with a largest arity and every empty part spends one.
     private fn interpolationChunk(self, parts: NodeList, tok: Token) {
-        if (__builtin_string_len(tok.value) == 0) { return }
+        if (tok.value.length == 0) { return }
         let chunk = parserNodeFrom(NodeKind.LITERAL_EXPR, tok)
         chunk.i1 = TokenType.STRING_LITERAL as Int
         chunk.s1 = tok.value
@@ -369,7 +400,7 @@ impl Parser {
         let elements = nodeList()
         if (self.checkVal(TokenType.SEPARATOR, "]") == false) {
             loop {
-                nodeListPush(elements, self.parseExpression(0))
+                nodeListPush(elements, self.parseBracketed())
                 if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
             }
         }
@@ -390,9 +421,9 @@ impl Parser {
         let keys = nodeList()
         let values = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
-            nodeListPush(keys, self.parseExpression(0))
+            nodeListPush(keys, self.parseBracketed())
             self.expectVal(TokenType.SEPARATOR, ":", "map literal entry")
-            nodeListPush(values, self.parseExpression(0))
+            nodeListPush(values, self.parseBracketed())
             if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
         }
         self.expectVal(TokenType.SEPARATOR, "}", "map literal")
@@ -415,7 +446,7 @@ impl Parser {
         let arguments = nodeList()
         if (self.checkVal(TokenType.SEPARATOR, ")") == false) {
             loop {
-                nodeListPush(arguments, self.parseExpression(0))
+                nodeListPush(arguments, self.parseBracketed())
                 if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
             }
         }
@@ -470,7 +501,7 @@ impl Parser {
                 // bound stops immediately before `..`. That makes one production
                 // cover both `a[i]` and SPEC 8.4's `a[start..end]` without making
                 // range a general expression operator.
-                let first = self.parseExpression(0)
+                let first = self.parseBracketed()
                 let rangeOp = self.current()
                 if (self.matchToken(TokenType.RANGE)) {
                     let slice = self.node(NodeKind.SLICE_EXPR)
@@ -517,11 +548,12 @@ impl Parser {
 impl Parser {
     // v0.1 3.4. `|a: Int, b: Int| a + b`, and `|| 42` for one with no parameters.
     //
-    // **Parameter types are written, and the body is an expression.** Both are the
-    // smallest form with the right structure rather than a limitation the design
-    // needs: an inferred parameter type has to be solved from the callee's signature
-    // at the call site, and a block body has to take its type from its `return`
-    // statements. Neither changes this syntax when it arrives.
+    // **Parameter types are written, and the body is an expression or a block.** A
+    // block's value is its last statement when that is an expression -- the one place
+    // the language has an implicit result; a function body answers only through
+    // `return`. An inferred parameter type has to be solved from the callee's
+    // signature at the call site, which is a separate feature that does not change
+    // this syntax when it arrives.
     //
     // `|` at the start of a primary is unambiguous -- a bitwise-or is binary and is
     // consumed by parseExpression's operator loop, so nothing else can begin here
@@ -545,7 +577,14 @@ impl Parser {
         }
 
         node.child1 = params.head
-        node.child2 = node_to_ptr(self.parseExpression(0))
+        // `|x: Int| { let y = x + 1; y * 2 }`: a block whose last expression is the
+        // closure's value. Nothing else opens a closure body with `{` -- a map
+        // literal there needs parentheses, as a struct literal in a condition does.
+        if (self.checkVal(TokenType.SEPARATOR, "{")) {
+            node.child2 = node_to_ptr(self.parseBlock())
+        } else {
+            node.child2 = node_to_ptr(self.parseExpression(0))
+        }
         return node
     }
 }
@@ -734,7 +773,7 @@ impl Parser {
         // The same gap as the literal above, and closed the same way: `(a + b).x`
         // and `[1, 2].length()` are expressions whose suffixes nobody was offering.
         if (self.matchVal(TokenType.SEPARATOR, "(")) {
-            let inner = self.parseExpression(0)
+            let inner = self.parseBracketed()
             self.expectVal(TokenType.SEPARATOR, ")", "parenthesized expression")
             return self.parseSuffixes(inner)
         }

@@ -186,7 +186,8 @@ def build_plib_ir(clang: str, compiler: Path, source: Path, work: Path,
 # no C library to compile the rest against, and the compiler refuses their import
 # before it would look for the section.
 FREESTANDING_STD = ("option", "platform", "iter", "mem", "string", "unicode_case", "unicode",
-                    "unicode_tables", "eq", "ord", "copy", "key", "default", "vec", "map")
+                    "unicode_tables", "eq", "ord", "copy", "key", "default", "vec", "map", "float_text",
+                    "port", "asm", "raw")
 
 
 def build_plib(clang: str, compiler: Path, source: Path, stdlib: Path, work: Path,

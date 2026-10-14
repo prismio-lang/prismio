@@ -29,6 +29,14 @@ __attribute__((naked, section(".text.boot"))) void _start(void) {
         "add  x0, x0, :lo12:kstack\n"
         "mov  x1, #16384\n"
         "add  sp, x0, x1\n"
+#ifdef ENABLE_FP
+        // CPACR_EL1.FPEN = 0b11: no trap on FP or SIMD at EL0 or EL1. Only the
+        // float kernel asks for this; every other kernel keeps the unit off.
+        "mrs  x2, cpacr_el1\n"
+        "orr  x2, x2, #(3 << 20)\n"
+        "msr  cpacr_el1, x2\n"
+        "isb\n"
+#endif
         "mov  w0, wzr\n"
         "mov  x1, xzr\n"
         "bl   kernel_start\n"

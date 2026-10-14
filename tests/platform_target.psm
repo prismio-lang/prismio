@@ -1,8 +1,31 @@
-// The three target builtins, folded for whichever `--target` this is built for.
-// run_platform_target_test builds it for several triples and reads the answer out
-// of `platformCodes`'s `ret`: os * 100 + arch * 10 + env.
+// std.platform's answers, folded for whichever `--target` this is built for.
+// run_platform_target_test builds it for several triples, lets LLVM fold it, and reads
+// the answer out of `platformCodes`'s `ret`: os * 100 + arch * 10 + env.
+import std.platform
+
+fn osCode() -> Int {
+    if (platform.isWindows) { return 1 }
+    if (platform.isLinux) { return 2 }
+    if (platform.isMacOS) { return 3 }
+    return 0
+}
+
+fn archCode() -> Int {
+    if (platform.architecture == Architecture.X86_64) { return 1 }
+    if (platform.architecture == Architecture.ARM64) { return 2 }
+    return 0
+}
+
+fn envCode() -> Int {
+    if (platform.environment == Environment.GNU) { return 1 }
+    if (platform.environment == Environment.Musl) { return 2 }
+    if (platform.environment == Environment.MSVC) { return 3 }
+    if (platform.environment == Environment.MinGW) { return 4 }
+    return 0
+}
+
 fn platformCodes() -> Int {
-    return __builtin_target_os() * 100 + __builtin_target_arch() * 10 + __builtin_target_env()
+    return osCode() * 100 + archCode() * 10 + envCode()
 }
 
 fn main() -> Int {

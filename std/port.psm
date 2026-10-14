@@ -1,0 +1,19 @@
+// x86 port I/O: the `in` and `out` instructions, which name their registers and so
+// cannot be written as assembly text. Every function here is refused on a target
+// that is not x86 -- the error names the target -- rather than assembled into
+// something the assembler rejects with a line number inside generated text.
+//
+//     import std.port
+//
+//     portOutU8(0x3F8, 65)             // a byte to the first serial port
+//     let status = portInU8(0x3FD)
+//
+// Meant for freestanding programs (`--freestanding`), where a kernel talks to the
+// hardware directly; an ordinary process is not allowed to execute either.
+
+public fn portInU8(port: U16) -> U8 { return __builtin_port_in_u8(port) }
+public fn portInU16(port: U16) -> U16 { return __builtin_port_in_u16(port) }
+public fn portInU32(port: U16) -> U32 { return __builtin_port_in_u32(port) }
+public fn portOutU8(port: U16, value: U8) { __builtin_port_out_u8(port, value) }
+public fn portOutU16(port: U16, value: U16) { __builtin_port_out_u16(port, value) }
+public fn portOutU32(port: U16, value: U32) { __builtin_port_out_u32(port, value) }

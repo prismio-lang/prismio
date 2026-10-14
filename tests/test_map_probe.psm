@@ -6,7 +6,7 @@ import std.key
 import std.copy
 import std.option
 
-struct CollidingKey { id: Int }
+public struct CollidingKey { id: Int }
 
 impl Key for CollidingKey {
     fn hash(self) -> Int { return -1 }

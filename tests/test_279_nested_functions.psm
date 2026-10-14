@@ -1,0 +1,68 @@
+// A function written inside another function's body. It is an ordinary function
+// that happens to sit where it is used: private, capturing nothing, and visible
+// from the declaration's block. The parser lifts it out under the name
+// `outer$inner` and renames the calls (parse/decl.psm, parseNestedFn), so two
+// functions may each have a `helper`, a nested function may call itself, and a
+// method may have one.
+
+import std.io
+import std.string
+
+struct Counter {
+    n: Int
+}
+
+impl Counter {
+    fn run(self) -> Int {
+        fn step(a: Int) -> Int { return a + 10 }
+        return step(self.n)
+    }
+
+    fn other(self) -> Int {
+        fn step(a: Int) -> Int { return a * 2 }
+        return step(self.n)
+    }
+}
+
+fn outer(x: Int) -> Int {
+    fn helper(a: Int) -> Int {
+        fn deep(b: Int) -> Int { return b * 2 }
+        if a > 0 { return deep(a) + helper(a - 1) }
+        return 0
+    }
+    fn other(a: Int) -> Int { return helper(a) + 1 }
+    return other(x)
+}
+
+fn second(x: Int) -> Int {
+    fn helper(a: Int) -> Int { return a - 1 }
+    return helper(x)
+}
+
+// Declared in an inner block, visible there, and used before the declaration the
+// way a function at the top level can be.
+fn scoped(flag: Bool) -> Int {
+    if flag {
+        fn pick() -> Int { return early() + 1 }
+        fn early() -> Int { return 40 }
+        return pick()
+    }
+    return 0
+}
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn main() -> Int {
+    // helper(3) = deep(3) + helper(2) = 6 + 4 + 2 = 12; other adds one.
+    if outer(3) != 13 { return fail("recursion and nesting") }
+    if second(3) != 2 { return fail("a second `helper` of its own") }
+    let c = Counter { n: 5 }
+    if c.run() != 15 { return fail("a nested function in a method") }
+    if c.other() != 10 { return fail("the same name in another method") }
+    if scoped(true) != 41 { return fail("a block's nested functions") }
+    println("ok")
+    return 0
+}

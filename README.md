@@ -82,7 +82,7 @@ fn area(s: Shape) -> Float {
     }
 }
 
-fn main() {
+fn main() -> Int {
     let shapes = [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Circle(0.5)]
 
     let mut total = 0.0
@@ -96,6 +96,7 @@ fn main() {
         counts.set(word, counts.getOr(word, 0) + 1)
     }
     println("a appears ${counts.getOr("a", 0)} times")
+    return 0
 }
 ```
 

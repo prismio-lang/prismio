@@ -1,0 +1,118 @@
+// Integer types mix where the meaning is plain: an array's length is a constant
+// expression, a range counts in any integer type, and an index may be any integer.
+// The three together are what `Array<U32, N * N>` indexed by `i * N + j` needs, with
+// `for i in 0..<N` over a `Usize`.
+
+import std.io
+import std.string
+import std.vec
+
+let N: Usize = 4
+let CELLS: Usize = N * N
+let SHIFTED: Int = 1 << 3
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn digits(values: Vec<Int>) -> String {
+    let mut out = ""
+    for v in values { out = out.concat(v.toString()) }
+    return out
+}
+
+fn main() -> Int {
+    // Constant array lengths: arithmetic on numbers and on non-`mut` globals.
+    let mut grid: Array<Int, N * N>
+    let mut flat: Array<Int, CELLS>
+    let mut wide: Array<Int, (N + 1) * 2 + 0x2>
+    let mut shifted: Array<Int, SHIFTED>
+    if grid.length != 16 or flat.length != 16 or wide.length != 12 or shifted.length != 8 {
+        return fail("array lengths from constants")
+    }
+
+    // Ranges over `Usize`, index by `Usize`, arithmetic in `Usize`.
+    for i in 0..<N {
+        for j in 0..<N {
+            grid[i * N + j] = (i * 10 + j) as Int
+        }
+    }
+    if grid[0] != 0 or grid[5] != 11 or grid[15] != 33 { return fail("Usize index arithmetic") }
+
+    let mut total: Usize = 0
+    for i in 0..<CELLS { total = total + i }
+    if total != 120 { return fail("a Usize range sums its values") }
+
+    // Direction, inclusiveness and step in every integer type.
+    let up: U32 = 5
+    let mut seen = Vec<Int>()
+    for i in 0..<up { seen.push(i as Int) }
+    if digits(seen) != "01234" { return fail("U32 0..<5") }
+
+    seen = Vec<Int>()
+    for i in up..0 { seen.push(i as Int) }
+    if digits(seen) != "543210" { return fail("U32 5..0 counts down and includes 0") }
+
+    seen = Vec<Int>()
+    for i in up..<0 { seen.push(i as Int) }
+    if digits(seen) != "54321" { return fail("U32 5..<0 excludes 0") }
+
+    let low: I64 = -2
+    let high: I64 = 3
+    seen = Vec<Int>()
+    for i in low..high { seen.push(i as Int + 2) }
+    if digits(seen) != "012345" { return fail("I64 -2..3") }
+
+    seen = Vec<Int>()
+    for i in high..low step 2 { seen.push(i as Int + 2) }
+    if digits(seen) != "531" { return fail("I64 3..-2 step 2") }
+
+    let top: U8 = 255
+    let mut visited = 0
+    for b in 250..top { visited = visited + 1 }
+    if visited != 6 { return fail("a range to the top of U8 stops there and does not wrap") }
+
+    visited = 0
+    for i in 5..5 { visited = visited + 1 }
+    for i in 5..<5 { visited = visited + 1 }
+    for i in up..<up { visited = visited + 1 }
+    if visited != 1 { return fail("a..a runs once, a..<a never (the first loop is an Int one)") }
+
+    // break, continue and labels are the loop's own.
+    let limit: Usize = 5
+    let mut evens = 0
+    for i in 0..<limit {
+        if i == 1 { continue }
+        if i == 4 { break }
+        evens = evens + 1
+    }
+    if evens != 3 { return fail("break and continue in a Usize range") }
+
+    let mut pairs = 0
+    outer@ for i in 0..<limit {
+        for j in 0..<limit {
+            if j == 2 { continue@outer }
+            pairs = pairs + 1
+        }
+    }
+    if pairs != 10 { return fail("a labelled continue in a Usize range") }
+
+    // Any integer type indexes a Vec, an array and a String.
+    let v: Vec<Int> = [10, 20, 30, 40]
+    let small: U8 = 2
+    let medium: U32 = 3
+    let signed: I64 = 1
+    if v[small] != 30 or v[medium] != 40 or v[signed] != 20 { return fail("indexing a Vec") }
+    let text = "abc"
+    if text[small] != 'c' { return fail("indexing a String") }
+
+    let mut w = v.clone()
+    w[medium] = 99
+    if w[3] != 99 { return fail("storing through a U32 index") }
+    grid[small] = 7
+    if grid[2] != 7 { return fail("storing into an array through a U8 index") }
+
+    println("ok")
+    return 0
+}

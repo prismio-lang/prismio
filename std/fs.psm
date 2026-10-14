@@ -246,11 +246,11 @@ struct MetadataOut {
 // time since the Unix epoch -- `m.modified.asSeconds`, or compared with
 // `unixTime()`. A path that is neither a directory nor a regular file (a device,
 // a socket) has both flags false.
-struct Metadata {
-    size: I64,
-    modified: Duration,
-    isDirectory: Bool,
-    isFile: Bool
+public struct Metadata {
+    public size: I64,
+    public modified: Duration,
+    public isDirectory: Bool,
+    public isFile: Bool
 }
 
 // `none` when nothing is at `path`, or it cannot be examined.
@@ -281,7 +281,7 @@ private extern fn fs_lines_has_line(handle: Int) -> Int
 private extern fn fs_lines_take_line(handle: Int) -> String produce(free)
 private extern fn fs_lines_close(handle: Int)
 
-struct FileLines {
+public struct FileLines {
     handle: Int
 }
 

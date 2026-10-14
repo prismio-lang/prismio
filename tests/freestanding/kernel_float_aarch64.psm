@@ -1,0 +1,57 @@
+// A kernel that prints and reads Floats with no C library under it: `toString`,
+// `toString(places)` and `parseFloat` are Prismio (std/float_text.psm), so the
+// only things this needs are the allocator below and an FPU the boot stub has
+// switched on (-DENABLE_FP). Before that module existed a Float could not be
+// formatted here at all -- the formatter was `snprintf`.
+
+import std.mem
+import std.raw
+import std.string
+
+// Within the 128 MiB `virt` has by default, above the image and its stack.
+let HEAP_BASE: Usize = 0x44000000
+
+// Zero until the first allocation: a global's initialiser cannot run code.
+let mut heapTop: Usize
+
+// Each block carries its size in the eight bytes before it, which is what lets
+// `prismio_realloc` copy the old contents. Sixteen bytes keep every block aligned
+// for any type.
+export fn prismio_alloc(size: Usize) -> Ptr {
+    if (heapTop == 0) { heapTop = HEAP_BASE }
+    let block = heapTop + 16
+    (block - 8).storeU64(size as U64)
+    heapTop = block + ((size + 15) & ~(15 as Usize))
+    return pointerAt(block)
+}
+
+export fn prismio_realloc(p: Ptr, size: Usize) -> Ptr {
+    let fresh = prismio_alloc(size)
+    let old = addressOf(p)
+    if (old != 0) {
+        let oldSize = (old - 8).loadU64() as Usize
+        let mut count = oldSize
+        if (size < count) { count = size }
+        copy(addressOf(fresh), old, count)
+    }
+    return fresh
+}
+
+export fn prismio_free(p: Ptr) {}
+
+fn check(ok: Bool) -> Int {
+    if (ok) { return 0 }
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    bad = bad + check((2.5).toString() == "2.5" and (0.1 + 0.2).toString() == "0.3")
+    bad = bad + check((1.0 / 3.0).toString() == "0.333333333333333")
+    bad = bad + check((1234.5678).toString(2) == "1234.57" and (0.5).toString(0) == "0")
+    bad = bad + check("0.1".parseFloat().unwrapOr(0.0).toString() == "0.1")
+    bad = bad + check("1e22".parseFloat().unwrapOr(0.0).toString() == "1e+22")
+    bad = bad + check("0x1.8p1".parseFloat().unwrapOr(0.0).toString() == "3")
+    bad = bad + check("2.5kg".parseFloat() == none)
+    return bad
+}

@@ -98,7 +98,7 @@ private fn umsCommandProfile(startIndex: Int) -> String {
 // path in the manifest was written relative to the manifest. A bare name carries
 // no separator and is left for PATH to answer.
 private fn umsShellProgram(root: String, program: String) -> String {
-    for i in 0..<__builtin_string_len(program) {
+    for i in 0..<program.length {
         let current = program.charAt(i)
         if (current == '/' or current == '\\') { return umsNativePath(root, program) }
     }
@@ -224,7 +224,7 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
 // "not found".
 public fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
     let workspace = umsLoadProject(".", umsCommandProfile(forwardFrom))
-    if (__builtin_string_len(workspace.project.manifestPath) == 0) { return -1 }
+    if (workspace.project.manifestPath.length == 0) { return -1 }
 
     let found = workspace.findCommand(name)
     if (found < 0) { return -1 }
@@ -259,7 +259,7 @@ public fn listUmsProjectCommands() {
         let declared = workspace.command(index)
         print("  prismio ")
         print(declared.name)
-        if (__builtin_string_len(declared.description) > 0) {
+        if (declared.description.length > 0) {
             print("  --  ")
             print(declared.description)
         }

@@ -1,0 +1,10 @@
+// expect-error: `r` may be used before it is assigned
+// A local may be declared without a value; reading it before the compiler can prove an
+// assignment is the error. `let r: Int = default` asks for the type's default instead.
+import std.io
+
+fn main() -> Int {
+    let r: Int
+    println(r)
+    return 0
+}

@@ -1572,6 +1572,7 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
     let n = ptr_to_node(nodePtr)
 
     let mut found = 0
+    if (irIsUnjudgedCall(n)) { return 0 - 1 }
     if (n.kind == NodeKind.CALL_EXPR) {
         let mut fname = ""
         if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
@@ -1623,7 +1624,7 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
             } else {
                 found = 1
             }
-        } else if (irCallIsGuardSafe(fname)) {
+        } else if (irCallIsGuardSafe(n, fname)) {
             // A call the compiler lowers itself, to an operation that touches no
             // list. It cannot reallocate or free one, so it has nothing to say
             // about this loop's guard. Without this a `__builtin_max` in the body
@@ -1660,6 +1661,16 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
     return found + a + b + c
 }
 
+// The calls no guard analysis can judge, so each declines its loop outright: a
+// trait-object call runs whichever impl the vtable holds, and a task runs on
+// another thread. A `dyn` method pushing to the list a loop reads through its
+// preheader's element base was a use-after-free read while DYN_CALL fell through
+// these walks as an ordinary expression.
+internal fn irIsUnjudgedCall(n: ASTNode) -> Bool {
+    return n.kind == NodeKind.DYN_CALL or n.kind == NodeKind.SPAWN_EXPR
+        or n.kind == NodeKind.JOIN_EXPR
+}
+
 private fn irFlatGuardCountChain(head: Ptr, bodyPtr: Ptr) -> Int {
     let mut total = 0
     let mut p = head
@@ -1673,16 +1684,24 @@ private fn irFlatGuardCountChain(head: Ptr, bodyPtr: Ptr) -> Int {
     return total
 }
 
-// Calls this compiler lowers to an operation that provably touches no list.
+// Whether a call provably moves no list's element block.
 //
-// Deliberately a list rather than a property read off the callee: these are the
-// names sema owns the signature of, so there is no declaration to consult and no
-// user function that can shadow one.
-private fn irCallIsGuardSafe(fname: String) -> Bool {
-    // One table, filled in src/ir/module.psm: the builtins this backend lowers
-    // itself, plus every Prismio function irBodyTouchesNothing proved calls
-    // nothing and indexes nothing.
+// One table, filled in src/ir/module.psm: the builtins this backend lowers
+// itself, plus every Prismio function irBodyMovesNoBlock proved moves no block.
+// The function sema resolved the call to answers for itself; a call with no
+// resolved symbol, or one naming something with no body here, goes by the name.
+internal fn irCallIsGuardSafe(call: ASTNode, fname: String) -> Bool {
+    if (call.s2.equals("") == false) {
+        let verdict = ir_guard_safe_verdict(guardSafeSymbolKey(call.s2))
+        if (verdict >= 0) { return verdict == 1 }
+    }
     return ir_is_guard_safe_fn(fname) == 1
+}
+
+// A resolved symbol's key in the guard-safe table, which source names share: no
+// name a program can write starts with `$`.
+internal fn guardSafeSymbolKey(symbol: String) -> String {
+    return "$sym$".concat(symbol)
 }
 
 private fn irReceiverBaseName(recv: ASTNode) -> String {
@@ -2430,6 +2449,7 @@ private fn irPushGuardOk(nodePtr: Ptr, bodyPtr: Ptr) -> Bool {
             or n.kind == NodeKind.FOR_STATEMENT) {
         return false
     }
+    if (irIsUnjudgedCall(n)) { return false }
     if (n.kind == NodeKind.CALL_EXPR) {
         let mut fname = ""
         if (nodeExists(n.child1)) { fname = ptr_to_node(n.child1).s1 }
@@ -2441,7 +2461,7 @@ private fn irPushGuardOk(nodePtr: Ptr, bodyPtr: Ptr) -> Bool {
             if (irBodyBindsName(bodyPtr, recv.s1)) { return false }
         } else if (flatGetStride(n, fname) > 0 or flatSetScalarStride(n, fname) > 0) {
             // Neither stamps, grows nor reallocates.
-        } else if (irCallIsGuardSafe(fname)) {
+        } else if (irCallIsGuardSafe(n, fname)) {
         } else {
             return false
         }
@@ -3244,7 +3264,7 @@ private fn generateLiteral(expr: ASTNode) -> String {
         //
         // `__builtin_string_len` here runs in the *compiler*, on the literal's own
         // text, so it is a compile-time count and not a call in the program.
-        return ir_get_temp_name(ir_const_str(expr.s2, __builtin_string_len(expr.s1)))
+        return ir_get_temp_name(ir_const_str(expr.s2, expr.s1.length))
     }
 
     // This kind, but no shape within it. `0` is what falling out of
@@ -4084,7 +4104,7 @@ private fn coalesceSpillIdOf(call: ASTNode, side: String) -> String {
 
 private fn coalesceSpillKeyOf(spill: String) -> String {
     let at = spill.indexOf("|")
-    return spill.substring(at + 1, __builtin_string_len(spill) - at - 1)
+    return spill.substring(at + 1, spill.length - at - 1)
 }
 
 private fn coalesceSpillSlotOf(spill: String) -> String {
@@ -4117,8 +4137,8 @@ private fn coalesceSpillFor(call: ASTNode, side: String) -> String {
     let marker = ";".concat(id, "=")
     let at = irCoalesceSpills.indexOf(marker)
     if (at >= 0) {
-        let from = at + __builtin_string_len(marker)
-        let rest = irCoalesceSpills.substring(from, __builtin_string_len(irCoalesceSpills) - from)
+        let from = at + marker.length
+        let rest = irCoalesceSpills.substring(from, irCoalesceSpills.length - from)
         return rest.substring(0, rest.indexOf(";"))
     }
 
@@ -4925,6 +4945,7 @@ private fn generateCall(expr: ASTNode) -> String {
             or floatBitsBuiltin(funcName) > 0) {
         return generateBitBuiltin(expr, funcName)
     }
+    if (rangeBuiltin(funcName) > 0) { return generateRangeBuiltin(expr, funcName) }
 
     if (irCallIsCoalesce(expr) and nodeExists(expr.child2)) { return generateCoalesce(expr) }
 

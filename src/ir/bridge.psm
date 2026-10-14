@@ -29,6 +29,11 @@ public extern fn ir_declare_function_end()
 public extern fn ir_function_begin(name: String, retType: String)
 public extern fn ir_function_param(paramType: String, paramName: String)
 public extern fn ir_function_param_unique(paramType: String, paramName: String)
+// How C widens a `bool`, a `char` or an 8- or 16-bit integer at a call: "zero",
+// "sign" or "bool", for the parameter declared last or for the return. The backend
+// adds `zeroext`/`signext` only where the target's C ABI has the caller extend.
+public extern fn ir_function_param_extend(kind: String borrow)
+public extern fn ir_function_return_extend(kind: String borrow)
 public extern fn ir_function_body_start()
 public extern fn ir_function_always_inline()
 public extern fn ir_function_cold()
@@ -360,6 +365,7 @@ public extern fn ir_list_flat_zero_append(listValue: String, countValue: String,
 // call site inside a guarded loop.
 public extern fn ir_mark_guard_safe_fn(name: String borrow, safe: Int)
 public extern fn ir_is_guard_safe_fn(name: String borrow) -> Int
+public extern fn ir_guard_safe_verdict(name: String borrow) -> Int
 // Loop range proofs (ir/ranges.psm): a fresh proof number per analysed loop copy,
 // which of this loop's access nodes it covers, and the receiver's element base the
 // preheader loaded for each. The node is our own AST; the base is interned.

@@ -1,0 +1,9 @@
+// expect-error: `__builtin_string_len` is internal to the standard library
+// Every `__builtin_*` is how std/ says what it implements; a program writes the
+// wrapper (`s.length`).
+import std.io
+
+fn main() -> Int {
+    println(__builtin_string_len("abc"))
+    return 0
+}

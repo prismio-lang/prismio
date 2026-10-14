@@ -1,0 +1,467 @@
+// Definite assignment: a local may be declared without a value, and every read of it
+// has to follow an assignment on every path that reaches the read.
+//
+//     let label: String
+//     if score > 90 { label = "A" } else { label = "B" }
+//     println(label)                         // fine: both branches assign
+//
+// A read the analysis cannot prove assigned is an error, which is the whole rule; there
+// is no default value to fall back on. An immutable `let` declared this way may be
+// assigned once: sema accepts the assignment (a declaration without a value is marked
+// assignable) and this pass is what refuses a second one.
+//
+// It runs over each function body after sema, because it needs to know whether a
+// `match` covers everything. The state at a program point is the set of declared but
+// unassigned locals, which is what is merged where paths join: a branch that returns,
+// breaks, continues or panics contributes nothing, and what a loop body assigns does not
+// count after a loop that may not run it. A loop is analysed once, with the state it was
+// entered with, so a value assigned late in one iteration is not known at the top of the
+// next -- the same answer a read there would get from Rust.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import common.diagnostics
+import std.string
+import std.vec
+
+struct FlowState {
+    // The declarations that have no value yet, and the loop depth each was declared at.
+    open: Vec<Ptr>,
+    depths: Vec<Int>,
+    // Immutable declarations that have been assigned their one value.
+    sealed: Vec<Ptr>,
+    // True where control cannot reach: after a return, a jump, or a call that never returns.
+    dead: Bool
+}
+
+// What a block declares, and the outer declarations it hides until it ends.
+struct FlowScope {
+    declared: Vec<Ptr>,
+    hidden: Vec<Ptr>,
+    hiddenDepths: Vec<Int>
+}
+
+private fn flowScope() -> FlowScope {
+    return FlowScope { declared: [], hidden: [], hiddenDepths: [] }
+}
+
+struct FlowContext {
+    depth: Int,
+    // The innermost loop's label ("" when it has none), and where control stood at each
+    // `break` that leaves it, merged: a `loop` ends only through one.
+    label: String,
+    breaks: FlowState,
+    broke: Bool,
+    // Labels of enclosing loops a `break@label` left, which makes that loop's end as
+    // uncertain as its start.
+    outerBreaks: String,
+    // Assignments to an immutable declaration made inside a loop it was declared
+    // outside of, with the declaration and the loop depth it sits at. Allowed only if no
+    // path from the assignment comes back round to the top of that loop.
+    assignedTargets: Vec<Ptr>,
+    assignedDecls: Vec<Ptr>,
+    assignedDepths: Vec<Int>
+}
+
+private fn flowEmpty() -> FlowState {
+    return FlowState { open: [], depths: [], sealed: [], dead: false }
+}
+
+private fn flowCopy(state: FlowState) -> FlowState {
+    let copy = flowEmpty()
+    for i in 0..<state.open.length {
+        copy.open.push(state.open[i])
+        copy.depths.push(state.depths[i])
+    }
+    for i in 0..<state.sealed.length { copy.sealed.push(state.sealed[i]) }
+    copy.dead = state.dead
+    return copy
+}
+
+private fn flowSame(a: ASTNode, b: ASTNode) -> Bool {
+    return a.file == b.file and a.line == b.line and a.col == b.col and a.s1.equals(b.s1)
+}
+
+// The latest declaration of `name` in `declarations`, or -1: an inner declaration of a
+// name hides an outer one, and is the later of the two.
+private fn flowFind(declarations: Vec<Ptr>, name: String) -> Int {
+    let mut i = declarations.length
+    while (i > 0) {
+        i = i - 1
+        if (ptr_to_node(declarations[i]).s1.equals(name)) { return i }
+    }
+    return 0 - 1
+}
+
+// The waiting declaration at `at` is gone: assigned, or out of scope.
+private fn flowDropOpen(state: FlowState, at: Int) {
+    let mut open = Vec<Ptr>()
+    let mut depths = Vec<Int>()
+    for i in 0..<state.open.length {
+        if (i != at) {
+            open.push(state.open[i])
+            depths.push(state.depths[i])
+        }
+    }
+    state.open = open
+    state.depths = depths
+}
+
+private fn flowForget(state: FlowState, decl: ASTNode) {
+    let mut open = Vec<Ptr>()
+    let mut depths = Vec<Int>()
+    for i in 0..<state.open.length {
+        if (flowSame(ptr_to_node(state.open[i]), decl) == false) {
+            open.push(state.open[i])
+            depths.push(state.depths[i])
+        }
+    }
+    state.open = open
+    state.depths = depths
+    let mut sealed = Vec<Ptr>()
+    for j in 0..<state.sealed.length {
+        if (flowSame(ptr_to_node(state.sealed[j]), decl) == false) { sealed.push(state.sealed[j]) }
+    }
+    state.sealed = sealed
+}
+
+private fn flowHasOpen(state: FlowState, decl: ASTNode) -> Bool {
+    for i in 0..<state.open.length {
+        if (flowSame(ptr_to_node(state.open[i]), decl)) { return true }
+    }
+    return false
+}
+
+// Where two paths join: unassigned on either is unassigned. A path that cannot reach
+// the join has nothing to say.
+private fn flowJoin(a: FlowState, b: FlowState) -> FlowState {
+    if (a.dead) { return flowCopy(b) }
+    if (b.dead) { return flowCopy(a) }
+    let joined = flowCopy(a)
+    for i in 0..<b.open.length {
+        let decl = ptr_to_node(b.open[i])
+        if (flowHasOpen(joined, decl) == false) {
+            joined.open.push(b.open[i])
+            joined.depths.push(b.depths[i])
+        }
+    }
+    for i in 0..<b.sealed.length {
+        let decl = ptr_to_node(b.sealed[i])
+        let mut known = false
+        for j in 0..<joined.sealed.length {
+            if (flowSame(ptr_to_node(joined.sealed[j]), decl)) { known = true }
+        }
+        if (known == false) { joined.sealed.push(b.sealed[i]) }
+    }
+    return joined
+}
+
+private fn flowAssign(state: FlowState, from: FlowState) {
+    state.open = Vec<Ptr>()
+    state.depths = Vec<Int>()
+    state.sealed = Vec<Ptr>()
+    for i in 0..<from.open.length {
+        state.open.push(from.open[i])
+        state.depths.push(from.depths[i])
+    }
+    for i in 0..<from.sealed.length { state.sealed.push(from.sealed[i]) }
+    state.dead = from.dead
+}
+
+private fn flowRead(state: FlowState, node: ASTNode) {
+    let at = flowFind(state.open, node.s1)
+    if (at < 0) { return }
+    semaErrorAt(node, diagQuote(node.s1).concat(" may be used before it is assigned"))
+    diag_note("assign it on every path before this read, or write `let ".concat(node.s1, ": T = default`"))
+    // Once, so one missing assignment is not reported at every later read.
+    flowForget(state, ptr_to_node(state.open[at]))
+}
+
+// Everything an expression reads. A function's own name in a call is not a read.
+private fn flowReads(state: FlowState, node: ASTNode) {
+    if (node.kind == NodeKind.TYPE_ANNOTATION) { return }
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) {
+        flowRead(state, node)
+        return
+    }
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)
+            and ptr_to_node(node.child1).kind == NodeKind.IDENTIFIER_EXPR) {
+        flowReadChain(state, node.child2)
+        return
+    }
+    flowReadChain(state, node.child1)
+    flowReadChain(state, node.child2)
+    flowReadChain(state, node.child3)
+}
+
+private fn flowReadChain(state: FlowState, head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        flowReads(state, node)
+        p = node.next
+    }
+}
+
+// A call that never returns ends the path.
+private fn flowCallNeverReturns(expr: ASTNode) -> Bool {
+    if (expr.kind != NodeKind.CALL_EXPR or nodeIsNull(expr.child1)) { return false }
+    let callee = ptr_to_node(expr.child1)
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let name = callee.s1
+    return name.equals("panic") or name.equals("exit") or name.equals("unreachable")
+        or name.equals("__builtin_panic") or name.equals("__builtin_exit")
+        or name.equals("__builtin_unreachable")
+}
+
+private fn flowIsArrayDecl(decl: ASTNode) -> Bool {
+    return nodeExists(decl.child1) and ptr_to_node(decl.child1).i1 == 1
+}
+
+private fn flowDeclare(context: FlowContext, state: FlowState, decl: ASTNode, scope: FlowScope) {
+    // A declaration of a name an outer one still waits on hides it until this block ends.
+    flowHide(state, decl.s1, scope)
+    scope.declared.push(node_to_ptr(decl))
+    let waits = nodeIsNull(decl.child2) and nodeExists(decl.child1) and flowIsArrayDecl(decl) == false
+    if (waits) {
+        state.open.push(node_to_ptr(decl))
+        state.depths.push(context.depth)
+    }
+}
+
+private fn flowAssignment(context: FlowContext, state: FlowState, stmt: ASTNode) {
+    let target = ptr_to_node(stmt.child1)
+    flowReads(state, ptr_to_node(stmt.child2))
+    if (target.kind != NodeKind.IDENTIFIER_EXPR) {
+        flowReads(state, target)
+        return
+    }
+    let at = flowFind(state.open, target.s1)
+    if (at >= 0) {
+        let decl = ptr_to_node(state.open[at])
+        let declaredDepth = state.depths[at]
+        if (decl.i1 == 0 and declaredDepth != context.depth) {
+            context.assignedTargets.push(node_to_ptr(target))
+            context.assignedDecls.push(state.open[at])
+            context.assignedDepths.push(declaredDepth)
+        }
+        if (decl.i1 == 0) { state.sealed.push(state.open[at]) }
+        flowDropOpen(state, at)
+        return
+    }
+    let sealedAt = flowFind(state.sealed, target.s1)
+    if (sealedAt >= 0) {
+        semaErrorAt(target, "cannot assign to ".concat(diagQuote(target.s1),
+                                                       ", which is not declared `mut` and may already have its value"))
+        diag_note("an immutable `let` without a value takes one assignment; declare it `let mut` to assign again")
+    }
+}
+
+// Control is about to return to the top of the loop whose body is at `context.depth`:
+// an immutable declaration from outside it that was assigned inside it would be
+// assigned again.
+private fn flowBackEdge(context: FlowContext, state: FlowState) {
+    if (state.dead) { return }
+    for i in 0..<context.assignedTargets.length {
+        let decl = ptr_to_node(context.assignedDecls[i])
+        let sealed = flowFind(state.sealed, decl.s1)
+        if (sealed >= 0 and flowSame(ptr_to_node(state.sealed[sealed]), decl)
+                and context.assignedDepths[i] < context.depth) {
+            let target = ptr_to_node(context.assignedTargets[i])
+            semaErrorAt(target, "cannot assign to ".concat(diagQuote(target.s1),
+                                                           ", which is not declared `mut` and could be assigned again by this loop"))
+            diag_note("declare it `let mut`, or leave the loop right after assigning it")
+            // Once.
+            context.assignedDepths[i] = 100000
+        }
+    }
+}
+
+// A loop has ended: only an assignment from a loop that is still open, to a declaration
+// outside it, can still be repeated.
+private fn flowForgetAssignments(context: FlowContext) {
+    let mut targets = Vec<Ptr>()
+    let mut decls = Vec<Ptr>()
+    let mut depths = Vec<Int>()
+    for i in 0..<context.assignedTargets.length {
+        if (context.assignedDepths[i] < context.depth) {
+            targets.push(context.assignedTargets[i])
+            decls.push(context.assignedDecls[i])
+            depths.push(context.assignedDepths[i])
+        }
+    }
+    context.assignedTargets = targets
+    context.assignedDecls = decls
+    context.assignedDepths = depths
+}
+
+private fn flowBlock(context: FlowContext, state: FlowState, block: ASTNode) {
+    let scope = flowScope()
+    let mut p = block.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (state.dead == false) { flowStatement(context, state, stmt, scope) }
+        p = stmt.next
+    }
+    flowEndScope(state, scope)
+}
+
+// What the block declared is out of sight, and what it hid is back.
+private fn flowEndScope(state: FlowState, scope: FlowScope) {
+    for i in 0..<scope.declared.length { flowForget(state, ptr_to_node(scope.declared[i])) }
+    for i in 0..<scope.hidden.length {
+        state.open.push(scope.hidden[i])
+        state.depths.push(scope.hiddenDepths[i])
+    }
+}
+
+private fn flowLoopBody(context: FlowContext, state: FlowState, body: ASTNode, label: String,
+                        infinite: Bool) {
+    let savedLabel = context.label.clone()
+    let savedBreaks = flowCopy(context.breaks)
+    let savedBroke = context.broke
+    context.label = label.clone()
+    context.broke = false
+    context.depth = context.depth + 1
+    let entered = flowCopy(state)
+    let inside = flowCopy(state)
+    flowBlock(context, inside, body)
+    flowBackEdge(context, inside)
+    context.depth = context.depth - 1
+    flowForgetAssignments(context)
+
+    // A `loop` ends where a `break` leaves it. Any other loop may not run its body, so
+    // it ends as it began.
+    if (infinite) {
+        if (context.broke) {
+            flowAssign(state, context.breaks)
+        } else {
+            state.dead = true
+        }
+        if (label.equals("") == false and context.outerBreaks.contains(";".concat(label, ";"))) {
+            flowAssign(state, entered)
+        }
+    }
+    context.label = savedLabel
+    flowAssign(context.breaks, savedBreaks)
+    context.broke = savedBroke
+}
+
+private fn flowIfStatement(context: FlowContext, state: FlowState, stmt: ASTNode) {
+    flowReads(state, ptr_to_node(stmt.child1))
+    let thenState = flowCopy(state)
+    flowBlock(context, thenState, ptr_to_node(stmt.child2))
+    let elseState = flowCopy(state)
+    if (nodeExists(stmt.child3)) {
+        let branch = ptr_to_node(stmt.child3)
+        flowStatement(context, elseState, branch, flowScope())
+    }
+    flowAssign(state, flowJoin(thenState, elseState))
+}
+
+private fn flowMatchStatement(context: FlowContext, state: FlowState, stmt: ASTNode) {
+    flowReads(state, ptr_to_node(stmt.child1))
+    let mut result = flowCopy(state)
+    result.dead = true
+    let mut covers = stmt.i3 == 1
+    let mut armPtr = stmt.child2
+    while (nodeExists(armPtr)) {
+        let arm = ptr_to_node(armPtr)
+        if (arm.s1.equals("_")) { covers = true }
+        let armState = flowCopy(state)
+        flowBlock(context, armState, ptr_to_node(arm.child2))
+        result = flowJoin(result, armState)
+        armPtr = arm.next
+    }
+    if (covers == false) { result = flowJoin(result, flowCopy(state)) }
+    flowAssign(state, result)
+}
+
+// Takes the declaration of `name` that still waits for a value out of sight until the
+// caller puts it back.
+private fn flowHide(state: FlowState, name: String, scope: FlowScope) {
+    if (name.equals("")) { return }
+    let outer = flowFind(state.open, name)
+    if (outer < 0) { return }
+    scope.hidden.push(state.open[outer])
+    scope.hiddenDepths.push(state.depths[outer])
+    flowDropOpen(state, outer)
+}
+
+private fn flowForStatement(context: FlowContext, state: FlowState, stmt: ASTNode) {
+    flowReadChain(state, stmt.child1)
+    flowReadChain(state, stmt.child2)
+    // The loop variables are the loop's own and hide a name that still waits for a value.
+    let scope = flowScope()
+    flowHide(state, stmt.s1, scope)
+    flowHide(state, stmt.s2, scope)
+    let body = ptr_to_node(stmt.child3)
+    flowLoopBody(context, state, body, body.s1, false)
+    flowEndScope(state, scope)
+}
+
+private fn flowJump(context: FlowContext, state: FlowState, stmt: ASTNode) {
+    if (stmt.kind == NodeKind.BREAK_STATEMENT) {
+        let label = stmt.s1
+        if (label.equals("") or label.equals(context.label)) {
+            if (context.broke) {
+                flowAssign(context.breaks, flowJoin(context.breaks, state))
+            } else {
+                flowAssign(context.breaks, state)
+                context.broke = true
+            }
+        } else {
+            context.outerBreaks = context.outerBreaks.concat(";", label, ";")
+        }
+    }
+    state.dead = true
+}
+
+private fn flowStatement(context: FlowContext, state: FlowState, stmt: ASTNode, scope: FlowScope) {
+    match (stmt.kind) {
+        NodeKind.VARIABLE_DECL => {
+            if (nodeExists(stmt.child2)) { flowReads(state, ptr_to_node(stmt.child2)) }
+            flowDeclare(context, state, stmt, scope)
+        }
+        NodeKind.ASSIGNMENT_STATEMENT => { flowAssignment(context, state, stmt) }
+        NodeKind.EXPRESSION_STATEMENT => {
+            let expr = ptr_to_node(stmt.child1)
+            flowReads(state, expr)
+            if (flowCallNeverReturns(expr)) { state.dead = true }
+        }
+        NodeKind.RETURN_STATEMENT => {
+            if (nodeExists(stmt.child1)) { flowReads(state, ptr_to_node(stmt.child1)) }
+            state.dead = true
+        }
+        NodeKind.BREAK_STATEMENT => { flowJump(context, state, stmt) }
+        NodeKind.CONTINUE_STATEMENT => {
+            flowBackEdge(context, state)
+            state.dead = true
+        }
+        NodeKind.IF_STATEMENT => { flowIfStatement(context, state, stmt) }
+        NodeKind.MATCH_STATEMENT => { flowMatchStatement(context, state, stmt) }
+        NodeKind.FOR_STATEMENT => { flowForStatement(context, state, stmt) }
+        NodeKind.WHILE_STATEMENT => {
+            flowReads(state, ptr_to_node(stmt.child1))
+            let condition = ptr_to_node(stmt.child1)
+            let body = ptr_to_node(stmt.child2)
+            let forever = condition.kind == NodeKind.LITERAL_EXPR and condition.s1.equals("true")
+            flowLoopBody(context, state, body, body.s1, forever)
+        }
+        NodeKind.LOOP_STATEMENT => {
+            let body = ptr_to_node(stmt.child1)
+            flowLoopBody(context, state, body, body.s1, true)
+        }
+        NodeKind.REGION_STATEMENT => { flowBlock(context, state, ptr_to_node(stmt.child1)) }
+        NodeKind.BLOCK => { flowBlock(context, state, stmt) }
+        _ => { flowReads(state, stmt) }
+    }
+}
+
+// Checks one function body, once sema has typed it.
+internal fn semaCheckDefiniteAssignment(body: ASTNode) {
+    let context = FlowContext { depth: 0, label: "", breaks: flowEmpty(), broke: false, outerBreaks: "",
+                                  assignedTargets: [], assignedDecls: [], assignedDepths: [] }
+    flowBlock(context, flowEmpty(), body)
+}

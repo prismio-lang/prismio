@@ -112,6 +112,35 @@ fn sieveStep(n: Int, start: Int, step: Int, cap: Int) -> Int {
     return total * 1000 + count
 }
 
+// A sieve's outer bound, `x * x <= bound`. The square is `Int` arithmetic, so past
+// 46340 it wraps negative with the condition still true and the loop runs on: a
+// bound above 46339^2, or a step that jumps the edge from below it. A start below
+// zero reads before the list.
+fn squareBound(n: Int, start: Int, step: Int, bound: Int, cap: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut x = start
+    let mut c = 0
+    let mut acc = 0
+    while (x * x <= bound and c < cap) {  // range: 1/1
+        acc = acc + xs[x] * (c + 1)
+        x = x + step
+        c = c + 1
+    }
+    return acc + x
+}
+
+// The strict, mirrored form, over a list exactly long enough for isqrt(limit - 1).
+fn squareBelow(n: Int, limit: Int) -> Int {
+    let xs = ascending(n, 1)
+    let mut x = 0
+    let mut acc = 0
+    while (limit > x * x) {  // range: 1/1
+        acc = acc + xs[x] * x
+        x = x + 1
+    }
+    return acc
+}
+
 // `at + 3 < n` bounds `at` by n - 4 only while the sum does not wrap. Started
 // near the top of `Int` it does, the condition is true, and every read is past
 // the end.
@@ -402,6 +431,16 @@ fn main() -> Int {
     bad = bad + check("FAIL: sieve huge step", sieveStep(40, 4, 2147483600, 5), 40001)
     bad = bad + check("FAIL: sieve wrapping step", sieveStep(40, 4, 2147483647, 5), 38005)
     bad = bad + check("FAIL: sieve start past n", sieveStep(40, 2147483600, 30, 5), 41000)
+
+    bad = bad + check("FAIL: square in range", squareBound(50, 0, 1, 40, 1000), 147)
+    bad = bad + check("FAIL: square negative start", squareBound(50, 0 - 5, 1, 30, 1000), 202)
+    bad = bad + check("FAIL: square past the edge", squareBound(50000, 46000, 1, 2147483000, 2000), 225434488)
+    bad = bad + check("FAIL: square step", squareBound(50, 0, 3, 40, 1000), 39)
+    bad = bad + check("FAIL: square step jumps the edge", squareBound(50000, 46330, 3, 2147390000, 100), 235018080)
+    bad = bad + check("FAIL: square wrapping step", squareBound(50, 0, 2147483647, 40, 5), 2147483644)
+    bad = bad + check("FAIL: square below", squareBelow(8, 50), 168)
+    bad = bad + check("FAIL: square below short", squareBelow(5, 50), 40)
+    bad = bad + check("FAIL: square below negative", squareBelow(8, 0 - 7), 0)
 
     bad = bad + check("FAIL: shifted in range", shifted(8, 0), 1505)
     bad = bad + check("FAIL: shifted wrapping start", shifted(8, 2147483646), 7)

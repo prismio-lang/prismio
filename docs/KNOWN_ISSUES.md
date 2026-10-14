@@ -520,6 +520,20 @@ reads 11,108,928, because an inlining decision near its threshold flips.
 
 ## Language surface
 
+**An enum takes no visibility marker, and a field-less enum is nameable from anywhere.**
+Functions, global `let`s, structs and struct fields have `public`/`internal`/`private`; a marker
+on an enum is refused (P3001). The planned work is in `docs/VISIBILITY_AND_FLUENCY_PLAN.md`.
+
+**`Vec.length` is an `Int`, so `let n: Usize = v.length` needs `as`.** Ranges and indexes now
+take any integer type, but a length does not give one: the length is `Int` by the 32-bit `Int`
+decision. Whether `length` should answer `Usize`, or only convert where a `Usize` is expected, is
+open (same plan).
+
+**A `for` over a non-`Int` integer range of more than 2,147,483,647 values stops with an error
+when entered.** The loop that runs is the `Int` loop over a count (`sema/ranges.psm`); the check
+is left out for types of 16 bits or fewer and for constant bounds. A local `let` is not a
+constant, so `Array<Int, n * 2>` over a local is an error; only non-`mut` globals are.
+
 **`mut` does not reach through a struct.** A Vec's, array's or Slice's contents change only
 through a `let mut` binding or an `inout` parameter (`semaCheckMutablePlace`), but a struct field
 is assignable through any binding, so `bag.items.push(x)` needs no `mut` on `bag` (a program that
@@ -721,6 +735,29 @@ undelivered message back and counted endpoints are `CHANNELS_PLAN.md` Phases 0 a
 
 ## Toolchain, packaging and tests
 
+**The pinned seed cannot parse `src/`.** `src/` uses visibility markers on structs and fields
+(`public struct`, `public x: T`), which the 0.1.0 seed and the old host cannot read, so a clean
+checkout cannot bootstrap and `prismio gate` / CI, which build from the pinned seed, fail until a
+seed that parses it is published. A seed was cut from this tree (2026-10-14) and a compiler built from only that file reproduces
+its own IR; it predates the definite-assignment pass and later changes, so it has to be cut again
+before publishing. The pin is in the working tree and **uncommitted**. It cannot be uploaded under the current naming without replacing the
+`v0.1.0` asset every older commit pins by SHA. The proposed fix is an optional `asset` name in
+`bootstrap/seed.json` read by `tools/fetch_seed.py` (see the plan).
+
+**`prismio verify` packages `dist/` without a freestanding failure core**, so a freestanding
+program that references `prismio_panic` or `prismio_step_check` cannot link in the
+`freestanding_bench` test (constant folding hides it for constant ranges). Package with
+`--freestanding-target aarch64-unknown-none-elf` in `verify`, or keep benchmark code free of
+failure paths.
+
+**The IntelliJ plugin's lexers do not know `is`, `not`, nested `fn`, closure blocks or the
+visibility markers on fields.** It is a sibling repository with hand-written lexers; its corpus
+test is what catches drift. The plan is in `docs/VISIBILITY_AND_FLUENCY_PLAN.md`.
+
+**Windows still links `LLVM-C.dll` and runs the whole-module library merge.** Static LLVM there
+is feasible (the archive has native `LLVM*.lib` and `llvm-config.exe`) but built `/MT`, so the
+Windows compiler would change C runtime too; not started (`docs/LLVM_BRIDGE_PLAN.md`, step 2).
+
 **`prismio suite` cannot run the ums host-routing fixture.** That fixture deletes and re-promotes
 the project host to exercise stage-0 -> project-local promotion, and the `prismio` process running
 the command is using that file. `python3 tools/run_suite.py` tests a *copy* of the compiler, which
@@ -744,6 +781,14 @@ taking a struct" where only the second reads a field, which nothing in a declara
 three-field struct with two fields of equal width is enough. `SpawnOut` is safe only because it is a
 `std` type. **Marking the struct `repr(C)` or `packed` keeps declaration order**; an unmarked one is
 still the compiler's to order.
+
+**A `U8`, `I8`, `U16`, `I16`, `Char` or `Bool` reaches C with its upper bits unextended.** An
+`extern fn` parameter is declared without `zeroext`/`signext`, and Clang trusts the *caller* to
+extend these to 32 bits on Apple arm64 (and, unmeasured, x86-64 SysV): `int widen(uint8_t x)
+{ return x; }` compiles to `mov w0, w0`. Reproduced 2026-10-10 on macOS arm64 with the project
+host: `widen(301 as U8)` returns 301, not 45. Standard AAPCS64 (Linux arm64) extends in the callee
+and should be safe. The same attributes are missing on `export fn` returns, unmeasured. The
+probe and the fix are step 0 of `INTEROP_PLAN.md`.
 
 **Other per-compilation decisions about a `std` type are made twice.** Which fields a type releases,
 and whether a boxed enum is null-tagged, are each decided by the library compile and again by the

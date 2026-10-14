@@ -8,6 +8,7 @@
 // returns how many failed.
 
 import std.mem
+import std.raw
 import std.string
 
 extern let seed: Int
@@ -26,17 +27,17 @@ export fn prismio_alloc(size: Usize) -> Ptr {
     let block = heapTop + 16
     (block - 8).storeU64(size as U64)
     heapTop = block + ((size + 15) & ~(15 as Usize))
-    return __builtin_addr_ptr(block)
+    return pointerAt(block)
 }
 
 export fn prismio_realloc(p: Ptr, size: Usize) -> Ptr {
     let fresh = prismio_alloc(size)
-    let old = __builtin_ptr_addr(p)
+    let old = addressOf(p)
     if (old != 0) {
         let oldSize = (old - 8).loadU64() as Usize
         let mut count = oldSize
         if (size < count) { count = size }
-        copy(__builtin_ptr_addr(fresh), old, count)
+        copy(addressOf(fresh), old, count)
     }
     return fresh
 }

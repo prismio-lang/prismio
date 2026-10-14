@@ -85,9 +85,9 @@ import std.option
 
 // `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
 // always a power of two, so `hash & mask` is the bucket.
-struct Map<K: Key + Copy, V> {
-    entryKeys: Vec<K>,
-    entryValues: Vec<V>,
+public struct Map<K: Key + Copy, V> {
+    public entryKeys: Vec<K>,
+    public entryValues: Vec<V>,
     slots: Vec<Int>,
     mask: Int,
     // Buckets a removal emptied (MAP_TOMBSTONE), which a lookup must probe past

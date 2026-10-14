@@ -94,7 +94,12 @@ fn cold_sum(b: Body) -> Int {
     return b.spawn + b.lod + b.flags + b.layer + b.owner
 }
 
-fn main() -> Int {
+// The bodies live and die here rather than in `main`, so the region the cost model
+// places around them has no opaque call inside it. With the `println` in the same
+// block, the write it reaches is an opaque call the bracket obligations refuse --
+// and the arena this fixture's ledger counts used to be placed only because the
+// `print` overloads nothing called made that write look reachable from outside.
+fn simulate() -> Int {
     let bs = build(4096)
 
     let mut frame = 0
@@ -105,6 +110,10 @@ fn main() -> Int {
 
     let first = bs[0]
     let last = bs[4095]
-    println(cold_sum(first) + cold_sum(last) + count_ids(bs))
+    return cold_sum(first) + cold_sum(last) + count_ids(bs)
+}
+
+fn main() -> Int {
+    println(simulate())
     return 0
 }

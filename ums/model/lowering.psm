@@ -63,7 +63,7 @@ impl UmsProjectModel {
                               "project metadata contains properties, not nested DSL calls")
             } else if (property.name.equals("name")) {
                 if (self.lowerString(diagnostics, property, "project.name")) {
-                    if (__builtin_string_len(self.metadata.name) > 0) {
+                    if (self.metadata.name.length > 0) {
                         self.lowerError(diagnostics, property, "UMS2002",
                                       "project.name is declared more than once")
                     } else {
@@ -73,7 +73,7 @@ impl UmsProjectModel {
                 }
             } else if (property.name.equals("version")) {
                 if (self.lowerString(diagnostics, property, "project.version")) {
-                    if (__builtin_string_len(self.metadata.version) > 0) {
+                    if (self.metadata.version.length > 0) {
                         self.lowerError(diagnostics, property, "UMS2002",
                                       "project.version is declared more than once")
                     } else {
@@ -83,7 +83,7 @@ impl UmsProjectModel {
                 }
             } else if (property.name.equals("prismio")) {
                 if (self.lowerString(diagnostics, property, "project.prismio")) {
-                    if (__builtin_string_len(self.metadata.prismioVersion) > 0) {
+                    if (self.metadata.prismioVersion.length > 0) {
                         self.lowerError(diagnostics, property, "UMS2002",
                                       "project.prismio is declared more than once")
                     } else {
@@ -152,10 +152,10 @@ impl UmsProjectModel {
                 self.lowerError(diagnostics, property, "UMS2401",
                     "toolchain contains only the optional 'host' property")
             } else if (self.lowerString(diagnostics, property, "toolchain.host")) {
-                if (__builtin_string_len(self.toolchain.host) > 0) {
+                if (self.toolchain.host.length > 0) {
                     self.lowerError(diagnostics, property, "UMS2402",
                                   "toolchain.host is declared more than once")
-                } else if (__builtin_string_len(property.value.text) == 0) {
+                } else if (property.value.text.length == 0) {
                     self.lowerError(diagnostics, property, "UMS2404",
                                   "toolchain.host cannot be empty")
                 } else {
@@ -355,7 +355,7 @@ impl UmsProjectModel {
                     "unknown target property '".concat(property.name,
                                                        "'; expected entry, runtime, exportDynamic, freestanding, triple, features, codeModel, noRedZone, native or link"))
             } else if (self.lowerString(diagnostics, property, "target entry")) {
-                if (__builtin_string_len(entry) > 0) {
+                if (entry.length > 0) {
                     self.lowerError(diagnostics, property, "UMS2102",
                                   "target entry is declared more than once")
                 } else {

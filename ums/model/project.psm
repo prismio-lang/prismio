@@ -8,9 +8,9 @@ import std.string
 // model, after the syntax is gone -- can still point at it. A span of zeros is
 // "nowhere in particular" and prints as the manifest path alone.
 struct UmsSpan {
-    line: Int,
-    col: Int,
-    len: Int
+    internal line: Int,
+    internal col: Int,
+    internal len: Int
 }
 
 internal fn umsSpanNone() -> UmsSpan {
@@ -18,27 +18,27 @@ internal fn umsSpanNone() -> UmsSpan {
 }
 
 struct UmsProjectMetadata {
-    name: String,
-    version: String,
-    prismioVersion: String,
-    description: String,
-    license: String,
-    licenseFile: String,
-    authors: Vec<String>,
-    descriptionDeclared: Bool,
-    licenseDeclared: Bool,
-    licenseFileDeclared: Bool,
-    authorsDeclared: Bool,
+    public name: String,
+    public version: String,
+    public prismioVersion: String,
+    public description: String,
+    public license: String,
+    public licenseFile: String,
+    public authors: Vec<String>,
+    internal descriptionDeclared: Bool,
+    internal licenseDeclared: Bool,
+    internal licenseFileDeclared: Bool,
+    internal authorsDeclared: Bool,
     // The project block, for a required property that was never written, and
     // then one span per property.
-    blockSpan: UmsSpan,
-    nameSpan: UmsSpan,
-    versionSpan: UmsSpan,
-    prismioSpan: UmsSpan,
-    descriptionSpan: UmsSpan,
-    licenseSpan: UmsSpan,
-    licenseFileSpan: UmsSpan,
-    authorsSpan: UmsSpan
+    internal blockSpan: UmsSpan,
+    internal nameSpan: UmsSpan,
+    internal versionSpan: UmsSpan,
+    internal prismioSpan: UmsSpan,
+    internal descriptionSpan: UmsSpan,
+    internal licenseSpan: UmsSpan,
+    internal licenseFileSpan: UmsSpan,
+    internal authorsSpan: UmsSpan
 }
 
 // Build policy is intentionally not part of project metadata. Profiles and
@@ -51,18 +51,18 @@ struct UmsProjectMetadata {
 // to -O0, because a variable folded into a register is one a debugger cannot
 // show.
 struct UmsBuildConfiguration {
-    profile: String,
-    stateDirectory: String,
-    buildDirectory: String,
-    debugInfo: Bool,
-    overflowChecks: Bool
+    public profile: String,
+    public stateDirectory: String,
+    public buildDirectory: String,
+    public debugInfo: Bool,
+    public overflowChecks: Bool
 }
 
 // Read by the installed compiler before it lowers the complete manifest. The
 // `toolchain` block is therefore a deliberately small, stable bootstrap surface:
 // once this host exists, that host owns the real UMS parse and command.
 struct UmsToolchainConfiguration {
-    host: String
+    public host: String
 }
 
 // Whether `toolchain.host` names this project's own build output: relative, under
@@ -73,7 +73,7 @@ struct UmsToolchainConfiguration {
 // host this machine promoted, not where the host lives. It decides what `clean`
 // may delete: only a host the project owns, never a parent's compiler.
 public fn umsHostIsProjectBuildOutput(path: String) -> Bool {
-    let length = __builtin_string_len(path)
+    let length = path.length
     if (length == 0 or umsAbsolutePath(path)) { return false }
     if (path.startsWith(".prismio/") == false and path.startsWith(".prismio\\") == false) {
         return false
@@ -91,21 +91,21 @@ public fn umsHostIsProjectBuildOutput(path: String) -> Bool {
 }
 
 public fn umsAbsolutePath(value: String) -> Bool {
-    let length = __builtin_string_len(value)
+    let length = value.length
     if (length == 0) { return false }
     if (value.charAt(0) == '/' or value.charAt(0) == '\\') { return true }
     return length > 1 and value.charAt(1) == ':'
 }
 
-struct UmsProjectModel {
-    root: String,
-    manifestPath: String,
-    metadata: UmsProjectMetadata,
-    build: UmsBuildConfiguration,
-    toolchain: UmsToolchainConfiguration,
-    targets: Vec<UmsTarget>,
-    commands: Vec<UmsCommand>,
-    dependencies: Vec<UmsDependency>
+public struct UmsProjectModel {
+    public root: String,
+    public manifestPath: String,
+    public metadata: UmsProjectMetadata,
+    public build: UmsBuildConfiguration,
+    public toolchain: UmsToolchainConfiguration,
+    public targets: Vec<UmsTarget>,
+    internal commands: Vec<UmsCommand>,
+    public dependencies: Vec<UmsDependency>
 }
 
 internal fn umsProjectModel(root: String, manifestPath: String, profile: String) -> UmsProjectModel {

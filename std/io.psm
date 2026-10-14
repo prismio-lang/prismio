@@ -23,14 +23,7 @@
 // left, and under the default that view would be copied -- the whole remainder,
 // on every iteration -- to supply a terminator the write does not look at.
 
-// Float is the one type with no source-level formatter, so `%g` is still C.
-// Mixing `printf` with the writes below is safe only because both of these
-// flush stdout before they return: nothing is left in a stdio buffer for a
-// later `write` to get in front of.
-private extern fn prismio_rt_print_float(value: Float)
-private extern fn prismio_rt_println_float(value: Float)
-private extern fn prismio_rt_eprint_float(value: Float)
-private extern fn prismio_rt_eprintln_float(value: Float)
+import std.float_text
 
 internal extern fn str_with_capacity(length: Int) -> String produce(free)
 
@@ -171,6 +164,23 @@ private fn prismioStdIoChar(value: Char, terminator: Char) -> String {
     return out
 }
 
+// The same text `Float.toString` gives, because it is the same function:
+// a value that reaches the console and one converted to a String must not
+// disagree. `terminator` rides in the same allocation, as it does for the
+// integers, so `println` is one `write`.
+private fn prismioStdIoFloat(value: Float, terminator: Char) -> String {
+    let mut buffer: Array<U8, 32>
+    let n = floatFormat(value, buffer)
+    let mut width = n
+    if (terminator != '\0') { width = n + 1 }
+    let out = str_with_capacity(width)
+    for i in 0..<n {
+        __builtin_string_put_byte(out, i, buffer[i] as Char)
+    }
+    if (terminator != '\0') { __builtin_string_put_byte(out, n, terminator) }
+    return out
+}
+
 public fn print(value: String) {
     prismioStdIoOut(value)
 }
@@ -226,7 +236,8 @@ public fn print(value: Usize) {
 }
 
 public fn print(value: Float) {
-    prismio_rt_print_float(value)
+    let text = prismioStdIoFloat(value, '\0')
+    prismioStdIoOut(text)
 }
 
 public fn print(value: Bool) {
@@ -331,7 +342,8 @@ public fn eprint(value: Usize) {
 }
 
 public fn eprint(value: Float) {
-    prismio_rt_eprint_float(value)
+    let text = prismioStdIoFloat(value, '\0')
+    prismioStdIoErr(text)
 }
 
 public fn eprint(value: Bool) {
@@ -414,7 +426,8 @@ public fn eprintln(value: Usize) {
 }
 
 public fn eprintln(value: Float) {
-    prismio_rt_eprintln_float(value)
+    let text = prismioStdIoFloat(value, '\n')
+    prismioStdIoErr(text)
 }
 
 public fn eprintln(value: Bool) {
@@ -481,7 +494,8 @@ public fn println(value: Usize) {
 }
 
 public fn println(value: Float) {
-    prismio_rt_println_float(value)
+    let text = prismioStdIoFloat(value, '\n')
+    prismioStdIoOut(text)
 }
 
 public fn println(value: Bool) {

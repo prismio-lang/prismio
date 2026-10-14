@@ -81,11 +81,6 @@ fn main() -> Int {
     let intMin = 0 - 2147483647 - 1
     bad = bad + check("FAIL: abs at Int minimum", abs(intMin), intMin)
 
-    // The builtins directly, so the wrapper is not the only thing under test.
-    bad = bad + check("FAIL: __builtin_max", __builtin_max(2, 8), 8)
-    bad = bad + check("FAIL: __builtin_min", __builtin_min(2, 8), 2)
-    bad = bad + check("FAIL: __builtin_abs", __builtin_abs(0 - 2), 2)
-
     // A guarded loop that calls out must agree with one that does not.
     bad = bad + check("FAIL: call in loop changed the answer",
                       clampSum(64, 0 - 1, 20), clampSumInline(64, 0 - 1, 20))

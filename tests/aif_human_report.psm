@@ -1,5 +1,9 @@
 import std.io
 
+// Printing an Int reaches std.io's formatter, which allocates: the report's
+// imported-modules section needs a standard library site the program can reach,
+// and one it cannot reach is no longer analysed.
 fn main() -> Int {
+    println(42)
     return 0
 }

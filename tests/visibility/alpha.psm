@@ -19,8 +19,8 @@ public fn visibilityUsesOwnPrivate(x: Int) -> Int { return visibilityFileOnly(x)
 // `private`, and marking one meant giving up the block. A method *is* a free
 // function whose first parameter is the receiver, so the marker means the same
 // thing here -- the declaring file, or its package.
-struct Counter {
-    n: Int
+public struct Counter {
+    public n: Int
 }
 
 impl Counter {

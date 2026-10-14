@@ -18,10 +18,10 @@ import std.fs
 // validated and then failed at link time with "Is a directory" -- and a leading
 // `-` made a command that parses as a flag.
 public fn umsValidName(value: String) -> Bool {
-    if (__builtin_string_len(value) == 0) { return false }
+    if (value.length == 0) { return false }
     if (umsIsAlnum(value.charAt(0)) == false) { return false }
     let mut i = 0
-    while (i < __builtin_string_len(value)) {
+    while (i < value.length) {
         let current = value.charAt(i)
         if (umsIsAlnum(current) == false and current != '-' and current != '_' and current != '.') {
             return false
@@ -60,7 +60,7 @@ private fn umsSemverIdentifiers(value: String, start: Int, end: Int, rejectLeadi
 // `1.0.0-beta.1` -- a valid version -- as "not semantic version form" and took
 // `01.02.0003.4`. A numeric component has no leading zero.
 private fn umsValidSemver(value: String) -> Bool {
-    let length = __builtin_string_len(value)
+    let length = value.length
     let mut coreEnd = length
     let mut preStart = -1
     let mut buildStart = -1
@@ -112,9 +112,9 @@ private fn umsValidNumericVersion(value: String, start: Int, end: Int,
 // identifiers against the versioned catalogue it serves.
 private fn umsValidLicenseExpression(value: String) -> Bool {
     let trimmed = value.trim()
-    if (__builtin_string_len(trimmed) == 0) { return false }
+    if (trimmed.length == 0) { return false }
     let mut i = 0
-    while (i < __builtin_string_len(trimmed)) {
+    while (i < trimmed.length) {
         let current = trimmed.charAt(i)
         if (umsIsAlnum(current) == false and current != '-' and current != '.' and
             current != '+' and current != ':' and current != '(' and
@@ -161,24 +161,24 @@ impl UmsProjectModel {
     }
 
     internal fn validate(self, inout diagnostics: Vec<UmsDiagnostic>) {
-        if (__builtin_string_len(self.metadata.name) == 0) {
+        if (self.metadata.name.length == 0) {
             self.validationError(diagnostics, self.metadata.blockSpan, "UMS2301", "project.name is required")
         } else if (umsValidName(self.metadata.name) == false) {
             self.validationError(diagnostics, self.metadata.nameSpan, "UMS2302",
                                "project.name may contain only letters, digits, '.', '_' and '-'")
         }
 
-        if (__builtin_string_len(self.metadata.version) == 0) {
+        if (self.metadata.version.length == 0) {
             self.validationError(diagnostics, self.metadata.blockSpan, "UMS2303", "project.version is required")
         } else if (umsValidSemver(self.metadata.version) == false) {
             self.validationError(diagnostics, self.metadata.versionSpan, "UMS2304",
                                "project.version must be a semantic version, such as 1.2.0 or 1.0.0-beta.1")
         }
 
-        if (__builtin_string_len(self.metadata.prismioVersion) == 0) {
+        if (self.metadata.prismioVersion.length == 0) {
             self.validationError(diagnostics, self.metadata.blockSpan, "UMS2305", "project.prismio is required")
         } else if (umsValidNumericVersion(self.metadata.prismioVersion, 0,
-                       __builtin_string_len(self.metadata.prismioVersion), 2, 3) == false) {
+                       self.metadata.prismioVersion.length, 2, 3) == false) {
             self.validationError(diagnostics, self.metadata.prismioSpan, "UMS2306",
                                "project.prismio must be MAJOR.MINOR or MAJOR.MINOR.PATCH, such as 0.1")
         }
@@ -186,7 +186,7 @@ impl UmsProjectModel {
 
         if (self.metadata.descriptionDeclared) {
             let description = self.metadata.description.trim()
-            if (__builtin_string_len(description) == 0) {
+            if (description.length == 0) {
                 self.validationError(diagnostics, self.metadata.descriptionSpan, "UMS2316",
                                    "project.description cannot be empty")
             }
@@ -198,7 +198,7 @@ impl UmsProjectModel {
                                "project.license must be a non-empty SPDX expression")
         }
         if (self.metadata.licenseFileDeclared) {
-            if (__builtin_string_len(self.metadata.licenseFile) == 0 or
+            if (self.metadata.licenseFile.length == 0 or
                 umsAbsolutePath(self.metadata.licenseFile)) {
                 self.validationError(diagnostics, self.metadata.licenseFileSpan, "UMS2318",
                                    "project.licenseFile must be a non-empty project-relative path")
@@ -222,7 +222,7 @@ impl UmsProjectModel {
         let mut authorIndex = 0
         while (authorIndex < self.metadata.authors.length) {
             let author = self.metadata.authors[authorIndex].trim()
-            if (__builtin_string_len(author) == 0) {
+            if (author.length == 0) {
                 self.validationError(diagnostics, self.metadata.authorsSpan, "UMS2322",
                                    "project.authors cannot contain an empty author")
             }
@@ -242,7 +242,7 @@ impl UmsProjectModel {
                     target.line, target.col, target.len,
                     "invalid target name '".concat(target.name, "'"))
             }
-            if (__builtin_string_len(target.entry) == 0) {
+            if (target.entry.length == 0) {
                 umsDiagnosticAdd(diagnostics, "UMS2309", self.manifestPath,
                     target.line, target.col, target.len,
                     "target '".concat(target.name, "' requires an entry source"))
@@ -262,7 +262,7 @@ impl UmsProjectModel {
             let mut linkIndex = 0
             while (linkIndex < target.links.length) {
                 let input = target.links[linkIndex]
-                if (__builtin_string_len(input.value) == 0) {
+                if (input.value.length == 0) {
                     umsDiagnosticAdd(diagnostics, "UMS2314", self.manifestPath,
                         input.line, input.col, input.len,
                         "link inputs cannot be empty")
@@ -274,18 +274,22 @@ impl UmsProjectModel {
             }
             for nativeIndex in 0..<target.natives.length {
                 let input = target.natives[nativeIndex]
-                if (__builtin_string_len(input.value) == 0) {
+                if (input.value.length == 0) {
                     umsDiagnosticAdd(diagnostics, "UMS2314", self.manifestPath,
                         input.line, input.col, input.len,
                         "native inputs cannot be empty")
                 } else if (input.kind == UmsNativeKind.SOURCE) {
-                    // C only: the driver compiles each source with clang as C and
-                    // links no C++ runtime, so a `.cpp` would compile and then fail
-                    // at link time naming symbols from a library nobody asked for.
-                    if (input.value.endsWith(".c") == false) {
+                    // C or C++: clang picks the language from the extension. The
+                    // driver links no C++ runtime of its own, so a target with C++
+                    // sources names it in `link` -- the compiler's does, through
+                    // third_party/llvm-link.rsp (`-lc++`) for runtime/llvm_bridge.cpp.
+                    let isC = input.value.endsWith(".c")
+                    let isCpp = input.value.endsWith(".cpp") or input.value.endsWith(".cc")
+                        or input.value.endsWith(".cxx")
+                    if (isC == false and isCpp == false) {
                         umsDiagnosticAdd(diagnostics, "UMS2324", self.manifestPath,
                             input.line, input.col, input.len,
-                            "native source '".concat(input.value, "' is not a C file (.c)"))
+                            "native source '".concat(input.value, "' is not a C or C++ file (.c, .cpp, .cc, .cxx)"))
                     } else {
                         self.requireFile(diagnostics, input.value, input.line, input.col,
                                          input.len, "UMS2324", "native source")
@@ -312,7 +316,7 @@ impl UmsProjectModel {
                     dependency.line, dependency.col, dependency.len,
                     "invalid dependency name '".concat(dependency.name, "'"))
             }
-            if (__builtin_string_len(dependency.constraint) == 0) {
+            if (dependency.constraint.length == 0) {
                 umsDiagnosticAdd(diagnostics, "UMS2312", self.manifestPath,
                     dependency.line, dependency.col, dependency.len,
                     "dependency '".concat(dependency.name, "' has an empty version constraint"))
@@ -343,7 +347,7 @@ impl UmsProjectModel {
                     continue
                 }
                 if (step.kind == UmsCommandStepKind.SHELL) {
-                    if (__builtin_string_len(step.subject) == 0) {
+                    if (step.subject.length == 0) {
                         umsDiagnosticAdd(diagnostics, "UMS2605", self.manifestPath,
                             step.line, step.col, step.len,
                             "a shell step needs a program to run")

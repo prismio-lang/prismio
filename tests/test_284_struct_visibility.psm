@@ -1,0 +1,18 @@
+// A public struct's public fields are readable and writable from anywhere; the rest
+// are reached through the struct's own file or package (neg_230 .. neg_233).
+
+import std.io
+import visibility.shapes
+import visibility.shapes_sibling
+
+fn main() -> Int {
+    let mut p = makePoint(10)
+    if p.x != 10 { return 1 }
+    p.x = 20
+    if p.x != 20 { return 2 }
+    if secretOf(p) != 12 { return 3 }
+    if siblingSum(p) != 20 + 11 + 11 { return 4 }
+    if packageOnlyValue() != 42 { return 5 }
+    println("ok")
+    return 0
+}

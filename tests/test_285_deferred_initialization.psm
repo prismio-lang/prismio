@@ -1,0 +1,95 @@
+// A local declared without a value is read only where every path that reaches the read
+// has assigned it (sema/assign.psm). Branches join, a path that returns, breaks or
+// panics contributes nothing, a loop assigns nothing as far as the code after it can
+// tell, and an immutable `let` takes one assignment.
+
+import std.io
+import std.string
+
+enum Color { Red, Green, Blue }
+
+struct Pair { x: Int, y: Int }
+
+fn grade(score: Int) -> String {
+    let label: String
+    if score > 90 { label = "A" } else if score > 60 { label = "B" } else { label = "C" }
+    return label
+}
+
+fn kind(c: Color) -> Int {
+    let n: Int
+    match (c) {
+        Color.Red => { n = 1 }
+        Color.Green => { n = 2 }
+        Color.Blue => { n = 3 }
+    }
+    return n
+}
+
+fn early(flag: Bool) -> Int {
+    let r: Int
+    if flag { r = 10 } else { return 0 - 1 }
+    return r
+}
+
+fn viaPanic(x: Int) -> Int {
+    let v: Int
+    if x > 0 { v = x } else { panic("x must be positive") }
+    return v
+}
+
+fn firstBig(limit: Int) -> Int {
+    let found: Int
+    let mut i = 0
+    loop {
+        if i * i > limit {
+            found = i
+            break
+        }
+        i = i + 1
+    }
+    return found
+}
+
+fn made() -> Pair {
+    let p: Pair
+    p = Pair { x: 3, y: 4 }
+    return p
+}
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn main() -> Int {
+    if grade(95) != "A" or grade(70) != "B" or grade(10) != "C" { return fail("if chain") }
+    if kind(Color.Green) != 2 or kind(Color.Blue) != 3 { return fail("a match over every variant") }
+    if early(true) != 10 or early(false) != 0 - 1 { return fail("a branch that returns") }
+    if viaPanic(4) != 4 { return fail("a branch that panics") }
+    if firstBig(20) != 5 { return fail("assigned before a break") }
+    if made().y != 4 { return fail("a struct assigned whole") }
+
+    // `mut` may be assigned again, and a loop may assign a variable declared before it.
+    let mut total: Int
+    total = 0
+    for k in 0..<5 { total = total + k }
+    if total != 10 { return fail("a mutable local") }
+
+    let doubled: Int
+    let base = 21
+    doubled = base * 2
+    if doubled != 42 { return fail("an immutable local, assigned once") }
+
+    // Declared in a block, hiding a name that waits for a value outside it.
+    let outer: Int
+    if base > 0 {
+        let outer = 5
+        if outer != 5 { return fail("shadowing") }
+    }
+    outer = 7
+    if outer != 7 { return fail("the outer name after a shadow") }
+
+    println("ok")
+    return 0
+}

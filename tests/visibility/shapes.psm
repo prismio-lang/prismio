@@ -1,0 +1,30 @@
+// Visibility on structs and their fields, with the levels a function has: `public`
+// is everywhere, `internal` this package, `private` this file. A struct is `internal`
+// and a field `private` unless a marker says otherwise.
+
+public struct Point {
+    public x: Int,
+    internal tag: Int,
+    secret: Int
+}
+
+// No marker: internal. Named from `tests/` (another package) it is refused.
+struct PackageOnly {
+    public value: Int
+}
+
+private struct FileOnly {
+    public value: Int
+}
+
+public fn makePoint(x: Int) -> Point {
+    return Point { x: x, tag: x + 1, secret: x + 2 }
+}
+
+public fn secretOf(p: Point) -> Int { return p.secret }
+
+public fn packageOnlyValue() -> Int {
+    let p = PackageOnly { value: 41 }
+    let f = FileOnly { value: 1 }
+    return p.value + f.value
+}

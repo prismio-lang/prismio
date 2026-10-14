@@ -242,6 +242,15 @@ private fn generateFunction(func: ASTNode) {
     // both `ptr` by the time ir_function_begin sees them.
     debugSignature(retType, debugTypeName(func.child3, ptr_null()))
 
+    // An `export fn` is called by C, so its narrow parameters and return follow
+    // C's widening rule as an extern's do. Only exports: anything else is called
+    // by this program alone, and its convention is the program's to choose.
+    let exported = (nodeFnAttrFlags(func) & 1) == 1 and isMain == 0
+    if (exported and nodeExists(func.child3)) {
+        let retWiden = abiExtension(ptr_to_node(func.child3))
+        if (retWiden.equals("") == false) { ir_function_return_extend(retWiden) }
+    }
+
     if (isMain == 1) {
         // Real OS argc/argv only reach the C `main` symbol; stash them into the
         // globals std.process reads through `extern let`.
@@ -264,6 +273,10 @@ private fn generateFunction(func: ASTNode) {
             ir_function_param_unique(pStore, pName)
         } else {
             ir_function_param(pStore, pName)
+        }
+        if (exported) {
+            let widen = abiExtension(pTypeNode)
+            if (widen.equals("") == false) { ir_function_param_extend(widen) }
         }
         debugSignatureParam(mapTypeNode(pTypeNode), debugTypeName(paramNode.child1, ptr_null()))
         paramPtr = paramNode.next
@@ -607,10 +620,14 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
         markPtr = func.next
     }
 
-    // Which callees the flat-List guard may look through. Marked by *source*
-    // name, because that is the spelling the guard sees, and marked for every
-    // function including the unsafe ones so that one unsafe overload poisons the
-    // name rather than leaving it silently safe.
+    // Which callees the flat-List guard may look through. Each function is judged
+    // under its own symbol, which a call reads off the CALL_EXPR sema resolved
+    // (irCallIsGuardSafe), and under its *source* name, which is what a call with
+    // no resolved symbol has to go by. The name is safe only when every function
+    // carrying it is, so one unsafe overload poisons the name rather than leaving
+    // it silently safe -- and when the name was all a call had, it poisoned every
+    // call: `Buffer.eq` reaching an extern took the guard from every `Map` probe,
+    // whose `eq` is an Int comparison.
     //
     // The builtins go in first and by the same door, which is what lets a library
     // wrapper qualify: `fn max(a, b) { return __builtin_max(a, b) }` calls
@@ -624,6 +641,9 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     ir_mark_guard_safe_fn("__builtin_rotate_left", 1)
     ir_mark_guard_safe_fn("__builtin_rotate_right", 1)
     ir_mark_guard_safe_fn("__builtin_swap_bytes", 1)
+    ir_mark_guard_safe_fn("__builtin_range_count", 1)
+    ir_mark_guard_safe_fn("__builtin_range_at", 1)
+    ir_mark_guard_safe_fn("__builtin_index_int", 1)
     ir_mark_guard_safe_fn("__builtin_float_bits", 1)
     ir_mark_guard_safe_fn("__builtin_float_from_bits", 1)
     // std.math's Float family, for the same reason: a square root or a sine
@@ -679,6 +699,7 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
         let func = ptr_to_node(seedPtr)
         if (func.kind == NodeKind.FUNCTION and nodeExists(func.child2)) {
             ir_mark_guard_safe_fn(func.s1, 1)
+            ir_mark_guard_safe_fn(guardSafeSymbolKey(functionSymbolName(func)), 1)
         }
         seedPtr = func.next
     }
@@ -693,8 +714,10 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
         while (nodeExists(safePtr)) {
             let func = ptr_to_node(safePtr)
             if (func.kind == NodeKind.FUNCTION and nodeExists(func.child2)) {
-                if (ir_is_guard_safe_fn(func.s1) == 1) {
+                let key = guardSafeSymbolKey(functionSymbolName(func))
+                if (ir_is_guard_safe_fn(key) == 1) {
                     if (irBodyMovesNoBlock(func.child2) == false) {
+                        ir_mark_guard_safe_fn(key, 0)
                         ir_mark_guard_safe_fn(func.s1, 0)
                         changed = true
                     }
@@ -769,11 +792,8 @@ private fn irBodyMovesNoBlock(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return true }
     let n = ptr_to_node(nodePtr)
 
-    // A spawn runs its callee on another thread, where this loop's reasoning
-    // does not reach at all.
+    if (irIsUnjudgedCall(n)) { return false }
     match (n.kind) {
-        NodeKind.SPAWN_EXPR => { return false }
-        NodeKind.JOIN_EXPR => { return false }
 
         NodeKind.CALL_EXPR => {
             if (nodeExists(n.child1) == false) { return false }
@@ -783,7 +803,7 @@ private fn irBodyMovesNoBlock(nodePtr: Ptr) -> Bool {
                 // Not a primitive this pass knows: it has to be a function the pass
                 // has already judged. An `extern fn` never is, which is the
                 // conservative answer for a body written in another language.
-                if (ir_is_guard_safe_fn(callee) != 1) { return false }
+                if (irCallIsGuardSafe(n, callee) == false) { return false }
             }
         }
     }
@@ -939,16 +959,38 @@ internal fn collectStringsExpr(expr: ASTNode) {
     }
 }
 
+// How C widens a value of this annotation's type at a call, for
+// ir_function_param_extend and ir_function_return_extend; "" when it is not
+// narrower than 32 bits. An unextended `U8` reached C with whatever the register's
+// upper bits held: `widen(301 as U8)` answered 301 on Apple arm64.
+private fn abiExtension(annotation: ASTNode) -> String {
+    if (nodeExists(annotation.typeInfo) == false) { return "" }
+    let t = ptr_to_type(annotation.typeInfo)
+    if (t.kind == TypeKind.BOOL) { return "bool" }
+    // `Char` is C's `char`, which is signed on every target that widens at all.
+    if (t.kind == TypeKind.CHAR) { return "sign" }
+    if (t.kind != TypeKind.INT) { return "" }
+    if (t.name.equals("U8") or t.name.equals("U16")) { return "zero" }
+    if (t.name.equals("I8") or t.name.equals("I16")) { return "sign" }
+    return ""
+}
+
 private fn declareExternFunction(ext: ASTNode) {
     let mut retType = getDeclaredReturnType(ext, ext.child2)
     ir_set_fn_return_type(functionSymbolName(ext), retType)
 
     ir_declare_function_begin(functionSymbolName(ext), ffiType(storageType(retType)))
+    if (nodeExists(ext.child2)) {
+        let retWiden = abiExtension(ptr_to_node(ext.child2))
+        if (retWiden.equals("") == false) { ir_function_return_extend(retWiden) }
+    }
     let mut paramPtr = ext.child1
     while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
         ir_declare_function_param(ffiType(storageType(mapTypeNode(pTypeNode))))
+        let widen = abiExtension(pTypeNode)
+        if (widen.equals("") == false) { ir_function_param_extend(widen) }
         paramPtr = paramNode.next
     }
     ir_declare_function_end()
@@ -1772,7 +1814,7 @@ private fn emitGlobalArray(decl: ASTNode) {
         if (elem.i1 == TokenType.STRING_LITERAL as Int) {
             // The per-function string pass never reaches a global's initializer.
             collectStringsExpr(elem)
-            ir_array_literal_str_elem(elem.s2, __builtin_string_len(elem.s1))
+            ir_array_literal_str_elem(elem.s2, elem.s1.length)
         } else {
             ir_array_literal_elem(elemType, generateExpression(elem))
         }
@@ -2435,7 +2477,7 @@ public fn generateModule(module: ASTNode) {
                         // `@g =  global ptr hello world`, which llc rejects.
                         collectStringsExpr(initNode)
                         globalStrName = initNode.s2
-                        globalStrLen = __builtin_string_len(initNode.s1)
+                        globalStrLen = initNode.s1.length
                         initVal = "@".concat(initNode.s2)
                     } else {
                         initVal = initNode.s1
@@ -2584,7 +2626,7 @@ private fn generateVtableDeclarationsFrom(module: ASTNode, ptr: Ptr) {
             let marker = node.s2.concat(";")
             if (irEmittedVtables.contains(marker) == false) {
                 irEmittedVtables = irEmittedVtables.concat(marker)
-                let traitName = node.s1.substring(4, __builtin_string_len(node.s1) - 4)
+                let traitName = node.s1.substring(4, node.s1.length - 4)
                 let traitDecl = irFindTrait(module, traitName)
                 if (nodeIsNull(node_to_ptr(traitDecl)) == false) {
                     ir_vtable_declare(node.s2, irTraitMethodCount(traitDecl))
@@ -2626,7 +2668,7 @@ private fn generateOneVtable(module: ASTNode, make: ASTNode) {
     if (irEmittedVtables.contains(marker)) { return }
     irEmittedVtables = irEmittedVtables.concat(marker)
 
-    let traitName = make.s1.substring(4, __builtin_string_len(make.s1) - 4)
+    let traitName = make.s1.substring(4, make.s1.length - 4)
     let traitDecl = irFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return }
 

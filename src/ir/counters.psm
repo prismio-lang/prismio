@@ -18,13 +18,13 @@ import std.string
 
 // The counter of one loop, or none (an empty name).
 struct NowrapCounter {
-    name: String,
-    lo: I64,
-    hi: I64,
+    internal name: String,
+    internal lo: I64,
+    internal hi: I64,
     // The bounding conjunct, numbered as w.leaf numbers them, or -1.
-    conjunct: Int,
+    internal conjunct: Int,
     // How many times the body can run, or -1.
-    trips: I64
+    internal trips: I64
 }
 
 internal fn nowrapNoCounter() -> NowrapCounter {

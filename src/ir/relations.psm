@@ -681,7 +681,7 @@ impl RelLoop {
     // The parse runs with two fallbacks: they agree only when the text is a number.
     private fn literal(self, n: ASTNode) -> Bool {
         if (n.kind != NodeKind.LITERAL_EXPR or n.i1 != TokenType.NUMBER_LITERAL as Int) { return false }
-        if (__builtin_string_len(n.s1) > REL_LITERAL_DIGITS + 1) { return false }
+        if (n.s1.length > REL_LITERAL_DIGITS + 1) { return false }
         let value = n.s1.parseIntOr(0)
         if (value != n.s1.parseIntOr(1)) { return false }
         if (value > 999999 or value < 0 - 999999) { return false }

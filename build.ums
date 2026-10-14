@@ -25,7 +25,7 @@ profiles {
 }
 
 targets {
-    // The compiler is an ordinary Prismio program whose runtime and backend are
+    // The compiler is an ordinary Prismio program who-se runtime and backend are
     // C. Nothing about it is built into the toolchain: this target names every
     // source, flag and library, and any project can declare the same things.
     executable("prismio") {
@@ -42,7 +42,8 @@ targets {
             source("runtime/lang_runtime.c", "runtime/program_support.c",
             "runtime/build_driver.c", "runtime/ir_symbols.c",
             "runtime/aif_containers.c", "runtime/aif_support.c",
-            "runtime/diagnostics.c", "runtime/llvm-api-backend.c")
+            "runtime/diagnostics.c", "runtime/llvm-api-backend.c",
+            "runtime/llvm_bridge.cpp")
             include("runtime")
             define("PRISMIO_LLVM_REAL_HEADERS", "PRISMIO_BOOTSTRAP_COMPAT")
             flag("-Wno-deprecated-declarations")

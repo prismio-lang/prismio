@@ -12,7 +12,7 @@ fn main() -> Int {
     let world = "World"
     let phrase = hello.concat(", ", world)
 
-    if (__builtin_string_len(hello) != 5) {
+    if (hello.length != 5) {
         return fail("string length should count characters")
     }
 

@@ -8,21 +8,24 @@
 // QEMU's cleared memory. The test patches nothing; it builds three kernels from
 // three values of the constant below.
 
+import std.raw
+import std.asm
+
 let MODE = 0
 
 // QEMU `virt`'s PL011 UART.
 fn put(c: U8) {
-    __builtin_mem_vstore_u32(0x09000000, c as U32)
+    volatileStoreU32(0x09000000, c as U32)
 }
 
 // A C string: bytes at an address up to a zero.
 fn puts(text: Ptr) {
-    let mut at = __builtin_ptr_addr(text)
-    let mut byte = __builtin_mem_load_u8(at)
+    let mut at = addressOf(text)
+    let mut byte = volatileLoadU8(at)
     while (byte != 0) {
         put(byte)
         at = at + 1
-        byte = __builtin_mem_load_u8(at)
+        byte = volatileLoadU8(at)
     }
 }
 
@@ -39,14 +42,14 @@ fn put_int(value: Int) {
 // ARM semihosting SYS_EXIT: QEMU's exit status becomes the program's. The two-word
 // parameter block lives in RAM the linker script leaves alone.
 fn halt(status: Int) {
-    __builtin_mem_store_u64(0x42000000, 0x20026)
-    __builtin_mem_store_u64(0x42000008, status as U64)
-    __builtin_asm("mov x0, #0x18\nmovz x1, #0x4200, lsl #16\nhlt #0xf000")
+    volatileStoreU64(0x42000000, 0x20026)
+    volatileStoreU64(0x42000008, status as U64)
+    asm("mov x0, #0x18\nmovz x1, #0x4200, lsl #16\nhlt #0xf000")
     while (true) {}
 }
 
 export naked section(".text.boot") fn _start() {
-    __builtin_asm("ldr x0, =__stack_top\nmov sp, x0\nbl main\n1: wfi\nb 1b")
+    asm("ldr x0, =__stack_top\nmov sp, x0\nbl main\n1: wfi\nb 1b")
 }
 
 // The one thing the failure core asks of a program. `kind` and `detail` are C

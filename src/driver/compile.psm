@@ -21,6 +21,7 @@ import std.string
 import std.option
 import driver.imports
 import driver.workload
+import driver.prune
 import std.fs
 
 public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
@@ -60,15 +61,15 @@ public extern fn compiler_jit_run(irFile: String borrow, programName: String bor
 // `run` starts the program ("" keeps this process's working directory), and its
 // arguments are queued separately with compiler_spawn_arg, because a list does
 // not cross the FFI boundary.
-struct CompileOptions {
-    runAfterBuild: Bool,
-    verify: Bool,
-    debug: Bool,
-    debugInfo: Bool,
-    optimized: Bool,
-    jit: Bool,
-    overflowChecks: Bool,
-    installedRuntime: Bool,
+public struct CompileOptions {
+    public runAfterBuild: Bool,
+    public verify: Bool,
+    public debug: Bool,
+    public debugInfo: Bool,
+    public optimized: Bool,
+    public jit: Bool,
+    public overflowChecks: Bool,
+    public installedRuntime: Bool,
     runDirectory: String
 }
 
@@ -191,6 +192,8 @@ private fn analyzedModule(path: String) -> ASTNode {
 
     if (diag_error_count() > 0) {
         diag_finish()
+    } else {
+        pruneUnreachableLibrary(mergedAst)
     }
 
     diag_progress_clear()
@@ -370,6 +373,8 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
         diag_finish()
         return 1
     }
+
+    pruneUnreachableLibrary(mergedAst)
 
     // AIF, between sema and codegen. It reports nothing here and writes nothing
     // back to the AST; codegen queries it per allocation site through

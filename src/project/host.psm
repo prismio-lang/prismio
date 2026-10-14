@@ -132,7 +132,7 @@ private fn emitUmsToolchainLibraries(hostPath: String, compilerPath: String) -> 
 // Compared by output path, because the output path is what buildUmsHostTarget
 // replaces and `toolchain.host` names a file rather than a target.
 public fn isUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget) -> Bool {
-    if (__builtin_string_len(workspace.project.toolchain.host) == 0) { return false }
+    if (workspace.project.toolchain.host.length == 0) { return false }
     let host = umsHostExecutable(workspace.project.root, workspace.project.toolchain.host)
     return target.outputPath.equals(host)
 }
@@ -242,7 +242,7 @@ public fn dispatchToUmsHost() -> Int {
     if (isGlobalLauncher() == false or hosted) { return -1 }
 
     let host = umsProjectHost(".")
-    if (__builtin_string_len(host) == 0) { return -1 }
+    if (host.length == 0) { return -1 }
 
     // This binary *is* the declared host, invoked directly rather than through a
     // parent. It is the local toolchain; there is nothing to forward to.

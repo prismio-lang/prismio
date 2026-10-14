@@ -1,0 +1,16 @@
+// Visibility markers on global variables. A public global and an unmarked one are
+// readable from any file that imports the module; a private one is its own file's,
+// and an internal one its package's (neg_224 and neg_225 check the refusals).
+
+import std.io
+import visibility.globals
+import visibility.globals_sibling
+
+fn main() -> Int {
+    if GLOBAL_PUBLIC != 11 { return 1 }
+    if GLOBAL_OPEN != 44 { return 2 }
+    if globalsOwnPrivate() != 22 { return 3 }
+    if globalsInternalFromSibling() != 33 { return 4 }
+    println("ok")
+    return 0
+}

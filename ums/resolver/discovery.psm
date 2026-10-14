@@ -6,7 +6,7 @@ import std.fs
 public fn umsDiscoverManifest(startDirectory: String,
                        inout diagnostics: Vec<UmsDiagnostic>) -> String {
     let mut directory = startDirectory
-    if (__builtin_string_len(directory) == 0 or directory.equals(".")) {
+    if (directory.length == 0 or directory.equals(".")) {
         directory = currentDirectory()
     }
 

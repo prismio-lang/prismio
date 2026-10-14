@@ -50,7 +50,7 @@ enum Environment {
 }
 
 // The type of `platform`. It holds nothing: every answer is the compiler's.
-struct PlatformQuery {
+public struct PlatformQuery {
 }
 
 // Uninitialised on purpose. A global cannot be initialised by an expression --

@@ -6,7 +6,7 @@ import std.string
 
 extern fn abort()
 
-struct UpdateKey { id: Int }
+public struct UpdateKey { id: Int }
 impl Key for UpdateKey {
     fn hash(self) -> Int { return -1 }
     fn eq(self, other: Self) -> Bool { return self.id == other.id }
@@ -21,7 +21,7 @@ fn unexpectedUpdate(value: Int) -> Int {
 }
 
 // Observable counters check the API's one-probe / one-callback contract.
-struct ProbeKey { id: Int, hashes: Int }
+public struct ProbeKey { id: Int, hashes: Int }
 impl Key for ProbeKey {
     fn hash(self) -> Int {
         self.hashes = self.hashes + 1
@@ -34,7 +34,7 @@ impl Copy for ProbeKey {
         return ProbeKey { id: self.id, hashes: 0 }
     }
 }
-struct CountUpdate { calls: Int }
+public struct CountUpdate { calls: Int }
 impl CountUpdate {
     // `public` because std.map calls it. An inherent method takes the private
     // default, and `mapUpdate` is duck-typed -- there is no trait here whose

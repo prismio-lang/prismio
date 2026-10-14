@@ -1,0 +1,8 @@
+// expect-error: field `secret` of `Point` is private to the file that declares it
+import std.io
+import visibility.shapes
+
+fn main() -> Int {
+    let p = makePoint(1)
+    return p.secret
+}

@@ -47,8 +47,8 @@ fn sign(v: Int) -> Int {
 // Both spellings, both argument orders.
 fn agrees(a: String, b: String) -> Bool {
     let expected = referenceOrder(a, b)
-    if (sign(__builtin_string_compare(a, b)) != expected) { return false }
-    if (sign(__builtin_string_compare(b, a)) != 0 - expected) { return false }
+    if (sign(a.compare(b)) != expected) { return false }
+    if (sign(b.compare(a)) != 0 - expected) { return false }
     return sign(a.compare(b)) == expected
 }
 
@@ -123,7 +123,7 @@ fn main() -> Int {
     }
 
     // An owned temporary on either side is dropped after the answer is in hand.
-    if (sign(__builtin_string_compare("ab".concat("c"), "abd")) != -1) {
+    if (sign("ab".concat("c").compare("abd")) != -1) {
         return fail("an owned temporary operand")
     }
     if (sign("abd".compare("ab".concat("c"))) != 1) { return fail("an owned temporary argument") }

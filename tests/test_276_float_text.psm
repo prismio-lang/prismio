@@ -1,0 +1,202 @@
+// Float text in Prismio (std/float_text.psm): what `toString`, `toString(places)`
+// and `parseFloat` give, against what the C library gave when the table below was
+// written. Each row is a bit pattern or a text and the answer `snprintf` and
+// `strtod` produced for it, so a change to the digit search, the rounding or the
+// shifts that moves one digit fails here with the row that moved.
+//
+// What the rows are for:
+//   - 0.1, 1/3, 0.1 + 0.2 and 1e15: the fifteen-digit cut, and the round-number
+//     widening (100 is `100`, not `1e+02`, but 1e15 is `1e+15`);
+//   - powers of two and their neighbours, where the interval below a double is
+//     half the one above and the fewest-digits search cannot assume monotone;
+//   - the denormal edge, the largest double, and 2^53 and its neighbours;
+//   - ties in `toString(places)`, which go to even on the exact value (0.5 is `0`,
+//     1.5 is `2`, 2.5 is `2`), and a negative that rounds to zero keeps its sign;
+//   - the parser's edges: halfway between two doubles, one digit past what the
+//     fast path holds, thirty digits, hexadecimal, and every way to leave
+//     characters unread, which is `none` because the whole text must be a number.
+// The random comparison against libc this table was drawn from ran on a million
+// patterns; it is not repeated here because the C functions are not a stable
+// thing to link a test against.
+
+import std.io
+import std.string
+import std.raw
+fn floatOf(bits: U64) -> Float {
+    return Float.fromBits(bits)
+}
+
+fn fmt(bits: U64, want: String) -> Int {
+    let got = floatOf(bits).toString()
+    if (got != want) {
+        println("FAIL toString ".concat(bits.toString(), ": got ", got, ", want ", want))
+        return 1
+    }
+    return 0
+}
+
+fn fix(bits: U64, places: Int, want: String) -> Int {
+    let got = floatOf(bits).toString(places)
+    if (got != want) {
+        println("FAIL toString(places) ".concat(bits.toString(), " ", places.toString(), ": got ", got))
+        println("    want ".concat(want))
+        return 1
+    }
+    return 0
+}
+
+fn parse(text: String, want: U64) -> Int {
+    let got = text.parseFloat()
+    if (got == none) {
+        println("FAIL parseFloat [".concat(text, "] is none"))
+        return 1
+    }
+    let bits = got.unwrapOr(0.0).bits
+    // Every NaN is the same answer.
+    let nan = ((want >> 52) & 0x7FF) == 0x7FF and (want & 0xFFFFFFFFFFFFF) != 0
+    if (nan and ((bits >> 52) & 0x7FF) == 0x7FF and (bits & 0xFFFFFFFFFFFFF) != 0) { return 0 }
+    if (bits != want) {
+        println("FAIL parseFloat [".concat(text, "]: got ", bits.toString(), ", want ", want.toString()))
+        return 1
+    }
+    return 0
+}
+
+fn invalid(text: String) -> Int {
+    if (text.parseFloat() != none) {
+        println("FAIL parseFloat [".concat(text, "] should be none"))
+        return 1
+    }
+    return 0
+}
+
+// Printing what was parsed prints the digits written, up to fifteen of them.
+fn roundTrip(text: String) -> Int {
+    let value = text.parseFloat().unwrapOr(0.0)
+    let back = value.toString()
+    if (back != text) {
+        println("FAIL round trip [".concat(text, "] came back as ", back))
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut failed = 0
+    failed = failed + fmt(0, "0")
+    failed = failed + fmt(9223372036854775808, "-0")
+    failed = failed + fmt(4607182418800017408, "1")
+    failed = failed + fmt(4602678819172646912, "0.5")
+    failed = failed + fmt(4591870180066957722, "0.1")
+    failed = failed + fmt(4599075939470750515, "0.3")
+    failed = failed + fmt(4636737291354636288, "100")
+    failed = failed + fmt(4921056587992461136, "1e+21")
+    failed = failed + fmt(4599676419421066581, "0.333333333333333")
+    failed = failed + fmt(4728057454347157504, "123456789")
+    failed = failed + fmt(4614256656543962353, "3.14159265")
+    failed = failed + fmt(4532020583610935537, "1e-05")
+    failed = failed + fmt(3110860544497550640, "1e-100")
+    failed = failed + fmt(9218868437227405311, "1.79769313486232e+308")
+    failed = failed + fmt(1, "5e-324")
+    failed = failed + fmt(4503599627370495, "2.2250738585072e-308")
+    failed = failed + fmt(4503599627370496, "2.2250738585072e-308")
+    failed = failed + fmt(9218868437227405312, "inf")
+    failed = failed + fmt(18442240474082181120, "-inf")
+    failed = failed + fmt(9221120237041090560, "nan")
+    failed = failed + fmt(4841369599423283200, "4.5035996273705e+15")
+    failed = failed + fmt(4845873199050653695, "9.00719925474099e+15")
+    failed = failed + fmt(4831355200913801216, "1e+15")
+    failed = failed + fmt(4607182418800017409, "1")
+    failed = failed + fmt(4607182418800017407, "1")
+    failed = failed + fmt(4666723172467343360, "10000")
+    failed = failed + fmt(4906019910204099648, "1e+20")
+    failed = failed + fmt(13875379345695965184, "-1000")
+    failed = failed + fmt(4562254508917369340, "0.001")
+    failed = failed + fmt(4683220299150983168, "123456.789011955")
+    failed = failed + fmt(4756540486875873280, "10000000000")
+    failed = failed + fmt(4367597403136100796, "1e-16")
+    failed = failed + fmt(9094988921128908188, "1e+300")
+    failed = failed + fmt(4621819117588971520, "10")
+    failed = failed + fmt(4609434218613702656, "1.5")
+    failed = failed + fix(0, 0, "0")
+    failed = failed + fix(9223372036854775808, 2, "-0.00")
+    failed = failed + fix(4607182418800017408, 1, "1.0")
+    failed = failed + fix(4599676419421066581, 5, "0.33333")
+    failed = failed + fix(4576918229304087675, 3, "0.010")
+    failed = failed + fix(4636737291354636288, 0, "100")
+    failed = failed + fix(4602678819172646912, 0, "0")
+    failed = failed + fix(4609434218613702656, 0, "2")
+    failed = failed + fix(4615063718147915776, 0, "4")
+    failed = failed + fix(13785626545772145148, 4, "-0.0010")
+    failed = failed + fix(4921056587992461136, 30, "1000000000000000000000.000000000000000000000000000000")
+    failed = failed + fix(4607182418800017407, 2, "1.00")
+    failed = failed + fix(9218868437227405311, 30, "179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.000000000000000000000000000000")
+    failed = failed + fix(1, 30, "0.000000000000000000000000000000")
+    failed = failed + fix(9218868437227405312, 2, "inf")
+    failed = failed + fix(18442240474082181120, 2, "-inf")
+    failed = failed + parse("0", 0)
+    failed = failed + parse("-0", 9223372036854775808)
+    failed = failed + parse("1", 4607182418800017408)
+    failed = failed + parse("1.5", 4609434218613702656)
+    failed = failed + parse("0.1", 4591870180066957722)
+    failed = failed + parse("1e5", 4681608360884174848)
+    failed = failed + parse("1E-5", 4532020583610935537)
+    failed = failed + parse("+2.5", 4612811918334230528)
+    failed = failed + parse(".5", 4602678819172646912)
+    failed = failed + parse("5.", 4617315517961601024)
+    failed = failed + parse("123456789012345678901234567890", 5042042089369253694)
+    failed = failed + parse("1e22", 4936209963552724370)
+    failed = failed + parse("1e23", 4950912855330343670)
+    failed = failed + parse("8.41e21", 4934958393344299186)
+    failed = failed + parse("9007199254740993", 4845873199050653696)
+    failed = failed + parse("9007199254740992.5", 4845873199050653696)
+    failed = failed + parse("4.9e-324", 1)
+    failed = failed + parse("2.4703282292062327e-324", 0)
+    failed = failed + parse("2.4703282292062328e-324", 1)
+    failed = failed + parse("2.2250738585072011e-308", 4503599627370495)
+    failed = failed + parse("1.7976931348623157e308", 9218868437227405311)
+    failed = failed + parse("1.7976931348623159e308", 9218868437227405312)
+    failed = failed + parse("1e400", 9218868437227405312)
+    failed = failed + parse("-1e400", 18442240474082181120)
+    failed = failed + parse("1e-400", 0)
+    failed = failed + parse("0.30000000000000004", 4599075939470750516)
+    failed = failed + parse("3.14159265358979323846264338327950288", 4614256656552045848)
+    failed = failed + parse("0x10", 4625196817309499392)
+    failed = failed + parse("0x1p-3", 4593671619917905920)
+    failed = failed + parse("0x1.8p1", 4613937818241073152)
+    failed = failed + parse("0X.8P1", 4607182418800017408)
+    failed = failed + parse("-0x1.fffffffffffff8p0", 13835058055282163712)
+    failed = failed + parse("0x1p1024", 9218868437227405312)
+    failed = failed + parse("inf", 9218868437227405312)
+    failed = failed + parse("-Infinity", 18442240474082181120)
+    failed = failed + parse("NaN", 9221120237041090560)
+    failed = failed + invalid("")
+    failed = failed + invalid("-")
+    failed = failed + invalid("+")
+    failed = failed + invalid(".")
+    failed = failed + invalid("1e")
+    failed = failed + invalid("1e+")
+    failed = failed + invalid("1.5kg")
+    failed = failed + invalid(" 1")
+    failed = failed + invalid("1 ")
+    failed = failed + invalid("1_0")
+    failed = failed + invalid("1..2")
+    failed = failed + invalid("0x")
+    failed = failed + invalid("0x.p1")
+    failed = failed + invalid("infin")
+    failed = failed + invalid("nan(")
+    failed = failed + invalid("--1")
+    failed = failed + invalid("1e5e5")
+    failed = failed + roundTrip("0.1")
+    failed = failed + roundTrip("123456.789")
+    failed = failed + roundTrip("1e-05")
+    failed = failed + roundTrip("1.5e+300")
+    failed = failed + roundTrip("-2.5")
+    failed = failed + roundTrip("100")
+    if (failed != 0) {
+        println("FAIL ".concat(failed.toString(), " rows"))
+        return 1
+    }
+    println("PASS")
+    return 0
+}

@@ -1,0 +1,116 @@
+// The two builtins a `for` over a non-`Int` integer range lowers to (sema/ranges.psm):
+// how many values the range visits, and the k-th of them.
+//
+// Both work in 64 bits whatever the bounds' type, because the distance between two
+// values of any integer type fits an unsigned 64-bit one: sign extension makes
+// `hi - lo` exact for a signed type, and zero extension for an unsigned one. The
+// count is therefore never wrapped, and the caller can refuse one a counter cannot
+// hold instead of running a loop that is silently shorter.
+
+import ast.nodes
+import ast.types
+import ir.bridge
+import common.int_builtins
+
+private fn rangeWiden(key: String, value: String, signed: Bool) -> String {
+    if (key.equals("i64")) { return value }
+    if (signed) { return ir_get_temp_name(ir_sext(key, value, "i64")) }
+    return ir_get_temp_name(ir_zext(key, value, "i64"))
+}
+
+// `__builtin_range_count(lo, hi, step, included)`: the span between the bounds,
+// whichever is larger, divided into steps. `a..<b` visits a value per whole step and
+// one more for a part-step left over; `a..b` visits the bound too.
+private fn generateRangeCount(expr: ASTNode) -> String {
+    let lo = ptr_to_node(expr.child2)
+    let hi = ptr_to_node(lo.next)
+    let step = ptr_to_node(hi.next)
+    let included = ptr_to_node(step.next)
+    let boundT = nodeGetType(lo)
+    let key = typeIrKey(boundT)
+    let signed = typeIntIsUnsigned(boundT) == false
+
+    let loValue = generateExpression(lo)
+    let hiValue = generateExpression(hi)
+    let stepValue = generateExpression(step)
+    let includedValue = generateExpression(included)
+
+    let mut ascending = ""
+    if (signed) {
+        ascending = ir_get_temp_name(ir_icmp_sle(key, loValue, hiValue))
+    } else {
+        ascending = ir_get_temp_name(ir_icmp_ule(key, loValue, hiValue))
+    }
+    let lo64 = rangeWiden(key, loValue, signed)
+    let hi64 = rangeWiden(key, hiValue, signed)
+    let upSpan = ir_get_temp_name(ir_sub("i64", hi64, lo64))
+    let downSpan = ir_get_temp_name(ir_sub("i64", lo64, hi64))
+    let span = ir_get_temp_name(ir_select("i64", ascending, upSpan, downSpan))
+
+    let step64 = ir_get_temp_name(ir_zext("i32", stepValue, "i64"))
+    let whole = ir_get_temp_name(ir_udiv("i64", span, step64))
+    let remainder = ir_get_temp_name(ir_urem("i64", span, step64))
+    let partial = ir_get_temp_name(ir_icmp_ne("i64", remainder, "0"))
+    let partial64 = ir_get_temp_name(ir_zext("i1", partial, "i64"))
+    let excluded = ir_get_temp_name(ir_add("i64", whole, partial64))
+    let withEnd = ir_get_temp_name(ir_add("i64", whole, "1"))
+    return ir_get_temp_name(ir_select("i64", includedValue, withEnd, excluded))
+}
+
+// `__builtin_range_at(lo, k, step, down)`: `lo` moved `k` steps towards the end.
+// `k * step` stays inside the span the count was made from, so the sum is a value
+// of the bounds' type and truncating back to it loses nothing.
+private fn generateRangeAt(expr: ASTNode) -> String {
+    let lo = ptr_to_node(expr.child2)
+    let position = ptr_to_node(lo.next)
+    let step = ptr_to_node(position.next)
+    let down = ptr_to_node(step.next)
+    let boundT = nodeGetType(lo)
+    let key = typeIrKey(boundT)
+    let signed = typeIntIsUnsigned(boundT) == false
+
+    let loValue = generateExpression(lo)
+    let positionValue = generateExpression(position)
+    let stepValue = generateExpression(step)
+    let downValue = generateExpression(down)
+
+    let lo64 = rangeWiden(key, loValue, signed)
+    let position64 = ir_get_temp_name(ir_zext("i32", positionValue, "i64"))
+    let step64 = ir_get_temp_name(ir_zext("i32", stepValue, "i64"))
+    let distance = ir_get_temp_name(ir_mul("i64", position64, step64))
+    let up = ir_get_temp_name(ir_add("i64", lo64, distance))
+    let below = ir_get_temp_name(ir_sub("i64", lo64, distance))
+    let value = ir_get_temp_name(ir_select("i64", downValue, below, up))
+    if (key.equals("i64")) { return value }
+    return ir_get_temp_name(ir_trunc("i64", value, key))
+}
+
+// `__builtin_index_int(i)`. A type that is 32 bits wide and unsigned is cut at
+// `Int.MAX`; a 64-bit one at both ends of `Int`, so a negative index below `Int.MIN`
+// stays negative and a large one stays too large.
+private fn generateIndexInt(expr: ASTNode) -> String {
+    let operand = ptr_to_node(expr.child2)
+    let operandT = nodeGetType(operand)
+    let key = typeIrKey(operandT)
+    let signed = typeIntIsUnsigned(operandT) == false
+    let value = generateExpression(operand)
+    if (key.equals("i32")) {
+        let over = ir_get_temp_name(ir_icmp_ugt("i32", value, "2147483647"))
+        return ir_get_temp_name(ir_select("i32", over, "2147483647", value))
+    }
+    let low = ir_get_temp_name(ir_trunc("i64", value, "i32"))
+    if (signed == false) {
+        let over = ir_get_temp_name(ir_icmp_ugt("i64", value, "2147483647"))
+        return ir_get_temp_name(ir_select("i32", over, "2147483647", low))
+    }
+    let over = ir_get_temp_name(ir_icmp_sgt("i64", value, "2147483647"))
+    let under = ir_get_temp_name(ir_icmp_slt("i64", value, "-2147483648"))
+    let capped = ir_get_temp_name(ir_select("i32", over, "2147483647", low))
+    return ir_get_temp_name(ir_select("i32", under, "-2147483648", capped))
+}
+
+internal fn generateRangeBuiltin(expr: ASTNode, funcName: String) -> String {
+    if (rangeBuiltin(funcName) == 1) { return generateRangeCount(expr) }
+    if (rangeBuiltin(funcName) == 3) { return generateIndexInt(expr) }
+    return generateRangeAt(expr)
+}

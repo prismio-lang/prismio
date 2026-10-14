@@ -27,6 +27,20 @@ public fn intSwapBytesBuiltin(name: String) -> Bool {
     return name.equals("__builtin_swap_bytes")
 }
 
+// The conversions sema inserts so a program need not write `as Int`. 1 is
+// `__builtin_range_count(lo, hi, step, included)`, how many values a `for` over a
+// non-`Int` integer range visits as a U64, and 2 is `__builtin_range_at(lo, k, step,
+// down)`, the k-th of them in the bounds' own type (sema/ranges.psm). 3 is
+// `__builtin_index_int(i)`, an index of a wider or unsigned type as the `Int` a
+// collection takes, saturating at the ends of `Int` so a value no `Int` holds stays
+// out of range instead of wrapping into it. 0 for anything else.
+public fn rangeBuiltin(name: String) -> Int {
+    if (name.equals("__builtin_range_count")) { return 1 }
+    if (name.equals("__builtin_range_at")) { return 2 }
+    if (name.equals("__builtin_index_int")) { return 3 }
+    return 0
+}
+
 // 1 `__builtin_float_bits` (Float -> U64), 2 `__builtin_float_from_bits` (U64 ->
 // Float): the same 64 bits under the other type, as C's memcpy into a uint64_t.
 // 0 for anything else.

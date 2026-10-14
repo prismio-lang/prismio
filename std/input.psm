@@ -106,7 +106,7 @@ public fn inputLines() -> StdinLines {
 
 // What `inputLines()` returns. It holds nothing: the position is the runtime's,
 // so two of these read one sequence between them, as two loops over the input would.
-struct StdinLines {
+public struct StdinLines {
 }
 
 impl Iterator for StdinLines {

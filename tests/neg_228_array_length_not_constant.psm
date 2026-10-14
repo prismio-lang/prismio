@@ -1,0 +1,9 @@
+// expect-error: an array's length must be a constant: `count` is `let mut`, so its value can change
+import std.io
+
+let mut count: Int = 4
+
+fn main() -> Int {
+    let mut a: Array<Int, count>
+    return 0
+}

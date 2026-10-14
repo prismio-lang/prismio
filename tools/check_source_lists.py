@@ -4,7 +4,8 @@
 Two sets of C files are written down in several places, and each place is
 someone's source of truth:
 
-- **The compiler's sources** -- every `runtime/*.c` -- are the `native` sources
+- **The compiler's sources** -- every `runtime/*.c`, and `runtime/*.cpp` for the LLVM
+  bridge -- are the `native` sources
   of the `prismio` target in `build.ums`, which is how `prismio build` makes a
   compiler, and `RUNTIME_SOURCES` in both bootstrap scripts, which is how a
   compiler is made from the seed with no compiler at all.
@@ -163,7 +164,8 @@ def main() -> int:
         # Every .c in runtime/ is a compiler source. A file nobody compiles is
         # dead weight at best and a silently-missing feature at worst.
         on_disk = sorted(
-            p.name for p in RUNTIME.glob("*.c") if p.name not in IGNORED_SOURCES
+            p.name for p in [*RUNTIME.glob("*.c"), *RUNTIME.glob("*.cpp")]
+            if p.name not in IGNORED_SOURCES
         )
         compare("runtime/*.c on disk vs build.ums native sources", on_disk, sorted(compiler))
         compare("tools/bootstrap.ps1 $runtimeSources", bootstrap_ps1_list(), compiler)

@@ -1,0 +1,119 @@
+// Stride tiling (src/ir/tiling.psm): a nest that marks a list at a stride runs one
+// cache-sized window at a time, and must leave the list exactly as the loop as
+// written would.
+//
+// Each shape runs below two windows (the plain loop), at the edge, and across
+// several, and the adversarial halves aim at the copy's conditions: a guard index
+// past the first window, which hands over to the plain loop midway; a negative
+// start and a step that wraps, which hand over before anything is stored; more
+// live iterations than the copy records, which runs it in batches. The expected
+// values come from a model of the language: `Int` wraps at 32 bits, an
+// out-of-range read is false or 0, an out-of-range write is dropped.
+//
+// A loop marked `// tile` must be the one tiled, and no other: the harness reads
+// PRISMIO_TILE_TRACE, so a copy that stops being emitted cannot pass as one that
+// gave the right answers.
+
+import std.io
+
+fn checksumBools(v: Vec<Bool>) -> Int {
+    let mut acc = 0
+    for i in 0..<v.length {
+        if (v[i]) { acc = (acc + i % 1000 + 1) % 1000000007 }
+    }
+    return acc
+}
+
+fn checksumInts(v: Vec<Int>) -> Int {
+    let mut acc = 0
+    for i in 0..<v.length {
+        acc = (acc + v[i] * (i % 1000 + 1)) % 1000000007
+    }
+    return acc
+}
+
+// The sieve as written, with its guard read `shift` places along.
+fn sieve(n: Int, shift: Int) -> Int {
+    let mut prime = Vec<Bool>.filled(n + 1, true)
+    prime[0] = false
+    prime[1] = false
+    let mut p = 2
+    while (p * p <= n) {  // tile
+        if (prime[p + shift]) {
+            let mut multiple = p * p
+            while (multiple <= n) {
+                prime[multiple] = false
+                multiple = multiple + p
+            }
+        }
+        p = p + 1
+    }
+    return checksumBools(prime)
+}
+
+// No guard, `Int` elements, a strict bound and a mark that is a variable.
+fn strided(n: Int, count: Int, offset: Int, scale: Int, mark: Int) -> Int {
+    let mut v = Vec<Int>.filled(n, 0)
+    let mut p = 1
+    while (p <= count) {  // tile
+        let mut m = p + offset
+        while (m < n) {
+            v[m] = mark
+            m = m + p * scale
+        }
+        p = p + 1
+    }
+    return checksumInts(v)
+}
+
+// The stored value reads the list, so stores no longer commute: never tiled.
+fn readback(n: Int) -> Int {
+    let mut v = Vec<Int>.filled(n, 1)
+    let mut p = 2
+    while (p < 40) {
+        let mut m = p
+        while (m < n) {
+            v[m] = v[p] + 1
+            m = m + p
+        }
+        p = p + 1
+    }
+    return checksumInts(v)
+}
+
+fn check(label: String, got: Int, want: Int) -> Int {
+    if (got != want) {
+        println(label)
+        println(got)
+        return 1
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + check("FAIL: sieve tiny", sieve(10, 0), 21)
+    bad = bad + check("FAIL: sieve one window", sieve(1000, 0), 76295)
+    bad = bad + check("FAIL: sieve under two windows", sieve(131071, 0), 6136943)
+    bad = bad + check("FAIL: sieve two windows", sieve(131072, 0), 6136943)
+    bad = bad + check("FAIL: sieve odd size", sieve(200003, 0), 9027801)
+    bad = bad + check("FAIL: sieve benchmark size", sieve(400000, 0), 16983391)
+    bad = bad + check("FAIL: sieve guard past the window", sieve(200000, 65530), 20053909)
+    bad = bad + check("FAIL: sieve guard before the list", sieve(200000, 0 - 3), 24360787)
+
+    bad = bad + check("FAIL: strided", strided(100000, 50, 0, 3, 7), 287173803)
+    bad = bad + check("FAIL: strided in batches", strided(100000, 5000, 20000, 37, 7), 67846331)
+    bad = bad + check("FAIL: strided negative start", strided(100000, 50, 0 - 3, 3, 7), 287244293)
+    bad = bad + check("FAIL: strided late start", strided(100000, 50, 70000, 3, 7), 86207555)
+    bad = bad + check("FAIL: strided one window", strided(20000, 50, 0, 3, 7), 57480514)
+    bad = bad + check("FAIL: strided wrapping step", strided(100000, 50, 0, 700000000, 7), 9275)
+    bad = bad + check("FAIL: strided under two windows", strided(32768, 3, 0, 1, 9), 146801655)
+    bad = bad + check("FAIL: strided two windows", strided(32769, 3, 0, 1, 9), 146808576)
+
+    bad = bad + check("FAIL: readback", readback(50000), 104845479)
+
+    if (bad != 0) { return 1 }
+    println("PASS: stride tiling")
+    return 0
+}

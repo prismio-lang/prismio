@@ -95,6 +95,27 @@
 #define PRISMIO_TARGETS 1
 #define PRISMIO_LLVM_TARGET_LIST(X) X(AArch64) X(X86) X(WebAssembly)
 
+// runtime/llvm_bridge.cpp: what LLVM-C cannot say, behind C entry points. It needs
+// LLVM's C++ API linked into the compiler, which macOS and Linux have (static
+// LLVM) and Windows does not yet (LLVM-C.dll exports the C API only), so Windows
+// keeps the C path until it links LLVM statically too (docs/LLVM_BRIDGE_PLAN.md,
+// step 2).
+#ifndef _WIN32
+#define PRISMIO_LLVM_BRIDGE 1
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Materialises one function of a lazily loaded module. 0 on success; otherwise
+// `*error`, when given, is a malloc'd message.
+int prismio_llvm_materialize(LLVMValueRef function, char** error);
+// LLVMLinkModules2 with Linker::LinkOnlyNeeded: only the definitions `dst`
+// declares, and what they reach, are linked. Consumes `src`. 0 on success.
+int prismio_llvm_link_only_needed(LLVMModuleRef dst, LLVMModuleRef src);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 #else
 
 #include <stddef.h> // size_t

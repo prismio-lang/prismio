@@ -15,6 +15,7 @@
 // checked the moment its syntax drifts.
 
 import std.io
+import std.string
 // Deliberately an extern rather than `std.string`: an opaque extern gives this
 // function its own allocation site, and the AIF facts asserted below are
 // per-site. Native `concat` shares one site across every caller.
@@ -41,7 +42,7 @@ fn direct() -> String {
 // nothing to repair.
 fn local() -> Int {
     let s = str_concat("no", "hops")
-    return __builtin_string_len(s)
+    return s.length
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {
@@ -61,8 +62,8 @@ fn main() -> Int {
     let mut bad = 0
 
     let b = boxed()
-    bad = bad + check("boxed", __builtin_string_len(b.item), 7)
-    bad = bad + check("direct", __builtin_string_len(direct()), 6)
+    bad = bad + check("boxed", b.item.length, 7)
+    bad = bad + check("direct", direct().length, 6)
     bad = bad + check("local", local(), 6)
 
     if (bad == 0) {

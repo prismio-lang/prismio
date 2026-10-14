@@ -36,7 +36,10 @@ tree: it is a release asset, and `bootstrap/seed.json` pins which one by version
 SHA-256 (`tools/fetch_seed.py` downloads and checks it). The gate builds from it, so a
 commit is releasable only while the pinned seed can still parse `src/`. A new seed is
 cut *after* a tag, from the compiler that was tagged (step 5), so there is nothing to
-refresh before the gate. `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `manifest.json`,
+refresh before the gate, **provided `src/` still parses with it**. When it does not (0.2.0: `src/`
+uses visibility markers), the gate and CI cannot pass until a seed that parses `src/` is published, and
+`tools/refresh_seed.sh` followed by an upload and a committed pin has to come first; see
+`docs/KNOWN_ISSUES.md` for how that was left. `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `manifest.json`,
 `graph.html`) is committed with the change that moved it.
 
 ```bash

@@ -140,7 +140,7 @@ private fn aifCountKindTier(kind: Int, tier: Int) -> Int {
 // Every caller prints something after this on the same line, so the guaranteed
 // space never becomes trailing whitespace at end of line.
 private fn aifPad(s: String, width: Int) -> String {
-    let mut n = __builtin_string_len(s)
+    let mut n = s.length
     // Already at or past the column: one space, so the fields stay separable.
     // Tested before the loop, because after it `n >= width` always holds and
     // padding every field by one more character would shift the whole table.
@@ -210,7 +210,7 @@ private fn aifReportPathLeaf(path: String) -> String {
     let mut at = forward
     if (backward > at) { at = backward }
     if (at < 0) { return path }
-    return path.substring(at + 1, __builtin_string_len(path) - at - 1)
+    return path.substring(at + 1, path.length - at - 1)
 }
 
 // Imported files already carry the logical name they were reached by. That is
@@ -475,7 +475,7 @@ private fn aifEmitHumanReport(sourcePath: String, converged: Bool) {
         print("  ")
         print(imported.toString())
         println(" potential site(s) found in imported source.")
-        diag_styled("dim", "  Imported sites are analyzed even when their functions are not executed.")
+        diag_styled("dim", "  Imported sites are listed when the program can call them, whether or not they run.")
         println("")
         diag_styled("dim", "ID   location                 type            storage                           reason")
         println("")

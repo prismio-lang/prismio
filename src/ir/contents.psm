@@ -41,8 +41,8 @@ struct ArrayContents {
     names: Vec<String>,
     // The block whose declaration of it ran, numbered as the walk enters blocks, or 0
     // before the walk reaches it; and how many loops were around that declaration.
-    family: Vec<Int>,
-    depth: Vec<Int>,
+    internal family: Vec<Int>,
+    internal depth: Vec<Int>,
     // The hull of its initial elements and of every store's concrete part.
     concreteLo: Vec<Int>,
     concreteHi: Vec<Int>,
@@ -59,8 +59,8 @@ struct ArrayContents {
     readWriter: Vec<Int>,
     readSlot: Vec<Int>,
     // The settled bound; an empty interval until settle(), and where there is none.
-    lo: Vec<Int>,
-    hi: Vec<Int>
+    internal lo: Vec<Int>,
+    internal hi: Vec<Int>
 }
 
 // A stored value's form; see the top of this file. An absent part is

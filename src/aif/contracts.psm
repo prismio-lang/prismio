@@ -43,7 +43,7 @@ private fn aifDeclaredContract(name: String, index: Int) -> Int {
     if (text.equals("out")) { return AIF_FFI_OUT }
 
     if (text.startsWith("retain_in:")) {
-        let k = text.substring(10, __builtin_string_len(text) - 10).parseInt().unwrapOr(0)
+        let k = text.substring(10, text.length - 10).parseInt().unwrapOr(0)
         return AIF_FFI_RETAIN_IN_BASE + k
     }
 
@@ -125,6 +125,7 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     if (name.equals("__builtin_min")) { return AIF_FFI_BORROW }
     if (name.equals("__builtin_abs")) { return AIF_FFI_BORROW }
     if (intBitCountBuiltin(name) or intRotateBuiltin(name) or intSwapBytesBuiltin(name)) { return AIF_FFI_BORROW }
+    if (rangeBuiltin(name) > 0) { return AIF_FFI_BORROW }
     if (floatBitsBuiltin(name) > 0) { return AIF_FFI_BORROW }
     if (floatBuiltinArity(name) > 0) { return AIF_FFI_BORROW }
     // Memory, atomics and assembly: integers in, an integer out, nothing retained

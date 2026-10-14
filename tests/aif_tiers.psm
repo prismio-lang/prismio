@@ -18,6 +18,7 @@
 // it had ceased to exist separately.
 
 import std.io
+import std.string
 struct Small {
     a: Int,
     b: Int
@@ -62,7 +63,7 @@ fn tier_zero() -> Int {
 // concat is.
 fn tier_one_string() -> Int {
     let joined = str_concat("a", "b")
-    return __builtin_string_len(joined)
+    return joined.length
 }
 
 // T1 -- a struct, region-bound, but wider than Theta_stack.
@@ -75,7 +76,7 @@ fn tier_one_wide() -> Int {
         f25: "", f26: "", f27: "", f28: "", f29: "", f30: "",
         f31: "", f32: "", f33: ""
     }
-    return __builtin_string_len(w.f01)
+    return w.f01.length
 }
 
 // T1 -- local, small and unaliased, so every fact says T0. It is not T0 because
@@ -100,7 +101,7 @@ fn tier_two() -> Small {
 // A is driven to Shared, which is what T3 tests.
 fn tier_three() -> Int {
     let arg = cli_arg(1)
-    return __builtin_string_len(arg)
+    return arg.length
 }
 
 // T4b -- unknown provenance like tier_three, so A is Shared, but the type lies
@@ -114,7 +115,7 @@ fn tier_four_cyclic() -> Int {
 // descends into the elements; the array itself is a site either way.
 fn tier_array_elements() -> Int {
     let parts = [str_concat("a", "b"), str_concat("c", "d")]
-    return __builtin_string_len(parts[0])
+    return (parts[0]).length
 }
 
 fn main() -> Int {

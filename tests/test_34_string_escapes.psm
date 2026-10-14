@@ -21,7 +21,7 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     // \n decodes to one character, not two
     let nl = "a\nb"
-    if (__builtin_string_len(nl) != 3) {
+    if (nl.length != 3) {
         return fail("\\n should decode to a single character")
     }
     if (nl.charAt(1) != '\n') {
@@ -30,7 +30,7 @@ fn main() -> Int {
 
     // \t
     let tab = "a\tb"
-    if (__builtin_string_len(tab) != 3) {
+    if (tab.length != 3) {
         return fail("\\t should decode to a single character")
     }
     if (tab.charAt(1) != '\t') {
@@ -39,7 +39,7 @@ fn main() -> Int {
 
     // \\ collapses to one backslash
     let back = "a\\b"
-    if (__builtin_string_len(back) != 3) {
+    if (back.length != 3) {
         return fail("\\\\ should decode to a single backslash")
     }
     if (back.charAt(1) != '\\') {
@@ -48,7 +48,7 @@ fn main() -> Int {
 
     // \" does not terminate the literal
     let quoted = "say \"hi\""
-    if (__builtin_string_len(quoted) != 8) {
+    if (quoted.length != 8) {
         return fail("escaped quotes should not end the literal")
     }
     if (quoted.charAt(4) != '"') {
@@ -68,18 +68,18 @@ fn main() -> Int {
     if (path.equals("C:\\dir\\file.txt") == false) {
         return fail("path with escaped backslashes did not round-trip")
     }
-    if (__builtin_string_len(path) != 15) {
+    if (path.length != 15) {
         return fail("path length after decoding is wrong")
     }
 
     // strings with no escapes still work (the fast path)
     let plain = "no escapes here"
-    if (__builtin_string_len(plain) != 15) {
+    if (plain.length != 15) {
         return fail("plain string length changed")
     }
 
     // an empty string is still empty
-    if (__builtin_string_len("") != 0) {
+    if (("").length != 0) {
         return fail("empty string should stay empty")
     }
 

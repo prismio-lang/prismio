@@ -9,27 +9,31 @@
 // `isa-debug-exit` device at 0xF4, whose written value becomes the emulator's exit
 // status as (value << 1) | 1.
 
+import std.raw
+import std.asm
+import std.port
+
 let MODE = 0
 
 export naked section(".note.Xen") align(4) fn pvh_note() {
-    __builtin_asm(".align 4\n.long 4\n.long 4\n.long 18\n.asciz \"Xen\"\n.long _start")
+    asm(".align 4\n.long 4\n.long 4\n.long 18\n.asciz \"Xen\"\n.long _start")
 }
 
 export naked section(".text.boot") fn _start() {
-    __builtin_asm("movl $$__stack_top, %esp\ncall main\n1: hlt\njmp 1b")
+    asm("movl $$__stack_top, %esp\ncall main\n1: hlt\njmp 1b")
 }
 
 fn put(c: U8) {
-    __builtin_port_out_u8(0x3F8, c)
+    portOutU8(0x3F8, c)
 }
 
 fn puts(text: Ptr) {
-    let mut at = __builtin_ptr_addr(text)
-    let mut byte = __builtin_mem_load_u8(at)
+    let mut at = addressOf(text)
+    let mut byte = volatileLoadU8(at)
     while (byte != 0) {
         put(byte)
         at = at + 1
-        byte = __builtin_mem_load_u8(at)
+        byte = volatileLoadU8(at)
     }
 }
 
@@ -39,7 +43,7 @@ fn put_int(value: Int) {
 }
 
 fn halt(status: U8) {
-    __builtin_port_out_u8(0xF4, status)
+    portOutU8(0xF4, status)
     while (true) {}
 }
 
@@ -61,7 +65,7 @@ fn main() -> Int {
     put(10)
     // Port reads as well as writes: the serial port's line status register has its
     // transmitter-empty bits set once the byte above has gone.
-    if ((__builtin_port_in_u8(0x3FD) & 0x60) == 0) { panic("line status") }
+    if ((portInU8(0x3FD) & 0x60) == 0) { panic("line status") }
     if (MODE == 1) {
         panic("boom")
     }

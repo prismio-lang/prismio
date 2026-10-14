@@ -1,0 +1,8 @@
+// expect-error: field `tag` of `Point` is internal to the package that declares it
+import std.io
+import visibility.shapes
+
+fn main() -> Int {
+    let p = makePoint(1)
+    return p.tag
+}

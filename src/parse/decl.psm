@@ -40,8 +40,8 @@ impl Parser {
                 // marker on a type or a global would be a promise the compiler does
                 // not keep -- which is worse than an error.
                 diag_error_at_code("P3001", marker.file, marker.line, marker.col, marker.len,
-                              "`".concat(markerText, "` is only accepted on a function or an `extern` declaration in v0.1"))
-                diag_note("a visibility marker on a type or a global is not enforced yet, and accepting it would promise that it is")
+                              "`".concat(markerText, "` is only accepted on a function, a struct, a global `let` or an `extern` declaration"))
+                diag_note("a visibility marker on an enum is not enforced yet, and accepting it would promise that it is")
             }
             return declaration
         }
@@ -129,12 +129,27 @@ impl Parser {
 
 
 impl Parser {
+    // A visibility word that begins a field: `public x: Int`. It is a marker only
+    // when another name follows, so a field called `public` still reads as one.
+    private fn atFieldMarker(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        let word = self.current().value
+        if (word.equals("public") == false and word.equals("private") == false
+                and word.equals("internal") == false) { return false }
+        return self.peek().type == TokenType.IDENTIFIER
+    }
+}
+
+
+impl Parser {
     // Whether the declaration after a marker is one whose visibility is checked:
-    // a function, which overload resolution filters, or either `extern` form, which
-    // the per-file extern table in runtime/ir_symbols.c filters.
+    // a function, which overload resolution filters, a global `let`, which every
+    // read of its name filters (semaCheckGlobalAccess), or either `extern` form,
+    // which the per-file extern table in runtime/ir_symbols.c filters.
     private fn visibilityIsEnforced(self) -> Bool {
         let next = self.peek()
         return next.value.equals("fn") or next.value.equals("extern") or next.value.equals("prop")
+            or next.value.equals("let") or next.value.equals("struct") or self.isStructModifierWord(next.value)
             or next.value.equals("cold") or self.isFnModifierWord(next.value)
     }
 }
@@ -635,7 +650,13 @@ impl Parser {
             // one. Every caller names the constructor before calling, so the
             // refusal can say which it is; a refused number is not kept, and no pass
             // after this one sees anything but types in another argument list.
-            if (self.check(TokenType.NUMBER_LITERAL)) {
+            if (node.s1.equals("Array") and nodeExists(args.head)) {
+                // The length: a constant expression, read tighter than `>` so the
+                // closing bracket ends it (`Array<U32, N * N>`).
+                self.lengthDepth = self.lengthDepth + 1
+                nodeListPush(args, self.parseExpression(6))
+                self.lengthDepth = self.lengthDepth - 1
+            } else if (self.check(TokenType.NUMBER_LITERAL)) {
                 let length = self.node(NodeKind.LITERAL_EXPR)
                 length.i1 = TokenType.NUMBER_LITERAL as Int
                 length.s1 = self.current().value
@@ -671,7 +692,7 @@ impl Parser {
         let mut ok = element.kind == NodeKind.TYPE_ANNOTATION
         if (nodeExists(second)) {
             let length = ptr_to_node(second)
-            ok = ok and length.kind == NodeKind.LITERAL_EXPR and nodeExists(length.next) == false
+            ok = ok and length.kind != NodeKind.TYPE_ANNOTATION and nodeExists(length.next) == false
         }
         typeNode.s1 = ""
         typeNode.i1 = 1
@@ -1070,7 +1091,7 @@ impl Parser {
         }
 
         if (self.checkVal(TokenType.SEPARATOR, "(")) {
-            diag_error_at_code("P3002", current.file, current.line, current.col, __builtin_string_len(name),
+            diag_error_at_code("P3002", current.file, current.line, current.col, name.length,
                 "the ".concat(diagQuote(name), " contract takes no argument"))
             diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
         }
@@ -1298,6 +1319,13 @@ impl Parser {
         if (isProperty) { nodeMarkProperty(fnNode) }
         let name = self.current()
         fnNode.s1 = name.value
+        // Written inside another function's body: `outer$name`, private, and found by
+        // the calls renameNestedCalls rewrites. Anything but a letter cannot be in an
+        // identifier, so the `$` cannot collide with a name the program wrote.
+        let enclosing = self.fnNode
+        if (nodeExists(enclosing)) {
+            fnNode.s1 = self.nestedFunctionPrefix(ptr_to_node(enclosing)).concat("$", name.value)
+        }
         // `fn default() -> Config` inside an `impl`: a type's own default, called
         // `Config.default()`. Only there, because only there is it qualified -- a
         // bare `default` anywhere else is the keyword's value.
@@ -1321,9 +1349,105 @@ impl Parser {
         }
         self.implPosition = 0
         self.parseWhereClause(fnNode)
+        self.fnNode = node_to_ptr(fnNode)
         fnNode.child2 = node_to_ptr(self.parseBlock())
+        self.fnNode = enclosing
 
         return fnNode
+    }
+}
+
+
+impl Parser {
+    // What a function nested directly in `enclosing` is named after: the enclosing
+    // function's own name, which is already `a$b` when that one is nested too. A
+    // method is named for its type as well, since two types may each have a method
+    // `run` that each has a nested `step`.
+    internal fn nestedFunctionPrefix(self, enclosing: ASTNode) -> String {
+        if (nodeExists(self.implType) and enclosing.s1.lastIndexOf("$") < 0) {
+            return ptr_to_node(self.implType).s1.concat("$", enclosing.s1)
+        }
+        return enclosing.s1.clone()
+    }
+
+    // `fn helper(...) { ... }` as a statement of a function body.
+    internal fn atNestedFn(self) -> Bool {
+        if (nodeExists(self.fnNode) == false) { return false }
+        if (self.checkVal(TokenType.KEYWORD, "fn") == false) { return false }
+        return self.peek().type == TokenType.IDENTIFIER
+    }
+
+    // A nested function is an ordinary function that happens to be written where it
+    // is used. It captures nothing -- a name from the enclosing function is unknown
+    // inside it, as it would be anywhere else; reach for a closure to capture -- so it
+    // is lifted out whole, under a name only the enclosing body's calls know.
+    internal fn parseNestedFn(self) {
+        let nested = self.parseFunctionDecl()
+        nested.next = ptr_null()
+        if (nodeExists(self.hoistTail)) {
+            ptr_to_node(self.hoistTail).next = node_to_ptr(nested)
+        } else {
+            self.hoistHead = node_to_ptr(nested)
+        }
+        self.hoistTail = node_to_ptr(nested)
+    }
+}
+
+
+// Rewrites calls of `original` to `mangled` in everything under `node`, which is a
+// node and not its siblings: a hoisted function sits in a chain of its own, and
+// following `next` from one would walk into the others.
+private fn renameCallsIn(node: ASTNode, original: String, mangled: String) {
+    if (node.kind == NodeKind.CALL_EXPR and nodeExists(node.child1)) {
+        let callee = ptr_to_node(node.child1)
+        if (callee.kind == NodeKind.IDENTIFIER_EXPR and callee.s1.equals(original)) {
+            callee.s1 = mangled.clone()
+        }
+    }
+    let mut childPtr = node.child1
+    for slot in 0..<3 {
+        if (slot == 1) { childPtr = node.child2 }
+        if (slot == 2) { childPtr = node.child3 }
+        let mut current = childPtr
+        while (nodeExists(current)) {
+            let child = ptr_to_node(current)
+            renameCallsIn(child, original, mangled)
+            current = child.next
+        }
+    }
+}
+
+impl Parser {
+    // Called when a block that declared nested functions is closed. `statements` is
+    // the block's chain; `mark` is the hoist tail from before it began, so what
+    // follows it is what this block (and anything inside it) hoisted.
+    internal fn renameNestedCalls(self, statements: Ptr, mark: Ptr) {
+        let prefix = self.nestedFunctionPrefix(ptr_to_node(self.fnNode)).concat("$")
+        let mut first = self.hoistHead
+        if (nodeExists(mark)) { first = ptr_to_node(mark).next }
+
+        let mut declared = first
+        while (nodeExists(declared)) {
+            let nested = ptr_to_node(declared)
+            // Only this block's own: `a$b$c` was declared in `a$b`'s body, whose
+            // block renamed it already.
+            if (nested.s1.startsWith(prefix) and nested.s1.substring(prefix.length, nested.s1.length).lastIndexOf("$") < 0) {
+                let original = nested.s1.substring(prefix.length, nested.s1.length)
+
+                let mut statementPtr = statements
+                while (nodeExists(statementPtr)) {
+                    let statement = ptr_to_node(statementPtr)
+                    renameCallsIn(statement, original, nested.s1)
+                    statementPtr = statement.next
+                }
+                let mut sibling = first
+                while (nodeExists(sibling)) {
+                    renameCallsIn(ptr_to_node(sibling), original, nested.s1)
+                    sibling = ptr_to_node(sibling).next
+                }
+            }
+            declared = nested.next
+        }
     }
 }
 
@@ -1488,7 +1612,7 @@ private fn parseImplMethodGenericInfo(header: ASTNode, method: ASTNode) {
 private fn implParamNameAt(params: String, index: Int) -> String {
     let mut start = 0
     let mut seen = 0
-    let n = __builtin_string_len(params)
+    let n = params.length
     for i in 0..n {
         if (i == n or params.charAt(i) == ',') {
             if (seen == index) {
@@ -1504,7 +1628,7 @@ private fn implParamNameAt(params: String, index: Int) -> String {
 private fn implParamCount(params: String) -> Int {
     if (params.equals("")) { return 0 }
     let mut count = 1
-    for i in 0..<__builtin_string_len(params) {
+    for i in 0..<params.length {
         if (params.charAt(i) == ',') { count = count + 1 }
     }
     return count
@@ -1895,6 +2019,8 @@ impl Parser {
         self.expectVal(TokenType.KEYWORD, "struct", "struct")
 
         let structNode = self.node(NodeKind.STRUCT_DECL)
+        // The package, unless a marker says otherwise (parseDeclaration).
+        structNode.i2 = 2
         let name = self.current()
         structNode.s1 = name.value
         self.expectToken(TokenType.IDENTIFIER, "struct name")
@@ -1906,6 +2032,14 @@ impl Parser {
         let fields = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
             let field = self.node(NodeKind.STRUCT_FIELD)
+            // The declaring file, unless a marker says otherwise.
+            field.i2 = 1
+            if (self.atFieldMarker()) {
+                let word = self.current().value
+                if (word.equals("public")) { field.i2 = 0 }
+                if (word.equals("internal")) { field.i2 = 2 }
+                self.advance()
+            }
             let fieldName = self.current()
             field.s1 = fieldName.value
             self.expectToken(TokenType.IDENTIFIER, "field name")

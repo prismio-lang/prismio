@@ -1,4 +1,5 @@
 import std.io
+import std.string
 extern fn executable_directory() -> String
 extern fn join_path(directory: String, filename: String) -> String
 extern fn command_quote_arg(arg: String) -> String
@@ -15,11 +16,11 @@ fn main() -> Int {
     let missing_path = join_path(exe_dir, "definitely_missing_prismio_runtime_split_file.tmp")
     let quoted = command_quote_arg(missing_path)
 
-    if (__builtin_string_len(exe_dir) <= 0) {
+    if (exe_dir.length <= 0) {
         return fail("driver executable_directory should return a path")
     }
 
-    if (__builtin_string_len(quoted) <= __builtin_string_len(missing_path)) {
+    if (quoted.length <= missing_path.length) {
         return fail("driver command_quote_arg should wrap the path")
     }
 

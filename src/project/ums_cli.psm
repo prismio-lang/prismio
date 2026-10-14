@@ -65,7 +65,7 @@ public fn pathLeaf(path: String) -> String {
     let back = path.lastIndexOf('\\')
     if (back > cut) { cut = back }
     if (cut < 0) { return path.clone() }
-    return path.substring(cut + 1, __builtin_string_len(path) - cut - 1)
+    return path.substring(cut + 1, path.length - cut - 1)
 }
 
 // `prismio init [name]` -- a project in the current directory, or in a new one.
@@ -163,7 +163,7 @@ public fn initUmsProject(nameArg: String) -> Int {
 }
 
 public fn umsNativePath(root: String, value: String) -> String {
-    let length = __builtin_string_len(value)
+    let length = value.length
     if (length > 0 and (value.charAt(0) == '/' or
         value.charAt(0) == '\\')) {
         return value.clone()
@@ -299,8 +299,8 @@ public fn buildUmsTarget(workspace: UmsWorkspace, target: UmsTarget) -> Int {
 // the targets named, and where the program's own arguments start (after `--`,
 // for `run`; -1 when there are none).
 struct ProjectRequest {
-    valid: Bool,
-    profile: String,
+    public valid: Bool,
+    public profile: String,
     names: Vec<String>,
     programArgumentsFrom: Int
 }
@@ -609,7 +609,7 @@ public fn cleanUmsProject(profile: String) -> Int {
     }
 
     let host = workspace.project.toolchain.host
-    if (__builtin_string_len(host) > 0 and
+    if (host.length > 0 and
         directoryOf(umsHostExecutable(workspace.project.root, host)).equals(profileRoot)) {
         let toolchainLib = joinPath(workspace.plan.artifactRoot, "lib")
         let toolchainStd = joinPath(workspace.plan.artifactRoot, "stdlib")

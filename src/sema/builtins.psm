@@ -36,6 +36,9 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // Integer bit operations on any width: a count answers an Int, a rotation
     // the operand's own type, so `x.rotateLeft(7)` on a U64 stays a U64.
     if (intBitCountBuiltin(name)) { return typeInt() }
+    if (rangeBuiltin(name) == 1) { return typeU64() }
+    if (rangeBuiltin(name) == 2) { return nodeGetType(ptr_to_node(argPtr)) }
+    if (rangeBuiltin(name) == 3) { return typeInt() }
     if (floatBitsBuiltin(name) == 1) { return typeU64() }
     if (floatBitsBuiltin(name) == 2) { return typeFloat() }
     if (intRotateBuiltin(name) or intSwapBytesBuiltin(name)) {
@@ -315,10 +318,10 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
         // Port I/O is an x86 instruction. Refused on every other target rather than
         // assembled into something the assembler rejects with a line number inside
         // generated text.
-        let triple = ir_target_triple()
-        if (triple.startsWith("x86_64") == false and triple.startsWith("i386") == false
-            and triple.startsWith("i686") == false and triple.startsWith("amd64") == false) {
-            semaErrorAt(call, diagQuote(name).concat(" is an x86 instruction, and the target is ", diagQuote(triple)))
+        // Not asked of std/port.psm's own wrappers: they are compiled for every
+        // target, and refused where a program calls one (semaCheckStdPortCall).
+        if (semaFileIsStandardLibrary(call.file) == false and semaTargetIsX86() == false) {
+            semaErrorAt(call, diagQuote(name).concat(" is an x86 instruction, and the target is ", diagQuote(ir_target_triple())))
             return true
         }
         let mut arity = 2
@@ -358,6 +361,50 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
         semaCheckValue(module, ptr_to_node(template.next), typeU64(), "assembly operand")
     }
     return true
+}
+
+// The compiler's instruction a call to `std.asm`'s `asm`, `asmRead` or `asmWrite`
+// is, or "" for any other name. The assembly text has to be a string literal --
+// it is part of the instruction stream, not data a function could be handed -- so
+// these are the one place a standard-library function is not run: the declaration
+// in std/asm.psm gives the name something to resolve against, and a call to it is
+// lowered here, in place. A function of the same name that is not std's is the
+// program's own and is left alone.
+internal fn semaStdAsmBuiltin(name: String) -> String {
+    let mut builtin = ""
+    if (name.equals("asm")) { builtin = "__builtin_asm" }
+    if (name.equals("asmRead")) { builtin = "__builtin_asm_read" }
+    if (name.equals("asmWrite")) { builtin = "__builtin_asm_write" }
+    if (builtin.equals("")) { return "" }
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) { return builtin }
+    }
+    return ""
+}
+
+internal fn semaTargetIsX86() -> Bool {
+    let triple = ir_target_triple()
+    return triple.startsWith("x86_64") or triple.startsWith("i386")
+        or triple.startsWith("i686") or triple.startsWith("amd64")
+}
+
+// `in` and `out` are x86 instructions, so a call to one of std.port's wrappers is
+// refused on any other target, by the name the program wrote and not by the
+// builtin underneath it. A function of the same name that is not std's is the
+// program's own.
+internal fn semaCheckStdPortCall(callee: ASTNode) {
+    if (callee.s1.startsWith("portIn") == false and callee.s1.startsWith("portOut") == false) { return }
+    if (semaTargetIsX86()) { return }
+    let count = ir_decl_count(callee.s1)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(callee.s1, i))
+        if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) {
+            semaErrorAt(callee, diagQuote(callee.s1).concat(" is an x86 instruction, and the target is ", diagQuote(ir_target_triple())))
+            return
+        }
+    }
 }
 
 internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
@@ -432,6 +479,37 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaCheckValue(module, ptr_to_node(argPtr), typeFloat(), "Float operand")
         } else {
             semaCheckValue(module, ptr_to_node(argPtr), typeU64(), "bits operand")
+        }
+        return true
+    }
+
+    if (rangeBuiltin(name) == 3) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let index = ptr_to_node(argPtr)
+        let indexT = semaExpr(module, index)
+        if (typeIsValid(indexT) and indexT.kind != TypeKind.INT) {
+            semaErrorAt(index, "an index is an integer, found ".concat(typeDisplay(indexT)))
+        }
+        return true
+    }
+    if (rangeBuiltin(name) > 0) {
+        if (semaCheckArity(call, name, argPtr, 4) == false) { return true }
+        let first = ptr_to_node(argPtr)
+        let boundT = semaExpr(module, first)
+        if (typeIsValid(boundT) and boundT.kind != TypeKind.INT) {
+            semaErrorAt(first, "a range's bounds are integers, found ".concat(typeDisplay(boundT)))
+            return true
+        }
+        let second = ptr_to_node(first.next)
+        let third = ptr_to_node(second.next)
+        if (rangeBuiltin(name) == 1) {
+            semaCheckValue(module, second, boundT, "range end")
+            semaCheckValue(module, third, typeInt(), "range step")
+            semaCheckValue(module, ptr_to_node(third.next), typeBool(), "range inclusiveness")
+        } else {
+            semaCheckValue(module, second, typeInt(), "range position")
+            semaCheckValue(module, third, typeInt(), "range step")
+            semaCheckValue(module, ptr_to_node(third.next), typeBool(), "range direction")
         }
         return true
     }

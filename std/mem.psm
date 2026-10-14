@@ -41,8 +41,8 @@
 // store (src/common/mem_builtins.psm). Big-endian is `__builtin_swap_bytes`, one
 // `rev`; a Float is its bits through `__builtin_float_bits`.
 
-import std.eq
-import std.string
+
+from std import {eq, string}
 
 private extern fn mem_alloc(size: Usize) -> Usize
 private extern fn mem_alloc_zeroed(size: Usize) -> Usize
@@ -95,7 +95,7 @@ public fn storeU64(address: Usize, value: U64) { __builtin_mem_store_u64(address
 
 // A run of bytes with a length, read and written at byte offsets. Every access is
 // bounds-checked and a bad one stops the program with the offset and the length.
-struct Buffer {
+public struct Buffer {
     bytes: Vec<U8>
 }
 
@@ -262,7 +262,7 @@ impl Eq for Buffer {
 // a `reset` holds whatever was written into it before. `base` and `limit` are the
 // block's address and length, read once: the block never moves, and reading them
 // through the Buffer on every allocation was two dependent loads and a check.
-struct Arena {
+public struct Arena {
     block: Buffer,
     base: Usize,
     limit: Int,

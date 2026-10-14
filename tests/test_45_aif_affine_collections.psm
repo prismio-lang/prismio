@@ -31,7 +31,7 @@ struct Named {
 // Fall-through. One allocation, released at the closing brace, read on the way.
 fn plain() -> Int {
     let s = "ab".concat("cde")
-    return __builtin_string_len(s)
+    return s.length
 }
 
 // Every iteration allocates two and releases both, newest first. Skipping a drop
@@ -48,7 +48,7 @@ fn per_iteration() -> Int {
     while (i < 200) {
         let digits = int_to_str(i)
         let s = "xy".concat(digits)
-        total = total + __builtin_string_len(s)
+        total = total + s.length
         i = i + 1
     }
     return total
@@ -69,9 +69,9 @@ fn early_exits() -> Int {
         if (i == 6) {
             break
         }
-        total = total + __builtin_string_len(s)
+        total = total + s.length
     }
-    return total + __builtin_string_len(kept)
+    return total + kept.length
 }
 
 // A return unwinds every scope at once, so the outer binding is released on that
@@ -80,15 +80,15 @@ fn early_return(flag: Bool) -> Int {
     let outer = "pq".concat("r")
     if (flag) {
         let inner = "st".concat("uv")
-        return __builtin_string_len(inner) + __builtin_string_len(outer)
+        return inner.length + outer.length
     }
-    return __builtin_string_len(outer)
+    return outer.length
 }
 
 // An explicit `drop` already freed it; the scope exit must not free it again.
 fn explicit() -> Int {
     let s = "uvw".concat("x")
-    let n = __builtin_string_len(s)
+    let n = s.length
     drop(s)
     return n
 }
@@ -102,7 +102,7 @@ fn escapes() -> String {
 // A parameter is borrowed, not owned, so the callee frees nothing -- and the
 // caller's own drop must still find the value intact.
 fn borrows(s: String) -> Int {
-    return __builtin_string_len(s)
+    return s.length
 }
 
 // Reborrowing. `let t = s` on a borrowed binding does not move it, so both names
@@ -110,14 +110,14 @@ fn borrows(s: String) -> Int {
 // allocates nothing.
 fn reborrow(s: String) -> Int {
     let t = s
-    return __builtin_string_len(t) + __builtin_string_len(s)
+    return t.length + s.length
 }
 
 // A string literal is an LLVM global, not an allocation. It registers no site, so
 // nothing frees it -- which is what keeps this from being a free of .rodata.
 fn literal_is_not_owned() -> Int {
     let s = "static"
-    return __builtin_string_len(s)
+    return s.length
 }
 
 // str_substring's out-of-range answer is an owned empty string rather than the
@@ -125,7 +125,7 @@ fn literal_is_not_owned() -> Int {
 // whether the scope exit frees a pointer into read-only memory.
 fn empty_substring_is_owned() -> Int {
     let s = "abc".substring(9, 2)
-    return __builtin_string_len(s)
+    return s.length
 }
 
 // A list is two allocations -- the handle and its element block -- so it is
@@ -156,7 +156,7 @@ fn list_released() -> Int {
 fn reassigned_from_borrow(n: Named) -> Int {
     let mut s = "ab".concat("cd")
     s = n.name
-    return __builtin_string_len(s)
+    return s.length
 }
 
 fn check(label: String, got: Int, want: Int) -> Int {
@@ -189,7 +189,7 @@ fn main() -> Int {
     bad = bad + check("list_released", list_released(), 5)
 
     let e = escapes()
-    bad = bad + check("escapes", __builtin_string_len(e), 3)
+    bad = bad + check("escapes", e.length, 3)
 
     let owned = "bo".concat("rrowed")
     bad = bad + check("borrows", borrows(owned), 8)

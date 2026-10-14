@@ -1,0 +1,11 @@
+// expect-error: cannot assign to `r`, which is not declared `mut` and may already have its value
+// An immutable `let` without a value takes one assignment.
+import std.io
+
+fn main() -> Int {
+    let r: Int
+    r = 1
+    r = 2
+    println(r)
+    return 0
+}

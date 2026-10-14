@@ -1,6 +1,8 @@
 // Memory behaviour: dependent loads, a queue, and bulk movement through raw
 // addresses. The same programs as ../c/memory.c and ../rust/memory.rs.
 
+import std.mem
+import std.raw
 export fn bench_pointer_chase(scale: U32) -> U32 {
     let mut order: Array<U32, 2048>
     let mut next: Array<U32, 2048>
@@ -62,16 +64,16 @@ export fn bench_ring_buffer(scale: U32) -> U32 {
 export fn bench_mem_copy(scale: U32) -> U32 {
     let mut o: Usize = 0
     while (o < 32768) {
-        __builtin_mem_store_u64(0x44000000 + o, ((o as U64) * 0x9E3779B97F4A7C15) ^ 0x5555)
+        storeU64(0x44000000 + o, ((o as U64) * 0x9E3779B97F4A7C15) ^ 0x5555)
         o = o + 8
     }
     let mut r: U32 = 0
     while (r < 288 * scale) {
         o = 0
         while (o < 32768) {
-            let v = __builtin_mem_load_u64(0x44000000 + o)
-            __builtin_mem_store_u64(0x45000000 + o, v)
-            __builtin_mem_store_u64(0x44000000 + o, v + (r as U64) + 1)
+            let v = loadU64(0x44000000 + o)
+            storeU64(0x45000000 + o, v)
+            storeU64(0x44000000 + o, v + (r as U64) + 1)
             o = o + 8
         }
         r = r + 1
@@ -79,7 +81,7 @@ export fn bench_mem_copy(scale: U32) -> U32 {
     let mut sum: U64 = 0
     o = 0
     while (o < 32768) {
-        sum = sum + __builtin_mem_load_u64(0x45000000 + o)
+        sum = sum + loadU64(0x45000000 + o)
         o = o + 8
     }
     return ((sum & 0xFFFFFFFF) as U32) ^ ((sum >> 32) as U32)

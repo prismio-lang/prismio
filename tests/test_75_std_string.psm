@@ -6,10 +6,7 @@
 
 import std.io
 import std.string
-
-// A fresh heap String the test fills itself. std keeps this entry point
-// internal, so a program that wants one raw declares it.
-extern fn str_with_capacity(length: Int) -> String produce(free)
+import std.mem
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -18,24 +15,24 @@ fn fail(message: String) -> Int {
 }
 
 fn searchFixture(seed: Int, length: Int) -> String {
-    let out = str_with_capacity(length)
+    let mut out = Buffer(length)
     let mut i = 0
     while (i < length) {
         // A deterministic non-periodic lowercase fixture. Keeping the alphabet
         // small still gives the candidate filters enough collisions to test.
         let code = (seed * 13 + i * 17 + i * i * 3) % 23
-        __builtin_string_put_byte(out, i, (97 + code) as Char)
+        out.writeU8(i, (97 + code) as U8)
         i = i + 1
     }
-    return out
+    return out.toString()
 }
 
 // Intentionally simple O(n*m) reference for checking the optimized packed-pair
 // and Two-Way implementation. It shares only the representation byte reads,
 // not any search policy or control flow with std.string.
 fn referenceIndexOf(haystack: String, needle: String) -> Int {
-    let hayLength = __builtin_string_len(haystack)
-    let needleLength = __builtin_string_len(needle)
+    let hayLength = haystack.length
+    let needleLength = needle.length
     if (needleLength == 0) { return 0 }
     if (needleLength > hayLength) { return 0 - 1 }
 
@@ -43,8 +40,7 @@ fn referenceIndexOf(haystack: String, needle: String) -> Int {
     while (at <= hayLength - needleLength) {
         let mut offset = 0
         while (offset < needleLength and
-               __builtin_string_byte_at(haystack, at + offset) ==
-               __builtin_string_byte_at(needle, offset)) {
+               haystack.byteAt(at + offset) == needle.byteAt(offset)) {
             offset = offset + 1
         }
         if (offset == needleLength) { return at }
@@ -103,7 +99,7 @@ fn main() -> Int {
         return fail("strFromChar should produce one byte")
     }
     let nativeNulChar = '\0'.toString()
-    if (__builtin_string_len(nativeNulChar) != 0) {
+    if (nativeNulChar.length != 0) {
         return fail("strFromChar should map NUL to the empty string")
     }
     let nativeClone = "copy".clone()

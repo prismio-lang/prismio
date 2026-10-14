@@ -975,6 +975,70 @@ void ir_module_end(void) { /* nothing to flush -- the module is already built */
 static int g_pending_param_noalias[MAX_PENDING_PARAMS];
 static int g_pending_ret_noalias;
 
+// C's rule for a `bool`, a `char` or an 8- or 16-bit integer crossing a call. On
+// most targets the *caller* widens it to 32 bits and the callee trusts that, so a
+// declaration without `zeroext`/`signext` hands C whatever the register's upper
+// bits held. Measured 2026-10-10 on Apple arm64: `extern fn widen(x: U8)` given
+// `301 as U8`, against C's `return x;` (`mov w0, w0`), answered 301, not 45.
+//
+// Not "always add it". Where the ABI has the callee extend, the attribute on an
+// `export fn` makes LLVM assume work no C caller did, and on an extern's return it
+// makes the caller skip work no C callee does. The table is clang's own, read with
+// `clang -target <t> -S -emit-llvm` on each: Apple arm64, x86 SysV, i686 (Windows
+// too) and wasm extend all of them; x86-64 Windows, MSVC and MinGW alike, only
+// `bool`; every other AArch64 none.
+enum { ABI_EXT_NONE, ABI_EXT_ZERO, ABI_EXT_SIGN, ABI_EXT_BOOL };
+static int g_pending_param_ext[MAX_PENDING_PARAMS];
+static int g_pending_ret_ext;
+
+static int abi_ext_kind(const char *kind) {
+    if (strcmp(kind, "zero") == 0) return ABI_EXT_ZERO;
+    if (strcmp(kind, "sign") == 0) return ABI_EXT_SIGN;
+    if (strcmp(kind, "bool") == 0) return ABI_EXT_BOOL;
+    backend_fail("unknown ABI extension kind", kind);
+    return ABI_EXT_NONE;
+}
+
+// The module's own triple, because that is what the object is compiled for; an
+// implicit host build stamps none, and then it is the host's.
+static int abi_target_extends(int ext) {
+    if (ext == ABI_EXT_NONE) return 0;
+    const char *triple = g_module ? LLVMGetTarget(g_module) : NULL;
+    if (!triple || !*triple) triple = ir_target_triple();
+    int apple = strstr(triple, "apple") != NULL || strstr(triple, "darwin") != NULL;
+    int windows = strstr(triple, "windows") != NULL || strstr(triple, "win32") != NULL
+                  || strstr(triple, "mingw") != NULL;
+    if (strncmp(triple, "aarch64", 7) == 0 || strncmp(triple, "arm64", 5) == 0) return apple;
+    if (strncmp(triple, "x86_64", 6) == 0) return !windows || ext == ABI_EXT_BOOL;
+    if (triple[0] == 'i' && strstr(triple, "86-") == triple + 2) return 1;
+    if (strncmp(triple, "wasm", 4) == 0) return 1;
+    return 0;
+}
+
+static void add_abi_ext_attr(LLVMValueRef fn, unsigned index, int ext) {
+    if (!abi_target_extends(ext)) return;
+    const char *name = ext == ABI_EXT_SIGN ? "signext" : "zeroext";
+    unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
+    if (kind) LLVMAddAttributeAtIndex(fn, index, LLVMCreateEnumAttribute(g_ctx, kind, 0));
+}
+
+// A direct call takes these from the callee, so marking the function is enough:
+// every call site, and the definition an `export fn` is, lowers by the same rule.
+static void apply_abi_extensions(LLVMValueRef fn) {
+    unsigned first = g_pending_sret ? 2u : 1u;
+    for (int i = 0; i < g_pending_param_count; i++) {
+        add_abi_ext_attr(fn, first + (unsigned)i, g_pending_param_ext[i]);
+    }
+    if (!g_pending_sret) add_abi_ext_attr(fn, 0u /* LLVMAttributeReturnIndex */, g_pending_ret_ext);
+}
+
+void ir_function_param_extend(const char *kind) {
+    if (g_pending_param_count == 0) backend_fail("ir_function_param_extend before any parameter", kind);
+    g_pending_param_ext[g_pending_param_count - 1] = abi_ext_kind(kind);
+}
+
+void ir_function_return_extend(const char *kind) { g_pending_ret_ext = abi_ext_kind(kind); }
+
 static int array_return_via_pointer(const char *key, LLVMTypeRef *type_out) {
     if (!key || strncmp(key, "arr:", 4) != 0) return 0;
     LLVMTypeRef ty = type_from_key(key);
@@ -1000,6 +1064,8 @@ void ir_function_begin(const char *name, const char *ret_type) {
     g_pending_param_count = 0;
     memset(g_pending_param_noalias, 0, sizeof(g_pending_param_noalias));
     g_pending_ret_noalias = 0;
+    memset(g_pending_param_ext, 0, sizeof(g_pending_param_ext));
+    g_pending_ret_ext = ABI_EXT_NONE;
     g_declaring = 0;
 }
 
@@ -1128,6 +1194,7 @@ void ir_declare_function_end(void) {
     LLVMValueRef fn = materialize_function();
     tag_alloc_fn(fn, g_pending_fn_name);
     tag_free_fn(fn, g_pending_fn_name);
+    apply_abi_extensions(fn);
     if (!g_pending_ret_noalias) return;
     unsigned kind = LLVMGetEnumAttributeKindForName("noalias", 7);
     if (!kind) return;
@@ -1138,6 +1205,7 @@ void ir_declare_function_end(void) {
 void ir_function_body_start(void) {
     g_function = materialize_function();
     apply_param_attrs(g_function);
+    apply_abi_extensions(g_function);
     // Whatever the previous function left set belongs to the previous function's
     // subprogram. Attaching it to an instruction here is not a slightly wrong
     // line, it is a module the verifier rejects -- so it is cleared before the
@@ -7668,6 +7736,16 @@ void ir_release_held_module(void) {
     g_held_path = NULL;
 }
 
+#ifdef PRISMIO_LLVM_BRIDGE
+static int link_library_modules_lazy(LLVMContextRef ctx, LLVMModuleRef dm,
+                                     const char *const *src_irs,
+                                     const int *link_modes, int module_count);
+#else
+static int link_library_modules_whole(LLVMContextRef ctx, LLVMModuleRef dm,
+                                      const char *const *src_irs,
+                                      const int *link_modes, int module_count);
+#endif
+
 int ir_link_library_modules(const char *dest_ir,
                             const char *const *src_irs,
                             const int *link_modes, int module_count,
@@ -7691,6 +7769,57 @@ int ir_link_library_modules(const char *dest_ir,
         LLVMContextDispose(ctx);
         return 1;
     }
+    int failed;
+#ifdef PRISMIO_LLVM_BRIDGE
+    failed = link_library_modules_lazy(ctx, dm, src_irs, link_modes, module_count);
+#else
+    failed = link_library_modules_whole(ctx, dm, src_irs, link_modes, module_count);
+#endif
+
+    if (!failed) prune_unused_imported_definitions(dm);
+    if (!failed && g_hold_merged) {
+        ir_release_held_module();
+        g_held_path = (char *)malloc(strlen(out_path) + 1);
+        if (g_held_path) {
+            strcpy(g_held_path, out_path);
+            g_held_ctx = ctx;
+            g_held_module = dm;
+            return 0;
+        }
+    }
+    if (!failed && LLVMPrintModuleToFile(dm, out_path, &err) != 0) {
+        fprintf(stderr, "ERROR: could not write merged program IR: %s\n",
+                err ? err : "(no detail)");
+        if (err) LLVMDisposeMessage(err);
+        failed = 1;
+    }
+    LLVMDisposeModule(dm);
+    LLVMContextDispose(ctx);
+    return failed;
+}
+
+// The passes every library module gets before it is linked, whichever way it was
+// read. Each is per function and reads only attributes or that function's own
+// body, so on a lazily read module they see exactly the functions materialised.
+static void prepare_library_module(LLVMContextRef ctx, LLVMModuleRef dm,
+                                   LLVMModuleRef sm, int link_mode) {
+    preserve_program_declaration_contracts(dm, sm);
+    clear_packaging_target_attributes(sm);
+    yield_to_workload_stubs(dm, sm);
+    mark_imported_definitions(sm);
+    // Apply one structural policy to both PLIB and runtime boundaries.
+    // Large or call-heavy helpers remain visible to ordinary LTO, but do
+    // not change the greedy inliner's order merely because they were
+    // shipped as bitcode rather than source/archive code.
+    mark_library_interface_functions(dm, sm, 192u);
+    if (link_mode != 1) mark_runtime_structural_invariants(ctx, sm);
+}
+
+#ifndef PRISMIO_LLVM_BRIDGE
+static int link_library_modules_whole(LLVMContextRef ctx, LLVMModuleRef dm,
+                                      const char *const *src_irs,
+                                      const int *link_modes, int module_count) {
+    char *err = NULL;
     int failed = 0;
     for (int i = 0; i < module_count && !failed; i++) {
         const char *role = link_modes[i] == 1
@@ -7714,17 +7843,7 @@ int ir_link_library_modules(const char *dest_ir,
             break;
         }
 
-        preserve_program_declaration_contracts(dm, sm);
-        clear_packaging_target_attributes(sm);
-        yield_to_workload_stubs(dm, sm);
-        mark_imported_definitions(sm);
-        // Apply one structural policy to both PLIB and runtime boundaries.
-        // Large or call-heavy helpers remain visible to ordinary LTO, but do
-        // not change the greedy inliner's order merely because they were
-        // shipped as bitcode rather than source/archive code.
-        mark_library_interface_functions(dm, sm, 192u);
-        if (link_modes[i] != 1) mark_runtime_structural_invariants(ctx, sm);
-
+        prepare_library_module(ctx, dm, sm, link_modes[i]);
         if (LLVMLinkModules2(dm, sm) != 0) {
             fprintf(stderr, "ERROR: could not link Prismio %s module %s\n"
                     "       Reinstall Prismio and try again.\n",
@@ -7732,28 +7851,264 @@ int ir_link_library_modules(const char *dest_ir,
             failed = 1;  // sm is consumed even when linking fails
         }
     }
-
-    if (!failed) prune_unused_imported_definitions(dm);
-    if (!failed && g_hold_merged) {
-        ir_release_held_module();
-        g_held_path = (char *)malloc(strlen(out_path) + 1);
-        if (g_held_path) {
-            strcpy(g_held_path, out_path);
-            g_held_ctx = ctx;
-            g_held_module = dm;
-            return 0;
-        }
-    }
-    if (!failed && LLVMPrintModuleToFile(dm, out_path, &err) != 0) {
-        fprintf(stderr, "ERROR: could not write merged program IR: %s\n",
-                err ? err : "(no detail)");
-        if (err) LLVMDisposeMessage(err);
-        failed = 1;
-    }
-    LLVMDisposeModule(dm);
-    LLVMContextDispose(ctx);
     return failed;
 }
+#else
+// Only what the program reaches is read, materialised and linked.
+//
+// Read whole, the C runtime is 266 definitions parsed and linked into every
+// program and then mostly deleted by prune_unused_imported_definitions: 3.5 ms of
+// parsing and 2 ms of linking for a program that prints one line, which calls a
+// handful of them. So each module is read lazily -- prototypes only -- and the
+// needed set is computed across all of them before anything is linked:
+//
+//   * the roots are the program's declarations that have a use, and every
+//     appending global (`llvm.used`, constructors) a library carries;
+//   * a needed function is materialised and every function or global its body
+//     names joins, looking through constant expressions; a needed global brings
+//     what its initializer names.
+//
+// LinkOnlyNeeded then links what the destination *declares*, so every needed
+// symbol is declared in the program first. That is what lets a module take a
+// function only a later module calls: linked one at a time, the runtime's
+// `str_*` helpers would be skipped before the plib that calls them arrived.
+//
+// A declaration the program never uses, of something a library defines, is
+// deleted rather than linked. The frontend declares runtime entry points it may
+// not call, and reading them whole linked and then pruned those.
+//
+// The merged module has the same functions and globals as the whole-module merge
+// and not the same order: IRMover lays functions out in the order it discovers
+// them, and discovery used to run through bodies that are now never read. That is
+// a different, deterministic layout, which measured as noise (benchmark geomean
+// 1.0007 against 1.0154 for two runs of one compiler, 2026-10-14). A local symbol
+// is never declared in the program: it is linked with whatever reaches it, and a
+// declaration would make the linker rename the library's definition (`f.16`).
+typedef struct {
+    const char* name;      // owned by the LLVM value; stable while it lives
+    size_t len;
+    LLVMValueRef value;    // the library's definition
+    int module;
+    int needed;
+} LibrarySymbol;
+
+typedef struct {
+    LibrarySymbol* slots;
+    size_t cap;
+    size_t count;
+    LLVMValueRef* work;
+    size_t work_count, work_cap;
+} LibrarySymbols;
+
+static unsigned long long library_symbol_hash(const char* name, size_t len) {
+    unsigned long long h = 1469598103934665603ULL;
+    for (size_t i = 0; i < len; i++) { h ^= (unsigned char)name[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+static LibrarySymbol* library_symbol_find(LibrarySymbols* table, const char* name, size_t len) {
+    if (!table->cap || !len) return NULL;
+    size_t i = (size_t)(library_symbol_hash(name, len) & (table->cap - 1));
+    while (table->slots[i].name) {
+        LibrarySymbol* s = &table->slots[i];
+        if (s->len == len && memcmp(s->name, name, len) == 0) return s;
+        i = (i + 1) & (table->cap - 1);
+    }
+    return NULL;
+}
+
+// The first definition wins, as it does when modules are linked in order.
+static void library_symbol_add(LibrarySymbols* table, LLVMValueRef value, int module) {
+    size_t len = 0;
+    const char* name = LLVMGetValueName2(value, &len);
+    if (!name || !len || library_symbol_find(table, name, len)) return;
+    size_t i = (size_t)(library_symbol_hash(name, len) & (table->cap - 1));
+    while (table->slots[i].name) i = (i + 1) & (table->cap - 1);
+    table->slots[i] = (LibrarySymbol){name, len, value, module, 0};
+    table->count++;
+}
+
+// A local symbol is linked with whatever reaches it, and is never named from the
+// program; declaring it there would make it a second, external symbol of the same
+// name, and the linker would rename the library's own definition (`f.16`).
+static int library_symbol_is_local(LLVMValueRef global) {
+    LLVMLinkage linkage = LLVMGetLinkage(global);
+    return linkage == LLVMInternalLinkage || linkage == LLVMPrivateLinkage;
+}
+
+static void library_symbol_need(LibrarySymbols* table, LLVMValueRef global) {
+    size_t len = 0;
+    const char* name = LLVMGetValueName2(global, &len);
+    LibrarySymbol* s = library_symbol_find(table, name, len);
+    if (!s || s->needed) return;
+    s->needed = 1;
+    if (table->work_count == table->work_cap) {
+        table->work_cap = table->work_cap ? table->work_cap * 2 : 256;
+        table->work = (LLVMValueRef*)realloc(table->work, table->work_cap * sizeof(LLVMValueRef));
+    }
+    table->work[table->work_count++] = s->value;
+}
+
+// Every global a value names: itself, or what a constant built from globals --
+// a GEP, a cast, a struct or array of pointers -- is built from.
+static void library_symbols_named_by(LibrarySymbols* table, LLVMValueRef value, int depth) {
+    if (!value || depth > 32) return;
+    if (LLVMIsAGlobalValue(value)) { library_symbol_need(table, value); return; }
+    if (!LLVMIsAConstantExpr(value) && !LLVMIsAConstantStruct(value)
+            && !LLVMIsAConstantArray(value) && !LLVMIsAConstantVector(value)) return;
+    int n = LLVMGetNumOperands(value);
+    for (int k = 0; k < n; k++) library_symbols_named_by(table, LLVMGetOperand(value, k), depth + 1);
+}
+
+static int library_symbols_close(LibrarySymbols* table) {
+    while (table->work_count > 0) {
+        LLVMValueRef value = table->work[--table->work_count];
+        if (LLVMIsAGlobalVariable(value)) {
+            library_symbols_named_by(table, LLVMGetInitializer(value), 0);
+            continue;
+        }
+        if (!LLVMIsAFunction(value)) continue;
+        char* error = NULL;
+        if (prismio_llvm_materialize(value, &error) != 0) {
+            fprintf(stderr, "ERROR: Prismio library function could not be read: %s\n"
+                    "       Reinstall Prismio and try again.\n", error ? error : "?");
+            free(error);
+            return 1;
+        }
+        for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(value); block;
+             block = LLVMGetNextBasicBlock(block)) {
+            for (LLVMValueRef inst = LLVMGetFirstInstruction(block); inst;
+                 inst = LLVMGetNextInstruction(inst)) {
+                int n = LLVMGetNumOperands(inst);
+                for (int k = 0; k < n; k++) library_symbols_named_by(table, LLVMGetOperand(inst, k), 0);
+            }
+        }
+    }
+    return 0;
+}
+
+// Lazily when it is bitcode; a module in text is read whole, and materialising
+// one of its functions is then a no-op.
+static LLVMModuleRef read_library_module(LLVMContextRef ctx, const char* path, const char* role) {
+    LLVMMemoryBufferRef buffer = NULL;
+    LLVMModuleRef module = NULL;
+    char* err = NULL;
+    if (LLVMCreateMemoryBufferWithContentsOfFile(path, &buffer, &err) != 0) {
+        fprintf(stderr, "ERROR: Prismio %s module is unreadable: %s\n"
+                "       Reinstall Prismio and try again.\n", role, path);
+        if (err) LLVMDisposeMessage(err);
+        return NULL;
+    }
+    const char* bytes = LLVMGetBufferStart(buffer);
+    int bitcode = LLVMGetBufferSize(buffer) >= 4 && bytes[0] == 'B' && bytes[1] == 'C';
+    if (bitcode ? LLVMGetBitcodeModuleInContext2(ctx, buffer, &module) != 0
+                : LLVMParseIRInContext(ctx, buffer, &module, &err) != 0) {
+        fprintf(stderr, "ERROR: Prismio %s module is invalid: %s\n"
+                "       Reinstall Prismio and try again.\n", role, path);
+        if (err) LLVMDisposeMessage(err);
+        return NULL;
+    }
+    return module;
+}
+
+static int link_library_modules_lazy(LLVMContextRef ctx, LLVMModuleRef dm,
+                                     const char *const *src_irs,
+                                     const int *link_modes, int module_count) {
+    LLVMModuleRef* modules = (LLVMModuleRef*)calloc((size_t)module_count + 1, sizeof(LLVMModuleRef));
+    LibrarySymbols table = {0};
+    int failed = modules == NULL;
+    size_t globals = 0;
+    for (int i = 0; i < module_count && !failed; i++) {
+        modules[i] = read_library_module(ctx, src_irs[i], link_modes[i] == 1 ? "standard-library" : "runtime");
+        if (!modules[i]) { failed = 1; break; }
+        for (LLVMValueRef f = LLVMGetFirstFunction(modules[i]); f; f = LLVMGetNextFunction(f)) globals++;
+        for (LLVMValueRef g = LLVMGetFirstGlobal(modules[i]); g; g = LLVMGetNextGlobal(g)) globals++;
+    }
+    if (!failed) {
+        table.cap = 64;
+        while (table.cap < globals * 2) table.cap *= 2;
+        table.slots = (LibrarySymbol*)calloc(table.cap, sizeof(LibrarySymbol));
+        failed = table.slots == NULL;
+    }
+    for (int i = 0; i < module_count && !failed; i++) {
+        for (LLVMValueRef f = LLVMGetFirstFunction(modules[i]); f; f = LLVMGetNextFunction(f)) {
+            if (!LLVMIsDeclaration(f)) library_symbol_add(&table, f, i);
+        }
+        for (LLVMValueRef g = LLVMGetFirstGlobal(modules[i]); g; g = LLVMGetNextGlobal(g)) {
+            if (!LLVMIsDeclaration(g)) library_symbol_add(&table, g, i);
+        }
+    }
+
+    if (!failed) {
+        // A program definition is never replaced (yield_to_workload_stubs), so a
+        // library definition of the same name is not needed for it.
+        for (LLVMValueRef f = LLVMGetFirstFunction(dm); f; ) {
+            LLVMValueRef next = LLVMGetNextFunction(f);
+            size_t len = 0;
+            const char* name = LLVMGetValueName2(f, &len);
+            LibrarySymbol* s = library_symbol_find(&table, name, len);
+            if (s && !LLVMIsDeclaration(f)) {
+                s->needed = 1;    // never linked, never a root
+            } else if (s && !LLVMGetFirstUse(f)) {
+                LLVMDeleteFunction(f);
+            } else if (s) {
+                library_symbol_need(&table, f);
+            }
+            f = next;
+        }
+        for (LLVMValueRef g = LLVMGetFirstGlobal(dm); g; g = LLVMGetNextGlobal(g)) {
+            if (LLVMIsDeclaration(g)) library_symbol_need(&table, g);
+        }
+        for (int i = 0; i < module_count; i++) {
+            for (LLVMValueRef g = LLVMGetFirstGlobal(modules[i]); g; g = LLVMGetNextGlobal(g)) {
+                if (LLVMGetLinkage(g) == LLVMAppendingLinkage) {
+                    library_symbols_named_by(&table, LLVMGetInitializer(g), 0);
+                }
+            }
+        }
+        failed = library_symbols_close(&table);
+    }
+
+    // Declared in the program, in library order, so LinkOnlyNeeded takes each one.
+    for (int i = 0; i < module_count && !failed; i++) {
+        for (LLVMValueRef f = LLVMGetFirstFunction(modules[i]); f; f = LLVMGetNextFunction(f)) {
+            size_t len = 0;
+            const char* name = LLVMGetValueName2(f, &len);
+            LibrarySymbol* s = library_symbol_find(&table, name, len);
+            if (!s || s->value != f || !s->needed || library_symbol_is_local(f)
+                    || LLVMGetNamedFunction(dm, name)) continue;
+            LLVMAddFunction(dm, name, LLVMGlobalGetValueType(f));
+        }
+        for (LLVMValueRef g = LLVMGetFirstGlobal(modules[i]); g; g = LLVMGetNextGlobal(g)) {
+            size_t len = 0;
+            const char* name = LLVMGetValueName2(g, &len);
+            LibrarySymbol* s = library_symbol_find(&table, name, len);
+            if (!s || s->value != g || !s->needed || library_symbol_is_local(g)
+                    || LLVMGetNamedGlobal(dm, name)) continue;
+            LLVMAddGlobal(dm, LLVMGlobalGetValueType(g), name);
+        }
+    }
+
+    for (int i = 0; i < module_count; i++) {
+        if (failed) {
+            if (modules[i]) LLVMDisposeModule(modules[i]);
+            continue;
+        }
+        prepare_library_module(ctx, dm, modules[i], link_modes[i]);
+        int linked = prismio_llvm_link_only_needed(dm, modules[i]);
+        if (linked != 0) {
+            fprintf(stderr, "ERROR: could not link Prismio %s module %s\n"
+                    "       Reinstall Prismio and try again.\n",
+                    link_modes[i] == 1 ? "standard-library" : "runtime", src_irs[i]);
+            failed = 1;  // consumed even when linking fails
+        }
+    }
+    free(table.slots);
+    free(table.work);
+    free(modules);
+    return failed;
+}
+#endif
 
 // Runs `main` of the module in `ir_path` -- the program's IR with the imported
 // standard-library bitcode already merged in (compiler_jit_run, build_driver.c).

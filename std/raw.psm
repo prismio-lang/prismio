@@ -1,0 +1,119 @@
+// Hardware access with no C runtime under it: volatile loads and stores for
+// memory-mapped registers, atomics on a 32-bit word, a memory barrier, the
+// conversions between a pointer and its address, and a Float's bit pattern.
+//
+//     import std.raw
+//
+//     volatileStoreU32(0x09000000, 65)         // a byte to a UART's data register
+//     let word = 0x44100000
+//     atomicAddU32(word, 1)
+//     fence()
+//     let level = volatileLoadU8(addressOf(text))
+//
+// Each function is one instruction or a few, written over the compiler's own
+// builtins; none calls the runtime, so a `--freestanding` kernel that imports this and
+// nothing that allocates links nothing but the failure core. The plain, non-volatile
+// `loadU32` and `storeU32` are `std.mem`'s, because that module is where memory a
+// program manages itself lives.
+//
+// **Nothing here checks anything.** An address is a number, and a load or store
+// through a bad one is as undefined as it is in C. What the builtins do refuse, at
+// compile time, is a value of the wrong width.
+
+// An address and the pointer it names, for the two places a program holds one as a
+// number: handing a `String` or a struct to code that works in addresses, and
+// turning an address back into something the language can pass on. Neither moves
+// or frees anything.
+public fn addressOf(pointer: Ptr) -> Usize { return __builtin_ptr_addr(pointer) }
+public fn pointerAt(address: Usize) -> Ptr { return __builtin_addr_ptr(address) }
+
+// Volatile access, for memory-mapped hardware: each call is one load or store of
+// that width, in program order, and is never merged, reordered with another
+// volatile access or dropped because nothing reads the result.
+public fn volatileLoadU8(address: Usize) -> U8 { return __builtin_mem_vload_u8(address) }
+public fn volatileLoadU16(address: Usize) -> U16 { return __builtin_mem_vload_u16(address) }
+public fn volatileLoadU32(address: Usize) -> U32 { return __builtin_mem_vload_u32(address) }
+public fn volatileLoadU64(address: Usize) -> U64 { return __builtin_mem_vload_u64(address) }
+public fn volatileStoreU8(address: Usize, value: U8) { __builtin_mem_vstore_u8(address, value) }
+public fn volatileStoreU16(address: Usize, value: U16) { __builtin_mem_vstore_u16(address, value) }
+public fn volatileStoreU32(address: Usize, value: U32) { __builtin_mem_vstore_u32(address, value) }
+public fn volatileStoreU64(address: Usize, value: U64) { __builtin_mem_vstore_u64(address, value) }
+
+// Atomic access to a word of 8, 16, 32 or 64 bits, sequentially consistent. The
+// read-modify-write forms answer the value the word held *before* the change;
+// `atomicCompareExchangeU32` stores `desired` only when the word equals `expected`,
+// and answers what it held.
+public fn atomicLoadU8(address: Usize) -> U8 { return __builtin_mem_aload_u8(address) }
+public fn atomicStoreU8(address: Usize, value: U8) { __builtin_mem_astore_u8(address, value) }
+public fn atomicAddU8(address: Usize, value: U8) -> U8 { return __builtin_mem_aadd_u8(address, value) }
+public fn atomicSubU8(address: Usize, value: U8) -> U8 { return __builtin_mem_asub_u8(address, value) }
+public fn atomicAndU8(address: Usize, value: U8) -> U8 { return __builtin_mem_aand_u8(address, value) }
+public fn atomicOrU8(address: Usize, value: U8) -> U8 { return __builtin_mem_aor_u8(address, value) }
+public fn atomicXorU8(address: Usize, value: U8) -> U8 { return __builtin_mem_axor_u8(address, value) }
+public fn atomicSwapU8(address: Usize, value: U8) -> U8 { return __builtin_mem_aswap_u8(address, value) }
+public fn atomicCompareExchangeU8(address: Usize, expected: U8, desired: U8) -> U8 {
+    return __builtin_mem_acas_u8(address, expected, desired)
+}
+
+public fn atomicLoadU16(address: Usize) -> U16 { return __builtin_mem_aload_u16(address) }
+public fn atomicStoreU16(address: Usize, value: U16) { __builtin_mem_astore_u16(address, value) }
+public fn atomicAddU16(address: Usize, value: U16) -> U16 { return __builtin_mem_aadd_u16(address, value) }
+public fn atomicSubU16(address: Usize, value: U16) -> U16 { return __builtin_mem_asub_u16(address, value) }
+public fn atomicAndU16(address: Usize, value: U16) -> U16 { return __builtin_mem_aand_u16(address, value) }
+public fn atomicOrU16(address: Usize, value: U16) -> U16 { return __builtin_mem_aor_u16(address, value) }
+public fn atomicXorU16(address: Usize, value: U16) -> U16 { return __builtin_mem_axor_u16(address, value) }
+public fn atomicSwapU16(address: Usize, value: U16) -> U16 { return __builtin_mem_aswap_u16(address, value) }
+public fn atomicCompareExchangeU16(address: Usize, expected: U16, desired: U16) -> U16 {
+    return __builtin_mem_acas_u16(address, expected, desired)
+}
+
+public fn atomicLoadU32(address: Usize) -> U32 { return __builtin_mem_aload_u32(address) }
+public fn atomicStoreU32(address: Usize, value: U32) { __builtin_mem_astore_u32(address, value) }
+public fn atomicAddU32(address: Usize, value: U32) -> U32 { return __builtin_mem_aadd_u32(address, value) }
+public fn atomicSubU32(address: Usize, value: U32) -> U32 { return __builtin_mem_asub_u32(address, value) }
+public fn atomicAndU32(address: Usize, value: U32) -> U32 { return __builtin_mem_aand_u32(address, value) }
+public fn atomicOrU32(address: Usize, value: U32) -> U32 { return __builtin_mem_aor_u32(address, value) }
+public fn atomicXorU32(address: Usize, value: U32) -> U32 { return __builtin_mem_axor_u32(address, value) }
+public fn atomicSwapU32(address: Usize, value: U32) -> U32 { return __builtin_mem_aswap_u32(address, value) }
+public fn atomicCompareExchangeU32(address: Usize, expected: U32, desired: U32) -> U32 {
+    return __builtin_mem_acas_u32(address, expected, desired)
+}
+
+public fn atomicLoadU64(address: Usize) -> U64 { return __builtin_mem_aload_u64(address) }
+public fn atomicStoreU64(address: Usize, value: U64) { __builtin_mem_astore_u64(address, value) }
+public fn atomicAddU64(address: Usize, value: U64) -> U64 { return __builtin_mem_aadd_u64(address, value) }
+public fn atomicSubU64(address: Usize, value: U64) -> U64 { return __builtin_mem_asub_u64(address, value) }
+public fn atomicAndU64(address: Usize, value: U64) -> U64 { return __builtin_mem_aand_u64(address, value) }
+public fn atomicOrU64(address: Usize, value: U64) -> U64 { return __builtin_mem_aor_u64(address, value) }
+public fn atomicXorU64(address: Usize, value: U64) -> U64 { return __builtin_mem_axor_u64(address, value) }
+public fn atomicSwapU64(address: Usize, value: U64) -> U64 { return __builtin_mem_aswap_u64(address, value) }
+public fn atomicCompareExchangeU64(address: Usize, expected: U64, desired: U64) -> U64 {
+    return __builtin_mem_acas_u64(address, expected, desired)
+}
+
+// A load or store at any alignment, of memory used only as bytes: a `Buffer`'s
+// bytes, or a block from `alloc`. The compiler assumes such memory is never also a
+// struct field or a `Vec` element read as another type, which is what lets a loop of
+// byte writes keep everything else in registers.
+public fn unalignedLoadU16(address: Usize) -> U16 { return __builtin_mem_uload_u16(address) }
+public fn unalignedLoadU32(address: Usize) -> U32 { return __builtin_mem_uload_u32(address) }
+public fn unalignedLoadU64(address: Usize) -> U64 { return __builtin_mem_uload_u64(address) }
+public fn unalignedStoreU16(address: Usize, value: U16) { __builtin_mem_ustore_u16(address, value) }
+public fn unalignedStoreU32(address: Usize, value: U32) { __builtin_mem_ustore_u32(address, value) }
+public fn unalignedStoreU64(address: Usize, value: U64) { __builtin_mem_ustore_u64(address, value) }
+
+// A value with its bytes in the opposite order: one `rev` or `bswap`.
+public fn swapBytes(value: U16) -> U16 { return __builtin_swap_bytes(value) }
+public fn swapBytes(value: U32) -> U32 { return __builtin_swap_bytes(value) }
+public fn swapBytes(value: U64) -> U64 { return __builtin_swap_bytes(value) }
+
+// A full memory barrier: no load or store moves across it.
+public fn fence() { __builtin_mem_fence() }
+
+// The IEEE 754 bit pattern of a Float, and the Float a pattern names: the conversions
+// that keep every bit, including a NaN's payload and a negative zero. Here and not in
+// std.math because a freestanding program may import this module and not that one.
+impl Float {
+    public prop bits(self) -> U64 { return __builtin_float_bits(self) }
+    public fn fromBits(bits: U64) -> Float { return __builtin_float_from_bits(bits) }
+}

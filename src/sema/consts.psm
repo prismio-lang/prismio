@@ -1,0 +1,175 @@
+// Constant integer expressions, which an array's length may be written as:
+// `Array<U32, MATRIX * MATRIX>` for a global `let MATRIX: Usize = 64`.
+//
+// A constant is a number, a global that is not `mut` and is initialised with a
+// constant, and arithmetic on those. The result is written back into the
+// annotation as the literal the rest of sema already reads, so no later pass learns
+// that a length can be anything else.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import common.diagnostics
+import std.string
+
+// How many globals deep a constant may refer to another before the chain is
+// treated as a cycle.
+private fn constMaxDepth() -> Int { return 32 }
+
+struct ConstValue {
+    ok: Bool,
+    value: I64,
+    why: String
+}
+
+private fn constFailed(why: String) -> ConstValue {
+    return ConstValue { ok: false, value: 0 as I64, why: why }
+}
+
+private fn constOf(value: I64) -> ConstValue {
+    return ConstValue { ok: true, value: value, why: "" }
+}
+
+private fn constGlobal(module: ASTNode, name: String) -> Ptr {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (decl.kind == NodeKind.VARIABLE_DECL and decl.s1.equals(name)) { return p }
+        p = decl.next
+    }
+    return ptr_null()
+}
+
+private fn constName(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
+    let declPtr = constGlobal(module, node.s1)
+    if (nodeIsNull(declPtr)) {
+        return constFailed(diagQuote(node.s1).concat(" is not a global constant"))
+    }
+    let decl = ptr_to_node(declPtr)
+    if (decl.i1 == 1) {
+        return constFailed(diagQuote(node.s1).concat(" is `let mut`, so its value can change"))
+    }
+    if (nodeIsNull(decl.child2)) {
+        return constFailed(diagQuote(node.s1).concat(" has no initializer"))
+    }
+    return constEvaluate(module, ptr_to_node(decl.child2), depth + 1)
+}
+
+private fn constBinary(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
+    let left = constEvaluate(module, ptr_to_node(node.child1), depth)
+    if (left.ok == false) { return left }
+    let right = constEvaluate(module, ptr_to_node(node.child2), depth)
+    if (right.ok == false) { return right }
+    let op = node.s1
+    let a = left.value
+    let b = right.value
+    if (op.equals("+")) { return constOf(a + b) }
+    if (op.equals("-")) { return constOf(a - b) }
+    if (op.equals("*")) { return constOf(a * b) }
+    if (op.equals("/") or op.equals("%")) {
+        if (b == 0 as I64) { return constFailed("a constant divides by zero") }
+        if (op.equals("/")) { return constOf(a / b) }
+        return constOf(a % b)
+    }
+    if (op.equals("<<") or op.equals(">>")) {
+        if (b < 0 as I64 or b > 62 as I64) { return constFailed("a constant shifts by more than 62") }
+        if (op.equals("<<")) { return constOf(a << b) }
+        return constOf(a >> b)
+    }
+    if (op.equals("&")) { return constOf(a & b) }
+    if (op.equals("|")) { return constOf(a | b) }
+    if (op.equals("^")) { return constOf(a ^ b) }
+    return constFailed("`".concat(op, "` is not a constant operator"))
+}
+
+private fn constEvaluate(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
+    if (depth > constMaxDepth()) { return constFailed("constants refer to each other in a cycle") }
+    if (node.kind == NodeKind.LITERAL_EXPR and node.i1 == TokenType.NUMBER_LITERAL as Int) {
+        // The parser folds a leading minus into the literal, so a negative constant
+        // arrives as one literal rather than as a negation.
+        let negative = node.s1.startsWith("-")
+        let mut digits = node.s1.clone()
+        if (negative) { digits = node.s1.substring(1, node.s1.length) }
+        let magnitude = typeIntLiteralValue(digits)
+        if (magnitude < 0 as I64) { return constFailed(diagQuote(node.s1).concat(" is not a usable constant")) }
+        if (negative) { return constOf(0 as I64 - magnitude) }
+        return constOf(magnitude)
+    }
+    if (node.kind == NodeKind.IDENTIFIER_EXPR) { return constName(module, node, depth) }
+    if (node.kind == NodeKind.BINARY_EXPR) { return constBinary(module, node, depth) }
+    if (node.kind == NodeKind.CAST_EXPR) { return constEvaluate(module, ptr_to_node(node.child1), depth) }
+    if (node.kind == NodeKind.UNARY_EXPR and node.s1.equals("-")) {
+        let inner = constEvaluate(module, ptr_to_node(node.child1), depth)
+        if (inner.ok == false) { return inner }
+        return constOf(0 as I64 - inner.value)
+    }
+    return constFailed("this is not a constant expression")
+}
+
+// Rewrites `length`, the expression written after the element type, into the
+// literal its value is. A length that is not constant is reported once, and left as
+// a literal the caller's own range check rejects, so nothing downstream sees an
+// expression where it expects a number.
+internal fn semaResolveArrayLength(module: ASTNode, length: ASTNode) {
+    if (length.kind == NodeKind.LITERAL_EXPR) { return }
+    let result = constEvaluate(module, length, 0)
+    if (result.ok == false) {
+        semaErrorAt(length, "an array's length must be a constant: ".concat(result.why))
+        diag_note("write a number, or arithmetic on globals declared `let NAME: Type = <constant>`")
+        length.i2 = 1
+        length.kind = NodeKind.LITERAL_EXPR
+        length.i1 = TokenType.NUMBER_LITERAL as Int
+        length.s1 = "0"
+        length.child1 = ptr_null()
+        length.child2 = ptr_null()
+        return
+    }
+    length.kind = NodeKind.LITERAL_EXPR
+    length.i1 = TokenType.NUMBER_LITERAL as Int
+    length.s1 = result.value.toString()
+    length.child1 = ptr_null()
+    length.child2 = ptr_null()
+}
+
+// A global's initializer written as arithmetic -- `let CELLS: Usize = N * N` --
+// folded into the literal it is, because a global is emitted with a static
+// initializer and nothing runs before `main`. Answers true when `init` is one,
+// whether or not its value fits `t` (that is reported here), and false when it is
+// not a constant expression, which the caller reports as the general refusal.
+internal fn semaFoldConstantInitializer(module: ASTNode, init: ASTNode, t: TypeInfo) -> Bool {
+    let result = constEvaluate(module, init, 0)
+    if (result.ok == false) { return false }
+    let text = result.value.toString()
+    if (typeIntLiteralFits(text, t) == false) {
+        semaErrorAt(init, "this constant is ".concat(text, ", which does not fit ", typeDisplay(t)))
+        return true
+    }
+    init.kind = NodeKind.LITERAL_EXPR
+    init.i1 = TokenType.NUMBER_LITERAL as Int
+    init.s1 = text
+    init.child1 = ptr_null()
+    init.child2 = ptr_null()
+    return true
+}
+
+// How many values `start..end` visits when both bounds are constants and the step is
+// a literal (or absent, meaning 1), and -1 when that cannot be known from the source.
+// A range whose count is known and fits an `Int` needs no check at run time.
+internal fn semaConstantRangeCount(module: ASTNode, start: ASTNode, end: ASTNode, step: Ptr, included: Bool) -> I64 {
+    let lo = constEvaluate(module, start, 0)
+    let hi = constEvaluate(module, end, 0)
+    if (lo.ok == false or hi.ok == false) { return 0 as I64 - 1 }
+    let mut stride = 1 as I64
+    if (nodeExists(step)) {
+        let stepNode = ptr_to_node(step)
+        if (stepNode.kind != NodeKind.LITERAL_EXPR) { return 0 as I64 - 1 }
+        stride = typeIntLiteralValue(stepNode.s1)
+        if (stride <= 0 as I64) { return 0 as I64 - 1 }
+    }
+    let mut span = hi.value - lo.value
+    if (span < 0 as I64) { span = lo.value - hi.value }
+    let whole = span / stride
+    if (included) { return whole + 1 as I64 }
+    if (span % stride == 0 as I64) { return whole }
+    return whole + 1 as I64
+}

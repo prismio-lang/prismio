@@ -1,0 +1,9 @@
+// expect-error: struct `PackageOnly` is internal to the package that declares it
+import std.io
+import visibility.shapes
+
+fn show(value: PackageOnly) -> Int { return value.value }
+
+fn main() -> Int {
+    return 0
+}

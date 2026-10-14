@@ -24,11 +24,11 @@ fn fail(message: String) -> Int {
 }
 
 fn measure(s: String) -> Int {
-    return __builtin_string_len(s)
+    return s.length
 }
 
 fn measureBoth(a: String, b: String) -> Int {
-    return __builtin_string_len(a) + __builtin_string_len(b)
+    return a.length + b.length
 }
 
 

@@ -666,7 +666,7 @@ internal fn aifElemKey(containerType: String) -> Int {
 // store ever populates.
 internal fn aifElementContainerType(ty: String) -> String {
     if (ty.startsWith("Slice<")) {
-        return "List".concat(ty.substring(5, __builtin_string_len(ty) - 5))
+        return "List".concat(ty.substring(5, ty.length - 5))
     }
     return ty
 }
@@ -701,7 +701,7 @@ internal fn aifVsOfKey(key: Int) -> Int {
 // became the first call whose *return* is one. Verified by the AIF manifests over
 // tests/ and the retired corpus being unchanged across this edit.
 private fn aifSiteType(ty: String) -> String {
-    let n = __builtin_string_len(ty)
+    let n = ty.length
     if (n > 1 and ty.endsWith("?")) { return ty.substring(0, n - 1) }
     return ty
 }

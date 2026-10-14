@@ -1,0 +1,11 @@
+// Visibility on global `let`s: the markers a function takes, with the same meaning.
+// `private` is this file, `internal` this package, `public` everywhere; a global with
+// no marker stays open to every file, which is what every program written before the
+// markers relied on.
+
+public let GLOBAL_PUBLIC: Int = 11
+private let GLOBAL_PRIVATE: Int = 22
+internal let GLOBAL_INTERNAL: Int = 33
+let GLOBAL_OPEN: Int = 44
+
+public fn globalsOwnPrivate() -> Int { return GLOBAL_PRIVATE }

@@ -1,0 +1,9 @@
+// expect-error: a struct literal of `Point` sets fields not visible here: `tag`, `secret`
+// A literal sets every field, so it is written where all of them are visible.
+import std.io
+import visibility.shapes
+
+fn main() -> Int {
+    let p = Point { x: 1, tag: 2, secret: 3 }
+    return p.x
+}

@@ -1,0 +1,866 @@
+// Float to text and back, in Prismio.
+//
+// This was `snprintf("%.*g")` and `strtod` in runtime/lang_runtime.c, which is why
+// a `--freestanding` program could not print a Float: the C library is the part it
+// does not have. Nothing here calls out, allocates, or reads a table.
+//
+// **The method is exact decimal arithmetic, not a clever shortcut.** A double is
+// `mantissa * 2^exponent`, so its exact decimal expansion is the mantissa's digits
+// shifted by that many bits. A `Decimal` holds up to 800 digits (a double needs at
+// most 767) and shifts them 60 bits at a time with 64-bit integer arithmetic.
+// Rounding that expansion to `n` digits is then correct by construction, ties to
+// even, and so is reading a decimal back into a double. The same two operations
+// give `%g`, `%f` and `strtod` without any of them being approximated.
+//
+// **It reproduces the C functions it replaces, digit for digit.** `floatFormat`
+// is the search `prismio_format_double` made: the fewest significant digits, up to
+// fifteen, that read back as the same double, widened out of exponent form where
+// that costs nothing. tests/float_text_probe.psm compares every result against the
+// C library on random bit patterns.
+//
+// **Where it is slower than libc.** Cost grows with the exponent: `1.0` is two
+// digits and one shift, `1e300` shifts a 17-digit number by 1000 bits through an
+// 800-digit buffer. Ordinary magnitudes (1e-5 to 1e15) are a few thousand digit
+// operations; a Float that is printed once is not a place that matters.
+//
+// The decimal algorithms are the ones in Go's strconv (decimal.go, atof.go),
+// which is exact in the same way and has been tested against every platform's C
+// library. The shift is written without Go's table of leading digits: it builds
+// the product least-significant digit first and copies it back, so there is
+// nothing to keep in step with the shift width.
+
+struct Decimal {
+    // One digit, 0 to 9, per element, most significant first.
+    digits: Array<U8, 800>,
+    // How many of `digits` are in use. Never ends in a zero.
+    count: Int,
+    // The value is 0.d1d2d3... * 10^point.
+    point: Int,
+    negative: Bool,
+    // A non-zero digit past the 800th was dropped, so the value is a little
+    // more than the digits say. Decides a tie in `shouldRoundUp`.
+    truncated: Bool
+}
+
+impl Decimal {
+    let CAPACITY: Int = 800
+    // 64-bit arithmetic holds `digit << 60` and `(n << 60) * 10` only up to here.
+    let MAX_SHIFT: Int = 60
+
+    fn empty() -> Decimal {
+        return Decimal { count: 0, point: 0, negative: false, truncated: false }
+    }
+
+    // A struct holding an array moves when it is named twice, so a second copy
+    // to round differently is made explicitly. Only the digits in use are copied.
+    fn copy(self) -> Decimal {
+        let mut c = Decimal { count: self.count, point: self.point, negative: self.negative,
+            truncated: self.truncated }
+        for i in 0..<self.count {
+            c.digits[i] = self.digits[i]
+        }
+        return c
+    }
+
+    fn trim(inout self) {
+        while (self.count > 0 and self.digits[self.count - 1] == 0) {
+            self.count = self.count - 1
+        }
+        if (self.count == 0) { self.point = 0 }
+    }
+
+    // The exact value of a double, given its 64 bits. Not for NaN or infinity.
+    fn setBits(inout self, bits: U64) {
+        let field = ((bits >> 52) & 0x7FF) as Int
+        let mut mantissa = bits & 0xFFFFFFFFFFFFF
+        let mut exponent = field
+        if (field == 0) {
+            exponent = 1
+        } else {
+            mantissa = mantissa | 0x10000000000000
+        }
+        self.negative = (bits >> 63) != 0
+        self.assign(mantissa)
+        // value = mantissa * 2^(exponent - 1075)
+        self.shift(exponent - 1075)
+    }
+
+    fn assign(inout self, value: U64) {
+        let mut reversed: Array<U8, 24>
+        let mut rest = value
+        let mut n = 0
+        while (rest > 0) {
+            let quotient = rest / 10
+            reversed[n] = (rest - quotient * 10) as U8
+            n = n + 1
+            rest = quotient
+        }
+        self.count = 0
+        let mut i = n - 1
+        while (i >= 0) {
+            self.digits[self.count] = reversed[i]
+            self.count = self.count + 1
+            i = i - 1
+        }
+        self.point = self.count
+        self.trim()
+    }
+
+    // Divide by 2^bits, for bits in 1...60.
+    fn shiftRight(inout self, bits: Int) {
+        let k = bits as U64
+        let mut read = 0
+        let mut write = 0
+        let mut n: U64 = 0
+        // Take enough leading digits that dividing by 2^k yields a first digit.
+        while ((n >> k) == 0) {
+            if (read >= self.count) {
+                if (n == 0) {
+                    self.count = 0
+                    return
+                }
+                while ((n >> k) == 0) {
+                    n = n * 10
+                    read = read + 1
+                }
+                break
+            }
+            n = n * 10 + (self.digits[read] as U64)
+            read = read + 1
+        }
+        self.point = self.point - (read - 1)
+        let mask: U64 = (1 << k) - 1
+        while (read < self.count) {
+            let next = self.digits[read] as U64
+            let digit = n >> k
+            n = n & mask
+            self.digits[write] = digit as U8
+            write = write + 1
+            n = n * 10 + next
+            read = read + 1
+        }
+        while (n > 0) {
+            let digit = n >> k
+            n = n & mask
+            if (write < 800) {
+                self.digits[write] = digit as U8
+                write = write + 1
+            } else if (digit > 0) {
+                self.truncated = true
+            }
+            n = n * 10
+        }
+        self.count = write
+        self.trim()
+    }
+
+    // Multiply by 2^bits, for bits in 1...60. The product is built least
+    // significant digit first: at most 800 + 19 digits.
+    fn shiftLeft(inout self, bits: Int) {
+        let k = bits as U64
+        let mut product: Array<U8, 840>
+        let mut made = 0
+        let mut carry: U64 = 0
+        let mut read = self.count - 1
+        while (read >= 0) {
+            carry = carry + ((self.digits[read] as U64) << k)
+            let quotient = carry / 10
+            product[made] = (carry - quotient * 10) as U8
+            made = made + 1
+            carry = quotient
+            read = read - 1
+        }
+        while (carry > 0) {
+            let quotient = carry / 10
+            product[made] = (carry - quotient * 10) as U8
+            made = made + 1
+            carry = quotient
+        }
+        let mut kept = made
+        if (kept > 800) { kept = 800 }
+        for i in 0..<(made - kept) {
+            if (product[i] != 0) { self.truncated = true }
+        }
+        for i in 0..<kept {
+            self.digits[i] = product[made - 1 - i]
+        }
+        self.point = self.point + (made - self.count)
+        self.count = kept
+        self.trim()
+    }
+
+    // Multiply by 2^bits, which may be negative.
+    fn shift(inout self, bits: Int) {
+        if (self.count == 0) { return }
+        let mut k = bits
+        if (k > 0) {
+            while (k > 60) {
+                self.shiftLeft(60)
+                k = k - 60
+            }
+            self.shiftLeft(k)
+        } else if (k < 0) {
+            while (k < -60) {
+                self.shiftRight(60)
+                k = k + 60
+            }
+            self.shiftRight(0 - k)
+        }
+    }
+
+    // Whether rounding to `at` digits goes up. Exactly halfway goes to the even
+    // neighbour, as C's `printf` and `strtod` do in the default rounding mode.
+    fn shouldRoundUp(self, at: Int) -> Bool {
+        if (at < 0 or at >= self.count) { return false }
+        let digit = self.digits[at] as Int
+        if (digit == 5 and at + 1 == self.count) {
+            // Digits were dropped past the end, so this is a little over half.
+            if (self.truncated) { return true }
+            return at > 0 and (self.digits[at - 1] as Int) % 2 != 0
+        }
+        return digit >= 5
+    }
+
+    fn roundDown(inout self, at: Int) {
+        if (at < 0 or at >= self.count) { return }
+        self.count = at
+        self.trim()
+    }
+
+    fn roundUp(inout self, at: Int) {
+        if (at < 0 or at >= self.count) { return }
+        let mut i = at - 1
+        while (i >= 0) {
+            if (self.digits[i] < 9) {
+                self.digits[i] = self.digits[i] + 1
+                self.count = i + 1
+                return
+            }
+            i = i - 1
+        }
+        // All nines: one, a place higher.
+        self.digits[0] = 1
+        self.count = 1
+        self.point = self.point + 1
+    }
+
+    // Keep `at` significant digits.
+    fn round(inout self, at: Int) {
+        if (at < 0 or at >= self.count) { return }
+        if (self.shouldRoundUp(at)) {
+            self.roundUp(at)
+        } else {
+            self.roundDown(at)
+        }
+    }
+
+    // Whether this value rounded to `precision` digits reads back as the double
+    // `bits` (a positive double's bits). Fifteen digits or fewer and a power of
+    // ten the double holds exactly make it one correctly rounded multiplication
+    // or division, which is the common case; the rest shift digits.
+    fn roundsTo(self, precision: Int, bits: U64) -> Bool {
+        if (precision >= self.count) { return true }
+        let mut mantissa: U64 = 0
+        for i in 0..<precision {
+            mantissa = mantissa * 10 + (self.digits[i] as U64)
+        }
+        if (self.shouldRoundUp(precision)) { mantissa = mantissa + 1 }
+        let scale = self.point - precision
+        if (scale >= -22 and scale <= 22) {
+            let f = mantissa as Float
+            let mut read = f
+            if (scale > 0) {
+                read = f * floatPowerOfTen(scale)
+            } else if (scale < 0) {
+                read = f / floatPowerOfTen(0 - scale)
+            }
+            return __builtin_float_bits(read) == bits
+        }
+        let mut rounded = self.copy()
+        rounded.negative = false
+        rounded.round(precision)
+        return rounded.toBits() == bits
+    }
+
+    // The integer part, rounded: what is left after the mantissa was shifted so
+    // its integer part is the 53 bits wanted.
+    fn roundedInteger(self) -> U64 {
+        if (self.point > 20) { return 0xFFFFFFFFFFFFFFFF }
+        let mut i = 0
+        let mut n: U64 = 0
+        while (i < self.point and i < self.count) {
+            n = n * 10 + (self.digits[i] as U64)
+            i = i + 1
+        }
+        while (i < self.point) {
+            n = n * 10
+            i = i + 1
+        }
+        if (self.shouldRoundUp(self.point)) { n = n + 1 }
+        return n
+    }
+
+    // The double nearest this value, as bits. Consumes the digits: it shifts
+    // them into range, so work on a copy to keep them.
+    fn toBits(inout self) -> U64 {
+        if (self.count == 0) { return floatAssemble(0, -1023, self.negative) }
+        if (self.point > 310) { return floatAssemble(0, 1024, self.negative) }
+        if (self.point < -330) { return floatAssemble(0, -1023, self.negative) }
+
+        // Scale by powers of two until the value is in [0.5, 1). `steps` is how
+        // far a shift of that many decimal places moves the point, rounded down.
+        let mut exponent = 0
+        while (self.point > 0) {
+            let n = floatShiftFor(self.point)
+            self.shift(0 - n)
+            exponent = exponent + n
+        }
+        while (self.point < 0 or (self.point == 0 and self.digits[0] < 5)) {
+            let n = floatShiftFor(0 - self.point)
+            self.shift(n)
+            exponent = exponent - n
+        }
+        // [0.5, 1) to [1, 2).
+        exponent = exponent - 1
+
+        // The smallest exponent a normal double has is -1022; below it the value
+        // is denormal, which shifting the digits down by the difference handles.
+        if (exponent < -1022) {
+            let n = -1022 - exponent
+            self.shift(0 - n)
+            exponent = exponent + n
+        }
+        if (exponent > 1023) { return floatAssemble(0, 1024, self.negative) }
+
+        // Take 53 bits as the integer part, then round.
+        self.shift(53)
+        let mut mantissa = self.roundedInteger()
+        // Rounding up may have carried into a 54th bit.
+        if (mantissa == 0x20000000000000) {
+            mantissa = mantissa >> 1
+            exponent = exponent + 1
+            if (exponent > 1023) { return floatAssemble(0, 1024, self.negative) }
+        }
+        // Denormal: no implicit leading bit.
+        if ((mantissa & 0x10000000000000) == 0) { exponent = -1023 }
+        return floatAssemble(mantissa, exponent, self.negative)
+    }
+}
+
+// How many bits to shift while the decimal point is `places` away from where it
+// should be: roughly places * log2(10), rounded down so it never overshoots.
+fn floatShiftFor(places: Int) -> Int {
+    if (places >= 9) { return 27 }
+    if (places == 1) { return 3 }
+    if (places == 2) { return 6 }
+    if (places == 3) { return 9 }
+    if (places == 4) { return 13 }
+    if (places == 5) { return 16 }
+    if (places == 6) { return 19 }
+    if (places == 7) { return 23 }
+    if (places == 8) { return 26 }
+    return 1
+}
+
+// Sign, unbiased exponent and the low 52 bits of the mantissa as a double.
+fn floatAssemble(mantissa: U64, exponent: Int, negative: Bool) -> U64 {
+    let field = ((exponent + 1023) as U64) & 0x7FF
+    let mut bits = (mantissa & 0xFFFFFFFFFFFFF) | (field << 52)
+    if (negative) { bits = bits | 0x8000000000000000 }
+    return bits
+}
+
+fn floatPut(inout out: [U8], at: Int, byte: U8) -> Int {
+    out[at] = byte
+    return at + 1
+}
+
+fn floatPutWord(inout out: [U8], at: Int, negative: Bool, nan: Bool) -> Int {
+    let mut n = at
+    if (nan) {
+        n = floatPut(out, n, 110)
+        n = floatPut(out, n, 97)
+        return floatPut(out, n, 110)
+    }
+    if (negative) { n = floatPut(out, n, 45) }
+    n = floatPut(out, n, 105)
+    n = floatPut(out, n, 110)
+    return floatPut(out, n, 102)
+}
+
+// `%g` for a decimal already rounded to `precision` significant digits.
+fn floatWriteGeneral(d: Decimal, precision: Int, inout out: [U8]) -> Int {
+    let mut at = 0
+    if (d.negative) { at = floatPut(out, at, 45) }
+    if (d.count == 0) { return floatPut(out, at, 48) }
+    let x = d.point - 1
+    if (x < -4 or x >= precision) {
+        at = floatPut(out, at, 48 + d.digits[0])
+        if (d.count > 1) {
+            at = floatPut(out, at, 46)
+            for i in 1..<d.count {
+                at = floatPut(out, at, 48 + d.digits[i])
+            }
+        }
+        at = floatPut(out, at, 101)
+        let mut magnitude = x
+        if (x < 0) {
+            at = floatPut(out, at, 45)
+            magnitude = 0 - x
+        } else {
+            at = floatPut(out, at, 43)
+        }
+        if (magnitude >= 100) {
+            at = floatPut(out, at, 48 + ((magnitude / 100) as U8))
+        }
+        at = floatPut(out, at, 48 + (((magnitude / 10) % 10) as U8))
+        return floatPut(out, at, 48 + ((magnitude % 10) as U8))
+    }
+    if (x >= 0) {
+        for i in 0..<(x + 1) {
+            if (i < d.count) {
+                at = floatPut(out, at, 48 + d.digits[i])
+            } else {
+                at = floatPut(out, at, 48)
+            }
+        }
+        if (d.count > x + 1) {
+            at = floatPut(out, at, 46)
+            for i in (x + 1)..<d.count {
+                at = floatPut(out, at, 48 + d.digits[i])
+            }
+        }
+        return at
+    }
+    at = floatPut(out, at, 48)
+    at = floatPut(out, at, 46)
+    for i in 0..<(0 - x - 1) {
+        at = floatPut(out, at, 48)
+    }
+    for i in 0..<d.count {
+        at = floatPut(out, at, 48 + d.digits[i])
+    }
+    return at
+}
+
+// At most fifteen significant digits: the decimal a double certainly holds. Any
+// decimal of up to fifteen digits survives text -> double -> text, so every
+// literal prints back as written, and `0.1 + 0.2` shows as `0.3` rather than the
+// exact `0.30000000000000004`. A value that needs sixteen or seventeen digits to
+// round-trip, `1.0 / 3.0`, prints its first fifteen.
+//
+// The fewest digits that read back as the same double, so `0.5` is `0.5` and not
+// `0.500000000000000`. NaN and the infinities are spelled out: C libraries
+// disagree about them (`inf`, `INF`, MSVC's `1.#INF`).
+//
+// `out` needs 32 bytes. Returns how many were written.
+internal fn floatFormat(value: Float, inout out: [U8]) -> Int {
+    let bits = __builtin_float_bits(value)
+    if (((bits >> 52) & 0x7FF) == 0x7FF) {
+        return floatPutWord(out, 0, (bits >> 63) != 0, (bits & 0xFFFFFFFFFFFFF) != 0)
+    }
+    let mut exact = Decimal.empty()
+    exact.setBits(bits)
+
+    // The fewest digits that read back. Reading back is monotone in the digit
+    // count -- more digits are never farther from the value -- so a binary search
+    // finds it, except at a power of two, where the interval below the value is
+    // half as wide as above it and a longer decimal can fall out of it; those
+    // take the linear search.
+    let magnitude = bits & 0x7FFFFFFFFFFFFFFF
+    let mut digits = 15
+    if ((bits & 0xFFFFFFFFFFFFF) == 0) {
+        for p in 1..<15 {
+            if (exact.roundsTo(p, magnitude)) {
+                digits = p
+                break
+            }
+        }
+    } else {
+        let mut low = 1
+        let mut high = 15
+        while (low < high) {
+            let middle = (low + high) / 2
+            if (middle < 15 and exact.roundsTo(middle, magnitude)) {
+                high = middle
+            } else {
+                low = middle + 1
+            }
+        }
+        digits = low
+    }
+
+    let mut shown = exact.copy()
+    shown.round(digits)
+
+    // **Fewest digits is not the form a reader expects.** `%g` goes exponential
+    // as soon as the exponent reaches the precision, so one digit sends 100 to
+    // `1e+02`. Widening the precision brings it back, and costs no digits: a
+    // trailing zero is not written. Bounded by the same fifteen, which leaves
+    // the genuinely exponential 1e+21 and 1e-308 alone.
+    let x = shown.point - 1
+    if (shown.count != 0 and (x < -4 or x >= digits)) {
+        for wider in (digits + 1)..<16 {
+            let mut candidate = exact.copy()
+            candidate.round(wider)
+            let xc = candidate.point - 1
+            if (xc >= -4 and xc < wider) {
+                return floatWriteGeneral(candidate, wider, out)
+            }
+        }
+    }
+    return floatWriteGeneral(shown, digits, out)
+}
+
+// Fixed point with `decimals` places (0 to 30), correctly rounded: a column
+// rather than a value, so it does not round-trip. `out` needs 345 bytes.
+internal fn floatFormatFixed(value: Float, decimals: Int, inout out: [U8]) -> Int {
+    let mut places = decimals
+    if (places < 0) { places = 0 }
+    if (places > 30) { places = 30 }
+    let bits = __builtin_float_bits(value)
+    if (((bits >> 52) & 0x7FF) == 0x7FF) {
+        return floatPutWord(out, 0, (bits >> 63) != 0, (bits & 0xFFFFFFFFFFFFF) != 0)
+    }
+    let mut d = Decimal.empty()
+    d.setBits(bits)
+    d.round(d.point + places)
+
+    let mut at = 0
+    if (d.negative) { at = floatPut(out, at, 45) }
+    if (d.point > 0) {
+        for i in 0..<d.point {
+            if (i < d.count) {
+                at = floatPut(out, at, 48 + d.digits[i])
+            } else {
+                at = floatPut(out, at, 48)
+            }
+        }
+    } else {
+        at = floatPut(out, at, 48)
+    }
+    if (places > 0) {
+        at = floatPut(out, at, 46)
+        for i in 0..<places {
+            let j = d.point + i
+            if (j >= 0 and j < d.count) {
+                at = floatPut(out, at, 48 + d.digits[j])
+            } else {
+                at = floatPut(out, at, 48)
+            }
+        }
+    }
+    return at
+}
+
+// ---------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------
+
+fn floatByteAt(text: String, at: Int) -> Int {
+    return __builtin_string_byte_at(text, at) as Int
+}
+
+fn floatLower(byte: Int) -> Int {
+    if (byte >= 65 and byte <= 90) { return byte + 32 }
+    return byte
+}
+
+// Whether the text from `at` is `word` (lower case) in any case, and nothing
+// else follows.
+fn floatWordAt(text: String, at: Int, length: Int, word: String) -> Bool {
+    let n = __builtin_string_len(word)
+    if (length - at != n) { return false }
+    for i in 0..<n {
+        if (floatLower(floatByteAt(text, at + i)) != (__builtin_string_byte_at(word, i) as Int)) {
+            return false
+        }
+    }
+    return true
+}
+
+fn floatHexValue(byte: Int) -> Int {
+    if (byte >= 48 and byte <= 57) { return byte - 48 }
+    let lower = floatLower(byte)
+    if (lower >= 97 and lower <= 102) { return lower - 87 }
+    return -1
+}
+
+// 10^0 to 10^22, the powers of ten a double holds exactly: 5^22 < 2^53.
+fn floatPowerOfTen(n: Int) -> Float {
+    let mut result = 1.0
+    for i in 0..<n {
+        result = result * 10.0
+    }
+    return result
+}
+
+fn floatNan() -> Float {
+    return __builtin_float_from_bits(0x7FF8000000000000)
+}
+
+fn floatInfinity(negative: Bool) -> Float {
+    if (negative) { return __builtin_float_from_bits(0xFFF0000000000000) }
+    return __builtin_float_from_bits(0x7FF0000000000000)
+}
+
+// A hexadecimal float, `0x1.8p3`, starting at the first digit after `0x`. The
+// exponent is optional, as `strtod` has it. `none` unless the text ends with the
+// number.
+fn floatParseHex(text: String, start: Int, length: Int, negative: Bool) -> Float? {
+    let mut i = start
+    let mut mantissa: U64 = 0
+    let mut mantissaDigits = 0
+    let mut digits = 0
+    let mut pointAt = 0
+    let mut sawPoint = false
+    let mut sawDigits = false
+    let mut truncated = false
+    while (i < length) {
+        let c = floatByteAt(text, i)
+        if (c == 46) {
+            if (sawPoint) { return none }
+            sawPoint = true
+            pointAt = digits
+            i = i + 1
+            continue
+        }
+        let h = floatHexValue(c)
+        if (h < 0) { break }
+        sawDigits = true
+        i = i + 1
+        if (h == 0 and digits == 0) {
+            pointAt = pointAt - 1
+            continue
+        }
+        digits = digits + 1
+        if (mantissaDigits < 16) {
+            mantissa = mantissa * 16 + (h as U64)
+            mantissaDigits = mantissaDigits + 1
+        } else if (h != 0) {
+            truncated = true
+        }
+    }
+    if (sawDigits == false) { return none }
+    if (sawPoint == false) { pointAt = digits }
+    let mut exponent = 0
+    if (i < length and floatLower(floatByteAt(text, i)) == 112) {
+        i = i + 1
+        let mut sign = 1
+        if (i < length and floatByteAt(text, i) == 43) {
+            i = i + 1
+        } else if (i < length and floatByteAt(text, i) == 45) {
+            sign = -1
+            i = i + 1
+        }
+        if (i >= length or floatByteAt(text, i) < 48 or floatByteAt(text, i) > 57) { return none }
+        let mut e = 0
+        while (i < length and floatByteAt(text, i) >= 48 and floatByteAt(text, i) <= 57) {
+            if (e < 10000) { e = e * 10 + (floatByteAt(text, i) - 48) }
+            i = i + 1
+        }
+        exponent = e * sign
+    }
+    if (i != length) { return none }
+    let mut shiftBy = 0
+    if (mantissa != 0) { shiftBy = (pointAt - mantissaDigits) * 4 + exponent }
+    return floatFromHex(mantissa, shiftBy, negative, truncated)
+}
+
+// `mantissa * 2^exponent`, rounded to nearest even. Keeps two bits below the
+// 53 wanted, the lowest of them "anything non-zero below", and rounds on those.
+fn floatFromHex(mantissa: U64, exponent: Int, negative: Bool, truncated: Bool) -> Float {
+    let mut m = mantissa
+    let mut e = exponent + 52
+    while (m != 0 and (m >> 54) == 0) {
+        m = m << 1
+        e = e - 1
+    }
+    if (truncated) { m = m | 1 }
+    while ((m >> 55) != 0) {
+        m = (m >> 1) | (m & 1)
+        e = e + 1
+    }
+    // Denormal: shift the value down until the exponent is the smallest.
+    while (m > 1 and e < -1024) {
+        m = (m >> 1) | (m & 1)
+        e = e + 1
+    }
+    let mut round = m & 3
+    m = m >> 2
+    round = round | (m & 1)
+    e = e + 2
+    if (round == 3) {
+        m = m + 1
+        if (m == 0x20000000000000) {
+            m = m >> 1
+            e = e + 1
+        }
+    }
+    if ((m >> 52) == 0) { e = -1023 }
+    if (e > 1023) { return floatInfinity(negative) }
+    return __builtin_float_from_bits(floatAssemble(m, e, negative))
+}
+
+// What `strtod` reads, and no more: an optional sign, then `inf`, `infinity`,
+// `nan`, `nan(name)`, a hexadecimal float, or decimal digits with an optional
+// point and exponent. **The whole text has to be the number**: no leading space,
+// no trailing text (`"1.5kg"` is `none`), no underscores.
+//
+// A decimal of at most 19 digits that is exact in a double (below 2^53) and
+// scales by at most 10^22 is one multiplication or division, correctly rounded
+// because both operands are exact. Anything else goes through `Decimal`, which
+// is exact for every input.
+internal fn floatParse(text: String) -> Float? {
+    let length = __builtin_string_len(text)
+    if (length == 0) { return none }
+    let mut i = 0
+    let mut negative = false
+    let first = floatByteAt(text, 0)
+    if (first == 43) {
+        i = 1
+    } else if (first == 45) {
+        negative = true
+        i = 1
+    }
+    if (i >= length) { return none }
+    let start = i
+
+    let lead = floatLower(floatByteAt(text, i))
+    if (lead == 105) {
+        if (floatWordAt(text, i, length, "inf") or floatWordAt(text, i, length, "infinity")) {
+            return floatInfinity(negative)
+        }
+        return none
+    }
+    if (lead == 110) {
+        if (floatWordAt(text, i, length, "nan")) { return floatNan() }
+        // `nan(chars)`: letters, digits and underscores between the brackets.
+        if (length - i >= 5 and floatWordAt(text, i, i + 3, "nan")
+                and floatByteAt(text, i + 3) == 40 and floatByteAt(text, length - 1) == 41) {
+            for j in (i + 4)..<(length - 1) {
+                let c = floatByteAt(text, j)
+                let word = (c >= 48 and c <= 57) or (c >= 65 and c <= 90)
+                    or (c >= 97 and c <= 122) or c == 95
+                if (word == false) { return none }
+            }
+            return floatNan()
+        }
+        return none
+    }
+    if (floatByteAt(text, i) == 48 and i + 1 < length
+            and floatLower(floatByteAt(text, i + 1)) == 120) {
+        return floatParseHex(text, i + 2, length, negative)
+    }
+
+    let mut mantissa: U64 = 0
+    let mut mantissaDigits = 0
+    let mut digits = 0
+    let mut point = 0
+    let mut sawPoint = false
+    let mut sawDigits = false
+    let mut truncated = false
+    while (i < length) {
+        let c = floatByteAt(text, i)
+        if (c == 46) {
+            if (sawPoint) { return none }
+            sawPoint = true
+            point = digits
+            i = i + 1
+            continue
+        }
+        if (c < 48 or c > 57) { break }
+        sawDigits = true
+        i = i + 1
+        if (c == 48 and digits == 0) {
+            point = point - 1
+            continue
+        }
+        digits = digits + 1
+        if (mantissaDigits < 19) {
+            mantissa = mantissa * 10 + ((c - 48) as U64)
+            mantissaDigits = mantissaDigits + 1
+        } else if (c != 48) {
+            truncated = true
+        }
+    }
+    if (sawDigits == false) { return none }
+    if (sawPoint == false) { point = digits }
+    if (i < length and floatLower(floatByteAt(text, i)) == 101) {
+        i = i + 1
+        let mut sign = 1
+        if (i < length and floatByteAt(text, i) == 43) {
+            i = i + 1
+        } else if (i < length and floatByteAt(text, i) == 45) {
+            sign = -1
+            i = i + 1
+        }
+        if (i >= length or floatByteAt(text, i) < 48 or floatByteAt(text, i) > 57) { return none }
+        let mut e = 0
+        while (i < length and floatByteAt(text, i) >= 48 and floatByteAt(text, i) <= 57) {
+            if (e < 10000) { e = e * 10 + (floatByteAt(text, i) - 48) }
+            i = i + 1
+        }
+        point = point + e * sign
+    }
+    if (i != length) { return none }
+
+    let mut scale = 0
+    if (mantissa != 0) { scale = point - mantissaDigits }
+    if (truncated == false and (mantissa >> 53) == 0) {
+        let exact = floatParseExact(mantissa, scale, negative)
+        if (exact != none) { return exact }
+    }
+    return floatParseSlow(text, start, length, negative, point)
+}
+
+// Every digit of the number, for the inputs the fast path cannot take: more than
+// 15 or so digits, or a power of ten a double does not hold. Reads the text
+// again, from `start`, because the common case never needs the 800 digits.
+fn floatParseSlow(text: String, start: Int, length: Int, negative: Bool, point: Int) -> Float {
+    let mut d = Decimal.empty()
+    d.negative = negative
+    let mut i = start
+    while (i < length) {
+        let c = floatByteAt(text, i)
+        if (c == 46) {
+            i = i + 1
+            continue
+        }
+        if (c < 48 or c > 57) { break }
+        i = i + 1
+        // Leading zeros are not digits.
+        if (c == 48 and d.count == 0) { continue }
+        if (d.count < 800) {
+            d.digits[d.count] = (c - 48) as U8
+            d.count = d.count + 1
+        } else if (c != 48) {
+            d.truncated = true
+        }
+    }
+    d.point = point
+    d.trim()
+    return __builtin_float_from_bits(d.toBits())
+}
+
+// The Clinger fast path: the mantissa is exact, and the power of ten is exact,
+// so one correctly rounded operation is the correctly rounded answer.
+fn floatParseExact(mantissa: U64, scale: Int, negative: Bool) -> Float? {
+    let mut f = mantissa as Float
+    if (negative) { f = -f }
+    if (scale == 0) { return f }
+    if (scale > 0 and scale <= 37) {
+        // A large exponent with few digits: move zeros into the integer part.
+        let mut e = scale
+        if (e > 22) {
+            f = f * floatPowerOfTen(e - 22)
+            e = 22
+        }
+        if (f > 1e15 or f < -1e15) { return none }
+        return f * floatPowerOfTen(e)
+    }
+    if (scale < 0 and scale >= -22) {
+        return f / floatPowerOfTen(0 - scale)
+    }
+    return none
+}

@@ -85,6 +85,7 @@
 //
 // See developers.prismio.org/runtime/supported-surface for which C symbols remain and why.
 
+import std.float_text
 import std.option
 import std.unicode_case
 
@@ -102,7 +103,7 @@ import std.unicode_case
 // because the loop form leaks -- which capped these functions at 150 000
 // characters. The write builtin does not check its upper bound; every use below
 // is immediately after a `str_with_capacity` whose length bounds the loop.
-internal extern fn str_with_capacity(length: Int) -> String produce (free )
+internal extern fn str_with_capacity(length: Int) -> String produce(free)
 
 // Optional search accelerators, not part of the irreducible String core.
 // `str_find_byte` delegates a one-byte scan to libc. `str_find_byte_pair` is a
@@ -111,12 +112,12 @@ internal extern fn str_with_capacity(length: Int) -> String produce (free )
 // a needle of 2..32 bytes -- pair selection, the scan and verification -- because
 // doing those here cost a runtime crossing per candidate. Two-Way factorisation
 // and the long-needle policy stay in Prismio.
-private extern fn str_find_byte(s: String borrow , from: Int, b: Char) -> Int
-private extern fn str_find_byte_pair(s: String borrow , from: Int, last: Int,
-offset1: Int, byte1: Char,
-offset2: Int, byte2: Char) -> Int
-private extern fn str_find_needle(s: String bytes , from: Int, length: Int,
-needle: String bytes , needleLength: Int) -> Int
+private extern fn str_find_byte(s: String borrow, from: Int, b: Char) -> Int
+private extern fn str_find_byte_pair(s: String borrow, from: Int, last: Int,
+    offset1: Int, byte1: Char,
+    offset2: Int, byte2: Char) -> Int
+private extern fn str_find_needle(s: String bytes, from: Int, length: Int,
+    needle: String bytes, needleLength: Int) -> Int
 
 // Byte length, not character count. `Char` is a byte here and there is no
 // Unicode scalar type yet, so a multi-byte UTF-8 character counts as its bytes.
@@ -298,7 +299,7 @@ internal fn strEndsWith(s: String, suffix: String) -> Bool {
 // ordering: the two least common needle bytes make the strongest SIMD filter.
 private fn strSearchByteRank(c: Char) -> Int {
     let mut b = c
-    if (charIsUpper(b)) { b =((b as U8) + 32) as Char }
+    if (charIsUpper(b)) { b = ((b as U8) + 32) as Char }
     if (b == 'a') { return 249 }
     if (b == 'b') { return 216 }
     if (b == 'c') { return 238 }
@@ -344,7 +345,7 @@ private fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I6
         let a = __builtin_string_byte_at(needle, right + offset)
         let b = __builtin_string_byte_at(needle, left + offset)
         if ((a < b and orderGreater == false) or
-        (a > b and orderGreater)) {
+            (a > b and orderGreater)) {
             right = right + offset + 1
             offset = 0
             period = right - left
@@ -362,7 +363,7 @@ private fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I6
             period = 1
         }
     }
-    return ((left as I64) << 32) |(period as I64)
+    return ((left as I64) << 32) | (period as I64)
 }
 
 // Crochemore-Perrin Two-Way search. This is the linear-time core used by
@@ -371,13 +372,13 @@ private fn strMaximalSuffix(needle: String, nlen: Int, orderGreater: Bool) -> I6
 // period that cannot hide a match. A 64-bit byteset cheaply rejects tails that
 // occur nowhere in the relevant part of the needle.
 private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
-slen: Int, nlen: Int,
-pairIndex1: Int, pairByte1: Char,
-pairIndex2: Int, pairByte2: Char) -> Int {
+    slen: Int, nlen: Int,
+    pairIndex1: Int, pairByte1: Char,
+    pairIndex2: Int, pairByte2: Char) -> Int {
     let suffixLess = strMaximalSuffix(needle, nlen, false)
     let suffixGreater = strMaximalSuffix(needle, nlen, true)
-    let lessPosition =(suffixLess >> 32) as Int
-    let greaterPosition =(suffixGreater >> 32) as Int
+    let lessPosition = (suffixLess >> 32) as Int
+    let greaterPosition = (suffixGreater >> 32) as Int
     let mut critical = greaterPosition
     let mut period = suffixGreater as Int
     if (lessPosition > greaterPosition) {
@@ -392,7 +393,7 @@ pairIndex2: Int, pairByte2: Char) -> Int {
     let mut prefixAt = 0
     while (exactPeriod and prefixAt < critical) {
         if (__builtin_string_byte_at(needle, prefixAt) !=
-        __builtin_string_byte_at(needle, period + prefixAt)) {
+            __builtin_string_byte_at(needle, period + prefixAt)) {
             exactPeriod = false
         }
         prefixAt = prefixAt + 1
@@ -408,8 +409,8 @@ pairIndex2: Int, pairByte2: Char) -> Int {
     let mut byteset: U64 = 0 as U64
     let mut setAt = 0
     while (setAt < bytesetEnd) {
-        let bit =(__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
-        byteset = byteset |((1 as U64) <<(bit as U64))
+        let bit = (__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
+        byteset = byteset | ((1 as U64) << (bit as U64))
         setAt = setAt + 1
     }
 
@@ -426,9 +427,9 @@ pairIndex2: Int, pairByte2: Char) -> Int {
             if (prefilterActive) {
                 let before = position
                 let candidate = str_find_byte_pair(s, before, lastStart,
-                pairIndex1, pairByte1,
-                pairIndex2, pairByte2)
-                if (candidate < 0) { return - 1 }
+                    pairIndex1, pairByte1,
+                    pairIndex2, pairByte2)
+                if (candidate < 0) { return -1 }
                 position = candidate
                 memory = 0
                 prefilterSkips = prefilterSkips + 1
@@ -441,15 +442,15 @@ pairIndex2: Int, pairByte2: Char) -> Int {
                     prefilterDistance = 0
                 }
             }
-            let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-            if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
+            let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+            if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
                 position = position + nlen
                 memory = 0
             } else {
                 let mut rightAt = critical
                 if (memory > rightAt) { rightAt = memory }
                 while (rightAt < nlen and
-                __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+                    __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                     rightAt = rightAt + 1
                 }
                 if (rightAt < nlen) {
@@ -461,7 +462,7 @@ pairIndex2: Int, pairByte2: Char) -> Int {
                     while (leftAt > memory and leftMismatch == false) {
                         leftAt = leftAt - 1
                         if (__builtin_string_byte_at(needle, leftAt) !=
-                        __builtin_string_byte_at(s, position + leftAt)) {
+                            __builtin_string_byte_at(s, position + leftAt)) {
                             leftMismatch = true
                         }
                     }
@@ -471,7 +472,7 @@ pairIndex2: Int, pairByte2: Char) -> Int {
                 }
             }
         }
-        return - 1
+        return -1
     }
 
     // Long-period CP2 never memorises a matched prefix. Keeping this separate
@@ -480,9 +481,9 @@ pairIndex2: Int, pairByte2: Char) -> Int {
         if (prefilterActive) {
             let before = position
             let candidate = str_find_byte_pair(s, before, lastStart,
-            pairIndex1, pairByte1,
-            pairIndex2, pairByte2)
-            if (candidate < 0) { return - 1 }
+                pairIndex1, pairByte1,
+                pairIndex2, pairByte2)
+            if (candidate < 0) { return -1 }
             position = candidate
             prefilterSkips = prefilterSkips + 1
             prefilterDistance = prefilterDistance + candidate - before
@@ -494,13 +495,13 @@ pairIndex2: Int, pairByte2: Char) -> Int {
                 prefilterDistance = 0
             }
         }
-        let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-        if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
+        let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+        if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
             position = position + nlen
         } else {
             let mut rightAt = critical
             while (rightAt < nlen and
-            __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+                __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                 rightAt = rightAt + 1
             }
             if (rightAt < nlen) {
@@ -511,7 +512,7 @@ pairIndex2: Int, pairByte2: Char) -> Int {
                 while (leftAt > 0 and leftMismatch == false) {
                     leftAt = leftAt - 1
                     if (__builtin_string_byte_at(needle, leftAt) !=
-                    __builtin_string_byte_at(s, position + leftAt)) {
+                        __builtin_string_byte_at(s, position + leftAt)) {
                         leftMismatch = true
                     }
                 }
@@ -520,7 +521,7 @@ pairIndex2: Int, pairByte2: Char) -> Int {
             }
         }
     }
-    return - 1
+    return -1
 }
 
 // The unprefiltered specialization used after a short needle produces dense
@@ -529,11 +530,11 @@ pairIndex2: Int, pairByte2: Char) -> Int {
 // case. Keeping the compact Two-Way loop separate restores Rust-std parity and
 // also avoids carrying four unused pair arguments through the hot function.
 private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
-slen: Int, nlen: Int) -> Int {
+    slen: Int, nlen: Int) -> Int {
     let suffixLess = strMaximalSuffix(needle, nlen, false)
     let suffixGreater = strMaximalSuffix(needle, nlen, true)
-    let lessPosition =(suffixLess >> 32) as Int
-    let greaterPosition =(suffixGreater >> 32) as Int
+    let lessPosition = (suffixLess >> 32) as Int
+    let greaterPosition = (suffixGreater >> 32) as Int
     let mut critical = greaterPosition
     let mut period = suffixGreater as Int
     if (lessPosition > greaterPosition) {
@@ -545,7 +546,7 @@ slen: Int, nlen: Int) -> Int {
     let mut prefixAt = 0
     while (exactPeriod and prefixAt < critical) {
         if (__builtin_string_byte_at(needle, prefixAt) !=
-        __builtin_string_byte_at(needle, period + prefixAt)) {
+            __builtin_string_byte_at(needle, period + prefixAt)) {
             exactPeriod = false
         }
         prefixAt = prefixAt + 1
@@ -561,8 +562,8 @@ slen: Int, nlen: Int) -> Int {
     let mut byteset: U64 = 0 as U64
     let mut setAt = 0
     while (setAt < bytesetEnd) {
-        let bit =(__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
-        byteset = byteset |((1 as U64) <<(bit as U64))
+        let bit = (__builtin_string_byte_at(needle, setAt) as U8 as Int) & 63
+        byteset = byteset | ((1 as U64) << (bit as U64))
         setAt = setAt + 1
     }
 
@@ -570,15 +571,15 @@ slen: Int, nlen: Int) -> Int {
     if (exactPeriod) {
         let mut memory = 0
         while (position + nlen <= slen) {
-            let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-            if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
+            let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+            if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
                 position = position + nlen
                 memory = 0
             } else {
                 let mut rightAt = critical
                 if (memory > rightAt) { rightAt = memory }
                 while (rightAt < nlen and
-                __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+                    __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                     rightAt = rightAt + 1
                 }
                 if (rightAt < nlen) {
@@ -590,7 +591,7 @@ slen: Int, nlen: Int) -> Int {
                     while (leftAt > memory and leftMismatch == false) {
                         leftAt = leftAt - 1
                         if (__builtin_string_byte_at(needle, leftAt) !=
-                        __builtin_string_byte_at(s, position + leftAt)) {
+                            __builtin_string_byte_at(s, position + leftAt)) {
                             leftMismatch = true
                         }
                     }
@@ -600,17 +601,17 @@ slen: Int, nlen: Int) -> Int {
                 }
             }
         }
-        return - 1
+        return -1
     }
 
     while (position + nlen <= slen) {
-        let tailBit =(__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
-        if (((byteset >>(tailBit as U64)) &(1 as U64)) ==(0 as U64)) {
+        let tailBit = (__builtin_string_byte_at(s, position + nlen - 1) as U8 as Int) & 63
+        if (((byteset >> (tailBit as U64)) & (1 as U64)) == (0 as U64)) {
             position = position + nlen
         } else {
             let mut rightAt = critical
             while (rightAt < nlen and
-            __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
+                __builtin_string_byte_at(needle, rightAt) == __builtin_string_byte_at(s, position + rightAt)) {
                 rightAt = rightAt + 1
             }
             if (rightAt < nlen) {
@@ -621,7 +622,7 @@ slen: Int, nlen: Int) -> Int {
                 while (leftAt > 0 and leftMismatch == false) {
                     leftAt = leftAt - 1
                     if (__builtin_string_byte_at(needle, leftAt) !=
-                    __builtin_string_byte_at(s, position + leftAt)) {
+                        __builtin_string_byte_at(s, position + leftAt)) {
                         leftMismatch = true
                     }
                 }
@@ -630,7 +631,7 @@ slen: Int, nlen: Int) -> Int {
             }
         }
     }
-    return - 1
+    return -1
 }
 
 // The first index at or after `from` where `needle` occurs, or -1.
@@ -647,18 +648,18 @@ internal fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
     if (i < 0) { i = 0 }
     if (nlen == 0) {
         if (i <= slen) { return i }
-        return - 1
+        return -1
     }
-    if (i + nlen > slen) { return - 1 }
+    if (i + nlen > slen) { return -1 }
     if (nlen == 1) {
         let hit = str_find_byte(s, i, __builtin_string_byte_at(needle, 0))
         if (hit <= slen - 1) { return hit }
-        return - 1
+        return -1
     }
     if (nlen <= 32) {
         let found = str_find_needle(s, i, slen, needle, nlen)
-        if (found >= - 1) { return found }
-        return strTwoWayIndexOfFrom(s, needle, - 2 - found, slen, nlen)
+        if (found >= -1) { return found }
+        return strTwoWayIndexOfFrom(s, needle, -2 - found, slen, nlen)
     }
 
     // Longer needles select their two least-common bytes to prefilter Two-Way,
@@ -704,7 +705,7 @@ internal fn strIndexOfFrom(s: String, needle: String, from: Int) -> Int {
     // 50-skip/8-byte effectiveness window makes dense inputs fall back to pure
     // Two-Way while selective inputs retain memory-bandwidth SIMD scanning.
     return strPrefilteredTwoWayIndexOfFrom(s, needle, i, slen, nlen,
-    index1, byte1, index2, byte2)
+        index1, byte1, index2, byte2)
 }
 
 internal fn strIndexOf(s: String, needle: String) -> Int {
@@ -719,7 +720,7 @@ internal fn strLastIndexOf(s: String, needle: String) -> Int {
         if (strMatchesAtIn(s, needle, i, slen, nlen)) { return i }
         i = i - 1
     }
-    return - 1
+    return -1
 }
 
 internal fn strContains(s: String, needle: String) -> Bool {
@@ -1253,7 +1254,7 @@ internal fn strReplaceAll(s: String, old: String, new: String) -> String {
 
     let newLen = __builtin_string_len(new)
     let count = strCountOf(s, old)
-    let out = str_with_capacity(slen + count *(newLen - oldLen))
+    let out = str_with_capacity(slen + count * (newLen - oldLen))
     let mut readAt = 0
     let mut writeAt = 0
     let mut matchAt = strIndexOf(s, old)
@@ -1389,7 +1390,7 @@ internal fn strJoin(parts: Vec<String>, sep: String) -> String {
     let n = list_len(parts)
     let seplen = __builtin_string_len(sep)
     let mut total = 0
-    if (n > 0) { total = seplen *(n - 1) }
+    if (n > 0) { total = seplen * (n - 1) }
     let mut i = 0
     while (i < n) {
         total = total + __builtin_string_len(list_get(parts, i))
@@ -1483,14 +1484,14 @@ internal fn strFromUnsigned(value: U64) -> String {
     let mut v = value
     let mut i = digits - 1
     while (v >= 100) {
-        let pair =((v % 100) as Int) * 2
+        let pair = ((v % 100) as Int) * 2
         __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
         __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
         i = i - 2
         v = v / 100
     }
     // One or two digits left, and the same table serves both.
-    let pair =((v % 100) as Int) * 2
+    let pair = ((v % 100) as Int) * 2
     __builtin_string_put_byte(out, i, __builtin_string_byte_at(table, pair + 1))
     if (i > 0) {
         __builtin_string_put_byte(out, i - 1, __builtin_string_byte_at(table, pair))
@@ -1951,36 +1952,15 @@ internal fn strParseBool(s: String) -> Bool? {
     return none
 }
 
-// **Not correctly rounded, and that is a documented limit rather than a bug to
-// find later.** The digits are accumulated as an integer and divided by a power
-// of ten once, so the result is within one ulp but is not always the nearest
-// double to the decimal text -- a correctly-rounded parser needs big-integer
-// arithmetic (Clinger/Eisel-Lemire) that this library does not have yet. Use it
-// for configuration and input; do not use it where a decimal literal must
-// round-trip bit-for-bit.
-//
-// Rejects what it cannot represent rather than guessing: empty text, a lone
-// sign, a lone dot, any non-digit, and more than 18 significant digits.
-private extern fn str_double_valid(text: String borrow) -> Int
-private extern fn str_double_value(text: String borrow) -> Float
-
-// **Reads back what `strFromFloat` writes, and nothing else.**
-//
-// The parser this replaces was source-level, and wrong three ways: its mantissa
-// accumulated in an `Int` while its own guard allowed eighteen digits, so a long
-// number wrapped and came back as a `Some` holding a different value; it divided
-// by ten once per decimal place, which lands near the nearest double rather than
-// on it; and it had no exponent case, so `1e+21` -- which is exactly what
-// `strFromFloat` produces for a large value -- did not parse. `strtod` is
-// correctly rounded and is the function the formatter checks its own candidates
-// against, so the pair round-trips by construction.
+// **Reads back what `strFromFloat` writes, and more: whatever `strtod` reads.**
+// The result is the double nearest the text, ties to even, for every input --
+// `"1e+21"`, which is what `strFromFloat` produces for a large value, a
+// hexadecimal `"0x1p-3"`, `"inf"` and `"nan"`. The work is std/float_text.psm.
 //
 // Stricter than C: the whole string must be a number, so `"1.5kg"` and `" 1.5"`
-// are `None` rather than 1.5. `"inf"`, `"-inf"` and `"nan"` parse, because
-// `strFromFloat` writes them.
+// are `none` rather than 1.5.
 internal fn strParseFloat(s: String) -> Float? {
-    if (str_double_valid(s) == 0) { return none }
-    return str_double_value(s)
+    return floatParse(s)
 }
 
 // The parse, or the caller's number: `parseInt().unwrapOr(fallback)`, named for
@@ -2034,7 +2014,7 @@ fn builderPiece(piece: String, end: String) -> String {
     return out
 }
 
-struct StringBuilder {
+public struct StringBuilder {
     parts: Vec<String>,
     size: Int
 }
@@ -2102,28 +2082,19 @@ impl StringBuilder {
 // **The shortest decimal text, at most fifteen significant digits.**
 //
 // `Float` used to be the one type a program could print and parse but never
-// convert: there was no `strFromFloat`, so a float could not be joined into a
-// line, written to a file, used as a map key's text, or built into a message.
-// The formatting itself is C, because finding the shortest form means parsing
-// candidates back, and `strtod` is where that lives -- see
-// `prismio_format_double` in runtime/lang_runtime.c. Fifteen is DBL_DIG, so
-// every decimal literal prints as written and `0.1 + 0.2` is `0.3`; a value
-// that needs more digits to round-trip, like `1.0 / 3.0`, prints fifteen.
+// convert, so a float could not be joined into a line, written to a file, or
+// built into a message. Fifteen is DBL_DIG, so every decimal literal prints as
+// written and `0.1 + 0.2` is `0.3`; a value that needs more digits to
+// round-trip, like `1.0 / 3.0`, prints fifteen. The formatting is
+// std/float_text.psm; this copies its bytes into a String of the right length.
 //
-// **`print(f)` writes exactly this text**, because both go through that one
-// function. A value that reaches the console and the same value converted to a
+// **`print(f)` writes exactly this text**, because std.io prints the String this
+// returns. A value that reaches the console and the same value converted to a
 // String must not disagree.
-//
-// Wrapping an `extern` that produces is a pass-through, which normally costs the
-// caller its drop (see the note over `concat`). It does not here, and the reason
-// is the argument: the leak needs the callee's allocation to be in both the
-// return's points-to set and a parameter's, and a `Float` parameter has no
-// points-to set at all. `tests/test_135_string_production.psm` measures it.
-private extern fn str_from_double(value: Float) -> String produce(free)
-private extern fn str_from_double_fixed(value: Float, decimals: Int) -> String produce(free)
-
 internal fn strFromFloat(value: Float) -> String {
-    return str_from_double(value)
+    let mut buffer: Array<U8, 32>
+    let n = floatFormat(value, buffer)
+    return strFromFloatBytes(buffer, n)
 }
 
 // A fixed number of decimals, for a column rather than a value -- prices,
@@ -2131,7 +2102,17 @@ internal fn strFromFloat(value: Float) -> String {
 // and `strFromFloatFixed(2.0, 2)` keeps its zeros as `2.00`.
 // `decimals` is clamped to 0..30.
 internal fn strFromFloatFixed(value: Float, decimals: Int) -> String {
-    return str_from_double_fixed(value, decimals)
+    let mut buffer: Array<U8, 400>
+    let n = floatFormatFixed(value, decimals, buffer)
+    return strFromFloatBytes(buffer, n)
+}
+
+private fn strFromFloatBytes(bytes: [U8], n: Int) -> String {
+    let out = str_with_capacity(n)
+    for i in 0..<n {
+        __builtin_string_put_byte(out, i, bytes[i] as Char)
+    }
+    return out
 }
 
 // ---------------------------------------------------------------------------

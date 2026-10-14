@@ -9,6 +9,65 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **A condition needs no parentheses.** `if x == 3 { }`, `while n < 10 { }` and
+  `if o == none { }` read as written, and `if (x == 3) { }` is the parenthesised
+  expression it always was. A struct literal in a bare condition has to be
+  parenthesised (`if (Point { x: 1 }).x == 1`), as it is in a `for` header, because
+  the `{` after a condition is the body.
+- **`is`, `is not` and `not`** are the words for `==`, `!=` and `!`, read into the
+  same nodes as the symbols. `not` binds like `!`: `not x == y` negates `x` alone.
+  All three are reserved words now.
+- **Nested functions.** A `fn` written in a function body is a private function that
+  captures nothing, visible in the block that declares it, callable before its
+  declaration and recursively; two functions may each have a `helper`, and a method
+  may have one. The parser lifts it out as `outer$inner`.
+- **A closure may have a block body**, `|x: Int| { let y = x + 1  y * 2 }`, and the
+  block's last expression is its value. A function body still answers only through
+  `return`, and its error now says so.
+- **Visibility on global `let`s, structs and fields**, with the levels a function has:
+  `public` (everywhere), `internal` (the package), `private` (the file). A struct is
+  `internal` unless marked and a field `private`, so `public struct Point { public x:
+  Int, y: Int }` is a public type with one public field; a struct literal needs every
+  field visible. An unmarked global stays open to every file. Enums are not enforced
+  yet and a marker on one is refused.
+- **An array's length is a constant expression**, `Array<U32, N * N>`, over numbers and
+  non-`mut` globals, and an integer global may be initialised by one:
+  `let CELLS: Usize = N * N`.
+- **Ranges and indexing across integer types.** `for i in 0..<MATRIX` over a `Usize`
+  (or `U32`, `I64`, `U8` ...) counts in that type, and a `Vec`, array or `String` is
+  indexed by any integer: a value no `Int` holds is out of range rather than wrapped
+  into it. The loop is the `Int` one over a count (`sema/ranges.psm`), so every proof
+  about loops still applies; a range with more than 2^31-1 values stops with an error
+  when entered. `bench_matrix_multiply` written this way is 9.96 M instructions, the
+  same as the C arm.
+- **`std.raw`, `std.port` and `std.asm`**, the clean surface for what freestanding code
+  used to reach with `__builtin_*`: address and pointer conversion, volatile and
+  unaligned access, atomics on 8- to 64-bit words, a fence, `swapBytes`, and a Float's
+  bits (`x.bits`, `Float.fromBits`) in `std.raw`; `portInU8` and friends in `std.port`; `asm`, `asmRead` and `asmWrite` in
+  `std.asm`, which the compiler lowers where the text is written because the text has to
+  be a literal. All three are freestanding-safe and call nothing in the C runtime.
+- **Float text is Prismio** (`std/float_text.psm`): `toString`, `toString(places)`,
+  `parseFloat`, `as String` and `as Float?` no longer call `snprintf` and `strtod`, so
+  a `--freestanding` program can format and parse a Float (`kernel_float_aarch64.psm`
+  boots under QEMU and does). A `Decimal` of up to 800 digits shifts and rounds the
+  exact expansion of a double, so rounding is correct by construction; a Clinger fast
+  path (one multiplication or division by an exact power of ten) takes the ordinary
+  cases. Output is digit-for-digit what the C functions gave: 1.1 million bit patterns
+  for `toString`, 200,000 for `toString(places)` and 300,000 texts for `parseFloat`
+  (`tests/test_276_float_text.psm` keeps a table of the edge rows). One difference:
+  `"nan(a-b)"` is `none` (C99 allows letters, digits and `_` between the brackets; macOS's
+  `strtod` took anything), and `toString(places)` of NaN or an infinity is `nan`, `inf`
+  or `-inf` on every platform where it used to follow the C library. `toString` of
+  a Float is 2.7× faster than the C search on short values and 6× on 15-digit ones
+  (0.25 µs against 0.67 µs and 0.16 against 1.0), `toString(places)` 1.75× slower
+  (0.1 µs), `parseFloat` equal to C up to 19 digits and 7× slower past them (0.15 µs).
+  Whole-suite A/B against the previous compiler: hosted Prismio geomean 0.996 over 65
+  workloads, binaries the same size, 20 freestanding workloads with identical
+  instruction counts, compiling the 66 programs 7% slower (837 ms to 910 ms) because
+  `std.string` now carries 35 more functions. `print(Float)` and its siblings format
+  through the same code, so the console and `toString` cannot disagree; what that
+  costs a program that never prints a Float is what the unreachable-function pruning
+  below removes. `std.float_text` is importable freestanding.
 - **`a ?? b`, none-coalescing.** `a` when it has a value and `b` when it is `none`,
   for any `T?`; `b` is a `T` (the result is a `T`) or another `T?` (the result stays
   one, so `a ?? b ?? 0` tries each in turn). The right side is evaluated only when it
@@ -137,7 +196,7 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `display`, `input`, `fs`, `process`, `time`, `term` and `math` is now importable (was `option`,
   `platform`, `iter`). A freestanding program is internalised like a closed hosted one, since its C
   reaches Prismio only through `main` and `export`; the freestanding benchmarks did not move (0.95× C).
-  Float text is not available there yet. `kernel_mem_aarch64.psm` boots under QEMU with a bump allocator
+  `kernel_mem_aarch64.psm` boots under QEMU with a bump allocator
   written in Prismio, and a Buffer read out of range reaches the panic hook. FREESTANDING_PLAN step 6.
 - **`__builtin_swap_bytes`, `__builtin_float_bits` and `__builtin_float_from_bits`**:
   byte order reversed at any integer width (one `rev`/`bswap`), and a Float and its
@@ -154,6 +213,79 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **A local may be declared without a value, and every read the compiler cannot prove
+  follows an assignment is an error** (`sema/assign.psm`): ``` `r` may be used before it
+  is assigned ```. Branches join, a path that returns, breaks, continues or panics
+  contributes nothing, a `match` must cover every variant or have a `_`, and a loop that
+  may run no times assigns nothing as far as the code after it can tell. An immutable
+  `let` declared this way takes one assignment (a second, or one a loop could repeat, is
+  an error); assigning a field of an unassigned struct is a read of it. `let x: T =
+  default` still asks for the type's default, and an array, a `Vec` and a `Map` keep
+  their empty or zeroed start.
+- **`__builtin_*` is the standard library's.** A program that writes one is refused,
+  with the wrapper to write instead (`s.length`, `min(a, b)`, `portOutU8(port, v)`,
+  `volatileLoadU32(address)`, `asm("nop")`). The compiler's own `src/`, `ums/`, the
+  tests, the benchmarks and the sandbox moved to the wrappers. `nowrap` proofs treat
+  `std.math`'s `min` and `max` as the builtins they wrap.
+- **Structs are `internal` and their fields `private` unless marked.** The tree was
+  migrated by compiling every entry point and widening each declaration to the level
+  its uses need: `internal` within a package and `public` across them. The standard
+  library's structs a program names (`Buffer`, `Arena`, `Duration`, `Instant`,
+  `Args`, `Child`, ...) are `public`. **`src/` now uses the new syntax, so the pinned
+  seed can no longer parse it.** A seed was cut from this tree and a compiler built from
+  only that seed reproduces its own IR; publishing it and committing the pin is open
+  (`docs/KNOWN_ISSUES.md`), and until then a clean checkout cannot bootstrap.
+- **The runtime and library bitcode is merged lazily on macOS and Linux.** Every library module
+  is read with `LLVMGetBitcodeModuleInContext2` (prototypes only), the set of definitions the
+  program reaches is computed across all of them, and `Linker::LinkOnlyNeeded` links just that
+  set, where every function was parsed and linked and most were then pruned. The one thing
+  LLVM-C cannot say is in `runtime/llvm_bridge.cpp` (`prismio_llvm_materialize`,
+  `prismio_llvm_link_only_needed`), a new compiler source; Windows links `LLVM-C.dll`, which
+  has no C++ API, and keeps the whole-module merge until it links LLVM statically
+  (`docs/LLVM_BRIDGE_PLAN.md`). A hello-world build is 36.1 -> 34.5 ms (median of 40); the
+  library read alone is 1.1 ms cold against 3-4 for a whole parse. The program is the same
+  in everything but order: the merged module has the same functions and globals, and 135 of the
+  136 test programs whose binary changed have the identical symbol set and size (the other is
+  16 bytes smaller). IRMover lays functions out in discovery order, which ran through bodies
+  that are no longer read. The hosted benchmark suite, whole against lazy, is a geomean of
+  1.0007 across 66 arms; two runs of the *same* compiler are 1.0154, with 7 arms beyond their
+  own noise tolerance against 2, so the layout change is inside run-to-run noise.
+
+- **A macOS program links by running `ld` directly**, not `system()` -> `/bin/sh` -> `cc` ->
+  `ld`. The driver is asked once with `-###`, and its `ld` line is kept in
+  `$TMPDIR/prismio-link-cache` with the object and output as markers, keyed on the driver
+  line and `DEVELOPER_DIR`/`SDKROOT`/`MACOSX_DEPLOYMENT_TARGET`. Every absolute path the line
+  names (the linker, the SDK, `libclang_rt.osx.a`) and `/var/db/xcode_select_link` are
+  recorded by identity, so an Xcode update or `xcode-select --switch` sends the next build
+  back to the driver; an `ld` that fails falls back to the driver and drops the entry. Only
+  for a program with no native objects, link arguments or exports. Building one line that
+  prints: 46.3 ms to 36.0; all 254 `tests/test_*.psm` programs build byte-identical
+  binaries, in 26.1 s against 28.9. `PRISMIO_LINK_CACHE=0` links through the driver.
+- **Standard-library functions a program cannot call are dropped after type checking**
+  (`src/driver/prune.psm`), so the ownership analysis and IR generation never see them.
+  Reachability is read off the calls sema resolved, closures and function values included,
+  and a trait object keeps every method of the impl it was built from; a program's own
+  functions are always kept, so no diagnostic depends on it. Printing one line: ownership
+  analysis 0.61 ms to 0.09, IR generation 0.95 to 0.24. `PRISMIO_PRUNE=0` turns it off.
+  **It is not output-neutral, deliberately:** a dead function used to decide how a live one
+  compiled. `region_confined` counted dead callers, so the `eprintln` overloads a program
+  never called made `std.io`'s `write` look reachable from outside a region and let the cost
+  model bracket an arena around a `println` -- an opaque call the obligation exists to
+  refuse. `test_62_split_release` and `forced_layout` leaned on that and now do their work
+  outside the printing function. `prismio aif` lists the imported sites the program can
+  reach, not every one in the modules it imports.
+- **Flat-guard verdicts are per function, not per name.** A call is judged by the function
+  sema resolved it to (`CALL_EXPR.s2`), falling back to its source name only when it has
+  none. By name, one unsafe overload poisoned every call spelled the same: `Buffer.eq`
+  reaching an extern took the guard from every `Map` probe in a program importing
+  `std.mem`, and one closure that pushes took it from every closure call. The benchmark
+  binary is now identical with pruning on and off. Against `65de043` (C Float printers, no
+  pruning, name verdicts), with both compilers bootstrapped two generations and the suites
+  interleaved, 3 x 15 runs: hosted geomean 0.998 over 66 workloads, five functions with
+  different instructions (the two `listSortRange` instantiations gain their guards,
+  sort_strings 5.9% faster), the binary the same 242,128 bytes, the suite compiled in
+  842 ms against 862. `gcd_lcm` (+12%) and `edit_distance` (-15%) are identical
+  instructions at another address.
 - **Tight integer loops get the no-wrap facts C gets from undefined overflow.** `Int` still
   wraps. Four analyses now tell LLVM where it provably cannot:
   - A loop over an `Array<T, N>` with no list guard is versioned on the facts that keep its
@@ -180,6 +312,25 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   separate what each buys. Because the compiler relies on it, an out-of-range index into a fixed
   array or a `[T]` view is now specified as undefined behaviour.
 
+- **A sieve runs as a segmented sieve, from the plain source** (`src/ir/tiling.psm`,
+  developer docs: Stride tiling and square bounds). A nest that stores one value at a stride -- `while (..) {
+  if (v[p]) { let mut m = ..  while (m <= n) { v[m] = false  m = m + p } }  p = p + 1 }` --
+  gets a copy that runs the outer loop with each inner loop cut at a 64 KB window (32 KB off
+  Apple silicon), then sweeps every later window across all the recorded iterations. Stores
+  of one value commute, so only the guard's reads could tell, and those all land in the first
+  window; any iteration the copy cannot match exactly hands over to a plain copy of the loop.
+  Two windows or more, a flat list, every store in range; nothing else in `src/`, `tests/` or
+  the benchmarks matches. Whole sieve on an M5: 1.18 ms to 0.70 ms at n = 10^6, 13.8 to 7.3 ms
+  at 10^7, 339 to 80 ms at 10^8 -- the hand-tiled C's 0.71, 7.6 and 84. Hosted `prime_sieve`
+  482 to 420 µs, against C++'s 454 and Rust's 622. Packing `Vec<Bool>` to bits was measured
+  and rejected: 0.21x-1.06x, tiled or not.
+- **`x * x <= n` bounds `x`** (`emitSquareBound`, `src/ir/ranges.psm`). The square is `Int`
+  arithmetic, so the range guard folds a start within 46340 and `isqrt(n) + step <= 46340`,
+  and then `x <= isqrt(n)` in the body. A sieve's outer loop proves `prime[p]` (it was checked)
+  and its `p = p + 1` becomes `nsw`, the fact LLVM needed to count the inner `m += p` loop and
+  interleave its stores: 8-15% on a sieve whose `n` is read at run time. The hosted benchmark's
+  `n` is a constant LLVM had already propagated; there this alone measured 1.5% slower with the
+  hot loop instruction-identical, which is layout.
 - **On AArch64, a branch on two conditions splits again when one is a single bit test.** LLVM 23's
   AArch64 backend gained a cost model that computes `a and b` together and branches once, and it
   merged even where one condition is a lone `tbnz`: `ring_buffer`'s
@@ -258,6 +409,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **A trait-object call in a loop could reallocate the Vec the loop read through its
+  flat guard.** The guard analyses judged calls by `CALL_EXPR`, and a `dyn` call is a
+  `DYN_CALL`, so it fell through as an ordinary expression: an impl that pushed to the list
+  left the guarded copy reading the freed element block (`walk` in
+  `tests/test_277_guard_dyn_call.psm` summed 27 for 28). `DYN_CALL`, `SPAWN_EXPR` and
+  `JOIN_EXPR` now decline the loop in all three analyses.
 - **`let big: Array<Int, N>` compiled in time linear in N with a large constant** (1.6 s
   at a million elements, 21 s at ten million, over two minutes at forty million). LLVM
   scalarises a first-class `store [N x T] zeroinitializer` before recovering the memset;

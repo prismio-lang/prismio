@@ -190,7 +190,10 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
             return typeDataView(typeInvalid())
         }
         let instantiated = monoInstantiateStruct(module, tn)
-        if (instantiated.equals("") == false) { return typeStruct(instantiated) }
+        if (instantiated.equals("") == false) {
+            semaCheckStructVisible(tn, tn.s1)
+            return typeStruct(instantiated)
+        }
         return typeInvalid()
     }
 
@@ -216,7 +219,10 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     if (tn.s1.equals("Usize")) { return typeUsize() }
     if (tn.s1.equals("")) { return typeVoid() }
     if (semaHasEnum(module, tn.s1)) { return typeEnum(tn.s1) }
-    if (semaHasStruct(module, tn.s1)) { return typeStruct(tn.s1) }
+    if (semaHasStruct(module, tn.s1)) {
+        semaCheckStructVisible(tn, tn.s1)
+        return typeStruct(tn.s1)
+    }
 
     semaErrorAt(tn, "unknown type ".concat(diagQuote(tn.s1)))
     return typeInvalid()
@@ -229,6 +235,7 @@ internal fn semaSizedArrayType(module: ASTNode, ann: ASTNode) -> TypeInfo {
         elemT = semaAnnotationType(module, ptr_to_node(ann.child1))
     }
     let length = ptr_to_node(ann.child2)
+    semaResolveArrayLength(module, length)
     let count = typeIntLiteralCount(length.s1)
     // `i2` marks it reported: an annotation is typed once per path that meets it.
     if (count < 0 and length.i2 == 0) {
@@ -288,6 +295,49 @@ internal fn semaIsIntLiteral(e: ASTNode) -> Bool {
 // gives: a field read is per-identifier and the walk was per-module. The inner
 // loop over fields or variants is unchanged -- it is bounded by the declaration,
 // not by the program.
+// Whether a declaration at `level` -- 0 public, 1 the declaring file, 2 the declaring
+// package -- is visible from `atFile`. The same three levels a function has.
+internal fn semaVisibleFrom(level: Int, declFile: Int, atFile: Int) -> Bool {
+    if (level == 0 or declFile == atFile) { return true }
+    if (level == 1) { return false }
+    return ir_same_package(declFile, atFile) == 1
+}
+
+// Reports a use of `what` of `owner` that `atFile` may not make, naming the level
+// that stops it and what to write to widen it.
+private fn semaReportHidden(at: ASTNode, what: String, owner: String, level: Int, widen: String) {
+    if (level == 1) {
+        semaErrorAt(at, what.concat(" of ", diagQuote(owner), " is private to the file that declares it"))
+        diag_note("write `public ".concat(widen, "` to make it part of ", diagQuote(owner),
+                                          "'s surface, or `internal` to share it within its package"))
+        return
+    }
+    semaErrorAt(at, what.concat(" of ", diagQuote(owner), " is internal to the package that declares it"))
+    diag_note("write `public ".concat(widen, "` to make it part of ", diagQuote(owner), "'s surface"))
+}
+
+// A struct is written where `at` is: the type may be named from there only when the
+// struct's own level allows it.
+internal fn semaCheckStructVisible(at: ASTNode, name: String) {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind != NodeKind.STRUCT_DECL) { continue }
+        if (semaVisibleFrom(decl.i2, decl.file, at.file)) { return }
+        // A generic's body naming a program's struct is the type argument arriving,
+        // which was checked where the program wrote it.
+        if (semaFileIsStandardLibrary(at.file) and semaFileIsStandardLibrary(decl.file) == false) { return }
+        let level = decl.i2
+        if (level == 1) {
+            semaErrorAt(at, "struct ".concat(diagQuote(name), " is private to the file that declares it"))
+        } else {
+            semaErrorAt(at, "struct ".concat(diagQuote(name), " is internal to the package that declares it"))
+        }
+        diag_note("write `public struct ".concat(name, "` to make it part of its module's surface"))
+        return
+    }
+}
+
 internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
     let count = ir_decl_count(structName)
     for i in 0..<count {
@@ -297,6 +347,12 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
             while (nodeExists(fieldPtr)) {
                 let field = ptr_to_node(fieldPtr)
                 if (field.s1.equals(fieldName)) {
+                    // A literal's fields are reported together, once, by
+                    // semaCheckStructLiteralVisible.
+                    if (at.kind != NodeKind.STRUCT_FIELD and semaVisibleFrom(field.i2, stmt.file, at.file) == false) {
+                        semaReportHidden(at, "field ".concat(diagQuote(fieldName)), structName, field.i2,
+                                         fieldName.concat(": T"))
+                    }
                     return semaAnnotationType(module, ptr_to_node(field.child1))
                 }
                 fieldPtr = field.next
@@ -510,5 +566,34 @@ internal fn semaFillOmittedFields(module: ASTNode, expr: ASTNode, structName: St
             return
         }
         tail = node.next
+    }
+}
+
+// A struct literal sets every field -- the ones written, and the ones left to their
+// defaults -- so it is written only where all of them are visible, and the struct
+// itself too. A struct with a hidden field is built by a function its own file
+// provides.
+internal fn semaCheckStructLiteralVisible(literal: ASTNode) {
+    let name = literal.s1
+    semaCheckStructVisible(literal, name)
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind != NodeKind.STRUCT_DECL) { continue }
+        let mut hidden = ""
+        let mut fieldPtr = decl.child1
+        while (nodeExists(fieldPtr)) {
+            let field = ptr_to_node(fieldPtr)
+            if (semaVisibleFrom(field.i2, decl.file, literal.file) == false) {
+                if (hidden.equals("") == false) { hidden = hidden.concat(", ") }
+                hidden = hidden.concat(diagQuote(field.s1))
+            }
+            fieldPtr = field.next
+        }
+        if (hidden.equals("") == false) {
+            semaErrorAt(literal, "a struct literal of ".concat(diagQuote(name), " sets fields not visible here: ", hidden))
+            diag_note("build it with a function the declaring file provides, or make the fields `public`")
+        }
+        return
     }
 }

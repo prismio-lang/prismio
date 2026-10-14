@@ -43,13 +43,13 @@ struct UmsResolution {
     source: String,
     resolved: String,
     locked: String,
-    ok: Bool
+    public ok: Bool
 }
 
 // A declared path as the lockfile spells it on every platform.
 private fn umsLockedPath(path: String) -> String {
     let mut out = ""
-    for i in 0..<__builtin_string_len(path) {
+    for i in 0..<path.length {
         let c = path.charAt(i)
         if (c == '\\') {
             out = out.concat("/")

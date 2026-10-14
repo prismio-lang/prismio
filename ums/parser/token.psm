@@ -20,12 +20,12 @@ enum UmsTokenKind {
 
 
 struct UmsToken {
-    kind: UmsTokenKind,
-    value: String,
-    offset: Int,
-    line: Int,
-    col: Int,
-    len: Int
+    internal kind: UmsTokenKind,
+    internal value: String,
+    internal offset: Int,
+    internal line: Int,
+    internal col: Int,
+    internal len: Int
 }
 
 internal fn umsToken(kind: UmsTokenKind, value: String, offset: Int,

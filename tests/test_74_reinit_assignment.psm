@@ -53,7 +53,7 @@ fn passes(sink t: Tree, n: Int) -> Tree {
 }
 
 fn consumeStr(sink s: String) -> Int {
-    return __builtin_string_len(s)
+    return s.length
 }
 
 fn fail(message: String) -> Int {
@@ -96,7 +96,7 @@ fn main() -> Int {
         acc2 = acc2.concat("z")
         j = j + 1
     }
-    if (__builtin_string_len(acc2) != 6) { failures = failures + fail("string accumulator after loop") }
+    if (acc2.length != 6) { failures = failures + fail("string accumulator after loop") }
 
     if (failures == 0) { println("reinit assignment ok") }
     return failures

@@ -1,8 +1,0 @@
-// expect-error: bit operations take an integer, found Float
-// The builtins under `countOnes` are defined on integer widths only.
-import std.io
-
-fn main() -> Int {
-    let x = 1.5
-    return __builtin_count_ones(x)
-}

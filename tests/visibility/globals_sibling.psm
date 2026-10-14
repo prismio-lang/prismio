@@ -1,0 +1,5 @@
+// The same package as `globals`, so its `internal` global is reachable here and
+// `tests/` -- the root package -- cannot reach it.
+import visibility.globals
+
+public fn globalsInternalFromSibling() -> Int { return GLOBAL_INTERNAL }

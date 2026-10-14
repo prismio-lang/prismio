@@ -16,22 +16,22 @@ public fn benchPrintln(value: Int) { benchWrite(value.toString()) benchWrite("\n
 public fn benchPrintln(value: I64) { benchWrite(value.toString()) benchWrite("\n") }
 
 struct BenchBucket {
-    values: Vec<Int>
+    internal values: Vec<Int>
 }
 
 struct BenchBand {
-    seed: Int,
-    steps: Int
+    internal seed: Int,
+    internal steps: Int
 }
 
 // C++'s `BenchTree` with its two `unique_ptr`s and Rust's with two
 // `Option<Box<_>>`: a node per allocation, an absent child as `none`. A struct
 // rather than an enum so that `recursive_tree_rebuild` can add to a node in
 // place, as the other two do, instead of rebuilding the tree every pass.
-struct BenchTree {
-    value: Int,
-    left: BenchTree?,
-    right: BenchTree?
+public struct BenchTree {
+    internal value: Int,
+    internal left: BenchTree?,
+    internal right: BenchTree?
 }
 
 public fn benchRandom(seed: Int) -> Int {

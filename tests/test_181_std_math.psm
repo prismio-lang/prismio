@@ -60,9 +60,9 @@ fn sumOfRoots(n: Int) -> Float {
 fn sumOfRootsInline(n: Int) -> Float {
     let mut acc = 0.0
     for i in 0..<n {
-        let mut r = __builtin_f64_sqrt(i as Float)
+        let mut r = (i as Float).sqrt()
         if (r < 1.0) { r = 1.0 }
-        acc = acc + __builtin_f64_floor(r)
+        acc = acc + r.floor()
     }
     return acc
 }

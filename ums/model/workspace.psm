@@ -13,11 +13,11 @@ import std.string
 import std.fs
 
 
-struct UmsWorkspace {
-    project: UmsProjectModel,
-    plan: UmsBuildPlan,
-    diagnostics: Vec<UmsDiagnostic>,
-    valid: Bool
+public struct UmsWorkspace {
+    public project: UmsProjectModel,
+    public plan: UmsBuildPlan,
+    public diagnostics: Vec<UmsDiagnostic>,
+    public valid: Bool
 }
 
 private fn umsEmptyWorkspace(diagnostics: Vec<UmsDiagnostic>) -> UmsWorkspace {
@@ -52,13 +52,13 @@ public fn umsLoadText(source: String, manifestPath: String, root: String,
 public fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspace {
     let mut diagnostics = umsDiagnostics()
     let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
-    if (__builtin_string_len(manifestPath) == 0) { return umsEmptyWorkspace(diagnostics) }
+    if (manifestPath.length == 0) { return umsEmptyWorkspace(diagnostics) }
     let root = directoryOf(manifestPath)
     return umsLoadText(readFile(manifestPath), manifestPath, root, profile)
 }
 
 private fn umsBootstrapPrefixLength(source: String) -> Int {
-    let length = __builtin_string_len(source)
+    let length = source.length
     let mut pos = 0
 
     // The bootstrap block is required to be first, apart from whitespace and
@@ -131,7 +131,7 @@ struct UmsHostDeclaration {
 private fn umsReadHostDeclaration(startDirectory: String) -> UmsHostDeclaration {
     let mut diagnostics = umsDiagnostics()
     let manifestPath = umsDiscoverManifest(startDirectory, diagnostics)
-    if (__builtin_string_len(manifestPath) == 0) { return UmsHostDeclaration { root: "", text: "" } }
+    if (manifestPath.length == 0) { return UmsHostDeclaration { root: "", text: "" } }
 
     let source = readFile(manifestPath)
     let prefixLength = umsBootstrapPrefixLength(source)
@@ -171,7 +171,7 @@ public fn umsHostExecutable(root: String, host: String) -> String {
 
 public fn umsProjectHost(startDirectory: String) -> String {
     let declared = umsReadHostDeclaration(startDirectory)
-    if (__builtin_string_len(declared.text) == 0) { return "" }
+    if (declared.text.length == 0) { return "" }
     return umsHostExecutable(declared.root, declared.text)
 }
 

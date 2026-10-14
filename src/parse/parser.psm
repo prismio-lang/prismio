@@ -27,9 +27,9 @@ import std.string
 // A `Ptr` rather than the type's name because `Ptr` is copyable -- a `String`
 // field would be moved out of the parser by the first method that read it.
 struct Parser {
-    current: Ptr, // Token pointer
-    allowStructLit: Int,
-    implType: Ptr, // ASTNode (IMPL_DECL with child3 IMPL_HEADER), or null
+    internal current: Ptr, // Token pointer
+    internal allowStructLit: Int,
+    internal implType: Ptr, // ASTNode (IMPL_DECL with child3 IMPL_HEADER), or null
     // T16 argument position. `fn f(v: impl Show)` *is* `fn f<T: Show>(v: T)`, but
     // the generic parameter list is parsed before the parameter list that reveals
     // it, so the synthesised GENERIC_PARAM cannot be attached where it is created.
@@ -38,24 +38,38 @@ struct Parser {
     //
     // A chain rather than one slot because `fn f(a: impl Show, b: impl Ord)`
     // synthesises two, and the sequence numbers them so they cannot collide.
-    implParams: Ptr, // ASTNode (GENERIC_PARAM chain), or null
-    implParamSeq: Int,
+    internal implParams: Ptr, // ASTNode (GENERIC_PARAM chain), or null
+    internal implParamSeq: Int,
     // Where an `impl Trait` currently being parsed is allowed to mean something.
     // 0 nowhere, 1 argument position, 2 return position. The two positions are
     // different constructs -- argument is a generic parameter the caller picks,
     // return is one concrete type the body picks -- so the type parser cannot
     // decide between them from the token alone, and anywhere else is an error
     // rather than a third meaning.
-    implPosition: Int,
+    internal implPosition: Int,
     // The line of the token `advance` last stepped past, which is what tells a
     // suffix on the same line from a statement that begins on the next one --
     // see parseSuffixes.
-    lastLine: Int
+    internal lastLine: Int,
+    // The FUNCTION whose body is being read, or null between declarations. A `fn`
+    // met while it is set is a nested one (parse/decl.psm, parseNestedFn).
+    internal fnNode: Ptr, // ASTNode, or null
+    // Nested functions, already named and parsed, waiting to join the module's own
+    // chain after the declaration they were written in: a nested function is a
+    // private top-level function the parser has renamed, so nothing past the parser
+    // needs to know it was ever nested. A `next` chain with its tail kept, which is
+    // what lets a block find the ones it wrote.
+    internal hoistHead: Ptr, // ASTNode, or null
+    internal hoistTail: Ptr, // ASTNode, or null
+    // Above zero while an array's length is being read inside `Array<T, ...>`, where a
+    // `>>` closes two argument lists and is not a shift.
+    internal lengthDepth: Int
 }
 
 public fn parserCreate(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null(),
-                    implParams: ptr_null(), implParamSeq: 0, implPosition: 0, lastLine: tokens.line }
+                    implParams: ptr_null(), implParamSeq: 0, implPosition: 0, lastLine: tokens.line,
+                    fnNode: ptr_null(), hoistHead: ptr_null(), hoistTail: ptr_null(), lengthDepth: 0 }
 }
 impl Parser {
 
@@ -458,6 +472,18 @@ impl Parser {
                 // later pass free of the question -- nothing downstream has to know
                 // that recovery exists.
                 nodeListPush(declarations, stmt)
+            }
+
+            // Functions written inside the declaration just read follow it.
+            let mut hoistedPtr = self.hoistHead
+            self.hoistHead = ptr_null()
+            self.hoistTail = ptr_null()
+            while (nodeExists(hoistedPtr)) {
+                let hoisted = ptr_to_node(hoistedPtr)
+                let following = hoisted.next
+                hoisted.next = ptr_null()
+                nodeListPush(declarations, hoisted)
+                hoistedPtr = following
             }
         }
 

@@ -1,0 +1,11 @@
+// expect-error: for range start: expected Usize, found Int
+// A range counts in one type: an `Int` variable does not become a `Usize` because
+// the other bound is one (a bare literal does).
+import std.io
+
+fn main() -> Int {
+    let a: Int = 3
+    let n: Usize = 4
+    for i in a..<n { println(i) }
+    return 0
+}

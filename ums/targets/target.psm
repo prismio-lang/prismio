@@ -44,20 +44,20 @@ enum UmsNativeKind {
     RESPONSE_FILE
 }
 
-struct UmsNativeInput {
-    kind: UmsNativeKind,
-    value: String,
-    line: Int,
-    col: Int,
-    len: Int
+public struct UmsNativeInput {
+    public kind: UmsNativeKind,
+    public value: String,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
-struct UmsLinkInput {
-    kind: UmsLinkKind,
-    value: String,
-    line: Int,
-    col: Int,
-    len: Int
+public struct UmsLinkInput {
+    public kind: UmsLinkKind,
+    public value: String,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
 
@@ -66,29 +66,29 @@ struct UmsLinkInput {
 // provide every runtime symbol themselves (a Prismio compiler, built from the
 // runtime in its own checkout). `exportDynamic` makes the executable's symbols
 // visible to code it loads while running, such as a JIT-compiled module.
-struct UmsTarget {
-    kind: UmsTargetKind,
-    name: String,
-    entry: String,
-    sourcePath: String,
-    outputPath: String,
-    runtime: String,
-    exportDynamic: Bool,
+public struct UmsTarget {
+    public kind: UmsTargetKind,
+    public name: String,
+    public entry: String,
+    public sourcePath: String,
+    public outputPath: String,
+    public runtime: String,
+    public exportDynamic: Bool,
     // A program with no operating system under it (docs/FREESTANDING_PLAN.md): the
     // installed runtime is not linked, no C library or startup files are, and
     // `triple` names the machine. `features`, `codeModel` and `noRedZone` are what a
     // kernel asks of code generation; the empty string leaves each at the target's
     // default.
-    freestanding: Bool,
-    triple: String,
-    features: String,
-    codeModel: String,
-    noRedZone: Bool,
-    links: Vec<UmsLinkInput>,
-    natives: Vec<UmsNativeInput>,
-    line: Int,
-    col: Int,
-    len: Int
+    public freestanding: Bool,
+    public triple: String,
+    public features: String,
+    public codeModel: String,
+    public noRedZone: Bool,
+    public links: Vec<UmsLinkInput>,
+    public natives: Vec<UmsNativeInput>,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
 public fn umsTarget(kind: UmsTargetKind, name: String, entry: String,

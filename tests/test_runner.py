@@ -729,6 +729,26 @@ def run_freestanding_test():
         ("kernel_mem_aarch64.psm", 1, [], 1,
          ["runtime error: %d byte(s) at offset %d are out of range for a Buffer of %d"]),
     ]
+    # A kernel that formats and parses Floats: the FPU is switched on by the stub
+    # (-DENABLE_FP), so unlike every other case it is built with the FP unit.
+    fp_stub = [
+        "--native", "boot_aarch64_virt.c",
+        "--native-flag", "-DENABLE_FP",
+        # The MMU is off, so every access is device memory and an unaligned one
+        # faults; the compiler has to be told not to emit them.
+        "--native-flag", "-mstrict-align", "--target-features", "+strict-align",
+        "--link-arg", "-T", "--link-arg", "link_aarch64_virt.ld",
+    ]
+    float_elf = out_dir / "float.elf"
+    built = build("kernel_float_aarch64.psm", float_elf, fp_stub)
+    if built.returncode != 0:
+        failures.append(f"kernel_float_aarch64.psm did not build:\n{built.stderr}")
+    else:
+        code, output = boot(float_elf)
+        if code != 0 or "result=0\n" not in output:
+            failures.append(f"kernel_float_aarch64.psm: exit {code}, output {output!r}; "
+                            f"wanted exit 0 containing 'result=0'")
+
     for index, (source, seed, extra, status, expected) in enumerate(cases):
         elf = out_dir / f"case{index}.elf"
         built = build(source, elf, [*stub, "--native-flag", f"-DSEED={seed}", *extra])
@@ -2013,7 +2033,7 @@ def run_check_overlay_test():
         main.write_text("import std.io\nimport util.shapes\n\n"
                         "fn main() -> Int {\n    println(doubled(Shape { w: 2, h: 3 }))\n    return 0\n}\n")
         (root / "src" / "util" / "shapes.psm").write_text(
-            "import util.area\n\nstruct Shape { w: Int, h: Int }\n\n"
+            "import util.area\n\npublic struct Shape { public w: Int, public h: Int }\n\n"
             "public fn doubled(s: Shape) -> Int { return 2 * areaOf(s) }\n")
         area = root / "src" / "util" / "area.psm"
         # Uses `Shape` without importing util.shapes, and is reached through a cycle.
@@ -4632,6 +4652,36 @@ def run_loop_range_proofs_test():
     return True
 
 
+def run_stride_tiling_test():
+    """test_286's tiled nests are exactly the loops it marks `// tile`.
+
+    Every tiled copy hands back to the loop as written when it cannot match it, so
+    a copy that is never emitted gives every right answer. The fixture's run checks
+    the answers; this checks, from PRISMIO_TILE_TRACE, that each marked loop got
+    the copy and that nothing else did.
+    """
+    print(f"\n{BLUE}--- Running stride_tiling ---{RESET}")
+    source = TEST_DIR / "test_286_stride_tiling.psm"
+    want = {number for number, line in enumerate(source.read_text().splitlines(), start=1)
+            if re.search(r"\S.*// tile\s*$", line)}
+    with tempfile.TemporaryDirectory(prefix="prismio-stride-tiling-") as tmp:
+        env = os.environ.copy()
+        env["PRISMIO_TILE_TRACE"] = "1"
+        built = subprocess.run([str(PRISMIO_EXE), "build", str(source), "-o",
+                                str(Path(tmp) / "tiling.ll")],
+                               cwd=PROJECT_ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] stride tiling: {built.stdout} {built.stderr}{RESET}")
+            return False
+        got = {int(found.group(1))
+               for found in re.finditer(r"stride tiling: line (\d+)", built.stderr)}
+    if not want or got != want:
+        print(f"{RED}[FAIL] stride tiling: expected lines {sorted(want)}, got {sorted(got)}{RESET}")
+        return False
+    print(f"{GREEN}[PASS] {len(want)} nests tiled as annotated, and no other{RESET}")
+    return True
+
+
 def run_proved_index_nsw_test():
     """A proved index's `+`/`-` is `nsw` exactly where nothing in it can wrap.
 
@@ -6263,13 +6313,13 @@ def run_target_test():
 def run_platform_target_test():
     """`std.platform`'s three builtins answer for the target, on nine triples.
 
-    `__builtin_target_os`, `_arch` and `_env` lower to constants read off the
-    triple (`targetOsCode` and its siblings in src/common/target.psm), and
-    `std.platform` maps the constants onto its enums. test_147 can only check the
-    host it runs on, so this reads the answer out of the IR for every triple the
-    mapping has a rule for, where nothing has to run: `platformCodes` in
-    tests/platform_target.psm returns os * 100 + arch * 10 + env, which LLVM's
-    builder folds to a single `ret`.
+    The target builtins lower to constants read off the triple (`targetOsCode` and
+    its siblings in src/common/target.psm), and `std.platform` maps the constants
+    onto its enums. test_147 can only check the host it runs on, so this reads the
+    answer out of the IR for every triple the mapping has a rule for, where nothing
+    has to run: `platformCodes` in tests/platform_target.psm returns
+    os * 100 + arch * 10 + env through std.platform's methods, and `opt` at -O1
+    inlines them and folds the whole thing to a single `ret`.
 
     The triples are the spellings the mapping has to survive: an unnormalised
     Android triple, MinGW spelt both ways LLVM spells it, and a target that
@@ -6298,8 +6348,17 @@ def run_platform_target_test():
                             + (result.stdout or result.stderr or "").strip()[-200:])
             cleanup_files(out)
             continue
-        ir = out.read_text(encoding="utf-8", errors="replace")
+        folded = TEST_DIR / f"platform_target_{triple}.folded.ll"
+        opt = PROJECT_ROOT / "third_party" / "llvm" / "bin" / ("opt.exe" if os.name == "nt" else "opt")
+        result = run_command([str(opt), "-passes=default<O1>", "-S", str(out), "-o", str(folded)])
         cleanup_files(out)
+        if result.returncode != 0 or not folded.exists():
+            problems.append(f"{triple}: opt exited {result.returncode}: "
+                            + (result.stdout or result.stderr or "").strip()[-200:])
+            cleanup_files(folded)
+            continue
+        ir = folded.read_text(encoding="utf-8", errors="replace")
+        cleanup_files(folded)
         body = re.search(r'define [^\n]*@"?platformCodes[^\n]*\{(.*?)\n\}', ir, re.S)
         got = re.search(r"ret i32 (-?\d+)", body.group(1)) if body else None
         if not got:
@@ -8892,6 +8951,113 @@ def run_cold_function_test():
     return True
 
 
+def run_c_abi_extension_test():
+    """A `bool`, `char` or 8-/16-bit integer crossing to or from C is widened as C's ABI says.
+
+    On Apple arm64, x86 SysV, i686 and wasm the *caller* widens these to 32 bits and
+    the callee trusts it (`int widen(uint8_t x) { return x; }` is `mov w0, w0`).
+    Before `zeroext`/`signext` were emitted, `widen(401 as U8)` answered 401 rather
+    than 145 on Apple arm64, and C reading an `export fn ... -> U8` saw 401 too.
+
+    Two halves. The run catches the defect on a host whose ABI widens in the caller
+    (it passes either way on Linux arm64, where the callee does). The IR half checks
+    each triple against clang's own table -- the attribute is as wrong where the ABI
+    does not want it as missing where it does, so absence is asserted as well.
+    """
+    print(f"\n{BLUE}--- Running c_abi_extension ---{RESET}")
+    problems = []
+    c_source = (
+        "#include <stdint.h>\n#include <stdbool.h>\n"
+        "int widen(uint8_t x) { return x; }\n"
+        "int widen_signed(int8_t x) { return x; }\n"
+        "int pick(bool b) { return b ? 7 : 3; }\n"
+        "uint8_t narrow(int x);\n"
+        "int via_export(int x) { return narrow(x); }\n")
+    # A loop and a call keep the narrowed value in a register LLVM did not just
+    # build from a constant, which is the case that reached C unextended.
+    program = (
+        "import std.io\nimport std.string\n\n"
+        "extern fn widen(x: U8) -> Int\nextern fn widen_signed(x: I8) -> Int\n"
+        "extern fn pick(b: Bool) -> Int\nextern fn via_export(x: Int) -> Int\n\n"
+        "export fn narrow(x: Int) -> U8 { return x as U8 }\n\n"
+        "fn bump(n: Int) -> Int { return n * 3 + 1 }\n\n"
+        "fn main() {\n    let mut i = 0\n    while (i < 3) {\n"
+        "        let wide = bump(100 + i) + 100\n"
+        "        println(\"u8 \".concat(widen(wide as U8) as String))\n"
+        "        println(\"i8 \".concat(widen_signed(wide as I8) as String))\n"
+        "        println(\"bool \".concat(pick((wide & 256) != 0) as String))\n"
+        "        println(\"export \".concat(via_export(wide) as String))\n"
+        "        i = i + 1\n    }\n}\n")
+    expected = "".join(f"u8 {w & 0xFF}\ni8 {(w & 0xFF) - 256 if w & 0x80 else w & 0xFF}\n"
+                       f"bool 7\nexport {w & 0xFF}\n" for w in (401, 404, 407))
+
+    # Each triple's expected signature, read from `clang -target <t> -S -emit-llvm`.
+    widened = {"takes": ("zeroext i8", ["i8 zeroext", "i16 signext", "i1 zeroext", "i8 signext", "i32"]),
+               "gives": ("signext i8", ["i16 zeroext", "i1 zeroext"])}
+    bool_only = {"takes": ("i8", ["i8", "i16", "i1 zeroext", "i8", "i32"]),
+                 "gives": ("i8", ["i16", "i1 zeroext"])}
+    plain = {"takes": ("i8", ["i8", "i16", "i1", "i8", "i32"]),
+             "gives": ("i8", ["i16", "i1"])}
+    triples = [("arm64-apple-macosx14.0.0", widened), ("x86_64-unknown-linux-gnu", widened),
+               ("wasm32-unknown-unknown", widened), ("x86_64-pc-windows-msvc", bool_only),
+               ("aarch64-unknown-linux-gnu", plain), ("aarch64-pc-windows-msvc", plain)]
+    signatures = (
+        "extern fn takes(a: U8, b: I16, c: Bool, d: Char, e: Int) -> U8\n"
+        "export fn gives(a: U16, b: Bool) -> I8 { return 1 }\n"
+        "fn main() -> Int {\n    let r = takes(1, 2, true, 'a', 5)\n"
+        "    return r as Int + gives(3, false) as Int\n}\n")
+    noise = {"noundef", "dso_local", "local_unnamed_addr", "hidden", "dllexport"}
+
+    def signature(text, name):
+        m = re.search(r"^(?:declare|define) ([^@\n]*)@\"?" + re.escape(name) + r"[^(\"]*\"?\(([^)]*)\)",
+                      text, re.M)
+        if not m:
+            return None
+        ret = " ".join(w for w in m.group(1).split() if w not in noise)
+        params = [" ".join(w for w in p.split() if w not in noise and not w.startswith("%"))
+                  for p in m.group(2).split(",") if p.strip()]
+        return ret, params
+
+    with tempfile.TemporaryDirectory(prefix="prismio-c-abi-") as td:
+        work = Path(td)
+        (work / "abi.c").write_text(c_source, encoding="utf-8")
+        (work / "main.psm").write_text(program, encoding="utf-8")
+        exe = work / ("abi" + (".exe" if os.name == "nt" else ""))
+        built = run_command([str(PRISMIO_EXE), "build", str(work / "main.psm"),
+                             "--native", str(work / "abi.c"), "-o", str(exe)])
+        if built.returncode != 0 or not exe.exists():
+            problems.append(f"the probe did not build: "
+                            f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+        else:
+            ran = run_command([str(exe)])
+            if ran.stdout.replace("\r\n", "\n") != expected:
+                problems.append(f"C saw unextended values:\n  expected {expected!r}\n"
+                                f"  got      {ran.stdout!r}")
+
+        (work / "sig.psm").write_text(signatures, encoding="utf-8")
+        for triple, want in triples:
+            ll = work / f"sig-{triple}.ll"
+            emitted = run_command([str(PRISMIO_EXE), "build", str(work / "sig.psm"),
+                                   "--target", triple, "-o", str(ll)])
+            if emitted.returncode != 0 or not ll.exists():
+                problems.append(f"{triple}: IR build failed: "
+                                f"{elide_middle((emitted.stdout or '') + (emitted.stderr or ''))}")
+                continue
+            text = ll.read_text(encoding="utf-8", errors="replace")
+            for name, sig in want.items():
+                got = signature(text, name)
+                if got != sig:
+                    problems.append(f"{triple}: {name} is {got}, clang's ABI says {sig}")
+
+    if problems:
+        print(f"{RED}[FAIL] c_abi_extension{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] narrow values cross to and from C widened as each target's C ABI says{RESET}")
+    return True
+
+
 def run_identifier_security_test():
     """UTS #39's two warnings: P2003 (a restricted character) and P2004 (confusable
     identifiers), from src/lexer/identifier_security.psm.
@@ -9818,6 +9984,7 @@ def main():
         ("channel_copies", run_channel_copies_test),
         ("scalar_optional", run_scalar_optional_test),
         ("loop_range_proofs", run_loop_range_proofs_test),
+        ("stride_tiling", run_stride_tiling_test),
         ("proved_index_nsw", run_proved_index_nsw_test),
         ("array_nowrap", run_array_nowrap_test),
         ("array_contents", run_array_contents_test),
@@ -9849,6 +10016,7 @@ def main():
         ("byte_loop_vectorise", run_byte_loop_vectorise_test),
         ("repeated_copy", run_repeated_copy_test),
         ("cold_function", run_cold_function_test),
+        ("c_abi_extension", run_c_abi_extension_test),
         ("identifier_security", run_identifier_security_test),
         ("curated_closure", run_curated_closure_test),
         ("curated_emits", run_curated_emits_test),

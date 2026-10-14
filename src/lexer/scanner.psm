@@ -64,7 +64,7 @@ impl Lexer {
             line: 1,
             col: 1,
             file: file,
-            length: __builtin_string_len(input),
+            length: input.length,
             interpolation: Interpolation.Off,
             interpBrace: 0
         }
@@ -100,12 +100,12 @@ impl Lexer {
     private fn peek(self, offset: Int) -> Char {
         let at = self.pos + offset
         if (at < 0 or at > self.length) { return '\0' }
-        return __builtin_string_byte_at(self.input, at)
+        return self.input.byteAt(at) as Char
     }
 
     private fn current(self) -> Char {
         if (self.pos < 0 or self.pos > self.length) { return '\0' }
-        return __builtin_string_byte_at(self.input, self.pos)
+        return self.input.byteAt(self.pos) as Char
     }
 
     private fn advance(self) {
@@ -248,7 +248,7 @@ impl Lexer {
     private fn hexByteEscape(self, raw: String, at: Int, line: Int, baseCol: Int) -> Int {
         let hi = hexDigitValue(raw.charAt(at + 2))
         let lo = hexDigitValue(raw.charAt(at + 3))
-        if (hi < 0 or lo < 0 or at + 3 >= __builtin_string_len(raw)) {
+        if (hi < 0 or lo < 0 or at + 3 >= raw.length) {
             self.fatal(line, baseCol + at,
                 "`\\x` takes exactly two hex digits, as in `\\x1b`")
         }
@@ -263,7 +263,7 @@ impl Lexer {
     // `\u{1F600}`: one to six hex digits naming a Unicode scalar value. Answers the
     // value; the escape's length is the digits' count plus four.
     private fn unicodeEscape(self, raw: String, at: Int, line: Int, baseCol: Int) -> Int {
-        let n = __builtin_string_len(raw)
+        let n = raw.length
         if (raw.charAt(at + 2) != '{') {
             self.fatal(line, baseCol + at,
                 "`\\u` takes a code point in braces, as in `\\u{1F600}`")
@@ -310,7 +310,7 @@ impl Lexer {
     private fn decodeEscapes(self, raw: String, line: Int, baseCol: Int) -> String {
         let mut out = ""
         let mut i = 0
-        let n = __builtin_string_len(raw)
+        let n = raw.length
 
         while (i < n) {
             let ch = raw.charAt(i)
@@ -1048,6 +1048,7 @@ impl Lexer {
 // the argument; without the contracts every Token reads as an opaque extern.
 public extern fn ptr_to_token(ptr: Ptr) -> Token alias
 public extern fn token_to_ptr(tok: Token borrow) -> Ptr alias
+
 impl Lexer {
 
     // Token is a struct and therefore move-only, so walking the list with a second

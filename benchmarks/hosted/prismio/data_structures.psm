@@ -5,6 +5,7 @@ import std.math
 public fn benchHashMap(scale: Int) -> Int {
     let n = 50000 * scale
     let map: Map<Int, Int> = mapNew<Int, Int>()
+
     for i in 0..<n {
         mapSet(map, i, (i * 31) % 1000003)
     }

@@ -161,7 +161,7 @@ public fn umsLex(source: String, path: String,
         pos: 0,
         line: 1,
         col: 1,
-        length: __builtin_string_len(source),
+        length: source.length,
         tokens: [],
         diagnostics: diagnostics
     }

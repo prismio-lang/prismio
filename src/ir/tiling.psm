@@ -1,0 +1,552 @@
+// Stride tiling: a loop nest that marks a list at a stride, run one cache-sized
+// window at a time -- the segmented sieve, from the plain one
+// (developer docs: compiler/stride-tiling).
+//
+//     while (C) {
+//         if (v[r]) {                       -- optional
+//             let mut m = E0
+//             while (m <= N) { v[m] = K  m = m + S }
+//         }
+//         p = ...                           -- scalar updates
+//     }
+//
+// Every store writes the one value K, so stores commute and repeat harmlessly:
+// the list ends the same whatever order they run in, as long as each outer
+// iteration decides the same way -- the same C, the same guard, E0, N and S.
+// Everything but the guard reads scalars, which the tiled copy updates in the
+// original order. So the copy runs the outer loop as written but stops each inner
+// loop at the end of the first window, recording where it stopped; then sweeps
+// each later window across every recorded iteration. A guard index inside the
+// first window reads what the original read there: every earlier write to it
+// landed in that window, which was swept in order, and no later one has run. One
+// outside it, or a start, step or bound the copy cannot match exactly, sends the
+// loop back to the original copy after finishing the recorded iterations -- the
+// list is then what the original would hold at that point.
+//
+// The 4096 records live on the stack; a nest with more live iterations runs in
+// batches that each finish every window before the next starts. Never for
+// `--freestanding` (small stacks, L1-sized data) or `--overflow-checks` (the copy
+// evaluates S where the original might not).
+
+import ast.nodes
+import ast.types
+import common.target
+import std.io
+import std.process
+import std.string
+
+extern fn compiler_is_freestanding() -> Int
+
+let TILE_RECORDS = 4096
+let mut irTileCounter = 0
+
+struct StrideNest {
+    found: Bool,
+    // The outer loop's condition.
+    cond: Ptr,
+    // The `list_set` the inner loop is, and its list.
+    store: Ptr,
+    list: Ptr,
+    // The guard's `list_get(v, r)` and its `r`, or null.
+    guardRead: Ptr,
+    guardIndex: Ptr,
+    // E0, N (and whether `<=`), S and K.
+    init: Ptr,
+    bound: Ptr,
+    inclusive: Bool,
+    step: Ptr,
+    value: Ptr,
+    // The outer loop's scalar updates, as a statement chain.
+    updates: Ptr,
+    elemKey: String,
+    stride: Int
+}
+
+// What emission carries between its helpers.
+struct TileEmit {
+    nest: StrideNest,
+    list: String,
+    data: String,
+    value: String,
+    window: String,
+    last: String,
+    recM: String,
+    recS: String,
+    mSlot: String,
+    countSlot: String,
+    exitSlot: String,
+    baseSlot: String,
+    jSlot: String
+}
+
+private fn strideNestNone() -> StrideNest {
+    return StrideNest {
+        found: false, cond: ptr_null(), store: ptr_null(), list: ptr_null(), guardRead: ptr_null(),
+        guardIndex: ptr_null(), init: ptr_null(), bound: ptr_null(), inclusive: true,
+        step: ptr_null(), value: ptr_null(), updates: ptr_null(), elemKey: "", stride: 0
+    }
+}
+
+// The window, in bytes. Apple's performance cores have a 128 KB L1D and its
+// efficiency cores 64 KB; measured on an M5, 64 KB windows beat 32 KB ones 1.10x at
+// n = 10^8 and 1.28x at 10^9. Elsewhere L1D is 32-48 KB.
+private fn tileWindowBytes() -> Int {
+    if (targetArchCode() == 2 and targetOsCode() == 3) { return 65536 }
+    return 32768
+}
+
+// ---------------------------------------------------------------------------
+// Recognition
+// ---------------------------------------------------------------------------
+
+private fn strideNestOf(stmt: ASTNode) -> StrideNest {
+    let mut nest = strideNestNone()
+    if (tilePure(stmt.child1, "i1") == false) { return nest }
+    nest.cond = stmt.child1
+    if (nodeIsNull(stmt.child2)) { return nest }
+    let outerPtr = stmt.child2
+    let outer = ptr_to_node(outerPtr)
+    if (outer.kind != NodeKind.BLOCK or nodeIsNull(outer.child1)) { return nest }
+
+    let first = ptr_to_node(outer.child1)
+    let mut declPtr = outer.child1
+    if (first.kind == NodeKind.IF_STATEMENT) {
+        if (nodeExists(first.child3) or nodeIsNull(first.child2)) { return nest }
+        let then = ptr_to_node(first.child2)
+        if (then.kind != NodeKind.BLOCK or nodeIsNull(then.child1)) { return nest }
+        nest.guardRead = first.child1
+        declPtr = then.child1
+        let decl = ptr_to_node(declPtr)
+        if (nodeIsNull(decl.next) or nodeExists(ptr_to_node(decl.next).next)) { return nest }
+        nest.updates = first.next
+    } else {
+        let decl = ptr_to_node(declPtr)
+        if (nodeIsNull(decl.next)) { return nest }
+        nest.updates = ptr_to_node(decl.next).next
+    }
+
+    let decl = ptr_to_node(declPtr)
+    if (decl.kind != NodeKind.VARIABLE_DECL or nodeIsNull(decl.child2)) { return nest }
+    let counter = decl.s1.clone()
+    if (tilePure(decl.child2, "i32") == false) { return nest }
+    nest.init = decl.child2
+    if (tileInnerLoop(ptr_to_node(decl.next), counter, outerPtr, nest) == false) { return nest }
+
+    let listName = ptr_to_node(nest.list).s1.clone()
+    if (nodeExists(nest.guardRead)) {
+        let read = ptr_to_node(nest.guardRead)
+        if (tileIsCall(read, "list_get", 2) == false) { return nest }
+        let readList = ptr_to_node(read.child2)
+        if (rangeIsNamed(read.child2, listName) == false) { return nest }
+        if (tilePure(readList.next, "i32") == false) { return nest }
+        nest.guardIndex = readList.next
+    }
+    if (ir_var_is_global(listName) == 1 or irBodyBindsName(outerPtr, listName)) { return nest }
+
+    let mut u = nest.updates
+    while (nodeExists(u)) {
+        let s = ptr_to_node(u)
+        if (s.kind != NodeKind.ASSIGNMENT_STATEMENT) { return nest }
+        let target = ptr_to_node(s.child1)
+        if (target.kind != NodeKind.IDENTIFIER_EXPR or target.s1.equals(listName)) { return nest }
+        if (tilePure(s.child1, "i32") == false or tilePure(s.child2, "i32") == false) {
+            return nest
+        }
+        u = s.next
+    }
+    nest.found = true
+    return nest
+}
+
+// `while (m <= N) { list_set(v, m, K)  m = m + S }`, N and K invariant over the
+// whole nest and S over the inner loop.
+private fn tileInnerLoop(inner: ASTNode, counter: String, outerPtr: Ptr, inout nest: StrideNest) -> Bool {
+    if (inner.kind != NodeKind.WHILE_STATEMENT or nodeIsNull(inner.child1)) { return false }
+    let cond = ptr_to_node(inner.child1)
+    if (cond.kind != NodeKind.BINARY_EXPR) { return false }
+    if (cond.s1.equals("<=") == false and cond.s1.equals("<") == false) { return false }
+    if (rangeIsNamed(cond.child1, counter) == false) { return false }
+    if (tileInvariant(cond.child2, outerPtr, "i32") == false) { return false }
+    nest.bound = cond.child2
+    nest.inclusive = cond.s1.equals("<=")
+
+    if (nodeIsNull(inner.child2)) { return false }
+    let body = ptr_to_node(inner.child2)
+    if (body.kind != NodeKind.BLOCK or nodeIsNull(body.child1)) { return false }
+    let storeStmt = ptr_to_node(body.child1)
+    if (storeStmt.kind != NodeKind.EXPRESSION_STATEMENT or nodeIsNull(storeStmt.next)) {
+        return false
+    }
+    let update = ptr_to_node(storeStmt.next)
+    if (nodeExists(update.next) or update.kind != NodeKind.ASSIGNMENT_STATEMENT) { return false }
+
+    let store = ptr_to_node(storeStmt.child1)
+    if (tileIsCall(store, "list_set", 3) == false) { return false }
+    let listNode = ptr_to_node(store.child2)
+    if (listNode.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let indexNode = ptr_to_node(listNode.next)
+    if (rangeIsNamed(listNode.next, counter) == false) { return false }
+    let stride = flatSetScalarStride(store, "list_set")
+    if (stride <= 0) { return false }
+    let elemKey = typeIrKey(ptr_to_type(nodeGetType(listNode).child))
+    if (optCarrierKey(elemKey).equals("") == false) { return false }
+    if (tileInvariant(indexNode.next, outerPtr, elemKey) == false) { return false }
+
+    // `m = m + S`, S neither the counter nor anything the inner loop binds.
+    if (rangeIsNamed(update.child1, counter) == false) { return false }
+    let sum = ptr_to_node(update.child2)
+    if (sum.kind != NodeKind.BINARY_EXPR or sum.s1.equals("+") == false) { return false }
+    if (rangeIsNamed(sum.child1, counter) == false) { return false }
+    if (tilePure(sum.child2, "i32") == false) { return false }
+    if (tileMentions(sum.child2, counter) or tileBindsAny(inner.child2, sum.child2)) {
+        return false
+    }
+
+    nest.store = node_to_ptr(store)
+    nest.list = store.child2
+    nest.step = sum.child2
+    nest.value = indexNode.next
+    nest.elemKey = elemKey.clone()
+    nest.stride = stride
+    return true
+}
+
+private fn tileIsCall(n: ASTNode, name: String, arity: Int) -> Bool {
+    if (n.kind != NodeKind.CALL_EXPR or nodeIsNull(n.child1)) { return false }
+    if (rangeIsNamed(n.child1, name) == false) { return false }
+    let mut count = 0
+    let mut a = n.child2
+    while (nodeExists(a)) {
+        count = count + 1
+        a = ptr_to_node(a).next
+    }
+    return count == arity
+}
+
+// An expression of local scalars with no call, no element access and nothing that
+// can trap: `/` and `%` are out, because the tiled copy may evaluate S where the
+// original does not.
+private fn tilePure(p: Ptr, key: String) -> Bool {
+    if (nodeIsNull(p)) { return false }
+    let n = ptr_to_node(p)
+    if (nodeHasType(n) == false) { return false }
+    if (storageType(getExprType(n)).equals(key) == false) { return false }
+    if (n.kind == NodeKind.LITERAL_EXPR) { return true }
+    if (n.kind == NodeKind.IDENTIFIER_EXPR) { return ir_var_is_global(n.s1) == 0 }
+    if (n.kind == NodeKind.UNARY_EXPR) {
+        if (n.s1.equals("-")) { return tilePure(n.child1, "i32") }
+        if (n.s1.equals("!") or n.s1.equals("not")) { return tilePure(n.child1, "i1") }
+        return false
+    }
+    if (n.kind != NodeKind.BINARY_EXPR) { return false }
+    let op = n.s1
+    if (op.equals("+") or op.equals("-") or op.equals("*")) {
+        return tilePure(n.child1, "i32") and tilePure(n.child2, "i32")
+    }
+    if (op.equals("and") or op.equals("or")) {
+        return tilePure(n.child1, "i1") and tilePure(n.child2, "i1")
+    }
+    if (op.equals("<") or op.equals("<=") or op.equals(">") or op.equals(">=")
+            or op.equals("==") or op.equals("!=")) {
+        return tilePure(n.child1, "i32") and tilePure(n.child2, "i32")
+    }
+    return false
+}
+
+// Pure, and naming nothing the outer loop's body binds -- which includes the
+// inner counter, declared there.
+private fn tileInvariant(p: Ptr, outerPtr: Ptr, key: String) -> Bool {
+    if (tilePure(p, key) == false) { return false }
+    return tileBindsAny(outerPtr, p) == false
+}
+
+private fn tileMentions(p: Ptr, name: String) -> Bool {
+    if (nodeIsNull(p)) { return false }
+    let n = ptr_to_node(p)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR) { return n.s1.equals(name) }
+    return tileMentions(n.child1, name) or tileMentions(n.child2, name)
+}
+
+// Whether `scope` binds any name `expr` reads.
+private fn tileBindsAny(scope: Ptr, expr: Ptr) -> Bool {
+    if (nodeIsNull(expr)) { return false }
+    let n = ptr_to_node(expr)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR) { return irBodyBindsName(scope, n.s1) }
+    return tileBindsAny(scope, n.child1) or tileBindsAny(scope, n.child2)
+}
+
+// ---------------------------------------------------------------------------
+// Emission
+// ---------------------------------------------------------------------------
+
+// Emits the tiled copy of `stmt` when it is the nest above, entered when the list
+// is flat and spans at least two windows, and leaves the builder where the loop as
+// written begins, for the copy not entered. Answers the label the copy falls back
+// to, where the caller puts a plain copy of the loop, or -1 when there is no copy.
+internal fn generateStrideTiling(stmt: ASTNode, endLabel: Int) -> Int {
+    if (compiler_is_freestanding() == 1 or ir_overflow_checks() == 1) { return 0 - 1 }
+    let nest = strideNestOf(stmt)
+    if (nest.found == false) { return 0 - 1 }
+    let id = irTileCounter
+    irTileCounter = irTileCounter + 1
+    let windowElems = tileWindowBytes() / nest.stride
+    if (process.env("PRISMIO_TILE_TRACE") != none) {
+        eprintln("stride tiling: line ".concat(stmt.line.toString(), " window ",
+                 windowElems.toString()))
+    }
+
+    let savedGuard = irLoopFlatGuard
+    let savedProof = irLoopRangeProof
+    let savedHeaderActive = irLoopHeaderBoundActive
+    let savedHoistedList = irLoopHoistedBoundList
+    irLoopFlatGuard = "1"
+    irLoopRangeProof = 0
+    irLoopHeaderBoundActive = false
+    irLoopHoistedBoundList = ""
+
+    let regularLabel = ir_get_label()
+    let fallbackLabel = ir_get_label()
+    let batchLabel = ir_get_label()
+    let t = tileEmitNew(nest, id, windowElems)
+    let flat = ir_get_temp_name(ir_list_is_flat(t.list, t.nest.stride))
+    let len = tileWiden(ir_get_temp_name(ir_list_len(t.list)))
+    let inside = ir_get_temp_name(ir_icmp_slt("i64", t.last, len))
+    let span = ir_get_temp_name(ir_mul("i64", t.window, "2"))
+    let wide = ir_get_temp_name(ir_icmp_sge("i64", t.last, span))
+    let enter = ir_get_temp_name(ir_and("i1", flat, ir_get_temp_name(ir_and("i1", inside, wide))))
+    ir_cond_br_numbered(enter, batchLabel, regularLabel)
+
+    ir_label_numbered(batchLabel)
+    ir_store("i64", "0", t.countSlot)
+    ir_store("i32", "0", t.exitSlot)
+    let flushLabel = tileFirstWindow(t)
+    tileFlush(t, flushLabel, batchLabel, fallbackLabel, endLabel)
+
+    irLoopFlatGuard = savedGuard.clone()
+    irLoopRangeProof = savedProof
+    irLoopHeaderBoundActive = savedHeaderActive
+    irLoopHoistedBoundList = savedHoistedList.clone()
+    ir_label_numbered(regularLabel)
+    return fallbackLabel
+}
+
+private fn tileEmitNew(nest: StrideNest, id: Int, windowElems: Int) -> TileEmit {
+    let list = generateExpression(ptr_to_node(nest.list))
+    let data = ir_get_temp_name(ir_list_data(list))
+    let value = generateExpression(ptr_to_node(nest.value))
+    let mut last = tileWiden(generateExpression(ptr_to_node(nest.bound)))
+    if (nest.inclusive == false) { last = ir_get_temp_name(ir_sub("i64", last, "1")) }
+    return TileEmit {
+        nest: nest,
+        list: list,
+        data: data,
+        value: value,
+        window: windowElems.toString(),
+        last: last,
+        recM: ir_get_temp_name(ir_array_alloca("i32", TILE_RECORDS)),
+        recS: ir_get_temp_name(ir_array_alloca("i32", TILE_RECORDS)),
+        mSlot: tileSlot(id, "m", "i64"),
+        countSlot: tileSlot(id, "count", "i64"),
+        exitSlot: tileSlot(id, "exit", "i32"),
+        baseSlot: tileSlot(id, "base", "i64"),
+        jSlot: tileSlot(id, "j", "i64")
+    }
+}
+
+private fn tileSlot(id: Int, tag: String, type: String) -> String {
+    let name = "tile.".concat(id.toString(), ".", tag)
+    ir_set_var_type(name, "Int")
+    let slot = ir_get_var_slot(name).clone()
+    ir_alloca(type, slot)
+    return slot
+}
+
+private fn tileWiden(value: String) -> String {
+    return ir_get_temp_name(ir_sext("i32", value, "i64"))
+}
+
+// A step already known to be at least 1, rebuilt so LLVM knows it too. A branch
+// or an `llvm.assume` saying so does not reach the range analysis that decides
+// whether the sweep can be counted -- and an uncounted sweep is one store per
+// branch, where a counted one is interleaved four ways.
+private fn tilePositive(step: String) -> String {
+    let less = tileNarrow(ir_get_temp_name(ir_sub("i64", step, "1")))
+    return ir_get_temp_name(ir_add_nsw("i64", ir_get_temp_name(ir_zext("i32", less, "i64")), "1"))
+}
+
+// A value the guard keeps inside `Int`.
+private fn tileNarrow(value: String) -> String {
+    return ir_get_temp_name(ir_trunc("i64", value, "i32"))
+}
+
+private fn tileMin(a: String, b: String) -> String {
+    let less = ir_get_temp_name(ir_icmp_slt("i64", a, b))
+    return ir_get_temp_name(ir_select("i64", less, a, b))
+}
+
+// The outer loop as written, each inner loop cut at the first window. Answers the
+// flush label, where every way out of it goes, with the exit slot saying why:
+// 0 the records are full, 1 the loop ended, 2 the original copy must take over.
+private fn tileFirstWindow(t: TileEmit) -> Int {
+    let headLabel = ir_get_label()
+    let condLabel = ir_get_label()
+    let bodyLabel = ir_get_label()
+    let sweepLabel = ir_get_label()
+    let updateLabel = ir_get_label()
+    let doneLabel = ir_get_label()
+    let fallbackLabel = ir_get_label()
+    let flushLabel = ir_get_label()
+    let firstLast = tileMin(t.last, ir_get_temp_name(ir_sub("i64", t.window, "1")))
+    ir_br_numbered(headLabel)
+
+    ir_label_numbered(headLabel)
+    let count = ir_get_temp_name(ir_load("i64", t.countSlot))
+    let full = ir_get_temp_name(ir_icmp_eq("i64", count, TILE_RECORDS.toString()))
+    ir_cond_br_numbered(full, flushLabel, condLabel)
+
+    ir_label_numbered(condLabel)
+    let more = generateExpression(ptr_to_node(t.nest.cond))
+    if (nodeExists(t.nest.guardRead)) {
+        let guardLabel = ir_get_label()
+        let readLabel = ir_get_label()
+        ir_cond_br_numbered(more, guardLabel, doneLabel)
+        ir_label_numbered(guardLabel)
+        let r = tileWiden(generateExpression(ptr_to_node(t.nest.guardIndex)))
+        let low = ir_get_temp_name(ir_icmp_sge("i64", r, "0"))
+        let high = ir_get_temp_name(ir_icmp_slt("i64", r, t.window))
+        ir_cond_br_numbered(ir_get_temp_name(ir_and("i1", low, high)), readLabel, fallbackLabel)
+        ir_label_numbered(readLabel)
+        let marked = generateExpression(ptr_to_node(t.nest.guardRead))
+        ir_cond_br_numbered(marked, bodyLabel, updateLabel)
+    } else {
+        ir_cond_br_numbered(more, bodyLabel, doneLabel)
+    }
+
+    // The iteration runs here only if the copy can run it exactly: a start in the
+    // list, a step that moves, and no step from the bound that wraps `Int`.
+    ir_label_numbered(bodyLabel)
+    let start = tileWiden(generateExpression(ptr_to_node(t.nest.init)))
+    let step = tileWiden(generateExpression(ptr_to_node(t.nest.step)))
+    let headroom = ir_get_temp_name(ir_sub("i64", "2147483647", t.last))
+    let ok = ir_get_temp_name(ir_and("i1",
+        ir_get_temp_name(ir_icmp_sge("i64", start, "0")),
+        ir_get_temp_name(ir_and("i1",
+            ir_get_temp_name(ir_icmp_sge("i64", step, "1")),
+            ir_get_temp_name(ir_icmp_sle("i64", step, headroom))))))
+    ir_cond_br_numbered(ok, sweepLabel, fallbackLabel)
+
+    ir_label_numbered(sweepLabel)
+    let stopped = tileSweep(t, start, tilePositive(step), firstLast)
+    let recordLabel = ir_get_label()
+    ir_cond_br_numbered(ir_get_temp_name(ir_icmp_sle("i64", stopped, t.last)),
+                        recordLabel, updateLabel)
+    ir_label_numbered(recordLabel)
+    let at = ir_get_temp_name(ir_load("i64", t.countSlot))
+    ir_store_ptr("i32", tileNarrow(stopped), ir_get_temp_name(ir_elem_ptr("i32", t.recM, at)))
+    let stepLess = ir_get_temp_name(ir_sub("i64", step, "1"))
+    ir_store_ptr("i32", tileNarrow(stepLess), ir_get_temp_name(ir_elem_ptr("i32", t.recS, at)))
+    ir_store("i64", ir_get_temp_name(ir_add_nsw("i64", at, "1")), t.countSlot)
+    ir_br_numbered(updateLabel)
+
+    ir_label_numbered(updateLabel)
+    let mut u = t.nest.updates
+    while (nodeExists(u)) {
+        generateStatement(ptr_to_node(u))
+        u = ptr_to_node(u).next
+    }
+    ir_br_numbered(headLabel)
+
+    ir_label_numbered(doneLabel)
+    ir_store("i32", "1", t.exitSlot)
+    ir_br_numbered(flushLabel)
+    ir_label_numbered(fallbackLabel)
+    ir_store("i32", "2", t.exitSlot)
+    ir_br_numbered(flushLabel)
+    return flushLabel
+}
+
+// Every later window, across every recorded iteration; then out the way the exit
+// slot says.
+private fn tileFlush(t: TileEmit, flushLabel: Int, batchLabel: Int, fallbackLabel: Int,
+                     endLabel: Int) {
+    let windowHead = ir_get_label()
+    let windowBody = ir_get_label()
+    let recordHead = ir_get_label()
+    let recordBody = ir_get_label()
+    let windowNext = ir_get_label()
+    let afterLabel = ir_get_label()
+    let notDone = ir_get_label()
+
+    ir_label_numbered(flushLabel)
+    ir_store("i64", t.window, t.baseSlot)
+    ir_br_numbered(windowHead)
+
+    ir_label_numbered(windowHead)
+    let base = ir_get_temp_name(ir_load("i64", t.baseSlot))
+    ir_cond_br_numbered(ir_get_temp_name(ir_icmp_sle("i64", base, t.last)), windowBody, afterLabel)
+
+    ir_label_numbered(windowBody)
+    let windowEnd = ir_get_temp_name(ir_sub("i64",
+        ir_get_temp_name(ir_add_nsw("i64", base, t.window)), "1"))
+    let hi = tileMin(t.last, windowEnd)
+    ir_store("i64", "0", t.jSlot)
+    ir_br_numbered(recordHead)
+
+    ir_label_numbered(recordHead)
+    let j = ir_get_temp_name(ir_load("i64", t.jSlot))
+    let count = ir_get_temp_name(ir_load("i64", t.countSlot))
+    ir_cond_br_numbered(ir_get_temp_name(ir_icmp_slt("i64", j, count)), recordBody, windowNext)
+
+    ir_label_numbered(recordBody)
+    // Recorded as `Int`s, the step less one, so the widened values carry their
+    // ranges: a resume point in [0, 2^32) and a step in [1, 2^32].
+    let resumeAt = ir_get_temp_name(ir_elem_ptr("i32", t.recM, j))
+    let resume = ir_get_temp_name(ir_zext("i32", ir_get_temp_name(ir_load_ptr("i32", resumeAt)), "i64"))
+    let stepLess = ir_get_temp_name(ir_load_ptr("i32",
+        ir_get_temp_name(ir_elem_ptr("i32", t.recS, j))))
+    let step = ir_get_temp_name(ir_add_nsw("i64",
+        ir_get_temp_name(ir_zext("i32", stepLess, "i64")), "1"))
+    let stopped = tileSweep(t, resume, step, hi)
+    ir_store_ptr("i32", tileNarrow(stopped), resumeAt)
+    ir_store("i64", ir_get_temp_name(ir_add_nsw("i64", j, "1")), t.jSlot)
+    ir_br_numbered(recordHead)
+
+    ir_label_numbered(windowNext)
+    ir_store("i64", ir_get_temp_name(ir_add_nsw("i64", base, t.window)), t.baseSlot)
+    ir_br_numbered(windowHead)
+
+    ir_label_numbered(afterLabel)
+    let why = ir_get_temp_name(ir_load("i32", t.exitSlot))
+    ir_cond_br_numbered(ir_get_temp_name(ir_icmp_eq("i32", why, "1")), endLabel, notDone)
+    ir_label_numbered(notDone)
+    ir_cond_br_numbered(ir_get_temp_name(ir_icmp_eq("i32", why, "2")), fallbackLabel, batchLabel)
+}
+
+// Stores K at `start`, `start + step`, ... up to `hi`, and answers the first index
+// past it. In i64, where nothing the guard admitted can wrap. The answer is worked
+// out rather than read off the counter: a counter live after the loop is what
+// stops LLVM interleaving it.
+private fn tileSweep(t: TileEmit, start: String, step: String, hi: String) -> String {
+    let head = ir_get_label()
+    let body = ir_get_label()
+    let done = ir_get_label()
+    ir_store("i64", start, t.mSlot)
+    ir_br_numbered(head)
+    ir_label_numbered(head)
+    let m = ir_get_temp_name(ir_load("i64", t.mSlot))
+    ir_cond_br_numbered(ir_get_temp_name(ir_icmp_sle("i64", m, hi)), body, done)
+    ir_label_numbered(body)
+    ir_list_flat_scalar_set(t.list, m, t.value, t.nest.elemKey, t.nest.stride, "1", 0, "", t.data)
+    ir_store("i64", ir_get_temp_name(ir_add_nsw("i64", m, step)), t.mSlot)
+    ir_br_numbered(head)
+    ir_label_numbered(done)
+
+    let past = ir_get_temp_name(ir_icmp_sgt("i64", start, hi))
+    let span = ir_get_temp_name(ir_sub("i64", hi, start))
+    // Plain arithmetic: with `start` past `hi` these are garbage the select drops.
+    let taken = ir_get_temp_name(ir_add("i64",
+        ir_get_temp_name(ir_udiv("i64", span, step)), "1"))
+    let reached = ir_get_temp_name(ir_add("i64", start,
+        ir_get_temp_name(ir_mul("i64", taken, step))))
+    return ir_get_temp_name(ir_select("i64", past, start, reached))
+}

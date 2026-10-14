@@ -82,7 +82,7 @@ internal fn isValueStructKey(t: String) -> Bool {
 }
 
 internal fn structTypeName(t: String) -> String {
-    return t.substring(7, __builtin_string_len(t) - 7)
+    return t.substring(7, t.length - 7)
 }
 
 private fn llvmTypeName(t: String) -> String {
@@ -381,7 +381,7 @@ internal fn storeAsDeclared(value: String, valueKey: String, declaredKey: String
 // kept as its `{ i1, T }` bytes instead (optIsWide).
 internal fn optCarrierKey(t: String) -> String {
     if (t.startsWith("opt:") == false) { return "" }
-    let payload = scalarBitsOf(t.substring(4, __builtin_string_len(t) - 4))
+    let payload = scalarBitsOf(t.substring(4, t.length - 4))
     if (payload == 0 or payload > 32) { return "" }
     if (payload <= 8) { return "i16" }
     if (payload == 16) { return "i32" }
@@ -504,8 +504,8 @@ internal fn dropReleaseType(slot: String, declType: String) -> String {
     let key = ";".concat(slot, "=")
     let at = irOptionalDropTypes.indexOf(key)
     if (at < 0) { return declType }
-    let from = at + __builtin_string_len(key)
-    let rest = irOptionalDropTypes.substring(from, __builtin_string_len(irOptionalDropTypes) - from)
+    let from = at + key.length
+    let rest = irOptionalDropTypes.substring(from, irOptionalDropTypes.length - from)
     return rest.substring(0, rest.indexOf(";"))
 }
 

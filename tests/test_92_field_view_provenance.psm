@@ -32,10 +32,6 @@ import std.io
 import std.string
 import std.option
 
-// A fresh heap String the test fills itself. std keeps this entry point
-// internal, so a program that wants one raw declares it.
-extern fn str_with_capacity(length: Int) -> String produce(free)
-
 struct Box { text: String }
 
 enum Holder { Empty, Full(String) }
@@ -49,11 +45,7 @@ fn fail(message: String) -> Int {
 }
 
 fn madeText() -> String {
-    let s = str_with_capacity(3)
-    __builtin_string_put_byte(s, 0, 'a')
-    __builtin_string_put_byte(s, 1, 'b')
-    __builtin_string_put_byte(s, 2, 'c')
-    return s
+    return "ab".concat("c")
 }
 
 fn makeBox() -> Box {

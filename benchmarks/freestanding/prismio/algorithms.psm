@@ -1,6 +1,18 @@
 // Algorithms over fixed arrays in the frame: no allocation, no library. The same
 // programs, statement for statement, as ../c/algorithms.c and ../rust/algorithms.rs.
 
+// `a > b ? a : b`, as the C and Rust arms spell it. A freestanding program has no
+// std.math, and LLVM turns these into the same smax and smin.
+fn max(a: Int, b: Int) -> Int {
+    if (a > b) { return a }
+    return b
+}
+
+fn min(a: Int, b: Int) -> Int {
+    if (a < b) { return a }
+    return b
+}
+
 fn fib(n: U32) -> U32 {
     if (n < 2) { return n }
     return fib(n - 1) + fib(n - 2)
@@ -217,7 +229,7 @@ export fn bench_knapsack(scale: U32) -> U32 {
             let v = value[i]
             let mut c = 1500
             while (c >= w) {
-                best[c] = __builtin_max(best[c], best[c - w] + v)
+                best[c] = max(best[c], best[c - w] + v)
                 c = c - 1
             }
             i = i + 1
@@ -261,7 +273,7 @@ export fn bench_edit_distance(scale: U32) -> U32 {
             while (j <= 600) {
                 let mut cost = 1
                 if (a[i - 1] == b[j - 1]) { cost = 0 }
-                cur[j] = __builtin_min(__builtin_min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost)
+                cur[j] = min(min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost)
                 j = j + 1
             }
             j = 0
@@ -277,45 +289,35 @@ export fn bench_edit_distance(scale: U32) -> U32 {
     return total
 }
 
+let MATRIX: Usize = 64
+
 export fn bench_matrix_multiply(scale: U32) -> U32 {
-    let mut a: Array<U32, 4096>
-    let mut b: Array<U32, 4096>
-    let mut c: Array<U32, 4096>
-    let mut i = 0
-    while (i < 64) {
-        let mut j = 0
-        while (j < 64) {
-            a[i * 64 + j] = (((i * 3 + j * 5) % 17) as U32)
-            b[i * 64 + j] = (((i * 7 + j * 2) % 13) as U32)
-            j = j + 1
+    let mut a: Array<U32, MATRIX * MATRIX>
+    let mut b: Array<U32, MATRIX * MATRIX>
+    let mut c: Array<U32, MATRIX * MATRIX>
+
+    for i in 0..<MATRIX {
+        for j in 0..<MATRIX {
+            a[i * MATRIX + j] = ((i * 3 + j * 5) % 17) as U32
+            b[i * MATRIX + j] = ((i * 7 + j * 2) % 13) as U32
         }
-        i = i + 1
     }
     let mut total: U32 = 0
-    let mut r: U32 = 0
-    while (r < 8 * scale) {
-        i = 0
-        while (i < 64) {
-            let mut j = 0
-            while (j < 64) {
+
+    for r in 0..<8 * scale as Int {
+        for i in 0..<MATRIX {
+            for j in 0..<MATRIX {
                 let mut sum: U32 = 0
-                let mut k = 0
-                while (k < 64) {
-                    sum = sum + a[i * 64 + k] * b[k * 64 + j]
-                    k = k + 1
+                for k in 0..<MATRIX {
+                    sum = sum + a[i * MATRIX + k] * b[k * MATRIX + j]
                 }
-                c[i * 64 + j] = sum
-                j = j + 1
+                c[i * MATRIX + j] = sum
             }
-            i = i + 1
         }
-        i = 0
-        while (i < 4096) {
+        for i in 0..<MATRIX * MATRIX {
             total = total + c[i]
-            i = i + 1
         }
-        a[(r % 64) as Int] = a[(r % 64) as Int] + 1
-        r = r + 1
+        a[r % 64] = a[r % 64] + 1
     }
     return total
 }

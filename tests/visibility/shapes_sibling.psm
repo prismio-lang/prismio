@@ -1,0 +1,8 @@
+// The same package as `shapes`: an `internal` field and an `internal` struct are
+// visible here, a `private` field is not.
+import visibility.shapes
+
+public fn siblingSum(p: Point) -> Int {
+    let held = PackageOnly { value: p.tag }
+    return p.x + p.tag + held.value
+}

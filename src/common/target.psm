@@ -29,10 +29,10 @@ public extern fn ir_target_is_explicit() -> Int
 
 
 struct Target {
-    triple: String,
+    public triple: String,
     pointerBits: Int,
-    dataLayout: String,
-    explicit: Bool
+    public dataLayout: String,
+    public explicit: Bool
 }
 
 // The target in force, as one value. Resolves the host on first use, so this

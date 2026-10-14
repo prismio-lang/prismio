@@ -7,7 +7,7 @@ import trait_vis.source
 
 // A local type implementing the imported trait. The orphan rule allows this
 // because the type is ours.
-struct Local { n: Int }
+public struct Local { n: Int }
 
 impl Greet for Local {
     fn greeting(self) -> String { return "local" }

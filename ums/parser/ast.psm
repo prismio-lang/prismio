@@ -16,39 +16,39 @@ enum UmsAstStatementKind {
 }
 
 struct UmsAstValue {
-    kind: UmsAstValueKind,
-    text: String,
-    line: Int,
-    col: Int,
-    len: Int
+    public kind: UmsAstValueKind,
+    public text: String,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
-struct UmsAstStatement {
-    kind: UmsAstStatementKind,
-    name: String,
-    value: UmsAstValue,
-    arguments: Vec<UmsAstValue>,
+public struct UmsAstStatement {
+    public kind: UmsAstStatementKind,
+    public name: String,
+    public value: UmsAstValue,
+    public arguments: Vec<UmsAstValue>,
     // Flat scalar values for an assignment such as `authors = ["A", "B"]`.
     // Kept on the statement rather than recursively inside UmsAstValue: a flat
     // list is the manifest feature UMS needs, and the non-recursive shape keeps
     // value representation as cheap as call arguments.
-    arrayValues: Vec<UmsAstValue>,
+    public arrayValues: Vec<UmsAstValue>,
     // Indices into UmsAstDocument.statements. Keeping syntax edges as indices
     // avoids a recursive nominal type, so a manifest AST never needs runtime
     // reference counting merely because blocks can nest.
-    children: Vec<Int>,
-    hasBlock: Bool,
-    start: Int,
-    blockOpen: Int,
-    blockClose: Int,
-    line: Int,
-    col: Int,
-    len: Int
+    public children: Vec<Int>,
+    public hasBlock: Bool,
+    public start: Int,
+    public blockOpen: Int,
+    public blockClose: Int,
+    public line: Int,
+    public col: Int,
+    public len: Int
 }
 
-struct UmsAstDocument {
-    statements: Vec<UmsAstStatement>,
-    roots: Vec<Int>
+public struct UmsAstDocument {
+    public statements: Vec<UmsAstStatement>,
+    public roots: Vec<Int>
 }
 
 private fn umsAstEmptyValue() -> UmsAstValue {

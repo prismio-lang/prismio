@@ -138,14 +138,21 @@ void ir_mark_guard_safe_fn(const char* name, int safe) {
     if (safe) { n->safe_seen = 1; } else { n->unsafe_seen = 1; }
 }
 
-int ir_is_guard_safe_fn(const char* name) {
-    if (!name || !name[0]) return 0;
+// 1 safe, 0 unsafe, -1 for a key nothing has marked. The resolved-symbol keys need
+// the third answer: a symbol with no body in this module (an extern, a runtime
+// primitive) is not a verdict of "unsafe", it is a reason to ask the name.
+int ir_guard_safe_verdict(const char* name) {
+    if (!name || !name[0]) return -1;
     const char* s = ir_intern(name);
     unsigned bucket = hash_str(s) % GUARD_SAFE_BUCKETS;
     for (GuardSafeNode* n = guard_safe_buckets[bucket]; n; n = n->next) {
         if (n->name == s) return n->safe_seen && !n->unsafe_seen;
     }
-    return 0;
+    return -1;
+}
+
+int ir_is_guard_safe_fn(const char* name) {
+    return ir_guard_safe_verdict(name) == 1;
 }
 
 // Which list accesses a loop's preheader proved in range (src/ir/ranges.psm).
@@ -683,6 +690,14 @@ typedef struct {
 static ExternDeclRecord* extern_decls = NULL;
 static int extern_decl_count = 0;
 static int extern_decl_capacity = 0;
+
+// Whether two files are in one package: the module path without its last segment,
+// which for a file outside any package is "" -- so every file of a single-file
+// program, and of a project's root, shares one.
+int ir_same_package(int file_a, int file_b) {
+    if (file_a == file_b) return 1;
+    return package_of(diag_file_module(file_a)) == package_of(diag_file_module(file_b));
+}
 
 void ir_extern_decl_record(int file, const char* name, int visibility) {
     const char* interned = ir_intern(name);

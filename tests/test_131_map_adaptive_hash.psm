@@ -35,7 +35,7 @@ fn check(label: String, got: Int, want: Int) -> Int {
 // bucket the probe walks past, and `existing` is the stored copy, so summing the
 // counter over `mapKeyAt` is the table's total probe displacement — the property
 // the switch exists to bound, measured instead of timed.
-struct PathKey { v: Int, hits: Int }
+public struct PathKey { v: Int, hits: Int }
 impl Key for PathKey {
     fn hash(self) -> Int { return keyMixInt(self.v * 65537) }
     fn eq(self, other: Self) -> Bool {

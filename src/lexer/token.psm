@@ -59,14 +59,14 @@ enum TokenType {
 // into the registry in runtime/diagnostics.c -- an integer rather than a path
 // because every token carries one and import resolution merges files from several
 // directories into a single AST.
-struct Token {
-    type: TokenType,
-    value: String,
-    line: Int,
-    col: Int,
-    len: Int,
-    file: Int,
-    tokNext: Ptr // Pointer to next Token
+public struct Token {
+    public type: TokenType,
+    public value: String,
+    public line: Int,
+    public col: Int,
+    public len: Int,
+    public file: Int,
+    public tokNext: Ptr // Pointer to next Token
 }
 
 // How a token kind reads inside a diagnostic. Deliberately coarser than the enum:
@@ -99,6 +99,11 @@ let reservedWords = [
     "import",
 
     "match", "if", "else", "and", "or",
+
+    // Spellings of `==` / `!=` and `!`, accepted beside the symbols and parsed into the
+    // same nodes: `a is b`, `a is not b`, `not a`. Nothing after the parser can tell
+    // which spelling was written.
+    "is", "not",
 
     "true", "false",
 

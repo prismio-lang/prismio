@@ -20,7 +20,7 @@ private extern fn time_unix_nanos() -> I64
 private extern fn time_sleep_nanos(nanos: I64)
 
 // A span of time.
-struct Duration {
+public struct Duration {
     nanos: I64
 }
 
@@ -57,7 +57,7 @@ impl Duration {
 // Linux -- so an `Instant` is for subtracting from another, not for printing.
 // It never steps backwards when the wall clock is set, which is why it and not
 // `unixTime` is the clock to time work with.
-struct Instant {
+public struct Instant {
     nanos: I64
 }
 

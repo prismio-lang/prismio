@@ -6,6 +6,7 @@
 // a counter really goes past `Int`, so a mark there would be a wrong one.
 
 import std.io
+import std.math
 
 // The freestanding benchmark's rows. Zero-filled, then 40 x 40 stores of
 // `min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)` per lifetime: every element
@@ -36,7 +37,7 @@ fn editRows() -> Int {
         while (j <= 40) {
             let mut cost = 1
             if (a[i - 1] == b[j - 1]) { cost = 0 }
-            cur[j] = __builtin_min(__builtin_min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost)
+            cur[j] = min(min(prev[j] + 1, cur[j - 1] + 1), prev[j - 1] + cost)
             j = j + 1
         }
         j = 0

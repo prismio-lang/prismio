@@ -11,7 +11,7 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     let text = "Hello, World!"
 
-    if (__builtin_string_len(text) != 13) {
+    if (text.length != 13) {
         return fail("string length builtin should read the native length")
     }
 

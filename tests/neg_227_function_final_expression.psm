@@ -1,0 +1,12 @@
+// expect-error: a function body returns only through `return`
+// A closure's block is the one place a final expression is the value.
+import std.io
+
+fn plusOne(a: Int) -> Int {
+    a + 1
+}
+
+fn main() -> Int {
+    println(plusOne(1))
+    return 0
+}

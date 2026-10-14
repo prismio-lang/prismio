@@ -214,7 +214,7 @@ private fn monoCopyChain(ptr: Ptr) -> Ptr {
 internal fn monoParamCount(params: String) -> Int {
     if (params.equals("")) { return 0 }
     let mut count = 1
-    let n = __builtin_string_len(params)
+    let n = params.length
     for i in 0..<n {
         if (params.charAt(i) == ',') { count = count + 1 }
     }
@@ -224,7 +224,7 @@ internal fn monoParamCount(params: String) -> Int {
 internal fn monoParamAt(params: String, index: Int) -> String {
     let mut start = 0
     let mut seen = 0
-    let n = __builtin_string_len(params)
+    let n = params.length
     for i in 0..n {
         if (i == n or params.charAt(i) == ',') {
             if (seen == index) { return params.substring(start, i - start) }
@@ -1665,7 +1665,7 @@ private fn monoArgsTooDeep(at: ASTNode, name: String, argsPtr: Ptr) -> Bool {
 private fn monoSeparatorCount(name: String) -> Int {
     let separator = monoSeparator().charAt(0)
     let mut count = 0
-    let n = __builtin_string_len(name)
+    let n = name.length
     for i in 0..<n {
         if (name.charAt(i) == separator) { count = count + 1 }
     }
@@ -1676,7 +1676,7 @@ private fn monoSeparatorCount(name: String) -> Int {
 // and printing all of it buries the sentence that explains what went wrong. The
 // head is what identifies it; the tail is the same thing repeated.
 private fn monoElide(text: String) -> String {
-    let n = __builtin_string_len(text)
+    let n = text.length
     if (n <= 48) { return text.clone() }
     let mut head = ""
     for i in 0..<48 {

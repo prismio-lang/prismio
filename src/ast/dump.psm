@@ -45,9 +45,9 @@ private fn hexDigit(v: Int) -> String {
 // survives without needing to be decoded first.
 private fn jsonString(s: String) {
     print("\"")
-    let n = __builtin_string_len(s)
+    let n = s.length
     for i in 0..<n {
-        let b = __builtin_string_byte_at(s, i)
+        let b = s.byteAt(i) as Char
         let c = charCode(b)
         if (c == 34) { print("\\\"") }
         else if (c == 92) { print("\\\\") }

@@ -254,7 +254,7 @@ private fn stringDispatchBestByte(firstPtr: Ptr, count: Int, length: Int) -> Int
         let mut scan = firstPtr
         repeat(count) {
             let literal = stringDispatchLiteral(ptr_to_node(scan))
-            if (__builtin_string_len(literal.s1) == length) {
+            if (literal.s1.length == length) {
                 let byte = charCode(literal.s1.charAt(position))
                 if (stringDispatchByteSeen(values, byte) == false) {
                     values.push(byte)
@@ -278,7 +278,7 @@ private fn generateStringDispatchCandidates(firstPtr: Ptr, count: Int,
     repeat(count) {
         let arm = ptr_to_node(scan)
         let literal = stringDispatchLiteral(arm)
-        let matchesLength = __builtin_string_len(literal.s1) == length
+        let matchesLength = literal.s1.length == length
         let mut matchesByte = true
         if (matchesLength and bytePosition >= 0) {
             matchesByte = charCode(literal.s1.charAt(bytePosition)) == byteValue
@@ -320,7 +320,7 @@ private fn generateStringDispatch(firstPtr: Ptr, count: Int) -> Ptr {
     let mut scanned = 0
     while (scanned < count) {
         let literal = stringDispatchLiteral(ptr_to_node(scan))
-        let length = __builtin_string_len(literal.s1)
+        let length = literal.s1.length
         if (stringDispatchLengthSeen(lengths, length) == false) {
             lengths.push(length)
             labels.push(ir_get_label())
@@ -362,7 +362,7 @@ private fn generateStringDispatch(firstPtr: Ptr, count: Int) -> Ptr {
             scanned = 0
             while (scanned < count) {
                 let literal = stringDispatchLiteral(ptr_to_node(scan))
-                if (__builtin_string_len(literal.s1) == groupLength) {
+                if (literal.s1.length == groupLength) {
                     let byte = charCode(literal.s1.charAt(bytePosition))
                     if (stringDispatchByteSeen(byteValues, byte) == false) {
                         byteValues.push(byte)
@@ -935,6 +935,14 @@ private fn generateIf(stmt: ASTNode) {
 private fn generateWhile(stmt: ASTNode) {
     let endLabel = ir_get_label()
 
+    // A sieve-shaped nest gets a copy that runs it one cache-sized window at a
+    // time (ir/tiling.psm), entered ahead of the loop below or not at all. When
+    // it hands over midway it does so to a copy of its own, the last one here:
+    // joining this loop's entry would make every counter's start a merge of the
+    // two, and the ranges LLVM reads off a counter starting at 2 are what let it
+    // count the sieve's inner loop.
+    let tiledFallback = generateStrideTiling(stmt, endLabel)
+
     // M4.2, the loop half. Emitted here because here is the preheader: the
     // guards have to dominate the loop and be computed once.
     let savedGuard = irLoopFlatGuard
@@ -984,6 +992,9 @@ private fn generateWhile(stmt: ASTNode) {
         proof = irLoopRangeProofPending
     }
     generateLoopVersions(stmt, endLabel, flatSlot, rangeSlot, proof, savedGuard, "", "", false)
+    if (tiledFallback >= 0) {
+        generateLoopCopy(stmt, tiledFallback, endLabel, "", 0, "", "", false)
+    }
 
     irLoopFlatGuard = savedGuard.clone()
     irLoopRangeProof = savedProof
@@ -1624,7 +1635,7 @@ private fn generateMatch(stmt: ASTNode) {
 //
 // No `return` after a call and none needed: the kinds are mutually exclusive, so
 // the tests below a match cannot also match.
-private fn generateStatement(stmt: ASTNode) {
+internal fn generateStatement(stmt: ASTNode) {
     // The line table, in one place. Every instruction this statement and its
     // subexpressions build inherits this location, including the calls codegen
     // inserts on its own -- an arena bracket, a drop, a release. Column as well
@@ -1670,7 +1681,7 @@ private fn generateRegionExits(count: Int) {
 // A longer literal still needs a heap copy because the slot will release it.
 internal fn generateOwnedStringLiteral(value: String, exprPtr: Ptr) -> String {
     let expr = ptr_to_node(exprPtr)
-    let length = __builtin_string_len(expr.s1)
+    let length = expr.s1.length
     if (length <= 12) {
         return ir_get_temp_name(ir_str_inline(value, "0", length.toString()))
     }
