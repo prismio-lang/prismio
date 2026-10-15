@@ -66,7 +66,18 @@ impl Parser {
             // and the node carries the symbol, so every later stage sees one spelling.
             if (operatorToken.type == TokenType.KEYWORD and op.equals("is")) {
                 op = "=="
-                if (self.matchVal(TokenType.KEYWORD, "not")) { op = "!=" }
+                // The word a `(` must not touch: `is`, or the `not` after it.
+                let mut wordText = "is"
+                let mut wordLine = operatorToken.line
+                let mut wordEnd = operatorToken.col + operatorToken.len
+                let negated = self.current()
+                if (self.matchVal(TokenType.KEYWORD, "not")) {
+                    op = "!="
+                    wordText = negated.value.clone()
+                    wordLine = negated.line
+                    wordEnd = negated.col + negated.len
+                }
+                self.refuseWordCall(wordText, wordLine, wordEnd)
             }
 
             // Left associativity: the right operand binds only tighter operators.
@@ -97,6 +108,22 @@ impl Parser {
         }
 
         return left
+    }
+}
+
+
+impl Parser {
+    // `x is(3)` parsed, because `(3)` is an ordinary parenthesised operand -- the same
+    // reason `x == (3)` does -- but it reads as a call, and `is` is an operator between
+    // two operands, as in Python: `x is 3`, `x is not none`. A `(` that touches the word
+    // is refused; one after a space is a grouped operand (`x is (a + b)`) and stays.
+    private fn refuseWordCall(self, text: String, line: Int, endCol: Int) {
+        let after = self.current()
+        if (after.type != TokenType.SEPARATOR or after.value.equals("(") == false) { return }
+        if (after.line != line or after.col != endCol) { return }
+        diag_error_at_code("P3010", after.file, after.line, after.col, after.len,
+                           diagQuote(text).concat(" is an operator between two operands, not a call"))
+        diag_note("write `x is 3` or `x is not none`; a grouped operand takes a space: `x is (a + b)`")
     }
 }
 

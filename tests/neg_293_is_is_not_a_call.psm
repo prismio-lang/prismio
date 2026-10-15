@@ -1,0 +1,14 @@
+// expect-error: `is` is an operator between two operands, not a call
+// expect-error: `not` is an operator between two operands, not a call
+// expect-error: aborting due to 2 previous errors
+// `is` and `is not` sit between their operands, as in Python: `x is 3`, `x is not 4`.
+// A `(` touching the word reads as a call, and `is` is not a function, so it is refused
+// -- `x is(3)` used to parse only because `(3)` is a parenthesised operand. A grouped
+// operand takes a space, `x is (a + b)`, and stays valid (test_293_is_operand).
+
+fn main() -> Int {
+    let x = 3
+    if x is(3) { return 1 }
+    if x is not(4) { return 2 }
+    return 0
+}

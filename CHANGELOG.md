@@ -40,7 +40,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   the `{` after a condition is the body.
 - **`is`, `is not` and `not`** are the words for `==`, `!=` and `!`, read into the
   same nodes as the symbols. `not` binds like `!`: `not x == y` negates `x` alone.
-  All three are reserved words now.
+  All three are reserved words now. They are operators between two operands, as in Python
+  (`x is 3`, `x is not none`), so a `(` touching the word is refused: `x is(3)` read as a
+  call and parsed only because `(3)` is a parenthesised operand. `x is (a + b)`, with a
+  space, is a grouped operand and stays valid (`P3010`, `neg_293`, `test_293`).
 - **Nested functions.** A `fn` written in a function body is a private function that
   captures nothing, visible in the block that declares it, callable before its
   declaration and recursively; two functions may each have a `helper`, and a method

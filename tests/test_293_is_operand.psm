@@ -1,0 +1,16 @@
+// `is` and `is not` between two operands, with and without a grouped right operand.
+// The word never touches a `(`: `x is(3)` is refused (neg_293_is_is_not_a_call).
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    let x = 3
+    let y = 1
+    if (x is 3) == false { return fail(1) }
+    if x is not 4 { } else { return fail(2) }
+    if x is (y + 2) { } else { return fail(3) }
+    if x is not (y + 3) { } else { return fail(4) }
+    if x is y { return fail(5) }
+    if x is not x { return fail(6) }
+    return 0
+}
