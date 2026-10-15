@@ -1,0 +1,52 @@
+// std.mem's typed blocks and a Buffer's pointer, docs/PTR_PLAN.md stage 6. `allocOf<T>` is
+// room for `count` of a plain-data type as a `Ptr<mut T>`, the size read off the type, so the
+// program writes no sizes and no casts; the bytes are then written through the pointer and
+// read back by address to prove where they went. A Buffer's `pointer` is its bytes, or none
+// when it has none.
+import std.mem
+import std.raw
+
+repr(C) struct Header {
+    magic: U32,
+    length: U32,
+    flags: U16,
+}
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    // Four 12-byte Headers: the elements are 12 bytes apart and the block holds all four.
+    let headers = allocZeroedOf<Header>(4)
+    if headers.offset(1).addr - headers.addr != 12 { return fail(1) }
+    headers.offset(3).magic = 0x5052534D
+    headers.offset(3).flags = 7
+    if headers.offset(3).magic != 0x5052534D { return fail(2) }
+    if loadU32(headers.addr + 36) != 0x5052534D { return fail(3) }
+    if headers.offset(2).magic != 0 { return fail(4) }
+
+    // Grown, the old elements are still there.
+    let more = reallocOf(headers, 8)
+    if more.offset(3).flags != 7 { return fail(5) }
+    free(more)
+
+    // A scalar block, and a count of zero is still a block that can be freed.
+    let numbers = allocOf<Int>(3)
+    numbers.store(10)
+    numbers.offset(2).store(30)
+    if numbers.offset(2).load() != 30 { return fail(6) }
+    free(numbers)
+    free(allocOf<Int>(0))
+
+    // A Buffer's pointer is its first byte; an empty Buffer has none.
+    let mut buffer = Buffer.new(4)
+    buffer.writeU8(0, 65)
+    buffer.writeU8(1, 66)
+    let bytes = buffer.pointer
+    if bytes == none { return fail(7) }
+    if expect(bytes).load() != 65 { return fail(8) }
+    if expect(bytes).offset(1).load() != 66 { return fail(9) }
+    if expect(bytes).addr != buffer.address { return fail(10) }
+    if Buffer.new(0).pointer != none { return fail(11) }
+
+    return 0
+}

@@ -76,6 +76,32 @@ public fn realloc(address: Usize, size: Usize) -> Usize { return mem_realloc(add
 // Returns a block from `alloc`, `allocZeroed` or `realloc`. 0 is ignored.
 public fn free(address: Usize) { mem_free(address) }
 
+// The same blocks as a typed pointer, for a `T` of plain data: `allocOf<Header>(4)` is room for
+// four of them as a `Ptr<mut Header>`, with no size to compute and nothing to cast. The size is
+// read off the type -- how far a pointer moves for one element -- so a padded struct and a packed
+// one are each their own, and a `T` that owns memory is refused by the pointer type itself. The
+// memory is not initialised; `allocZeroedOf` is.
+public fn allocOf<T>(count: Int) -> Ptr<mut T> {
+    bufferCheckLength(count, "allocOf's count")
+    let one = Ptr<mut T>.atUnchecked(4096)
+    return Ptr<mut T>.atUnchecked(mem_alloc((one.offset(1).addr - one.addr) * (count as Usize)))
+}
+
+public fn allocZeroedOf<T>(count: Int) -> Ptr<mut T> {
+    bufferCheckLength(count, "allocZeroedOf's count")
+    let one = Ptr<mut T>.atUnchecked(4096)
+    return Ptr<mut T>.atUnchecked(mem_alloc_zeroed((one.offset(1).addr - one.addr) * (count as Usize)))
+}
+
+// `block` grown or shrunk to room for `count`, possibly moved; the old pointer is dead afterwards.
+public fn reallocOf<T>(block: Ptr<mut T>, count: Int) -> Ptr<mut T> {
+    bufferCheckLength(count, "reallocOf's count")
+    return Ptr<mut T>.atUnchecked(mem_realloc(block.addr, (block.offset(1).addr - block.addr) * (count as Usize)))
+}
+
+// Returns a block from `allocOf`, `allocZeroedOf` or `reallocOf`.
+public fn free<T>(block: Ptr<mut T>) { mem_free(block.addr) }
+
 // memmove: the two ranges may overlap.
 public fn copy(to: Usize, from: Usize, count: Usize) { mem_copy(to, from, count) }
 public fn fill(address: Usize, value: U8, count: Usize) { mem_fill(address, value as Int, count) }
@@ -142,6 +168,15 @@ impl Buffer {
     // Where the bytes are now, for `__builtin_mem_*` or a C function. A resize,
     // `push` or `append` may move them, and the Buffer's release frees them.
     public prop address(self) -> Usize { return mem_bytes_data(self.bytes) }
+
+    // The bytes as a typed pointer, or `none` for an empty Buffer: no bytes, nothing to point at,
+    // even where the storage behind it has an address. It points into the Buffer's own storage,
+    // which `push`, `append` or `resize` may move: use it before growing the Buffer again, and
+    // never after the Buffer is gone.
+    public prop pointer(self) -> Ptr<mut U8>? {
+        if (self.bytes.length == 0) { return none }
+        return Ptr<mut U8>.at(mem_bytes_data(self.bytes))
+    }
 
     // `b[i]` and `b[i] = x`.
     public fn at(self, index: Int) -> U8 { return __builtin_mem_uload_u8(bufferAt(self, index, 1)) }

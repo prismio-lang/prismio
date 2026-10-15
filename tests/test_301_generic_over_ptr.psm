@@ -1,0 +1,31 @@
+// A generic function over a typed pointer: `T` is solved from what the pointer points at, a
+// `Ptr<mut Pair>` fits a `Ptr<T>` as it fits a `Ptr<Pair>`, and the instantiation names a
+// pointer type the compiler can write down again (it used to name `Ptr<mut Pair>` as one
+// identifier and fail to resolve it). `stride` is how far one element is, read off the type.
+import std.raw
+
+repr(C) struct Pair {
+    a: U32,
+    b: U16,
+}
+
+extern fn malloc(size: Usize) -> Ptr<mut Pair>
+extern fn free(block: Ptr)
+
+fn stride<T>(p: Ptr<T>) -> Usize { return p.offset(1).addr - p.addr }
+fn keep<T>(p: Ptr<mut T>) -> Ptr<mut T> { return p }
+fn second<T>(p: Ptr<mut T>) -> Ptr<mut T> { return p.offset(1) }
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    let pair = malloc(16)
+    if stride(pair) != 8 { return fail(1) }
+    let numbers = Ptr<mut Int>.cast(pair)
+    if stride(numbers) != 4 { return fail(2) }
+    if keep(pair).addr != pair.addr { return fail(3) }
+    if second(pair).addr - pair.addr != 8 { return fail(4) }
+    if second(numbers).addr - pair.addr != 4 { return fail(5) }
+    free(pair)
+    return 0
+}

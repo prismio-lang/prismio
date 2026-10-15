@@ -854,6 +854,28 @@ internal fn monoAnnotationFromType(t: TypeInfo) -> ASTNode {
             return tn
         }
     }
+    // A typed pointer is the same shape, and its name -- `Ptr<mut U8>` -- is no identifier either:
+    // without this a generic function over `Ptr<mut T>` instantiated with a concrete `T` named a
+    // type nobody could resolve. Spelled as the parser spells it: `Ptr`, the capabilities as
+    // leading `$mut` / `$volatile` markers, then the pointee.
+    if (typeIsTypedPtr(t)) {
+        tn.i2 = 1
+        tn.s1 = "Ptr"
+        let args = nodeList()
+        if (typePtrIsMut(t)) {
+            let marker = createNode(NodeKind.TYPE_ANNOTATION)
+            marker.s1 = "$mut"
+            nodeListPush(args, marker)
+        }
+        if (typePtrIsVolatile(t)) {
+            let marker = createNode(NodeKind.TYPE_ANNOTATION)
+            marker.s1 = "$volatile"
+            nodeListPush(args, marker)
+        }
+        nodeListPush(args, monoAnnotationFromType(typePtrPointee(t)))
+        tn.child1 = args.head
+        return tn
+    }
     // A future is a PTR with a name and a child, so the name alone would write
     // `Future<Int>` as one identifier. Spelled as the applied type it is, a lifted
     // `spawn` block that captured a future can name its parameter.
@@ -1064,6 +1086,15 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
         return monoMatchParam(module, ptr_to_node(tn.child1), semaDataViewElementType(actual), paramName)
     }
 
+    // `Ptr<mut T>` against a `Ptr<mut Header>`: `T` is what it points at. The capabilities are
+    // the parser's leading markers, which `typePtrAnnotationPointee` steps over.
+    if (tn.i2 == 1 and tn.s1.equals("Ptr") and typeIsTypedPtr(actual)) {
+        let pointeeAt = typePtrAnnotationPointee(tn)
+        if (nodeExists(pointeeAt)) {
+            return monoMatchParam(module, ptr_to_node(pointeeAt), typePtrPointee(actual), paramName)
+        }
+    }
+
     // `Map<K, V>` against an argument of type `Map$Int$Int`. The instantiation
     // recorded what it was made from, so the match is positional against that
     // rather than an attempt to read the mangled name back apart.
@@ -1226,6 +1257,8 @@ private fn monoTemplateAcceptsCall(module: ASTNode, template: ASTNode,
 // the same argument.
 private fn monoArgumentFits(expected: TypeInfo, actual: TypeInfo) -> Bool {
     if (typeEquals(expected, actual)) { return true }
+    // A `Ptr<mut Header>` fits a generic `Ptr<T>`, as it fits a concrete one.
+    if (typeIsTypedPtr(expected) and typePtrConverts(expected, actual)) { return true }
     return expected.kind == TypeKind.OPTIONAL and nodeExists(expected.child)
         and typeEquals(typeOptionalInner(expected), actual)
 }

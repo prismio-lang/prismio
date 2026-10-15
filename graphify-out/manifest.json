@@ -684,9 +684,9 @@
     "semantic_hash": ""
   },
   "src/sema/generics.psm": {
-    "mtime": 1791988539.691759,
-    "seen": 1791989396.4654222,
-    "ast_hash": "e54de1798bffd34383379f9590fe5b6e",
+    "mtime": 1792045745.0221696,
+    "seen": 1792045856.210749,
+    "ast_hash": "fbdf7baf546aceeebe4d5d63df77ade7",
     "semantic_hash": ""
   },
   "src/sema/maps.psm": {
@@ -3930,9 +3930,9 @@
     "semantic_hash": ""
   },
   "CHANGELOG.md": {
-    "mtime": 1792044627.2954993,
-    "seen": 1792044841.700375,
-    "ast_hash": "4f3f9a91a96f3235072d52dbf4d35e0e",
+    "mtime": 1792045824.864912,
+    "seen": 1792045856.211156,
+    "ast_hash": "b97bd390211765b45a063f9a8e5c8c25",
     "semantic_hash": ""
   },
   "tests/aif_array_frame.psm": {
@@ -4590,9 +4590,9 @@
     "semantic_hash": ""
   },
   "std/mem.psm": {
-    "mtime": 1791957213.9305906,
-    "seen": 1791957818.508537,
-    "ast_hash": "0e87d1ed44e5b0dc5e317e6a0e781ad2",
+    "mtime": 1792045777.3119004,
+    "seen": 1792045856.210761,
+    "ast_hash": "d918ef4a089e72c21f283b6f4e89b571",
     "semantic_hash": ""
   },
   "tests/std_mem_failures_probe.psm": {
@@ -5058,9 +5058,9 @@
     "semantic_hash": ""
   },
   "docs/PTR_PLAN.md": {
-    "mtime": 1792044627.2968626,
-    "seen": 1792044841.700394,
-    "ast_hash": "5a4e5041fbeaf2ef4cfc50f347eeb697",
+    "mtime": 1792045824.864654,
+    "seen": 1792045856.211176,
+    "ast_hash": "e70fedd15e1c1df8b4a2aecb3c10c02d",
     "semantic_hash": ""
   },
   "src/sema/pointer.psm": {
@@ -5193,6 +5193,18 @@
     "mtime": 1792044764.7515385,
     "seen": 1792044841.700282,
     "ast_hash": "e2bb9f3c1d50758924244201b67ef6a7",
+    "semantic_hash": ""
+  },
+  "tests/test_300_std_mem_typed.psm": {
+    "mtime": 1792045680.1267004,
+    "seen": 1792045856.21106,
+    "ast_hash": "6a84dd086ceff39a579259f194dd5659",
+    "semantic_hash": ""
+  },
+  "tests/test_301_generic_over_ptr.psm": {
+    "mtime": 1792045793.7978618,
+    "seen": 1792045856.211061,
+    "ast_hash": "e0a0d87838faf5a9dbe2a2eed25ac9b6",
     "semantic_hash": ""
   }
 }
