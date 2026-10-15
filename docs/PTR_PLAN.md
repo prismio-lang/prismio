@@ -1,6 +1,6 @@
 # `Ptr<T>`: a typed pointer
 
-Status 2026-10-15: **stages 1-5 built** (the type and its conversions; reads through a pointer, `load()`,
+Status 2026-10-15: **stages 1-5 built, stage 6 built except `asSlice`** (the type and its conversions; reads through a pointer, `load()`,
 the scalar projection, parameter attributes; writes through `Ptr<mut T>`; the address methods and the
 `std.raw` constructors; volatile access and atomics with orderings). Stage 6 is open. Source: the "Transparent Capability Pointer"
 proposal, corrected against this tree, plus the additions in §4. It closes the last open box of
@@ -130,7 +130,7 @@ Follow `Channel<T>`: PTR-kinded, `name` = `Ptr<T>` / `Ptr<mut T>`, pointee in `c
 | 3 | Writes: field `=`/`op=` through `Ptr<mut>`, `store`, the refusal diagnostics | `semaAssignment`, `pointer.psm` |
 | 4 | **Built.** Address methods, `at`/`atUnchecked`/`cast`/`castAligned`, `advance`; `inbounds` | `pointer.psm`, `mem_builtins.psm`, `llvm-api-backend.c` (`ir_ptr_op`) |
 | 5 | **Built.** Volatile in the type; atomics with orderings | builtins table, `std/raw.psm`, `llvm-api-backend.c` (`ir_ptr_atomic`, `ir_ptr_load_volatile`) |
-| 6 | `asSlice`; `std.mem` typed `alloc`; `Buffer.pointer`; docs in **both** apps; CHANGELOG 0.2.0 | `std/mem.psm`, `../website/apps/{docs,developers}` |
+| 6 | **Built, except `asSlice`.** `std.mem` typed `allocOf`/`allocZeroedOf`/`reallocOf`/`free`; `Buffer.pointer`; docs in **both** apps; CHANGELOG 0.2.0. **`asSlice` is not built**: see below | `std/mem.psm`, `../website/apps/{docs,developers}` |
 
 **What stages 1 and 2 settled** (each differs from, or adds to, what the table above says):
 
@@ -152,6 +152,23 @@ Follow `Channel<T>`: PTR-kinded, `name` = `Ptr<T>` / `Ptr<mut T>`, pointee in `c
   and an exactly-typed pointer argument outranks one that needs `mut` dropped.
 - **`typeEquals` is strict for typed pointers** (it used to be PTR's unconditional `true`); the one-way
   conversions live in `typePtrConverts`, consulted from `semaTypesMatch`.
+
+**What stage 6 settled:**
+
+- **`asSlice` cannot be built as §4.10 assumed, and that is a design finding, not an omission.** A `Slice<T>` is
+  `{ handle, offset, length }` where the handle is a Prismio *list header* and every element access goes through the list
+  runtime (`list_get`, `prismio_slice_check`). A pointer and a count have no header to put in the handle. A real `asSlice`
+  needs a second view representation over foreign memory (a header that never owns, or a slice that carries a data pointer),
+  its borrow rules in AIF, and the runtime paths that read a slice taught the second form. That is a plan of its own;
+  until then the bounded loop is `advance(n, limit)` and the checked container is `Buffer`.
+- **Typed blocks:** `allocOf<T>(count)`, `allocZeroedOf<T>`, `reallocOf`, and `free(Ptr<mut T>)` beside `free(Usize)`. The element
+  size is read off the type (`p.offset(1).addr - p.addr` on a fabricated pointer, which folds to a constant), so no `sizeof`
+  is needed and a packed and a padded struct are each their own. `Buffer.pointer` is a `Ptr<mut U8>?`, none when the Buffer has no
+  bytes (an empty Buffer still has a non-null data pointer, so the length is what is tested).
+- **Two compiler gaps surfaced and are fixed:** `monoAnnotationFromType` named a typed pointer by its display name, so a generic
+  function over `Ptr<mut T>` instantiated with a concrete `T` named a type nobody could resolve; and the solver did not infer `T`
+  from a `Ptr<T>` parameter. Both now handle a typed pointer (the second also lets a `Ptr<mut T>` fit a generic `Ptr<T>`).
+  `test_301_generic_over_ptr` holds them.
 
 **What stage 5 settled:**
 

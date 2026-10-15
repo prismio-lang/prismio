@@ -96,6 +96,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   a store cannot acquire, and a compare-exchange derives its failure ordering from the success one. A new `typed_pointer_ir`
   harness test checks the emitted `load volatile`, `store atomic ... release`, `atomicrmw ... acq_rel` and `cmpxchg` and the
   parameter attributes, since none of it shows in a program's output (`test_297`, `test_298`, `neg_298`).
+- **Typed blocks and a Buffer's pointer (stage 6).** `std.mem` gains `allocOf<T>(count)`, `allocZeroedOf<T>(count)`,
+  `reallocOf(block, count)` and `free(block)` for a `Ptr<mut T>`, the element size read off the type, and `Buffer.pointer`, a
+  `Ptr<mut U8>?` that is `none` for an empty Buffer (`test_300`). Generic functions over a typed pointer now work: the
+  instantiation names a pointer type it can write down again, `T` is solved from a `Ptr<T>` parameter, and a `Ptr<mut T>` fits a
+  generic `Ptr<T>` (`test_301`). **`asSlice` is not built:** a `Slice` is a handle to a list header, so a pointer and a count have nothing
+  to be a view of; it needs a second view representation (`docs/PTR_PLAN.md`).
 - **Nested functions.** A `fn` written in a function body is a private function that
   captures nothing, visible in the block that declares it, callable before its
   declaration and recursively; two functions may each have a `helper`, and a method
