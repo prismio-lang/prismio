@@ -3010,6 +3010,91 @@ private fn generateMemBuiltin(expr: ASTNode, funcName: String) -> String {
         return ir_get_temp_name(ir_asm_call(key, text, constraints))
     }
 
+    // A typed pointer's load: `load T, ptr %p` at the pointee's own type, through the
+    // same scalar path an array element takes, so a Bool is the byte it is everywhere
+    // else and the access carries its type tag. Not volatile: sema refuses a volatile
+    // pointer until stage 5 gives it its own access.
+    if (ptrLoadBuiltin(funcName)) {
+        let pointer = ptr_to_node(expr.child2)
+        let pointerT = nodeGetType(pointer)
+        let valueKey = storageType(typeIrKey(typePtrPointee(pointerT)))
+        let pointerVal = generateExpression(pointer)
+        // Every access through a `Ptr<volatile T>` is volatile, and `readVolatile` makes one
+        // on a pointer that is not.
+        if (typePtrIsVolatile(pointerT) or ptrAccessIsVolatile(funcName)) {
+            return ir_get_temp_name(ir_ptr_load_volatile(valueKey, pointerVal))
+        }
+        return ir_get_temp_name(ir_load_ptr(valueKey, pointerVal))
+    }
+
+    // `p.store(v)`: the store half, at the pointee's own type, through the scalar path an
+    // array element is written by. Both operands are generated before the store, as a
+    // call's arguments are.
+    if (ptrStoreBuiltin(funcName)) {
+        let pointer = ptr_to_node(expr.child2)
+        let stored = ptr_to_node(pointer.next)
+        let pointerT = nodeGetType(pointer)
+        let valueKey = storageType(typeIrKey(typePtrPointee(pointerT)))
+        let pointerVal = generateExpression(pointer)
+        let storedVal = generateExpression(stored)
+        if (typePtrIsVolatile(pointerT) or ptrAccessIsVolatile(funcName)) {
+            ir_ptr_store_volatile(valueKey, storedVal, pointerVal)
+        } else {
+            ir_store_ptr(valueKey, storedVal, pointerVal)
+        }
+        return ""
+    }
+
+    // Atomic access on a typed pointer, ordered as written. The ordering is a variant of
+    // `AtomicOrder`, which sema checked is written as one; here it is read off the node as the
+    // number the instruction takes, and nothing is generated for it.
+    let atomicKind = ptrAtomicKind(funcName)
+    if (atomicKind > 0) {
+        let pointer = ptr_to_node(expr.child2)
+        let valueKey = storageType(typeIrKey(typePtrPointee(nodeGetType(pointer))))
+        let pointerVal = generateExpression(pointer)
+        let mut operandAt = pointer.next
+        let mut a = ""
+        let mut b = ""
+        if (atomicKind >= 2) {
+            let first = ptr_to_node(operandAt)
+            a = generateExpression(first)
+            operandAt = first.next
+        }
+        if (atomicKind == 9) {
+            let second = ptr_to_node(operandAt)
+            b = generateExpression(second)
+            operandAt = second.next
+        }
+        let order = ptrAtomicOrderCode(ptr_to_node(operandAt).s1)
+        let result = ir_ptr_atomic(atomicKind, valueKey, pointerVal, a, b, order)
+        if (atomicKind == 2) { return "" }
+        return ir_get_temp_name(result)
+    }
+
+    // A typed pointer's address operations: the pointee's own key says the stride, the
+    // alignment and what a distance is counted in, and the backend does the rest
+    // (ir_ptr_op). The pointee is the first operand's, or for a constructor or cast the
+    // result's -- unwrapped, because `at` and `castAligned` answer a `Ptr<T>?`.
+    let opKind = ptrOpKind(funcName)
+    if (opKind > 0) {
+        let first = ptr_to_node(expr.child2)
+        let mut subjectT = nodeGetType(expr)
+        if (opKind <= 7) { subjectT = nodeGetType(first) }
+        if (subjectT.kind == TypeKind.OPTIONAL) { subjectT = typeOptionalInner(subjectT) }
+        let elemKey = typeIrKey(typePtrPointee(subjectT))
+        let arity = ptrOpArity(opKind)
+        let a = generateExpression(first)
+        let mut b = ""
+        let mut c = ""
+        if (arity >= 2) {
+            let second = ptr_to_node(first.next)
+            b = generateExpression(second)
+            if (arity >= 3) { c = generateExpression(ptr_to_node(second.next)) }
+        }
+        return ir_get_temp_name(ir_ptr_op(opKind, elemKey, a, b, c))
+    }
+
     let addrKind = addrBuiltinKind(funcName)
     if (addrKind > 0) {
         let operand = generateExpression(ptr_to_node(expr.child2))
@@ -3558,8 +3643,7 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
     // The root's value, for an argument list that has to release it after its
     // call instead (irMemberRootValue).
     if (objectNode.kind == NodeKind.CALL_EXPR) { irMemberRootValue = objectVal.clone() }
-    let objectType = getExprType(objectNode)
-    let structName = structTypeName(objectType)
+    let structName = memberObjectStructName(objectNode)
     let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
     let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
 
@@ -3582,8 +3666,15 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
     if (isStructTypeKey(fieldType) or isArrayValueKey(fieldType)) {
         return ir_get_temp_name(slot)
     }
-    let loaded = ir_get_temp_name(ir_struct_load_ptr(fieldType, ir_get_temp_name(slot),
-                                                     structName, fieldIndex))
+    // A field reached through a `Ptr<volatile T>` is read volatile, whatever its type.
+    let objectIsVolatile = nodeHasType(objectNode) and typePtrIsVolatile(nodeGetType(objectNode))
+    let mut loadedId = 0
+    if (objectIsVolatile) {
+        loadedId = ir_struct_load_ptr_volatile(fieldType, ir_get_temp_name(slot), structName, fieldIndex)
+    } else {
+        loadedId = ir_struct_load_ptr(fieldType, ir_get_temp_name(slot), structName, fieldIndex)
+    }
+    let loaded = ir_get_temp_name(loadedId)
     // A scalar is a copy, so once it is loaded nothing points into the struct
     // and the temporary is released here -- `Config.default().retries` leaked
     // the Config. A reference field is a view into it and stays as it was: the

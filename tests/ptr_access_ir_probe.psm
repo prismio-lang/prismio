@@ -1,0 +1,28 @@
+// What each kind of access through a typed pointer is emitted as; read by the
+// `typed_pointer_ir` harness test in test_runner.py, which looks for the instruction each
+// function must contain, and the one it must not. Not a `test_*` fixture: it is never run.
+import std.raw
+
+repr(C) struct Regs {
+    status: U32,
+    control: U32,
+}
+
+fn plainLoad(p: Ptr<Int>) -> Int { return p.load() }
+fn plainField(r: Ptr<Regs>) -> U32 { return r.status }
+fn volatileLoad(p: Ptr<volatile Int>) -> Int { return p.load() }
+fn volatileStore(p: Ptr<mut volatile Int>) { p.store(1) }
+fn volatileOperand(p: Ptr<volatile Int>) -> Int { return p + 1 }
+fn volatileFieldRead(r: Ptr<volatile Regs>) -> U32 { return r.status }
+fn volatileFieldWrite(r: Ptr<mut volatile Regs>) { r.control = 5 }
+fn oneOffRead(p: Ptr<Int>) -> Int { return p.readVolatile() }
+fn oneOffWrite(p: Ptr<mut Int>) { p.writeVolatile(2) }
+fn atomicLoadAcquire(p: Ptr<Int>) -> Int { return p.atomicLoad(AtomicOrder.Acquire) }
+fn atomicLoadRelaxed(p: Ptr<Int>) -> Int { return p.atomicLoad(AtomicOrder.Relaxed) }
+fn atomicStoreRelease(p: Ptr<mut Int>) { p.atomicStore(3, AtomicOrder.Release) }
+fn atomicAddAcqRel(p: Ptr<mut Int>) -> Int { return p.atomicAdd(1, AtomicOrder.AcqRel) }
+fn atomicSwapSeqCst(p: Ptr<mut U8>) -> U8 { return p.atomicSwap(1, AtomicOrder.SeqCst) }
+fn atomicCasRelease(p: Ptr<mut Int>) -> Int { return p.atomicCompareExchange(1, 2, AtomicOrder.Release) }
+fn atomicCasAcqRel(p: Ptr<mut Int>) -> Int { return p.atomicCompareExchange(1, 2, AtomicOrder.AcqRel) }
+
+fn main() -> Int { return 0 }

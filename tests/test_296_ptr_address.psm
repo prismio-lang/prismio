@@ -1,0 +1,89 @@
+// `Ptr<T>` address mechanics, docs/PTR_PLAN.md stage 4: where a pointer points, stepping it,
+// comparing it, and making one from a number or another pointer. `p + 1` is always the value,
+// so every motion here is a method, and each is checked against the address it should reach.
+//
+//   buffer (16 bytes)      [ 1 ][ 2 ][ 3 ][ 4 ]       four Ints, stride 4
+//   Packet (24 bytes)      Header (12) + tag (1) + padding + next (8), stride 24
+import std.raw
+
+repr(C) struct Header {
+    magic: U32,
+    length: U32,
+    flags: U16,
+}
+
+repr(C) struct Packet {
+    header: Header,
+    tag: U8,
+    next: Ptr<Packet>?,
+}
+
+extern fn calloc(count: Usize, size: Usize) -> Ptr<mut Packet>
+extern fn malloc(size: Usize) -> Ptr<mut Int>
+extern fn free(block: Ptr)
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    let a = malloc(16)
+    a.store(1)
+    a.offset(1).store(2)
+    a.offset(2).store(3)
+    a.offset(3).store(4)
+
+    // `addr` is a property and a pointer's offset is in elements: Int is 4 bytes.
+    if a.offset(1).addr - a.addr != 4 { return fail(1) }
+    if a.offset(3).load() != 4 { return fail(2) }
+    if a.byteOffset(4).load() != 2 { return fail(3) }
+    if a.offset(3).offsetFrom(a) != 3 { return fail(4) }
+    if a.offsetFrom(a.offset(3)) != -3 { return fail(5) }
+    if a.wrappingOffset(2).load() != 3 { return fail(6) }
+    if a.offset(2).offset(-1).load() != 2 { return fail(7) }
+
+    // A struct steps by its own size, 24 bytes here, not by a byte or a field.
+    let packets = calloc(2, 24)
+    if packets.offset(1).addr - packets.addr != 24 { return fail(8) }
+    if packets.offset(1).offsetFrom(packets) != 1 { return fail(9) }
+
+    // Alignment and identity.
+    if a.isAligned(4) == false { return fail(10) }
+    if a.byteOffset(1).isAligned(4) { return fail(11) }
+    if a.byteOffset(2).isAligned(2) == false { return fail(12) }
+    if a.sameAs(a.offset(0)) == false { return fail(13) }
+    if a.sameAs(a.offset(1)) { return fail(14) }
+
+    // `advance` stops at its limit instead of passing it, in either direction; the end
+    // itself (one past the last element) is reachable.
+    let end = a.offset(4)
+    if a.advance(3, end) == none { return fail(15) }
+    if a.advance(4, end) == none { return fail(16) }
+    if a.advance(5, end) != none { return fail(17) }
+    if end.advance(-4, a) == none { return fail(18) }
+    if end.advance(-5, a) != none { return fail(19) }
+    if expect(a.advance(2, end)).load() != 3 { return fail(20) }
+
+    // The constructors. `at` is none for 0 and for an address the pointee cannot sit at.
+    let again = Ptr<mut Int>.at(a.addr)
+    if again == none { return fail(21) }
+    if expect(again).load() != 1 { return fail(22) }
+    if Ptr<mut Int>.at(0) != none { return fail(23) }
+    if Ptr<mut Int>.at(a.addr + 1) != none { return fail(24) }
+    if Ptr<mut Int>.atUnchecked(a.addr).offset(1).load() != 2 { return fail(25) }
+
+    // `cast` keeps the address and changes the type; `castAligned` refuses a bad one.
+    let bytes = Ptr<mut U8>.cast(a)
+    if bytes.offset(4).load() != 2 { return fail(26) }
+    if bytes.offset(1).addr - bytes.addr != 1 { return fail(27) }
+    if Ptr<mut Int>.castAligned(bytes.offset(1)) != none { return fail(28) }
+    let widened = Ptr<mut Int>.castAligned(bytes.offset(8))
+    if widened == none { return fail(29) }
+    if expect(widened).load() != 3 { return fail(30) }
+
+    // An opaque handle becomes typed through `cast`.
+    let handle: Ptr = a
+    if Ptr<mut Int>.cast(handle).load() != 1 { return fail(31) }
+
+    free(packets)
+    free(a)
+    return 0
+}

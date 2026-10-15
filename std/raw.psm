@@ -27,6 +27,20 @@
 public fn addressOf(pointer: Ptr) -> Usize { return __builtin_ptr_addr(pointer) }
 public fn pointerAt(address: Usize) -> Ptr { return __builtin_addr_ptr(address) }
 
+// How an atomic access on a typed pointer is ordered against the others around it, written
+// at the call: `p.atomicAdd(1, AtomicOrder.AcqRel)`. It has to be a variant written there, not a
+// value, because the ordering is a property of the instruction.
+//
+//     Relaxed   atomic, and nothing is ordered around it: a counter
+//     Acquire   what follows cannot move above it: taking a lock (a load)
+//     Release   what precedes cannot move below it: dropping one (a store)
+//     AcqRel    both, for a read-modify-write
+//     SeqCst    every thread sees every such access in one order: the default of the
+//               address functions below, and the only one that needs no thought
+//
+// A load cannot be Release or AcqRel and a store cannot be Acquire or AcqRel; the compiler says so.
+enum AtomicOrder { Relaxed, Acquire, Release, AcqRel, SeqCst }
+
 // Volatile access, for memory-mapped hardware: each call is one load or store of
 // that width, in program order, and is never merged, reordered with another
 // volatile access or dropped because nothing reads the result.

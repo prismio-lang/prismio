@@ -170,10 +170,129 @@ public fn portBuiltinConstraints(dir: Int, width: Int) -> String {
     return "={".concat(reg, "},{dx},~{memory}")
 }
 
+// `__builtin_ptr_load(p)`: the value a typed `Ptr<T>` points at, of the pointee's own
+// type and alignment. The one builtin `Ptr<T>` reads lower to (docs/PTR_PLAN.md): the
+// address stays a pointer, so LLVM keeps the provenance, the `nonnull` and the type
+// tag that `__builtin_mem_load_*` through a `Usize` throws away. Sema writes it for
+// `p.load()`, for a pointer used as a scalar operand, and for one handed to a slot
+// that wants the scalar; it is never written in a program (semaRefuseRuntimeCalls).
+public fn ptrLoadBuiltin(name: String) -> Bool {
+    return name.equals("__builtin_ptr_load") or name.equals("__builtin_ptr_vload")
+}
+
+// The one-off volatile access, `p.readVolatile()` and `p.writeVolatile(v)`, on a pointer that
+// is not itself `volatile`: the same load and store with the access marked. A `Ptr<volatile T>`
+// needs neither, because every access through it is.
+public fn ptrAccessIsVolatile(name: String) -> Bool {
+    return name.equals("__builtin_ptr_vload") or name.equals("__builtin_ptr_vstore")
+}
+
+// Atomic access on the pointer, with the ordering written at the call:
+// `__builtin_ptr_atomic_<op>`. 1 load, 2 store, 3 swap, 4 add, 5 sub, 6 and, 7 or, 8 xor,
+// 9 compare-exchange; 0 for any other name. The operands are the pointer, the values the op
+// takes, and last the ordering, a variant of `AtomicOrder` (std/raw.psm) that sema has read
+// as a number -- an ordering is an instruction's property, so it cannot be a runtime value.
+public fn ptrAtomicKind(name: String) -> Int {
+    if (name.startsWith("__builtin_ptr_atomic_") == false) { return 0 }
+    let op = name.substring(21, name.length - 21)
+    if (op.equals("load")) { return 1 }
+    if (op.equals("store")) { return 2 }
+    if (op.equals("swap")) { return 3 }
+    if (op.equals("add")) { return 4 }
+    if (op.equals("sub")) { return 5 }
+    if (op.equals("and")) { return 6 }
+    if (op.equals("or")) { return 7 }
+    if (op.equals("xor")) { return 8 }
+    if (op.equals("compare_exchange")) { return 9 }
+    return 0
+}
+
+public fn ptrAtomicName(kind: Int) -> String {
+    if (kind == 1) { return "__builtin_ptr_atomic_load" }
+    if (kind == 2) { return "__builtin_ptr_atomic_store" }
+    if (kind == 3) { return "__builtin_ptr_atomic_swap" }
+    if (kind == 4) { return "__builtin_ptr_atomic_add" }
+    if (kind == 5) { return "__builtin_ptr_atomic_sub" }
+    if (kind == 6) { return "__builtin_ptr_atomic_and" }
+    if (kind == 7) { return "__builtin_ptr_atomic_or" }
+    if (kind == 8) { return "__builtin_ptr_atomic_xor" }
+    return "__builtin_ptr_atomic_compare_exchange"
+}
+
+// Operands including the pointer and the ordering.
+public fn ptrAtomicArity(kind: Int) -> Int {
+    if (kind == 1) { return 2 }
+    if (kind == 9) { return 4 }
+    return 3
+}
+
+// An `AtomicOrder` variant as ir_ptr_atomic numbers it; -1 for any other name.
+public fn ptrAtomicOrderCode(variant: String) -> Int {
+    if (variant.equals("Relaxed")) { return 0 }
+    if (variant.equals("Acquire")) { return 1 }
+    if (variant.equals("Release")) { return 2 }
+    if (variant.equals("AcqRel")) { return 3 }
+    if (variant.equals("SeqCst")) { return 4 }
+    return -1
+}
+
+// The address operations of a typed pointer (docs/PTR_PLAN.md stage 4): `p.offset(n)`,
+// `p.offsetFrom(q)`, the constructors, and the rest. One family, one lowering
+// (`ir_ptr_op`), so a kind is a number and the name is `__builtin_ptr_<op>`. 0 for a name
+// that is not one of them; `__builtin_ptr_addr`, `_load` and `_store` are their own.
+//
+//    1 offset  2 byte_offset  3 wrapping_offset  4 diff  5 aligned  6 same  7 advance
+//    8 from_address  9 at  10 cast  11 cast_aligned
+public fn ptrOpKind(name: String) -> Int {
+    if (name.startsWith("__builtin_ptr_") == false) { return 0 }
+    let op = name.substring(14, name.length - 14)
+    if (op.equals("offset")) { return 1 }
+    if (op.equals("byte_offset")) { return 2 }
+    if (op.equals("wrapping_offset")) { return 3 }
+    if (op.equals("diff")) { return 4 }
+    if (op.equals("aligned")) { return 5 }
+    if (op.equals("same")) { return 6 }
+    if (op.equals("advance")) { return 7 }
+    if (op.equals("from_address")) { return 8 }
+    if (op.equals("at")) { return 9 }
+    if (op.equals("cast")) { return 10 }
+    if (op.equals("cast_aligned")) { return 11 }
+    return 0
+}
+
+public fn ptrOpName(kind: Int) -> String {
+    if (kind == 1) { return "__builtin_ptr_offset" }
+    if (kind == 2) { return "__builtin_ptr_byte_offset" }
+    if (kind == 3) { return "__builtin_ptr_wrapping_offset" }
+    if (kind == 4) { return "__builtin_ptr_diff" }
+    if (kind == 5) { return "__builtin_ptr_aligned" }
+    if (kind == 6) { return "__builtin_ptr_same" }
+    if (kind == 7) { return "__builtin_ptr_advance" }
+    if (kind == 8) { return "__builtin_ptr_from_address" }
+    if (kind == 9) { return "__builtin_ptr_at" }
+    if (kind == 10) { return "__builtin_ptr_cast" }
+    return "__builtin_ptr_cast_aligned"
+}
+
+// How many operands, pointer first where there is one.
+public fn ptrOpArity(kind: Int) -> Int {
+    if (kind == 7) { return 3 }
+    if (kind >= 1 and kind <= 6) { return 2 }
+    return 1
+}
+
+// `__builtin_ptr_store(p, v)`: the write half of `ptrLoadBuiltin`, answering nothing. Sema
+// writes it for `p.store(v)` on a `Ptr<mut T>`; a field write through a pointer is an
+// ordinary assignment and needs no builtin.
+public fn ptrStoreBuiltin(name: String) -> Bool {
+    return name.equals("__builtin_ptr_store") or name.equals("__builtin_ptr_vstore")
+}
+
 // Anything in either family, for the one question the AIF contract asks.
 public fn memBuiltinAny(name: String) -> Bool {
     return memBuiltinArity(name) > 0 or memBuiltinIsFence(name) or asmBuiltinKind(name) > 0
-        or addrBuiltinKind(name) > 0 or portBuiltinDir(name) > 0
+        or addrBuiltinKind(name) > 0 or portBuiltinDir(name) > 0 or ptrLoadBuiltin(name)
+        or ptrStoreBuiltin(name) or ptrOpKind(name) > 0 or ptrAtomicKind(name) > 0
 }
 
 // 1 `__builtin_asm`, 2 `__builtin_asm_read`, 3 `__builtin_asm_write`; 0 otherwise.

@@ -1289,8 +1289,19 @@ private fn semaHasTextForm(t: TypeInfo) -> Bool {
 
 private fn semaUnaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let operand = ptr_to_node(expr.child1)
-    let operandT = semaExpr(module, operand)
+    let mut operandT = semaExpr(module, operand)
     let uop = expr.s1
+
+    // `-p`, `!p`, `~p` on a pointer to a scalar: the value's, as a binary operator's is.
+    if (typeIsTypedPtr(operandT)) {
+        let refusal = semaPtrReadRefusal(operandT)
+        if (refusal.equals("") == false) {
+            semaErrorAt(operand, refusal)
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        operandT = semaPtrLoad(module, operand)
+    }
 
     if (uop.equals("!")) {
         semaExpectAssignable(operand, "operator `!`", typeBool(), operandT)
@@ -1378,6 +1389,17 @@ private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let rightNode = ptr_to_node(expr.child2)
     let mut leftT = semaExpr(module, leftNode)
     let mut rightT = semaExpr(module, rightNode)
+
+    // A pointer beside a value is read through (src/sema/pointer.psm); the operands
+    // below are then the values, and nothing after this knows a pointer was written.
+    if (typeIsTypedPtr(leftT) or typeIsTypedPtr(rightT)) {
+        if (semaPtrProjectOperands(module, expr, leftNode, rightNode, leftT, rightT) == false) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        if (typeIsTypedPtr(leftT)) { leftT = semaPtrLoad(module, leftNode) }
+        if (typeIsTypedPtr(rightT)) { rightT = semaPtrLoad(module, rightNode) }
+    }
 
     // Coerce a bare integer literal to the other operand's integer type so
     // mixing a sized int with a literal (e.g. `n <= 0`, `u / 7`) type-checks.
@@ -1792,9 +1814,17 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             let channelMade = semaChannelAssociated(module, expr, target, callee.s1)
             if (channelMade == semaVecRewritten()) { return nodeGetType(expr) }
             if (channelMade == semaVecRejected()) { return typeInvalid() }
+            // `Ptr<T>.at(address)` and its siblings (src/sema/pointer.psm).
+            let pointerMade = semaPtrAssociated(module, expr, target, callee.s1.clone())
+            if (pointerMade == 1) { return nodeGetType(expr) }
+            if (pointerMade == 2) { return typeInvalid() }
         } else if (target.kind != NodeKind.IDENTIFIER_EXPR or ir_has_var_type(target.s1) == 1) {
             let receiverT = semaExpr(module, target)
             let receiverKind = receiverT.kind
+            // A typed pointer's methods (src/sema/pointer.psm).
+            if (typeIsTypedPtr(receiverT)) {
+                return semaPtrMethod(module, expr, callee.s1.clone(), target, receiverT)
+            }
             // Channel's methods, for Vec's reason: `send` moves, and the
             // plain-data rename is per call site (src/sema/channel.psm).
             if (typeIsChannel(receiverT)) {
@@ -2393,6 +2423,8 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     let objectT = semaExpr(module, objectNode)
+    // docs/PTR_PLAN.md. `p.magic` on a `Ptr<Header>` reads the field where it lies.
+    if (typeIsTypedPtr(objectT)) { return semaPtrMemberAccess(module, expr, objectNode, objectT) }
     if (objectT.kind == TypeKind.DATAELEMENT) {
         if (nodeIsNull(objectT.child)) {
             semaErrorAt(objectNode, "DataView element has no row type")
@@ -3292,6 +3324,14 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
         ir_unmark_list_exclusive(target.s1)
     }
     let targetT = semaExpr(module, target)
+    // A field of what a typed pointer points at is a place the pointer writes through:
+    // `Ptr<mut T>` only, and a scalar or pointer field (src/sema/pointer.psm).
+    if (target.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(target.child1)
+        and nodeHasType(ptr_to_node(target.child1))
+        and typeIsTypedPtr(nodeGetType(ptr_to_node(target.child1)))) {
+        // An invalid target was reported while it was typed (a volatile pointer's field).
+        if (typeIsValid(targetT) and semaPtrCheckFieldWrite(module, target) == false) { return }
+    }
     // Named while the right-hand side is checked, so a move of the target
     // *into* its own replacement is not read as a move that repeats.
     if (target.kind == NodeKind.IDENTIFIER_EXPR) {
@@ -3303,10 +3343,14 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     // plus the adoption and its range check, so only a literal is sent there --
     // and `default`, which needs the target's type to become anything at all.
     let value = ptr_to_node(stmt.child2)
+    // `p = 5` on a `Ptr<mut Int>` replaces the pointer; a literal adopts the pointee's type.
+    if (typeIsTypedPtr(targetT) and semaIsIntLiteral(value)
+        and semaPtrAssignedItsPointee(value, targetT, typePtrPointee(targetT))) { return }
     if (semaIsIntLiteral(value) or value.kind == NodeKind.DEFAULT_EXPR) {
         semaCheckValue(module, value, targetT, "assignment")
     } else {
         let valueT = semaValueTypeAgainst(module, value, targetT)
+        if (semaPtrAssignedItsPointee(value, targetT, valueT)) { return }
         semaExpectAssignable(value, "assignment", targetT, valueT)
         semaCheckArrayCopy(value, targetT, valueT)
     }

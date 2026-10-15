@@ -1,0 +1,32 @@
+// expect-error: cannot write through `Ptr<Node>`, which is read-only
+// expect-error: take a `Ptr<mut Node>` to write through it
+// expect-error: cannot write through `Ptr<Int>`, which is read-only
+// expect-error: cannot assign the struct field `header` through a pointer
+// expect-error: this points at `Header`, which is written a field at a time
+// expect-error: cannot assign Int to `Ptr<mut Int>`: that would replace the pointer
+// expect-error: stored value: expected Int, found Bool
+// expect-error: aborting due to 6 previous errors
+// What a write through `Ptr<T>` refuses, one error each; the count holds that.
+//
+//   - Only `Ptr<mut T>` writes; the others are told which type to take.
+//   - A struct field is written a field at a time: assigning one whole would copy bytes
+//     through a pointer under the spelling of a rebinding, and `p = 5` would replace the
+//     pointer, not the value it points at.
+
+extern fn malloc(size: Usize) -> Ptr<mut Int>
+
+struct Header { magic: U32 }
+struct Packet { header: Header, tag: U8 }
+struct Node { value: Int }
+
+fn readOnlyField(ro: Ptr<Node>) { ro.value = 1 }
+fn readOnlyStore(ro: Ptr<Int>) { ro.store(1) }
+fn wholeStruct(p: Ptr<mut Packet>, q: Ptr<Header>) { p.header = q }
+fn storeStruct(p: Ptr<mut Header>, q: Ptr<Header>) { p.store(q) }
+fn rebind() {
+    let mut n = malloc(4)
+    n = 5
+}
+fn wrongType(n: Ptr<mut Int>) { n.store(true) }
+
+fn main() -> Int { return 0 }

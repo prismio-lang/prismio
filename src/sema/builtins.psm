@@ -67,6 +67,33 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (portBuiltinDir(name) == 1) { return typeVoid() }
     if (addrBuiltinKind(name) == 1) { return typeUsize() }
     if (addrBuiltinKind(name) == 2) { return typePtr() }
+    if (ptrStoreBuiltin(name)) { return typeVoid() }
+    // A typed pointer's address operations (src/common/mem_builtins.psm ptrOpKind). The
+    // constructors answer the opaque pointer here and are given their written type by
+    // the call that built them (semaPtrAssociated), which is the only place it is known.
+    let atomicKind = ptrAtomicKind(name)
+    if (atomicKind > 0) {
+        if (atomicKind == 2) { return typeVoid() }
+        if (nodeExists(argPtr)) { return typePtrPointee(nodeGetType(ptr_to_node(argPtr))) }
+        return typeInvalid()
+    }
+    let opKind = ptrOpKind(name)
+    if (opKind > 0) {
+        if (opKind == 4) { return typeInt() }
+        if (opKind == 5 or opKind == 6) { return typeBool() }
+        if (opKind >= 8) { return typePtr() }
+        if (nodeExists(argPtr)) {
+            let subject = nodeGetType(ptr_to_node(argPtr))
+            if (opKind == 7 and typeIsTypedPtr(subject)) { return typeOptional(subject) }
+            return subject
+        }
+        return typeInvalid()
+    }
+    // A typed pointer's load is the pointee, read off the argument.
+    if (ptrLoadBuiltin(name)) {
+        if (nodeExists(argPtr)) { return typePtrPointee(nodeGetType(ptr_to_node(argPtr))) }
+        return typeInvalid()
+    }
 
     // errno and the two numbers a retry loop compares it against. Int, because
     // errno is a C `int` and these are read to be compared with each other.
@@ -288,6 +315,97 @@ private fn semaMemValueType(width: Int) -> TypeInfo {
     return typeU64()
 }
 
+// An atomic access on a typed pointer: an integer pointee (an atomic needs one of 8, 16, 32 or
+// 64 bits), `Ptr<mut T>` for anything that writes, each value the pointee's own type, and a
+// last operand that is written `AtomicOrder.Variant` -- an ordering is a property of the
+// instruction, so a variable cannot supply it. A load cannot release and a store cannot
+// acquire; LLVM rejects both, so they are refused here with the reason.
+private fn semaCheckPtrAtomic(module: ASTNode, call: ASTNode, name: String, kind: Int, argPtr: Ptr) {
+    if (semaCheckArity(call, name, argPtr, ptrAtomicArity(kind)) == false) { return }
+    let pointer = ptr_to_node(argPtr)
+    let pointerT = semaExpr(module, pointer)
+    if (typeIsValid(pointerT) == false) { return }
+    if (typeIsTypedPtr(pointerT) == false) {
+        semaErrorAt(pointer, "an atomic access needs a typed pointer, and this is ".concat(typeDisplay(pointerT)))
+        return
+    }
+    let pointee = typePtrPointee(pointerT)
+    if (pointee.kind != TypeKind.INT) {
+        semaErrorAt(pointer, "an atomic access needs a pointer to an integer, and this points at ".concat(typeDisplay(pointee)))
+        return
+    }
+    if (kind != 1 and typePtrIsMut(pointerT) == false) {
+        semaErrorAt(pointer, "cannot write through ".concat(diagQuote(typeDisplay(pointerT)), ", which is read-only"))
+        diag_note("take a `Ptr<mut ".concat(typeDisplay(pointee), ">` to write through it"))
+    }
+    // The values, then the ordering last.
+    let mut operandAt = pointer.next
+    let values = ptrAtomicArity(kind) - 2
+    for i in 0..<values {
+        let operand = ptr_to_node(operandAt)
+        semaCheckValue(module, operand, pointee, "atomic operand")
+        operandAt = operand.next
+    }
+    let order = ptr_to_node(operandAt)
+    let written = order.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(order.child1)
+        and ptr_to_node(order.child1).kind == NodeKind.IDENTIFIER_EXPR
+        and ptr_to_node(order.child1).s1.equals("AtomicOrder")
+        and ptrAtomicOrderCode(order.s1) >= 0
+    if (written == false) {
+        semaErrorAt(order, "the ordering is written as a variant of `AtomicOrder`: `Relaxed`, `Acquire`, `Release`, `AcqRel` or `SeqCst`")
+        return
+    }
+    semaExpr(module, order)
+    let code = ptrAtomicOrderCode(order.s1)
+    if (kind == 1 and (code == 2 or code == 3)) {
+        semaErrorAt(order, "a load cannot be ".concat(order.s1, ": it releases nothing"))
+        diag_note("a load is `Relaxed`, `Acquire` or `SeqCst`")
+    }
+    if (kind == 2 and (code == 1 or code == 3)) {
+        semaErrorAt(order, "a store cannot be ".concat(order.s1, ": it acquires nothing"))
+        diag_note("a store is `Relaxed`, `Release` or `SeqCst`")
+    }
+}
+
+// The operands of a typed pointer's address operation. The first is the pointer, or for
+// `at` and `atUnchecked` the number; the others are an `Int` step, a `Usize` alignment, or
+// a second pointer to the same type. `cast` also takes the opaque `Ptr`, which is how a
+// foreign handle becomes typed.
+private fn semaCheckPtrOp(module: ASTNode, call: ASTNode, name: String, kind: Int, argPtr: Ptr) {
+    if (semaCheckArity(call, name, argPtr, ptrOpArity(kind)) == false) { return }
+    let first = ptr_to_node(argPtr)
+    if (kind == 8 or kind == 9) {
+        semaCheckValue(module, first, typeUsize(), "address")
+        return
+    }
+    let firstT = semaExpr(module, first)
+    if (typeIsValid(firstT) == false) { return }
+    if (kind == 10 or kind == 11) {
+        if (firstT.kind != TypeKind.PTR) {
+            semaErrorAt(first, "a cast needs a pointer, and this is ".concat(typeDisplay(firstT)))
+        }
+        return
+    }
+    if (typeIsTypedPtr(firstT) == false) {
+        semaErrorAt(first, "this needs a typed pointer, and this is ".concat(typeDisplay(firstT)))
+        return
+    }
+    let second = ptr_to_node(first.next)
+    if (kind <= 3 or kind == 7) { semaCheckValue(module, second, typeInt(), "step") }
+    if (kind == 5) { semaCheckValue(module, second, typeUsize(), "alignment") }
+    if (kind == 4 or kind == 6 or kind == 7) {
+        let mut otherAt = first.next
+        if (kind == 7) { otherAt = ptr_to_node(first.next).next }
+        let other = ptr_to_node(otherAt)
+        let otherT = semaExpr(module, other)
+        if (typeIsValid(otherT) and (typeIsTypedPtr(otherT) == false
+                or typeEquals(typePtrPointee(firstT), typePtrPointee(otherT)) == false)) {
+            semaErrorAt(other, "this must be a pointer to the same type, ".concat(
+                typeDisplay(typePtrPointee(firstT)), ", and this is ", typeDisplay(otherT)))
+        }
+    }
+}
+
 // `__builtin_mem_*` and `__builtin_asm*`. The address is a `Usize`; the value is
 // the unsigned type of the width in the name, so `__builtin_mem_vstore_u8(a, 65)`
 // adopts U8 for its literal and a `U32` handed to it is refused rather than
@@ -335,11 +453,49 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
         return true
     }
 
+    if (ptrLoadBuiltin(name)) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        let pointer = ptr_to_node(argPtr)
+        let pointerT = semaExpr(module, pointer)
+        if (typeIsTypedPtr(pointerT) == false and typeIsValid(pointerT)) {
+            semaErrorAt(pointer, "a load needs a typed pointer, and this is ".concat(typeDisplay(pointerT)))
+        }
+        return true
+    }
+
+    let atomicOp = ptrAtomicKind(name)
+    if (atomicOp > 0) {
+        semaCheckPtrAtomic(module, call, name, atomicOp, argPtr)
+        return true
+    }
+    let opKind = ptrOpKind(name)
+    if (opKind > 0) {
+        semaCheckPtrOp(module, call, name, opKind, argPtr)
+        return true
+    }
+
+    if (ptrStoreBuiltin(name)) {
+        if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
+        let pointer = ptr_to_node(argPtr)
+        let pointerT = semaExpr(module, pointer)
+        if (typeIsTypedPtr(pointerT)) {
+            semaCheckValue(module, ptr_to_node(pointer.next), typePtrPointee(pointerT), "stored value")
+        } else if (typeIsValid(pointerT)) {
+            semaErrorAt(pointer, "a store needs a typed pointer, and this is ".concat(typeDisplay(pointerT)))
+        }
+        return true
+    }
+
     let addrKind = addrBuiltinKind(name)
     if (addrKind > 0) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         if (addrKind == 1) {
-            semaCheckValue(module, ptr_to_node(argPtr), typePtr(), "pointer")
+            // A typed pointer's address is read off it whatever it may do: looking at
+            // where it points writes nothing, so a read-only one need not become opaque.
+            let subject = ptr_to_node(argPtr)
+            if (typeIsTypedPtr(semaExpr(module, subject)) == false) {
+                semaCheckValue(module, subject, typePtr(), "pointer")
+            }
         } else {
             semaCheckValue(module, ptr_to_node(argPtr), typeUsize(), "address")
         }

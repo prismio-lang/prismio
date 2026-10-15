@@ -1,0 +1,28 @@
+// expect-error: `addr` is a property, not a method
+// expect-error: `offset` takes 1 argument, found 2
+// expect-error: step: expected Int, found Bool
+// expect-error: this must be a pointer to the same type, Int, and this is Ptr<Header>
+// expect-error: this must be a pointer to the same type, Int, and this is Int
+// expect-error: `Ptr<T>` has no associated function `nosuch`
+// expect-error: no method `step` on Ptr<Int>
+// expect-error: `Ptr<T>.at` makes a pointer the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
+// expect-error: aborting due to 8 previous errors
+// What the address methods and constructors refuse, one error each; the count holds that.
+//
+//   - `addr` is read without parentheses, and every method takes the number of arguments it
+//     names.
+//   - A step is an `Int`; a distance or an identity test is between pointers to one type.
+//   - A constructor is `std.raw`'s: a file that has not imported it cannot make a pointer
+//     from a number (neg_297 is the file that has, and refuses the casts).
+struct Header { magic: U32 }
+
+fn property(p: Ptr<Int>) -> Usize { return p.addr() }
+fn arity(p: Ptr<Int>) -> Ptr<Int> { return p.offset(1, 2) }
+fn step(p: Ptr<Int>) -> Ptr<Int> { return p.offset(true) }
+fn distance(p: Ptr<Int>, q: Ptr<Header>) -> Int { return p.offsetFrom(q) }
+fn notPointer(p: Ptr<Int>) -> Bool { return p.sameAs(1) }
+fn nosuch(n: Usize) -> Ptr<Int>? { return Ptr<Int>.nosuch(n) }
+fn unknown(p: Ptr<Int>) -> Ptr<Int> { return p.step(1) }
+fn forged(n: Usize) -> Ptr<Int>? { return Ptr<Int>.at(n) }
+
+fn main() -> Int { return 0 }

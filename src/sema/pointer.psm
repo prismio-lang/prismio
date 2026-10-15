@@ -1,0 +1,435 @@
+// What a typed pointer, `Ptr<T>`, does when it is read: docs/PTR_PLAN.md, stage 2.
+//
+// **A pointer is read through in three places and is a pointer everywhere else.**
+// A member of a struct pointee (`p.magic`), an operand of an operator whose other side
+// is not a pointer (`p + 5`), and a slot annotated with the scalar it points at
+// (`let n: Int = p`). `let q = p`, `f(p)` and `return p` keep the pointer. The reads
+// all lower to one builtin, `__builtin_ptr_load`, written here -- never by a
+// program -- so LLVM sees `load T, ptr %p` and keeps the pointer's provenance.
+//
+// What is refused rather than guessed:
+//
+//   - two pointers under one operator, because `p == q` is either an identity test
+//     or a value test and a reader cannot tell which was meant;
+//   - a read through a `volatile` pointer, until it has the volatile access that is
+//     its whole point (stage 5), because a plain load there would be silently wrong;
+//   - a write through any pointer (stage 3).
+
+import ast.nodes
+import lexer.token
+import ast.types
+import common.diagnostics
+import common.mem_builtins
+import ir.bridge
+import std.string
+
+// A new node holding what `n` holds, for the one case an in-place rewrite needs both:
+// the node becomes the call, and the call's argument is what the node was. Children
+// are shared, not copied -- the original stops being a tree member the moment it is
+// rewritten, so nothing else reaches them. `next` is left clear: the copy is the sole
+// argument.
+private fn semaPtrCopyNode(n: ASTNode) -> ASTNode {
+    let c = createNode(n.kind)
+    nodeSpanFrom(c, n)
+    c.s1 = n.s1.clone()
+    c.s2 = n.s2.clone()
+    c.i1 = n.i1
+    c.i2 = n.i2
+    c.i3 = n.i3
+    c.child1 = n.child1
+    c.child2 = n.child2
+    c.child3 = n.child3
+    c.typeInfo = n.typeInfo
+    c.genericInfo = n.genericInfo
+    return c
+}
+
+// Why `ptrT` cannot be read as a value, or "" when it can. A struct is read a field at
+// a time (`p.magic`) and a pointer to a pointer is a pointer, so neither has a value to
+// load. A volatile pointer reads like any other, and every read is a volatile one.
+internal fn semaPtrReadRefusal(ptrT: TypeInfo) -> String {
+    let pointee = typePtrPointee(ptrT)
+    if (typeIsValid(pointee) == false) { return "" }
+    if (typeIsScalarOptionalInner(pointee)) { return "" }
+    if (pointee.kind == TypeKind.STRUCT) {
+        return "this points at ".concat(diagQuote(pointee.name), ", which is read a field at a time: `p.field`")
+    }
+    return "this points at a ".concat(typeDisplay(pointee), ", which has no value to read")
+}
+
+// `node`, a typed pointer, becomes `__builtin_ptr_load(node)` in place and is typed
+// again: what comes back is the pointee. The caller has checked `semaPtrReadRefusal`.
+internal fn semaPtrLoad(module: ASTNode, node: ASTNode) -> TypeInfo {
+    let copy = semaPtrCopyNode(node)
+    node.s2 = ""
+    node.i2 = 0
+    node.i3 = 0
+    // `semaExpr` answers from the type a node already carries, and this one carries the
+    // pointer's; the call must be typed afresh.
+    node.typeInfo = ptr_null()
+    semaBecomeCall(node, "__builtin_ptr_load", node_to_ptr(copy))
+    return semaExpr(module, node)
+}
+
+// `p.magic`: the field of a struct pointee, read where it lies. A field that is itself
+// a struct is storage inside the parent, so its address is the answer and the type is a
+// pointer to it with the same capabilities -- `p.header.magic` reads through two.
+internal fn semaPtrMemberAccess(module: ASTNode, expr: ASTNode, objectNode: ASTNode, ptrT: TypeInfo) -> TypeInfo {
+    let pointee = typePtrPointee(ptrT)
+    if (typeIsValid(pointee) == false) {
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    // `p.addr`: where it points, as a `Usize`. A property, as `v.length` is -- it reads and
+    // computes nothing -- and a field of that name on the struct it points at wins.
+    if (expr.s1.equals("addr") and (pointee.kind != TypeKind.STRUCT
+                                    or semaStructHasField(pointee.name, "addr") == false)) {
+        expr.typeInfo = ptr_null()
+        objectNode.next = ptr_null()
+        semaBecomeCall(expr, "__builtin_ptr_addr", node_to_ptr(objectNode))
+        return semaExpr(module, expr)
+    }
+    if (pointee.kind != TypeKind.STRUCT) {
+        semaErrorAt(objectNode, "no property ".concat(diagQuote(expr.s1), " on ", typeDisplay(ptrT)))
+        nodeSetType(expr, typeInvalid())
+        return typeInvalid()
+    }
+    let fieldT = semaFindStructFieldType(module, expr, pointee.name, expr.s1)
+    if (fieldT.kind == TypeKind.STRUCT) {
+        // A struct inside a volatile one is volatile too: it is the same device's registers.
+        let inner = typePtrTo(fieldT, typePtrIsMut(ptrT), typePtrIsVolatile(ptrT))
+        nodeSetType(expr, inner)
+        return inner
+    }
+    nodeSetType(expr, fieldT)
+    return fieldT
+}
+
+// Why `ptrT` may not be written through, or "" when it may. Only `Ptr<mut T>` writes; a
+// volatile one writes like any other, and every write is a volatile one.
+internal fn semaPtrWriteRefusal(ptrT: TypeInfo) -> String {
+    if (typePtrIsMut(ptrT) == false) {
+        return "cannot write through ".concat(diagQuote(typeDisplay(ptrT)), ", which is read-only")
+    }
+    return ""
+}
+
+// The refusal and the way out, said once at `at`.
+private fn semaPtrReportWrite(at: ASTNode, ptrT: TypeInfo, refusal: String) {
+    semaErrorAt(at, refusal)
+    if (typePtrIsMut(ptrT) == false) {
+        let pointee = typePtrPointee(ptrT)
+        diag_note("take a `Ptr<mut ".concat(typeDisplay(pointee), ">` to write through it"))
+    }
+}
+
+// `p.field = v` and `p.field += v`, after the target is typed: the pointer has to be able
+// to write, and the field has to be a scalar or a pointer. A field that is a struct lies
+// inside the parent, so `p.header = q` would copy bytes through a pointer under the
+// spelling of a rebinding; its fields are written one at a time. Answers whether the
+// assignment may go on.
+internal fn semaPtrCheckFieldWrite(module: ASTNode, target: ASTNode) -> Bool {
+    let objectNode = ptr_to_node(target.child1)
+    let ptrT = nodeGetType(objectNode)
+    let refusal = semaPtrWriteRefusal(ptrT)
+    if (refusal.equals("") == false) {
+        semaPtrReportWrite(target, ptrT, refusal)
+        return false
+    }
+    let pointee = typePtrPointee(ptrT)
+    if (pointee.kind == TypeKind.STRUCT
+        and semaFindStructFieldType(module, target, pointee.name, target.s1).kind == TypeKind.STRUCT) {
+        semaErrorAt(target, "cannot assign the struct field ".concat(diagQuote(target.s1), " through a pointer"))
+        diag_note("write its fields one at a time: `p.".concat(target.s1, ".field = value`"))
+        return false
+    }
+    return true
+}
+
+// `p = 5` on a `Ptr<mut Int>` rebinds the pointer, which the type refuses; this says what
+// was probably meant. Answers whether it was that mistake.
+internal fn semaPtrAssignedItsPointee(value: ASTNode, targetT: TypeInfo, valueT: TypeInfo) -> Bool {
+    if (typeIsTypedPtr(targetT) == false or typeIsScalarOptionalInner(valueT) == false) { return false }
+    if (typeEquals(typePtrPointee(targetT), valueT) == false) { return false }
+    semaErrorAt(value, "cannot assign ".concat(typeDisplay(valueT), " to ", diagQuote(typeDisplay(targetT)),
+                                               ": that would replace the pointer"))
+    diag_note("write the value through it with `p.store(value)`")
+    return true
+}
+
+// The method names that move or compare a pointer without touching what it points at, and
+// the operation each is (src/common/mem_builtins.psm ptrOpKind); 0 for any other name.
+private fn semaPtrMethodOp(method: String) -> Int {
+    if (method.equals("offset")) { return 1 }
+    if (method.equals("byteOffset")) { return 2 }
+    if (method.equals("wrappingOffset")) { return 3 }
+    if (method.equals("offsetFrom")) { return 4 }
+    if (method.equals("isAligned")) { return 5 }
+    if (method.equals("sameAs")) { return 6 }
+    if (method.equals("advance")) { return 7 }
+    return 0
+}
+
+private fn semaPtrArgumentCount(args: Ptr) -> Int {
+    let mut count = 0
+    let mut p = args
+    while (nodeExists(p)) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+// The receiver first, then what was written in the parentheses, as one operand list.
+private fn semaPtrOperands(receiver: ASTNode, written: Ptr) -> Ptr {
+    let operands = nodeList()
+    let mut rest = written
+    receiver.next = ptr_null()
+    nodeListPush(operands, receiver)
+    while (nodeExists(rest)) {
+        let operand = ptr_to_node(rest)
+        rest = operand.next
+        operand.next = ptr_null()
+        nodeListPush(operands, operand)
+    }
+    return operands.head
+}
+
+// `p.load()`, `p.store(v)` and the address methods (`offset`, `byteOffset`,
+// `wrappingOffset`, `offsetFrom`, `isAligned`, `sameAs`, `advance`), none of which reads or
+// writes memory. Any other name on a pointer is told what the pointer has.
+internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiver: ASTNode, ptrT: TypeInfo) -> TypeInfo {
+    let op = semaPtrMethodOp(method)
+    if (op > 0) {
+        let given = semaPtrArgumentCount(call.child2)
+        if (given != ptrOpArity(op) - 1) {
+            let wanted = ptrOpArity(op) - 1
+            let head = "`".concat(method, "` takes ", wanted.toString())
+            semaErrorAt(call, head.concat(" argument", semaPtrPlural(wanted), ", found ", given.toString()))
+            nodeSetType(call, typeInvalid())
+            return typeInvalid()
+        }
+        call.typeInfo = ptr_null()
+        semaBecomeCall(call, ptrOpName(op), semaPtrOperands(receiver, call.child2))
+        return semaExpr(module, call)
+    }
+    if (method.equals("addr")) {
+        semaErrorAt(call, "`addr` is a property, not a method")
+        diag_note("read it without parentheses: `p.addr`")
+        nodeSetType(call, typeInvalid())
+        return typeInvalid()
+    }
+    let atomic = semaPtrAtomicOp(method)
+    if (atomic > 0) { return semaPtrAtomicMethod(module, call, method, atomic, receiver) }
+    let writes = method.equals("store") or method.equals("writeVolatile")
+    let reads = method.equals("load") or method.equals("readVolatile")
+    if (writes == false and reads == false) {
+        semaErrorAt(call, "no method ".concat(diagQuote(method), " on ", typeDisplay(ptrT)))
+        diag_note("a pointer has `load`, `store`, `readVolatile`, `writeVolatile`, the `atomic...` family, `addr`, `offset`, `byteOffset`, `wrappingOffset`, `offsetFrom`, `isAligned`, `sameAs` and `advance`; its fields are `p.field`")
+        nodeSetType(call, typeInvalid())
+        return typeInvalid()
+    }
+    let pointee = typePtrPointee(ptrT)
+    let mut refusal = ""
+    if (writes) {
+        refusal = semaPtrWriteRefusal(ptrT)
+        if (refusal.equals("") and typeIsValid(pointee) and typeIsScalarOptionalInner(pointee) == false) {
+            if (pointee.kind == TypeKind.STRUCT) {
+                refusal = "this points at ".concat(diagQuote(pointee.name),
+                                                   ", which is written a field at a time: `p.field = value`")
+            } else {
+                refusal = "this points at a ".concat(typeDisplay(pointee), ", which has no value to write")
+            }
+        }
+    } else {
+        refusal = semaPtrReadRefusal(ptrT)
+    }
+    if (refusal.equals("") == false) {
+        if (writes and typePtrIsMut(ptrT) == false) {
+            semaPtrReportWrite(call, ptrT, refusal)
+        } else {
+            semaErrorAt(call, refusal)
+        }
+        nodeSetType(call, typeInvalid())
+        return typeInvalid()
+    }
+    call.typeInfo = ptr_null()
+    if (reads) {
+        if (semaPtrArgumentCount(call.child2) != 0) {
+            semaErrorAt(call, "`".concat(method, "` takes no arguments"))
+            nodeSetType(call, typeInvalid())
+            return typeInvalid()
+        }
+        let mut loadName = "__builtin_ptr_load"
+        if (method.equals("readVolatile")) { loadName = "__builtin_ptr_vload" }
+        semaBecomeCall(call, loadName, node_to_ptr(receiver))
+        return semaExpr(module, call)
+    }
+    if (method.equals("writeVolatile")) {
+        semaBecomeCall(call, "__builtin_ptr_vstore", semaPtrOperands(receiver, call.child2))
+    } else {
+        semaBecomeCall(call, "__builtin_ptr_store", semaPtrOperands(receiver, call.child2))
+    }
+    return semaExpr(module, call)
+}
+
+// The `atomic...` methods and the operation each is (src/common/mem_builtins.psm
+// ptrAtomicKind); 0 for any other name. They mirror `std.raw`'s `atomicAddU32` family, on a
+// pointer rather than a number, and add the ordering.
+private fn semaPtrAtomicOp(method: String) -> Int {
+    if (method.equals("atomicLoad")) { return 1 }
+    if (method.equals("atomicStore")) { return 2 }
+    if (method.equals("atomicSwap")) { return 3 }
+    if (method.equals("atomicAdd")) { return 4 }
+    if (method.equals("atomicSub")) { return 5 }
+    if (method.equals("atomicAnd")) { return 6 }
+    if (method.equals("atomicOr")) { return 7 }
+    if (method.equals("atomicXor")) { return 8 }
+    if (method.equals("atomicCompareExchange")) { return 9 }
+    return 0
+}
+
+// `p.atomicAdd(1, AtomicOrder.AcqRel)` and the rest: rewritten into the builtin with the
+// receiver first and the ordering last. The ordering and the integer pointee are checked
+// where the builtin is (semaCheckPtrAtomic), with the rest of its operands.
+private fn semaPtrAtomicMethod(module: ASTNode, call: ASTNode, method: String, kind: Int,
+                               receiver: ASTNode) -> TypeInfo {
+    if (semaFileIsStandardLibrary(call.file) == false and ir_file_imports_module(call.file, "std.raw") == 0) {
+        semaErrorAt(call, "`".concat(method, "` is `std.raw`'s, with the `AtomicOrder` it takes: add `import std.raw`"))
+        nodeSetType(call, typeInvalid())
+        return typeInvalid()
+    }
+    let wanted = ptrAtomicArity(kind) - 1
+    let given = semaPtrArgumentCount(call.child2)
+    if (given != wanted) {
+        let head = "`".concat(method, "` takes ", wanted.toString())
+        semaErrorAt(call, head.concat(" argument", semaPtrPlural(wanted), ", found ", given.toString()))
+        nodeSetType(call, typeInvalid())
+        return typeInvalid()
+    }
+    call.typeInfo = ptr_null()
+    semaBecomeCall(call, ptrAtomicName(kind), semaPtrOperands(receiver, call.child2))
+    return semaExpr(module, call)
+}
+
+private fn semaPtrPlural(count: Int) -> String {
+    if (count == 1) { return "" }
+    return "s"
+}
+
+// `Ptr<T>.at(address)`, `.atUnchecked(address)`, `.cast(p)` and `.castAligned(p)`: the ways
+// a program makes a typed pointer out of something that is not one. They are `std.raw`'s,
+// behind the import that already marks code that touches memory by number -- a file that
+// has not imported it cannot conjure a pointer -- and none of them checks that the memory
+// is there. `at` and `castAligned` answer `Ptr<T>?`, none for 0 or an address the pointee
+// cannot sit at; the other two trust the caller. Answers 0 when `qualifier` is not a
+// `Ptr<...>`, 1 once `expr` is rewritten (and typed here, because the written `T` is the
+// only place the result's type is), and 2 when it has been refused.
+internal fn semaPtrAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode, name: String) -> Int {
+    if (qualifier.s1.equals("Ptr") == false or qualifier.i2 != 1) { return 0 }
+    let mut kind = 0
+    if (name.equals("atUnchecked")) { kind = 8 }
+    if (name.equals("at")) { kind = 9 }
+    if (name.equals("cast")) { kind = 10 }
+    if (name.equals("castAligned")) { kind = 11 }
+    if (kind == 0) {
+        semaErrorAt(expr, "`Ptr<T>` has no associated function ".concat(diagQuote(name)))
+        diag_note("a pointer is made with `Ptr<T>.at(address)`, `.atUnchecked(address)`, `.cast(p)` or `.castAligned(p)`")
+        nodeSetType(expr, typeInvalid())
+        return 2
+    }
+    if (semaFileIsStandardLibrary(expr.file) == false and ir_file_imports_module(expr.file, "std.raw") == 0) {
+        semaErrorAt(expr, "`Ptr<T>.".concat(name, "` makes a pointer the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`"))
+        nodeSetType(expr, typeInvalid())
+        return 2
+    }
+    let targetT = semaAnnotationType(module, qualifier)
+    if (typeIsTypedPtr(targetT) == false) {
+        nodeSetType(expr, typeInvalid())
+        return 2
+    }
+    if (semaPtrArgumentCount(expr.child2) != 1) {
+        semaErrorAt(expr, "`Ptr<T>.".concat(name, "` takes 1 argument, found ",
+                                            semaPtrArgumentCount(expr.child2).toString()))
+        nodeSetType(expr, typeInvalid())
+        return 2
+    }
+    let source = ptr_to_node(expr.child2)
+    expr.typeInfo = ptr_null()
+    semaBecomeCall(expr, ptrOpName(kind), expr.child2)
+    semaExpr(module, expr)
+    // A read-only pointer cannot be cast into one that writes: the function that took it was
+    // promised it would not be, and the compiler told LLVM so. An opaque `Ptr` can -- it was
+    // already a promise nothing checks, which is what `cast` is for.
+    if ((kind == 10 or kind == 11) and typePtrIsMut(targetT) and nodeHasType(source)
+        and typeIsTypedPtr(nodeGetType(source)) and typePtrIsMut(nodeGetType(source)) == false) {
+        semaErrorAt(source, "cannot cast ".concat(diagQuote(typeDisplay(nodeGetType(source))), " to ",
+                                                  diagQuote(typeDisplay(targetT)), ": it is read-only"))
+        diag_note("the function that took it was promised it would not be written through")
+        nodeSetType(expr, typeInvalid())
+        return 2
+    }
+    if (kind == 9 or kind == 11) {
+        nodeSetType(expr, typeOptional(targetT))
+    } else {
+        nodeSetType(expr, targetT)
+    }
+    return 1
+}
+
+// The operands of a binary operator, after both are typed. A pointer beside a
+// non-pointer is read through; a pointer beside a pointer is refused. Answers whether
+// the operator may go on, and rewrites each pointer operand in place.
+internal fn semaPtrProjectOperands(module: ASTNode, expr: ASTNode, leftNode: ASTNode, rightNode: ASTNode,
+                                   leftT: TypeInfo, rightT: TypeInfo) -> Bool {
+    if (typeIsTypedPtr(leftT) and typeIsTypedPtr(rightT)) {
+        semaErrorAt(expr, "both operands of ".concat(diagQuote(expr.s1), " are pointers"))
+        diag_note("`p.sameAs(q)` compares where they point, `p.load()` what they point at")
+        return false
+    }
+    if (typeIsTypedPtr(leftT)) {
+        let refusal = semaPtrReadRefusal(leftT)
+        if (refusal.equals("") == false) {
+            semaErrorAt(leftNode, refusal)
+            return false
+        }
+    }
+    if (typeIsTypedPtr(rightT)) {
+        let refusal = semaPtrReadRefusal(rightT)
+        if (refusal.equals("") == false) {
+            semaErrorAt(rightNode, refusal)
+            return false
+        }
+    }
+    return true
+}
+
+// How many of a call's pointer arguments are exactly the type their parameter names, for
+// overload ranking: `size(w)` with a `Ptr<mut B>` fits both `size(Ptr<B>)`, by dropping
+// `mut`, and `size(Ptr<mut B>)`, as it is, and the second is the one meant. Zero for a
+// call with no typed pointer in it, which is every call that existed before `Ptr<T>`.
+internal fn semaPtrExactArgumentCount(module: ASTNode, fnNode: ASTNode, argPtr: Ptr) -> Int {
+    let mut exact = 0
+    let mut arg = argPtr
+    let mut param = fnNode.child1
+    while (nodeExists(arg) and nodeExists(param)) {
+        let argNode = ptr_to_node(arg)
+        let paramNode = ptr_to_node(param)
+        if (nodeHasType(argNode) and typeIsTypedPtr(nodeGetType(argNode))) {
+            let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
+            if (typeEquals(paramT, nodeGetType(argNode))) { exact = exact + 1 }
+        }
+        arg = argNode.next
+        param = paramNode.next
+    }
+    return exact
+}
+
+// A pointer handed to a slot that is annotated with the scalar it points at: `let n:
+// Int = p`, `return p` from a function that answers `Int`. Reads through it; any other
+// mismatch is left to be reported as the type error it is.
+internal fn semaPtrProjectsTo(expected: TypeInfo, actual: TypeInfo) -> Bool {
+    if (typeIsTypedPtr(actual) == false or typeIsScalarOptionalInner(expected) == false) { return false }
+    if (semaPtrReadRefusal(actual).equals("") == false) { return false }
+    return typeEquals(expected, typePtrPointee(actual))
+}

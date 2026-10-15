@@ -1,0 +1,19 @@
+// expect-error: cannot cast `Ptr<Header>` to `Ptr<mut Int>`: it is read-only
+// expect-error: a cast needs a pointer, and this is Int
+// expect-error: `Ptr<T>.at` takes 1 argument, found 2
+// expect-error: aborting due to 3 previous errors
+// What `cast` and the constructors refuse in a file that has imported `std.raw`.
+//
+//   - A read-only pointer is never cast into one that writes: the function that took it was
+//     promised it would not be, and the compiler told LLVM so. An opaque `Ptr` can be cast,
+//     because it was already a promise nothing checks.
+//   - A cast takes a pointer, and a constructor takes exactly one argument.
+import std.raw
+
+struct Header { magic: U32 }
+
+fn launder(p: Ptr<Header>) -> Ptr<mut Int> { return Ptr<mut Int>.cast(p) }
+fn number() -> Ptr<mut Int> { return Ptr<mut Int>.cast(5) }
+fn twice(n: Usize) -> Ptr<Int>? { return Ptr<Int>.at(n, n) }
+
+fn main() -> Int { return 0 }

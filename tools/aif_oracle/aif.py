@@ -246,6 +246,20 @@ for _w in ('u8', 'u16', 'u32'):
     FFI_CONTRACTS['__builtin_port_out_' + _w] = {0: 'borrow', 1: 'borrow'}
     FFI_CONTRACTS['__builtin_port_in_' + _w] = {0: 'borrow'}
 FFI_CONTRACTS['__builtin_ptr_addr'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_ptr_load'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_ptr_vload'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_ptr_store'] = {0: 'borrow', 1: 'borrow'}
+FFI_CONTRACTS['__builtin_ptr_vstore'] = {0: 'borrow', 1: 'borrow'}
+# Atomic access on a typed pointer (ptrAtomicKind): the pointer, the values and the ordering.
+for _op, _arity in {'load': 2, 'store': 3, 'swap': 3, 'add': 3, 'sub': 3, 'and': 3, 'or': 3,
+                    'xor': 3, 'compare_exchange': 4}.items():
+    FFI_CONTRACTS['__builtin_ptr_atomic_' + _op] = {i: 'borrow' for i in range(_arity)}
+# The address operations of a typed pointer (src/common/mem_builtins.psm ptrOpKind): every
+# operand is read and nothing is retained.
+for _op, _arity in {'offset': 2, 'byte_offset': 2, 'wrapping_offset': 2, 'diff': 2, 'aligned': 2,
+                    'same': 2, 'advance': 3, 'from_address': 1, 'at': 1, 'cast': 1,
+                    'cast_aligned': 1}.items():
+    FFI_CONTRACTS['__builtin_ptr_' + _op] = {i: 'borrow' for i in range(_arity)}
 FFI_CONTRACTS['__builtin_addr_ptr'] = {0: 'borrow'}
 FFI_CONTRACTS['__builtin_asm'] = {0: 'borrow'}
 FFI_CONTRACTS['__builtin_asm_read'] = {0: 'borrow'}

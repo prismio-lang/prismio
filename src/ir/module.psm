@@ -274,6 +274,19 @@ private fn generateFunction(func: ASTNode) {
         } else {
             ir_function_param(pStore, pName)
         }
+        // A typed pointer promises non-null, aligned, readable and -- unless `mut` -- not
+        // written through; the type is what says so, and LLVM is told (docs/PTR_PLAN.md).
+        if (nodeHasType(pTypeNode) and typeIsTypedPtr(nodeGetType(pTypeNode))) {
+            let ptrT = nodeGetType(pTypeNode)
+            // The pointee's own key, not its storage key: `struct:Header` is the layout the
+            // size and alignment are read from, where the storage key would say `ptr`.
+            let pointeeKey = typeIrKey(typePtrPointee(ptrT))
+            let mut readonly = 1
+            if (typePtrIsMut(ptrT)) { readonly = 0 }
+            let mut readable = 1
+            if (typePtrIsVolatile(ptrT)) { readable = 0 }
+            ir_function_param_pointer(pointeeKey, readonly, readable)
+        }
         if (exported) {
             let widen = abiExtension(pTypeNode)
             if (widen.equals("") == false) { ir_function_param_extend(widen) }

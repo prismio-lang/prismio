@@ -1,0 +1,22 @@
+// Overloads over typed pointers are distinct functions: the pointee and the capabilities
+// are part of the symbol, so `Ptr<A>`, `Ptr<B>` and `Ptr<mut B>` do not collide, and a
+// call takes the overload whose pointer it is, not the one it converts to.
+
+struct A { x: Int }
+struct B { x: Int }
+
+extern fn calloc(count: Usize, size: Usize) -> Ptr<mut B>
+extern fn free(block: Ptr)
+
+fn size(p: Ptr<A>) -> Int { return 1 }
+fn size(p: Ptr<B>) -> Int { return 2 }
+fn size(p: Ptr<mut B>) -> Int { return 3 }
+
+fn main() -> Int {
+    let w = calloc(1, 4)
+    let r: Ptr<B> = w
+    let code = size(w) * 10 + size(r)
+    free(w)
+    if code != 32 { return 1 }
+    return 0
+}

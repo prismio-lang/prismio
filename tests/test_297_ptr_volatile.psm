@@ -1,0 +1,70 @@
+// `Ptr<volatile T>`, docs/PTR_PLAN.md stage 5. Every access through one is volatile, field
+// reads and writes included, so a driver cannot write one register access the optimiser may
+// drop; this checks the values come out right, and tests/ptr_access_ir_probe.psm (read by the
+// `typed_pointer_ir` harness test) checks that each access is emitted volatile. `readVolatile`
+// and `writeVolatile` are the one-off form on a pointer that is not itself volatile.
+//
+//   Uart (repr(C), 12 bytes): data +0 (U32), status +4 (U32), baud +8 (U16)
+import std.raw
+
+repr(C) struct Uart {
+    data: U32,
+    status: U32,
+    baud: U16,
+}
+
+repr(C) struct Device {
+    uart: Uart,
+    id: U8,
+}
+
+extern fn calloc(count: Usize, size: Usize) -> Ptr<mut Device>
+extern fn malloc(size: Usize) -> Ptr<mut Int>
+extern fn free(block: Ptr)
+
+fn send(uart: Ptr<mut volatile Uart>, byte: U8) {
+    // The poll the optimiser must not hoist: `status` is read again every time round.
+    uart.status = 0x20
+    if (uart.status & 0x20) == 0 { return }
+    uart.data = byte as U32
+}
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    let device = calloc(1, 16)
+    let base = addressOf(device)
+
+    // A pointer picks up `volatile` where it is written: `Ptr<mut Device>` to
+    // `Ptr<mut volatile Device>` is an explicit cast, never a silent conversion.
+    let regs = Ptr<mut volatile Device>.cast(device)
+    send(regs.uart, 65)
+    if volatileLoadU32(base) != 65 { return fail(1) }
+    if volatileLoadU32(base + 4) != 0x20 { return fail(2) }
+
+    // A struct inside a volatile one is volatile: `regs.uart` is `Ptr<mut volatile Uart>`.
+    regs.uart.baud = 9600
+    if volatileLoadU16(base + 8) != 9600 { return fail(3) }
+    regs.id = 7
+    if volatileLoadU8(base + 12) != 7 { return fail(4) }
+    if regs.id != 7 { return fail(5) }
+    if regs.uart.baud + 1 != 9601 { return fail(6) }
+
+    // A volatile scalar pointer: reads, operands, `load` and `store`.
+    let counter = Ptr<mut volatile Int>.cast(malloc(4))
+    counter.store(40)
+    if counter + 2 != 42 { return fail(7) }
+    if counter.load() != 40 { return fail(8) }
+    counter.store(counter + 1)
+    if counter.load() != 41 { return fail(9) }
+
+    // The one-off form on a pointer that is not volatile.
+    let plain = malloc(4)
+    plain.writeVolatile(5)
+    if plain.readVolatile() != 5 { return fail(10) }
+    if plain.load() != 5 { return fail(11) }
+
+    free(plain)
+    free(device)
+    return 0
+}

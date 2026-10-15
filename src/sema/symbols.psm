@@ -15,7 +15,21 @@ internal fn semaMangleType(t: TypeInfo) -> String {
         TypeKind.BOOL => { return "Bool" }
         TypeKind.CHAR => { return "Char" }
         TypeKind.STRING => { return "String" }
-        TypeKind.PTR => { return "Ptr" }
+        TypeKind.PTR => {
+            // A typed pointer names its pointee and capabilities, so `f(Ptr<A>)`,
+            // `f(Ptr<B>)` and `f(Ptr<mut B>)` are three functions. A bare `Ptr` and the
+            // handles built on it (`Future`, `Channel`) keep the one name they always had.
+            if (typeIsTypedPtr(t) and nodeExists(t.child)) {
+                let pointee = semaMangleType(ptr_to_type(t.child))
+                if (typePtrIsMut(t)) {
+                    if (typePtrIsVolatile(t)) { return "PtrMutVolatile_".concat(pointee) }
+                    return "PtrMut_".concat(pointee)
+                }
+                if (typePtrIsVolatile(t)) { return "PtrVolatile_".concat(pointee) }
+                return "Ptr_".concat(pointee)
+            }
+            return "Ptr"
+        }
         TypeKind.STRUCT => { return "Struct_".concat(t.name) }
         TypeKind.ENUM => { return "Enum_".concat(t.name) }
         TypeKind.ARRAY => {
@@ -272,6 +286,9 @@ private fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeI
     if (enumFitsExpected(module, argNode, expected)) { return true }
     let actual = semaExpr(module, argNode)
     if (semaTypesMatch(expected, actual)) { return true }
+    // A pointer to a scalar where the scalar is wanted: read through once this overload
+    // is chosen, as every other position annotated with it does (src/sema/pointer.psm).
+    if (semaPtrProjectsTo(expected, actual)) { return true }
 
     // T15. A concrete value is accepted where a trait object is expected, when
     // its type implements the trait. The value is wrapped after the overload is
@@ -765,6 +782,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
                 // `show(self: Int?)` is the first, not a tie.
                 let literalScore = semaModulePreference(call, stmt) * 100000
                                    + semaUnwrappedArgumentCount(module, stmt, argPtr) * 100
+                                   + semaPtrExactArgumentCount(module, stmt, argPtr) * 100
                                    + semaDefaultLiteralScore(module, stmt, argPtr)
                 if (literalScore > bestLiteralScore) {
                     bestPtr = stmtPtr

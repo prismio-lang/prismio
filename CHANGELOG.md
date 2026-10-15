@@ -44,6 +44,58 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   (`x is 3`, `x is not none`), so a `(` touching the word is refused: `x is(3)` read as a
   call and parsed only because `(3)` is a parenthesised operand. `x is (a + b)`, with a
   space, is a grouped operand and stays valid (`P3010`, `neg_293`, `test_293`).
+- **`Ptr<T>`, the type (stage 1 of `docs/PTR_PLAN.md`).** A typed pointer: non-null, one machine
+  word, `Ptr<T>?` for an absent one at no cost. `Ptr<mut T>` may write and `Ptr<volatile T>` makes
+  every access volatile, in either order; `Ptr<mut T>` becomes `Ptr<T>`, and becomes the opaque
+  `Ptr` (still the spelling for a foreign handle) -- a read-only `Ptr<T>` does not, because foreign
+  code may write through an opaque one -- and nothing converts the other way. What it points at
+  must own nothing: numbers, `Bool`, `Char`, enums, pointers and structs of those, so
+  `Ptr<String>` and a pointer to a struct holding a `Vec` are refused. A struct may hold a
+  `Ptr<Node>?` (`test_291`, `neg_291`, `neg_292`).
+- **Reading through a `Ptr<T>` (stage 2).** `p.magic` reads a field of a struct pointee where it lies
+  (a `getelementptr inbounds` and a load at the field's alignment), and a field that is itself a
+  struct is a pointer to it, so `packet.header.magic` reads through two. A pointer to a scalar is
+  read where a value is wanted: `p + 5`, `-p`, `p is 40`, `let n: Int = p`, `return p`, and as an
+  argument to an `Int` parameter; `p.load()` says it outright. A pointer stays a pointer anywhere
+  else, so `let q = p` copies the pointer. Two pointers under one operator, a struct as an
+  operand and a read through `volatile` are refused with the method or stage that handles each.
+  The reads lower to one builtin, `__builtin_ptr_load`, emitted as a typed `load` with the
+  pointee's TBAA tag, and a `Ptr<T>` parameter carries `noundef nonnull align(A)
+  dereferenceable(S)` from the data layout, plus `readonly` unless it is `mut`: `Ptr<Header>` over
+  `{ i32, i32, i16 }` is `align 4 dereferenceable(12)`. Overloads on the pointee type or the
+  capability are distinct functions, and the exactly-typed one wins (`test_292`, `test_294`,
+  `neg_294`). Volatile access is stage 5.
+- **Writing through a `Ptr<mut T>` (stage 3).** `p.field = v` stores into a field of the pointee (a store at the
+  field's own width and alignment), `packet.header.magic = v` through two, and `p.store(v)` writes a scalar
+  pointee (`__builtin_ptr_store`). A pointer field takes a pointer: `node.next = other`. Refused with the way
+  out: a write through a read-only `Ptr<T>` (take a `Ptr<mut T>`), a struct-typed field (`p.header = q`; write
+  its fields), `p.store` of a struct, and `p = 5`, which would replace the pointer rather than write the value.
+  `p.field += 1` is still refused, as it is for any field (compound assignment needs a plain variable): write
+  `p.field = p.field + 1`. Access through a `volatile` pointer, read or write, is refused until it has its own
+  access (`test_295`, `neg_295`).
+- **Where a `Ptr<T>` points, stepping it, and making one (stage 4).** `p.addr` is a `Usize` property. Motion is
+  by method, so `p + 1` stays the value and a pointer cannot be stepped by accident: `p.offset(n)` (one
+  `getelementptr inbounds`, in elements, so a 12-byte struct steps 12), `p.byteOffset(n)`,
+  `p.wrappingOffset(n)` (no `inbounds`, for a ring), `p.offsetFrom(q)` (elements, exact), `p.isAligned(a)`,
+  `p.sameAs(q)` (where they point, which `==` between two pointers refuses to guess), and
+  `p.advance(n, limit)`, which answers `none` rather than pass `limit` in the direction of travel and
+  compiles to a branchless select. The constructors are `std.raw`'s and need `import std.raw`, which is the
+  whole of the unsafe marker: `Ptr<T>.at(address)` and `.castAligned(p)` answer `Ptr<T>?` (none for 0 or an
+  address the pointee cannot sit at), `.atUnchecked(address)` and `.cast(p)` trust the caller, and a
+  read-only pointer cannot be cast to a `mut` one. A `Ptr<T>?` is unwrapped with `expect`; there is no flow
+  narrowing. `Ptr<mut T>.at(...)` also parses now, which the type-argument scan in expressions had missed
+  (`test_296`, `neg_296`, `neg_297`).
+- **Volatile and atomic access through a `Ptr<T>` (stage 5).** Every access through a `Ptr<volatile T>` is volatile:
+  `p.load()`, `p.store(v)`, a scalar operand, a field read or write, and a struct inside it, so a driver cannot write
+  one register access the optimiser may drop or hoist; a `Ptr<volatile T>` parameter is not promised readable, so it
+  gets no `dereferenceable`. `p.readVolatile()` and `p.writeVolatile(v)` are the one-off form. The atomics are
+  `p.atomicLoad(order)`, `atomicStore`, `atomicSwap`, `atomicAdd`, `atomicSub`, `atomicAnd`, `atomicOr`,
+  `atomicXor` and `atomicCompareExchange`, with the ordering written at the call as a variant of the new
+  `AtomicOrder` in `std.raw` (`Relaxed`, `Acquire`, `Release`, `AcqRel`, `SeqCst`), which also closes the weaker-orderings
+  gap `docs/FREESTANDING_PLAN.md` listed. The pointee is an integer, a write needs `Ptr<mut T>`, a load cannot release and
+  a store cannot acquire, and a compare-exchange derives its failure ordering from the success one. A new `typed_pointer_ir`
+  harness test checks the emitted `load volatile`, `store atomic ... release`, `atomicrmw ... acq_rel` and `cmpxchg` and the
+  parameter attributes, since none of it shows in a program's output (`test_297`, `test_298`, `neg_298`).
 - **Nested functions.** A `fn` written in a function body is a private function that
   captures nothing, visible in the block that declares it, callable before its
   declaration and recursively; two functions may each have a `helper`, and a method

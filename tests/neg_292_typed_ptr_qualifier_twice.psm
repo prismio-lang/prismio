@@ -1,0 +1,9 @@
+// expect-error: `mut` is written twice
+// expect-error: aborting due to 1 previous error
+// A qualifier is written once.
+
+struct Header { magic: U32 }
+
+fn twice(p: Ptr<mut mut Header>) {}
+
+fn main() -> Int { return 0 }

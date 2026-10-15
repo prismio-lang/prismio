@@ -1,0 +1,32 @@
+// expect-error: return: expected Ptr<mut Header>, found Ptr<Header>
+// expect-error: return: expected Ptr<Header>, found Ptr
+// expect-error: return: expected Ptr<Header>, found Ptr<volatile Header>
+// expect-error: return: expected Ptr<Header>, found Ptr<Node>
+// expect-error: return: expected Ptr, found Ptr<Header>
+// expect-error: a pointer cannot point at String, which owns memory
+// expect-error: a pointer cannot point at Vec<Int>, which owns memory
+// expect-error: a pointer cannot point at `Owner`: it holds a value that owns memory
+// expect-error: `Ptr` points at one type
+// expect-error: aborting due to 9 previous errors
+// What a typed pointer refuses, one error each; the count holds that.
+//
+//   - Write access, a pointee type, or the opaque `Ptr` never arrives by assignment: it
+//     takes `Ptr<T>.cast`. `volatile` is neither added nor dropped silently.
+//   - What it points at owns nothing. A `String` or `Vec` stored through a pointer would
+//     move an owner into memory no release visits, and a struct holding one is the same.
+
+struct Header { magic: U32 }
+struct Node { value: Int }
+struct Owner { name: String }
+
+fn gain(p: Ptr<Header>) -> Ptr<mut Header> { return p }
+fn fromOpaque(p: Ptr) -> Ptr<Header> { return p }
+fn dropVolatile(p: Ptr<volatile Header>) -> Ptr<Header> { return p }
+fn retype(p: Ptr<Node>) -> Ptr<Header> { return p }
+fn opaque(p: Ptr<Header>) -> Ptr { return p }
+fn owned(p: Ptr<String>) {}
+fn vec(p: Ptr<Vec<Int>>) {}
+fn holder(p: Ptr<Owner>) {}
+fn many(p: Ptr<Int, Int>) {}
+
+fn main() -> Int { return 0 }

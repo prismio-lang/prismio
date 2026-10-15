@@ -1,0 +1,36 @@
+// `Ptr<T>`, docs/PTR_PLAN.md stage 1: the type, its capabilities and the conversions
+// between them. A typed pointer is one word the program does not own, so a struct may
+// hold one (the linked list) and `T?` costs nothing.
+//
+//   - `Ptr<mut T>` stands where `Ptr<T>` is wanted, and where `Ptr` is: foreign code may
+//     write through an opaque `Ptr`, so a read-only pointer does not become one. `Ptr<T>?`
+//     takes `none`, and `Ptr<mut T>?` becomes `Ptr<T>?`.
+//   - `volatile` is a capability of its own, written before or after `mut`.
+//   - A struct of plain data is a valid pointee, and so is a pointer to a pointer.
+
+struct Header {
+    magic: U32,
+    length: U32,
+    flags: U16,
+}
+
+struct Node {
+    value: Int,
+    next: Ptr<Node>?,
+}
+
+enum Mode { Idle, Busy }
+
+fn toRead(p: Ptr<mut Header>) -> Ptr<Header> { return p }
+fn toOpaque(p: Ptr<mut Header>) -> Ptr { return p }
+fn forget(p: Ptr<mut volatile Header>) -> Ptr { return p }
+fn eitherOrder(p: Ptr<volatile mut Header>) -> Ptr<mut volatile Header> { return p }
+fn optionalDrop(p: Ptr<mut Header>?) -> Ptr<Header>? { return p }
+fn absent() -> Ptr<Node>? { return none }
+fn nested(p: Ptr<Ptr<Int>>) -> Ptr<Ptr<Int>> { return p }
+fn scalars(a: Ptr<mut U8>, b: Ptr<Float>, c: Ptr<Bool>, d: Ptr<Mode>, e: Ptr<Char>) -> Ptr { return a }
+fn handle(p: Ptr) -> Ptr { return p }
+
+fn main() -> Int {
+    return 0
+}

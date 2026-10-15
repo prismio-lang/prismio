@@ -1,0 +1,24 @@
+// expect-error: both operands of `+` are pointers
+// expect-error: this points at `Header`, which is read a field at a time: `p.field`
+// expect-error: no property `magic` on Ptr<Int>
+// expect-error: struct `Header` has no field `missing`
+// expect-error: no method `step` on Ptr<Int>
+// expect-error: expected Int, found Ptr<Header>
+// expect-error: aborting due to 6 previous errors
+// What a read through `Ptr<T>` refuses, one error each; the count holds that.
+//
+//   - Two pointers under one operator: `p == q` is an identity test or a value test, and
+//     a reader cannot tell which was meant.
+//   - A struct has no value to load, only fields; a scalar has no fields.
+
+struct Header { magic: U32 }
+
+fn both(p: Ptr<Int>, q: Ptr<Int>) -> Int { return p + q }
+fn whole(p: Ptr<Header>) -> Int { return p + 1 }
+fn scalar(p: Ptr<Int>) -> U32 { return p.magic }
+fn missing(p: Ptr<Header>) -> U32 { return p.missing }
+fn later(p: Ptr<Int>) -> Int { return p.step(1).load() }
+fn slot(p: Ptr<Header>) -> Int { let n: Int = p
+    return n }
+
+fn main() -> Int { return 0 }

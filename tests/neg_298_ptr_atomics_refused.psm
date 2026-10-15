@@ -1,0 +1,31 @@
+// expect-error: an atomic access needs a pointer to an integer, and this points at Float
+// expect-error: an atomic access needs a pointer to an integer, and this points at Header
+// expect-error: cannot write through `Ptr<Int>`, which is read-only
+// expect-error: a load cannot be Release: it releases nothing
+// expect-error: a store cannot be Acquire: it acquires nothing
+// expect-error: the ordering is written as a variant of `AtomicOrder`
+// expect-error: atomic operand: expected Int, found Bool
+// expect-error: `atomicAdd` takes 2 arguments, found 1
+// expect-error: aborting due to 8 previous errors
+// What an atomic access on a typed pointer refuses, one error each; the count holds that.
+//
+//   - It needs an integer pointee (8, 16, 32 or 64 bits), and `Ptr<mut T>` for anything that
+//     writes.
+//   - A load cannot release and a store cannot acquire: LLVM rejects both, so they are
+//     refused with the reason rather than at the backend.
+//   - The ordering is written as a variant of `AtomicOrder`: it is a property of the
+//     instruction, so a variable or any other value cannot supply it.
+import std.raw
+
+struct Header { magic: U32 }
+
+fn notInteger(p: Ptr<Float>) -> Float { return p.atomicLoad(AtomicOrder.SeqCst) }
+fn notScalar(p: Ptr<Header>) -> Header { return p.atomicLoad(AtomicOrder.SeqCst) }
+fn readOnly(p: Ptr<Int>) -> Int { return p.atomicAdd(1, AtomicOrder.SeqCst) }
+fn loadRelease(p: Ptr<Int>) -> Int { return p.atomicLoad(AtomicOrder.Release) }
+fn storeAcquire(p: Ptr<mut Int>) { p.atomicStore(1, AtomicOrder.Acquire) }
+fn notAVariant(p: Ptr<Int>, n: Int) -> Int { return p.atomicLoad(n) }
+fn wrongValue(p: Ptr<mut Int>) { p.atomicStore(true, AtomicOrder.SeqCst) }
+fn arity(p: Ptr<mut Int>) -> Int { return p.atomicAdd(AtomicOrder.SeqCst) }
+
+fn main() -> Int { return 0 }

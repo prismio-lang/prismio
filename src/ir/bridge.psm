@@ -504,6 +504,21 @@ public extern fn ir_function_section(name: String)
 public extern fn ir_function_align(bytes: Int)
 public extern fn ir_function_export(name: String)
 public extern fn ir_struct_type_packed(on: Int)
+// The parameter just declared is a typed `Ptr<T>`: its pointee's storage key, whether
+// the function may not write through it, and whether the pointee may be assumed readable.
+public extern fn ir_function_param_pointer(pointeeKey: String, readonly: Int, readable: Int)
+// A typed pointer's address operations: `kind` is ptrOpKind (src/common/mem_builtins.psm),
+// `elemKey` the pointee's own key, and the three operands are the values the kind takes
+// ("" for one it does not).
+public extern fn ir_ptr_op(kind: Int, elemKey: String, a: String, b: String, c: String) -> Int
+// Volatile and atomic access through a typed pointer, and a struct field reached through a
+// volatile one. `kind` is ptrAtomicKind and `order` 0 relaxed, 1 acquire, 2 release,
+// 3 acquire-release, 4 sequentially consistent.
+public extern fn ir_ptr_load_volatile(type: String, ptrValue: String) -> Int
+public extern fn ir_ptr_store_volatile(type: String, value: String, ptrValue: String)
+public extern fn ir_struct_load_ptr_volatile(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
+public extern fn ir_struct_store_ptr_volatile(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
+public extern fn ir_ptr_atomic(kind: Int, type: String, ptrValue: String, a: String, b: String, order: Int) -> Int
 public extern fn ir_mem_load(type: String, addrType: String, addr: String, mode: Int) -> Int
 public extern fn ir_mem_store(type: String, value: String, addrType: String, addr: String, mode: Int)
 public extern fn ir_mem_rmw(op: Int, type: String, addrType: String, addr: String, value: String) -> Int

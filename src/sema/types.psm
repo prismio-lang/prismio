@@ -141,6 +141,10 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         // `let t: Task<Int> = spawn describe(j)` type-checked against a
         // Task<String>. A type nobody can spell is a type nobody can get wrong;
         // one that resolves to Invalid is worse than either.
+        // `Ptr<T>`, `Ptr<mut T>`, `Ptr<volatile T>`: a typed pointer, docs/PTR_PLAN.md.
+        // Built in like `Task<R>` and for its reason -- no struct to instantiate, and
+        // falling through would resolve it to Invalid, which matches everything.
+        if (tn.s1.equals("Ptr")) { return semaPtrAnnotationType(module, tn) }
         if (tn.s1.equals("Task") or tn.s1.equals("Future")) {
             if (nodeExists(tn.child1)) {
                 return typeTask(semaAnnotationType(module, ptr_to_node(tn.child1)))
@@ -228,6 +232,100 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     return typeInvalid()
 }
 
+// `Ptr<[mut] [volatile] T>`. The qualifiers are the parser's `$mut` / `$volatile`
+// markers; what is left is exactly one type.
+private fn semaPtrAnnotationType(module: ASTNode, tn: ASTNode) -> TypeInfo {
+    let caps = typePtrAnnotationCapabilities(tn)
+    let pointeeAt = typePtrAnnotationPointee(tn)
+    if (nodeExists(pointeeAt) == false) {
+        // The annotation node itself carries the report-once mark: it has no pointee to hold it.
+        if (tn.s2.equals("") == false) { return typeInvalid() }
+        tn.s2 = semaPtrReported()
+        semaErrorAt(tn, "`Ptr<>` needs the type it points at")
+        return typeInvalid()
+    }
+    let pointeeNode = ptr_to_node(pointeeAt)
+    // An annotation is typed once per path that meets it, and a refusal is made once: `s2`
+    // on the pointee is otherwise unused, and the mark says it was already said.
+    let reported = pointeeNode.s2.equals("") == false
+    if (nodeExists(pointeeNode.next) and reported == false) {
+        semaErrorAt(ptr_to_node(pointeeNode.next), "`Ptr` points at one type")
+        diag_note("a pointer to several things is `Ptr<T>` and `offset`, or a `Slice<T>`")
+    }
+    let pointee = semaAnnotationType(module, pointeeNode)
+    let mut refused = nodeExists(pointeeNode.next)
+    if (typeIsValid(pointee)) {
+        let refusal = semaPtrPointeeRefusal(module, pointee)
+        if (refusal.equals("") == false) {
+            refused = true
+            if (reported == false) {
+                semaErrorAt(pointeeNode, refusal)
+                diag_note("a typed pointer reads and writes plain data: numbers, `Bool`, `Char`, enums, pointers and structs of those")
+            }
+        }
+    } else {
+        refused = true
+    }
+    if (reported == false) { pointeeNode.s2 = semaPtrReported() }
+    // An unusable pointer is an invalid type, not `Ptr<Invalid>`: Invalid is what sema
+    // skips, so one refusal is one error rather than one per use.
+    if (refused) { return typeInvalid() }
+    return typePtrTo(pointee, (caps & 1) == 1, (caps & 2) == 2)
+}
+
+private fn semaPtrReported() -> String { return "reported" }
+
+// Why `pointee` cannot be pointed at, or "" when it can. A typed pointer moves bytes
+// in and out of memory nothing tracks, so what it points at must own nothing: a
+// `String` or `Vec` stored through one would move an owner into memory no release
+// will ever visit. A pointer to a pointer is fine -- a pointer owns nothing.
+private fn semaPtrPointeeRefusal(module: ASTNode, pointee: TypeInfo) -> String {
+    if (typeIsScalarOptionalInner(pointee) or pointee.kind == TypeKind.PTR) { return "" }
+    if (pointee.kind == TypeKind.STRUCT) {
+        if (semaPtrStructIsPlain(module, pointee.name, 0)) { return "" }
+        return "a pointer cannot point at ".concat(diagQuote(pointee.name),
+                                                   ": it holds a value that owns memory")
+    }
+    return "a pointer cannot point at ".concat(typeDisplay(pointee), ", which owns memory")
+}
+
+// Every field of `name` is a scalar, a pointer, an enum, or a struct that is plain
+// the same way. A pointer field ends the descent -- `Ptr<Node>` inside `Node` is the
+// linked list this exists for -- and the depth bound makes a mutually recursive pair
+// of by-value structs somebody else's error rather than a loop here.
+private fn semaPtrStructIsPlain(module: ASTNode, name: String, depth: Int) -> Bool {
+    if (depth > 16) { return false }
+    let decl = findStructDeclNamed(module, name)
+    if (nodeExists(node_to_ptr(decl)) == false) { return false }
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let field = ptr_to_node(p)
+        p = field.next
+        if (field.kind != NodeKind.STRUCT_FIELD) { continue }
+        if (nodeExists(field.child1) == false) { return false }
+        let ann = ptr_to_node(field.child1)
+        if (ann.i1 == 1) { return false }
+        // `Ptr<T>` and `Ptr<T>?` alike: a pointer owns nothing, present or absent.
+        if (ann.s1.equals("Ptr")) { continue }
+        if (ann.i2 == 1 or ann.i3 == 1) { return false }
+        if (semaPtrScalarName(ann.s1) or semaHasEnum(module, ann.s1)) { continue }
+        if (semaHasStruct(module, ann.s1) and semaPtrStructIsPlain(module, ann.s1, depth + 1)) { continue }
+        return false
+    }
+    return true
+}
+
+// The names `semaAnnotationInner` resolves to a scalar, spelled the way it does. Every
+// one is 5 bytes or fewer, so the common miss -- a struct name -- is left by one length test.
+private fn semaPtrScalarName(name: String) -> Bool {
+    if (name.length > 5) { return false }
+    return name.equals("Int") or name.equals("Float") or name.equals("Bool")
+        or name.equals("Char") or name.equals("Ptr") or name.equals("I8")
+        or name.equals("I16") or name.equals("I64") or name.equals("Isize")
+        or name.equals("U8") or name.equals("U16") or name.equals("U32")
+        or name.equals("U64") or name.equals("Usize")
+}
+
 // `Array<T, N>`, the length read off the annotation.
 internal fn semaSizedArrayType(module: ASTNode, ann: ASTNode) -> TypeInfo {
     let mut elemT = typeInvalid()
@@ -269,6 +367,13 @@ internal fn semaTypesMatch(expected: TypeInfo, actual: TypeInfo) -> Bool {
     // pointer, and a present `T` is that pointer with a non-null value.
     if (expected.kind == TypeKind.OPTIONAL and actual.kind != TypeKind.OPTIONAL) {
         return semaTypesMatch(typeOptionalInner(expected), actual)
+    }
+    // docs/PTR_PLAN.md. `Ptr<mut T>` stands where `Ptr<T>` is wanted and either where
+    // the opaque `Ptr` is; `Ptr<mut T>?` likewise reaches `Ptr<T>?`.
+    if (expected.kind == TypeKind.PTR) { return typePtrConverts(expected, actual) }
+    if (expected.kind == TypeKind.OPTIONAL and actual.kind == TypeKind.OPTIONAL
+        and nodeExists(expected.child) and nodeExists(actual.child)) {
+        return semaTypesMatch(typeOptionalInner(expected), typeOptionalInner(actual))
     }
     return false
 }

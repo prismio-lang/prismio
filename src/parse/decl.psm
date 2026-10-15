@@ -672,6 +672,14 @@ impl Parser {
     internal fn parseTypeArgList(self, node: ASTNode) {
         node.i2 = 1
         let args = nodeList()
+        // `Ptr<mut T>`, `Ptr<volatile T>`, `Ptr<mut volatile T>`: what the pointer may
+        // do is written in front of what it points at. Each qualifier rides as a
+        // leading marker, named `$mut` or `$volatile` for the reason `dyn$Show` is:
+        // `$` cannot occur in a source identifier, so a marker can never be mistaken
+        // for a type, and the node keeps its shape -- a name, `i2`, a chain under
+        // `child1` -- so every pass that copies or substitutes an annotation carries
+        // them along unchanged. Only sema reads them (semaPtrAnnotationType).
+        if (node.s1.equals("Ptr")) { self.parsePtrQualifiers(args) }
         loop {
             // A number is a length, and `Array<T, N>` is the one type that takes
             // one. Every caller names the constructor before calling, so the
@@ -703,6 +711,37 @@ impl Parser {
         }
         node.child1 = args.head
         self.expectCloseAngle("type argument list")
+    }
+
+    // The qualifiers of a `Ptr<...>`, in either order and each at most once. `mut` is
+    // a keyword; `volatile` is **contextual**, a qualifier only when a type follows
+    // it, because reserving a word breaks programs already using it as a name.
+    private fn parsePtrQualifiers(self, args: NodeList) {
+        let mut seenMut = false
+        let mut seenVolatile = false
+        loop {
+            let word = self.current()
+            let mut qualifier = ""
+            if (word.type == TokenType.KEYWORD and word.value.equals("mut")) {
+                qualifier = "$mut"
+            } else if (word.type == TokenType.IDENTIFIER and word.value.equals("volatile")) {
+                let after = self.peek()
+                if (after.type == TokenType.IDENTIFIER or after.type == TokenType.KEYWORD
+                    or (after.type == TokenType.SEPARATOR and after.value.equals("["))) {
+                    qualifier = "$volatile"
+                }
+            }
+            if (qualifier.equals("")) { return }
+            if ((qualifier.equals("$mut") and seenMut) or (qualifier.equals("$volatile") and seenVolatile)) {
+                diag_error_at_code("P3009", word.file, word.line, word.col, word.len,
+                                   diagQuote(word.value).concat(" is written twice"))
+            }
+            if (qualifier.equals("$mut")) { seenMut = true } else { seenVolatile = true }
+            let marker = self.node(NodeKind.TYPE_ANNOTATION)
+            marker.s1 = qualifier
+            self.advance()
+            nodeListPush(args, marker)
+        }
     }
 }
 

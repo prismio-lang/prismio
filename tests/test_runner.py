@@ -5145,6 +5145,85 @@ def run_std_mem_failures_test():
     return True
 
 
+def run_typed_pointer_ir_test():
+    """What each access through a typed `Ptr<T>` is emitted as (docs/PTR_PLAN.md).
+
+    Volatility and an ordering are invisible to a program's output, so the only
+    check that means anything is the instruction: a `Ptr<volatile T>` access is
+    `load volatile` or `store volatile` whatever it reads (a scalar, a field, an
+    operand), a plain one is neither, an atomic carries the ordering written at the
+    call, and a compare-exchange takes its failure ordering from the success one
+    without the release half. The parameter line is checked as well, because the
+    type is what tells LLVM a pointer is non-null, aligned, readable for its size and
+    -- unless `mut` -- not written through: a volatile pointer is not promised
+    readable, since a device register is not memory a load may be hoisted past.
+    """
+    print(f"\n{BLUE}--- Running typed_pointer_ir ---{RESET}")
+    problems = []
+    source = str(TEST_DIR / "ptr_access_ir_probe.psm")
+    with tempfile.TemporaryDirectory(prefix="prismio-ptr-ir-") as tmp:
+        ll = Path(tmp) / "probe.ll"
+        built = run_command([str(PRISMIO_EXE), "build", source, "-o", str(ll)])
+        if built.returncode != 0 or not ll.exists():
+            print(f"{RED}[FAIL] typed pointer probe did not emit IR: "
+                  f"{built.stdout} {built.stderr}{RESET}")
+            return False
+        text = ll.read_text(encoding="utf-8")
+
+    def function(name):
+        found = re.search(r"^(define [^\n]*@" + name + r"__[^\n]*)\{\n(.*?)^\}", text,
+                          re.S | re.M)
+        return (found.group(1), found.group(2)) if found else (None, None)
+
+    # name -> (instructions the body must have, text it must not have, parameter facts it
+    # must have, parameter facts it must not)
+    cases = {
+        "plainLoad": ([r"load i32, ptr %\S+, align 4"], ["volatile", "atomic"],
+                      ["readonly", "dereferenceable\\(4\\)", "nonnull"], []),
+        "plainField": ([r"load i32, ptr %\S+, align 4"], ["volatile", "atomic"], ["readonly"], []),
+        "volatileLoad": ([r"load volatile i32, ptr %\S+, align 4"], [],
+                         ["readonly", "nonnull"], ["dereferenceable"]),
+        "volatileStore": ([r"store volatile i32 1, ptr %\S+, align 4"], [], ["nonnull"],
+                          ["readonly", "dereferenceable"]),
+        "volatileOperand": ([r"load volatile i32, ptr %\S+, align 4"], [], [], []),
+        "volatileFieldRead": ([r"load volatile i32, ptr %\S+, align 4"], [], [], ["dereferenceable"]),
+        "volatileFieldWrite": ([r"store volatile i32 5, ptr %\S+, align 4"], [], [], ["readonly"]),
+        "oneOffRead": ([r"load volatile i32, ptr %\S+, align 4"], [], ["dereferenceable\\(4\\)"], []),
+        "oneOffWrite": ([r"store volatile i32 2, ptr %\S+, align 4"], [], [], []),
+        "atomicLoadAcquire": ([r"load atomic i32, ptr %\S+ acquire, align 4"], ["volatile"], [], []),
+        "atomicLoadRelaxed": ([r"load atomic i32, ptr %\S+ monotonic, align 4"], [], [], []),
+        "atomicStoreRelease": ([r"store atomic i32 3, ptr %\S+ release, align 4"], [], [], []),
+        "atomicAddAcqRel": ([r"atomicrmw add ptr %\S+, i32 1 acq_rel, align 4"], [], [], []),
+        "atomicSwapSeqCst": ([r"atomicrmw xchg ptr %\S+, i8 1 seq_cst, align 1"], [], [], []),
+        "atomicCasRelease": ([r"cmpxchg ptr %\S+, i32 1, i32 2 release monotonic, align 4"], [], [], []),
+        "atomicCasAcqRel": ([r"cmpxchg ptr %\S+, i32 1, i32 2 acq_rel acquire, align 4"], [], [], []),
+    }
+    for name, (musts, must_nots, param_musts, param_must_nots) in cases.items():
+        header, body = function(name)
+        if header is None:
+            problems.append(f"{name}: not in the emitted IR")
+            continue
+        for want in musts:
+            if not re.search(want, body):
+                problems.append(f"{name}: no `{want}` in its body")
+        for bad in must_nots:
+            if re.search(bad, body):
+                problems.append(f"{name}: has `{bad}` and must not")
+        for want in param_musts:
+            if not re.search(want, header):
+                problems.append(f"{name}: parameter lacks `{want}`: {header.strip()}")
+        for bad in param_must_nots:
+            if re.search(bad, header):
+                problems.append(f"{name}: parameter has `{bad}` and must not: {header.strip()}")
+    if problems:
+        print(f"{RED}[FAIL] typed pointer IR{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] typed pointer accesses are volatile, atomic and attributed as their type says{RESET}")
+    return True
+
+
 def run_scalar_optional_test():
     """A scalar `T?` is a value: no allocation, and `expect` on `none` panics.
 
@@ -10043,6 +10122,7 @@ def main():
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
         ("std_mem_failures", run_std_mem_failures_test),
+        ("typed_pointer_ir", run_typed_pointer_ir_test),
         ("freestanding", run_freestanding_test),
         ("freestanding_bench", run_freestanding_bench_test),
         ("ownership_probes", run_ownership_probes_test),

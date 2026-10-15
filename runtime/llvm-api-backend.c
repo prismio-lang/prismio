@@ -974,6 +974,14 @@ void ir_module_end(void) { /* nothing to flush -- the module is already built */
 
 static int g_pending_param_noalias[MAX_PENDING_PARAMS];
 static int g_pending_ret_noalias;
+// A typed `Ptr<T>` parameter: what the type promises about the pointer, spelled as the
+// attributes LLVM acts on. `deref_bytes` is 0 when the pointee is not promised readable
+// (a volatile pointer: a device register is not memory a load may speculate), and
+// `deref_align` is the pointee's ABI alignment. See ir_function_param_pointer.
+static unsigned long long g_pending_param_deref[MAX_PENDING_PARAMS];
+static unsigned g_pending_param_align[MAX_PENDING_PARAMS];
+static char g_pending_param_pointer[MAX_PENDING_PARAMS];
+static char g_pending_param_readonly[MAX_PENDING_PARAMS];
 
 // C's rule for a `bool`, a `char` or an 8- or 16-bit integer crossing a call. On
 // most targets the *caller* widens it to 32 bits and the callee trusts that, so a
@@ -1063,6 +1071,10 @@ void ir_function_begin(const char *name, const char *ret_type) {
     g_pending_ret = g_pending_sret ? LLVMVoidTypeInContext(g_ctx) : type_from_key(ret_type);
     g_pending_param_count = 0;
     memset(g_pending_param_noalias, 0, sizeof(g_pending_param_noalias));
+    memset(g_pending_param_pointer, 0, sizeof(g_pending_param_pointer));
+    memset(g_pending_param_readonly, 0, sizeof(g_pending_param_readonly));
+    memset(g_pending_param_deref, 0, sizeof(g_pending_param_deref));
+    memset(g_pending_param_align, 0, sizeof(g_pending_param_align));
     g_pending_ret_noalias = 0;
     memset(g_pending_param_ext, 0, sizeof(g_pending_param_ext));
     g_pending_ret_ext = ABI_EXT_NONE;
@@ -1102,7 +1114,47 @@ void ir_function_param_unique(const char *param_type, const char *param_name) {
     if (i < MAX_PENDING_PARAMS) g_pending_param_noalias[i] = 1;
 }
 
+// The last parameter declared is a typed `Ptr<T>` (docs/PTR_PLAN.md): non-null, defined,
+// aligned for its pointee and -- unless `volatile` -- readable for the pointee's whole
+// size, which is what lets LLVM hoist a load past a branch that guards nothing. A
+// pointer that is not `mut` is also `readonly`: the function cannot write through it,
+// because the one conversion that could launder the capability (to the opaque `Ptr`
+// foreign code writes through) is refused for it in sema. `pointee_key` is the pointee's
+// storage key, so the size and alignment are the data layout's, packed structs included.
+void ir_function_param_pointer(const char *pointee_key, int readonly, int readable) {
+    int i = g_pending_param_count - 1;
+    if (i < 0 || i >= MAX_PENDING_PARAMS) backend_fail("ir_function_param_pointer before any parameter", pointee_key);
+    LLVMTypeRef pointee = type_from_key(pointee_key);
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(g_module);
+    g_pending_param_pointer[i] = 1;
+    g_pending_param_readonly[i] = readonly != 0;
+    g_pending_param_align[i] = LLVMABIAlignmentOfType(layout, pointee);
+    g_pending_param_deref[i] = readable ? LLVMABISizeOfType(layout, pointee) : 0;
+}
+
+static void apply_pointer_param_attrs(LLVMValueRef fn) {
+    unsigned k_nonnull = LLVMGetEnumAttributeKindForName("nonnull", 7);
+    unsigned k_noundef = LLVMGetEnumAttributeKindForName("noundef", 7);
+    unsigned k_deref = LLVMGetEnumAttributeKindForName("dereferenceable", 15);
+    unsigned k_align = LLVMGetEnumAttributeKindForName("align", 5);
+    unsigned k_readonly = LLVMGetEnumAttributeKindForName("readonly", 8);
+    for (int i = 0; i < g_pending_param_count; i++) {
+        if (!g_pending_param_pointer[i]) continue;
+        if (LLVMGetTypeKind(g_pending_params[i]) != LLVMPointerTypeKind) continue;
+        unsigned at = (unsigned)(i + 1 + (g_pending_sret ? 1 : 0));
+        if (k_nonnull) LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_nonnull, 0));
+        if (k_noundef) LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_noundef, 0));
+        if (k_align && g_pending_param_align[i] > 0)
+            LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_align, g_pending_param_align[i]));
+        if (k_deref && g_pending_param_deref[i] > 0)
+            LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_deref, g_pending_param_deref[i]));
+        if (k_readonly && g_pending_param_readonly[i])
+            LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_readonly, 0));
+    }
+}
+
 static void apply_param_attrs(LLVMValueRef fn) {
+    apply_pointer_param_attrs(fn);
     unsigned kind = LLVMGetEnumAttributeKindForName("noalias", 7);
     if (!kind) return;
     for (int i = 0; i < g_pending_param_count; i++) {
@@ -1897,6 +1949,187 @@ int ir_mem_cmpxchg(const char *type, const char *addr_type, const char *addr,
     return intern_value(LLVMBuildExtractValue(g_builder, cas, 0, ""));
 }
 
+// The operations behind a typed pointer's address methods and constructors
+// (docs/PTR_PLAN.md stage 4), one entry because each is a few LLVM instructions over the
+// same three things: the pointee's layout, the pointer-sized integer, and a null that
+// stands for "absent". `elem_key` is the pointee's own key, so a stride and an alignment
+// are the data layout's -- a `{ i32, i32, i16 }` steps 12 bytes and a packed struct is
+// aligned to 1. Kinds are src/common/mem_builtins.psm's ptrOpKind:
+//
+//    1 offset(p, n)          getelementptr inbounds elem, p, n
+//    2 byteOffset(p, n)      getelementptr inbounds i8, p, n
+//    3 wrappingOffset(p, n)  getelementptr elem, p, n -- no `inbounds`, the form a ring needs
+//    4 diff(p, q)            elements from q to p, exact, as an Int
+//    5 aligned(p, a)         (address & (a - 1)) == 0, `a` a power of two
+//    6 same(p, q)            where they point, not what they hold
+//    7 advance(p, n, limit)  p + n, or null if that passes `limit` in the direction of travel;
+//                            one past `limit` is the end and is allowed, as it is for offset
+//    8 fromAddress(a)        the pointer at a number, unchecked
+//    9 at(a)                 null for 0 or an address the pointee cannot sit at
+//   10 cast(p)               the same word, a new type
+//   11 castAligned(p)        null when p's address cannot hold the pointee
+//
+// The select in 7, 9 and 11 is on purpose: the `inbounds` offset of 7 is poison when the
+// answer is null, and a select does not use the arm it does not choose.
+static LLVMValueRef ptr_index(LLVMValueRef n, LLVMTypeRef ip) {
+    unsigned have = LLVMGetIntTypeWidth(LLVMTypeOf(n));
+    unsigned want = LLVMGetIntTypeWidth(ip);
+    if (have < want) return LLVMBuildSExt(g_builder, n, ip, "");
+    if (have > want) return LLVMBuildTrunc(g_builder, n, ip, "");
+    return n;
+}
+
+int ir_ptr_op(int kind, const char *elem_key, const char *a, const char *b, const char *c) {
+    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(g_module);
+    LLVMTypeRef ptr_ty = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef ip = LLVMIntPtrTypeInContext(g_ctx, layout);
+    const char *ip_key = LLVMGetIntTypeWidth(ip) == 32 ? "i32" : "i64";
+    LLVMTypeRef elem = (elem_key && elem_key[0]) ? type_from_key(elem_key)
+                                                 : LLVMInt8TypeInContext(g_ctx);
+    LLVMValueRef zero = LLVMConstInt(ip, 0, 0);
+    switch (kind) {
+    case 1:
+    case 2:
+    case 3: {
+        LLVMValueRef idx[1] = { ptr_index(resolve_value(b, "i32"), ip) };
+        LLVMTypeRef step = kind == 2 ? LLVMInt8TypeInContext(g_ctx) : elem;
+        LLVMValueRef base = resolve_value(a, "ptr");
+        return intern_value(kind == 3 ? LLVMBuildGEP2(g_builder, step, base, idx, 1, "")
+                                      : LLVMBuildInBoundsGEP2(g_builder, step, base, idx, 1, ""));
+    }
+    case 4: {
+        LLVMValueRef d = LLVMBuildPtrDiff2(g_builder, elem, resolve_value(a, "ptr"),
+                                           resolve_value(b, "ptr"), "");
+        return intern_value(LLVMBuildTrunc(g_builder, d, LLVMInt32TypeInContext(g_ctx), ""));
+    }
+    case 5: {
+        LLVMValueRef addr = LLVMBuildPtrToInt(g_builder, resolve_value(a, "ptr"), ip, "");
+        LLVMValueRef mask = LLVMBuildSub(g_builder, resolve_value(b, ip_key),
+                                         LLVMConstInt(ip, 1, 0), "");
+        LLVMValueRef low = LLVMBuildAnd(g_builder, addr, mask, "");
+        return intern_value(LLVMBuildICmp(g_builder, LLVMIntEQ, low, zero, ""));
+    }
+    case 6:
+        return intern_value(LLVMBuildICmp(g_builder, LLVMIntEQ, resolve_value(a, "ptr"),
+                                          resolve_value(b, "ptr"), ""));
+    case 7: {
+        LLVMValueRef p = resolve_value(a, "ptr");
+        LLVMValueRef n = ptr_index(resolve_value(b, "i32"), ip);
+        LLVMValueRef limit = resolve_value(c, "ptr");
+        LLVMValueRef room = LLVMBuildPtrDiff2(g_builder, elem, limit, p, "");
+        LLVMValueRef forward = LLVMBuildICmp(g_builder, LLVMIntSGE, n, zero, "");
+        LLVMValueRef fits_up = LLVMBuildICmp(g_builder, LLVMIntSLE, n, room, "");
+        LLVMValueRef fits_down = LLVMBuildICmp(g_builder, LLVMIntSGE, n, room, "");
+        LLVMValueRef fits = LLVMBuildSelect(g_builder, forward, fits_up, fits_down, "");
+        LLVMValueRef idx[1] = { n };
+        LLVMValueRef moved = LLVMBuildInBoundsGEP2(g_builder, elem, p, idx, 1, "");
+        return intern_value(LLVMBuildSelect(g_builder, fits, moved, LLVMConstNull(ptr_ty), ""));
+    }
+    case 8:
+        return intern_value(LLVMBuildIntToPtr(g_builder, resolve_value(a, ip_key), ptr_ty, ""));
+    case 9:
+    case 11: {
+        LLVMValueRef p = kind == 9 ? LLVMBuildIntToPtr(g_builder, resolve_value(a, ip_key), ptr_ty, "")
+                                   : resolve_value(a, "ptr");
+        LLVMValueRef addr = LLVMBuildPtrToInt(g_builder, p, ip, "");
+        unsigned long long align = LLVMABIAlignmentOfType(layout, elem);
+        LLVMValueRef low = LLVMBuildAnd(g_builder, addr, LLVMConstInt(ip, align - 1, 0), "");
+        LLVMValueRef aligned = LLVMBuildICmp(g_builder, LLVMIntEQ, low, zero, "");
+        LLVMValueRef present = LLVMBuildICmp(g_builder, LLVMIntNE, addr, zero, "");
+        LLVMValueRef ok = LLVMBuildAnd(g_builder, aligned, present, "");
+        return intern_value(LLVMBuildSelect(g_builder, ok, p, LLVMConstNull(ptr_ty), ""));
+    }
+    case 10:
+        return intern_value(resolve_value(a, "ptr"));
+    }
+    backend_fail("unknown pointer operation", elem_key);
+    return 0;
+}
+
+// Volatile and atomic access through a typed pointer (docs/PTR_PLAN.md stage 5). The
+// pointer stays a pointer, so LLVM keeps its provenance; what the access is ordered as
+// comes from the type (`Ptr<volatile T>`) or the method (`atomicAdd`), never from a
+// number. Alignment is the pointee's ABI alignment, which LLVM requires of an atomic one.
+static unsigned pointee_align(LLVMTypeRef ty) {
+    return LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), ty);
+}
+
+int ir_ptr_load_volatile(const char *type, const char *ptr_value) {
+    LLVMTypeRef ty = type_from_key(type);
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, ty, resolve_value(ptr_value, "ptr"), "");
+    LLVMSetVolatile(load, 1);
+    LLVMSetAlignment(load, pointee_align(ty));
+    return intern_value(load);
+}
+
+void ir_ptr_store_volatile(const char *type, const char *value, const char *ptr_value) {
+    if (block_done()) return;
+    LLVMTypeRef ty = type_from_key(type);
+    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
+                                        resolve_value(ptr_value, "ptr"));
+    LLVMSetVolatile(store, 1);
+    LLVMSetAlignment(store, pointee_align(ty));
+}
+
+// A field read or written through a volatile pointer: the struct-field access, marked.
+int ir_struct_load_ptr_volatile(const char *type, const char *ptr_value,
+                                const char *struct_name, int field_index);
+void ir_struct_store_ptr_volatile(const char *type, const char *value, const char *ptr_value,
+                                  const char *struct_name, int field_index);
+
+static LLVMAtomicOrdering atomic_order(int code) {
+    switch (code) {
+    case 0: return LLVMAtomicOrderingMonotonic;
+    case 1: return LLVMAtomicOrderingAcquire;
+    case 2: return LLVMAtomicOrderingRelease;
+    case 3: return LLVMAtomicOrderingAcquireRelease;
+    }
+    return LLVMAtomicOrderingSequentiallyConsistent;
+}
+
+// `kind` is ptrAtomicKind (src/common/mem_builtins.psm): 1 load, 2 store, 3 swap, 4 add,
+// 5 sub, 6 and, 7 or, 8 xor, 9 compare-exchange. `order` is 0 relaxed, 1 acquire,
+// 2 release, 3 acquire-release, 4 sequentially consistent. A read-modify-write answers
+// what was there before; a compare-exchange answers what it found, so the caller compares
+// that with `expected` to learn whether the store happened. Its failure ordering is the
+// success one without its release half, as C++ derives it.
+int ir_ptr_atomic(int kind, const char *type, const char *ptr_value, const char *a, const char *b,
+                  int order) {
+    LLVMTypeRef ty = type_from_key(type);
+    LLVMValueRef ptr = resolve_value(ptr_value, "ptr");
+    LLVMAtomicOrdering ord = atomic_order(order);
+    if (kind == 1) {
+        LLVMValueRef load = LLVMBuildLoad2(g_builder, ty, ptr, "");
+        LLVMSetAlignment(load, pointee_align(ty));
+        LLVMSetOrdering(load, ord);
+        return intern_value(load);
+    }
+    if (kind == 2) {
+        if (block_done()) return 0;
+        LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(a, type), ptr);
+        LLVMSetAlignment(store, pointee_align(ty));
+        LLVMSetOrdering(store, ord);
+        return 0;
+    }
+    if (kind == 9) {
+        LLVMAtomicOrdering failure = order == 2 ? LLVMAtomicOrderingMonotonic
+                                   : order == 3 ? LLVMAtomicOrderingAcquire : ord;
+        LLVMValueRef cas = LLVMBuildAtomicCmpXchg(g_builder, ptr, resolve_value(a, type),
+                                                  resolve_value(b, type), ord, failure, 0);
+        LLVMSetAlignment(cas, pointee_align(ty));
+        return intern_value(LLVMBuildExtractValue(g_builder, cas, 0, ""));
+    }
+    static const LLVMAtomicRMWBinOp ops[] = {
+        LLVMAtomicRMWBinOpXchg, LLVMAtomicRMWBinOpAdd, LLVMAtomicRMWBinOpSub,
+        LLVMAtomicRMWBinOpAnd, LLVMAtomicRMWBinOpOr, LLVMAtomicRMWBinOpXor,
+    };
+    if (kind < 3 || kind > 8) backend_fail("unknown atomic operation", type);
+    LLVMValueRef rmw = LLVMBuildAtomicRMW(g_builder, ops[kind - 3], ptr, resolve_value(a, type),
+                                          ord, 0);
+    LLVMSetAlignment(rmw, pointee_align(ty));
+    return intern_value(rmw);
+}
+
 void ir_mem_fence(void) {
     if (block_done()) return;
     LLVMBuildFence(g_builder, LLVMAtomicOrderingSequentiallyConsistent, 0, "");
@@ -1927,6 +2160,26 @@ void ir_struct_store_ptr(const char *type, const char *value, const char *ptr_va
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
     tag_struct_field(store, struct_name, field_index, type);
+}
+
+// The same two, for a field reached through a `Ptr<volatile T>`: every such access is
+// volatile, so a driver cannot write one register access that the optimiser may drop.
+int ir_struct_load_ptr_volatile(const char *type, const char *ptr_value,
+                                const char *struct_name, int field_index) {
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, type_from_key(type),
+                                       resolve_value(ptr_value, "ptr"), "");
+    tag_struct_field(load, struct_name, field_index, type);
+    LLVMSetVolatile(load, 1);
+    return intern_value(load);
+}
+
+void ir_struct_store_ptr_volatile(const char *type, const char *value, const char *ptr_value,
+                                  const char *struct_name, int field_index) {
+    if (block_done()) return;
+    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
+                                        resolve_value(ptr_value, "ptr"));
+    tag_struct_field(store, struct_name, field_index, type);
+    LLVMSetVolatile(store, 1);
 }
 
 // M4.3c. Different top-level DataView fields occupy different allocations.

@@ -263,6 +263,9 @@ impl Parser {
                 // nothing to do
             } else if (current.value.equals("?")) {
                 // nothing to do: an optional suffix
+            } else if (current.type == TokenType.KEYWORD and current.value.equals("mut")) {
+                // nothing to do: a pointer's capability, `Ptr<mut T>.at(address)`. `mut`
+                // cannot begin an expression, so a `<` before it is never a comparison.
             } else {
                 return false
             }

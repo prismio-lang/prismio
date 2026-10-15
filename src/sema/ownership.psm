@@ -307,7 +307,10 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
     // `let m: Map<String, Int> = Map()`: type arguments only the context knows.
     if (valNode.kind == NodeKind.CALL_EXPR) { monoTypeArgsFromExpected(module, valNode, expected) }
 
-    let actual = semaExpr(module, valNode)
+    let mut actual = semaExpr(module, valNode)
+    // A typed pointer into a slot annotated with what it points at reads through:
+    // `let n: Int = p` (src/sema/pointer.psm).
+    if (semaPtrProjectsTo(expected, actual)) { actual = semaPtrLoad(module, valNode) }
     semaExpectAssignable(valNode, context, expected, actual)
 
     // M4.2. A fresh empty list takes its element type from the annotation, for

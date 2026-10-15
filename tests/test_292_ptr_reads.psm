@@ -1,0 +1,85 @@
+// `Ptr<T>` read through, docs/PTR_PLAN.md stage 2. The bytes are written with std.raw
+// and read back through typed pointers, so what is checked is the layout the pointer
+// assumes: a field is read where it lies, a nested struct is a pointer to the storage
+// inside its parent, and a scalar pointer is read as an operand, as a slot's value, and
+// by `load()`.
+//
+//   Packet (repr(C), 12 bytes)      Header (repr(C), 12 bytes)
+//   +0  header: Header ----------->   +0  magic:  U32
+//   +12 tag: U8                       +4  length: U32
+//                                     +8  flags:  U16
+import std.raw
+
+repr(C) struct Header {
+    magic: U32,
+    length: U32,
+    flags: U16,
+}
+
+repr(C) struct Packet {
+    header: Header,
+    tag: U8,
+}
+
+extern fn calloc(count: Usize, size: Usize) -> Ptr<mut Packet>
+extern fn malloc(size: Usize) -> Ptr<mut Int>
+extern fn free(block: Ptr)
+
+fn verify(p: Ptr<Header>) -> Bool {
+    if p.magic != 0x5052534D { return false }
+    return p.length > 0
+}
+
+fn flags(p: Ptr<Header>) -> U16 { return p.flags }
+
+fn doubled(p: Ptr<Int>) -> Int { return p * 2 }
+
+fn readBack(p: Ptr<Int>) -> Int {
+    let v: Int = p
+    return v
+}
+
+fn twice(x: Int) -> Int { return x * 2 }
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    let packet = calloc(1, 16)
+    let base = addressOf(packet)
+    volatileStoreU32(base, 0x5052534D)
+    volatileStoreU32(base + 4, 12)
+    volatileStoreU16(base + 8, 513)
+    volatileStoreU8(base + 12, 7)
+
+    if packet.header.magic != 0x5052534D { return fail(1) }
+    if packet.header.length != 12 { return fail(2) }
+    if packet.header.flags != 513 { return fail(3) }
+    if packet.tag != 7 { return fail(4) }
+
+    // A field that is a struct is a pointer to it, with the same capabilities.
+    let inner: Ptr<Header> = packet.header
+    if verify(inner) == false { return fail(5) }
+    if flags(packet.header) != 513 { return fail(6) }
+
+    let n = malloc(4)
+    volatileStoreU32(addressOf(n), 40)
+    if n + 2 != 42 { return fail(7) }
+    if 2 + n != 42 { return fail(8) }
+    if n * 2 != 80 { return fail(9) }
+    if -n != -40 { return fail(10) }
+    if n.load() != 40 { return fail(11) }
+    if doubled(n) != 80 { return fail(12) }
+    if readBack(n) != 40 { return fail(13) }
+    if n > 100 { return fail(14) }
+    if (n < 41) == false { return fail(15) }
+    if n is 40 { } else { return fail(16) }
+    if twice(n) != 80 { return fail(18) }
+
+    // A pointer is a pointer until something wants the value.
+    let same = n
+    if same.load() != 40 { return fail(17) }
+
+    free(n)
+    free(packet)
+    return 0
+}

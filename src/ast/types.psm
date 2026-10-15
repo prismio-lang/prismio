@@ -355,6 +355,88 @@ public fn typeChannelElem(t: TypeInfo) -> TypeInfo {
     return typeInvalid()
 }
 
+// A typed pointer, `Ptr<T>`, and the capabilities written in front of `T`:
+// `Ptr<mut T>` may write, `Ptr<volatile T>` makes every access volatile.
+// docs/PTR_PLAN.md.
+//
+// PTR-kinded and named, for the reason `typeTask` and `typeChannel` are: it is one
+// machine word the program does not own, so every PTR arm in sema, AIF and codegen
+// already treats it correctly. A bare `Ptr` is the same family with an opaque,
+// zero-sized pointee -- no `child`, nothing to read through.
+//
+// The capabilities ride in `length`, which a PTR has no other use for, so the
+// struct keeps its layout: bit 0 is `mut`, bit 1 is `volatile`.
+private fn typePtrToCapabilities(pointee: TypeInfo, caps: Int) -> TypeInfo {
+    let mut t = typeMake(TypeKind.PTR,
+                         "Ptr<".concat(typePtrQualifierText(caps), pointee.name, ">"), "ptr")
+    t.child = type_to_ptr(pointee)
+    t.length = caps
+    return t
+}
+
+// What is written between `<` and the pointee, so a diagnostic shows the type as the
+// program spelled it. One table lookup, not a concat per bit.
+private fn typePtrQualifierText(caps: Int) -> String {
+    match (caps) {
+        1 => { return "mut " }
+        2 => { return "volatile " }
+        3 => { return "mut volatile " }
+    }
+    return ""
+}
+
+public fn typePtrTo(pointee: TypeInfo, writable: Bool, volatile: Bool) -> TypeInfo {
+    if (writable) {
+        if (volatile) { return typePtrToCapabilities(pointee, 3) }
+        return typePtrToCapabilities(pointee, 1)
+    }
+    if (volatile) { return typePtrToCapabilities(pointee, 2) }
+    return typePtrToCapabilities(pointee, 0)
+}
+
+public fn typeIsTypedPtr(t: TypeInfo) -> Bool {
+    return t.kind == TypeKind.PTR and t.name.startsWith("Ptr<")
+}
+
+public fn typePtrPointee(t: TypeInfo) -> TypeInfo {
+    if (typeIsTypedPtr(t) and nodeExists(t.child)) { return ptr_to_type(t.child) }
+    return typeInvalid()
+}
+
+public fn typePtrIsMut(t: TypeInfo) -> Bool {
+    return typeIsTypedPtr(t) and (t.length & 1) == 1
+}
+
+public fn typePtrIsVolatile(t: TypeInfo) -> Bool {
+    return typeIsTypedPtr(t) and (t.length & 2) == 2
+}
+
+// The same pointer without its write capability: what `Ptr<mut T>` converts to.
+public fn typePtrReadOnly(t: TypeInfo) -> TypeInfo {
+    return typePtrTo(typePtrPointee(t), false, typePtrIsVolatile(t))
+}
+
+// Whether a pointer of type `actual` may stand where `expected` is wanted, the one
+// asymmetric rule `typeEquals` cannot say. `Ptr<mut T>` becomes `Ptr<T>` and either
+// becomes the opaque `Ptr`; the other directions are refused -- gaining write access
+// or a type needs an explicit `Ptr<T>.cast`, and `volatile` is never added or dropped
+// silently, because a volatile access that quietly stops being one is the bug the
+// qualifier exists to prevent.
+public fn typePtrConverts(expected: TypeInfo, actual: TypeInfo) -> Bool {
+    if (actual.kind != TypeKind.PTR or expected.kind != TypeKind.PTR) { return false }
+    if (typeIsTypedPtr(expected) == false) {
+        // The opaque pointer takes a typed one that may write, and only that one: foreign
+        // code handed an opaque `Ptr` may write through it, so a read-only `Ptr<T>` that
+        // became one would lose the capability its `readonly` parameter promises LLVM.
+        // `Ptr<T>.cast` is the explicit form. Another named handle is not a Ptr.
+        return expected.name.equals("Ptr") and typePtrIsMut(actual)
+    }
+    if (typeIsTypedPtr(actual) == false) { return false }
+    if (typePtrIsVolatile(expected) != typePtrIsVolatile(actual)) { return false }
+    if (typePtrIsMut(expected) and typePtrIsMut(actual) == false) { return false }
+    return typeEquals(typePtrPointee(expected), typePtrPointee(actual))
+}
+
 public fn typeOptionalInner(t: TypeInfo) -> TypeInfo {
     if (t.kind == TypeKind.OPTIONAL and nodeExists(t.child)) {
         return ptr_to_type(t.child)
@@ -635,6 +717,15 @@ public fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
             return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
         }
     }
+    // A typed pointer is the same type as another only when it points at the same
+    // thing with the same capabilities; the one-way conversions (`mut` dropped, a type
+    // forgotten) are `typePtrConverts`, which `semaTypesMatch` adds. Without this arm
+    // `Ptr<Header>` and `Ptr<Node>` would meet at PTR's unconditional `true`.
+    if (a.kind == TypeKind.PTR and (typeIsTypedPtr(a) or typeIsTypedPtr(b))) {
+        if (typeIsTypedPtr(a) == false or typeIsTypedPtr(b) == false) { return false }
+        if (a.length != b.length) { return false }
+        return typeEquals(typePtrPointee(a), typePtrPointee(b))
+    }
     // Two task handles are the same type only when they yield the same thing.
     // Without this they would fall through to PTR's unconditional `true` and
     // `let t: Task<Int> = spawn make_report(j)` would typecheck.
@@ -731,6 +822,11 @@ public fn typeSemKey(t: TypeInfo) -> String {
             if (typeIsChannel(t) and nodeExists(t.child)) {
                 return "chan:".concat(typeSemKey(ptr_to_type(t.child)))
             }
+            // `ptr:<capabilities>:<pointee>`, so a typed pointer survives a binding
+            // with its pointee and its `mut`/`volatile` rather than coming back opaque.
+            if (typeIsTypedPtr(t) and nodeExists(t.child)) {
+                return "ptr:".concat(t.length.toString(), ":", typeSemKey(ptr_to_type(t.child)))
+            }
             return "Ptr"
         }
         TypeKind.STRUCT => { return "struct:".concat(t.name) }
@@ -784,6 +880,39 @@ private fn typeStorageKey(t: TypeInfo) -> String {
     return key
 }
 
+// The capabilities a `Ptr<...>` annotation wrote, read off its `$mut` / `$volatile`
+// markers (src/parse/decl.psm): bit 0 is `mut`, bit 1 is `volatile`.
+public fn typePtrAnnotationCapabilities(tn: ASTNode) -> Int {
+    let mut caps = 0
+    let mut p = tn.child1
+    while (nodeExists(p)) {
+        let arg = ptr_to_node(p)
+        if (arg.s1.startsWith("$") == false) { break }
+        if (arg.s1.equals("$mut")) { caps = caps | 1 } else { caps = caps | 2 }
+        p = arg.next
+    }
+    return caps
+}
+
+// The first argument that is not a qualifier marker: what the pointer points at, or
+// an absent node for a `Ptr<>` that named nothing.
+public fn typePtrAnnotationPointee(tn: ASTNode) -> Ptr {
+    let mut p = tn.child1
+    while (nodeExists(p)) {
+        let arg = ptr_to_node(p)
+        if (arg.s1.startsWith("$") == false) { return p }
+        p = arg.next
+    }
+    return p
+}
+
+private fn typePtrFromAnnotation(tn: ASTNode) -> TypeInfo {
+    let caps = typePtrAnnotationCapabilities(tn)
+    let pointee = typePtrAnnotationPointee(tn)
+    if (nodeExists(pointee) == false) { return typePtrTo(typeInvalid(), false, false) }
+    return typePtrTo(typeFromAnnotation(ptr_to_node(pointee)), (caps & 1) == 1, (caps & 2) == 2)
+}
+
 private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     if (tn.i1 == 1) {
         if (nodeExists(tn.child1)) {
@@ -816,6 +945,7 @@ private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
         }
         return typeChannel(typeInvalid())
     }
+    if (tn.i2 == 1 and tn.s1.equals("Ptr")) { return typePtrFromAnnotation(tn) }
 
     if (tn.s1.equals("Int")) { return typeInt() }
     if (tn.s1.equals("Float")) { return typeFloat() }
@@ -884,6 +1014,12 @@ public fn typeFromSemKey(key: String) -> TypeInfo {
     if (key.equals("Usize")) { return typeUsize() }
     if (key.startsWith("struct:")) {
         return typeStruct(key.substring(7, key.length - 7))
+    }
+    // `ptr:3:struct:Header`: the capabilities are one digit, so the pointee starts at 6.
+    if (key.startsWith("ptr:")) {
+        let caps = key.charAt(4)
+        let pointee = typeFromSemKey(key.substring(6, key.length - 6))
+        return typePtrTo(pointee, caps == '1' or caps == '3', caps == '2' or caps == '3')
     }
     if (key.startsWith("enum:")) {
         return typeEnum(key.substring(5, key.length - 5))
