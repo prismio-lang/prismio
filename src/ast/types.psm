@@ -11,7 +11,7 @@ import std.option
 // nodeHasType answer false for a node that did carry a type. That happened to
 // cancel out -- nodeGetType returns typeInvalid() either way -- which is
 // exactly why it survived.
-enum TypeKind {
+public enum TypeKind {
     // Not a type. Keeps every real kind's low byte non-zero.
     NEVER_ZERO,
 

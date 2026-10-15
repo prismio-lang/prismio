@@ -8,7 +8,7 @@
 import std.string
 import std.vec
 
-enum TokenType {
+public enum TokenType {
     STRING_LITERAL,
     CHAR_LITERAL,
     NUMBER_LITERAL,

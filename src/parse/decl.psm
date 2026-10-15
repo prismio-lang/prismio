@@ -40,8 +40,8 @@ impl Parser {
                 // marker on a type or a global would be a promise the compiler does
                 // not keep -- which is worse than an error.
                 diag_error_at_code("P3001", marker.file, marker.line, marker.col, marker.len,
-                              "`".concat(markerText, "` is only accepted on a function, a struct, a global `let` or an `extern` declaration"))
-                diag_note("a visibility marker on an enum is not enforced yet, and accepting it would promise that it is")
+                              "`".concat(markerText, "` is only accepted on a function, a struct, an enum, a global `let` or an `extern` declaration"))
+                diag_note("a trait and an impl block have no visibility of their own; mark the functions inside them")
             }
             return declaration
         }
@@ -86,9 +86,9 @@ impl Parser {
     // it when a marker asked for something else, so the default lives at the places
     // a declaration is built rather than in every reader of `i2`.
     //
-    // Recognising every declaration kind and rejecting all but `fn` and `extern` in
-    // parseDeclaration keeps the marker consumed either way, so a misplaced one is a
-    // single error rather than a cascade.
+    // Recognising every declaration kind and rejecting the ones that take no
+    // marker in parseDeclaration keeps the marker consumed either way, so a
+    // misplaced one is a single error rather than a cascade.
     //
     // These are **contextual**, matched as identifiers rather than reserved as
     // keywords, which is how `priv` has always worked. Reserving them would break
@@ -125,6 +125,10 @@ impl Parser {
         if (next.value.equals("struct")) { return level }
         if (next.value.equals("enum")) { return level }
         if (next.value.equals("let")) { return level }
+        // Recognised so that parseDeclaration can refuse them by name: read as a
+        // plain identifier the marker would be reported as "expected a declaration".
+        if (next.value.equals("trait")) { return level }
+        if (next.value.equals("impl")) { return level }
         return -1
     }
 }
@@ -146,12 +150,14 @@ impl Parser {
 impl Parser {
     // Whether the declaration after a marker is one whose visibility is checked:
     // a function, which overload resolution filters, a global `let`, which every
-    // read of its name filters (semaCheckGlobalAccess), or either `extern` form,
-    // which the per-file extern table in runtime/ir_symbols.c filters.
+    // read of its name filters (semaCheckGlobalAccess), a struct or an enum, which
+    // every use of the type name filters (semaCheckTypeVisible), or either
+    // `extern` form, which the per-file extern table in runtime/ir_symbols.c filters.
     private fn visibilityIsEnforced(self) -> Bool {
         let next = self.peek()
         return next.value.equals("fn") or next.value.equals("extern") or next.value.equals("prop")
-            or next.value.equals("let") or next.value.equals("struct") or self.isStructModifierWord(next.value)
+            or next.value.equals("let") or next.value.equals("struct") or next.value.equals("enum")
+            or self.isStructModifierWord(next.value)
             or next.value.equals("cold") or next.value.equals("async") or self.isFnModifierWord(next.value)
     }
 }
@@ -2126,11 +2132,18 @@ impl Parser {
 }
 
 
+// What an enum with no marker is. The one place the default is chosen: it is
+// `internal`, as a struct's is, and a different default is a change to this return
+// and nothing else.
+private fn enumDefaultVisibility() -> Int { return 2 }
+
+
 impl Parser {
     private fn parseEnumDecl(self) -> ASTNode {
         self.expectVal(TokenType.KEYWORD, "enum", "enum")
 
         let enumNode = self.node(NodeKind.ENUM_DECL)
+        enumNode.i2 = enumDefaultVisibility()
         let name = self.current()
         enumNode.s1 = name.value
         self.expectToken(TokenType.IDENTIFIER, "enum name")

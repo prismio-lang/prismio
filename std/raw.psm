@@ -39,7 +39,7 @@ public fn pointerAt(address: Usize) -> Ptr { return __builtin_addr_ptr(address) 
 //               address functions below, and the only one that needs no thought
 //
 // A load cannot be Release or AcqRel and a store cannot be Acquire or AcqRel; the compiler says so.
-enum AtomicOrder { Relaxed, Acquire, Release, AcqRel, SeqCst }
+public enum AtomicOrder { Relaxed, Acquire, Release, AcqRel, SeqCst }
 
 // Volatile access, for memory-mapped hardware: each call is one load or store of
 // that width, in program order, and is never merged, reordered with another

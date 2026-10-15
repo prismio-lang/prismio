@@ -1,0 +1,10 @@
+// expect-error: enum `PackageWrapper` is internal to the package that declares it
+// A generic enum is checked against its template, under the name that was written.
+import std.io
+import enum_visibility.enums
+
+fn show(held: PackageWrapper<Int>) -> Int { return 0 }
+
+fn main() -> Int {
+    return 0
+}

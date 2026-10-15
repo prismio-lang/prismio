@@ -1,0 +1,74 @@
+// Visibility on enums, with the levels a function and a struct have: `public` is
+// everywhere, `internal` this package, `private` this file. An enum is `internal`
+// unless a marker says otherwise, and its variants take its level.
+
+public enum Mode { Fast, Slow }
+
+// No marker: internal. Named from `tests/` (another package) it is refused.
+enum DefaultMode { Yes, No }
+
+internal enum PackageMode { On, Off }
+
+private enum FileMode { Only, Here }
+
+public enum Shape { Dot, Circle(Int) }
+
+internal enum PackageShape { Dot, Circle(Int) }
+
+private enum FileShape { Dot, Circle(Int) }
+
+public enum Wrapper<T> { Has(T), Nothing }
+
+internal enum PackageWrapper<T> { Has(T), Nothing }
+
+public fn modeCode(mode: Mode) -> Int {
+    match (mode) {
+        Mode.Fast => { return 1 }
+        Mode.Slow => { return 2 }
+    }
+}
+
+public fn fastMode() -> Mode { return Mode.Fast }
+
+public fn shapeSize(shape: Shape) -> Int {
+    match (shape) {
+        Shape.Dot => { return 0 }
+        Shape.Circle(r) => { return r }
+    }
+}
+
+public fn makeShape(radius: Int) -> Shape { return Shape.Circle(radius) }
+
+public fn wrapped(value: Int) -> Wrapper<Int> { return Wrapper.Has(value) }
+
+public fn unwrapped(held: Wrapper<Int>) -> Int {
+    match (held) {
+        Wrapper.Has(v) => { return v }
+        Wrapper.Nothing => { return -1 }
+    }
+}
+
+// A public function hands an internal enum to a caller that cannot name it.
+public fn makePackageShape(radius: Int) -> PackageShape { return PackageShape.Circle(radius) }
+
+// Every level is usable from the file that declares it.
+public fn ownLevels() -> Int {
+    let a = DefaultMode.Yes
+    let b: PackageMode = PackageMode.Off
+    let c = FileMode.Here
+    let d: FileShape = FileShape.Circle(4)
+    let e: PackageWrapper<Int> = PackageWrapper.Has(5)
+    let mut total = 0
+    if (a == DefaultMode.Yes) { total = total + 1 }
+    if (b == PackageMode.Off) { total = total + 1 }
+    if (c == FileMode.Here) { total = total + 1 }
+    match (d) {
+        FileShape.Dot => { total = total + 100 }
+        FileShape.Circle(r) => { total = total + r }
+    }
+    match (e) {
+        PackageWrapper.Has(v) => { total = total + v }
+        PackageWrapper.Nothing => { total = total + 100 }
+    }
+    return total
+}

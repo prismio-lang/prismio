@@ -1,5 +1,5 @@
 import std.string
-enum UmsDependencyScope {
+public enum UmsDependencyScope {
     UNKNOWN,
     IMPLEMENTATION,
     API,

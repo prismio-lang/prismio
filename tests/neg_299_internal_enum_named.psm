@@ -1,0 +1,10 @@
+// expect-error: enum `DefaultMode` is internal to the package that declares it
+// An enum with no marker is internal, as a struct is.
+import std.io
+import enum_visibility.enums
+
+fn show(mode: DefaultMode) -> Int { return 0 }
+
+fn main() -> Int {
+    return 0
+}

@@ -195,7 +195,8 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         }
         let instantiated = monoInstantiateStruct(module, tn)
         if (instantiated.equals("") == false) {
-            semaCheckStructVisible(tn, tn.s1)
+            semaCheckTypeVisible(tn, tn.s1)
+            enumCheckTemplateVisible(module, tn)
             return typeStruct(instantiated)
         }
         return typeInvalid()
@@ -222,9 +223,12 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     if (tn.s1.equals("U64")) { return typeU64() }
     if (tn.s1.equals("Usize")) { return typeUsize() }
     if (tn.s1.equals("")) { return typeVoid() }
-    if (semaHasEnum(module, tn.s1)) { return typeEnum(tn.s1) }
+    if (semaHasEnum(module, tn.s1)) {
+        semaCheckTypeVisible(tn, tn.s1)
+        return typeEnum(tn.s1)
+    }
     if (semaHasStruct(module, tn.s1)) {
-        semaCheckStructVisible(tn, tn.s1)
+        semaCheckTypeVisible(tn, tn.s1)
         return typeStruct(tn.s1)
     }
 
@@ -421,24 +425,45 @@ private fn semaReportHidden(at: ASTNode, what: String, owner: String, level: Int
     diag_note("write `public ".concat(widen, "` to make it part of ", diagQuote(owner), "'s surface"))
 }
 
-// A struct is written where `at` is: the type may be named from there only when the
-// struct's own level allows it.
-internal fn semaCheckStructVisible(at: ASTNode, name: String) {
+// What a diagnostic calls a declaration of a named type. A payload enum is a struct by
+// the time sema runs, and the diagnostic names the enum the author wrote.
+private fn semaTypeWord(decl: ASTNode) -> String {
+    if (decl.kind == NodeKind.ENUM_DECL or nodeStructIsFromEnum(decl)) { return "enum" }
+    return "struct"
+}
+
+// The name the author wrote for a type: `Box` for the instantiation `Box$Int`.
+private fn semaWrittenTypeName(name: String) -> String {
+    let at = name.indexOf(monoSeparator())
+    if (at <= 0) { return name }
+    return name.substring(0, at)
+}
+
+// Whether the struct or enum `decl` may be named from `at`, reporting the use when it
+// may not. `name` is the one the author wrote, which is not `decl.s1` for a generic.
+internal fn semaCheckDeclVisible(at: ASTNode, decl: ASTNode, name: String) -> Bool {
+    if (semaVisibleFrom(decl.i2, decl.file, at.file)) { return true }
+    // A generic's body naming a program's type is the type argument arriving, which
+    // was checked where the program wrote it.
+    if (semaFileIsStandardLibrary(at.file) and semaFileIsStandardLibrary(decl.file) == false) { return true }
+    if (decl.i2 == 1) {
+        semaErrorAt(at, semaTypeWord(decl).concat(" ", diagQuote(semaWrittenTypeName(name)), " is private to the file that declares it"))
+    } else {
+        semaErrorAt(at, semaTypeWord(decl).concat(" ", diagQuote(semaWrittenTypeName(name)), " is internal to the package that declares it"))
+    }
+    diag_note("write `public ".concat(semaTypeWord(decl), " ", semaWrittenTypeName(name), "` to make it part of its module's surface"))
+    return false
+}
+
+// A struct or an enum is named where `at` is: the type may be named from there only
+// when its own level allows it. A variant takes its enum's level, so constructing one
+// is a use of the enum's name.
+internal fn semaCheckTypeVisible(at: ASTNode, name: String) {
     let count = ir_decl_count(name)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
-        if (decl.kind != NodeKind.STRUCT_DECL) { continue }
-        if (semaVisibleFrom(decl.i2, decl.file, at.file)) { return }
-        // A generic's body naming a program's struct is the type argument arriving,
-        // which was checked where the program wrote it.
-        if (semaFileIsStandardLibrary(at.file) and semaFileIsStandardLibrary(decl.file) == false) { return }
-        let level = decl.i2
-        if (level == 1) {
-            semaErrorAt(at, "struct ".concat(diagQuote(name), " is private to the file that declares it"))
-        } else {
-            semaErrorAt(at, "struct ".concat(diagQuote(name), " is internal to the package that declares it"))
-        }
-        diag_note("write `public struct ".concat(name, "` to make it part of its module's surface"))
+        if (decl.kind != NodeKind.STRUCT_DECL and decl.kind != NodeKind.ENUM_DECL) { continue }
+        semaCheckDeclVisible(at, decl, name)
         return
     }
 }
@@ -680,11 +705,13 @@ internal fn semaFillOmittedFields(module: ASTNode, expr: ASTNode, structName: St
 // provides.
 internal fn semaCheckStructLiteralVisible(literal: ASTNode) {
     let name = literal.s1
-    semaCheckStructVisible(literal, name)
     let count = ir_decl_count(name)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (decl.kind != NodeKind.STRUCT_DECL) { continue }
+        // A payload enum's variant is built as a literal of its tagged struct, and the
+        // enum was checked where the variant was named, under the name written there.
+        if (nodeStructIsFromEnum(decl) == false) { semaCheckDeclVisible(literal, decl, name) }
         let mut hidden = ""
         let mut fieldPtr = decl.child1
         while (nodeExists(fieldPtr)) {

@@ -1,0 +1,9 @@
+// expect-error: enum `PackageShape` is internal to the package that declares it
+// A payload enum is a struct by the time sema runs; its marker is the enum's.
+import std.io
+import enum_visibility.enums
+
+fn main() -> Int {
+    let shape = PackageShape.Circle(1)
+    return 0
+}

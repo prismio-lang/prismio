@@ -1,0 +1,9 @@
+// expect-error: enum `FileMode` is private to the file that declares it
+// A variant takes its enum's level: naming one is naming the enum.
+import std.io
+import enum_visibility.enums
+
+fn main() -> Int {
+    let mode = FileMode.Only
+    return 0
+}

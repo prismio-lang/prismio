@@ -5,7 +5,7 @@ extern fn host_is_windows() -> Int
 // Appended, never inserted: the tag is the variant's position, so reordering
 // these changes the value every compiled comparison expects -- the rule
 // std/option.psm states for `Option`.
-enum UmsTargetKind {
+public enum UmsTargetKind {
     UNKNOWN,
     EXECUTABLE,
     LIBRARY,
@@ -17,7 +17,7 @@ enum UmsTargetKind {
 // directly to an ordinary linker input; a response file is a file of them, which
 // is how a manifest links a library whose flags another tool computed (LLVM's,
 // written by tools/setup_llvm.py).
-enum UmsLinkKind {
+public enum UmsLinkKind {
     UNKNOWN,
     LIBRARY,
     SEARCH,
@@ -35,7 +35,7 @@ enum UmsLinkKind {
 // toolchain's clang and link into the executable, and the flags they compile
 // with. Nothing about a source is inferred -- the manifest names the include
 // directories, the defines and any flag file a source needs.
-enum UmsNativeKind {
+public enum UmsNativeKind {
     UNKNOWN,
     SOURCE,
     INCLUDE,

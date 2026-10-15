@@ -2400,6 +2400,7 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (objectNode.kind == NodeKind.IDENTIFIER_EXPR and semaEnumHasVariant(module, objectNode.s1, expr.s1)) {
+        semaCheckTypeVisible(expr, objectNode.s1)
         let variantT = typeEnum(objectNode.s1)
         nodeSetType(expr, variantT)
         return variantT

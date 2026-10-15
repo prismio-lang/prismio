@@ -1,6 +1,6 @@
 import std.string
 
-enum UmsAstValueKind {
+public enum UmsAstValueKind {
     UNKNOWN,
     STRING,
     INTEGER,
@@ -9,7 +9,7 @@ enum UmsAstValueKind {
     ARRAY
 }
 
-enum UmsAstStatementKind {
+public enum UmsAstStatementKind {
     UNKNOWN,
     ASSIGNMENT,
     CALL

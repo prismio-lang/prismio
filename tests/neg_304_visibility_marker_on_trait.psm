@@ -1,0 +1,9 @@
+// expect-error: `private` is only accepted on a function, a struct, an enum, a global `let` or an `extern` declaration
+// A trait has no visibility of its own; the functions inside it are marked instead.
+private trait Hidden {
+    fn size(self) -> Int
+}
+
+fn main() -> Int {
+    return 0
+}

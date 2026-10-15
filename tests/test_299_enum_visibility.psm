@@ -1,0 +1,35 @@
+// A public enum is usable from anywhere -- named in a type, built, and matched,
+// fieldless, with payloads and generic. An internal one, or one with no marker, is
+// usable in its own package, here through `enum_visibility.enums_sibling`
+// (neg_299 .. neg_303).
+
+import std.io
+import enum_visibility.enums
+import enum_visibility.enums_sibling
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mode: Mode = Mode.Slow
+    if (modeCode(mode) != 2 or modeCode(fastMode()) != 1) { return fail("a public fieldless enum") }
+
+    let shape: Shape = Shape.Circle(7)
+    if (shapeSize(shape) != 7 or shapeSize(makeShape(3)) != 3) { return fail("a public payload enum") }
+    match (makeShape(9)) {
+        Shape.Dot => { return fail("matched the wrong variant") }
+        Shape.Circle(r) => { if (r != 9) { return fail("an arm of a public payload enum") } }
+    }
+
+    let held: Wrapper<Int> = Wrapper.Has(11)
+    if (unwrapped(held) != 11 or unwrapped(wrapped(12)) != 12) { return fail("a public generic enum") }
+
+    if (ownLevels() != 1 + 1 + 1 + 4 + 5) { return fail("every level inside its own file") }
+    if (siblingEnumSum(6) != 1 + 1 + 6 + 6) { return fail("internal enums inside their package") }
+
+    println("ok")
+    return 0
+}

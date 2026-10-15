@@ -163,7 +163,7 @@ impl Args {
 // The codes are a wire protocol between this file and `program_support.c`, which
 // compares against its own copy and never re-derives them. Adding a variant
 // here and not there still builds, and then redirects to the wrong place.
-enum StreamMode {
+public enum StreamMode {
     Inherit
     Pipe
     Discard

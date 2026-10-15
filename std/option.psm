@@ -69,7 +69,7 @@ public fn andThen<T, U, F: Fn(T) -> U?>(o: T?, f: F) -> U? {
     return f(expect(o))
 }
 
-enum Result<T, E> {
+public enum Result<T, E> {
     Err(E),
     Ok(T)
 }

@@ -185,6 +185,10 @@ internal fn enumDesugarToStruct(enumDecl: ASTNode) -> ASTNode {
     let structDecl = createNode(NodeKind.STRUCT_DECL)
     structDecl.s1 = enumDecl.s1
     nodeSpanFrom(structDecl, enumDecl)
+    // createNode leaves the visibility at 0, public, and the enum's marker would be
+    // lost with the declaration it was written on.
+    structDecl.i2 = enumDecl.i2
+    nodeMarkFromEnum(structDecl)
 
     let fields = nodeList()
 
@@ -421,6 +425,9 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
         semaErrorAt(expr, diagQuote(enumName).concat(" has no variant ", diagQuote(variantName)))
         return false
     }
+    // The shadow is the enum as written, marker and file included; the struct that
+    // replaced it only carries the same two, and a generic's is a copy of its template.
+    semaCheckDeclVisible(expr, shadow, enumName)
 
     let fields = nodeList()
     nodeListPush(fields, enumLiteralField(enumTagField(), node_to_ptr(enumTagLiteral(tag))))
@@ -480,6 +487,14 @@ private fn enumArmVariantName(pattern: ASTNode) -> String {
     return pattern.s1
 }
 
+// The enum a pattern names, as written: `Shape` in `Shape.Circle(r)`. A pattern that
+// leaves the qualifier off names the one the scrutinee has.
+private fn enumArmEnumName(pattern: ASTNode, shadow: ASTNode) -> String {
+    let qualifier = enumQualifierOf(pattern)
+    if (qualifier.kind == NodeKind.ERROR_NODE) { return shadow.s1 }
+    return qualifier.s1
+}
+
 // The identifiers a pattern binds: the argument list of `Shape.Circle(r)`.
 private fn enumArmBinders(pattern: ASTNode) -> Ptr {
     if (pattern.kind == NodeKind.CALL_EXPR) { return pattern.child2 }
@@ -510,6 +525,7 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
         return
     }
     arm.i1 = tag
+    semaCheckDeclVisible(pattern, shadow, enumArmEnumName(pattern, shadow))
 
     // The binders live in a scope of their own, outside the block's, so they are
     // visible throughout the arm and gone at the next one.
@@ -720,4 +736,14 @@ internal fn enumNeedsWrittenArgs(module: ASTNode, enumName: String) -> Bool {
     if (nodeIsNull(node_to_ptr(template))) { return false }
     if (template.kind != NodeKind.ENUM_DECL) { return false }
     return enumHasPayload(template)
+}
+
+// A generic enum named by `Option<Int>` is checked against its template: the
+// instantiation is a copy that sema made, and the declaration index holds no entry
+// under the name the author wrote.
+internal fn enumCheckTemplateVisible(module: ASTNode, tn: ASTNode) {
+    let template = monoFindTypeTemplate(module, tn.s1)
+    if (nodeIsNull(node_to_ptr(template))) { return }
+    if (template.kind != NodeKind.ENUM_DECL) { return }
+    semaCheckDeclVisible(tn, template, tn.s1)
 }

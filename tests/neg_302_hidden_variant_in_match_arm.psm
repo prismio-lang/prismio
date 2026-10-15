@@ -1,0 +1,13 @@
+// expect-error: enum `PackageShape` is internal to the package that declares it
+// The value arrives through a public function, so no annotation names the enum; the
+// arm that does is refused.
+import std.io
+import enum_visibility.enums
+
+fn main() -> Int {
+    let shape = makePackageShape(2)
+    match (shape) {
+        PackageShape.Dot => { return 0 }
+        PackageShape.Circle(r) => { return r }
+    }
+}

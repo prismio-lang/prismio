@@ -1,0 +1,22 @@
+// The same package as `enums`: an `internal` enum and one with no marker are visible
+// here, a `private` one is not.
+import enum_visibility.enums
+
+public fn siblingEnumSum(radius: Int) -> Int {
+    let mode: DefaultMode = DefaultMode.No
+    let pm: PackageMode = PackageMode.On
+    let shape = PackageShape.Circle(radius)
+    let held: PackageWrapper<Int> = PackageWrapper.Has(radius)
+    let mut total = 0
+    if (mode == DefaultMode.No) { total = total + 1 }
+    if (pm == PackageMode.On) { total = total + 1 }
+    match (shape) {
+        PackageShape.Dot => { total = total + 100 }
+        PackageShape.Circle(r) => { total = total + r }
+    }
+    match (held) {
+        PackageWrapper.Has(v) => { total = total + v }
+        PackageWrapper.Nothing => { total = total + 100 }
+    }
+    return total
+}
