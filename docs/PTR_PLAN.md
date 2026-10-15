@@ -171,7 +171,7 @@ Follow `Channel<T>`: PTR-kinded, `name` = `Ptr<T>` / `Ptr<mut T>`, pointee in `c
 - **The IR is asserted, not just run.** `typed_pointer_ir` (tests/test_runner.py over `tests/ptr_access_ir_probe.psm`)
   checks each access is the instruction its type or method says, because neither volatility nor an ordering shows in
   program output.
-- **Enums take no visibility marker yet**, so `AtomicOrder` is a plain `enum`.
+- **`AtomicOrder` is a `public enum`**: enums take the visibility markers, and the atomics name it from other packages.
 
 **What stage 4 settled:**
 

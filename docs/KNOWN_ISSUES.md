@@ -520,10 +520,6 @@ reads 11,108,928, because an inlining decision near its threshold flips.
 
 ## Language surface
 
-**An enum takes no visibility marker, and a field-less enum is nameable from anywhere.**
-Functions, global `let`s, structs and struct fields have `public`/`internal`/`private`; a marker
-on an enum is refused (P3001). The planned work is in `docs/VISIBILITY_AND_FLUENCY_PLAN.md`.
-
 **`Vec.length` is an `Int`, so `let n: Usize = v.length` needs `as`.** Ranges and indexes now
 take any integer type, but a length does not give one: the length is `Int` by the 32-bit `Int`
 decision. Whether `length` should answer `Usize`, or only convert where a `Usize` is expected, is

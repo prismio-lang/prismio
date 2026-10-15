@@ -103,12 +103,17 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 - **A closure may have a block body**, `|x: Int| { let y = x + 1  y * 2 }`, and the
   block's last expression is its value. A function body still answers only through
   `return`, and its error now says so.
-- **Visibility on global `let`s, structs and fields**, with the levels a function has:
-  `public` (everywhere), `internal` (the package), `private` (the file). A struct is
-  `internal` unless marked and a field `private`, so `public struct Point { public x:
+- **Visibility on global `let`s, structs, fields and enums**, with the levels a function has:
+  `public` (everywhere), `internal` (the package), `private` (the file). A struct and an
+  enum are `internal` unless marked and a field `private`, so `public struct Point { public x:
   Int, y: Int }` is a public type with one public field; a struct literal needs every
-  field visible. An unmarked global stays open to every file. Enums are not enforced
-  yet and a marker on one is refused.
+  field visible. An unmarked global stays open to every file. An enum is checked where
+  its name is written (an annotation, `Mode<Int>` included), where a variant is built
+  and where a `match` arm names one; a variant takes its enum's level, payload and
+  generic enums included. A marker on a `trait` or an `impl` is refused by name (P3001).
+  The enums that cross a package are `public`: `TokenType`, `NodeKind`, `TypeKind`, the
+  `ums` ones, and in `std` `Result`, `Platform`, `Architecture`, `Environment`,
+  `StreamMode` and `AtomicOrder`.
 - **An array's length is a constant expression**, `Array<U32, N * N>`, over numbers and
   non-`mut` globals, and an integer global may be initialised by one:
   `let CELLS: Usize = N * N`.

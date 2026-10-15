@@ -16,7 +16,8 @@ both doc apps' snippets compile (296 + 50). What shipped is in the CHANGELOG's 0
 | Constant array lengths and integer globals, ranges and indexing over any integer type | done; `bench_matrix_multiply` at C parity |
 | Lazy library merge (LLVM bridge) | done, 1.6 ms, benchmark-neutral |
 | Seed | **cut and verified, not published** (below) |
-| Enum visibility, IntelliJ plugin, `Vec.length`, Windows static LLVM | open |
+| Visibility on enums (default `internal`, `enumDefaultVisibility` in `parse/decl.psm`) | done, tested, documented; **uncommitted** |
+| IntelliJ plugin, `Vec.length`, Windows static LLVM | open |
 
 ## Next session, in order
 
@@ -41,30 +42,26 @@ Proposed: let `seed.json` carry an optional `asset` name.
   pin, and run `tools/bootstrap.sh --seed --out build/seedcheck` from a clean `bootstrap/` cache.
 - Add a test for the override beside the existing seed tests, and update RELEASE.md's seed section.
 
-### 2. Visibility markers on enums
+### 2. Visibility markers on enums (done, uncommitted)
 
-Same three levels, same enforcement points as structs.
+Same three levels and enforcement points as structs. An enum is `internal` unless marked; the default is
+the return value of `enumDefaultVisibility` in `src/parse/decl.psm`, so changing it is one line (and the
+`DefaultMode` fixtures, `neg_299`).
 
-- Parser: `visibilityIsEnforced` accepts `enum`; `parseEnumDecl` stamps the default on
-  `ENUM_DECL.i2`. Decide the default with the user (struct is `internal`; Rust is private).
-- Sema: check where a type name resolves to an enum (`semaAnnotationInner`, the `semaHasEnum`
-  branch), at a variant construction `Shape.Dot`, and at a `match` arm that names a variant.
-  Variants take the enum's visibility. A payload enum is desugared into a struct whose nodes are
-  built with `createNode` (so `i2` is 0, public); keep the check on the *enum* node, before the
-  desugar, or the marker is lost.
-- Migration: reuse the method from this session. Compile every entry point with `check
-  --diagnostic-format=json`, read the diagnostics, widen each declaration to the level its uses
-  need (`internal` within a package, `public` across). The script is not kept; rebuild it (about
-  150 lines: index declarations by name, map each use to a declaring file and package, edit
-  the declaration line). Raise `DIAG_ERROR_LIMIT` in `runtime/diagnostics.c` for the run and
-  restore it.
-- **Two-step rule again**: `src/` will use the new markers, so build a host that understands them
-  first (see the next-session prompt) and cut another seed. Plan the seed publication (step 1)
-  *after* this, so one seed covers both.
-- Tests: a positive and four negative cases like `tests/visibility/shapes*.psm`; remove the P3001
-  example from `website/apps/docs/content/errors/visibility-violation.md`, which uses a
-  `private enum` as its "modifier not accepted" example, and the `modules.md` / `structs.md` /
-  CHANGELOG sentences that say enums take no marker.
+- Parser: `visibilityIsEnforced` accepts `enum`, `parseEnumDecl` stamps the default on `ENUM_DECL.i2`, and
+  `visibilityLevel` also recognises `trait` and `impl`, so a marker on either is P3001 by name.
+- Sema: `semaCheckTypeVisible` (annotation of a fieldless or payload enum), `enumCheckTemplateVisible` (a
+  generic `Wrapper<Int>`), `semaMemberAccessExpr` (a fieldless variant, and so a fieldless `match` arm),
+  `enumResolveConstruction` (a payload variant) and `semaCheckPayloadArm`. `enumDesugarToStruct` copies the
+  enum's `i2` onto the struct it builds and sets bit 4 of `STRUCT_DECL.i1` so a diagnostic says "enum".
+- Migration: `TokenType`, `NodeKind`, `TypeKind`, the `ums` enums and the `std` ones (`Result`, `Platform`,
+  `Architecture`, `Environment`, `StreamMode`, `AtomicOrder`) are `public`; every other enum in the tree is
+  used only inside its package and keeps the default.
+- Tests: `tests/test_299_enum_visibility.psm` over `tests/enum_visibility/`, and `neg_299` .. `neg_304`.
+- **Not done: a seed.** `src/` uses `public enum`, so the pinned seed cannot parse it; cut one with
+  `tools/refresh_seed.sh` and publish it with step 1 (one seed covers both).
+- Known gap, shared with structs: a generic *struct* named by annotation (`Box<Int>`) is not checked at the
+  annotation, only through its literal and fields. A generic *enum* is.
 
 ### 3. The IntelliJ plugin (`../intellij-plugin`)
 
@@ -74,9 +71,9 @@ Update in this order, running `./gradlew test` after each:
 1. `lang/PrismioWords.java` and `completion/Keywords.java`: add `is` and `not` (reserved words).
    `PrismioLexer.java` classifies by that list, so highlighting follows.
 2. `symbols/SignatureParser.java`:
-   - visibility words before `struct` (`public struct`, `repr(C)`/`packed` after the marker) and
-     before a **field** (`public x: Int`, only when a name follows, so a field called `public`
-     still parses);
+   - visibility words before `struct` (`public struct`, `repr(C)`/`packed` after the marker), before
+     `enum` (`public enum`) and before a **field** (`public x: Int`, only when a name follows, so a
+     field called `public` still parses);
    - a `fn` inside a function body: the parser skips bodies by brace matching, so nested
      functions are invisible to it. Decide whether outline/navigation should list them as
      `outer$inner` or not at all;
