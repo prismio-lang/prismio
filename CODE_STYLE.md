@@ -180,18 +180,17 @@ Do not infer architecture from one function or one file.
 
 ### Self-hosting comes first
 
-The pinned seed must be able to parse `src/`.
+The committed seed must be able to parse `src/`.
 
-The seed (a release asset, pinned in `bootstrap/seed.json` and fetched by
-`tools/fetch_seed.py`) is LLVM IR for a compiler built from an earlier tree.
+The seed (`bootstrap/seed.ll`, committed) is LLVM IR for a compiler built from an earlier tree.
 If new syntax is added to the compiler source and used immediately, the seed
 can no longer parse the source that it is supposed to rebuild.
 
 New syntax therefore lands in two steps:
 
 1. Teach the frontend the syntax. Do not use it in `src/`. Build and verify.
-2. Cut a seed with `tools/refresh_seed.ps1 -Compiler <gen2>` (`.sh` elsewhere), publish
-   it as a release asset, and commit the new `bootstrap/seed.json`.
+2. Cut a seed with `prismio seed` (from `build/gen2`; `prismio bootstrap` builds it), and have
+   the maintainer commit the new `bootstrap/seed.ll` (never before they say so).
 3. Only then use the new syntax in `src/`.
 
 ### Judge changes by emitted behavior
@@ -201,8 +200,8 @@ For behavior-preserving changes, the compiler's output is the contract.
 The full validation loop is:
 
 ```bash
-tools/bootstrap.ps1 -Compiler <known-good> -Out build/g1.exe
-tools/bootstrap.ps1 -Compiler build/g1.exe -Out build/g2.exe
+python3 tools/bootstrap.py -Compiler <known-good> -Out build/g1.exe
+python3 tools/bootstrap.py -Compiler build/g1.exe -Out build/g2.exe
 ```
 
 Then:
@@ -821,7 +820,7 @@ Before submitting compiler code, ask:
 - Is the subtle invariant preserved where it matters?
 
 ### Correctness
-- Does the pinned seed still parse `src/`?
+- Does the committed seed still parse `src/`?
 - Does the compiler bootstrap?
 - Does the next generation bootstrap?
 - Did focused and full tests pass?

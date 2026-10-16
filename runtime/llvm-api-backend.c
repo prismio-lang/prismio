@@ -5651,12 +5651,12 @@ int ir_str_data(const char *value) {
 // triple means "host" (ir_target_select's fallback), which is the one case that
 // falls through to this compiler's own platform.
 //
-// **Except in the seed.** The pinned seed (bootstrap/seed.json) is IR with no triple, so
+// **Except in the seed.** The committed seed (bootstrap/seed.ll) is IR with no triple, so
 // that any host can compile it -- and three answers here are the host's own:
 // this accessor, the console write below, and EAGAIN. A seed refreshed on macOS
 // called `__error`, which Linux does not define, and `write`, which the Windows
 // CRT does not; CI's first run past its lint gate in two weeks failed on both.
-// tools/refresh_seed.* set PRISMIO_SEED_IR, and each of the three then names a
+// tools/refresh_seed.py set PRISMIO_SEED_IR, and each of the three then names a
 // function in program_support.c that answers on the machine that compiles the
 // seed. Only the seed pays the call; every ordinary build is unchanged.
 static int seed_ir(void) {
@@ -7371,7 +7371,7 @@ typedef enum {
     // on every platform, and is the whole of why `run --jit` fails on Windows
     // and nowhere else: a Mach-O executable exports its symbols to a `dlsym` by
     // default; an ELF one does when it was linked `-rdynamic`, which
-    // tools/bootstrap.sh passes for exactly this reason; build_driver.c exports
+    // tools/bootstrap.py passes for exactly this reason; build_driver.c exports
     // the native objects' symbols by list instead (unix_export_flags), falling
     // back to `-rdynamic`; a COFF executable exports nothing at all unless it was
     // linked with an export table, so `GetProcAddress` over the running .exe

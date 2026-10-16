@@ -47,10 +47,10 @@ build/
 # when it fails to build, which is kept precisely so someone can read it.
 .prismio-*
 
-# The bootstrap seed is a release asset, not a tracked file: tools/fetch_seed.py
-# downloads it into bootstrap/ (and tools/refresh_seed.* writes one there). Only the
-# pin, bootstrap/seed.json, is tracked.
-bootstrap/*.ll
+# The bootstrap seed is tracked despite `*.ll` above, but a refreshed one is never
+# staged or committed until the maintainer says so (a commit per refresh would bloat
+# the history): .githooks/pre-commit refuses it. tools/refresh_seed.py writes it here.
+!bootstrap/seed.ll
 
 # LLVM toolchain fetched by tools/setup_llvm.py. Multi-GB, and llvm-paths.json
 # holds absolute paths that are only valid on the machine that generated it.

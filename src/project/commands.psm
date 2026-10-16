@@ -37,7 +37,6 @@ public fn prismioBuiltinCommands() -> Vec<String> {
     names.push("test")
     names.push("clean")
     names.push("check")
-    names.push("bootstrap")
     names.push("aif")
     names.push("dump-ast")
     names.push("runtime-hash")

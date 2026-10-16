@@ -1014,7 +1014,7 @@ def run_cli_usage_test():
     # 5. The compiler-development commands are in --help-all, not --help.
     res_all = run_command([str(PRISMIO_EXE), "--help-all"])
     if (res_all.returncode != 0 or "Compiler-development commands" not in res_all.stdout
-            or "dump-ast" in res_help.stdout or "bootstrap" in res_help.stdout):
+            or "dump-ast" in res_help.stdout):
         print(f"{RED}[FAIL] --help and --help-all do not split the user and "
               f"compiler-development commands{RESET}")
         return False
@@ -3788,15 +3788,15 @@ def run_object_cache_test():
 
 
 def run_bootstrap_cache_key_test():
-    """The bootstrap scripts cache toolchain objects, and the key has to be content.
+    """The bootstrap script caches toolchain objects, and the key has to be content.
 
-    `tools/bootstrap.sh` and `tools/bootstrap.ps1` compile seven C sources on
+    `tools/bootstrap.py` compiles seven C sources on
     every generation -- 1.44 s of a 2.7 s self-build -- and now reuse them from
     `$TMPDIR/prismio-objcache`. This is the one build path whose contract is that
     an edit to `runtime/*.c` reaches the next generation, so a stale entry here
     poisons a compiler generation rather than a test binary.
 
-    Both scripts therefore expose `--print-cache-key` / `-PrintCacheKey`, which
+    The script therefore exposes `--print-cache-key`, which
     computes the key and nothing else, so this can assert the four properties
     that matter in milliseconds instead of by bootstrapping:
 
@@ -3820,12 +3820,8 @@ def run_bootstrap_cache_key_test():
     problems = []
 
     repo = TEST_DIR.parent
-    if os.name == "nt":
-        script = ["powershell", "-NoProfile", "-File", str(repo / "tools" / "bootstrap.ps1")]
-        key_flag, repo_flag = "-PrintCacheKey", "-Repo"
-    else:
-        script = ["bash", str(repo / "tools" / "bootstrap.sh")]
-        key_flag, repo_flag = "--print-cache-key", "--repo"
+    script = [sys.executable, str(repo / "tools" / "bootstrap.py")]
+    key_flag, repo_flag = "--print-cache-key", "--repo"
 
     with tempfile.TemporaryDirectory(prefix="prismio-cachekey-") as tree:
         shutil.copytree(repo / "runtime", Path(tree) / "runtime")

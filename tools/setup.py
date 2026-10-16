@@ -505,11 +505,8 @@ def blocked(checks):
 
 
 def next_steps():
-    if sys.platform == "win32":
-        shell = "pwsh" if shutil.which("pwsh") else "powershell -ExecutionPolicy Bypass"
-        return (f"  {shell} -File tools/bootstrap.ps1 -Out build/gen0.exe\n"
-                "  (the README has the rest of the bootstrap)")
-    return ("  tools/bootstrap.sh --seed --out build/gen0\n"
+    out = "build/gen0.exe" if sys.platform == "win32" else "build/gen0"
+    return (f"  python3 tools/bootstrap.py --seed --out {out}\n"
             "  (the README has the rest of the bootstrap)")
 
 

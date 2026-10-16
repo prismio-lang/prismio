@@ -1,0 +1,19 @@
+#!/bin/sh
+# The bootstrap seed (bootstrap/seed.ll) is tracked, but a refreshed one is
+# not committed until the maintainer says so: it is ~20 MB of IR, and a commit per
+# refresh would bloat the history. Staging it is refused; to commit one deliberately:
+#
+#     PRISMIO_ALLOW_SEED_COMMIT=1 git commit ...
+#
+# Enable the hooks in a clone with:  git config core.hooksPath .githooks
+
+if [ "${PRISMIO_ALLOW_SEED_COMMIT:-}" = "1" ]; then exit 0; fi
+
+seed=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '^bootstrap/seed\.ll$' || true)
+if [ -n "$seed" ]; then
+    echo "error: the bootstrap seed is staged, and a refreshed seed is not committed until the maintainer says so:" >&2
+    echo "$seed" | sed 's/^/    /' >&2
+    echo "unstage it with: git restore --staged <file>" >&2
+    echo "(to commit one on purpose: PRISMIO_ALLOW_SEED_COMMIT=1 git commit ...)" >&2
+    exit 1
+fi

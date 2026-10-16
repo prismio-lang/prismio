@@ -2035,7 +2035,7 @@ static int link_program_msvc(const char* program_obj, const char* exe_file) {
         // image says otherwise, where macOS and Linux give 8 -- and the compiler is
         // deeply recursive: a seed-built compiler died with a stack overflow
         // (0xC00000FD) on its first real input, with no message. It is address
-        // space reserved, not memory committed. tools/bootstrap.ps1 sets the same
+        // space reserved, not memory committed. tools/bootstrap.py sets the same
         // value for the generations it links itself.
         snprintf(command, len,
                  "%s%s -defaultlib:libcmt -defaultlib:oldnames -nologo -Brepro -STACK:16777216%s %s%s%s",
@@ -3007,7 +3007,7 @@ static char* native_object_arguments(char** objects) {
 // as `<nm> --defined-only --extern-only --format=posix` prints them: the raw
 // text, or NULL when nm did not run. Mach-O names keep their leading `_`.
 //
-// Two parsing details, both of which cost a CI round in tools/bootstrap.ps1
+// Two parsing details, both of which cost a CI round in the Windows bootstrap
 // before they were understood. nm interleaves a `<file>:` header line per
 // object, so a whitespace split would produce `/EXPORT:lang_runtime.obj:` and
 // fail the link; the line is matched as `<name> <type>` instead, and a header
@@ -3255,9 +3255,9 @@ static void write_dsym(const char* exe_file) {
 
 int ir_jit_run_file(const char* ir_path, const char* program_name);
 
-// What the pinned seed still calls. The pinned seed (bootstrap/seed.json) is IR for an
+// What the pinned seed still calls. The committed seed (bootstrap/seed.ll) is IR for an
 // earlier compiler, linked against *these* C sources, so a function it names can
-// leave only after the seed is refreshed (tools/refresh_seed.sh). Kept, like
+// leave only after the seed is refreshed (tools/refresh_seed.py). Kept, like
 // `list_set_elem_inline`, only in a compiler built from repository sources:
 // both build.ums and the bootstrap scripts define PRISMIO_BOOTSTRAP_COMPAT, and
 // nothing a user program links does. A seed-built generation uses them only to
@@ -3289,7 +3289,7 @@ int compiler_bootstrap_executable(const char* ir_file, const char* exe_file) {
     (void)ir_file;
     (void)exe_file;
     fprintf(stderr, "ERROR: this compiler predates native targets; build the compiler with "
-                    "tools/bootstrap.sh, or with `prismio build` in its checkout.\n");
+                    "tools/bootstrap.py, or with `prismio build` in its checkout.\n");
     return 1;
 }
 

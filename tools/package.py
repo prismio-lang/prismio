@@ -328,7 +328,7 @@ def main() -> int:
         shutil.rmtree(stale)
 
     # Windows links LLVM-C.lib, an import library, so the DLL travels with the
-    # compiler -- the same copy tools/bootstrap.ps1 makes beside every
+    # compiler -- the same copy tools/bootstrap.py makes beside every
     # generation.
     if WINDOWS:
         dll = Path(llvm_bin()) / "LLVM-C.dll"

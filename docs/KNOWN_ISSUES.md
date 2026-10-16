@@ -831,14 +831,12 @@ undelivered message back and counted endpoints are `CHANNELS_PLAN.md` Phases 0 a
 
 ## Toolchain, packaging and tests
 
-**The pinned seed cannot parse `src/`.** `src/` uses visibility markers on structs and fields
+**The committed seed cannot parse `src/`.** `src/` uses visibility markers on structs and fields
 (`public struct`, `public x: T`), which the 0.1.0 seed and the old host cannot read, so a clean
-checkout cannot bootstrap and `prismio gate` / CI, which build from the pinned seed, fail until a
-seed that parses it is published. A seed was cut from this tree (2026-10-14) and a compiler built from only that file reproduces
-its own IR; it predates the definite-assignment pass and later changes, so it has to be cut again
-before publishing. The pin is in the working tree and **uncommitted**. It cannot be uploaded under the current naming without replacing the
-`v0.1.0` asset every older commit pins by SHA. The proposed fix is an optional `asset` name in
-`bootstrap/seed.json` read by `tools/fetch_seed.py` (see the plan).
+checkout cannot bootstrap and `prismio gate` / CI, which build from the seed, fail until a seed that
+parses it is committed. One was cut from this tree on 2026-10-17 (`bootstrap/seed.ll`, a compiler built from
+only that file reproduces its own IR) and is **in the working tree, uncommitted**: a refreshed seed is
+committed only when the maintainer says so (`.githooks/pre-commit` refuses it).
 
 **`prismio verify` packages `dist/` without a freestanding failure core**, so a freestanding
 program that references `prismio_panic` or `prismio_step_check` cannot link in the
@@ -891,7 +889,7 @@ and whether a boxed enum is null-tagged, are each decided by the library compile
 program. A `String?` returned by `stripPrefix` and read in a program that also reserves
 null for it answered correctly out of tree; that is one probe, not an argument.
 
-**A bare `tools/bootstrap.sh` generation in `../build` is not a complete compiler.** A compiler is a
+**A bare `tools/bootstrap.py` generation in `../build` is not a complete compiler.** A compiler is a
 layout (`bin/`, `lib/runtime/*.bc`, `stdlib/*.plib`), not a file, and a generation builds the
 compiler and nothing else. `prismio build` leaves the full toolchain beside the project host;
 point `tests/test_runner.py --compiler` at that, or at a packaged `dist`, or package the generation

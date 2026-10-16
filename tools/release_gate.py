@@ -103,14 +103,9 @@ def last_line(text: str) -> str:
 
 
 def bootstrap(compiler: Path, out: Path) -> subprocess.CompletedProcess:
-    """tools/bootstrap.sh and its PowerShell twin are the one pair that stays a
-    shell script: they hand-link a compiler generation, which is the step that
+    """tools/bootstrap.py hand-links a compiler generation, which is the step that
     must not go through any existing binary's idea of the toolchain."""
-    if WINDOWS:
-        shell = shutil.which("pwsh") or shutil.which("powershell")
-        return run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                    REPO / "tools" / "bootstrap.ps1", "-Compiler", compiler, "-Out", out])
-    return run(["bash", REPO / "tools" / "bootstrap.sh",
+    return run([sys.executable, REPO / "tools" / "bootstrap.py",
                 "--compiler", compiler, "--out", out])
 
 
@@ -164,23 +159,17 @@ def check_rc_reproduces(rc: Path, generation_one_ir: Path, work: Path) -> None:
 
 
 def check_seed(rc: Path, work: Path) -> None:
-    """The pinned release seed still builds a compiler from this tree -- the path
-    a machine with no Prismio at all takes, and the one CLAUDE.md's two-step rule
-    for new syntax protects. It fetches the seed the way that machine does
-    (tools/fetch_seed.py, checked against bootstrap/seed.json). It used to run
+    """The committed seed (bootstrap/seed.ll) still builds a compiler from this tree --
+    the path a machine with no Prismio at all takes, and the one CLAUDE.md's two-step
+    rule for new syntax protects. It bootstraps from the seed the way that machine
+    does. It used to run
     `rc bootstrap`, which asked the RC rather than the seed, and that command is
     gone."""
     step("seed agreement")
     progress("building from the seed")
-    if WINDOWS:
-        shell = shutil.which("pwsh") or shutil.which("powershell")
-        result = run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                      REPO / "tools" / "bootstrap.ps1",
-                      "-Out", work / f"seedchk{EXE}"])
-    else:
-        result = run(["bash", REPO / "tools" / "bootstrap.sh", "--seed",
-                      "--out", work / f"seedchk{EXE}"])
-    ok("the pinned seed builds the compiler") if result.returncode == 0 \
+    result = run([sys.executable, REPO / "tools" / "bootstrap.py", "--seed",
+                  "--out", work / f"seedchk{EXE}"])
+    ok("the committed seed builds the compiler") if result.returncode == 0 \
         else bad(last_line(result.stdout + result.stderr))
 
 

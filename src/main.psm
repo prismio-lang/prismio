@@ -471,16 +471,6 @@ fn main() -> Int {
     // that comparison is the only real defence against a transfer function that
     // is subtly wrong and yields a silently wrong tier rather than a crash.
     if (first.equals("aif")) { return cliAif() }
-    // A compiler is built like any other program: from its project's build.ums,
-    // which names its C sources. The command that used to build one from a table
-    // compiled into every compiler is gone, and says where it went.
-    if (first.equals("bootstrap")) {
-        diag_error_code("P1034", "`prismio bootstrap` has been removed")
-        diag_note("build the compiler from its checkout with `prismio build`; its build.ums names the sources")
-        diag_note("with no compiler at all, tools/bootstrap.sh --seed (bootstrap.ps1 on Windows) builds one from the release seed it fetches")
-        return 1
-    }
-
     if (first.equals("init")) {
         if (process.args.count > 3) {
             diag_error_code("P1036", "`init` takes at most one name")

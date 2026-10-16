@@ -26,7 +26,7 @@ Prismio is a self-hosted systems programming language. The compiler — the lexe
 
 The LLVM backend and the runtime are C, under `runtime/` (see [C_CODE_STYLE.md](C_CODE_STYLE.md)); you only need to touch them for a backend or runtime change. The compiler produces LLVM IR, optimises and generates machine code in process with the LLVM it links (AArch64, X86 and WebAssembly), and hands the object to the system's linker.
 
-A seed, published as a release asset and pinned in `bootstrap/seed.json`, builds the first compiler on a machine that has none.
+A seed, `bootstrap/seed.ll`, builds the first compiler on a machine that has none.
 
 ---
 
@@ -71,26 +71,27 @@ is written in itself, so a build always takes an existing compiler as input.
 From a fresh checkout with no `prismio` anywhere:
 
 ```bash
-tools/bootstrap.sh --seed --out build/gen0
+python3 tools/bootstrap.py --seed --out build/gen0
 ```
 
 The seed is LLVM IR for a compiler built from an earlier tree. It is the only way out
-of the cycle on a host that has none. It is not in the repository: `--seed` runs
-`tools/fetch_seed.py`, which downloads the release asset pinned in `bootstrap/seed.json`,
-checks its SHA-256, and caches it in `bootstrap/` (ignored by git).
+of the cycle on a host that has none. It is `bootstrap/seed.ll`, committed with the tree,
+and `--seed` reads it. A refreshed seed is never staged or committed until the maintainer
+says so (`.githooks/pre-commit` refuses it; enable the hooks with
+`git config core.hooksPath .githooks`).
 
 After that, one generation per command — about **4 seconds**, because the C
 runtime objects are cached and only the changed Prismio is recompiled:
 
 ```bash
-tools/bootstrap.sh --compiler build/gen0 --out build/gen1
+python3 tools/bootstrap.py --compiler build/gen0 --out build/gen1
 ```
 
 ### The loop after a change
 
 ```bash
-tools/bootstrap.sh --compiler build/gen0 --out build/gen1
-tools/bootstrap.sh --compiler build/gen1 --out build/gen2
+python3 tools/bootstrap.py --compiler build/gen0 --out build/gen1
+python3 tools/bootstrap.py --compiler build/gen1 --out build/gen2
 
 build/gen1 build src/main.psm -o /tmp/a.ll
 build/gen2 build src/main.psm -o /tmp/b.ll
@@ -169,15 +170,15 @@ exactly those reasons.
 
 ### If you changed the syntax
 
-New syntax lands in **two commits**, and the order is not negotiable: the pinned
+New syntax lands in **two commits**, and the order is not negotiable: the committed
 seed has to be able to parse `src/`, so teach the frontend first without using the
-syntax in `src/`, then cut a seed with `tools/refresh_seed.sh --compiler build/gen2`
-(`tools/refresh_seed.ps1` on Windows), publish it as a release asset and commit the
-new `bootstrap/seed.json`, and only then use the syntax. Skipping this leaves a fresh
-clone unable to build. See [CODE_STYLE.md](CODE_STYLE.md).
+syntax in `src/`, then run `prismio bootstrap` and cut a seed with `prismio seed`,
+have the maintainer commit it, and only then use
+the syntax. Skipping this leaves a fresh clone unable to build. See
+[CODE_STYLE.md](CODE_STYLE.md).
 
-CI only checks that the pinned seed can build the tree, not that it is recent, so a
-seed that still parses `src/` stays pinned until something needs a newer one.
+CI only checks that the committed seed can build the tree, not that it is recent, so a
+seed that still parses `src/` stays until something needs a newer one.
 
 ---
 

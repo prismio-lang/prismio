@@ -1,4 +1,4 @@
-# Bootstrap the compiler from the release seed and prove it reaches a fixed
+# Bootstrap the compiler from the committed seed and prove it reaches a fixed
 # point, then run the test suite against the compiler that produced it.
 #
 # The fixpoint check is the important one and it is cheap: a compiler that does
@@ -81,21 +81,15 @@ jobs:
         run: python -c "import json;print(json.load(open('third_party/llvm-paths.json'))['bin'])" >> "$GITHUB_PATH"
 
 
-      # The seed is a release asset, not a tracked file: the bootstrap fetches it
-      # (tools/fetch_seed.py) and checks it against the SHA-256 in bootstrap/seed.json.
+      # The seed is bootstrap/seed.ll, committed with the tree: the bootstrap reads it.
       - name: Bootstrap from the seed
         shell: bash
         run: |
           set -e
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            pwsh -File tools/bootstrap.ps1 -Out build/gen0.exe
-            pwsh -File tools/bootstrap.ps1 -Compiler build/gen0.exe -Out build/gen1.exe
-            pwsh -File tools/bootstrap.ps1 -Compiler build/gen1.exe -Out build/gen2.exe
-          else
-            tools/bootstrap.sh --seed --out build/gen0
-            tools/bootstrap.sh --compiler build/gen0 --out build/gen1
-            tools/bootstrap.sh --compiler build/gen1 --out build/gen2
-          fi
+          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+          python tools/bootstrap.py --seed --out "build/gen0$EXT"
+          python tools/bootstrap.py --compiler "build/gen0$EXT" --out "build/gen1$EXT"
+          python tools/bootstrap.py --compiler "build/gen1$EXT" --out "build/gen2$EXT"
 
       # gen1 and gen2 must agree on the IR they produce for the compiler. gen0
       # is excluded: it was built from the seed, which may predate the current
@@ -173,11 +167,11 @@ jobs:
       # A seed that can no longer build the tree strands anyone starting from a
       # fresh checkout. The bootstrap above already proved this one builds it; this
       # checks the other property a seed has to keep.
-      - name: Check the pinned seed is target-neutral
+      - name: Check the committed seed is target-neutral
         shell: bash
         run: |
           set -e
-          SEED="$(python tools/fetch_seed.py --check)"
+          SEED=bootstrap/seed.ll
           grep -q '^target ' "$SEED" && {
             echo "seed carries a target directive; it must stay target-neutral"; exit 1; }
           echo "seed is target-neutral"

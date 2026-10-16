@@ -91,20 +91,12 @@ def manifest_native_sources():
     return names
 
 
-def bootstrap_ps1_list():
-    text = read(TOOLS / "bootstrap.ps1")
-    m = re.search(r"\$runtimeSources\s*=\s*@\((.*?)\)", text, re.S)
+def bootstrap_list():
+    text = read(TOOLS / "bootstrap.py")
+    m = re.search(r"^RUNTIME_SOURCES\s*=\s*\[(.*?)\]", text, re.S | re.M)
     if not m:
-        raise Failure("could not find $runtimeSources in bootstrap.ps1")
-    return re.findall(r"'([^']+)'", m.group(1))
-
-
-def bootstrap_sh_list():
-    text = read(TOOLS / "bootstrap.sh")
-    m = re.search(r'RUNTIME_SOURCES="([^"]*)"', text)
-    if not m:
-        raise Failure("could not find RUNTIME_SOURCES in bootstrap.sh")
-    return m.group(1).split()
+        raise Failure("could not find RUNTIME_SOURCES in bootstrap.py")
+    return re.findall(r'"([^"]+)"', m.group(1))
 
 
 def package_runtime_bitcode():
@@ -168,8 +160,7 @@ def main() -> int:
             if p.name not in IGNORED_SOURCES
         )
         compare("runtime/*.c on disk vs build.ums native sources", on_disk, sorted(compiler))
-        compare("tools/bootstrap.ps1 $runtimeSources", bootstrap_ps1_list(), compiler)
-        compare("tools/bootstrap.sh RUNTIME_SOURCES", bootstrap_sh_list(), compiler)
+        compare("tools/bootstrap.py RUNTIME_SOURCES", bootstrap_list(), compiler)
 
         compare("tools/package.py RUNTIME_BITCODE", package_runtime_bitcode(), runtime)
         c_floor, py_floor = macos_floors()

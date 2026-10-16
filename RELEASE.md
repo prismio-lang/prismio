@@ -32,13 +32,13 @@ git status --short                   # only the intended files; no stray .prismi
 ```
 
 The **seed** is what a new machine builds the compiler from. It is not part of the
-tree: it is a release asset, and `bootstrap/seed.json` pins which one by version and
-SHA-256 (`tools/fetch_seed.py` downloads and checks it). The gate builds from it, so a
-commit is releasable only while the pinned seed can still parse `src/`. A new seed is
+tree's own file, `bootstrap/seed.ll`, and a refreshed one is committed only when the
+maintainer says so (`.githooks/pre-commit` refuses it). The gate builds from it, so a
+commit is releasable only while the committed seed can still parse `src/`. A new seed is
 cut *after* a tag, from the compiler that was tagged (step 5), so there is nothing to
 refresh before the gate, **provided `src/` still parses with it**. When it does not (0.2.0: `src/`
-uses visibility markers), the gate and CI cannot pass until a seed that parses `src/` is published, and
-`tools/refresh_seed.sh` followed by an upload and a committed pin has to come first; see
+uses visibility markers), the gate and CI cannot pass until a seed that parses `src/` is committed, and
+`tools/refresh_seed.py` followed by the maintainer's commit has to come first; see
 `docs/KNOWN_ISSUES.md` for how that was left. `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `manifest.json`,
 `graph.html`) is committed with the change that moved it.
 
@@ -172,18 +172,16 @@ gh release create v0.1.0 \
     dist/release/prismio-0.1.0-*.sha256
 ```
 
-**Then cut the release's seed**, from the compiler that was just tagged. It is a
-release asset like the archives, and the next release's `bootstrap/seed.json` pins it:
+**Then cut the release's seed**, from the compiler that was just tagged. The next release
+builds from it:
 
 ```bash
-tools/refresh_seed.sh --compiler <the tagged compiler>    # .ps1 on Windows; writes bootstrap/prismio-seed-0.1.0.ll and the pin
-gh release upload v0.1.0 bootstrap/prismio-seed-0.1.0.ll
-git add bootstrap/seed.json && git commit -m "bootstrap: pin the 0.1.0 seed"
+python3 tools/refresh_seed.py --compiler <the tagged compiler>    # writes bootstrap/seed.ll
+# committing it is the maintainer's call: PRISMIO_ALLOW_SEED_COMMIT=1 git add bootstrap/seed.ll && git commit ...
 ```
 
-The seed is never in the tagged tree (its hash cannot be known before it exists), so a
-tag always builds from the *previous* release's seed, and the gate has already proved
-that one can parse `src/`.
+The seed cut from a tag is committed after the tag, so a tag always builds from the
+*previous* release's seed, and the gate has already proved that one can parse `src/`.
 
 **A `v1.0.0` tag already exists in this repository and is older than this work.**
 It is not what 0.1.0 releases from and is not touched here. Deleting a published

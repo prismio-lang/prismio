@@ -37,7 +37,7 @@ targets {
         // `run --jit` resolves a jitted module's runtime calls in this process.
         exportDynamic = true
         native {
-            // Must match RUNTIME_SOURCES in tools/bootstrap.sh and bootstrap.ps1;
+            // Must match RUNTIME_SOURCES in tools/bootstrap.py;
             // tools/check_source_lists.py checks that it does.
             source("runtime/lang_runtime.c", "runtime/program_support.c",
             "runtime/build_driver.c", "runtime/ir_symbols.c",
@@ -81,6 +81,31 @@ commands {
     command("bench") {
         description = "Run the benchmark suites: hosted (Prismio, C++, Rust) and freestanding (Prismio, C, Rust)"
         run("benchmarks/run.py", "--compiler", ".prismio/build/release/prismio", args)
+    }
+
+    // The compiler from nothing but this checkout: generation 0 is compiled from the
+    // committed seed (bootstrap/seed.ll), then each generation builds the next from
+    // src/. For a host with no Prismio, or to prove the seed still parses the tree;
+    // `prismio build` is the loop for a machine that has one. Flags are
+    // tools/bootstrap.py's: run it directly for one generation (`--compiler`,
+    // `--seed [ir]`, `--out`, `--keep`, `--promote`). `prismio bootstrap --promote` also
+    // installs gen2 as this checkout's local toolchain (`.prismio/build/release/prismio`
+    // and the debug compiler), the way to take a src/ change the old host cannot build.
+    command("bootstrap") {
+        description = "Build the compiler from the committed seed: gen0 from bootstrap/seed.ll, then gen1 and gen2"
+        run("tools/bootstrap.py", "--seed", "--out", "build/gen0")
+        run("tools/bootstrap.py", "--compiler", "build/gen0", "--out", "build/gen1")
+        run("tools/bootstrap.py", "--compiler", "build/gen1", "--out", "build/gen2", args)
+    }
+
+    // Cuts bootstrap/seed.ll from `build/gen2` (run `prismio bootstrap` first), then
+    // proves a compiler built from only that file works. **The refreshed seed is not
+    // staged or committed until the maintainer says so** -- .githooks/pre-commit
+    // refuses it, and a commit per refresh would bloat the history.
+    command("seed") {
+        description = "Cut bootstrap/seed.ll from build/gen2 and check it bootstraps (left uncommitted)"
+        run("tools/refresh_seed.py", "--compiler", "build/gen2")
+        run("tools/bootstrap.py", "--seed", "--out", "build/seedcheck")
     }
 
     // Through tools/run_suite.py, which tests a *copy* of the compiler.

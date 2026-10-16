@@ -732,13 +732,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   A dividend whose range is not bounded, or does not fit `Int`, keeps the `srem`.
 - Compiling the compiler's own source is about 3% faster (0.677 s → 0.658 s, median of
   seven interleaved runs).
-- The bootstrap seed is no longer tracked in git. It is the `prismio-seed-<version>.ll`
-  asset of a release, pinned by version and SHA-256 in `bootstrap/seed.json`;
-  `tools/fetch_seed.py` downloads it into `bootstrap/` (ignored), checks the hash and
-  reuses the file, and `tools/bootstrap.*` run it for `--seed`. `tools/refresh_seed.*`
-  cut a seed, update the pin and print the `gh release upload` that publishes it. The
-  CI step that required the committed seed to match `src/` is gone: a seed is the
-  compiler as of a release, not of the working tree.
+- The bootstrap seed is `bootstrap/seed.ll`, tracked by git, and `tools/bootstrap.py` reads it for
+  `--seed`: no release asset, no SHA-256 pin (`bootstrap/seed.json`) and no downloader
+  (`tools/fetch_seed.py`). `tools/refresh_seed.py` writes it. A refreshed seed is never staged or
+  committed until the maintainer says so -- at ~20 MB, a commit per refresh would bloat the history --
+  and `.githooks/pre-commit` refuses it (`PRISMIO_ALLOW_SEED_COMMIT=1` overrides;
+  `git config core.hooksPath .githooks` enables it). The CI step that required the committed seed
+  to match `src/` is gone: a seed is the compiler as of a release, not of the working tree.
+  `tools/bootstrap.py` and `tools/refresh_seed.py` replace the `.sh`/`.ps1` pairs (one script on every
+  platform), and two project commands wrap them: `prismio bootstrap` builds gen0 from the seed, then gen1 and gen2,
+  and `prismio seed` cuts `bootstrap/seed.ll` from `build/gen2` and checks it bootstraps. `--promote` (on the script, or `prismio bootstrap --promote`) then installs the last generation as the checkout's local toolchain by running its own `build --release` and `build`, which writes the trust stamp a copied binary would lack.
+  `bootstrap` is no longer a reserved verb: the stub that answered `prismio bootstrap` with "has been removed"
+  (P1034) is gone and the name is free for a project command, so a `build.ums` that declares one needs a
+  compiler from this tree (an older install rejects it with P1062).
 - The project host in `build.ums` and `sandbox/build.ums` is the release build
   (`.prismio/build/release/prismio`, built by `prismio build --release`), and the
   `release` and `bench` commands use it. `verify`, `gate` and `package` still name the

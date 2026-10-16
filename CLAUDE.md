@@ -14,6 +14,13 @@ rather than a leak — corruption, not lost bytes:
   pointer into `argv` (as `cli_arg` did) is `alias`; declaring it `produce` hands
   `argv` to the deallocator.
 
+## The seed is tracked but never committed on refresh
+
+`bootstrap/seed.ll` is tracked by git, but a refreshed one is **never staged or committed until the
+maintainer says so**: ~20 MB of IR per refresh would bloat the history. `.githooks/pre-commit` refuses a staged seed (`git config core.hooksPath
+.githooks` enables it; `PRISMIO_ALLOW_SEED_COMMIT=1` overrides, only on the maintainer's word). Commit by
+naming paths, never `git add -A` / `git commit -a`, and leave `bootstrap/` out.
+
 ## Runtime surface
 
 [The runtime surface](https://developers.prismio.org/runtime/supported-surface) is the map of what a program can call. Applications use
@@ -33,10 +40,9 @@ cd ../website/apps/docs && PRISMIO_INTERNAL_HOSTED=1 PRISMIO=<toolchain>/bin/pri
 Two rules from it are load-bearing enough to repeat here, because breaking either one
 fails a generation later with nothing pointing at the cause:
 
-- **The pinned seed must be able to parse `src/`.** The seed is a release asset, not a
-  tracked file (`bootstrap/seed.json` pins it; `tools/fetch_seed.py` fetches it). New
-  syntax lands in two steps — teach the frontend, cut and publish a seed
-  (`tools/refresh_seed.sh`) and commit the new pin, *then* use it in `src/`.
+- **The committed seed must be able to parse `src/`.** The seed is `bootstrap/seed.ll`. New
+  syntax lands in two steps — teach the frontend, cut a seed (`prismio seed`) and
+  have the maintainer commit it, *then* use it in `src/`.
 - **A behaviour-preserving change must produce byte-identical compiler output** for
   every program in `tests/` and `benchmarks/hosted/prismio/`. Verify with two generations to a
   fixpoint, the full suite, and `tools/aif_differential.py`.
@@ -48,15 +54,18 @@ Everything is a project command from `build.ums`, run from the checkout:
 `prismio suite` (fast loop), `prismio verify` (suite, source lists, externs, AIF
 differential), `prismio gate` (lint, then the release gate on a packaged candidate;
 run it before every push; CI does not run on push, it is started by hand with `gh workflow run ci.yml --ref main`), `prismio release` (the archive and `.sha256` for this
-host), `prismio bench`. The `.py` and `.sh` files under `tools/` are what they call;
-reach for them directly only when a command cannot (bootstrapping, the seed).
+host), `prismio bench`, `prismio bootstrap` (gen0 from `bootstrap/seed.ll`, then gen1 and gen2; `--promote` also installs gen2 as
+the local toolchain, `.prismio/build/release/prismio`) and
+`prismio seed` (cut `bootstrap/seed.ll` from `build/gen2` and check it bootstraps; left uncommitted). The
+`.py` files under `tools/` are what they call; reach for them directly only when a command cannot (a
+machine with no `prismio` yet: `python3 tools/bootstrap.py --seed --out build/gen0`).
 
 Four hazards, each of which has cost a session:
 
 - **Never run `prismio build`, or edit `src/`, while `tools/run_suite.py` runs.** Its
   ums fixture moves the host aside, and some fixtures compile the working tree.
 - **A feature `src/` needs must be installed as the host first.** Teach the compiler,
-  build it, cut and publish a seed (`tools/refresh_seed.sh`), install that generation as the
+  build it, cut a seed (`prismio seed`), install that generation as the
   host, *then* use the feature in `src/`. The old host cannot build a tree that needs
   something it lacks.
 - **Name a test compiler anything but `prismio`.** It is a launcher that forwards by
@@ -70,8 +79,8 @@ Four hazards, each of which has cost a session:
 ## Before a release
 
 `graphify-out/` is refreshed *before* the gate, in the commit that gets tested:
-`prismio build` twice, `graphify update .`. The seed is not: it is cut after the tag and
-uploaded to the release (`tools/refresh_seed.sh`), and the next commit pins it. The full
+`prismio build` twice, `graphify update .`. The seed is not: it is cut after the tag
+(`prismio seed`), and committed only when the maintainer says so. The full
 procedure is `RELEASE.md`.
 
 ## graphify

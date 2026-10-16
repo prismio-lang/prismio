@@ -212,11 +212,7 @@ def build_release_compiler(host: Path) -> Path:
 
 
 def bootstrap(compiler: Path, out: Path) -> subprocess.CompletedProcess:
-    if WINDOWS:
-        shell = shutil.which("pwsh") or shutil.which("powershell")
-        return run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                    REPO / "tools" / "bootstrap.ps1", "-Compiler", compiler, "-Out", out])
-    return run(["bash", REPO / "tools" / "bootstrap.sh",
+    return run([sys.executable, REPO / "tools" / "bootstrap.py",
                 "--compiler", compiler, "--out", out])
 
 

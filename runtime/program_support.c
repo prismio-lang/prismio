@@ -2243,12 +2243,12 @@ int prismio_rt_color_supported(int fd) {
 
 // The seed's three answers
 //
-// The pinned seed (bootstrap/seed.json) carries no triple, so it can be compiled on any
+// The committed seed (bootstrap/seed.ll) carries no triple, so it can be compiled on any
 // host, and three things libc spells per platform cannot be written into it:
 // errno's accessor (`__error`, `__errno_location`, `_errno`), the console write
 // (`write`, `_write`, with different word sizes) and EAGAIN (35 on Darwin, 11
 // elsewhere). A compiler emitting the seed (PRISMIO_SEED_IR, set by
-// tools/refresh_seed.*) calls these instead; see errno_location_symbol in
+// tools/refresh_seed.py) calls these instead; see errno_location_symbol in
 // llvm-api-backend.c. Nothing else calls them, and a program's own build names
 // libc directly, so they cost an ordinary program nothing.
 #include <errno.h>

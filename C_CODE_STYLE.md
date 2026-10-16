@@ -113,7 +113,7 @@ Splitting a runtime source is not a free operation — the file list is duplicat
 in the bootstrap and packaging paths and checked against the driver table:
 
 1. `prismio_toolchain_files[]` in `runtime/build_driver.c`
-2. `RUNTIME_SOURCES` in `tools/bootstrap.sh` and `tools/bootstrap.ps1`
+2. `RUNTIME_SOURCES` in `tools/bootstrap.py`
 3. `RUNTIME_BITCODE` / `LIBRARIES` in `tools/package.py`
 4. `tools/check_source_lists.py`, which asserts those lists agree
 
@@ -204,8 +204,8 @@ generation:
 
 ```bash
 python3 tools/check_source_lists.py
-bash tools/bootstrap.sh --compiler <known-good> --out build/g1
-bash tools/bootstrap.sh --compiler build/g1 --out build/g2
+python3 tools/bootstrap.py --compiler <known-good> --out build/g1
+python3 tools/bootstrap.py --compiler build/g1 --out build/g2
 ```
 
 `g1` and `g2` must emit identical IR for `src/main.psm`. Then
@@ -276,13 +276,12 @@ The file list is duplicated in the following places, and
 `tools/check_source_lists.py` names each one it finds disagreeing:
 
 1. `prismio_toolchain_files[]` in `runtime/build_driver.c`
-2. `RUNTIME_SOURCES` in `tools/bootstrap.sh` and `tools/bootstrap.ps1`
+2. `RUNTIME_SOURCES` in `tools/bootstrap.py`
 3. `RUNTIME_BITCODE` and `LIBRARIES` in `tools/package.py`
 
 Run `check_source_lists.py`, then bootstrap two generations before believing it.
 
 **A failing compile inside the parallel loop reports as something else.**
-`bootstrap.sh` compiles the misses in background jobs and its `EXIT` trap removes
-the work directory, so the first error you see is a *different* file failing to
-rename its object into a directory that no longer exists. Re-run with `--keep` to
+`bootstrap.py` compiles the misses in parallel and removes its work directory on exit,
+so a failure can be reported after the directory is gone. Re-run with `--keep` to
 see the real error.

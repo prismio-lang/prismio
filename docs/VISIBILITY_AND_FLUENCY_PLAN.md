@@ -21,26 +21,15 @@ both doc apps' snippets compile (296 + 50). What shipped is in the CHANGELOG's 0
 
 ## Next session, in order
 
-### 1. Publish a seed that parses `src/` (needs the user's go-ahead)
+### 1. Commit a seed that parses `src/` (needs the user's go-ahead)
 
-`src/` uses visibility markers, so the pinned 0.1.0 seed cannot parse it and `prismio gate` /
-CI (which bootstrap from the pinned seed) fail. A seed was cut with `tools/refresh_seed.sh`
-(18.6 MB) and a compiler built from only that file reproduces the IR of `src/main.psm`. It predates
-the definite-assignment pass (`sema/assign.psm`), so **cut it again** before publishing. `bootstrap/seed.json` holds the new
-pin **in the working tree, uncommitted**, and `bootstrap/prismio-seed-0.1.0.ll` is the new file
-(the old cached seed was overwritten; `fetch_seed.py` re-downloads it when the pin is restored).
-
-The catch: the pin scheme derives the URL from the version
-(`v{version}/prismio-seed-{version}.ll`), and `PRISMIO_VERSION` is still `0.1.0`, so uploading
-replaces the asset that every older commit pins by SHA. Do not use `--clobber`.
-
-Proposed: let `seed.json` carry an optional `asset` name.
-
-- `tools/fetch_seed.py`: use `pin.get("asset", seed_name(version))` for the URL and the cache name.
-- `tools/refresh_seed.sh` and `.ps1`: take `--asset <name>` and write it into the pin.
-- Cut it as `prismio-seed-0.1.0-r2.ll`, `gh release upload v0.1.0 <file>` (no clobber), commit the
-  pin, and run `tools/bootstrap.sh --seed --out build/seedcheck` from a clean `bootstrap/` cache.
-- Add a test for the override beside the existing seed tests, and update RELEASE.md's seed section.
+`src/` uses visibility markers, so the committed seed cannot parse it until a new one is committed and `prismio gate` /
+CI (which bootstrap from `bootstrap/seed.ll`) fail. The seed is a tracked file now -- no release asset, no pin
+(`seed.json`) and no downloader (`fetch_seed.py` is gone) -- but **a refreshed seed is not staged or
+committed until the maintainer says so**: `.githooks/pre-commit` refuses it, since a commit per refresh would
+bloat the history. A seed cut from this tree is in the working tree as `bootstrap/seed.ll`, uncommitted; cut it again
+from the final compiler first (`python3 tools/refresh_seed.py --compiler <gen>`), then the maintainer commits it with
+`PRISMIO_ALLOW_SEED_COMMIT=1`, and `python3 tools/bootstrap.py --seed --out build/seedcheck` from a clean checkout proves it.
 
 ### 2. Visibility markers on enums (done, uncommitted)
 
@@ -58,8 +47,8 @@ the return value of `enumDefaultVisibility` in `src/parse/decl.psm`, so changing
   `Architecture`, `Environment`, `StreamMode`, `AtomicOrder`) are `public`; every other enum in the tree is
   used only inside its package and keeps the default.
 - Tests: `tests/test_299_enum_visibility.psm` over `tests/enum_visibility/`, and `neg_299` .. `neg_304`.
-- **Not done: a seed.** `src/` uses `public enum`, so the pinned seed cannot parse it; cut one with
-  `tools/refresh_seed.sh` and publish it with step 1 (one seed covers both).
+- **Not done: a seed.** `src/` uses `public enum`, so the committed seed cannot parse it; cut one with
+  `tools/refresh_seed.py` and commit it with step 1 (one seed covers both).
 - Known gap, shared with structs: a generic *struct* named by annotation (`Box<Int>`) is not checked at the
   annotation, only through its literal and fields. A generic *enum* is.
 

@@ -315,7 +315,7 @@ public fn dispatchToUmsHost() -> Int {
         if (compiler_check_host_abi(host) != 0) {
             diag_error_code("P1066", "the rebuilt project compiler reports a different generation")
             diag_note("the installed compiler is older than this project's sources")
-            diag_note("bootstrap one from source: tools/bootstrap.sh --seed --out build/g1")
+            diag_note("bootstrap one from source: python3 tools/bootstrap.py --seed --out build/g1")
             return 1
         }
     }
