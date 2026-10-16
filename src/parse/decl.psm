@@ -201,6 +201,21 @@ impl Parser {
 
 
 impl Parser {
+    // `cold` or `inline` directly before an `impl` method's `fn`, or before the other of
+    // the two: `cold inline fn` is parsed so that the conflict is reported as itself.
+    private fn atMethodMarker(self, word: String) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        if (self.current().value.equals(word) == false) { return false }
+        let next = self.peek()
+        if (next.type == TokenType.IDENTIFIER) {
+            return next.value.equals("cold") or next.value.equals("inline")
+        }
+        return next.type == TokenType.KEYWORD and next.value.equals("fn")
+    }
+}
+
+
+impl Parser {
     // `from std import {io, vec}` -- an import with the directory first.
     //
     // **Contextual**, as `cold` and `workload` are: `from` is not reserved, and at
@@ -250,7 +265,7 @@ impl Parser {
             return next.type == TokenType.SEPARATOR and next.value.equals("(")
         }
         if (word.equals("export") == false and word.equals("naked") == false
-            and word.equals("inline") == false) { return false }
+            and word.equals("inline") == false and word.equals("cold") == false) { return false }
         if (next.type == TokenType.KEYWORD) { return next.value.equals("fn") }
         if (next.type != TokenType.IDENTIFIER) { return false }
         return self.isFnModifierWord(next.value) or next.value.equals("cold")
@@ -1640,10 +1655,24 @@ impl Parser {
             let methodVisibility = self.visibilityLevel()
             if (methodVisibility >= 0) { self.advance() }
 
-            let methodIsCold = self.atColdDecl()
-            if (methodIsCold) { self.advance() }
-            let methodIsInline = self.atInlineDecl()
-            if (methodIsInline) { self.advance() }
+            let mut methodIsCold = false
+            let mut methodIsInline = false
+            let mut atMarker = true
+            while (atMarker) {
+                atMarker = false
+                if (self.atMethodMarker("cold")) {
+                    methodIsCold = true
+                    atMarker = true
+                    self.advance()
+                } else if (self.atMethodMarker("inline")) {
+                    methodIsInline = true
+                    atMarker = true
+                    self.advance()
+                }
+            }
+            if (methodIsCold and methodIsInline) {
+                self.error("a function cannot be both `cold` and `inline`")
+            }
             let methodIsAsync = self.atAsyncDecl()
             if (methodIsAsync) { self.advance() }
             if (self.checkVal(TokenType.KEYWORD, "fn") == false and self.atPropDecl() == false) {

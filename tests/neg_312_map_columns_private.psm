@@ -1,0 +1,13 @@
+// expect-error: field `entryKeys` of `Map$Int$Int` is private to the file that declares it
+// expect-error: aborting due to 1 previous error
+// A Map's columns are private to std/map.psm: its `__builtin_assume`s rest on the
+// invariants that file keeps (`slots.length == mask + 1`, every slot's entry below
+// `entryKeys.length`), and a program that pushed to or truncated a column would break
+// them where the compiler no longer checks.
+
+import std.map
+
+fn main() -> Int {
+    let m = Map<Int, Int>()
+    return m.entryKeys.length
+}

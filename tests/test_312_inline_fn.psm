@@ -1,0 +1,61 @@
+// `inline fn`: a function inlined into every caller (LLVM's `alwaysinline`,
+// Rust's `#[inline(always)]`, src/parse/decl.psm). The marker moves code, never
+// behaviour, so this checks that every placement parses and computes the same
+// thing it would unmarked -- run_inline_fn_test reads the IR for the attribute.
+//
+// `inline` is contextual: a local, a parameter and a function may all be named
+// `inline`, and none of them is a marker because none is directly before `fn`.
+
+import std.io
+import std.vec
+
+inline fn square(x: Int) -> Int { return x * x }
+
+private inline fn addOne(x: Int) -> Int { return x + 1 }
+
+// A generic inline function: the marker has to survive monomorphisation.
+inline fn firstOr<T>(values: Vec<T>, fallback: T) -> T {
+    if (values.length == 0) { return fallback }
+    return values[0]
+}
+
+// An inline function that loops, and one that calls another.
+inline fn sumTo(n: Int) -> Int {
+    let mut total = 0
+    for i in 0..<n { total = total + addOne(i) }
+    return total
+}
+
+fn inline(inline: Int) -> Int {
+    return inline + 10
+}
+
+struct Counter { value: Int }
+
+impl Counter {
+    inline fn bumped(self) -> Int { return self.value + 1 }
+    private inline fn doubled(self) -> Int { return self.value * 2 }
+    fn quadrupled(self) -> Int { return self.doubled() * 2 }
+    fn reset(self) -> Int { return 0 }
+}
+
+// Combines with the other function modifiers, in any order.
+export inline fn exported(x: Int) -> Int { return x - 1 }
+
+fn plain(x: Int) -> Int { return x + 100 }
+
+fn main() -> Int {
+    let inline = 4
+    let counter = Counter { value: inline }
+    if (square(inline) != 16) { return 1 }
+    if (sumTo(4) != 10) { return 2 }
+    let empty: Vec<Int> = []
+    if (firstOr(empty, 7) != 7) { return 3 }
+    let two: Vec<Int> = [9, 8]
+    if (firstOr(two, 7) != 9) { return 4 }
+    if (counter.bumped() != 5 or counter.quadrupled() != 16 or counter.reset() != 0) { return 5 }
+    if (inline(inline) != 14) { return 6 }
+    if (exported(1) != 0 or plain(1) != 101) { return 7 }
+    println("ok")
+    return 0
+}

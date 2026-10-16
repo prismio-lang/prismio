@@ -1,0 +1,11 @@
+// expect-error: `__builtin_assume` is internal to the standard library
+// expect-error: aborting due to 1 previous error
+// A program cannot call `__builtin_assume`. It promises LLVM a fact and is undefined
+// when the fact is false -- std makes it for invariants of its own data (std/map.psm),
+// and a program that could make it would turn a wrong guess into silent corruption.
+
+fn main() -> Int {
+    let x = 3
+    __builtin_assume(x > 0)
+    return x
+}

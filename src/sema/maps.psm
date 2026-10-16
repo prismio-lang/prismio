@@ -66,8 +66,8 @@ internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -
     let mut keyT = typeInvalid()
     let mut valueT = typeInvalid()
     if (isMap) {
-        keyT = semaListElementType(semaFindStructFieldType(module, node, expected.name, "entryKeys"))
-        valueT = semaListElementType(semaFindStructFieldType(module, node, expected.name, "entryValues"))
+        keyT = semaListElementType(semaCompilerFieldType(module, node, expected.name, "entryKeys"))
+        valueT = semaListElementType(semaCompilerFieldType(module, node, expected.name, "entryValues"))
     } else {
         keyT = semaExpr(module, ptr_to_node(node.child1))
         valueT = semaExpr(module, ptr_to_node(node.child2))

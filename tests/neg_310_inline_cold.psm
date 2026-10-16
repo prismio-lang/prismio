@@ -1,0 +1,17 @@
+// expect-error: a function cannot be both `cold` and `inline`
+// expect-error: aborting due to 3 previous errors
+// `inline` asks for the function to be folded into every caller and `cold` asks for it
+// never to be: the pair says nothing, in either order and as a method too, so it is
+// refused at the parse (src/parse/decl.psm) rather than one winning silently.
+
+inline cold fn both(x: Int) -> Int { return x + 1 }
+
+cold inline fn other(x: Int) -> Int { return x + 2 }
+
+struct Box { value: Int }
+
+impl Box {
+    inline cold fn get(self) -> Int { return self.value }
+}
+
+fn main() -> Int { return both(1) + other(1) }

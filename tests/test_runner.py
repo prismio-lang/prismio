@@ -9349,6 +9349,67 @@ def run_cold_function_test():
     return True
 
 
+def run_inline_fn_test():
+    """`inline fn` lowers to LLVM `alwaysinline`, and nothing else does.
+
+    test_312_inline_fn checks that every placement runs; this reads its IR, because
+    the marker changes no behaviour and a lowering that dropped it would pass any
+    output check. It is load-bearing for performance: std's `mapProbe` is `inline`
+    because a bounds check made it larger than LLVM's cost model would inline, and
+    key_value_update paid 1.13x for it.
+
+    Marked: a free function, a `private` one, a looping one, a generic instantiation,
+    an `impl` method, a `private` method and an `export` one. Unmarked: a function
+    *named* `inline` and ordinary neighbours.
+    """
+    print(f"\n{BLUE}--- Running inline_fn ---{RESET}")
+    src = TEST_DIR / "test_312_inline_fn.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-inline-") as td:
+        ll = Path(td) / "inline.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(ll)])
+        if built.returncode != 0 or not ll.exists():
+            problems.append(f"IR build failed: "
+                            f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+        else:
+            text = ll.read_text(encoding="utf-8", errors="replace")
+            groups = {}
+            for m in re.finditer(r"^attributes (#\d+) = \{ (.*?) \}$", text, re.M):
+                groups[m.group(1)] = m.group(2).split()
+
+            def attrs(prefix):
+                m = re.search(r"^define [^@\n]*@\"?" + re.escape(prefix) + r"[^(]*\([^)]*\)([^{]*)\{",
+                              text, re.M)
+                if not m:
+                    return None
+                found = []
+                for ref in re.findall(r"#\d+", m.group(1)):
+                    found += groups.get(ref, [])
+                return found
+
+            for name in ("square__Int", "addOne__Int", "sumTo__Int", "firstOr$Int", "bumped__Struct_Counter",
+                         "doubled__Struct_Counter", "exported__Int"):
+                got = attrs(name)
+                if got is None:
+                    problems.append(f"{name} was not emitted")
+                elif "alwaysinline" not in got:
+                    problems.append(f"{name} is inline but carries {got}")
+            for name in ("inline__Int", "quadrupled__Struct_Counter", "reset__Struct_Counter", "plain__Int"):
+                got = attrs(name)
+                if got is None:
+                    problems.append(f"{name} was not emitted")
+                elif "alwaysinline" in got:
+                    problems.append(f"{name} is not inline but carries {got}")
+
+    if problems:
+        print(f"{RED}[FAIL] inline functions{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] inline functions lower to alwaysinline, and only they do{RESET}")
+    return True
+
+
 def run_c_abi_extension_test():
     """A `bool`, `char` or 8-/16-bit integer crossing to or from C is widened as C's ABI says.
 
@@ -10420,6 +10481,7 @@ def main():
         ("byte_loop_vectorise", run_byte_loop_vectorise_test),
         ("repeated_copy", run_repeated_copy_test),
         ("cold_function", run_cold_function_test),
+        ("inline_fn", run_inline_fn_test),
         ("c_abi_extension", run_c_abi_extension_test),
         ("identifier_security", run_identifier_security_test),
         ("curated_closure", run_curated_closure_test),

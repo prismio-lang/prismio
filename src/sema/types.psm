@@ -476,6 +476,17 @@ internal fn semaCheckTypeVisible(at: ASTNode, name: String) {
 }
 
 internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
+    return semaStructFieldType(module, at, structName, fieldName, true)
+}
+
+// The type of a field the compiler itself reads, not the program: a map literal and a
+// default `Map` build std's columns whatever their visibility, as std's own code does.
+internal fn semaCompilerFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
+    return semaStructFieldType(module, at, structName, fieldName, false)
+}
+
+private fn semaStructFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String,
+                               checkVisible: Bool) -> TypeInfo {
     let count = ir_decl_count(structName)
     for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(structName, i))
@@ -486,7 +497,7 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
                 if (field.s1.equals(fieldName)) {
                     // A literal's fields are reported together, once, by
                     // semaCheckStructLiteralVisible.
-                    if (at.kind != NodeKind.STRUCT_FIELD and semaVisibleFrom(field.i2, stmt.file, at.file) == false) {
+                    if (checkVisible and at.kind != NodeKind.STRUCT_FIELD and semaVisibleFrom(field.i2, stmt.file, at.file) == false) {
                         semaReportHidden(at, "field ".concat(diagQuote(fieldName)), structName, field.i2,
                                          fieldName.concat(": T"))
                     }

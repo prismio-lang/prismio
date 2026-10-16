@@ -337,6 +337,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **`Map`'s columns are private, and the two Map benchmarks the bounds checks slowed are faster than
+  before them.** `entryKeys` and `entryValues` are `private` (no program, test or benchmark read them;
+  the compiler's own map literals and `default` read their types through `semaCompilerFieldType`, which
+  skips the visibility check a program's field read gets -- `neg_312_map_columns_private`). `mapProbe` is
+  `private inline fn`, and four `__builtin_assume`s state the two invariants the file keeps (a bucket is
+  inside `slots`; an entry index read out of `slots` is inside both columns), so the `Vec` checks fold.
+  Interleaved A/B against the build before any check, 66 hosted workloads, 15 runs, checksums identical,
+  both arms packaged toolchains: `key_value_update` 0.79x (was 1.13x with the checks), `hashmap_insert_lookup`
+  0.89x, `word_frequency` 0.88x, `mixed_map_removal` 0.94x (was 1.10x); the geomean over all 65 workloads
+  with a measurable time is 0.984, and no workload is more than 6% slower. (A benchmark built by the
+  project's own debug compiler, not a packaged one, reads up to 2x slower on allocation-heavy workloads: its
+  runtime lacks the SDK stamp, so the binary says `sdk 11.0` and macOS gives it the older malloc.)
+
 - **Freestanding code is faster and 39% smaller: Prismio's own passes in LLVM's pipeline.** Two passes in
   `runtime/llvm_bridge.cpp`, which LLVM-C cannot express, run at the pipeline's extension points
   (`PassBuilder::registerVectorizer{Start,End}EPCallback`, one bit each of `policies`). On the 20 freestanding
@@ -429,6 +442,18 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `[T]` view is not checked yet: it gets its length in the next step. Twenty fixtures that checked
   the old zero now check the trap, through a new harness form, `// expect-trap: <argument> =>
   <message>`, that runs the program once per case.
+- **`inline fn`.** The opposite of `cold fn`: the function is inlined into every caller, whatever its
+  size (LLVM's `alwaysinline`, Rust's `#[inline(always)]`). It goes where `cold` goes -- after a visibility
+  marker, directly before `fn`, at top level or in an `impl` block -- combines with `export`, `naked`,
+  `section` and `align` in either order, survives monomorphisation, and is ignored by a `-g` build. `inline`
+  and `cold` on one function is a parse error (`P3201`) in either order, as a method too; `cold inline fn`
+  and `cold export fn` used to stop at "expected a declaration" and now parse. Contextual, so a variable or
+  function may still be named `inline`. Fixtures `test_312_inline_fn`, `neg_310_inline_cold`, the
+  `inline_fn` harness test (reads the IR); the IntelliJ plugin and the TextMate grammar know the word.
+- **`__builtin_assume(cond)`, std only.** A fact std's own data keeps, handed to LLVM (`llvm.assume`):
+  unchecked and undefined when false, so a program cannot call it (`neg_311_assume_outside_std`). It is
+  how the Map's `Vec` indices stay proved without a bounds check (below). AIF contract `borrow`;
+  guard-safe in the flat-loop matcher; in the AIF oracle.
 - **An array index the compiler proves in range has no check** (`src/ir/nowrap.psm`,
   `src/ir/contents.psm`). The interval walk that marks `nsw` now proves indices too, in every
   function that subscripts a fixed array, not only those with a loop, and knows more:

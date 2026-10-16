@@ -360,19 +360,17 @@ oracle) and worth a look the next time either file is touched.
 
 ## Codegen and performance
 
-### Two Map benchmarks are 13% and 10% slower since `Vec` indices are checked
+### A program linked by the project-built compiler says `sdk 11.0` and allocates about 2x slower
 
-`key_value_update` 1.13x and `mixed_map_removal` 1.10x of the build before the check (interleaved
-A/B, checksums identical). The checks inside the Map's own functions, `slots[at]` and
-`entryKeys[entry]` in `mapProbe` and the `entryValues` write in `mapSet`, grow `mapProbe` from 143 to
-194 instructions and LLVM stops inlining it into the benchmark loops. Those indices are proved by the
-table's invariants (`at & mask` with `slots.length == mask + 1`; an entry read out of `slots` is
-below `entryKeys.length`), not by anything LLVM can see. Measured on the saved IR: removing the
-checks inside `map*` and inlining `mapProbe` gives 0.79x and 0.95x of the build before the check.
-Decided 2026-10-16, not built: std-only unchecked Vec builtins (as `__builtin_string_byte_at` is for
-strings) used where the invariant holds, and an `inline fn` modifier for `mapProbe`. `src/` imports
-`std.map`, so it lands in two steps with a seed between them. MEMORY_SAFETY_PLAN §6 has the
-measurements.
+Found 2026-10-17 in a benchmark A/B. `.prismio/build/lib/runtime/*.bc` (what `prismio build` installs) is
+compiled for `arm64-apple-macosx27.0.0` and carries no `SDK Version` module flag; the packaged runtime
+(`tools/package.py`) is `macosx11.0.0` with `SDK Version 27.0`. With no flag, LLVM stamps the object's
+`LC_BUILD_VERSION` sdk from the triple (11.0), and macOS gives a binary linked against an old SDK the older
+malloc: `tree_traversal` 1.8x, `manual_alloc_churn` 2.1x, `s_expression_parse` 1.5x, `line_processing` 1.3x of
+the same program built by a packaged compiler, with identical machine code for the hot functions.
+`vtool -set-build-version macos 11.0 27.0 -replace` on the slow binary restores parity. Only timings from a
+project-built compiler are affected; a packaged toolchain is right. The fix is for the project build's
+runtime to be built as the packaged one is.
 
 ### The module has no data layout while its IR is built, so `i64` is aligned to 4
 

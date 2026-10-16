@@ -166,7 +166,7 @@ all 19 sources). That edit's oracle half (`tools/aif_oracle`) is unwritten.
 
 ### Open, in order
 
-1. **Two Map benchmarks regressed; cause found 2026-10-16 (evening), fix decided, not built.** The user
+1. **DONE in round 5 (below).** Two Map benchmarks regressed; cause found 2026-10-16 (evening). The user
    chose std-only unchecked Vec builtins plus an `inline fn` modifier (KNOWN_ISSUES has the entry). Interleaved A/B
    (HEAD vs now, in-process `elapsed_ns`, checksums identical): `key_value_update` **1.13x**,
    `mixed_map_removal` **1.10x**. The cause is the runtime-side checks in the curated scalar accessors
@@ -272,6 +272,26 @@ State to resume from (all UNCOMMITTED, on top of rounds 1-3):
   settings measured on the 20 workloads (instructions geomean, `.text`): off 1.000 / 17.4 KB; factor 2
   0.942 / 21.4 KB; factor 4 with `-unroll-partial-threshold=60` 0.928 / 20.0 KB; factor 4 (current)
   0.914 / 29.9 KB. `mandelbrot_fixed` alone grew 784 -> 5,952 bytes, `matrix_multiply` 740 -> 2,792.
+
+### Round 5 (2026-10-17): the Map fix verified
+
+Done and verified: fixtures `test_312_inline_fn` (+ harness `inline_fn`, reads `alwaysinline` off the IR),
+`neg_310_inline_cold`, `neg_311_assume_outside_std`, `neg_312_map_columns_private`; `cold inline fn` and
+`cold export fn` now parse (a leading `cold` starts the modifier chain; `impl` methods take `cold`/`inline`
+in either order, `atMethodMarker`). **Making the columns private broke map literals and `default`**: sema
+reads the columns' types by name through `semaFindStructFieldType`, which applies the visibility check
+(round 4's note said it did not). `semaCompilerFieldType` is the unchecked twin for those two sites.
+Suite 638/638; two-generation IR fixpoint identical (gz1 = gz2, and a from-seed bootstrap of the re-cut
+seed gives the same IR); `prismio verify` passes steps 1-4 and the AIF differential's only disagreements are
+`src/main.psm`'s (T2 138/137 and 269/266, T3 612/613 and 481/484: the same 1/3 shape as before, the
+`aif_support.c` A-CONTAIN edit's, not re-proved by a build without it). Seed re-cut and pinned
+(`9b58ef08...`), NOT uploaded. Hosted 66-workload A/B vs the build before any check, both packaged:
+`key_value_update` 0.79x, `hashmap_insert_lookup` 0.89x, `word_frequency` 0.88x, `mixed_map_removal` 0.94x,
+geomean 0.984, nothing more than 6% slower. Docs gates 306 + 51, content audits, IntelliJ plugin tests pass.
+KNOWN_ISSUES' Map entry deleted. **Open:** the project-built runtime (`.prismio/build/lib/runtime`) is
+`macosx27.0.0` with no `SDK Version` flag, so programs a project-built compiler links say `sdk 11.0` and
+allocate about 2x slower than the packaged toolchain's (tree_traversal 1.8x, manual_alloc_churn 2.1x);
+time only packaged compilers.
 
 ### Things that cost time this session
 
