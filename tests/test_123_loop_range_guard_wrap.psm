@@ -1,3 +1,8 @@
+// expect-trap: wrap-up => index -2147483648 is out of range for a Vec of length 4
+// expect-trap: wrap-down => index -2147483632 is out of range for a Vec of length 16
+// expect-trap: run-away-down => index -1 is out of range for a Vec of length 4
+// expect-trap: run-away-up => index 4 is out of range for a Vec of length 4
+// expect-trap: stride-two-past-end => index 4 is out of range for a Vec of length 4
 // The loop range guard's monotonicity precondition.
 //
 // generateLoopRangeGuards proves "every index this loop forms is in [lo, hi]"
@@ -13,11 +18,12 @@
 //     values. This one did not crash: it read adjacent heap and returned
 //     plausible answers, which is why it survived.
 //
-// `list_get` is total, so every arm below has one right answer whether the
-// guard fires or declines. What the arms are for is that the *wrong* answer is
-// a memory read rather than a number.
+// An index out of range stops the program, so every arm below has one right answer
+// whether the guard fires or declines: the program stops at the first wrapped index.
+// What the arms are for is that the *wrong* answer is a memory read, which never stops.
 
 import std.io
+import std.process
 
 fn filled(n: Int) -> Vec<Int> {
     let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
@@ -105,24 +111,31 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
+// An arm whose index leaves the list runs only when its case is named: it must stop the
+// program there (docs/MEMORY_SAFETY_PLAN.md section 2), where a proved copy taken for it
+// would read past the list and run on. The harness runs one case per `expect-trap` line.
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn main() -> Int {
     let mut bad = 0
 
-    // 1, then -2147483648 and -1, both out of range and both worth 0.
-    bad = bad + check("FAIL: wrapUp", wrapUp(), 2)
+    // 1, then -2147483648, which stops the program.
+    if (trapCase("wrap-up")) { return (wrapUp()) as Int }
 
     // Only the first index, 15, is in range; the rest wrap out of it.
-    bad = bad + check("FAIL: wrapDown", wrapDown(0 - 20), 16)
+    if (trapCase("wrap-down")) { return (wrapDown(0 - 20)) as Int }
 
     // 2 and 1 from the list, then zeros down to the break.
-    bad = bad + check("FAIL: runAwayDown", runAwayDown(0 - 8), 3)
+    if (trapCase("run-away-down")) { return (runAwayDown(0 - 8)) as Int }
 
     // 3 and 4 from the list, then zeros up to the break.
-    bad = bad + check("FAIL: runAwayUp", runAwayUp(8), 7)
+    if (trapCase("run-away-up")) { return (runAwayUp(8)) as Int }
 
     // xs[0] + xs[2], and the same past the end.
     bad = bad + check("FAIL: strideTwo in range", strideTwo(4), 4)
-    bad = bad + check("FAIL: strideTwo past end", strideTwo(9), 4)
+    if (trapCase("stride-two-past-end")) { return (strideTwo(9)) as Int }
 
     if (bad != 0) { return 1 }
     println("PASS: loop range guard monotonicity")

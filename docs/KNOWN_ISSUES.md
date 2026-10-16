@@ -25,7 +25,7 @@ AArch64 backend, a benchmark arm and docs, none of the analysis):
 | [Ownership: leaks](#ownership-leaks) | What the suite still leaks, by cause, and the shapes that reproduce each |
 | [The AIF analysis and its oracle](#the-aif-analysis-and-its-oracle) | Where the engine and the Python oracle disagree |
 | [Codegen and performance](#codegen-and-performance) | Missed placements, a rejected literal form, curation and linkage limits |
-| [Freestanding and the Linux kernel](#freestanding-and-the-linux-kernel) | The one benchmark row behind C, and where the kernel work is tracked |
+| [Freestanding and the Linux kernel](#freestanding-and-the-linux-kernel) | Checks and copies the suite still pays for, and where the kernel work is tracked |
 | [Language surface](#language-surface) | What the language does not do yet, and decisions worth knowing |
 | [Traits](#traits) | What the trait system deliberately leaves out |
 | [Concurrency](#concurrency) | Task and channel limits |
@@ -41,6 +41,14 @@ history at `c9f71ef`: `git show c9f71ef:aif/evidence/RESULTS-<name>.md`
 ---
 
 ## Ownership: leaks
+
+> **2026-10-16:** four more shapes, found by the `graph_churn_*` benchmarks, are written up with
+> reproducers in [`GRAPH_CHURN_FINDINGS.md`](GRAPH_CHURN_FINDINGS.md): same-named bindings sharing one
+> key, an overwritten `Vec` element parked until its `Vec` dies, and the move checker rejecting
+> exclusive branches. A fifth, a fresh struct held by two `Vec`s of one type, is fixed (`test_302`); the
+> parked overwrite is fixed for a local `Vec` (2026-10-17, `test_317`, peak memory 1.2x to 1.4x of C++).
+> Two more found on 2026-10-17 are there too: a field moved out of an element view is released twice, and
+> a view assigned to an owning local leaks the value it replaced.
 
 Every item in this section is a **leak, never a double free**: the conservative direction
 when the analysis cannot prove a release. `--verify` reports `allocated / released /
@@ -352,6 +360,50 @@ oracle) and worth a look the next time either file is touched.
 
 ## Codegen and performance
 
+### Two Map benchmarks are 13% and 10% slower since `Vec` indices are checked
+
+`key_value_update` 1.13x and `mixed_map_removal` 1.10x of the build before the check (interleaved
+A/B, checksums identical). The checks inside the Map's own functions, `slots[at]` and
+`entryKeys[entry]` in `mapProbe` and the `entryValues` write in `mapSet`, grow `mapProbe` from 143 to
+194 instructions and LLVM stops inlining it into the benchmark loops. Those indices are proved by the
+table's invariants (`at & mask` with `slots.length == mask + 1`; an entry read out of `slots` is
+below `entryKeys.length`), not by anything LLVM can see. Measured on the saved IR: removing the
+checks inside `map*` and inlining `mapProbe` gives 0.79x and 0.95x of the build before the check.
+Decided 2026-10-16, not built: std-only unchecked Vec builtins (as `__builtin_string_byte_at` is for
+strings) used where the invariant holds, and an `inline fn` modifier for `mapProbe`. `src/` imports
+`std.map`, so it lands in two steps with a seed between them. MEMORY_SAFETY_PLAN §6 has the
+measurements.
+
+### The module has no data layout while its IR is built, so `i64` is aligned to 4
+
+Found 2026-10-16 (the `Ptr<T>` soundness pass). `ir_module_start` creates the module without a layout;
+only a named target (`ir_module_set_target`) or a `-g` build (`pin_data_layout`) stamps one before
+codegen. Every alignment the backend computes in between -- `LLVMABIAlignmentOfType`, and the default
+LLVM gives a load or store with none -- is the *default* layout's, where `i64` is 4. Sizes are safe
+(they are `sizeof` constant expressions, resolved at codegen); explicit alignments are not:
+
+```prismio
+import std.raw
+extern fn malloc(size: Usize) -> Ptr<mut U64>
+fn bump(p: Ptr<mut U64>) -> U64 { return p.atomicAdd(1, AtomicOrder.AcqRel) }
+fn main() -> Int {
+    let m = malloc(8)
+    m.store(4)
+    return bump(m) as Int
+}
+```
+
+answers 4, correctly, but `atomicrmw add ... align 4` is under-aligned for an 8-byte atomic, so it
+compiles to a `___atomic_compare_exchange` libcall (`nm` shows it) where `ldaddal` was due -- and a
+freestanding build has no libcall to link. A `Ptr<U64>` parameter is also `align 4`, and
+`Ptr<U64>.at` accepts an address that is 4 mod 8. Plain `i64` loads and stores say `align 4`, which is
+legal and probably free on AArch64. The struct-path TBAA offsets (`LLVMOffsetOfElement`) are the
+default layout's too, consistently, so no miscompile has been traced to them.
+
+The fix is to stamp the selected target's layout in `ir_module_start` (`pin_data_layout` already
+knows how). It changes the IR of every program that touches an `i64`, so it needs
+the benchmark matrix run beside it, not just the suite.
+
 ### A `Vec` literal heap-allocates and costs 4.3x the same literal left as an array
 
 Measured 2026-10-07: a function called 20,000,000 times that builds
@@ -368,12 +420,10 @@ caller.
 Three fixes were considered and none was built:
 
 - **Retype a read-only literal as an array** (an immutable binding that is only indexed, iterated
-  or asked for `.length` is an `Array<T, N>` for free). Sound for the type system, but it **changes
-  what an out-of-range read does**: `v[7]` on a three-element `Vec` reads `0` (re-checked
-  2026-10-09), while on an array it reads adjacent memory, because the language does not yet
-  promise a bounds-check trap for an array index (see *Array indexing is unchecked* below). A
-  program with a latent off-by-one would silently change behaviour, so this waits for either array
-  bounds checks or a range proof for the index (`../src/ir/ranges.psm` already proves some).
+  or asked for `.length` is an `Array<T, N>` for free). Sound for the type system. It was blocked on
+  what an out-of-range read did -- `0` from a `Vec`, adjacent memory from an array -- and since
+  2026-10-16 both stop the program with the same message shape, so the rewrite no longer changes
+  behaviour. Not built.
   `isEmpty` and `isNotEmpty` are also `Vec`-only, so they would block the rewrite.
 - **A frame-resident list** (header and elements in the caller's frame, no release) for a
   literal that never grows. Sema's rule that only a `let mut` or `inout` binding can change a
@@ -502,19 +552,53 @@ The features a kernel module needs that Prismio does not have yet are listed, by
 [`LINUX_BENCHMARKS.md`](LINUX_BENCHMARKS.md) and the language side is
 [`FREESTANDING_PLAN.md`](FREESTANDING_PLAN.md). Not repeated here.
 
-### `heapsort` is the one freestanding row behind C, by 1.9%
+### `edit_distance` still copies its row every iteration
 
-Re-read from the benchmark results of 2026-10-09: `heapsort` runs 10,907,440 instructions against
-C's 10,702,272 (1.019x), inside the suite's +-2% parity band, and the suite is 5 wins, 15 parity and
-0 losses against C (geomean 0.947); every other row is level with C or ahead. It is the overflow
-difference again: `root * 2 + 1` in `sift`'s loop condition needs `nsw` to become C's code, and `root =
-pick` is no counter, so neither the access facts, the counted loops nor the guards reach it. The
-recipe is measured: a guard `start >= 0 and end >= -1` on `sift`'s parameters, plus `root >= 0`
-carried through `root = pick` (`pick` was accessed), makes the multiply and the add `nsw`, and the
-row reads 10,555,648 (0.986x). That needs `mul nsw` as well (`BINOP(ir_mul_nsw, LLVMBuildNSWMul)` and
-a bridge extern). Emit it as the frontend's two loop copies: a function-level emulation measured
-+0.7% from pass ordering. It is fragile: with only the access facts off (`PRISMIO_NOWRAP=0`) the row
-reads 11,108,928, because an inlining decision near its threshold flips.
+Measured 2026-10-16: the row loop runs 41 instructions per 4 cells (10.25 a cell, against about 9.5
+for the work itself), and `prev = cur` after it is a `memcpy` of 2,404 bytes into the harness's word
+loop, about 850 instructions a row, 12% of the 4.21M total. Nothing reads `cur` before writing it in
+the next row, so swapping the two arrays' roles would remove the copy: array rotation (Ng et al.,
+*Inter-procedural loop fusion, array contraction and rotation*, PACT 2003). It needs an analysis that
+every element of the copied-from array is written before it is read in each outer iteration, and
+rows addressed through a pointer that the swap exchanges. LLVM's `loop-fusion` pass does not fuse
+the two loops (tried on the saved IR: 5,540,624 to 5,540,640).
+
+### `bytecode_interpreter` keeps the check on `reg[c]`
+
+`reg[a]` and `reg[b]` are proved since 2026-10-17: `base = (pc * 4) as Int` is an immutable `let` with
+a congruence (0 mod 4), and the literal `program`'s elements at positions 1 and 2 mod 4 are all below 4
+(`src/ir/strides.psm`), which took the row from 0.98x to 0.78x of C. `c`, at position 3, is 7 in the
+fifth record, where `op` is 4 and `c` is an immediate rather than an index; `reg[c]` is reached only
+when `op` is 0, 1 or 2, so proving it needs the analysis to split on `op`'s value, which ties `pc` to
+records 0, 1, 2 and 6. Nothing does that path-sensitive step yet.
+
+### Covered-fill elimination misses a fill indexed by an `Int` expression in two loops
+
+`CoveredFillElimination` (`runtime/llvm_bridge.cpp`) keeps the zero-fill of `t[r * 32 + c]` over a
+32 x 32 nest (`test_313_covered_fill`'s `nestedWholeFill`): the index is a 32-bit `Int` sign-extended to
+the address, and SCEV will not split `sext(r * 32 + c)` into one recurrence per loop without `nsw` on
+the arithmetic. The fill stays, which is correct and costs the `memset`; a one-dimensional fill, or a
+two-dimensional one whose index the nowrap analysis marks `nsw`, is deleted.
+
+### Freestanding `.text` is 1.21x C, and where the bytes are
+
+18.1 KB against C's 14.9 KB (2026-10-17), all of the difference in the benchmark functions (the harness
+is shared), at 0.685x of C's instructions with every workload ahead. The largest are deliberate unrolling,
+at 0.53x to 0.86x of C's instructions: `sha256` 964 bytes against 604, `binary_search` 512 against 260
+(its query loop unrolled at run time with the search inside it), `ring_buffer` 384 against 188,
+`bytecode_interpreter` 528 against 272 (its dispatch loop unrolled twice since its checks went),
+`atomic_counter`, `spinlock` and `volatile_registers` likewise. Rolled, the suite was 6.2 KB against C's
+5.3 KB; most of that rest is `knapsack`, versioned on `w >= 0` for 0.61x of C. Not yet tried: LLVM's
+MachineOutliner for the cold failure paths, and choosing the unroll budget per workload from a profile
+rather than the static estimate (`PRISMIO_UNROLL_BUDGET`).
+
+### A freestanding program has no `min` or `max`
+
+`std.math` is outside the freestanding allowlist (FREESTANDING_PLAN step 5), because some of its
+functions are instructions on one target and C library calls on another; integer `min` and `max` are
+neither, but come with it. A freestanding program writes its own, as the benchmark suite does. The
+interval walk recognises a hand-written `min`/`max` by its body (`nowrapSelection`), so nothing is
+lost to the analysis; the gap is the library surface.
 
 ---
 
@@ -571,16 +655,6 @@ are library functions, so a Vec they are called on is also "lent" and its later 
 for every length rather than once per length (`COLLECTIONS.md` step 3). A generic struct and an
 enum payload cannot hold an array yet. (`Vec<T, N>` and `Slice<T>`'s two layouts are steps 4 and
 5, not started.)
-
-**Array indexing is unchecked.** `a[i]` on an `Array<T, N>` or `[T]` is not bounds-checked in any
-profile, and the docs say so (`arrays-and-lists`: *the language does not yet promise a portable
-bounds-check trap for every array index*). An index past either end reads (or, on a `let mut`
-array, writes) the neighbouring stack slot; a negative one does the same below the array. A
-three-element array read at index 5 printed `0` and did not trap (2026-10-09). The same read on a
-`Vec` returns `0`, and a `Slice` is bounds-checked, so the three do not agree. Checking costs the
-loops the benchmarks measure (`PERFORMANCE_PLAN.md`: `quicksort`'s partition loop is already
-bounds-check bound), so the fix is a range proof that elides the check where it can, not a
-blanket one.
 
 **A resolved path dependency is not on the import search.** Vendor source below the entry root. A
 build that declares a dependency says so (`P1081`).

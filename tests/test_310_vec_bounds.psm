@@ -1,0 +1,50 @@
+// expect-trap: read => index 3 is out of range for a Vec of length 3
+// expect-trap: write => index 5 is out of range for a Vec of length 3
+// expect-trap: negative => index -1 is out of range for a Vec of length 3
+// expect-trap: swap => index 7 is out of range for a Vec of length 3
+// expect-trap: strings => index 2 is out of range for a Vec of length 2
+// expect-trap: in-loop => index 3 is out of range for a Vec of length 3
+// An index outside a Vec stops the program with the index and the length, for a read, a
+// write, a swap and a `Vec<String>` alike (docs/MEMORY_SAFETY_PLAN.md section 2). It used to
+// read 0 or the empty String and to drop the write. `get` is the form that answers `none`.
+// Each case runs on its own, named by the argument; with none, only the in-range arms run.
+import std.process
+import std.vec
+
+fn three() -> Vec<Int> {
+    let mut v: Vec<Int> = []
+    v.push(1)
+    v.push(2)
+    v.push(3)
+    return v
+}
+
+fn sumTo(n: Int) -> Int {
+    let v = three()
+    let mut t = 0
+    for i in 0..<n { t = t + v[i] }
+    return t
+}
+
+fn main() -> Int {
+    let mut v = three()
+    let mut words: Vec<String> = []
+    words.push("a")
+    words.push("a string longer than twelve bytes")
+    if (process.args.count > 1) {
+        let case = process.args[1]
+        let n = case.length
+        if (case.equals("read")) { return v[n - 1] }
+        if (case.equals("write")) { v[n] = 9 }
+        if (case.equals("negative")) { return v[n - 9] }
+        if (case.equals("swap")) { v.swap(0, n + 3) }
+        if (case.equals("strings")) { return words[n - 5].length }
+        if (case.equals("in-loop")) { return sumTo(n - 3) }
+        return 0
+    }
+    if (v[2] != 3 or sumTo(3) != 6) { return 1 }
+    if (v.get(3) != none) { return 2 }
+    v.swap(0, 2)
+    if (v[0] != 3 or words[1].length != 33) { return 3 }
+    return 0
+}

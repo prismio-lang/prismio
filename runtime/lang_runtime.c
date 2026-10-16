@@ -55,8 +55,10 @@
 
 #if defined(_MSC_VER)
 #define PRISMIO_NOINLINE __declspec(noinline)
+#define PRISMIO_FAILS __declspec(noinline) __declspec(noreturn)
 #else
 #define PRISMIO_NOINLINE __attribute__((noinline))
+#define PRISMIO_FAILS __attribute__((noinline, noreturn, cold))
 #endif
 
 // On every cold half of a split fast path, and not only the small ones. An
@@ -2684,6 +2686,23 @@ static void scalar_store(void* dst, unsigned long long v, int size) {
     else                { *(unsigned long long*)dst = v; }
 }
 
+// An index outside a Vec stops the program, as `remove` and `insert` always did and as a Slice
+// does. It used to read 0 and drop a write, which turned an off-by-one into a wrong answer
+// rather than an error (docs/MEMORY_SAFETY_PLAN.md §2). Out of line and exported: the
+// accessors that call it are curated into the program, and a curated body may name neither
+// a string constant nor a local symbol (run_curated_closure_test).
+PRISMIO_FAILS void list_index_fail(int index, int len) {
+    fprintf(stderr, "runtime error: index %d is out of range for a Vec of length %d\n", index, len);
+    exit(1);
+}
+
+// The same for an `Array<T, N>` or a `[T]`, whose check codegen emits inline
+// (ir_array_index_check) where the loop's range proof does not already cover the index.
+PRISMIO_FAILS void array_index_fail(int index, int len) {
+    fprintf(stderr, "runtime error: index %d is out of range for an array of length %d\n", index, len);
+    exit(1);
+}
+
 // list_set_inline_scalar's fallback, out of line so the boxed setter is not
 // inlined into it: `list_set`'s only caller in a program with no boxed lists is
 // this one, and inlined there it made the store too large for a sort's swap to
@@ -2704,7 +2723,7 @@ void list_set_inline_scalar(void* lp, int index, unsigned long long bits, int el
         list_set_unstamped(lp, index, bits);
         return;
     }
-    if (index < 0 || index >= l->len) return;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     scalar_store((unsigned char*)l->data + (size_t)index * (size_t)elem_size,
                  bits, elem_size);
 }
@@ -2724,7 +2743,7 @@ void list_set_inline_scalar(void* lp, int index, unsigned long long bits, int el
 // that actually decides, and the caller gets a value either way.
 unsigned long long list_get_inline_scalar(void* lp, int index, int elem_size) {
     RtList* l = (RtList*)lp;
-    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     if (l->elem_size != elem_size) {
         return (unsigned long long)(uintptr_t)l->data[index];
     }
@@ -2774,7 +2793,7 @@ void* list_get_inline(void* lp, int index) {
     // fields unconditional, so a loop can keep them in registers.
     // Same single unsigned compare as `list_get` above, and the same reason the
     // header is *not* read into locals ahead of it.
-    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     if (!l->elem_size) return l->data[index];
     return (unsigned char*)l->data + (size_t)index * (size_t)l->elem_size;
 }
@@ -2785,7 +2804,7 @@ void* list_get_inline(void* lp, int index) {
 void list_set_inline(void* lp, int index, void* value) {
     RtList* l = (RtList*)lp;
     if (!l->elem_size) { list_set(lp, index, value); return; }
-    if (index < 0 || index >= l->len) return;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     list_copy_elem((unsigned char*)l->data + (size_t)index * (size_t)l->elem_size,
                    value, (size_t)l->elem_size);
     list_release_source(l, value);
@@ -2804,10 +2823,11 @@ void list_set_inline(void* lp, int index, void* value) {
 // which for a flat struct is interior to this block. `sortBy` on 200
 // `struct Pt { x: Int, y: Int }` aborted in `free`.
 //
-// Out of range is a no-op, as it is for `list_set`.
+// Out of range stops the program, as every index does (list_index_fail).
 void list_swap(void* lp, int i, int j) {
     RtList* l = (RtList*)lp;
-    if ((unsigned)i >= (unsigned)l->len || (unsigned)j >= (unsigned)l->len) return;
+    if ((unsigned)i >= (unsigned)l->len) list_index_fail(i, l->len);
+    if ((unsigned)j >= (unsigned)l->len) list_index_fail(j, l->len);
     size_t size = l->elem_size ? (size_t)l->elem_size : sizeof(void*);
     unsigned char* a = (unsigned char*)l->data + (size_t)i * size;
     unsigned char* b = (unsigned char*)l->data + (size_t)j * size;
@@ -2896,11 +2916,10 @@ static char* str_own_pair(void* raw, long long word) {
     return str_own(bytes, word);
 }
 
-// The halves of element `index`; NULL and 0 out of range, which is what a boxed
-// `list_get` gave `fatFromPtr` -- a null pointer measured as empty.
+// The halves of element `index`. Out of range stops the program (list_index_fail).
 void* list_str_data(void* lp, int index) {
     RtList* l = (RtList*)lp;
-    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     if (l->elem_size == (int)sizeof(StrPair)) return (void*)((StrPair*)l->data)[index].data;
     return l->data[index];
 }
@@ -2915,7 +2934,7 @@ PRISMIO_NOINLINE long long list_str_word_boxed(void* lp, int index) {
 
 long long list_str_word(void* lp, int index) {
     RtList* l = (RtList*)lp;
-    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     if (l->elem_size == (int)sizeof(StrPair)) return ((StrPair*)l->data)[index].word;
     return list_str_word_boxed(lp, index);
 }
@@ -2962,7 +2981,7 @@ static void list_discard_slot(RtList* l, int index, int now);
 // pointer compare keeps `v[i] = v[i]` from parking what it is about to store.
 PRISMIO_NOINLINE void list_set_str_slow(void* lp, int index, void* raw, long long word) {
     RtList* l = (RtList*)lp;
-    if (index < 0 || index >= l->len) return;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     if (l->elem_size != (int)sizeof(StrPair)) {
         list_set(lp, index, str_own_pair(raw, word));
         return;
@@ -2991,7 +3010,7 @@ void list_set_str(void* lp, int index, void* raw, long long word) {
         list_set_str_slow(lp, index, raw, word);
         return;
     }
-    if (index < 0 || index >= l->len) return;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     StrPair* slot = (StrPair*)l->data + index;
     if (l->elem_own != AIF_ELEM_NONE && !l->arena && slot->data != (const char*)raw
             && !(slot->word & (STR_WORD_INLINE | STR_WORD_VIEW | STR_WORD_BORROWED))) {
@@ -3093,8 +3112,8 @@ void list_truncate(void* lp, int n, int now) {
     l->len = n;
 }
 
-// Out of range is an error rather than `list_set`'s no-op: a removal that did
-// nothing would leave the caller holding a copy of an element it thinks it took.
+// Out of range is an error, as every index is: a removal that did nothing would leave the
+// caller holding a copy of an element it thinks it took.
 void list_remove_at(void* lp, int index, int now) {
     RtList* l = (RtList*)lp;
     if ((unsigned)index >= (unsigned)l->len) {
@@ -3372,7 +3391,7 @@ void* list_get(void* lp, int index) {
     // 1.029x**, with the natural arms 1.01-1.02x as well. See
     // aif/evidence/RESULTS-list-header-hoist.md. Hoisting the base belongs in
     // codegen, which knows the receiver is loop-invariant, not here.
-    if ((unsigned)index >= (unsigned)l->len) return 0;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     return l->data[index];
 }
 
@@ -3392,7 +3411,7 @@ PRISMIO_NOINLINE void list_set_park_slow(void* lp, int index, void* value) {
 // CYCLE is counted and left as it was.
 void list_set(void* lp, int index, void* value) {
     RtList* l = (RtList*)lp;
-    if (index < 0 || index >= l->len) return;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
     if (l->elem_own == AIF_ELEM_RC) {
         rc_retain(value);
         rc_release(l->data[index]);
@@ -3410,6 +3429,46 @@ void list_set(void* lp, int index, void* value) {
         return;
     }
     l->data[index] = value;
+}
+
+// An overwrite codegen proved no view of the displaced element can be live
+// (src/ir/overwrites.psm): what list_set would park is released at once, as a
+// removal's is under `now`. The store goes first, as list_set_exclusive's does, so
+// releasing the old element can never see the slot still pointing at it. A counted,
+// arena or inline list goes the way list_set always sends it.
+void list_set_now(void* lp, int index, void* value) {
+    RtList* l = (RtList*)lp;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
+    if ((l->elem_own != AIF_ELEM_OBJECT && l->elem_own != AIF_ELEM_LIST
+            && l->elem_own != AIF_ELEM_TYPED && l->elem_own != AIF_ELEM_STRING)
+            || l->elem_size || l->arena) {
+        list_set(lp, index, value);
+        return;
+    }
+    void* old = l->data[index];
+    l->data[index] = value;
+    if (old && old != value) list_release_element(l, old);
+}
+
+// list_set_str's slow path with the displaced String released at once, for the
+// overwrite list_set_now serves.
+void list_set_str_now(void* lp, int index, void* raw, long long word) {
+    RtList* l = (RtList*)lp;
+    if ((unsigned)index >= (unsigned)l->len) list_index_fail(index, l->len);
+    if (l->elem_size != (int)sizeof(StrPair)) {
+        list_set_now(lp, index, str_own_pair(raw, word));
+        return;
+    }
+    StrPair* slot = (StrPair*)l->data + index;
+    if (slot->data != (const char*)raw) list_discard_slot(l, index, 1);
+    if (STR_WORD_IS_VIEW(word)) {
+        int length = (int)(word & STR_WORD_LENGTH);
+        slot->data = str_clone_n((const char*)raw, length);
+        slot->word = length;
+        return;
+    }
+    slot->data = (const char*)raw;
+    slot->word = word;
 }
 
 // Boxed replacement with a compiler-proved exclusive handle. Unlike list_set,

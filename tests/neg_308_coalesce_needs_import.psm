@@ -1,0 +1,11 @@
+// expect-error: `??` needs `import std.option`
+// expect-error: aborting due to 1 previous error
+// `??` is std.option's, and the file that writes it imports std.option. A file that reaches the
+// module only through another import (std.process imports it) used to pass this check and fail
+// later as "module `std.option` declares no `optionCoalesce$Int`".
+import std.process
+
+fn main() -> Int {
+    let x: Int? = none
+    return x ?? 4
+}

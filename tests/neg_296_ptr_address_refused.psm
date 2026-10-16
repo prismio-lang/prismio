@@ -1,5 +1,5 @@
 // expect-error: `addr` is a property, not a method
-// expect-error: `offset` takes 1 argument, found 2
+// expect-error: `advance` takes 2 arguments, found 1
 // expect-error: step: expected Int, found Bool
 // expect-error: this must be a pointer to the same type, Int, and this is Ptr<Header>
 // expect-error: this must be a pointer to the same type, Int, and this is Int
@@ -17,8 +17,8 @@
 struct Header { magic: U32 }
 
 fn property(p: Ptr<Int>) -> Usize { return p.addr() }
-fn arity(p: Ptr<Int>) -> Ptr<Int> { return p.offset(1, 2) }
-fn step(p: Ptr<Int>) -> Ptr<Int> { return p.offset(true) }
+fn arity(p: Ptr<Int>) -> Ptr<Int>? { return p.advance(1) }
+fn step(p: Ptr<Int>) -> Ptr<Int>? { return p.advance(true, p) }
 fn distance(p: Ptr<Int>, q: Ptr<Header>) -> Int { return p.offsetFrom(q) }
 fn notPointer(p: Ptr<Int>) -> Bool { return p.sameAs(1) }
 fn nosuch(n: Usize) -> Ptr<Int>? { return Ptr<Int>.nosuch(n) }

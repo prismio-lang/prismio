@@ -1,0 +1,29 @@
+// expect-error: return: expected Ptr, found Ptr<mut volatile U32>
+// expect-error: cannot cast `Ptr<mut volatile U32>` to `Ptr<mut U32>`: it is volatile
+// expect-error: cannot cast `Ptr<volatile U32>` to `Ptr<U8>`: it is volatile
+// expect-error: `header` cannot be `Header` in a packed struct: its fields would be read at an address `Header` is not aligned to
+// expect-error: `words` cannot be `[U32]` in a packed struct: its elements would be read at an address they are not aligned to
+// expect-error: `count` cannot be `U32?` in a packed struct
+// expect-error: `name` cannot be `String` in a packed struct
+// expect-error: aborting due to 7 previous errors
+// What keeps a typed pointer's promises true, one error each; the count holds that.
+//
+//   - `volatile` is never dropped, not by the opaque `Ptr` and not by a `cast`: a plain access
+//     to a device register is one LLVM may merge, reorder or drop.
+//   - Every field of a packed struct is aligned to one byte or is a scalar the backend reads
+//     at one byte. What is reached through a field -- an inner struct's fields, an array's
+//     elements, an optional's flag -- would be read at its own type's alignment.
+import std.raw
+
+repr(C) struct Header { magic: U32 }
+
+packed struct Nested { tag: U8, header: Header }
+packed struct Words { tag: U8, words: Array<U32, 2> }
+packed struct Maybe { tag: U8, count: U32? }
+packed struct Named { tag: U8, name: String }
+
+fn opaque(r: Ptr<mut volatile U32>) -> Ptr { return r }
+fn plain(r: Ptr<mut volatile U32>) -> Ptr<mut U32> { return Ptr<mut U32>.cast(r) }
+fn bytes(r: Ptr<volatile U32>) -> Ptr<U8>? { return Ptr<U8>.castAligned(r) }
+
+fn main() -> Int { return 0 }

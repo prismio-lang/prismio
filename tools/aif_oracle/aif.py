@@ -124,6 +124,7 @@ FFI_CONTRACTS = {
     # no call. They borrow for the duration of the operation and retain nothing.
     '__builtin_string_len': {0: 'borrow'},
     '__builtin_string_byte_at': {0: 'borrow'},
+    '__builtin_assume': {0: 'borrow'},
     '__builtin_string_put_byte': {0: 'borrow'},
     # `==` on two Strings lowers to this. Missing here, it made every caller of
     # `equals` -- which is most of std.string -- call something undescribed, and

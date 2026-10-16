@@ -1,3 +1,4 @@
+// expect-trap: read-past-end => index 1000 is out of range for a Vec of length 104
 // `Vec<String>` stores the 16-byte pair itself.
 //
 // A slot used to be one word: a short String was copied to the heap on the way
@@ -8,6 +9,7 @@
 // list born boxed that reaches code typed `Vec<String>`.
 
 import std.io
+import std.process
 import std.vec
 import std.map
 import std.string
@@ -65,10 +67,10 @@ fn main() -> Int {
     if (words[102].length != 44) { return fail("an owned long string") }
     if (words[103].equals("quick brown fox jumps") == false) { return fail("a pushed view") }
 
-    // Iteration over every element, and a read past the end, which is the empty
-    // String it always was.
+    // Iteration over every element. A read past the end stops the program (one run, named
+    // by its argument): it used to be the empty String.
     if (totalLength(words) != 426) { return fail("for-in over a Vec<String>") }
-    if (words[1000].length != 0) { return fail("a read past the end") }
+    if (process.args.count > 1 and process.args[1].equals("read-past-end")) { return words[1000].length }
 
     // Sorting moves pairs between slots, inline and owned alike.
     let mut fruit: Vec<String> = []

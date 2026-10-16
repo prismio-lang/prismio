@@ -360,6 +360,30 @@
       "profile": "allocation"
     },
     {
+      "name": "graph_churn_single",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation"
+    },
+    {
+      "name": "graph_churn_alloc",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation"
+    },
+    {
+      "name": "graph_churn_transfer",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation-concurrency"
+    },
+    {
+      "name": "graph_churn_full",
+      "category": "memory",
+      "status": "implemented",
+      "profile": "allocation-concurrency"
+    },
+    {
       "name": "file_read",
       "category": "io",
       "status": "implemented",
@@ -495,6 +519,12 @@
       "category": "adversarial",
       "status": "implemented",
       "profile": "memory-copy"
+    },
+    {
+      "name": "register_pressure_torture",
+      "category": "adversarial",
+      "status": "implemented",
+      "profile": "cpu-ilp"
     },
     {
       "name": "dead_code_elimination",

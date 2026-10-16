@@ -3263,7 +3263,7 @@ int aif_solve(int max_rounds) {
             // value, and releasing it from each is a double free. `view_stored`
             // keeps that on the old rule.
             synth_rule = AIF_RULE_A_CONTAIN;
-            if ((sites[s].kind != AIF_K_STRING || sites[s].view_stored)
+            if ((!site_is_move_only(&sites[s]) || sites[s].view_stored)
                 && bits_count_at_least_two(&container_of[s])
                 && raise_alias(s, AIF_A_SHARED, -1)) {
                 changed = moved(s);

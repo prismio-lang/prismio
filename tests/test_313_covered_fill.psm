@@ -1,0 +1,150 @@
+// A frame array is zero-filled where it is declared, and the bridge's
+// CoveredFillElimination deletes that fill when a loop nest writes every element
+// before anything reads one (runtime/llvm_bridge.cpp). Every case here either
+// reads a zero the fill wrote -- so the fill must survive -- or is written whole
+// and must sum to the same total with the fill gone. A wrong deletion reads
+// stack garbage instead of a zero and the program exits non-zero.
+//
+// Every value and every read index depends on `seed` (1, the argument count), and
+// the arrays are 1,024 elements, so that LLVM can neither fold a case away nor
+// forward the zero to a read before the pass sees the fill.
+
+import std.process
+
+fn total(inout a: [U32], n: Int, seed: U32) -> U32 {
+    let mut sum: U32 = 0
+    for i in 0..<n {
+        sum = sum + a[i] * ((i as U32) + seed)
+    }
+    return sum
+}
+
+// Written whole: deleted, and the weighted sum is unchanged.
+fn wholeFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    for i in 0..<1024 {
+        t[i] = (i as U32) + seed
+    }
+    return total(t, 1024, seed)
+}
+
+// The last element is never written and must read zero.
+fn shortFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    for i in 0..<1023 {
+        t[i] = seed
+    }
+    return t[1022 + (seed as Int)]
+}
+
+// Every other element: the odd ones stay zero.
+fn conditionalFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    for i in 0..<1024 {
+        if (i % 2 == 0) { t[i] = 7 * seed }
+    }
+    return t[seed as Int] + t[1022 + (seed as Int)]
+}
+
+// A stride of two leaves the odd elements unwritten.
+fn stridedFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    for i in 0..<512 {
+        t[i * 2] = 9 * seed
+    }
+    return t[seed as Int] + t[32 + (seed as Int)]
+}
+
+// Leaves the loop early; the tail stays zero.
+fn earlyExitFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    let mut i = 0
+    while (i < 1024) {
+        if (i == 9 + (seed as Int)) { break }
+        t[i] = 3 * seed
+        i = i + 1
+    }
+    return t[9 + (seed as Int)] + t[1022 + (seed as Int)]
+}
+
+// Each element reads the next before that one is written: t[i] = seed for all
+// but the last, which is set to zero afterwards.
+fn readAheadFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    for i in 0..<1023 {
+        t[i] = t[i + 1] + seed
+    }
+    t[1023] = 0
+    return total(t, 1024, seed)
+}
+
+// A read before the covering loop sees the fill.
+fn readBeforeFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    let first = t[4 + (seed as Int)]
+    for i in 0..<1024 {
+        t[i] = 4 * seed
+    }
+    return first + t[4 + (seed as Int)]
+}
+
+// Two dimensions written whole, row-major.
+fn nestedWholeFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    for r in 0..<32 {
+        for c in 0..<32 {
+            t[r * 32 + c] = seed
+        }
+    }
+    return total(t, 1024, seed)
+}
+
+// The inner loop stops one column short, so column 31 of every row stays zero.
+fn nestedShortFill(seed: U32) -> U32 {
+    let mut t: Array<U32, 1024>
+    for r in 0..<32 {
+        for c in 0..<31 {
+            t[r * 32 + c] = 5 * seed
+        }
+    }
+    let mut sum: U32 = 0
+    for r in 0..<32 {
+        sum = sum + t[r * 32 + 30 + (seed as Int)]
+    }
+    return sum
+}
+
+// Declared inside an outer loop, so zero-filled on every pass; index 0 is never
+// written by the loop and reads zero each time.
+fn refillInLoop(seed: U32) -> U32 {
+    let mut sum: U32 = 0
+    for pass in 0..<3 {
+        let mut t: Array<U32, 1024>
+        for i in 1..<1024 {
+            t[i] = (pass as U32) + seed
+        }
+        sum = sum + t[(seed as Int) - 1] * 1000 + t[1022 + (seed as Int)]
+    }
+    return sum
+}
+
+fn main() -> Int {
+    let seed = process.args.count as U32
+    // sum over i of (i + 1) * (i + 1) for i in 0..1023
+    let mut squares: U32 = 0
+    for k in 1..<1025 {
+        squares = squares + (k as U32) * (k as U32)
+    }
+    if (wholeFill(seed) != squares) { return 1 }
+    if (shortFill(seed) != 0) { return 2 }
+    if (conditionalFill(seed) != 0) { return 3 }
+    if (stridedFill(seed) != 0) { return 4 }
+    if (earlyExitFill(seed) != 0) { return 5 }
+    // sum over i < 1023 of (i + 1)
+    if (readAheadFill(seed) != 523776) { return 6 }
+    if (readBeforeFill(seed) != 4) { return 7 }
+    if (nestedWholeFill(seed) != 524800) { return 8 }
+    if (nestedShortFill(seed) != 0) { return 9 }
+    if (refillInLoop(seed) != 6) { return 10 }
+    return 0
+}

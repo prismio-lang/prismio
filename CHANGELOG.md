@@ -9,6 +9,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **Five benchmarks:** `graph_churn_single`, `graph_churn_alloc`, `graph_churn_transfer` and `graph_churn_full`
+  (graph mutation, allocation and lifetime pressure, cross-thread transfer and reclamation, and all three), and
+  `register_pressure_torture` (forty live values in a dependent chain). Prismio is 1.9x to 2.5x of C++ on the
+  four graph ones, at parity on the last; `docs/GRAPH_CHURN_FINDINGS.md` has the table and the four open issues
+  they found. The channel queue C++ and the benchmark share moved to `cpp/bounded_queue.hpp`.
+
 - **`async fn`, `Future<T>` and `await`.** Calling an `async fn` does not run it: the call is a
   `Future<T>`, a task that has not started, and the body runs where it is awaited. `await f(x)` is
   the call itself, with no handle and no allocation; a held future is one small allocation, and a
@@ -48,7 +54,8 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   word, `Ptr<T>?` for an absent one at no cost. `Ptr<mut T>` may write and `Ptr<volatile T>` makes
   every access volatile, in either order; `Ptr<mut T>` becomes `Ptr<T>`, and becomes the opaque
   `Ptr` (still the spelling for a foreign handle) -- a read-only `Ptr<T>` does not, because foreign
-  code may write through an opaque one -- and nothing converts the other way. What it points at
+  code may write through an opaque one, and neither does a volatile one, whose accesses must stay
+  volatile -- and nothing converts the other way. What it points at
   must own nothing: numbers, `Bool`, `Char`, enums, pointers and structs of those, so
   `Ptr<String>` and a pointer to a struct holding a `Vec` are refused. A struct may hold a
   `Ptr<Node>?` (`test_291`, `neg_291`, `neg_292`).
@@ -59,10 +66,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   argument to an `Int` parameter; `p.load()` says it outright. A pointer stays a pointer anywhere
   else, so `let q = p` copies the pointer. Two pointers under one operator, a struct as an
   operand and a read through `volatile` are refused with the method or stage that handles each.
-  The reads lower to one builtin, `__builtin_ptr_load`, emitted as a typed `load` with the
-  pointee's TBAA tag, and a `Ptr<T>` parameter carries `noundef nonnull align(A)
-  dereferenceable(S)` from the data layout, plus `readonly` unless it is `mut`: `Ptr<Header>` over
-  `{ i32, i32, i16 }` is `align 4 dereferenceable(12)`. Overloads on the pointee type or the
+  The reads lower to one builtin, `__builtin_ptr_load`, emitted as a typed `load` with no type-based
+  alias tag (a `cast` makes two types the same bytes), and a `Ptr<T>` parameter carries `noundef
+  nonnull align(A)` from the data layout, plus `readonly` unless it is `mut`: `Ptr<Header>` over
+  `{ i32, i32, i16 }` is `align 4`. It is not `dereferenceable`, because a pointer may be one past
+  its allocation. Overloads on the pointee type or the
   capability are distinct functions, and the exactly-typed one wins (`test_292`, `test_294`,
   `neg_294`). Volatile access is stage 5.
 - **Writing through a `Ptr<mut T>` (stage 3).** `p.field = v` stores into a field of the pointee (a store at the
@@ -79,10 +87,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `p.wrappingOffset(n)` (no `inbounds`, for a ring), `p.offsetFrom(q)` (elements, exact), `p.isAligned(a)`,
   `p.sameAs(q)` (where they point, which `==` between two pointers refuses to guess), and
   `p.advance(n, limit)`, which answers `none` rather than pass `limit` in the direction of travel and
-  compiles to a branchless select. The constructors are `std.raw`'s and need `import std.raw`, which is the
+  compiles to a branchless select (a plain GEP and an ordinary division, so a `limit` from another
+  block or not a whole number of elements away is still answered). The constructors are `std.raw`'s and need `import std.raw`, which is the
   whole of the unsafe marker: `Ptr<T>.at(address)` and `.castAligned(p)` answer `Ptr<T>?` (none for 0 or an
-  address the pointee cannot sit at), `.atUnchecked(address)` and `.cast(p)` trust the caller, and a
-  read-only pointer cannot be cast to a `mut` one. A `Ptr<T>?` is unwrapped with `expect`; there is no flow
+  address the pointee cannot sit at), `.atUnchecked(address)` and `.cast(p)` trust the caller, a
+  read-only pointer cannot be cast to a `mut` one, and a volatile one only to a volatile one. A `Ptr<T>?` is unwrapped with `expect`; there is no flow
   narrowing. `Ptr<mut T>.at(...)` also parses now, which the type-argument scan in expressions had missed
   (`test_296`, `neg_296`, `neg_297`).
 - **Volatile and atomic access through a `Ptr<T>` (stage 5).** Every access through a `Ptr<volatile T>` is volatile:
@@ -102,6 +111,20 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   instantiation names a pointer type it can write down again, `T` is solved from a `Ptr<T>` parameter, and a `Ptr<mut T>` fits a
   generic `Ptr<T>` (`test_301`). **`asSlice` is not built:** a `Slice` is a handle to a list header, so a pointer and a count have nothing
   to be a view of; it needs a second view representation (`docs/PTR_PLAN.md`).
+- **What a `Ptr<T>` lets the optimiser assume, audited.** Four were wrong and are fixed (`test_303`, `neg_305`, and new
+  `typed_pointer_ir` cases). A store through a `Ptr<mut Float>` was moved past a load through the `Ptr<U64>` cast from the
+  same block at -O3, and a field store through one struct past a load through another laid out alike: pointer accesses
+  carried type-based alias tags, and now carry none (managed values keep theirs). `dereferenceable` on a `Ptr<T>`
+  parameter made passing a one-past-the-end pointer, such as `advance`'s `limit`, undefined; it is gone. `advance`'s room
+  was an `sdiv exact`, poison for a `limit` that is not a whole number of elements away. And `volatile` could be dropped by
+  converting to the opaque `Ptr` or by `cast`; both are refused. Three suspected problems were checked and were already
+  right: `Ptr<volatile U32>.at(...)` parses, `p > 0` on a `Ptr<U32>` is unsigned, and `if p` on a `Ptr<Bool>` is refused.
+- **Stepping a pointer is `std.raw`'s, and `cast` cannot make one stricter** (`docs/MEMORY_SAFETY_PLAN.md` §1). `offset`,
+  `byteOffset` and `wrappingOffset` need `import std.raw`, as the constructors do: a pointer has no length, so one stepped
+  out of its block is not caught, and a byte step leaves a misaligned `Ptr<Int>`. `advance(n, limit)` stays safe. `cast`
+  to a pointee needing more alignment than the source promises (`Ptr<U8>` to `Ptr<U64>`) is refused and names
+  `castAligned`, which checks, and the new `castUnchecked`, which is the caller's word (`neg_306`, `neg_307`). A struct
+  with an inline `Array<U8, N>` field is now a valid pointee.
 - **Nested functions.** A `fn` written in a function body is a private function that
   captures nothing, visible in the block that declares it, callable before its
   declaration and recursively; two functions may each have a `helper`, and a method
@@ -225,7 +248,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   source name, the symbol an assembler stub or a linker script writes), `naked` (no prologue
   or epilogue; the body is `__builtin_asm`), `section("...")` and `align(n)`. Before
   `struct`: `repr(C)` (fields in the order written, C's padding) and `packed` (and no
-  padding); an unmarked struct is still ordered by the compiler. All are contextual words, so
+  padding); an unmarked struct is still ordered by the compiler. A packed struct's fields are read
+  and written at one byte -- they were read at their type's alignment, which an odd offset makes
+  undefined -- and so a field of one is a number, `Bool`, `Char`, enum, pointer, packed struct or
+  byte array: an inner struct, a wider array or a `T?` would be read through at its own alignment,
+  and is refused (`neg_305`). All are contextual words, so
   a variable may still be called `export`.
 - New diagnostics `P1090`–`P1096` (the command-line flags, and `P1094` for a refused `std`
   import) and `UMS2116` (an unknown `codeModel`).
@@ -310,6 +337,142 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **Freestanding code is faster and 39% smaller: Prismio's own passes in LLVM's pipeline.** Two passes in
+  `runtime/llvm_bridge.cpp`, which LLVM-C cannot express, run at the pipeline's extension points
+  (`PassBuilder::registerVectorizer{Start,End}EPCallback`, one bit each of `policies`). On the 20 freestanding
+  workloads: instructions 0.876x of C to **0.793x** (19 fewer, 1 more), 0.789x of Rust to 0.714x, and `.text`
+  29.5 KB to **18.0 KB** (C 14.9 KB, Rust 15.7 KB). The benchmark functions alone are 19.4 KB to 8.3 KB.
+  - **`HotLoopUnroll`** replaces `-unroll-allow-partial -unroll-max-count=4` for the whole module. That setting
+    unrolled set-up loops too, and loops LoopVectorize had already interleaved four ways unrolled four more
+    (sixteen copies of a fill that runs once). The pass picks loops itself, after LoopVectorize: a hot one (its
+    nest's estimated iterations at least an eighth of the function's hottest), innermost first, by a factor
+    that divides its trip count and keeps factor x size within 150 instructions. It also unrolls at run time
+    an outermost loop whose count comes from the input (`K * scale`), which LLVM never does on a `generic` CPU:
+    `pointer_chase` 0.63x of C, `atomic_counter` 0.53x, `popcount` 0.86x. It skips a nested loop with a long
+    bound and any loop of a recursive function, whose few trips per entry pay the remainder (`prime_sieve` was
+    1.08x and `fibonacci` 1.23x before those rules). `PRISMIO_UNROLL_POLICY=0`, `PRISMIO_UNROLL_BUDGET` and
+    `PRISMIO_UNROLL_COUNT` measure it. Windows has no bridge and keeps the module-wide setting.
+  - **`CoveredFillElimination`** deletes the zero-fill of a frame array that a loop nest then writes whole
+    before anything reads it, proved through SCEV: the store's address steps tile the array exactly, every
+    loop in the nest has a constant trip count and exits only at its latch, and every other use of the array
+    is dominated by the nest's exit. LLVM's DSE cannot see a loop's stores as covering a `memset`. 18 memsets
+    in the freestanding suite became 6 (C has 2, both in its source). On every target, at every optimising
+    level. `test_313_covered_fill` holds nine shapes that must keep the fill and one that loses it;
+    `PRISMIO_COVERED_FILLS=0` turns it off and `PRISMIO_POLICY_TRACE=1` prints every decision.
+  - A program a policy applies to runs the bridge's whole pipeline (`default<O3>` with the passes added) even
+    when it is too small to partition.
+- **`v[k] = x` releases the element it displaces at once where no view of it can be live**
+  (`src/ir/overwrites.psm`, runtime `list_set_now` / `list_set_str_now`). It used to park every displaced
+  owned element until the Vec died, because `let n = v[k]` is a view and might still be read. Now, before codegen,
+  each store is proved or not: `v` is a local made fresh and never reassigned; no value that may hold a view of an
+  element is assigned, returned, captured or passed to an argument AIF says the callee keeps
+  (`aif_call_arg_retained`, which covers user functions through AIF's flow and builtins through their
+  contracts); the new value mentions none; and no binding that may hold one is live at the store. On graph_churn
+  (Apple silicon, 9 runs, against 2026-10-16's tracked run): peak memory 30.0 to **5.6 MB**, 89.6 to **4.0 MB**,
+  58.1 to **2.4 MB** and 96.0 to **6.5 MB** (8x to 32x C++'s down to 1.2x to 1.4x), and time 2.14x to **1.93x**,
+  1.90x to **1.55x**, 2.47x to **1.79x** and 1.99x to **1.68x** of C++ (single, alloc, transfer, full).
+  `test_317_overwrite_release` holds three stores that release and five that must park (a view read after the
+  store, the loop's own binder, a view kept outside the loop, the new element built from the old, a Vec handed in);
+  `test_318_overwrite_peak` bounds the peak at 4 KB (528 bytes, against 176,449 parked); the `overwrite_release`
+  harness test reads each function's setter. Not yet: a store into a field's Vec (`frag.nodes[i] = ...`), which
+  still parks.
+- **A small pure tree-recursive function is inlined into itself once** (`SelfRecursionUnfold`,
+  `runtime/llvm_bridge.cpp`, at the early-simplification extension point, before TailCallElim). Unfolded,
+  `fib(n - 1) + fib(n - 2)` is four calls of which two have the same argument, and a call that reads no memory
+  is merged with its twin once FunctionAttrs has marked it: three calls a level instead of four, a growth rate
+  of 1.466 per level instead of 1.618. `fibonacci` 4.96M to **0.35M** instructions, 0.940x to **0.066x** of C,
+  for 28 bytes; its leaf path is also the 3-instruction minimum now, where it saved three registers before.
+  Only for a body of at most 40 instructions with two or three self-calls and no other memory access or call;
+  from -O2, not -Os/-Oz, on every target. LLVM's inliner never inlines a function into itself (GCC's does).
+  `test_316_self_recursion_unfold` checks four such functions against loops; `PRISMIO_SELF_UNFOLD=0` turns it
+  off. A second level, with EarlyCSE, GVN and SimplifyCFG between, left four calls and was slower.
+- **A private function's parameters take their range from its calls, and an index its record layout.**
+  Two facts the interval walk (`src/ir/nowrap.psm`) did not have, which put Prismio ahead of C on all 20
+  freestanding workloads (geomean 0.791x to **0.782x**; 0.714x of Rust to 0.705x; with the unfolding above,
+  **0.685x** of C and **0.617x** of Rust):
+  - **Call-site parameter ranges** (`src/ir/param_ranges.psm`). Before any function is generated, as AIF reads
+    the whole module, the walk runs over every caller and records each argument's interval at every call to a
+    private function; the join is where that function's own walk starts, and LLVM is told as a `range`
+    attribute (`ir_function_param_range`). Nothing is claimed unless every call is seen: an exported, public,
+    generic, `async` or method function gets none, and so does one whose name is used as a value or spawned
+    anywhere in the module, or one with any call the walk did not record. `heapsort` 1.003x to **0.966x** of
+    C: told `sift`'s `start` is in [0, 1023], LLVM proves the sift loop's indices non-negative and indexes with
+    a free zero-extension instead of `sxtw`, which C gets from signed overflow being undefined and IPSCCP alone
+    does not find (it widens a loop counter to the full range). The walk also divides now (`(2048 - 2) / 2`
+    was an unknown), and a call in an `if` condition is recorded once.
+  - **Congruences** (`src/ir/strides.psm`). An immutable `let` keeps what it is modulo a stride
+    (`base = (pc * 4) as Int` is 0 mod 4), and an immutable literal array its elements, so `program[base + 1]`
+    is bounded by the elements one past a multiple of 4 rather than by all of them: `bytecode_interpreter`'s
+    `reg[a]` and `reg[b]` lose their checks, 0.980x to **0.777x** of C. The interval and congruence domains'
+    reduced product (Granger 1989).
+  - `test_314_param_ranges` and `test_315_index_strides` with the `param_ranges` and `index_strides` harness
+    tests that read the IR. `test_179`'s three must-stay-plain functions are `public` now: main's one call to
+    `shiftedBackTwo` passes 2, which proves the op that test keeps unmarked.
+- **The freestanding failure core is collected by the linker.** Native sources of a `--freestanding` build
+  compile with `-ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables`, so the link's
+  `--gc-sections` drops the `panic.c` functions a program never calls (552 bytes of fourteen functions, of
+  which the suite calls one) and their strings, and no `.eh_frame` is emitted (`.rodata` 2,069 to 1,792 bytes).
+- **Four freestanding Prismio arms were not the C program.** `mandelbrot_fixed` ignored `scale` (a constant
+  `0..<6` that LLVM unrolled six ways, 5,952 bytes), and `matrix_multiply`, `crc32` and `atomic_counter`
+  counted with a signed `Int` range, which may count down and so carries a second loop copy, where C counts
+  in `u32`. All four count in `U32` now. `PRISMIO_BENCH_C_FLAGS` adds flags to the C arm; `-funroll-loops`
+  changes nothing on `generic` (the image is byte-identical), so the C arm with Prismio's old unrolling is
+  `-mllvm -unroll-allow-partial -mllvm -unroll-max-count=4`.
+- **An index out of range stops the program, on a `Vec` and on an `Array<T, N>`**
+  (`docs/MEMORY_SAFETY_PLAN.md` §2). A `Vec` read used to answer the element type's zero, a write
+  did nothing and `swap` was a no-op; an array read or wrote the neighbouring stack. Now each prints
+  `runtime error: index 6 is out of range for a Vec of length 1` (or `for an array of length N`)
+  and exits, as `remove`, `insert` and a `Slice` already did; in a freestanding program the failure
+  reaches `prismio_panic_hook`. A constant array index out of range is a compile error. The check is
+  a compare and a branch to a cold call that never returns, skipped where a loop's range proof
+  or the interval walk (below) covers the access; codegen's inline flat-list paths, which answered 0 themselves, trap too. A
+  `[T]` view is not checked yet: it gets its length in the next step. Twenty fixtures that checked
+  the old zero now check the trap, through a new harness form, `// expect-trap: <argument> =>
+  <message>`, that runs the program once per case.
+- **An array index the compiler proves in range has no check** (`src/ir/nowrap.psm`,
+  `src/ir/contents.psm`). The interval walk that marks `nsw` now proves indices too, in every
+  function that subscripts a fixed array, not only those with a loop, and knows more:
+  - `U32`, `U16`, `U8`, `I16` and `I8` locals, each with its own type's wrap rule, beside `Int`;
+    `*`, `>>` and `&` by a literal, an unsigned `%` by a literal or a bounded divisor, and `as`
+    between integers when the value fits.
+  - A comparison narrows its locals on both branches: `a < b` puts `a` below `b`'s largest value
+    and `b` above `a`'s smallest, and its negation holds in the `else` and after a loop that has no
+    `break`. `!=` trims an interval whose edge it names.
+  - A variable the loop assigns keeps a fact when one is inductive: a guess from the facts at entry
+    is widened by what a side-effect-free walk of the body leaves at its end, jumping to the next
+    literal the loop compares it with, until it stops moving (widening with thresholds, Blanchet
+    et al., PLDI 2003). A `continue` anywhere in the body turns it off, and a `break` keeps it out
+    of the facts after the loop. Binary search's `lo` and `hi` are the case.
+  - `for i in a..<b` bounds `i` in its body, in either direction.
+  - A local array of any of those integer types keeps a bound on its elements; an array whose type
+    cannot hold its family's bound fails alone. A value read through an immutable `let` bound once
+    (`let t = order[i]; ... order[j] = t`) counts as a read of the array.
+  - A program's own `min` or `max` is recognised by its body, not its name.
+
+  Freestanding, in instructions: `binary_search` 13,438,400 to 11,036,304 (C 11,036,304),
+  `pointer_chase` 14,448,592 to 9,629,904 (C 9,629,904) and `bytecode_interpreter` 10,400,032 to
+  9,650,048 (C 9,850,032), the three rows the checks above had cost. `test_311_proved_indices`
+  checks five proved shapes and twelve that look provable and are not -- an off-by-one `<=`, a
+  `U32` below zero, an exit the end of the body does not see, a large `U32` cast, a mask one too
+  wide, a store nothing bounds, a `let` bound twice -- each of which still stops at its index;
+  `proved_indices` reads the IR for which keep a check. Hosted: 66 workloads in an interleaved A/B
+  against the build before, no change outside noise, every checksum identical.
+- **A freestanding build unrolls loops** (`ensure_codegen_initialized`, `runtime/llvm-api-backend.c`).
+  LLVM's AArch64 cost model unrolls nothing partially for a CPU without a loop buffer, which
+  `generic` is, for clang and rustc as for Prismio. A freestanding target now gets partial
+  unrolling, a trip count known at compile time, at most 4 copies. Measured on the suite: a
+  geomean of 0.914 of the build before, no workload worse; `edit_distance` 5,540,624 to 4,207,920,
+  `matrix_multiply` 0.69, `sha256` 0.70, `crc32` 0.69. `.text` grows from 17.2 to 29.9 KB; `-Os` and
+  `-Oz` keep LLVM's zero threshold for size and do not unroll. Runtime unrolling went further
+  (0.853) but cost `fibonacci` 31%, whose tail-recursion loop pays the trip-count prologue on each
+  of 300,000 short entries. *Superseded on 2026-10-16 by `HotLoopUnroll` (above): the module-wide setting
+  remains only where there is no C++ bridge (Windows).*
+- **Freestanding benchmark verdicts are absolute** (`benchmarks/freestanding/suite.py`). The count
+  is exact, so fewer instructions than the other arm is a win, more is a loss, and only an equal
+  count is level; the hosted suite keeps its noise-aware tolerance. The +-2% band had called
+  `edit_distance`'s 5% and `heapsort`'s 2% parity. Ratios print to three places. The suite now reads
+  17 fewer, 3 level and 0 more against C (geomean 0.876), and 15, 5 and 0 against Rust (0.789);
+  under the absolute rule it read 7, 3 and 10 against C when this work began.
 - **The second half of the IR pipeline runs in the codegen partitions, in parallel.** `default<O3>`
   is now run in two halves through the C++ bridge (`prismio_llvm_run_default_half`, built exactly as
   `buildPerModuleDefaultPipeline` builds it): the module simplification pipeline -- the inliner and
@@ -564,6 +727,22 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   of their functions' IR changed, which is code layout.
 
 ### Fixed
+
+- **`edit_distance` had lost its element bound** to its own `min`. The bound on what its rows hold
+  (`src/ir/contents.psm`) asked whether `min` was std.math's, and a freestanding program cannot
+  import std.math, so the benchmark's `fn min` never qualified: 5,900,624 instructions where the
+  freestanding README recorded 5,540,624. The callee is now judged by its body.
+
+- **`??` in a file that had not imported `std.option` failed with an internal-looking error.** A file
+  that reached the module only through another import (`std.process` and `std.string` both import it)
+  passed the check and then failed as "module `std.option` declares no `optionCoalesce$Int`"; it now
+  says "`??` needs `import std.option`", as a file with no route to it already did (`neg_308`).
+- **A fresh struct stored in two `Vec`s of one type no longer stops the first from releasing.** Overwriting an
+  element of one `Vec<F>` leaked the displaced `F` and all it owned once a second `Vec<F>` was pushed a result
+  of the same function: the A-CONTAIN rule read two containers holding one allocation *site* as one value
+  held twice and sent it to the counted tier, which a struct that owns a `Vec` cannot use. The exemption
+  `test_255` made for `String` now covers every move-only site, still excluding an element read that was
+  pushed. `graph_churn_alloc` went from 10 released of 2,521,048 to all of them. `test_302`; suite 614/614.
 
 - **`-O0`..`-O3` did not set how the program was optimised.** The program's object step was
   fixed at O3 (O0 with `-g`); the flag only ran a second `default<O<n>>` over the frontend's

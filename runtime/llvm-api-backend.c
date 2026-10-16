@@ -975,13 +975,16 @@ void ir_module_end(void) { /* nothing to flush -- the module is already built */
 static int g_pending_param_noalias[MAX_PENDING_PARAMS];
 static int g_pending_ret_noalias;
 // A typed `Ptr<T>` parameter: what the type promises about the pointer, spelled as the
-// attributes LLVM acts on. `deref_bytes` is 0 when the pointee is not promised readable
-// (a volatile pointer: a device register is not memory a load may speculate), and
-// `deref_align` is the pointee's ABI alignment. See ir_function_param_pointer.
-static unsigned long long g_pending_param_deref[MAX_PENDING_PARAMS];
+// attributes LLVM acts on. `align` is the pointee's ABI alignment. See
+// ir_function_param_pointer.
 static unsigned g_pending_param_align[MAX_PENDING_PARAMS];
 static char g_pending_param_pointer[MAX_PENDING_PARAMS];
 static char g_pending_param_readonly[MAX_PENDING_PARAMS];
+// An integer parameter every caller passes inside [lo, hi] (ir/param_ranges.psm),
+// spelled as LLVM's `range` attribute. See ir_function_param_range.
+static char g_pending_param_ranged[MAX_PENDING_PARAMS];
+static long long g_pending_param_lo[MAX_PENDING_PARAMS];
+static long long g_pending_param_hi[MAX_PENDING_PARAMS];
 
 // C's rule for a `bool`, a `char` or an 8- or 16-bit integer crossing a call. On
 // most targets the *caller* widens it to 32 bits and the callee trusts that, so a
@@ -1073,8 +1076,8 @@ void ir_function_begin(const char *name, const char *ret_type) {
     memset(g_pending_param_noalias, 0, sizeof(g_pending_param_noalias));
     memset(g_pending_param_pointer, 0, sizeof(g_pending_param_pointer));
     memset(g_pending_param_readonly, 0, sizeof(g_pending_param_readonly));
-    memset(g_pending_param_deref, 0, sizeof(g_pending_param_deref));
     memset(g_pending_param_align, 0, sizeof(g_pending_param_align));
+    memset(g_pending_param_ranged, 0, sizeof(g_pending_param_ranged));
     g_pending_ret_noalias = 0;
     memset(g_pending_param_ext, 0, sizeof(g_pending_param_ext));
     g_pending_ret_ext = ABI_EXT_NONE;
@@ -1114,28 +1117,64 @@ void ir_function_param_unique(const char *param_type, const char *param_name) {
     if (i < MAX_PENDING_PARAMS) g_pending_param_noalias[i] = 1;
 }
 
-// The last parameter declared is a typed `Ptr<T>` (docs/PTR_PLAN.md): non-null, defined,
-// aligned for its pointee and -- unless `volatile` -- readable for the pointee's whole
-// size, which is what lets LLVM hoist a load past a branch that guards nothing. A
-// pointer that is not `mut` is also `readonly`: the function cannot write through it,
-// because the one conversion that could launder the capability (to the opaque `Ptr`
-// foreign code writes through) is refused for it in sema. `pointee_key` is the pointee's
-// storage key, so the size and alignment are the data layout's, packed structs included.
-void ir_function_param_pointer(const char *pointee_key, int readonly, int readable) {
+// The last parameter declared is a typed `Ptr<T>` (docs/PTR_PLAN.md): non-null, defined
+// and aligned for its pointee. A pointer that is not `mut` is also `readonly`: the
+// function cannot write through it, because the conversions that could launder the
+// capability (to the opaque `Ptr` foreign code writes through, or a `cast`) are refused
+// for it in sema. `pointee_key` is the pointee's storage key, so the alignment is the
+// data layout's, packed structs included.
+//
+// **Not `dereferenceable`.** A `Ptr<T>` may point one past its allocation -- that is
+// what `p.offset(count)` makes, and the `limit` that `advance` is given -- and the
+// attribute would make passing one undefined at the call, whether or not the callee
+// reads it: LLVM may hoist a load from it past the branch that guarded the read. Where
+// a function does read its pointer on every path, LLVM proves the fact itself.
+void ir_function_param_pointer(const char *pointee_key, int readonly) {
     int i = g_pending_param_count - 1;
     if (i < 0 || i >= MAX_PENDING_PARAMS) backend_fail("ir_function_param_pointer before any parameter", pointee_key);
     LLVMTypeRef pointee = type_from_key(pointee_key);
-    LLVMTargetDataRef layout = LLVMGetModuleDataLayout(g_module);
     g_pending_param_pointer[i] = 1;
     g_pending_param_readonly[i] = readonly != 0;
-    g_pending_param_align[i] = LLVMABIAlignmentOfType(layout, pointee);
-    g_pending_param_deref[i] = readable ? LLVMABISizeOfType(layout, pointee) : 0;
+    g_pending_param_align[i] = LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), pointee);
+}
+
+// The last parameter declared is an integer every call passes inside [lo, hi], the
+// join of what each caller's interval walk proved (ir/param_ranges.psm). LLVM reads
+// the attribute where it cannot see the callers itself -- a non-internal function --
+// and where it can but loses the bound to a loop: IPSCCP widens a caller's counter
+// to the full range, and only with `start` known non-negative does a heap's sift
+// index with a free zero-extension instead of `sxtw` (heapsort 10.74M -> 10.39M
+// instructions, C 10.70M).
+void ir_function_param_range(long long lo, long long hi) {
+    int i = g_pending_param_count - 1;
+    if (i < 0 || i >= MAX_PENDING_PARAMS) backend_fail("ir_function_param_range before any parameter", "");
+    g_pending_param_ranged[i] = 1;
+    g_pending_param_lo[i] = lo;
+    g_pending_param_hi[i] = hi;
+}
+
+static void apply_range_param_attrs(LLVMValueRef fn) {
+    unsigned k_range = LLVMGetEnumAttributeKindForName("range", 5);
+    if (!k_range) return;
+    for (int i = 0; i < g_pending_param_count; i++) {
+        if (!g_pending_param_ranged[i]) continue;
+        if (LLVMGetTypeKind(g_pending_params[i]) != LLVMIntegerTypeKind) continue;
+        unsigned bits = LLVMGetIntTypeWidth(g_pending_params[i]);
+        if (bits == 0 || bits > 64) continue;
+        uint64_t mask = bits == 64 ? ~0ull : ((1ull << bits) - 1);
+        // Half-open and wrapping in `bits`: [lo, hi + 1). A range covering every value
+        // has lower == upper, which LLVM reads as empty, so it is left off.
+        uint64_t lower = (uint64_t)g_pending_param_lo[i] & mask;
+        uint64_t upper = ((uint64_t)g_pending_param_hi[i] + 1) & mask;
+        if (lower == upper) continue;
+        unsigned at = (unsigned)(i + 1 + (g_pending_sret ? 1 : 0));
+        LLVMAddAttributeAtIndex(fn, at, LLVMCreateConstantRangeAttribute(g_ctx, k_range, bits, &lower, &upper));
+    }
 }
 
 static void apply_pointer_param_attrs(LLVMValueRef fn) {
     unsigned k_nonnull = LLVMGetEnumAttributeKindForName("nonnull", 7);
     unsigned k_noundef = LLVMGetEnumAttributeKindForName("noundef", 7);
-    unsigned k_deref = LLVMGetEnumAttributeKindForName("dereferenceable", 15);
     unsigned k_align = LLVMGetEnumAttributeKindForName("align", 5);
     unsigned k_readonly = LLVMGetEnumAttributeKindForName("readonly", 8);
     for (int i = 0; i < g_pending_param_count; i++) {
@@ -1146,8 +1185,6 @@ static void apply_pointer_param_attrs(LLVMValueRef fn) {
         if (k_noundef) LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_noundef, 0));
         if (k_align && g_pending_param_align[i] > 0)
             LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_align, g_pending_param_align[i]));
-        if (k_deref && g_pending_param_deref[i] > 0)
-            LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_deref, g_pending_param_deref[i]));
         if (k_readonly && g_pending_param_readonly[i])
             LLVMAddAttributeAtIndex(fn, at, LLVMCreateEnumAttribute(g_ctx, k_readonly, 0));
     }
@@ -1155,6 +1192,7 @@ static void apply_pointer_param_attrs(LLVMValueRef fn) {
 
 static void apply_param_attrs(LLVMValueRef fn) {
     apply_pointer_param_attrs(fn);
+    apply_range_param_attrs(fn);
     unsigned kind = LLVMGetEnumAttributeKindForName("noalias", 7);
     if (!kind) return;
     for (int i = 0; i < g_pending_param_count; i++) {
@@ -1503,6 +1541,21 @@ void ir_unreachable(void) {
     LLVMBuildUnreachable(g_builder);
 }
 
+// `__builtin_assume(cond)`: a fact the program promises, as `llvm.assume`. std uses it
+// where an invariant of its own data proves what no analysis can see -- a Map's slot
+// index is `hash & mask` and `mask` is one less than the slot count -- so that the
+// bounds check after it folds away. A false promise is undefined behaviour, which is
+// why the builtin is std's and not a program's.
+void ir_assume(const char *cond) {
+    if (block_done()) return;
+    LLVMTypeRef i1 = LLVMInt1TypeInContext(g_ctx);
+    LLVMTypeRef assume_ty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), &i1, 1, 0);
+    LLVMValueRef assume = LLVMGetNamedFunction(g_module, "llvm.assume");
+    if (!assume) assume = LLVMAddFunction(g_module, "llvm.assume", assume_ty);
+    LLVMValueRef value = resolve_value(cond, "i1");
+    LLVMBuildCall2(g_builder, assume_ty, assume, &value, 1, "");
+}
+
 int ir_alloca(const char *type, const char *name) {
     for (int i = 0; i < g_alloca_count; i++) {
         if (strcmp(g_allocas[i].name, name) == 0) return -1; // already allocated
@@ -1847,14 +1900,40 @@ static LLVMValueRef element_from_memory(LLVMValueRef loaded, LLVMTypeRef elemty)
 }
 
 
+// Alignment is the pointee's ABI alignment, which LLVM requires of an atomic access and
+// every access through a typed pointer states.
+static unsigned pointee_align(LLVMTypeRef ty) {
+    return LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), ty);
+}
+
+// The alignment an access of `ty` at `ptr` may claim: its type's, unless `ptr` is a field
+// of a `packed struct`. Such a field starts wherever the one before it ended, so its
+// address is aligned only as the struct is, to one byte; left to LLVM, a load takes its
+// type's ABI alignment, and `load i32 ..., align 4` at an odd offset is undefined -- and
+// faults on a strict-alignment target. Read off the address rather than passed in, because
+// every field access (a read, a write, a literal's initialiser, one through a typed
+// pointer) computes its address with the GEP this looks at, and not all of them know which
+// struct it is. Sema keeps whatever is reached *through* a packed field aligned to one
+// byte (semaCheckPackedStructs), so one level is the whole of it.
+static unsigned access_align(LLVMValueRef ptr, LLVMTypeRef ty) {
+    int gep = LLVMIsAGetElementPtrInst(ptr) != NULL
+           || (LLVMIsAConstantExpr(ptr) && LLVMGetConstOpcode(ptr) == LLVMGetElementPtr);
+    if (gep) {
+        LLVMTypeRef source = LLVMGetGEPSourceElementType(ptr);
+        if (LLVMGetTypeKind(source) == LLVMStructTypeKind && LLVMIsPackedStruct(source)) return 1;
+    }
+    return pointee_align(ty);
+}
+
 // Load/store through a pointer *value* rather than a named local. Struct fields
 // and array elements are addresses produced by a GEP, so they have no name to
 // look up -- the text backend reached them by emitting `store ... ptr %tN`
 // directly, which is one of the things ir_append was being used for.
 int ir_load_ptr(const char *type, const char *ptr_value) {
-    LLVMValueRef load = LLVMBuildLoad2(g_builder, type_from_key(type),
-                                       resolve_value(ptr_value, "ptr"), "");
+    LLVMTypeRef ty = type_from_key(type);
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, ty, resolve_value(ptr_value, "ptr"), "");
     tag_scalar(load, type);
+    LLVMSetAlignment(load, access_align(LLVMGetOperand(load, 0), ty));
     return intern_value(load);
 }
 
@@ -1863,6 +1942,7 @@ void ir_store_ptr(const char *type, const char *value, const char *ptr_value) {
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
     tag_scalar(store, type);
+    LLVMSetAlignment(store, access_align(LLVMGetOperand(store, 1), type_from_key(type)));
 }
 
 // Memory through an integer address, and the machine instructions Prismio has no
@@ -2012,17 +2092,28 @@ int ir_ptr_op(int kind, const char *elem_key, const char *a, const char *b, cons
     case 6:
         return intern_value(LLVMBuildICmp(g_builder, LLVMIntEQ, resolve_value(a, "ptr"),
                                           resolve_value(b, "ptr"), ""));
+    // `advance(n, limit)`: the step, or none past `limit`. Neither half may assume what the
+    // check is there to establish. The room is a plain `sdiv`, because the `exact` one
+    // LLVMBuildPtrDiff2 emits is poison when `limit` is not a whole number of elements away
+    // -- as it is not, for a 12-byte struct, from a `limit` of another allocation -- and a
+    // poison condition selects poison rather than none. The step is a plain GEP, because
+    // `inbounds` is a claim that `p` and `p + n` share an allocation, which a `limit` from
+    // somewhere else does not make true.
     case 7: {
         LLVMValueRef p = resolve_value(a, "ptr");
         LLVMValueRef n = ptr_index(resolve_value(b, "i32"), ip);
         LLVMValueRef limit = resolve_value(c, "ptr");
-        LLVMValueRef room = LLVMBuildPtrDiff2(g_builder, elem, limit, p, "");
+        LLVMValueRef bytes = LLVMBuildSub(g_builder, LLVMBuildCast(g_builder, LLVMPtrToAddr, limit, ip, ""),
+                                          LLVMBuildCast(g_builder, LLVMPtrToAddr, p, ip, ""), "");
+        unsigned long long size = LLVMABISizeOfType(layout, elem);
+        LLVMValueRef room = size == 1 ? bytes
+                                      : LLVMBuildSDiv(g_builder, bytes, LLVMConstInt(ip, size, 0), "");
         LLVMValueRef forward = LLVMBuildICmp(g_builder, LLVMIntSGE, n, zero, "");
         LLVMValueRef fits_up = LLVMBuildICmp(g_builder, LLVMIntSLE, n, room, "");
         LLVMValueRef fits_down = LLVMBuildICmp(g_builder, LLVMIntSGE, n, room, "");
         LLVMValueRef fits = LLVMBuildSelect(g_builder, forward, fits_up, fits_down, "");
         LLVMValueRef idx[1] = { n };
-        LLVMValueRef moved = LLVMBuildInBoundsGEP2(g_builder, elem, p, idx, 1, "");
+        LLVMValueRef moved = LLVMBuildGEP2(g_builder, elem, p, idx, 1, "");
         return intern_value(LLVMBuildSelect(g_builder, fits, moved, LLVMConstNull(ptr_ty), ""));
     }
     case 8:
@@ -2046,36 +2137,36 @@ int ir_ptr_op(int kind, const char *elem_key, const char *a, const char *b, cons
     return 0;
 }
 
-// Volatile and atomic access through a typed pointer (docs/PTR_PLAN.md stage 5). The
-// pointer stays a pointer, so LLVM keeps its provenance; what the access is ordered as
-// comes from the type (`Ptr<volatile T>`) or the method (`atomicAdd`), never from a
-// number. Alignment is the pointee's ABI alignment, which LLVM requires of an atomic one.
-static unsigned pointee_align(LLVMTypeRef ty) {
-    return LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), ty);
+// A load or store through a typed pointer (docs/PTR_PLAN.md): of the pointee, or of a field
+// of a struct pointee, whose address is a GEP like any other. The pointer stays a pointer,
+// so LLVM keeps its provenance; `is_volatile` comes from the type (`Ptr<volatile T>`) or the
+// method (`readVolatile`), never from a number.
+//
+// **No TBAA tag.** A tag tells LLVM that a `double` and a `long long` are never the same
+// bytes, and `Ptr<U>.cast(p)` exists to make them so. Tagged, a store through a
+// `Ptr<mut Float>` moved past a load through the `Ptr<U64>` cast from it at -O3, and so did
+// a field store through one struct type past a load through another laid out alike
+// (2026-10-16, through two parameters BasicAA cannot relate). Untagged, an access may alias
+// anything, which is what memory reached by a pointer is. Managed values and collections
+// keep their tags: nothing casts them.
+static LLVMValueRef ptr_access(LLVMValueRef inst, unsigned align, int is_volatile) {
+    LLVMSetAlignment(inst, align);
+    if (is_volatile) LLVMSetVolatile(inst, 1);
+    return inst;
 }
 
-int ir_ptr_load_volatile(const char *type, const char *ptr_value) {
+int ir_ptr_load(const char *type, const char *ptr_value, int is_volatile) {
     LLVMTypeRef ty = type_from_key(type);
     LLVMValueRef load = LLVMBuildLoad2(g_builder, ty, resolve_value(ptr_value, "ptr"), "");
-    LLVMSetVolatile(load, 1);
-    LLVMSetAlignment(load, pointee_align(ty));
-    return intern_value(load);
+    return intern_value(ptr_access(load, access_align(LLVMGetOperand(load, 0), ty), is_volatile));
 }
 
-void ir_ptr_store_volatile(const char *type, const char *value, const char *ptr_value) {
+void ir_ptr_store(const char *type, const char *value, const char *ptr_value, int is_volatile) {
     if (block_done()) return;
-    LLVMTypeRef ty = type_from_key(type);
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
-    LLVMSetVolatile(store, 1);
-    LLVMSetAlignment(store, pointee_align(ty));
+    ptr_access(store, access_align(LLVMGetOperand(store, 1), type_from_key(type)), is_volatile);
 }
-
-// A field read or written through a volatile pointer: the struct-field access, marked.
-int ir_struct_load_ptr_volatile(const char *type, const char *ptr_value,
-                                const char *struct_name, int field_index);
-void ir_struct_store_ptr_volatile(const char *type, const char *value, const char *ptr_value,
-                                  const char *struct_name, int field_index);
 
 static LLVMAtomicOrdering atomic_order(int code) {
     switch (code) {
@@ -2144,13 +2235,15 @@ void ir_list_store_ptr(const char *type, const char *value, const char *ptr_valu
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
     tag_list_element(store, type);
+    LLVMSetAlignment(store, access_align(LLVMGetOperand(store, 1), type_from_key(type)));
 }
 
 int ir_struct_load_ptr(const char *type, const char *ptr_value,
                        const char *struct_name, int field_index) {
-    LLVMValueRef load = LLVMBuildLoad2(g_builder, type_from_key(type),
-                                       resolve_value(ptr_value, "ptr"), "");
+    LLVMTypeRef ty = type_from_key(type);
+    LLVMValueRef load = LLVMBuildLoad2(g_builder, ty, resolve_value(ptr_value, "ptr"), "");
     tag_struct_field(load, struct_name, field_index, type);
+    LLVMSetAlignment(load, access_align(LLVMGetOperand(load, 0), ty));
     return intern_value(load);
 }
 
@@ -2160,26 +2253,7 @@ void ir_struct_store_ptr(const char *type, const char *value, const char *ptr_va
     LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
                                         resolve_value(ptr_value, "ptr"));
     tag_struct_field(store, struct_name, field_index, type);
-}
-
-// The same two, for a field reached through a `Ptr<volatile T>`: every such access is
-// volatile, so a driver cannot write one register access that the optimiser may drop.
-int ir_struct_load_ptr_volatile(const char *type, const char *ptr_value,
-                                const char *struct_name, int field_index) {
-    LLVMValueRef load = LLVMBuildLoad2(g_builder, type_from_key(type),
-                                       resolve_value(ptr_value, "ptr"), "");
-    tag_struct_field(load, struct_name, field_index, type);
-    LLVMSetVolatile(load, 1);
-    return intern_value(load);
-}
-
-void ir_struct_store_ptr_volatile(const char *type, const char *value, const char *ptr_value,
-                                  const char *struct_name, int field_index) {
-    if (block_done()) return;
-    LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(value, type),
-                                        resolve_value(ptr_value, "ptr"));
-    tag_struct_field(store, struct_name, field_index, type);
-    LLVMSetVolatile(store, 1);
+    LLVMSetAlignment(store, access_align(LLVMGetOperand(store, 1), type_from_key(type)));
 }
 
 // M4.3c. Different top-level DataView fields occupy different allocations.
@@ -3553,6 +3627,51 @@ static LLVMValueRef flat_element_address(LLVMValueRef data, LLVMValueRef idx, in
     return LLVMBuildGEP2(g_builder, row, data, &wide, 1, "");
 }
 
+// The out-of-range arm of an inline Vec access: the program stops with the runtime's
+// message (list_index_fail), as every out-of-line accessor does (docs/MEMORY_SAFETY_PLAN.md
+// section 2). These arms used to answer 0 or a null address, or skip the write: the old
+// "a Vec index is total" rule, implemented a second time here, so changing list_get
+// alone left every flat-guarded loop on it (test_123's wrapUp read index -2147483648 as
+// 0 and ran on). The failing block ends in `unreachable` after a cold,
+// noreturn call, so the in-range path is a guard with no join and nothing after it to
+// keep: LLVM treats it as an exit, not as a diamond. The builder is left in range.
+static void bounds_or_fail(LLVMValueRef idx, LLVMValueRef len, const char *fail_name) {
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
+    int ok = ir_get_label();
+    int fail = ir_get_label();
+    LLVMBuildCondBr(g_builder, in_bounds, block_for(ok), block_for(fail));
+    LLVMPositionBuilderAtEnd(g_builder, block_for(fail));
+    LLVMTypeRef params[2] = {i32, i32};
+    LLVMTypeRef fnty = LLVMFunctionType(LLVMVoidTypeInContext(g_ctx), params, 2, 0);
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, fail_name);
+    if (!fn) {
+        fn = LLVMAddFunction(g_module, fail_name, fnty);
+        const char *attrs[3] = {"noreturn", "cold", "nounwind"};
+        for (int i = 0; i < 3; i++) {
+            unsigned kind = LLVMGetEnumAttributeKindForName(attrs[i], strlen(attrs[i]));
+            LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex,
+                                    LLVMCreateEnumAttribute(g_ctx, kind, 0));
+        }
+    }
+    LLVMValueRef args[2] = {idx, len};
+    LLVMBuildCall2(g_builder, fnty, fn, args, 2, "");
+    LLVMBuildUnreachable(g_builder);
+    LLVMPositionBuilderAtEnd(g_builder, block_for(ok));
+}
+
+static void list_bounds_or_fail(LLVMValueRef idx, LLVMValueRef len) {
+    bounds_or_fail(idx, len, "list_index_fail");
+}
+
+// `index` into an array of `length` elements, a constant for an `Array<T, N>`: in range,
+// or the program stops (array_index_fail). Codegen calls this only where the loop's range
+// proof does not already cover the access.
+void ir_array_index_check(const char *index, const char *length) {
+    if (block_done()) return;
+    bounds_or_fail(resolve_value(index, "i32"), resolve_value(length, "i32"), "array_index_fail");
+}
+
 int ir_list_flat_elem(const char *list, const char *index, int stride,
                       const char *guard, int check_bounds) {
     LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
@@ -3584,17 +3703,14 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
             LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
         LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
         tag_list_header(data, "ptr");
-        LLVMValueRef addr = flat_element_address(data, idx, stride, !check_bounds);
-        if (!check_bounds) {
-            return intern_value(addr);
+        if (check_bounds) {
+            LLVMValueRef len_ptr =
+                LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
+            LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
+            tag_list_header(len, "i32");
+            list_bounds_or_fail(idx, len);
         }
-        LLVMValueRef len_ptr =
-            LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
-        LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
-        tag_list_header(len, "i32");
-        LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
-        LLVMValueRef flat_val = LLVMBuildSelect(g_builder, in_bounds, addr, LLVMConstNull(ptrty), "");
-        return intern_value(flat_val);
+        return intern_value(flat_element_address(data, idx, stride, 1));
     }
 
     LLVMValueRef is_flat;
@@ -3629,31 +3745,22 @@ int ir_list_flat_elem(const char *list, const char *index, int stride,
         LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
     LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
     tag_list_header(data, "ptr");
-    LLVMValueRef addr = flat_element_address(data, idx, stride, !check_bounds);
-    LLVMValueRef flat_val = addr;
     if (check_bounds) {
         LLVMValueRef len_ptr =
             LLVMBuildStructGEP2(g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
         LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
         tag_list_header(len, "i32");
         // `index < 0 || index >= len` is one unsigned compare: a negative index is
-        // a very large unsigned one, and `len` is never negative. Same answer as
-        // list_get_inline's two signed tests, and the same null on failure.
-        LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
-        // **A select, not a branch, and the difference is the whole optimisation.**
-        // Answering the bounds test with a branch to a null-returning edge is what
-        // list_get_inline does and it reads as the more faithful translation, so it
-        // was written that way first. It costs the result: the extra control flow in
-        // this block leaves the *second* list's representation test unhoisted, so
-        // g4's movement loop came back with `cmp w10, #0x18` and a reloaded `data`
-        // per iteration and the constant stride replaced by `madd`. Two straight-line
-        // instructions here buy four versions of a branch-free loop.
+        // a very large unsigned one, and `len` is never negative.
         //
-        // Plain GEP rather than inbounds: an out-of-range index is answered with
-        // null here, and poison in the arm that select discards is a hazard worth
-        // not having for an address the target folds either way.
-        flat_val = LLVMBuildSelect(g_builder, in_bounds, addr, LLVMConstNull(ptrty), "");
+        // This was a select of a null address, and the select was the optimisation: a
+        // branch to a null-answering *join* left g4's second representation test
+        // unhoisted. The branch now goes to a block that never comes back
+        // (list_bounds_or_fail), which LLVM treats as a loop exit rather than a diamond;
+        // the benchmark matrix is what says whether that holds.
+        list_bounds_or_fail(idx, len);
     }
+    LLVMValueRef flat_val = flat_element_address(data, idx, stride, 1);
     LLVMBuildBr(g_builder, block_for(join));
     LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);
 
@@ -3747,31 +3854,11 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
             data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
             tag_list_header(data, "ptr");
         }
-        LLVMValueRef in_bounds = LLVMBuildICmp(
-            g_builder, LLVMIntULT, idx, len, "");
-        int present = ir_get_label();
-        int absent = ir_get_label();
-        int checked = ir_get_label();
-        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
-
-        LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+        list_bounds_or_fail(idx, len);
         LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
         LLVMValueRef loaded = LLVMBuildLoad2(g_builder, element_memory_type(elemty), addr, "");
         tag_list_element(loaded, elem_type);
-        loaded = element_from_memory(loaded, elemty);
-        LLVMBuildBr(g_builder, block_for(checked));
-        LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
-
-        LLVMPositionBuilderAtEnd(g_builder, block_for(absent));
-        LLVMBuildBr(g_builder, block_for(checked));
-        LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
-
-        LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
-        LLVMValueRef flat_val = LLVMBuildPhi(g_builder, elemty, "");
-        LLVMValueRef flat_values[2] = {loaded, LLVMConstNull(elemty)};
-        LLVMBasicBlockRef flat_blocks[2] = {present_end, absent_end};
-        LLVMAddIncoming(flat_val, flat_values, flat_blocks, 2);
-        return intern_value(flat_val);
+        return intern_value(element_from_memory(loaded, elemty));
     }
     if (guard && guard[0]) {
         is_flat = resolve_value(guard, "i1");
@@ -3827,30 +3914,11 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
         data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
         tag_list_header(data, "ptr");
     }
-    LLVMValueRef in_bounds = LLVMBuildICmp(
-        g_builder, LLVMIntULT, idx, len, "");
-    int present = ir_get_label();
-    int absent = ir_get_label();
-    int checked = ir_get_label();
-    LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
-
-    LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+    list_bounds_or_fail(idx, len);
     LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
-    LLVMValueRef loaded = LLVMBuildLoad2(g_builder, element_memory_type(elemty), addr, "");
-    tag_list_element(loaded, elem_type);
-    loaded = element_from_memory(loaded, elemty);
-    LLVMBuildBr(g_builder, block_for(checked));
-    LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
-
-    LLVMPositionBuilderAtEnd(g_builder, block_for(absent));
-    LLVMBuildBr(g_builder, block_for(checked));
-    LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
-
-    LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
-    flat_val = LLVMBuildPhi(g_builder, elemty, "");
-    LLVMValueRef flat_values[2] = {loaded, LLVMConstNull(elemty)};
-    LLVMBasicBlockRef flat_blocks[2] = {present_end, absent_end};
-    LLVMAddIncoming(flat_val, flat_values, flat_blocks, 2);
+    flat_val = LLVMBuildLoad2(g_builder, element_memory_type(elemty), addr, "");
+    tag_list_element(flat_val, elem_type);
+    flat_val = element_from_memory(flat_val, elemty);
     LLVMBuildBr(g_builder, block_for(join));
     }
     LLVMBasicBlockRef flat_end = LLVMGetInsertBlock(g_builder);
@@ -3893,8 +3961,8 @@ int ir_list_flat_scalar_elem(const char *list, const char *index,
 // the in-range branch are both dead and the store is one instruction.
 //
 // The false arm is the ordinary `list_set_inline_scalar` call, so a guard that
-// does not hold at run time stores exactly what it stores today -- including
-// doing nothing at all for an out-of-range index.
+// does not hold at run time stores exactly what it stores today -- and an index out
+// of range stops the program on either arm (list_bounds_or_fail).
 void ir_list_flat_scalar_set(const char *list, const char *index,
                              const char *value, const char *elem_type,
                              int stride, const char *guard, int check_bounds,
@@ -3947,17 +4015,10 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
             data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
             tag_list_header(data, "ptr");
         }
-        LLVMValueRef in_bounds = LLVMBuildICmp(
-            g_builder, LLVMIntULT, idx, len, "");
-        int present = ir_get_label();
-        int join = ir_get_label();
-        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));
-        LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+        list_bounds_or_fail(idx, len);
         LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
         LLVMValueRef st = LLVMBuildStore(g_builder, element_to_memory(val), addr);
         tag_list_element(st, elem_type);
-        LLVMBuildBr(g_builder, block_for(join));
-        LLVMPositionBuilderAtEnd(g_builder, block_for(join));
         return;
     }
     if (guard && guard[0]) {
@@ -3979,7 +4040,6 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
     LLVMBuildCondBr(g_builder, is_flat, block_for(flat), block_for(boxed));
 
     LLVMPositionBuilderAtEnd(g_builder, block_for(flat));
-    int store_at = flat;
     LLVMValueRef data;
     if (hoisted_data && hoisted_data[0]) {
         data = resolve_value(hoisted_data, "ptr");
@@ -3999,14 +4059,8 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
             len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
             tag_list_header(len, "i32");
         }
-        LLVMValueRef in_bounds = LLVMBuildICmp(
-            g_builder, LLVMIntULT, idx, len, "");
-        int present = ir_get_label();
-        LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(join));
-        LLVMPositionBuilderAtEnd(g_builder, block_for(present));
-        store_at = present;
+        list_bounds_or_fail(idx, len);
     }
-    (void)store_at;
     LLVMValueRef addr = flat_element_address(data, idx, stride, 1);
     // **Tagged, and leaving it untagged cost the whole vectoriser.** An untagged
     // store may alias anything, including the `data` pointer this block just
@@ -4046,9 +4100,8 @@ void ir_list_flat_scalar_set(const char *list, const char *index,
 // inline; Invalid/inferred-later Lists keep the generic runtime accessor.
 // Scalars ride in these slots and use the existing slotToScalar conversion.
 //
-// Bounds stay checked: unlike the flat-body helper, this operation dereferences
-// the computed slot, so an out-of-range GEP cannot be hidden behind a select
-// without performing an invalid load first.
+// Bounds stay checked: an index out of range stops the program before the slot is
+// read (list_bounds_or_fail).
 int ir_list_boxed_elem(const char *list, const char *index) {
     LLVMTypeRef ptrty = LLVMPointerTypeInContext(g_ctx, 0);
     if (block_done()) return intern_value(LLVMConstNull(ptrty));
@@ -4063,33 +4116,15 @@ int ir_list_boxed_elem(const char *list, const char *index) {
         g_builder, listty, hdr, RT_LIST_FIELD_LEN, "");
     LLVMValueRef len = LLVMBuildLoad2(g_builder, i32, len_ptr, "");
     tag_list_header(len, "i32");
-    LLVMValueRef in_bounds = LLVMBuildICmp(g_builder, LLVMIntULT, idx, len, "");
-    int present = ir_get_label();
-    int absent = ir_get_label();
-    int checked = ir_get_label();
-    LLVMBuildCondBr(g_builder, in_bounds, block_for(present), block_for(absent));
-
-    LLVMPositionBuilderAtEnd(g_builder, block_for(present));
+    list_bounds_or_fail(idx, len);
     LLVMValueRef data_ptr = LLVMBuildStructGEP2(
         g_builder, listty, hdr, RT_LIST_FIELD_DATA, "");
     LLVMValueRef data = LLVMBuildLoad2(g_builder, ptrty, data_ptr, "");
     tag_list_header(data, "ptr");
     LLVMValueRef wide_idx = LLVMBuildSExt(g_builder, idx, i64, "");
     LLVMValueRef slot = LLVMBuildGEP2(g_builder, ptrty, data, &wide_idx, 1, "");
-    LLVMValueRef loaded = LLVMBuildLoad2(g_builder, ptrty, slot, "");
-    tag_list_element(loaded, "ptr");
-    LLVMBuildBr(g_builder, block_for(checked));
-    LLVMBasicBlockRef present_end = LLVMGetInsertBlock(g_builder);
-
-    LLVMPositionBuilderAtEnd(g_builder, block_for(absent));
-    LLVMBuildBr(g_builder, block_for(checked));
-    LLVMBasicBlockRef absent_end = LLVMGetInsertBlock(g_builder);
-
-    LLVMPositionBuilderAtEnd(g_builder, block_for(checked));
-    LLVMValueRef boxed_val = LLVMBuildPhi(g_builder, ptrty, "");
-    LLVMValueRef checked_values[2] = {loaded, LLVMConstNull(ptrty)};
-    LLVMBasicBlockRef checked_blocks[2] = {present_end, absent_end};
-    LLVMAddIncoming(boxed_val, checked_values, checked_blocks, 2);
+    LLVMValueRef boxed_val = LLVMBuildLoad2(g_builder, ptrty, slot, "");
+    tag_list_element(boxed_val, "ptr");
     return intern_value(boxed_val);
 }
 
@@ -8780,6 +8815,21 @@ static void ensure_codegen_initialized(void) {
     if (!extra || !strstr(extra, "aarch64-br-merging-cbz-tbnz-bias")) {
         argv[argc++] = "-aarch64-br-merging-cbz-tbnz-bias=8";
     }
+    // Partial unrolling on a freestanding target is the bridge's HotLoopUnroll
+    // pass (pipeline_policies, llvm_bridge.cpp), loop by loop. It used to be
+    // -unroll-allow-partial -unroll-max-count=4 for the whole module: 0.876x of C's
+    // instructions at 1.98x C's .text, because set-up loops unrolled too and loops
+    // LoopVectorize had interleaved four ways unrolled four ways again. Where there
+    // is no bridge (Windows, prismio_llvm.h) the module-wide setting is still the
+    // only way to unroll at all, so it stays there.
+#ifndef PRISMIO_LLVM_BRIDGE
+    if (g_freestanding && (!extra || !strstr(extra, "unroll-allow-partial"))) {
+        argv[argc++] = "-unroll-allow-partial";
+    }
+    if (g_freestanding && (!extra || !strstr(extra, "unroll-max-count"))) {
+        argv[argc++] = "-unroll-max-count=4";
+    }
+#endif
     if (extra && *extra) {
         snprintf(args_copy, sizeof(args_copy), "%s", extra);
         for (char *tok = strtok(args_copy, " \t"); tok && argc < 34; tok = strtok(NULL, " \t")) {
@@ -9047,6 +9097,29 @@ typedef struct {
 // One half of `<prefix>,default<O<n>>` for an -O level, with cc1's tuning:
 // unrolling, interleaving and both vectorizers from -O2 up; -Oz leaves the loop
 // vectorizer off (shouldEnableVectorizerAtOLevel). See prismio_llvm_run_default_half.
+// Prismio's passes in LLVM's pipeline (PRISMIO_POLICY_*, llvm_bridge.cpp) for a
+// build at `opt_level`. COVERED_FILLS at every optimising level, on every target;
+// SELF_RECURSION_UNFOLD from -O2 on every target, and not where a build asks for size.
+// HOT_LOOP_UNROLL on a freestanding target, whose `generic` CPU LLVM never unrolls
+// partially: a hosted target's unrolling is LLVM's own cost model, and -Os/-Oz
+// unroll nothing. PRISMIO_COVERED_FILLS=0, PRISMIO_SELF_UNFOLD=0 and
+// PRISMIO_UNROLL_POLICY=0 turn them off, to measure them.
+static int env_off(const char *name) {
+    const char *v = getenv(name);
+    return v && v[0] == '0' && v[1] == '\0';
+}
+
+static int pipeline_policies(int opt_level) {
+    int policies = 0;
+    if (opt_level >= 1 && !env_off("PRISMIO_COVERED_FILLS")) policies |= PRISMIO_POLICY_COVERED_FILLS;
+    if (opt_level >= 2 && opt_level < IR_OPT_SIZE && !env_off("PRISMIO_SELF_UNFOLD"))
+        policies |= PRISMIO_POLICY_SELF_RECURSION_UNFOLD;
+    if (g_freestanding && opt_level >= 2 && opt_level < IR_OPT_SIZE) {
+        if (!env_off("PRISMIO_UNROLL_POLICY")) policies |= PRISMIO_POLICY_HOT_LOOP_UNROLL;
+    }
+    return policies;
+}
+
 static int run_pipeline_half(LLVMModuleRef m, LLVMTargetMachineRef tm, const char *prefix,
                              int opt_level, int half, char *error, size_t error_size) {
     int vectorize = opt_level >= 2;
@@ -9054,7 +9127,7 @@ static int run_pipeline_half(LLVMModuleRef m, LLVMTargetMachineRef tm, const cha
     int level = opt_level >= IR_OPT_SIZE ? 2 : opt_level;
     if (prismio_llvm_run_default_half(m, tm, prefix, level, half, vectorize, vectorize,
                                       vectorize && opt_level != IR_OPT_MIN_SIZE, vectorize,
-                                      &msg) != 0) {
+                                      pipeline_policies(opt_level), &msg) != 0) {
         snprintf(error, error_size, "%s", msg ? msg : "the optimisation pipeline failed");
         free(msg);
         return 1;
@@ -9511,6 +9584,17 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
         }
     }
     if (split) split = codegen_partition_count(m, opt_level) > 1;
+#ifdef PRISMIO_LLVM_BRIDGE
+    // A program with a policy (pipeline_policies) runs the bridge's whole pipeline,
+    // which is default<O3> with Prismio's passes at their extension points, even
+    // when it is too small to partition.
+    if (!split && pipeline_policies(opt_level)) {
+        char error[512];
+        failed = run_pipeline_half(m, tm, internalize ? "globaldce" : "", opt_level, 0,
+                                   error, sizeof(error));
+        if (failed) fprintf(stderr, "ERROR: the optimisation pipeline failed: %s\n", error);
+    } else
+#endif
     if (!split) {
         // cc1's pipeline tuning at -O2 and above: unrolling and interleaving on,
         // both vectorizers on. SLP is the one PipelineTuningOptions defaults off.

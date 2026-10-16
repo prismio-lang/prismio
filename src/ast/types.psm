@@ -428,8 +428,10 @@ public fn typePtrConverts(expected: TypeInfo, actual: TypeInfo) -> Bool {
         // The opaque pointer takes a typed one that may write, and only that one: foreign
         // code handed an opaque `Ptr` may write through it, so a read-only `Ptr<T>` that
         // became one would lose the capability its `readonly` parameter promises LLVM.
-        // `Ptr<T>.cast` is the explicit form. Another named handle is not a Ptr.
-        return expected.name.equals("Ptr") and typePtrIsMut(actual)
+        // Nor a volatile one: `Ptr<T>.cast` of the opaque pointer would hand back a plain
+        // pointer to a device register, whose accesses LLVM may merge or drop. Another
+        // named handle is not a Ptr.
+        return expected.name.equals("Ptr") and typePtrIsMut(actual) and typePtrIsVolatile(actual) == false
     }
     if (typeIsTypedPtr(actual) == false) { return false }
     if (typePtrIsVolatile(expected) != typePtrIsVolatile(actual)) { return false }

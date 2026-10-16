@@ -744,10 +744,12 @@ private fn generateAssignment(stmt: ASTNode) {
     // into a call and admits only elements nobody owns, so this is the address
     // generateIndex reads through, and a plain store with no release.
     if (targetNode.kind == NodeKind.INDEX_EXPR) {
-        let arrayVal = generateExpression(ptr_to_node(targetNode.child1))
+        let arrayNode = ptr_to_node(targetNode.child1)
+        let arrayVal = generateExpression(arrayNode)
         let indexVal = generateExpression(ptr_to_node(targetNode.child2))
         let elemType = storageType(getExprType(targetNode))
         let val = generateExpression(ptr_to_node(stmt.child2))
+        generateArrayIndexCheck(targetNode, nodeGetType(arrayNode), indexVal)
         let slot = ir_elem_ptr(elemType, arrayVal, indexVal)
         ir_store_ptr(elemType, val, ir_get_temp_name(slot))
     }
@@ -836,10 +838,8 @@ private fn generateAssignment(stmt: ASTNode) {
             ir_array_copy_key(fieldType, ir_get_temp_name(slot), val)
         } else if (isStructTypeKey(fieldType) and isValueStructKey(fieldType) == false) {
             ir_copy_struct(structTypeName(fieldType), ir_get_temp_name(slot), val)
-        } else if (nodeHasType(objectNode) and typePtrIsVolatile(nodeGetType(objectNode))) {
-            // Through a `Ptr<volatile T>` every store is volatile: it reaches the device.
-            ir_struct_store_ptr_volatile(fieldType, val, ir_get_temp_name(slot),
-                                         structName, fieldIndex)
+        } else if (nodeHasType(objectNode) and typeIsTypedPtr(nodeGetType(objectNode))) {
+            ir_ptr_store(fieldType, val, ir_get_temp_name(slot), ptrAccessVolatility(nodeGetType(objectNode)))
         } else {
             ir_struct_store_ptr(fieldType, val, ir_get_temp_name(slot),
                                 structName, fieldIndex)

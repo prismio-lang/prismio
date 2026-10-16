@@ -1,0 +1,149 @@
+// `v[k] = x` releases the element it displaces at once when no view of an element
+// can be live there (src/ir/overwrites.psm), and parks it with the Vec otherwise.
+// The first three functions must release now; every other one holds a view across
+// its store in a different way and must park. A wrong release is a read of freed
+// memory: `--verify` reports it as a violation (the `aif_verify` harness test builds
+// this file so), and the `overwrite_release` harness test reads which setter each
+// function calls. Each answer is also checked here.
+
+import std.process
+
+struct Node {
+    value: Int,
+    edges: Vec<Int>
+}
+
+fn make(i: Int) -> Node {
+    let mut edges: Vec<Int> = []
+    for k in 0..<3 { edges.push(i + k) }
+    return Node { value: i, edges: edges }
+}
+
+fn weigh(n: Node) -> Int {
+    return n.value + n.edges.length
+}
+
+// A view read and done with before the store: released now.
+fn readThenReplace(steps: Int) -> Int {
+    let mut slots: Vec<Node> = []
+    for i in 0..<4 { slots.push(make(i)) }
+    let mut total = 0
+    for step in 0..<steps {
+        let n = slots[step % 4]
+        total = total + n.value
+        slots[step % 4] = make(step)
+    }
+    return total + weigh(slots[0])
+}
+
+// A view lent to a call that keeps nothing: released now.
+fn lendThenReplace(steps: Int) -> Int {
+    let mut slots: Vec<Node> = Vec<Node>.withCapacity(4)
+    for i in 0..<4 { slots.push(make(i)) }
+    let mut total = 0
+    for step in 0..<steps {
+        total = total + weigh(slots[step % 4])
+        slots[step % 4] = make(step + 1)
+    }
+    return total
+}
+
+// The view is taken after the store in the loop body: on the next iteration's store
+// it is a binding not yet made. Released now.
+fn replaceThenRead(steps: Int) -> Int {
+    let mut slots: Vec<Node> = []
+    for i in 0..<4 { slots.push(make(i)) }
+    let mut total = 0
+    for step in 0..<steps {
+        slots[step % 4] = make(step)
+        let n = slots[(step + 1) % 4]
+        total = total + n.value
+    }
+    return total
+}
+
+// The view is read after the store: parks.
+fn readAfterReplace(steps: Int) -> Int {
+    let mut slots: Vec<Node> = []
+    for i in 0..<4 { slots.push(make(i)) }
+    let mut total = 0
+    for step in 0..<steps {
+        let n = slots[step % 4]
+        slots[step % 4] = make(step + 100)
+        total = total + n.value + n.edges[2]
+    }
+    return total
+}
+
+// The loop's own binder is a view of the element being replaced: parks.
+fn replaceWhileIterating() -> Int {
+    let mut slots: Vec<Node> = []
+    for i in 0..<4 { slots.push(make(i)) }
+    let mut total = 0
+    let mut k = 0
+    for n in slots {
+        slots[k] = make(k + 50)
+        total = total + n.value + n.edges[1]
+        k = k + 1
+    }
+    return total
+}
+
+// A view kept in a variable that outlives the loop body: parks.
+fn keptOutside(steps: Int) -> Int {
+    let mut slots: Vec<Node> = []
+    for i in 0..<4 { slots.push(make(i)) }
+    let mut last = slots[3]
+    for step in 0..<steps {
+        last = slots[step % 4]
+        slots[step % 4] = make(step)
+    }
+    return last.value + last.edges[0]
+}
+
+// The new element is built from a view of the old one: parks. (Its edges are copied:
+// moving `old.edges` out of the view is the double release docs/KNOWN_ISSUES.md
+// records, whichever setter runs.)
+fn rebuiltFromOld(steps: Int) -> Int {
+    let mut slots: Vec<Node> = []
+    for i in 0..<4 { slots.push(make(i)) }
+    for step in 0..<steps {
+        let old = slots[step % 4]
+        slots[step % 4] = Node { value: old.value + 1, edges: copyEdges(old) }
+    }
+    return slots[0].value + slots[1].edges.length
+}
+
+fn copyEdges(n: Node) -> Vec<Int> {
+    let mut out: Vec<Int> = []
+    for e in n.edges { out.push(e) }
+    return out
+}
+
+// A Vec the function was handed: the caller may hold a view of it. Parks.
+fn replaceInBorrowed(inout slots: Vec<Node>, step: Int) {
+    slots[step % 4] = make(step)
+}
+
+fn borrowedCaller(steps: Int) -> Int {
+    let mut slots: Vec<Node> = []
+    for i in 0..<4 { slots.push(make(i)) }
+    let held = slots[1]
+    for step in 0..<steps {
+        replaceInBorrowed(slots, step)
+    }
+    return held.value + held.edges[2]
+}
+
+fn main() -> Int {
+    let steps = process.args.count * 40
+    if (readThenReplace(steps) != 675) { return 1 }
+    if (lendThenReplace(steps) != 792) { return 2 }
+    if (replaceThenRead(steps) != 672) { return 3 }
+    if (readAfterReplace(steps) != 8552) { return 4 }
+    if (replaceWhileIterating() != 16) { return 5 }
+    if (keptOutside(steps) != 70) { return 6 }
+    if (rebuiltFromOld(steps) != 13) { return 7 }
+    if (borrowedCaller(steps) != 4) { return 8 }
+    return 0
+}

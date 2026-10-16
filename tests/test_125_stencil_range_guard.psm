@@ -1,3 +1,5 @@
+// expect-trap: stencil-past-end => index 8 is out of range for a Vec of length 8
+// expect-trap: shifted-past-end => index 100 is out of range for a Vec of length 4
 // MEM-035: a multi-point stencil is bounded by a *shifted* condition.
 //
 // `while (at + 3 < n)` is how a 7-point stencil says "the widest read is in
@@ -7,10 +9,11 @@
 //
 // `at + K < n` is `at < n - K`. The arms below are the ones that can go wrong if
 // the shift is dropped or applied in the wrong direction: the guard would then
-// admit a loop whose widest read is past the end, and `list_get`'s totality --
-// 0 past the end, never a memory read -- would be observable as a wrong sum.
+// admit a loop whose widest read is past the end, which would read memory past the
+// list where the checked loop stops the program (docs/MEMORY_SAFETY_PLAN.md section 2).
 
 import std.io
+import std.process
 
 fn filled(n: Int) -> Vec<Int> {
     let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
@@ -36,7 +39,7 @@ fn stencil(n: Int, len: Int) -> Int {
     return acc
 }
 
-// A shift wider than the list: every read past the end contributes 0.
+// A shift wider than the list: its first read is past the end and stops the program.
 fn shiftedPastEnd(n: Int) -> Int {
     let xs = filled(4)
     let mut acc = 0
@@ -72,6 +75,13 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
+// An arm whose index leaves the list runs only when its case is named: it must stop the
+// program there (docs/MEMORY_SAFETY_PLAN.md section 2), where a proved copy taken for it
+// would read past the list and run on. The harness runs one case per `expect-trap` line.
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn main() -> Int {
     let mut bad = 0
 
@@ -85,8 +95,8 @@ fn main() -> Int {
     }
     bad = bad + check("FAIL: stencil in range", stencil(16, 16), want)
 
-    // The same loop over a list of 8. Reads past index 7 contribute 0, and a
-    // guard that forgot the shift would read memory instead.
+    // The same loop over a list of 8. Its first read past index 7 stops the program, and
+    // a guard that forgot the shift would read memory instead.
     let mut want2 = 0
     let mut b = 3
     while (b < 13) {
@@ -99,9 +109,9 @@ fn main() -> Int {
         want2 = want2 + term
         b = b + 1
     }
-    bad = bad + check("FAIL: stencil past end", stencil(16, 8), want2)
+    if (trapCase("stencil-past-end")) { return (stencil(16, 8)) as Int }
 
-    bad = bad + check("FAIL: shifted past end", shiftedPastEnd(110), 0)
+    if (trapCase("shifted-past-end")) { return (shiftedPastEnd(110)) as Int }
     bad = bad + check("FAIL: never runs", neverRuns(), 0)
 
     if (bad != 0) { return 1 }

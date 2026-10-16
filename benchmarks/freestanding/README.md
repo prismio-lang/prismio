@@ -19,7 +19,9 @@ difference is the workload's **guest instruction count**, to the nearest 16.
 That count is the same on every run on every machine. It was calibrated against a loop of known
 length (10,000,000 instructions reads 625,000 ticks, every time), and each arm is booted several
 times and checked for agreement. So there is nothing to take a median of, no spread to measure
-and no noise model: a result is a win or a loss when the ratio leaves a fixed ±2%.
+and no noise model. A verdict is absolute: fewer instructions than the other arm is a win, more
+is a loss, and only an equal count (the same number of ticks) is level. The hosted suite's
+tolerance exists for noise, and there is none here; a band of ±2% used to call a 5% loss parity.
 
 What the number is **not**:
 
@@ -59,7 +61,7 @@ Configuration held equal for every arm:
 | Target | `aarch64-unknown-none-elf` (Rust: `aarch64-unknown-none-softfloat`), CPU `generic` |
 | FP and SIMD | off (`-mgeneral-regs-only`, `-neon,-fp-armv8`): the entry code leaves the unit off, and the first FP instruction would trap with no vector table |
 | Alignment | strict (`-mstrict-align`, `+strict-align`): with the MMU off every access is to device memory and an unaligned one faults. Without this clang merges adjacent loads into a wider one and the guest dies at the exception vector |
-| Optimisation | C `-O3`, Rust `opt-level=3` with fat LTO and one codegen unit, Prismio's default pipeline |
+| Optimisation | C `-O3`, Rust `opt-level=3` with fat LTO and one codegen unit, Prismio's default pipeline. Prismio's pipeline unrolls its hot loops partially (at most 4 copies) on a freestanding target, which clang and rustc do not for `generic`: see below |
 | Linking | the same script (`harness/link.ld`), `--gc-sections` |
 | Build directory | Prismio builds from `benchmarks/build/freestanding`, not the repository root, to keep the build away from the source tree. An earlier version of this note said a working directory containing `runtime/` made the compiler internalise nothing (512 bytes, 200,000 instructions on `heapsort`); that did not reproduce on 2026-10-09, when the suite built byte-identical (87,120 bytes) from the root and from an empty directory, with the runner's environment |
 | Allocation | none. Every workload keeps its arrays in the frame |
@@ -73,7 +75,7 @@ instructions across the 20 workloads. The compiler now proves it instead: an unc
 its index, which marks quicksort's scans `nsw` (11.30M to 9.99M, C 10.10M); knapsack's loop over a
 sized array is versioned on `w >= 0` (5.69M to 3.14M, C 5.12M); and edit distance's rows are local
 arrays whose elements stay in `[0, 360600]`, so `min(a + 1, b + 1)` becomes `min(a, b) + 1` (5.90M to
-5.54M, C 5.60M). `heapsort` (1.02x) is the one row left behind C; `docs/KNOWN_ISSUES.md` has it.
+5.54M, C 5.60M); it had lost that bound to its own `min`, which the analysis now judges by its body.
 `PRISMIO_NOWRAP=0` and `PRISMIO_RANGE_PROOFS=0` switch the mechanisms' marks off, to separate them.
 The suite keeps C's default because that is what C is.
 
@@ -82,9 +84,36 @@ backend merges a branch on two conditions into one, even when one is a single bi
 22 does not, which made `ring_buffer` 1.18x Rust. Prismio raises `-aarch64-br-merging-cbz-tbnz-bias`
 to 8 and matches Rust's count; the C arm keeps clang's default.
 
-**A known difference, kept on purpose:** Rust indexes with bounds checks, as safe Rust does.
-C's arrays and Prismio's fixed arrays are unchecked. That is the language's price for safe
-indexing, and it is visible in `binary_search`, `heapsort`, `pointer_chase` and `knapsack`.
+**Unrolling is a compiler setting.** LLVM's AArch64 cost model unrolls partially only for a CPU
+whose scheduling model has a loop buffer, and `generic` has none, so clang and rustc leave every
+loop rolled; what C does get is LoopVectorize *interleaving* a loop whose iterations are independent
+(four copies of a table fill as `stp` pairs). Prismio's freestanding pipeline adds its own pass,
+`HotLoopUnroll` (`runtime/llvm_bridge.cpp`), after LoopVectorize: it unrolls a loop by up to 4 only
+when the loop is hot (its nest's estimated iterations at least an eighth of the function's hottest),
+innermost first, within 150 instructions, and at run time an outermost loop whose count comes from
+the input (`K * scale`). That is `edit_distance`, `matrix_multiply`, `crc32`, `sha256` and `mem_copy`
+near 0.7x, `pointer_chase` 0.63x and `atomic_counter` 0.53x, and set-up loops stay as C has them.
+`PRISMIO_UNROLL_POLICY=0` turns it off.
+
+`-funroll-loops` does nothing to the C arm on `generic` (the image is byte-identical), so it is not the
+comparison. The C arm with the setting Prismio used before the pass is
+`PRISMIO_BENCH_C_FLAGS="-mllvm -unroll-allow-partial -mllvm -unroll-max-count=4"`, measured 2026-10-16:
+
+| | instructions vs C `-O3` | `.text` |
+|---|---|---|
+| C `-O3` | 1.000 | 14.9 KB |
+| C `-O3` + partial unroll x4 | 0.91 | 21.5 KB |
+| Prismio, module-wide partial unroll x4 (before) | 0.876 | 29.5 KB |
+| Prismio, `HotLoopUnroll` + `CoveredFillElimination` | 0.793 | 18.0 KB |
+| Prismio, + parameter ranges, congruences, `SelfRecursionUnfold` (2026-10-17) | 0.685 | 18.1 KB |
+
+`PRISMIO_BENCH_C_FLAGS` adds any flags to the C arm, and the report records the command.
+
+**A known difference, kept on purpose:** Rust and Prismio index with bounds checks; C does not.
+Prismio checks an index it cannot prove in range and proves the rest (`src/ir/nowrap.psm`: `U32`
+facts, comparisons, loop invariants and what a local array can hold), so `binary_search`,
+`pointer_chase` and `bytecode_interpreter` pay for no check in their hot loops and are level with C
+or ahead. Rust's checks are visible in `binary_search`, `heapsort`, `pointer_chase` and `knapsack`.
 
 ## Layout
 

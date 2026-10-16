@@ -189,6 +189,18 @@ impl Parser {
 
 
 impl Parser {
+    // `inline fn` in an `impl` block, where the top level's modifier list
+    // (isFnModifierWord) does not reach: contextual, like `cold`.
+    private fn atInlineDecl(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        if (self.current().value.equals("inline") == false) { return false }
+        let next = self.peek()
+        return next.type == TokenType.KEYWORD and next.value.equals("fn")
+    }
+}
+
+
+impl Parser {
     // `from std import {io, vec}` -- an import with the directory first.
     //
     // **Contextual**, as `cold` and `workload` are: `from` is not reserved, and at
@@ -213,12 +225,21 @@ impl Parser {
     //   section("...")  the object-file section its code goes in
     //   align(n)        its alignment in bytes, a power of two
     //
+    // and one about how it is called, the opposite of `cold`:
+    //
+    //   inline          inlined into every caller (LLVM's `alwaysinline`, Rust's
+    //                   `#[inline(always)]`), for a small function whose callers
+    //                   need its body: std.map's probe, which LLVM's cost model
+    //                   stopped inlining once a bounds check made it larger, and
+    //                   key_value_update paid for. A debug build ignores it, as it
+    //                   ignores the inlining codegen chooses itself.
+    //
     // **Contextual**, like `cold`: each is a modifier only where a declaration can
     // begin and the next token continues one, so a variable named `export` keeps
     // compiling. They combine in any order, `export naked section(".text.boot") fn`.
     private fn isFnModifierWord(self, word: String) -> Bool {
         return word.equals("export") or word.equals("naked") or word.equals("section")
-            or word.equals("align")
+            or word.equals("align") or word.equals("inline")
     }
 
     private fn atFnModifiers(self) -> Bool {
@@ -228,7 +249,8 @@ impl Parser {
         if (word.equals("section") or word.equals("align")) {
             return next.type == TokenType.SEPARATOR and next.value.equals("(")
         }
-        if (word.equals("export") == false and word.equals("naked") == false) { return false }
+        if (word.equals("export") == false and word.equals("naked") == false
+            and word.equals("inline") == false) { return false }
         if (next.type == TokenType.KEYWORD) { return next.value.equals("fn") }
         if (next.type != TokenType.IDENTIFIER) { return false }
         return self.isFnModifierWord(next.value) or next.value.equals("cold")
@@ -250,6 +272,9 @@ impl Parser {
                 self.advance()
             } else if (word.equals("naked")) {
                 flags = flags | 2
+                self.advance()
+            } else if (word.equals("inline")) {
+                flags = flags | 8
                 self.advance()
             } else if (word.equals("cold")) {
                 cold = true
@@ -282,6 +307,9 @@ impl Parser {
                 self.error("expected `fn` after a function modifier")
                 break
             }
+        }
+        if (cold and (flags & 8) == 8) {
+            self.error("a function cannot be both `cold` and `inline`")
         }
         let fnNode = self.parseFunctionDecl()
         if (cold) { nodeMarkCold(fnNode) }
@@ -1614,6 +1642,8 @@ impl Parser {
 
             let methodIsCold = self.atColdDecl()
             if (methodIsCold) { self.advance() }
+            let methodIsInline = self.atInlineDecl()
+            if (methodIsInline) { self.advance() }
             let methodIsAsync = self.atAsyncDecl()
             if (methodIsAsync) { self.advance() }
             if (self.checkVal(TokenType.KEYWORD, "fn") == false and self.atPropDecl() == false) {
@@ -1621,7 +1651,10 @@ impl Parser {
             }
             let method = self.parseFunctionDecl()
             if (methodIsCold) { nodeMarkCold(method) }
-            if (methodIsAsync) { nodeSetFnAttrs(method, 4, 0, "") }
+            let mut methodFlags = 0
+            if (methodIsAsync) { methodFlags = 4 }
+            if (methodIsInline) { methodFlags = methodFlags | 8 }
+            if (methodFlags != 0) { nodeSetFnAttrs(method, methodFlags, 0, "") }
             method.s2 = self.parseImplMethodParams(header.s1, method.s2)
             // A function with no `self` belongs to the type: `impl Config { fn
             // make() -> Config }` is `Config.make()`, and its name says so, so two

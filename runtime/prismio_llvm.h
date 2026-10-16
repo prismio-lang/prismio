@@ -110,13 +110,20 @@ extern "C" {
 int prismio_llvm_materialize(LLVMValueRef function, char** error);
 // Turns a function of a lazily loaded module into a declaration, unread.
 void prismio_llvm_drop_body(LLVMValueRef function);
-// One half of `<prefix>,default<O<level>>`: 1 = through the inliner's
-// simplification, 2 = the per-function optimisation pipeline after it. See
-// llvm_bridge.cpp. 0 on success.
+// Prismio's passes inside LLVM's pipeline (llvm_bridge.cpp), one bit each.
+// HOT_LOOP_UNROLL: hot innermost loops LoopVectorize left alone unroll partially.
+#define PRISMIO_POLICY_HOT_LOOP_UNROLL 1
+// COVERED_FILLS: a zero-fill of a frame array a loop nest then writes whole is deleted.
+#define PRISMIO_POLICY_COVERED_FILLS 2
+// SELF_RECURSION_UNFOLD: a small pure tree-recursive function is inlined into itself once.
+#define PRISMIO_POLICY_SELF_RECURSION_UNFOLD 4
+// `<prefix>,default<O<level>>` (half 0), or one half of it: 1 = through the
+// inliner's simplification, 2 = the per-function optimisation pipeline after it.
+// `policies` adds the passes above. See llvm_bridge.cpp. 0 on success.
 int prismio_llvm_run_default_half(LLVMModuleRef module, LLVMTargetMachineRef machine,
                                   const char* prefix, int level, int half,
                                   int unroll, int interleave, int vectorize_loops,
-                                  int vectorize_slp, char** error);
+                                  int vectorize_slp, int policies, char** error);
 // LLVMLinkModules2 with Linker::LinkOnlyNeeded: only the definitions `dst`
 // declares, and what they reach, are linked. Consumes `src`. 0 on success.
 int prismio_llvm_link_only_needed(LLVMModuleRef dst, LLVMModuleRef src);

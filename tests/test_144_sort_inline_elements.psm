@@ -1,3 +1,4 @@
+// expect-trap: swap-past-end => index 3 is out of range for a Vec of length 3
 // `sortBy` over lists whose elements live in the list's own block, and
 // `list_swap` itself.
 //
@@ -15,6 +16,7 @@
 // (developers.prismio.org/runtime/supported-surface).
 
 import std.io
+import std.process
 import std.vec
 import std.string
 
@@ -154,14 +156,15 @@ fn main() -> Int {
 
     // `list_swap` directly, on the representations the sorts above did not
     // exercise by hand: scalars by value, and String pairs -- one inline, one
-    // behind a pointer. A swap with itself and one out of range change nothing.
+    // behind a pointer. A swap with itself changes nothing; one out of range stops the
+    // program (one run, named by its argument).
     let mut ints: Vec<Int> = []
     ints.push(10)
     ints.push(20)
     ints.push(30)
     ints.swap(0, 2)
     ints.swap(1, 1)
-    ints.swap(0, 3)
+    if (process.args.count > 1 and process.args[1].equals("swap-past-end")) { ints.swap(0, 3) }
     if (ints[0] != 30 or ints[1] != 20 or ints[2] != 10) {
         return fail("list_swap on Int")
     }

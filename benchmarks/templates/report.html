@@ -326,7 +326,7 @@
             <span class="outcome-label">Outcome:</span>
             <button class="outcome-pill fs-outcome-pill active" data-val="all">All</button>
             <button class="outcome-pill fs-outcome-pill" data-val="prismio-win">Fewer instructions</button>
-            <button class="outcome-pill fs-outcome-pill" data-val="parity">Parity</button>
+            <button class="outcome-pill fs-outcome-pill" data-val="parity">Level</button>
             <button class="outcome-pill fs-outcome-pill" data-val="prismio-loss">More instructions</button>
           </div>
           <div class="select-wrap">
@@ -1217,7 +1217,7 @@
     // ------------------------------------------------------------------ freestanding
     // The bare-metal suite (benchmarks/freestanding/suite.py). Its metric is the number
     // of guest instructions a workload took, which is exact, so there are no samples,
-    // no spread and no noise model here: a verdict is a fixed tolerance on the ratio.
+    // no spread and no noise model here: a verdict is absolute, fewer instructions or more.
     const FS_ARMS = [["prismio", "Prismio", "var(--prismio)"], ["c", "C (clang -O3)", "var(--cpp)"], ["rust", "Rust (opt-3)", "var(--rust)"]];
     let fsCategory = "all", fsOutcome = "all", fsQuery = "", fsSort = "catalog";
     const fsExpanded = new Set();
@@ -1244,10 +1244,11 @@
     function fsDelta(item, other) {
       const r = fsRatio(item, other);
       if (!r || !isFinite(r)) return `<span class="delta-pill parity">—</span>`;
-      const pct = Math.round((r - 1) * 100);
-      const label = pct === 0 ? `${r.toFixed(2)}× (parity)` : `${r.toFixed(2)}× (${pct > 0 ? "+" : ""}${pct}%)`;
-      const v = item.verdict && item.verdict[other];
-      const why = v ? `Exact count; judged against ±${(v.tolerance * 100).toFixed(0)}%` : "";
+      const diff = fsInstr(item, "prismio") - fsInstr(item, other);
+      const pct = ((r - 1) * 100).toFixed(1);
+      const label = diff === 0 ? `${r.toFixed(3)}× (level)` : `${r.toFixed(3)}× (${diff > 0 ? "+" : ""}${pct}%)`;
+      const why = diff === 0 ? "Exact count: the same number of instructions"
+        : `Exact count: ${Math.abs(diff).toLocaleString()} instructions ${diff < 0 ? "fewer" : "more"}`;
       return `<span class="delta-pill ${PILL[fsVerdict(item, other)]}" title="${escapeHtml(why)}">${label}</span>`;
     }
     function fsFiltered() {
@@ -1304,9 +1305,9 @@
           <p class="kpi-desc">Geometric mean of Prismio's instruction count over ${who}'s, across ${total} workloads. Below 1.00× is fewer instructions.</p></div>
           <div><div class="distribution-bar">
             <div class="dist-seg win" style="width:${w(ctr.win)}%" title="${ctr.win} fewer"></div>
-            <div class="dist-seg tie" style="width:${w(ctr.parity)}%" title="${ctr.parity} parity"></div>
+            <div class="dist-seg tie" style="width:${w(ctr.parity)}%" title="${ctr.parity} level"></div>
             <div class="dist-seg loss" style="width:${w(ctr.loss)}%" title="${ctr.loss} more"></div></div>
-          <div class="distribution-legend"><span>${ctr.win} fewer</span><span>${ctr.parity} parity</span><span>${ctr.loss} more</span></div></div>
+          <div class="distribution-legend"><span>${ctr.win} fewer</span><span>${ctr.parity} level</span><span>${ctr.loss} more</span></div></div>
         </div>`;
       };
       const textC = text("c"), textR = text("rust"), textP = text("prismio");
@@ -1346,7 +1347,7 @@
         </div>`;
 
       const notes = [
-        ["What the number is", `Guest instructions executed, read from the generic timer under QEMU's <code>-icount shift=0</code> (${r.tick_instructions} instructions per tick). It is exact and repeatable, so there is no median, spread or noise model: a verdict is a fixed ±${((r.parity || 0.02) * 100).toFixed(0)}% on the ratio.`],
+        ["What the number is", `Guest instructions executed, read from the generic timer under QEMU's <code>-icount shift=0</code> (${r.tick_instructions} instructions per tick). It is exact and repeatable, so there is no median, spread or noise model: a verdict is absolute: fewer instructions than the other arm is a win, more is a loss, and only an equal count is level.`],
         ["What it leaves out", "It models no cache, pipeline or branch predictor. A workload dominated by memory stalls, such as <code>pointer_chase</code> or <code>mem_copy</code>, costs more on real silicon than its count says, and a count cannot show a vectorised loop's advantage. It shows how much code each compiler asked the machine to run."],
         ["Held equal", "One harness object for all three arms, built once. No floating point or SIMD (the entry code leaves the unit off) and strict alignment (the MMU is off, so an unaligned access faults), for every arm. The same algorithm in each language, checked by identical checksums."],
         ["Known difference", "Rust indexes with bounds checks, as safe Rust does; C and Prismio's fixed arrays are unchecked. That is the language's price for safe indexing, so it stays in the number."],
@@ -1417,14 +1418,14 @@
       let out;
       if (kind === "summary") {
         out = `### Prismio Freestanding Benchmark Summary
-- **Overall vs C (clang -O3)**: **${c.geo.toFixed(2)}×** instructions (${c.win} fewer / ${c.parity} parity / ${c.loss} more)
-- **Overall vs Rust (rustc opt-3, no_std)**: **${ru.geo.toFixed(2)}×** instructions (${ru.win} fewer / ${ru.parity} parity / ${ru.loss} more)
+- **Overall vs C (clang -O3)**: **${c.geo.toFixed(2)}×** instructions (${c.win} fewer / ${c.parity} level / ${c.loss} more)
+- **Overall vs Rust (rustc opt-3, no_std)**: **${ru.geo.toFixed(2)}×** instructions (${ru.win} fewer / ${ru.parity} level / ${ru.loss} more)
 - **Code size (.text)**: Prismio ${formatBytes(r.images.prismio.text)}, C ${formatBytes(r.images.c.text)}, Rust ${formatBytes(r.images.rust.text)}
 - **Method**: bare-metal ${r.target} under QEMU, guest instructions via \`-icount shift=0\`; exact and repeatable across ${r.runs} boots.
 - **Integrity**: identical checksums across all three languages for all ${r.benchmarks.length} workloads.`;
       } else if (kind === "markdown") {
         out = "| Workload | Category | Prismio | C | Rust | vs C | vs Rust |\n|---|---|---:|---:|---:|---:|---:|\n" +
-          items.map(i => `| \`${i.name}\` | ${i.category} | ${fsInstr(i, "prismio")} | ${fsInstr(i, "c")} | ${fsInstr(i, "rust")} | ${fsRatio(i, "c").toFixed(2)}× | ${fsRatio(i, "rust").toFixed(2)}× |`).join("\n") + "\n";
+          items.map(i => `| \`${i.name}\` | ${i.category} | ${fsInstr(i, "prismio")} | ${fsInstr(i, "c")} | ${fsInstr(i, "rust")} | ${fsRatio(i, "c").toFixed(3)}× | ${fsRatio(i, "rust").toFixed(3)}× |`).join("\n") + "\n";
       } else {
         out = "Workload,Category,Checksum,Prismio_instructions,C_instructions,Rust_instructions,Ratio_vs_C,Ratio_vs_Rust\n" +
           items.map(i => `"${i.name}","${i.category}",${i.result},${fsInstr(i, "prismio")},${fsInstr(i, "c")},${fsInstr(i, "rust")},${fsRatio(i, "c").toFixed(3)},${fsRatio(i, "rust").toFixed(3)}`).join("\n") + "\n";

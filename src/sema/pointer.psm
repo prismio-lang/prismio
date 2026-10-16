@@ -20,6 +20,7 @@ import lexer.token
 import ast.types
 import common.diagnostics
 import common.mem_builtins
+import common.target
 import ir.bridge
 import std.string
 
@@ -170,6 +171,15 @@ private fn semaPtrMethodOp(method: String) -> Int {
     return 0
 }
 
+// `offset`, `byteOffset` and `wrappingOffset` make a pointer the type cannot vouch for: a
+// pointer carries no length, so one stepped out of its block is not caught, and a byte step
+// leaves a `Ptr<Int>` that is not aligned for an Int. Like the constructors, they are
+// `std.raw`'s. `advance` is bounded by the `limit` it is given, and the rest only read where
+// a pointer is.
+private fn semaPtrStepIsRaw(op: Int) -> Bool {
+    return op == 1 or op == 2 or op == 3
+}
+
 private fn semaPtrArgumentCount(args: Ptr) -> Int {
     let mut count = 0
     let mut p = args
@@ -201,6 +211,13 @@ private fn semaPtrOperands(receiver: ASTNode, written: Ptr) -> Ptr {
 internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiver: ASTNode, ptrT: TypeInfo) -> TypeInfo {
     let op = semaPtrMethodOp(method)
     if (op > 0) {
+        if (semaPtrStepIsRaw(op) and semaFileIsStandardLibrary(call.file) == false
+            and ir_file_imports_module(call.file, "std.raw") == 0) {
+            semaErrorAt(call, "`".concat(method, "` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`"))
+            diag_note("`advance(n, limit)` steps within a bound you give it, and needs no import")
+            nodeSetType(call, typeInvalid())
+            return typeInvalid()
+        }
         let given = semaPtrArgumentCount(call.child2)
         if (given != ptrOpArity(op) - 1) {
             let wanted = ptrOpArity(op) - 1
@@ -330,11 +347,11 @@ internal fn semaPtrAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
     let mut kind = 0
     if (name.equals("atUnchecked")) { kind = 8 }
     if (name.equals("at")) { kind = 9 }
-    if (name.equals("cast")) { kind = 10 }
+    if (name.equals("cast") or name.equals("castUnchecked")) { kind = 10 }
     if (name.equals("castAligned")) { kind = 11 }
     if (kind == 0) {
         semaErrorAt(expr, "`Ptr<T>` has no associated function ".concat(diagQuote(name)))
-        diag_note("a pointer is made with `Ptr<T>.at(address)`, `.atUnchecked(address)`, `.cast(p)` or `.castAligned(p)`")
+        diag_note("a pointer is made with `Ptr<T>.at(address)`, `.atUnchecked(address)`, `.cast(p)`, `.castAligned(p)` or `.castUnchecked(p)`")
         nodeSetType(expr, typeInvalid())
         return 2
     }
@@ -369,12 +386,84 @@ internal fn semaPtrAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
         nodeSetType(expr, typeInvalid())
         return 2
     }
+    // Nor is one cast into a pointer stricter than the memory under it: a `Ptr<U8>` promises
+    // one-byte alignment, and a `Ptr<U64>` made from it would promise eight that nothing
+    // checked. `castAligned` checks it; `castUnchecked` is the caller's word that it holds. An
+    // opaque `Ptr` promised nothing, so it is cast as the caller says.
+    if (name.equals("cast") and nodeHasType(source) and typeIsTypedPtr(nodeGetType(source))) {
+        let from = typePtrPointee(nodeGetType(source))
+        let to = typePtrPointee(targetT)
+        let fromAlign = semaPointeeAlign(module, from)
+        let toAlign = semaPointeeAlign(module, to)
+        if (toAlign > fromAlign) {
+            let head = "cannot cast ".concat(diagQuote(typeDisplay(nodeGetType(source))), " to ",
+                                             diagQuote(typeDisplay(targetT)), ": ")
+            let need = diagQuote(typeDisplay(to)).concat(" needs ", toAlign.toString(), "-byte alignment")
+            let have = ", and ".concat(diagQuote(typeDisplay(from)), " promises ", fromAlign.toString())
+            semaErrorAt(source, head.concat(need, have))
+            diag_note("`castAligned(p)` checks the address and answers none when it is not aligned; `castUnchecked(p)` promises that it is")
+            nodeSetType(expr, typeInvalid())
+            return 2
+        }
+    }
+    // Nor is a volatile one cast into one that is not: every access through it reaches a
+    // device, and a plain access LLVM may merge, reorder or drop.
+    if ((kind == 10 or kind == 11) and typePtrIsVolatile(targetT) == false and nodeHasType(source)
+        and typeIsTypedPtr(nodeGetType(source)) and typePtrIsVolatile(nodeGetType(source))) {
+        let kept = typePtrTo(typePtrPointee(targetT), typePtrIsMut(targetT), true)
+        semaErrorAt(source, "cannot cast ".concat(diagQuote(typeDisplay(nodeGetType(source))), " to ",
+                                                  diagQuote(typeDisplay(targetT)), ": it is volatile"))
+        diag_note("every access through it must stay volatile: cast to `".concat(typeDisplay(kept), "`"))
+        nodeSetType(expr, typeInvalid())
+        return 2
+    }
     if (kind == 9 or kind == 11) {
         nodeSetType(expr, typeOptional(targetT))
     } else {
         nodeSetType(expr, targetT)
     }
     return 1
+}
+
+// The alignment `t` needs in memory, as C lays it out: a scalar its own width (a `Bool` is
+// a byte, a pointer the target's word), a struct its widest field, a packed struct one. Read
+// from the type rather than the backend's data layout, which is LLVM's default until codegen
+// and calls an `I64` four (docs/KNOWN_ISSUES.md). 0 for a type with no layout to speak of.
+private fn semaPointeeAlign(module: ASTNode, t: TypeInfo) -> Int {
+    if (t.kind == TypeKind.BOOL) { return 1 }
+    if (t.kind == TypeKind.PTR) { return targetPointerBytes() }
+    if (t.kind == TypeKind.OPTIONAL and nodeExists(t.child)) { return semaPointeeAlign(module, ptr_to_type(t.child)) }
+    if (t.kind == TypeKind.STRUCT) { return semaStructAlign(module, t.name) }
+    // An `Array<T, N>` field is its elements in place.
+    if (t.kind == TypeKind.ARRAY and nodeExists(t.child)) { return semaPointeeAlign(module, ptr_to_type(t.child)) }
+    let key = typeIrKey(t)
+    if (key.equals("i8")) { return 1 }
+    if (key.equals("i16")) { return 2 }
+    if (key.equals("i32") or key.equals("float")) { return 4 }
+    if (key.equals("i64") or key.equals("double")) { return 8 }
+    if (key.equals("ptr")) { return targetPointerBytes() }
+    return 0
+}
+
+private fn semaStructAlign(module: ASTNode, name: String) -> Int {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind != NodeKind.STRUCT_DECL) { continue }
+        if (nodeStructIsPacked(decl)) { return 1 }
+        let mut widest = 1
+        let mut f = decl.child1
+        while (nodeExists(f)) {
+            let field = ptr_to_node(f)
+            if (nodeExists(field.child1)) {
+                let a = semaPointeeAlign(module, semaAnnotationType(module, ptr_to_node(field.child1)))
+                if (a > widest) { widest = a }
+            }
+            f = field.next
+        }
+        return widest
+    }
+    return 0
 }
 
 // The operands of a binary operator, after both are typed. A pointer beside a

@@ -1,12 +1,47 @@
+// expect-trap: for-copy-down-past-the-end => index 12 is out of range for a Vec of length 8
+// expect-trap: for-copy-down-before-the-start => index -1 is out of range for a Vec of length 8
+// expect-trap: let-shadow => index 100 is out of range for a Vec of length 8
+// expect-trap: let-shadow-past-the-end => index 100 is out of range for a Vec of length 8
+// expect-trap: binder-shadow-past-the-end => index 9 is out of range for a Vec of length 8
+// expect-trap: nested-bump-past-the-end => index 8 is out of range for a Vec of length 8
+// expect-trap: nested-grow => index 8 is out of range for a Vec of length 8
+// expect-trap: nested-grow-past-the-end => index 43 is out of range for a Vec of length 40
+// expect-trap: merge-short-scratch => index 6 is out of range for a Vec of length 6
+// expect-trap: merge-past-the-end => index 10 is out of range for a Vec of length 10
+// expect-trap: sieve-wrapping-step => index -2147483645 is out of range for a Vec of length 41
+// expect-trap: square-negative-start => index -5 is out of range for a Vec of length 50
+// expect-trap: square-wrapping-step => index 2147483647 is out of range for a Vec of length 50
+// expect-trap: square-below-short => index 5 is out of range for a Vec of length 5
+// expect-trap: shifted-wrapping-start => index 2147483646 is out of range for a Vec of length 8
+// expect-trap: reverse-past-the-end => index 11 is out of range for a Vec of length 8
+// expect-trap: reverse-before-the-start => index -3 is out of range for a Vec of length 8
+// expect-trap: for-copy-offset-target => index 8 is out of range for a Vec of length 8
+// expect-trap: for-copy-past-the-end => index 8 is out of range for a Vec of length 8
+// expect-trap: for-step-past-the-end => index 14 is out of range for a Vec of length 10
+// expect-trap: for-step-down-past-the-end => index 20 is out of range for a Vec of length 10
+// expect-trap: for-step-down-to-int-min => index -999999995 is out of range for a Vec of length 10
+// expect-trap: for-down-past-the-end => index 12 is out of range for a Vec of length 10
+// expect-trap: for-down-negative-weight => index 11 is out of range for a Vec of length 10
+// expect-trap: for-down-counting-up => index -3 is out of range for a Vec of length 10
+// expect-trap: for-down-literal-past-the-end => index 9 is out of range for a Vec of length 5
+// expect-trap: divided-negative => index -2 is out of range for a Vec of length 8
+// expect-trap: divided-past-the-end => index 8 is out of range for a Vec of length 8
+// expect-trap: masked-past-the-end => index 14 is out of range for a Vec of length 8
+// expect-trap: masked-negative-mask => index 14 is out of range for a Vec of length 8
+// expect-trap: bisect-past-the-end => index 18 is out of range for a Vec of length 16
+// expect-trap: bisect-wrapping-span => index -2147483648 is out of range for a Vec of length 16
+// expect-trap: bisect-wrapping-bound => index 1073741823 is out of range for a Vec of length 16
+// expect-trap: bisect-sum-past-the-end => index 18 is out of range for a Vec of length 16
+// expect-trap: bisect-sum-wrapping => index -348 is out of range for a Vec of length 16
 // Loop range proofs (src/ir/ranges.psm), and the property they must never break.
 //
 // A loop whose indices the analysis can bound runs a copy with no bounds checks,
-// behind a preheader guard that holds the facts the proof rests on. `list_get` is
-// total -- an index outside the list reads 0 and a write there does nothing -- so
-// every shape below runs once with inputs the guard admits and once with inputs
-// that make one of its facts false, and both must give what the language says.
-// The expected values come from a model of that semantics: `Int` wraps at 32 bits,
-// an out-of-range read is 0, an out-of-range write is dropped.
+// behind a preheader guard that holds the facts the proof rests on. An index outside
+// the list stops the program (docs/MEMORY_SAFETY_PLAN.md section 2), so every shape
+// below runs once with inputs the guard admits, which must give the right number, and
+// -- one case per run, named by its argument -- with inputs that make one of its facts
+// false, which must stop at the first index out of range rather than read past it.
+// The expected values come from a model of the language: `Int` wraps at 32 bits.
 //
 // Each shape is one the analysis handles and the previous one did not: several
 // counters moving under branches, a relation that bounds a counter the condition
@@ -17,6 +52,7 @@
 // analysis tracks, and a counter a nested loop moves.
 
 import std.io
+import std.process
 
 enum Slot { Empty, At(Int) }
 
@@ -420,94 +456,101 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
+// An arm whose index leaves the list runs only when its case is named: it must stop the
+// program there (docs/MEMORY_SAFETY_PLAN.md section 2), where a proved copy taken for it
+// would read past the list and run on. The harness runs one case per `expect-trap` line.
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn main() -> Int {
     let mut bad = 0
 
     bad = bad + check("FAIL: merge in range", merge(10, 0, 5, 10), 270)
-    bad = bad + check("FAIL: merge short scratch", merge(6, 0, 5, 10), 101)
-    bad = bad + check("FAIL: merge past the end", merge(10, 3, 5, 14), 205)
+    if (trapCase("merge-short-scratch")) { return (merge(6, 0, 5, 10)) as Int }
+    if (trapCase("merge-past-the-end")) { return (merge(10, 3, 5, 14)) as Int }
 
     bad = bad + check("FAIL: sieve in range", sieveStep(40, 4, 2, 100), 22019)
     bad = bad + check("FAIL: sieve huge step", sieveStep(40, 4, 2147483600, 5), 40001)
-    bad = bad + check("FAIL: sieve wrapping step", sieveStep(40, 4, 2147483647, 5), 38005)
+    if (trapCase("sieve-wrapping-step")) { return (sieveStep(40, 4, 2147483647, 5)) as Int }
     bad = bad + check("FAIL: sieve start past n", sieveStep(40, 2147483600, 30, 5), 41000)
 
     bad = bad + check("FAIL: square in range", squareBound(50, 0, 1, 40, 1000), 147)
-    bad = bad + check("FAIL: square negative start", squareBound(50, 0 - 5, 1, 30, 1000), 202)
+    if (trapCase("square-negative-start")) { return (squareBound(50, 0 - 5, 1, 30, 1000)) as Int }
     bad = bad + check("FAIL: square past the edge", squareBound(50000, 46000, 1, 2147483000, 2000), 225434488)
     bad = bad + check("FAIL: square step", squareBound(50, 0, 3, 40, 1000), 39)
     bad = bad + check("FAIL: square step jumps the edge", squareBound(50000, 46330, 3, 2147390000, 100), 235018080)
-    bad = bad + check("FAIL: square wrapping step", squareBound(50, 0, 2147483647, 40, 5), 2147483644)
+    if (trapCase("square-wrapping-step")) { return (squareBound(50, 0, 2147483647, 40, 5)) as Int }
     bad = bad + check("FAIL: square below", squareBelow(8, 50), 168)
-    bad = bad + check("FAIL: square below short", squareBelow(5, 50), 40)
+    if (trapCase("square-below-short")) { return (squareBelow(5, 50)) as Int }
     bad = bad + check("FAIL: square below negative", squareBelow(8, 0 - 7), 0)
 
     bad = bad + check("FAIL: shifted in range", shifted(8, 0), 1505)
-    bad = bad + check("FAIL: shifted wrapping start", shifted(8, 2147483646), 7)
+    if (trapCase("shifted-wrapping-start")) { return (shifted(8, 2147483646)) as Int }
 
     bad = bad + check("FAIL: match length", matchLength(3, 0, 10), 5)
     bad = bad + check("FAIL: match length short", matchLength(6, 0, 10), 2)
     bad = bad + check("FAIL: match length past the end", matchLength(3, 0, 20), 5)
 
     bad = bad + check("FAIL: reverse in range", reverse(8, 0, 7), 252)
-    bad = bad + check("FAIL: reverse past the end", reverse(8, 0, 11), 414)
-    bad = bad + check("FAIL: reverse before the start", reverse(8, 0 - 3, 4), 387)
+    if (trapCase("reverse-past-the-end")) { return (reverse(8, 0, 11)) as Int }
+    if (trapCase("reverse-before-the-start")) { return (reverse(8, 0 - 3, 4)) as Int }
 
     bad = bad + check("FAIL: for copy", forCopy(8, 0, 8, 0), 348)
     bad = bad + check("FAIL: for copy offset source", forCopy(8, 2, 8, 0), 217)
-    bad = bad + check("FAIL: for copy offset target", forCopy(8, 0, 8, 3), 220)
-    bad = bad + check("FAIL: for copy past the end", forCopy(8, 0, 12, 0), 348)
+    if (trapCase("for-copy-offset-target")) { return (forCopy(8, 0, 8, 3)) as Int }
+    if (trapCase("for-copy-past-the-end")) { return (forCopy(8, 0, 12, 0)) as Int }
 
     bad = bad + check("FAIL: for step", forStep(10, 0, 9, 3), 188)
     bad = bad + check("FAIL: for step one", forStep(10, 0, 9, 1), 440)
-    bad = bad + check("FAIL: for step past the end", forStep(10, 4, 20, 5), 140)
+    if (trapCase("for-step-past-the-end")) { return (forStep(10, 4, 20, 5)) as Int }
 
     bad = bad + check("FAIL: for copy down", forCopy(8, 7, 0, 0), 224)
-    bad = bad + check("FAIL: for copy down past the end", forCopy(8, 12, 3, 0), 229)
-    bad = bad + check("FAIL: for copy down before the start", forCopy(8, 7, 0 - 3, 0), 264)
+    if (trapCase("for-copy-down-past-the-end")) { return (forCopy(8, 12, 3, 0)) as Int }
+    if (trapCase("for-copy-down-before-the-start")) { return (forCopy(8, 7, 0 - 3, 0)) as Int }
 
     bad = bad + check("FAIL: for step down", forStep(10, 9, 0, 3), 188)
-    bad = bad + check("FAIL: for step down past the end", forStep(10, 20, 4, 5), 42)
-    bad = bad + check("FAIL: for step down to Int.min", forStep(10, 5, 0 - 2147483647, 1000000000), 42)
+    if (trapCase("for-step-down-past-the-end")) { return (forStep(10, 20, 4, 5)) as Int }
+    if (trapCase("for-step-down-to-int-min")) { return (forStep(10, 5, 0 - 2147483647, 1000000000)) as Int }
 
     bad = bad + check("FAIL: for down", forDown(10, 9, 3, 1), 658)
-    bad = bad + check("FAIL: for down past the end", forDown(10, 12, 3, 1), 658)
-    bad = bad + check("FAIL: for down negative weight", forDown(10, 9, 0 - 2, 1), 1080)
+    if (trapCase("for-down-past-the-end")) { return (forDown(10, 12, 3, 1)) as Int }
+    if (trapCase("for-down-negative-weight")) { return (forDown(10, 9, 0 - 2, 1)) as Int }
     bad = bad + check("FAIL: for down one step", forDown(10, 3, 3, 1), 393)
-    bad = bad + check("FAIL: for down counting up", forDown(10, 2, 5, 1), 409)
+    if (trapCase("for-down-counting-up")) { return (forDown(10, 2, 5, 1)) as Int }
     bad = bad + check("FAIL: for down literal", forDownLiteral(10), 10387)
-    bad = bad + check("FAIL: for down literal past the end", forDownLiteral(5), 19)
+    if (trapCase("for-down-literal-past-the-end")) { return (forDownLiteral(5)) as Int }
 
     bad = bad + check("FAIL: divided", divided(8, 0, 10), 229)
-    bad = bad + check("FAIL: divided negative", divided(8, 0 - 5, 6), 104)
-    bad = bad + check("FAIL: divided past the end", divided(8, 0, 20), 543)
+    if (trapCase("divided-negative")) { return (divided(8, 0 - 5, 6)) as Int }
+    if (trapCase("divided-past-the-end")) { return (divided(8, 0, 20)) as Int }
 
     bad = bad + check("FAIL: masked", masked(8, 7, 0, 20), 114)
-    bad = bad + check("FAIL: masked past the end", masked(8, 15, 0, 20), 62)
-    bad = bad + check("FAIL: masked negative mask", masked(8, 0 - 1, 0, 5), 11)
+    if (trapCase("masked-past-the-end")) { return (masked(8, 15, 0, 20)) as Int }
+    if (trapCase("masked-negative-mask")) { return (masked(8, 0 - 1, 0, 5)) as Int }
 
-    bad = bad + check("FAIL: let shadow", letShadow(5), 200)
-    bad = bad + check("FAIL: let shadow past the end", letShadow(8), 350)
+    if (trapCase("let-shadow")) { return (letShadow(5)) as Int }
+    if (trapCase("let-shadow-past-the-end")) { return (letShadow(8)) as Int }
     bad = bad + check("FAIL: binder shadow", binderShadow(5, 2), 15)
-    bad = bad + check("FAIL: binder shadow past the end", binderShadow(5, 9), 0)
+    if (trapCase("binder-shadow-past-the-end")) { return (binderShadow(5, 9)) as Int }
     bad = bad + check("FAIL: nested bump", nestedBump(8), 16)
-    bad = bad + check("FAIL: nested bump past the end", nestedBump(11), 16)
+    if (trapCase("nested-bump-past-the-end")) { return (nestedBump(11)) as Int }
 
     bad = bad + check("FAIL: bisect found", bisect(16, 0, 15, 11), 1102)
     bad = bad + check("FAIL: bisect found low", bisect(16, 0, 15, 4), 404)
     bad = bad + check("FAIL: bisect missing", bisect(16, 0, 15, 99), 0 - 95)
-    bad = bad + check("FAIL: bisect past the end", bisect(16, 0, 20, 18), 0 - 95)
+    if (trapCase("bisect-past-the-end")) { return (bisect(16, 0, 20, 18)) as Int }
     bad = bad + check("FAIL: bisect before the start", bisect(16, 0 - 3, 15, 1), 102)
-    bad = bad + check("FAIL: bisect wrapping span", bisect(16, 0 - 2147483600, 2147483600, 5), 0 - 98)
-    bad = bad + check("FAIL: bisect wrapping bound", bisect(16, 0, 2147483647, 0), 41)
+    if (trapCase("bisect-wrapping-span")) { return (bisect(16, 0 - 2147483600, 2147483600, 5)) as Int }
+    if (trapCase("bisect-wrapping-bound")) { return (bisect(16, 0, 2147483647, 0)) as Int }
     bad = bad + check("FAIL: bisect sum found", bisectSum(16, 0, 15, 11), 1102)
-    bad = bad + check("FAIL: bisect sum past the end", bisectSum(16, 0, 20, 18), 0 - 95)
-    bad = bad + check("FAIL: bisect sum wrapping", bisectSum(16, 2147483000, 2147483600, 5), 0 - 59)
+    if (trapCase("bisect-sum-past-the-end")) { return (bisectSum(16, 0, 20, 18)) as Int }
+    if (trapCase("bisect-sum-wrapping")) { return (bisectSum(16, 2147483000, 2147483600, 5)) as Int }
     bad = bad + check("FAIL: bisect sum before the start", bisectSum(16, 0 - 5, 15, 0), 2)
     bad = bad + check("FAIL: unordered midpoint", unordered(8, 0, 7, 8), 48)
     bad = bad + check("FAIL: unordered midpoint below", unordered(8, 6, 0, 8), 9)
-    bad = bad + check("FAIL: nested grow", nestedGrow(8, 7), 4)
-    bad = bad + check("FAIL: nested grow past the end", nestedGrow(40, 7), 172)
+    if (trapCase("nested-grow")) { return (nestedGrow(8, 7)) as Int }
+    if (trapCase("nested-grow-past-the-end")) { return (nestedGrow(40, 7)) as Int }
 
     if (bad != 0) { return 1 }
     println("PASS: loop range proofs")

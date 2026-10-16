@@ -1,3 +1,7 @@
+// expect-trap: body-assigned => index -1 is out of range for a Vec of length 8
+// expect-trap: body-local => index -1 is out of range for a Vec of length 8
+// expect-trap: invariant-term => index -1 is out of range for a Vec of length 8
+// expect-trap: invariant-term-step-2 => index -1 is out of range for a Vec of length 8
 // A loop-body-local `let` used inside an index expression.
 //
 // The range guard evaluates every loop-invariant term in the **preheader**, and
@@ -12,6 +16,7 @@
 // qualify: a term bound outside the loop.
 
 import std.io
+import std.process
 
 fn check(label: String, got: Int, want: Int) -> Int {
     if (got != want) {
@@ -73,14 +78,21 @@ fn trulyInvariant(n: Int, step: Int) -> Int {
     return acc
 }
 
+// An arm whose index leaves the list runs only when its case is named: it must stop the
+// program there (docs/MEMORY_SAFETY_PLAN.md section 2), where a proved copy taken for it
+// would read past the list and run on. The harness runs one case per `expect-trap` line.
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn main() -> Int {
     let mut bad = 0
-    // xs is [0..7]; reading at-1 for at in 7..0 gives 6+5+4+3+2+1+0 and one
-    // out-of-range read at at=0 contributing 0.
-    bad = bad + check("FAIL: body-local index term", localDecl(8), 21)
-    bad = bad + check("FAIL: body-assigned index term", assignedInBody(8), 21)
-    bad = bad + check("FAIL: invariant index term", trulyInvariant(8, 1), 21)
-    bad = bad + check("FAIL: invariant index term, step 2", trulyInvariant(8, 2), 15)
+    // xs is [0..7]; reading at-1 for at in 7..0 reads 6+5+4+3+2+1+0 and then index -1
+    // at at=0, which stops the program.
+    if (trapCase("body-local")) { return (localDecl(8)) as Int }
+    if (trapCase("body-assigned")) { return (assignedInBody(8)) as Int }
+    if (trapCase("invariant-term")) { return (trulyInvariant(8, 1)) as Int }
+    if (trapCase("invariant-term-step-2")) { return (trulyInvariant(8, 2)) as Int }
 
     if (bad != 0) { return 1 }
     println("PASS: loop-local index terms")

@@ -1,0 +1,82 @@
+// What a typed pointer must not let the optimiser assume (docs/PTR_PLAN.md, "What the
+// soundness pass settled"). Each was a wrong answer at -O3 or undefined IR before it was fixed.
+//
+//   - Two pointers `cast` to different types may be the same bytes. A type-based alias tag on
+//     their accesses told LLVM otherwise, and the store through one moved past the load
+//     through the other. The functions take both as parameters, because BasicAA answers
+//     "same pointer" for one SSA value before TBAA is asked.
+//   - `advance(n, limit)` with a `limit` that is not a whole number of elements away: the room
+//     was an `sdiv exact`, which is poison there, and a poison check selects poison.
+//   - A field of a `packed struct` is at an odd offset; it was read and written as if aligned.
+import std.raw
+
+repr(C) struct Left { x: U32 }
+repr(C) struct Right { y: U32 }
+
+// 12 bytes, alignment 4: a whole number of these is never 28 bytes.
+repr(C) struct Trio { a: U32, b: U32, c: U32 }
+
+packed struct Inner { a: U8, b: U16 }
+packed struct Wire { tag: U8, word: U32, wide: I64, inner: Inner, bytes: Array<U8, 3> }
+packed struct Frame { tag: U8, word: U32, inner: Inner }
+
+extern fn calloc(count: Usize, size: Usize) -> Ptr<mut U8>
+extern fn free(block: Ptr)
+
+fn fail(code: Int) -> Int { return code }
+
+fn structPun(p: Ptr<mut Left>, q: Ptr<mut Right>) -> U32 {
+    q.y = 5
+    p.x = 9
+    return q.y
+}
+
+fn scalarPun(p: Ptr<mut Float>, q: Ptr<mut U64>) -> U64 {
+    q.store(7)
+    p.store(1.0)
+    return q.load()
+}
+
+fn readWire(w: Wire) -> I64 { return w.word as I64 + w.wide + w.inner.b as I64 + w.bytes[2] as I64 }
+
+fn bump(f: Ptr<mut Frame>) -> U32 {
+    f.word = f.word + 1
+    f.inner.b = 40
+    return f.word + f.inner.b as U32
+}
+
+fn main() -> Int {
+    // calloc's block is aligned for any type, which is the promise `castUnchecked` makes: a
+    // `cast` from a `Ptr<U8>` to anything stricter is refused (neg_306).
+    let block = calloc(1, 64)
+
+    if structPun(Ptr<mut Left>.castUnchecked(block), Ptr<mut Right>.castUnchecked(block)) != 9 { return fail(1) }
+    // 1.0 is 0x3FF0000000000000: the load sees the float's bits, never the 7 stored first.
+    if scalarPun(Ptr<mut Float>.castUnchecked(block), Ptr<mut U64>.castUnchecked(block)) != 4607182418800017408 { return fail(2) }
+
+    // 28 bytes from `first` is two whole Trios and a third of one: two steps fit, three do not.
+    let first = Ptr<mut Trio>.castUnchecked(block)
+    let limit = Ptr<mut Trio>.castUnchecked(block.byteOffset(28))
+    if first.advance(2, limit) == none { return fail(3) }
+    if first.advance(3, limit) != none { return fail(4) }
+    if limit.advance(-2, first) == none { return fail(5) }
+    if limit.advance(-3, first) != none { return fail(6) }
+
+    let mut w = Wire { tag: 1, word: 2, wide: 3, inner: Inner { a: 4, b: 5 }, bytes: [6, 7, 8] }
+    w.word = w.word + 10
+    w.wide = w.wide * 2
+    w.inner.b = w.inner.b + 1
+    w.bytes[2] = 9
+    // word 12, wide 6, inner.b 6, bytes[2] 9.
+    if readWire(w) != 33 { return fail(7) }
+
+    // One byte in, so every field after `tag` is at an odd address.
+    let f = Ptr<mut Frame>.cast(block.byteOffset(1))
+    f.word = 2
+    // word 3, inner.b 40.
+    if bump(f) != 43 { return fail(8) }
+    if f.inner.b != 40 { return fail(9) }
+
+    free(block)
+    return 0
+}

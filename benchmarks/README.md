@@ -106,6 +106,9 @@ not, and they were added because the suite had no coverage of these shapes:
 | `string_join` | Owned-string **construction**. `tokenization`, `string_search` and `csv_parse` all read strings; none builds one. |
 | `bytecode_interpreter` | Dispatch with a **carried stack**, so the branch sees a trace rather than a distribution. `switch_dispatch` branches on a value and carries nothing. |
 
+Two further additions, `graph_churn_*` and `register_pressure_torture`, are described in
+[`docs/GRAPH_CHURN_FINDINGS.md`](../docs/GRAPH_CHURN_FINDINGS.md), with what they found.
+
 Three of the five landed in the suite's slowest-for-Prismio group on their first
 run, which is the point: a benchmark that only confirms what the existing ones
 already say has not earned its place.
@@ -326,18 +329,19 @@ status, and workload profile.
   `sha256`, `blake3_chunk`, `raytracer_sphere`, `channel_pipeline`,
   `bytecode_interpreter`; unsupported: `async_event_loop`, `mutex_contention`, `work_stealing_pool`,
   `simd_vector_ops`.
-- Memory (10 implemented, 1 unsupported): `transient_allocation`, `struct_creation`,
+- Memory (14 implemented, 1 unsupported): `transient_allocation`, `struct_creation`,
   `allocation_mutation`, `nested_collection`, `large_buffer_copy`,
   `recursive_tree_rebuild`, `string_join`, `binary_codec`, `manual_alloc_churn`,
-  `arena_bump`; unsupported: `custom_allocator_churn`.
+  `arena_bump`, `graph_churn_single`, `graph_churn_alloc`, `graph_churn_transfer`,
+  `graph_churn_full`; unsupported: `custom_allocator_churn`.
 - I/O and serialization (6 implemented, 5 unsupported): `file_read`,
   `file_write`, `line_processing`, `tokenization`, `base64_codec`, `csv_parse`;
   unsupported: `json_parse`, `json_serialize`, `tcp_echo_server`, `mmap_file_io`,
   `generic_serialization`.
-- Adversarial (12 implemented): `pointer_chase`, `random_gather`,
+- Adversarial (13 implemented): `pointer_chase`, `random_gather`,
   `branch_mispredict`, `strided_memory`, `allocation_escape`,
   `function_call_overhead`, `indirect_calls`, `dependency_chain`, `aos_vs_soa`,
-  `switch_dispatch`, `memcpy_mix`, `dead_code_elimination`.
+  `switch_dispatch`, `memcpy_mix`, `dead_code_elimination`, `register_pressure_torture`.
 
 ### Adversarial benchmark design
 

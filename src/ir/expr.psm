@@ -1582,7 +1582,7 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
         // its message, and every argument of the other three, contribute
         // nothing -- otherwise `assert(ok, "bad: ".concat(name))` in a loop
         // cost the loop its guard for a call that never runs while it loops.
-        if (fname.equals("__builtin_assert")) {
+        if (fname.equals("__builtin_assert") or fname.equals("__builtin_assume")) {
             if (nodeIsNull(n.child2)) { return 0 }
             return irFlatGuardCount(n.child2, bodyPtr)
         }
@@ -1864,9 +1864,20 @@ private fn irCaptureStableListBoundChain(head: Ptr, bodyPtr: Ptr, condPtr: Ptr) 
     return false
 }
 
+// `a[i]` on an array, read or written: in range, or the program stops
+// (docs/MEMORY_SAFETY_PLAN.md section 2). An access the loop's range proof covers is in
+// range by the guard that chose this copy, so it pays nothing; every other one pays a
+// compare and a branch to a cold call that never returns. A `[T]` view has no length to
+// compare against until it carries one, so it is not checked yet.
+internal fn generateArrayIndexCheck(access: ASTNode, arrayT: TypeInfo, indexVal: String) {
+    if (arrayT.kind != TypeKind.ARRAY or arrayT.length <= 0) { return }
+    if (irAccessProved(access) or nowrapIndexInRange(access)) { return }
+    ir_array_index_check(indexVal, arrayT.length.toString())
+}
+
 // Whether the loop copy being generated proved this node: an access in range, or
 // an induction variable's update free of wrap.
-private fn irAccessProved(expr: ASTNode) -> Bool {
+internal fn irAccessProved(expr: ASTNode) -> Bool {
     if (irLoopRangeProof == 0) { return false }
     return ir_range_proof_of(node_to_ptr(expr)) == irLoopRangeProof
 }
@@ -2892,7 +2903,7 @@ private fn irViewMayOutliveIteration(body: Ptr, listName: String) -> Bool {
 
 // One pass of the fixed point: every non-scalar binding whose initializer
 // mentions a holder may itself hold a view -- `let t = s`, `let n = s.name`.
-private fn irGrowViewHolders(head: Ptr, inout holders: Vec<String>) {
+internal fn irGrowViewHolders(head: Ptr, inout holders: Vec<String>) {
     let mut p = head
     while (nodeExists(p)) {
         let n = ptr_to_node(p)
@@ -2929,7 +2940,7 @@ private fn irAssignsViewOf(head: Ptr, holders: Vec<String>) -> Bool {
 }
 
 // Whether the expression at `ptr` -- not its siblings -- names a holder.
-private fn irMentionsHolder(ptr: Ptr, holders: Vec<String>) -> Bool {
+internal fn irMentionsHolder(ptr: Ptr, holders: Vec<String>) -> Bool {
     if (nodeIsNull(ptr)) { return false }
     let n = ptr_to_node(ptr)
     if (n.kind == NodeKind.IDENTIFIER_EXPR and irHoldersContain(holders, n.s1)) { return true }
@@ -2947,7 +2958,7 @@ private fn irChainMentionsHolder(head: Ptr, holders: Vec<String>) -> Bool {
     return false
 }
 
-private fn irHoldersContain(holders: Vec<String>, name: String) -> Bool {
+internal fn irHoldersContain(holders: Vec<String>, name: String) -> Bool {
     for i in 0..<holders.length {
         if (holders[i].equals(name)) { return true }
     }
@@ -3010,25 +3021,20 @@ private fn generateMemBuiltin(expr: ASTNode, funcName: String) -> String {
         return ir_get_temp_name(ir_asm_call(key, text, constraints))
     }
 
-    // A typed pointer's load: `load T, ptr %p` at the pointee's own type, through the
-    // same scalar path an array element takes, so a Bool is the byte it is everywhere
-    // else and the access carries its type tag. Not volatile: sema refuses a volatile
-    // pointer until stage 5 gives it its own access.
+    // A typed pointer's load: `load T, ptr %p` at the pointee's storage type, so a Bool is
+    // the byte it is everywhere else. Every access through a `Ptr<volatile T>` is volatile,
+    // and `readVolatile` makes one on a pointer that is not.
     if (ptrLoadBuiltin(funcName)) {
         let pointer = ptr_to_node(expr.child2)
         let pointerT = nodeGetType(pointer)
         let valueKey = storageType(typeIrKey(typePtrPointee(pointerT)))
         let pointerVal = generateExpression(pointer)
-        // Every access through a `Ptr<volatile T>` is volatile, and `readVolatile` makes one
-        // on a pointer that is not.
-        if (typePtrIsVolatile(pointerT) or ptrAccessIsVolatile(funcName)) {
-            return ir_get_temp_name(ir_ptr_load_volatile(valueKey, pointerVal))
-        }
-        return ir_get_temp_name(ir_load_ptr(valueKey, pointerVal))
+        let mut isVolatile = ptrAccessVolatility(pointerT)
+        if (ptrAccessIsVolatile(funcName)) { isVolatile = 1 }
+        return ir_get_temp_name(ir_ptr_load(valueKey, pointerVal, isVolatile))
     }
 
-    // `p.store(v)`: the store half, at the pointee's own type, through the scalar path an
-    // array element is written by. Both operands are generated before the store, as a
+    // `p.store(v)`: the store half. Both operands are generated before the store, as a
     // call's arguments are.
     if (ptrStoreBuiltin(funcName)) {
         let pointer = ptr_to_node(expr.child2)
@@ -3037,11 +3043,9 @@ private fn generateMemBuiltin(expr: ASTNode, funcName: String) -> String {
         let valueKey = storageType(typeIrKey(typePtrPointee(pointerT)))
         let pointerVal = generateExpression(pointer)
         let storedVal = generateExpression(stored)
-        if (typePtrIsVolatile(pointerT) or ptrAccessIsVolatile(funcName)) {
-            ir_ptr_store_volatile(valueKey, storedVal, pointerVal)
-        } else {
-            ir_store_ptr(valueKey, storedVal, pointerVal)
-        }
+        let mut isVolatile = ptrAccessVolatility(pointerT)
+        if (ptrAccessIsVolatile(funcName)) { isVolatile = 1 }
+        ir_ptr_store(valueKey, storedVal, pointerVal, isVolatile)
         return ""
     }
 
@@ -3666,11 +3670,11 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
     if (isStructTypeKey(fieldType) or isArrayValueKey(fieldType)) {
         return ir_get_temp_name(slot)
     }
-    // A field reached through a `Ptr<volatile T>` is read volatile, whatever its type.
-    let objectIsVolatile = nodeHasType(objectNode) and typePtrIsVolatile(nodeGetType(objectNode))
+    // A field reached through a typed pointer is the pointer's access: untagged, and
+    // volatile through a `Ptr<volatile T>`, whatever its type.
     let mut loadedId = 0
-    if (objectIsVolatile) {
-        loadedId = ir_struct_load_ptr_volatile(fieldType, ir_get_temp_name(slot), structName, fieldIndex)
+    if (nodeHasType(objectNode) and typeIsTypedPtr(nodeGetType(objectNode))) {
+        loadedId = ir_ptr_load(fieldType, ir_get_temp_name(slot), ptrAccessVolatility(nodeGetType(objectNode)))
     } else {
         loadedId = ir_struct_load_ptr(fieldType, ir_get_temp_name(slot), structName, fieldIndex)
     }
@@ -3866,6 +3870,7 @@ private fn generateIndex(expr: ASTNode) -> String {
 
     let arrayVal = generateExpression(baseNode)
     let indexVal = generateExpression(ptr_to_node(expr.child2))
+    generateArrayIndexCheck(expr, baseType, indexVal)
 
     // sema types the index expression as the array's element type, so this
     // reads the right width and stride. Hardcoding i32 here loaded four
@@ -5213,6 +5218,14 @@ private fn generateCall(expr: ASTNode) -> String {
         return ""
     }
 
+    // `__builtin_assume(cond)`: std's promise of a fact its own data keeps (`ir_assume`
+    // in runtime/llvm-api-backend.c). Nothing runs; the condition's value is a
+    // promise LLVM may use, and a bounds check it implies folds away.
+    if (funcName.equals("__builtin_assume") and nodeExists(expr.child2)) {
+        ir_assume(generateExpression(ptr_to_node(expr.child2)))
+        return ""
+    }
+
     // `assert`: a compare and a branch to a cold block. The message is built
     // only on that block, so a passing assertion allocates nothing however its
     // message is written.
@@ -5947,6 +5960,13 @@ private fn generateCall(expr: ASTNode) -> String {
         if (funcName.equals("list_push")) { callName = "list_push_str" }
         if (funcName.equals("list_insert")) { callName = "list_insert_str" }
         if (funcName.equals("list_set")) { callName = "list_set_str" }
+    }
+    // An overwrite no view of the displaced element can outlive releases it at once
+    // instead of parking it (ir/overwrites.psm). Inline elements own nothing and
+    // keep their setter.
+    if (funcName.equals("list_set") and overwriteReleasesNow(expr)) {
+        if (callName.equals("list_set")) { callName = "list_set_now" }
+        if (callName.equals("list_set_str")) { callName = "list_set_str_now" }
     }
     // A removal's `now`: whether no view of an element can outlive it, so what
     // it removes may be released at once rather than parked with the list.

@@ -5,8 +5,10 @@
 //   - `Ptr<mut T>` stands where `Ptr<T>` is wanted, and where `Ptr` is: foreign code may
 //     write through an opaque `Ptr`, so a read-only pointer does not become one. `Ptr<T>?`
 //     takes `none`, and `Ptr<mut T>?` becomes `Ptr<T>?`.
-//   - `volatile` is a capability of its own, written before or after `mut`.
-//   - A struct of plain data is a valid pointee, and so is a pointer to a pointer.
+//   - `volatile` is a capability of its own, written before or after `mut`, and never lost:
+//     a volatile pointer does not become `Ptr` (neg_305).
+//   - A struct of plain data is a valid pointee, an inline `Array<U8, N>` included, and so is a
+//     pointer to a pointer.
 
 struct Header {
     magic: U32,
@@ -21,15 +23,21 @@ struct Node {
 
 enum Mode { Idle, Busy }
 
+// An inline array of plain data is plain data: the bytes are in the struct.
+repr(C) struct Framed {
+    tag: U8,
+    bytes: Array<U8, 4>,
+}
+
 fn toRead(p: Ptr<mut Header>) -> Ptr<Header> { return p }
 fn toOpaque(p: Ptr<mut Header>) -> Ptr { return p }
-fn forget(p: Ptr<mut volatile Header>) -> Ptr { return p }
 fn eitherOrder(p: Ptr<volatile mut Header>) -> Ptr<mut volatile Header> { return p }
 fn optionalDrop(p: Ptr<mut Header>?) -> Ptr<Header>? { return p }
 fn absent() -> Ptr<Node>? { return none }
 fn nested(p: Ptr<Ptr<Int>>) -> Ptr<Ptr<Int>> { return p }
 fn scalars(a: Ptr<mut U8>, b: Ptr<Float>, c: Ptr<Bool>, d: Ptr<Mode>, e: Ptr<Char>) -> Ptr { return a }
 fn handle(p: Ptr) -> Ptr { return p }
+fn framed(p: Ptr<mut Framed>) -> Ptr<Framed> { return p }
 
 fn main() -> Int {
     return 0

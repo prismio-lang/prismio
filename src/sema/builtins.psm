@@ -109,6 +109,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("__builtin_target_arch")) { return typeInt() }
     if (name.equals("__builtin_target_env")) { return typeInt() }
 
+    if (name.equals("__builtin_assume")) { return typeVoid() }
     if (name.equals("__builtin_string_len")) { return typeInt() }
     if (name.equals("__builtin_string_byte_at")) { return typeChar() }
     if (name.equals("__builtin_string_put_byte")) { return typeVoid() }
@@ -716,6 +717,15 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         or name.equals("__builtin_target_arch")
         or name.equals("__builtin_target_env")) {
         semaCheckArity(call, name, argPtr, 0)
+        return true
+    }
+
+    // A fact std promises from an invariant of its own data. **Not checked, and
+    // undefined when false**: that is the point -- the checks it makes redundant are
+    // the cost -- and why a program cannot call it.
+    if (name.equals("__builtin_assume")) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typeBool(), "assumed condition")
         return true
     }
 

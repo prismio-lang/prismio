@@ -514,6 +514,8 @@ def run_test(test_file):
     success, output, error_output = run_program(exe_file)
 
     if success:
+        success = run_expected_traps(test_file, exe_file)
+    if success:
         print(f"{GREEN}[PASS] Test passed{RESET}")
         if output:
             print(f"  Output: {output.strip()}")
@@ -526,6 +528,40 @@ def run_test(test_file):
 
     cleanup_files(exe_file)
     return success
+
+
+def expected_traps(test_file):
+    """`// expect-trap: <argument> => <message>` lines, as (argument, message) pairs.
+
+    A program stops at its first run-time error, so a fixture that checks several
+    of them is run once per case: with no argument it runs the arms that must
+    succeed, and given a case's argument it must stop, with a non-zero exit and the
+    message on stderr. That keeps "the guard declines rather than corrupts" one
+    file per loop shape now that an index out of range stops the program instead of
+    reading 0 (docs/MEMORY_SAFETY_PLAN.md section 2).
+    """
+    wanted = []
+    with open(test_file, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            marker = "// expect-trap:"
+            if marker in line:
+                argument, _, message = line.split(marker, 1)[1].partition("=>")
+                wanted.append((argument.strip(), message.strip()))
+    return wanted
+
+
+def run_expected_traps(test_file, exe_file):
+    for argument, message in expected_traps(test_file):
+        result = run_command([str(exe_file), argument])
+        if result.returncode == 0:
+            print(f"{RED}  case `{argument}` ran to the end; it should have stopped with: "
+                  f"{message}{RESET}")
+            return False
+        if message not in result.stderr:
+            print(f"{RED}  case `{argument}` stopped, but not with: {message}{RESET}")
+            print(f"  stderr: {result.stderr.strip()}")
+            return False
+    return True
 
 
 def expected_errors(test_file):
@@ -4735,6 +4771,144 @@ def run_proved_index_nsw_test():
     return True
 
 
+def run_param_ranges_test():
+    """A private function's integer parameters carry the join of what every call passes
+    (src/ir/param_ranges.psm), as LLVM `range` attributes, and only where every call is
+    one the walk saw.
+
+    test_314 checks the answers; a wrong range is poison that may still print them, so
+    the IR is read: `scaled` gets [0, 150) and [150, 151) from two loops, `halved` the
+    quotient 1023, `countDown` a non-negative bound from its own guarded `n - 1`; the
+    unbounded argument, the public function and the one also called from a closure
+    get none.
+    """
+    print(f"\n{BLUE}--- Running param_ranges ---{RESET}")
+    source = TEST_DIR / "test_314_param_ranges.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-param-ranges-") as tmp:
+        ir_path = Path(tmp) / "ranges.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] param ranges IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+    def signature(name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*', ir, re.MULTILINE)
+        if not match:
+            problems.append(f"missing function {name}")
+            return ""
+        return match.group(0)
+
+    wanted = {
+        "scaled": ["range(i32 0, 150)", "range(i32 150, 151)"],
+        "halved": ["range(i32 1023, 1024)"],
+        "countDown": ["range(i32 0, 2147483647)"],
+    }
+    for name, ranges in wanted.items():
+        text = signature(name)
+        for want in ranges:
+            if want not in text:
+                problems.append(f"{name}: no `{want}` in `{text}`")
+    for name in ("unbounded", "exposed", "fromClosure"):
+        if "range(" in signature(name):
+            problems.append(f"{name}: a range on a parameter not every call bounds")
+    if problems:
+        print(f"{RED}[FAIL] param ranges{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] parameter ranges are the join of every call, and only then{RESET}")
+    return True
+
+
+def run_index_strides_test():
+    """An immutable `let` keeps a congruence and a literal array its elements
+    (src/ir/strides.psm), which proves an index into a flattened record array.
+
+    test_315 checks the answers and the trap; the IR is read for which checks are left:
+    none in `run`, whose `a` and `b` fields are below 4; `runMutable`'s through a
+    `let mut` base, which keeps no congruence; and `wideField`'s, whose field is 9.
+    """
+    print(f"\n{BLUE}--- Running index_strides ---{RESET}")
+    source = TEST_DIR / "test_315_index_strides.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-index-strides-") as tmp:
+        ir_path = Path(tmp) / "strides.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] index strides IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+    def checks(name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append(f"missing function {name}")
+            return 0
+        return match.group(1).count("array_index_fail")
+
+    if checks("run") != 0:
+        problems.append("run: a field below 4 still has a bounds check")
+    if checks("runMutable") == 0:
+        problems.append("runMutable: a `let mut` base proved an index it cannot")
+    if checks("wideField") == 0:
+        problems.append("wideField: a field of 9 lost its check")
+    if problems:
+        print(f"{RED}[FAIL] index strides{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] record fields proved by congruence, and only there{RESET}")
+    return True
+
+
+def run_overwrite_release_test():
+    """`v[k] = x` releases what it displaces at once only where no view of an element
+    can be live (src/ir/overwrites.psm).
+
+    test_317 checks the answers and `aif_verify` the ledger; a release that reached a
+    live view could still print the right answer, so the IR is read for each
+    function's setter: `list_set_now` in the three that read or lend a view before the
+    store, or take it after; `list_set` in the five that read it after the store,
+    iterate the Vec, keep it outside the loop, build the new element from it, or
+    replace into a Vec they were handed.
+    """
+    print(f"\n{BLUE}--- Running overwrite_release ---{RESET}")
+    source = TEST_DIR / "test_317_overwrite_release.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-overwrite-") as tmp:
+        ir_path = Path(tmp) / "overwrite.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] overwrite release IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+    def body(name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append(f"missing function {name}")
+            return ""
+        return match.group(1)
+
+    for name in ("readThenReplace", "lendThenReplace", "replaceThenRead"):
+        text = body(name)
+        if "@list_set_now(" not in text or "@list_set(" in text:
+            problems.append(f"{name}: the store does not release at once")
+    for name in ("readAfterReplace", "replaceWhileIterating", "keptOutside", "rebuiltFromOld",
+                 "replaceInBorrowed"):
+        if "@list_set_now(" in body(name):
+            problems.append(f"{name}: a store releases while a view may be live")
+    if problems:
+        print(f"{RED}[FAIL] overwrite release{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] overwrites release at once exactly where no view is live{RESET}")
+    return True
+
+
 def nsw_sources(body):
     """The variable each `add nsw`/`sub nsw` in a function's IR loaded its left operand
     from, or `elem` for an array element and `other` for anything else.
@@ -4788,18 +4962,83 @@ def run_array_contents_test():
             problems.append(f"{name}: {marked} element adds are nsw, expected at least {wanted}")
     if "i" not in sources("counted"):
         problems.append("counted: the counter's `i - 2` is not nsw")
-    steps = {"escaped": "k", "shadowedArrays": "k", "continued": "k", "doubling": "k",
-             "readsFailed": "k", "movingBound": "", "stepThenUse": "", "conjunctBefore": "i"}
-    for name, step in steps.items():
-        stray = [source for source in sources(name) if source != step]
+    # Each function's steps that its loop's condition bounds. movingBound's `n` and
+    # `i` and stepThenUse's `i` are found by the loop invariants (nowrapInvariants):
+    # `n < 20` and `i < n`, `i < 10`, hold where each is stepped. What those two are
+    # about is the large sum after the step, which must stay plain, and is read below.
+    steps = {"escaped": ("k",), "shadowedArrays": ("k",), "continued": ("k",),
+             "doubling": ("k",), "readsFailed": ("k",), "movingBound": ("n", "i"),
+             "stepThenUse": ("i",), "conjunctBefore": ("i",)}
+    for name, allowed in steps.items():
+        stray = [source for source in sources(name) if source not in allowed]
         if stray:
             problems.append(f"{name}: an op that can wrap is nsw ({', '.join(stray)})")
+    for name, literal in (("movingBound", 2147483640), ("stepThenUse", 2147483638)):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+        if match and re.search(rf'add nsw i32 %\S+, {literal}\b', match.group(1)):
+            problems.append(f"{name}: the sum with {literal}, which can wrap, is nsw")
     if problems:
         print(f"{RED}[FAIL] array contents{RESET}")
         for problem in problems:
             print(f"  {problem}")
         return False
     print(f"{GREEN}[PASS] array elements and counted loops make nsw exactly where nothing can wrap{RESET}")
+    return True
+
+
+def run_proved_indices_test():
+    """An array index the interval walk proves in range carries no check, and one it
+    cannot prove keeps its check.
+
+    test_311 runs every shape, and its trap cases stop where they should; but a check
+    left in place still gives the right answer, so the IR is read as well. Binary
+    search over `U32`, a pointer chase through two arrays whose contents are indices,
+    a small interpreter whose `pc` cycles 0..3, an `!=` at the interval's edge and a
+    mask and remainder that fit lose every check. The twelve that look provable and
+    are not -- an off-by-one `<=`, a `U32` below zero, a `break` or `continue`
+    (labelled too) the end of the body does not see, `!=` away from the edge, a large
+    `U32` cast, a mask or remainder one too wide, a step past the end, a store nothing
+    bounds and a `let` bound twice -- each keep at least one.
+    """
+    print(f"\n{BLUE}--- Running proved_indices ---{RESET}")
+    source = TEST_DIR / "test_311_proved_indices.psm"
+    with tempfile.TemporaryDirectory(prefix="prismio-proved-indices-") as tmp:
+        ir_path = Path(tmp) / "proved.ll"
+        built = subprocess.run([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)],
+                               cwd=PROJECT_ROOT, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace")
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] proved indices IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+
+    def checks(name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', ir, re.MULTILINE | re.DOTALL)
+        if not match:
+            return None
+        return match.group(1).count("call void @array_index_fail")
+
+    problems = []
+    for name in ("binarySearch", "chase", "bytecode", "atEdge", "masked"):
+        count = checks(name)
+        if count is None:
+            problems.append(f"missing function {name}")
+        elif count:
+            problems.append(f"{name}: {count} index checks left, expected none")
+    for name in ("offByOne", "below", "afterBreak", "continuePath", "continueOuter", "notAtEdge",
+                 "bigCast", "wideMask", "wideRemainder", "stepping", "unboundedContents",
+                 "shadowedAlias"):
+        count = checks(name)
+        if count is None:
+            problems.append(f"missing function {name}")
+        elif count == 0:
+            problems.append(f"{name}: its unprovable index lost its check")
+    if problems:
+        print(f"{RED}[FAIL] proved indices{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] proved indices lose their check, and only they do{RESET}")
     return True
 
 
@@ -4848,11 +5087,18 @@ def run_array_nowrap_test():
         problems.append("knapsack: the subscript `c - w` is not nsw")
     if not re.search(r'sub nsw i32 %\S+, 1\b', knapsack):
         problems.append("knapsack: `c - 1` is not nsw")
+    # shortCircuit's `hits` is bounded by its loop's `hits < 1` where both of its sums
+    # run (nowrapInvariants); what the function is about is the `i + 1` on Int.MAX after
+    # the loop, which must stay plain.
     for name in ("reassigned", "shortCircuit", "coalesced", "shadowed", "headKill", "negativeLeft",
                  "viewBelow"):
-        stray = [source for source in nsw_sources(body(name)) if source not in ("k", "n")]
+        allowed = ("k", "n", "hits") if name == "shortCircuit" else ("k", "n")
+        stray = [source for source in nsw_sources(body(name)) if source not in allowed]
         if stray:
             problems.append(f"{name}: an op that can wrap is nsw ({', '.join(stray)})")
+    short = body("shortCircuit")
+    if len(re.findall(r'add nsw i32 %\S+, 1\b', short)) > 1:
+        problems.append("shortCircuit: the `i + 1` on Int.MAX is nsw")
     traced = {int(n): (int(p), int(t)) for n, p, t in
               re.findall(r"range proof: line (\d+) proved (\d+) of (\d+)", built.stderr)}
     capacity = line_of("while (c >= w)")
@@ -5154,9 +5400,11 @@ def run_typed_pointer_ir_test():
     operand), a plain one is neither, an atomic carries the ordering written at the
     call, and a compare-exchange takes its failure ordering from the success one
     without the release half. The parameter line is checked as well, because the
-    type is what tells LLVM a pointer is non-null, aligned, readable for its size and
-    -- unless `mut` -- not written through: a volatile pointer is not promised
-    readable, since a device register is not memory a load may be hoisted past.
+    type is what tells LLVM a pointer is non-null, aligned and -- unless `mut` -- not
+    written through, and never `dereferenceable`: a pointer may be one past its
+    allocation. No access carries a TBAA tag (`cast` makes two types the same bytes),
+    `advance` steps with a plain GEP and divides without `exact`, and a packed
+    struct's field is read and written at one byte.
     """
     print(f"\n{BLUE}--- Running typed_pointer_ir ---{RESET}")
     problems = []
@@ -5178,9 +5426,10 @@ def run_typed_pointer_ir_test():
     # name -> (instructions the body must have, text it must not have, parameter facts it
     # must have, parameter facts it must not)
     cases = {
-        "plainLoad": ([r"load i32, ptr %\S+, align 4"], ["volatile", "atomic"],
-                      ["readonly", "dereferenceable\\(4\\)", "nonnull"], []),
-        "plainField": ([r"load i32, ptr %\S+, align 4"], ["volatile", "atomic"], ["readonly"], []),
+        "plainLoad": ([r"load i32, ptr %\S+, align 4"], ["volatile", "atomic", "!tbaa"],
+                      ["readonly", "nonnull", "align 4"], ["dereferenceable"]),
+        "plainField": ([r"load i32, ptr %\S+, align 4"], ["volatile", "atomic", "!tbaa"], ["readonly"],
+                       ["dereferenceable"]),
         "volatileLoad": ([r"load volatile i32, ptr %\S+, align 4"], [],
                          ["readonly", "nonnull"], ["dereferenceable"]),
         "volatileStore": ([r"store volatile i32 1, ptr %\S+, align 4"], [], ["nonnull"],
@@ -5188,7 +5437,7 @@ def run_typed_pointer_ir_test():
         "volatileOperand": ([r"load volatile i32, ptr %\S+, align 4"], [], [], []),
         "volatileFieldRead": ([r"load volatile i32, ptr %\S+, align 4"], [], [], ["dereferenceable"]),
         "volatileFieldWrite": ([r"store volatile i32 5, ptr %\S+, align 4"], [], [], ["readonly"]),
-        "oneOffRead": ([r"load volatile i32, ptr %\S+, align 4"], [], ["dereferenceable\\(4\\)"], []),
+        "oneOffRead": ([r"load volatile i32, ptr %\S+, align 4"], [], [], ["dereferenceable"]),
         "oneOffWrite": ([r"store volatile i32 2, ptr %\S+, align 4"], [], [], []),
         "atomicLoadAcquire": ([r"load atomic i32, ptr %\S+ acquire, align 4"], ["volatile"], [], []),
         "atomicLoadRelaxed": ([r"load atomic i32, ptr %\S+ monotonic, align 4"], [], [], []),
@@ -5197,6 +5446,10 @@ def run_typed_pointer_ir_test():
         "atomicSwapSeqCst": ([r"atomicrmw xchg ptr %\S+, i8 1 seq_cst, align 1"], [], [], []),
         "atomicCasRelease": ([r"cmpxchg ptr %\S+, i32 1, i32 2 release monotonic, align 4"], [], [], []),
         "atomicCasAcqRel": ([r"cmpxchg ptr %\S+, i32 1, i32 2 acq_rel acquire, align 4"], [], [], []),
+        "advanceStep": ([r"= getelementptr i32, ptr %\S+, i64", r"sdiv i64 %\S+, 4"],
+                        ["getelementptr inbounds", "sdiv exact"], [], ["dereferenceable"]),
+        "packedField": ([r"load i32, ptr %\S+, align 1"], ["align 4", "!tbaa"], ["align 1"], []),
+        "packedFieldWrite": ([r"store i32 5, ptr %\S+, align 1"], ["align 4"], [], []),
     }
     for name, (musts, must_nots, param_musts, param_must_nots) in cases.items():
         header, body = function(name)
@@ -5220,7 +5473,7 @@ def run_typed_pointer_ir_test():
         for problem in problems:
             print(f"  {problem}")
         return False
-    print(f"{GREEN}[PASS] typed pointer accesses are volatile, atomic and attributed as their type says{RESET}")
+    print(f"{GREEN}[PASS] typed pointer accesses are volatile, atomic, aligned and attributed as their type says{RESET}")
     return True
 
 
@@ -8344,6 +8597,18 @@ def run_aif_verify_test():
         # store as that copy; 0 violations is the guard, and a leak here is the two
         # sides disagreeing about whether the copy is made.
         "test_256_string_view_pushed_twice": 0,
+        # A struct made fresh and stored in two Vecs of one type: the first's
+        # displaced elements were never released (A-CONTAIN counted the one `frag`
+        # site as one value held twice). The exemption test_255 made for a String
+        # now covers any move-only site. The 4 are the `Pair` blocks that an element
+        # read pushed into two containers keeps held by design (one value, three
+        # holders); 0 violations is the guard, and a rise in the leaks is the
+        # exemption reaching `Frag`/`Node` no longer.
+        "test_302_struct_in_two_vecs": 4,
+        # Overwrites that release at once and overwrites that must park, side by side;
+        # 0 violations is the guard that no release reached a view still read.
+        "test_317_overwrite_release": 0,
+        "test_318_overwrite_peak": 0,
     }
 
     max_allocations = {
@@ -8354,6 +8619,9 @@ def run_aif_verify_test():
     # at once it peaks at 208 bytes, parked at 35,102.
     max_peak_bytes = {
         "test_161_removal_releases_now": 2048,
+        # 2,000 replacements of four Vec-owning structs: 528 bytes released at once,
+        # 176,449 parked (src/ir/overwrites.psm).
+        "test_318_overwrite_peak": 4096,
     }
 
     # Objects served by an arena. test_164 builds 100,000 structs with an array
@@ -10119,6 +10387,10 @@ def main():
         ("proved_index_nsw", run_proved_index_nsw_test),
         ("array_nowrap", run_array_nowrap_test),
         ("array_contents", run_array_contents_test),
+        ("param_ranges", run_param_ranges_test),
+        ("index_strides", run_index_strides_test),
+        ("overwrite_release", run_overwrite_release_test),
+        ("proved_indices", run_proved_indices_test),
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
         ("std_mem_failures", run_std_mem_failures_test),

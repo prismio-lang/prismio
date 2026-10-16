@@ -1,0 +1,67 @@
+// expect-trap: wide-field => index 9 is out of range for an array of length 4
+// An immutable `let` keeps a congruence and a literal array its elements
+// (src/ir/strides.psm): `program[pc * 4 + 1]` reads only the elements one past a
+// multiple of 4, all below 4 here, so `reg[a]` needs no bounds check. The
+// `index_strides` harness test reads the IR for which checks are left. This program
+// checks the answers, and that a field whose elements do reach past `reg` still traps.
+
+import std.process
+
+// Four-word records: op, a, b, c. Fields a and b index `reg`; c reaches 7.
+fn run(steps: Int) -> U32 {
+    let program: [U32] = [
+        0, 0, 1, 2,
+        1, 1, 0, 3,
+        2, 2, 1, 1,
+        3, 3, 2, 7
+    ]
+    let mut reg: [U32] = [1, 2, 3, 4]
+    let mut pc: U32 = 0
+    for _ in 0..<steps {
+        let base = (pc * 4) as Int
+        let a = program[base + 1] as Int
+        let b = program[base + 2] as Int
+        reg[a] = reg[a] + reg[b] + program[base + 3]
+        if (pc == 3) { pc = 0 } else { pc = pc + 1 }
+    }
+    return reg[0] ^ reg[1] ^ reg[2] ^ reg[3]
+}
+
+// The same layout through a `let mut` base, which keeps no congruence. The words
+// between the `a` fields reach 9, so only the congruence could prove `reg[a]`: still
+// right, and still checked.
+fn runMutable(steps: Int) -> U32 {
+    let program: [U32] = [0, 1, 9, 9, 0, 3, 9, 9]
+    let mut reg: [U32] = [5, 6, 7, 8]
+    let mut pc: U32 = 0
+    for _ in 0..<steps {
+        let mut base = (pc * 4) as Int
+        let a = program[base + 1] as Int
+        reg[a] = reg[a] + 1
+        base = base + 0
+        if (pc == 1) { pc = 0 } else { pc = pc + 1 }
+    }
+    return reg[0] + reg[1] + reg[2] + reg[3]
+}
+
+// Field 1 of the second record is 9: the index is past `reg`, and must trap.
+fn wideField(record: Int) -> U32 {
+    let program: [U32] = [0, 1, 0, 0, 0, 9, 0, 0]
+    let reg: [U32] = [1, 2, 3, 4]
+    let base = record * 4
+    let a = program[base + 1] as Int
+    return reg[a]
+}
+
+fn main() -> Int {
+    if (process.args.count > 1) {
+        let case = process.args[1]
+        if (case.equals("wide-field")) { return wideField(case.length - 9) as Int }
+        return 0
+    }
+    let steps = process.args.count * 8
+    if (run(steps) != 111) { return 1 }
+    if (runMutable(steps) != 34) { return 2 }
+    if (wideField(steps - 8) != 2) { return 3 }
+    return 0
+}

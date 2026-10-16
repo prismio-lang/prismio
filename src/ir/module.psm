@@ -197,6 +197,24 @@ private fn moduleTreeHasLoop(nodePtr: Ptr) -> Bool {
     return moduleTreeHasLoop(node.next)
 }
 
+// Whether the tree subscripts a fixed-length array, whose bounds check the interval walk
+// may prove unnecessary even with no loop around it.
+private fn moduleTreeIndexesArray(nodePtr: Ptr) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let node = ptr_to_node(nodePtr)
+    if (node.kind == NodeKind.INDEX_EXPR and nodeExists(node.child1)) {
+        let base = ptr_to_node(node.child1)
+        if (nodeHasType(base) and nodeGetType(base).kind == TypeKind.ARRAY
+            and nodeGetType(base).length > 0) {
+            return true
+        }
+    }
+    if (moduleTreeIndexesArray(node.child1)) { return true }
+    if (moduleTreeIndexesArray(node.child2)) { return true }
+    if (moduleTreeIndexesArray(node.child3)) { return true }
+    return moduleTreeIndexesArray(node.next)
+}
+
 private fn moduleTreeUsesDataView(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let node = ptr_to_node(nodePtr)
@@ -261,6 +279,7 @@ private fn generateFunction(func: ASTNode) {
     }
 
     let mut paramPtr = func.child1
+    let mut paramOrdinal = 0
     while (nodeExists(paramPtr)) {
         let paramNode = ptr_to_node(paramPtr)
         let pTypeNode = ptr_to_node(paramNode.child1)
@@ -274,18 +293,19 @@ private fn generateFunction(func: ASTNode) {
         } else {
             ir_function_param(pStore, pName)
         }
-        // A typed pointer promises non-null, aligned, readable and -- unless `mut` -- not
-        // written through; the type is what says so, and LLVM is told (docs/PTR_PLAN.md).
+        paramRangeDeclare(func, paramOrdinal)
+        paramOrdinal = paramOrdinal + 1
+        // A typed pointer promises non-null, aligned and -- unless `mut` -- not written
+        // through; the type is what says so, and LLVM is told (docs/PTR_PLAN.md). Not that
+        // it is readable: it may point one past its allocation (ir_function_param_pointer).
         if (nodeHasType(pTypeNode) and typeIsTypedPtr(nodeGetType(pTypeNode))) {
             let ptrT = nodeGetType(pTypeNode)
             // The pointee's own key, not its storage key: `struct:Header` is the layout the
-            // size and alignment are read from, where the storage key would say `ptr`.
+            // alignment is read from, where the storage key would say `ptr`.
             let pointeeKey = typeIrKey(typePtrPointee(ptrT))
             let mut readonly = 1
             if (typePtrIsMut(ptrT)) { readonly = 0 }
-            let mut readable = 1
-            if (typePtrIsVolatile(ptrT)) { readable = 0 }
-            ir_function_param_pointer(pointeeKey, readonly, readable)
+            ir_function_param_pointer(pointeeKey, readonly)
         }
         if (exported) {
             let widen = abiExtension(pTypeNode)
@@ -302,7 +322,7 @@ private fn generateFunction(func: ASTNode) {
     // module-wide AST fact computed below, never a function-name rule. Leave
     // debug functions alone: always-inline at -O0 would erase the frame the
     // debugger was explicitly asked to show.
-    if (func.i1 == 3 and ir_debug_enabled() == 0) {
+    if ((func.i1 == 3 or nodeIsInline(func)) and ir_debug_enabled() == 0) {
         ir_function_always_inline()
     }
     // `cold fn` (src/parse/decl.psm). In a debug build too: it changes no frame
@@ -397,8 +417,11 @@ private fn generateFunction(func: ASTNode) {
         irHoistBorrowedTemporaries(func.child2)
         irFunctionDecl = node_to_ptr(func)
         irFunctionBody = func.child2
-        // Only a loop repeats arithmetic often enough for `nsw` to matter.
-        if (irFunctionHasLoop) { irNowrapPass = nowrapAnalyse(func) }
+        // Only a loop repeats arithmetic often enough for `nsw` to matter, but any
+        // fixed-array subscript may have a check the walk's facts make unnecessary.
+        if (irFunctionHasLoop or moduleTreeIndexesArray(func.child2)) {
+            irNowrapPass = nowrapAnalyse(func, paramRangesEntry(func))
+        }
 
         generateBlock(ptr_to_node(func.child2))
         irNowrapPass = 0
@@ -681,6 +704,8 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     ir_mark_guard_safe_fn("__builtin_panic", 1)
     ir_mark_guard_safe_fn("__builtin_unreachable", 1)
     ir_mark_guard_safe_fn("__builtin_assert", 1)
+    // An assumption emits no call at all.
+    ir_mark_guard_safe_fn("__builtin_assume", 1)
     ir_mark_guard_safe_fn("__builtin_exit", 1)
     let mut floatOp = 0
     while (floatBuiltinOp(floatOp).equals("") == false) {
@@ -1896,6 +1921,9 @@ public fn generateModule(module: ASTNode) {
     // depend on which passes ran before it. It is one walk of the top level.
     indexModuleDeclarations(module)
     markSingleLoopCallsiteFunctions(module)
+    // Before the runtime is declared: list_set_now is declared only where a store
+    // was proved to release at once (ir/overwrites.psm).
+    overwritesMark(module)
     // `i3` is otherwise unused on FUNCTION nodes. Clear the per-emission thunk
     // mark because this AST may be compiled once as a workload and again as the
     // real program in the same process.
@@ -2373,6 +2401,23 @@ public fn generateModule(module: ASTNode) {
     ir_declare_function_param("ptr")
     ir_declare_function_end()
 
+    // Only where a store releases at once (ir/overwrites.psm): declared everywhere,
+    // these would change the IR of every program and the behaviour of none.
+    if (overwritesAny()) {
+        ir_declare_function_begin("list_set_now", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("ptr")
+        ir_declare_function_end()
+
+        ir_declare_function_begin("list_set_str_now", "void")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("ptr")
+        ir_declare_function_param("i64")
+        ir_declare_function_end()
+    }
+
     // Only where something swaps, for the Slice family's reason below: emitted
     // unconditionally, this one declaration changed the IR of all 187 programs
     // in the snapshot and the behaviour of none.
@@ -2595,6 +2640,10 @@ public fn generateModule(module: ASTNode) {
     }
 
     ir_blank_line()
+
+    // After every global is registered -- the walk asks which names are globals --
+    // and before any body, so each function's walk and signature can read it.
+    paramRangesCollect(module)
 
     // Second pass: functions
     let mut stmtPtr2 = module.child1

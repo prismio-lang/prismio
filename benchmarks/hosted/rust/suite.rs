@@ -3,6 +3,7 @@ mod adversarial;
 mod common;
 mod compute;
 mod data_structures;
+mod graph_churn;
 mod io;
 mod memory;
 
@@ -76,6 +77,11 @@ fn run(name: &str, scale: i32, input: &str, output: &str) -> i32 {
         "sort_strings" => algorithms::sort_strings(scale),
         "edit_distance" => algorithms::edit_distance(scale),
         "string_join" => memory::string_join(scale),
+        "register_pressure_torture" => adversarial::register_pressure_torture(scale),
+        "graph_churn_single" => graph_churn::graph_churn_single(scale),
+        "graph_churn_alloc" => graph_churn::graph_churn_alloc(scale),
+        "graph_churn_transfer" => graph_churn::graph_churn_transfer(scale),
+        "graph_churn_full" => graph_churn::graph_churn_full(scale),
         "bytecode_interpreter" => compute::bytecode_interpreter(scale),
         _ => -1,
     }

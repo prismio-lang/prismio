@@ -1,0 +1,95 @@
+// A struct made fresh and stored in one Vec used to stop a second Vec of the same
+// type from releasing anything it was overwritten with. `mk` is one allocation
+// site, so two containers each holding a result of it read to the analysis as one
+// value held twice (A-CONTAIN), which sent the site to the counted tier; a struct
+// that owns a Vec cannot be released from there, so every displaced element, and
+// every list inside it, leaked.
+//
+// A struct that is made fresh and stored is never one value in two containers:
+// storing one binding twice is "use of moved value", and a parameter is a borrow.
+// test_255 made that argument for Strings; this is the same exemption for any
+// move-only site. An element read that is pushed is still the shape that is not
+// exempt (it is one value held twice), and the last part below is that shape:
+// 0 violations is the guard. Run under --verify by run_aif_verify_test.
+
+import std.vec
+
+struct Node {
+    value: Int,
+    edges: Vec<Int>
+}
+
+// A type of its own for the last part: an element read pushed taints every site of
+// the type it reads (the key is per type), so sharing `Node` would hide the rest.
+struct Pair {
+    left: Int,
+    items: Vec<Int>
+}
+
+fn pair(i: Int) -> Pair {
+    let mut items: Vec<Int> = Vec<Int>.withCapacity(2)
+    items.push(i)
+    return Pair { left: i, items: items }
+}
+
+struct Frag {
+    nodes: Vec<Node>,
+    id: Int
+}
+
+fn node(i: Int) -> Node {
+    let mut edges: Vec<Int> = Vec<Int>.withCapacity(2)
+    edges.push(i)
+    edges.push(i + 1)
+    return Node { value: i, edges: edges }
+}
+
+fn frag(i: Int) -> Frag {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(3)
+    for k in 0..<3 { nodes.push(node(i + k)) }
+    return Frag { nodes: nodes, id: i }
+}
+
+fn sum(f: Frag) -> Int {
+    let mut total = f.id
+    for n in f.nodes {
+        total = total + n.value
+        for e in n.edges { total = total + e }
+    }
+    return total
+}
+
+fn fail(what: String) -> Int {
+    return 1
+}
+
+fn main() -> Int {
+    // One Vec replaced element by element, another that only grows. Both hold
+    // results of `frag`; the displaced fragments of the first are released.
+    let mut slots: Vec<Frag> = Vec<Frag>.withCapacity(4)
+    for i in 0..<4 { slots.push(frag(i)) }
+    let mut kept: Vec<Frag> = Vec<Frag>.withCapacity(8)
+    let mut total = 0
+    for step in 0..<400 {
+        total = total + sum(slots[step % 4])
+        slots[step % 4] = frag(step)
+        if (step % 50 == 0) { kept.push(frag(step + 1000)) }
+    }
+    for f in slots { total = total + sum(f) }
+    for f in kept { total = total + sum(f) }
+    if (kept.length != 8) { return fail("kept") }
+
+    // The shape the exemption must not reach: an element read pushed into two
+    // more containers.
+    let mut a: Vec<Pair> = Vec<Pair>.withCapacity(2)
+    let mut b: Vec<Pair> = Vec<Pair>.withCapacity(2)
+    let mut c: Vec<Pair> = Vec<Pair>.withCapacity(2)
+    a.push(pair(1))
+    a.push(pair(2))
+    b.push(a[0])
+    c.push(a[0])
+    c.push(a[1])
+    if (b.length + c.length != 3) { return fail("pushed views") }
+    if (total <= 0) { return fail("total") }
+    return 0
+}

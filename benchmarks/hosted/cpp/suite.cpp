@@ -70,6 +70,11 @@ int run(const std::string& name, int scale, const std::string& input, const std:
     if (name == "edit_distance") return edit_distance(scale);
     if (name == "string_join") return string_join(scale);
     if (name == "bytecode_interpreter") return bytecode_interpreter(scale);
+    if (name == "register_pressure_torture") return register_pressure_torture(scale);
+    if (name == "graph_churn_single") return graph_churn_single(scale);
+    if (name == "graph_churn_alloc") return graph_churn_alloc(scale);
+    if (name == "graph_churn_transfer") return graph_churn_transfer(scale);
+    if (name == "graph_churn_full") return graph_churn_full(scale);
     return -1;
 }
 

@@ -1,3 +1,6 @@
+// expect-trap: rotated-negative => index -5 is out of range for a Vec of length 1000
+// expect-trap: rotated-wrapping => index -7 is out of range for a Vec of length 1000
+// expect-trap: shifted-back-wrapping => index 2147483647 is out of range for a Vec of length 1000
 // Proved index arithmetic is emitted `nsw` (src/ir/ranges.psm, rangeMarkIndex).
 //
 // `Int` wraps at 32 bits, and an index is sign-extended to 64 before it reaches
@@ -13,6 +16,7 @@
 // with a `k` that does.
 
 import std.io
+import std.process
 import std.math
 
 fn ascending(n: Int, from: Int) -> Vec<Int> {
@@ -84,7 +88,10 @@ fn shiftedBack(xs: Vec<Int>, base: Int) -> Int {
 }
 
 // Two back is not the same: `base + c` in [2, len + 1] can be one past `Int`.
-fn shiftedBackTwo(xs: Vec<Int>, base: Int) -> Int {
+// `public`, like the two below, so that the rule is tested for a parameter nothing
+// bounds: a private function takes its parameters' ranges from its calls
+// (src/ir/param_ranges.psm), and main's one call passes 2, which does prove it.
+public fn shiftedBackTwo(xs: Vec<Int>, base: Int) -> Int {
     let mut acc = 0
     let mut c = 1
     while (c <= 10) {
@@ -96,7 +103,7 @@ fn shiftedBackTwo(xs: Vec<Int>, base: Int) -> Int {
 
 // In range for every `k`, and `i + k` wraps for a large one: neither op may be
 // marked. The index the loop computes is still `i`.
-fn offsetBack(xs: Vec<Int>, k: Int) -> Int {
+public fn offsetBack(xs: Vec<Int>, k: Int) -> Int {
     let mut acc = 0
     let mut i = 0
     while (i < xs.length) {
@@ -108,7 +115,7 @@ fn offsetBack(xs: Vec<Int>, k: Int) -> Int {
 
 // An index the analysis cannot bound: the access stays checked and its
 // arithmetic stays plain.
-fn lookedUp(xs: Vec<Int>, table: Vec<Int>) -> Int {
+public fn lookedUp(xs: Vec<Int>, table: Vec<Int>) -> Int {
     let mut acc = 0
     let mut i = 0
     while (i < table.length) {
@@ -127,6 +134,13 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
+// An arm whose index leaves the list runs only when its case is named: it must stop the
+// program there (docs/MEMORY_SAFETY_PLAN.md section 2), where a proved copy taken for it
+// would read past the list and run on. The harness runs one case per `expect-trap` line.
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn main() -> Int {
     let mut bad = 0
     let xs = ascending(1000, 1)
@@ -139,17 +153,17 @@ fn main() -> Int {
     // Every index in 0..7 once per eight elements of a 1000-element list.
     bad = bad + check("FAIL: rotated", rotated(xs, 3), 4500)
     // Negative remainders read nothing: the guard declines, the checked copy runs.
-    bad = bad + check("FAIL: rotated negative", rotated(xs, 0 - 5), 4470)
+    if (trapCase("rotated-negative")) { return (rotated(xs, 0 - 5)) as Int }
     // `i + shift` wraps from i = 48 on; from there each remainder is negative,
     // and reads nothing, or zero.
-    bad = bad + check("FAIL: rotated wrapping", rotated(xs, 2147483600), 335)
+    if (trapCase("rotated-wrapping")) { return (rotated(xs, 2147483600)) as Int }
 
     // 1..10, then 2..11, and 991..1000 against the end of a 1000-element list.
     bad = bad + check("FAIL: shiftedBack", shiftedBack(xs, 0), 55)
     bad = bad + check("FAIL: shiftedBackTwo", shiftedBackTwo(xs, 2), 65)
     bad = bad + check("FAIL: shiftedBack end", shiftedBack(xs, 990), 9955)
     // `base + c` wraps at c = 1; every index is far outside and reads nothing.
-    bad = bad + check("FAIL: shiftedBack wrapping", shiftedBack(xs, 2147483647), 0)
+    if (trapCase("shifted-back-wrapping")) { return (shiftedBack(xs, 2147483647)) as Int }
 
     bad = bad + check("FAIL: offsetBack", offsetBack(xs, 7), 500500)
     // `i + k` wraps from i = 648 on; the difference is still `i`.

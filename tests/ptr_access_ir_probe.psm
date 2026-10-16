@@ -8,6 +8,11 @@ repr(C) struct Regs {
     control: U32,
 }
 
+packed struct Wire {
+    tag: U8,
+    word: U32,
+}
+
 fn plainLoad(p: Ptr<Int>) -> Int { return p.load() }
 fn plainField(r: Ptr<Regs>) -> U32 { return r.status }
 fn volatileLoad(p: Ptr<volatile Int>) -> Int { return p.load() }
@@ -24,5 +29,9 @@ fn atomicAddAcqRel(p: Ptr<mut Int>) -> Int { return p.atomicAdd(1, AtomicOrder.A
 fn atomicSwapSeqCst(p: Ptr<mut U8>) -> U8 { return p.atomicSwap(1, AtomicOrder.SeqCst) }
 fn atomicCasRelease(p: Ptr<mut Int>) -> Int { return p.atomicCompareExchange(1, 2, AtomicOrder.Release) }
 fn atomicCasAcqRel(p: Ptr<mut Int>) -> Int { return p.atomicCompareExchange(1, 2, AtomicOrder.AcqRel) }
+
+fn advanceStep(p: Ptr<Int>, limit: Ptr<Int>) -> Ptr<Int>? { return p.advance(1, limit) }
+fn packedField(w: Ptr<Wire>) -> U32 { return w.word }
+fn packedFieldWrite(w: Ptr<mut Wire>) { w.word = 5 }
 
 fn main() -> Int { return 0 }

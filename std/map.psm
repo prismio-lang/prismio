@@ -85,9 +85,17 @@ import std.option
 
 // `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
 // always a power of two, so `hash & mask` is the bucket.
+//
+// **Two invariants this file keeps and promises to LLVM** (`__builtin_assume`, in
+// mapProbe, mapSet and mapGetOr): `slots` has `mask + 1` elements, so a bucket is
+// always inside it; and an entry index a bucket holds is below `entryKeys`'s and
+// `entryValues`'s length, which are always equal. The bounds checks they make
+// redundant cost key_value_update 13% and mixed_map_removal 10%: they grew mapProbe
+// past what LLVM would inline. Every column is private, so nothing outside this file
+// can break either one; a false promise would be undefined behaviour.
 public struct Map<K: Key + Copy, V> {
-    public entryKeys: Vec<K>,
-    public entryValues: Vec<V>,
+    entryKeys: Vec<K>,
+    entryValues: Vec<V>,
     slots: Vec<Int>,
     mask: Int,
     // Buckets a removal emptied (MAP_TOMBSTONE), which a lookup must probe past
@@ -97,7 +105,7 @@ public struct Map<K: Key + Copy, V> {
     // The most buckets past its home any entry sits, so a lookup can stop after
     // that many and a miss does not walk to an empty bucket. See mapProbe.
     longest: Int,
-    // How far past its home the bucket the last `findSlot` probe answered is,
+    // How far past its home the bucket the last `fprismioindSlot` probe answered is,
     // so mapInsert need not walk the sequence again to update `longest`. A
     // field rather than work inside mapProbe: anything more in the probe's body
     // stops it inlining into mapSet's overwrite path, and key_value_update went
@@ -230,12 +238,15 @@ private fn mapHashOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
     return h
 }
 
-private fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> Int {
+// `inline`: every lookup and update is this loop, and its callers' loops want it in
+// their own bodies (the comment on Map says why it needs telling).
+private inline fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> Int {
     let mut at = mapHashOf(m, key) & m.mask
     let mut step = 1
     let mut reusable = -1
     let mut reusableStep = 0
     loop {
+        __builtin_assume((at as U32) < (list_len(m.slots) as U32))
         let entry = list_get(m.slots, at)
         if (entry < 0) {
             if (entry == mapEmpty()) {
@@ -255,6 +266,7 @@ private fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> I
                 reusableStep = step
             }
         } else {
+            __builtin_assume((entry as U32) < (list_len(m.entryKeys) as U32))
             let existing = list_get(m.entryKeys, entry)
             // Trait-qualified: `Eq` spells its method `eq` too, and a program that
             // imports std.vec has both traits in scope.
@@ -387,6 +399,7 @@ public fn mapGet<K: Key + Copy, V>(m: Map<K, V>, key: K) -> V? {
 public fn mapGetOr<K: Key + Copy, V>(m: Map<K, V>, key: K, fallback: V) -> V {
     let at = mapIndexOf(m, key)
     if (at < 0) { return fallback }
+    __builtin_assume((at as U32) < (list_len(m.entryValues) as U32))
     return list_get(m.entryValues, at)
 }
 
@@ -412,6 +425,7 @@ public fn mapUpdate<K: Key + Copy, V, F>(m: Map<K, V>, key: K, update: F) -> Boo
 public fn mapSet<K: Key + Copy, V>(m: Map<K, V>, key: K, value: V) -> Bool {
     let found = mapProbe(m, key, true)
     if (found >= 0) {
+        __builtin_assume((found as U32) < (list_len(m.entryValues) as U32))
         list_set(m.entryValues, found, value)
         return true
     }

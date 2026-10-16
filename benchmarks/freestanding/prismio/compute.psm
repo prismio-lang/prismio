@@ -28,7 +28,7 @@ export fn bench_crc32(scale: U32) -> U32 {
 
     let mut crc: U32 = 0xFFFFFFFF
 
-    for _ in 0..<32 * scale as Int {
+    for _ in 0..<32 * scale {
         for i in 0..<32768 {
             crc = table[((crc ^ (buffer[i] as U32)) & 255) as Int] ^ (crc >> 8)
         }
@@ -128,7 +128,7 @@ export fn bench_popcount(scale: U32) -> U32 {
 export fn bench_mandelbrot_fixed(scale: U32) -> U32 {
     let mut total: U32 = 0
 
-    for _ in 0..<6 {
+    for _ in 0..<6 * scale {
         for py in 0..<96 as I32 {
             for px in 0..<96 as I32 {
 

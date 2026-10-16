@@ -76,6 +76,11 @@ int blake3_chunk(int scale);
 int raytracer_sphere(int scale);
 int channel_pipeline(int scale);
 
+int graph_churn_single(int scale);
+int graph_churn_alloc(int scale);
+int graph_churn_transfer(int scale);
+int graph_churn_full(int scale);
+
 int pointer_chase(int scale);
 int random_gather(int scale);
 int branch_mispredict(int scale);
@@ -88,3 +93,4 @@ int aos_vs_soa(int scale);
 int switch_dispatch(int scale);
 int memcpy_mix(int scale);
 int dead_code_elimination(int scale);
+int register_pressure_torture(int scale);

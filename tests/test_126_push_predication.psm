@@ -1,3 +1,4 @@
+// expect-trap: break-past-end => index 10 is out of range for a Vec of length 10
 // E1: one preheader guard for every push the loop performs.
 //
 // `cap - len >= trip_count * pushes_per_iteration` proved once makes every push
@@ -11,6 +12,7 @@
 // `list_push` stamps, grows and reallocates as it always has.
 
 import std.io
+import std.process
 
 fn digest(xs: Vec<Int>) -> Int {
     let mut acc = 0
@@ -119,6 +121,13 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
+// An arm whose index leaves the list runs only when its case is named: it must stop the
+// program there (docs/MEMORY_SAFETY_PLAN.md section 2), where a proved copy taken for it
+// would read past the list and run on. The harness runs one case per `expect-trap` line.
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn main() -> Int {
     let mut bad = 0
     let n = 64
@@ -151,7 +160,7 @@ fn main() -> Int {
     let cut = fillBreak(n, 10)
     bad = bad + check("FAIL: break length", cut.length, 10)
     bad = bad + check("FAIL: break last", cut[9], 27)
-    bad = bad + check("FAIL: break past end", cut[10], 0)
+    if (trapCase("break-past-end")) { return (cut[10]) as Int }
 
     if (bad != 0) { return 1 }
     println("PASS: push predication")

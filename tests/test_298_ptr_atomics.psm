@@ -33,7 +33,9 @@ fn main() -> Int {
     let bytes = Ptr<mut U8>.cast(n)
     if bytes.atomicAdd(1, AtomicOrder.SeqCst) != 7 { return fail(15) }
     if n.load() != 8 { return fail(16) }
-    let wide = Ptr<mut U64>.cast(malloc(8))
+    // malloc's block is aligned for any type; a `cast` from `Ptr<mut Int>` would promise 8
+    // bytes of alignment from 4, so it is the caller's word.
+    let wide = Ptr<mut U64>.castUnchecked(malloc(8))
     wide.atomicStore(1, AtomicOrder.SeqCst)
     if wide.atomicAdd(2, AtomicOrder.SeqCst) != 1 { return fail(17) }
     if wide.atomicLoad(AtomicOrder.SeqCst) != 3 { return fail(18) }

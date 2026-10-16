@@ -11,6 +11,9 @@ All three items below currently appear as unsupported workloads in
 record to `implemented` until its benchmark runs in all three implementations,
 has a cross-language checksum, and passes the normal suite.
 
+## Any type:
+Int\<N> , UInt\<N>
+
 ## Delivery order
 
 1. **`mixed_map_removal`** — close the credibility gap in `std.map`.

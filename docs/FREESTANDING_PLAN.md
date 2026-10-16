@@ -58,13 +58,17 @@ allocates pull in the allocator, `pthread` (the allocator and the cycle collecto
 take a mutex) and, with checks, stdio. `import std.io` costs about 34 KB and five
 libc families for one `println`.
 
-**1.3 Fixed arrays are not bounds-checked.** `a[i % 5]` on a 4-element array
-lowers to `getelementptr inbounds` and a load: out-of-range is undefined behavior,
-not a trap (p4's IR, read directly; the run's exit status 133 is the division
-by zero that follows, not the out-of-range read). That is what a kernel wants for a
-hot path and what it does not want for memory safety. Needs an explicit decision
-(section 3, step 1). A `Vec` read out of range answers the element type's zero
-(documented in `arrays-and-lists.md`), which is a third behavior.
+**1.3 Fixed arrays are bounds-checked, freestanding too (decided 2026-10-16).** This
+section first recorded that `a[i % 5]` on a 4-element array lowered to `getelementptr
+inbounds` and a load, out of range undefined, and proposed keeping that by default.
+MEMORY_SAFETY_PLAN §2 reversed it, and the user confirmed it for freestanding builds: an
+index that is not proved in range is checked, and a failure reaches `prismio_panic_hook`
+(weak defaults in `runtime/freestanding/panic.c`; a kernel defines its own). A `Vec`
+index fails the same way. The price is paid only where the compiler cannot prove the
+index: on the freestanding suite every check in a hot loop is proved away
+(`binary_search`, `pointer_chase` and `bytecode_interpreter` are level with C or ahead),
+because the interval walk (`src/ir/nowrap.psm`) reasons about `U32` and the other narrow
+integers, comparisons, loop invariants and array contents.
 
 **1.4 Division by zero is a raw `sdiv`.** No guard and no runtime call. On x86 that
 is a #DE fault; the kernel's handler owns the result. Fine, and worth stating.
@@ -173,8 +177,8 @@ name one, only the single-file CLI can), the **libc-free link command**, and the
 - [x] **Manifest surface.** A target in `build.ums` takes `freestanding`, `triple`, `features`, `codeModel`
       and `noRedZone`, and `link { }` takes `script("kernel.ld")` and `arg("...")`. The triple is selected for
       the target and reset to the host after it, so one project can build a kernel and a host tool.
-- [ ] Fixed-array bounds checks (1.3). Still unchecked; the decision stands as
-      proposed (unchecked by default, `--bounds-checks` through the panic hook).
+- [x] Fixed-array bounds checks (1.3): checked by default, through the panic hook,
+      decided 2026-10-16; see 1.3.
 - [x] `runtime/freestanding/panic.c` ships in the toolchain (`lib/runtime/freestanding/`, by
       `tools/package.py --freestanding-target`) and `--freestanding` adds it itself.
 - [ ] `tools/check_externs.py` reads the packaged `dist/`, so it reports the new

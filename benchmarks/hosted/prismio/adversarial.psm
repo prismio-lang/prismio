@@ -577,3 +577,182 @@ public fn benchDeadCodeElimination(scale: Int) -> Int {
     }
     return 17
 }
+
+// Forty live 32-bit values updated in one loop body, each from three others, so the
+// working set is larger than any general-purpose register file (16 on x86-64, 31 on
+// AArch64) and the allocator has to choose what to keep and what to spill. Each
+// update reads the value the previous line just wrote, so the body is one long
+// dependent chain: the loop cannot be vectorised (the first version had independent
+// updates, all three compilers vectorised it, and the three arms tied at 6.7 ms
+// measuring nothing), nothing is a division and nothing is memory traffic by
+// construction. What is measured is register allocation, spill code and scheduling
+// of a chain. The three arms are generated from one description and differ only in
+// spelling; unsigned 32-bit arithmetic wraps in all three, so no value is undefined.
+public fn benchRegisterPressureTorture(scale: Int) -> Int {
+    let mut s0: U32 = 40503
+    let mut s1: U32 = 81006
+    let mut s2: U32 = 121509
+    let mut s3: U32 = 162012
+    let mut s4: U32 = 202515
+    let mut s5: U32 = 243018
+    let mut s6: U32 = 283521
+    let mut s7: U32 = 324024
+    let mut s8: U32 = 364527
+    let mut s9: U32 = 405030
+    let mut s10: U32 = 445533
+    let mut s11: U32 = 486036
+    let mut s12: U32 = 526539
+    let mut s13: U32 = 567042
+    let mut s14: U32 = 607545
+    let mut s15: U32 = 648048
+    let mut s16: U32 = 688551
+    let mut s17: U32 = 729054
+    let mut s18: U32 = 769557
+    let mut s19: U32 = 810060
+    let mut s20: U32 = 850563
+    let mut s21: U32 = 891066
+    let mut s22: U32 = 931569
+    let mut s23: U32 = 972072
+    let mut s24: U32 = 1012575
+    let mut s25: U32 = 1053078
+    let mut s26: U32 = 1093581
+    let mut s27: U32 = 1134084
+    let mut s28: U32 = 1174587
+    let mut s29: U32 = 1215090
+    let mut s30: U32 = 1255593
+    let mut s31: U32 = 1296096
+    let mut s32: U32 = 1336599
+    let mut s33: U32 = 1377102
+    let mut s34: U32 = 1417605
+    let mut s35: U32 = 1458108
+    let mut s36: U32 = 1498611
+    let mut s37: U32 = 1539114
+    let mut s38: U32 = 1579617
+    let mut s39: U32 = 1620120
+    let rounds = 100000 * scale
+    for r in 0..<rounds {
+        s0 = s0 + (s39 ^ (s19 >> 3)) + 1
+        s0 = s0 ^ (s7 << 5)
+        s1 = s1 + (s0 ^ (s20 >> 3)) + 3
+        s1 = s1 ^ (s8 << 5)
+        s2 = s2 + (s1 ^ (s21 >> 3)) + 5
+        s2 = s2 ^ (s9 << 5)
+        s3 = s3 + (s2 ^ (s22 >> 3)) + 7
+        s3 = s3 ^ (s10 << 5)
+        s4 = s4 + (s3 ^ (s23 >> 3)) + 9
+        s4 = s4 ^ (s11 << 5)
+        s5 = s5 + (s4 ^ (s24 >> 3)) + 11
+        s5 = s5 ^ (s12 << 5)
+        s6 = s6 + (s5 ^ (s25 >> 3)) + 13
+        s6 = s6 ^ (s13 << 5)
+        s7 = s7 + (s6 ^ (s26 >> 3)) + 15
+        s7 = s7 ^ (s14 << 5)
+        s8 = s8 + (s7 ^ (s27 >> 3)) + 17
+        s8 = s8 ^ (s15 << 5)
+        s9 = s9 + (s8 ^ (s28 >> 3)) + 19
+        s9 = s9 ^ (s16 << 5)
+        s10 = s10 + (s9 ^ (s29 >> 3)) + 21
+        s10 = s10 ^ (s17 << 5)
+        s11 = s11 + (s10 ^ (s30 >> 3)) + 23
+        s11 = s11 ^ (s18 << 5)
+        s12 = s12 + (s11 ^ (s31 >> 3)) + 25
+        s12 = s12 ^ (s19 << 5)
+        s13 = s13 + (s12 ^ (s32 >> 3)) + 27
+        s13 = s13 ^ (s20 << 5)
+        s14 = s14 + (s13 ^ (s33 >> 3)) + 29
+        s14 = s14 ^ (s21 << 5)
+        s15 = s15 + (s14 ^ (s34 >> 3)) + 31
+        s15 = s15 ^ (s22 << 5)
+        s16 = s16 + (s15 ^ (s35 >> 3)) + 33
+        s16 = s16 ^ (s23 << 5)
+        s17 = s17 + (s16 ^ (s36 >> 3)) + 35
+        s17 = s17 ^ (s24 << 5)
+        s18 = s18 + (s17 ^ (s37 >> 3)) + 37
+        s18 = s18 ^ (s25 << 5)
+        s19 = s19 + (s18 ^ (s38 >> 3)) + 39
+        s19 = s19 ^ (s26 << 5)
+        s20 = s20 + (s19 ^ (s39 >> 3)) + 41
+        s20 = s20 ^ (s27 << 5)
+        s21 = s21 + (s20 ^ (s0 >> 3)) + 43
+        s21 = s21 ^ (s28 << 5)
+        s22 = s22 + (s21 ^ (s1 >> 3)) + 45
+        s22 = s22 ^ (s29 << 5)
+        s23 = s23 + (s22 ^ (s2 >> 3)) + 47
+        s23 = s23 ^ (s30 << 5)
+        s24 = s24 + (s23 ^ (s3 >> 3)) + 49
+        s24 = s24 ^ (s31 << 5)
+        s25 = s25 + (s24 ^ (s4 >> 3)) + 51
+        s25 = s25 ^ (s32 << 5)
+        s26 = s26 + (s25 ^ (s5 >> 3)) + 53
+        s26 = s26 ^ (s33 << 5)
+        s27 = s27 + (s26 ^ (s6 >> 3)) + 55
+        s27 = s27 ^ (s34 << 5)
+        s28 = s28 + (s27 ^ (s7 >> 3)) + 57
+        s28 = s28 ^ (s35 << 5)
+        s29 = s29 + (s28 ^ (s8 >> 3)) + 59
+        s29 = s29 ^ (s36 << 5)
+        s30 = s30 + (s29 ^ (s9 >> 3)) + 61
+        s30 = s30 ^ (s37 << 5)
+        s31 = s31 + (s30 ^ (s10 >> 3)) + 63
+        s31 = s31 ^ (s38 << 5)
+        s32 = s32 + (s31 ^ (s11 >> 3)) + 65
+        s32 = s32 ^ (s39 << 5)
+        s33 = s33 + (s32 ^ (s12 >> 3)) + 67
+        s33 = s33 ^ (s0 << 5)
+        s34 = s34 + (s33 ^ (s13 >> 3)) + 69
+        s34 = s34 ^ (s1 << 5)
+        s35 = s35 + (s34 ^ (s14 >> 3)) + 71
+        s35 = s35 ^ (s2 << 5)
+        s36 = s36 + (s35 ^ (s15 >> 3)) + 73
+        s36 = s36 ^ (s3 << 5)
+        s37 = s37 + (s36 ^ (s16 >> 3)) + 75
+        s37 = s37 ^ (s4 << 5)
+        s38 = s38 + (s37 ^ (s17 >> 3)) + 77
+        s38 = s38 ^ (s5 << 5)
+        s39 = s39 + (s38 ^ (s18 >> 3)) + 79
+        s39 = s39 ^ (s6 << 5)
+        s0 = s0 + (r as U32)
+    }
+    let mut checksum: I64 = 0
+    checksum = (checksum * 31 + ((s0 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s1 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s2 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s3 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s4 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s5 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s6 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s7 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s8 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s9 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s10 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s11 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s12 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s13 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s14 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s15 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s16 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s17 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s18 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s19 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s20 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s21 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s22 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s23 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s24 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s25 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s26 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s27 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s28 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s29 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s30 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s31 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s32 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s33 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s34 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s35 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s36 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s37 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s38 & 2147483647) as I64)) % 1000000007
+    checksum = (checksum * 31 + ((s39 & 2147483647) as I64)) % 1000000007
+    return checksum as Int
+}

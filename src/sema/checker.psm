@@ -1361,8 +1361,12 @@ private fn semaCoalesceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
-    // A generic is on the module's template list, not in the declaration index.
-    if (monoHasTemplate(module, "optionCoalesce", NodeKind.FUNCTION) == false) {
+    // A generic is on the module's template list, not in the declaration index. The file has to
+    // import std.option itself: the template is in the program whenever anything imported it --
+    // std.process and std.string both do -- but the call is bound to the module by name, which
+    // a file that did not import it cannot reach ("declares no `optionCoalesce$Int`").
+    if (monoHasTemplate(module, "optionCoalesce", NodeKind.FUNCTION) == false
+        or (semaFileIsStandardLibrary(expr.file) == false and ir_file_imports_module(expr.file, "std.option") == 0)) {
         semaErrorAt(expr, "`??` needs `import std.option`")
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
@@ -2576,6 +2580,18 @@ private fn semaIndexOperandAsInt(module: ASTNode, owner: ASTNode) -> TypeInfo {
     return semaExpr(module, clamped)
 }
 
+// A constant index an `Array<T, N>`'s type already rules out: refused here, where both are
+// known, rather than left to the check that would stop the program at run time
+// (docs/MEMORY_SAFETY_PLAN.md section 2).
+private fn semaCheckConstantIndex(index: ASTNode, length: Int) {
+    if (semaIsIntLiteral(index) == false or index.i2 == 1) { return }
+    let value = typeIntLiteralValue(index.s1)
+    if (index.s1.startsWith("-") == false and value >= 0 and value < length as I64) { return }
+    index.i2 = 1
+    semaErrorAt(index, "index ".concat(index.s1, " is out of range for an array of length ", length.toString()))
+    diag_note("its indices are 0 to ".concat((length - 1).toString()))
+}
+
 private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let collectionT = semaExpr(module, ptr_to_node(expr.child1))
     // A struct's index is whatever its `at` takes -- a Map's is a key -- so
@@ -2655,6 +2671,7 @@ private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         nodeSetType(expr, refT)
         return refT
     }
+    if (collectionT.length > 0) { semaCheckConstantIndex(ptr_to_node(expr.child2), collectionT.length) }
     nodeSetType(expr, elemT)
     return elemT
 }
@@ -5883,6 +5900,7 @@ public fn analyzeModule(module: ASTNode) {
     // type mismatch. A struct field was not blocked at all.
     semaCheckDynPositions(module)
     semaCheckArrayFields(module)
+    semaCheckPackedStructs(module)
 
     semaCheckSupertraitCycles(module)
     semaCheckImplBlocks(module)

@@ -1,0 +1,272 @@
+import common
+import std.vec
+
+// Four benchmarks over one data structure, so a gap in `graph_churn_full` can be
+// traced to the phase that causes it instead of argued about.
+//
+// The structure is a graph of nodes that each own a heap-allocated edge list: a
+// `Vec<Int>` here, a `std::vector<int>` in C++ and a `Vec<i32>` in Rust. That is
+// the shape ownership-based memory management is judged on -- many small
+// allocations whose lifetimes are decided by data, not by scope -- and it is the
+// part `graph_bfs` (one flat array) and `recursive_tree_rebuild` (strict
+// parent-owns-child) leave out.
+//
+//   graph_churn_single    a slab of nodes mutated in place: edges added and
+//                         removed, nodes killed (edge list freed) and revived
+//                         (edge list allocated), one thread
+//   graph_churn_alloc     fragments built, summed and dropped at lifetimes the
+//                         data picks, a few kept to the end; one thread
+//   graph_churn_transfer  fragments built on one thread, trimmed on a second,
+//                         freed on a third, through two bounded channels
+//   graph_churn_full      the three above, one checksum
+//
+// Everything is derived from a seeded generator, and every product stays inside
+// 64 bits, so the three arms are the same program. The generator is MINSTD
+// (48271 mod 2^31-1) and the checksum is reduced after every step.
+
+struct ChurnNode {
+    value: Int,
+    live: Int,
+    edges: Vec<Int>
+}
+
+public struct ChurnFrag {
+    nodes: Vec<ChurnNode>,
+    id: Int
+}
+
+let CHURN_MOD: I64 = 1000000007
+
+fn churnNext(seed: I64) -> I64 {
+    return (seed * 48271) % 2147483647
+}
+
+fn churnMix(acc: I64, value: Int) -> I64 {
+    return (acc * 31 + (value as I64)) % CHURN_MOD
+}
+
+// A fragment is a small graph whose edges all point inside it: 8 to 31 nodes with
+// 1 to 6 edges each, every edge list its own allocation. It depends on `index`
+// alone, so the producer thread and a single-threaded loop build the same one.
+fn churnFragment(index: Int) -> ChurnFrag {
+    let mut seed: I64 = ((index as I64) * 7919 + 17) % 2147483646 + 1
+    seed = churnNext(seed)
+    let count = 8 + ((seed % 24) as Int)
+    let mut nodes: Vec<ChurnNode> = Vec<ChurnNode>.withCapacity(count)
+    for _ in 0..<count {
+        seed = churnNext(seed)
+        let degree = 1 + ((seed % 6) as Int)
+        let mut edges: Vec<Int> = Vec<Int>.withCapacity(degree)
+        for _ in 0..<degree {
+            seed = churnNext(seed)
+            edges.push((seed % (count as I64)) as Int)
+        }
+        seed = churnNext(seed)
+        nodes.push(ChurnNode { value: (seed % 1021) as Int, live: 1, edges: edges })
+    }
+    return ChurnFrag { nodes: nodes, id: index }
+}
+
+fn churnFragSum(frag: ChurnFrag) -> I64 {
+    let mut acc: I64 = frag.id as I64
+    for node in frag.nodes {
+        acc = churnMix(acc, node.value)
+        for edge in node.edges {
+            acc = churnMix(acc, edge)
+        }
+    }
+    return acc
+}
+
+// graph_churn_single
+fn churnSingle(scale: Int) -> I64 {
+    let n = 8192 * scale
+    let steps = 240000 * scale
+    let n64 = n as I64
+    let mut nodes: Vec<ChurnNode> = Vec<ChurnNode>.withCapacity(n)
+    let mut free: Vec<Int> = Vec<Int>.withCapacity(n)
+    let mut seed: I64 = 12345
+    for i in 0..<n {
+        let mut edges: Vec<Int> = Vec<Int>.withCapacity(4)
+        for _ in 0..<3 {
+            seed = churnNext(seed)
+            edges.push((seed % n64) as Int)
+        }
+        nodes.push(ChurnNode { value: i % 1021, live: 1, edges: edges })
+    }
+
+    let mut checksum: I64 = 0
+    for step in 0..<steps {
+        seed = churnNext(seed)
+        let u = (seed % n64) as Int
+        seed = churnNext(seed)
+        let v = (seed % n64) as Int
+        seed = churnNext(seed)
+        let op = (seed % 8) as Int
+        if (op < 3) {
+            if (nodes[u].live == 1 and nodes[v].live == 1) {
+                if (nodes[u].edges.length >= 12) {
+                    let _dropped = nodes[u].edges.swapRemove(0)
+                }
+                nodes[u].edges.push(v)
+            }
+        } else if (op < 5) {
+            if (nodes[u].live == 1 and nodes[u].edges.length > 0) {
+                let at = v % nodes[u].edges.length
+                checksum = churnMix(checksum, nodes[u].edges[at])
+                let _dropped = nodes[u].edges.swapRemove(at)
+            }
+        } else if (op == 6) {
+            if (nodes[u].live == 1) {
+                let kept = nodes[u].value
+                checksum = churnMix(churnMix(checksum, kept), nodes[u].edges.length)
+                nodes[u] = ChurnNode { value: kept, live: 0, edges: Vec<Int>.withCapacity(0) }
+                free.push(u)
+            }
+        } else if (op == 7) {
+            if (free.length > 0) {
+                let w = expect(free.pop())
+                let mut edges: Vec<Int> = Vec<Int>.withCapacity(4)
+                for k in 0..<3 {
+                    edges.push((v + k * 7919) % n)
+                }
+                nodes[w] = ChurnNode { value: step % 1021, live: 1, edges: edges }
+            }
+        }
+    }
+
+    for node in nodes {
+        if (node.live == 1) {
+            checksum = churnMix(checksum, node.value)
+            for edge in node.edges {
+                if (nodes[edge].live == 1) {
+                    checksum = churnMix(checksum, edge)
+                }
+            }
+        }
+    }
+    return churnMix(checksum, free.length)
+}
+
+// graph_churn_alloc
+fn churnAlloc(scale: Int) -> I64 {
+    let window = 192
+    let steps = 10000 * scale
+    let mut slots: Vec<ChurnFrag> = Vec<ChurnFrag>.withCapacity(window)
+    for i in 0..<window {
+        slots.push(churnFragment(i))
+    }
+    let mut kept: Vec<ChurnFrag> = Vec<ChurnFrag>.withCapacity(steps / 50 + 1)
+    let mut seed: I64 = 99991
+    let mut checksum: I64 = 0
+    for step in 0..<steps {
+        seed = churnNext(seed)
+        let slot = (seed % (window as I64)) as Int
+        checksum = (checksum * 31 + churnFragSum(slots[slot])) % CHURN_MOD
+        slots[slot] = churnFragment(window + step)
+        if (step % 50 == 0) {
+            kept.push(churnFragment(window + steps + step))
+        }
+    }
+    for frag in slots {
+        checksum = (checksum * 31 + churnFragSum(frag)) % CHURN_MOD
+    }
+    for frag in kept {
+        checksum = (checksum * 31 + churnFragSum(frag)) % CHURN_MOD
+    }
+    return churnMix(checksum, kept.length)
+}
+
+struct ChurnSource {
+    count: Int
+}
+
+fn churnProduce(out: Channel<ChurnFrag>, source: ChurnSource) -> Int {
+    for i in 0..<source.count {
+        out.send(churnFragment(i))
+    }
+    out.close()
+    return source.count
+}
+
+// The middle stage owns the fragment for a moment and frees part of it: every node
+// whose value is a multiple of three loses its edge list, which was allocated on
+// the producer's thread.
+fn churnTrim(in_ch: Channel<ChurnFrag>, out_ch: Channel<ChurnFrag>) -> Int {
+    let mut acc: I64 = 0
+    loop {
+        let taken = in_ch.receive()
+        if (taken == none) { break }
+        let mut frag = expect(taken)
+        acc = (acc * 31 + churnFragSum(frag)) % CHURN_MOD
+        for i in 0..<frag.nodes.length {
+            if (frag.nodes[i].value % 3 == 0) {
+                frag.nodes[i] = ChurnNode { value: frag.nodes[i].value, live: 1, edges: Vec<Int>.withCapacity(0) }
+            }
+        }
+        out_ch.send(frag)
+    }
+    out_ch.close()
+    return acc as Int
+}
+
+// graph_churn_transfer
+fn churnTransfer(scale: Int) -> I64 {
+    let count = 5000 * scale
+    let source = ChurnSource { count: count }
+    let ch1 = Channel<ChurnFrag>(16)
+    let ch2 = Channel<ChurnFrag>(16)
+
+    let w1 = spawn churnProduce(ch1.share(), source)
+    let w2 = spawn churnTrim(ch1.share(), ch2.share())
+
+    // The consumer keeps the last 64 fragments it saw, so each one is freed 64
+    // receives after it arrives -- by the thread that did not build it. The ring
+    // starts full of empty fragments (id -1) so that a receive is always a
+    // replacement, which is what each arm does.
+    let ring = 64
+    let mut recent: Vec<ChurnFrag> = Vec<ChurnFrag>.withCapacity(ring)
+    for _ in 0..<ring {
+        recent.push(ChurnFrag { nodes: Vec<ChurnNode>.withCapacity(0), id: -1 })
+    }
+    let mut checksum: I64 = 0
+    let mut seen = 0
+    loop {
+        let taken = ch2.receive()
+        if (taken == none) { break }
+        let frag = expect(taken)
+        checksum = (checksum * 31 + churnFragSum(frag)) % CHURN_MOD
+        recent[seen % ring] = frag
+        seen = seen + 1
+    }
+
+    let sent = join w1
+    let trimmed = join w2
+    ch1.free()
+    ch2.free()
+
+    for old in recent {
+        checksum = (checksum * 31 + churnFragSum(old)) % CHURN_MOD
+    }
+    checksum = churnMix(checksum, trimmed)
+    return churnMix(checksum, sent + seen)
+}
+
+public fn benchGraphChurnSingle(scale: Int) -> Int {
+    return churnSingle(scale) as Int
+}
+
+public fn benchGraphChurnAlloc(scale: Int) -> Int {
+    return churnAlloc(scale) as Int
+}
+
+public fn benchGraphChurnTransfer(scale: Int) -> Int {
+    return churnTransfer(scale) as Int
+}
+
+public fn benchGraphChurnFull(scale: Int) -> Int {
+    let single = churnSingle(scale)
+    let alloc = churnAlloc(scale)
+    let transfer = churnTransfer(scale)
+    return (((single * 31 + alloc) % CHURN_MOD * 31 + transfer) % CHURN_MOD) as Int
+}

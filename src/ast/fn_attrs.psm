@@ -10,7 +10,8 @@ import std.option
 // whole compiler for the sake of a few boot-stub declarations. Keyed by where the
 // `fn` keyword is, which is unique per declaration and survives the copy a generic
 // instantiation makes. One record per line, `file:line:col|flags|align|section`;
-// flags are 1 export, 2 naked and 4 async, and align is 0 when none was written.
+// flags are 1 export, 2 naked, 4 async and 8 inline, and align is 0 when none was
+// written.
 let mut fnAttrTable = ""
 
 private fn fnAttrKey(fnNode: ASTNode) -> String {
@@ -63,6 +64,12 @@ public fn nodeFnAttrFlags(fnNode: ASTNode) -> Int {
 public fn nodeIsAsync(fnNode: ASTNode) -> Bool {
     if (fnAttrTable.equals("")) { return false }
     return (nodeFnAttrFlags(fnNode) & 4) == 4
+}
+
+// `inline fn`: inlined into every caller (src/parse/decl.psm, isFnModifierWord).
+public fn nodeIsInline(fnNode: ASTNode) -> Bool {
+    if (fnAttrTable.equals("")) { return false }
+    return (nodeFnAttrFlags(fnNode) & 8) == 8
 }
 
 public fn nodeFnAlign(fnNode: ASTNode) -> Int {

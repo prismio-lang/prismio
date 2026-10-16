@@ -136,6 +136,7 @@ public extern fn ir_fcmp_oge(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_ret(type: String, value: String)
 public extern fn ir_ret_void()
 public extern fn ir_unreachable()
+public extern fn ir_assume(condition: String)
 public extern fn ir_br(label: String)
 public extern fn ir_br_numbered(labelNum: Int)
 public extern fn ir_cond_br(condition: String, trueLabel: String, falseLabel: String)
@@ -323,6 +324,8 @@ public extern fn ir_ptr_to_int(value: String, toType: String) -> Int
 public extern fn ir_bitcast(fromType: String, value: String, toType: String) -> Int
 public extern fn ir_struct_field_ptr(structName: String, object: String, fieldIndex: Int) -> Int
 public extern fn ir_elem_ptr(elemType: String, base: String, index: String) -> Int
+// `index` into an array of `length` elements: in range, or the program stops.
+public extern fn ir_array_index_check(index: String, length: String)
 // M4.2's flat-List access with its representation test hoisted out of the
 // element loop. `stride` is the static element size codegen already computed;
 // the emitted false arm is `list_get_inline` itself, so the boxed representation
@@ -504,20 +507,22 @@ public extern fn ir_function_section(name: String)
 public extern fn ir_function_align(bytes: Int)
 public extern fn ir_function_export(name: String)
 public extern fn ir_struct_type_packed(on: Int)
-// The parameter just declared is a typed `Ptr<T>`: its pointee's storage key, whether
-// the function may not write through it, and whether the pointee may be assumed readable.
-public extern fn ir_function_param_pointer(pointeeKey: String, readonly: Int, readable: Int)
+// The parameter just declared is a typed `Ptr<T>`: its pointee's storage key, and whether
+// the function may not write through it.
+public extern fn ir_function_param_pointer(pointeeKey: String, readonly: Int)
+// The integer parameter just declared is inside [lo, hi] at every call (ir/param_ranges.psm).
+public extern fn ir_function_param_range(lo: I64, hi: I64)
 // A typed pointer's address operations: `kind` is ptrOpKind (src/common/mem_builtins.psm),
 // `elemKey` the pointee's own key, and the three operands are the values the kind takes
 // ("" for one it does not).
 public extern fn ir_ptr_op(kind: Int, elemKey: String, a: String, b: String, c: String) -> Int
-// Volatile and atomic access through a typed pointer, and a struct field reached through a
-// volatile one. `kind` is ptrAtomicKind and `order` 0 relaxed, 1 acquire, 2 release,
-// 3 acquire-release, 4 sequentially consistent.
-public extern fn ir_ptr_load_volatile(type: String, ptrValue: String) -> Int
-public extern fn ir_ptr_store_volatile(type: String, value: String, ptrValue: String)
-public extern fn ir_struct_load_ptr_volatile(type: String, ptrValue: String, structName: String, fieldIndex: Int) -> Int
-public extern fn ir_struct_store_ptr_volatile(type: String, value: String, ptrValue: String, structName: String, fieldIndex: Int)
+// Access through a typed pointer: the pointee or a field of a struct pointee, and the
+// atomics. `isVolatile` is 1 for a volatile access; neither load nor store carries a
+// type-based alias tag, because `cast` can make any two types the same bytes. `kind` is
+// ptrAtomicKind and `order` 0 relaxed, 1 acquire, 2 release, 3 acquire-release,
+// 4 sequentially consistent.
+public extern fn ir_ptr_load(type: String, ptrValue: String, isVolatile: Int) -> Int
+public extern fn ir_ptr_store(type: String, value: String, ptrValue: String, isVolatile: Int)
 public extern fn ir_ptr_atomic(kind: Int, type: String, ptrValue: String, a: String, b: String, order: Int) -> Int
 public extern fn ir_mem_load(type: String, addrType: String, addr: String, mode: Int) -> Int
 public extern fn ir_mem_store(type: String, value: String, addrType: String, addr: String, mode: Int)

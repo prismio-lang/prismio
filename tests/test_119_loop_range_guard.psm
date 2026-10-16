@@ -1,19 +1,28 @@
+// expect-trap: down-past-end => index 10 is out of range for a Vec of length 4
+// expect-trap: up-past-end => index 4 is out of range for a Vec of length 4
+// expect-trap: write-past-end => index 9 is out of range for a Vec of length 4
+// expect-trap: offset-negative => index -1 is out of range for a Vec of length 4
+// expect-trap: offset-past-end => index 5 is out of range for a Vec of length 4
+// expect-trap: empty => index 3 is out of range for a Vec of length 0
 // The loop range guard, and the one property it must never break.
 //
 // A loop whose reads are provably in range drops its per-access bounds check --
 // see generateLoopRangeGuards in src/ir/expr.psm. That is a *speed* change and
-// must not be a *semantics* one: `list_get` is total, and an index past the end
-// returns 0 rather than reading memory. So every case below is written twice,
-// once with indices the guard can prove and once with indices it cannot, and
-// both have to produce the same answer they would with the guard switched off.
+// must not be a *semantics* one: an index past the end stops the program
+// (docs/MEMORY_SAFETY_PLAN.md section 2) rather than reading memory. So every
+// loop below is run with indices the guard can prove, which must give the right
+// answer, and -- one case per run, named by the argument -- with indices it cannot,
+// which must stop at the first one out of range.
 //
 // The in-range arms are what proves the fast path is emitted at all; the
-// out-of-range arms are what proves the guard declines rather than corrupts.
+// out-of-range cases are what proves the guard declines rather than corrupts: a
+// proved copy taken for them would read past the list and never stop.
 // A version of this analysis that widened the range by one step made every
 // lower conjunct false, so the guard never fired -- these arms would still have
 // passed, which is why the benchmark, not this file, is what shows it works.
 
 import std.io
+import std.process
 
 fn filled() -> Vec<Int> {
     let mut xs: Vec<Int> = Vec<Int>.withCapacity(4)
@@ -89,26 +98,15 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
-fn main() -> Int {
-    let mut bad = 0
-
-    // In range: the guard should be provable.
-    bad = bad + check("FAIL: sumDown in range", sumDown(3), 10)
-    bad = bad + check("FAIL: sumDownOffset in range", sumDownOffset(3, 0), 10)
-    bad = bad + check("FAIL: sumUp in range", sumUp(4), 10)
-    bad = bad + check("FAIL: readWrite in range", readWrite(3), 20)
-
-    // Past the end: out-of-range reads contribute 0, nothing is read from memory.
-    bad = bad + check("FAIL: sumDown past end", sumDown(10), 10)
-    bad = bad + check("FAIL: sumUp past end", sumUp(9), 10)
-    bad = bad + check("FAIL: readWrite past end", readWrite(9), 20)
-
-    // Offset drives indices negative: 1, 0, -1, -2 over a 4-element list.
-    bad = bad + check("FAIL: sumDownOffset negative", sumDownOffset(3, 2), 3)
-
+// An out-of-range case, run on its own: each stops the program at its first bad index.
+fn outOfRange(case: String) -> Int {
+    if (case.equals("down-past-end")) { return sumDown(10) }
+    if (case.equals("up-past-end")) { return sumUp(9) }
+    if (case.equals("write-past-end")) { return readWrite(9) }
+    // Offset drives indices negative: 1, 0, -1 over a 4-element list.
+    if (case.equals("offset-negative")) { return sumDownOffset(3, 2) }
     // Offset drives them past the end instead.
-    bad = bad + check("FAIL: sumDownOffset past end", sumDownOffset(3, 0 - 2), 7)
-
+    if (case.equals("offset-past-end")) { return sumDownOffset(3, 0 - 2) }
     // An empty list: length 0, so no index is ever in range.
     let empty: Vec<Int> = Vec<Int>.withCapacity(1)
     let mut acc = 0
@@ -117,7 +115,18 @@ fn main() -> Int {
         acc = acc + empty[at]
         at = at - 1
     }
-    bad = bad + check("FAIL: empty list", acc, 0)
+    return acc
+}
+
+fn main() -> Int {
+    if (process.args.count > 1) { return outOfRange(process.args[1]) }
+    let mut bad = 0
+
+    // In range: the guard should be provable.
+    bad = bad + check("FAIL: sumDown in range", sumDown(3), 10)
+    bad = bad + check("FAIL: sumDownOffset in range", sumDownOffset(3, 0), 10)
+    bad = bad + check("FAIL: sumUp in range", sumUp(4), 10)
+    bad = bad + check("FAIL: readWrite in range", readWrite(3), 20)
 
     if (bad != 0) { return 1 }
     println("PASS: loop range guard")

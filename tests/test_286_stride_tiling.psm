@@ -1,3 +1,6 @@
+// expect-trap: strided-negative-start => index -2 is out of range for a Vec of length 100000
+// expect-trap: strided-wrapping-step => index -1494967292 is out of range for a Vec of length 100000
+// expect-trap: sieve-before-the-list => index -1 is out of range for a Vec of length 200001
 // Stride tiling (src/ir/tiling.psm): a nest that marks a list at a stride runs one
 // cache-sized window at a time, and must leave the list exactly as the loop as
 // written would.
@@ -7,14 +10,15 @@
 // past the first window, which hands over to the plain loop midway; a negative
 // start and a step that wraps, which hand over before anything is stored; more
 // live iterations than the copy records, which runs it in batches. The expected
-// values come from a model of the language: `Int` wraps at 32 bits, an
-// out-of-range read is false or 0, an out-of-range write is dropped.
+// values come from a model of the language: `Int` wraps at 32 bits, and an index
+// out of range stops the program (one case per run, named by its argument).
 //
 // A loop marked `// tile` must be the one tiled, and no other: the harness reads
 // PRISMIO_TILE_TRACE, so a copy that stops being emitted cannot pass as one that
 // gave the right answers.
 
 import std.io
+import std.process
 
 fn checksumBools(v: Vec<Bool>) -> Int {
     let mut acc = 0
@@ -90,6 +94,13 @@ fn check(label: String, got: Int, want: Int) -> Int {
     return 0
 }
 
+// An arm whose index leaves the list runs only when its case is named: it must stop the
+// program there (docs/MEMORY_SAFETY_PLAN.md section 2), where a proved copy taken for it
+// would read past the list and run on. The harness runs one case per `expect-trap` line.
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn main() -> Int {
     let mut bad = 0
 
@@ -100,14 +111,14 @@ fn main() -> Int {
     bad = bad + check("FAIL: sieve odd size", sieve(200003, 0), 9027801)
     bad = bad + check("FAIL: sieve benchmark size", sieve(400000, 0), 16983391)
     bad = bad + check("FAIL: sieve guard past the window", sieve(200000, 65530), 20053909)
-    bad = bad + check("FAIL: sieve guard before the list", sieve(200000, 0 - 3), 24360787)
+    if (trapCase("sieve-before-the-list")) { return (sieve(200000, 0 - 3)) as Int }
 
     bad = bad + check("FAIL: strided", strided(100000, 50, 0, 3, 7), 287173803)
     bad = bad + check("FAIL: strided in batches", strided(100000, 5000, 20000, 37, 7), 67846331)
-    bad = bad + check("FAIL: strided negative start", strided(100000, 50, 0 - 3, 3, 7), 287244293)
+    if (trapCase("strided-negative-start")) { return (strided(100000, 50, 0 - 3, 3, 7)) as Int }
     bad = bad + check("FAIL: strided late start", strided(100000, 50, 70000, 3, 7), 86207555)
     bad = bad + check("FAIL: strided one window", strided(20000, 50, 0, 3, 7), 57480514)
-    bad = bad + check("FAIL: strided wrapping step", strided(100000, 50, 0, 700000000, 7), 9275)
+    if (trapCase("strided-wrapping-step")) { return (strided(100000, 50, 0, 700000000, 7)) as Int }
     bad = bad + check("FAIL: strided under two windows", strided(32768, 3, 0, 1, 9), 146801655)
     bad = bad + check("FAIL: strided two windows", strided(32769, 3, 0, 1, 9), 146808576)
 

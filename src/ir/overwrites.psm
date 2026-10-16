@@ -1,0 +1,340 @@
+// Which `v[i] = x` may release the element it displaces at once, rather than park it
+// with the Vec until the Vec dies.
+//
+// Parking exists because `let n = v[i]` is a view of the element, not a copy, and the
+// language lets `v[i] = x` run while `n` is still read: freeing the displaced element
+// there would leave `n` reading freed memory. It is right and it is costly. A loop that
+// keeps replacing elements holds every element it ever stored until the Vec goes:
+// graph_churn's windows peaked at 8x to 32x C++'s memory, and allocating into a heap
+// that never gets a block back made them 1.9x to 2.5x C++'s time. Rust frees the
+// displaced element at the store because its borrow checker has already refused any
+// view that could still be live; Prismio proves, per store, that none is.
+//
+// The store `v[k] = x` releases now when all of this holds:
+//
+//   1. `v` is a local of this function, declared once, from a fresh Vec (`[]`,
+//      `Vec<T>.withCapacity(n)`, a literal), and never assigned as a whole. Then no
+//      other function and no outer frame can hold a view of its elements.
+//   2. No view of an element can leave the function's own names: no value that may
+//      hold one is assigned anywhere, returned, captured by a closure or a spawn, or
+//      passed as an argument AIF says the callee may keep (aif_call_arg_retained,
+//      which is a Prismio callee's interprocedural flow and a builtin's or extern's
+//      ownership contract, and says yes when it does not know). The names that may
+//      hold one are `v` and, to a fixed point, every binding whose initialiser or
+//      `for` iterable mentions one (irGrowViewHolders).
+//   3. `x` mentions none of them, so the new element is not a view into the old.
+//   4. None of them except `v` is live at the store: each binding is either out of
+//      scope there -- declared in a block the store is not in, or later in the store's
+//      own block, which on a loop's next iteration is a binding not yet made -- or
+//      in scope with no use at or after the statement that holds the store. A
+//      statement that holds the store and also mentions the binding counts as a use.
+//      A store inside a `match` whose scrutinee mentions one is refused outright: the
+//      arm's pattern binds names this does not follow.
+//
+// Anything short of that parks, as before. The elements themselves cannot alias each
+// other here: a list whose elements may be shared is counted, and a counted list's
+// overwrite already releases through the count.
+
+import ast.nodes
+import ast.types
+import std.string
+
+// One line per store that may release now: `\n<function symbol>@<line>:<col>`. Rebuilt
+// by overwritesMark before each emission of the module.
+let mut overwriteTable = ""
+
+// The statement structure of one function body, numbered as the walk enters it: every
+// chain of statements gets an id, and every interesting node its path, the chain and
+// position of each of its ancestors from the body down.
+struct OverwriteWalk {
+    internal heads: Vec<Ptr>,
+    // The stores: each `list_set` call, and the path to the statement holding it.
+    internal stores: Vec<Ptr>,
+    internal storePaths: Vec<String>,
+    // Bindings: a `let` at (chain, position), or a `for` binder whose scope is its
+    // body's chain from position 0.
+    internal names: Vec<String>,
+    internal chains: Vec<Int>,
+    internal positions: Vec<Int>,
+    // `match` statements: the path to each, and its scrutinee.
+    internal matchPaths: Vec<String>,
+    internal scrutinees: Vec<Ptr>
+}
+
+internal fn overwritesMark(module: ASTNode) {
+    overwriteTable = ""
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (decl.kind == NodeKind.FUNCTION and nodeExists(decl.child2)) { overwritesInFunction(decl) }
+        p = decl.next
+    }
+}
+
+// Whether the active function's store `call` was proved to release now.
+internal fn overwriteReleasesNow(call: ASTNode) -> Bool {
+    if (overwriteTable.equals("") or nodeIsNull(irFunctionDecl)) { return false }
+    let key = overwriteKey(ptr_to_node(irFunctionDecl), call)
+    return overwriteTable.indexOf(key.concat("\n")) >= 0
+}
+
+// Whether any store in the module releases now: the entry points it calls are declared
+// only then, so no other program's IR changes.
+internal fn overwritesAny() -> Bool {
+    return overwriteTable.equals("") == false
+}
+
+private fn overwriteKey(func: ASTNode, call: ASTNode) -> String {
+    return "\n".concat(functionSymbolName(func), "@", call.line.toString(), ":", call.col.toString())
+}
+
+private fn overwritesInFunction(func: ASTNode) {
+    let w = OverwriteWalk {
+        heads: [], stores: [], storePaths: [], names: [], chains: [], positions: [],
+        matchPaths: [], scrutinees: []
+    }
+    overwriteWalkChain(w, ptr_to_node(func.child2).child1, "")
+    for i in 0..<w.stores.length {
+        let call = ptr_to_node(w.stores[i])
+        if (overwriteProved(func, w, call, w.storePaths[i])) {
+            overwriteTable = overwriteTable.concat(overwriteKey(func, call), "\n")
+        }
+    }
+}
+
+// Numbers the chain starting at `head` and walks it. `path` is the ancestors' path,
+// `;chain:position` per level.
+private fn overwriteWalkChain(w: OverwriteWalk, head: Ptr, path: String) {
+    if (nodeIsNull(head)) { return }
+    let chain = w.heads.length
+    w.heads.push(head)
+    let mut p = head
+    let mut position = 0
+    while (nodeExists(p)) {
+        let here = path.concat(";", chain.toString(), ":", position.toString())
+        overwriteWalkNode(w, p, here, chain, position)
+        position = position + 1
+        p = ptr_to_node(p).next
+    }
+}
+
+private fn overwriteWalkNode(w: OverwriteWalk, nodePtr: Ptr, here: String, chain: Int, position: Int) {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.EXPRESSION_STATEMENT and nodeExists(n.child1)) {
+        let call = ptr_to_node(n.child1)
+        if (call.kind == NodeKind.CALL_EXPR and overwriteIsListSet(call)) {
+            w.stores.push(n.child1)
+            w.storePaths.push(here.clone())
+        }
+    }
+    if (n.kind == NodeKind.VARIABLE_DECL) {
+        w.names.push(n.s1.clone())
+        w.chains.push(chain)
+        w.positions.push(position)
+    }
+    if (n.kind == NodeKind.MATCH_STATEMENT) {
+        w.matchPaths.push(here.clone())
+        w.scrutinees.push(n.child1)
+    }
+    if (n.kind == NodeKind.FOR_STATEMENT) {
+        overwriteWalkChain(w, n.child1, here)
+        overwriteWalkChain(w, n.child2, here)
+        // The binders' scope is the body's statements, all of them.
+        if (nodeExists(n.child3) and ptr_to_node(n.child3).kind == NodeKind.BLOCK) {
+            let bodyChain = w.heads.length
+            overwriteAddBinder(w, n.s1, bodyChain)
+            overwriteAddBinder(w, n.s2, bodyChain)
+            overwriteWalkChain(w, ptr_to_node(n.child3).child1, here.concat(";b"))
+        } else {
+            overwriteWalkChain(w, n.child3, here)
+        }
+        return
+    }
+    overwriteWalkChain(w, n.child1, here)
+    overwriteWalkChain(w, n.child2, here)
+    overwriteWalkChain(w, n.child3, here)
+}
+
+private fn overwriteAddBinder(w: OverwriteWalk, name: String, bodyChain: Int) {
+    if (name.equals("")) { return }
+    w.names.push(name.clone())
+    w.chains.push(bodyChain)
+    w.positions.push(0 - 1)
+}
+
+// `name` alone, as a holder set.
+private fn overwriteOne(name: String) -> Vec<String> {
+    let mut one: Vec<String> = []
+    one.push(name.clone())
+    return one
+}
+
+private fn overwriteIsListSet(call: ASTNode) -> Bool {
+    if (nodeIsNull(call.child1) or nodeIsNull(call.child2)) { return false }
+    let callee = ptr_to_node(call.child1)
+    if (callee.s1.equals("list_set") == false) { return false }
+    return ptr_to_node(call.child2).kind == NodeKind.IDENTIFIER_EXPR
+}
+
+private fn overwriteProved(func: ASTNode, w: OverwriteWalk, call: ASTNode, storePath: String) -> Bool {
+    let list = ptr_to_node(call.child2)
+    let name = list.s1
+    if (overwriteListIsFresh(func, w, name) == false) { return false }
+    let mut holders: Vec<String> = []
+    holders.push(name.clone())
+    overwriteGrowHolders(func.child2, holders)
+    if (overwriteViewEscapes(func.child2, name, holders)) { return false }
+    let indexNode = ptr_to_node(list.next)
+    if (irMentionsHolder(indexNode.next, holders)) { return false }
+    for i in 0..<w.matchPaths.length {
+        let matchPath: String = w.matchPaths[i]
+        let inside = storePath.startsWith(matchPath.concat(";"))
+        if (inside and irMentionsHolder(w.scrutinees[i], holders)) { return false }
+    }
+    for i in 0..<w.names.length {
+        let bound: String = w.names[i]
+        if (bound.equals(name) == false and irHoldersContain(holders, bound)
+                and overwriteLiveAt(w, i, storePath)) {
+            return false
+        }
+    }
+    return true
+}
+
+// `name` is declared once in the body, not a parameter, as a Vec from a fresh
+// constructor or literal.
+private fn overwriteListIsFresh(func: ASTNode, w: OverwriteWalk, name: String) -> Bool {
+    let mut p = func.child1
+    while (nodeExists(p)) {
+        if (ptr_to_node(p).s1.equals(name)) { return false }
+        p = ptr_to_node(p).next
+    }
+    let mut count = 0
+    for i in 0..<w.names.length {
+        let bound: String = w.names[i]
+        if (bound.equals(name)) { count = count + 1 }
+    }
+    if (count != 1) { return false }
+    let decl = overwriteFindDecl(func.child2, name)
+    if (nodeIsNull(decl)) { return false }
+    let d = ptr_to_node(decl)
+    if (nodeHasType(d) == false or nodeGetType(d).kind != TypeKind.LIST) { return false }
+    if (nodeIsNull(d.child2)) { return true }
+    let init = ptr_to_node(d.child2)
+    if (init.kind == NodeKind.ARRAY_LITERAL_EXPR) { return irMentionsHolder(d.child2, overwriteOne(name)) == false }
+    if (init.kind != NodeKind.CALL_EXPR or nodeIsNull(init.child1)) { return false }
+    let callee = ptr_to_node(init.child1).s1
+    return callee.equals("list_new") or callee.equals("list_new_with_capacity")
+}
+
+private fn overwriteFindDecl(nodePtr: Ptr, name: String) -> Ptr {
+    let mut p = nodePtr
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.VARIABLE_DECL and n.s1.equals(name)) { return p }
+        let a = overwriteFindDecl(n.child1, name)
+        if (nodeExists(a)) { return a }
+        let b = overwriteFindDecl(n.child2, name)
+        if (nodeExists(b)) { return b }
+        let c = overwriteFindDecl(n.child3, name)
+        if (nodeExists(c)) { return c }
+        p = n.next
+    }
+    return ptr_null()
+}
+
+// irGrowViewHolders' fixed point, with `for` binders over a holder added: the
+// binder of `for n in v` is a view of each element in turn.
+private fn overwriteGrowHolders(body: Ptr, inout holders: Vec<String>) {
+    loop {
+        let before = holders.length
+        irGrowViewHolders(body, holders)
+        overwriteGrowForBinders(body, holders)
+        if (holders.length == before) { break }
+    }
+}
+
+private fn overwriteGrowForBinders(head: Ptr, inout holders: Vec<String>) {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.FOR_STATEMENT and irMentionsHolder(n.child1, holders)) {
+            if (n.s1.equals("") == false and irHoldersContain(holders, n.s1) == false) { holders.push(n.s1.clone()) }
+            if (n.s2.equals("") == false and irHoldersContain(holders, n.s2) == false) { holders.push(n.s2.clone()) }
+        }
+        overwriteGrowForBinders(n.child1, holders)
+        overwriteGrowForBinders(n.child2, holders)
+        overwriteGrowForBinders(n.child3, holders)
+        p = n.next
+    }
+}
+
+// Whether a value that may hold a view of an element reaches anything that outlives
+// the function's names, or `list` itself is reassigned.
+private fn overwriteViewEscapes(head: Ptr, list: String, holders: Vec<String>) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+            let target = ptr_to_node(n.child1)
+            if (target.kind == NodeKind.IDENTIFIER_EXPR and target.s1.equals(list)) { return true }
+            if (overwriteCarriesView(n.child2, holders)) { return true }
+        }
+        if (n.kind == NodeKind.RETURN_STATEMENT and overwriteCarriesView(n.child1, holders)) { return true }
+        if ((n.kind == NodeKind.CLOSURE_EXPR or n.kind == NodeKind.SPAWN_EXPR)
+                and irMentionsHolder(p, holders)) {
+            return true
+        }
+        if (n.kind == NodeKind.CALL_EXPR and overwriteCallKeepsView(p, holders)) { return true }
+        if (overwriteViewEscapes(n.child1, list, holders)) { return true }
+        if (overwriteViewEscapes(n.child2, list, holders)) { return true }
+        if (overwriteViewEscapes(n.child3, list, holders)) { return true }
+        p = n.next
+    }
+    return false
+}
+
+// A value of a type that owns something, mentioning a holder.
+private fn overwriteCarriesView(valuePtr: Ptr, holders: Vec<String>) -> Bool {
+    if (nodeIsNull(valuePtr)) { return false }
+    let v = ptr_to_node(valuePtr)
+    if (nodeHasType(v) and typeOwnsNothing(nodeGetType(v))) { return false }
+    return irMentionsHolder(valuePtr, holders)
+}
+
+private fn overwriteCallKeepsView(callPtr: Ptr, holders: Vec<String>) -> Bool {
+    let call = ptr_to_node(callPtr)
+    let mut index = 0
+    let mut a = call.child2
+    while (nodeExists(a)) {
+        if (overwriteCarriesView(a, holders) and aif_call_arg_retained(callPtr, index) == 1) { return true }
+        index = index + 1
+        a = ptr_to_node(a).next
+    }
+    return false
+}
+
+// Whether binding `i` of the walk may be live at the store at `storePath`: in scope
+// there, with a use in the statement holding the store or after it in that chain.
+private fn overwriteLiveAt(w: OverwriteWalk, i: Int, storePath: String) -> Bool {
+    let chain = w.chains[i]
+    let marker = ";".concat(chain.toString(), ":")
+    let at = storePath.indexOf(marker)
+    if (at < 0) { return false }
+    let rest = storePath.substring(at + marker.length, storePath.length - at - marker.length)
+    let mut end = rest.indexOf(";")
+    if (end < 0) { end = rest.length }
+    let storePosition = rest.substring(0, end).parseIntOr(0 - 1)
+    if (storePosition < 0) { return true }
+    if (storePosition < w.positions[i]) { return false }
+    let name: String = w.names[i]
+    let holder = overwriteOne(name)
+    let mut p = w.heads[chain]
+    let mut position = 0
+    while (nodeExists(p)) {
+        if (position >= storePosition and irMentionsHolder(p, holder)) { return true }
+        position = position + 1
+        p = ptr_to_node(p).next
+    }
+    return false
+}

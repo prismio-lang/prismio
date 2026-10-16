@@ -1,8 +1,9 @@
 # `Ptr<T>`: a typed pointer
 
-Status 2026-10-15: **stages 1-5 built, stage 6 built except `asSlice`** (the type and its conversions; reads through a pointer, `load()`,
-the scalar projection, parameter attributes; writes through `Ptr<mut T>`; the address methods and the
-`std.raw` constructors; volatile access and atomics with orderings). Stage 6 is open. Source: the "Transparent Capability Pointer"
+Status 2026-10-16: **stages 1-5 built, stage 6 built except `asSlice`, and a soundness pass over all six** (the type
+and its conversions; reads through a pointer, `load()`, the scalar projection, parameter attributes; writes through
+`Ptr<mut T>`; the address methods and the `std.raw` constructors; volatile access and atomics with orderings; what the
+optimiser may assume about each, below). Stage 6 is open. Source: the "Transparent Capability Pointer"
 proposal, corrected against this tree, plus the additions in §4. It closes the last open box of
 `FREESTANDING_PLAN.md` step 3 ("a typed pointer, if the name-only convention proves too weak").
 
@@ -148,10 +149,49 @@ Follow `Channel<T>`: PTR-kinded, `name` = `Ptr<T>` / `Ptr<mut T>`, pointee in `c
   stage 5), and any write (stage 3).
 - **Parameters** `Ptr<T>` get `noundef nonnull align(A) dereferenceable(S)` from the data layout (packed
   structs included), plus `readonly` unless `mut`; `volatile` omits `dereferenceable`. A `Ptr<T>?` gets none.
+  (`dereferenceable` was dropped by the soundness pass: a pointer may be one past its allocation.)
 - **Overloads:** the pointee and capabilities are in the symbol (`f__Ptr_Struct_A`, `f__PtrMut_Struct_B`),
   and an exactly-typed pointer argument outranks one that needs `mut` dropped.
 - **`typeEquals` is strict for typed pointers** (it used to be PTR's unconditional `true`); the one-way
   conversions live in `typePtrConverts`, consulted from `semaTypesMatch`.
+
+**What the soundness pass settled** (2026-10-16; each was a wrong answer at -O3 or undefined IR, and
+`test_303_ptr_soundness`, `neg_305_ptr_soundness_refused` and `typed_pointer_ir` hold them):
+
+- **No type-based alias tag on a pointer access.** `load`, `store` and a field through a typed pointer reused the
+  scalar and struct-path TBAA tags, which tell LLVM a `double` and a `long long`, or two structs laid out alike,
+  are never the same bytes -- and `cast` exists to make them so. A store through a `Ptr<mut Float>` moved past a load
+  through the `Ptr<U64>` cast from the same block, as did a field store through one struct past a load through
+  another (both through two parameters; BasicAA answers "same pointer" for one SSA value before TBAA is asked).
+  The access is now untagged (`ir_ptr_load`/`ir_ptr_store`); managed values and collections keep their tags.
+- **No `dereferenceable` on a parameter.** A `Ptr<T>` may point one past its allocation (`p.offset(count)`,
+  `advance`'s `limit`), and the attribute made passing one undefined at the call. Stage 2's
+  `noundef nonnull align(A)` and `readonly` stay; where a function reads its pointer on every path, LLVM proves
+  dereferenceability itself.
+- **`advance` steps with a plain GEP and divides without `exact`.** The `select` already kept an out-of-range step's
+  poison unused (stage 4), but the room was `sdiv exact`, which is poison when `limit` is not a whole number of
+  elements away (a 12-byte struct, a `limit` from another block), and a poison condition selects poison. And
+  `inbounds` claimed `p` and `p + n` share an allocation, which a `limit` from elsewhere does not make true.
+  `offsetFrom` keeps `sdiv exact`: it is defined only between pointers into one array, as C's subtraction is.
+- **`volatile` is never lost.** A `Ptr<mut volatile T>` no longer converts to the opaque `Ptr` (stage 1 allowed it,
+  and `Ptr<T>.cast` of the result was a plain pointer to a device register), and `cast`/`castAligned` from a volatile
+  pointer must name a volatile target. A foreign function that takes a register declares a `Ptr<mut volatile T>`
+  parameter.
+- **A packed struct's fields are read and written at one byte, and what lies inside one is aligned to one byte
+  itself.** Every field access took its type's ABI alignment, so `w.word` at offset 1 was `load i32 ... align 4`,
+  on a plain value as much as through a pointer -- not a `Ptr<T>` bug, but one it inherited. The backend now reads
+  the alignment off the field's address (`access_align`: a GEP into a packed struct type is one byte), which covers a
+  read, a write, a literal's initialiser and a typed pointer alike. That cannot reach through a field: an inner
+  struct's own fields, an array's elements and a `T?`'s flag are accessed at their own type's alignment. So sema
+  refuses those (`semaCheckPackedStructs`): a field of a packed struct is a number, `Bool`, `Char`, enum, pointer,
+  packed struct or byte array. With that, no `Ptr<T>` short of `atUnchecked`/`cast` is under-aligned, so an atomic
+  never sees one.
+- **Not changed, because they were already right:** `Ptr<volatile U32>.at(...)` parses in expression position
+  (`volatile` reaches `looksLikeTypeArgs` as an identifier); `p > 0` on a `Ptr<U32>` compares unsigned and
+  `p != 0x80000000` is the right 32 bits; `if p` on a `Ptr<Bool>` is already a type error.
+- **Found and left open:** the module has no data layout while IR is built (only a cross or `-g` build stamps one),
+  so alignments are LLVM's default layout's, where `i64` is 4. A `Ptr<U64>` atomic is `align 4` and compiles to a
+  `___atomic_compare_exchange` libcall. See KNOWN_ISSUES.
 
 **What stage 6 settled:**
 
@@ -234,14 +274,14 @@ fixpoint read in the IR, `tools/aif_differential.py`, then `graphify update .`. 
 
 `Ptr<T>` removes null, accidental mutation, accidental stride arithmetic and a missing `volatile`. It does
 not remove use after free, a pointer past its allocation, or an `at` pointer that points at nothing.
-`dereferenceable(sizeof T)` makes a lying `cast` worse than in C (the optimiser may speculate the load),
-which is why `cast` is `std.raw`'s and `castAligned` exists. An MMIO pointer must be `volatile`; a plain
+`align(A)` makes a lying `cast` as bad as in C, which is why `cast` is `std.raw`'s and `castAligned` exists. An MMIO pointer must be `volatile`; a plain
 `Ptr` over a device register is the programmer's bug, as a non-`volatile` `T*` is in C.
 
 ## 7. Open
 
 - Does `Ptr<T>.at(address)` as a static on a built-in type resolve like `Buffer.new`, or does sema need an arm?
   Find out in stage 1; the fallback is a `std.raw` function `pointerTo(Ptr<T> type witness)`, which is worse.
-- Signed-integer pointee comparisons through the projection rule reuse the existing literal typing
-  (`prismio-literal-typing-model`); check `p > 0` with `Ptr<U32>` before stage 2 is called done.
-- Pointee alignment when `T` is a `repr(C)` struct with a packed field: the attribute is the struct's, not the field's.
+- ~~Signed-integer pointee comparisons through the projection rule~~: checked 2026-10-16, `p > 0` on a `Ptr<U32>`
+  is `icmp ugt`.
+- ~~Pointee alignment when `T` is a struct with a packed field~~: settled by the soundness pass; a packed struct
+  holds only what is aligned to one byte or read at one byte.

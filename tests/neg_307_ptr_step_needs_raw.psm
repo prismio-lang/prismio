@@ -1,0 +1,19 @@
+// expect-error: `offset` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
+// expect-error: `byteOffset` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
+// expect-error: `wrappingOffset` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`
+// expect-error: aborting due to 3 previous errors
+// A pointer carries no length, so one stepped out of its block is not caught, and a byte step
+// leaves a `Ptr<Int>` that is not aligned for an Int. Stepping is `std.raw`'s, as the
+// constructors are. `advance` is bounded by its `limit`, and reading where a pointer is
+// (`addr`, `offsetFrom`, `isAligned`, `sameAs`) moves nothing, so neither needs the import.
+
+extern fn give() -> Ptr<mut Int>
+
+fn far(p: Ptr<mut Int>) -> Ptr<mut Int> { return p.offset(1000) }
+fn odd(p: Ptr<mut Int>) -> Ptr<mut Int> { return p.byteOffset(1) }
+fn behind(p: Ptr<mut Int>) -> Ptr<mut Int> { return p.wrappingOffset(-1) }
+
+fn bounded(p: Ptr<mut Int>, end: Ptr<mut Int>) -> Ptr<mut Int>? { return p.advance(1, end) }
+fn place(p: Ptr<mut Int>, q: Ptr<mut Int>) -> Bool { return p.sameAs(q) and p.isAligned(4) and p.offsetFrom(q) == 0 }
+
+fn main() -> Int { return 0 }

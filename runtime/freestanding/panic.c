@@ -2,9 +2,9 @@
 //
 // A program built with `--freestanding` does not link the installed runtime,
 // because the installed runtime is libc code: its failure paths call `fprintf`
-// and `exit`. Generated code still calls the same six functions when something
-// goes wrong, so a freestanding program has to define them. These are those six,
-// each reduced to one call: `prismio_panic_hook`, which the program provides.
+// and `exit`. Generated code still calls the same functions when something
+// goes wrong, so a freestanding program has to define them. These are those, each
+// reduced to one call: `prismio_panic_hook`, which the program provides.
 //
 // `--freestanding` adds it to the build. It includes nothing, so it needs no sysroot
 // and no headers. **Every function here is weak**, so a program may define any of
@@ -70,6 +70,20 @@ __attribute__((weak, noreturn)) void data_view_fail(const char* message) {
 
 __attribute__((weak, noreturn)) void data_view_access_fail(int reason) {
     data_view_fail(reason == 1 ? "view is not ready for access" : "element index out of range");
+}
+
+// An index out of range (docs/MEMORY_SAFETY_PLAN.md section 2). An array's check is
+// inline in any program, which may link no runtime at all, so its failure is here; a
+// Vec's is too, for symmetry, though only a program that merged the runtime has a Vec
+// and that runtime defines the strong one.
+__attribute__((weak, noreturn)) void array_index_fail(int index, int len) {
+    (void)index; (void)len;
+    prismio_panic_hook("index out of range", "array", "", 0, 0);
+}
+
+__attribute__((weak, noreturn)) void list_index_fail(int index, int len) {
+    (void)index; (void)len;
+    prismio_panic_hook("index out of range", "Vec", "", 0, 0);
 }
 
 // The allocator the freestanding runtime and std.mem allocate through. A program

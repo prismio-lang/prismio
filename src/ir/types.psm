@@ -243,6 +243,13 @@ internal fn memberObjectStructName(objectNode: ASTNode) -> String {
     return structTypeName(getExprType(objectNode))
 }
 
+// 1 when every access through the typed pointer `ptrT` is volatile -- a `Ptr<volatile T>`,
+// whose reads and writes reach a device -- as the backend's pointer access takes it.
+internal fn ptrAccessVolatility(ptrT: TypeInfo) -> Int {
+    if (typePtrIsVolatile(ptrT)) { return 1 }
+    return 0
+}
+
 internal fn getExprType(expr: ASTNode) -> String {
     if (nodeHasType(expr)) {
         return typeIrKey(nodeGetType(expr))

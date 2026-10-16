@@ -16,7 +16,9 @@ Status checked against the tree on 2026-09-25.
 A leak is acceptable in 0.1 if it is documented. A **violation** is not: freeing
 something that is not live, reading a dead frame, or getting a wrong answer.
 `--verify` separates the two ("leaked" against "violations"), and so does this
-list.
+list. Pointers, bounds, slice lifetimes and aliasing are planned in
+[MEMORY_SAFETY_PLAN.md](MEMORY_SAFETY_PLAN.md) (2026-10-16), which found five ways
+a compiling program still corrupts memory.
 
 - [x] **A recursive enum built from `let`-bound children double-frees.** Fixed
       2026-09-25 (`vs_stored_in_recursive_field`); the text below is the report.

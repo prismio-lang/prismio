@@ -49,6 +49,7 @@ CPP_SOURCES = tuple(HOSTED / "cpp" / name for name in (
     "memory.cpp",
     "io.cpp",
     "adversarial.cpp",
+    "graph_churn.cpp",
 ))
 
 # What a cached arm is keyed on. Wider than the compiled set on purpose: a header

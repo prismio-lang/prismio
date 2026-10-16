@@ -304,7 +304,7 @@ export fn bench_matrix_multiply(scale: U32) -> U32 {
     }
     let mut total: U32 = 0
 
-    for r in 0..<8 * scale as Int {
+    for r in 0..<8 * scale {
         for i in 0..<MATRIX {
             for j in 0..<MATRIX {
                 let mut sum: U32 = 0
@@ -317,7 +317,7 @@ export fn bench_matrix_multiply(scale: U32) -> U32 {
         for i in 0..<MATRIX * MATRIX {
             total = total + c[i]
         }
-        a[r % 64] = a[r % 64] + 1
+        a[(r % 64) as Int] = a[(r % 64) as Int] + 1
     }
     return total
 }

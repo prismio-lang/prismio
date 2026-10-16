@@ -1,0 +1,60 @@
+// expect-trap: read-past-end => index 3 is out of range for an array of length 3
+// expect-trap: write-past-end => index 4 is out of range for an array of length 3
+// expect-trap: negative => index -1 is out of range for an array of length 3
+// expect-trap: field-array => index 3 is out of range for an array of length 3
+// expect-trap: loop-past-end => index 64 is out of range for an array of length 64
+// An index into an `Array<T, N>` is checked against N (docs/MEMORY_SAFETY_PLAN.md
+// section 2): in range it reads and writes as it always did, and out of range it stops the
+// program with the index and the length, where it used to read or write the neighbouring
+// stack. A constant index out of range is a compile error instead (neg_309). Each run-time
+// case runs on its own, named by the argument; with none, only the in-range arms run.
+import std.process
+
+struct Frame { tag: U8, bytes: Array<U8, 3>, tail: U8 }
+
+fn at(i: Int) -> Int {
+    let a: Array<Int, 3> = [10, 20, 30]
+    return a[i]
+}
+
+fn put(i: Int) -> Int {
+    let mut a: Array<Int, 3> = [1, 2, 3]
+    a[i] = 9
+    return a[0] + a[1] + a[2]
+}
+
+fn poke(i: Int) -> Int {
+    let mut f = Frame { tag: 1, bytes: [1, 2, 3], tail: 7 }
+    f.bytes[i] = 5
+    return f.tail as Int
+}
+
+// A loop the range proof leaves unmarked: LLVM hoists its check as one compare of `n`.
+fn total(n: Int) -> Int {
+    let mut a: Array<Int, 64>
+    for i in 0..<64 { a[i] = i }
+    let mut t = 0
+    for i in 0..<n { t = t + a[i] }
+    return t
+}
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    if (process.args.count > 1) {
+        let case = process.args[1]
+        if (case.equals("read-past-end")) { return at(case.length - 10) }
+        if (case.equals("write-past-end")) { return put(case.length - 10) }
+        if (case.equals("negative")) { return at(case.length - 9) }
+        if (case.equals("field-array")) { return poke(case.length - 8) }
+        if (case.equals("loop-past-end")) { return total(case.length + 52) }
+        return 0
+    }
+    // The indices come from a run-time value so the compiler cannot fold them.
+    let two = process.args.count + 1
+    if (at(two) != 30) { return fail(1) }
+    if (put(two - 2) != 14) { return fail(2) }
+    if (poke(two) != 7) { return fail(3) }
+    if (total(64) != 2016) { return fail(4) }
+    return 0
+}

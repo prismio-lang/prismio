@@ -1,5 +1,6 @@
-// What the elements of a local `Array<Int, N>` can hold, so that arithmetic on one read
-// from it can be proved not to wrap. ir/nowrap.psm walks the function and asks.
+// What the elements of a local integer array can hold, so that arithmetic on one read
+// from it can be proved not to wrap, and an index read from it proved in range.
+// ir/nowrap.psm walks the function and asks.
 //
 // Edit distance's two rows are the case. Every store into `prev` and `cur` is a counter,
 // a copy, or `min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)`, so a store raises
@@ -29,6 +30,15 @@
 // An array qualifies only when nothing but a subscript names it, in its function and
 // outside any closure, and its name is bound once there: no view, no `inout`, no copy,
 // no `for x in`, no shadowing. Anything else could write it where the walk does not look.
+//
+// Its elements are `Int` or a narrower integer (ir/nowrap.psm's fact types), and a
+// family's bound must lie inside every member's type, so a store that would wrap one
+// leaves the family unbounded. pointer_chase's `next[at]` needs the unsigned case: every
+// value its `order` and `next` arrays ever hold is an index, so `at` stays one.
+//
+// A value read from one of the arrays may reach a store through an immutable `let`
+// bound once in the function (`let t = order[i]; ... order[j] = t`, a swap): the name
+// is that read.
 
 import ast.nodes
 import ast.types
@@ -37,8 +47,10 @@ import std.string
 let CONTENTS_INT_MAX = 2147483647
 
 struct ArrayContents {
-    // One slot per array declared `Array<Int, N>` in the function.
+    // One slot per integer array declared in the function, with its element type's range.
     names: Vec<String>,
+    internal elemLo: Vec<I64>,
+    internal elemHi: Vec<I64>,
     // The block whose declaration of it ran, numbered as the walk enters blocks, or 0
     // before the walk reaches it; and how many loops were around that declaration.
     internal family: Vec<Int>,
@@ -60,7 +72,12 @@ struct ArrayContents {
     readSlot: Vec<Int>,
     // The settled bound; an empty interval until settle(), and where there is none.
     internal lo: Vec<Int>,
-    internal hi: Vec<Int>
+    internal hi: Vec<Int>,
+    // Each immutable `let` initialised by a subscript of a named array, that array's
+    // name, and how many times the function binds the name.
+    aliasNames: Vec<String>,
+    aliasArrays: Vec<String>,
+    aliasBindings: Vec<Int>
 }
 
 // A stored value's form; see the top of this file. An absent part is
@@ -76,9 +93,9 @@ struct ContentForm {
 // The arrays of `func` that qualify, each still to be declared by the walk.
 internal fn contentsCollect(func: ASTNode) -> ArrayContents {
     let c = ArrayContents {
-        names: [], family: [], depth: [], concreteLo: [], concreteHi: [], growth: [],
-        sumLoC: [], sumLoR: [], sumHiC: [], sumHiR: [], failed: [], readWriter: [], readSlot: [],
-        lo: [], hi: []
+        names: [], elemLo: [], elemHi: [], family: [], depth: [], concreteLo: [], concreteHi: [],
+        growth: [], sumLoC: [], sumLoR: [], sumHiC: [], sumHiR: [], failed: [], readWriter: [],
+        readSlot: [], lo: [], hi: [], aliasNames: [], aliasArrays: [], aliasBindings: []
     }
     c.collect(func.child2)
     if (c.names.length == 0) { return c }
@@ -94,7 +111,17 @@ impl ArrayContents {
         let mut p = head
         while (nodeExists(p)) {
             let n = ptr_to_node(p)
-            if (n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n)) { self.add(n.s1) }
+            if (n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n)) {
+                self.add(n.s1, ptr_to_type(nodeGetType(n).child))
+            }
+            if (n.kind == NodeKind.VARIABLE_DECL and n.i1 != 1 and nodeExists(n.child2)) {
+                let init = ptr_to_node(n.child2)
+                if (init.kind == NodeKind.INDEX_EXPR and contentsBaseName(init).equals("") == false) {
+                    self.aliasNames.push(n.s1.clone())
+                    self.aliasArrays.push(contentsBaseName(init))
+                    self.aliasBindings.push(0)
+                }
+            }
             self.collect(n.child1)
             self.collect(n.child2)
             self.collect(n.child3)
@@ -105,12 +132,14 @@ impl ArrayContents {
 
 
 impl ArrayContents {
-    private fn add(self, name: String) {
+    private fn add(self, name: String, elem: TypeInfo) {
         if (self.slotOf(name) >= 0) {
             self.failed[self.slotOf(name)] = 1
             return
         }
         self.names.push(name.clone())
+        self.elemLo.push(nowrapTypeMin(elem))
+        self.elemHi.push(nowrapTypeMax(elem))
         self.family.push(0)
         self.depth.push(0)
         self.concreteLo.push(CONTENTS_INT_MAX)
@@ -127,13 +156,13 @@ impl ArrayContents {
 }
 
 
-// A signed `Int` element and a known length: a zero-filled or literal-initialised local.
+// An integer element of a fact type and a known length: a zero-filled or
+// literal-initialised local.
 private fn contentsIsIntArray(decl: ASTNode) -> Bool {
     if (nodeHasType(decl) == false) { return false }
     let t = nodeGetType(decl)
     if (t.kind != TypeKind.ARRAY or t.length <= 0 or nodeIsNull(t.child)) { return false }
-    let elem = ptr_to_type(t.child)
-    return elem.kind == TypeKind.INT and elem.name.equals("Int")
+    return nowrapTypeBits(ptr_to_type(t.child)) > 0
 }
 
 impl ArrayContents {
@@ -147,8 +176,13 @@ impl ArrayContents {
                         or n.kind == NodeKind.FUNCTION_PARAMETER
             if (binds) {
                 self.bindingOf(n.s1, n.kind == NodeKind.VARIABLE_DECL and contentsIsIntArray(n))
-                if (n.kind == NodeKind.FOR_STATEMENT) { self.bindingOf(n.s2, false) }
+                self.aliasBound(n.s1)
+                if (n.kind == NodeKind.FOR_STATEMENT) {
+                    self.bindingOf(n.s2, false)
+                    self.aliasBound(n.s2)
+                }
             }
+            if (n.kind == NodeKind.MATCH_ARM) { self.aliasPattern(n.child1) }
             self.countBindings(n.child1)
             self.countBindings(n.child2)
             self.countBindings(n.child3)
@@ -166,6 +200,54 @@ impl ArrayContents {
         let slot = self.slotOf(name)
         if (slot < 0 or isTheArray) { return }
         self.failed[slot] = 1
+    }
+}
+
+
+impl ArrayContents {
+    private fn aliasBound(self, name: String) {
+        for i in 0..<self.aliasNames.length {
+            let known: String = self.aliasNames[i]
+            if (known.equals(name)) { self.aliasBindings[i] = self.aliasBindings[i] + 1 }
+        }
+    }
+}
+
+
+impl ArrayContents {
+    // A pattern may bind any name it mentions, which counts as a second binding.
+    private fn aliasPattern(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.IDENTIFIER_EXPR) {
+                self.aliasBound(n.s1)
+                self.aliasBound(n.s1)
+            }
+            self.aliasPattern(n.child1)
+            self.aliasPattern(n.child2)
+            self.aliasPattern(n.child3)
+            p = n.next
+        }
+    }
+}
+
+
+impl ArrayContents {
+    // The slot of the array an alias `name` read, or -1: the name must be bound once in
+    // the function, so every mention of it is that one read.
+    internal fn slotOfAlias(self, name: String) -> Int {
+        for i in 0..<self.aliasNames.length {
+            let known: String = self.aliasNames[i]
+            if (known.equals(name)) {
+                if (self.aliasBindings[i] != 1) { return 0 - 1 }
+                let array: String = self.aliasArrays[i]
+                let slot = self.slotOf(array)
+                if (slot < 0 or self.failed[slot] == 1) { return 0 - 1 }
+                return slot
+            }
+        }
+        return 0 - 1
     }
 }
 
@@ -343,6 +425,30 @@ impl ArrayContents {
         for slot in 0..<self.names.length {
             if (self.family[slot] == 0) { self.failed[slot] = 1 }
         }
+        // An array too narrow for its family's bound fails alone, and what read it
+        // after it; the rest settle again without it. Each round fails one more array
+        // or ends.
+        loop {
+            self.spreadFailures()
+            let mut narrow = false
+            for slot in 0..<self.names.length {
+                if (self.failed[slot] == 0 and self.tooNarrow(slot)) {
+                    self.failed[slot] = 1
+                    narrow = true
+                }
+            }
+            if (narrow == false) { break }
+        }
+        for slot in 0..<self.names.length {
+            self.settleFamily(self.family[slot])
+        }
+    }
+}
+
+
+impl ArrayContents {
+    // A writer whose value read an array that failed fails too.
+    private fn spreadFailures(self) {
         let mut spread = true
         while (spread) {
             spread = false
@@ -353,9 +459,25 @@ impl ArrayContents {
                 }
             }
         }
-        for slot in 0..<self.names.length {
-            self.settleFamily(self.family[slot])
+    }
+}
+
+
+impl ArrayContents {
+    // Whether the bound `slot`'s family would settle on lies outside its element type,
+    // which would mean a store into it wrapped.
+    private fn tooNarrow(self, slot: Int) -> Bool {
+        let mut low = CONTENTS_INT_MAX as I64
+        let mut high = (0 - CONTENTS_INT_MAX - 1) as I64
+        let mut growth = 0 as I64
+        for i in 0..<self.names.length {
+            if (self.family[i] == self.family[slot] and self.failed[i] == 0) {
+                if ((self.concreteLo[i] as I64) < low) { low = self.concreteLo[i] as I64 }
+                if ((self.concreteHi[i] as I64) > high) { high = self.concreteHi[i] as I64 }
+                growth = growth + self.growth[i] as I64
+            }
         }
+        return low < self.elemLo[slot] or high + growth > self.elemHi[slot]
     }
 }
 

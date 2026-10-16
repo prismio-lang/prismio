@@ -3,6 +3,7 @@ import adversarial
 import common
 import compute
 import data_structures
+import graph_churn
 import io
 import memory
 import std.vec
@@ -78,6 +79,11 @@ public fn benchRun(name: String, scale: Int, inputPath: String, outputPath: Stri
     if (name.equals("edit_distance")) { return benchEditDistance(scale) }
     if (name.equals("string_join")) { return benchStringJoin(scale) }
     if (name.equals("bytecode_interpreter")) { return benchBytecodeInterpreter(scale) }
+    if (name.equals("register_pressure_torture")) { return benchRegisterPressureTorture(scale) }
+    if (name.equals("graph_churn_single")) { return benchGraphChurnSingle(scale) }
+    if (name.equals("graph_churn_alloc")) { return benchGraphChurnAlloc(scale) }
+    if (name.equals("graph_churn_transfer")) { return benchGraphChurnTransfer(scale) }
+    if (name.equals("graph_churn_full")) { return benchGraphChurnFull(scale) }
     return -1
 }
 

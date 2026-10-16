@@ -1,17 +1,24 @@
+// expect-trap: short-dst => index 8 is out of range for a Vec of length 8
+// expect-trap: short-src => index 8 is out of range for a Vec of length 8
+// expect-trap: for-short-dst => index 8 is out of range for a Vec of length 8
+// expect-trap: for-short-src => index 8 is out of range for a Vec of length 8
+// expect-trap: for-descending => index 20 is out of range for a Vec of length 16
+// expect-trap: for-negative-bound => index -1 is out of range for a Vec of length 8
 // MEM-006: `while (k < n) { list_set(dst, k, list_get(src, k)); k = k + 1 }`, and
 // `for k in a..<n { dst[k] = src[k] }`, are lowered to one `llvm.memcpy` under a
 // preheader guard. Two names for one list fail the guard and run the loop.
 //
 // The guard has to carry every precondition the loop satisfied implicitly, and
-// each arm below is one of them. `list_get` and `list_set` are total, so a bound
-// past either length is not an error -- reading past `src` yields 0 and writing
-// past `dst` does nothing -- and a block transfer that ignored the lengths would
-// turn both into memory it does not own.
+// each arm below is one of them. A bound past either length stops the program at
+// the first index out of range (docs/MEMORY_SAFETY_PLAN.md section 2), so the guard
+// has to decline it: a block transfer that ignored the lengths would move memory it
+// does not own and run on. Those arms run one per run, named by the argument.
 //
 // The induction variable is live after the loop, so the transfer has to leave it
 // where the loop would have: at the bound.
 
 import std.io
+import std.process
 
 fn filled(n: Int, base: Int) -> Vec<Int> {
     let mut xs: Vec<Int> = Vec<Int>.withCapacity(n)
@@ -96,6 +103,10 @@ fn copyFloats(inout dst: Vec<Float>, src: Vec<Float>, n: Int) {
     }
 }
 
+fn trapCase(name: String) -> Bool {
+    return process.args.count > 1 and process.args[1].equals(name)
+}
+
 fn check(label: String, got: Int, want: Int) -> Int {
     if (got != want) {
         print(label)
@@ -117,23 +128,15 @@ fn main() -> Int {
     bad = bad + check("FAIL: copyAll returns the bound", copyAll(b, a, 64), 64)
     bad = bad + check("FAIL: copyAll content", digest(b), digest(a))
 
-    // The bound is past the destination. `list_set` does nothing past the end,
-    // so the first 8 move and the rest are dropped.
+    // The bound is past the destination: the write at 8 stops the program.
     let c = filled(32, 200)
     let mut d = filled(8, 0)
-    bad = bad + check("FAIL: short dst returns the bound", copyAll(d, c, 32), 32)
-    bad = bad + check("FAIL: short dst length", d.length, 8)
-    bad = bad + check("FAIL: short dst content", digest(d), digest(filled(8, 200)))
+    if (trapCase("short-dst")) { return copyAll(d, c, 32) }
 
-    // The bound is past the source. `list_get` yields 0 there, so the tail of
-    // the destination is zeroed rather than left alone.
+    // The bound is past the source: the read at 8 stops the program.
     let e = filled(8, 300)
     let mut f = filled(32, 7)
-    bad = bad + check("FAIL: short src returns the bound", copyAll(f, e, 32), 32)
-    bad = bad + check("FAIL: short src head", f[0], 300)
-    bad = bad + check("FAIL: short src boundary", f[7], 307)
-    bad = bad + check("FAIL: short src tail", f[8], 0)
-    bad = bad + check("FAIL: short src end", f[31], 0)
+    if (trapCase("short-src")) { return copyAll(f, e, 32) }
 
     // A non-zero start leaves everything below it alone.
     let g = filled(16, 400)
@@ -173,15 +176,11 @@ fn main() -> Int {
 
     let fc = filled(32, 200)
     let mut fd = filled(8, 0)
-    copyAllFor(fd, fc, 32)
-    bad = bad + check("FAIL: for short dst length", fd.length, 8)
-    bad = bad + check("FAIL: for short dst content", digest(fd), digest(filled(8, 200)))
+    if (trapCase("for-short-dst")) { copyAllFor(fd, fc, 32) }
 
     let fe = filled(8, 300)
     let mut ff = filled(32, 7)
-    copyAllFor(ff, fe, 32)
-    bad = bad + check("FAIL: for short src boundary", ff[7], 307)
-    bad = bad + check("FAIL: for short src tail", ff[8], 0)
+    if (trapCase("for-short-src")) { copyAllFor(ff, fe, 32) }
 
     let fg = filled(16, 400)
     let mut fh = filled(16, 0)
@@ -190,10 +189,10 @@ fn main() -> Int {
     bad = bad + check("FAIL: for copyFrom at start", fh[4], 404)
     bad = bad + check("FAIL: for copyFrom end", fh[15], 415)
 
+    // `20..<16` counts down from 20, past both lengths from its first step.
     let fi = filled(16, 500)
     let mut fj = filled(16, 0)
-    copyFromFor(fj, fi, 20, 16)
-    bad = bad + check("FAIL: for descending range content", digest(fj), digest(filled(16, 0)))
+    if (trapCase("for-descending")) { copyFromFor(fj, fi, 20, 16) }
 
     let mut fk = filled(16, 600)
     copyAllFor(fk, fk, 16)
@@ -204,12 +203,10 @@ fn main() -> Int {
     copyAllFor(fm, fl, 0)
     bad = bad + check("FAIL: for empty lists", fm.length, 0)
 
+    // `0..<-5` counts down from 0, so only element 0 is in range and -1 stops it.
     let fo = filled(8, 700)
     let mut fp = filled(8, 0)
-    // `0..<-5` counts down from 0, so only element 0 is ever in range.
-    copyAllFor(fp, fo, 0 - 5)
-    bad = bad + check("FAIL: for negative bound head", fp[0], 700)
-    bad = bad + check("FAIL: for negative bound rest", fp[1], 1)
+    if (trapCase("for-negative-bound")) { copyAllFor(fp, fo, 0 - 5) }
 
     let mut rs = filled(4, 1)
     let mut rd = filled(4, 0)

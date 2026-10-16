@@ -12,8 +12,8 @@ let REGISTERS: Usize = 0x44200000
 export fn bench_atomic_counter(scale: U32) -> U32 {
     volatileStoreU32(WORD, 0)
 
-    for i in 0..<500000 * scale as Int {
-        atomicAddU32(WORD, 1 + (i as U32 & 3))
+    for i in 0..<500000 * scale {
+        atomicAddU32(WORD, 1 + (i & 3))
 
     }
     return atomicLoadU32(WORD)

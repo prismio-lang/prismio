@@ -1,0 +1,32 @@
+// A window of four structs, each owning a Vec, replaced 2,000 times with a view read
+// before each replacement. The replacement releases what it displaces at once
+// (src/ir/overwrites.psm), so the program's peak is a few elements: 528 bytes,
+// against 176,449 when every displaced element was parked until the Vec died. The
+// `aif_verify` harness test bounds the peak (`max_peak_bytes`).
+
+import std.process
+
+struct Slot {
+    value: Int,
+    edges: Vec<Int>
+}
+
+fn fill(i: Int) -> Slot {
+    let mut edges: Vec<Int> = []
+    for k in 0..<4 { edges.push(i + k) }
+    return Slot { value: i, edges: edges }
+}
+
+fn main() -> Int {
+    let mut slots: Vec<Slot> = []
+    for i in 0..<4 { slots.push(fill(i)) }
+    let mut total = 0
+    let steps = process.args.count * 2000
+    for step in 0..<steps {
+        let s = slots[step % 4]
+        total = total + s.value + s.edges.length
+        slots[step % 4] = fill(step)
+    }
+    if (total != 1999016) { return 1 }
+    return 0
+}

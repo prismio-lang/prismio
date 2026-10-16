@@ -1,0 +1,65 @@
+// A private function's integer parameters take the join of what its calls pass, read
+// with the interval walk's facts at each call (src/ir/param_ranges.psm), and LLVM is
+// told as a `range` attribute. A wrong range is poison that may still print the right
+// number, so the `param_ranges` harness test reads the IR; this program checks every
+// function still answers what it should, including the ones that must get no range.
+
+import std.process
+
+// Called from two loops: `i` in [0, 99] and [100, 149], `n` always 150.
+fn scaled(i: Int, n: Int) -> Int {
+    return i * 3 + n
+}
+
+// Called with `(2048 - 2) / 2`, which the walk divides: exactly 1023.
+fn halved(x: Int) -> Int {
+    return x + 1
+}
+
+// Recursive, and still ranged: its own call passes `n - 1` after `n <= 0` returned, so
+// at least 0, and main passes 10. Nothing about `n` itself is needed.
+fn countDown(n: Int) -> Int {
+    if (n <= 0) { return 0 }
+    return 1 + countDown(n - 1)
+}
+
+// Called with the argument count, which nothing bounds.
+fn unbounded(x: Int) -> Int {
+    return x * 2
+}
+
+// Public: callers outside this file are possible, so no range.
+public fn exposed(x: Int) -> Int {
+    return x - 1
+}
+
+// Called once with a bounded value and once from inside a closure's body, whose
+// captured value the walk cannot bound.
+fn fromClosure(x: Int) -> Int {
+    return x + 7
+}
+
+fn applyOnce<F>(f: F, x: Int) -> Int {
+    return f(x)
+}
+
+fn main() -> Int {
+    let seed = process.args.count
+    let mut total = 0
+    for i in 0..<100 {
+        total = total + scaled(i, 150)
+    }
+    for i in 100..<150 {
+        total = total + scaled(i, 150)
+    }
+    // sum of 3i over 0..149 plus 150 * 150
+    if (total != 3 * 11175 + 22500) { return 1 }
+    if (halved((2048 - 2) / 2) != 1024) { return 2 }
+    if (countDown(10) != 10) { return 3 }
+    if (unbounded(seed + 20) != 42) { return 4 }
+    if (exposed(5) != 4) { return 5 }
+    let offset = seed * 1000
+    if (fromClosure(3) != 10) { return 6 }
+    if (applyOnce(|v: Int| fromClosure(v + offset), 2) != 1009) { return 7 }
+    return 0
+}

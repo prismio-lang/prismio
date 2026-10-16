@@ -1,0 +1,279 @@
+// What an index is modulo a stride, and what an immutable literal array holds at the
+// indices of one residue: the congruence half of the interval walk (ir/nowrap.psm).
+//
+// An interval alone loses the shape of `program[pc * 4 + 1]`: with `pc` in [0, 7] the
+// index is somewhere in [1, 29], and the literal's elements there reach 7, but the index
+// is always one more than a multiple of 4, and those elements are all below 4. A
+// bytecode interpreter's operand fields are laid out this way, and so is any array of
+// records flattened into one of words. Pairing each interval with a congruence -- the
+// reduced product of intervals and congruences (Granger, *Static analysis of arithmetical
+// congruences*, 1989) -- recovers it.
+//
+// Only an immutable `let` carries one. It is bound once where it is declared and never
+// changes, so there is nothing to join: the fact lives from the declaration to the end
+// of its block. A `let mut` loop counter would need the join and gets nothing here.
+
+import ast.nodes
+import ast.types
+import std.string
+
+// The congruences and literal arrays in scope at the walk's point. A congruence is
+// `value = residue (mod stride)`; stride 0 means the value is exactly `residue`.
+struct IndexStrides {
+    internal names: Vec<String>,
+    internal strides: Vec<I64>,
+    internal residues: Vec<I64>,
+    // Immutable `let`s initialised with a literal of integer literals, by name.
+    internal arrays: Vec<String>,
+    internal decls: Vec<Ptr>
+}
+
+internal fn indexStridesNew() -> IndexStrides {
+    return IndexStrides { names: [], strides: [], residues: [], arrays: [], decls: [] }
+}
+
+impl IndexStrides {
+    // Drops what is known of `name`: its block ended, or another binding shadows it.
+    internal fn kill(self, name: String) {
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name)) { self.names[i] = "" }
+        }
+        for i in 0..<self.arrays.length {
+            let known: String = self.arrays[i]
+            if (known.equals(name)) { self.arrays[i] = "" }
+        }
+    }
+}
+
+
+impl IndexStrides {
+    internal fn setCongruence(self, name: String, stride: I64, residue: I64) {
+        self.kill(name)
+        if (stride == 1 as I64) { return }
+        self.names.push(name.clone())
+        self.strides.push(stride)
+        self.residues.push(strideNormal(stride, residue))
+    }
+}
+
+
+impl IndexStrides {
+    // The slot of `name`'s congruence, or -1.
+    internal fn congruenceOf(self, name: String) -> Int {
+        let mut at = 0 - 1
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name)) { at = i }
+        }
+        return at
+    }
+}
+
+
+impl IndexStrides {
+    internal fn addArray(self, name: String, decl: Ptr) {
+        self.kill(name)
+        self.arrays.push(name.clone())
+        self.decls.push(decl)
+    }
+}
+
+
+impl IndexStrides {
+    // The declaration of the literal array `name`, or null.
+    internal fn arrayOf(self, name: String) -> Ptr {
+        let mut found = ptr_null()
+        for i in 0..<self.arrays.length {
+            let known: String = self.arrays[i]
+            if (known.equals(name)) { found = self.decls[i] }
+        }
+        return found
+    }
+}
+
+
+// `residue` brought into [0, stride), or left alone for an exact value.
+internal fn strideNormal(stride: I64, residue: I64) -> I64 {
+    if (stride <= 0 as I64) { return residue }
+    let r = residue % stride
+    if (r < 0 as I64) { return r + stride }
+    return r
+}
+
+internal fn strideGcd(a: I64, b: I64) -> I64 {
+    let mut x = a
+    let mut y = b
+    if (x < 0 as I64) { x = 0 - x }
+    if (y < 0 as I64) { y = 0 - y }
+    while (y != 0 as I64) {
+        let t = x % y
+        x = y
+        y = t
+    }
+    return x
+}
+
+// An immutable `let` of a literal whose every element is an integer literal, and no
+// element of which the function assigns: its elements are known exactly.
+internal fn strideIsLiteralArray(decl: ASTNode, body: Ptr) -> Bool {
+    if (decl.i1 == 1 or nodeIsNull(decl.child2)) { return false }
+    let init = ptr_to_node(decl.child2)
+    if (init.kind != NodeKind.ARRAY_LITERAL_EXPR or nodeIsNull(init.child1)) { return false }
+    let mut p = init.child1
+    while (nodeExists(p)) {
+        if (strideElementValue(ptr_to_node(p)) < 0 as I64) { return false }
+        p = ptr_to_node(p).next
+    }
+    return strideStoresInto(body, decl.s1) == false
+}
+
+// A non-negative integer literal's value, or -1. Negative elements are left to the
+// whole-array bound.
+private fn strideElementValue(n: ASTNode) -> I64 {
+    if (n.kind != NodeKind.LITERAL_EXPR or nowrapIsFactType(n) == false) { return (0 - 1) as I64 }
+    let value = n.s1.parseIntOr(0 - 1)
+    if (value < 0 or value != n.s1.parseIntOr(0 - 2)) { return (0 - 1) as I64 }
+    return value as I64
+}
+
+// Whether anything in the subtree assigns an element of `name`.
+private fn strideStoresInto(nodePtr: Ptr, name: String) -> Bool {
+    if (nodeIsNull(nodePtr)) { return false }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
+        let target = ptr_to_node(n.child1)
+        if (target.kind == NodeKind.INDEX_EXPR and nodeExists(target.child1)) {
+            let base = ptr_to_node(target.child1)
+            if (base.kind == NodeKind.IDENTIFIER_EXPR and base.s1.equals(name)) { return true }
+        }
+    }
+    return strideStoresIntoChain(n.child1, name) or strideStoresIntoChain(n.child2, name)
+           or strideStoresIntoChain(n.child3, name)
+}
+
+private fn strideStoresIntoChain(head: Ptr, name: String) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (strideStoresInto(p, name)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+// The smallest and largest element of the literal `decl` at an index in [lo, hi]
+// congruent to `residue` modulo `stride`, into out.lo/out.hi; false when no index
+// qualifies. An index outside the literal is one no access that ran can have had.
+internal fn strideLiteralBound(decl: ASTNode, lo: I64, hi: I64, stride: I64, residue: I64,
+                               out: StrideBound) -> Bool {
+    let init = ptr_to_node(decl.child2)
+    let mut found = false
+    let mut index = 0 as I64
+    let mut p = init.child1
+    while (nodeExists(p)) {
+        let fits = index >= lo and index <= hi
+        let congruent = (stride == 0 as I64 and index == residue)
+                        or (stride > 0 as I64 and strideNormal(stride, index) == residue)
+        if (fits and congruent) {
+            let value = strideElementValue(ptr_to_node(p))
+            if (found == false or value < out.lo) { out.lo = value }
+            if (found == false or value > out.hi) { out.hi = value }
+            found = true
+        }
+        index = index + 1 as I64
+        p = ptr_to_node(p).next
+    }
+    return found
+}
+
+struct StrideBound {
+    internal lo: I64,
+    internal hi: I64
+}
+
+internal fn strideBoundNew() -> StrideBound {
+    return StrideBound { lo: 0 as I64, hi: 0 as I64 }
+}
+
+// The congruence of an integer expression at the walk's point, into w.stride and
+// w.residue. A sum, difference or product counts only where the interval walk shows
+// it exact -- one that wrapped keeps no residue modulo anything but a power of two --
+// and an operand nothing is known of is any integer, stride 1. False when the result
+// is no better than that.
+internal fn nowrapStride(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) -> Bool {
+    strideOf(w, f, exprPtr)
+    return w.stride != 1 as I64
+}
+
+private fn strideOf(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) {
+    w.stride = 1 as I64
+    w.residue = 0 as I64
+    if (nodeIsNull(exprPtr)) { return }
+    let e = ptr_to_node(exprPtr)
+    let literal = nowrapLiteral(e)
+    if (literal >= 0) {
+        w.stride = 0 as I64
+        w.residue = literal as I64
+        return
+    }
+    if (e.kind == NodeKind.IDENTIFIER_EXPR) {
+        let at = w.strides.congruenceOf(e.s1)
+        if (at >= 0) {
+            w.stride = w.strides.strides[at]
+            w.residue = w.strides.residues[at]
+        }
+        return
+    }
+    if (e.kind == NodeKind.CAST_EXPR) {
+        if (nowrapInterval(w, f, exprPtr)) { strideOf(w, f, e.child1) }
+        return
+    }
+    if (e.kind != NodeKind.BINARY_EXPR) { return }
+    let plus = e.s1.equals("+")
+    let minus = e.s1.equals("-")
+    let times = e.s1.equals("*")
+    if ((plus or minus or times) == false or nowrapInterval(w, f, exprPtr) == false) { return }
+    strideOf(w, f, e.child1)
+    let s1 = w.stride
+    let r1 = w.residue
+    strideOf(w, f, e.child2)
+    let s2 = w.stride
+    let r2 = w.residue
+    if (plus or minus) {
+        w.stride = strideGcd(s1, s2)
+        if (plus) { w.residue = r1 + r2 } else { w.residue = r1 - r2 }
+    } else if (s2 == 0 as I64) {
+        w.stride = s1 * r2
+        w.residue = r1 * r2
+    } else if (s1 == 0 as I64) {
+        w.stride = s2 * r1
+        w.residue = r1 * r2
+    } else {
+        w.stride = strideGcd(strideGcd(s1 * s2, s1 * r2), s2 * r1)
+        w.residue = r1 * r2
+    }
+    if (w.stride < 0 as I64) { w.stride = 0 - w.stride }
+    w.residue = strideNormal(w.stride, w.residue)
+}
+
+// An element of an immutable literal array: the literal's smallest and largest value at
+// the indices the subscript's interval and congruence allow, into w.lo/w.hi.
+internal fn nowrapLiteralElement(w: NowrapWalk, f: NowrapFacts, e: ASTNode) -> Bool {
+    if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return false }
+    let base = ptr_to_node(e.child1)
+    if (base.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let decl = w.strides.arrayOf(base.s1)
+    if (nodeIsNull(decl)) { return false }
+    let mut lo = 0 as I64
+    let mut hi = 2147483647 as I64
+    if (nowrapInterval(w, f, e.child2)) {
+        lo = w.lo
+        hi = w.hi
+    }
+    strideOf(w, f, e.child2)
+    let out = strideBoundNew()
+    if (strideLiteralBound(ptr_to_node(decl), lo, hi, w.stride, w.residue, out) == false) { return false }
+    w.lo = out.lo
+    w.hi = out.hi
+    return true
+}

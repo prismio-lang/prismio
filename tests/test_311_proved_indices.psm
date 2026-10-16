@@ -1,0 +1,256 @@
+// expect-trap: off-by-one => index 64 is out of range for an array of length 64
+// expect-trap: below-zero => index -1 is out of range for an array of length 4
+// expect-trap: after-break => index 10 is out of range for an array of length 4
+// expect-trap: continue-path => index 100 is out of range for an array of length 4
+// expect-trap: continue-outer => index 50 is out of range for an array of length 4
+// expect-trap: not-at-edge => index 7 is out of range for an array of length 7
+// expect-trap: big-cast => index -1294967296 is out of range for an array of length 4
+// expect-trap: wide-mask => index 7 is out of range for an array of length 7
+// expect-trap: wide-remainder => index 8 is out of range for an array of length 8
+// expect-trap: stepping => index 8 is out of range for an array of length 8
+// expect-trap: unbounded-contents => index 9 is out of range for an array of length 8
+// expect-trap: shadowed-alias => index 9 is out of range for an array of length 8
+// An index the compiler proves in range needs no check (ir/nowrap.psm): unsigned facts,
+// comparisons on both branches, loop invariants found by widening, and array contents.
+// The in-range arm checks the answers of the shapes it proves; tests/test_runner.py's
+// proved_indices reads the IR to see that they carry no check. Every named case is a
+// shape that looks provable and is not, and must still stop at its out-of-range index.
+import std.process
+
+fn binarySearch(key: U32) -> Int {
+    let mut table: Array<U32, 64>
+    for i in 0..<64 { table[i] = (i as U32) * 3 }
+    let mut lo: U32 = 0
+    let mut hi: U32 = 64
+    while (lo < hi) {
+        let mid = (lo + hi) >> 1
+        if (table[mid as Int] < key) { lo = mid + 1 } else { hi = mid }
+    }
+    if (lo < 64 and table[lo as Int] == key) { return lo as Int }
+    return 0 - 1
+}
+
+// `<=` where `<` belongs: `mid` reaches 64 once the key is past every element.
+fn offByOne(key: U32) -> Int {
+    let mut table: Array<U32, 64>
+    for i in 0..<64 { table[i] = (i as U32) * 3 }
+    let mut lo: U32 = 0
+    let mut hi: U32 = 64
+    while (lo <= hi) {
+        let mid = (lo + hi) >> 1
+        if (table[mid as Int] == key) { return mid as Int }
+        if (table[mid as Int] < key) { lo = mid + 1 } else { hi = mid - 1 }
+    }
+    return 0 - 1
+}
+
+fn chase(steps: Int) -> U32 {
+    let mut order: Array<U32, 16>
+    let mut next: Array<U32, 16>
+    for i in 0..<16 { order[i] = i as U32 }
+    let mut s: U32 = 7
+    let mut i = 15
+    while (i > 0) {
+        s = s * 1664525 + 1013904223
+        let j = ((s >> 8) % ((i as U32) + 1)) as Int
+        let t = order[i]
+        order[i] = order[j]
+        order[j] = t
+        i = i - 1
+    }
+    for k in 0..<16 { next[order[k] as Int] = order[(k + 1) % 16] }
+    let mut at = order[0]
+    let mut sum: U32 = 0
+    for _ in 0..<steps {
+        at = next[at as Int]
+        sum = sum + at
+    }
+    return sum
+}
+
+fn bytecode(rounds: Int) -> U32 {
+    let program: Array<U32, 8> = [3, 1, 2, 0, 1, 1, 0, 2]
+    let mut reg: Array<U32, 4> = [1, 2, 3, 4]
+    let mut pc: U32 = 0
+    for _ in 0..<rounds {
+        let base = (pc * 2) as Int
+        reg[program[base] as Int] = reg[program[base + 1] as Int] + 1
+        if (pc == 3) { pc = 0 } else { pc = pc + 1 }
+    }
+    return reg[0] + reg[1] + reg[2] + reg[3]
+}
+
+fn atEdge(x: Int) -> Int {
+    let a: Array<Int, 7> = [1, 2, 3, 4, 5, 6, 7]
+    if (x >= 0 and x <= 7 and x != 7) { return a[x] }
+    return 0
+}
+
+fn masked(x: U32) -> Int {
+    let a: Array<Int, 8> = [1, 2, 3, 4, 5, 6, 7, 8]
+    return a[(x & 7) as Int] + a[(x % 8) as Int]
+}
+
+fn below(start: U32) -> Int {
+    let a: Array<Int, 4> = [1, 2, 3, 4]
+    let mut x: U32 = start
+    x = x - 1
+    return a[x as Int]
+}
+
+fn afterBreak(step: Int) -> Int {
+    let a: Array<Int, 4> = [1, 2, 3, 4]
+    let mut x = 0
+    while (x < 4) {
+        x = x + step
+        break
+    }
+    return a[x]
+}
+
+// The end of the body leaves `j` at 1, but a `continue` takes 100 back to the head.
+fn continuePath(trigger: Int) -> Int {
+    let a: Array<Int, 4> = [1, 2, 3, 4]
+    let mut j = 0
+    let mut k = 0
+    let mut t = 0
+    while (k < 10) {
+        t = t + a[j]
+        k = k + 1
+        if (k == trigger) {
+            j = 100
+            continue
+        }
+        j = 1
+    }
+    return t
+}
+
+// A `continue` that names the outer loop, from inside the inner one.
+fn continueOuter(trigger: Int) -> Int {
+    let a: Array<Int, 4> = [1, 2, 3, 4]
+    let mut j = 0
+    let mut t = 0
+    outer@ for k in 0..<6 {
+        t = t + a[j]
+        for m in 0..<2 {
+            if (k == trigger and m == 1) {
+                j = 50
+                continue@outer
+            }
+        }
+        j = 2
+    }
+    return t
+}
+
+fn notAtEdge(x: Int) -> Int {
+    let a: Array<Int, 7> = [1, 2, 3, 4, 5, 6, 7]
+    if (x >= 0 and x <= 7 and x != 3) { return a[x] }
+    return 0
+}
+
+fn bigCast(x: U32) -> Int {
+    let a: Array<Int, 4> = [1, 2, 3, 4]
+    if (x >= 3000000000) { return a[x as Int] }
+    return 0
+}
+
+fn wideMask(x: U32) -> Int {
+    let a: Array<Int, 7> = [1, 2, 3, 4, 5, 6, 7]
+    return a[(x & 7) as Int]
+}
+
+fn wideRemainder(x: U32) -> Int {
+    let a: Array<Int, 8> = [1, 2, 3, 4, 5, 6, 7, 8]
+    return a[(x % 9) as Int]
+}
+
+// `x` steps past the array on the last iteration; no fact on it survives the loop head.
+fn stepping(n: Int) -> Int {
+    let a: Array<Int, 8> = [1, 2, 3, 4, 5, 6, 7, 8]
+    let mut x = 0
+    let mut t = 0
+    for _ in 0..<n {
+        t = t + a[x]
+        x = x + 2
+    }
+    return t
+}
+
+// A store of a value nothing bounds leaves the family without a bound.
+fn unboundedContents(v: U32) -> U32 {
+    let mut next: Array<U32, 8>
+    for i in 0..<8 { next[i] = ((i + 1) % 8) as U32 }
+    next[3] = v
+    let mut at: U32 = 0
+    let mut sum: U32 = 0
+    for _ in 0..<8 {
+        at = next[at as Int]
+        sum = sum + at
+    }
+    return sum
+}
+
+// `t` is bound twice, so it is not one read of `next`: the second holds `v`.
+fn shadowedAlias(v: U32) -> U32 {
+    let mut next: Array<U32, 8>
+    for i in 0..<8 { next[i] = ((i + 1) % 8) as U32 }
+    if (v > 100) {
+        let t = next[1]
+        next[2] = t
+    } else {
+        let t = v
+        next[2] = t
+    }
+    let mut at: U32 = 0
+    let mut sum: U32 = 0
+    for _ in 0..<8 {
+        at = next[at as Int]
+        sum = sum + at
+    }
+    return sum
+}
+
+fn fail(code: Int) -> Int { return code }
+
+fn main() -> Int {
+    let one = process.args.count
+    if (one > 1) {
+        let case = process.args[1]
+        let n = case.length
+        if (case.equals("off-by-one")) { return offByOne(1000) }
+        if (case.equals("below-zero")) { return below((n - 10) as U32) }
+        if (case.equals("after-break")) { return afterBreak(n - 1) }
+        if (case.equals("continue-path")) { return continuePath(n - 8) }
+        if (case.equals("continue-outer")) { return continueOuter(n - 12) }
+        if (case.equals("not-at-edge")) { return notAtEdge(n - 4) }
+        if (case.equals("big-cast")) { return bigCast(3000000000) }
+        if (case.equals("wide-mask")) { return wideMask((n - 2) as U32) }
+        if (case.equals("wide-remainder")) { return wideRemainder((n - 6) as U32) }
+        if (case.equals("stepping")) { return stepping(n - 3) }
+        if (case.equals("unbounded-contents")) { return unboundedContents((n - 9) as U32) as Int }
+        if (case.equals("shadowed-alias")) { return shadowedAlias((n - 5) as U32) as Int }
+        return 0
+    }
+    // Run-time values, so nothing folds: `one` is 1.
+    if (binarySearch((one * 30) as U32) != 10) { return fail(1) }
+    if (binarySearch((one * 31) as U32) != 0 - 1) { return fail(2) }
+    if (offByOne((one * 30) as U32) != 10) { return fail(3) }
+    if (chase(one * 100) != 756) { return fail(4) }
+    if (bytecode(one * 10) != 20) { return fail(5) }
+    if (atEdge(one * 6) != 7) { return fail(6) }
+    if (masked((one * 13) as U32) != 12) { return fail(7) }
+    if (below((one * 2) as U32) != 2) { return fail(8) }
+    if (afterBreak(one) != 2) { return fail(9) }
+    if (continuePath(one * 99) != 19) { return fail(10) }
+    if (continueOuter(one * 99) != 16) { return fail(11) }
+    if (notAtEdge(one * 6) != 7) { return fail(12) }
+    if (bigCast(one as U32) != 0) { return fail(13) }
+    if (wideMask((one * 6) as U32) != 7) { return fail(14) }
+    if (wideRemainder((one * 7) as U32) != 8) { return fail(15) }
+    if (stepping(one * 4) != 16) { return fail(16) }
+    if (unboundedContents((one * 4) as U32) != 28) { return fail(17) }
+    if (shadowedAlias((one * 4) as U32) != 26) { return fail(18) }
+    return 0
+}

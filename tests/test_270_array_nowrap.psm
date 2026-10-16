@@ -99,7 +99,7 @@ fn earlyExit(n: Int) -> Int {
 
 // The access ran, then the name was assigned: its fact is gone, and the
 // increment really wraps.
-fn reassigned(a: [Int]) -> Int {
+public fn reassigned(a: [Int]) -> Int {
     let mut i = 0
     let mut first = 0
     let mut k = 0
@@ -113,7 +113,7 @@ fn reassigned(a: [Int]) -> Int {
 
 // A fact from the right of `and` holds only where the `and` held. With the flag
 // false the access never runs, and `i` is far outside the array.
-fn shortCircuit(a: [Int], flag: Bool) -> Int {
+public fn shortCircuit(a: [Int], flag: Bool) -> Int {
     let i = 2147483647
     let mut hits = 0
     while (hits < 1) {
@@ -124,7 +124,7 @@ fn shortCircuit(a: [Int], flag: Bool) -> Int {
 }
 
 // The same for the fallback of `??`, evaluated only when the left is none.
-fn coalesced(a: [Int], o: Int?) -> Int {
+public fn coalesced(a: [Int], o: Int?) -> Int {
     let i = 2147483647
     let mut r = 0
     let mut k = 0
@@ -136,7 +136,7 @@ fn coalesced(a: [Int], o: Int?) -> Int {
 }
 
 // A `let` inside a block is another variable under the same name.
-fn shadowed(a: [Int]) -> Int {
+public fn shadowed(a: [Int]) -> Int {
     let mut acc = 0
     let mut k = 0
     while (k < 1) {
@@ -153,7 +153,7 @@ fn shadowed(a: [Int]) -> Int {
 
 // A loop head keeps no fact on a name the loop assigns: the first iteration's
 // access does not cover the second iteration's `i`.
-fn headKill(a: [Int]) -> Int {
+public fn headKill(a: [Int]) -> Int {
     let mut i = 0
     let mut n = 0
     let mut acc = 0
@@ -170,7 +170,7 @@ fn headKill(a: [Int]) -> Int {
 
 // A subscript whose left operand no access bounded: `x - y` wraps from far below
 // `Int` into range, and must, since the index the program computes is the wrapped one.
-fn negativeLeft(a: [Int], x: Int, y: Int) -> Int {
+public fn negativeLeft(a: [Int], x: Int, y: Int) -> Int {
     let mut acc = 0
     let mut k = 0
     while (k < 1) {
@@ -182,7 +182,10 @@ fn negativeLeft(a: [Int], x: Int, y: Int) -> Int {
 
 // A view's indices reach Int.MAX - 1, and `i - 2` with `i` at Int.MIN + 1 wraps
 // to exactly that. So the access does not put `i` at 2 or more, and `i - 3` may wrap.
-fn viewBelow(a: [Int], i: Int) -> Int {
+// `public`, like the six other functions whose ops must stay plain, so that each is
+// tested for parameters nothing bounds: a private function takes its parameters'
+// ranges from its calls (src/ir/param_ranges.psm), and main's one call here passes 4.
+public fn viewBelow(a: [Int], i: Int) -> Int {
     let mut acc = 0
     let mut k = 0
     while (k < 1) {

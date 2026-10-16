@@ -307,16 +307,23 @@ private fn semaPtrStructIsPlain(module: ASTNode, name: String, depth: Int) -> Bo
         p = field.next
         if (field.kind != NodeKind.STRUCT_FIELD) { continue }
         if (nodeExists(field.child1) == false) { return false }
-        let ann = ptr_to_node(field.child1)
-        if (ann.i1 == 1) { return false }
-        // `Ptr<T>` and `Ptr<T>?` alike: a pointer owns nothing, present or absent.
-        if (ann.s1.equals("Ptr")) { continue }
-        if (ann.i2 == 1 or ann.i3 == 1) { return false }
-        if (semaPtrScalarName(ann.s1) or semaHasEnum(module, ann.s1)) { continue }
-        if (semaHasStruct(module, ann.s1) and semaPtrStructIsPlain(module, ann.s1, depth + 1)) { continue }
-        return false
+        if (semaPtrFieldIsPlain(module, ptr_to_node(field.child1), depth) == false) { return false }
     }
     return true
+}
+
+private fn semaPtrFieldIsPlain(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
+    // An `Array<T, N>` field is N `T`s in place, so it is plain when `T` is. A `[T]` field is
+    // refused on its own (semaArrayLengthsInFields).
+    if (ann.i1 == 1) {
+        return semaIsSizedArrayAnnotation(ann) and nodeExists(ann.child1)
+            and semaPtrFieldIsPlain(module, ptr_to_node(ann.child1), depth)
+    }
+    // `Ptr<T>` and `Ptr<T>?` alike: a pointer owns nothing, present or absent.
+    if (ann.s1.equals("Ptr")) { return true }
+    if (ann.i2 == 1 or ann.i3 == 1) { return false }
+    if (semaPtrScalarName(ann.s1) or semaHasEnum(module, ann.s1)) { return true }
+    return semaHasStruct(module, ann.s1) and semaPtrStructIsPlain(module, ann.s1, depth + 1)
 }
 
 // The names `semaAnnotationInner` resolves to a scalar, spelled the way it does. Every
@@ -511,6 +518,79 @@ internal fn semaStructHasField(structName: String, fieldName: String) -> Bool {
                 fieldPtr = field.next
             }
         }
+    }
+    return false
+}
+
+// A field of a `packed struct` starts wherever the one before it ended, so its address is
+// aligned to one byte and no more. The backend accesses a packed struct's own fields at
+// that alignment (access_align in llvm-api-backend.c), and that is all it can do: what is
+// reached *through* a field -- an inner struct's fields, an array's elements, a `T?`'s
+// flag -- is accessed at its own type's alignment, which an odd offset breaks (undefined in
+// LLVM, a fault on a strict-alignment target). So every field of a packed struct is a
+// scalar, a pointer, or something aligned to one byte itself: a packed struct, or an array
+// of bytes.
+internal fn semaCheckPackedStructs(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (nodeStructIsPacked(decl)) { semaCheckPackedFields(module, decl) }
+        p = decl.next
+    }
+}
+
+private fn semaCheckPackedFields(module: ASTNode, decl: ASTNode) {
+    let mut f = decl.child1
+    while (nodeExists(f)) {
+        let field = ptr_to_node(f)
+        if (nodeExists(field.child1)) {
+            let ann = ptr_to_node(field.child1)
+            let t = semaAnnotationType(module, ann)
+            let kind = semaPackedFieldKind(module, t)
+            if (kind != 0) {
+                let head = diagQuote(field.s1).concat(" cannot be ", diagQuote(typeDisplay(t)), " in a packed struct")
+                if (kind == 1) {
+                    semaErrorAt(ann, head.concat(": its fields would be read at an address ",
+                                                 diagQuote(t.name), " is not aligned to"))
+                    diag_note("declare ".concat(diagQuote(t.name), " `packed` as well"))
+                } else if (kind == 2) {
+                    semaErrorAt(ann, head.concat(": its elements would be read at an address they are not aligned to"))
+                    diag_note("an array in a packed struct holds `U8`, `I8` or `Bool`")
+                } else {
+                    semaErrorAt(ann, head)
+                    diag_note("a field of a packed struct is a number, a `Bool`, a `Char`, an enum, a pointer or a packed struct")
+                }
+            }
+        }
+        f = field.next
+    }
+}
+
+// 0 when `t` may be a field of a packed struct; otherwise why not: 1 a struct that is not
+// packed, 2 an array whose elements are wider than a byte, 3 anything else.
+private fn semaPackedFieldKind(module: ASTNode, t: TypeInfo) -> Int {
+    if (typeIsValid(t) == false) { return 0 }
+    if (typeIsScalarOptionalInner(t) or t.kind == TypeKind.PTR) { return 0 }
+    if (t.kind == TypeKind.OPTIONAL and nodeExists(t.child) and ptr_to_type(t.child).kind == TypeKind.PTR) {
+        return 0
+    }
+    if (t.kind == TypeKind.STRUCT) {
+        if (enumIsPayloadType(module, t)) { return 3 }
+        if (semaStructIsPacked(t.name)) { return 0 }
+        return 1
+    }
+    if (t.kind == TypeKind.ARRAY and nodeExists(t.child)) {
+        let elemT = ptr_to_type(t.child)
+        if (elemT.kind == TypeKind.BOOL or elemT.name.equals("U8") or elemT.name.equals("I8")) { return 0 }
+        return 2
+    }
+    return 3
+}
+
+private fn semaStructIsPacked(name: String) -> Bool {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        if (nodeStructIsPacked(ptr_to_node(ir_decl_at(name, i)))) { return true }
     }
     return false
 }

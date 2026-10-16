@@ -1,0 +1,87 @@
+// A small pure function that calls itself two or three times is inlined into itself
+// once (SelfRecursionUnfold, runtime/llvm_bridge.cpp), so that its copies' equal calls
+// merge: `fib(n - 1) + fib(n - 2)` becomes three calls a level instead of four. Every
+// function here is checked against a loop that computes the same thing, on inputs
+// that depend on the argument count so that nothing is folded at compile time.
+
+import std.process
+
+fn fib(n: U32) -> U32 {
+    if (n < 2) { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn fibLoop(n: U32) -> U32 {
+    let mut a: U32 = 0
+    let mut b: U32 = 1
+    for _ in 0..<n {
+        let t = a + b
+        a = b
+        b = t
+    }
+    return a
+}
+
+// Three self-calls, and a base case that is not the argument itself.
+fn trib(n: Int) -> Int {
+    if (n < 3) { return n / 2 }
+    return trib(n - 1) + trib(n - 2) + trib(n - 3)
+}
+
+fn tribLoop(n: Int) -> Int {
+    let mut a = 0
+    let mut b = 0
+    let mut c = 1
+    if (n < 2) { return 0 }
+    if (n == 2) { return 1 }
+    for _ in 3..n {
+        let d = a + b + c
+        a = b
+        b = c
+        c = d
+    }
+    return c
+}
+
+// Two arguments, two self-calls whose arguments differ in both.
+fn choose(n: Int, k: Int) -> Int {
+    if (k == 0 or k == n) { return 1 }
+    return choose(n - 1, k - 1) + choose(n - 1, k)
+}
+
+fn chooseLoop(n: Int, k: Int) -> Int {
+    let mut result = 1
+    for i in 1..k {
+        result = result * (n - k + i) / i
+    }
+    return result
+}
+
+// Wraps: the unfolded arithmetic must wrap exactly as the original's does.
+fn grow(n: U32) -> U32 {
+    if (n < 2) { return n + 7 }
+    return grow(n - 1) * 3 + grow(n - 2)
+}
+
+fn growLoop(n: U32) -> U32 {
+    let mut a: U32 = 7
+    let mut b: U32 = 8
+    if (n == 0) { return a }
+    for _ in 1..<n {
+        let t = b * 3 + a
+        a = b
+        b = t
+    }
+    return b
+}
+
+fn main() -> Int {
+    let seed = process.args.count
+    let n = 20 + seed
+    if (fib(n as U32) != fibLoop(n as U32)) { return 1 }
+    if (fib(0) != 0 or fib(seed as U32) != 1) { return 2 }
+    if (trib(n - 2) != tribLoop(n - 2)) { return 3 }
+    if (choose(n - 1, 7 + seed) != chooseLoop(n - 1, 7 + seed)) { return 4 }
+    if (grow((n + 9) as U32) != growLoop((n + 9) as U32)) { return 5 }
+    return 0
+}

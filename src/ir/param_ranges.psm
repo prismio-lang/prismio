@@ -1,0 +1,295 @@
+// What every caller passes a private function's integer parameters.
+//
+// A private function is called only from its own file, so every call to it is in
+// this module, and the range its parameter can take is the join of what each call
+// passes. Each call's arguments are read with the interval walk's facts where the
+// call is made (ir/nowrap.psm), before any function is generated, as AIF reads the
+// whole module before codegen. The result reaches two places: the function's own
+// walk starts from it, and its definition says it to LLVM as a `range` attribute.
+//
+// That is a fact LLVM does not find for itself. A heap's `sift(data, start, 2047)`
+// is called with `start` counting down from 1023 to 0, and IPSCCP widens a loop's
+// counter to the full range; told `start` is in [0, 1023], LLVM proves the sift
+// loop's indices non-negative and indexes with a free zero-extension instead of a
+// `sxtw` (heapsort 10.74M -> 10.39M instructions, C 10.70M).
+//
+// **Every call must be seen, or nothing is claimed.** A function gets no range when
+// it is exported, a method (reachable through its receiver from any file, the way
+// std/map.psm calls a program's `eq`), generic, `async`, or `main`; when its name is
+// used as anything but a plain call's callee -- a function value, a spawn, whose
+// thunk calls it from the runtime -- anywhere in the module; or when the walk
+// recorded fewer calls than the module holds, which is any call inside a closure,
+// a global's initialiser or a form the walk does not record. A call with a different
+// number of arguments than parameters also takes the range away.
+
+import ast.nodes
+import ast.types
+import ast.fn_attrs
+import ir.bridge
+import std.string
+
+// One line per parameter with a range: `\n<symbol>#<index>|<lo>|<hi>`. Rebuilt by
+// paramRangesCollect before each emission of the module.
+let mut paramRangeTable = ""
+
+// The candidates of one collection: each one's symbol and source name, how many
+// calls the module holds to it, and whether something disqualified it.
+struct ParamCandidates {
+    decls: Vec<Ptr>,
+    symbols: Vec<String>,
+    names: Vec<String>,
+    calls: Vec<Int>,
+    poisoned: Vec<Bool>,
+    // The functions whose bodies hold a call to some candidate: walked for its facts.
+    callers: Vec<Ptr>
+}
+
+internal fn paramRangesCollect(module: ASTNode) {
+    paramRangeTable = ""
+    let c = ParamCandidates { decls: [], symbols: [], names: [], calls: [], poisoned: [], callers: [] }
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (paramRangeCandidate(decl)) {
+            let symbol = functionSymbolName(decl)
+            let known = c.find(symbol)
+            if (known >= 0) {
+                c.poisoned[known] = true
+            } else {
+                c.decls.push(p)
+                c.symbols.push(symbol.clone())
+                c.names.push(decl.s1.clone())
+                c.calls.push(0)
+                c.poisoned.push(false)
+            }
+        }
+        p = decl.next
+    }
+    if (c.symbols.length == 0) { return }
+
+    let mut q = module.child1
+    while (nodeExists(q)) {
+        let before = c.totalCalls()
+        paramRangeScan(c, q)
+        let decl = ptr_to_node(q)
+        if (decl.kind == NodeKind.FUNCTION and c.totalCalls() > before) { c.callers.push(q) }
+        q = decl.next
+    }
+
+    let sites = nowrapCallSitesNew()
+    for i in 0..<c.symbols.length {
+        if (c.poisoned[i] == false and c.calls[i] > 0) {
+            let symbol: String = c.symbols[i]
+            sites.watched.push(symbol.clone())
+        }
+    }
+    if (sites.watched.length == 0) { return }
+    for k in 0..<c.callers.length {
+        let caller = ptr_to_node(c.callers[k])
+        nowrapRecordCalls(caller, paramRangesEntry(caller), sites)
+    }
+
+    for i in 0..<c.symbols.length {
+        if (c.poisoned[i] == false and c.calls[i] > 0) {
+            paramRangeJoin(ptr_to_node(c.decls[i]), c.symbols[i], c.calls[i], sites)
+        }
+    }
+}
+
+// A private, non-generic free function with a body and an integer parameter.
+private fn paramRangeCandidate(decl: ASTNode) -> Bool {
+    if (decl.kind != NodeKind.FUNCTION or nodeIsNull(decl.child2)) { return false }
+    if (decl.i2 != 1 or decl.s1.equals("main") or nodeExists(decl.genericInfo)) { return false }
+    // export (1) and async (4).
+    if ((nodeFnAttrFlags(decl) & 5) != 0) { return false }
+    if (nodeIsNull(decl.child1)) { return false }
+    let first = ptr_to_node(decl.child1)
+    if (first.s1.equals("self")) { return false }
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        if (nodeExists(param.child1) and nowrapIsFactType(ptr_to_node(param.child1))) { return true }
+        p = param.next
+    }
+    return false
+}
+
+impl ParamCandidates {
+    private fn find(self, symbol: String) -> Int {
+        for i in 0..<self.symbols.length {
+            let known: String = self.symbols[i]
+            if (known.equals(symbol)) { return i }
+        }
+        return 0 - 1
+    }
+}
+
+
+impl ParamCandidates {
+    private fn totalCalls(self) -> Int {
+        let mut total = 0
+        for i in 0..<self.calls.length {
+            total = total + self.calls[i]
+        }
+        return total
+    }
+}
+
+
+impl ParamCandidates {
+    // Every candidate whose source name is `name`: an overload set shares the name,
+    // and a use of the name alone cannot say which one it means.
+    private fn poisonName(self, name: String) {
+        for i in 0..<self.names.length {
+            let known: String = self.names[i]
+            if (known.equals(name)) { self.poisoned[i] = true }
+        }
+    }
+}
+
+
+// Counts every call to a candidate in the subtree, and disqualifies a candidate whose
+// name appears anywhere but as a plain call's callee, or whose call is spawned.
+private fn paramRangeScan(c: ParamCandidates, nodePtr: Ptr) {
+    if (nodeIsNull(nodePtr)) { return }
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR) {
+        c.poisonName(n.s1)
+    } else if (n.kind == NodeKind.CALL_EXPR) {
+        let at = c.find(n.s2)
+        if (at >= 0) { c.calls[at] = c.calls[at] + 1 }
+        if (nodeExists(n.child1)) {
+            let callee = ptr_to_node(n.child1)
+            if (callee.kind == NodeKind.IDENTIFIER_EXPR) {
+                // Resolved to no symbol: the name is all there is to go by.
+                if (n.s2.equals("")) { c.poisonName(callee.s1) }
+            } else {
+                paramRangeScanChain(c, n.child1)
+            }
+        }
+        paramRangeScanChain(c, n.child2)
+        paramRangeScanChain(c, n.child3)
+        return
+    } else if (n.kind == NodeKind.SPAWN_EXPR and nodeExists(n.child1)) {
+        let spawned = ptr_to_node(n.child1)
+        let at = c.find(spawned.s2)
+        if (at >= 0) { c.poisoned[at] = true }
+    }
+    paramRangeScanChain(c, n.child1)
+    paramRangeScanChain(c, n.child2)
+    paramRangeScanChain(c, n.child3)
+}
+
+private fn paramRangeScanChain(c: ParamCandidates, head: Ptr) {
+    let mut p = head
+    while (nodeExists(p)) {
+        paramRangeScan(c, p)
+        p = ptr_to_node(p).next
+    }
+}
+
+// Each integer parameter's range from the recorded calls, when the walk recorded all
+// `calls` of them, every one with this many arguments and a bounded interval for this
+// one, and the hull fits both the parameter's type and the table's `Int`.
+private fn paramRangeJoin(decl: ASTNode, symbol: String, calls: Int, sites: NowrapCallSites) {
+    let mut recorded = 0
+    for k in 0..<sites.seen.length {
+        let known: String = sites.seen[k]
+        if (known.equals(symbol)) { recorded = recorded + 1 }
+    }
+    if (recorded != calls) { return }
+    let arity = paramRangeArity(decl)
+    let mut rows = 0
+    for k in 0..<sites.symbols.length {
+        let known: String = sites.symbols[k]
+        if (known.equals(symbol)) { rows = rows + 1 }
+    }
+    if (rows != arity * calls) { return }
+
+    let mut index = 0
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        if (nodeExists(param.child1) and nowrapIsFactType(ptr_to_node(param.child1))) {
+            paramRangeJoinOne(symbol, index, nodeGetType(ptr_to_node(param.child1)), sites)
+        }
+        index = index + 1
+        p = param.next
+    }
+}
+
+private fn paramRangeJoinOne(symbol: String, index: Int, t: TypeInfo, sites: NowrapCallSites) {
+    let mut lo = 2147483647 as I64
+    let mut hi = (0 - 2147483647 - 1) as I64
+    for k in 0..<sites.symbols.length {
+        let known: String = sites.symbols[k]
+        if (known.equals(symbol) and sites.indices[k] == index) {
+            if (sites.los[k] > sites.his[k]) { return }
+            if (sites.los[k] < lo) { lo = sites.los[k] }
+            if (sites.his[k] > hi) { hi = sites.his[k] }
+        }
+    }
+    if (lo > hi or nowrapFitsType(lo, hi, t) == false) { return }
+    if (hi > 2147483647 as I64) { return }
+    let line = "\n".concat(symbol, "#", index.toString(), "|")
+    paramRangeTable = paramRangeTable.concat(line, (lo as Int).toString(), "|", (hi as Int).toString())
+}
+
+private fn paramRangeArity(decl: ASTNode) -> Int {
+    let mut count = 0
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+// The `|lo|hi` tail of a parameter's line, or "" when it has no range.
+private fn paramRangeRecord(symbol: String, index: Int) -> String {
+    if (paramRangeTable.equals("")) { return "" }
+    let key = "\n".concat(symbol, "#", index.toString(), "|")
+    let at = paramRangeTable.indexOf(key)
+    if (at < 0) { return "" }
+    let start = at + key.length
+    let rest = paramRangeTable.substring(start, paramRangeTable.length - start)
+    let end = rest.indexOf("\n")
+    if (end < 0) { return rest.clone() }
+    return rest.substring(0, end)
+}
+
+private fn paramRangeLo(record: String) -> I64 {
+    let bar = record.indexOf("|")
+    return record.substring(0, bar).parseIntOr(0) as I64
+}
+
+private fn paramRangeHi(record: String) -> I64 {
+    let bar = record.indexOf("|")
+    return record.substring(bar + 1, record.length - bar - 1).parseIntOr(0) as I64
+}
+
+// The facts the function's walk starts from: one per parameter with a range.
+internal fn paramRangesEntry(func: ASTNode) -> NowrapFacts {
+    let facts = nowrapFactsNew()
+    if (paramRangeTable.equals("")) { return facts }
+    let symbol = functionSymbolName(func)
+    let mut index = 0
+    let mut p = func.child1
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        let record = paramRangeRecord(symbol, index)
+        if (record.equals("") == false) {
+            nowrapAssume(facts, param.s1, paramRangeLo(record), paramRangeHi(record))
+        }
+        index = index + 1
+        p = param.next
+    }
+    return facts
+}
+
+// Tells LLVM the range of the parameter just declared, the `index`th of `func`.
+internal fn paramRangeDeclare(func: ASTNode, index: Int) {
+    let record = paramRangeRecord(functionSymbolName(func), index)
+    if (record.equals("")) { return }
+    ir_function_param_range(paramRangeLo(record), paramRangeHi(record))
+}

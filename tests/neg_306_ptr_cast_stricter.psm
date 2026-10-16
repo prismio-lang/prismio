@@ -1,0 +1,21 @@
+// expect-error: cannot cast `Ptr<mut U8>` to `Ptr<mut U64>`: `U64` needs 8-byte alignment, and `U8` promises 1
+// expect-error: cannot cast `Ptr<Wire>` to `Ptr<Header>`: `Header` needs 4-byte alignment, and `Wire` promises 1
+// expect-error: aborting due to 2 previous errors
+// A `cast` never makes a pointer stricter than the memory under it: a `Ptr<U8>` promises one
+// byte of alignment, and a `Ptr<U64>` made from it would promise eight nothing checked.
+// `castAligned` checks the address; `castUnchecked` is the caller's word; a cast to a looser
+// pointee, or from the opaque `Ptr`, is as the caller says.
+import std.raw
+
+repr(C) struct Header { magic: U32 }
+packed struct Wire { tag: U8, magic: U32 }
+
+fn widen(p: Ptr<mut U8>) -> Ptr<mut U64> { return Ptr<mut U64>.cast(p) }
+fn unpack(p: Ptr<Wire>) -> Ptr<Header> { return Ptr<Header>.cast(p) }
+
+fn checked(p: Ptr<mut U8>) -> Ptr<mut U64>? { return Ptr<mut U64>.castAligned(p) }
+fn promised(p: Ptr<mut U8>) -> Ptr<mut U64> { return Ptr<mut U64>.castUnchecked(p) }
+fn looser(p: Ptr<mut U64>) -> Ptr<mut U8> { return Ptr<mut U8>.cast(p) }
+fn opaque(p: Ptr) -> Ptr<mut U64> { return Ptr<mut U64>.cast(p) }
+
+fn main() -> Int { return 0 }

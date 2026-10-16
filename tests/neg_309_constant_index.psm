@@ -1,0 +1,27 @@
+// expect-error: index 3 is out of range for an array of length 3
+// expect-error: index -1 is out of range for an array of length 3
+// expect-error: index 8 is out of range for an array of length 4
+// expect-error: aborting due to 3 previous errors
+// A constant index the array's type already rules out is refused where both are known,
+// rather than left to the check that would stop the program (docs/MEMORY_SAFETY_PLAN.md
+// section 2). Reads, writes and an array field alike; the last index of each is fine.
+
+struct Packet { bytes: Array<U8, 4> }
+
+fn read() -> Int {
+    let a: Array<Int, 3> = [1, 2, 3]
+    return a[3] + a[2]
+}
+
+fn before() -> Int {
+    let a: Array<Int, 3> = [1, 2, 3]
+    return a[-1]
+}
+
+fn field() -> U8 {
+    let mut p = Packet { bytes: [1, 2, 3, 4] }
+    p.bytes[8] = 1
+    return p.bytes[3]
+}
+
+fn main() -> Int { return 0 }

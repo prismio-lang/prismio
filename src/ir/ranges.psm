@@ -30,9 +30,8 @@
 // operand did not wrap.
 //
 // A loop with no list guard to ride on is analysed for its sized-array accesses
-// instead (`arrays`). Those are never checked, so a proof drops nothing; what it
-// buys is its guard, which dominates the proved copy, and the `nsw` the guard
-// licenses. Knapsack's `best[c - w]` over `c` in `[w, 1500]` puts `w >= 0` in the
+// instead (`arrays`). The proved copy drops their bounds checks, and the guard,
+// which dominates it, licenses the `nsw` that is most of what the proof buys. Knapsack's `best[c - w]` over `c` in `[w, 1500]` puts `w >= 0` in the
 // guard, and from that one fact LLVM proves the loop's reads trail its store and
 // interleaves it: 3.14M instructions against 5.69M without the guard and C's 5.12M
 // (freestanding, aarch64). The guard `w != Int.MIN` that only keeps `c - 1` from
@@ -271,9 +270,13 @@ impl RangeLoop {
         self.proof = ir_range_proof_new()
         self.runWalk(RANGE_WALK_EMIT)
         relationsProve(self)
-        // An array proof drops no check, so a loop whose arithmetic it leaves
-        // unmarked -- `for i in 0..<n { a[i] }` -- would get a second copy for
-        // nothing but a fact LLVM rarely uses.
+        // A loop whose arithmetic an array proof leaves unmarked -- `for i in 0..<n
+        // { a[i] }` -- is not versioned for the bounds checks the proof would drop:
+        // LLVM already hoists that check out of the loop as one compare of `n`
+        // against the length, and the loop still vectorises (measured 2026-10-16,
+        // docs/MEMORY_SAFETY_PLAN.md section 2). A second copy would buy nothing.
+        // A loop whose arithmetic it does mark is versioned, and its proved copy
+        // drops the checks too (generateArrayIndexCheck).
         if (self.arrays and self.markedOps == 0) { return "" }
         // A line number means nothing across files, and the fixtures that read this
         // trace match loops by their own lines, so a standard library loop is not

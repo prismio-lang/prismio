@@ -2864,8 +2864,14 @@ static char* native_compile_flags(void) {
     // What compiling C for a machine with no OS means: no hosted library to
     // assume (-ffreestanding), no GOT to load addresses through (-fno-pic), and
     // no stack-protector canary, which reads a guard symbol the C library defines.
+    // One section per function and per object, so the link's --gc-sections can drop
+    // the failure core's functions a program never calls (panic.c is fourteen of
+    // them, 552 bytes in the freestanding suite, of which it calls one), and no
+    // unwind tables, which a machine with no unwinder never reads.
     const char* freestanding =
-        g_freestanding ? " -ffreestanding -fno-pic -fno-stack-protector" : "";
+        g_freestanding ? " -ffreestanding -fno-pic -fno-stack-protector"
+                         " -ffunction-sections -fdata-sections"
+                         " -fno-asynchronous-unwind-tables -fno-unwind-tables" : "";
     size_t flags_len = strlen(target) + strlen(min_os) + strlen(declared) +
                        strlen(freestanding) + 16;
     char* flags = (char*)malloc(flags_len);

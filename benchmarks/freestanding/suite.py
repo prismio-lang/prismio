@@ -52,10 +52,12 @@ RUST_TARGET = "aarch64-unknown-none-softfloat"
 # instructions reads 625,000 ticks on every run.
 TICK_INSTRUCTIONS = 16
 
-# Within this fraction of the other arm a result is parity. The count is exact, so
-# this is not noise: it is the size of a difference that is not worth a verdict,
-# since code placement alone moves a count by a fraction of a percent.
-PARITY = 0.02
+# A verdict is absolute: the count is exact, so Prismio wins on any workload where it
+# executes fewer instructions than the other arm, loses where it executes more, and is
+# level only where the counts are equal. A tolerance belongs to the hosted suite, whose
+# times carry noise; here there is none to allow for, and a band hid real differences
+# (edit_distance's 5% and heapsort's 2% both read as parity under the old +/-2%).
+# Equal means the same number of timer ticks: the count's resolution is one tick.
 
 # Flags that make the arms one machine: no FP or SIMD (the entry code leaves the unit
 # off), and strict alignment, because with the MMU off every access is to device
@@ -248,7 +250,10 @@ def build_arms(args, tools, compiler, run_timed, ui):
     elf = {language: BUILD / (language + "-suite.elf") for language in LANGUAGES}
     steps = {
         "c": [
-            [tools.clang, *C_FLAGS, "-O3", "-ffunction-sections", "-c",
+            # PRISMIO_BENCH_C_FLAGS adds flags to the C arm only, for a comparison
+            # such as `-funroll-loops`; the report records the command it ran.
+            [tools.clang, *C_FLAGS, "-O3", "-ffunction-sections",
+             *os.environ.get("PRISMIO_BENCH_C_FLAGS", "").split(), "-c",
              str(HERE / "c" / "suite.c"), "-o", str(c_object)],
             [*link, str(harness_o), str(c_object), "-o", str(elf["c"])],
         ],
@@ -355,13 +360,18 @@ def run_guest(tools, elf, timeout=300):
 
 
 def verdict(prismio, other):
-    ratio = prismio / max(other, 1)
-    outcome = "parity"
-    if ratio <= 1 - PARITY:
-        outcome = "win"
-    elif ratio >= 1 + PARITY:
-        outcome = "loss"
-    return {"outcome": outcome, "ratio": round(ratio, 4), "tolerance": PARITY}
+    """`win`, `parity` or `loss` by the exact counts, and the ratio for display."""
+    outcome = "win" if prismio < other else "loss" if prismio > other else "parity"
+    return {"outcome": outcome, "ratio": round(prismio / max(other, 1), 4),
+            "difference": prismio - other}
+
+
+def ratio_text(style, ratio, outcome, width=8):
+    """A ratio to three places, coloured by the absolute verdict: two places would print
+    a 0.4% loss as `1.00x`, and the verdict is exact."""
+    text = "{:.3f}×".format(ratio).rjust(width)
+    colour = {"win": style.green, "loss": style.red}.get(outcome, "")
+    return colour + text + style.reset if colour else text
 
 
 def geomean(values):
@@ -472,7 +482,7 @@ def run(args, compiler, llvm_bin, environment, ui, run_timed, portable_command, 
         for language in LANGUAGES:
             text = format_count(counts[language]).rjust(10)
             cells.append(style.bold + text + style.reset if counts[language] == best else text)
-        ratios = [ui.ratio(counts["prismio"] / max(counts[other], 1), outcome=record["verdict"][other]["outcome"])
+        ratios = [ratio_text(style, record["verdict"][other]["ratio"], record["verdict"][other]["outcome"])
                   for other in OTHERS]
         ui.line("    {:<{w}}  {}  {}".format(item["name"], "  ".join(cells), "  ".join(ratios), w=name_width))
 
@@ -484,8 +494,9 @@ def run(args, compiler, llvm_bin, environment, ui, run_timed, portable_command, 
         outcomes = [item["verdict"][other]["outcome"] for item in benchmarks]
         summary[other] = {"geomean": round(geomean(ratios), 4), "win": outcomes.count("win"),
                           "parity": outcomes.count("parity"), "loss": outcomes.count("loss")}
-        ui.line("  vs {:<5} geomean {}   {}{} fewer{} · {} parity · {}{} more{}".format(
-            LABELS[other], ui.ratio(summary[other]["geomean"], 0),
+        geo = summary[other]["geomean"]
+        ui.line("  vs {:<5} geomean {}   {}{} fewer{} · {} level · {}{} more{}".format(
+            LABELS[other], ratio_text(style, geo, "win" if geo < 1 else "loss" if geo > 1 else "parity", 0),
             style.green, summary[other]["win"], style.reset, summary[other]["parity"],
             style.red if summary[other]["loss"] else "", summary[other]["loss"], style.reset))
     code = {language: images[language]["text"] for language in LANGUAGES}
@@ -521,7 +532,7 @@ def run(args, compiler, llvm_bin, environment, ui, run_timed, portable_command, 
         "tick_instructions": TICK_INSTRUCTIONS,
         "runs": runs,
         "deterministic": not unstable,
-        "parity": PARITY,
+        "verdict_rule": "absolute: fewer instructions is a win, more a loss, an equal count level",
         "target": C_TARGET,
         "machine": "QEMU virt, cortex-a57, -icount shift=0",
         "scale": scale,

@@ -70,12 +70,12 @@ internal fn nowrapCounter(w: NowrapWalk, f: NowrapFacts, condPtr: Ptr, bodyPtr: 
     if (up) {
         hi = w.hi
         if (hi + by > intMax) { return nowrapNoCounter() }
-        if (entered >= 0) { lo = f.los[entered] as I64 }
+        if (entered >= 0) { lo = f.los[entered] }
         if (counts) { trips = nowrapTrips(lo, hi, by) }
     } else {
         lo = w.lo
         if (lo - by < intMin) { return nowrapNoCounter() }
-        if (entered >= 0) { hi = f.his[entered] as I64 }
+        if (entered >= 0) { hi = f.his[entered] }
         if (counts) { trips = nowrapTrips(lo, hi, by) }
     }
     return NowrapCounter { name: target.s1.clone(), lo: lo, hi: hi, conjunct: conjunct, trips: trips }
@@ -164,7 +164,7 @@ private fn nowrapMentions(nodePtr: Ptr, name: String) -> Bool {
 
 // Whether the subtree holds a `continue`, which may be this loop's. Every child is a
 // chain: a match's arms follow one another, as a block's statements do.
-private fn nowrapHasContinue(nodePtr: Ptr) -> Bool {
+internal fn nowrapHasContinue(nodePtr: Ptr) -> Bool {
     if (nodeIsNull(nodePtr)) { return false }
     let n = ptr_to_node(nodePtr)
     if (n.kind == NodeKind.CONTINUE_STATEMENT) { return true }
