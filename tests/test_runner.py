@@ -1772,8 +1772,23 @@ def run_ums_test():
                 (drift / "stdlib").mkdir()
                 (drift / "work").mkdir()
                 pkg_clang = packaging.llvm_clang()
-                packaging.build_runtime_bitcode(
-                    pkg_clang, "lang_runtime.c", drift / "runtime", False)
+                # package.py's main() sets the deployment floor before it builds the
+                # runtime bitcode on macOS; calling the builder directly has to do the
+                # same, or the "packaged" bitcode here lacks the version and SDK stamp
+                # every real package carries (and the project build lacked it too, so
+                # the two agreed on the wrong thing). Only the bitcode: the .plib code
+                # section is compared as the project builds it, with no variable set.
+                floor_before = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
+                if sys.platform == "darwin":
+                    os.environ["MACOSX_DEPLOYMENT_TARGET"] = packaging.MACOS_FLOOR
+                try:
+                    packaging.build_runtime_bitcode(
+                        pkg_clang, "lang_runtime.c", drift / "runtime", False)
+                finally:
+                    if floor_before is None:
+                        os.environ.pop("MACOSX_DEPLOYMENT_TARGET", None)
+                    else:
+                        os.environ["MACOSX_DEPLOYMENT_TARGET"] = floor_before
                 packaging.build_plib(pkg_clang, compiler_artifact,
                                      PROJECT_ROOT / "std" / "option.psm",
                                      drift / "stdlib", drift / "work")
@@ -5388,7 +5403,7 @@ def run_std_mem_failures_test():
 
 
 def run_typed_pointer_ir_test():
-    """What each access through a typed `Ptr<T>` is emitted as (docs/PTR_PLAN.md).
+    """What each access through a typed `Ptr<T>` is emitted as (PTR_PLAN (removed; git history)).
 
     Volatility and an ordering are invisible to a program's output, so the only
     check that means anything is the instruction: a `Ptr<volatile T>` access is

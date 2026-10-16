@@ -360,18 +360,6 @@ oracle) and worth a look the next time either file is touched.
 
 ## Codegen and performance
 
-### A program linked by the project-built compiler says `sdk 11.0` and allocates about 2x slower
-
-Found 2026-10-17 in a benchmark A/B. `.prismio/build/lib/runtime/*.bc` (what `prismio build` installs) is
-compiled for `arm64-apple-macosx27.0.0` and carries no `SDK Version` module flag; the packaged runtime
-(`tools/package.py`) is `macosx11.0.0` with `SDK Version 27.0`. With no flag, LLVM stamps the object's
-`LC_BUILD_VERSION` sdk from the triple (11.0), and macOS gives a binary linked against an old SDK the older
-malloc: `tree_traversal` 1.8x, `manual_alloc_churn` 2.1x, `s_expression_parse` 1.5x, `line_processing` 1.3x of
-the same program built by a packaged compiler, with identical machine code for the hot functions.
-`vtool -set-build-version macos 11.0 27.0 -replace` on the slow binary restores parity. Only timings from a
-project-built compiler are affected; a packaged toolchain is right. The fix is for the project build's
-runtime to be built as the packaged one is.
-
 ### The module has no data layout while its IR is built, so `i64` is aligned to 4
 
 Found 2026-10-16 (the `Ptr<T>` soundness pass). `ir_module_start` creates the module without a layout;

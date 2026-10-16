@@ -1,4 +1,4 @@
-// `Ptr<T>` address mechanics, docs/PTR_PLAN.md stage 4: where a pointer points, stepping it,
+// `Ptr<T>` address mechanics, PTR_PLAN (removed; git history) stage 4: where a pointer points, stepping it,
 // comparing it, and making one from a number or another pointer. `p + 1` is always the value,
 // so every motion here is a method, and each is checked against the address it should reach.
 //

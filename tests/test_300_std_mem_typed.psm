@@ -1,4 +1,4 @@
-// std.mem's typed blocks and a Buffer's pointer, docs/PTR_PLAN.md stage 6. `allocOf<T>` is
+// std.mem's typed blocks and a Buffer's pointer, PTR_PLAN (removed; git history) stage 6. `allocOf<T>` is
 // room for `count` of a plain-data type as a `Ptr<mut T>`, the size read off the type, so the
 // program writes no sizes and no casts; the bytes are then written through the pointer and
 // read back by address to prove where they went. A Buffer's `pointer` is its bytes, or none

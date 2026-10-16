@@ -171,7 +171,7 @@ public fn portBuiltinConstraints(dir: Int, width: Int) -> String {
 }
 
 // `__builtin_ptr_load(p)`: the value a typed `Ptr<T>` points at, of the pointee's own
-// type and alignment. The one builtin `Ptr<T>` reads lower to (docs/PTR_PLAN.md): the
+// type and alignment. The one builtin `Ptr<T>` reads lower to (PTR_PLAN (removed; git history)): the
 // address stays a pointer, so LLVM keeps the provenance, the `nonnull` and the type
 // tag that `__builtin_mem_load_*` through a `Usize` throws away. Sema writes it for
 // `p.load()`, for a pointer used as a scalar operand, and for one handed to a slot
@@ -236,7 +236,7 @@ public fn ptrAtomicOrderCode(variant: String) -> Int {
     return -1
 }
 
-// The address operations of a typed pointer (docs/PTR_PLAN.md stage 4): `p.offset(n)`,
+// The address operations of a typed pointer (PTR_PLAN (removed; git history) stage 4): `p.offset(n)`,
 // `p.offsetFrom(q)`, the constructors, and the rest. One family, one lowering
 // (`ir_ptr_op`), so a kind is a number and the name is `__builtin_ptr_<op>`. 0 for a name
 // that is not one of them; `__builtin_ptr_addr`, `_load` and `_store` are their own.

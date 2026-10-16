@@ -38,6 +38,10 @@ from pathlib import Path
 from executable import resolve_executable
 
 REPO = Path(__file__).resolve().parent.parent
+# What the caller's shell said, before resolve_llvm exports the pinned LLVM's own floor (14.0) for
+# the compiles and link of the compiler itself. A promoted generation's `build` must not see that
+# one: it would build the project's runtime for macOS 14 instead of the floor programs target.
+CALLER_DEPLOYMENT_TARGET = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
 WINDOWS = os.name == "nt"
 EXE = ".exe" if WINDOWS else ""
 OBJ = ".obj" if WINDOWS else ".o"
@@ -291,9 +295,13 @@ def promote(repo: Path, generation: Path) -> None:
     after it refreshes the debug compiler (`.prismio/build/debug/prismio`) that
     `prismio build`, `suite` and `verify` run. Needs the tree to be one this generation can
     build, which a generation bootstrapped from it is."""
+    env = dict(os.environ)
+    env.pop("MACOSX_DEPLOYMENT_TARGET", None)
+    if CALLER_DEPLOYMENT_TARGET is not None:
+        env["MACOSX_DEPLOYMENT_TARGET"] = CALLER_DEPLOYMENT_TARGET
     for what, argv in (("build --release", ["build", "--release"]), ("build", ["build"])):
         step(f"promote: {what}")
-        result = subprocess.run([str(generation), *argv], cwd=repo, capture_output=True,
+        result = subprocess.run([str(generation), *argv], cwd=repo, env=env, capture_output=True,
                                 text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             die(f"promote: {what}", (result.stdout or "") + (result.stderr or ""))

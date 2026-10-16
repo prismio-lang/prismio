@@ -357,7 +357,7 @@ public fn typeChannelElem(t: TypeInfo) -> TypeInfo {
 
 // A typed pointer, `Ptr<T>`, and the capabilities written in front of `T`:
 // `Ptr<mut T>` may write, `Ptr<volatile T>` makes every access volatile.
-// docs/PTR_PLAN.md.
+// PTR_PLAN (removed; git history).
 //
 // PTR-kinded and named, for the reason `typeTask` and `typeChannel` are: it is one
 // machine word the program does not own, so every PTR arm in sema, AIF and codegen

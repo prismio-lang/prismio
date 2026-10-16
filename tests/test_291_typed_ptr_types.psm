@@ -1,4 +1,4 @@
-// `Ptr<T>`, docs/PTR_PLAN.md stage 1: the type, its capabilities and the conversions
+// `Ptr<T>`, PTR_PLAN (removed; git history) stage 1: the type, its capabilities and the conversions
 // between them. A typed pointer is one word the program does not own, so a struct may
 // hold one (the linked list) and `T?` costs nothing.
 //

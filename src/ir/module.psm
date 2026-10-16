@@ -296,7 +296,7 @@ private fn generateFunction(func: ASTNode) {
         paramRangeDeclare(func, paramOrdinal)
         paramOrdinal = paramOrdinal + 1
         // A typed pointer promises non-null, aligned and -- unless `mut` -- not written
-        // through; the type is what says so, and LLVM is told (docs/PTR_PLAN.md). Not that
+        // through; the type is what says so, and LLVM is told (PTR_PLAN (removed; git history)). Not that
         // it is readable: it may point one past its allocation (ir_function_param_pointer).
         if (nodeHasType(pTypeNode) and typeIsTypedPtr(nodeGetType(pTypeNode))) {
             let ptrT = nodeGetType(pTypeNode)

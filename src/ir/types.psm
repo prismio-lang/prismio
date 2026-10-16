@@ -234,7 +234,7 @@ internal fn getDeclaredReturnType(node: ASTNode, retChild: Ptr) -> String {
 // The struct a member access reads from. A struct value names it in its IR key
 // (`struct:Header`); a typed pointer's key is just `ptr`, and the struct is what it
 // points at -- which is the same machine word either way, so the field is found
-// the same way. docs/PTR_PLAN.md.
+// the same way. PTR_PLAN (removed; git history).
 internal fn memberObjectStructName(objectNode: ASTNode) -> String {
     if (nodeHasType(objectNode)) {
         let objectT = nodeGetType(objectNode)

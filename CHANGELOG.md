@@ -337,6 +337,15 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **A program built by a checkout's compiler is stamped with the real SDK.** The pinned LLVM `clang` that links
+  a program from a checkout was given no sysroot, found no SDK to read, and stamped the executable
+  `sdk 11.0` (the deployment floor) where Apple's `cc` stamps `sdk 27.0`; macOS gives a binary that claims
+  an old SDK the older `malloc`. From identical machine code, `tree_traversal` read 1.8x, `manual_alloc_churn`
+  2.1x and `s_expression_parse` 1.5x of the same program built by a packaged compiler. The link now passes
+  `-isysroot $(xcrun --show-sdk-path)` (`SDKROOT` wins; a host build only), the project's runtime bitcode is
+  compiled for the same deployment version as the packaged one (`SDK Version` module flag included, and the
+  version is in its cache key), and `bootstrap.py --promote` no longer lets the pinned LLVM's own floor (14.0)
+  leak into the promoted generation's build. A project-built compiler now times within noise of a packaged one.
 - **`Map`'s columns are private, and the two Map benchmarks the bounds checks slowed are faster than
   before them.** `entryKeys` and `entryValues` are `private` (no program, test or benchmark read them;
   the compiler's own map literals and `default` read their types through `semaCompilerFieldType`, which
@@ -346,9 +355,7 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   Interleaved A/B against the build before any check, 66 hosted workloads, 15 runs, checksums identical,
   both arms packaged toolchains: `key_value_update` 0.79x (was 1.13x with the checks), `hashmap_insert_lookup`
   0.89x, `word_frequency` 0.88x, `mixed_map_removal` 0.94x (was 1.10x); the geomean over all 65 workloads
-  with a measurable time is 0.984, and no workload is more than 6% slower. (A benchmark built by the
-  project's own debug compiler, not a packaged one, reads up to 2x slower on allocation-heavy workloads: its
-  runtime lacks the SDK stamp, so the binary says `sdk 11.0` and macOS gives it the older malloc.)
+  with a measurable time is 0.984, and no workload is more than 6% slower. 
 
 - **Freestanding code is faster and 39% smaller: Prismio's own passes in LLVM's pipeline.** Two passes in
   `runtime/llvm_bridge.cpp`, which LLVM-C cannot express, run at the pipeline's extension points

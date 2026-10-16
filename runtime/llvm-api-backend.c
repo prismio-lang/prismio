@@ -1117,7 +1117,7 @@ void ir_function_param_unique(const char *param_type, const char *param_name) {
     if (i < MAX_PENDING_PARAMS) g_pending_param_noalias[i] = 1;
 }
 
-// The last parameter declared is a typed `Ptr<T>` (docs/PTR_PLAN.md): non-null, defined
+// The last parameter declared is a typed `Ptr<T>` (PTR_PLAN (removed; git history)): non-null, defined
 // and aligned for its pointee. A pointer that is not `mut` is also `readonly`: the
 // function cannot write through it, because the conversions that could launder the
 // capability (to the opaque `Ptr` foreign code writes through, or a `cast`) are refused
@@ -2030,7 +2030,7 @@ int ir_mem_cmpxchg(const char *type, const char *addr_type, const char *addr,
 }
 
 // The operations behind a typed pointer's address methods and constructors
-// (docs/PTR_PLAN.md stage 4), one entry because each is a few LLVM instructions over the
+// (PTR_PLAN (removed; git history) stage 4), one entry because each is a few LLVM instructions over the
 // same three things: the pointee's layout, the pointer-sized integer, and a null that
 // stands for "absent". `elem_key` is the pointee's own key, so a stride and an alignment
 // are the data layout's -- a `{ i32, i32, i16 }` steps 12 bytes and a packed struct is
@@ -2137,7 +2137,7 @@ int ir_ptr_op(int kind, const char *elem_key, const char *a, const char *b, cons
     return 0;
 }
 
-// A load or store through a typed pointer (docs/PTR_PLAN.md): of the pointee, or of a field
+// A load or store through a typed pointer (PTR_PLAN (removed; git history)): of the pointee, or of a field
 // of a struct pointee, whose address is a GEP like any other. The pointer stays a pointer,
 // so LLVM keeps its provenance; `is_volatile` comes from the type (`Ptr<volatile T>`) or the
 // method (`readVolatile`), never from a number.

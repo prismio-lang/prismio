@@ -1807,6 +1807,33 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj,
 // `cc`. A cross build needs a driver that takes `--target`, which `cc` is only
 // when it is clang. A Windows host build does not come here at all: it links
 // with MSVC's link.exe (link_program_msvc) unless PRISMIO_CC says otherwise.
+#ifdef __APPLE__
+// ` -isysroot <the active SDK>` for the pinned clang, or "". Apple's `cc` finds the SDK
+// itself and stamps the executable with its version; the pinned LLVM clang, given no
+// sysroot, has no SDK to read and stamps the minimum deployment version instead, so a
+// program linked from a checkout said `sdk 11.0` and macOS gave it the older malloc
+// (about 2x slower on allocation-heavy code, from identical machine code). The path is
+// the one `cc` would use, and a host build only: a --target build names its own sysroot.
+static void append_host_sdk(char* command, size_t size) {
+    if (ir_target_is_explicit()) return;
+    const char* sdkroot = getenv("SDKROOT");
+    if (sdkroot && *sdkroot) return;  // clang reads it itself
+    FILE* pipe = popen("xcrun --show-sdk-path 2>/dev/null", "r");
+    if (!pipe) return;
+    char path[1024] = "";
+    if (!fgets(path, sizeof(path), pipe)) path[0] = '\0';
+    pclose(pipe);
+    size_t n = strlen(path);
+    while (n > 0 && (path[n - 1] == '\n' || path[n - 1] == '\r')) path[--n] = '\0';
+    if (n == 0) return;
+    char* quoted = command_quote_arg(path);
+    if (!quoted) return;
+    size_t used = strlen(command);
+    snprintf(command + used, size - used, " -isysroot %s", quoted);
+    free(quoted);
+}
+#endif
+
 static const char* link_driver_command(void) {
     static char command[1200];
     static int ready = 0;
@@ -1818,6 +1845,9 @@ static const char* link_driver_command(void) {
         snprintf(command, sizeof(command), "%s", env);
     } else if (g_clang_binary[0]) {
         snprintf(command, sizeof(command), "%s", native_clang_command());
+#ifdef __APPLE__
+        append_host_sdk(command, sizeof(command));
+#endif
     } else {
 #ifdef _WIN32
         snprintf(command, sizeof(command), "clang");
@@ -3934,7 +3964,15 @@ static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
 
     char* q_src = command_quote_arg(source);
     char* q_out = command_quote_arg(output);
-    size_t len = strlen(clang) + strlen(q_src) + strlen(q_out) + 192;
+    // The deployment version the packaged runtime (tools/package.py) is built for.
+    // Without it clang compiles for its SDK's version and leaves out the `SDK Version`
+    // module flag, and a program that merges this bitcode is stamped `sdk 11.0` by LLVM
+    // from its own triple instead of the real SDK: macOS then gives the binary the
+    // pre-SDK-27 behaviour, and a project-built compiler's programs allocate about 2x
+    // slower than a packaged compiler's from identical machine code.
+    char min_os[64];
+    macos_min_flag(min_os, sizeof(min_os));
+    size_t len = strlen(clang) + strlen(min_os) + strlen(q_src) + strlen(q_out) + 192;
     char* command = (char*)malloc(len);
     if (!command) {
         free(q_src);
@@ -3942,9 +3980,9 @@ static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
         return 1;
     }
     snprintf(command, len,
-             "%s -O2 -fno-stack-check -fno-stack-protector -ffile-compilation-dir=. "
+             "%s %s-O2 -fno-stack-check -fno-stack-protector -ffile-compilation-dir=. "
              "-Wno-deprecated-declarations %s-emit-llvm -c %s -o %s",
-             clang, verify ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_out);
+             clang, min_os, verify ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_out);
     int failed = run_quiet_build_command(command, log_path);
     free(command);
     free(q_src);
@@ -4220,6 +4258,12 @@ static int runtime_cache_key(char* out, int out_size) {
     }
     unsigned long long hash = fnv1a_bytes(PRISMIO_FNV_OFFSET, (const unsigned char*)source);
     free(source);
+    // The deployment version the bitcode is compiled for (emit_runtime_bitcode): a
+    // toolchain built before it was passed holds bitcode with no SDK stamp, and must
+    // be re-emitted, not reused.
+    char min_os[64];
+    macos_min_flag(min_os, sizeof(min_os));
+    hash = fnv1a_bytes(hash, (const unsigned char*)min_os);
     snprintf(out, out_size, "%016llx", clang_identity(hash));
     return 0;
 }

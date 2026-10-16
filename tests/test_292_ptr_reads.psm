@@ -1,4 +1,4 @@
-// `Ptr<T>` read through, docs/PTR_PLAN.md stage 2. The bytes are written with std.raw
+// `Ptr<T>` read through, PTR_PLAN (removed; git history) stage 2. The bytes are written with std.raw
 // and read back through typed pointers, so what is checked is the layout the pointer
 // assumes: a field is read where it lies, a nested struct is a pointer to the storage
 // inside its parent, and a scalar pointer is read as an operand, as a slot's value, and

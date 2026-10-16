@@ -1,4 +1,4 @@
-// What a typed pointer, `Ptr<T>`, does when it is read: docs/PTR_PLAN.md, stage 2.
+// What a typed pointer, `Ptr<T>`, does when it is read: PTR_PLAN (removed; git history), stage 2.
 //
 // **A pointer is read through in three places and is a pointer everywhere else.**
 // A member of a struct pointee (`p.magic`), an operand of an operator whose other side

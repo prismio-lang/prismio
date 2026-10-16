@@ -1,4 +1,4 @@
-// Atomics on a typed pointer, docs/PTR_PLAN.md stage 5: the integer the pointer points at,
+// Atomics on a typed pointer, PTR_PLAN (removed; git history) stage 5: the integer the pointer points at,
 // read and changed in one indivisible step, with the ordering written at the call. Values are
 // checked here, and the orderings by the `typed_pointer_ir` harness test over
 // tests/ptr_access_ir_probe.psm. A read-modify-write answers what was there before.

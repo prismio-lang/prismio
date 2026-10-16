@@ -141,7 +141,7 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         // `let t: Task<Int> = spawn describe(j)` type-checked against a
         // Task<String>. A type nobody can spell is a type nobody can get wrong;
         // one that resolves to Invalid is worse than either.
-        // `Ptr<T>`, `Ptr<mut T>`, `Ptr<volatile T>`: a typed pointer, docs/PTR_PLAN.md.
+        // `Ptr<T>`, `Ptr<mut T>`, `Ptr<volatile T>`: a typed pointer, PTR_PLAN (removed; git history).
         // Built in like `Task<R>` and for its reason -- no struct to instantiate, and
         // falling through would resolve it to Invalid, which matches everything.
         if (tn.s1.equals("Ptr")) { return semaPtrAnnotationType(module, tn) }
@@ -379,7 +379,7 @@ internal fn semaTypesMatch(expected: TypeInfo, actual: TypeInfo) -> Bool {
     if (expected.kind == TypeKind.OPTIONAL and actual.kind != TypeKind.OPTIONAL) {
         return semaTypesMatch(typeOptionalInner(expected), actual)
     }
-    // docs/PTR_PLAN.md. `Ptr<mut T>` stands where `Ptr<T>` is wanted and either where
+    // PTR_PLAN (removed; git history). `Ptr<mut T>` stands where `Ptr<T>` is wanted and either where
     // the opaque `Ptr` is; `Ptr<mut T>?` likewise reaches `Ptr<T>?`.
     if (expected.kind == TypeKind.PTR) { return typePtrConverts(expected, actual) }
     if (expected.kind == TypeKind.OPTIONAL and actual.kind == TypeKind.OPTIONAL

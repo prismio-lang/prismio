@@ -1,4 +1,4 @@
-// `Ptr<volatile T>`, docs/PTR_PLAN.md stage 5. Every access through one is volatile, field
+// `Ptr<volatile T>`, PTR_PLAN (removed; git history) stage 5. Every access through one is volatile, field
 // reads and writes included, so a driver cannot write one register access the optimiser may
 // drop; this checks the values come out right, and tests/ptr_access_ir_probe.psm (read by the
 // `typed_pointer_ir` harness test) checks that each access is emitted volatile. `readVolatile`

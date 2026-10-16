@@ -6,9 +6,9 @@
     "semantic_hash": ""
   },
   "tests/test_runner.py": {
-    "mtime": 1792190873.7544825,
-    "seen": 1792190883.5529149,
-    "ast_hash": "ba1614bb67ba3b3886c88c7570d52296",
+    "mtime": 1792192342.5636966,
+    "seen": 1792192540.263724,
+    "ast_hash": "b2a8b101dc390f2200b167415ef1436c",
     "semantic_hash": ""
   },
   "CONTRIBUTING.md": {
@@ -42,9 +42,9 @@
     "semantic_hash": ""
   },
   "runtime/build_driver.c": {
-    "mtime": 1792190156.1024535,
-    "seen": 1792190471.894359,
-    "ast_hash": "b284ce5082973c9caf9d21bf168ae78d",
+    "mtime": 1792191915.689061,
+    "seen": 1792192540.263315,
+    "ast_hash": "6db02806a0dd7698b85849f1afaf9408",
     "semantic_hash": ""
   },
   "runtime/diagnostics.c": {
@@ -60,9 +60,9 @@
     "semantic_hash": ""
   },
   "runtime/llvm-api-backend.c": {
-    "mtime": 1792190156.103293,
-    "seen": 1792190471.894363,
-    "ast_hash": "440d0b32fdadddb70f4725c08fdbf4aa",
+    "mtime": 1792191970.7221465,
+    "seen": 1792192540.26332,
+    "ast_hash": "569f55f1129d54169a4bf995177fd403",
     "semantic_hash": ""
   },
   "runtime/prismio_llvm.h": {
@@ -342,9 +342,9 @@
     "semantic_hash": ""
   },
   "docs/KNOWN_ISSUES.md": {
-    "mtime": 1792190143.2096577,
-    "seen": 1792190471.894861,
-    "ast_hash": "1caabfb2065e20f5b4e04dff3a1738f7",
+    "mtime": 1792191982.0145998,
+    "seen": 1792192540.263789,
+    "ast_hash": "3117da14678e79aa551658e6819a70a7",
     "semantic_hash": ""
   },
   "docs/MEMORY_PLAN.md": {
@@ -432,9 +432,9 @@
     "semantic_hash": ""
   },
   "src/ast/types.psm": {
-    "mtime": 1792175555.5361137,
-    "seen": 1792188913.913217,
-    "ast_hash": "490e21474ba19f86eecee0a071c634f8",
+    "mtime": 1792191970.724585,
+    "seen": 1792192540.2633312,
+    "ast_hash": "5b5fcbfe99644a7c9199a5a2f70851c3",
     "semantic_hash": ""
   },
   "src/common/diagnostics.psm": {
@@ -516,9 +516,9 @@
     "semantic_hash": ""
   },
   "src/ir/module.psm": {
-    "mtime": 1792175555.53721,
-    "seen": 1792188913.913228,
-    "ast_hash": "70467bc074455d0fe455c9cb947af89c",
+    "mtime": 1792191970.7238536,
+    "seen": 1792192540.2633421,
+    "ast_hash": "0be12441f7cb6b22e7529754c0d62baf",
     "semantic_hash": ""
   },
   "src/ir/ranges.psm": {
@@ -540,9 +540,9 @@
     "semantic_hash": ""
   },
   "src/ir/types.psm": {
-    "mtime": 1792175555.5380065,
-    "seen": 1792188913.913235,
-    "ast_hash": "1f90ce95ef390c42b0b8b2d1fe7fe210",
+    "mtime": 1792191970.7239487,
+    "seen": 1792192540.263349,
+    "ast_hash": "30b83ceef8105a28047150d51556946e",
     "semantic_hash": ""
   },
   "src/lexer/identifier_security.psm": {
@@ -636,9 +636,9 @@
     "semantic_hash": "1b9280e4c88861acdf026fc5a61e23d8"
   },
   "src/sema/checker.psm": {
-    "mtime": 1792175555.5388813,
-    "seen": 1792188913.913244,
-    "ast_hash": "e95144edaf85a8dfe11190f187aed72a",
+    "mtime": 1792191970.7251284,
+    "seen": 1792192540.263359,
+    "ast_hash": "3b45ba456875fc34d0c740bf544450e6",
     "semantic_hash": ""
   },
   "src/sema/defaults.psm": {
@@ -684,9 +684,9 @@
     "semantic_hash": ""
   },
   "src/sema/types.psm": {
-    "mtime": 1792187969.3449547,
-    "seen": 1792188913.9132512,
-    "ast_hash": "d887a86aa9b49378d386af21ab30f6c6",
+    "mtime": 1792191970.7243445,
+    "seen": 1792192540.263366,
+    "ast_hash": "1ae9b4b45b0a1f39f5801708cad3d296",
     "semantic_hash": ""
   },
   "src/sema/vec.psm": {
@@ -3906,9 +3906,9 @@
     "semantic_hash": ""
   },
   "CHANGELOG.md": {
-    "mtime": 1792191416.9768865,
-    "seen": 1792191429.8621209,
-    "ast_hash": "b6903075f8b2c02dda3b842b40144f11",
+    "mtime": 1792191982.0149572,
+    "seen": 1792192540.263772,
+    "ast_hash": "ae420652df01dbe2ea2bff303fa8ccbd",
     "semantic_hash": ""
   },
   "tests/aif_array_frame.psm": {
@@ -4122,9 +4122,9 @@
     "semantic_hash": ""
   },
   "src/common/mem_builtins.psm": {
-    "mtime": 1792175555.5362535,
-    "seen": 1792188913.9132202,
-    "ast_hash": "c723d5ea1f1f67806c470ab5e4b367db",
+    "mtime": 1792191970.724121,
+    "seen": 1792192540.2633338,
+    "ast_hash": "a628d8925ce454b1f62361a7c0c1ed60",
     "semantic_hash": ""
   },
   "tests/freestanding/imports_core.psm": {
@@ -5010,9 +5010,9 @@
     "semantic_hash": ""
   },
   "tests/test_291_typed_ptr_types.psm": {
-    "mtime": 1792175555.5431702,
-    "seen": 1792188913.913549,
-    "ast_hash": "86dfa8c74f2256f14667d5aa2f9a3d5d",
+    "mtime": 1792191970.7222555,
+    "seen": 1792192540.2636669,
+    "ast_hash": "4fd63ad9e5ab632b5735e370b6349163",
     "semantic_hash": ""
   },
   "tests/test_293_is_operand.psm": {
@@ -5021,16 +5021,10 @@
     "ast_hash": "6474157da833b9aa9de3a3cd91eafc7e",
     "semantic_hash": ""
   },
-  "docs/PTR_PLAN.md": {
-    "mtime": 1792175555.517317,
-    "seen": 1792188913.9136782,
-    "ast_hash": "fe55a5dc267b18743b5b483cc9a47d7e",
-    "semantic_hash": ""
-  },
   "src/sema/pointer.psm": {
-    "mtime": 1792175555.539424,
-    "seen": 1792188913.913249,
-    "ast_hash": "d56c63ae9a9dca97d6b8a6c63d68447d",
+    "mtime": 1792191970.72404,
+    "seen": 1792192540.263364,
+    "ast_hash": "b27488e7aa9892fe1c8bbf66dacb3054",
     "semantic_hash": ""
   },
   "tests/neg_294_ptr_reads_refused.psm": {
@@ -5040,9 +5034,9 @@
     "semantic_hash": ""
   },
   "tests/test_292_ptr_reads.psm": {
-    "mtime": 1792175555.543218,
-    "seen": 1792188913.913549,
-    "ast_hash": "16d9bf5a36da83da46c01e6e21c32be7",
+    "mtime": 1792191970.7208216,
+    "seen": 1792192540.263668,
+    "ast_hash": "2cf12b3aad61bf1a2d343ece41462568",
     "semantic_hash": ""
   },
   "tests/test_294_ptr_overloads.psm": {
@@ -5058,9 +5052,9 @@
     "semantic_hash": ""
   },
   "tests/test_295_ptr_writes.psm": {
-    "mtime": 1792175555.5433595,
-    "seen": 1792188913.913551,
-    "ast_hash": "992581eebb1e1f052089cffe988515eb",
+    "mtime": 1792191970.72233,
+    "seen": 1792192540.26367,
+    "ast_hash": "8c510f863f0a534721d106cfb9534be4",
     "semantic_hash": ""
   },
   "tests/neg_296_ptr_address_refused.psm": {
@@ -5076,9 +5070,9 @@
     "semantic_hash": ""
   },
   "tests/test_296_ptr_address.psm": {
-    "mtime": 1792175555.54342,
-    "seen": 1792188913.9135518,
-    "ast_hash": "2517ed4bf206012ae5700b33e54a84ab",
+    "mtime": 1792191970.723497,
+    "seen": 1792192540.26367,
+    "ast_hash": "a051c5b00d24306f8c5b1e44cfcad566",
     "semantic_hash": ""
   },
   "tests/neg_298_ptr_atomics_refused.psm": {
@@ -5094,15 +5088,15 @@
     "semantic_hash": ""
   },
   "tests/test_297_ptr_volatile.psm": {
-    "mtime": 1792175555.5434704,
-    "seen": 1792188913.9135518,
-    "ast_hash": "990706600a40c10a78e5b822162a1f47",
+    "mtime": 1792191970.721065,
+    "seen": 1792192540.263671,
+    "ast_hash": "3749ea51f9d1df441c16cd954d780664",
     "semantic_hash": ""
   },
   "tests/test_298_ptr_atomics.psm": {
-    "mtime": 1792175555.543516,
-    "seen": 1792188913.913553,
-    "ast_hash": "8ebd9d24a49efc00e0e153530e86ad1a",
+    "mtime": 1792191970.7235734,
+    "seen": 1792192540.263671,
+    "ast_hash": "70db814c68c1629bcb3bcd8d604cafde",
     "semantic_hash": ""
   },
   "tests/enum_visibility/enums.psm": {
@@ -5160,9 +5154,9 @@
     "semantic_hash": ""
   },
   "tests/test_300_std_mem_typed.psm": {
-    "mtime": 1792175555.543623,
-    "seen": 1792188913.913554,
-    "ast_hash": "6a84dd086ceff39a579259f194dd5659",
+    "mtime": 1792191970.7224016,
+    "seen": 1792192540.263673,
+    "ast_hash": "d50f59eaf5a73ff65c7d674171ef560c",
     "semantic_hash": ""
   },
   "tests/test_301_generic_over_ptr.psm": {
@@ -5214,9 +5208,9 @@
     "semantic_hash": ""
   },
   "tests/test_303_ptr_soundness.psm": {
-    "mtime": 1792175555.5438104,
-    "seen": 1792188913.9135559,
-    "ast_hash": "ffa06474a5adcd9aa2818868a36a6a5d",
+    "mtime": 1792191970.721317,
+    "seen": 1792192540.263675,
+    "ast_hash": "4cb52393ad47aff3f95be8c37265155d",
     "semantic_hash": ""
   },
   "tests/neg_306_ptr_cast_stricter.psm": {
@@ -5256,9 +5250,9 @@
     "semantic_hash": ""
   },
   "docs/MEMORY_SAFETY_PLAN.md": {
-    "mtime": 1792188896.878716,
-    "seen": 1792188913.913677,
-    "ast_hash": "d38d7e4e3df3d535465d2d17b25a933c",
+    "mtime": 1792191970.7254622,
+    "seen": 1792192540.263792,
+    "ast_hash": "b9598eba3c8462a908048aff53669f5e",
     "semantic_hash": ""
   },
   "tests/test_311_proved_indices.psm": {
@@ -5352,9 +5346,9 @@
     "semantic_hash": ""
   },
   "tools/bootstrap.py": {
-    "mtime": 1792191016.1433346,
-    "seen": 1792191429.8620958,
-    "ast_hash": "ef7548abf826955615f8765e4e485d64",
+    "mtime": 1792191797.5164003,
+    "seen": 1792192540.263746,
+    "ast_hash": "1b61976360d44784974a7ab442044287",
     "semantic_hash": ""
   },
   "tools/refresh_seed.py": {

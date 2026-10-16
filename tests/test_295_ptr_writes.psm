@@ -1,4 +1,4 @@
-// `Ptr<mut T>` written through, docs/PTR_PLAN.md stage 3. The stores go through typed
+// `Ptr<mut T>` written through, PTR_PLAN (removed; git history) stage 3. The stores go through typed
 // pointers and are checked from outside them, with raw loads of the same bytes, so what is
 // proved is where each store lands and how wide it is: a field is written where it lies, a
 // nested struct's field through the parent, a scalar by `store`, and a pointer field with

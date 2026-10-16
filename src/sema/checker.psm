@@ -2428,7 +2428,7 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     let objectT = semaExpr(module, objectNode)
-    // docs/PTR_PLAN.md. `p.magic` on a `Ptr<Header>` reads the field where it lies.
+    // PTR_PLAN (removed; git history). `p.magic` on a `Ptr<Header>` reads the field where it lies.
     if (typeIsTypedPtr(objectT)) { return semaPtrMemberAccess(module, expr, objectNode, objectT) }
     if (objectT.kind == TypeKind.DATAELEMENT) {
         if (nodeIsNull(objectT.child)) {

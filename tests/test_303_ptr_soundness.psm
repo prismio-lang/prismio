@@ -1,4 +1,4 @@
-// What a typed pointer must not let the optimiser assume (docs/PTR_PLAN.md, "What the
+// What a typed pointer must not let the optimiser assume (PTR_PLAN (removed; git history), "What the
 // soundness pass settled"). Each was a wrong answer at -O3 or undefined IR before it was fixed.
 //
 //   - Two pointers `cast` to different types may be the same bytes. A type-based alias tag on

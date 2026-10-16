@@ -2,7 +2,7 @@
 
 Started 2026-10-16. Decisions are the user's, made after measuring what the compiler did; each
 section says what was measured, what was decided and where it lands. The `Ptr<T>` design is
-[PTR_PLAN.md](PTR_PLAN.md); this file is what a program may *do* with pointers, arrays and
+PTR_PLAN (removed; in git history); this file is what a program may *do* with pointers, arrays and
 slices without corrupting memory. It is the work behind [MEMORY_PLAN.md](MEMORY_PLAN.md) §1's
 rule: no known way to corrupt memory in a program that compiles.
 
