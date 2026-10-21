@@ -1,0 +1,67 @@
+// The text of numbers that have no overload of their own: an `Int<N>` whose N is not a
+// named width, and the floats other than `Float`.
+//
+// An integer of up to 64 bits prints as the `I64` or `U64` it widens to. A wider one is
+// rewritten to `intText` (std/number_text.psm), which takes the value apart in 32-bit
+// digits. A float prints the fewest digits that read back *in its own type* -- an `F32`
+// written as 0.1 prints as 0.1, not as the 0.10000000149011612 its double widening has.
+
+import std.io
+import std.display
+import std.number_text
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    // Up to 64 bits: no import needed, and `as String` and `toString` agree.
+    let a: Int<24> = -9
+    let b: UInt<12> = 4000
+    let c: Int<40> = -123456789012
+    if (a.toString() != "-9") { return fail("Int<24>") }
+    if (b.toString() != "4000") { return fail("UInt<12>") }
+    if (c.toString() != "-123456789012") { return fail("Int<40>") }
+    if ((a as String) != "-9") { return fail("as String") }
+    // Interpolation is `show`, which an unnamed width gets the same way.
+    if ("v=${a}" != "v=-9") { return fail("interpolation of Int<24>") }
+
+    // Past 64 bits, both signs, and the extremes.
+    let max: Int<128> = 170141183460469231731687303715884105727
+    let min: Int<128> = -170141183460469231731687303715884105728
+    let top: UInt<128> = 340282366920938463463374607431768211455
+    let zero: UInt<200> = 0
+    if ("${top}" != "340282366920938463463374607431768211455") { return fail("interpolation of UInt<128>") }
+    let minus: Int<65> = -1
+    if (max.toString() != "170141183460469231731687303715884105727") { return fail("Int<128> max") }
+    if (min.toString() != "-170141183460469231731687303715884105728") { return fail("Int<128> min") }
+    if (top.toString() != "340282366920938463463374607431768211455") { return fail("UInt<128> max") }
+    if (zero.toString() != "0") { return fail("UInt<200> zero") }
+    if (minus.toString() != "-1") { return fail("Int<65> -1") }
+    let power: UInt<256> = 1
+    if ((power << 255).toString() != "57896044618658097711785492504343953926634992332820282019728792003956564819968") {
+        return fail("2^255")
+    }
+
+    // Floats print the digits that read back in their own type.
+    let f: F32 = 0.1
+    let third: F32 = 1.0
+    let h: F16 = 0.1
+    let bf: BF16 = 3.14159
+    let q: F128 = 0.1
+    if (f.toString() != "0.1") { return fail("F32 0.1") }
+    if ((third / 3.0).toString() != "0.33333334") { return fail("F32 one third") }
+    if (h.toString() != "0.1") { return fail("F16 0.1") }
+    if (bf.toString() != "3.14") { return fail("BF16 3.14159") }
+    if (q.toString() != "0.1") { return fail("F128 0.1") }
+    let big: F32 = 16777216.0
+    if (big.toString() != "16777216") { return fail("F32 2^24") }
+    if (f.toString(3) != "0.100") { return fail("F32 fixed decimals") }
+    let zeroF: F32 = 0.0
+    if ((zeroF / zeroF).toString() != "nan") { return fail("F32 nan") }
+    let overflow: F16 = 60000.0
+    if ((overflow * 2.0).toString() != "inf") { return fail("F16 inf") }
+    return 0
+}

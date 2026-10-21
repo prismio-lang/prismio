@@ -1,0 +1,181 @@
+// Arbitrary-width integers: `Int<N>` and `UInt<N>` for any N from 1 to 2^23.
+//
+// A width that has a named spelling keeps it, so `Int<8>` *is* `I8`, `Int<32>` is
+// `Int` and `UInt<64>` is `U64`: one type, one key, no cast between the two
+// spellings. Every other width is named `Int$24` or `UInt$24`. `$` cannot occur in
+// a source identifier, so the name cannot collide with a program's own type, and
+// typeDisplay already reads `Int$24` back as `Int<24>` -- the spelling a program
+// wrote -- by the rule that renders `Map$String$Int`.
+//
+// This module answers what the *name* says. The type and its LLVM spelling are
+// built in ast/types.psm; the literal range check lives here because a literal
+// wider than 64 bits has no machine integer to be parsed into.
+
+import std.string
+
+// LLVM's own ceiling (IntegerType::MAX_INT_BITS). A width past it has no `iN`.
+public fn intWidthMax() -> Int { return 8388608 }
+
+// The annotation name of a width and signedness: the established spelling where
+// there is one, `Int$N` / `UInt$N` otherwise.
+public fn intWidthName(bits: Int, unsigned: Bool) -> String {
+    if (unsigned) {
+        if (bits == 8) { return "U8" }
+        if (bits == 16) { return "U16" }
+        if (bits == 32) { return "U32" }
+        if (bits == 64) { return "U64" }
+        return "UInt$".concat(bits.toString())
+    }
+    if (bits == 8) { return "I8" }
+    if (bits == 16) { return "I16" }
+    if (bits == 32) { return "Int" }
+    if (bits == 64) { return "I64" }
+    return "Int$".concat(bits.toString())
+}
+
+// The width a `Int$N` / `UInt$N` name carries, and 0 for any other name.
+public fn intWidthOfName(name: String) -> Int {
+    let mut from = 0
+    if (name.startsWith("Int$")) { from = 4 }
+    else if (name.startsWith("UInt$")) { from = 5 }
+    else { return 0 }
+    let parsed = name.substring(from, name.length - from).parseInt()
+    if (parsed == none) { return 0 }
+    return expect(parsed)
+}
+
+// The width a number literal in `Int<...>` names, or -1 when the text is not a plain
+// whole number that fits an `Int`: `Int<0x20>` is 32, `Int<1.5>` and `Int<-8>` are
+// not widths. Whether the number is a *usable* width is intWidthValid's question.
+public fn intWidthFromLiteral(text: String) -> Int {
+    let mut radix = 10
+    let mut start = 0
+    if (text.length > 2 and text.byteAt(0) == 48) {
+        let marker = text.byteAt(1)
+        if (marker == 120 or marker == 88) { radix = 16 }
+        if (marker == 111 or marker == 79) { radix = 8 }
+        if (marker == 98 or marker == 66) { radix = 2 }
+        if (radix != 10) { start = 2 }
+    }
+    let parsed = text.substring(start, text.length - start).parseInt(radix)
+    if (parsed == none) { return -1 }
+    return expect(parsed)
+}
+
+// The width of an LLVM integer key: 24 for `i24`, and 0 for anything that is not
+// `i` followed by a whole number (`ptr`, `double`, `struct:...`).
+public fn intWidthOfKey(key: String) -> Int {
+    if (key.length < 2 or key.byteAt(0) != 105) { return 0 }
+    let parsed = key.substring(1, key.length - 1).parseInt()
+    if (parsed == none) { return 0 }
+    return expect(parsed)
+}
+
+// Whether a width written in a type is one a type can have: positive, and within
+// what LLVM can name.
+public fn intWidthValid(bits: Int) -> Bool {
+    return bits >= 1 and bits <= intWidthMax()
+}
+
+// The bytes LLVM allocates for an `iN` under the data layouts this compiler targets
+// (`i128:128`): the next power of two of the stored bytes up to 64 bits, and a
+// multiple of 16 beyond.
+public fn intWidthAllocBytes(bits: Int) -> Int {
+    let stored = (bits + 7) / 8
+    if (bits > 64) { return ((stored + 15) / 16) * 16 }
+    let mut bytes = 1
+    while (bytes < stored) { bytes = bytes * 2 }
+    return bytes
+}
+
+// The significant bits of a non-negative literal's digits in `radix`, and whether
+// exactly one of them is set. Packed as `bits * 2 + (1 if a power of two)`, because
+// the range check wants both and a pair is a struct for no gain.
+//
+// Binary, octal and hex read straight off the digits. Decimal halves the digit
+// string until it is gone, which is quadratic in the literal's length -- a literal
+// wide enough for that to matter is not one a person typed.
+private fn intLiteralBitShape(digits: String, radix: Int) -> Int {
+    let n = digits.length
+    let mut values: Vec<Int> = []
+    for i in 0..<n {
+        let c = digits.byteAt(i)
+        let mut d = 0
+        if (c >= 48 and c <= 57) { d = c - 48 }
+        else if (c >= 97 and c <= 102) { d = c - 87 }
+        else if (c >= 65 and c <= 70) { d = c - 55 }
+        values.push(d)
+    }
+
+    if (radix != 10) {
+        let per = intRadixBits(radix)
+        let mut bits = 0
+        let mut ones = 0
+        let mut seen = false
+        for i in 0..<n {
+            let d = values[i]
+            if (seen == false and d == 0) { continue }
+            let mut width = per
+            if (seen == false) {
+                // The leading digit contributes only the bits it actually uses.
+                width = 0
+                let mut rest = d
+                while (rest > 0) {
+                    width = width + 1
+                    rest = rest / 2
+                }
+            }
+            seen = true
+            bits = bits + width
+            let mut rest = d
+            while (rest > 0) {
+                ones = ones + (rest % 2)
+                rest = rest / 2
+            }
+        }
+        if (bits > 0 and ones == 1) { return bits * 2 + 1 }
+        return bits * 2
+    }
+
+    // Decimal: halve until zero, counting bits and set bits as they fall off.
+    let mut bits = 0
+    let mut ones = 0
+    let mut start = 0
+    while (start < n and values[start] == 0) { start = start + 1 }
+    while (start < n) {
+        let mut carry = 0
+        for i in start..<n {
+            let cur = carry * 10 + values[i]
+            values[i] = cur / 2
+            carry = cur % 2
+        }
+        bits = bits + 1
+        ones = ones + carry
+        while (start < n and values[start] == 0) { start = start + 1 }
+    }
+    if (bits > 0 and ones == 1) { return bits * 2 + 1 }
+    return bits * 2
+}
+
+private fn intRadixBits(radix: Int) -> Int {
+    if (radix == 16) { return 4 }
+    if (radix == 8) { return 3 }
+    return 1
+}
+
+// Whether a written integer literal fits a `bits`-wide type: the check a 64-bit
+// parse cannot make. The sign has already been peeled by the caller as `negative`;
+// `body` is the digits after any `0x` / `0o` / `0b`.
+//
+// Two's complement reaches one further down than up, so a negative literal fits
+// when its magnitude is at most 2^(bits-1): fewer than `bits` significant bits, or
+// exactly `bits` of them with only the top one set.
+public fn intLiteralFitsWide(body: String, radix: Int, bits: Int, unsigned: Bool, negative: Bool) -> Bool {
+    if (negative and unsigned) { return false }
+    let shape = intLiteralBitShape(body, radix)
+    let used = shape / 2
+    let isPower = shape % 2 == 1
+    if (unsigned) { return used <= bits }
+    if (negative) { return used < bits or (used == bits and isPower) }
+    return used < bits
+}

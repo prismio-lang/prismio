@@ -3,6 +3,8 @@
 
 import ast.nodes
 import ast.types
+import ast.int_width
+import ast.float_width
 import common.text
 import common.diagnostics
 
@@ -395,6 +397,12 @@ internal extern fn aif_vs_view_of(vs: Int, collection: Int)
 internal extern fn aif_vs_mark_untracked(vs: Int)
 internal extern fn aif_vs_mark_literal(vs: Int)
 
+// Bindings are keyed per declaration (runtime/aif_support.c): the walk brackets each
+// block, match arm and function with enter/leave so a name resolves to the innermost
+// declaration visible at the read, and aif_var_note_scope is the declaration itself.
+internal extern fn aif_env_reset()
+internal extern fn aif_env_enter()
+internal extern fn aif_env_leave()
 internal extern fn aif_key_var(fnId: Int, name: String) -> Int
 internal extern fn aif_var_note_scope(fnId: Int, name: String, scope: Int)
 internal extern fn aif_var_scope(fnId: Int, name: String) -> Int
@@ -614,6 +622,8 @@ internal fn aifIsRef(ty: String) -> Bool {
     if (ty.equals("Isize")) { return false }
     if (ty.equals("Usize")) { return false }
     if (ty.equals("Float")) { return false }
+    if (floatKeyOfName(ty).equals("") == false) { return false }
+    if (intWidthOfName(ty) > 0) { return false }
     if (ty.equals("Bool")) { return false }
     if (ty.equals("Char")) { return false }
     if (ty.equals("Void")) { return false }

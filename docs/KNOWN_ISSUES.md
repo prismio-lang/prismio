@@ -42,13 +42,11 @@ history at `c9f71ef`: `git show c9f71ef:aif/evidence/RESULTS-<name>.md`
 
 ## Ownership: leaks
 
-> **2026-10-16:** four more shapes, found by the `graph_churn_*` benchmarks, are written up with
-> reproducers in [`GRAPH_CHURN_FINDINGS.md`](GRAPH_CHURN_FINDINGS.md): same-named bindings sharing one
-> key, an overwritten `Vec` element parked until its `Vec` dies, and the move checker rejecting
-> exclusive branches. A fifth, a fresh struct held by two `Vec`s of one type, is fixed (`test_302`); the
-> parked overwrite is fixed for a local `Vec` (2026-10-17, `test_317`, peak memory 1.2x to 1.4x of C++).
-> Two more found on 2026-10-17 are there too: a field moved out of an element view is released twice, and
-> a view assigned to an owning local leaks the value it replaced.
+> **2026-10-21:** `graph_churn_*` turned up shapes that are now fixed (a fresh struct held by two `Vec`s of one type,
+> an overwritten element or a displaced field parked or leaked until its container dies, two bindings of one name
+> sharing one analysis key, the move checker rejecting exclusive branches); what is still open from that work is in
+> [`GRAPH_CHURN_FINDINGS.md`](GRAPH_CHURN_FINDINGS.md): a field moved out of an element view is released twice, and a
+> view assigned to an owning local leaks the value it replaced.
 
 Every item in this section is a **leak, never a double free**: the conservative direction
 when the analysis cannot prove a release. `--verify` reports `allocated / released /
@@ -184,7 +182,7 @@ Bound to a `let`, the same call is clean, and a map literal with only plain keys
 `mapPut` and inherits both leaks: `return { p.concat("-long-suffix"): 1 }` reads 9 allocated, 8
 released, and the same literal held in a struct field reads 9 allocated, 0 released.
 
-### Assigning a struct field releases the value it replaces only for a fresh local
+### Assigning a struct field releases the value it replaces only where no view can be live
 
 ```
 let p = Process()
@@ -192,32 +190,29 @@ p.program = process.args[0]
 p.arguments = ["x"]            // 4 allocated, 4 released
 ```
 
-Fixed 2026-10-09 for the common shape, and the reason `test_153`, `test_183`, `test_188`,
-`test_258` and `test_259` read clean. An assignment releases the list it displaces when
-`irMarkDisplacedFieldStores` (`../src/ir/expr.psm`) can see that nothing else holds it:
+An assignment `r.f = x`, `v[i].f = x` or `r.v[i].f = x` releases the list it displaces when the
+removal verdict's "no view can be live" proof holds (`../src/ir/overwrites.psm`, the same proof a
+`v[k] = x` overwrite uses; `test_320` and `test_321` hold both halves, and `COLLECTIONS.md` 1e is the
+proof's origin):
 
-- the receiver is declared in the same block by a struct literal or by a call whose result
-  this scope owns, and is not a parameter, a global or a name for something else;
-- nothing between the declaration and the assignment mentions it, except a store to a
-  *different* field of it whose value does not mention it (`p.program = ...` first is fine);
-- the right-hand side does not mention it, so it cannot be the value being released;
-- the type is reclaimed and releases its fields, and this field is released as a list
-  (`fieldStoreReleasesDisplaced` in `../src/ir/stmt.psm`). A type nobody reclaims keeps its
-  field values' owners, so freeing one there would be a second free.
+- the root `r` (or `v`) is a local made by a struct literal, by a call whose result this function owns,
+  by `expect` of a received value, or by a fresh `Vec`, and is never assigned as a whole;
+- no binding that may hold a view of it is returned, assigned, captured, or passed to a callee that
+  keeps it -- the root itself may be moved on (sent, returned, pushed);
+- `x` mentions none of those bindings, so it is not the value being released;
+- none of them is live at the store.
+
+The first assignment to a fresh local is also released by the older syntactic rule
+(`irMarkDisplacedFieldStores`, `../src/ir/expr.psm`), and the type must be reclaimed and release the field
+as a list (`fieldStoreReleasesDisplaced`, `../src/ir/stmt.psm`): a type nobody reclaims keeps its field
+values' owners, so freeing one there would be a second free.
 
 **Still leaks**, each declined on purpose:
 
-- the receiver is a parameter, a global, or an alias, or was declared in an outer block or
-  before a loop (`for i in 0..<5 { b.items = [i] }` reads 13 allocated, 3 released);
-- a second assignment to the same field (the first is a mention of the receiver), or any read
-  of the field first: `let old = b.items` is a *view*, and so is a value a call returns out of
-  `b`, so the displaced value may still be read;
-- a field that is a String, a struct, an array, a counted field, or a list the type does not
-  release.
-
-Closing those needs the removal verdict's "no view can be live" proof (`COLLECTIONS.md` 1e), not
-a syntactic one. The heap-struct variant (`b.items = [3]` on a `Bag` that is later pushed into
-a `Vec`) reads 7 allocated, 7 released now.
+- the root is a parameter, a global, an alias, or any value this function does not own;
+- a view is live across the store (`let old = b.items` then `b.items = ...` then `old` is read), or the
+  new value is built from the old one (`b.items = f(b.items)`);
+- a field that is a String, a struct, an array, a counted field, or a list the type does not release.
 
 ### A struct on the frame: three field shapes still leak
 
@@ -751,28 +746,50 @@ annotation rewritten, so `let p: Point = makePoint()` still type-checks. Dispatc
 correct; the abstraction barrier is what is missing, and closing it means keeping the return type
 distinct through checking rather than rewriting it.
 
+**`Int<N>` of an unnamed width and `F16`, `F32`, `BF16`, `F128` implement no standard trait**
+(2026-10-21). `Eq`, `Ord`, `Copy`, `Default`, `Display` and `Key` are written per type in their own
+modules (`../std/eq.psm` and the rest), and the orphan rule lets only the module that declares a
+trait or a type implement one for the other, so a program cannot write `impl Key for Int<24>`
+(`this module declares neither`). The operators all work, so the cost is the trait-bounded APIs: a
+`Map<Int<24>, V>`, `Vec<F32>.sort()`, `Vec<F32>.filled(n, x)` and `contains`. Two pieces. For the
+four floats it is a list: add the impls to the trait modules, which `src/` imports through
+`std.vec`, so **the bootstrap seed has to be cut and committed first** or the old seed reads `F32`
+as a struct and `prismio bootstrap` fails. For an unnamed integer width there is no list to write;
+it needs either impls synthesised on first use of a width (sema builds declarations for the
+traits the program imports, as it builds `dyn$Show` structs) or a blanket `impl<T: Integer>`, which
+the language does not have.
+
+**`print` of `F16`, `F32`, `BF16` and `F128` needs `import std.number_text`** for the same seed
+reason: their overloads belong beside `Float`'s in `../std/io.psm` and `../std/string.psm`, which
+`src/` imports. Printing an `Int<N>` wider than 64 bits needs the same import and always will (a
+call into a module is allowed only from a file that imports it); up to 64 bits it does not.
+
+**A `Vec` cannot hold a number wider than 64 bits** (`Vec<Int<128>>`, `Vec<F128>`, and their
+optionals): a container slot and an inline row are at most one 64-bit word, and the annotation is
+refused with a note to wrap the value in a struct, which a `Vec` holds whole. Rows of arbitrary
+width mean the inline-element size is no longer one of 1, 2, 4, 8 and 16, which every
+`scalarInlineBytes` consumer in `../src/ir/expr.psm` assumes. Arrays, struct fields and locals
+are unaffected.
+
+**`std.math` is `Float`'s.** `sqrt`, `sin`, `pow` and the rest lower to `llvm.*.f64` through
+`__builtin_f64_*` (`../src/common/float_builtins.psm`), so on an `F32` they are written
+`(x as Float).sqrt() as F32`. The builtins already take their LLVM suffix from one place
+(`floatIntrinsicSuffix`), so the lowering generalises; what is missing is the overloads and the
+decision about which of them round correctly in `F32`.
+
+**`F128` (and `F16`/`BF16` on a target without them) link against compiler-rt or libgcc.** The
+arithmetic is `__addtf3`, `__multf3`, `__extendhfsf2` and their kind. They resolve on macOS
+(measured, aarch64) and are in libgcc on Linux; a Windows program using one is expected not to
+link, because `link.exe` is given no builtins library. Not run on Linux or Windows.
+
+**`F128` prints as the double nearest it** (`../std/number_text.psm`): the decimal machinery in
+`../std/float_text.psm` works on a double's 53 bits.
+
 ---
 
 ## Concurrency
 
 The plan for channels and tasks is `CHANNELS_PLAN.md`.
-
-**A received value leaks when its name was also sent from.** AIF keys a local by function and name
-(`aif_key_var`), so `let v = ...; c.send(v)` and a later `for v in c` in the same function share
-one value set; the received value takes the send's escape and is never released.
-
-```
-let c = Channel<Note>(4)
-let v = Note { text: "a text long enough for the heap ".concat("x") }
-c.send(v)
-c.close()
-for v in c { println(v.text.length) }     // 3 allocated, 1 released, 2 leaked
-c.free()
-```
-
-Renaming the loop variable (`for w in c`) reads 3 allocated, 3 released. A leak, not a double
-free. The fix is per-declaration binding keys, in the engine and the oracle together; it is the
-same name-keying that makes `test_205`'s inner `let a = a` keep its refusal.
 
 **A `spawn` not proved joined leaks its owned temporary arguments.** *Not re-run.* The temporary
 is released at the scope exit only when the join is proved (the E-SPAWN-J proof the task handle

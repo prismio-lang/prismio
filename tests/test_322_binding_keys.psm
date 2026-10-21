@@ -1,0 +1,95 @@
+// A binding is told apart by its declaration, not its name. The AIF engine used to key
+// a local by (function, name), so `let n = mk(step)` in a loop and a later
+// `for n in other` were one variable: the `for` binder is a view of an element, the `let`
+// stored an owner, and joining the two read the owner's store as a view store, which
+// taints every site of the type. Nothing in `slots` was then released.
+//
+// Each part below repeats a name the way real code does. --verify (run_aif_verify_test)
+// must see every block released and no violation: a key shared between two bindings is a
+// leak, and a key split wrongly would be a double release.
+// ir/overwrites.psm tells bindings apart the same way, so a ring replaced from a loop
+// whose binder shares a name with a later loop stays released at once (max_peak_bytes).
+
+import std.process
+
+struct Node {
+    value: Int,
+    edges: Vec<Int>
+}
+
+fn make(i: Int) -> Node {
+    let mut edges: Vec<Int> = Vec<Int>.withCapacity(2)
+    edges.push(i)
+    return Node { value: i, edges: edges }
+}
+
+// The `let` stores an owner; the later `for` binder of the same name is a view.
+fn sequentialLoops(steps: Int) -> Int {
+    let mut slots: Vec<Node> = Vec<Node>.withCapacity(4)
+    let mut other: Vec<Node> = Vec<Node>.withCapacity(4)
+    for i in 0..<4 {
+        slots.push(make(i))
+        other.push(make(i + 10))
+    }
+    for step in 0..<steps {
+        let n = make(step)
+        slots[step % 4] = n
+    }
+    let mut total = 0
+    for n in other { total = total + n.value }
+    for n in slots { total = total + n.value }
+    return total
+}
+
+// The binder comes first and the owner after it.
+fn binderFirst(steps: Int) -> Int {
+    let mut slots: Vec<Node> = Vec<Node>.withCapacity(4)
+    let mut total = 0
+    for i in 0..<4 { slots.push(make(i)) }
+    for n in slots { total = total + n.value }
+    for step in 0..<steps {
+        let n = make(step)
+        slots[step % 4] = n
+    }
+    return total + slots[0].value
+}
+
+// Sibling blocks, one name, two roles: the first returns its value, the second does not.
+fn siblings(flag: Bool) -> Int {
+    if (flag) {
+        let n = make(1)
+        return n.value
+    } else {
+        let n = make(2)
+        let m = n.value
+        return m
+    }
+}
+
+// An inner declaration shadows the outer one and ends with its block.
+fn shadowed() -> Int {
+    let n = make(5)
+    let mut total = n.value
+    if (total > 0) {
+        let n = make(7)
+        total = total + n.value
+    }
+    return total + n.value
+}
+
+// The initialiser of a shadowing `let` reads the binding it shadows.
+fn rebind() -> Int {
+    let n = make(3)
+    let seen = n.value
+    let n = make(seen + 1)
+    return n.value
+}
+
+fn main() -> Int {
+    if (sequentialLoops(2000) != 46 + 1996 + 1997 + 1998 + 1999) { return 1 }
+    if (binderFirst(2000) != 6 + 1996) { return 2 }
+    if (siblings(true) != 1 or siblings(false) != 2) { return 3 }
+    if (shadowed() != 17) { return 4 }
+    if (rebind() != 4) { return 5 }
+    return 0
+}

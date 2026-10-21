@@ -1,0 +1,120 @@
+import std.io
+import std.vec
+
+// C: enum WindowSequence -- no explicit values, so an enum maps directly
+enum WindowSequence { OnlyLong, LongStart, EightShort, LongStop }
+
+// C: enum BandType has explicit values (ZERO_BT = 0, FIRST_PAIR_BT = 5, ...).
+// Prismio enums take no explicit discriminants, so these stay Int constants.
+let ZERO_BT: Int = 0
+let FIRST_PAIR_BT: Int = 5
+let ESC_BT: Int = 11
+let NOISE_BT: Int = 13
+
+let MAX_ELEM_ID: Int = 64
+
+struct NoiseInfo {
+    seed: U32,
+    level: U8,
+    offset: U8,
+}
+
+struct IndividualChannelStream {
+    maxSfb: Int,
+    windowSequence: Array<WindowSequence, 2>,
+    numWindowGroups: Int,
+    groupLen: Array<Int, 8>,
+    swbTable: Int,               // C: const uint16_t *swb_offset -- index into a global table
+    numSwb: Int,
+}
+
+struct SingleChannelElement {
+    ics: IndividualChannelStream,
+    noise: NoiseInfo,
+    bandType: Array<Int, 128>,
+    sfo: Array<Int, 128>,
+    coeffs: Array<Float, 1024>,
+    prevCoeffs: Array<Float, 1024>,
+    saved: Array<Float, 1536>,
+    retBuf: Array<Float, 2048>,
+    ltpState: Array<Float, 3072>,
+}
+
+struct ChannelElement {
+    present: Bool,
+    maxSfbSte: Int,
+    msMask: Array<U8, 128>,
+    ch: Vec<SingleChannelElement>,    // C: SingleChannelElement ch[2]; Array<struct, N> is refused
+}
+
+struct OutputConfiguration {
+    layoutMap: Array<U8, 768>,        // C: uint8_t layout_map[MAX_ELEM_ID*4][3], flattened
+    layoutMapTags: Int,
+    status: Int,                      // C: enum OCStatus; kept as Int until its values are used
+    channels: Int,
+}
+
+struct AACDecContext {
+    isSaved: Bool,
+    // C: ChannelElement *che[4][MAX_ELEM_ID]. Pointers that may be null and are
+    // aliased by tagCheMap, so each slot is an owned optional, indexed by type * 64 + id.
+    che: Vec<ChannelElement?>,
+    tagCheMap: Vec<Int>,              // C: ChannelElement *tag_che_map[4][64] -> slot index, -1 if unmapped
+    tagsMapped: Bool,
+    outputElement: Vec<Int>,          // C: SingleChannelElement *output_element[64] -> slot * 2 + channel
+    randomState: U32,
+    forceDmonoMode: Int,
+    dmonoMode: Int,
+    targetLevel: Int,
+    oc: Vec<OutputConfiguration>,     // C: OutputConfiguration oc[2]
+    // Dropped: class, avctx, frame (host back-pointers), dsp and proc (function-pointer
+    // tables), the fixed/float union and is_fixed, buf_mdct and temp (locals now),
+    // and the warned_* flags (replaced by returned errors).
+}
+
+fn newContext() -> AACDecContext {
+    let mut che: Vec<ChannelElement?> = []
+    let mut tags: Vec<Int> = []
+    let mut out: Vec<Int> = []
+    for _ in 0..<(4 * MAX_ELEM_ID) {
+        che.push(none)
+        tags.push(-1)
+    }
+    for _ in 0..<64 {
+        out.push(-1)
+    }
+    let mut oc: Vec<OutputConfiguration> = []
+    return AACDecContext {
+        isSaved: false,
+        che: che,
+        tagCheMap: tags,
+        tagsMapped: false,
+        outputElement: out,
+        randomState: 0,
+        forceDmonoMode: 0,
+        dmonoMode: 0,
+        targetLevel: 0,
+        oc: oc,
+    }
+}
+
+fn cheAllocated(ac: AACDecContext, slot: Int) -> Bool {
+    return ac.che[slot] != none
+}
+
+fn allocChe(inout ac: AACDecContext, slot: Int) {
+    ac.che[slot] = ChannelElement {
+        present: false,
+        maxSfbSte: 0,
+
+        ch: [],
+    }
+}
+
+fn main() -> Int {
+    let mut ac = newContext()
+    println(cheAllocated(ac, 3))
+    allocChe(ac, 3)
+    println(cheAllocated(ac, 3))
+    return 0
+}

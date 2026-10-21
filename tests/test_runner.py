@@ -5547,7 +5547,9 @@ def run_channel_copies_test():
     print(f"\n{BLUE}--- Running channel_copies ---{RESET}")
     source = TEST_DIR / "test_232_channel_copies.psm"
     problems = []
-    alloc = re.compile(r"call ptr @(malloc|rt_alloc|rc_alloc|arena_alloc|cyc_alloc)\b")
+    # Attributes sit between `call` and the type when the allocator is the seam's `rt_base_alloc`
+    # (`call noalias ptr @rt_base_alloc`: it carries malloc's attributes, docs/ALLOCATOR_PLAN.md).
+    alloc = re.compile(r"call (?:\w+ )*ptr @(malloc|rt_alloc|rt_base_alloc|rc_alloc|arena_alloc|cyc_alloc)\b")
     with tempfile.TemporaryDirectory(prefix="prismio-channel-copies-") as tmp:
         ir_path = Path(tmp) / "copies.ll"
         built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
@@ -8613,13 +8615,26 @@ def run_aif_verify_test():
         # site as one value held twice). The exemption test_255 made for a String
         # now covers any move-only site. The 4 are the `Pair` blocks that an element
         # read pushed into two containers keeps held by design (one value, three
-        # holders); 0 violations is the guard, and a rise in the leaks is the
+        # holders; 4 until a small Vec's header and elements became one block); 0 violations is the guard, and a rise in the leaks is the
         # exemption reaching `Frag`/`Node` no longer.
-        "test_302_struct_in_two_vecs": 4,
+        "test_302_struct_in_two_vecs": 2,
         # Overwrites that release at once and overwrites that must park, side by side;
         # 0 violations is the guard that no release reached a view still read.
         "test_317_overwrite_release": 0,
         "test_318_overwrite_peak": 0,
+        # A field store releases the value it displaces where no view is live
+        # (test_320, 0 leaked) and keeps it where one may be (test_321: the 300
+        # lists of `held`, `heldForNext` and `rebuilt`, one block each since a small
+        # Vec's header and elements are one allocation; 0 violations is the guard).
+        "test_320_field_store_release": 0,
+        "test_321_field_store_parks": 300,
+        # Two bindings of one name are two bindings: a `let` that stores an owner and a
+        # later `for` binder of the same name (a view) used to share one analysis key,
+        # which sent every site of the type to the counted tier and leaked all of it.
+        "test_322_binding_keys": 0,
+        # A small Vec of known capacity is one block, header and elements; every way it
+        # stops being one (growth, reserve, a field replaced) must free each block once.
+        "test_323_fused_list": 0,
     }
 
     max_allocations = {
@@ -8633,6 +8648,10 @@ def run_aif_verify_test():
         # 2,000 replacements of four Vec-owning structs: 528 bytes released at once,
         # 176,449 parked (src/ir/overwrites.psm).
         "test_318_overwrite_peak": 4096,
+        # 2,000 replacements of a node's edge list, six ways: released at once the
+        # peak is a few hundred bytes, leaked it is the sum of every list.
+        "test_320_field_store_release": 4096,
+        "test_322_binding_keys": 4096,
     }
 
     # Objects served by an arena. test_164 builds 100,000 structs with an array

@@ -1580,12 +1580,87 @@ void ir_clear_local_var_types(void) {
 
 static NameList moved_names = { NULL, 0, 0, "the moved-value table" };
 
+// Open branch frames, defined with the rest of the branch bookkeeping below.
+static int moved_frame_count;
+
 void ir_clear_moved(void) {
     moved_names.count = 0;
+    moved_frame_count = 0;
 }
 
 int ir_is_moved(const char* name) {
     return namelist_contains(&moved_names, name);
+}
+
+// Exclusive branches. Moved-from state is one set per function, filled in source
+// order, so a value moved in the `then` arm of an `if` read as moved in the `else`
+// arm and after a `continue`. A frame saves the set when the branches open
+// (`base`), and collects the union of the sets the arms that can fall through end
+// with (`joined`). Each arm starts from `base`; after the last arm the set is that
+// union -- moved on any path that reaches the join -- or `base` if every arm leaves
+// (the code after it is unreachable, and nothing is left to report on).
+typedef struct {
+    NameList base;
+    NameList joined;
+    int fell_through; // some arm reached the join
+} MovedFrame;
+
+static MovedFrame* moved_frames;
+static int moved_frame_capacity;
+
+static void namelist_copy(NameList* to, const NameList* from) {
+    to->count = 0;
+    for (int i = 0; i < from->count; i++) namelist_add(to, from->items[i]);
+}
+
+static void namelist_union(NameList* into, const NameList* from) {
+    for (int i = 0; i < from->count; i++) {
+        if (!namelist_contains(into, from->items[i])) namelist_add(into, from->items[i]);
+    }
+}
+
+void ir_moved_branches_begin(void) {
+    if (moved_frame_count == moved_frame_capacity) {
+        int next = moved_frame_capacity ? moved_frame_capacity * 2 : 16;
+        moved_frames = (MovedFrame*)xrealloc(moved_frames, (size_t)next * sizeof(MovedFrame),
+                                             "the moved-branch stack");
+        moved_frame_capacity = next;
+    }
+    MovedFrame* frame = &moved_frames[moved_frame_count++];
+    // A reused slot keeps its buffers; only the contents are reset.
+    if (frame->base.what == NULL) {
+        frame->base = (NameList){ NULL, 0, 0, "the moved-branch table" };
+        frame->joined = (NameList){ NULL, 0, 0, "the moved-branch table" };
+    }
+    namelist_copy(&frame->base, &moved_names);
+    frame->joined.count = 0;
+    frame->fell_through = 0;
+}
+
+// Ends one arm. `diverges` is whether control cannot leave the arm's bottom
+// (return, break, continue, panic): its moves never reach the join.
+void ir_moved_branch_end(int diverges) {
+    if (moved_frame_count == 0) return;
+    MovedFrame* frame = &moved_frames[moved_frame_count - 1];
+    if (!diverges) {
+        namelist_union(&frame->joined, &moved_names);
+        frame->fell_through = 1;
+    }
+    namelist_copy(&moved_names, &frame->base);
+}
+
+// Closes the frame. `has_fallthrough_arm` is 1 when no arm covers the case that
+// matches none of them (an `if` without `else`): that implicit arm falls through
+// with the state the branches opened with.
+void ir_moved_branches_end(int has_fallthrough_arm) {
+    if (moved_frame_count == 0) return;
+    MovedFrame* frame = &moved_frames[--moved_frame_count];
+    if (has_fallthrough_arm) {
+        namelist_union(&frame->joined, &frame->base);
+        frame->fell_through = 1;
+    }
+    if (frame->fell_through) namelist_copy(&moved_names, &frame->joined);
+    else namelist_copy(&moved_names, &frame->base);
 }
 
 // M2.1c. The binding an assignment is re-initialising, while its right-hand side

@@ -1,0 +1,189 @@
+// Conversions between numbers: what `x as T` and `x as T?` lower to when both
+// sides are an integer (of any width), a float (of any of the five), a Char or a
+// Bool.
+//
+// Here rather than in expr.psm because the question is a closed one -- two numeric
+// types in, one value out -- that every numeric type added to the language widens,
+// and expr.psm is already the largest file in the compiler. Width and kind come
+// from ast/types.psm and ast/float_width.psm, so a type with a new width needs no
+// change here; this file knows instructions, not names.
+
+import ast.types
+import ast.float_width
+import ir.bridge
+import std.string
+
+// `as`, both sides numbers. Truncating for an integer to a narrower integer,
+// rounding for a float to a narrower float, and **saturating for a float to an
+// integer**, as Rust's `as` is: out-of-range clamps to the type's bound and NaN is
+// 0. A bare `fptosi` makes both poison, so `1e10 as Int` would be whatever the
+// optimiser chose. On AArch64 `fcvtzs` already saturates and the intrinsic is that
+// one instruction; x86-64 adds a compare and select.
+internal fn numericConvert(val: String, fromT: TypeInfo, toT: TypeInfo) -> String {
+    let fromKey = typeIrKey(fromT)
+    let toKey = typeIrKey(toT)
+    if (fromKey.equals(toKey)) { return val }
+
+    // Char and Bool are unsigned here as they are when widening below.
+    // `sitofp` read the i1 of `true` as -1 and the i8 of Char 200 as -56.
+    let unsignedSource = typeIntIsUnsigned(fromT)
+                          or fromT.kind == TypeKind.CHAR
+                          or fromT.kind == TypeKind.BOOL
+
+    if (toT.kind == TypeKind.FLOAT) {
+        if (fromT.kind == TypeKind.FLOAT) { return floatResize(val, fromKey, toKey) }
+        if (unsignedSource) { return ir_get_temp_name(ir_uitofp(fromKey, val, toKey)) }
+        return ir_get_temp_name(ir_sitofp(fromKey, val, toKey))
+    }
+
+    if (fromT.kind == TypeKind.FLOAT) { return floatToInteger(val, fromKey, toKey, typeIntIsUnsigned(toT)) }
+
+    // Integer-shaped on both sides, so the only question is width.
+    return integerResize(val, fromT, toT)
+}
+
+// Width first, then sign: truncating or extending as `as T` does. Char and Bool are
+// zero-extended: a Char is a byte value, so 'A' as Int must be 65 and never a
+// negative number.
+internal fn integerResize(val: String, fromT: TypeInfo, toT: TypeInfo) -> String {
+    let fromKey = typeIrKey(fromT)
+    let toKey = typeIrKey(toT)
+    let fromBits = typeIntBits(fromT)
+    let toBits = typeIntBits(toT)
+    if (fromBits > toBits) { return ir_get_temp_name(ir_trunc(fromKey, val, toKey)) }
+    if (fromBits == toBits) { return val.clone() }
+    if (typeIntIsUnsigned(fromT) or fromT.kind == TypeKind.CHAR or fromT.kind == TypeKind.BOOL) {
+        return ir_get_temp_name(ir_zext(fromKey, val, toKey))
+    }
+    return ir_get_temp_name(ir_sext(fromKey, val, toKey))
+}
+
+// Float to float. Wider is exact, narrower rounds to nearest. `half` and `bfloat`
+// are both 16 bits and neither contains the other, so the step between them goes
+// through `float`, which contains both.
+internal fn floatResize(val: String, fromKey: String, toKey: String) -> String {
+    let fromBits = floatBitsOfKey(fromKey)
+    let toBits = floatBitsOfKey(toKey)
+    if (fromBits < toBits) { return ir_get_temp_name(ir_fpext(fromKey, val, toKey)) }
+    if (fromBits > toBits) { return ir_get_temp_name(ir_fptrunc(fromKey, val, toKey)) }
+    let wide = ir_get_temp_name(ir_fpext(fromKey, val, "float"))
+    return ir_get_temp_name(ir_fptrunc("float", wide, toKey))
+}
+
+// The saturating conversion, by the intrinsic that spells it for these two types:
+// `llvm.fptosi.sat.i32.f64`, `llvm.fptoui.sat.i24.f32`.
+internal fn floatToInteger(val: String, fromKey: String, toKey: String, toUnsigned: Bool) -> String {
+    let mut conversion = "llvm.fptosi.sat."
+    if (toUnsigned) { conversion = "llvm.fptoui.sat." }
+    ir_call_begin()
+    ir_call_arg(fromKey, val)
+    return ir_get_temp_name(ir_call_end(toKey, conversion.concat(toKey, ".", floatIntrinsicSuffix(fromKey))))
+}
+
+// Whether a number is a value of another numeric type -- the flag half of `x as T?`,
+// whose value half is numericConvert. The value is computed whatever the flag says,
+// so it must be one that cannot be poison -- which is why a float goes through the
+// saturating conversion even though the flag has already ruled out every input that
+// would saturate.
+//
+// Integer to integer: narrowing is a round trip -- truncate, extend back as the
+// target's sign says, compare -- which catches both a magnitude too large and a sign
+// the target cannot hold. At equal or greater width only the sign can be lost: a
+// negative value into an unsigned type, or the top bit of an unsigned one into a
+// signed type of the same width.
+//
+// Integer to float and float to float: present unless the value overflows the target
+// to an infinity. Rounding is not a loss here -- `i64 as Float?` has always rounded
+// -- so only a magnitude the target cannot represent at all makes it `none`.
+// Float to integer: whole, and inside the range.
+internal fn numericFits(value: String, from: TypeInfo, to: TypeInfo) -> String {
+    if (from.kind == TypeKind.FLOAT and to.kind == TypeKind.FLOAT) {
+        return floatToFloatFits(value, from, to)
+    }
+    if (from.kind == TypeKind.FLOAT) { return floatToIntegerFits(value, from, to) }
+    if (to.kind == TypeKind.FLOAT) { return integerToFloatFits(value, from, to) }
+    return integerFits(value, from, to)
+}
+
+private fn integerFits(value: String, from: TypeInfo, to: TypeInfo) -> String {
+    let fromKey = typeIrKey(from)
+    let fromBits = typeIntBits(from)
+    let toBits = typeIntBits(to)
+    let fromUnsigned = typeIntIsUnsigned(from)
+    let toUnsigned = typeIntIsUnsigned(to)
+    if (fromBits > toBits) {
+        let narrow = ir_get_temp_name(ir_trunc(fromKey, value, typeIrKey(to)))
+        let mut back = ""
+        if (toUnsigned) {
+            back = ir_get_temp_name(ir_zext(typeIrKey(to), narrow, fromKey))
+        } else {
+            back = ir_get_temp_name(ir_sext(typeIrKey(to), narrow, fromKey))
+        }
+        return ir_get_temp_name(ir_icmp_eq(fromKey, back, value))
+    }
+    if (fromUnsigned == toUnsigned) { return "true" }
+    if (fromBits < toBits and fromUnsigned) { return "true" }
+    return ir_get_temp_name(ir_icmp_sge(fromKey, value, "0"))
+}
+
+// An integer fits a float unless converting overflows it. `double` and `fp128` reach
+// past any integer a program names (2^128 against 2^1024), so they need no test; the
+// narrower three do, since `half` stops at 65504.
+private fn integerToFloatFits(value: String, from: TypeInfo, to: TypeInfo) -> String {
+    let toKey = typeIrKey(to)
+    if ((toKey.equals("double") or toKey.equals("fp128")) and typeIntBits(from) <= 128) { return "true" }
+    return isFiniteFlag(toKey, numericConvert(value, from, to))
+}
+
+// A float fits another when the narrowing does not turn a finite value into an
+// infinity. Rounding is allowed; a NaN or an infinity going in is the same going out.
+private fn floatToFloatFits(value: String, from: TypeInfo, to: TypeInfo) -> String {
+    let fromKey = typeIrKey(from)
+    let toKey = typeIrKey(to)
+    if (floatBitsOfKey(toKey) > floatBitsOfKey(fromKey)) { return "true" }
+    let narrow = floatResize(value, fromKey, toKey)
+    let narrowFinite = isFiniteFlag(toKey, narrow)
+    let valueFinite = isFiniteFlag(fromKey, value)
+    let wasSpecial = ir_get_temp_name(ir_xor("i1", valueFinite, "true"))
+    return ir_get_temp_name(ir_or("i1", narrowFinite, wasSpecial))
+}
+
+// `x - x` is zero for every finite x and NaN for an infinity or a NaN, and an ordered
+// compare with zero is false for NaN: one subtract and one compare, no constant that
+// has to be spelled in the float's own width.
+private fn isFiniteFlag(key: String, value: String) -> String {
+    let difference = ir_get_temp_name(ir_fsub(key, value, value))
+    return ir_get_temp_name(ir_fcmp_oeq(key, difference, "0.0"))
+}
+
+// Whether a float is exactly an integer of `to`: whole, and inside the range. The
+// bounds are powers of two, which a float holds exactly, and the upper one is
+// exclusive -- `I64.MAX` itself is not a double, so `x < 2^63` is the test and
+// `x <= I64.MAX` would round. NaN fails every ordered compare, and an infinity
+// fails the range, so neither needs a test of its own.
+private fn floatToIntegerFits(value: String, from: TypeInfo, to: TypeInfo) -> String {
+    let fromKey = typeIrKey(from)
+    let bits = typeIntBits(to)
+    let mut low = "0.0"
+    let mut high = powerOfTwoLiteral(bits)
+    if (typeIntIsUnsigned(to) == false) {
+        low = "-".concat(powerOfTwoLiteral(bits - 1))
+        high = powerOfTwoLiteral(bits - 1)
+    }
+    ir_call_begin()
+    ir_call_arg(fromKey, value)
+    let whole = ir_get_temp_name(ir_call_end(fromKey, "llvm.trunc.".concat(floatIntrinsicSuffix(fromKey))))
+    let isWhole = ir_get_temp_name(ir_fcmp_oeq(fromKey, whole, value))
+    let aboveLow = ir_get_temp_name(ir_fcmp_oge(fromKey, value, low))
+    let belowHigh = ir_get_temp_name(ir_fcmp_olt(fromKey, value, high))
+    let inRange = ir_get_temp_name(ir_and("i1", aboveLow, belowHigh))
+    return ir_get_temp_name(ir_and("i1", isWhole, inRange))
+}
+
+// 2^n as a float literal. Hexadecimal, so it is exact for any n: a decimal
+// spelling of 2^127 is 39 digits that one of the narrower floats may round
+// differently. One that is past the float's range reads as infinity, which makes
+// the `<` against it true -- correct, since a float that small cannot exceed it.
+private fn powerOfTwoLiteral(n: Int) -> String {
+    return "0x1p".concat(n.toString())
+}

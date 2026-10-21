@@ -9,11 +9,35 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **Integers of any width, and five float types.** `Int<N>` and `UInt<N>` are an integer of
+  exactly `N` bits for any `N` from 1 to 8,388,608 (LLVM's limit): `Int<24>`, `UInt<5>`,
+  `Int<128>`, `UInt<4096>`. A width that has a name is that name -- `Int<8>` is `I8`, `Int<32>`
+  is `Int`, `UInt<64>` is `U64` -- so the spellings mix without a cast; any other width is its own
+  type, lowered to `iN`. Arithmetic wraps at the width, `--overflow-checks` traps at it, a literal
+  is range-checked against it (a 128-bit literal is valid for an `Int<128>`), a float converts to
+  it by saturating, and `x as Int<24>?` answers `none` when `x` does not fit. The floats are
+  `F16`, `F32`, `F64` (`Float` under another name), `F128` and `BF16`; a float literal takes the
+  float type its context gives it, a cast between them rounds, and `F<24>` and `Float<32>` are
+  errors, since a float has no free width. `print`, `println`, `toString`, `as String` and `"${x}"` work for
+  every one: up to 64 bits an integer converts to `I64` or `U64`, a wider one goes through
+  `std.number_text` (`import std.number_text`), and the floats other than `Float` print the
+  fewest digits that read back *in their own type*, so an `F32` written `0.1` prints `0.1`.
+  `tests/test_324`-`test_326` and `neg_314`-`neg_317` hold it; `ast/int_width.psm` and
+  `ast/float_width.psm` own the names, `ir/numeric.psm` the conversions.
+
+  Known limits (`docs/KNOWN_ISSUES.md`): an `Int<N>` of an unnamed width and the four new floats
+  implement none of the standard traits yet (`Eq`, `Ord`, `Copy`, `Default`, `Display`, `Key`), so
+  they cannot be `Map` keys or `sort`ed through the trait-bounded APIs; a `Vec` cannot hold a
+  number wider than 64 bits; `std.math` is `Float`'s; and `F128` needs a library of soft-float
+  routines that Windows builds do not link.
+- **Mixed-width shift amounts.** `x >> n` with a `U64` and an `Int` failed module verification (an
+  `lshr i64` by an `i32`); the amount is now resized to the shifted value's type.
 - **Five benchmarks:** `graph_churn_single`, `graph_churn_alloc`, `graph_churn_transfer` and `graph_churn_full`
   (graph mutation, allocation and lifetime pressure, cross-thread transfer and reclamation, and all three), and
-  `register_pressure_torture` (forty live values in a dependent chain). Prismio is 1.9x to 2.5x of C++ on the
-  four graph ones, at parity on the last; `docs/GRAPH_CHURN_FINDINGS.md` has the table and the four open issues
-  they found. The channel queue C++ and the benchmark share moved to `cpp/bounded_queue.hpp`.
+  `register_pressure_torture` (forty live values in a dependent chain). Prismio is 1.2x to 1.5x of C++ on the
+  four graph ones (1.9x to 2.5x when they were added) at 1.1x to 1.5x of its peak memory (8x to 32x), at parity
+  on the last; `docs/GRAPH_CHURN_FINDINGS.md` has the table and the issues they found. The channel queue C++ and
+  the benchmark share moved to `cpp/bounded_queue.hpp`.
 
 - **`async fn`, `Future<T>` and `await`.** Calling an `async fn` does not run it: the call is a
   `Future<T>`, a task that has not started, and the body runs where it is awaited. `await f(x)` is
@@ -394,8 +418,25 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `test_317_overwrite_release` holds three stores that release and five that must park (a view read after the
   store, the loop's own binder, a view kept outside the loop, the new element built from the old, a Vec handed in);
   `test_318_overwrite_peak` bounds the peak at 4 KB (528 bytes, against 176,449 parked); the `overwrite_release`
-  harness test reads each function's setter. Not yet: a store into a field's Vec (`frag.nodes[i] = ...`), which
-  still parks.
+  harness test reads each function's setter. A store into a field's Vec (`frag.nodes[i] = ...`) follows the
+  same proof now, with the root a local struct (below).
+- **A small `Vec` is one allocation instead of two.** Its 64-byte header and its first block of elements were
+  separate `malloc`s; `list_new_cap` (`runtime/lang_runtime.c`) now makes them one block when the capacity is known
+  and the elements take at most 256 bytes on the heap (`RtList.fused`), and the first growth moves the elements to a
+  block of their own. On graph_churn, where every node owns a `Vec<Int>`: blocks allocated 33% to 42% fewer, and time
+  1.67x / 1.53x / 1.84x / 1.63x to **1.28x / 1.48x / 1.24x / 1.36x** of C++ (single, alloc, transfer, full), peak
+  RSS 1.1x to 1.5x of C++ (a fused header is padded to 16 bytes). Leak counts that count blocks halve (`test_302`,
+  `test_321`). `test_323_fused_list`.
+- **A field store releases the value it displaces wherever no view of it can be live.** `r.f = x`,
+  `v[i].f = x` and `r.v[i].f = x` used to release only the first store to a fresh local, so a loop that kept
+  replacing a node's edge list leaked every list it replaced (`n.edges = mkv(step)` over 1,000 steps: 2,002
+  allocated, 2 released). `src/ir/overwrites.psm` runs the same proof as a `v[k] = x` overwrite with the root of
+  the path as the container: a local made by a struct literal, an owning call, `expect` of a received value or a
+  fresh Vec; no view of it leaves the function's bindings; the new value mentions none; none is live at the
+  store. The root itself being moved on (sent, returned, pushed) does not count, which is what lets a stage that
+  edits a fragment and forwards it release. Now 2,002 released, peak 536 bytes. `graph_churn.*` is written with
+  plain field assignment in all three languages and balances (0 leaked, 0 violations on all four arms).
+  `test_320_field_store_release` and `test_321_field_store_parks`.
 - **A small pure tree-recursive function is inlined into itself once** (`SelfRecursionUnfold`,
   `runtime/llvm_bridge.cpp`, at the early-simplification extension point, before TailCallElim). Unfolded,
   `fib(n - 1) + fib(n - 2)` is four calls of which two have the same argument, and a call that reads no memory
@@ -782,6 +823,21 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `test_255` made for `String` now covers every move-only site, still excluding an element read that was
   pushed. `graph_churn_alloc` went from 10 released of 2,521,048 to all of them. `test_302`; suite 614/614.
 
+- **Two bindings of one name no longer share one analysis key.** AIF keyed a local by function and name, so
+  `let n = mk(step)` in a loop and a later `for n in other` were one variable; the `for` binder is a view, the
+  `let` stored an owner, and the join read the owner's store as a view store and sent every site of the type to
+  the counted tier (1,528 allocated, 512 released). The walk now resolves a read or a store to the innermost
+  visible declaration of its name, as the source does (`aif_env_*` in `runtime/aif_support.c`, the walk in
+  `src/aif/walk.psm`, the oracle in `tools/aif_oracle/aif.py`); a function that never repeats a name builds the
+  keys it always did. The same shape with a channel (`let v = ...; c.send(v)`, then `for v in c`) is fixed with
+  it. `src/ir/overwrites.psm` had the same flaw in its proof and now tells declarations apart too: without that,
+  renaming the benchmark's binder back to `frag` parked a ring of fragments (38 MB peak against 0.19 MB).
+  `test_322_binding_keys`.
+- **The move checker no longer rejects exclusive branches.** `if (c) { v.push(n) } else { v[i] = n }` was
+  `use of moved value` on the else arm, and a `continue` after a push hid the move from nothing: moved-from state
+  was one set in source order. Each arm of an `if` / `else if` and of a `match` now starts from the state the
+  branches opened with, an arm that cannot fall through hands none of its moves on, and the state after is the
+  union of the rest. It accepts more programs and no fewer. `test_319_exclusive_branch_moves`, `neg_313`.
 - **`-O0`..`-O3` did not set how the program was optimised.** The program's object step was
   fixed at O3 (O0 with `-g`); the flag only ran a second `default<O<n>>` over the frontend's
   module before it. So `-O0` was a fully optimised build and `-O3` optimised twice: the hosted

@@ -666,7 +666,7 @@ private fn generateVariableDecl(stmt: ASTNode) {
 // teardown. Anything else keeps leaking the displaced value, which is never wrong.
 private fn fieldStoreReleasesDisplaced(stmt: ASTNode, structName: String, field: String,
                                        fieldType: String) -> Bool {
-    if (stmt.i3 != 1) { return false }
+    if (stmt.i3 != 1 and overwriteFieldStoreReleasesNow(stmt) == false) { return false }
     if (aif_type_releases(structName) != 1 or aif_type_is_reclaimed(structName) != 1) { return false }
     if (aif_field_is_counted(structName, field) == 1) { return false }
     if (isStructTypeKey(fieldType) or isArrayValueKey(fieldType)) { return false }

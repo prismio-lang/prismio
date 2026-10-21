@@ -197,6 +197,23 @@ internal fn semaBlockDiverges(block: ASTNode) -> Bool {
     return false
 }
 
+// --- exclusive branches --------------------------------------------------------
+//
+// The arms of an `if` or `match` are exclusive, so a value one of them moves is
+// still whole in the others, and an arm that cannot fall through (`continue`,
+// `return`, `panic`) hands none of its moves to the code after the statement. The
+// move table itself lives in the IR bridge; these are its two questions in Bool.
+
+internal fn semaMovedArmEnd(diverges: Bool) {
+    if (diverges) { ir_moved_branch_end(1) } else { ir_moved_branch_end(0) }
+}
+
+// `fallsThroughUncovered`: no arm covers the case that matches none of them (an
+// `if` with no `else`, a `match` that is not exhaustive).
+internal fn semaMovedBranchesEnd(fallsThroughUncovered: Bool) {
+    if (fallsThroughUncovered) { ir_moved_branches_end(1) } else { ir_moved_branches_end(0) }
+}
+
 // --- jumps -------------------------------------------------------------------
 //
 // `break` and `continue` outside any loop, and a label that no enclosing loop

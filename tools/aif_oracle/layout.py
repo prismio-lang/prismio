@@ -28,7 +28,7 @@ import argparse
 from collections import defaultdict
 
 sys.path.insert(0, __file__.rsplit('/', 1)[0] if '/' in __file__ else '.')
-from aif import Model                                        # noqa: E402
+from aif import Model, int_width                             # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Machine model (LAYOUT 4)
@@ -46,20 +46,35 @@ LAMBDA_NUM, LAMBDA_DEN = 2, 100               # 0.02, in fixed point
 # Struct-typed fields are pointers in the current implementation.
 WIDTH = {'Int': 4, 'I8': 1, 'I16': 2, 'I32': 4, 'I64': 8,
          'U8': 1, 'U16': 2, 'U32': 4, 'U64': 8,
-         'Isize': 8, 'Usize': 8, 'Float': 8, 'Bool': 1, 'Char': 1}
+         'Isize': 8, 'Usize': 8, 'Float': 8, 'Bool': 1, 'Char': 1,
+         'F16': 2, 'BF16': 2, 'F32': 4, 'F128': 16}
 PTR = 8
+
+
+def int_alloc_bytes(bits):
+    """Bytes LLVM allocates for an `iN` (`i128:128`): the next power of two up to
+    64 bits, a multiple of 16 past it. The twin of intWidthAllocBytes."""
+    stored = (bits + 7) // 8
+    if bits > 64:
+        return (stored + 15) // 16 * 16
+    size = 1
+    while size < stored:
+        size *= 2
+    return size
 
 
 def field_width(model, ty):
     base = ty.split('<')[0].strip('[]')
     if base in WIDTH:
         return WIDTH[base]
+    if int_width(base) > 0:
+        return int_alloc_bytes(int_width(base))
     return PTR              # struct, String, List, array -> a pointer today
 
 
 def field_align(model, ty):
     w = field_width(model, ty)
-    return min(w, 8)
+    return min(w, 16)
 
 
 # ---------------------------------------------------------------------------

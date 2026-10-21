@@ -436,6 +436,7 @@ private fn freestandingSafeModule(name: String) -> Bool {
         or name.equals("std.eq") or name.equals("std.ord") or name.equals("std.copy")
         or name.equals("std.key") or name.equals("std.default")
         or name.equals("std.vec") or name.equals("std.map") or name.equals("std.float_text")
+        or name.equals("std.number_text")
         or name.equals("std.port") or name.equals("std.asm") or name.equals("std.raw")
 }
 

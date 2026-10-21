@@ -1,0 +1,15 @@
+// expect-error: `Int` width 0 is out of range
+// expect-error: `UInt` width 8388609 is out of range
+// expect-error: `Int` takes a width: a whole number of bits
+// expect-error: `UInt` takes a whole number of bits, not 1.5
+// A width is a whole number of bits from 1 to 2^23, LLVM's own ceiling. Each of these
+// is reported once and recovers as a 32-bit integer, so one bad width is one error and
+// not a second one about a type that was never resolved.
+
+fn main() -> Int {
+    let a: Int<0> = 0
+    let b: UInt<8388609> = 0
+    let c: Int<n> = 0
+    let d: UInt<1.5> = 0
+    return 0
+}

@@ -7,6 +7,10 @@
 #include "prismio_platform.h"
 #include "prismio_runtime.h"
 
+// Every libc `free`/`realloc` in this file is spelled `tmp_free`/`tmp_realloc` (prismio_runtime.h),
+// because a block from the allocator seam must reach `rt_free` instead. See docs/ALLOCATOR_PLAN.md.
+#pragma GCC poison free realloc
+
 // M4.3's common conversion/access failure path. Defined outside
 // lang_runtime.c so its curated bounds-check body does not grow private Clang
 // `.cold` dependencies that cannot be linked from the extracted module.
@@ -85,7 +89,7 @@ int make_directory(const char* path) {
         }
     }
     PRISMIO_MKDIR(work);
-    free(work);
+    tmp_free(work);
 
     return directory_exists(path) ? 0 : 1;
 }
@@ -202,7 +206,7 @@ char* current_directory(void) {
     if (path) {
         char* owned = (char*)rt_base_alloc(strlen(path) + 1);
         strcpy(owned, path);
-        free(path);
+        tmp_free(path);
         return owned;
     }
 
@@ -239,7 +243,7 @@ static void append_module_name(char*** names, int* count, int* capacity,
 
     if (*count == *capacity) {
         *capacity = *capacity ? *capacity * 2 : 16;
-        *names = (char**)realloc(*names, (size_t)*capacity * sizeof(char*));
+        *names = (char**)tmp_realloc(*names, (size_t)*capacity * sizeof(char*));
         if (!*names) {
             fprintf(stderr, "prismio: out of memory listing modules\n");
             exit(1);
@@ -301,9 +305,9 @@ char* list_modules(const char* directory) {
     for (int i = 0; i < count; i++) {
         if (i > 0) strcat(result, "\n");
         strcat(result, names[i]);
-        free(names[i]);
+        tmp_free(names[i]);
     }
-    free(names);
+    tmp_free(names);
     return result;
 }
 
@@ -321,8 +325,8 @@ static char** fs_list_names;
 static int    fs_list_count;
 
 void fs_list_end(void) {
-    for (int i = 0; i < fs_list_count; i++) free(fs_list_names[i]);
-    free(fs_list_names);
+    for (int i = 0; i < fs_list_count; i++) tmp_free(fs_list_names[i]);
+    tmp_free(fs_list_names);
     fs_list_names = NULL;
     fs_list_count = 0;
 }
@@ -331,7 +335,7 @@ static int fs_list_push(int* capacity, const char* name) {
     if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return 1;
     if (fs_list_count == *capacity) {
         int grown = *capacity ? *capacity * 2 : 16;
-        char** bigger = (char**)realloc(fs_list_names, (size_t)grown * sizeof(char*));
+        char** bigger = (char**)tmp_realloc(fs_list_names, (size_t)grown * sizeof(char*));
         if (!bigger) return 0;
         fs_list_names = bigger;
         *capacity = grown;
@@ -452,7 +456,7 @@ char* fs_readlink(const char* path) {
         if (!buffer) return NULL;
         ssize_t length = readlink(path, buffer, capacity);
         if (length < 0) {
-            free(buffer);
+            tmp_free(buffer);
             char* empty = (char*)rt_base_alloc(1);
             if (empty) empty[0] = '\0';
             return empty;
@@ -463,10 +467,10 @@ char* fs_readlink(const char* path) {
                 memcpy(result, buffer, (size_t)length);
                 result[length] = '\0';
             }
-            free(buffer);
+            tmp_free(buffer);
             return result;
         }
-        free(buffer);
+        tmp_free(buffer);
         capacity *= 2;
     }
 #endif
@@ -480,7 +484,7 @@ int fs_realpath_exists(const char* path) {
     char* resolved = realpath(path, NULL);
 #endif
     if (!resolved) return 0;
-    free(resolved);
+    tmp_free(resolved);
     return 1;
 }
 
@@ -503,7 +507,7 @@ char* fs_realpath(const char* path) {
     size_t length = strlen(resolved);
     char* result = (char*)rt_base_alloc(length + 1);
     if (result) memcpy(result, resolved, length + 1);
-    free(resolved);
+    tmp_free(resolved);
     return result;
 }
 
@@ -535,20 +539,20 @@ char* proc_groups(void) {
     gid_t* groups = count > 0 ? (gid_t*)malloc((size_t)count * sizeof(gid_t)) : NULL;
     if (count > 0 && !groups) return NULL;
     if (count > 0 && getgroups(count, groups) < 0) {
-        free(groups);
+        tmp_free(groups);
         return NULL;
     }
     size_t capacity = (size_t)(count + 1) * 24 + 1;
     char* out = (char*)rt_base_alloc(capacity);
     if (!out) {
-        free(groups);
+        tmp_free(groups);
         return NULL;
     }
     size_t offset = 0;
     gid_t primary = getgid();
     int written = snprintf(out, capacity, "%u", (unsigned)primary);
     if (written < 0) {
-        free(groups);
+        tmp_free(groups);
         return NULL;
     }
     offset = (size_t)written;
@@ -556,13 +560,13 @@ char* proc_groups(void) {
         if (groups[i] == primary) continue;
         written = snprintf(out + offset, capacity - offset, " %u", (unsigned)groups[i]);
         if (written < 0) {
-            free(groups);
+            tmp_free(groups);
             return NULL;
         }
         offset += (size_t)written;
     }
     out[offset] = '\0';
-    free(groups);
+    tmp_free(groups);
     return out;
 #endif
 }
@@ -764,7 +768,7 @@ int execute_command(const char* command) {
     char* wrapped = (char*)malloc(command_len);
     snprintf(wrapped, command_len, "cmd /S /C \"%s\"", command);
     int result = system(wrapped);
-    free(wrapped);
+    tmp_free(wrapped);
     return result == 0 ? 0 : 1;
 #else
     return system(command) == 0 ? 0 : 1;
@@ -817,9 +821,9 @@ static int    g_spawn_argc = 0;
 static int    g_spawn_cap = 0;
 
 static void spawn_builder_reset(void) {
-    for (int i = 0; i < g_spawn_argc; i++) free(g_spawn_argv[i]);
-    free(g_spawn_argv);
-    free(g_spawn_program);
+    for (int i = 0; i < g_spawn_argc; i++) tmp_free(g_spawn_argv[i]);
+    tmp_free(g_spawn_argv);
+    tmp_free(g_spawn_program);
     g_spawn_program = NULL;
     g_spawn_argv = NULL;
     g_spawn_argc = 0;
@@ -845,7 +849,7 @@ void proc_spawn_arg(const char* argument) {
     if (!argument) return;
     if (g_spawn_argc == g_spawn_cap) {
         int grown = g_spawn_cap ? g_spawn_cap * 2 : 8;
-        char** bigger = (char**)realloc(g_spawn_argv, (size_t)grown * sizeof(char*));
+        char** bigger = (char**)tmp_realloc(g_spawn_argv, (size_t)grown * sizeof(char*));
         if (!bigger) return;
         g_spawn_argv = bigger;
         g_spawn_cap = grown;
@@ -940,7 +944,7 @@ int proc_spawn_run(int stdin_mode, int stdout_mode, int stderr_mode,
             failure = ENOMEM;
         } else {
             failure = posix_spawnp(&child, vector[0], &actions, NULL, vector, environ);
-            free(vector);
+            tmp_free(vector);
         }
     }
 
@@ -992,7 +996,7 @@ int proc_exec(void) {
     execvp(vector[0], vector);
     // Only reached when the exec failed; the vector's elements belong to the
     // builder, so only the vector itself is this function's to free.
-    free(vector);
+    tmp_free(vector);
     return -1;
 }
 
@@ -1169,7 +1173,7 @@ int proc_spawn_run(int stdin_mode, int stdout_mode, int stderr_mode,
             failure = (int)GetLastError();
         }
     }
-    free(line);
+    tmp_free(line);
 
     // The child's ends close here in every outcome, for the reason the POSIX
     // half gives: a parent still holding the write end never sees EOF.
@@ -1215,7 +1219,7 @@ int proc_exec(void) {
     char** vector = spawn_vector();
     if (!vector) return -1;
     _execvp(vector[0], (const char* const*)vector);
-    free(vector);
+    tmp_free(vector);
     return -1;
 }
 
@@ -1445,7 +1449,7 @@ static size_t line_reader_fill(LineReader* r) {
     if (r->capacity - r->end < LINE_READER_CHUNK) {
         size_t grown = r->capacity ? r->capacity * 2 : LINE_READER_CHUNK;
         while (grown - r->end < LINE_READER_CHUNK) grown *= 2;
-        char* bigger = (char*)realloc(r->buffer, grown);
+        char* bigger = (char*)tmp_realloc(r->buffer, grown);
         if (!bigger) { r->eof = 1; return 0; }
         r->buffer = bigger;
         r->capacity = grown;
@@ -1584,7 +1588,7 @@ void fs_lines_close(int handle) {
 #else
     close(r->fd);
 #endif
-    free(r->buffer);
+    tmp_free(r->buffer);
     memset(r, 0, sizeof(*r));
     s->open = 0;
     // Wraps within 15 bits, so a handle stays a non-negative Int.
@@ -1612,7 +1616,7 @@ int fs_lines_open(const char* path) {
         }
         int grown = fs_lines_slot_count ? fs_lines_slot_count * 2 : 8;
         if (grown > FS_LINES_MAX_SLOTS) grown = FS_LINES_MAX_SLOTS;
-        FsLinesSlot* bigger = (FsLinesSlot*)realloc(fs_lines_slots,
+        FsLinesSlot* bigger = (FsLinesSlot*)tmp_realloc(fs_lines_slots,
                                                     (size_t)grown * sizeof(FsLinesSlot));
         if (!bigger) {
 #ifdef _WIN32
@@ -1945,7 +1949,7 @@ void* prismio_scope_new(void) {
 static void prismio_scope_add(PrismioScope* sc, PrismioTask* t) {
     if (sc->len == sc->cap) {
         int cap = sc->cap ? sc->cap * 2 : 4;
-        PrismioTask** grown = (PrismioTask**)realloc(sc->tasks, (size_t)cap * sizeof(PrismioTask*));
+        PrismioTask** grown = (PrismioTask**)tmp_realloc(sc->tasks, (size_t)cap * sizeof(PrismioTask*));
         if (!grown) prismio_task_start_failed("out of memory");
         sc->tasks = grown;
         sc->cap = cap;
@@ -1979,8 +1983,8 @@ void prismio_scope_end(void* scope) {
         prismio_task_await(sc->tasks[i]);
         prismio_task_release(sc->tasks[i]);
     }
-    free(sc->tasks);
-    free(sc);
+    tmp_free(sc->tasks);
+    tmp_free(sc);
 }
 
 // Three accessors rather than one returning a word the caller reinterprets.
@@ -2006,7 +2010,7 @@ void prismio_task_join_v(void* handle) {
 void prismio_task_release(void* handle) {
     PrismioTask* t = (PrismioTask*)handle;
     if (!t) return;
-    if (--t->refs <= 0) free(t);
+    if (--t->refs <= 0) tmp_free(t);
 }
 
 // `bytes` is the in-place ring a plain-data channel uses instead of `slots`:
@@ -2030,7 +2034,7 @@ void* chan_new(int capacity) {
     PrismioChan* c = (PrismioChan*)calloc(1, sizeof(PrismioChan));
     if (!c) return NULL;
     c->slots = (void**)calloc((size_t)capacity, sizeof(void*));
-    if (!c->slots) { free(c); return NULL; }
+    if (!c->slots) { tmp_free(c); return NULL; }
     c->cap = capacity;
     PRISMIO_MUTEX_INIT(&c->lock);
     PRISMIO_COND_INIT(&c->not_empty);
@@ -2199,9 +2203,9 @@ void chan_free(void* handle) {
     PRISMIO_MUTEX_DESTROY(&c->lock);
     PRISMIO_COND_DESTROY(&c->not_empty);
     PRISMIO_COND_DESTROY(&c->not_full);
-    free(c->slots);
-    free(c->bytes);
-    free(c);
+    tmp_free(c->slots);
+    tmp_free(c->bytes);
+    tmp_free(c);
 }
 
 // std.term's `colorEnabled`: whether text written to descriptor `fd` (1 or 2)

@@ -1,20 +1,74 @@
 import std.io
 import std.map
 import std.vec
+import std.math
+import std.option
+import std.raw
+import std.mem
 
+private fn benchRandom(seed: Int) -> Int {
+    return (seed * 25173 + 13849) % 65521
+}
+
+public fn benchFlatBitset(scale: Int) -> Int {
+    let n = 50000 * scale
+    let words = (n + 63) / 64
+
+    let mut a = Vec<U64>.filled(words, 0)
+    let mut b = Vec<U64>.filled(words, 0)
+    let mut c = Vec<U64>.filled(words, 0)
+
+    let one: U64 = 1
+    let mut seed = 77
+    for i in 0..<n {
+        seed = benchRandom(seed)
+        let wIdx = i / 64
+        let bIdx = (i % 64) as U64
+        if (seed % 3 == 0) {
+            a[wIdx] = a[wIdx] | (one << bIdx)
+        }
+        seed = benchRandom(seed)
+        if (seed % 5 == 0) {
+            b[wIdx] = b[wIdx] | (one << bIdx)
+        }
+    }
+
+    let magic: U64 = 0x0137_F026_8594_B374
+    for _ in 0..<10 {
+        for w in 0..<words {
+            let aw = a[w]
+            let bw = b[w]
+            let cw = (aw & bw) | ((~aw) & (bw ^ magic))
+            c[w] = cw
+            a[w] = aw ^ cw
+            b[w] = (bw << (1 as U64)) | (bw >> (63 as U64))
+        }
+    }
+
+    let mut countA: I64 = 0
+    let mut countB: I64 = 0
+    let mut countC: I64 = 0
+    for w in 0..<words {
+        countA = countA + (a[w].countOnes() as I64)
+        countB = countB + (b[w].countOnes() as I64)
+        countC = countC + (c[w].countOnes() as I64)
+    }
+
+    let checksum = (countA * 10007 + countB * 31 + countC) % 1000000007
+    return checksum as Int
+}
+
+struct Hello {
+
+}
 fn main() {
-    let mut names: Vec<Int>
+    let x = "746"
+    let s = Buffer.fromString(x).pointer
+    let z: U8 = s ?? 87
 
-    names.push(5)
-    names.push(4)
-    names.push(3)
-    names.push(2)
-    names.push(1)
+    println(s ?? 8 as U8)
+}
 
-    let s = names[1..<3]
+fn take(x: Ptr<Int>) {
 
-    names.pop()
-    names.pop()
-
-    println(s[2])
 }

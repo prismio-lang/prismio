@@ -1952,7 +1952,64 @@ static int key_intern(int kind, int a, int b) {
     return n->id;
 }
 
-int aif_key_var(int fn, const char* name)            { return key_intern(AIF_KEY_VAR, fn, aif_intern(name)); }
+// Bindings are keyed per declaration, not per name.
+//
+// A key used to be (function, name), so `let frag = ...` in one block and a later
+// `for frag in ...` were one variable: the `for` binder is a view of an element, the
+// earlier `let` stored an owner, and joining the two read the owner's store as a view
+// store, which taints every site of the type. The walk now keeps the bindings in scope
+// as it goes (aif_env_*), and a read or a store resolves to the innermost declaration
+// of its name that is visible there, as the source does.
+//
+// The first declaration of a name in a function keeps the plain (function, name) key,
+// so a function that never repeats a name builds the keys it always did, and the
+// by-name lookups codegen makes for a name it has already checked is bound once
+// (aif_frees_unless_returned_node) still land on it. Later declarations are
+// `name#1`, `name#2`, ... -- a spelling no source name can have.
+typedef struct {
+    int fn;
+    int name;   // interned
+    int key;
+} EnvEntry;
+
+static EnvEntry* env_entries;
+static int env_len, env_cap;
+static int* env_marks;
+static int env_mark_len, env_mark_cap;
+
+// A new function starts with nothing in scope.
+void aif_env_reset(void) {
+    env_len = 0;
+    env_mark_len = 0;
+}
+
+void aif_env_enter(void) {
+    if (env_mark_len == env_mark_cap) {
+        env_mark_cap = env_mark_cap ? env_mark_cap * 2 : 64;
+        env_marks = (int*)xrealloc(env_marks, (size_t)env_mark_cap * sizeof(int), "AIF binding scopes");
+    }
+    env_marks[env_mark_len++] = env_len;
+}
+
+void aif_env_leave(void) {
+    if (env_mark_len == 0) return;
+    env_len = env_marks[--env_mark_len];
+}
+
+// The key of the innermost visible declaration of `name`, or -1: a global, a name the
+// walk never declared (a closure's parameter), or a read outside any walk.
+static int env_resolve(int fn, int name) {
+    for (int i = env_len - 1; i >= 0; i--) {
+        if (env_entries[i].name == name && env_entries[i].fn == fn) return env_entries[i].key;
+    }
+    return -1;
+}
+
+int aif_key_var(int fn, const char* name) {
+    int interned = aif_intern(name);
+    int resolved = env_resolve(fn, interned);
+    return resolved >= 0 ? resolved : key_intern(AIF_KEY_VAR, fn, interned);
+}
 
 // Declaring scopes
 //
@@ -1982,15 +2039,36 @@ static void var_scope_grow(int key) {
     var_scope_cap = grow;
 }
 
+// A declaration of `name` in `scope`. Takes the first key of the name's spellings that no
+// earlier declaration of this function used, and puts it in scope until the block it
+// was declared in is left. A global (function -1) has one key and is not in the walk's
+// environment.
 void aif_var_note_scope(int fn, const char* name, int scope) {
-    int key = aif_key_var(fn, name);
+    int interned = aif_intern(name);
+    int key = key_intern(AIF_KEY_VAR, fn, interned);
+    if (fn >= 0) {
+        for (int ordinal = 1; key < var_scope_cap && var_scope[key] >= 0; ordinal++) {
+            char spelled[512];
+            snprintf(spelled, sizeof spelled, "%s#%d", name, ordinal);
+            key = key_intern(AIF_KEY_VAR, fn, aif_intern(spelled));
+        }
+    }
     var_scope_grow(key);
     if (var_scope[key] < 0) {
         var_scope[key] = scope;
-        return;
+    } else {
+        int m = scope_lca(var_scope[key], scope);
+        if (m >= 0) var_scope[key] = m;
     }
-    int m = scope_lca(var_scope[key], scope);
-    if (m >= 0) var_scope[key] = m;
+    if (fn < 0) return;
+    if (env_len == env_cap) {
+        env_cap = env_cap ? env_cap * 2 : 256;
+        env_entries = (EnvEntry*)xrealloc(env_entries, (size_t)env_cap * sizeof(EnvEntry), "AIF bindings in scope");
+    }
+    env_entries[env_len].fn = fn;
+    env_entries[env_len].name = interned;
+    env_entries[env_len].key = key;
+    env_len++;
 }
 
 // Called at every read of a binding. Declines rather than guesses in the two
@@ -8972,6 +9050,8 @@ void aif_reset(void) {
     free(var_scope);
     var_scope = NULL;
     var_scope_cap = 0;
+    env_len = 0;
+    env_mark_len = 0;
 
     free(extern_contract);
     extern_contract = NULL;

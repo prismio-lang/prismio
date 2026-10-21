@@ -271,6 +271,12 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
         nodeSetType(valNode, expected)
         return expected
     }
+    // A float literal adopts the float type it initialises: `let x: F32 = 0.1`.
+    // There is no range to check -- a float rounds, it does not wrap.
+    if (typeIsValid(expected) and expected.kind == TypeKind.FLOAT and semaIsFloatLiteral(valNode)) {
+        nodeSetType(valNode, expected)
+        return expected
+    }
 
     // An array literal takes its element type from the annotation when there is
     // one, for the same reason a bare integer literal does above.

@@ -75,6 +75,7 @@ public fn nodeIsInline(fnNode: ASTNode) -> Bool {
 public fn nodeFnAlign(fnNode: ASTNode) -> Int {
     let record = fnAttrRecord(fnNode)
     if (record.equals("")) { return 0 }
+
     return fnAttrField(record, 1).parseInt().unwrapOr(0)
 }
 

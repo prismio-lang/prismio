@@ -10,6 +10,8 @@ import common.int_builtins
 import common.mem_builtins
 import std.string
 import aif.model
+import ir.numeric
+import ast.float_width
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
 // answer. Previously both operands were generated unconditionally and combined
@@ -3906,42 +3908,7 @@ private fn generateCast(expr: ASTNode) -> String {
         return generateCheckedCast(val, fromT, toT, expr.i3)
     }
 
-    // Char and Bool are unsigned here as they are when widening below.
-    // `sitofp` read the i1 of `true` as -1 and the i8 of Char 200 as -56.
-    let unsignedSource = typeIntIsUnsigned(fromT)
-                          or fromT.kind == TypeKind.CHAR
-                          or fromT.kind == TypeKind.BOOL
-
-    if (toKey.equals("double")) {
-        if (unsignedSource) {
-            return ir_get_temp_name(ir_uitofp(fromKey, val, toKey))
-        }
-        return ir_get_temp_name(ir_sitofp(fromKey, val, toKey))
-    }
-
-    // Saturating, as Rust's `as` is: out-of-range clamps to the type's bound
-    // and NaN is 0. A bare `fptosi` makes both *poison*, so `1e10 as Int` was
-    // whatever the optimiser chose. On AArch64 `fcvtzs` already saturates and
-    // the intrinsic is that one instruction; x86-64 adds a compare and select.
-    if (fromKey.equals("double")) {
-        let mut conversion = "llvm.fptosi.sat."
-        if (typeIntIsUnsigned(toT)) { conversion = "llvm.fptoui.sat." }
-        ir_call_begin()
-        ir_call_arg("double", val)
-        return ir_get_temp_name(ir_call_end(toKey, conversion.concat(toKey, ".f64")))
-    }
-
-    // Integer-shaped on both sides, so the only question is width.
-    if (typeIntBits(fromT) > typeIntBits(toT)) {
-        return ir_get_temp_name(ir_trunc(fromKey, val, toKey))
-    }
-
-    // Widening. Char and Bool are zero-extended: a Char is a byte value, so
-    // 'A' as Int must be 65 and never a negative number.
-    if (unsignedSource) {
-        return ir_get_temp_name(ir_zext(fromKey, val, toKey))
-    }
-    return ir_get_temp_name(ir_sext(fromKey, val, toKey))
+    return numericConvert(val, fromT, toT)
 }
 
 // `x as T?` between numbers: the value converted, and present only when the
@@ -3971,26 +3938,11 @@ private fn generateCheckedCast(val: String, fromT: TypeInfo, toT: TypeInfo, vari
     if (inner.kind == TypeKind.ENUM) {
         if (from.kind == TypeKind.INT) {
             fits = ir_get_temp_name(ir_icmp_ult(fromKey, value, variants.toString()))
-            converted = checkedIntegerConvert(value, from, typeInt())
+            converted = numericConvert(value, from, typeInt())
         }
-    } else if (toKey.equals("double")) {
-        if (fromKey.equals("double") == false) {
-            if (typeIntIsUnsigned(from)) {
-                converted = ir_get_temp_name(ir_uitofp(fromKey, value, "double"))
-            } else {
-                converted = ir_get_temp_name(ir_sitofp(fromKey, value, "double"))
-            }
-        }
-    } else if (fromKey.equals("double")) {
-        fits = checkedFloatFits(value, inner)
-        let mut conversion = "llvm.fptosi.sat."
-        if (typeIntIsUnsigned(inner)) { conversion = "llvm.fptoui.sat." }
-        ir_call_begin()
-        ir_call_arg("double", value)
-        converted = ir_get_temp_name(ir_call_end(toKey, conversion.concat(toKey, ".f64")))
     } else {
-        fits = checkedIntegerFits(value, from, inner)
-        converted = checkedIntegerConvert(value, from, inner)
+        fits = numericFits(value, from, inner)
+        converted = numericConvert(value, from, inner)
     }
     if (present.equals("true") == false and fits.equals("true") == false) {
         present = ir_get_temp_name(ir_and("i1", present, fits))
@@ -4000,77 +3952,6 @@ private fn generateCheckedCast(val: String, fromT: TypeInfo, toT: TypeInfo, vari
     let key = typeIrKey(toT)
     let flagged = ir_get_temp_name(ir_insert_value(key, ir_get_temp_name(ir_undef(key)), present, "i1", 0))
     return ir_get_temp_name(ir_insert_value(key, flagged, converted, toKey, 1))
-}
-
-// Width first, then sign: truncating or extending as `as T` does.
-private fn checkedIntegerConvert(value: String, from: TypeInfo, to: TypeInfo) -> String {
-    let fromBits = typeIntBits(from)
-    let toBits = typeIntBits(to)
-    if (fromBits > toBits) { return ir_get_temp_name(ir_trunc(typeIrKey(from), value, typeIrKey(to))) }
-    if (fromBits == toBits) { return value.clone() }
-    if (typeIntIsUnsigned(from)) { return ir_get_temp_name(ir_zext(typeIrKey(from), value, typeIrKey(to))) }
-    return ir_get_temp_name(ir_sext(typeIrKey(from), value, typeIrKey(to)))
-}
-
-// Whether an integer is a value of another integer type. Narrowing is a round
-// trip -- truncate, extend back as the target's sign says, compare -- which
-// catches both a magnitude too large and a sign the target cannot hold. At equal
-// or greater width only the sign can be lost: a negative value into an unsigned
-// type, or the top bit of an unsigned one into a signed type of the same width.
-private fn checkedIntegerFits(value: String, from: TypeInfo, to: TypeInfo) -> String {
-    let fromKey = typeIrKey(from)
-    let fromBits = typeIntBits(from)
-    let toBits = typeIntBits(to)
-    let fromUnsigned = typeIntIsUnsigned(from)
-    let toUnsigned = typeIntIsUnsigned(to)
-    if (fromBits > toBits) {
-        let narrow = ir_get_temp_name(ir_trunc(fromKey, value, typeIrKey(to)))
-        let mut back = ""
-        if (toUnsigned) {
-            back = ir_get_temp_name(ir_zext(typeIrKey(to), narrow, fromKey))
-        } else {
-            back = ir_get_temp_name(ir_sext(typeIrKey(to), narrow, fromKey))
-        }
-        return ir_get_temp_name(ir_icmp_eq(fromKey, back, value))
-    }
-    if (fromUnsigned == toUnsigned) { return "true" }
-    if (fromBits < toBits and fromUnsigned) { return "true" }
-    return ir_get_temp_name(ir_icmp_sge(fromKey, value, "0"))
-}
-
-// Whether a Float is exactly an integer of `to`: whole, and inside the range. The
-// bounds are powers of two, which a double holds exactly, and the upper one is
-// exclusive -- `I64.MAX` itself is not a double, so `x < 2^63` is the test and
-// `x <= I64.MAX` would round. NaN fails every ordered compare, and an infinity
-// fails the range, so neither needs a test of its own.
-private fn checkedFloatFits(value: String, to: TypeInfo) -> String {
-    let bits = typeIntBits(to)
-    let mut low = "0.0"
-    let mut high = checkedPowerOfTwo(bits)
-    if (typeIntIsUnsigned(to) == false) {
-        low = "-".concat(checkedPowerOfTwo(bits - 1))
-        high = checkedPowerOfTwo(bits - 1)
-    }
-    ir_call_begin()
-    ir_call_arg("double", value)
-    let whole = ir_get_temp_name(ir_call_end("double", "llvm.trunc.f64"))
-    let isWhole = ir_get_temp_name(ir_fcmp_oeq("double", whole, value))
-    let aboveLow = ir_get_temp_name(ir_fcmp_oge("double", value, low))
-    let belowHigh = ir_get_temp_name(ir_fcmp_olt("double", value, high))
-    let inRange = ir_get_temp_name(ir_and("i1", aboveLow, belowHigh))
-    return ir_get_temp_name(ir_and("i1", isWhole, inRange))
-}
-
-// 2^n as a double literal, for the bounds above.
-private fn checkedPowerOfTwo(n: Int) -> String {
-    if (n == 7) { return "128.0" }
-    if (n == 8) { return "256.0" }
-    if (n == 15) { return "32768.0" }
-    if (n == 16) { return "65536.0" }
-    if (n == 31) { return "2147483648.0" }
-    if (n == 32) { return "4294967296.0" }
-    if (n == 63) { return "9223372036854775808.0" }
-    return "18446744073709551616.0"
 }
 
 // `{ true, value }`: a present scalar `T?`. Its absent counterpart is the type's
@@ -4120,7 +4001,7 @@ private fn generateScalarOptionalCompare(expr: ASTNode) -> String {
     let aValue = scalarOptionalField(a, optT, 1)
     let bValue = scalarOptionalField(b, optT, 1)
     let mut sameValue = ""
-    if (innerKey.equals("double")) {
+    if (floatKeyValid(innerKey)) {
         sameValue = ir_get_temp_name(ir_fcmp_oeq(innerKey, aValue, bValue))
     } else {
         sameValue = ir_get_temp_name(ir_icmp_eq(innerKey, aValue, bValue))
@@ -4365,8 +4246,8 @@ private fn generateUnary(expr: ASTNode) -> String {
         // double. Nor is `fsub 0.0, x`, which it once was: that answers +0.0
         // for -(+0.0), so `1.0 / -x` came out +inf. `fneg` flips the sign bit
         // and nothing else.
-        if (operandType.equals("double")) {
-            return ir_get_temp_name(ir_fneg("double", operandVal))
+        if (floatKeyValid(operandType)) {
+            return ir_get_temp_name(ir_fneg(operandType, operandVal))
         }
         let negId = ir_neg(operandType, operandVal)
         return ir_get_temp_name(negId)
@@ -4584,17 +4465,29 @@ private fn generateBinary(expr: ASTNode) -> String {
     }
 
     let leftVal = generateExpression(ptr_to_node(expr.child1))
-    let rightVal = generateExpression(ptr_to_node(expr.child2))
+    let mut rightVal = generateExpression(ptr_to_node(expr.child2))
 
     let op = expr.s1
     let mut tempId = 0
     let leftNode = ptr_to_node(expr.child1)
     let opType = getExprType(leftNode)
+
+    // A shift amount is an integer of its own type (sema), and LLVM wants it in the
+    // shifted value's. `x >> n` with `x: U64` and `n: Int` used to reach the
+    // verifier as an `lshr i64` by an `i32`; the amount is resized as an integer
+    // is, so an `Int<128>` shifted by an `Int` is well formed too.
+    if (op.equals("<<") or op.equals(">>")) {
+        let rightNode = ptr_to_node(expr.child2)
+        if (nodeHasType(leftNode) and nodeHasType(rightNode)
+                and getExprType(rightNode).equals(opType) == false) {
+            rightVal = integerResize(rightVal, nodeGetType(rightNode), nodeGetType(leftNode))
+        }
+    }
     let mut isUnsigned = false
     if (nodeHasType(leftNode)) {
         isUnsigned = typeIntIsUnsigned(nodeGetType(leftNode))
     }
-    if (opType.equals("double")) {
+    if (floatKeyValid(opType)) {
         if (op.equals("+")) { tempId = ir_fadd(opType, leftVal, rightVal) }
         if (op.equals("-")) { tempId = ir_fsub(opType, leftVal, rightVal) }
         if (op.equals("*")) { tempId = ir_fmul(opType, leftVal, rightVal) }
@@ -4669,7 +4562,7 @@ private fn generateBinary(expr: ASTNode) -> String {
             if (op.equals(">=")) { tempId = ir_icmp_sge(opType, leftVal, rightVal) }
         }
     }
-    if (op.equals("%") and opType.equals("double") == false) {
+    if (op.equals("%") and floatKeyValid(opType) == false) {
         let form = nowrapRemainderForm(expr)
         if (isUnsigned) { tempId = ir_urem(opType, leftVal, rightVal) }
         else if (form != REM_KEEP) { tempId = reducedRemainder(form, opType, leftVal, rightVal) }

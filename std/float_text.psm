@@ -490,6 +490,12 @@ internal fn floatFormat(value: Float, inout out: [U8]) -> Int {
         digits = low
     }
 
+    return floatWriteRounded(exact, digits, out)
+}
+
+// `exact` rounded to `digits` significant digits, written as `%g` does, widened out of
+// exponent form where that costs nothing.
+fn floatWriteRounded(exact: Decimal, digits: Int, inout out: [U8]) -> Int {
     let mut shown = exact.copy()
     shown.round(digits)
 
@@ -510,6 +516,28 @@ internal fn floatFormat(value: Float, inout out: [U8]) -> Int {
         }
     }
     return floatWriteGeneral(shown, digits, out)
+}
+
+// The value to `digits` significant digits, not the fewest that read back: what a
+// narrower float needs, because "reads back" is a question about *its* precision and
+// only the caller knows which float that is (std/number_text.psm). `out` needs 32 bytes.
+internal fn floatFormatDigits(value: Float, digits: Int, inout out: [U8]) -> Int {
+    let bits = __builtin_float_bits(value)
+    if (((bits >> 52) & 0x7FF) == 0x7FF) {
+        return floatPutWord(out, 0, (bits >> 63) != 0, (bits & 0xFFFFFFFFFFFFF) != 0)
+    }
+    let mut exact = Decimal.empty()
+    exact.setBits(bits)
+    return floatWriteRounded(exact, digits, out)
+}
+
+// The double a `digits`-digit rounding of `value` reads as, as its bits. A finite
+// `value` only.
+internal fn floatDigitsBits(value: Float, digits: Int) -> U64 {
+    let mut exact = Decimal.empty()
+    exact.setBits(__builtin_float_bits(value))
+    exact.round(digits)
+    return exact.toBits()
 }
 
 // Fixed point with `decimals` places (0 to 30), correctly rounded: a column

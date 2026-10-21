@@ -708,7 +708,7 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
                                          ": ",
                                          boundText))
     }
-    diag_note("write `impl ".concat(boundText, " for ", argT.name, " { ... }`"))
+    diag_note("write `impl ".concat(boundText, " for ", typeDisplay(argT), " { ... }`"))
     return false
 }
 
@@ -1263,12 +1263,12 @@ private fn monoArgumentFits(expected: TypeInfo, actual: TypeInfo) -> Bool {
         and typeEquals(typeOptionalInner(expected), actual)
 }
 
-// A bare integer literal fits an integer parameter of any width, as it does for
+// A bare literal fits a numeric parameter of any width, as it does for
 // a concrete one (semaArgMatchesType): `T` was solved from another argument, so
 // in `ids.contains(2)` against a `Vec<I64>` the literal is not `Int` but an `I64`,
 // and the argument check types it once this template is chosen.
 private fn monoLiteralFits(expected: TypeInfo, arg: ASTNode) -> Bool {
-    return typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(arg)
+    return semaLiteralTakes(arg, expected)
 }
 
 // Whether a non-generic overload of `name` takes exactly these argument types.

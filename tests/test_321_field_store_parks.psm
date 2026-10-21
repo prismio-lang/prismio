@@ -1,0 +1,70 @@
+// The shapes test_320 must not be confused with: a field store whose displaced value
+// a view may still be reading, which keeps it (leaks it, never frees it early). A
+// release here is a read of freed memory, which `--verify` reports as a violation
+// and the answers below would show as garbage. The leaks are by design: every
+// list displaced in `held`, `heldForNext` and `rebuilt` is kept (300 blocks: each list is one block, header and elements together).
+
+import std.process
+
+struct Node {
+    value: Int,
+    edges: Vec<Int>
+}
+
+fn edges(i: Int) -> Vec<Int> {
+    let mut v: Vec<Int> = Vec<Int>.withCapacity(4)
+    for k in 0..<4 { v.push(i + k) }
+    return v
+}
+
+fn node(i: Int) -> Node {
+    return Node { value: i, edges: edges(i) }
+}
+
+fn sum(v: Vec<Int>) -> Int {
+    let mut t = 0
+    for e in v { t = t + e }
+    return t
+}
+
+// The view taken before the store is read after it.
+fn held(steps: Int) -> Int {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(4)
+    for i in 0..<4 { nodes.push(node(i)) }
+    let mut t = 0
+    for step in 0..<steps {
+        let seen = nodes[step % 4].edges
+        nodes[step % 4].edges = edges(step)
+        t = t + sum(seen)
+    }
+    return t
+}
+
+// A view made in one iteration and read in the next, past the store between them.
+fn heldForNext(steps: Int) -> Int {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(4)
+    for i in 0..<4 { nodes.push(node(i)) }
+    let first = nodes[0].edges
+    let mut t = 0
+    for step in 0..<steps {
+        nodes[0].edges = edges(step)
+        t = t + sum(first)
+    }
+    return t
+}
+
+// The new value is built from the old one.
+fn rebuilt(steps: Int) -> Int {
+    let mut n = node(1)
+    for step in 0..<steps {
+        n.edges = edges(n.edges[0] + step)
+    }
+    return sum(n.edges)
+}
+
+fn main() -> Int {
+    if (held(100) != 18864) { return 1 }
+    if (heldForNext(100) != 600) { return 2 }
+    if (rebuilt(100) != 19810) { return 3 }
+    return 0
+}

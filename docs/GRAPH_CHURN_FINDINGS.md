@@ -1,10 +1,10 @@
 # What `graph_churn_*` and `register_pressure_torture` found
 
-Written 2026-10-16. Five benchmarks were added (`benchmarks/hosted/*/graph_churn.*` and
-`register_pressure_torture` in `adversarial.*`). Writing the Prismio arm of the first four
-turned up one compiler bug that is fixed, four that are not, and a measurable gap. This file
-is the record: each entry has a reproducer small enough to paste, what it costs, and where
-the fix lives. `docs/KNOWN_ISSUES.md` points here for these.
+Written 2026-10-16, updated 2026-10-21. Five benchmarks were added (`benchmarks/hosted/*/graph_churn.*` and
+`register_pressure_torture` in `adversarial.*`). Writing the Prismio arm of the first four turned up
+seven compiler problems. Five are fixed (the sections headed *Fixed* below, each with a reproducer small enough
+to paste, its cause and its guard); two are open. This file is the record, and `docs/KNOWN_ISSUES.md` points here
+for the two that are open.
 
 ## The benchmarks
 
@@ -21,19 +21,48 @@ checksums agree across Prismio, C++ and Rust (the harness fails otherwise).
 
 ### Results (Apple silicon, 9 runs, median, `--rebuild`, compiler built from this tree)
 
-| Benchmark | Prismio | C++ | Rust | vs C++ | vs Rust | RSS Prismio | RSS vs C++ |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `graph_churn_single` | 38.5 ms | 18.0 ms | 17.6 ms | 2.14x | 2.19x | 30.0 MB | 8.1x |
-| `graph_churn_alloc` | 64.0 ms | 33.6 ms | 33.2 ms | 1.90x | 1.93x | 89.6 MB | 32.0x |
-| `graph_churn_transfer` | 66.5 ms | 27.0 ms | 23.8 ms | 2.47x | 2.79x | 58.1 MB | 30.3x |
-| `graph_churn_full` | 157.9 ms | 79.5 ms | 74.0 ms | 1.99x | 2.13x | 96.0 MB | 19.3x |
-| `register_pressure_torture` | 14.9 ms | 15.0 ms | 14.9 ms | 1.00x | 1.00x | 1.7 MB | 1.05x |
+Time against C++ and peak RSS against C++, for the arms as the three languages write them. *10-16* is the
+first run, before any of the fixes below; *10-17* is after `v[k] = x` released a displaced element of a local
+Vec (CHANGELOG); *10-21* is after field stores, stores through a field's Vec, per-declaration binding keys and
+the field-assignment spelling of the arms (`nodes[u].edges = ...`, in all three languages); **now** is after a
+small Vec's header and first element block became one allocation (below).
+
+| Benchmark | Prismio now | C++ | Rust | vs C++ 10-16 | 10-17 | 10-21 | **now** | vs Rust now | RSS Prismio 10-16 | **now** | RSS vs C++ 10-16 | **now** |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `graph_churn_single` | 23.1 ms | 18.0 ms | 17.4 ms | 2.14x | 1.93x | 1.67x | **1.28x** | 1.33x | 30.0 MB | **5.6 MB** | 8.1x | **1.53x** |
+| `graph_churn_alloc` | 52.8 ms | 35.7 ms | 33.4 ms | 1.90x | 1.55x | 1.53x | **1.48x** | 1.58x | 89.6 MB | **4.0 MB** | 32.0x | **1.41x** |
+| `graph_churn_transfer` | 36.2 ms | 29.3 ms | 24.1 ms | 2.47x | 1.79x | 1.84x | **1.24x** | 1.50x | 58.1 MB | **2.2 MB** | 30.3x | **1.14x** |
+| `graph_churn_full` | 111.2 ms | 81.5 ms | 76.1 ms | 1.99x | 1.68x | 1.63x | **1.36x** | 1.46x | 96.0 MB | **7.0 MB** | 19.3x | **1.47x** |
+| `register_pressure_torture` | 14.9 ms | 15.0 ms | 14.9 ms | 1.00x | | | 1.00x | 1.00x | 1.7 MB | 1.7 MB | 1.05x | 1.05x |
+
+`--verify` on all four graph arms (`graph_churn_*` built from `suite.psm`): 0 leaked, 0 violations, and the
+peak live bytes are what the program needs rather than what it ever allocated.
+
+| Arm | blocks allocated = released, 10-16 | now | peak live, 10-16 (parked) | peak live, now |
+| --- | ---: | ---: | ---: | ---: |
+| `graph_churn_single` | 873,059 | 363,569 | 22.5 MB | 4.03 MB |
+| `graph_churn_alloc` | 2,521,048 | 1,680,702 | 78.1 MB | 2.07 MB |
+| `graph_churn_transfer` | 1,619,876 | 950,018 | 47.5 MB | 0.18 MB |
+| `graph_churn_full` | 5,013,971 | 2,994,277 | 148.1 MB | 4.03 MB |
+
+(`graph_churn_single` allocates fewer blocks than it did because a node killed or revived now replaces its edge
+list instead of building a whole new node, and every block count dropped again when a small Vec's header and
+elements became one block. The peak live bytes rose by about 12% for that: a fused header is padded to 16 bytes.)
 
 Read three things from it.
 
-1. **Allocation-heavy graph code is about 2x C++ and Rust, and the cause is measured below**
-   (the displaced element is parked, not freed). Peak memory is 8x to 32x, which is the same
-   cause seen from the other side.
+1. **Memory is closed and the time gap is 1.2x to 1.5x.** Peak memory is 1.1x to 1.5x of C++ where it was 8x to 32x,
+   and the time gap fell from 1.9x-2.5x to 1.24x-1.48x. What is left is allocation count and cost. A sample of
+   `graph_churn_alloc` puts about half its time in libc's `malloc` and `free`, and it makes 1.68M allocations to C++'s
+   ~0.8M, because C++ and Rust keep each `ChurnNode` inline in the vector and own one buffer per node, while
+   Prismio boxes a struct that owns a `Vec`: the node, then the `Vec` (header and elements together, since the fusion)
+   -- two blocks per node where it was three, and a pointer chase on every `nodes[u].field`. Two things would close
+   the rest, and neither is built: storing a struct that owns a Vec inline in the element Vec (per-element release
+   hooks on overwrite, removal and teardown, and a shell-free push), and a small-block allocator of the runtime's
+   own (the recycler in `lang_runtime.c` is capped at 512 blocks, off once a program spawns, and asks the system
+   allocator for each block's size on every free; codegen allocates objects with libc `malloc` directly).
+   The second is a cross-cutting change to the "any block is a malloc block" invariant `C_CODE_STYLE.md` states, and
+   needs its own design.
 2. **`register_pressure_torture` is at parity, and that is a tripwire, not a victory.** All
    three arms go through LLVM, so register allocation is shared; a regression would mean the
    IR Prismio emits changed shape. Its first version had independent updates, every compiler
@@ -41,9 +70,28 @@ Read three things from it.
    a tie at a speed that cannot be scalar is a benchmark measuring nothing. The serial
    dependence between consecutive lines is what fixed it, and the comment in
    `adversarial.psm` says so.
-3. **The ledger is balanced on all four graph benchmarks** (`--verify`: 0 leaked, 0
-   violations; `graph_churn_full` 5,013,971 allocated, 5,013,971 released), after the fix
-   below. Before it, `graph_churn_alloc` released 10 of 2,521,048 blocks.
+3. **The ledger is balanced on all four graph benchmarks** with the arms written the way a C++ or Rust
+   programmer writes them first: field assignment, and one name for both the receive loop's `frag` and the final
+   `for frag in recent`. Before the fixes below, `graph_churn_alloc` released 10 of 2,521,048 blocks and the
+   first Prismio arm of `graph_churn_single` leaked 542,258 of 634,698.
+
+## Done: a small Vec is one allocation
+
+A `Vec` was two blocks, the header (`RtList`, 64 bytes) and its element block, and a program that builds a small
+`Vec` per node pays two `malloc`s, two `free`s and two cache lines for each. `list_new_cap`
+(`runtime/lang_runtime.c`) now makes them one block when the capacity is known, the elements take at most 256 bytes,
+and the list is a heap list (no arena): `data` points just past the header (`RtList.fused`). The first growth,
+`reserve`, or an inline-stamp copies the elements to a block of their own and clears the flag, and every site that
+frees or resizes `data` goes through `list_free_data` / checks `fused`, so nothing frees an interior pointer. A
+`Vec` made with no capacity, or a large one, is two blocks as before.
+
+Effect on the four arms: blocks allocated down 33% to 42%, time from 1.53x-1.84x to 1.24x-1.48x of C++, and every
+leak count that counts blocks halves (`test_302` 4 to 2, `test_321` 600 to 300: a leaked list is one block now).
+`test_323_fused_list`: growth by push, by `reserve`, past the 256-byte limit at construction, boxed, inline and
+`String` elements, a `Vec` field replaced in a loop, truncate-and-refill; 0 leaked, 0 violations.
+
+The header is padded to 16 bytes inside a fused block, so a program with many tiny Vecs holds up to 12% more peak
+bytes (`graph_churn_single`: 3.55 MB to 4.03 MB) and 1.2x to 1.5x of C++'s RSS where it had 1.19x to 1.49x.
 
 ## Fixed: a fresh struct in two Vecs of one type stopped the first from releasing
 
@@ -81,55 +129,81 @@ shape that really is one value in several containers. One line, in the A-CONTAIN
 
 **Guard.** `tests/test_302_struct_in_two_vecs.psm`, listed in `tests/test_runner.py`
 (`run_aif_verify_test`): the two-Vec shape above must leak 0, and the element-read-pushed-
-twice shape, on a type of its own, must report **0 violations** (its 4 leaked blocks are by
+twice shape, on a type of its own, must report **0 violations** (its 2 leaked blocks, 4 before a small Vec became one block, are by
 design). The adversarial probes (element read pushed into two Vecs; moved into a third) read
 the same as before the change: 0 violations, same leaks. Full suite 614/614.
 
-## Open: same-named bindings share one analysis key
+## Fixed: same-named bindings shared one analysis key
 
-**Symptom.** A `let` in a loop and a *later* `for` binder of the same name in the same function
-are one variable to the ownership analysis. The `for` binder is a view of an element; so the
-earlier `let`'s store is read as a view store, which taints every site of that type.
+**Symptom.** A `let` in a loop and a *later* `for` binder of the same name in the same function were one variable
+to the ownership analysis. The `for` binder is a view of an element; so the earlier `let`'s store was read as a
+view store, which taints every site of that type.
 
 ```
 for step in 0..<500 { let n = mk(step)  slots[step % 4] = n }
-for n in other { t = t + n.value }        // 1528 allocated, 512 released, 1016 leaked
-// rename the binder to `o`:              // 1528 allocated, 1528 released, 0 leaked
+for n in other { t = t + n.value }        // before: 1528 allocated, 512 released, 1016 leaked
+                                          // after:  1528 allocated, 1528 released, 0 leaked
 ```
 
-In `graph_churn_transfer` the binder was `frag` in both places, and it cost the whole program
-its releases. The benchmark now names the second one `old`; **the arm is the same program in
-all three languages, but the spelling was chosen to avoid this.**
+In `graph_churn_transfer` the binder was `frag` in both places, and it cost the whole program its releases; the
+benchmark had spelled the second one `old` to avoid it. It is `frag` again. The same shape with a channel
+(`let v = ...; c.send(v)` and a later `for v in c`) was a separate `KNOWN_ISSUES` entry and is fixed by the same change.
 
-**Cause.** Variable keys are `(function, name)` (`aif_key_var`, `runtime/aif_support.c`);
-`aif_var_note_scope` joins two declarations of one name outward to their common ancestor.
-`KNOWN_ISSUES.md` already records a case of it (`for v in c` over a channel) and says the fix
-is per-declaration binding keys, in the engine and the oracle together.
+**Cause.** Variable keys were `(function, name)` (`aif_key_var`, `runtime/aif_support.c`), and
+`aif_var_note_scope` joined two declarations of one name outward to their common ancestor.
 
-**Why it is not fixed.** It changes how every local is identified in both the C engine and the
-Prismio oracle (`src/aif/walk.psm`), and a wrong change reads as a double free. It is the
-largest single item on this list and the one most worth doing.
+**Fix.** The walk (`src/aif/walk.psm`) brackets every block, function and match arm with
+`aif_env_enter` / `aif_env_leave`, and the engine keeps the bindings in scope: a read or a store resolves to the
+innermost visible declaration of its name, as the source does. The first declaration of a name in a function keeps the
+plain `(function, name)` key, so a function that never repeats a name builds the keys it always did and the by-name
+lookup codegen makes (`aif_frees_unless_returned_node`) still lands on it; later ones are `name#1`, `name#2`. The
+declaration is made after its initialiser is walked, so `let s = s.trim()` reads the binding it shadows. The Python
+oracle (`tools/aif_oracle/aif.py`) mirrors it, and `tools/aif_differential.py` agrees on every program it compared before
+(the `src/main.psm` row differed by one site before this change too). No new syntax, so no seed step.
 
-## Open: assigning a struct field does not release the value it replaces
+**The second analysis with the same flaw.** `src/ir/overwrites.psm` (the "no view can be live" proof) also
+identified bindings by name, so after the rename above `recent[seen % ring] = frag` was refused -- the receive loop's
+`frag` looked like the later `for frag in recent`, a holder of a view -- and the ring's elements parked again: peak 38 MB
+instead of 0.19 MB, 65 ms instead of 53. It now resolves every mention to a declaration as it walks and works on sets
+of declarations, so the two are told apart there too.
+
+**Guard.** `test_322_binding_keys` (sequential loops with the owner first and the binder first, sibling blocks with
+one name, an inner shadow, `let n = f(n)`): 0 leaked, 0 violations, and the peak is bounded.
+
+**Not changed.** The frontend's syntactic guards keep refusing a name bound more than once
+(`chainBindingCount`, `test_205`'s inner `let a = a`). They were written because the engine's key was per name, and can
+be lifted now; a refusal only leaks, so that is a separate step.
+
+## Fixed: assigning a struct field did not release the value it replaced
 
 ```
 let mut n = N { value: 1, edges: mkv(0) }
 for step in 0..<1000 { n.edges = mkv(step) }
-// 2002 allocated, 2 released, 2000 leaked
+// before: 2002 allocated, 2 released, 2000 leaked
+// after:  2002 allocated, 2002 released, 0 leaked, peak 536 bytes
 ```
 
-Also through an index (`nodes[u].edges = ...`: 2026 allocated, 26 released). Known and
-documented (`KNOWN_ISSUES.md`, *Assigning a struct field releases the value it replaces only
-for a fresh local*): the release is only emitted when the receiver is a fresh local and
-nothing between its declaration and the store mentions it. Closing the rest needs the removal
-verdict's "no view can be live" proof (`COLLECTIONS.md` 1e), not a syntactic one.
+Also through an index (`nodes[u].edges = ...`: 2026 allocated, 26 released, before) and a field's own Vec
+(`frag.nodes[i].edges = ...`, `frag.nodes[i] = ...`). The release used to be emitted only when the receiver was a
+fresh local and nothing between its declaration and the store mentioned it.
 
-**The benchmark avoids it** by replacing the whole node (`nodes[u] = ChurnNode { ... }`) in all
-three arms, which is the same allocation and the same free in C++ and Rust. Written the way
-the C++ and Rust programmers would write it first (`nodes[u].edges = Vec::new()`), the first
-Prismio arm leaked 542,258 of 634,698 blocks.
+**Fix.** `overwriteFieldStoreProved` is the removal verdict's "no view can be live" proof (the one a `v[k] = x`
+overwrite uses) with the root of the target's path as the container: a local made by a struct literal, by a call
+that returns an owner, by `expect` of a received value (`chan_recv`), or by a fresh `Vec`; no view of it leaves the
+function's bindings; the new value mentions none of them; none is live at the store. One difference from the Vec
+case: the root being *moved* (sent, pushed, returned) is not a view of the displaced value leaving, so it does not
+count against the store -- without that `churnTrim`, which sends the fragment it just edited, never qualified.
+`generateAssignment` (`src/ir/stmt.psm`) releases the displaced list when this or the older syntactic rule
+(`irMarkDisplacedFieldStores`) says so and the type releases the field as a list. The `list_set` half of the same
+change lets `frag.nodes[i] = ...` release now through a field's Vec.
 
-## Fixed for a local Vec (2026-10-17): an overwritten element was parked until its Vec died
+**Guard.** `test_320_field_store_release` (six shapes that release, peak 512 bytes against 720,360 leaked) and
+`test_321_field_store_parks` (a view read after the store, a view carried into the next iteration, the new value built
+from the old: all keep the old value, 0 violations). Probed as the double-free class: an element read pushed into two
+containers then field-stored (0 violations, unchanged leaks), a root moved after the stores, a store in one branch
+read in the other.
+
+## Fixed: an overwritten element was parked until its Vec died
 
 ```
 let mut slots: Vec<N> = ...        // 4 elements
@@ -151,11 +225,28 @@ is a fresh cache line. It is the same proof as the previous entry, from the elem
 verb, and is the next obvious customer of `semaRemovalVerdict`.
 
 **Since 2026-10-17** a store into a local Vec releases the displaced element at once wherever no view of an
-element can be live (`src/ir/overwrites.psm`; the CHANGELOG has the proof's four conditions). Peak memory on the
-four benchmarks fell to 1.2x to 1.4x of C++ and time to 1.55x to 1.93x. Still parked: a store through a field
-(`frag.nodes[i] = ...` in `churnTrim`), whose Vec is not a local of the function. The remaining time gap is
-mostly representation: C++ and Rust keep each `ChurnNode` inline in the vector, and Prismio boxes a struct that
-owns a `Vec`, so every node is a heap object of its own and every `nodes[u].field` a pointer chase.
+element can be live (`src/ir/overwrites.psm`; the CHANGELOG has the proof's four conditions), and since
+2026-10-21 the same for a store through a field's Vec (`frag.nodes[i] = ...`, the root a local struct that may be
+moved on afterwards). Peak memory on the four benchmarks is 1.2x to 1.5x of C++ and time 1.5x to 1.8x. The
+remaining time gap is representation: C++ and Rust keep each `ChurnNode` inline in the vector, and Prismio
+boxes a struct that owns a `Vec`, so every node is a heap object of its own and every `nodes[u].field` a
+pointer chase.
+
+## Fixed: the move checker rejected exclusive branches
+
+```
+let n = mk(i)
+if (ring.length < 2) { ring.push(n) } else { ring[i % 2] = n }
+// was: error[P4001]: use of moved value `n`   (on the else arm)
+```
+
+Moved-from state was one set filled in source order, so the `then` arm's move was visible in the `else` arm and after a
+`continue`. Each arm of an `if` / `else if` and of a `match` now starts from the state the branches opened with, an arm
+that cannot fall through (`return`, `break`, `continue`, `panic`) hands none of its moves to the code after, and
+the state after is the union of the arms that can (`ir_moved_branches_*`, `runtime/ir_symbols.c`; `semaIfStatement` and
+the match statements). It only accepts more programs. `test_319_exclusive_branch_moves` holds the shapes that now
+compile; `neg_313_moved_in_one_branch` holds the one that must not (a move on a path that reaches the use). The ring in
+`graph_churn_transfer` is still prefilled with empty fragments so that all three arms agree.
 
 ## Open: moving a field out of an element view releases it twice
 
@@ -179,21 +270,6 @@ let mut last = make(-1)
 for step in 0..<40 { last = slots[step % 4] }            // 3 leaked: make(-1)'s blocks
 ```
 
-## Open: the move checker does not see exclusive branches
-
-```
-let n = mk(i)
-if (ring.length < 2) { ring.push(n) } else { ring[i % 2] = n }
-// error[P4001]: use of moved value `n`   (on the else arm)
-```
-
-`continue` after the push is not seen either. Both arms are exclusive, so this is a false
-positive: the program is correct and rejected. The ring in `graph_churn_transfer` is prefilled
-with empty fragments so that every receive is a replacement and there is no branch; C++ and
-Rust do the same so the arms agree. A flow-sensitive moved-state at joins (`src/sema/flow.psm`
-already does definite-return that way) is what is missing. This one is cheap and is a
-usability bug, not a performance one.
-
 ## Not bugs, but the next reader will trip on them
 
 - `&&` and `||` are `and` and `or`.
@@ -203,16 +279,23 @@ usability bug, not a performance one.
   `PRISMIO_INTERNAL_HOSTED=1` is set, so a freshly built compiler is not the one that runs
   until it is. The first leak measurements in this work used the old compiler for that
   reason; every number above is with the variable set.
+- A partial benchmark run (`--only`) writes `benchmarks/results/results.json` like a full one, and the suite's
+  `workloads` test reads the checksums it holds, so it fails with "expected None" afterwards. Give a partial run
+  `--output <scratch file>`.
 - `benchmarks/run.py` refuses a compiler older than `std/` or `src/` and needs
   `--allow-stale-compiler`; `--rebuild` is needed after a compiler change, because a cached
   arm is keyed on its sources, not on the compiler that built it.
 
 ## Where each fix lives
 
-| Item | File | Size | Risk |
-| --- | --- | --- | --- |
-| Per-declaration binding keys | `runtime/aif_support.c` (`aif_key_var`, scopes), `src/aif/walk.psm` | large | double free if the oracle and engine disagree; needs a seed-compatible two-step |
-| Field store releases the displaced value | `src/ir/expr.psm` (`irMarkDisplacedFieldStores`), `src/ir/stmt.psm` | medium | the "no view can be live" proof |
-| Indexed overwrite releases at once | done for a local Vec, `src/ir/overwrites.psm`; a field's Vec still parks | -- | -- |
-| Move out of an element view | sema's move check, or a copy | small | refusing changes which programs compile |
-| Exclusive branches in the move checker | `src/sema/flow.psm` | small | none for soundness (it only accepts more) |
+| Item | File | State |
+| --- | --- | --- |
+| Per-declaration binding keys | `runtime/aif_support.c` (`aif_env_*`, `aif_var_note_scope`), `src/aif/walk.psm`, `tools/aif_oracle/aif.py` | done 2026-10-21 |
+| Field store releases the displaced value | `src/ir/overwrites.psm` (`overwriteFieldStoreProved`), `src/ir/stmt.psm` (`fieldStoreReleasesDisplaced`) | done 2026-10-21 |
+| Indexed overwrite releases at once | `src/ir/overwrites.psm`: a local Vec 2026-10-17, a field's Vec 2026-10-21 | done |
+| Exclusive branches in the move checker | `src/sema/checker.psm`, `src/sema/flow.psm`, `runtime/ir_symbols.c` | done 2026-10-21 |
+| Move out of an element view | sema's move check, or a copy | open: refusing changes which programs compile |
+| View assigned to an owning local | codegen's assignment release | open |
+| Small Vec header and elements in one block | `runtime/lang_runtime.c` (`list_new_cap`, `list_free_data`) | done 2026-10-21 |
+| Structs that own a Vec stored inline in a Vec | layout (`src/ir/types.psm`, `contents.psm`), per-element release in the runtime | not started |
+| A small-block allocator of the runtime's own | `runtime/lang_runtime.c` (`rt_base_alloc`, `rt_free`), `g_alloc_fn` in `llvm-api-backend.c` | not started: needs a design (the interchangeability invariant, threads) |

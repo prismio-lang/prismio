@@ -1,0 +1,139 @@
+import std.io
+import std.math
+import std.vec
+
+struct BitReader {
+    data: Vec<U8>,
+    pos: Int,
+}
+
+// C: get_bits(gb, n) -- reads n bits, MSB first
+fn getBits(inout gb: BitReader, n: Int) -> U32 {
+    let mut value: U32 = 0
+    for _ in 0..<n {
+        let byte = gb.data[gb.pos / 8]
+        let shift = 7 - (gb.pos % 8)
+        let bit = ((byte >> shift as U8) & 1) as U32
+        value = (value << 1) | bit
+        gb.pos = gb.pos + 1
+    }
+    return value
+}
+
+// C: get_escaped_value(gb, nb1, nb2, nb3)
+fn getEscapedValue(inout gb: BitReader, nb1: Int, nb2: Int, nb3: Int) -> U32 {
+    let mut value = getBits(gb, nb1)
+    if value < ((1 << nb1) - 1) as U32 {
+        return value
+    }
+    let value2 = getBits(gb, nb2)
+    value = value + value2
+    if nb3 != 0 and value2 == ((1 << nb2) - 1) as U32 {
+        value = value + getBits(gb, nb3)
+    }
+    return value
+}
+
+struct NoiseState {
+    seed: U32,
+}
+
+// C: noise_random_sign(unsigned int *seed)
+fn noiseRandomSign(inout st: NoiseState) -> Float {
+    st.seed = st.seed * 69069 + 5
+    if (st.seed & 0x10000) != 0 { return -1.0 }
+    return 1.0
+}
+
+struct Sce {
+    coeffs: Vec<Float>,
+    sfo: Vec<Int>,
+    noise: NoiseState,
+}
+
+// C: apply_noise_fill. `coef` advances by g_len * 128 per window group, and by
+// 128 per group inside it, so the flat index is base + group * 128 + start + z.
+fn applyNoiseFill(inout sce: Sce, swbOffset: Vec<Int>, groupLen: Vec<Int>,
+                  maxSfb: Int, bandOff: Int, level: Float, noiseOffset: Int) {
+    let mut base = 0
+    for g in 0..<groupLen.length {
+        let gLen = groupLen[g]
+        for sfb in 0..<maxSfb {
+            let start = swbOffset[sfb]
+            if start < bandOff { continue }
+            let len = swbOffset[sfb + 1] - start
+            let mut quantisedToZero = true
+            for group in 0..<gLen {
+                for z in 0..<len {
+                    let idx = base + group * 128 + start + z
+                    if sce.coeffs[idx] == 0.0 {
+                        sce.coeffs[idx] = noiseRandomSign(sce.noise) * level
+                    } else {
+                        quantisedToZero = false
+                    }
+                }
+            }
+            if quantisedToZero {
+                let at = g * maxSfb + sfb
+                sce.sfo[at] = max(sce.sfo[at] + noiseOffset, -200)
+            }
+        }
+        base = base + gLen * 128
+    }
+}
+
+// C: decode_tsd -- int64_t arithmetic, nested loops, early break
+fn decodeTsd(inout gb: BitReader, nbTrSlots: Int, nbSlots: Int) -> Vec<Int> {
+    let mut data: Vec<Int> = []
+    for _ in 0..<nbSlots { data.push(0) }
+    let nbBits = log2Int(nbSlots / (nbTrSlots + 1))
+    let mut s = getBits(gb, nbBits) as I64
+    let mut p = nbTrSlots + 1
+    let mut k = nbSlots - 1
+    while k >= 0 {
+        if p > k {
+            while k >= 0 {
+                data[k] = 1
+                k -= 1
+            }
+            break
+        }
+        let mut c: I64 = (k - p + 1) as I64
+        let mut h = 2
+        while h <= p and c <= s {
+            c = c + c * ((k - p) as I64) / (h as I64)
+            h += 1
+        }
+        if s >= c {
+            s = s - c
+            data[k] = 1
+            p -= 1
+            if p == 0 { break }
+        }
+        k -= 1
+    }
+    return data
+}
+
+fn log2Int(v: Int) -> Int {
+    let mut n = 0
+    let mut x = v
+    while x > 1 {
+        x = x / 2
+        n += 1
+    }
+    return n
+}
+
+fn main() -> Int {
+    let mut gb = BitReader { data: [0xAB, 0xCD, 0x12], pos: 0 }
+    println(getEscapedValue(gb, 4, 8, 0))
+    let mut sce = Sce { coeffs: [0.0, 0.0, 0.0, 0.0], sfo: [0, 0], noise: NoiseState { seed: 0x3039 } }
+    let swb: Vec<Int> = [0, 2, 4]
+    let groups: Vec<Int> = [1]
+    applyNoiseFill(sce, swb, groups, 2, 0, 0.5, -16)
+    println(sce.sfo[0])
+    let mut tgb = BitReader { data: [0x5A, 0x00], pos: 0 }
+    println(decodeTsd(tgb, 1, 4).length)
+    return 0
+}

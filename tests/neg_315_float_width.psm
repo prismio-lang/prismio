@@ -1,0 +1,11 @@
+// expect-error: `F` does not take a width
+// expect-error: `Float` does not take a width
+// A float has the five widths IEEE 754 and bfloat16 define -- F16, F32, F64, F128 and
+// BF16 -- and no other, so unlike `Int<N>` a number after it is a mistake, never a
+// width to be honoured.
+
+fn main() -> Int {
+    let a: F<24> = 1.0
+    let b: Float<32> = 1.0
+    return 0
+}

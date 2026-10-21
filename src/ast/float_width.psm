@@ -1,0 +1,61 @@
+// The float types: `F16`, `F32`, `F64`, `F128` and `BF16`.
+//
+// Unlike `Int<N>` a float has no free width. IEEE 754 defines these four and
+// bfloat16 is the fifth that hardware treats as a type of its own, so the set is
+// closed and `F<24>` is an error (the parser reports it; see rejectFloatWidth).
+//
+// `F64` is `Float`: one type with the longer spelling kept for the default. The
+// parser renames `F64` to `Float` the way it renames `I32` to `Int`, so every later
+// pass sees one name and the two mix without a cast.
+//
+// This module is the only place that knows which names exist and what each lowers
+// to. ast/types.psm builds the TypeInfo from it, ir/types.psm asks it about keys,
+// and the backend (runtime/llvm-api-backend.c, float_type_from_key) spells the same
+// five keys -- the one table that has to be kept in step by hand.
+
+import std.string
+
+// The LLVM key a float name lowers to, or "" when the name is not a float.
+public fn floatKeyOfName(name: String) -> String {
+    if (name.equals("Float") or name.equals("F64")) { return "double" }
+    if (name.equals("F32")) { return "float" }
+    if (name.equals("F16")) { return "half" }
+    if (name.equals("BF16")) { return "bfloat" }
+    if (name.equals("F128")) { return "fp128" }
+    return ""
+}
+
+// The type name a key stands for, as a program spells it. `double` is `Float`,
+// because that is what the default is called everywhere a person reads it.
+public fn floatNameOfKey(key: String) -> String {
+    if (key.equals("double")) { return "Float" }
+    if (key.equals("float")) { return "F32" }
+    if (key.equals("half")) { return "F16" }
+    if (key.equals("bfloat")) { return "BF16" }
+    if (key.equals("fp128")) { return "F128" }
+    return ""
+}
+
+public fn floatKeyValid(key: String) -> Bool {
+    return floatNameOfKey(key).equals("") == false
+}
+
+// Storage width in bits.
+public fn floatBitsOfKey(key: String) -> Int {
+    if (key.equals("double")) { return 64 }
+    if (key.equals("float")) { return 32 }
+    if (key.equals("half") or key.equals("bfloat")) { return 16 }
+    if (key.equals("fp128")) { return 128 }
+    return 0
+}
+
+// The suffix an LLVM floating-point intrinsic carries for this key:
+// `llvm.sqrt.f64`, `llvm.sqrt.bf16`. "" for a key that is not a float.
+public fn floatIntrinsicSuffix(key: String) -> String {
+    if (key.equals("double")) { return "f64" }
+    if (key.equals("float")) { return "f32" }
+    if (key.equals("half")) { return "f16" }
+    if (key.equals("bfloat")) { return "bf16" }
+    if (key.equals("fp128")) { return "f128" }
+    return ""
+}

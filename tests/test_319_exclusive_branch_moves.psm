@@ -1,0 +1,76 @@
+// The arms of an `if` or a `match` are exclusive, so a value one of them moves is
+// still whole in the others, and an arm that leaves (`continue`, `return`) hands
+// none of its moves to the code after the statement. Moved-from state used to be
+// one set filled in source order, which read all of these as "use of moved value".
+// The negative twins -- a move on a path that does reach the use -- are
+// neg_313_moved_in_one_branch.
+
+import std.vec
+
+struct Node {
+    value: Int,
+    edges: Vec<Int>
+}
+
+fn node(i: Int) -> Node {
+    let mut edges: Vec<Int> = Vec<Int>.withCapacity(2)
+    edges.push(i)
+    return Node { value: i, edges: edges }
+}
+
+enum Mode {
+    Push,
+    Replace,
+    Skip
+}
+
+fn main() -> Int {
+    let mut ring: Vec<Node> = Vec<Node>.withCapacity(2)
+
+    // if / else: n moves in whichever arm runs, once.
+    for i in 0..<6 {
+        let n = node(i)
+        if (ring.length < 2) { ring.push(n) } else { ring[i % 2] = n }
+    }
+    if (ring.length != 2 or ring[0].value != 4 or ring[1].value != 5) { return 1 }
+
+    // else-if chain.
+    for i in 0..<6 {
+        let n = node(i)
+        if (i == 0) {
+            ring.push(n)
+        } else if (i == 1) {
+            ring[0] = n
+        } else {
+            ring[1] = n
+        }
+    }
+    if (ring[0].value != 1 or ring[1].value != 5) { return 2 }
+
+    // An arm that continues does not hand its move to the code below.
+    let mut kept: Vec<Node> = Vec<Node>.withCapacity(4)
+    for i in 0..<6 {
+        let n = node(i)
+        if (i % 2 == 0) {
+            kept.push(n)
+            continue
+        }
+        ring[0] = n
+    }
+    if (kept.length != 3 or ring[0].value != 5) { return 3 }
+
+    // match arms are exclusive too.
+    let modes = [Mode.Push, Mode.Replace, Mode.Skip, Mode.Replace]
+    let mut total = 0
+    for i in 0..<4 {
+        let n = node(10 + i)
+        match (modes[i]) {
+            Mode.Push => { kept.push(n) }
+            Mode.Replace => { ring[1] = n }
+            Mode.Skip => { total = total + n.value }
+        }
+    }
+    if (kept.length != 4 or ring[1].value != 13 or total != 12) { return 4 }
+
+    return 0
+}

@@ -120,7 +120,8 @@ fn churnSingle(scale: Int) -> I64 {
             if (nodes[u].live == 1) {
                 let kept = nodes[u].value
                 checksum = churnMix(churnMix(checksum, kept), nodes[u].edges.length)
-                nodes[u] = ChurnNode { value: kept, live: 0, edges: Vec<Int>.withCapacity(0) }
+                nodes[u].live = 0
+                nodes[u].edges = Vec<Int>.withCapacity(0)
                 free.push(u)
             }
         } else if (op == 7) {
@@ -130,7 +131,9 @@ fn churnSingle(scale: Int) -> I64 {
                 for k in 0..<3 {
                     edges.push((v + k * 7919) % n)
                 }
-                nodes[w] = ChurnNode { value: step % 1021, live: 1, edges: edges }
+                nodes[w].value = step % 1021
+                nodes[w].live = 1
+                nodes[w].edges = edges
             }
         }
     }
@@ -201,7 +204,7 @@ fn churnTrim(in_ch: Channel<ChurnFrag>, out_ch: Channel<ChurnFrag>) -> Int {
         acc = (acc * 31 + churnFragSum(frag)) % CHURN_MOD
         for i in 0..<frag.nodes.length {
             if (frag.nodes[i].value % 3 == 0) {
-                frag.nodes[i] = ChurnNode { value: frag.nodes[i].value, live: 1, edges: Vec<Int>.withCapacity(0) }
+                frag.nodes[i].edges = Vec<Int>.withCapacity(0)
             }
         }
         out_ch.send(frag)
@@ -245,8 +248,8 @@ fn churnTransfer(scale: Int) -> I64 {
     ch1.free()
     ch2.free()
 
-    for old in recent {
-        checksum = (checksum * 31 + churnFragSum(old)) % CHURN_MOD
+    for frag in recent {
+        checksum = (checksum * 31 + churnFragSum(frag)) % CHURN_MOD
     }
     checksum = churnMix(checksum, trimmed)
     return churnMix(checksum, sent + seen)

@@ -127,7 +127,8 @@ namespace
                 {
                     const int kept = nodes[u].value;
                     checksum = churn_mix(churn_mix(checksum, kept), static_cast<int>(nodes[u].edges.size()));
-                    nodes[u] = ChurnNode{kept, 0, std::vector<int>()};
+                    nodes[u].live = 0;
+                    nodes[u].edges = std::vector<int>();
                     free_list.push_back(u);
                 }
             }
@@ -140,7 +141,9 @@ namespace
                     std::vector<int> edges;
                     edges.reserve(4);
                     for (int k = 0; k < 3; ++k) edges.push_back((v + k * 7919) % n);
-                    nodes[w] = ChurnNode{step % 1021, 1, std::move(edges)};
+                    nodes[w].value = step % 1021;
+                    nodes[w].live = 1;
+                    nodes[w].edges = std::move(edges);
                 }
             }
         }
@@ -204,7 +207,7 @@ namespace
                 ChurnFrag frag = std::move(*taken);
                 acc = (acc * 31 + churn_frag_sum(frag)) % CHURN_MOD;
                 for (ChurnNode& node : frag.nodes)
-                    if (node.value % 3 == 0) node = ChurnNode{node.value, 1, std::vector<int>()};
+                    if (node.value % 3 == 0) node.edges = std::vector<int>();
                 ch2.send(std::move(frag));
             }
             ch2.close();

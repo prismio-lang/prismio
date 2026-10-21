@@ -1,7 +1,6 @@
 import common
 import std.math
 
-
 struct BenchParticle {
     x: Float,
     y: Float,

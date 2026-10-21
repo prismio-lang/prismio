@@ -11,7 +11,7 @@ internal fn semaMangleType(t: TypeInfo) -> String {
     match (t.kind) {
         TypeKind.VOID => { return "Void" }
         TypeKind.INT => { return t.name }
-        TypeKind.FLOAT => { return "Float" }
+        TypeKind.FLOAT => { return t.name }
         TypeKind.BOOL => { return "Bool" }
         TypeKind.CHAR => { return "Char" }
         TypeKind.STRING => { return "String" }
@@ -278,9 +278,7 @@ internal fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> AST
 }
 
 private fn semaArgMatchesType(module: ASTNode, argNode: ASTNode, expected: TypeInfo) -> Bool {
-    if (typeIsValid(expected) and expected.kind == TypeKind.INT and semaIsIntLiteral(argNode)) {
-        return true
-    }
+    if (semaLiteralTakes(argNode, expected)) { return true }
     // `Option.None` for an `Option<Int>` parameter; semaCheckValue qualifies it
     // once this candidate is chosen.
     if (enumFitsExpected(module, argNode, expected)) { return true }
@@ -340,6 +338,12 @@ private fn semaDefaultLiteralScore(module: ASTNode, fnNode: ASTNode, argPtr: Ptr
         let paramT = semaAnnotationType(module, ptr_to_node(paramNode.child1))
         if (semaIsIntLiteral(argNode) and paramT.kind == TypeKind.INT
             and paramT.name.equals("Int")) {
+            score = score + 1
+        }
+        // A float literal's default is `Float`, so `f(1.5)` beside `f(F32)` and
+        // `f(Float)` keeps the one that needs no re-typing.
+        if (semaIsFloatLiteral(argNode) and paramT.kind == TypeKind.FLOAT
+            and paramT.name.equals("Float")) {
             score = score + 1
         }
         arg = argNode.next

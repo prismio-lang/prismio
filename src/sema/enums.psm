@@ -720,6 +720,7 @@ internal fn semaMatchPayloadArms(module: ASTNode, stmt: ASTNode, scrutT: TypeInf
         } else {
             semaCheckPayloadArm(module, arm, shadow, expectedReturn)
         }
+        semaMovedArmEnd(semaBlockDiverges(ptr_to_node(arm.child2)))
         armPtr = arm.next
     }
 

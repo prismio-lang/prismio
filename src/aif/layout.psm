@@ -3,6 +3,8 @@
 
 import ast.nodes
 import ast.types
+import ast.int_width
+import ast.float_width
 import common.text
 import common.diagnostics
 import common.target
@@ -87,6 +89,15 @@ internal fn aifTypeBytes(ann: ASTNode) -> Int {
     // with it.
     if (n.equals("Float")) { return 8 }
     if (aif_is_enum(n) == 1) { return 4 }
+    // The other floats are their own width, 2 to 16 bytes. `fp128` is 16-byte
+    // aligned on the targets this compiler emits for, and 16 wide, so no padding.
+    let floatKey = floatKeyOfName(n)
+    if (floatKey.equals("") == false) { return floatBitsOfKey(floatKey) / 8 }
+    // `Int<N>`: the bytes LLVM allocates for an `iN`, not the ceiling of N/8.
+    // Up to 64 bits that is the next power of two (an `i24` takes four); past it,
+    // the 16-byte alignment of `i128` rounds the size up to a multiple of 16.
+    let width = intWidthOfName(n)
+    if (width > 0) { return intWidthAllocBytes(width) }
 
     // String, Ptr, and a struct field that is a reference edge: one pointer.
     // A struct field that is a *containment* edge is its own size instead, and
@@ -138,6 +149,9 @@ private fn aifTypeAlign(module: ASTNode, ann: ASTNode) -> Int {
             return best
         }
     }
+    // An `Int<200>` is 32 bytes allocated but aligned to 16, the most LLVM asks of an
+    // integer (`i128:128`); every other scalar aligns to its own width.
+    if (intWidthOfName(ann.s1) > 0 and aifTypeBytes(ann) > 16) { return 16 }
     return aifTypeBytes(ann)
 }
 

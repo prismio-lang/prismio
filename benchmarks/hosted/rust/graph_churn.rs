@@ -99,7 +99,8 @@ fn churn_single(scale: i32) -> i64 {
             if nodes[u].live == 1 {
                 let kept = nodes[u].value;
                 checksum = churn_mix(churn_mix(checksum, kept), nodes[u].edges.len() as i32);
-                nodes[u] = ChurnNode { value: kept, live: 0, edges: Vec::new() };
+                nodes[u].live = 0;
+                nodes[u].edges = Vec::new();
                 free.push(u as i32);
             }
         } else if op == 7 {
@@ -108,7 +109,9 @@ fn churn_single(scale: i32) -> i64 {
                 for k in 0..3 {
                     edges.push((v + k * 7919) % n);
                 }
-                nodes[w as usize] = ChurnNode { value: step % 1021, live: 1, edges };
+                nodes[w as usize].value = step % 1021;
+                nodes[w as usize].live = 1;
+                nodes[w as usize].edges = edges;
             }
         }
     }
@@ -171,7 +174,7 @@ fn churn_transfer(scale: i32) -> i64 {
             acc = (acc * 31 + churn_frag_sum(&frag)) % CHURN_MOD;
             for node in frag.nodes.iter_mut() {
                 if node.value % 3 == 0 {
-                    *node = ChurnNode { value: node.value, live: 1, edges: Vec::new() };
+                    node.edges = Vec::new();
                 }
             }
             let _ = tx2.send(frag);

@@ -1,0 +1,87 @@
+// The five float types: `F16`, `F32`, `F64`, `F128` and `BF16`. `F64` is `Float`.
+//
+// Each lowers to its LLVM type (`half`, `float`, `double`, `fp128`, `bfloat`), a float
+// literal takes the type its context gives it, and a cast between them rounds to
+// nearest -- `F16` and `BF16` are both 16 bits and neither holds the other, so the cast
+// between those two goes through `F32`.
+
+import std.io
+
+struct Sample { a: F32, b: F16, c: BF16 }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn halve(x: F32) -> F32 { return x * 0.5 }
+fn takesFloat(x: Float) -> Float { return x }
+
+fn main() -> Int {
+    // `F64` and `Float` are one type.
+    let d: F64 = 4.5
+    if (takesFloat(d) != 4.5) { return fail("F64 is Float") }
+
+    // A literal adopts the type it meets.
+    let a: F32 = 1.5
+    let negative: F32 = -1.5
+    if ((a as Float) != 1.5 or (negative as Float) != -1.5) { return fail("F32 literal") }
+    if ((halve(a) as Float) != 0.75) { return fail("literal beside an F32") }
+    if (((a + 0.25) as Float) != 1.75) { return fail("F32 addition") }
+    if (a * 2.0 + 1.0 != 4.0) { return fail("F32 compare against a literal") }
+
+    // Fields.
+    let s = Sample { a: a, b: 2.25, c: 3.0 }
+    if ((s.b as Float) != 2.25 or (s.c as Float) != 3.0) { return fail("F16 and BF16 fields") }
+
+    // Rounding between widths.
+    let third: Float = 1.0 / 3.0
+    let narrow: F32 = third as F32
+    if ((narrow as Float) == third) { return fail("F32 is narrower than a double") }
+    if (((narrow as Float) - third) > 1.0e-7) { return fail("F32 is within a float's error") }
+    let bf: BF16 = 1.0
+    let hf: F16 = 0.5
+    if (((bf as F16) as Float) != 1.0 or ((hf as BF16) as Float) != 0.5) { return fail("F16 <-> BF16") }
+
+    // Range: F16 stops at 65504, a double does not.
+    let h: F16 = 60000.0
+    let doubled: Float = (h * 2.0) as Float
+    if (doubled < 1.0e30) { return fail("F16 overflows to infinity") }
+    let maxHalf: F16 = 65504.0
+    if ((maxHalf as Float) != 65504.0) { return fail("F16 max") }
+    let tooBig: Float = 70000.0
+    if ((tooBig as F16?) != none) { return fail("70000 does not fit F16") }
+    if ((100.0 as F16?) == none) { return fail("100 fits F16") }
+
+    // Quadruple precision, computed at run time.
+    let mut x: F128 = 1.0
+    let mut i = 1
+    while (i < 30) {
+        x = x * ((i % 3 + 1) as F128) + 1.0
+        i = i + 1
+    }
+    if ((x as Float) != 120932350.0) { return fail("F128 arithmetic") }
+
+    // Integers convert in and saturate out.
+    let n: Int<24> = -123
+    if ((n as F32) != -123.0) { return fail("Int<24> -> F32") }
+    let u: UInt<100> = 1
+    if ((u as Float) != 1.0) { return fail("UInt<100> -> Float") }
+    let f: F32 = 1.0e10
+    if ((f as Int) != 2147483647) { return fail("F32 -> Int saturates") }
+
+    // Optionals and a Vec of them.
+    let mut v: Vec<F32> = []
+    v.push(1.5)
+    v.push(2.5)
+    if ((v[0] + v[1]) as Float != 4.0) { return fail("Vec<F32>") }
+    let mut o: Vec<F32?> = []
+    o.push(0.25 as F32?)
+    o.push(none)
+    if (o[0] == none or o[1] != none) { return fail("Vec<F32?>") }
+    let mut ho: Vec<F16?> = []
+    ho.push(0.5 as F16?)
+    if (ho[0] == none) { return fail("Vec<F16?>") }
+    return 0
+}

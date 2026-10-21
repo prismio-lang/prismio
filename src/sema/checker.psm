@@ -992,7 +992,7 @@ private fn semaLiteralExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         if (typeIntLiteralFitsAnyInt(expr.s1) == false) {
             semaErrorAt(expr, "integer literal ".concat(diagQuote(expr.s1),
                                                         " is too large for any integer type"))
-            diag_note("the widest are `I64` and `U64`, at 64 bits")
+            diag_note("the widest integer type is `Int<8388608>`")
         }
     }
     if (expr.i1 == TokenType.FLOAT_LITERAL as Int) { t = typeFloat() }
@@ -1200,9 +1200,12 @@ private fn semaEnumVariantCount(module: ASTNode, enumName: String) -> Int {
 
 // The String method that reads a `T`, or "" for a type text has no reading of.
 private fn semaParseFunctionFor(t: TypeInfo) -> String {
-    if (t.kind == TypeKind.INT or t.kind == TypeKind.FLOAT or t.kind == TypeKind.BOOL) {
-        return "parse".concat(t.name)
-    }
+    // A width or float type with no `parse` of its own has no reading of text:
+    // `parseInt$24` is not a function, and the message for it was an unknown name.
+    // Parse a wider type and convert -- `s as I64?` then `as Int<24>?`.
+    if (t.kind == TypeKind.INT and t.name.contains("$") == false) { return "parse".concat(t.name) }
+    if (t.kind == TypeKind.FLOAT and t.name.equals("Float")) { return "parseFloat" }
+    if (t.kind == TypeKind.BOOL) { return "parseBool" }
     return ""
 }
 
@@ -1422,6 +1425,18 @@ private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // negative value -- making the subtraction produce it back.
     semaCheckLiteralRange(leftNode)
     semaCheckLiteralRange(rightNode)
+
+    // The same for a float literal beside a float of another width: `x * 0.5` on an
+    // F32 is an F32 multiply, not an error about a Float.
+    if (leftT.kind == TypeKind.FLOAT and rightT.kind == TypeKind.FLOAT and typeEquals(leftT, rightT) == false) {
+        if (semaIsFloatLiteral(rightNode)) {
+            nodeSetType(rightNode, leftT)
+            rightT = typeCopy(leftT)
+        } else if (semaIsFloatLiteral(leftNode)) {
+            nodeSetType(leftNode, rightT)
+            leftT = typeCopy(rightT)
+        }
+    }
 
     let op = expr.s1
 
@@ -1912,6 +1927,17 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
             callee.s1 = "call"
             expr.child2 = node_to_ptr(receiver)
             return semaExpr(module, expr)
+        }
+    }
+
+    // `println(x)` for an `Int<24>` or an `F32`: no overload has that parameter, and the
+    // call is rewritten to one that does (src/sema/number_text.psm).
+    if (callee.kind == NodeKind.IDENTIFIER_EXPR and callee.s1.length >= 4) {
+        let numberText = semaNumberTextLower(module, expr, callee.s1)
+        if (numberText == semaVecRewritten()) { return semaExpr(module, expr) }
+        if (numberText == semaVecRejected()) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
         }
     }
 
@@ -3364,7 +3390,7 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     // `p = 5` on a `Ptr<mut Int>` replaces the pointer; a literal adopts the pointee's type.
     if (typeIsTypedPtr(targetT) and semaIsIntLiteral(value)
         and semaPtrAssignedItsPointee(value, targetT, typePtrPointee(targetT))) { return }
-    if (semaIsIntLiteral(value) or value.kind == NodeKind.DEFAULT_EXPR) {
+    if (semaIsIntLiteral(value) or semaIsFloatLiteral(value) or value.kind == NodeKind.DEFAULT_EXPR) {
         semaCheckValue(module, value, targetT, "assignment")
     } else {
         let valueT = semaValueTypeAgainst(module, value, targetT)
@@ -3473,14 +3499,23 @@ private fn semaExpressionStatement(module: ASTNode, stmt: ASTNode, expectedRetur
 private fn semaIfStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     let condT = semaExpr(module, ptr_to_node(stmt.child1))
     semaExpectAssignable(ptr_to_node(stmt.child1), "if condition", typeBool(), condT)
+    // The arms are exclusive, so a value one moves is still whole in the other, and
+    // an arm that leaves (`continue`, `return`) hands nothing on to the code after.
+    ir_moved_branches_begin()
     semaBlock(module, ptr_to_node(stmt.child2), expectedReturn)
+    semaMovedArmEnd(semaBlockDiverges(ptr_to_node(stmt.child2)))
     if (nodeExists(stmt.child3)) {
         let elseNode = ptr_to_node(stmt.child3)
         if (elseNode.kind == NodeKind.IF_STATEMENT) {
             semaStatement(module, elseNode, expectedReturn)
+            semaMovedArmEnd(semaStmtDiverges(elseNode))
         } else {
             semaBlock(module, elseNode, expectedReturn)
+            semaMovedArmEnd(semaBlockDiverges(elseNode))
         }
+        semaMovedBranchesEnd(false)
+    } else {
+        semaMovedBranchesEnd(true)
     }
 }
 
@@ -3591,7 +3626,9 @@ private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Ty
     // its arms bind names rather than comparing values, so it takes a
     // different path entirely -- see semaCheckPayloadArm.
     if (enumIsPayloadType(module, scrutT)) {
+        ir_moved_branches_begin()
         semaMatchPayloadArms(module, stmt, scrutT, expectedReturn)
+        semaMovedBranchesEnd(stmt.i3 != 1)
         return
     }
 
@@ -3605,6 +3642,7 @@ private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Ty
     if (scrutT.kind == TypeKind.ENUM and semaMatchCoversEnum(stmt, scrutT.name)) { stmt.i3 = 1 }
     let mut patExpected = typeCopy(scrutT)
 
+    ir_moved_branches_begin()
     let mut armPtr = stmt.child2
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
@@ -3612,8 +3650,10 @@ private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Ty
             semaCheckValue(module, ptr_to_node(arm.child1), patExpected, "match pattern")
         }
         semaBlock(module, ptr_to_node(arm.child2), expectedReturn)
+        semaMovedArmEnd(semaBlockDiverges(ptr_to_node(arm.child2)))
         armPtr = arm.next
     }
+    semaMovedBranchesEnd(stmt.i3 != 1)
 }
 
 // One statement kind per line. Each checker is the function named beside it,

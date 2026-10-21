@@ -66,7 +66,18 @@ THREAD_NAME = {ISOLATED: 'Isolated', TRANSFERRED: 'Transferred',
                CROSS_THREAD: 'CrossThread'}
 
 REF_SCALARS = {'Int', 'I8', 'I16', 'I32', 'I64', 'U8', 'U16', 'U32', 'U64',
-               'Isize', 'Usize', 'Float', 'Bool', 'Char', 'Void', ''}
+               'Isize', 'Usize', 'Float', 'Bool', 'Char', 'Void', '',
+               'F16', 'F32', 'F128', 'BF16'}
+
+
+def int_width(ty):
+    """The width of `Int<N>` / `UInt<N>` spelled as the compiler names it
+    (`Int$24`, `UInt$200`; a named width keeps its name), or 0 for any other
+    type. The twin of intWidthOfName in src/ast/int_width.psm."""
+    for prefix in ('UInt$', 'Int$'):
+        if ty.startswith(prefix) and ty[len(prefix):].isdigit():
+            return int(ty[len(prefix):])
+    return 0
 
 # FFI contracts for the Prismio runtime surface (FFI.md 5).
 #
@@ -537,7 +548,7 @@ class Model:
 
     def is_ref(self, ty):
         """Does a value of this type participate in the memory model at all?"""
-        if ty in REF_SCALARS or ty in self.enums:
+        if ty in REF_SCALARS or ty in self.enums or int_width(ty) > 0:
             return False
         return True
 
@@ -724,6 +735,12 @@ class Engine:
         # Shadowing joins outward via the LCA, so the answer does not depend on
         # which declaration the walk saw last.
         self.var_scope = {}
+        # The bindings in scope as the walk goes, innermost last: (fn, name, key). A read
+        # or store resolves to the innermost visible declaration of its name, so two
+        # declarations of one name are two keys. The first in a function keeps the plain
+        # name; later ones are `name#1`, `name#2`. Mirrors the env in aif_support.c.
+        self.env = []
+        self.env_marks = []
         # SPEC 5.2.1's call graph, for the bracketing summary. One entry per call
         # *expression*: a set would collapse two calls to one and make every
         # callee look sole-owned, which is exactly the fact regime (a) turns on.
@@ -739,16 +756,19 @@ class Engine:
     def build(self):
         for sym, fn in self.m.functions.items():
             root = self.m.scopes.new(None, sym)
+            self.env = []
+            self.env_marks = [0]
             for p_i, p in enumerate(fn['c1']):
                 if p['k'] != 'FUNCTION_PARAMETER':
                     continue
                 self.note_var_scope(sym, p['s1'], root)
                 ty = p['ty'] or (p['c1'][0]['s1'] if p['c1'] else '')
                 if self.m.is_ref(ty):
-                    self.constraints.append(('bind', ('var', sym, p['s1']),
+                    self.constraints.append(('bind', self.var_key(sym, p['s1']),
                                              self.ref(('param', sym, p_i))))
             for b in fn['c2']:
                 self.walk(b, sym, root)
+            self.env_marks.pop()
 
     def new_site(self, ty, fn, scope, node):
         # REQUIREMENTS 4, src/aif/model.psm's aifSiteType: a site typed `T?`
@@ -812,7 +832,7 @@ class Engine:
             return VS_EMPTY
 
         if k == 'IDENTIFIER_EXPR':
-            return self.ref(('var', fn, e['s1'])) if self.m.is_ref(ty) else VS_EMPTY
+            return self.ref(self.var_key(fn, e['s1'])) if self.m.is_ref(ty) else VS_EMPTY
 
         if k == 'MEMBER_ACCESS_EXPR':
             obj = e['c1'][0] if e['c1'] else None
@@ -1068,18 +1088,33 @@ class Engine:
         return vs_ref(key)
 
     def note_var_scope(self, fn, name, scope):
+        """A declaration of `name`: the first spelling of it no earlier declaration of
+        this function took, in scope until the enclosing block is left."""
         key = ('var', fn, name)
-        prev = self.var_scope.get(key)
-        if prev is None:
-            self.var_scope[key] = scope
-            return
-        m = self.m.scopes.lca(prev, scope)
-        if m is not None:
-            self.var_scope[key] = m
+        ordinal = 0
+        while key in self.var_scope:
+            ordinal += 1
+            key = ('var', fn, '%s#%d' % (name, ordinal))
+        self.var_scope[key] = scope
+        self.env.append((fn, name, key))
+
+    def env_enter(self):
+        self.env_marks.append(len(self.env))
+
+    def env_leave(self):
+        del self.env[self.env_marks.pop():]
+
+    def var_key(self, fn, name):
+        """The key of the innermost visible declaration of `name`; the plain key for a
+        global or a name the walk never declared."""
+        for efn, ename, key in reversed(self.env):
+            if ename == name and efn == fn:
+                return key
+        return ('var', fn, name)
 
     def holder_scope(self, fn, name, fallback):
         """Where a value assigned to `name` has to stay alive until."""
-        return self.var_scope.get(('var', fn, name), fallback)
+        return self.var_scope.get(self.var_key(fn, name), fallback)
 
     # -- structured-concurrency analysis -------------------------------------
     #
@@ -1246,10 +1281,12 @@ class Engine:
 
         if k == 'BLOCK':
             inner = self.m.scopes.new(scope, fn)
+            self.env_enter()
             for slot in ('c1', 'c2', 'c3'):
                 self.stamp_joins(n[slot])
                 for c in n[slot]:
                     self.walk(c, fn, inner)
+            self.env_leave()
             return
 
         # SPEC 5.2. The scope is what has to match the compiler's, because scope
@@ -1264,11 +1301,15 @@ class Engine:
             return
 
         if k == 'VARIABLE_DECL':
-            self.note_var_scope(fn, n['s1'], scope)
+            # Declared after the initialiser is read: `let s = s.trim()` reads the
+            # binding it shadows.
             if n['c2']:
                 v = self.sites_of(n['c2'][0], fn, scope)
-                self.constraints.append(('bind', ('var', fn, n['s1']), v))
+                self.note_var_scope(fn, n['s1'], scope)
+                self.constraints.append(('bind', self.var_key(fn, n['s1']), v))
                 self.constraints.append(('live_in', v, scope, fn))
+            else:
+                self.note_var_scope(fn, n['s1'], scope)
             return
 
         if k == 'ASSIGNMENT_STATEMENT':
@@ -1276,7 +1317,7 @@ class Engine:
             val = self.sites_of(n['c2'][0], fn, scope) if n['c2'] else VS_EMPTY
             if tgt is not None:
                 if tgt['k'] == 'IDENTIFIER_EXPR':
-                    self.constraints.append(('bind', ('var', fn, tgt['s1']), val))
+                    self.constraints.append(('bind', self.var_key(fn, tgt['s1']), val))
                     self.constraints.append(
                         ('live_in', val, self.holder_scope(fn, tgt['s1'], scope), fn))
                 elif tgt['k'] == 'MEMBER_ACCESS_EXPR':
@@ -1300,6 +1341,10 @@ class Engine:
                 self.constraints.append(('escape_caller', v, fn))
             return
 
+        # An arm's binders are in scope for that arm alone.
+        arm = (k == 'MATCH_ARM')
+        if arm:
+            self.env_enter()
         for slot in ('c1', 'c2', 'c3'):
             for c in n[slot]:
                 if c['k'] in ('BLOCK', 'VARIABLE_DECL', 'ASSIGNMENT_STATEMENT',
@@ -1309,6 +1354,8 @@ class Engine:
                     self.walk(c, fn, scope)
                 else:
                     self.sites_of(c, fn, scope)
+        if arm:
+            self.env_leave()
 
     # -- fixed point ---------------------------------------------------------
 

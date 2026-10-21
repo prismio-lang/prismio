@@ -2,6 +2,8 @@
 
 import ast.nodes
 import ast.types
+import ast.int_width
+import ast.float_width
 import common.text
 import common.diagnostics
 import std.string
@@ -9,6 +11,9 @@ import std.string
 private fn mapType(t: String) -> String {
     if (t.equals("Int")) { return "i32" }
     if (t.equals("Float")) { return "double" }
+    // `F16`, `F32`, `F128`, `BF16` (`F64` is spelled `Float` by the time it gets here).
+    let floatKey = floatKeyOfName(t)
+    if (floatKey.equals("") == false) { return floatKey }
     if (t.equals("Bool")) { return "i1" }
     // A String is a pointer *and* a length. The buffer stays NUL-terminated
     // (FFI 7.1), so crossing to C is still `.ptr` and still zero-copy -- see
@@ -31,6 +36,9 @@ private fn mapType(t: String) -> String {
     if (t.equals("U64")) { return "i64" }
     if (t.equals("Usize")) { return irPtrIntType() }
     if (t.equals("")) { return "void" }
+    // `Int<24>` is `Int$24`: the width is in the name.
+    let bits = intWidthOfName(t)
+    if (bits > 0) { return "i".concat(bits.toString()) }
     return "i32"
 }
 
@@ -51,8 +59,7 @@ internal fn isStructTypeKey(t: String) -> Bool {
 // rather than a check that never fires. Everything else -- `ptr`, `double`,
 // `struct:` -- either has its own path above or cannot take `+`.
 internal fn isIntegerStorageKey(t: String) -> Bool {
-    return t.equals("i8") or t.equals("i16")
-        or t.equals("i32") or t.equals("i64")
+    return intWidthOfKey(t) >= 2
 }
 
 // The fat String is the one key that answers `isStructTypeKey` while *not* being
@@ -393,6 +400,23 @@ internal fn storeAsDeclared(value: String, valueKey: String, declaredKey: String
     return value
 }
 
+// The width a scalar `T?`'s payload takes in its carrier: the storage width of a named
+// integer or a float, and for an `Int<24>` the power of two that holds it, since the
+// carrier widens the payload by zero extension and reads it back by truncation. 0 for
+// anything too wide for a carrier, which keeps the `{ i1, T }` bytes instead.
+private fn optPayloadBits(key: String) -> Int {
+    let named = scalarBitsOf(key)
+    if (named > 0) { return named }
+    let floatBits = floatBitsOfKey(key)
+    if (floatBits > 0) { return floatBits }
+    let width = intWidthOfKey(key)
+    if (width < 2 or width > 64) { return 0 }
+    if (width <= 8) { return 8 }
+    if (width <= 16) { return 16 }
+    if (width <= 32) { return 32 }
+    return 64
+}
+
 // The integer a scalar `T?` is kept as in a container, twice its payload's
 // width: the value in the high half and the present flag in the low one
 // (ir_opt_pack). "" for anything else, and for a 64-bit payload -- `Float?`,
@@ -400,7 +424,7 @@ internal fn storeAsDeclared(value: String, valueKey: String, declaredKey: String
 // kept as its `{ i1, T }` bytes instead (optIsWide).
 internal fn optCarrierKey(t: String) -> String {
     if (t.startsWith("opt:") == false) { return "" }
-    let payload = scalarBitsOf(t.substring(4, t.length - 4))
+    let payload = optPayloadBits(t.substring(4, t.length - 4))
     if (payload == 0 or payload > 32) { return "" }
     if (payload <= 8) { return "i16" }
     if (payload == 16) { return "i32" }
@@ -460,9 +484,16 @@ internal fn scalarToSlot(storeType: String, value: String) -> String {
     }
     let pi = irPtrIntType()
 
-    if (storeType.equals("double")) {
-        let bits = ir_get_temp_name(ir_bitcast("double", value, "i64"))
-        return ir_get_temp_name(ir_int_to_ptr("i64", bits))
+    // A float travels as the integer of its own width, widened like any other.
+    // `double` is the whole word, so it needs no extension; `float`, `half` and
+    // `bfloat` do.
+    let floatBits = floatBitsOfKey(storeType)
+    if (floatBits > 0 and floatBits <= 64) {
+        let intKey = "i".concat(floatBits.toString())
+        let bits = ir_get_temp_name(ir_bitcast(storeType, value, intKey))
+        if (floatBits == 64) { return ir_get_temp_name(ir_int_to_ptr("i64", bits)) }
+        let widenedBits = ir_get_temp_name(ir_zext(intKey, bits, pi))
+        return ir_get_temp_name(ir_int_to_ptr(pi, widenedBits))
     }
 
     let mut widened = value
@@ -482,9 +513,16 @@ internal fn slotToScalar(storeType: String, value: String) -> String {
     if (optIsWide(storeType)) { return ir_get_temp_name(ir_load_ptr(storeType, value)) }
     let pi = irPtrIntType()
 
-    if (storeType.equals("double")) {
-        let bits = ir_get_temp_name(ir_ptr_to_int(value, "i64"))
-        return ir_get_temp_name(ir_bitcast("i64", bits, "double"))
+    let floatBits = floatBitsOfKey(storeType)
+    if (floatBits > 0 and floatBits <= 64) {
+        let intKey = "i".concat(floatBits.toString())
+        if (floatBits == 64) {
+            let bits = ir_get_temp_name(ir_ptr_to_int(value, "i64"))
+            return ir_get_temp_name(ir_bitcast("i64", bits, storeType))
+        }
+        let word = ir_get_temp_name(ir_ptr_to_int(value, pi))
+        let narrow = ir_get_temp_name(ir_trunc(pi, word, intKey))
+        return ir_get_temp_name(ir_bitcast(intKey, narrow, storeType))
     }
 
     let raw = ir_get_temp_name(ir_ptr_to_int(value, pi))

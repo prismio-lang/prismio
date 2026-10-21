@@ -105,6 +105,8 @@ public extern fn ir_sitofp(fromType: String, value: String, toType: String) -> I
 public extern fn ir_uitofp(fromType: String, value: String, toType: String) -> Int
 public extern fn ir_fptosi(fromType: String, value: String, toType: String) -> Int
 public extern fn ir_fptoui(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_fpext(fromType: String, value: String, toType: String) -> Int
+public extern fn ir_fptrunc(fromType: String, value: String, toType: String) -> Int
 public extern fn ir_and(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_or(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_xor(type: String, lhs: String, rhs: String) -> Int
@@ -168,6 +170,11 @@ public extern fn ir_clear_moved()
 public extern fn ir_mark_moved(name: String)
 public extern fn ir_unmark_moved(name: String)
 public extern fn ir_is_moved(name: String) -> Int
+// Exclusive branches: each arm starts from the moved set the branches opened with,
+// and after them the set is the union of the arms that can fall through.
+public extern fn ir_moved_branches_begin()
+public extern fn ir_moved_branch_end(diverges: Int)
+public extern fn ir_moved_branches_end(hasFallthroughArm: Int)
 // A scoped, conservative capability for `list_set_exclusive`: local list_new
 // starts exclusive; any operation that can expose an element or the handle
 // clears it. Unlike borrowed state this belongs to the List owner, not a value

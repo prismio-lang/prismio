@@ -271,18 +271,49 @@ int ir_get_temp(void) { return intern_value(NULL); }
 
 static LLVMTypeRef named_struct(const char *name);
 
+// The numeric scalar keys, answered in one place so the type table, the constant
+// reader, the debug-info table and the flat-layout test cannot disagree about which
+// spellings exist.
+//
+// An integer is `iN` for any N from 1 to LLVM's limit (`Int<N>` and `UInt<N>` in
+// the language; the key does not carry signedness, which only operations have).
+// A float is one of LLVM's five IEEE-style names: `half`, `bfloat`, `float`,
+// `double` and `fp128` (F16, BF16, F32, F64, F128).
+static unsigned key_int_width(const char *t) {
+    if (!t || t[0] != 'i' || t[1] < '1' || t[1] > '9') return 0;
+    unsigned long w = 0;
+    for (const char *c = t + 1; *c; c++) {
+        if (*c < '0' || *c > '9') return 0;
+        w = w * 10 + (unsigned long)(*c - '0');
+        if (w > 8388608UL) return 0;
+    }
+    return (unsigned)w;
+}
+
+static LLVMTypeRef float_type_from_key(const char *t) {
+    if (!t) return NULL;
+    if (strcmp(t, "double") == 0) return LLVMDoubleTypeInContext(g_ctx);
+    if (strcmp(t, "float") == 0) return LLVMFloatTypeInContext(g_ctx);
+    if (strcmp(t, "half") == 0) return LLVMHalfTypeInContext(g_ctx);
+    if (strcmp(t, "bfloat") == 0) return LLVMBFloatTypeInContext(g_ctx);
+    if (strcmp(t, "fp128") == 0) return LLVMFP128TypeInContext(g_ctx);
+    return NULL;
+}
+
+static int key_is_scalar_number(const char *t) {
+    return key_int_width(t) != 0 || float_type_from_key(t) != NULL;
+}
+
 // Maps the frontend's type keys ("i32", "double", "ptr", "struct:Foo") onto
 // LLVM types. Unknown keys are a hard error rather than a silent i32, which is
 // what the text backend defaulted to.
 static LLVMTypeRef type_from_key(const char *t) {
     if (!t || !*t) return LLVMVoidTypeInContext(g_ctx);
     if (strcmp(t, "void") == 0) return LLVMVoidTypeInContext(g_ctx);
-    if (strcmp(t, "i1") == 0) return LLVMInt1TypeInContext(g_ctx);
-    if (strcmp(t, "i8") == 0) return LLVMInt8TypeInContext(g_ctx);
-    if (strcmp(t, "i16") == 0) return LLVMInt16TypeInContext(g_ctx);
-    if (strcmp(t, "i32") == 0) return LLVMInt32TypeInContext(g_ctx);
-    if (strcmp(t, "i64") == 0) return LLVMInt64TypeInContext(g_ctx);
-    if (strcmp(t, "double") == 0) return LLVMDoubleTypeInContext(g_ctx);
+    unsigned int_bits = key_int_width(t);
+    if (int_bits) return LLVMIntTypeInContext(g_ctx, int_bits);
+    LLVMTypeRef float_ty = float_type_from_key(t);
+    if (float_ty) return float_ty;
     if (strcmp(t, "ptr") == 0 || strcmp(t, "ptrptr") == 0)
         return LLVMPointerTypeInContext(g_ctx, 0);
     if (strncmp(t, "struct:", 7) == 0) return named_struct(t + 7);
@@ -467,6 +498,11 @@ static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
         backend_fail("non-zero constant of an aggregate type", s);
     }
     if (ty == LLVMDoubleTypeInContext(g_ctx)) return LLVMConstReal(ty, atof(s));
+    // Every other float is read as text. `atof` is a double, which cannot carry the
+    // 113-bit significand of an `fp128` and would round a `half` twice.
+    if (kind == LLVMHalfTypeKind || kind == LLVMBFloatTypeKind
+        || kind == LLVMFloatTypeKind || kind == LLVMFP128TypeKind)
+        return LLVMConstRealOfString(ty, s);
     if (ty == LLVMPointerTypeInContext(g_ctx, 0)) {
         if (strcmp(s, "null") == 0 || strcmp(s, "0") == 0) return LLVMConstPointerNull(ty);
         backend_fail("non-null pointer constant", s);
@@ -493,6 +529,23 @@ static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
         if (digits[1] == 'x' || digits[1] == 'X') { base = 16; digits += 2; }
         else if (digits[1] == 'o' || digits[1] == 'O') { base = 8; digits += 2; }
         else if (digits[1] == 'b' || digits[1] == 'B') { base = 2; digits += 2; }
+    }
+    // Wider than a machine integer: `strtoull` would stop at 64 bits, so the
+    // digits go to LLVM, which reads any width in the radix the prefix named.
+    if (kind == LLVMIntegerTypeKind && LLVMGetIntTypeWidth(ty) > 64) {
+        char wide[8200];
+        size_t n = strlen(digits);
+        if (n + 2 > sizeof(wide)) {
+            size_t cap = n + 2;
+            char *big = (char *)malloc(cap);
+            if (!big) backend_fail("out of memory reading a wide constant", s);
+            snprintf(big, cap, "%s%s", sign ? "-" : "", digits);
+            LLVMValueRef v = LLVMConstIntOfString(ty, big, (uint8_t)base);
+            free(big);
+            return v;
+        }
+        snprintf(wide, sizeof(wide), "%s%s", sign ? "-" : "", digits);
+        return LLVMConstIntOfString(ty, wide, (uint8_t)base);
     }
     if (sign) {
         long long magnitude = (long long)strtoull(digits, NULL, base);
@@ -1208,7 +1261,7 @@ static void apply_param_attrs(LLVMValueRef fn) {
 }
 
 static void tag_alloc_fn(LLVMValueRef fn, const char *name) {
-    if (strcmp(name, "malloc") == 0) {
+    if (strcmp(name, "malloc") == 0 || strcmp(name, "rt_base_alloc") == 0) {
         unsigned k_allockind = LLVMGetEnumAttributeKindForName("allockind", 9);
         unsigned k_nounwind = LLVMGetEnumAttributeKindForName("nounwind", 8);
         unsigned k_willreturn = LLVMGetEnumAttributeKindForName("willreturn", 10);
@@ -2434,6 +2487,39 @@ static void attach_cold(const StructType *s, LLVMValueRef hot, const char *alloc
     tag_struct_record(store, s, 0, (unsigned)s->hot_count, "ptr");
 }
 
+// PROTOTYPE (docs/ALLOCATOR_PLAN.md): PRISMIO_PROTO_ALLOC=rt_base_alloc sends object
+// allocation through the runtime seam instead of libc `malloc`. Only consulted while
+// the name is still the default, so a verify build keeps its own pair.
+static const char *effective_alloc_fn(void) {
+    if (strcmp(g_alloc_fn, "malloc") == 0) {
+        const char *proto = getenv("PRISMIO_PROTO_ALLOC");
+        if (proto && *proto) return proto;
+    }
+    return g_alloc_fn;
+}
+
+// PROTOTYPE: what LLVM already knows about `malloc` by name, said at the call site so it
+// survives the runtime's definition of `rt_base_alloc` replacing the declaration's
+// attributes when the bitcode is linked. A call site's attributes are consulted before
+// the callee's, and the effective memory behaviour is the intersection of the two.
+static void tag_alloc_callsite(LLVMValueRef call, const char *name) {
+    if (strcmp(name, "malloc") == 0) return;
+    unsigned k_allockind = LLVMGetEnumAttributeKindForName("allockind", 9);
+    unsigned k_allocsize = LLVMGetEnumAttributeKindForName("allocsize", 9);
+    unsigned k_noalias = LLVMGetEnumAttributeKindForName("noalias", 7);
+    unsigned k_memory = LLVMGetEnumAttributeKindForName("memory", 6);
+    unsigned k_nounwind = LLVMGetEnumAttributeKindForName("nounwind", 8);
+    unsigned k_willreturn = LLVMGetEnumAttributeKindForName("willreturn", 10);
+    if (getenv("PRISMIO_PROTO_NOATTR")) return;
+    if (k_noalias) LLVMAddCallSiteAttribute(call, 0 /* return */, LLVMCreateEnumAttribute(g_ctx, k_noalias, 0));
+    if (k_allockind) LLVMAddCallSiteAttribute(call, ~0U, LLVMCreateEnumAttribute(g_ctx, k_allockind, 1U | 8U));
+    if (k_allocsize) LLVMAddCallSiteAttribute(call, ~0U, LLVMCreateEnumAttribute(g_ctx, k_allocsize, 0xFFFFFFFFULL));
+    LLVMAddCallSiteAttribute(call, ~0U, LLVMCreateStringAttribute(g_ctx, "alloc-family", 12, "malloc", 6));
+    if (k_memory) LLVMAddCallSiteAttribute(call, ~0U, LLVMCreateEnumAttribute(g_ctx, k_memory, 3U << 2));
+    if (k_nounwind) LLVMAddCallSiteAttribute(call, ~0U, LLVMCreateEnumAttribute(g_ctx, k_nounwind, 0));
+    if (k_willreturn) LLVMAddCallSiteAttribute(call, ~0U, LLVMCreateEnumAttribute(g_ctx, k_willreturn, 0));
+}
+
 int ir_alloc_object(const char *struct_name) {
     StructType *s = struct_entry(struct_name);
     LLVMTypeRef sty = s->type;
@@ -2448,11 +2534,13 @@ int ir_alloc_object(const char *struct_name) {
     }
 
     LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
-    LLVMValueRef alloc_fn = get_or_declare_alloc_fn(g_alloc_fn, alloc_ty);
+    const char *alloc_name = effective_alloc_fn();
+    LLVMValueRef alloc_fn = get_or_declare_alloc_fn(alloc_name, alloc_ty);
 
     LLVMValueRef args[1] = {size};
     LLVMValueRef hot = LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, "");
-    attach_cold(s, hot, g_alloc_fn, size_ty);
+    tag_alloc_callsite(hot, alloc_name);
+    attach_cold(s, hot, alloc_name, size_ty);
     return intern_value(hot);
 }
 
@@ -2821,9 +2909,7 @@ static int type_key_is_flat(const char *key, int depth) {
         return elem ? type_key_is_flat(elem + 1, depth + 1) : 0;
     }
     if (strncmp(key, "opt:", 4) == 0) return type_key_is_flat(key + 4, depth + 1);
-    return strcmp(key, "i1") == 0 || strcmp(key, "i8") == 0 || strcmp(key, "i16") == 0
-        || strcmp(key, "i32") == 0 || strcmp(key, "i64") == 0
-        || strcmp(key, "float") == 0 || strcmp(key, "double") == 0;
+    return key_is_scalar_number(key);
 }
 
 static int struct_is_flat_by_name(const char *name, int depth) {
@@ -4476,6 +4562,18 @@ int ir_fptoui(const char *from_type, const char *value, const char *to_type) {
                                         type_from_key(to_type), ""));
 }
 
+// Between float widths. The caller picks the direction by size (src/ir/numeric.psm);
+// `half` and `bfloat` are the same size, so it goes through `float` for those.
+int ir_fpext(const char *from_type, const char *value, const char *to_type) {
+    return intern_value(LLVMBuildFPExt(g_builder, resolve_value(value, from_type),
+                                       type_from_key(to_type), ""));
+}
+
+int ir_fptrunc(const char *from_type, const char *value, const char *to_type) {
+    return intern_value(LLVMBuildFPTrunc(g_builder, resolve_value(value, from_type),
+                                         type_from_key(to_type), ""));
+}
+
 void ir_call_begin(void) {
     if (g_call_depth >= MAX_CALL_DEPTH) backend_fail("call nesting too deep", NULL);
     g_calls[g_call_depth].count = 0;
@@ -5065,9 +5163,13 @@ int ir_select(const char *type, const char *cond, const char *a, const char *b) 
 // The flag in the low half is what makes a zeroed row, and so a zero-filled
 // block, read as `none`.
 static LLVMTypeRef opt_payload_int_type(LLVMTypeRef payload) {
-    if (LLVMGetTypeKind(payload) == LLVMIntegerTypeKind) return payload;
-    if (LLVMGetTypeKind(payload) == LLVMFloatTypeKind) return LLVMInt32TypeInContext(g_ctx);
-    return LLVMInt64TypeInContext(g_ctx);
+    switch (LLVMGetTypeKind(payload)) {
+    case LLVMIntegerTypeKind: return payload;
+    case LLVMHalfTypeKind:
+    case LLVMBFloatTypeKind: return LLVMInt16TypeInContext(g_ctx);
+    case LLVMFloatTypeKind: return LLVMInt32TypeInContext(g_ctx);
+    default: return LLVMInt64TypeInContext(g_ctx);
+    }
 }
 
 int ir_opt_pack(const char *opt_key, const char *value, const char *carrier_key) {
@@ -6149,6 +6251,10 @@ const char *diag_file_path(int file);
 // compiler as the user typed it, so it is usually relative, and a debugger
 // resolves a relative DW_AT_name against the compilation directory.
 char *current_directory(void);
+// Its result is an `rt_base_alloc` block, so it is released through the seam, not
+// libc `free`. Declared here for the same reason as `current_directory`: this file
+// does not include prismio_runtime.h.
+void rt_free(void *p);
 
 // From ir_symbols.c. The field *names* of a registered struct, in the order they
 // were registered -- which generateStructDecl guarantees is the physical order
@@ -6557,6 +6663,18 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
     }
     if (strcmp(key, "i64") == 0) return di_basic("I64", 64, PRISMIO_DW_ATE_signed);
     if (strcmp(key, "double") == 0) return di_basic("Float", 64, PRISMIO_DW_ATE_float);
+    if (strcmp(key, "float") == 0) return di_basic("F32", 32, PRISMIO_DW_ATE_float);
+    if (strcmp(key, "half") == 0) return di_basic("F16", 16, PRISMIO_DW_ATE_float);
+    if (strcmp(key, "bfloat") == 0) return di_basic("BF16", 16, PRISMIO_DW_ATE_float);
+    if (strcmp(key, "fp128") == 0) return di_basic("F128", 128, PRISMIO_DW_ATE_float);
+    // `Int<24>` and the other widths with no name of their own. The key does not
+    // say signed or unsigned, so the debugger sees the signed reading.
+    unsigned wide_bits = key_int_width(key);
+    if (wide_bits) {
+        char label[32];
+        snprintf(label, sizeof(label), "Int<%u>", wide_bits);
+        return di_basic(label, wide_bits, PRISMIO_DW_ATE_signed);
+    }
 
     // Before the generic struct case: a String is a value, not an address of one.
     if (strcmp(key, "struct:prismio.str") == 0) return di_string_type();
@@ -6621,14 +6739,15 @@ static LLVMMetadataRef di_type_for_llvm(LLVMTypeRef ty) {
     switch (LLVMGetTypeKind(ty)) {
     case LLVMVoidTypeKind: return NULL;
     case LLVMDoubleTypeKind: return di_type_for("double", NULL);
+    case LLVMFloatTypeKind: return di_type_for("float", NULL);
+    case LLVMHalfTypeKind: return di_type_for("half", NULL);
+    case LLVMBFloatTypeKind: return di_type_for("bfloat", NULL);
+    case LLVMFP128TypeKind: return di_type_for("fp128", NULL);
     case LLVMPointerTypeKind: return di_opaque_ptr();
     case LLVMIntegerTypeKind: {
-        unsigned w = LLVMGetIntTypeWidth(ty);
-        if (w == 1) return di_type_for("i1", NULL);
-        if (w <= 8) return di_type_for("i8", NULL);
-        if (w <= 16) return di_type_for("i16", NULL);
-        if (w <= 32) return di_type_for("i32", NULL);
-        return di_type_for("i64", NULL);
+        char key[16];
+        snprintf(key, sizeof(key), "i%u", LLVMGetIntTypeWidth(ty));
+        return di_type_for(key, NULL);
     }
     default: return NULL;
     }
@@ -6872,7 +6991,7 @@ void ir_debug_begin(const char *producer, const char *main_path, int is_optimize
 
     char *cwd = current_directory();
     snprintf(g_di_dir, sizeof(g_di_dir), "%s", cwd ? cwd : ".");
-    if (cwd) free(cwd);
+    if (cwd) rt_free(cwd);
 
     g_di = LLVMCreateDIBuilder(g_module);
     pin_data_layout();

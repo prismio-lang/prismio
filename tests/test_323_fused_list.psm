@@ -1,0 +1,102 @@
+// A small Vec of known capacity is one allocation: the header and the first block of
+// elements together (list_new_cap in runtime/lang_runtime.c). Growing it moves the
+// elements to a block of their own, and from then on it frees and resizes like any
+// other. Every way a fused block can leave that state is here -- growth by push, by
+// reserve, past the size limit at construction, boxed, inline, scalar and String
+// elements, a Vec that is a field -- and --verify (run_aif_verify_test) must see
+// every block released exactly once.
+
+import std.process
+
+struct Point {
+    x: Int,
+    y: Int
+}
+
+struct Bag {
+    items: Vec<Int>,
+    tag: Int
+}
+
+fn grown(n: Int) -> Int {
+    let mut v: Vec<Int> = Vec<Int>.withCapacity(2)
+    for i in 0..<n { v.push(i) }
+    let mut total = 0
+    for x in v { total = total + x }
+    return total
+}
+
+fn reserved(n: Int) -> Int {
+    let mut v: Vec<Int> = Vec<Int>.withCapacity(4)
+    v.push(1)
+    v.reserve(n)
+    for i in 0..<n { v.push(i) }
+    return v.length
+}
+
+// Bigger than the fusing limit at construction: a separate block from the start.
+fn large(n: Int) -> Int {
+    let mut v: Vec<Int> = Vec<Int>.withCapacity(500)
+    for i in 0..<n { v.push(i) }
+    return v.length
+}
+
+fn flat(n: Int) -> Int {
+    let mut v: Vec<Point> = Vec<Point>.withCapacity(3)
+    for i in 0..<n { v.push(Point { x: i, y: i * 2 }) }
+    let mut total = 0
+    for p in v { total = total + p.y }
+    return total
+}
+
+fn boxed(n: Int) -> Int {
+    let mut v: Vec<Bag> = Vec<Bag>.withCapacity(2)
+    for i in 0..<n {
+        let mut items: Vec<Int> = Vec<Int>.withCapacity(3)
+        items.push(i)
+        v.push(Bag { items: items, tag: i })
+    }
+    let mut total = 0
+    for b in v { total = total + b.items[0] + b.tag }
+    return total
+}
+
+fn strings(n: Int) -> Int {
+    let mut v: Vec<String> = Vec<String>.withCapacity(2)
+    for i in 0..<n { v.push("a string that is long enough to need the heap ".concat(i.toString())) }
+    return v.length
+}
+
+fn emptyAndRefill(rounds: Int) -> Int {
+    let mut v: Vec<Int> = Vec<Int>.withCapacity(8)
+    let mut total = 0
+    for r in 0..<rounds {
+        for i in 0..<20 { v.push(i + r) }
+        total = total + v.length
+        v.truncate(0)
+    }
+    return total
+}
+
+// Never grown, and replaced as a field: the fused block is freed with its header.
+fn replaced(steps: Int) -> Int {
+    let mut b = Bag { items: Vec<Int>.withCapacity(4), tag: 0 }
+    for step in 0..<steps {
+        let mut items: Vec<Int> = Vec<Int>.withCapacity(4)
+        items.push(step)
+        b.items = items
+    }
+    return b.items[0]
+}
+
+fn main() -> Int {
+    if (grown(1000) != 499500) { return 1 }
+    if (reserved(100) != 101) { return 2 }
+    if (large(2000) != 2000) { return 3 }
+    if (flat(50) != 2450) { return 4 }
+    if (boxed(30) != 435 + 435) { return 5 }
+    if (strings(40) != 40) { return 6 }
+    if (emptyAndRefill(50) != 1000) { return 7 }
+    if (replaced(100) != 99) { return 8 }
+    return 0
+}

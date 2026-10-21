@@ -1,0 +1,110 @@
+// Printing an integer of a width with no name: `println(x)`, `print(x)`,
+// `x.toString()`, `x as String` and `"${x}"` (which is `show(x)`) for an `Int<24>` or a
+// `UInt<200>`.
+//
+// A named integer has an overload in std for each of these, and an unnamed one cannot:
+// there is a type per width. So the call is rewritten, once, to something that already
+// exists -- the way `x as String` becomes `x.toString()` (checker.psm) -- and the
+// rewrite is decided by what the argument's type says and nothing else. (The floats
+// that are not `Float` have ordinary overloads, std/number_text.psm.)
+//
+//   * An integer of up to 64 bits converts to `I64` or `U64` by the cast the program
+//     could have written, and the call that follows is the ordinary overload. Nothing
+//     needs importing.
+//   * A wider integer has no machine type to convert to, so the call becomes
+//     `intText(value, bits, signed)` (std/number_text.psm), which takes the value apart
+//     with shifts.
+//
+// The value is an argument of the rewritten call and so is evaluated once, which is
+// why this is not written as a loop over `value >> i` in the AST.
+
+import ast.nodes
+import lexer.token
+import ast.types
+import ast.int_width
+import common.diagnostics
+import std.string
+
+// Whether `expr`, a call to `name`, was rewritten (semaVecRewritten: check it again),
+// refused after reporting (semaVecRejected), or is none of this module's business (0).
+internal fn semaNumberTextLower(module: ASTNode, expr: ASTNode, name: String) -> Int {
+    if (name.equals("print") == false and name.equals("println") == false
+            and name.equals("toString") == false and name.equals("show") == false) {
+        return 0
+    }
+    if (nodeExists(expr.child2) == false) { return 0 }
+    let first = ptr_to_node(expr.child2)
+    let t = semaExpr(module, first)
+    if (t.kind == TypeKind.INT and intWidthOfName(t.name) > 0) {
+        return semaIntTextLower(module, expr, name, first, t)
+    }
+    return 0
+}
+
+private fn semaIntTextLower(module: ASTNode, expr: ASTNode, name: String, first: ASTNode,
+                            t: TypeInfo) -> Int {
+    let bits = typeIntBits(t)
+    if (bits <= 64) {
+        let mut wide = typeI64()
+        if (typeIntIsUnsigned(t)) { wide = typeU64() }
+        textCastFirst(expr, first, wide)
+        return semaVecRewritten()
+    }
+
+    if (textHelperAvailable(module, expr, t, "intText") == false) { return semaVecRejected() }
+    // `toString(radix)` is the one form with a second argument, and a radix over a
+    // width past 64 bits is not built.
+    if (nodeExists(first.next)) {
+        semaErrorAt(expr, "a radix is not supported for ".concat(typeDisplay(t), ", which is wider than 64 bits"))
+        return semaVecRejected()
+    }
+    let mut signed = "true"
+    if (typeIntIsUnsigned(t)) { signed = "false" }
+    let args = nodeList()
+    nodeListPush(args, first)
+    nodeListPush(args, textLiteral(first, TokenType.NUMBER_LITERAL as Int, bits.toString()))
+    nodeListPush(args, textLiteral(first, TokenType.BOOL_LITERAL as Int, signed))
+    return textRewrite(expr, name, first, "intText", args)
+}
+
+// `helper` is generic, so it is a template and not in the declaration index.
+private fn textHelperAvailable(module: ASTNode, at: ASTNode, t: TypeInfo, helper: String) -> Bool {
+    if (monoHasTemplate(module, helper, NodeKind.FUNCTION)) { return true }
+    semaErrorAt(at, "printing ".concat(typeDisplay(t), " needs `import std.number_text`"))
+    return false
+}
+
+// `toString(x)` becomes `helper(x, ...)`; `println(x)` keeps its call and prints the
+// text. The expression itself becomes the call, in place, as every rewrite here is.
+// `args` is the value followed by what the helper also takes, and `value` is its head.
+private fn textRewrite(expr: ASTNode, name: String, value: ASTNode, helper: String,
+                       args: NodeList) -> Int {
+    if (name.equals("toString") or name.equals("show")) {
+        semaBecomeCall(expr, helper, args.head)
+        return semaVecRewritten()
+    }
+    let call = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(call, value)
+    semaBecomeCall(call, helper, args.head)
+    expr.child2 = node_to_ptr(call)
+    return semaVecRewritten()
+}
+
+// `value as I64`, spliced in where the argument stood.
+private fn textCastFirst(call: ASTNode, first: ASTNode, to: TypeInfo) {
+    let cast = createNode(NodeKind.CAST_EXPR)
+    nodeSpanFrom(cast, first)
+    cast.next = first.next
+    first.next = ptr_null()
+    cast.child1 = node_to_ptr(first)
+    cast.child2 = node_to_ptr(monoAnnotationFromType(to))
+    call.child2 = node_to_ptr(cast)
+}
+
+private fn textLiteral(at: ASTNode, kind: Int, text: String) -> ASTNode {
+    let literal = createNode(NodeKind.LITERAL_EXPR)
+    nodeSpanFrom(literal, at)
+    literal.i1 = kind
+    literal.s1 = text.clone()
+    return literal
+}

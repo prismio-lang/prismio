@@ -331,7 +331,10 @@ private fn semaVecArgCount(call: ASTNode) -> Int {
 // Which `filled` a `T` gets: the runtime's for a scalar, std.vec's generic copy
 // loop for anything else, or "" after reporting that std.vec is not imported.
 private fn semaVecFilledCallee(module: ASTNode, expr: ASTNode, elem: TypeInfo) -> String {
-    if (elem.kind == TypeKind.INT or elem.kind == TypeKind.FLOAT
+    // The runtime's fill takes one i64: every integer up to 64 bits and a `Float`
+    // fit it, and the other floats do not (a `float` is not the bits of an i64).
+    if ((elem.kind == TypeKind.INT and typeIsWideScalar(elem) == false)
+            or (elem.kind == TypeKind.FLOAT and elem.name.equals("Float"))
             or elem.kind == TypeKind.BOOL or elem.kind == TypeKind.CHAR) {
         return "list_new_filled"
     }
@@ -346,7 +349,7 @@ private fn semaVecFilledCallee(module: ASTNode, expr: ASTNode, elem: TypeInfo) -
     }
     if (monoHasTemplate(module, "vecFilled", NodeKind.FUNCTION)) { return "vecFilled" }
     semaErrorAt(expr, "`Vec<".concat(typeDisplay(elem), ">.filled` needs `import std.vec`"))
-    diag_note("a scalar element needs no import; any other is copied per element by std.vec")
+    diag_note("an integer up to 64 bits, a `Float`, a Bool or a Char needs no import; any other is copied per element by std.vec")
     return ""
 }
 

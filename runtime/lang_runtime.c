@@ -173,7 +173,382 @@ void rt_arena_hint_pop(void) {
 // **Not compiled into a `--verify` build at all.** There the seam is still the
 // two ledger macros, so the ledger sees every allocation and release exactly as
 // it did before, and a recycled block cannot be mistaken for a live one.
-#ifndef PRISMIO_AIF_VERIFY
+// ---------------------------------------------------------------------------------
+// PROTOTYPE allocators (docs/ALLOCATOR_PLAN.md). Off unless the runtime is compiled
+// with -DPRISMIO_ALLOC_MODE=N; mode 0 is the recycler below, unchanged.
+//
+//   1  the recycler with its cap lifted (still malloc_size on every free, still
+//      single-threaded)                                          -- option (b), honest
+//   3  a size-header recycler: the size class is read from a word in front of the
+//      block, so no malloc_size. Breaks interchangeability on purpose; it is the
+//      ceiling of what a sized free could buy, not a proposal   -- option (b), ideal
+//   2  the address-range slab with per-thread caches             -- option (a)
+//
+// None of these is compiled into a --verify or freestanding build.
+// ---------------------------------------------------------------------------------
+#ifndef PRISMIO_ALLOC_MODE
+#define PRISMIO_ALLOC_MODE 0
+#endif
+// The slab needs mmap and pthreads; anywhere else mode 2 is the recycler below.
+#if PRISMIO_ALLOC_MODE == 2 && !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING) \
+    && (defined(__unix__) || defined(__APPLE__))
+#define PRISMIO_SLAB_ACTIVE 1
+#endif
+
+#if PRISMIO_ALLOC_MODE != 0 && !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING) \
+    && (defined(__unix__) || defined(__APPLE__))
+
+#if PRISMIO_ALLOC_MODE == 1 || PRISMIO_ALLOC_MODE == 3
+// ---- (b) --------------------------------------------------------------------------
+#if defined(__APPLE__)
+#include <malloc/malloc.h>
+#define RT_USABLE_SIZE(p) malloc_size(p)
+#else
+#include <malloc.h>
+#define RT_USABLE_SIZE(p) malloc_usable_size(p)
+#endif
+#define RT_RECYCLE_GRAIN    16
+#define RT_RECYCLE_BUCKETS  8
+static void* rt_recycle_head[RT_RECYCLE_BUCKETS];
+
+#if PRISMIO_ALLOC_MODE == 1
+PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
+    if (size <= (size_t)RT_RECYCLE_GRAIN * RT_RECYCLE_BUCKETS && !prismio_memory_threads_are_enabled()) {
+        size_t k = (size + RT_RECYCLE_GRAIN - 1) / RT_RECYCLE_GRAIN;
+        if (k == 0) k = 1;
+        void* reused = rt_recycle_head[k - 1];
+        if (reused) { rt_recycle_head[k - 1] = *(void**)reused; return reused; }
+        return malloc(k * RT_RECYCLE_GRAIN);
+    }
+    return malloc(size);
+}
+PRISMIO_NOINLINE void rt_free(void* p) {
+    if (!p) return;
+    if (!prismio_memory_threads_are_enabled()) {
+        size_t k = RT_USABLE_SIZE(p) / RT_RECYCLE_GRAIN;
+        if (k >= 1 && k <= RT_RECYCLE_BUCKETS) {
+            *(void**)p = rt_recycle_head[k - 1];
+            rt_recycle_head[k - 1] = p;
+            return;
+        }
+    }
+    free(p);
+}
+PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) { return realloc(p, size); }
+#else
+// Mode 3. Every block carries a 16-byte header: word 0 is its class (0 = not pooled).
+PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
+    if (size <= (size_t)RT_RECYCLE_GRAIN * RT_RECYCLE_BUCKETS && !prismio_memory_threads_are_enabled()) {
+        size_t k = (size + RT_RECYCLE_GRAIN - 1) / RT_RECYCLE_GRAIN;
+        if (k == 0) k = 1;
+        void* reused = rt_recycle_head[k - 1];
+        if (reused) { rt_recycle_head[k - 1] = *(void**)reused; return reused; }
+        unsigned char* m = (unsigned char*)malloc(16 + k * RT_RECYCLE_GRAIN);
+        if (!m) return NULL;
+        *(size_t*)m = k;
+        return m + 16;
+    }
+    unsigned char* m = (unsigned char*)malloc(16 + size);
+    if (!m) return NULL;
+    *(size_t*)m = 0;
+    return m + 16;
+}
+PRISMIO_NOINLINE void rt_free(void* p) {
+    if (!p) return;
+    unsigned char* m = (unsigned char*)p - 16;
+    size_t k = *(size_t*)m;
+    if (k && !prismio_memory_threads_are_enabled()) {
+        *(void**)p = rt_recycle_head[k - 1];
+        rt_recycle_head[k - 1] = p;
+        return;
+    }
+    free(m);
+}
+PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
+    if (!p) return rt_base_alloc(size);
+    unsigned char* m = (unsigned char*)p - 16;
+    size_t k = *(size_t*)m;
+    size_t have = k ? k * RT_RECYCLE_GRAIN : 0;
+    if (!k) {
+        unsigned char* r = (unsigned char*)realloc(m, 16 + size);
+        if (!r) return NULL;
+        return r + 16;
+    }
+    if (size <= have) return p;
+    void* n = rt_base_alloc(size);
+    memcpy(n, p, have);
+    rt_free(p);
+    return n;
+}
+#endif
+
+#else
+// ---- (a) --------------------------------------------------------------------------
+// Address-range slab. One 2 GiB virtual region per size class, reserved up front and
+// touched only as it is carved: a block's class is (address - base) >> 31, so freeing
+// is one range compare and a shift, no header and no malloc_size. Anything outside the
+// range -- a libc block, an arena pointer's neighbour, a size over 512 -- is handed to
+// libc free exactly as before.
+#include <sys/mman.h>
+#include <sched.h>
+
+#define SLAB_GRAIN         16
+#define SLAB_CLASSES       32                 /* 16 .. 512 bytes */
+#define SLAB_MAX           (SLAB_GRAIN * SLAB_CLASSES)
+#define SLAB_REGION_SHIFT  31
+// Each class region starts this many bytes later than the one before, so the first blocks
+// of different classes -- the hot ones, in a small program -- do not share their low address
+// bits. Without it `key_value_update` measured 7% slower than with malloc on identical code.
+#ifndef SLAB_STAGGER
+#define SLAB_STAGGER 1088
+#endif
+#define SLAB_BATCH         64
+#define SLAB_WINDOW_BYTES  8192
+#ifdef PRISMIO_SLAB_INLINE
+#define SLAB_ENTRY
+#else
+#define SLAB_ENTRY PRISMIO_NOINLINE
+#endif
+#define SLAB_HIGH          (2 * SLAB_BATCH)
+
+// `cur`..`end` is memory this cache has been given by the region but not yet cut into
+// blocks: untouched until the block is handed out, so a program that stops early never
+// pays to link, or to fault in, the tail.
+typedef struct { void* head; uint32_t count; uint32_t pad; unsigned char* cur; unsigned char* end; } SlabBin;
+typedef struct { SlabBin bin[SLAB_CLASSES]; } SlabCache;
+
+typedef struct {
+    int       lock;
+    void*     batches;      /* chains of SLAB_BATCH blocks: w0 next block, w1 next batch */
+    void*     loose;        /* a thread's leftovers, singly linked */
+    uint32_t  loose_n;
+    uintptr_t bump;
+    uintptr_t limit;
+} SlabGlobal;
+
+static uintptr_t slab_base;
+static uintptr_t slab_span;             /* 0 until the reservation holds: every pointer misses */
+static int       slab_state;            /* 0 unused, 1 ready, -1 refused */
+static SlabCache slab_main;             /* the process-local cache: the main thread's */
+static PRISMIO_THREAD_LOCAL SlabCache slab_tls;
+static PRISMIO_THREAD_LOCAL int slab_tls_used;
+static SlabGlobal slab_global[SLAB_CLASSES];
+#ifdef SLAB_SPANS
+// Span layout (the production shape): one region, carved in 64 KiB spans, each owned by one
+// class; a side table answers "which class" for a span instead of the address's high bits.
+// That is what lets a wholly free span be given to another class or returned to the OS.
+#define SLAB_SPAN_SHIFT 16
+static unsigned char slab_span_class[((size_t)SLAB_CLASSES << SLAB_REGION_SHIFT) >> SLAB_SPAN_SHIFT];
+static uintptr_t slab_span_next;
+static int slab_span_lock;
+#define SLAB_CLASS_OF(off) ((unsigned)slab_span_class[(off) >> SLAB_SPAN_SHIFT])
+#else
+#define SLAB_CLASS_OF(off) ((unsigned)((off) >> SLAB_REGION_SHIFT))
+#endif
+
+static inline void slab_lock(SlabGlobal* g) {
+    while (__atomic_exchange_n(&g->lock, 1, __ATOMIC_ACQUIRE)) sched_yield();
+}
+static inline void slab_unlock(SlabGlobal* g) { __atomic_store_n(&g->lock, 0, __ATOMIC_RELEASE); }
+
+static void slab_init(void) {
+    slab_state = -1;
+    const char* off = getenv("PRISMIO_SLAB");
+    if (off && off[0] == '0') return;
+    size_t span = (size_t)SLAB_CLASSES << SLAB_REGION_SHIFT;
+    // A preferred address, not a demand: a debugging shim can then recognise a slab
+    // block by range, and a hint the system declines costs nothing but that.
+    void* m = mmap((void*)(uintptr_t)0x600000000000ULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON
+#ifdef MAP_NORESERVE
+                   | MAP_NORESERVE
+#endif
+                   , -1, 0);
+    if (m == MAP_FAILED) return;
+    slab_base = (uintptr_t)m;
+#ifdef SLAB_SPANS
+    slab_span_next = slab_base;
+    for (int c = 0; c < SLAB_CLASSES; c++) slab_global[c].bump = slab_global[c].limit = 0;
+#else
+    for (int c = 0; c < SLAB_CLASSES; c++) {
+        slab_global[c].bump = slab_base + ((uintptr_t)c << SLAB_REGION_SHIFT) + (uintptr_t)(c * SLAB_STAGGER);
+        slab_global[c].limit = slab_global[c].bump + ((uintptr_t)1 << SLAB_REGION_SHIFT);
+    }
+#endif
+    slab_span = span;
+    slab_state = 1;
+}
+
+// Which cache this thread owns. The main thread keeps the process-local one, as it does
+// for the arena, so a program that never spawns never reads a thread-local.
+static inline SlabCache* slab_cache(void) {
+    if (__builtin_expect(prismio_memory_threads_are_enabled(), 0) && prismio_memory_worker)
+        return &slab_tls;
+    return &slab_main;
+}
+
+static void slab_thread_key_init(void);
+
+// Cache empty: a batch from the shared list, then a thread's leftovers, then fresh memory.
+static PRISMIO_NOINLINE void* slab_refill(SlabBin* bin, unsigned c) {
+    if (slab_state == 0) slab_init();
+    size_t sz = (size_t)(c + 1) * SLAB_GRAIN;
+    if (slab_state < 0) return malloc(sz);
+    if (slab_cache() == &slab_tls && !slab_tls_used) { slab_tls_used = 1; slab_thread_key_init(); }
+    if (bin->cur != bin->end) {
+        void* fresh = bin->cur;
+        bin->cur += sz;
+        return fresh;
+    }
+    SlabGlobal* g = &slab_global[c];
+    slab_lock(g);
+    void* chain = g->batches;
+    if (chain) {
+        g->batches = ((void**)chain)[1];
+        slab_unlock(g);
+        bin->head = *(void**)chain;
+        bin->count = SLAB_BATCH - 1;
+        return chain;
+    }
+    if (g->loose) {
+        void* first = g->loose;
+        void* last = first;
+        uint32_t n = 1;
+        while (n < SLAB_BATCH && *(void**)last) { last = *(void**)last; n++; }
+        g->loose = *(void**)last;
+        g->loose_n -= n;
+        slab_unlock(g);
+        *(void**)last = NULL;
+        bin->head = *(void**)first;
+        bin->count = n - 1;
+        return first;
+    }
+    uintptr_t start = g->bump;
+    size_t take = sz * (SLAB_WINDOW_BYTES / sz > 8 ? SLAB_WINDOW_BYTES / sz : 8);
+#ifdef SLAB_SPANS
+    if (start + take > g->limit) {
+        while (__atomic_exchange_n(&slab_span_lock, 1, __ATOMIC_ACQUIRE)) sched_yield();
+        uintptr_t fresh = slab_span_next;
+        int ok = fresh + ((uintptr_t)1 << SLAB_SPAN_SHIFT) <= slab_base + slab_span;
+        if (ok) { slab_span_next = fresh + ((uintptr_t)1 << SLAB_SPAN_SHIFT); slab_span_class[(fresh - slab_base) >> SLAB_SPAN_SHIFT] = (unsigned char)c; }
+        __atomic_store_n(&slab_span_lock, 0, __ATOMIC_RELEASE);
+        if (!ok) { slab_unlock(g); return malloc(sz); }
+        start = fresh + (uintptr_t)(c * SLAB_STAGGER) % 4096;
+        g->limit = fresh + ((uintptr_t)1 << SLAB_SPAN_SHIFT);
+    }
+#endif
+    if (start + take > g->limit) { slab_unlock(g); return malloc(sz); }
+    g->bump = start + take;
+    slab_unlock(g);
+    bin->cur = (unsigned char*)start + sz;
+    bin->end = (unsigned char*)start + take;
+    return (void*)start;
+}
+
+SLAB_ENTRY void* rt_base_alloc(size_t size) {
+    if (__builtin_expect(size - 1 < (size_t)SLAB_MAX, 1)) {
+        unsigned c = (unsigned)((size - 1) >> 4);
+        SlabBin* bin = &slab_cache()->bin[c];
+        void* b = bin->head;
+        if (__builtin_expect(b != NULL, 1)) {
+            bin->head = *(void**)b;
+            bin->count--;
+            return b;
+        }
+        return slab_refill(bin, c);
+    }
+    if (size == 0) {
+        SlabBin* bin = &slab_cache()->bin[0];
+        void* b = bin->head;
+        if (b) { bin->head = *(void**)b; bin->count--; return b; }
+        return slab_refill(bin, 0);
+    }
+    return malloc(size);
+}
+
+// A full cache returns its oldest batch to the shared list.
+static PRISMIO_NOINLINE void slab_spill(SlabBin* bin, unsigned c) {
+    void* first = bin->head;
+    void* last = first;
+    for (unsigned i = 1; i < SLAB_BATCH; i++) last = *(void**)last;
+    bin->head = *(void**)last;
+    bin->count -= SLAB_BATCH;
+    *(void**)last = NULL;
+    SlabGlobal* g = &slab_global[c];
+    slab_lock(g);
+    ((void**)first)[1] = g->batches;
+    g->batches = first;
+    slab_unlock(g);
+}
+
+SLAB_ENTRY void rt_free(void* p) {
+    if (!p) return;
+    uintptr_t off = (uintptr_t)p - slab_base;
+    if (__builtin_expect(off < slab_span, 1)) {
+        unsigned c = SLAB_CLASS_OF(off);
+        SlabBin* bin = &slab_cache()->bin[c];
+        *(void**)p = bin->head;
+        bin->head = p;
+        if (__builtin_expect(++bin->count >= SLAB_HIGH, 0)
+            && prismio_memory_threads_are_enabled())
+            slab_spill(bin, c);
+        return;
+    }
+    free(p);
+}
+
+PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
+    if (!p) return rt_base_alloc(size);
+    uintptr_t off = (uintptr_t)p - slab_base;
+    if (off < slab_span) {
+        size_t have = ((size_t)SLAB_CLASS_OF(off) + 1) * SLAB_GRAIN;
+        if (size <= have) return p;
+        void* n = rt_base_alloc(size);
+        if (!n) return NULL;
+        memcpy(n, p, have);
+        rt_free(p);
+        return n;
+    }
+    return realloc(p, size);
+}
+
+// A worker thread's leftover blocks go back to the shared list when it exits; the
+// pthread key's destructor is the backstop for a thread that never reaches cleanup.
+static void slab_flush_tls(void) {
+    for (unsigned c = 0; c < SLAB_CLASSES; c++) {
+        SlabBin* bin = &slab_tls.bin[c];
+        SlabGlobal* g = &slab_global[c];
+        for (; bin->cur != bin->end; bin->cur += (size_t)(c + 1) * SLAB_GRAIN) {
+            slab_lock(g);
+            *(void**)bin->cur = g->loose;
+            g->loose = bin->cur;
+            g->loose_n++;
+            slab_unlock(g);
+        }
+        while (bin->head) {
+            void* b = bin->head;
+            bin->head = *(void**)b;
+            slab_lock(g);
+            *(void**)b = g->loose;
+            g->loose = b;
+            g->loose_n++;
+            slab_unlock(g);
+        }
+        bin->count = 0;
+    }
+}
+#include <pthread.h>
+static pthread_key_t slab_key;
+static pthread_once_t slab_key_once = PTHREAD_ONCE_INIT;
+static void slab_key_destroy(void* unused) { (void)unused; slab_flush_tls(); }
+static void slab_key_make(void) { pthread_key_create(&slab_key, slab_key_destroy); }
+static void slab_thread_key_init(void) {
+    pthread_once(&slab_key_once, slab_key_make);
+    pthread_setspecific(slab_key, (void*)1);
+}
+void prismio_slab_thread_flush(void) { slab_flush_tls(); }
+#endif  /* mode 2 */
+
+#elif !defined(PRISMIO_AIF_VERIFY)
 
 #if defined(_WIN32)
 #include <malloc.h>
@@ -1383,8 +1758,14 @@ long arena_regions(void) { return arena_state()->regions_entered; }
 // calls this after the spawned function returns. It also makes an unbalanced
 // region fail in the safe direction -- reclaim its thread's memory rather than
 // leaving it live or exposing it to the next task.
+#ifdef PRISMIO_SLAB_ACTIVE
+void prismio_slab_thread_flush(void);
+#endif
 void prismio_memory_thread_cleanup(void) {
     ArenaState* state = arena_state();
+#ifdef PRISMIO_SLAB_ACTIVE
+    prismio_slab_thread_flush();
+#endif
     while (state->depth > 0) arena_pop();
     while (state->pool) {
         ArenaChunk* next = state->pool->next;
@@ -2292,10 +2673,47 @@ typedef struct {
     void** grave;
     int grave_len;
     int grave_cap;
+    // 1 when `data` points into the same allocation as this header, which
+    // list_new_cap makes for a small heap list of known capacity: the header and the
+    // first element block are one malloc instead of two, which is one fewer block to
+    // allocate, free and miss the cache on for every `Vec` a program builds in a loop.
+    // The first growth moves the elements to a block of their own and clears it, so
+    // nothing but the owner of that moment may free or resize `data` while it is set.
+    // Appended after `grave_cap`, past the prefix codegen reads.
+    int fused;
 } RtList;
+
+// The room a fused list's elements start at: the header rounded up so any element
+// type is aligned, and so the pool's 16-byte grain sees one block, not two.
+#define RT_LIST_FUSED_HDR ((sizeof(RtList) + 15) & ~(size_t)15)
+// A bigger first block is not worth tying to its header: growing it copies the lot
+// to a block of its own.
+#define RT_LIST_FUSED_MAX 256
+
+// Frees `l`'s element block unless it is the header's own or an arena's.
+static void list_free_data(RtList* l) {
+    if (l->data && !l->arena && !l->fused) rt_free(l->data);
+}
 
 
 static void* list_new_cap(int cap, int elem_size) {
+    size_t first = cap > 0 ? (size_t)cap * (elem_size > 0 ? (size_t)elem_size : sizeof(void*)) : 0;
+    if (first > 0 && first <= RT_LIST_FUSED_MAX && rt_arena_slot() == 0
+            && *rt_arena_hint_state() <= 0) {
+        RtList* f = (RtList*)rt_base_alloc(RT_LIST_FUSED_HDR + first);
+        f->len = 0;
+        f->cap = cap;
+        f->elem_own = AIF_ELEM_NONE;
+        f->elem_release = 0;
+        f->arena = 0;
+        f->elem_size = elem_size;
+        f->grave = NULL;
+        f->grave_len = 0;
+        f->grave_cap = 0;
+        f->fused = 1;
+        f->data = (void**)((unsigned char*)f + RT_LIST_FUSED_HDR);
+        return f;
+    }
     RtList* l = (RtList*)rt_alloc(sizeof(RtList));
     l->len = 0;
     l->cap = cap;
@@ -2306,6 +2724,7 @@ static void* list_new_cap(int cap, int elem_size) {
     l->grave = NULL;
     l->grave_len = 0;
     l->grave_cap = 0;
+    l->fused = 0;
     size_t stride = elem_size > 0 ? (size_t)elem_size : sizeof(void*);
     size_t bytes = cap > 0 ? (size_t)cap * stride : 0;
     l->data = bytes > 0 ? (void**)rt_alloc(bytes) : NULL;
@@ -2510,7 +2929,8 @@ void list_set_elem_inline(void* lp, int elem_size) {
     // is the whole saving.
     if (!l->data) return;
     if (l->cap > 0 && elem_size == (int)sizeof(void*)) return;
-    if (!l->arena) rt_free(l->data);
+    list_free_data(l);
+    l->fused = 0;
     size_t bytes = (size_t)l->cap * (size_t)elem_size;
     l->data = (void**)(l->arena ? arena_alloc_at(l->arena, bytes) : rt_alloc(bytes));
 }
@@ -2551,7 +2971,7 @@ PRISMIO_NOINLINE void list_inline_grow(void* lp) {
     RtList* l = (RtList*)lp;
     int nc = l->cap ? l->cap * 2 : 4;
     size_t bytes = (size_t)nc * (size_t)l->elem_size;
-    if (list_grows_by_realloc(l)) {
+    if (list_grows_by_realloc(l) && !l->fused) {
         l->data = (void**)rt_base_realloc(l->data, bytes);
         l->cap = nc;
         return;
@@ -2559,7 +2979,8 @@ PRISMIO_NOINLINE void list_inline_grow(void* lp) {
     unsigned char* nd = l->arena ? (unsigned char*)arena_alloc_at(l->arena, bytes)
                                  : (unsigned char*)rt_alloc(bytes);
     if (l->data) list_copy_elem(nd, l->data, (size_t)l->len * (size_t)l->elem_size);
-    if (l->data && !l->arena) rt_free(l->data);
+    list_free_data(l);
+    l->fused = 0;
     l->data = (void**)nd;
     l->cap = nc;
 }
@@ -3097,7 +3518,8 @@ void list_reserve(void* lp, int n) {
     unsigned char* nd = l->arena ? (unsigned char*)arena_alloc_at(l->arena, bytes)
                                  : (unsigned char*)rt_alloc(bytes);
     if (l->data) memcpy(nd, l->data, (size_t)l->len * stride);
-    if (l->data && !l->arena) rt_free(l->data);
+    list_free_data(l);
+    l->fused = 0;
     l->data = (void**)nd;
     l->cap = n;
 }
@@ -3286,7 +3708,7 @@ void* prismio_expect(void* p) {
 PRISMIO_NOINLINE void list_push_grow(void* lp) {
     RtList* l = (RtList*)lp;
     int nc = l->cap ? l->cap * 2 : 4;
-    if (list_grows_by_realloc(l)) {
+    if (list_grows_by_realloc(l) && !l->fused) {
         l->data = (void**)rt_base_realloc(l->data, sizeof(void*) * (size_t)nc);
         l->cap = nc;
         return;
@@ -3298,7 +3720,8 @@ PRISMIO_NOINLINE void list_push_grow(void* lp) {
     void** nd = l->arena ? (void**)arena_alloc_at(l->arena, sizeof(void*) * (size_t)nc)
                          : (void**)rt_alloc(sizeof(void*) * (size_t)nc);
     for (int i = 0; i < l->len; i++) nd[i] = l->data[i];
-    if (l->data && !l->arena) rt_free(l->data);
+    list_free_data(l);
+    l->fused = 0;
     l->data = nd;
     l->cap = nc;
 }
@@ -3360,7 +3783,7 @@ void list_release(void* lp) {
             }
         }
         list_release_parked(l);
-        if (l->data) rt_free(l->data);
+        list_free_data(l);
         rt_free(l);
         return;
     }
@@ -3371,7 +3794,7 @@ void list_release(void* lp) {
         }
     }
     list_release_parked(l);
-    if (l->data) rt_free(l->data);
+    list_free_data(l);
     rt_free(l);
 }
 

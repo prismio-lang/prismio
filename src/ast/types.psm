@@ -1,4 +1,6 @@
 import ast.nodes
+import ast.int_width
+import ast.float_width
 import ir.bridge
 import common.text
 import common.target
@@ -96,6 +98,19 @@ public fn typeInvalid() -> TypeInfo { return typeMake(TypeKind.INVALID, "Invalid
 public fn typeVoid() -> TypeInfo { return typeMake(TypeKind.VOID, "Void", "void") }
 public fn typeInt() -> TypeInfo { return typeMake(TypeKind.INT, "Int", "i32") }
 public fn typeFloat() -> TypeInfo { return typeMake(TypeKind.FLOAT, "Float", "double") }
+// `F16`, `F32`, `F64`, `F128`, `BF16` (ast/float_width.psm). `F64` is `Float`, so a
+// name that is not one of the five answers Invalid, as typeIntFromName does.
+public fn typeFloatFromName(name: String) -> TypeInfo {
+    let key = floatKeyOfName(name)
+    if (key.equals("")) { return typeInvalid() }
+    return typeMake(TypeKind.FLOAT, floatNameOfKey(key), key)
+}
+
+public fn typeFloatFromKey(key: String) -> TypeInfo {
+    if (floatKeyValid(key) == false) { return typeInvalid() }
+    return typeMake(TypeKind.FLOAT, floatNameOfKey(key), key)
+}
+
 public fn typeBool() -> TypeInfo { return typeMake(TypeKind.BOOL, "Bool", "i1") }
 public fn typeChar() -> TypeInfo { return typeMake(TypeKind.CHAR, "Char", "i8") }
 public fn typeString() -> TypeInfo { return typeMake(TypeKind.STRING, "String", "ptr") }
@@ -119,6 +134,32 @@ public fn typeU32() -> TypeInfo { return typeMake(TypeKind.INT, "U32", "i32") }
 public fn typeU64() -> TypeInfo { return typeMake(TypeKind.INT, "U64", "i64") }
 public fn typeUsize() -> TypeInfo { return typeMake(TypeKind.INT, "Usize", targetPtrIntType(targetCurrent())) }
 
+// `Int<N>` and `UInt<N>`. A width with a named spelling is that type exactly
+// (ast/int_width.psm), so `Int<16>` and `I16` share a name, a key and every
+// overload; the rest are `Int$24` / `UInt$24` over LLVM's `i24`.
+public fn typeIntN(bits: Int, unsigned: Bool) -> TypeInfo {
+    return typeMake(TypeKind.INT, intWidthName(bits, unsigned), "i".concat(bits.toString()))
+}
+
+// The integer type a name spells, or Invalid when it spells none: the named
+// widths, and `Int$N` / `UInt$N`. One answer for the annotation, sem-key and
+// IR-name tables, which used to each carry their own list.
+public fn typeIntFromName(name: String) -> TypeInfo {
+    if (name.equals("Int")) { return typeInt() }
+    if (name.equals("I8")) { return typeI8() }
+    if (name.equals("I16")) { return typeI16() }
+    if (name.equals("I64")) { return typeI64() }
+    if (name.equals("Isize")) { return typeIsize() }
+    if (name.equals("U8")) { return typeU8() }
+    if (name.equals("U16")) { return typeU16() }
+    if (name.equals("U32")) { return typeU32() }
+    if (name.equals("U64")) { return typeU64() }
+    if (name.equals("Usize")) { return typeUsize() }
+    let bits = intWidthOfName(name)
+    if (intWidthValid(bits)) { return typeIntN(bits, name.startsWith("U")) }
+    return typeInvalid()
+}
+
 // Bit width of an integer type, from its LLVM spelling. Casting needs it to
 // choose between truncation and extension.
 public fn typeIntBits(t: TypeInfo) -> Int {
@@ -127,6 +168,11 @@ public fn typeIntBits(t: TypeInfo) -> Int {
     if (t.llvm.equals("i16")) { return 16 }
     if (t.llvm.equals("i32")) { return 32 }
     if (t.llvm.equals("i64")) { return 64 }
+    // `Int<24>`: the digits after the `i`.
+    if (t.kind == TypeKind.INT and t.llvm.startsWith("i")) {
+        let parsed = t.llvm.substring(1, t.llvm.length - 1).parseInt()
+        if (parsed != none) { return expect(parsed) }
+    }
     return 0
 }
 
@@ -156,12 +202,15 @@ private fn typeTwoToThe(k: Int) -> U64 {
 // further down than up, so `-2147483648` fits `Int` and `2147483648` does not.
 public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
     let bits = typeIntBits(t)
-    if (bits == 0 or bits > 64) { return true }
-    if (bits == 1) { return true }
+    if (bits == 0) { return true }
+    // A bare `i1` is the Bool a comparison produces; only a *written* one-bit
+    // integer, `Int<1>` / `UInt<1>`, has a range to check.
+    if (bits == 1 and t.name.contains("$") == false) { return true }
 
     let negative = text.startsWith("-")
     let unsigned = typeIntIsUnsigned(t)
     if (negative and unsigned) { return false }
+    if (bits > 64) { return typeIntLiteralFitsWide(text, bits, unsigned, negative) }
 
     let mut at = 0
     if (negative or text.startsWith("+")) { at = 1 }
@@ -176,6 +225,23 @@ public fn typeIntLiteralFits(text: String, t: TypeInfo) -> Bool {
     }
     if (negative) { return magnitude <= typeTwoToThe(bits - 1) }
     return magnitude < typeTwoToThe(bits - 1)
+}
+
+// A literal for a type wider than any machine integer the compiler parses into.
+// Same prefixes as typeIntLiteralMagnitude, handed to ast/int_width.psm as digits.
+private fn typeIntLiteralFitsWide(text: String, bits: Int, unsigned: Bool, negative: Bool) -> Bool {
+    let mut start = 0
+    if (negative or text.startsWith("+")) { start = 1 }
+    let mut radix = 10
+    if (text.byteAt(start) == 48 and text.length > start + 1) {
+        let marker = text.byteAt(start + 1)
+        if (marker == 120 or marker == 88) { radix = 16 }
+        if (marker == 111 or marker == 79) { radix = 8 }
+        if (marker == 98 or marker == 66) { radix = 2 }
+        if (radix != 10) { start = start + 2 }
+    }
+    let digits = text.substring(start, text.length - start)
+    return intLiteralFitsWide(digits, radix, bits, unsigned, negative)
 }
 
 // The digits from `at` on, as a magnitude. `0xFF`, `0o755`, `0b1010`: the
@@ -221,12 +287,19 @@ public fn typeIntLiteralValue(text: String) -> I64 {
     return magnitude as I64
 }
 
-// Whether any 64-bit integer type could hold this literal: `I64` when it is
-// negative, `U64` otherwise. The question `semaExpr` can answer about a literal
-// before anything has told it what type it is.
+// Whether any integer type could hold this literal. The question `semaExpr` can
+// answer about a literal before anything has told it what type it is.
+//
+// A 64-bit type holds nearly every literal, so that is asked first and cheaply. One
+// that does not fit `I64` / `U64` is not rejected: `Int<128>` holds it, and which
+// type a literal has is for the context to say -- semaCheckLiteralRange reports it
+// against the type it ends up with. It is rejected here only when not even the
+// widest `Int<N>` could hold it.
 public fn typeIntLiteralFitsAnyInt(text: String) -> Bool {
-    if (text.startsWith("-")) { return typeIntLiteralFits(text, typeI64()) }
-    return typeIntLiteralFits(text, typeU64())
+    let negative = text.startsWith("-")
+    if (negative and typeIntLiteralFits(text, typeI64())) { return true }
+    if (negative == false and typeIntLiteralFits(text, typeU64())) { return true }
+    return typeIntLiteralFitsWide(text, intWidthMax(), negative == false, negative)
 }
 
 public fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
@@ -690,6 +763,9 @@ public fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
         TypeKind.INT => {
             return a.name.equals(b.name)
         }
+        TypeKind.FLOAT => {
+            return a.name.equals(b.name)
+        }
         TypeKind.ARRAY => {
             if (nodeIsNull(a.child) or nodeIsNull(b.child)) {
                 // Element types agree only when *both* are absent. Compared as
@@ -760,6 +836,16 @@ public fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
     return true
 }
 
+// A number wider than the 64 bits a container slot or an inline row carries:
+// `Int<128>`, `UInt<65>`, `F128`. Fine as a local, a parameter, a return, a field and
+// an array element; a `Vec` of them would need rows wider than any it has.
+public fn typeIsWideScalar(t: TypeInfo) -> Bool {
+    if (typeIsValueOptional(t)) { return typeIsWideScalar(ptr_to_type(t.child)) }
+    if (t.kind == TypeKind.INT) { return typeIntBits(t) > 64 }
+    if (t.kind == TypeKind.FLOAT) { return floatBitsOfKey(t.llvm) > 64 }
+    return false
+}
+
 public fn typeIsNumeric(t: TypeInfo) -> Bool {
     return t.kind == TypeKind.INT or t.kind == TypeKind.FLOAT
 }
@@ -768,7 +854,7 @@ public fn typeIrKey(t: TypeInfo) -> String {
     match (t.kind) {
         TypeKind.VOID => { return "void" }
         TypeKind.INT => { return t.llvm }
-        TypeKind.FLOAT => { return "double" }
+        TypeKind.FLOAT => { return t.llvm }
         TypeKind.BOOL => { return "i1" }
         TypeKind.CHAR => { return "i8" }
     // The fat String. Kept in step with `mapType` in src/ir/types.psm, which is
@@ -806,7 +892,7 @@ public fn typeSemKey(t: TypeInfo) -> String {
     match (t.kind) {
         TypeKind.VOID => { return "Void" }
         TypeKind.INT => { return t.name }
-        TypeKind.FLOAT => { return "Float" }
+        TypeKind.FLOAT => { return t.name }
         TypeKind.BOOL => { return "Bool" }
         TypeKind.CHAR => { return "Char" }
         TypeKind.STRING => { return "String" }
@@ -951,6 +1037,8 @@ private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
 
     if (tn.s1.equals("Int")) { return typeInt() }
     if (tn.s1.equals("Float")) { return typeFloat() }
+    let floating = typeFloatFromName(tn.s1)
+    if (typeIsValid(floating)) { return floating }
     if (tn.s1.equals("Bool")) { return typeBool() }
     if (tn.s1.equals("String")) { return typeString() }
     // An opaque, copyable machine pointer. `typeFromSemKey` has resolved this
@@ -967,22 +1055,15 @@ private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     // String needs.
     if (tn.s1.equals("Ptr")) { return typePtr() }
     if (tn.s1.equals("Char")) { return typeChar() }
-    if (tn.s1.equals("I8")) { return typeI8() }
-    if (tn.s1.equals("I16")) { return typeI16() }
-    if (tn.s1.equals("I64")) { return typeI64() }
-    if (tn.s1.equals("Isize")) { return typeIsize() }
-    if (tn.s1.equals("U8")) { return typeU8() }
-    if (tn.s1.equals("U16")) { return typeU16() }
-    if (tn.s1.equals("U32")) { return typeU32() }
-    if (tn.s1.equals("U64")) { return typeU64() }
-    if (tn.s1.equals("Usize")) { return typeUsize() }
+    let sized = typeIntFromName(tn.s1)
+    if (typeIsValid(sized)) { return sized }
     if (tn.s1.equals("")) { return typeVoid() }
     return typeStruct(tn.s1)
 }
 
 private fn typeFromIrKey(key: String) -> TypeInfo {
     if (key.equals("i32")) { return typeInt() }
-    if (key.equals("double")) { return typeFloat() }
+    if (floatKeyValid(key)) { return typeFloatFromKey(key) }
     if (key.equals("i1")) { return typeBool() }
     if (key.equals("i8")) { return typeChar() }
     if (key.equals("ptr")) { return typePtr() }
@@ -1000,20 +1081,15 @@ private fn typeFromIrKey(key: String) -> TypeInfo {
 public fn typeFromSemKey(key: String) -> TypeInfo {
     if (key.equals("Int")) { return typeInt() }
     if (key.equals("Float")) { return typeFloat() }
+    let floating = typeFloatFromName(key)
+    if (typeIsValid(floating)) { return floating }
     if (key.equals("Bool")) { return typeBool() }
     if (key.equals("Char")) { return typeChar() }
     if (key.equals("String")) { return typeString() }
     if (key.equals("Ptr")) { return typePtr() }
     if (key.equals("Void")) { return typeVoid() }
-    if (key.equals("I8")) { return typeI8() }
-    if (key.equals("I16")) { return typeI16() }
-    if (key.equals("I64")) { return typeI64() }
-    if (key.equals("Isize")) { return typeIsize() }
-    if (key.equals("U8")) { return typeU8() }
-    if (key.equals("U16")) { return typeU16() }
-    if (key.equals("U32")) { return typeU32() }
-    if (key.equals("U64")) { return typeU64() }
-    if (key.equals("Usize")) { return typeUsize() }
+    let sized = typeIntFromName(key)
+    if (typeIsValid(sized)) { return sized }
     if (key.startsWith("struct:")) {
         return typeStruct(key.substring(7, key.length - 7))
     }

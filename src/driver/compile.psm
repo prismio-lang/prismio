@@ -5,10 +5,6 @@
 // half stopped early. They are here rather than in the CLI because what they
 // share is a pipeline, not an argument vector.
 
-import std.io
-import lexer.scanner
-import lexer.token
-import lexer.identifier_security
 import common.text
 import ast.nodes
 import parse.*
@@ -17,12 +13,10 @@ import sema.*
 import common.diagnostics
 import ast.dump
 import aif.*
-import std.string
-import std.option
-import driver.imports
-import driver.workload
-import driver.prune
-import std.fs
+
+from std import { fs, io, string, option }
+from lexer import { scanner, token, identifier_security }
+from driver import { imports, workload, prune }
 
 public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
 public extern fn compiler_installed_runtime_hash() -> String produce(free)
@@ -347,8 +341,9 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
         diag_set_file_module(rootFile, emissionMod)
     }
     diag_progress("parsing")
-    let lex = Lexer.create(content, rootFile)
-    let headToken = lex.allTokens()
+
+    let lexer = Lexer.create(content, rootFile)
+    let headToken = lexer.allTokens()
     let p = parserCreate(headToken)
     let astRoot = parseModule(p)
 

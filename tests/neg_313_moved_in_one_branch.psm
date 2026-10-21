@@ -1,0 +1,16 @@
+// expect-error: use of moved value
+// A move in one arm still reaches the code after the `if` when that arm falls
+// through, so using the value there is rejected. Exclusive branches make the other
+// arm see the value whole; they do not make the join forget the move.
+import std.vec
+
+struct Node {
+    value: Int
+}
+
+fn main() -> Int {
+    let mut ring: Vec<Node> = Vec<Node>.withCapacity(2)
+    let n = Node { value: 1 }
+    if (ring.length < 2) { ring.push(n) } else { ring[0] = Node { value: 2 } }
+    return n.value
+}

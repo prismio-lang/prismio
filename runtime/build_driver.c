@@ -34,6 +34,10 @@ void diag_progress_clear(void);
 #include <sys/wait.h>
 #endif
 
+// Every libc `free`/`realloc` in this file is spelled `tmp_free`/`tmp_realloc` (prismio_runtime.h),
+// because a block from the allocator seam must reach `rt_free` instead. See docs/ALLOCATOR_PLAN.md.
+#pragma GCC poison free realloc
+
 // Generated code stores the process arguments here before it enters Prismio
 // `main`. Forwarding uses the original vector directly, so quoting cannot change
 // an argument and the hosted command keeps the caller's exact CLI contract.
@@ -117,7 +121,7 @@ char* compiler_default_exe_path(const char* source_path) {
     char* result = (char*)malloc(strlen(stem) + 1);
     sprintf(result, "%s", stem);
 #endif
-    free(stem);
+    tmp_free(stem);
     return result;
 }
 
@@ -143,7 +147,7 @@ static char* compiler_temp_path(const char* base_path, const char* suffix) {
         sprintf(result, ".prismio-%.*s-%s", stem_len, filename, suffix);
     }
 
-    free(directory);
+    rt_free(directory);
     return result;
 }
 
@@ -202,8 +206,8 @@ int compiler_publish_file(const char* from, const char* to) {
         result = 1;
     }
 
-    free(tmp);
-    free(text);
+    tmp_free(tmp);
+    rt_free(text);
     return result;
 }
 
@@ -246,14 +250,14 @@ static int ensure_directory_exists(const char* directory) {
     }
 
     PRISMIO_MKDIR(path);
-    free(path);
+    tmp_free(path);
     return 0;
 }
 
 int compiler_prepare_output_path(const char* output_path) {
     char* directory = get_directory(output_path);
     int result = ensure_directory_exists(directory);
-    free(directory);
+    rt_free(directory);
     return result;
 }
 
@@ -301,18 +305,18 @@ static int find_toolchain_entry(char* out, int out_size, const char* subdir,
                  compiler_dir, PRISMIO_PATH_SEP, PRISMIO_PATH_SEP, subdir,
                  PRISMIO_PATH_SEP, filename);
         if (accept_if_exists(out, out_size, candidate)) {
-            free(compiler_dir);
+            rt_free(compiler_dir);
             return 1;
         }
 
         snprintf(candidate, sizeof(candidate), "%s%c%s%c%s",
                  compiler_dir, PRISMIO_PATH_SEP, subdir, PRISMIO_PATH_SEP, filename);
         if (accept_if_exists(out, out_size, candidate)) {
-            free(compiler_dir);
+            rt_free(compiler_dir);
             return 1;
         }
 
-        free(compiler_dir);
+        rt_free(compiler_dir);
     }
 
     static const char* prefixes[] = { "", "..", "../..", NULL };
@@ -421,7 +425,7 @@ static int find_llvm_paths_ex(char* include_out, int include_size, char* lib_out
                  PRISMIO_PATH_SEP, PRISMIO_PATH_SEP);
         if (file_exists(candidate)) text = read_file(candidate);
     }
-    if (compiler_dir) free(compiler_dir);
+    if (compiler_dir) rt_free(compiler_dir);
 
     static const char* prefixes[] = {
         "third_party/llvm-paths.json", "third_party\\llvm-paths.json",
@@ -446,7 +450,7 @@ static int find_llvm_paths_ex(char* include_out, int include_size, char* lib_out
         && !json_string_field(text, "link_rsp", rsp_out, rsp_size)) {
         rsp_out[0] = '\0';
     }
-    free(text);
+    rt_free(text);
     return ok;
 }
 
@@ -494,7 +498,7 @@ static const char* native_clang_command(void) {
     snprintf(candidate, sizeof(candidate), "%s%cbin%cclang",
              root, PRISMIO_PATH_SEP, PRISMIO_PATH_SEP);
 #endif
-    free(root);
+    rt_free(root);
     if (!file_exists(candidate)) return command;
 
     char* quoted = command_quote_arg(candidate);
@@ -502,7 +506,7 @@ static const char* native_clang_command(void) {
         snprintf(command, sizeof(command), "%s", quoted);
         snprintf(g_clang_binary, sizeof(g_clang_binary), "%s", candidate);
     }
-    free(quoted);
+    rt_free(quoted);
     return command;
 }
 
@@ -541,12 +545,12 @@ static int find_in_lib_dir(char* out, int out_size, const char* filename) {
                  compiler_dir, PRISMIO_PATH_SEP, relative_dirs[d],
                  PRISMIO_PATH_SEP, PRISMIO_PATH_SEP, filename);
         if (accept_if_exists(out, out_size, candidate)) {
-            free(compiler_dir);
+            rt_free(compiler_dir);
             return 1;
         }
     }
 
-    free(compiler_dir);
+    rt_free(compiler_dir);
     return 0;
 }
 
@@ -726,21 +730,21 @@ char* compiler_plib_interface(const char* path, const char* expected_module) {
     }
     fclose(file);
     if (failed) {
-        free(sections);
+        tmp_free(sections);
         interface[0] = '\0';
         return interface;
     }
 
     for (int i = 0; i < prismio_plib_count; i++) {
         if (strcmp(prismio_plibs[i].module, module) == 0) {
-            free(sections);
+            tmp_free(sections);
             return interface;
         }
     }
     if (prismio_plib_count >= PRISMIO_PLIB_MAX) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
                  "more than %d compiled modules were imported", PRISMIO_PLIB_MAX);
-        free(sections);
+        tmp_free(sections);
         interface[0] = '\0';
         return interface;
     }
@@ -857,7 +861,7 @@ char* compiler_runtime_source_hash(void) {
         // Fold the file name in too, so moving code between files is detected.
         hash = fnv1a_bytes(hash, (const unsigned char*)prismio_toolchain_files[i].name);
         hash = fnv1a_bytes(hash, (const unsigned char*)text);
-        free(text);
+        rt_free(text);
         hashed++;
     }
 
@@ -922,20 +926,20 @@ static int run_quiet_build_command(const char* command, const char* log_path) {
     size_t len = strlen(command) + strlen(q_log) + 16;
     char* redirected = (char*)malloc(len);
     if (!redirected) {
-        free(q_log);
+        rt_free(q_log);
         return run_build_command(command);
     }
     snprintf(redirected, len, "%s > %s 2>&1", command, q_log);
     int failed = run_build_command(redirected);
-    free(redirected);
-    free(q_log);
+    tmp_free(redirected);
+    rt_free(q_log);
 
     if (failed) {
         char* text = read_file(log_path);
         if (text) {
             diag_progress_clear();
             fputs(text, stderr);
-            free(text);
+            rt_free(text);
         }
     }
     delete_file(log_path);
@@ -1067,7 +1071,7 @@ static char* target_clang_flags(void) {
              triple[0] ? "--target=" : "", triple, triple[0] ? " " : "",
              has_sysroot ? "-isysroot " : "", q_sysroot ? q_sysroot : "",
              has_sysroot ? " " : "");
-    if (q_sysroot) free(q_sysroot);
+    if (q_sysroot) rt_free(q_sysroot);
     return out;
 }
 
@@ -1149,8 +1153,8 @@ static const char* g_link_extra = "";
 static int g_link_partitions = 0;
 
 static void free_string_list(char*** items, int* count, int* cap) {
-    for (int i = 0; i < *count; i++) free((*items)[i]);
-    free(*items);
+    for (int i = 0; i < *count; i++) tmp_free((*items)[i]);
+    tmp_free(*items);
     *items = NULL;
     *count = 0;
     *cap = 0;
@@ -1159,7 +1163,7 @@ static void free_string_list(char*** items, int* count, int* cap) {
 static int push_string(char*** items, int* count, int* cap, const char* value) {
     if (*count == *cap) {
         int grown = *cap ? *cap * 2 : 8;
-        char** bigger = (char**)realloc(*items, (size_t)grown * sizeof(char*));
+        char** bigger = (char**)tmp_realloc(*items, (size_t)grown * sizeof(char*));
         if (!bigger) return 1;
         *items = bigger;
         *cap = grown;
@@ -1173,15 +1177,15 @@ static int push_string(char*** items, int* count, int* cap, const char* value) {
 }
 
 void compiler_link_reset(void) {
-    free(g_native_link_args);
+    tmp_free(g_native_link_args);
     g_native_link_args = NULL;
-    free(g_native_link_args_msvc);
+    tmp_free(g_native_link_args_msvc);
     g_native_link_args_msvc = NULL;
     g_native_link_has_framework = 0;
     g_native_link_needs_driver = 0;
     g_native_link_has_code = 0;
     free_string_list(&g_native_sources, &g_native_source_count, &g_native_source_cap);
-    free(g_native_flags);
+    tmp_free(g_native_flags);
     g_native_flags = NULL;
     free_string_list(&g_native_flag_files, &g_native_flag_file_count, &g_native_flag_file_cap);
     g_installed_runtime = 1;
@@ -1195,15 +1199,15 @@ static int append_quoted_argument(char** args, const char* argument) {
 
     size_t old_len = *args ? strlen(*args) : 0;
     size_t quoted_len = strlen(quoted);
-    char* grown = (char*)realloc(*args, old_len + quoted_len + 2);
+    char* grown = (char*)tmp_realloc(*args, old_len + quoted_len + 2);
     if (!grown) {
-        free(quoted);
+        rt_free(quoted);
         return 1;
     }
     *args = grown;
     grown[old_len] = ' ';
     memcpy(grown + old_len + 1, quoted, quoted_len + 1);
-    free(quoted);
+    rt_free(quoted);
     return 0;
 }
 
@@ -1214,7 +1218,7 @@ static int append_joined_argument(char** args, const char* prefix, const char* v
     if (!argument) return 1;
     snprintf(argument, len, "%s%s%s", prefix, value ? value : "", suffix);
     int result = append_quoted_argument(args, argument);
-    free(argument);
+    tmp_free(argument);
     return result;
 }
 
@@ -1477,7 +1481,7 @@ static char* g_curated_raw_ir = NULL;
 static void discard_curated_raw_ir(void) {
     if (!g_curated_raw_ir) return;
     delete_file(g_curated_raw_ir);
-    free(g_curated_raw_ir);
+    tmp_free(g_curated_raw_ir);
     g_curated_raw_ir = NULL;
 }
 
@@ -1512,16 +1516,16 @@ static char* build_curated_module(const char* target_flags) {
     for (int i = 0; i < PRISMIO_CURATED_OP_COUNT; i++) {
         hash = fnv1a_bytes(hash, (const unsigned char*)PRISMIO_CURATED_OPS[i]);
     }
-    free(text);
+    rt_free(text);
 
     char* dir = object_cache_dir();
     if (!dir) return NULL;
-    if (ensure_directory_exists(dir) != 0) { free(dir); return NULL; }
+    if (ensure_directory_exists(dir) != 0) { rt_free(dir); return NULL; }
 
     char name[128];
     snprintf(name, sizeof(name), "curated-%016llx.ll", hash);
     char* entry = join_path(dir, name);
-    free(dir);
+    rt_free(dir);
     if (!entry) return NULL;
 
     // PRISMIO_OBJ_CACHE=0 has to reach this cache too, and for the same reason
@@ -1583,7 +1587,7 @@ static char* build_curated_module(const char* target_flags) {
             build_trace_stage("curated: runtime IR", t0);
         }
 
-        free(command);
+        tmp_free(command);
     }
 
     // 2. the curated ops out of it, in process. Everything else is reduced to a
@@ -1603,36 +1607,36 @@ static char* build_curated_module(const char* target_flags) {
     // A bypassed cache builds to the temporary and uses it in place; installing
     // it would repopulate the very entry the caller asked to skip.
     if (!failed && bypass) {
-        free(q_src); free(q_tmp); free(q_raw);
+        tmp_free(q_src); tmp_free(q_tmp); tmp_free(q_raw);
         g_curated_raw_ir = tmp_raw;
         tmp_raw = NULL;
-        free(entry);
+        rt_free(entry);
         return tmp_ll;
     }
 
     if (!failed && fs_rename(tmp_ll, entry) != 0) {
         // A failed install is not a failed build: use the temporary this once
         // and pay for it again next time.
-        free(q_src); free(q_tmp); free(q_raw);
+        tmp_free(q_src); tmp_free(q_tmp); tmp_free(q_raw);
         g_curated_raw_ir = tmp_raw;
         tmp_raw = NULL;
-        free(entry);
+        rt_free(entry);
         return tmp_ll;
     }
 
-    free(q_src); free(q_tmp); free(q_raw);
+    tmp_free(q_src); tmp_free(q_tmp); tmp_free(q_raw);
 
     if (failed) {
-        if (tmp_raw) { delete_file(tmp_raw); free(tmp_raw); }
+        if (tmp_raw) { delete_file(tmp_raw); tmp_free(tmp_raw); }
         delete_file(tmp_ll);
-        free(tmp_ll);
-        free(entry);
+        tmp_free(tmp_ll);
+        rt_free(entry);
         return NULL;
     }
 
     g_curated_raw_ir = tmp_raw;
     tmp_raw = NULL;
-    free(tmp_ll);
+    tmp_free(tmp_ll);
     return entry;
 }
 
@@ -1644,17 +1648,17 @@ static char* merge_curated_into_program(const char* ir_file, const char* target_
 
     size_t n = strlen(ir_file) + 32;
     char* merged = (char*)malloc(n);
-    if (!merged) { free(curated); return NULL; }
+    if (!merged) { rt_free(curated); return NULL; }
     snprintf(merged, n, "%s.merged.ll", ir_file);
 
     double t0 = build_trace_ms();
     int ok = ir_link_modules(ir_file, curated, merged) == 0;
     build_trace_stage("curated: merge", t0);
-    free(curated);
+    rt_free(curated);
 
     if (!ok) {
         delete_file(merged);
-        free(merged);
+        tmp_free(merged);
         return NULL;
     }
     return merged;
@@ -1788,10 +1792,10 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj,
     double t0 = build_trace_ms();
     int result = run_build_command(command);
     build_trace_stage("program (whole program)", t0);
-    free(command);
-    free(target);
-    free(q_ir);
-    free(q_obj);
+    tmp_free(command);
+    tmp_free(target);
+    rt_free(q_ir);
+    rt_free(q_obj);
     return result;
 }
 
@@ -1830,7 +1834,7 @@ static void append_host_sdk(char* command, size_t size) {
     if (!quoted) return;
     size_t used = strlen(command);
     snprintf(command + used, size - used, " -isysroot %s", quoted);
-    free(quoted);
+    rt_free(quoted);
 }
 #endif
 
@@ -1926,15 +1930,15 @@ static int msvc_tools_dir(char* out, size_t size, const char* exe_file) {
              "-property installationPath > %s",
              q_vswhere, strcmp(msvc_target_arch(), "arm64") == 0 ? "ARM64" : "x86.x64",
              q_answer);
-    free(q_vswhere);
-    free(q_answer);
+    rt_free(q_vswhere);
+    rt_free(q_answer);
     char* install = execute_command(command) == 0 ? read_file(answer_path) : NULL;
     delete_file(answer_path);
-    free(answer_path);
+    tmp_free(answer_path);
     if (!install) return 0;
     char* newline = strpbrk(install, "\r\n");
     if (newline) *newline = '\0';
-    if (!install[0]) { free(install); return 0; }
+    if (!install[0]) { tmp_free(install); return 0; }
 
     char version_path[1400];
     snprintf(version_path, sizeof(version_path),
@@ -1943,9 +1947,9 @@ static int msvc_tools_dir(char* out, size_t size, const char* exe_file) {
     if (version) {
         trim_trailing_space(version);
         snprintf(out, size, "%s\\VC\\Tools\\MSVC\\%s", install, version);
-        free(version);
+        rt_free(version);
     }
-    free(install);
+    tmp_free(install);
     return version != NULL;
 }
 
@@ -2042,7 +2046,7 @@ static int link_program_msvc(const char* program_obj, const char* exe_file) {
         failed |= append_joined_argument(&libpaths, "-libpath:", dir, "");
         snprintf(dir, sizeof(dir), "%s\\um\\%s", sdk, arch);
         failed |= append_joined_argument(&libpaths, "-libpath:", dir, "");
-        if (failed) { free(libpaths); return 1; }
+        if (failed) { tmp_free(libpaths); return 1; }
     }
 
     char* q_link = command_quote_arg(link_exe);
@@ -2072,11 +2076,11 @@ static int link_program_msvc(const char* program_obj, const char* exe_file) {
                  q_link, out_arg, libpaths ? libpaths : "", q_obj, g_link_extra, native);
         result = run_build_command(command);
     }
-    free(command);
-    free(out_arg);
-    free(libpaths);
-    free(q_link);
-    free(q_obj);
+    tmp_free(command);
+    tmp_free(out_arg);
+    tmp_free(libpaths);
+    rt_free(q_link);
+    rt_free(q_obj);
     return result;
 }
 #endif
@@ -2141,7 +2145,7 @@ typedef struct {
 static void link_args_push(LinkArgs* args, const char* text, size_t len) {
     if (args->count == args->cap) {
         args->cap = args->cap ? args->cap * 2 : 32;
-        args->items = (char**)realloc(args->items, (size_t)args->cap * sizeof(char*));
+        args->items = (char**)tmp_realloc(args->items, (size_t)args->cap * sizeof(char*));
     }
     char* copy = (char*)malloc(len + 1);
     memcpy(copy, text, len);
@@ -2192,7 +2196,7 @@ static char* link_cache_path(const char* driver_command) {
     const char* base = getenv("TMPDIR");
     if (!base || !base[0]) base = "/tmp";
     char* dir = join_path(base, "prismio-link-cache");
-    if (!dir || ensure_directory_exists(dir) != 0) { free(dir); return NULL; }
+    if (!dir || ensure_directory_exists(dir) != 0) { rt_free(dir); return NULL; }
     // The variables that steer the driver to another toolchain, SDK or deployment
     // version are part of what it was asked.
     unsigned long long key = fnv1a_bytes(PRISMIO_FNV_OFFSET, (const unsigned char*)driver_command);
@@ -2205,7 +2209,7 @@ static char* link_cache_path(const char* driver_command) {
     char name[64];
     snprintf(name, sizeof(name), "link-%016llx.args", key);
     char* path = join_path(dir, name);
-    free(dir);
+    rt_free(dir);
     return path;
 }
 
@@ -2232,7 +2236,7 @@ static int link_cache_read(const char* path, LinkArgs* out) {
         }
         p = nl + 1;
     }
-    free(text);
+    rt_free(text);
     return valid && out->count > 0;
 }
 
@@ -2264,7 +2268,7 @@ static void link_cache_write(const char* path, const LinkArgs* args) {
     char tmp[1200];
     snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, (int)PRISMIO_GETPID());
     if (write_text_file(tmp, text) != 0 || fs_rename(tmp, path) != 0) delete_file(tmp);
-    free(text);
+    tmp_free(text);
 }
 
 // `keyed` is the link the driver would run with the object and the output spelled
@@ -2318,14 +2322,14 @@ static int link_with_cached_ld(const char* keyed, const char* real,
             // substituted back, so such a line is not kept.
             else if (strstr(args.items[i], program_obj) || strstr(args.items[i], exe_file)) parsed = 0;
             if (mark) {
-                free(args.items[i]);
+                tmp_free(args.items[i]);
                 args.items[i] = (char*)malloc(strlen(mark) + 1);
                 strcpy(args.items[i], mark);
             }
         }
         if (parsed && partitions > 0) {
             // Drop the partitions' own paths: the cached line names the object once.
-            for (int i = object_at + 1; i <= object_at + partitions; i++) free(args.items[i]);
+            for (int i = object_at + 1; i <= object_at + partitions; i++) tmp_free(args.items[i]);
             memmove(args.items + object_at + 1, args.items + object_at + 1 + partitions,
                     (size_t)(args.count - object_at - 1 - partitions) * sizeof(char*));
             args.count -= partitions;
@@ -2335,13 +2339,13 @@ static int link_with_cached_ld(const char* keyed, const char* real,
         } else {
             link_args_free(&args);
         }
-        free(text);
+        rt_free(text);
         if (log) delete_file(log);
-        free(log);
-        free(command);
+        tmp_free(log);
+        tmp_free(command);
     }
     if (args.count == 0) {
-        free(cache);
+        rt_free(cache);
         return 1;
     }
 
@@ -2370,9 +2374,9 @@ static int link_with_cached_ld(const char* keyed, const char* real,
     // Not this program's fault, as far as anything here can tell, so the driver
     // links it and says why if it cannot -- and a line that failed is not kept.
     if (status != 0) delete_file(cache);
-    free(cache);
-    free(argv);
-    free(partition_paths);
+    rt_free(cache);
+    tmp_free(argv);
+    tmp_free(partition_paths);
     link_args_free(&args);
     return status == 0 ? 0 : 1;
 }
@@ -2426,9 +2430,9 @@ static char* driver_link_command(const char* program_obj, const char* exe_file) 
              driver, target, min_os, mode, q_obj, g_link_extra, native, stack, q_exe,
              (!g_freestanding && target_splits_libc()) ? " -lm -lpthread" : "",
              (!g_freestanding && target_is_mach_o()) ? " -Wl,-dead_strip -Wl,-fixup_chains" : "");
-    free(target);
-    free(q_obj);
-    free(q_exe);
+    tmp_free(target);
+    rt_free(q_obj);
+    rt_free(q_exe);
     return command;
 }
 
@@ -2457,9 +2461,9 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
         char* keyed = driver_link_command(LINK_OBJECT_MARK, LINK_OUTPUT_MARK);
         g_link_extra = extra;
         int linked = keyed && link_with_cached_ld(keyed, command, program_obj, exe_file) == 0;
-        free(keyed);
+        tmp_free(keyed);
         if (linked) {
-            free(command);
+            tmp_free(command);
             return 0;
         }
     }
@@ -2467,7 +2471,7 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
     double t0 = build_trace_ms();
     int result = run_build_command(command);
     build_trace_stage("link (driver)", t0);
-    free(command);
+    tmp_free(command);
     return result;
 }
 
@@ -2566,9 +2570,9 @@ static char* merge_libraries_into_program(const char* ir_file,
     char** extracted = prismio_plib_count > 0
         ? (char**)calloc((size_t)prismio_plib_count, sizeof(char*)) : NULL;
     if ((module_count > 0 && (!modules || !modes)) || (prismio_plib_count > 0 && !extracted)) {
-        free(modules);
-        free(modes);
-        free(extracted);
+        tmp_free(modules);
+        tmp_free(modes);
+        tmp_free(extracted);
         return NULL;
     }
 
@@ -2608,20 +2612,20 @@ static char* merge_libraries_into_program(const char* ir_file,
     for (int i = 0; i < prismio_plib_count; i++) {
         if (!extracted[i]) continue;
         delete_file(extracted[i]);
-        free(extracted[i]);
+        tmp_free(extracted[i]);
     }
-    free(extracted);
-    free(modules);
-    free(modes);
+    tmp_free(extracted);
+    tmp_free(modules);
+    tmp_free(modes);
     if (fs_runtime) {
         if (!fs_cached) delete_file(fs_runtime);
-        free(fs_runtime);
+        rt_free(fs_runtime);
     }
 
     if (failed) {
         if (merged) {
             delete_file(merged);
-            free(merged);
+            tmp_free(merged);
         }
         return NULL;
     }
@@ -2737,14 +2741,14 @@ static char* native_object_entry(const char* role, const char* source_path,
 
     char* dir = object_cache_dir();
     if (ensure_directory_exists(dir) != 0) {
-        free(dir);
+        rt_free(dir);
         return NULL;
     }
 
     char name[160];
     snprintf(name, sizeof(name), "%s-%016llx.obj", role, hash);
     char* path = join_path(dir, name);
-    free(dir);
+    rt_free(dir);
     return path;
 }
 
@@ -2761,7 +2765,7 @@ static int native_deps_current(const char* entry) {
     char* deps = native_deps_path(entry);
     if (!deps) return 0;
     FILE* file = fopen(deps, "rb");
-    free(deps);
+    tmp_free(deps);
     if (!file) return 0;
 
     char line[4200];
@@ -2790,14 +2794,14 @@ static int native_deps_record(const char* entry, const char* depfile) {
     char* text = read_file(depfile);
     if (!text) return 1;
     const char* p = strstr(text, ": ");
-    if (!p) { free(text); return 1; }
+    if (!p) { rt_free(text); return 1; }
     p += 2;
 
     char* deps = native_deps_path(entry);
-    if (!deps) { free(text); return 1; }
+    if (!deps) { rt_free(text); return 1; }
     size_t tmp_len = strlen(deps) + 32;
     char* tmp = (char*)malloc(tmp_len);
-    if (!tmp) { free(deps); free(text); return 1; }
+    if (!tmp) { tmp_free(deps); rt_free(text); return 1; }
     snprintf(tmp, tmp_len, "%s.tmp-%d", deps, PRISMIO_GETPID());
     FILE* out = fopen(tmp, "wb");
     int failed = out == NULL;
@@ -2842,9 +2846,9 @@ static int native_deps_record(const char* entry, const char* depfile) {
     } else if (failed) {
         delete_file(tmp);
     }
-    free(tmp);
-    free(deps);
-    free(text);
+    tmp_free(tmp);
+    tmp_free(deps);
+    rt_free(text);
     return failed;
 }
 
@@ -2910,7 +2914,7 @@ static char* native_compile_flags(void) {
                  g_debug_info ? " -g" : "",
                  declared);
     }
-    free(target);
+    tmp_free(target);
     return flags;
 }
 
@@ -2929,7 +2933,7 @@ static int compile_native_source(const char* source, const char* flags, int inde
             if (object_cache_trace()) fprintf(stderr, "[objcache hit] %s\n", role);
             *object = entry;
             *cached = 1;
-            free(role);
+            tmp_free(role);
             return 0;
         }
         if (object_cache_trace()) fprintf(stderr, "[objcache miss] %s\n", role);
@@ -2965,19 +2969,19 @@ static int compile_native_source(const char* source, const char* flags, int inde
             fs_rename(out, entry) == 0) {
         // A failed install is not a failed build: the temporary is linked
         // and the compile is paid for again next time.
-        free(out);
+        tmp_free(out);
         out = entry;
         entry = NULL;
         *cached = 1;
     }
     *object = out;
-    if (dep) { delete_file(dep); free(dep); }
-    free(q_dep);
-    free(q_src);
-    free(q_out);
-    free(command);
-    free(entry);
-    free(role);
+    if (dep) { delete_file(dep); tmp_free(dep); }
+    rt_free(q_dep);
+    rt_free(q_src);
+    rt_free(q_out);
+    tmp_free(command);
+    rt_free(entry);
+    tmp_free(role);
     return result;
 }
 
@@ -2990,7 +2994,7 @@ static int compile_native_sources(const char* exe_file, char** objects, int* cac
         result = compile_native_source(g_native_sources[i], flags, i, exe_file,
                                        &objects[i], &cached[i]);
     }
-    free(flags);
+    tmp_free(flags);
     return result;
 }
 
@@ -3009,11 +3013,11 @@ static int freestanding_runtime_bitcode(const char* exe_file, char** bitcode, in
     if (!flags) return 1;
     size_t len = strlen(flags) + 16;
     char* bitcode_flags = (char*)malloc(len);
-    if (!bitcode_flags) { free(flags); return 1; }
+    if (!bitcode_flags) { tmp_free(flags); return 1; }
     snprintf(bitcode_flags, len, "%s -emit-llvm", flags);
-    free(flags);
+    tmp_free(flags);
     int result = compile_native_source(path, bitcode_flags, -1, exe_file, bitcode, cached);
-    free(bitcode_flags);
+    tmp_free(bitcode_flags);
     return result;
 }
 
@@ -3022,7 +3026,7 @@ static char* native_object_arguments(char** objects) {
     char* args = NULL;
     for (int i = 0; i < g_native_source_count; i++) {
         if (objects[i] && append_quoted_argument(&args, objects[i]) != 0) {
-            free(args);
+            tmp_free(args);
             return NULL;
         }
     }
@@ -3058,26 +3062,26 @@ static char* native_export_symbols(const char* nm, char** objs, int count,
         any = 1;
     }
     char* command = any ? (char*)malloc(command_size) : NULL;
-    if (!command) { free(q_nm); free(list_path); return NULL; }
+    if (!command) { rt_free(q_nm); tmp_free(list_path); return NULL; }
     int written = snprintf(command, command_size,
                            "%s --defined-only --extern-only --format=posix", q_nm);
-    free(q_nm);
+    rt_free(q_nm);
     for (int i = 0; i < count; i++) {
         if (!objs[i]) continue;
         char* quoted = command_quote_arg(objs[i]);
         written += snprintf(command + written, command_size - written, " %s", quoted);
-        free(quoted);
+        rt_free(quoted);
     }
     char* q_list = command_quote_arg(list_path);
     snprintf(command + written, command_size - written, " > %s", q_list);
-    free(q_list);
+    rt_free(q_list);
 
     int failed = run_build_command(command);
-    free(command);
+    tmp_free(command);
 
     char* text = failed ? NULL : read_file(list_path);
     delete_file(list_path);
-    free(list_path);
+    tmp_free(list_path);
     return text;
 }
 
@@ -3122,7 +3126,7 @@ static char* unix_export_flags(char** objs, int count, const char* exe_file) {
         char* dir = get_directory(g_clang_binary);
         char candidate[1200];
         snprintf(candidate, sizeof(candidate), "%s%cllvm-nm", dir ? dir : ".", PRISMIO_PATH_SEP);
-        free(dir);
+        rt_free(dir);
         if (file_exists(candidate)) snprintf(nm, sizeof(nm), "%s", candidate);
     }
     char* text = native_export_symbols(nm, objs, count, exe_file);
@@ -3132,8 +3136,8 @@ static char* unix_export_flags(char** objs, int count, const char* exe_file) {
     char* list_path = compiler_temp_path(exe_file, "exports.list");
     FILE* list = list_path ? fopen(list_path, "wb") : NULL;
     if (!list) {
-        free(list_path);
-        free(text);
+        tmp_free(list_path);
+        tmp_free(text);
         return NULL;
     }
     // ld64 reads one (underscored) name per line; GNU ld and lld a version-
@@ -3154,25 +3158,25 @@ static char* unix_export_flags(char** objs, int count, const char* exe_file) {
     }
     if (!mach_o) fputs("};\n", list);
     fclose(list);
-    free(text);
+    tmp_free(text);
     if (written == 0) {
         delete_file(list_path);
-        free(list_path);
+        tmp_free(list_path);
         return NULL;
     }
 
-    free(g_export_rsp);
+    tmp_free(g_export_rsp);
     g_export_rsp = list_path;
     size_t n = strlen(list_path) + 64;
     char* flag = (char*)malloc(n);
     if (!flag) return NULL;
     snprintf(flag, n, mach_o ? "-Wl,-exported_symbols_list,%s" : "-Wl,--dynamic-list=%s", list_path);
     char* quoted = command_quote_arg(flag);
-    free(flag);
+    tmp_free(flag);
     size_t q = quoted ? strlen(quoted) + 2 : 0;
     char* arg = quoted ? (char*)malloc(q) : NULL;
     if (arg) snprintf(arg, q, " %s", quoted);
-    free(quoted);
+    rt_free(quoted);
     return arg;
 }
 #endif
@@ -3208,7 +3212,7 @@ static char* windows_export_flags(char** objs, int count, const char* exe_file) 
     // is not an upper bound on the flags -- three times it is.
     size_t flags_size = strlen(text) * 3 + 64;
     char* flags = (char*)malloc(flags_size);
-    if (!flags) { free(text); return NULL; }
+    if (!flags) { tmp_free(text); return NULL; }
     flags[0] = '\0';
 
     size_t used = 0;
@@ -3228,9 +3232,9 @@ static char* windows_export_flags(char** objs, int count, const char* exe_file) 
         if (!end) break;
         line = end + 1;
     }
-    free(text);
+    tmp_free(text);
 
-    if (exported == 0) { free(flags); return NULL; }
+    if (exported == 0) { tmp_free(flags); return NULL; }
 
     // **Through a response file, not on the command line.** cmd.exe refuses a
     // line longer than 8191 characters, and 191 exports are several thousand on
@@ -3242,19 +3246,19 @@ static char* windows_export_flags(char** objs, int count, const char* exe_file) 
     char* rsp_path = compiler_temp_path(exe_file, "exports.rsp");
     FILE* rsp = rsp_path ? fopen(rsp_path, "wb") : NULL;
     if (!rsp) {
-        free(rsp_path);
+        tmp_free(rsp_path);
         return flags;
     }
     for (char* c = flags; *c; c++) fputc(*c == ' ' ? '\n' : *c, rsp);
     fclose(rsp);
-    free(flags);
-    free(g_export_rsp);
+    tmp_free(flags);
+    tmp_free(g_export_rsp);
     g_export_rsp = rsp_path;
     char* q_rsp_path = command_quote_arg(rsp_path);
     size_t arg_len = strlen(q_rsp_path) + 3;
     char* arg = (char*)malloc(arg_len);
     if (arg) snprintf(arg, arg_len, " @%s", q_rsp_path);
-    free(q_rsp_path);
+    rt_free(q_rsp_path);
     return arg;
 }
 #endif
@@ -3276,8 +3280,8 @@ static void write_dsym(const char* exe_file) {
                 "warning: dsymutil failed; the binary has a debug map but no .dSYM,\n"
                 "         so a debugger will find no source lines for it.\n");
     }
-    free(command);
-    free(q_exe);
+    tmp_free(command);
+    rt_free(q_exe);
 #else
     (void)exe_file; // ELF: the linker copied the debug sections into the binary
 #endif
@@ -3309,9 +3313,9 @@ int compiler_run_executable_with(const char* exe_file, const char* arguments) {
     if (line) {
         snprintf(line, n, "%s %s", q_exe, arguments ? arguments : "");
         result = run_build_command(line);
-        free(line);
+        tmp_free(line);
     }
-    free(q_exe);
+    rt_free(q_exe);
     return result;
 }
 
@@ -3345,7 +3349,7 @@ int compiler_jit_run(const char* ir_file, const char* program_name) {
     diag_progress_clear();
     int status = ir_jit_run_file(merged, program_name);
     delete_file(merged);
-    free(merged);
+    tmp_free(merged);
     return status;
 }
 
@@ -3424,10 +3428,10 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
             result = 1;
         } else {
             snprintf(joined, n, " %s%s", quoted, extra ? extra : "");
-            free(extra);
+            tmp_free(extra);
             extra = joined;
         }
-        free(quoted);
+        rt_free(quoted);
     }
     if (result == 0 && g_export_dynamic) {
 #ifdef _WIN32
@@ -3444,12 +3448,12 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
         char* joined = (char*)malloc(n);
         if (joined) {
             snprintf(joined, n, "%s%s%s", extra ? extra : "", exports ? exports : "", tail);
-            free(extra);
+            tmp_free(extra);
             extra = joined;
         } else {
             result = 1;
         }
-        free(exports);
+        tmp_free(exports);
     }
 
     if (result == 0) {
@@ -3461,7 +3465,7 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
     }
     if (g_export_rsp) {
         delete_file(g_export_rsp);
-        free(g_export_rsp);
+        tmp_free(g_export_rsp);
         g_export_rsp = NULL;
     }
 
@@ -3472,11 +3476,11 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
 
     for (int i = 0; i < native_count && objects; i++) {
         if (objects[i] && !cached[i]) delete_file(objects[i]);
-        free(objects[i]);
+        rt_free(objects[i]);
     }
-    free(objects);
-    free(cached);
-    free(extra);
+    tmp_free(objects);
+    tmp_free(cached);
+    tmp_free(extra);
     delete_file(program_obj);
     for (int p = 1; p <= partition_objects; p++) {
         char path[1200];
@@ -3486,8 +3490,8 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
     delete_file(merged_ir);
     ir_release_held_module();
     discard_curated_raw_ir();
-    free(program_obj);
-    free(merged_ir);
+    tmp_free(program_obj);
+    tmp_free(merged_ir);
     return result;
 }
 
@@ -3553,7 +3557,7 @@ static void compiler_hosted_env_end(char* saved, int was_set) {
     if (was_set) setenv("PRISMIO_INTERNAL_HOSTED", saved, 1);
     else unsetenv("PRISMIO_INTERNAL_HOSTED");
 #endif
-    free(saved);
+    tmp_free(saved);
 }
 
 // Read once and then removed from the environment. The marker is an instruction
@@ -3590,7 +3594,7 @@ int compiler_is_current_executable(const char* path) {
 #else
     char* directory = prismio_executable_directory();
     if (!directory || prismio_argc < 1 || !prismio_argv || !prismio_argv[0]) {
-        free(directory);
+        rt_free(directory);
         return 0;
     }
 
@@ -3598,7 +3602,7 @@ int compiler_is_current_executable(const char* path) {
     size_t current_len = strlen(directory) + strlen(leaf) + 2;
     char* current = (char*)malloc(current_len);
     if (!current) {
-        free(directory);
+        rt_free(directory);
         return 0;
     }
     snprintf(current, current_len, "%s/%s", directory, leaf);
@@ -3609,8 +3613,8 @@ int compiler_is_current_executable(const char* path) {
                stat(path, &candidate_stat) == 0 &&
                current_stat.st_dev == candidate_stat.st_dev &&
                current_stat.st_ino == candidate_stat.st_ino;
-    free(current);
-    free(directory);
+    tmp_free(current);
+    rt_free(directory);
     return same;
 #endif
 }
@@ -3652,7 +3656,7 @@ static int spawn_and_wait(const char* program, char** arguments, int count,
 #endif
         if (!moved) {
             if (!quiet) fprintf(stderr, "error: cannot enter %s: %s\n", directory, strerror(errno));
-            free(saved);
+            tmp_free(saved);
             return -1;
         }
     }
@@ -3670,7 +3674,7 @@ static int spawn_and_wait(const char* program, char** arguments, int count,
 #else
         (void)chdir(saved);
 #endif
-        free(saved);
+        tmp_free(saved);
     }
 
     if (started != 0) {
@@ -3695,7 +3699,7 @@ static int g_pending_count = 0;
 static int g_pending_cap = 0;
 
 static void pending_args_clear(void) {
-    for (int i = 0; i < g_pending_count; i++) free(g_pending_args[i]);
+    for (int i = 0; i < g_pending_count; i++) tmp_free(g_pending_args[i]);
     g_pending_count = 0;
 }
 
@@ -3703,7 +3707,7 @@ void compiler_spawn_arg(const char* argument) {
     if (!argument) return;
     if (g_pending_count == g_pending_cap) {
         int grown = g_pending_cap ? g_pending_cap * 2 : 8;
-        char** bigger = (char**)realloc(g_pending_args, (size_t)grown * sizeof(char*));
+        char** bigger = (char**)tmp_realloc(g_pending_args, (size_t)grown * sizeof(char*));
         if (!bigger) return;
         g_pending_args = bigger;
         g_pending_cap = grown;
@@ -3748,7 +3752,7 @@ int compiler_program_on_path(const char* name) {
         if (!candidate) return 0;
         snprintf(candidate, dir_len + name_len + 2, "%.*s/%s", (int)dir_len, path, name);
         int runnable = access(candidate, X_OK) == 0;
-        free(candidate);
+        tmp_free(candidate);
         if (runnable) return 1;
         if (!end) break;
         path = end + 1;
@@ -3766,7 +3770,7 @@ int compiler_forward_cli(const char* host) {
     char* saved = NULL;
     int was_set = 0;
     if (compiler_hosted_env_begin(&saved, &was_set) != 0) {
-        free(saved);
+        tmp_free(saved);
         return 1;
     }
     int status = spawn_and_wait(host, prismio_argv + 1, prismio_argc - 1, "", 0);
@@ -3788,13 +3792,13 @@ static int compiler_probe_executable(const char* exe_file, char** arguments, int
     char* saved = NULL;
     int was_set = 0;
     if (compiler_hosted_env_begin(&saved, &was_set) != 0) {
-        free(saved);
-        free(normalized);
+        tmp_free(saved);
+        tmp_free(normalized);
         return 1;
     }
     int status = spawn_and_wait(normalized, arguments, count, "", 1);
     compiler_hosted_env_end(saved, was_set);
-    free(normalized);
+    tmp_free(normalized);
     return status == 0 ? 0 : 1;
 }
 
@@ -3879,7 +3883,7 @@ static int read_binary_file(const char* path, unsigned char** data, size_t* size
         return 1;
     }
     if (length > 0 && fread(buffer, 1, (size_t)length, file) != (size_t)length) {
-        free(buffer);
+        tmp_free(buffer);
         fclose(file);
         return 1;
     }
@@ -3917,7 +3921,7 @@ static char* absolute_directory(const char* path) {
     char* canonical = realpath(directory, NULL);
     if (!canonical) return directory;
 #endif
-    free(directory);
+    rt_free(directory);
     return canonical;
 }
 
@@ -3975,8 +3979,8 @@ static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
     size_t len = strlen(clang) + strlen(min_os) + strlen(q_src) + strlen(q_out) + 192;
     char* command = (char*)malloc(len);
     if (!command) {
-        free(q_src);
-        free(q_out);
+        rt_free(q_src);
+        rt_free(q_out);
         return 1;
     }
     snprintf(command, len,
@@ -3984,9 +3988,9 @@ static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
              "-Wno-deprecated-declarations %s-emit-llvm -c %s -o %s",
              clang, min_os, verify ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_out);
     int failed = run_quiet_build_command(command, log_path);
-    free(command);
-    free(q_src);
-    free(q_out);
+    tmp_free(command);
+    rt_free(q_src);
+    rt_free(q_out);
     return failed;
 }
 
@@ -4008,8 +4012,8 @@ static int emit_plib_section(const char* clang, const char* compiler,
     char* ir_path = compiler_temp_path(base, ir_suffix);
     char* bc_path = compiler_temp_path(base, bc_suffix);
     if (!ir_path || !bc_path) {
-        free(ir_path);
-        free(bc_path);
+        tmp_free(ir_path);
+        tmp_free(bc_path);
         return 1;
     }
 
@@ -4031,7 +4035,7 @@ static int emit_plib_section(const char* clang, const char* compiler,
             failed = set_env_var("PRISMIO_LIBRARY_MODULE", module)
                      || run_quiet_build_command(command, log_path);
             set_env_var("PRISMIO_LIBRARY_MODULE", NULL);
-            free(command);
+            tmp_free(command);
         }
     }
     if (!failed) {
@@ -4042,20 +4046,20 @@ static int emit_plib_section(const char* clang, const char* compiler,
         } else {
             snprintf(command, len, "%s -emit-llvm -c -x ir %s -o %s", clang, q_ir, q_bc);
             failed = run_quiet_build_command(command, log_path);
-            free(command);
+            tmp_free(command);
         }
     }
     if (!failed) failed = read_binary_file(bc_path, data, size);
 
     delete_file(ir_path);
     delete_file(bc_path);
-    free(q_compiler);
-    free(q_source);
-    free(q_ir);
-    free(q_bc);
-    free(normalized);
-    free(ir_path);
-    free(bc_path);
+    rt_free(q_compiler);
+    rt_free(q_source);
+    rt_free(q_ir);
+    rt_free(q_bc);
+    tmp_free(normalized);
+    tmp_free(ir_path);
+    tmp_free(bc_path);
     return failed;
 }
 
@@ -4121,9 +4125,9 @@ static int emit_stdlib_plib(const char* clang, const char* compiler,
         if (failed) delete_file(output);
     }
 
-    free(interface);
-    free(code);
-    free(verify_code);
+    tmp_free(interface);
+    tmp_free(code);
+    tmp_free(verify_code);
     return failed;
 }
 
@@ -4182,7 +4186,7 @@ static int stamp_append(ToolchainStamp* stamp, const char* name, const char* key
     if (stamp->len + (size_t)written + 1 > stamp->cap) {
         size_t cap = stamp->cap ? stamp->cap : 512;
         while (cap < stamp->len + (size_t)written + 1) cap *= 2;
-        char* grown = (char*)realloc(stamp->text, cap);
+        char* grown = (char*)tmp_realloc(stamp->text, cap);
         if (!grown) return 1;
         stamp->text = grown;
         stamp->cap = cap;
@@ -4200,7 +4204,7 @@ static char* stamp_read(const char* path) {
     if (!text) return NULL;
     if (strncmp(text, PRISMIO_TOOLCHAIN_STAMP_HEADER,
                 strlen(PRISMIO_TOOLCHAIN_STAMP_HEADER)) != 0) {
-        free(text);
+        rt_free(text);
         return NULL;
     }
     return text;
@@ -4253,11 +4257,11 @@ static unsigned long long clang_identity(unsigned long long hash) {
 static int runtime_cache_key(char* out, int out_size) {
     char* source = compiler_runtime_source_hash();
     if (!source || !source[0]) {
-        free(source);
+        tmp_free(source);
         return 1;
     }
     unsigned long long hash = fnv1a_bytes(PRISMIO_FNV_OFFSET, (const unsigned char*)source);
-    free(source);
+    tmp_free(source);
     // The deployment version the bitcode is compiled for (emit_runtime_bitcode): a
     // toolchain built before it was passed holds bitcode with no SDK stamp, and must
     // be re-emitted, not reused.
@@ -4284,7 +4288,7 @@ static unsigned long long compiler_binary_hash(const char* compiler) {
     size_t size = 0;
     if (read_binary_file(compiler, &data, &size) != 0) return 0;
     unsigned long long hash = fnv1a_raw(PRISMIO_FNV_OFFSET, data, size);
-    free(data);
+    tmp_free(data);
     return hash;
 }
 
@@ -4296,7 +4300,7 @@ static int plib_cache_key(char* out, int out_size, const char* source_path,
                                         (const unsigned char*)&compiler_hash,
                                         sizeof(compiler_hash));
     hash = fnv1a_bytes(hash, (const unsigned char*)text);
-    free(text);
+    rt_free(text);
     snprintf(out, out_size, "%016llx", hash);
     return 0;
 }
@@ -4398,7 +4402,7 @@ int compiler_emit_local_toolchain(const char* root, const char* compiler) {
         if (!failed) {
             char* value = compiler_runtime_source_hash();
             failed = write_text_file(hash_path, value) != 0;
-            free(value);
+            tmp_free(value);
         }
     }
     if (!failed && have_runtime_key) {
@@ -4418,7 +4422,7 @@ int compiler_emit_local_toolchain(const char* root, const char* compiler) {
             snprintf(core_out, sizeof(core_out), "%s%cpanic.c", core_dir, PRISMIO_PATH_SEP);
             char* text = read_file(core_source);
             if (text && ensure_directory_exists(core_dir) == 0) write_text_file(core_out, text);
-            free(text);
+            rt_free(text);
         }
     }
 
@@ -4428,7 +4432,7 @@ int compiler_emit_local_toolchain(const char* root, const char* compiler) {
     char* saved = NULL;
     int was_set = 0;
     if (!failed && compiler_hosted_env_begin(&saved, &was_set) != 0) {
-        free(saved);
+        tmp_free(saved);
         saved = NULL;
         failed = 1;
     }
@@ -4500,11 +4504,11 @@ int compiler_emit_local_toolchain(const char* root, const char* compiler) {
     if (!failed && !stamp_broken && stamp.text) {
         if (write_text_file(stamp_path, stamp.text) != 0) delete_file(stamp_path);
     }
-    free(stamp.text);
-    free(recorded);
+    tmp_free(stamp.text);
+    tmp_free(recorded);
 
-    free(runtime_dir);
-    free(std_dir);
+    rt_free(runtime_dir);
+    rt_free(std_dir);
     if (failed) {
         fprintf(stderr,
                 "ERROR: could not build the project-local runtime and standard library\n"
@@ -4589,7 +4593,7 @@ int compiler_host_stamp_write(const char* host) {
     char* path = host_stamp_path(host);
     if (!path) return 1;
     FILE* file = fopen(path, "wb");
-    free(path);
+    tmp_free(path);
     if (!file) return 1;
     int ok = fprintf(file, "%s%s\n", HOST_STAMP_HEADER, identity) > 0;
     return (fclose(file) == 0 && ok) ? 0 : 1;
@@ -4604,7 +4608,7 @@ int compiler_host_stamp_matches(const char* host) {
     char* path = host_stamp_path(host);
     if (!path) return 0;
     FILE* file = fopen(path, "rb");
-    free(path);
+    tmp_free(path);
     if (!file) return 0;
     char recorded[320];
     size_t n = fread(recorded, 1, sizeof(recorded) - 1, file);
@@ -4630,7 +4634,7 @@ static void remove_tree_at(const char* path) {
     snprintf(pattern, n + 3, "%s\\*", path);
     WIN32_FIND_DATAA entry;
     HANDLE find = FindFirstFileA(pattern, &entry);
-    free(pattern);
+    tmp_free(pattern);
     if (find != INVALID_HANDLE_VALUE) {
         do {
             if (strcmp(entry.cFileName, ".") == 0 || strcmp(entry.cFileName, "..") == 0) continue;
@@ -4646,7 +4650,7 @@ static void remove_tree_at(const char* path) {
             } else if (!compiler_is_current_executable(child) && !DeleteFileA(child)) {
                 remove_tree_failed = 1;
             }
-            free(child);
+            tmp_free(child);
         } while (FindNextFileA(find, &entry));
         FindClose(find);
     }
@@ -4742,8 +4746,8 @@ int compiler_run_workload(const char* exe_file, int timeout_seconds) {
 
     int result = run_build_command(command);
 
-    free(command);
-    free(q_exe);
-    free(normalized);
+    tmp_free(command);
+    rt_free(q_exe);
+    tmp_free(normalized);
     return result;
 }

@@ -676,9 +676,11 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
             // nested blocks, each of which numbers its own statements from 0.
             let savedCursor = aifStmtCursor
             aifStmtCursor = 1
+            aif_env_enter()
             aifWalkChain(n.child1, fnId, inner)
             aifWalkChain(n.child2, fnId, inner)
             aifWalkChain(n.child3, fnId, inner)
+            aif_env_leave()
             aifStmtCursor = savedCursor
             return
         }
@@ -747,7 +749,10 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
             // Recorded whether or not there is an initialiser: a later assignment to
             // this name needs the declaring scope, and `let x: T` with no value is
             // still a declaration.
-            aif_var_note_scope(fnId, n.s1, scope)
+            //
+            // Declared after the initialiser is read, not before: `let s = s.trim()`
+            // reads the binding it shadows, and a declaration is in scope only
+            // from the next statement.
             if (nodeExists(n.child2)) {
                 // LAYOUT 5's `order`. A binding of a container element inside a loop
                 // is the shape the cost model calls sequential: the records are
@@ -764,9 +769,12 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
                     }
                 }
                 let v = aifSitesOf(n.child2, fnId, scope)
+                aif_var_note_scope(fnId, n.s1, scope)
                 aif_con_bind(aif_key_var(fnId, n.s1), v)
                 aif_con_live_in(v, scope, fnId)
                 aifApplyAnnotations(n, v)
+            } else {
+                aif_var_note_scope(fnId, n.s1, scope)
             }
             return
         }
@@ -864,13 +872,17 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
         NodeKind.MATCH_STATEMENT => {
             let scrutinee = aifSitesOf(n.child1, fnId, scope)
             let scrutType = aifBaseType(aifNodeType(ptr_to_node(n.child1)))
+            // Each arm's binders are in scope for that arm alone: two arms may bind
+            // one name, and they are two bindings.
             let mut armPtr = n.child2
             while (nodeExists(armPtr)) {
                 let arm = ptr_to_node(armPtr)
+                aif_env_enter()
                 aifBindPayloadArm(arm, scrutType, scrutinee, fnId, scope)
+                aifWalk(armPtr, fnId, scope)
+                aif_env_leave()
                 armPtr = arm.next
             }
-            aifWalkChildren(n.child2, fnId, scope)
             aifWalkChildren(n.child3, fnId, scope)
             return
         }
@@ -1264,6 +1276,8 @@ internal fn aifBuild(module: ASTNode) {
             if (fid >= 0) {
                 let root = aif_scope_new(0 - 1, fid)
                 aif_con_fn(fid)
+                aif_env_reset()
+                aif_env_enter()
 
                 let mut paramPtr = d.child1
                 let mut index = 0
@@ -1308,6 +1322,7 @@ internal fn aifBuild(module: ASTNode) {
                 aifStmtCursor = 1
                 aifWalkChain(d.child2, fid, root)
                 aifStmtCursor = savedFnCursor
+                aif_env_leave()
                 aif_con_fn(0 - 1)
             }
         }

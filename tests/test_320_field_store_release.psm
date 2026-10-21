@@ -1,0 +1,121 @@
+// A field store `r.f = x` -- through a local, an indexed element or a field's Vec --
+// releases the value it displaces at once when no view of it can be live
+// (src/ir/overwrites.psm), instead of leaking it. Before, only the first store to a
+// fresh local did, so a loop that kept replacing a node's edge list leaked every list
+// it replaced. The answers are checked here; `--verify` (run_aif_verify_test) checks
+// the ledger balances with no violation, and the peak (max_peak_bytes) checks the
+// displaced values were freed as they went rather than held to the end.
+// test_321 is the other half: the shapes that must not release.
+
+import std.process
+
+struct Node {
+    value: Int,
+    edges: Vec<Int>
+}
+
+struct Frag {
+    nodes: Vec<Node>,
+    id: Int
+}
+
+fn edges(i: Int) -> Vec<Int> {
+    let mut v: Vec<Int> = Vec<Int>.withCapacity(4)
+    for k in 0..<4 { v.push(i + k) }
+    return v
+}
+
+fn node(i: Int) -> Node {
+    return Node { value: i, edges: edges(i) }
+}
+
+fn total(n: Node) -> Int {
+    let mut t = n.value
+    for e in n.edges { t = t + e }
+    return t
+}
+
+// A struct local, replaced in a loop. Its own reads of the field between stores are
+// not views kept: the next store finds none.
+fn local(steps: Int) -> Int {
+    let mut n = node(1)
+    let mut t = 0
+    for step in 0..<steps {
+        t = t + total(n)
+        n.edges = edges(step)
+    }
+    return t + total(n)
+}
+
+// An element of a local Vec, through the index.
+fn indexed(steps: Int) -> Int {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(4)
+    for i in 0..<4 { nodes.push(node(i)) }
+    for step in 0..<steps {
+        nodes[step % 4].edges = edges(step)
+    }
+    let mut t = 0
+    for n in nodes { t = t + total(n) }
+    return t
+}
+
+// A view read and finished with before the store.
+fn viewDone(steps: Int) -> Int {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(4)
+    for i in 0..<4 { nodes.push(node(i)) }
+    let mut t = 0
+    for step in 0..<steps {
+        let seen = nodes[step % 4].edges
+        for e in seen { t = t + e }
+        nodes[(step + 1) % 4].edges = edges(step)
+    }
+    return t
+}
+
+// The Vec an element is replaced in is a field of a local struct.
+fn throughField(steps: Int) -> Int {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(3)
+    for i in 0..<3 { nodes.push(node(i)) }
+    let mut f = Frag { nodes: nodes, id: 7 }
+    for step in 0..<steps {
+        f.nodes[step % 3] = node(step)
+    }
+    let mut t = f.id
+    for n in f.nodes { t = t + total(n) }
+    return t
+}
+
+// The edges of an element of a field's Vec.
+fn fieldElementEdges(steps: Int) -> Int {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(3)
+    for i in 0..<3 { nodes.push(node(i)) }
+    let mut f = Frag { nodes: nodes, id: 7 }
+    for step in 0..<steps {
+        f.nodes[step % 3].edges = edges(step)
+    }
+    return total(f.nodes[0]) + total(f.nodes[1]) + total(f.nodes[2])
+}
+
+// The root leaves the function after the stores: moving it on is not a view of what
+// the stores replaced.
+fn rootMoved(steps: Int) -> Frag {
+    let mut nodes: Vec<Node> = Vec<Node>.withCapacity(3)
+    for i in 0..<3 { nodes.push(node(i)) }
+    let mut f = Frag { nodes: nodes, id: 9 }
+    for step in 0..<steps {
+        f.nodes[step % 3].edges = edges(step)
+    }
+    return f
+}
+
+fn main() -> Int {
+    let steps = 2000
+    if (local(steps) != 8010011) { return 1 }
+    if (indexed(steps) != 31990) { return 2 }
+    if (viewDone(steps) != 8000004) { return 3 }
+    if (throughField(steps) != 29995) { return 4 }
+    if (fieldElementEdges(steps) != 23997) { return 5 }
+    let moved = rootMoved(steps)
+    if (total(moved.nodes[2]) != 7996) { return 6 }
+    return 0
+}

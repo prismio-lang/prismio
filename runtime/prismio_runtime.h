@@ -110,6 +110,19 @@ void  rt_free(void* p);
 #endif
 #endif
 
+// The other half of the rule above: a block from the seam is released by `rt_free` and
+// resized by `rt_base_realloc` and by nothing else, because with a slab allocator behind
+// the seam it is not a libc block (docs/ALLOCATOR_PLAN.md). Libc's own spellings are for
+// memory this runtime got from `malloc`, `calloc`, `strdup`, `getcwd` and the like, and
+// the files that have been converted write them `tmp_free` / `tmp_realloc` and poison the
+// bare names (`#pragma GCC poison free realloc`, after their includes), so a call that
+// does not say which world its pointer is from does not compile. A macro defined before
+// the pragma is still expandable after it.
+#ifndef PRISMIO_FREESTANDING
+#define tmp_free(p) free(p)
+#define tmp_realloc(p, n) realloc((p), (n))
+#endif
+
 // Program support: the half of the old driver.c that a *compiled Prismio program*
 // can legitimately call at its own runtime. Implemented in program_support.c and
 // destined for the installed program_support bitcode module.

@@ -1,0 +1,14 @@
+// expect-error: printing Int<128> needs `import std.number_text`
+// An integer wider than 64 bits has no machine type to print through, so its text comes
+// from std.number_text, and a call into a module is allowed only from a file that
+// imports it. Up to 64 bits needs no import: the value converts to `I64` or `U64`.
+
+import std.io
+
+fn main() -> Int {
+    let narrow: Int<40> = 5
+    println(narrow)
+    let wide: Int<128> = 5
+    println(wide)
+    return 0
+}

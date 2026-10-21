@@ -2097,6 +2097,15 @@ internal fn strFromFloat(value: Float) -> String {
     return strFromFloatBytes(buffer, n)
 }
 
+// `digits` significant digits, for a float narrower than `Float` that has already been
+// widened: the digits it needs are fewer than a double's, and which number is
+// std/number_text.psm's question.
+internal fn strFromFloatDigits(value: Float, digits: Int) -> String {
+    let mut buffer: Array<U8, 32>
+    let n = floatFormatDigits(value, digits, buffer)
+    return strFromFloatBytes(buffer, n)
+}
+
 // A fixed number of decimals, for a column rather than a value -- prices,
 // percentages, a table of timings: `strFromFloatFixed(1.0 / 3.0, 2)` is `0.33`,
 // and `strFromFloatFixed(2.0, 2)` keeps its zeros as `2.00`.

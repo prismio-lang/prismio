@@ -1,0 +1,22 @@
+// expect-error: integer literal `9000000` does not fit in Int<24>
+// expect-error: integer literal `4096` does not fit in UInt<12>
+// expect-error: integer literal `170141183460469231731687303715884105728` does not fit in Int<128>
+// expect-error: integer literal `340282366920938463463374607431768211456` does not fit in UInt<128>
+// expect-error: integer literal `-17` does not fit in Int<5>
+// expect-error: initializer for `p`: expected I16, found I8
+// A literal is checked against the width it is given, however wide: 2^127 is one past
+// the largest Int<128> and 2^128 one past the largest UInt<128>. `Int<16>` is `I16`, so
+// the last line is the same refusal an `I8` into an `I16` has always had -- there is no
+// implicit widening between integer types.
+
+fn main() -> Int {
+    let a: Int<24> = 9000000
+    let b: UInt<12> = 4096
+    let c: Int<128> = 170141183460469231731687303715884105728
+    let d: UInt<128> = 340282366920938463463374607431768211456
+    let e: Int<5> = -17
+    let ok: Int<5> = -16
+    let n: Int<8> = 3
+    let p: Int<16> = n
+    return 0
+}

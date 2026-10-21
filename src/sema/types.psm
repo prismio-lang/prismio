@@ -4,6 +4,8 @@
 import ast.nodes
 import lexer.token
 import ast.types
+import ast.int_width
+import ast.float_width
 import ir.bridge
 import common.diagnostics
 import std.string
@@ -153,7 +155,12 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
         }
         if (tn.s1.equals("List")) {
             if (nodeExists(tn.child1)) {
-                return typeList(semaAnnotationType(module, ptr_to_node(tn.child1)))
+                let elem = semaAnnotationType(module, ptr_to_node(tn.child1))
+                if (typeIsWideScalar(elem)) {
+                    semaErrorAt(tn, "a Vec cannot hold ".concat(typeDisplay(elem), " yet: its elements are at most 64 bits"))
+                    diag_note("wrap it in a struct, which a Vec holds whole")
+                }
+                return typeList(elem)
             }
             return typeList(typeInvalid())
         }
@@ -204,6 +211,8 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
 
     if (tn.s1.equals("Int")) { return typeInt() }
     if (tn.s1.equals("Float")) { return typeFloat() }
+    let floating = typeFloatFromName(tn.s1)
+    if (typeIsValid(floating)) { return floating }
     if (tn.s1.equals("Bool")) { return typeBool() }
     if (tn.s1.equals("String")) { return typeString() }
     // Kept in step with typeFromAnnotation in src/ast/types.psm, which is the
@@ -213,15 +222,8 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
     // exactly how `Ptr` behaved until now.
     if (tn.s1.equals("Ptr")) { return typePtr() }
     if (tn.s1.equals("Char")) { return typeChar() }
-    if (tn.s1.equals("I8")) { return typeI8() }
-    if (tn.s1.equals("I16")) { return typeI16() }
-    if (tn.s1.equals("I64")) { return typeI64() }
-    if (tn.s1.equals("Isize")) { return typeIsize() }
-    if (tn.s1.equals("U8")) { return typeU8() }
-    if (tn.s1.equals("U16")) { return typeU16() }
-    if (tn.s1.equals("U32")) { return typeU32() }
-    if (tn.s1.equals("U64")) { return typeU64() }
-    if (tn.s1.equals("Usize")) { return typeUsize() }
+    let sized = typeIntFromName(tn.s1)
+    if (typeIsValid(sized)) { return sized }
     if (tn.s1.equals("")) { return typeVoid() }
     if (semaHasEnum(module, tn.s1)) {
         semaCheckTypeVisible(tn, tn.s1)
@@ -329,7 +331,9 @@ private fn semaPtrFieldIsPlain(module: ASTNode, ann: ASTNode, depth: Int) -> Boo
 // The names `semaAnnotationInner` resolves to a scalar, spelled the way it does. Every
 // one is 5 bytes or fewer, so the common miss -- a struct name -- is left by one length test.
 private fn semaPtrScalarName(name: String) -> Bool {
+    if (intWidthOfName(name) > 0) { return true }
     if (name.length > 5) { return false }
+    if (floatKeyOfName(name).equals("") == false) { return true }
     return name.equals("Int") or name.equals("Float") or name.equals("Bool")
         or name.equals("Char") or name.equals("Ptr") or name.equals("I8")
         or name.equals("I16") or name.equals("I64") or name.equals("Isize")
@@ -404,6 +408,20 @@ internal fn semaExpectAssignable(node: ASTNode, context: String, expected: TypeI
 
 internal fn semaIsIntLiteral(e: ASTNode) -> Bool {
     return e.kind == NodeKind.LITERAL_EXPR and e.i1 == TokenType.NUMBER_LITERAL as Int
+}
+
+internal fn semaIsFloatLiteral(e: ASTNode) -> Bool {
+    return e.kind == NodeKind.LITERAL_EXPR and e.i1 == TokenType.FLOAT_LITERAL as Int
+}
+
+// A bare literal has the type its context gives it: `Int` and `Float` are first
+// guesses, and an integer literal may become any integer type where a float literal
+// may become any float type. Whether this node is a literal that can take `t`.
+internal fn semaLiteralTakes(e: ASTNode, t: TypeInfo) -> Bool {
+    if (typeIsValid(t) == false) { return false }
+    if (t.kind == TypeKind.INT) { return semaIsIntLiteral(e) }
+    if (t.kind == TypeKind.FLOAT) { return semaIsFloatLiteral(e) }
+    return false
 }
 
 // Both of these ask the declaration index for the declarations carrying the

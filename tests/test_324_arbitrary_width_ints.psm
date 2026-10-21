@@ -1,0 +1,103 @@
+// `Int<N>` and `UInt<N>`: an integer of any width from 1 to 2^23 bits.
+//
+// A width that has a name *is* that name -- `Int<8>` is `I8`, `Int<32>` is `Int`,
+// `UInt<64>` is `U64` -- so the two spellings share overloads and mix without a cast.
+// Every other width is its own type, lowered to LLVM's `iN`: arithmetic wraps at N
+// bits, a literal is range-checked against N, and a cast to it truncates or extends.
+
+import std.io
+
+struct Rgb565 { r: UInt<5>, g: UInt<6>, b: UInt<5> }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn takesI8(x: I8) -> I8 { return x }
+fn takesInt(x: Int) -> Int { return x }
+fn takesU64(x: U64) -> U64 { return x }
+fn identity<T>(x: T) -> T { return x }
+
+fn pack(p: Rgb565) -> UInt<16> {
+    return (((p.r as UInt<16>) << 11) | ((p.g as UInt<16>) << 5)) | (p.b as UInt<16>)
+}
+
+fn mul(a: Int<128>, b: Int<128>) -> Int<128> { return a * b }
+
+fn main() -> Int {
+    // A named width is the named type.
+    let a: Int<8> = 5
+    if (takesI8(a) != 5) { return fail("Int<8> is I8") }
+    let b: Int<32> = 7
+    if (takesInt(b) != 7) { return fail("Int<32> is Int") }
+    let c: UInt<64> = 9
+    if (takesU64(c) != 9) { return fail("UInt<64> is U64") }
+
+    // Wrapping at the width.
+    let w: UInt<4> = 15
+    if ((w + 1) as Int != 0) { return fail("UInt<4> wraps at 16") }
+    let sw: Int<4> = 7
+    if ((sw + 1) as Int != -8) { return fail("Int<4> wraps at 8") }
+    let top: Int<24> = 8388607
+    if ((top + 1) as Int != -8388608) { return fail("Int<24> wraps at 2^23") }
+
+    // One bit.
+    let one: Int<1> = -1
+    let zero: Int<1> = 0
+    if ((one as Int) != -1 or (zero as Int) != 0) { return fail("Int<1> holds -1 and 0") }
+    let bit: UInt<1> = 1
+    if ((bit as Int) != 1) { return fail("UInt<1> holds 1") }
+
+    // Fields, packing and bit operations.
+    let pixel = Rgb565 { r: 31, g: 32, b: 1 }
+    if (pack(pixel) as Int != 64513) { return fail("RGB565 packing") }
+    let m: UInt<12> = 0xABC
+    if ((m & 0xF0) as Int != 0xB0) { return fail("mask") }
+    if ((m >> 4) as Int != 0xAB) { return fail("shift right") }
+    if ((~m) as Int != 0x543) { return fail("complement stays inside the width") }
+
+    // Arrays, generics and optionals.
+    let mut xs: Array<Int<24>, 4> = [1, 2, 3, 4]
+    xs[2] = -8000000
+    let mut sum: Int<24> = 0
+    for i in 0..<4 { sum = sum + xs[i] }
+    if (sum as Int != -7999993) { return fail("array of Int<24>") }
+    if (identity(5 as Int<7>) as Int != 5) { return fail("generic over Int<7>") }
+    let maybe: Int<12>? = 5 as Int<12>?
+    if (maybe == none) { return fail("Int<12>? present") }
+    let absent: Int<12>? = none
+    if (absent != none) { return fail("Int<12>? absent") }
+
+    // Division and remainder keep the sign semantics of the width.
+    let d: Int<40> = -500000000000
+    if ((d / 7) as I64 != -71428571428) { return fail("Int<40> division") }
+    if ((d % 7) as I64 != -4) { return fail("Int<40> remainder") }
+
+    // Wider than any machine integer.
+    let big: Int<128> = 170141183460469231731687303715884105727
+    if (mul(big, 1) != big) { return fail("Int<128> multiply by one") }
+    let all: UInt<128> = 340282366920938463463374607431768211455
+    if (all <= 5) { return fail("UInt<128> compare is unsigned") }
+    if ((big as Int) != -1) { return fail("Int<128> truncates to Int") }
+    let one256: UInt<256> = 1
+    if ((one256 << 255) >> 250 != 32) { return fail("UInt<256> shifts") }
+
+    // Casts from floats saturate at the width's bounds.
+    let huge: Float = 1.0e10
+    if ((huge as Int<24>) as Int != 8388607) { return fail("saturate high") }
+    if (((0.0 - huge) as Int<24>) as Int != -8388608) { return fail("saturate low") }
+    if ((huge as UInt<12>) as Int != 4095) { return fail("unsigned saturate high") }
+    let nan: Float = 0.0 / 0.0
+    if ((nan as Int<24>) as Int != 0) { return fail("NaN is zero") }
+
+    // A checked cast says whether the value fits.
+    let fits: Int = 100000
+    if ((fits as Int<24>?) == none) { return fail("fits Int<24>") }
+    let toobig: Int = 10000000
+    if ((toobig as Int<24>?) != none) { return fail("does not fit Int<24>") }
+    let negative: Int = -1
+    if ((negative as UInt<12>?) != none) { return fail("negative is not a UInt<12>") }
+    return 0
+}

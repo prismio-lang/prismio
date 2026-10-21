@@ -1,0 +1,159 @@
+// Text for the numbers that have no `toString` and `println` of their own: an integer
+// of a width with no name (`Int<N>`, `UInt<N>`), and the floats narrower or wider than
+// `Float` (`F32`, `F16`, `BF16`, `F128`).
+//
+// **Integers are one generic function.** A width cannot have an overload: there is one
+// type per N. The compiler rewrites a print of one wider than 64 bits into
+// `intText(value, bits, signed)` (src/sema/number_text.psm), and `T` is whatever type
+// that was. The body reads the value only with operators, which a generic is checked
+// for once `T` is concrete, so one function serves a 65-bit integer and a 4096-bit one.
+//
+// **The floats are overloads,** because there are four of them and no more.
+//
+// Printing either needs `import std.number_text`: a call into a module is allowed only
+// from a file that imports it, and this is a module a program imports only if it uses
+// one of these types. (The overloads for the four floats belong in std.io and
+// std.string beside `Float`'s, and move there once the bootstrap seed can parse the
+// type names -- src/ imports both, and an older seed would read `F32` as a struct.)
+//
+// ## Integers
+//
+// **The method is schoolbook.** The value is taken apart into 32-bit digits by
+// shifting, negated across them if it is a negative signed value, then divided by
+// 10^9 until nothing is left; each remainder is nine decimal digits. 32-bit digits
+// because their product with 10^9 and the carry fit a U64, so nothing here needs a
+// 128-bit division -- which a target without compiler-rt would have to link a
+// library for. Quadratic in the width, and a width wide enough for that to matter is
+// not one that is printed in a loop.
+
+import std.io
+import std.string
+import std.float_text
+
+// `value` is an integer of `bits` bits, signed or not. `bits` and `signed` are what
+// sema knows of `T` and the generic cannot ask.
+public fn intText<T>(value: T, bits: Int, signed: Bool) -> String {
+    let count = (bits + 31) / 32
+    let mut digits: Vec<U32> = []
+    for i in 0..<count {
+        digits.push((value >> (32 * i)) as U32)
+    }
+
+    // A signed value is sign-extended across every digit (the shift above is
+    // arithmetic for it), so its top bit is the top bit of the last digit.
+    let negative = signed and (digits[count - 1] >> 31) == 1
+    if (negative) { negateDigits(digits) }
+    return decimalFromDigits(digits, negative)
+}
+
+// Two's complement across the digits: invert each, add one with carry.
+private fn negateDigits(inout digits: Vec<U32>) {
+    let mut carry = 1 as U64
+    for i in 0..<digits.length {
+        let sum = ((~digits[i]) as U64) + carry
+        digits[i] = sum as U32
+        carry = sum >> 32
+    }
+}
+
+private fn digitsAreZero(digits: Vec<U32>) -> Bool {
+    for i in 0..<digits.length {
+        if (digits[i] != 0) { return false }
+    }
+    return true
+}
+
+// Divide the number by 10^9 in place and answer the remainder.
+private fn divideByBillion(inout digits: Vec<U32>) -> U32 {
+    let mut remainder = 0 as U64
+    let mut i = digits.length - 1
+    while (i >= 0) {
+        let current = (remainder << 32) | (digits[i] as U64)
+        digits[i] = (current / 1000000000) as U32
+        remainder = current % 1000000000
+        i = i - 1
+    }
+    return remainder as U32
+}
+
+private fn decimalFromDigits(inout digits: Vec<U32>, negative: Bool) -> String {
+    let mut groups: Vec<U32> = []
+    while (digitsAreZero(digits) == false) {
+        groups.push(divideByBillion(digits))
+    }
+    if (groups.length == 0) { return "0" }
+
+    let mut out = ""
+    if (negative) { out = "-" }
+    let top = groups.length - 1
+    out = out.concat(strFromUnsigned(groups[top] as U64))
+    let mut g = top - 1
+    while (g >= 0) {
+        let text = strFromUnsigned(groups[g] as U64)
+        // Nine digits, zero-padded: every group below the top is a full one.
+        for pad in 0..<(9 - text.length) {
+            out = out.concat("0")
+        }
+        out = out.concat(text)
+        g = g - 1
+    }
+    return out
+}
+
+// ## Floats
+//
+// **The fewest digits that read back as the same number *in its own type*.** `Float`
+// prints with the fewest of up to fifteen that read back as the same double
+// (std/float_text.psm). An `F32` widened to a double is a number with a longer
+// expansion than anyone wrote -- 0.1 as an `F32` is 0.10000000149011612 -- so printing
+// it as a double would show digits the type never had. Instead the search is run
+// against `T`: take the digits one at a time, read each rounding back as a double,
+// narrow it to `T`, and stop at the first that equals the value.
+//
+// `limit` is how many digits `T` can need at most -- 9 for an `F32`, 5 for an `F16`, 4
+// for a `BF16` -- and the fallback if none matched, so the loop always ends. An `F128`
+// has more precision than the double the formatter works in; it prints as its nearest
+// double, to 17 digits.
+public fn floatText<T>(value: T, limit: Int) -> String {
+    let wide = value as Float
+    // NaN and the infinities, which have no digits; the double spelling is theirs too.
+    if (wide != wide or wide - wide != 0.0) { return strFromFloat(wide) }
+    if (wide == 0.0) { return strFromFloat(wide) }
+    // A double's own digits are already the fewest that read back, and an `F128` is
+    // printed as the double nearest it.
+    if (limit >= 17) { return strFromFloat(wide) }
+    for digits in 1..<limit {
+        let back = __builtin_float_from_bits(floatDigitsBits(wide, digits)) as T
+        if (back == value) { return strFromFloatDigits(wide, digits) }
+    }
+    return strFromFloatDigits(wide, limit)
+}
+
+public fn print(value: F32) { print(floatText(value, 9)) }
+public fn print(value: F16) { print(floatText(value, 5)) }
+public fn print(value: BF16) { print(floatText(value, 4)) }
+public fn print(value: F128) { print(floatText(value, 17)) }
+
+public fn println(value: F32) { println(floatText(value, 9)) }
+public fn println(value: F16) { println(floatText(value, 5)) }
+public fn println(value: BF16) { println(floatText(value, 4)) }
+public fn println(value: F128) { println(floatText(value, 17)) }
+
+// `toString()` is the digits that read back; `toString(decimals)` is a fixed-point
+// column, formatted as the `Float` it widens to.
+impl F32 {
+    public fn toString(self) -> String { return floatText(self, 9) }
+    public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
+}
+impl F16 {
+    public fn toString(self) -> String { return floatText(self, 5) }
+    public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
+}
+impl BF16 {
+    public fn toString(self) -> String { return floatText(self, 4) }
+    public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
+}
+impl F128 {
+    public fn toString(self) -> String { return floatText(self, 17) }
+    public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
+}
