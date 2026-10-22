@@ -1,0 +1,3 @@
+// expect-error: an `extern fn` cannot be variadic
+extern fn printf(...args: Int) -> Int
+fn main() -> Int { return 0 }

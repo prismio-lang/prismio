@@ -196,7 +196,18 @@ public enum NodeKind {
     // value. Laid out as an ENUM_DECL -- ENUM_VARIANT entries, the representation in
     // child2 -- but never a type: sema turns each `Status.Ok` into a typed constant
     // (src/sema/codeset.psm). Appended so the pinned seed's ordinals do not move.
-    CODESET_DECL
+    CODESET_DECL,
+
+    // `typelist Printable { Display }` / `typelist Row (Int, String, Bool)`: the types a
+    // variadic parameter accepts, as a set (`{ }`, i1 = 0) or an ordered sequence (`( )`,
+    // i1 = 1). child1 is a chain of STRUCT_FIELD entries -- s1 the entry's name when it has
+    // one, child1 its TYPE_ANNOTATION. Compile-time only: sema/typelists.psm reads it and
+    // nothing after sema ever sees one.
+    TYPELIST_DECL,
+
+    // `...args` at a call: the arguments of a pack passed on as separate arguments. child1
+    // is the pack's name. Rewritten away by sema/packs.psm before overload resolution.
+    SPREAD_EXPR
 }
 
 // Flat AST Node using String for pointers (type punning)

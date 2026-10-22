@@ -59,6 +59,7 @@ impl Parser {
         if (self.checkVal(TokenType.KEYWORD, "struct")) { return self.parseStructDecl() }
         if (self.checkVal(TokenType.KEYWORD, "enum")) { return self.parseEnumDecl() }
         if (self.atCodesetDecl()) { return self.parseCodesetDecl() }
+        if (self.atTypelistDecl()) { return self.parseTypelistDecl() }
         if (self.checkVal(TokenType.KEYWORD, "impl")) { return self.parseImplDecl() }
         if (self.checkVal(TokenType.KEYWORD, "trait")) { return self.parseTraitDecl() }
         if (self.atWorkload()) { return self.parseWorkloadDecl() }
@@ -120,6 +121,7 @@ impl Parser {
         if (next.type == TokenType.IDENTIFIER and next.value.equals("cold")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("async")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("codeset")) { return level }
+        if (next.type == TokenType.IDENTIFIER and next.value.equals("typelist")) { return level }
         if (next.type == TokenType.IDENTIFIER and self.isFnModifierWord(next.value)) { return level }
         if (next.type == TokenType.IDENTIFIER and self.isStructModifierWord(next.value)) { return level }
         if (next.type != TokenType.KEYWORD) { return -1 }
@@ -160,7 +162,7 @@ impl Parser {
         let next = self.peek()
         return next.value.equals("fn") or next.value.equals("extern") or next.value.equals("prop")
             or next.value.equals("let") or next.value.equals("struct") or next.value.equals("enum")
-            or next.value.equals("codeset")
+            or next.value.equals("codeset") or next.value.equals("typelist")
             or self.isStructModifierWord(next.value)
             or next.value.equals("cold") or next.value.equals("async") or self.isFnModifierWord(next.value)
     }
@@ -1352,6 +1354,18 @@ impl Parser {
             }
         }
 
+        // `...args: Ts` -- a pack, any number of arguments (docs/VARIADICS_PLAN.md). Rejected
+        // on an `extern fn` in sema, which knows where the parameter ended up.
+        if (self.check(TokenType.ELLIPSIS)) {
+            if (isExtern) {
+                let marker = self.current()
+                diag_error_at_code("P3014", marker.file, marker.line, marker.col, marker.len,
+                                   "an `extern fn` cannot be variadic: C varargs are not supported")
+            }
+            self.advance()
+            param.i1 = 1
+        }
+
         let name = self.current()
         param.s1 = name.value
         self.expectToken(TokenType.IDENTIFIER, "parameter name")
@@ -1409,7 +1423,27 @@ impl Parser {
         }
 
         self.expectVal(TokenType.SEPARATOR, ")", "params")
+        self.checkPackPlacement(params.head)
         return params.head
+    }
+}
+
+
+impl Parser {
+    // Variadic parameters come last, together: after the first, only more of them.
+    private fn checkPackPlacement(self, first: Ptr) {
+        let mut seenPack = false
+        let mut p = first
+        while (nodeExists(p)) {
+            let param = ptr_to_node(p)
+            if (seenPack and param.i1 != 1) {
+                diag_error_at_code("P3015", param.file, param.line, param.col, param.len,
+                                   "a variadic parameter must come last: ".concat(diagQuote(param.s1), " follows one"))
+                return
+            }
+            if (param.i1 == 1) { seenPack = true }
+            p = param.next
+        }
     }
 }
 

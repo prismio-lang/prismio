@@ -1,0 +1,61 @@
+// A fieldless enum is a `Map` key without writing `Copy`, `Eq` or `Key` for it, and a
+// generic enum's struct variants build and match like any other, including with the
+// type arguments written.
+
+import std.io
+import std.string
+import std.map
+import std.option
+
+enum Level { Low, Mid, High }
+enum Http: U16 { Ok = 200, NotFound = 404 }
+
+// A hand-written impl is the program's own and wins over the derived one.
+enum Mode { Fast, Slow }
+impl Key for Mode {
+    fn hash(self) -> Int { return 7 }
+    fn eq(self, other: Self) -> Bool { return self == other }
+}
+impl Copy for Mode { fn copyOf(self) -> Self { return self } }
+
+enum Shape<T> { Dot, Rect { w: T, h: T }, Named { label: String, size: T } }
+
+fn area(s: Shape<Int>) -> Int {
+    match (s) {
+        Shape.Dot => { return 0 }
+        Shape.Rect { h, w } => { return w * h }
+        Shape.Named { label, size } => { return size }
+    }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let levels = mapNew<Level, Int>()
+    mapSet(levels, Level.High, 3)
+    mapSet(levels, Level.Low, 1)
+    if (mapGetOr(levels, Level.High, 0) != 3) { return fail("fieldless enum key") }
+    if (mapGetOr(levels, Level.Mid, -1) != -1) { return fail("absent enum key") }
+
+    let codes = mapNew<Http, Int>()
+    mapSet(codes, Http.NotFound, 404)
+    if (mapGetOr(codes, Http.NotFound, 0) != 404) { return fail("numbered enum key") }
+    if (mapHas(codes, Http.Ok)) { return fail("numbered enum absent key") }
+
+    let modes = mapNew<Mode, Int>()
+    mapSet(modes, Mode.Slow, 2)
+    if (mapGetOr(modes, Mode.Slow, 0) != 2) { return fail("hand-written impl") }
+
+    let a: Shape<Int> = Shape.Rect { w: 3, h: 4 }
+    if (area(a) != 12) { return fail("generic struct variant, inferred") }
+    if (area(Shape.Named { size: 9, label: "x" }) != 9) { return fail("any field order") }
+    let b = Shape<Int>.Rect { w: 5, h: 6 }
+    if (area(b) != 30) { return fail("type arguments written") }
+
+    println("test_329 ok")
+    return 0
+}

@@ -9,6 +9,20 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **Variadic parameters and `typelist`.** `fn println<Ts: Printable>(...args: Ts)` takes any number of
+  arguments, and a `typelist` says which types they may have: braces for an unordered set
+  (`typelist Scalars { Int, Float, Bool }`, `typelist Printable { Display }`), parentheses for an ordered
+  sequence that repeats (`typelist Row (Int, String, Bool)`). The function is instantiated per call shape:
+  `for arg in args` is unrolled, `args.length`, `args[k]` and `row[k]` / `row.name` are constants, and
+  `f(...args)` forwards, so there is no array or length at run time. A function may have several packs
+  (consecutive, in order), and `...parts: String` is the one-type form. A fixed overload always beats a
+  variadic one. `print`, `println`, `eprint` and `eprintln` now take any number of printable arguments,
+  space separated (`import std.display`; one argument still calls the per-type overload), `concat` takes
+  seven parts or more, and string interpolation is one `concat` however many parts it has. Before the
+  standard-library conversion the whole corpus compiled to the IR it did before; after it, the suite passes. `tests/test_330`, `test_331`, `neg_329`-`neg_335`;
+  `parse/typelists.psm`, `sema/typelists.psm`, `sema/packs.psm`, `docs/VARIADICS_PLAN.md`. Not yet: a pack
+  in a closure, keyword arguments, a minimum count.
+
 - **Enum discriminants, representation types, struct variants and `codeset`.**
   `enum HttpStatus: U16 { Ok = 200, NotFound = 404 }` gives an enum a representation and
   numbers. A fieldless enum is stored as that integer (`Packet { status, level }` is
@@ -27,7 +41,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   modules are `parse/enums.psm`, `sema/enum_discriminants.psm`, `sema/codeset.psm` and
   `sema/enum_struct_variants.psm` (`docs/ENUM_DISCRIMINANTS_PLAN.md`). The runtime's
   enum registry is 64-bit (`ir_register_enum_variant`, `ir_enum_has_variant`) and the seed
-  was re-cut for it. A struct variant of a *generic* enum is built positionally for now.
+  was re-cut for it. Struct variants work on generic enums too (`Shape<Int>.Rect { w: 5, h: 6 }`).
+  A fieldless enum that appears as a type argument gets `Copy`, `Eq` and `Key` without writing
+  them (`driver/derived_impls.psm`), so `Map<Level, V>` works; an `impl` the program writes wins.
+  `I32` is shown beside `Int` in the enum docs (the two have always been one type).
 
 - **Integers of any width, and five float types.** `Int<N>` and `UInt<N>` are an integer of
   exactly `N` bits for any `N` from 1 to 8,388,608 (LLVM's limit): `Int<24>`, `UInt<5>`,

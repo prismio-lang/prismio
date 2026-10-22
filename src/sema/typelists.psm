@@ -1,0 +1,94 @@
+// What a `typelist` accepts.
+//
+//     typelist Scalars { Int, I64, Float, Bool }     // a set
+//     typelist Row (Int, String, Bool)               // a sequence
+//
+// An entry is a type, a trait (any type implementing it fits), or another list. A set
+// accepts an argument when any entry does; a sequence accepts by position, and the pack that
+// is bounded by it asks entry by entry (sema/packs.psm). Nested lists are flattened by
+// asking the inner list the same question, to a bounded depth so a list cannot contain itself.
+
+import ast.nodes
+import ast.types
+import common.diagnostics
+import std.string
+
+let TYPELIST_MAX_DEPTH = 8
+
+internal fn typelistNamed(name: String) -> ASTNode {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.TYPELIST_DECL) { return decl }
+    }
+    return ptr_to_node(ptr_null())
+}
+
+internal fn typelistIsSequence(list: ASTNode) -> Bool {
+    return list.i1 == 1
+}
+
+internal fn typelistWidth(list: ASTNode) -> Int {
+    let mut width = 0
+    let mut p = list.child1
+    while (nodeExists(p)) {
+        width = width + 1
+        p = ptr_to_node(p).next
+    }
+    return width
+}
+
+internal fn typelistEntryAt(list: ASTNode, index: Int) -> ASTNode {
+    let mut p = list.child1
+    let mut i = 0
+    while (nodeExists(p) and i < index) {
+        p = ptr_to_node(p).next
+        i = i + 1
+    }
+    return ptr_to_node(p)
+}
+
+// The position of a named entry, or -1.
+internal fn typelistIndexOfName(list: ASTNode, name: String) -> Int {
+    let mut p = list.child1
+    let mut i = 0
+    while (nodeExists(p)) {
+        if (ptr_to_node(p).s1.equals(name)) { return i }
+        p = ptr_to_node(p).next
+        i = i + 1
+    }
+    return -1
+}
+
+// What an entry is written as, for a message.
+internal fn typelistEntryText(entry: ASTNode) -> String {
+    return ptr_to_node(entry.child1).s1.clone()
+}
+
+// Whether one entry accepts a type.
+internal fn typelistEntryAccepts(module: ASTNode, entry: ASTNode, argT: TypeInfo, depth: Int) -> Bool {
+    let annotation = ptr_to_node(entry.child1)
+    let name = annotation.s1
+    let nested = typelistNamed(name)
+    if (nodeExists(node_to_ptr(nested)) and depth < TYPELIST_MAX_DEPTH) {
+        return typelistAccepts(module, nested, argT, depth + 1)
+    }
+    let traitDecl = monoFindTrait(module, name)
+    if (nodeExists(node_to_ptr(traitDecl))) {
+        let traitRef = createNode(NodeKind.TRAIT_REF)
+        traitRef.s1 = name.clone()
+        return monoImplements(module, argT, traitRef)
+    }
+    let entryT = semaAnnotationType(module, annotation)
+    return typeIsValid(entryT) and typeEquals(entryT, argT)
+}
+
+// Whether any entry accepts a type: a set's rule, and a nested list's whatever its delimiter.
+internal fn typelistAccepts(module: ASTNode, list: ASTNode, argT: TypeInfo, depth: Int) -> Bool {
+    let mut p = list.child1
+    while (nodeExists(p)) {
+        if (typelistEntryAccepts(module, ptr_to_node(p), argT, depth)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}

@@ -1,0 +1,7 @@
+// expect-error: argument 2 must be `String` (the arguments repeat `Int, String, Bool`), found `Int`
+typelist Row (Int, String, Bool)
+fn rows<Ts: Row>(...args: Ts) { }
+fn main() -> Int {
+    rows(1, 2, 3)
+    return 0
+}

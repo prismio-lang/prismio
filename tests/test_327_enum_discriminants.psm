@@ -23,7 +23,7 @@ enum Color: U8 { Red, Green, Blue }
 enum Message: U8 {
     Quit = 0,
     Text(String) = 5,
-    Move { x: Int, y: Int },
+    Move { x: I32, y: Int },
     Resize(Int, Int),
 }
 

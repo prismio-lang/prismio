@@ -1,0 +1,73 @@
+// `typelist` declarations: the types a variadic parameter accepts.
+//
+//     typelist Scalars { Int, I64, Float, Bool }     // a set: any of these, any order
+//     typelist Row (Int, String, Bool)               // a sequence: this order, repeated
+//     typelist Named (id: Int, name: String)         // a sequence with named positions
+//
+// The delimiter is the choice of ordered or not, and is recorded, not interpreted: sema/typelists.psm
+// decides what an entry means (a type, a trait, or another list). Shape of the node
+// (docs/VARIADICS_PLAN.md):
+//
+//     TYPELIST_DECL   s1 name, i1 = 1 for a sequence, i2 visibility,
+//                     child1 entries -- STRUCT_FIELD, s1 the entry's name if written, child1 its type
+
+import lexer.token
+import common.text
+import ast.nodes
+import common.diagnostics
+import std.string
+
+impl Parser {
+    // `typelist` is **contextual**, like `codeset`: a declaration only when a name follows.
+    internal fn atTypelistDecl(self) -> Bool {
+        if (self.checkVal(TokenType.IDENTIFIER, "typelist") == false) { return false }
+        return self.peek().type == TokenType.IDENTIFIER
+    }
+
+    internal fn parseTypelistDecl(self) -> ASTNode {
+        let list = self.node(NodeKind.TYPELIST_DECL)
+        list.i2 = enumDefaultVisibility()
+        self.advance()
+
+        let name = self.current()
+        list.s1 = name.value
+        self.expectToken(TokenType.IDENTIFIER, "typelist name")
+
+        if (self.matchVal(TokenType.SEPARATOR, "{")) {
+            list.child1 = self.parseTypelistEntries("}")
+        } else if (self.matchVal(TokenType.SEPARATOR, "(")) {
+            list.i1 = 1
+            list.child1 = self.parseTypelistEntries(")")
+        } else {
+            let found = parserDescribe(self.current())
+            self.fatal("expected `{` for a set or `(` for an ordered sequence in typelist, found ".concat(found))
+        }
+        return list
+    }
+}
+
+impl Parser {
+    private fn parseTypelistEntries(self, closer: String) -> Ptr {
+        let entries = nodeList()
+        while (self.checkVal(TokenType.SEPARATOR, closer) == false) {
+            nodeListPush(entries, self.parseTypelistEntry())
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        self.expectVal(TokenType.SEPARATOR, closer, "typelist")
+        return entries.head
+    }
+
+    // `Int`, or `id: Int` when the position has a name.
+    private fn parseTypelistEntry(self) -> ASTNode {
+        let entry = self.node(NodeKind.STRUCT_FIELD)
+        if (self.check(TokenType.IDENTIFIER) and self.peek().type == TokenType.SEPARATOR
+                and self.peek().value.equals(":")) {
+            let entryName = self.current()
+            entry.s1 = entryName.value
+            self.advance()
+            self.advance()
+        }
+        entry.child1 = node_to_ptr(self.parseTypeAnnotation())
+        return entry
+    }
+}

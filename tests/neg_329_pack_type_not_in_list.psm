@@ -1,0 +1,9 @@
+// expect-error: argument 2 has type `P`, which is not in `Printable`
+import std.display
+typelist Printable { Display }
+struct P { x: Int }
+fn say<Ts: Printable>(...args: Ts) { }
+fn main() -> Int {
+    say(1, P { x: 1 })
+    return 0
+}

@@ -28,7 +28,7 @@ import std.string
 // What an enum or codeset with no marker is. The one place the default is chosen:
 // it is `internal`, as a struct's is, and a different default is a change to this
 // return and nothing else.
-private fn enumDefaultVisibility() -> Int { return 2 }
+internal fn enumDefaultVisibility() -> Int { return 2 }
 
 impl Parser {
     internal fn parseEnumDecl(self) -> ASTNode {
@@ -153,8 +153,9 @@ impl Parser {
 
 impl Parser {
     // `Message.Move { x: 1, y: 2 }`, and in a match arm the pattern `Message.Move { x, y }`.
-    // The cursor is on the `{`. A STRUCT_LITERAL_EXPR whose `s1` is `Enum.Variant`;
-    // sema/enum_struct_variants.psm turns it into the positional form.
+    // The cursor is on the `{`. A STRUCT_LITERAL_EXPR whose `s1` is `Enum.Variant`
+    // (child3 the written type arguments, if any); sema/enum_struct_variants.psm
+    // turns it into the positional form.
     //
     // A field may be written without its value (`{ x, y }`) here and nowhere else:
     // in a pattern the name is the binding, and in an expression it is the variable
@@ -164,6 +165,8 @@ impl Parser {
         let literal = self.node(NodeKind.STRUCT_LITERAL_EXPR)
         nodeSpanFrom(literal, member)
         literal.s1 = owner.s1.concat(".", member.s1)
+        // `Shape<Int>.Rect { ... }`: the written type arguments ride on child3 to sema.
+        if (owner.kind == NodeKind.TYPE_ANNOTATION) { literal.child3 = member.child1 }
         self.expectVal(TokenType.SEPARATOR, "{", "variant literal")
 
         let fields = nodeList()
@@ -193,7 +196,7 @@ impl Parser {
         if (self.allowStructLit != 1) { return false }
         if (self.checkVal(TokenType.SEPARATOR, "{") == false) { return false }
         let owner = ptr_to_node(member.child1)
-        if (owner.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+        if (owner.kind != NodeKind.IDENTIFIER_EXPR and owner.kind != NodeKind.TYPE_ANNOTATION) { return false }
         return startsUppercase(owner.s1) and startsUppercase(member.s1)
     }
 }

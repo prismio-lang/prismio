@@ -23,6 +23,9 @@ trait Display {
     fn show(self) -> String
 }
 
+// Every type that can be shown: what `print` and `println` accept, any number of them.
+public typelist Printable { Display }
+
 impl Display for Int    { fn show(self) -> String { return strFromInt(self) } }
 impl Display for I8     { fn show(self) -> String { return strFromInt(self as Int) } }
 impl Display for I16    { fn show(self) -> String { return strFromInt(self as Int) } }
@@ -137,21 +140,33 @@ impl Display for String? {
 // The print family for anything that can show itself, so `println(version)` works
 // for a type with an `impl Display`, and for the optionals above, once this module
 // is imported. **Here and not in std.io**, which every printing program imports: a
-// generic `print<T: Display>` there would put this module, and std.string under it,
+// generic `print` there would put this module, and std.string under it,
 // into programs that never print anything but a literal. The overloads std.io has
 // for its own types are exact matches, and an exact match wins over these.
-public fn print<T: Display>(value: T) {
-    print(value.show())
+public fn print<Ts: Printable>(...args: Ts) {
+    let mut first = true
+    for arg in args {
+        if (first == false) { print(" ") }
+        first = false
+        print(arg.show())
+    }
 }
 
-public fn println<T: Display>(value: T) {
-    println(value.show())
+public fn println<Ts: Printable>(...args: Ts) {
+    print(...args)
+    println()
 }
 
-public fn eprint<T: Display>(value: T) {
-    eprint(value.show())
+public fn eprint<Ts: Printable>(...args: Ts) {
+    let mut first = true
+    for arg in args {
+        if (first == false) { eprint(" ") }
+        first = false
+        eprint(arg.show())
+    }
 }
 
-public fn eprintln<T: Display>(value: T) {
-    eprintln(value.show())
+public fn eprintln<Ts: Printable>(...args: Ts) {
+    eprint(...args)
+    eprintln()
 }

@@ -51,7 +51,11 @@ public enum TokenType {
     // pinned seed and the IDE plugin both match on them by number.
     INTERP_BEGIN,
     INTERP_PART,
-    INTERP_END
+    INTERP_END,
+
+    // `...`: the marker of a variadic parameter and of a spread argument. Appended for
+    // the same reason as the three above.
+    ELLIPSIS
 }
 
 // `line`/`col` are 1-based and point at the token's first character; `len` is its
@@ -81,6 +85,7 @@ public fn typeToString(t: TokenType) -> String {
         TokenType.BOOL_LITERAL => { return "BOOL" }
         TokenType.IDENTIFIER => { return "IDENTIFIER" }
         TokenType.KEYWORD => { return "KEYWORD" }
+        TokenType.ELLIPSIS => { return "..." }
         TokenType.SEPARATOR => { return "SEPARATOR" }
         TokenType.ARITHMETIC_OPERATOR => { return "OPERATOR" }
         TokenType.RELATIONAL_OPERATOR => { return "REL_OP" }

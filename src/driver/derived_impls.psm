@@ -1,0 +1,120 @@
+// Standard-trait impls a fieldless enum gets without writing them.
+//
+// An enum's value is an integer, so `Copy`, `Eq` and `Key` have one possible
+// meaning and no reason to be hand-written -- and without them `Map<Color, V>` is
+// refused until the program writes three impls that each say "it is an integer".
+//
+// The impls are **source text parsed like any other**, so everything after the
+// merge sees an ordinary `impl` block and nothing needs to know they were derived.
+// Each is added only when its trait is in the program (the program imported it)
+// and the program has not written its own, so a hand-written impl always wins.
+//
+// **Only for an enum the program passes as a type argument** -- `Map<Color, V>`,
+// `mapNew<Color, V>()`. That is where a bound is asked of an enum, and a derived
+// impl for every enum would put three unused functions into every program that
+// merely imports `std.key`: they are not pruned, and the output of programs that
+// never use them would change.
+// Generic enums and enums with payloads are left alone: a payload enum owns
+// values, and no integer meaning applies.
+
+import ast.nodes
+import ast.types
+import ir.bridge
+import sema.enums
+import driver.imports
+import std.string
+
+private fn implExists(module: ASTNode, traitName: String, typeName: String) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals(traitName) and stmt.s1.equals(typeName)) {
+            return true
+        }
+        p = stmt.next
+    }
+    return false
+}
+
+private fn traitDeclared(module: ASTNode, traitName: String) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(traitName)) { return true }
+        p = stmt.next
+    }
+    return false
+}
+
+private fn derivedSource(name: String, traitName: String) -> String {
+    if (traitName.equals("Copy")) {
+        return "impl Copy for ".concat(name, " { fn copyOf(self) -> Self { return self } }\n")
+    }
+    if (traitName.equals("Eq")) {
+        return "impl Eq for ".concat(name, " { fn eq(self, other: Self) -> Bool { return self == other } }\n")
+    }
+    return "impl Key for ".concat(name, " {\n",
+                                  "    fn hash(self) -> Int { return (self as Int) & 2147483647 }\n",
+                                  "    fn eq(self, other: Self) -> Bool { return self == other }\n}\n")
+}
+
+// `|Name|` for every type written as an argument of another type or a call.
+let mut typeArguments = ""
+
+private fn noteTypeArguments(first: Ptr) {
+    let mut p = first
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.TYPE_ANNOTATION) {
+            let mut arg = node.child1
+            while (nodeExists(arg)) {
+                let name = ptr_to_node(arg).s1
+                if (typeArguments.contains("|".concat(name, "|")) == false) {
+                    typeArguments = typeArguments.concat(name, "|")
+                }
+                arg = ptr_to_node(arg).next
+            }
+        }
+        noteTypeArguments(node.child1)
+        noteTypeArguments(node.child2)
+        noteTypeArguments(node.child3)
+        p = node.next
+    }
+}
+
+private fn derivable(decl: ASTNode) -> Bool {
+    if (decl.kind != NodeKind.ENUM_DECL or decl.s2.equals("") == false) { return false }
+    if (enumHasPayload(decl)) { return false }
+    return typeArguments.contains("|".concat(decl.s1, "|"))
+}
+
+private fn deriveFor(module: ASTNode, decl: ASTNode, traitName: String) {
+    if (traitDeclared(module, traitName) == false) { return }
+    if (implExists(module, traitName, decl.s1)) { return }
+    let parsed = parseSource(derivedSource(decl.s1, traitName), decl.file)
+    let mut p = parsed.child1
+    while (nodeExists(p)) {
+        let implNode = ptr_to_node(p)
+        let following = implNode.next
+        implNode.next = ptr_null()
+        appendStatement(module, implNode)
+        p = following
+    }
+}
+
+// Adds the impls for every fieldless enum already in the merged module. Appending
+// while walking is safe: what is appended is an IMPL_DECL, which `derivable` skips.
+public fn deriveEnumImpls(module: ASTNode) {
+    typeArguments = "|"
+    noteTypeArguments(module.child1)
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (derivable(stmt)) {
+            deriveFor(module, stmt, "Copy")
+            deriveFor(module, stmt, "Eq")
+            deriveFor(module, stmt, "Key")
+        }
+        p = stmt.next
+    }
+}

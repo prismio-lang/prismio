@@ -1,0 +1,40 @@
+// The standard library's own variadics: `concat` past six parts (interpolation is one call, not a tree
+// of joins) and `print` / `println` of any number of printable arguments, space separated.
+
+import std.io
+import std.string
+import std.display
+
+struct Version { major: Int, minor: Int }
+impl Display for Version {
+    fn show(self) -> String { return "v${self.major}.${self.minor}" }
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let a = "a"
+    if (a.concat("b", "c", "d", "e", "f", "g", "h") != "abcdefgh") { return fail("concat of eight") }
+    if (a.concat("b", "c", "d", "e", "f") != "abcdef") { return fail("six keep their own overload") }
+    let long = "start ".concat("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", " end")
+    if (long != "start 12345678910 end") { return fail("concat of twelve") }
+
+    let n = 5
+    let text = "n=${n} m=${n + 1} k=${n + 2} j=${n + 3} i=${n + 4}"
+    if (text != "n=5 m=6 k=7 j=8 i=9") { return fail("interpolation with ten parts") }
+
+    // These go to stdout; the checks above are the contract, these prove they compile and run.
+    println("a", 1, true, 2.5)
+    println(Version { major: 1, minor: 2 })
+    print("two", "words")
+    println()
+    println(42)
+    println()
+
+    println("test_331 ok")
+    return 0
+}

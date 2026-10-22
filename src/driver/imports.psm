@@ -18,6 +18,7 @@ import ast.types
 import parse.*
 import ir.*
 import sema.*
+import driver.derived_impls
 import common.diagnostics
 import std.string
 import std.fs
@@ -144,14 +145,14 @@ private fn hasNamedTopLevel(module: ASTNode, stmt: ASTNode) -> Bool {
     return false
 }
 
-private fn parseSource(content: String, file: Int) -> ASTNode {
+internal fn parseSource(content: String, file: Int) -> ASTNode {
     let lex = Lexer.create(content, file)
     let headToken = lex.allTokens()
     let p = parserCreate(headToken)
     return parseModule(p)
 }
 
-private fn appendStatement(module: ASTNode, stmt: ASTNode) {
+internal fn appendStatement(module: ASTNode, stmt: ASTNode) {
     if (isExternDecl(stmt)) {
         ir_extern_decl_record(stmt.file, stmt.s1, stmt.i2)
     }
@@ -629,6 +630,7 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     // Before the templates are collected, and after the merge: a default may be
     // inherited from a trait declared in another module, and a default expanded
     // on a generic impl has to be collected as a template like any other.
+    deriveEnumImpls(merged)
     monoExpandDefaultMethods(merged)
 
     // Before the templates are collected: a generic enum is numbered once, on

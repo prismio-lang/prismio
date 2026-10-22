@@ -114,6 +114,17 @@ private fn enumOrderedInitialisers(expr: ASTNode, variant: ASTNode) -> Ptr {
     return ordered.head
 }
 
+// The qualifier of the call: the written `Shape<Int>` when the literal carried type
+// arguments, and the bare enum name otherwise -- the two shapes `Shape<Int>.Rect(...)`
+// and `Shape.Rect(...)` already parse to.
+private fn enumVariantQualifier(expr: ASTNode) -> ASTNode {
+    if (nodeExists(expr.child3)) { return ptr_to_node(expr.child3) }
+    let owner = createNode(NodeKind.IDENTIFIER_EXPR)
+    owner.s1 = enumVariantLiteralOwner(expr)
+    nodeSpanFrom(owner, expr)
+    return owner
+}
+
 // `Enum.Variant { ... }` as an expression or a pattern: rewritten into the call
 // `Enum.Variant(...)`. False after reporting, with the node left as it was.
 internal fn enumVariantLiteralToCall(module: ASTNode, expr: ASTNode) -> Bool {
@@ -121,12 +132,9 @@ internal fn enumVariantLiteralToCall(module: ASTNode, expr: ASTNode) -> Bool {
     if (nodeIsNull(node_to_ptr(variant))) { return false }
     if (enumCheckVariantFields(expr, variant, true) == false) { return false }
 
-    let owner = createNode(NodeKind.IDENTIFIER_EXPR)
-    owner.s1 = enumVariantLiteralOwner(expr)
-    nodeSpanFrom(owner, expr)
     let callee = createNode(NodeKind.MEMBER_ACCESS_EXPR)
     callee.s1 = enumVariantLiteralName(expr)
-    callee.child1 = node_to_ptr(owner)
+    callee.child1 = node_to_ptr(enumVariantQualifier(expr))
     nodeSpanFrom(callee, expr)
 
     let args = enumOrderedInitialisers(expr, variant)

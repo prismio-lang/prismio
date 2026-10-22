@@ -1,0 +1,8 @@
+// expect-error: `break` and `continue` are not allowed in a loop over a pack
+fn f(...rest: Int) {
+    for r in rest { break }
+}
+fn main() -> Int {
+    f(1, 2)
+    return 0
+}

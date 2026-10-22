@@ -2703,6 +2703,37 @@ impl String {
         return out
     }
 
+    // Seven parts or more. The five above are the cases worth a hand-tuned body, and they
+    // keep winning for two to six parts (a fixed overload always beats a variadic one);
+    // this is what a longer chain or interpolation lowers to, instead of a tree of joins.
+    // One allocation, sized once. There is no short-string path: a result of twelve bytes
+    // or fewer from seven or more pieces is a handful of one-byte parts, and the
+    // allocation it skips is not worth an arity-generic builtin.
+    public fn concat(self, b: String, c: String, d: String, e: String, f: String, ...more: String) -> String {
+        let alen = __builtin_string_len(self)
+        let blen = __builtin_string_len(b)
+        let clen = __builtin_string_len(c)
+        let dlen = __builtin_string_len(d)
+        let elen = __builtin_string_len(e)
+        let flen = __builtin_string_len(f)
+        let mut total = alen + blen + clen + dlen + elen + flen
+        for part in more { total = total + __builtin_string_len(part) }
+        let out = str_with_capacity(total)
+        strCopyRangeInto(out, 0, self, 0, alen)
+        strCopyRangeInto(out, alen, b, 0, blen)
+        strCopyRangeInto(out, alen + blen, c, 0, clen)
+        strCopyRangeInto(out, alen + blen + clen, d, 0, dlen)
+        strCopyRangeInto(out, alen + blen + clen + dlen, e, 0, elen)
+        strCopyRangeInto(out, alen + blen + clen + dlen + elen, f, 0, flen)
+        let mut at = alen + blen + clen + dlen + elen + flen
+        for part in more {
+            let partLen = __builtin_string_len(part)
+            strCopyRangeInto(out, at, part, 0, partLen)
+            at = at + partLen
+        }
+        return out
+    }
+
     // `[start, end)`. The half-open twin of `substring`, which takes a *length*.
     // Both exist because `s[a..b]` is end-exclusive and reading a range operator
     // as a length is the mistake this pair is meant to stop.

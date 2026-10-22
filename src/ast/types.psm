@@ -1249,6 +1249,7 @@ public fn isNamedTopLevel(stmt: ASTNode) -> Bool {
         NodeKind.STRUCT_DECL => { return true }
         NodeKind.ENUM_DECL => { return true }
         NodeKind.CODESET_DECL => { return true }
+        NodeKind.TYPELIST_DECL => { return true }
     // LAYOUT 3.1 merges several workloads *by summation*, so a workload that
     // arrives twice through two import paths would weight itself twice over. It
     // is named and it is not overloadable, so the existing rule is exactly right

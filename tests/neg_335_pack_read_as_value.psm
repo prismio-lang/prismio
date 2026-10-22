@@ -1,0 +1,8 @@
+// expect-error: `rest` is a pack: use `.length`
+fn f(...rest: Int) -> Int {
+    let all = rest
+    return 0
+}
+fn main() -> Int {
+    return f(1, 2)
+}

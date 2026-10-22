@@ -1,0 +1,3 @@
+// expect-error: a variadic parameter must come last: `tail` follows one
+fn f(...rest: Int, tail: Int) { }
+fn main() -> Int { return 0 }

@@ -1,0 +1,598 @@
+// Variadic parameters, expanded per call.
+//
+//     fn println<Ts: Printable>(...args: Ts) { for arg in args { print(arg.show()) } }
+//     println("x = ", x)                 // Ts is (String, Int)
+//
+// A call that no fixed overload takes is bound to the pack function's packs, and the function
+// is **copied once per shape of call** with each pack replaced by one ordinary parameter per
+// argument (`args$0`, `args$1`), exactly as a generic is copied per type argument. The copy's
+// body is rewritten so that the pack's own operations are plain code:
+//
+//     args.length, args.count   a literal
+//     args[2]                   the parameter args$2
+//     for arg in args { ... }   the body, once per argument, each in its own scope
+//     f(...args)                the parameters, as separate arguments
+//
+// Everything after sema sees an ordinary function. docs/VARIADICS_PLAN.md has the design.
+
+import ast.nodes
+import ast.types
+import lexer.token
+import common.diagnostics
+import std.string
+
+// ---------------------------------------------------------
+// Declarations
+// ---------------------------------------------------------
+
+internal fn packHasPackParameter(fnNode: ASTNode) -> Bool {
+    let mut p = fnNode.child1
+    while (nodeExists(p)) {
+        if (ptr_to_node(p).i1 == 1) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+private fn packTemplateNamed(module: ASTNode, name: String) -> ASTNode {
+    let mut p = module.child2
+    while (nodeExists(p)) {
+        let template = ptr_to_node(p)
+        if (template.kind == NodeKind.FUNCTION and template.s1.equals(name) and packHasPackParameter(template)) {
+            return template
+        }
+        p = template.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+private fn packFixedCount(template: ASTNode) -> Int {
+    let mut count = 0
+    let mut p = template.child1
+    while (nodeExists(p) and ptr_to_node(p).i1 != 1) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+private fn packChainLength(first: Ptr) -> Int {
+    let mut count = 0
+    let mut p = first
+    while (nodeExists(p)) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+private fn packChainAt(first: Ptr, index: Int) -> ASTNode {
+    let mut p = first
+    let mut i = 0
+    while (nodeExists(p) and i < index) {
+        p = ptr_to_node(p).next
+        i = i + 1
+    }
+    return ptr_to_node(p)
+}
+
+// The `typelist` that bounds a pack's type parameter, or an absent node when the pack is
+// written with a concrete type (`...parts: String`).
+private fn packListOf(template: ASTNode, packParam: ASTNode) -> ASTNode {
+    let annotation = ptr_to_node(packParam.child1)
+    let mut g = template.genericInfo
+    while (nodeExists(g)) {
+        let generic = ptr_to_node(g)
+        if (generic.kind == NodeKind.GENERIC_PARAM and generic.s1.equals(annotation.s1)) {
+            let mut b = generic.child1
+            while (nodeExists(b)) {
+                let list = typelistNamed(ptr_to_node(b).s1)
+                if (nodeExists(node_to_ptr(list))) { return list }
+                b = ptr_to_node(b).next
+            }
+        }
+        g = generic.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+private fn packTypeParameterNamed(template: ASTNode, name: String) -> Bool {
+    let mut g = template.genericInfo
+    while (nodeExists(g)) {
+        let generic = ptr_to_node(g)
+        if (generic.kind == NodeKind.GENERIC_PARAM and generic.s1.equals(name)) { return true }
+        g = generic.next
+    }
+    return false
+}
+
+// ---------------------------------------------------------
+// Binding a call to the packs
+// ---------------------------------------------------------
+
+private fn packArgText(i: Int) -> String {
+    return (i + 1).toString()
+}
+
+// Whether argument type `argT` is accepted by position `position` of a pack: the concrete type
+// of a homogeneous pack, an entry of a sequence, or any entry of a set.
+private fn packAccepts(module: ASTNode, list: ASTNode, concrete: TypeInfo, argT: TypeInfo, position: Int) -> Bool {
+    if (nodeIsNull(node_to_ptr(list))) { return typeEquals(concrete, argT) }
+    if (typelistIsSequence(list)) {
+        return typelistEntryAccepts(module, typelistEntryAt(list, position), argT, 0)
+    }
+    return typelistAccepts(module, list, argT, 0)
+}
+
+private fn packListName(template: ASTNode, packParam: ASTNode, list: ASTNode) -> String {
+    if (nodeIsNull(node_to_ptr(list))) { return ptr_to_node(packParam.child1).s1.clone() }
+    return list.s1.clone()
+}
+
+// What a pack accepts, for a message about an argument it did not.
+private fn packRejection(module: ASTNode, template: ASTNode, packParam: ASTNode, list: ASTNode,
+                         concrete: TypeInfo, arg: ASTNode, offset: Int, index: Int) {
+    let found = diagQuote(typeDisplay(nodeGetType(arg)))
+    if (nodeIsNull(node_to_ptr(list))) {
+        semaErrorAt(arg, "argument ".concat(packArgText(index), " must be ", diagQuote(typeDisplay(concrete)),
+                                            ", found ", found))
+        return
+    }
+    if (typelistIsSequence(list) == false) {
+        semaErrorAt(arg, "argument ".concat(packArgText(index), " has type ", found, ", which is not in ",
+                                            diagQuote(list.s1)))
+        return
+    }
+    let width = typelistWidth(list)
+    let entry = typelistEntryAt(list, offset % width)
+    let mut pattern = typelistEntryText(typelistEntryAt(list, 0))
+    for e in 1..<width {
+        pattern = pattern.concat(", ", typelistEntryText(typelistEntryAt(list, e)))
+    }
+    let wanted = diagQuote(typelistEntryText(entry))
+    let repeats = " (the arguments repeat ".concat(diagQuote(pattern), "), found ", found)
+    semaErrorAt(arg, "argument ".concat(packArgText(index), " must be ", wanted, repeats))
+}
+
+// How many arguments each pack takes, in declaration order, or false after reporting.
+private fn packBind(module: ASTNode, template: ASTNode, callExpr: ASTNode, fixed: Int,
+                    inout counts: Vec<Int>) -> Bool {
+    let argHead = callExpr.child2
+    let total = packChainLength(argHead)
+    let mut at = fixed
+    let mut packPtr = packChainAt(template.child1, fixed)
+    let mut p = node_to_ptr(packPtr)
+    while (nodeExists(p)) {
+        let packParam = ptr_to_node(p)
+        let list = packListOf(template, packParam)
+        let annotation = ptr_to_node(packParam.child1)
+        if (nodeIsNull(node_to_ptr(list)) and packTypeParameterNamed(template, annotation.s1)) {
+            semaErrorAt(callExpr, "the pack type ".concat(diagQuote(annotation.s1), " needs a typelist bound, as in `<",
+                                                         annotation.s1, ": Printable>`"))
+            return false
+        }
+        let mut concrete = typeInvalid()
+        if (nodeIsNull(node_to_ptr(list))) { concrete = semaAnnotationType(module, annotation) }
+
+        let start = at
+        let mut width = 1
+        let sequence = nodeExists(node_to_ptr(list)) and typelistIsSequence(list)
+        if (sequence) { width = typelistWidth(list) }
+        if (width == 0) {
+            semaErrorAt(list, "the typelist ".concat(diagQuote(list.s1), " is empty and accepts nothing"))
+            return false
+        }
+        loop {
+            if (at + width > total) { break }
+            let mut fits = true
+            for j in 0..<width {
+                let arg = packChainAt(argHead, at + j)
+                if (packAccepts(module, list, concrete, nodeGetType(arg), j) == false) {
+                    fits = false
+                    break
+                }
+            }
+            if (fits == false) { break }
+            at = at + width
+        }
+        counts.push(at - start)
+        p = packParam.next
+    }
+
+    if (at < total) {
+        packReportLeftover(module, template, argHead, fixed, counts, at, total)
+        return false
+    }
+    return true
+}
+
+// The first argument no pack took. A sequence that ran out of arguments mid-group says so by
+// the group's size; any other mismatch names the argument, what it was and what was wanted.
+private fn packReportLeftover(module: ASTNode, template: ASTNode, argHead: Ptr, fixed: Int,
+                              counts: Vec<Int>, at: Int, total: Int) {
+    let lastIndex = counts.length - 1
+    let lastParam = packChainAt(template.child1, fixed + lastIndex)
+    let list = packListOf(template, lastParam)
+    let mut concrete = typeInvalid()
+    if (nodeIsNull(node_to_ptr(list))) { concrete = semaAnnotationType(module, ptr_to_node(lastParam.child1)) }
+    if (nodeExists(node_to_ptr(list)) and typelistIsSequence(list)) {
+        let width = typelistWidth(list)
+        let present = total - at
+        let mut checked = width
+        if (present < width) { checked = present }
+        // The first argument of the unfinished group that its position refuses; if none does, the
+        // group is simply short.
+        for j in 0..<checked {
+            let candidate = packChainAt(argHead, at + j)
+            if (typelistEntryAccepts(module, typelistEntryAt(list, j), nodeGetType(candidate), 0) == false) {
+                packRejection(module, template, lastParam, list, concrete, candidate, j, at + j)
+                return
+            }
+        }
+        let groupText = " arguments in groups of ".concat(width.toString(), "; the last group has ", present.toString())
+        semaErrorAt(packChainAt(argHead, at), diagQuote(template.s1).concat(" takes ", diagQuote(list.s1), groupText))
+        return
+    }
+    packRejection(module, template, lastParam, list, concrete, packChainAt(argHead, at), 0, at)
+}
+
+private fn packPrefixFits(module: ASTNode, list: ASTNode, argHead: Ptr, at: Int, total: Int) -> Bool {
+    for j in 0..<(total - at) {
+        let arg = packChainAt(argHead, at + j)
+        if (typelistEntryAccepts(module, typelistEntryAt(list, j), nodeGetType(arg), 0) == false) { return false }
+    }
+    return true
+}
+
+// ---------------------------------------------------------
+// Rewriting a copy's body
+// ---------------------------------------------------------
+
+// The pack being expanded and the loop variable being substituted. Module state rather than
+// parameters because the rewrite is a recursive walk that threads them through every level;
+// each pass sets them and no pass is re-entered for a different pack.
+let mut packName = ""
+let mut packCount = 0
+let mut packWidth = 1
+let mut packList: Ptr
+let mut rowName = ""
+let mut rowGroup = 0
+
+private fn packExpandedName(index: Int) -> String {
+    return packName.concat("$", index.toString())
+}
+
+private fn packIsRef(p: Ptr) -> Bool {
+    if (nodeIsNull(p)) { return false }
+    let node = ptr_to_node(p)
+    return node.kind == NodeKind.IDENTIFIER_EXPR and node.s1.equals(packName)
+}
+
+private fn packIsRowRef(p: Ptr) -> Bool {
+    if (nodeIsNull(p)) { return false }
+    let node = ptr_to_node(p)
+    return node.kind == NodeKind.IDENTIFIER_EXPR and node.s1.equals(rowName)
+}
+
+private fn packBecomeIdentifier(node: ASTNode, name: String) {
+    node.kind = NodeKind.IDENTIFIER_EXPR
+    node.s1 = name
+    node.s2 = ""
+    node.i1 = 0
+    node.i2 = 0
+    node.i3 = 0
+    node.child1 = ptr_null()
+    node.child2 = ptr_null()
+    node.child3 = ptr_null()
+}
+
+private fn packBecomeNumber(node: ASTNode, value: Int) {
+    node.kind = NodeKind.LITERAL_EXPR
+    node.s1 = value.toString()
+    node.s2 = ""
+    node.i1 = TokenType.NUMBER_LITERAL as Int
+    node.i2 = 0
+    node.i3 = 0
+    node.child1 = ptr_null()
+    node.child2 = ptr_null()
+    node.child3 = ptr_null()
+}
+
+private fn packLiteralIndex(p: Ptr) -> Int {
+    if (nodeIsNull(p)) { return -1 }
+    let node = ptr_to_node(p)
+    if (node.kind != NodeKind.LITERAL_EXPR or node.i1 != TokenType.NUMBER_LITERAL as Int) { return -1 }
+    let parsed = node.s1.parseInt()
+    if (parsed == none) { return -1 }
+    return expect(parsed)
+}
+
+// ---- `row` inside an unrolled `for`
+
+private fn packSubstituteNode(node: ASTNode) {
+    if (packIsRowRef(node.child1) and node.kind == NodeKind.INDEX_EXPR) {
+        let k = packLiteralIndex(node.child2)
+        if (packWidth > 1 and k >= 0 and k < packWidth) {
+            packBecomeIdentifier(node, packExpandedName(rowGroup * packWidth + k))
+            return
+        }
+    }
+    if (packIsRowRef(node.child1) and node.kind == NodeKind.MEMBER_ACCESS_EXPR and packWidth > 1
+            and nodeExists(packList)) {
+        let k = typelistIndexOfName(ptr_to_node(packList), node.s1)
+        if (k >= 0) {
+            packBecomeIdentifier(node, packExpandedName(rowGroup * packWidth + k))
+            return
+        }
+    }
+    if (node.kind == NodeKind.IDENTIFIER_EXPR and node.s1.equals(rowName)) {
+        if (packWidth == 1) {
+            node.s1 = packExpandedName(rowGroup)
+        } else {
+            semaErrorAt(node, diagQuote(rowName).concat(" is a group of ", packWidth.toString(),
+                                                        "; read an entry with `", rowName, "[0]` or by name"))
+        }
+        return
+    }
+    packSubstituteChain(node.child1)
+    packSubstituteChain(node.child2)
+    packSubstituteChain(node.child3)
+}
+
+private fn packSubstituteChain(first: Ptr) {
+    let mut p = first
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        packSubstituteNode(node)
+        p = node.next
+    }
+}
+
+private fn packContainsLoopExit(first: Ptr) -> Bool {
+    let mut p = first
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.BREAK_STATEMENT or node.kind == NodeKind.CONTINUE_STATEMENT) { return true }
+        if (packContainsLoopExit(node.child1) or packContainsLoopExit(node.child2)
+                or packContainsLoopExit(node.child3)) {
+            return true
+        }
+        p = node.next
+    }
+    return false
+}
+
+// ---- the walk
+
+private fn packTrueLiteral() -> ASTNode {
+    let literal = createNode(NodeKind.LITERAL_EXPR)
+    literal.i1 = TokenType.BOOL_LITERAL as Int
+    literal.s1 = "true"
+    return literal
+}
+
+// One copy of the loop body for one group, in a scope of its own so its `let`s do not meet the
+// next copy's. `if (true)` is that scope: sema has no bare block statement to lower.
+private fn packUnrollOne(forNode: ASTNode, group: Int) -> ASTNode {
+    let scope = createNode(NodeKind.IF_STATEMENT)
+    nodeSpanFrom(scope, forNode)
+    scope.child1 = node_to_ptr(packTrueLiteral())
+    let body = monoCopyOne(forNode.child3)
+    rowName = forNode.s1.clone()
+    rowGroup = group
+    packSubstituteChain(body.child1)
+    body.child1 = packRewriteChain(body.child1)
+    scope.child2 = node_to_ptr(body)
+    return scope
+}
+
+private fn packUnrollFor(out: NodeList, forNode: ASTNode) {
+    if (packContainsLoopExit(ptr_to_node(forNode.child3).child1)) {
+        semaErrorAt(forNode, "`break` and `continue` are not allowed in a loop over a pack: it is unrolled, not a loop")
+        return
+    }
+    let groups = packCount / packWidth
+    for g in 0..<groups {
+        nodeListPush(out, packUnrollOne(forNode, g))
+    }
+}
+
+private fn packSpreadInto(out: NodeList, spread: ASTNode) {
+    for i in 0..<packCount {
+        let arg = createNode(NodeKind.IDENTIFIER_EXPR)
+        arg.s1 = packExpandedName(i)
+        nodeSpanFrom(arg, spread)
+        nodeListPush(out, arg)
+    }
+}
+
+private fn packRewriteNode(node: ASTNode) {
+    if (node.kind == NodeKind.MEMBER_ACCESS_EXPR and packIsRef(node.child1)) {
+        if (node.s1.equals("length")) {
+            packBecomeNumber(node, packCount)
+            return
+        }
+        if (node.s1.equals("count")) {
+            packBecomeNumber(node, packCount / packWidth)
+            return
+        }
+    }
+    if (node.kind == NodeKind.INDEX_EXPR and packIsRef(node.child1)) {
+        let k = packLiteralIndex(node.child2)
+        if (k < 0) {
+            semaErrorAt(node, "a pack is indexed by a literal, as in `".concat(packName, "[0]`: its arguments have different types"))
+            return
+        }
+        if (k >= packCount) {
+            semaErrorAt(node, diagQuote(packName).concat(" has ", packCount.toString(), " arguments here; index ",
+                                                         k.toString(), " is past the end"))
+            return
+        }
+        packBecomeIdentifier(node, packExpandedName(k))
+        return
+    }
+    if (node.kind == NodeKind.IDENTIFIER_EXPR and node.s1.equals(packName)) {
+        semaErrorAt(node, diagQuote(packName).concat(" is a pack: use `.length`, an index, `for x in ", packName,
+                                                     "`, or pass it on with `...", packName, "`"))
+        return
+    }
+    node.child1 = packRewriteChain(node.child1)
+    node.child2 = packRewriteChain(node.child2)
+    node.child3 = packRewriteChain(node.child3)
+}
+
+// A statement or argument chain, rebuilt: a `for` over the pack and a spread each become several
+// siblings, so the chain cannot be edited in place.
+private fn packRewriteChain(first: Ptr) -> Ptr {
+    let out = nodeList()
+    let mut p = first
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        let following = node.next
+        node.next = ptr_null()
+        if (node.kind == NodeKind.FOR_STATEMENT and nodeIsNull(node.child2) and packIsRef(node.child1)) {
+            packUnrollFor(out, node)
+        } else if (node.kind == NodeKind.SPREAD_EXPR and packIsRef(node.child1)) {
+            packSpreadInto(out, node)
+        } else {
+            packRewriteNode(node)
+            nodeListPush(out, node)
+        }
+        p = following
+    }
+    return out.head
+}
+
+// ---------------------------------------------------------
+// Instantiating
+// ---------------------------------------------------------
+
+private fn packMangledName(template: ASTNode, callExpr: ASTNode, fixed: Int) -> String {
+    let mut name = template.s1.concat("$pack")
+    let mut p = packChainAt(callExpr.child2, fixed)
+    let mut node = node_to_ptr(p)
+    while (nodeExists(node)) {
+        name = name.concat(monoSeparator(), semaMangleType(nodeGetType(ptr_to_node(node))))
+        node = ptr_to_node(node).next
+    }
+    return name
+}
+
+// The copy's parameters: the fixed ones as they were, and each pack as one parameter per argument,
+// typed as the argument that fills it.
+private fn packExpandParameters(copy: ASTNode, callExpr: ASTNode, fixed: Int, counts: Vec<Int>) {
+    let params = nodeList()
+    let mut p = copy.child1
+    let mut argAt = fixed
+    let mut packIndex = 0
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        let following = param.next
+        param.next = ptr_null()
+        if (param.i1 == 1) {
+            for j in 0..<counts[packIndex] {
+                let expanded = createNode(NodeKind.FUNCTION_PARAMETER)
+                nodeSpanFrom(expanded, param)
+                expanded.s1 = param.s1.concat("$", j.toString())
+                let argT = nodeGetType(packChainAt(callExpr.child2, argAt + j))
+                expanded.child1 = node_to_ptr(monoAnnotationFromType(argT))
+                nodeListPush(params, expanded)
+            }
+            argAt = argAt + counts[packIndex]
+            packIndex = packIndex + 1
+        } else {
+            nodeListPush(params, param)
+        }
+        p = following
+    }
+    copy.child1 = params.head
+}
+
+private fn packRewriteBody(module: ASTNode, template: ASTNode, copy: ASTNode, fixed: Int, counts: Vec<Int>) {
+    let body = ptr_to_node(copy.child2)
+    let mut p = packChainAt(template.child1, fixed)
+    let mut node = node_to_ptr(p)
+    let mut packIndex = 0
+    while (nodeExists(node)) {
+        let packParam = ptr_to_node(node)
+        let list = packListOf(template, packParam)
+        packName = packParam.s1.clone()
+        packCount = counts[packIndex]
+        packWidth = 1
+        packList = node_to_ptr(list)
+        if (nodeExists(node_to_ptr(list)) and typelistIsSequence(list)) { packWidth = typelistWidth(list) }
+        body.child1 = packRewriteChain(body.child1)
+        packIndex = packIndex + 1
+        node = packParam.next
+    }
+}
+
+private fn packInstantiationMarker() -> ASTNode {
+    let marker = createNode(NodeKind.GENERIC_PARAM)
+    marker.s1 = "$pack"
+    return marker
+}
+
+private fn packInstantiate(module: ASTNode, template: ASTNode, callExpr: ASTNode, callee: ASTNode,
+                           fixed: Int, counts: Vec<Int>) {
+    let name = packMangledName(template, callExpr, fixed)
+    let existing = ir_decl_count(name)
+    for i in 0..<existing {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION and decl.file == template.file and decl.line == template.line
+                and decl.col == template.col) {
+            callee.s1 = name.clone()
+            return
+        }
+    }
+
+    let copy = monoCopyOne(node_to_ptr(template))
+    copy.s1 = name
+    copy.s2 = ""
+    // An instantiation is emitted by the program that asks for it, never taken from a PLIB, and
+    // codegen tells the two apart by `genericInfo` (ir/module.psm, shouldEmitFunctionFromSource).
+    // A function with no type parameter -- `...parts: String` -- gets a marker so it counts.
+    if (nodeIsNull(copy.genericInfo)) { copy.genericInfo = node_to_ptr(packInstantiationMarker()) }
+    packExpandParameters(copy, callExpr, fixed, counts)
+    packRewriteBody(module, template, copy, fixed, counts)
+
+    monoAppendDeclaration(module, copy)
+    indexTopLevel(copy)
+    copy.s2 = semaFunctionSymbol(module, copy)
+    semaPredeclareFunction(module, copy)
+    callee.s1 = copy.s1.clone()
+}
+
+// A call that names a variadic function and that no fixed overload takes: bound to the packs
+// and rewritten to name the instantiation made for these argument types. Does nothing for any
+// other call, which is nearly all of them, so it is one walk of the template chain.
+internal fn packResolveCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
+    if (callee.kind != NodeKind.IDENTIFIER_EXPR) { return }
+    let template = packTemplateNamed(module, callee.s1)
+    if (nodeIsNull(node_to_ptr(template))) { return }
+    if (monoConcreteOverloadFits(module, callee.s1, callExpr.child2)) { return }
+
+    let fixed = packFixedCount(template)
+    let total = packChainLength(callExpr.child2)
+    if (total < fixed) { return }
+
+    let mut p = packChainAt(callExpr.child2, fixed)
+    let mut argPtr = node_to_ptr(p)
+    while (nodeExists(argPtr)) {
+        let arg = ptr_to_node(argPtr)
+        if (arg.kind == NodeKind.SPREAD_EXPR) {
+            semaErrorAt(arg, "`...` passes a pack on, and only inside a function that has one")
+            callExpr.i1 = 1
+            return
+        }
+        if (typeIsValid(semaExpr(module, arg)) == false) { return }
+        argPtr = arg.next
+    }
+
+    let mut counts: Vec<Int> = []
+    if (packBind(module, template, callExpr, fixed, counts) == false) {
+        callExpr.i1 = 1
+        return
+    }
+    packInstantiate(module, template, callExpr, callee, fixed, counts)
+}

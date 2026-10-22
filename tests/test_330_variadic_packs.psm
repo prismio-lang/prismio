@@ -1,0 +1,93 @@
+// Variadic parameters and `typelist`: a pack takes any number of arguments the list allows, and the
+// function is instantiated per call shape -- `for` over a pack is unrolled, `args.length` is a
+// constant, and `f(...args)` forwards.
+
+import std.io
+import std.string
+import std.display
+
+typelist Printable { Display }
+typelist Row (Int, String, Bool)
+typelist Named (id: Int, name: String)
+typelist PTs { Int, String }
+typelist KTs { Float, Bool }
+
+fn joined<Ts: Printable>(...args: Ts) -> String {
+    let mut out = ""
+    let mut first = true
+    for arg in args {
+        if (first == false) { out = out.concat(" ") }
+        first = false
+        out = out.concat(arg.show())
+    }
+    return out
+}
+
+fn forward<Ts: Printable>(...args: Ts) -> String {
+    return joined(...args)
+}
+
+fn rows<Ts: Row>(...args: Ts) -> Int {
+    let mut total = 0
+    for row in args {
+        total = total + row[0]
+        if (row[2]) { total = total + row[1].length }
+    }
+    return total * 100 + args.count
+}
+
+fn glue(sep: String, ...parts: String) -> String {
+    let mut out = ""
+    let mut first = true
+    for p in parts {
+        if (first == false) { out = out.concat(sep) }
+        first = false
+        out = out.concat(p)
+    }
+    return out
+}
+
+fn split<A: PTs, B: KTs>(...pts: A, ...kts: B) -> Int {
+    return pts.length * 10 + kts.length
+}
+
+fn named<Ts: Named>(...args: Ts) -> String {
+    let mut out = ""
+    for row in args { out = out.concat(row.name, row.id.toString()) }
+    return out
+}
+
+fn pick<Ts: Printable>(...args: Ts) -> String {
+    return args[1].show()
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (joined("x =", 5, true) != "x = 5 true") { return fail("mixed types, in order") }
+    if (joined(1, 2, 3, 4) != "1 2 3 4") { return fail("more than six arguments is no limit") }
+    if (joined("only") != "only") { return fail("a fixed overload is not needed for one") }
+    if (joined(1, 2, 3, 4, 5, 6, 7, 8, 9) != "1 2 3 4 5 6 7 8 9") { return fail("nine arguments") }
+    if (forward("fwd", 7) != "fwd 7") { return fail("spread forwards the pack") }
+
+    if (rows() != 0) { return fail("a sequence pack may take no groups") }
+    if (rows(1, "one", true) != 401) { return fail("one group") }
+    if (rows(1, "one", true, 2, "two", false) != 602) { return fail("two groups") }
+
+    if (glue("-", "a", "b", "c") != "a-b-c") { return fail("homogeneous pack") }
+    if (glue("-") != "") { return fail("homogeneous pack, no arguments") }
+
+    if (split(1, "a", 2.5, true, false) != 23) { return fail("two packs, consecutive") }
+    if (split(1, 2) != 20) { return fail("two packs, the second empty") }
+    if (split(1.5) != 1) { return fail("two packs, the first empty") }
+
+    if (named(1, "a", 2, "b") != "a1b2") { return fail("named entries of a sequence") }
+    if (pick(10, 20, 30) != "20") { return fail("a literal index into a pack") }
+
+    println("test_330 ok")
+    return 0
+}

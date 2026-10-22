@@ -32,6 +32,9 @@ import std.string
 internal fn monoSeparator() -> String { return "$" }
 
 private fn monoIsTemplate(stmt: ASTNode) -> Bool {
+    // A function with a variadic parameter is instantiated per call shape whether or not
+    // it names a type parameter: `fn concat(self, ...parts: String)` has none.
+    if (stmt.kind == NodeKind.FUNCTION and packHasPackParameter(stmt)) { return true }
     if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.STRUCT_DECL
         or stmt.kind == NodeKind.ENUM_DECL) {
         return stmt.s2.equals("") == false
@@ -255,7 +258,7 @@ private fn monoGenericParamAt(infoPtr: Ptr, index: Int) -> Ptr {
 // Bounds
 // ---------------------------------------------------------
 
-private fn monoFindTrait(module: ASTNode, traitName: String) -> ASTNode {
+internal fn monoFindTrait(module: ASTNode, traitName: String) -> ASTNode {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
@@ -562,7 +565,7 @@ private fn monoImplApplies(module: ASTNode, implNode: ASTNode,
 // A walk rather than a declaration-index lookup is deliberate: impls are not
 // named declarations, and the query occurs once per generic instantiation rather
 // than once per identifier expression.
-private fn monoImplements(module: ASTNode, actual: TypeInfo, traitRef: ASTNode) -> Bool {
+internal fn monoImplements(module: ASTNode, actual: TypeInfo, traitRef: ASTNode) -> Bool {
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
@@ -802,7 +805,7 @@ internal fn monoSubstituteChain(ptr: Ptr, params: String, argsPtr: Ptr) {
 // the text written at the use site, so `Box<Int>` and a `Box<T>` whose `T` was
 // itself substituted with `Int` name the same instantiation instead of two that
 // differ only in spelling.
-private fn monoMangledName(module: ASTNode, base: String, argsPtr: Ptr) -> String {
+internal fn monoMangledName(module: ASTNode, base: String, argsPtr: Ptr) -> String {
     let mut name = base
     let mut p = argsPtr
     while (nodeExists(p)) {
@@ -1275,7 +1278,7 @@ private fn monoLiteralFits(expected: TypeInfo, arg: ASTNode) -> Bool {
 // One that does is the call's callee, and no template is instantiated for it:
 // `f(5)` beside `fn f(x: Int)` and `fn f<T>(x: T)` used to name `f<Int>`, so the
 // overload written for `Int` could never be called.
-private fn monoConcreteOverloadFits(module: ASTNode, name: String, argPtr: Ptr) -> Bool {
+internal fn monoConcreteOverloadFits(module: ASTNode, name: String, argPtr: Ptr) -> Bool {
     let count = ir_decl_count(name)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
@@ -1349,7 +1352,8 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
     let mut templatePtr = module.child2
     while (nodeExists(templatePtr)) {
         let template = ptr_to_node(templatePtr)
-        if (template.kind == NodeKind.FUNCTION and template.s1.equals(callee.s1)) {
+        if (template.kind == NodeKind.FUNCTION and template.s1.equals(callee.s1)
+                and packHasPackParameter(template) == false) {
             let params = template.s2
             let count = monoParamCount(params)
             let holders = nodeList()

@@ -1942,6 +1942,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (semaIsScalarUnwrapOr(module, callee.s1, expr.child2) == false) {
+        packResolveCall(module, expr, callee)
         monoResolveGenericCall(module, expr, callee)
     }
 

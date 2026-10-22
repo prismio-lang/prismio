@@ -927,7 +927,7 @@ impl Lexer {
         return self.token(TokenType.ARITHMETIC_OPERATOR, "??", line, col, start)
     }
 
-    // `..` is the inclusive range and `..<` the one that stops before its end. One
+    // `...` is neither: the variadic marker. `..` is the inclusive range and `..<` the one that stops before its end. One
     // token kind for both, told apart by the spelling: every place that accepts a
     // range accepts either, so the parser asks the kind first and the value only
     // to record which end was meant.
@@ -938,6 +938,10 @@ impl Lexer {
 
         self.advance()
         self.advance()
+        if (self.current() == '.') {
+            self.advance()
+            return self.token(TokenType.ELLIPSIS, "...", line, col, start)
+        }
         if (self.current() == '<') {
             self.advance()
             return self.token(TokenType.RANGE, "..<", line, col, start)

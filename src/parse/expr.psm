@@ -309,8 +309,7 @@ impl Parser {
 
 impl Parser {
     // A literal chunk of an interpolated string, dropped when it is empty: `"${a}${b}"`
-    // is two parts rather than five, which matters because `concat` is an overload
-    // set with a largest arity and every empty part spends one.
+    // is two parts rather than five: a part is a copy.
     private fn interpolationChunk(self, parts: NodeList, tok: Token) {
         if (tok.value.length == 0) { return }
         let chunk = parserNodeFrom(NodeKind.LITERAL_EXPR, tok)
@@ -336,13 +335,9 @@ private fn interpolationShow(value: ASTNode) -> ASTNode {
 }
 
 impl Parser {
-    // The parts as one `concat`, or as a tree of them when there are more parts than
-    // `impl String` has an overload for.
-    //
-    // **Grouped rather than chained.** `a.concat(b).concat(c)` copies the prefix once
-    // per step, so a long interpolation would be quadratic in its own length; six at
-    // a time is one allocation per group and one more to join the groups, which for
-    // any interpolation a person writes is two levels at most.
+    // The parts as one `concat`, however many there are: `impl String` has hand-tuned
+    // overloads for two to six and a variadic one past that (std/string.psm), so a long
+    // interpolation is still one allocation and not a tree of joins.
     private fn interpolationJoin(self, parts: Ptr, anchor: Token) -> ASTNode {
         let mut count = 0
         let mut walk = parts
@@ -359,32 +354,12 @@ impl Parser {
         }
         if (count == 1) { return ptr_to_node(parts) }
 
-        if (count <= 6) {
-            let call = parserNodeFrom(NodeKind.CALL_EXPR, anchor)
-            let callee = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, anchor)
-            callee.s1 = "concat"
-            call.child1 = node_to_ptr(callee)
-            call.child2 = parts
-            return call
-        }
-
-        // More than one group: take six at a time, join each, and recurse over the
-        // results.
-        let groups = nodeList()
-        let mut restPtr = parts
-        while (nodeExists(restPtr)) {
-            let groupHead = restPtr
-            let mut taken = 1
-            let mut tail = ptr_to_node(restPtr)
-            while (taken < 6 and nodeExists(tail.next)) {
-                tail = ptr_to_node(tail.next)
-                taken = taken + 1
-            }
-            restPtr = tail.next
-            tail.next = ptr_null()
-            nodeListPush(groups, self.interpolationJoin(groupHead, anchor))
-        }
-        return self.interpolationJoin(groups.head, anchor)
+        let call = parserNodeFrom(NodeKind.CALL_EXPR, anchor)
+        let callee = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, anchor)
+        callee.s1 = "concat"
+        call.child1 = node_to_ptr(callee)
+        call.child2 = parts
+        return call
     }
 }
 
@@ -465,6 +440,19 @@ impl Parser {
 
 
 impl Parser {
+    // One argument of a call. `...args` passes a pack on as separate arguments, so the
+    // marker is only meaningful here and in a parameter list.
+    private fn parseArgument(self) -> ASTNode {
+        if (self.check(TokenType.ELLIPSIS) == false) { return self.parseBracketed() }
+        let spread = self.node(NodeKind.SPREAD_EXPR)
+        self.advance()
+        spread.child1 = node_to_ptr(self.parseBracketed())
+        return spread
+    }
+}
+
+
+impl Parser {
     private fn parseCall(self, callee: ASTNode) -> ASTNode {
         let call = self.node(NodeKind.CALL_EXPR)
         // Point the call at its callee rather than at the first argument, so
@@ -476,7 +464,7 @@ impl Parser {
         let arguments = nodeList()
         if (self.checkVal(TokenType.SEPARATOR, ")") == false) {
             loop {
-                nodeListPush(arguments, self.parseBracketed())
+                nodeListPush(arguments, self.parseArgument())
                 if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
             }
         }
