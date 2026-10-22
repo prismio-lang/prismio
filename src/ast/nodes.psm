@@ -207,7 +207,14 @@ public enum NodeKind {
 
     // `...args` at a call: the arguments of a pack passed on as separate arguments. child1
     // is the pack's name. Rewritten away by sema/packs.psm before overload resolution.
-    SPREAD_EXPR
+    SPREAD_EXPR,
+
+    // `const x = area(5)`: the initializer of a `const` declaration, wrapped so that sema
+    // can find every expression that has to be known at compile time. child1 is the
+    // expression. Evaluated and rewritten in place into the literal it comes to before
+    // anything else in sema runs (sema/const_eval.psm), so no later pass sees one.
+    // Appended so the pinned seed's NodeKind ordinals do not move.
+    CONST_EXPR
 }
 
 // Flat AST Node using String for pointers (type punning)
@@ -348,18 +355,17 @@ public fn nodeIsCallableBound(ref: ASTNode) -> Bool {
     return ref.kind == NodeKind.TRAIT_REF and ref.i3 == 1
 }
 
+// Whether the parser built a CONST_EXPR (src/parse/decl.psm): sema's constant
+// evaluation walks the whole program to find them, so a program with none is spared
+// the walk. Set by the parser, read once by semaFoldConstants.
+let mut constExprSeen = false
+
+public fn nodeNoteConstExpr() { constExprSeen = true }
+
+public fn nodeConstExprSeen() -> Bool { return constExprSeen }
+
 public fn nodeIsProperty(fnNode: ASTNode) -> Bool {
     return fnNode.kind == NodeKind.FUNCTION and fnNode.i1 == 4
-}
-
-// A `cold fn` (src/parse/decl.psm): a function that rarely runs. Kept in
-// FUNCTION.i1 as 16, a value none of codegen's inline states (0-3) takes, and
-// one markSingleLoopCallsiteFunctions keeps rather than clears -- a cold
-// function is never inlined, so the state it would otherwise carry is moot.
-public fn nodeMarkCold(fnNode: ASTNode) { fnNode.i1 = 16 }
-
-public fn nodeIsCold(fnNode: ASTNode) -> Bool {
-    return fnNode.kind == NodeKind.FUNCTION and fnNode.i1 == 16
 }
 
 // `repr(C)` and `packed` on a struct (src/parse/decl.psm), kept in STRUCT_DECL.i1

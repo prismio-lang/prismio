@@ -264,7 +264,7 @@ private fn generateFunction(func: ASTNode) {
     // An `export fn` is called by C, so its narrow parameters and return follow
     // C's widening rule as an extern's do. Only exports: anything else is called
     // by this program alone, and its convention is the program's to choose.
-    let exported = (nodeFnAttrFlags(func) & 1) == 1 and isMain == 0
+    let exported = nodeIsExported(func) and isMain == 0
     if (exported and nodeExists(func.child3)) {
         let retWiden = abiExtension(ptr_to_node(func.child3))
         if (retWiden.equals("") == false) { ir_function_return_extend(retWiden) }
@@ -323,21 +323,7 @@ private fn generateFunction(func: ASTNode) {
     // module-wide AST fact computed below, never a function-name rule. Leave
     // debug functions alone: always-inline at -O0 would erase the frame the
     // debugger was explicitly asked to show.
-    if ((func.i1 == 3 or nodeIsInline(func)) and ir_debug_enabled() == 0) {
-        ir_function_always_inline()
-    }
-    // `cold fn` (src/parse/decl.psm). In a debug build too: it changes no frame
-    // the debugger shows, only where the optimiser puts the call.
-    if (nodeIsCold(func)) {
-        ir_function_cold()
-    }
-    // `export`, `naked` and `section("...")` (src/parse/decl.psm), which say what the
-    // symbol is rather than how the function runs.
-    let attrFlags = nodeFnAttrFlags(func)
-    if ((attrFlags & 1) == 1) { ir_function_export(func.s1) }
-    if ((attrFlags & 2) == 2) { ir_function_naked() }
-    if (nodeFnSection(func).equals("") == false) { ir_function_section(nodeFnSection(func)) }
-    if (nodeFnAlign(func) > 0) { ir_function_align(nodeFnAlign(func)) }
+    irEmitFunctionAttributes(func, func.i1 == 3)
     ir_clear_local_var_types()
     ir_clear_returned()
     irCoalesceSpills = ";"
@@ -520,7 +506,7 @@ private fn countFunctionCallsitesNode(nodePtr: Ptr, callerSymbol: String) {
         if (nodeExists(targetPtr)) {
             let target = ptr_to_node(targetPtr)
             let recursive = functionSymbolName(target).equals(callerSymbol)
-            if (nodeIsCold(target)) {
+            if (nodeIsNeverInlined(target)) {
                 // Never inlined, so its callsites are not counted.
             } else if (target.i1 == 0 and recursive == false) {
                 target.i1 = 1
@@ -649,7 +635,7 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     let mut clearPtr = module.child1
     while (nodeExists(clearPtr)) {
         let decl = ptr_to_node(clearPtr)
-        if (decl.kind == NodeKind.FUNCTION and nodeIsCold(decl) == false) { decl.i1 = 0 }
+        if (decl.kind == NodeKind.FUNCTION) { decl.i1 = 0 }
         clearPtr = decl.next
     }
 

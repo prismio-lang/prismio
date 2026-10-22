@@ -9319,6 +9319,27 @@ def run_byte_loop_vectorise_test():
     return True
 
 
+def llvm_function_attributes(text):
+    """A function `attrs(prefix)` over IR text: the attributes of the first `define`
+    whose symbol starts with `prefix`, or None when none was emitted. Attribute
+    groups (`#4`) are resolved through the `attributes #4 = { ... }` lines."""
+    groups = {}
+    for m in re.finditer(r"^attributes (#\d+) = \{ (.*?) \}$", text, re.M):
+        groups[m.group(1)] = m.group(2).split()
+
+    def attrs(prefix):
+        m = re.search(r"^define [^@\n]*@\"?" + re.escape(prefix) + r"[^(]*\([^)]*\)([^{]*)\{",
+                      text, re.M)
+        if not m:
+            return None
+        found = []
+        for ref in re.findall(r"#\d+", m.group(1)):
+            found += groups.get(ref, [])
+        return found
+
+    return attrs
+
+
 def run_cold_function_test():
     """`cold fn` lowers to LLVM `cold` and `noinline`, and nothing else does.
 
@@ -9380,13 +9401,14 @@ def run_cold_function_test():
 
 
 def run_inline_fn_test():
-    """`inline fn` lowers to LLVM `alwaysinline`, and nothing else does.
+    """`inline fn` lowers to LLVM `inlinehint` -- a hint, not `alwaysinline` -- and
+    nothing else does. (A marked function may *also* be `alwaysinline`: codegen forces
+    that on its own for a function with one callsite inside a loop, whatever it says.)
 
     test_312_inline_fn checks that every placement runs; this reads its IR, because
     the marker changes no behaviour and a lowering that dropped it would pass any
-    output check. It is load-bearing for performance: std's `mapProbe` is `inline`
-    because a bounds check made it larger than LLVM's cost model would inline, and
-    key_value_update paid 1.13x for it.
+    output check. `inline(always)`, the spelling that forces it, is
+    run_fn_attributes_test's.
 
     Marked: a free function, a `private` one, a looping one, a generic instantiation,
     an `impl` method, a `private` method and an `export` one. Unmarked: a function
@@ -9422,13 +9444,13 @@ def run_inline_fn_test():
                 got = attrs(name)
                 if got is None:
                     problems.append(f"{name} was not emitted")
-                elif "alwaysinline" not in got:
+                elif "inlinehint" not in got:
                     problems.append(f"{name} is inline but carries {got}")
             for name in ("inline__Int", "quadrupled__Struct_Counter", "reset__Struct_Counter", "plain__Int"):
                 got = attrs(name)
                 if got is None:
                     problems.append(f"{name} was not emitted")
-                elif "alwaysinline" in got:
+                elif "inlinehint" in got or "alwaysinline" in got:
                     problems.append(f"{name} is not inline but carries {got}")
 
     if problems:
@@ -9436,7 +9458,69 @@ def run_inline_fn_test():
         for p in problems:
             print(f"  {p}")
         return False
-    print(f"{GREEN}[PASS] inline functions lower to alwaysinline, and only they do{RESET}")
+    print(f"{GREEN}[PASS] inline functions lower to inlinehint, and only they do{RESET}")
+    return True
+
+
+def run_fn_attributes_test():
+    """`inline(always)`, `inline(never)`, `noinline`, `hot`, `noreturn` and `cold`
+    lower to the LLVM attributes they name, and only to those.
+
+    test_334_fn_attributes checks that every placement runs; this reads its IR,
+    because none of the markers changes what a program computes, so a lowering that
+    dropped one would pass any output check. Marked: free functions, a `private` one,
+    generic instantiations, `impl` methods, and combinations in either order.
+    Unmarked: functions *named* after the markers, and ordinary neighbours.
+    """
+    print(f"\n{BLUE}--- Running fn_attributes ---{RESET}")
+    src = TEST_DIR / "test_334_fn_attributes.psm"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-fnattrs-") as td:
+        ll = Path(td) / "attrs.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(src), "-o", str(ll)])
+        if built.returncode != 0 or not ll.exists():
+            problems.append(f"IR build failed: "
+                            f"{elide_middle((built.stdout or '') + (built.stderr or ''))}")
+        else:
+            attrs = llvm_function_attributes(ll.read_text(encoding="utf-8", errors="replace"))
+            expected = {
+                "square__Int": {"alwaysinline"},
+                "addOne__Int": {"alwaysinline"},
+                "firstOr$Int": {"alwaysinline"},
+                "bumped__Struct_Counter": {"alwaysinline"},
+                "plusTwo__Int": {"noinline"},
+                "plusThree__Int": {"noinline"},
+                "lastOr$Int": {"noinline"},
+                "doubled__Struct_Counter": {"noinline"},
+                "reset__Struct_Counter": {"noinline"},
+                "sumTo__Int": {"hot"},
+                "tripled__Struct_Counter": {"hot"},
+                "combined__Int": {"alwaysinline", "hot"},
+                "hotAndNotInlined__Int": {"hot", "noinline"},
+                "die__Int": {"noreturn"},
+                "dieSlowly__Int": {"cold", "noinline", "noreturn"},
+                "abort__Struct_Counter": {"cold", "noinline", "noreturn"},
+            }
+            for name, want in expected.items():
+                got = attrs(name)
+                if got is None:
+                    problems.append(f"{name} was not emitted")
+                elif set(got) != want:
+                    problems.append(f"{name} should carry exactly {sorted(want)} but carries {got}")
+            for name in ("checked__Int", "hot__Int", "noinline__Int", "noreturn__Int",
+                         "plain__Int", "quadrupled__Struct_Counter"):
+                got = attrs(name)
+                if got is None:
+                    problems.append(f"{name} was not emitted")
+                elif got:
+                    problems.append(f"{name} is unmarked but carries {got}")
+
+    if problems:
+        print(f"{RED}[FAIL] function attributes{RESET}")
+        for p in problems:
+            print(f"  {p}")
+        return False
+    print(f"{GREEN}[PASS] function markers lower to the attributes they name, and only those{RESET}")
     return True
 
 
@@ -10512,6 +10596,7 @@ def main():
         ("repeated_copy", run_repeated_copy_test),
         ("cold_function", run_cold_function_test),
         ("inline_fn", run_inline_fn_test),
+        ("fn_attributes", run_fn_attributes_test),
         ("c_abi_extension", run_c_abi_extension_test),
         ("identifier_security", run_identifier_security_test),
         ("curated_closure", run_curated_closure_test),

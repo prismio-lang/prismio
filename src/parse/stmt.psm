@@ -486,6 +486,7 @@ impl Parser {
         if (self.checkVal(TokenType.KEYWORD, "for")) { return self.parseForStatement() }
         if (self.checkVal(TokenType.KEYWORD, "region")) { return self.parseRegionStatement() }
         if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseVariableDecl() }
+        if (self.atConstDecl()) { return self.parseVariableDecl() }
         if (self.atRepeatStatement()) { return self.parseRepeatStatement() }
         if (self.atScopeStatement()) { return self.parseScopeStatement() }
 

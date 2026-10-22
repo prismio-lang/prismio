@@ -2,16 +2,25 @@ import ast.nodes
 import std.string
 import std.option
 
-// Function attributes the AST has no field for: `export fn`, `naked fn` and
-// `section("...") fn` (src/parse/decl.psm).
+// Function attributes the AST has no field for: everything a function can say
+// before its `fn` (src/parse/modifiers.psm).
 //
-// A table beside the AST rather than a field on it: FUNCTION.i1 already holds one
-// state at a time (inline, property, cold), and a new field on every node costs the
-// whole compiler for the sake of a few boot-stub declarations. Keyed by where the
-// `fn` keyword is, which is unique per declaration and survives the copy a generic
-// instantiation makes. One record per line, `file:line:col|flags|align|section`;
-// flags are 1 export, 2 naked, 4 async and 8 inline, and align is 0 when none was
-// written.
+// A table beside the AST rather than a field on it: FUNCTION.i1 is codegen's
+// scratch state and a new field on every node costs the whole compiler for the
+// sake of a few declarations. Keyed by where the `fn` keyword is, which is unique
+// per declaration and survives the copy a generic instantiation makes. One record
+// per line, `file:line:col|flags|align|section`; align is 0 when none was written.
+//
+// The flags are bits, named by the predicates below and written only through
+// `fnAttrBit*`, so nothing outside this file spells a number:
+//
+//   how the symbol is exposed   export, naked, section("..."), align(n)
+//   how the function is called  async
+//   how it is inlined           inline (a hint), inline(always), noinline /
+//                               inline(never) -- at most one of the three
+//   how likely it is to run     cold, hot -- at most one
+//   what it promises            noreturn (never returns to its caller),
+//                               const (may also run at compile time)
 let mut fnAttrTable = ""
 
 private fn fnAttrKey(fnNode: ASTNode) -> String {
@@ -58,18 +67,64 @@ public fn nodeFnAttrFlags(fnNode: ASTNode) -> Int {
     return fnAttrField(record, 0).parseInt().unwrapOr(0)
 }
 
+public fn fnAttrBitExport() -> Int { return 1 }
+public fn fnAttrBitNaked() -> Int { return 2 }
+public fn fnAttrBitAsync() -> Int { return 4 }
+public fn fnAttrBitInline() -> Int { return 8 }
+public fn fnAttrBitInlineAlways() -> Int { return 16 }
+public fn fnAttrBitNoinline() -> Int { return 32 }
+public fn fnAttrBitCold() -> Int { return 64 }
+public fn fnAttrBitHot() -> Int { return 128 }
+public fn fnAttrBitNoreturn() -> Int { return 256 }
+public fn fnAttrBitConst() -> Int { return 512 }
+
+private fn nodeHasFnAttr(fnNode: ASTNode, bit: Int) -> Bool {
+    if (fnAttrTable.equals("") or fnNode.kind != NodeKind.FUNCTION) { return false }
+    return (nodeFnAttrFlags(fnNode) & bit) == bit
+}
+
+public fn nodeIsExported(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitExport()) }
+public fn nodeIsNaked(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitNaked()) }
+
 // `async fn`. A call to one does not run it: it yields a `Future<R>`, and the body
 // runs when that future is awaited or spawned. The body itself is compiled as an
 // ordinary function returning R, which is why a flag is all the declaration needs.
-public fn nodeIsAsync(fnNode: ASTNode) -> Bool {
-    if (fnAttrTable.equals("")) { return false }
-    return (nodeFnAttrFlags(fnNode) & 4) == 4
-}
+public fn nodeIsAsync(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitAsync()) }
 
-// `inline fn`: inlined into every caller (src/parse/decl.psm, isFnModifierWord).
-public fn nodeIsInline(fnNode: ASTNode) -> Bool {
+// `inline fn`: LLVM's `inlinehint`, a nudge to the inliner that the body is cheap
+// enough to be worth folding in. Rust's `#[inline]`.
+public fn nodeIsInlineHint(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitInline()) }
+
+// `inline(always) fn`: LLVM's `alwaysinline`, folded into every caller whatever its
+// size. Rust's `#[inline(always)]`.
+public fn nodeIsInlineAlways(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitInlineAlways()) }
+
+// `noinline fn` and `inline(never) fn`: never folded into a caller. Two spellings of
+// one request; `noinline` is the one the compiler's own sources use.
+public fn nodeIsNoinline(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitNoinline()) }
+
+// `cold fn`: a function that rarely runs -- an error path, or the slow half of an
+// operation split so the fast half can be inlined. Never inlined (LLVM's `cold`
+// and `noinline`), and a branch that calls it is laid out as the unlikely one.
+public fn nodeIsCold(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitCold()) }
+
+// `hot fn`: a function that runs often. LLVM's `hot`: optimised for speed even in
+// a size-optimised build, and placed with the other hot code.
+public fn nodeIsHot(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitHot()) }
+
+// `noreturn fn`: control never comes back from a call to it. Sema holds the body to
+// that (semaCheckNoreturn) and reads the marker to end the path at a call.
+public fn nodeIsNoreturn(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitNoreturn()) }
+
+// `const fn`: an ordinary function that a constant expression may also call
+// (src/sema/const_eval.psm).
+public fn nodeIsConstFn(fnNode: ASTNode) -> Bool { return nodeHasFnAttr(fnNode, fnAttrBitConst()) }
+
+// A function that is never folded into a caller, for any of the three reasons.
+// Its callsites are not counted toward the single-callsite inlining heuristic.
+public fn nodeIsNeverInlined(fnNode: ASTNode) -> Bool {
     if (fnAttrTable.equals("")) { return false }
-    return (nodeFnAttrFlags(fnNode) & 8) == 8
+    return (nodeFnAttrFlags(fnNode) & (fnAttrBitNoinline() | fnAttrBitCold() | fnAttrBitNaked())) != 0
 }
 
 public fn nodeFnAlign(fnNode: ASTNode) -> Int {

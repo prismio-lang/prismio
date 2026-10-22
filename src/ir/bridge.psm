@@ -36,8 +36,7 @@ public extern fn ir_function_param_unique(paramType: String, paramName: String)
 public extern fn ir_function_param_extend(kind: String borrow)
 public extern fn ir_function_return_extend(kind: String borrow)
 public extern fn ir_function_body_start()
-public extern fn ir_function_always_inline()
-public extern fn ir_function_cold()
+public extern fn ir_function_attribute(name: String borrow)
 public extern fn ir_function_end()
 
 // Call Builder

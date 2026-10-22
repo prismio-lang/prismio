@@ -1,0 +1,732 @@
+// Compile-time evaluation: `const x = area(5)` and `const fn`.
+//
+//     const fn area(side: Int) -> Int { return side * side }
+//     const CELLS = area(8)                       // 64, worked out by the compiler
+//     let table: Array<U8, area(3)> = ...         // a length may call one too
+//
+// A `const fn` is an ordinary function that a constant may also call. It is checked
+// and compiled like any other, so it can be called at run time as well; this file is
+// the second way of running it, a tree-walking interpreter over the function's AST.
+//
+// **What it runs.** Integers of every width and `Bool`; locals, `let mut` and
+// assignment; `if`, `match` on a value, `while`, `loop`, `for` over a range,
+// `break`/`continue` (with labels) and `return`; calls to other `const fn`s, recursion
+// included; reads of global constants. Nothing else -- no strings, floats, Vecs,
+// structs or pointers -- and the first construct outside the list is named in the error
+// rather than approximated.
+//
+// **Exact, then checked.** Arithmetic is exact (consts.psm: constArithmetic) and every
+// value that meets a declared type -- a parameter, an annotated `let`, a `return`, an
+// assignment to an annotated variable -- must fit it, and `as` truncates to the width it
+// names. A constant therefore either equals what the function computes at run time or
+// is refused; it is never quietly different. (An `Int` that would overflow at run time is
+// an error here; wrapping arithmetic belongs in the wider type or an explicit `as`.)
+//
+// **Bounded.** A budget of steps and a depth limit turn an endless loop or runaway
+// recursion into an error that names it, because a compiler that hangs on a typo in a
+// constant is worse than one that refuses.
+//
+// It runs before sema looks at anything else (semaFoldConstants), over the parser's
+// tree, so the body it interprets is exactly what was written: no pass has rewritten
+// a `for` or a compound assignment yet. Every CONST_EXPR is replaced in place by the
+// literal it came to, and nothing after sees one.
+
+import ast.nodes
+import ast.fn_attrs
+import lexer.token
+import ast.types
+import common.diagnostics
+import std.string
+import std.vec
+
+// --- the types a constant can have ------------------------------------------------
+
+// The width in bits of an integer type a constant can hold, 0 for any other type. The
+// 64-bit types are bounded by constLimit(), which is narrower than they are.
+private fn constTypeBits(name: String) -> Int {
+    if (name.equals("Int") or name.equals("I32") or name.equals("U32")) { return 32 }
+    if (name.equals("I8") or name.equals("U8")) { return 8 }
+    if (name.equals("I16") or name.equals("U16")) { return 16 }
+    if (name.equals("I64") or name.equals("U64") or name.equals("Isize") or name.equals("Usize")) { return 64 }
+    return 0
+}
+
+private fn constTypeSigned(name: String) -> Bool {
+    return name.equals("Int") or name.equals("I8") or name.equals("I16") or name.equals("I32")
+        or name.equals("I64") or name.equals("Isize")
+}
+
+private fn constTypeKnown(name: String) -> Bool {
+    return constTypeBits(name) != 0 or name.equals("Bool")
+}
+
+private fn constPow2(bits: Int) -> I64 {
+    return (1 as I64) << (bits as I64)
+}
+
+private fn constTypeMax(name: String) -> I64 {
+    let bits = constTypeBits(name)
+    if (bits == 64) { return constLimit() }
+    if (constTypeSigned(name)) { return constPow2(bits - 1) - (1 as I64) }
+    return constPow2(bits) - (1 as I64)
+}
+
+private fn constTypeMin(name: String) -> I64 {
+    if (constTypeSigned(name) == false) { return 0 as I64 }
+    let bits = constTypeBits(name)
+    if (bits == 64) { return (0 as I64) - constLimit() }
+    return (0 as I64) - constPow2(bits - 1)
+}
+
+// `value` cut down to `name`'s width, as `as` does at run time.
+private fn constWrapTo(name: String, value: I64) -> I64 {
+    let bits = constTypeBits(name)
+    if (bits == 0 or bits == 64) { return value }
+    let modulus = constPow2(bits)
+    let mut r = value % modulus
+    if (r < (0 as I64)) { r = r + modulus }
+    if (constTypeSigned(name) and r >= modulus / (2 as I64)) { r = r - modulus }
+    return r
+}
+
+// The name of the scalar a type annotation spells, or "" when it spells anything else
+// -- an array, an optional, a generic, a type this evaluator does not know.
+private fn constAnnotationName(annotation: Ptr) -> String {
+    if (nodeIsNull(annotation)) { return "" }
+    let node = ptr_to_node(annotation)
+    if (node.i1 != 0 or node.i3 != 0 or nodeExists(node.child1)) { return "" }
+    if (constTypeKnown(node.s1) == false) { return "" }
+    return node.s1.clone()
+}
+
+// --- the interpreter ------------------------------------------------------------------
+
+private fn stepNormal() -> Int { return 0 }
+private fn stepBreak() -> Int { return 1 }
+private fn stepContinue() -> Int { return 2 }
+private fn stepReturn() -> Int { return 3 }
+private fn stepFailed() -> Int { return 4 }
+
+private fn constStepLimit() -> Int { return 2000000 }
+private fn constDepthLimit() -> Int { return 200 }
+
+// Locals are four parallel stacks, a frame being the slice above `base`. Names and
+// declared types are interned into `symbols`, so the stacks hold Ints and can be popped.
+private struct ConstEval {
+    module: Ptr,
+    symbols: Vec<String>,
+    envName: Vec<Int>,
+    envType: Vec<Int>,
+    envValue: Vec<I64>,
+    envFlags: Vec<Int>,
+    base: Int,
+    steps: Int,
+    depth: Int,
+    failed: Bool,
+    why: String,
+    at: Ptr,
+    jumpLabel: String,
+    returned: I64,
+    returnedBool: Bool
+}
+
+private fn newConstEval(module: ASTNode) -> ConstEval {
+    return ConstEval { module: node_to_ptr(module), symbols: [], envName: [], envType: [], envValue: [],
+                       envFlags: [], base: 0, steps: 0, depth: 0, failed: false, why: "", at: ptr_null(),
+                       jumpLabel: "", returned: 0 as I64, returnedBool: false }
+}
+
+// A flag bit on a local: it is a Bool, or it may be assigned.
+private fn flagBool() -> Int { return 1 }
+private fn flagMutable() -> Int { return 2 }
+
+impl ConstEval {
+    // The first failure is the one reported; anything that fails after it is a
+    // consequence.
+    private fn fail(self, node: ASTNode, why: String) -> ConstValue {
+        if (self.failed == false) {
+            self.failed = true
+            self.why = why.clone()
+            self.at = node_to_ptr(node)
+        }
+        return constFailed(why)
+    }
+
+    private fn failure(self) -> ConstValue {
+        let result = constFailed(self.why.clone())
+        return ConstValue { ok: false, value: result.value, isBool: false, why: result.why, at: self.at }
+    }
+
+    private fn tick(self, node: ASTNode) -> Bool {
+        self.steps = self.steps + 1
+        if (self.steps > constStepLimit()) {
+            self.fail(node, "constant evaluation ran for more than ".concat(constStepLimit().toString(),
+                                                                            " steps; does a loop never end?"))
+            return false
+        }
+        return self.failed == false
+    }
+
+    private fn intern(self, text: String) -> Int {
+        let mut i = 0
+        while (i < self.symbols.length) {
+            if (self.symbols[i].equals(text)) { return i }
+            i = i + 1
+        }
+        self.symbols.push(text.clone())
+        return self.symbols.length - 1
+    }
+
+    // The slot of the innermost local called `name` in the current frame, or -1.
+    private fn find(self, name: String) -> Int {
+        let id = self.intern(name)
+        let mut i = self.envName.length - 1
+        while (i >= self.base) {
+            if (self.envName[i] == id) { return i }
+            i = i - 1
+        }
+        return -1
+    }
+
+    private fn bind(self, name: String, typeName: String, value: ConstValue, mutable: Bool) {
+        self.envName.push(self.intern(name))
+        self.envType.push(self.intern(typeName))
+        self.envValue.push(value.value)
+        let mut flags = 0
+        if (value.isBool) { flags = flags | flagBool() }
+        if (mutable) { flags = flags | flagMutable() }
+        self.envFlags.push(flags)
+    }
+
+    private fn popTo(self, mark: Int) {
+        while (self.envName.length > mark) {
+            self.envName.pop()
+            self.envType.pop()
+            self.envValue.pop()
+            self.envFlags.pop()
+        }
+    }
+
+    // `value` for a place declared as `typeName` ("" when it was inferred): the right
+    // kind, and within the type's range.
+    private fn conform(self, node: ASTNode, typeName: String, value: ConstValue, what: String) -> ConstValue {
+        if (value.ok == false or typeName.equals("")) { return value }
+        if (typeName.equals("Bool")) {
+            if (value.isBool == false) { return self.fail(node, what.concat(" is a Bool, but this value is an integer")) }
+            return value
+        }
+        if (value.isBool) { return self.fail(node, what.concat(" is ").concat(typeName, ", but this value is a Bool")) }
+        if (value.value < constTypeMin(typeName) or value.value > constTypeMax(typeName)) {
+            return self.fail(node, "the value ".concat(value.value.toString(), " does not fit ", typeName, " (", what, ")"))
+        }
+        return value
+    }
+
+    // --- expressions ---
+
+    internal fn eval(self, node: ASTNode) -> ConstValue {
+        if (self.tick(node) == false) { return self.failure() }
+        if (node.kind == NodeKind.CONST_EXPR) { return self.eval(ptr_to_node(node.child1)) }
+        if (node.kind == NodeKind.LITERAL_EXPR) { return self.evalLiteral(node) }
+        if (node.kind == NodeKind.IDENTIFIER_EXPR) { return self.evalName(node) }
+        if (node.kind == NodeKind.UNARY_EXPR) { return self.evalUnary(node) }
+        if (node.kind == NodeKind.BINARY_EXPR) { return self.evalBinary(node) }
+        if (node.kind == NodeKind.CAST_EXPR) { return self.evalCast(node) }
+        if (node.kind == NodeKind.CALL_EXPR) { return self.evalCall(node) }
+        return self.fail(node, "this expression cannot be worked out at compile time")
+    }
+
+    private fn evalLiteral(self, node: ASTNode) -> ConstValue {
+        if (node.i1 == TokenType.NUMBER_LITERAL as Int) {
+            let result = constIntegerLiteral(node)
+            if (result.ok == false) { return self.fail(node, result.why) }
+            return result
+        }
+        if (node.i1 == TokenType.BOOL_LITERAL as Int) { return constBool(node.s1.equals("true")) }
+        return self.fail(node, "only integers and Bool are supported in a constant so far")
+    }
+
+    private fn evalName(self, node: ASTNode) -> ConstValue {
+        let slot = self.find(node.s1)
+        if (slot >= 0) {
+            let value = self.envValue[slot]
+            if ((self.envFlags[slot] & flagBool()) != 0) { return constBool(value != (0 as I64)) }
+            return constOf(value)
+        }
+        return self.evalGlobal(node)
+    }
+
+    // A global constant: not `mut`, and initialised with something this can run. Its
+    // initializer cannot see the locals of whoever is asking, so it runs in a frame of
+    // its own.
+    private fn evalGlobal(self, node: ASTNode) -> ConstValue {
+        let declPtr = constGlobal(ptr_to_node(self.module), node.s1)
+        if (nodeIsNull(declPtr)) {
+            return self.fail(node, diagQuote(node.s1).concat(" is not a constant: a constant can read only global constants and, inside a `const fn`, the function's own variables"))
+        }
+        let decl = ptr_to_node(declPtr)
+        if (decl.i1 == 1) { return self.fail(node, diagQuote(node.s1).concat(" is `let mut`, so its value can change")) }
+        if (nodeIsNull(decl.child2)) { return self.fail(node, diagQuote(node.s1).concat(" has no initializer")) }
+        if (self.depth >= constDepthLimit()) { return self.fail(node, "constants refer to each other in a cycle") }
+        let savedBase = self.base
+        self.base = self.envName.length
+        self.depth = self.depth + 1
+        let value = self.eval(ptr_to_node(decl.child2))
+        self.depth = self.depth - 1
+        self.base = savedBase
+        if (value.ok == false) { return value }
+        let typeName = constAnnotationName(decl.child1)
+        return self.conform(node, typeName, value, "global ".concat(diagQuote(node.s1)))
+    }
+
+    private fn evalUnary(self, node: ASTNode) -> ConstValue {
+        let operand = self.eval(ptr_to_node(node.child1))
+        if (operand.ok == false) { return operand }
+        if (node.s1.equals("!")) {
+            if (operand.isBool == false) { return self.fail(node, "`!` needs a Bool in a constant") }
+            return constBool(operand.value == (0 as I64))
+        }
+        if (operand.isBool) { return self.fail(node, "`".concat(node.s1, "` needs an integer in a constant")) }
+        if (node.s1.equals("-")) { return constOf((0 as I64) - operand.value) }
+        if (node.s1.equals("~")) { return constOf((0 as I64) - operand.value - (1 as I64)) }
+        return self.fail(node, "`".concat(node.s1, "` is not a constant operator"))
+    }
+
+    private fn evalBinary(self, node: ASTNode) -> ConstValue {
+        let op = node.s1
+        let left = self.eval(ptr_to_node(node.child1))
+        if (left.ok == false) { return left }
+        // `and` and `or` do not run the right side when the left decides, as at run time:
+        // `n == 0 or 100 / n > 3` is a constant for n = 0.
+        if (op.equals("and") or op.equals("or")) {
+            if (left.isBool == false) { return self.fail(node, "`".concat(op, "` needs Bools in a constant")) }
+            let leftTrue = left.value != (0 as I64)
+            if (op.equals("and") and leftTrue == false) { return constBool(false) }
+            if (op.equals("or") and leftTrue) { return constBool(true) }
+            let right = self.eval(ptr_to_node(node.child2))
+            if (right.ok == false) { return right }
+            if (right.isBool == false) { return self.fail(node, "`".concat(op, "` needs Bools in a constant")) }
+            return right
+        }
+        let right = self.eval(ptr_to_node(node.child2))
+        if (right.ok == false) { return right }
+        if (op.equals("==") or op.equals("!=")) {
+            if (left.isBool != right.isBool) { return self.fail(node, "cannot compare a Bool with an integer") }
+            if (op.equals("==")) { return constBool(left.value == right.value) }
+            return constBool(left.value != right.value)
+        }
+        if (left.isBool or right.isBool) { return self.fail(node, "`".concat(op, "` needs integers in a constant")) }
+        if (op.equals("<")) { return constBool(left.value < right.value) }
+        if (op.equals(">")) { return constBool(left.value > right.value) }
+        if (op.equals("<=")) { return constBool(left.value <= right.value) }
+        if (op.equals(">=")) { return constBool(left.value >= right.value) }
+        let result = constArithmetic(op, left.value, right.value)
+        if (result.ok == false) { return self.fail(node, result.why) }
+        return result
+    }
+
+    private fn evalCast(self, node: ASTNode) -> ConstValue {
+        let operand = self.eval(ptr_to_node(node.child1))
+        if (operand.ok == false) { return operand }
+        let target = constAnnotationName(node.child2)
+        if (target.equals("")) { return self.fail(node, "a constant can be cast only to an integer type or Bool") }
+        if (target.equals("Bool")) {
+            if (operand.isBool == false) { return self.fail(node, "an integer cannot be cast to Bool; compare it with `!= 0`") }
+            return operand
+        }
+        // `true as Int` is 1.
+        return constOf(constWrapTo(target, operand.value))
+    }
+
+    // --- calls ---
+
+    private fn evalCall(self, call: ASTNode) -> ConstValue {
+        let calleePtr = call.child1
+        if (nodeIsNull(calleePtr) or ptr_to_node(calleePtr).kind != NodeKind.IDENTIFIER_EXPR) {
+            return self.fail(call, "only a plain function name can be called in a constant")
+        }
+        let name = ptr_to_node(calleePtr).s1.clone()
+        let mut found = ptr_null()
+        let mut count = 0
+        let mut p = ptr_to_node(self.module).child1
+        while (nodeExists(p)) {
+            let decl = ptr_to_node(p)
+            if (decl.kind == NodeKind.FUNCTION and decl.s1.equals(name)) {
+                if (count == 0) { found = p }
+                count = count + 1
+            }
+            p = decl.next
+        }
+        if (count == 0) { return self.fail(call, diagQuote(name).concat(" is not a function that a constant can call")) }
+        if (count > 1) {
+            return self.fail(call, "more than one function is called ".concat(diagQuote(name), "; a constant can call only one of them"))
+        }
+        let fnNode = ptr_to_node(found)
+        if (nodeIsConstFn(fnNode) == false) {
+            return self.fail(call, diagQuote(name).concat(" is not a `const fn`, so it cannot run at compile time; declare it `const fn`"))
+        }
+        if (nodeExists(fnNode.genericInfo)) {
+            return self.fail(call, "a generic function cannot run at compile time yet")
+        }
+        if (nodeIsNull(fnNode.child2)) { return self.fail(call, diagQuote(name).concat(" has no body")) }
+        let returnType = constAnnotationName(fnNode.child3)
+        if (returnType.equals("")) {
+            return self.fail(fnNode, "a `const fn` must return an integer type or Bool to be used in a constant")
+        }
+        if (self.depth >= constDepthLimit()) {
+            return self.fail(call, "constant evaluation is nested more than ".concat(constDepthLimit().toString(),
+                                                                                      " calls deep; does ", diagQuote(name), " recurse forever?"))
+        }
+
+        // The arguments are evaluated in the caller's frame, then bound in a new one.
+        let mut argValues = Vec<I64>()
+        let mut argBools = Vec<Bool>()
+        let mut argPtr = call.child2
+        while (nodeExists(argPtr)) {
+            let argNode = ptr_to_node(argPtr)
+            let value = self.eval(argNode)
+            if (value.ok == false) { return value }
+            argValues.push(value.value)
+            argBools.push(value.isBool)
+            argPtr = argNode.next
+        }
+        let mut paramCount = 0
+        let mut paramPtr = fnNode.child1
+        while (nodeExists(paramPtr)) {
+            paramCount = paramCount + 1
+            paramPtr = ptr_to_node(paramPtr).next
+        }
+        if (paramCount != argValues.length) {
+            return self.fail(call, diagQuote(name).concat(" takes ", paramCount.toString(), " arguments, but this passes ",
+                                                          argValues.length.toString()))
+        }
+
+        let savedBase = self.base
+        let mark = self.envName.length
+        self.base = mark
+        self.depth = self.depth + 1
+        let mut index = 0
+        paramPtr = fnNode.child1
+        while (nodeExists(paramPtr)) {
+            let param = ptr_to_node(paramPtr)
+            let typeName = constAnnotationName(param.child1)
+            if (typeName.equals("")) {
+                self.fail(param, "a `const fn` used in a constant takes only integers and Bool; ".concat(diagQuote(param.s1), " is something else"))
+                break
+            }
+            let argument = ConstValue { ok: true, value: argValues[index], isBool: argBools[index], why: "", at: ptr_null() }
+            let checked = self.conform(call, typeName, argument, "parameter ".concat(diagQuote(param.s1)))
+            if (checked.ok == false) { break }
+            self.bind(param.s1, typeName, checked, false)
+            index = index + 1
+            paramPtr = param.next
+        }
+
+        let mut status = stepFailed()
+        if (self.failed == false) { status = self.execBlock(ptr_to_node(fnNode.child2)) }
+        self.depth = self.depth - 1
+        self.popTo(mark)
+        self.base = savedBase
+        if (self.failed) { return self.failure() }
+        if (status != stepReturn()) {
+            return self.fail(fnNode, diagQuote(name).concat(" reached its closing brace without returning a value"))
+        }
+        let result = ConstValue { ok: true, value: self.returned, isBool: self.returnedBool, why: "", at: ptr_null() }
+        return self.conform(call, returnType, result, "the result of ".concat(diagQuote(name)))
+    }
+
+    // --- statements ---
+
+    private fn execBlock(self, block: ASTNode) -> Int {
+        let mark = self.envName.length
+        let mut status = stepNormal()
+        let mut p = block.child1
+        while (nodeExists(p)) {
+            let stmt = ptr_to_node(p)
+            status = self.exec(stmt)
+            if (status != stepNormal()) { break }
+            p = stmt.next
+        }
+        self.popTo(mark)
+        return status
+    }
+
+    private fn exec(self, stmt: ASTNode) -> Int {
+        if (self.tick(stmt) == false) { return stepFailed() }
+        if (stmt.kind == NodeKind.VARIABLE_DECL) { return self.execDecl(stmt) }
+        if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) { return self.execAssign(stmt) }
+        if (stmt.kind == NodeKind.IF_STATEMENT) { return self.execIf(stmt) }
+        if (stmt.kind == NodeKind.WHILE_STATEMENT) { return self.execWhile(stmt) }
+        if (stmt.kind == NodeKind.LOOP_STATEMENT) { return self.execLoop(stmt) }
+        if (stmt.kind == NodeKind.FOR_STATEMENT) { return self.execFor(stmt) }
+        if (stmt.kind == NodeKind.MATCH_STATEMENT) { return self.execMatch(stmt) }
+        if (stmt.kind == NodeKind.RETURN_STATEMENT) { return self.execReturn(stmt) }
+        if (stmt.kind == NodeKind.BREAK_STATEMENT) {
+            self.jumpLabel = stmt.s1.clone()
+            return stepBreak()
+        }
+        if (stmt.kind == NodeKind.CONTINUE_STATEMENT) {
+            self.jumpLabel = stmt.s1.clone()
+            return stepContinue()
+        }
+        if (stmt.kind == NodeKind.EXPRESSION_STATEMENT and nodeExists(stmt.child1)
+            and ptr_to_node(stmt.child1).kind == NodeKind.CALL_EXPR) {
+            // A call run for nothing: it can only fail, which is worth finding out.
+            let value = self.eval(ptr_to_node(stmt.child1))
+            if (value.ok == false) { return stepFailed() }
+            return stepNormal()
+        }
+        self.fail(stmt, "this statement cannot run at compile time")
+        return stepFailed()
+    }
+
+    private fn execDecl(self, decl: ASTNode) -> Int {
+        if (nodeIsNull(decl.child2)) {
+            self.fail(decl, "a variable in a `const fn` needs a value where it is declared")
+            return stepFailed()
+        }
+        let typeName = constAnnotationName(decl.child1)
+        if (nodeExists(decl.child1) and typeName.equals("")) {
+            self.fail(decl, "a variable in a `const fn` can be an integer or Bool only")
+            return stepFailed()
+        }
+        let value = self.eval(ptr_to_node(decl.child2))
+        if (value.ok == false) { return stepFailed() }
+        let checked = self.conform(decl, typeName, value, "variable ".concat(diagQuote(decl.s1)))
+        if (checked.ok == false) { return stepFailed() }
+        self.bind(decl.s1, typeName, checked, decl.i1 == 1)
+        return stepNormal()
+    }
+
+    private fn execAssign(self, stmt: ASTNode) -> Int {
+        let target = ptr_to_node(stmt.child1)
+        if (target.kind != NodeKind.IDENTIFIER_EXPR) {
+            self.fail(stmt, "a `const fn` can assign only to its own variables")
+            return stepFailed()
+        }
+        let slot = self.find(target.s1)
+        if (slot < 0) {
+            self.fail(target, diagQuote(target.s1).concat(" is not a variable of this `const fn`"))
+            return stepFailed()
+        }
+        if ((self.envFlags[slot] & flagMutable()) == 0) {
+            self.fail(target, diagQuote(target.s1).concat(" is not `let mut`, so it cannot be assigned"))
+            return stepFailed()
+        }
+        let value = self.eval(ptr_to_node(stmt.child2))
+        if (value.ok == false) { return stepFailed() }
+        let typeName = self.symbols[self.envType[slot]].clone()
+        let isBool = (self.envFlags[slot] & flagBool()) != 0
+        if (value.isBool != isBool) {
+            self.fail(stmt, "this assignment changes ".concat(diagQuote(target.s1), " between a Bool and an integer"))
+            return stepFailed()
+        }
+        let checked = self.conform(stmt, typeName, value, "variable ".concat(diagQuote(target.s1)))
+        if (checked.ok == false) { return stepFailed() }
+        self.envValue[slot] = checked.value
+        return stepNormal()
+    }
+
+    private fn condition(self, node: ASTNode, what: String) -> Int {
+        let value = self.eval(node)
+        if (value.ok == false) { return -1 }
+        if (value.isBool == false) {
+            self.fail(node, "the condition of ".concat(what, " must be a Bool"))
+            return -1
+        }
+        if (value.value != (0 as I64)) { return 1 }
+        return 0
+    }
+
+    private fn execIf(self, stmt: ASTNode) -> Int {
+        let taken = self.condition(ptr_to_node(stmt.child1), "an `if`")
+        if (taken < 0) { return stepFailed() }
+        if (taken == 1) { return self.execBlock(ptr_to_node(stmt.child2)) }
+        if (nodeIsNull(stmt.child3)) { return stepNormal() }
+        let other = ptr_to_node(stmt.child3)
+        if (other.kind == NodeKind.IF_STATEMENT) { return self.exec(other) }
+        return self.execBlock(other)
+    }
+
+    // What a loop does with the status its body ended with: 0 go on, 1 leave the loop
+    // normally, 2 pass the status up (a `return`, a failure, or a jump to an outer
+    // loop's label).
+    private fn loopStep(self, status: Int, label: String) -> Int {
+        if (status == stepNormal()) { return 0 }
+        if (status == stepBreak() or status == stepContinue()) {
+            if (self.jumpLabel.equals("") == false and self.jumpLabel.equals(label) == false) { return 2 }
+            self.jumpLabel = ""
+            if (status == stepBreak()) { return 1 }
+            return 0
+        }
+        return 2
+    }
+
+    private fn execWhile(self, stmt: ASTNode) -> Int {
+        let body = ptr_to_node(stmt.child2)
+        loop {
+            let go = self.condition(ptr_to_node(stmt.child1), "a `while`")
+            if (go < 0) { return stepFailed() }
+            if (go == 0) { return stepNormal() }
+            if (self.tick(stmt) == false) { return stepFailed() }
+            let status = self.execBlock(body)
+            let next = self.loopStep(status, body.s1)
+            if (next == 1) { return stepNormal() }
+            if (next == 2) { return status }
+        }
+    }
+
+    private fn execLoop(self, stmt: ASTNode) -> Int {
+        let body = ptr_to_node(stmt.child1)
+        loop {
+            if (self.tick(stmt) == false) { return stepFailed() }
+            let status = self.execBlock(body)
+            let next = self.loopStep(status, body.s1)
+            if (next == 1) { return stepNormal() }
+            if (next == 2) { return status }
+        }
+    }
+
+    // `for i in a..<b`, `a..b`, `a..<b step s` and `repeat(n)`. A range whose start is
+    // past its end counts down, as it does at run time.
+    private fn execFor(self, stmt: ASTNode) -> Int {
+        if (nodeIsNull(stmt.child2) or stmt.s2.equals("") == false) {
+            self.fail(stmt, "a `for` in a `const fn` can only count through a range such as `0..<n`")
+            return stepFailed()
+        }
+        let startValue = self.eval(ptr_to_node(stmt.child1))
+        if (startValue.ok == false) { return stepFailed() }
+        let endNode = ptr_to_node(stmt.child2)
+        let endValue = self.eval(endNode)
+        if (endValue.ok == false) { return stepFailed() }
+        if (startValue.isBool or endValue.isBool) {
+            self.fail(stmt, "the bounds of a range must be integers")
+            return stepFailed()
+        }
+        let mut stride = 1 as I64
+        if (nodeExists(endNode.next)) {
+            let stepValue = self.eval(ptr_to_node(endNode.next))
+            if (stepValue.ok == false) { return stepFailed() }
+            if (stepValue.value <= (0 as I64)) {
+                self.fail(ptr_to_node(endNode.next), "a range's step must be positive")
+                return stepFailed()
+            }
+            stride = stepValue.value
+        }
+        let inclusive = stmt.i1 == 1
+        let ascending = startValue.value <= endValue.value
+        let body = ptr_to_node(stmt.child3)
+        let mut i = startValue.value
+        loop {
+            let past = (ascending and ((inclusive and i > endValue.value) or (inclusive == false and i >= endValue.value)))
+                or (ascending == false and ((inclusive and i < endValue.value) or (inclusive == false and i <= endValue.value)))
+            if (past) { return stepNormal() }
+            if (self.tick(stmt) == false) { return stepFailed() }
+            let mark = self.envName.length
+            self.bind(stmt.s1, "", constOf(i), false)
+            let status = self.execBlock(body)
+            self.popTo(mark)
+            let next = self.loopStep(status, body.s1)
+            if (next == 1) { return stepNormal() }
+            if (next == 2) { return status }
+            if (ascending) { i = i + stride } else { i = i - stride }
+        }
+    }
+
+    private fn execMatch(self, stmt: ASTNode) -> Int {
+        let scrutinee = self.eval(ptr_to_node(stmt.child1))
+        if (scrutinee.ok == false) { return stepFailed() }
+        let mut armPtr = stmt.child2
+        while (nodeExists(armPtr)) {
+            let arm = ptr_to_node(armPtr)
+            let mut hit = arm.s1.equals("_")
+            if (hit == false and nodeExists(arm.child1)) {
+                let pattern = self.eval(ptr_to_node(arm.child1))
+                if (pattern.ok == false) { return stepFailed() }
+                hit = pattern.isBool == scrutinee.isBool and pattern.value == scrutinee.value
+            }
+            if (hit) { return self.execBlock(ptr_to_node(arm.child2)) }
+            armPtr = arm.next
+        }
+        return stepNormal()
+    }
+
+    private fn execReturn(self, stmt: ASTNode) -> Int {
+        if (nodeIsNull(stmt.child1)) {
+            self.fail(stmt, "a `const fn` used in a constant must return a value")
+            return stepFailed()
+        }
+        let value = self.eval(ptr_to_node(stmt.child1))
+        if (value.ok == false) { return stepFailed() }
+        self.returned = value.value
+        self.returnedBool = value.isBool
+        return stepReturn()
+    }
+}
+
+// --- entry points ----------------------------------------------------------------------
+
+// `call`, a call to a `const fn`, evaluated: what consts.psm hands a call it meets in
+// an array length or a global's initializer.
+internal fn constEvalCall(module: ASTNode, call: ASTNode) -> ConstValue {
+    let ev = newConstEval(module)
+    let result = ev.eval(call)
+    if (ev.failed) { return ev.failure() }
+    return result
+}
+
+// Rewrites `node`, a CONST_EXPR, in place into the literal it comes to. A constant that
+// cannot be worked out is reported where it is written, with a note at the construct
+// inside a `const fn` that stopped it, and left as `0` so nothing downstream sees an
+// expression where it expects a literal.
+private fn foldConstExpr(module: ASTNode, node: ASTNode) {
+    let ev = newConstEval(module)
+    let result = ev.eval(ptr_to_node(node.child1))
+    if (ev.failed) {
+        semaErrorAt(node, "this constant cannot be worked out at compile time: ".concat(ev.why))
+        if (nodeExists(ev.at)) {
+            let culprit = ptr_to_node(ev.at)
+            // Where inside a `const fn` it stopped, unless that is the expression itself.
+            if (culprit.line != node.line or culprit.col != node.col or culprit.file != node.file) {
+                diag_note_at(culprit.file, culprit.line, culprit.col, culprit.len, "it stopped here")
+            }
+        }
+    }
+    node.kind = NodeKind.LITERAL_EXPR
+    node.child1 = ptr_null()
+    if (ev.failed or result.ok == false) {
+        node.i1 = TokenType.NUMBER_LITERAL as Int
+        node.s1 = "0"
+        return
+    }
+    if (result.isBool) {
+        node.i1 = TokenType.BOOL_LITERAL as Int
+        if (result.value != (0 as I64)) { node.s1 = "true" } else { node.s1 = "false" }
+        return
+    }
+    node.i1 = TokenType.NUMBER_LITERAL as Int
+    node.s1 = result.value.toString()
+}
+
+private fn foldWalk(module: ASTNode, first: Ptr) {
+    let mut p = first
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.CONST_EXPR) {
+            foldConstExpr(module, node)
+        } else {
+            foldWalk(module, node.child1)
+            foldWalk(module, node.child2)
+            foldWalk(module, node.child3)
+        }
+        p = node.next
+    }
+}
+
+// Replaces every CONST_EXPR in the program with the literal it comes to. First in sema:
+// the bodies it interprets are the parser's, unrewritten, and everything after sees
+// ordinary literals.
+internal fn semaFoldConstants(module: ASTNode) {
+    if (nodeConstExprSeen() == false) { return }
+    foldWalk(module, module.child1)
+}

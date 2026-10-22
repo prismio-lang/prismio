@@ -50,10 +50,9 @@ impl Parser {
         if (self.checkVal(TokenType.KEYWORD, "import")) { return parseImportStatement(self) }
         if (self.atFromImport()) { return parseFromImportStatement(self) }
         if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseVariableDecl() }
+        if (self.atConstDecl()) { return self.parseVariableDecl() }
         if (self.checkVal(TokenType.KEYWORD, "extern")) { return self.parseExternDecl() }
         if (self.checkVal(TokenType.KEYWORD, "fn") or self.atPropDecl()) { return self.parseFunctionDecl() }
-        if (self.atColdDecl()) { return self.parseColdFunctionDecl() }
-        if (self.atAsyncDecl()) { return self.parseAsyncFunctionDecl() }
         if (self.atFnModifiers()) { return self.parseModifiedFunctionDecl() }
         if (self.atStructModifiers()) { return self.parseModifiedStructDecl() }
         if (self.checkVal(TokenType.KEYWORD, "struct")) { return self.parseStructDecl() }
@@ -118,8 +117,6 @@ impl Parser {
 
         let next = self.peek()
         if (next.type == TokenType.IDENTIFIER and next.value.equals("prop")) { return level }
-        if (next.type == TokenType.IDENTIFIER and next.value.equals("cold")) { return level }
-        if (next.type == TokenType.IDENTIFIER and next.value.equals("async")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("codeset")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("typelist")) { return level }
         if (next.type == TokenType.IDENTIFIER and self.isFnModifierWord(next.value)) { return level }
@@ -164,59 +161,7 @@ impl Parser {
             or next.value.equals("let") or next.value.equals("struct") or next.value.equals("enum")
             or next.value.equals("codeset") or next.value.equals("typelist")
             or self.isStructModifierWord(next.value)
-            or next.value.equals("cold") or next.value.equals("async") or self.isFnModifierWord(next.value)
-    }
-}
-
-
-impl Parser {
-    // `cold fn fail(message: String)` -- a function that rarely runs: an error
-    // path, or the slow half of an operation split so the fast half can be
-    // inlined. It is never inlined into its callers, and a branch that calls it is
-    // laid out as the unlikely one (LLVM's `cold` and `noinline`, which is Rust's
-    // `#[cold]` with `#[inline(never)]`).
-    //
-    // Declared rather than inferred, because nothing in a body says how often it
-    // runs. The need is concrete: an executable internalises every function but
-    // `main`, and LLVM inlines an internal function's only call however large it
-    // is. `mapSet`'s insert half, split out so the update half could be inlined
-    // into a caller's loop, was inlined back into `mapSet` -- which then grew too
-    // large to be inlined anywhere, and key_value_update ran 1.28x slower.
-    //
-    // **Contextual**, like `prop` and the visibility markers: `cold` is a marker
-    // only directly before `fn`, so a variable named `cold` keeps compiling.
-    private fn atColdDecl(self) -> Bool {
-        if (self.check(TokenType.IDENTIFIER) == false) { return false }
-        if (self.current().value.equals("cold") == false) { return false }
-        let next = self.peek()
-        return next.type == TokenType.KEYWORD and next.value.equals("fn")
-    }
-}
-
-
-impl Parser {
-    // `inline fn` in an `impl` block, where the top level's modifier list
-    // (isFnModifierWord) does not reach: contextual, like `cold`.
-    private fn atInlineDecl(self) -> Bool {
-        if (self.check(TokenType.IDENTIFIER) == false) { return false }
-        if (self.current().value.equals("inline") == false) { return false }
-        let next = self.peek()
-        return next.type == TokenType.KEYWORD and next.value.equals("fn")
-    }
-}
-
-
-impl Parser {
-    // `cold` or `inline` directly before an `impl` method's `fn`, or before the other of
-    // the two: `cold inline fn` is parsed so that the conflict is reported as itself.
-    private fn atMethodMarker(self, word: String) -> Bool {
-        if (self.check(TokenType.IDENTIFIER) == false) { return false }
-        if (self.current().value.equals(word) == false) { return false }
-        let next = self.peek()
-        if (next.type == TokenType.IDENTIFIER) {
-            return next.value.equals("cold") or next.value.equals("inline")
-        }
-        return next.type == TokenType.KEYWORD and next.value.equals("fn")
+            or self.isFnModifierWord(next.value)
     }
 }
 
@@ -232,112 +177,6 @@ impl Parser {
         if (self.current().value.equals("from") == false) { return false }
         let next = self.peek()
         return next.type == TokenType.IDENTIFIER or next.type == TokenType.KEYWORD
-    }
-}
-
-
-impl Parser {
-    // The words that may stand before `fn` to say something about the symbol
-    // rather than the function's behaviour (docs/FREESTANDING_PLAN.md, step 4):
-    //
-    //   export          the function is also reachable as its source name, the
-    //                   symbol an assembler stub or a linker script writes
-    //   naked           no prologue or epilogue; the body is `__builtin_asm`
-    //   section("...")  the object-file section its code goes in
-    //   align(n)        its alignment in bytes, a power of two
-    //
-    // and one about how it is called, the opposite of `cold`:
-    //
-    //   inline          inlined into every caller (LLVM's `alwaysinline`, Rust's
-    //                   `#[inline(always)]`), for a small function whose callers
-    //                   need its body: std.map's probe, which LLVM's cost model
-    //                   stopped inlining once a bounds check made it larger, and
-    //                   key_value_update paid for. A debug build ignores it, as it
-    //                   ignores the inlining codegen chooses itself.
-    //
-    // **Contextual**, like `cold`: each is a modifier only where a declaration can
-    // begin and the next token continues one, so a variable named `export` keeps
-    // compiling. They combine in any order, `export naked section(".text.boot") fn`.
-    private fn isFnModifierWord(self, word: String) -> Bool {
-        return word.equals("export") or word.equals("naked") or word.equals("section")
-            or word.equals("align") or word.equals("inline")
-    }
-
-    private fn atFnModifiers(self) -> Bool {
-        if (self.check(TokenType.IDENTIFIER) == false) { return false }
-        let word = self.current().value
-        let next = self.peek()
-        if (word.equals("section") or word.equals("align")) {
-            return next.type == TokenType.SEPARATOR and next.value.equals("(")
-        }
-        if (word.equals("export") == false and word.equals("naked") == false
-            and word.equals("inline") == false and word.equals("cold") == false) { return false }
-        if (next.type == TokenType.KEYWORD) { return next.value.equals("fn") }
-        if (next.type != TokenType.IDENTIFIER) { return false }
-        return self.isFnModifierWord(next.value) or next.value.equals("cold")
-    }
-
-    private fn parseModifiedFunctionDecl(self) -> ASTNode {
-        let mut flags = 0
-        let mut section = ""
-        let mut align = 0
-        let mut cold = false
-        while (self.checkVal(TokenType.KEYWORD, "fn") == false) {
-            if (self.check(TokenType.IDENTIFIER) == false) {
-                self.error("expected `fn` after a function modifier")
-                break
-            }
-            let word = self.current().value
-            if (word.equals("export")) {
-                flags = flags | 1
-                self.advance()
-            } else if (word.equals("naked")) {
-                flags = flags | 2
-                self.advance()
-            } else if (word.equals("inline")) {
-                flags = flags | 8
-                self.advance()
-            } else if (word.equals("cold")) {
-                cold = true
-                self.advance()
-            } else if (word.equals("align")) {
-                self.advance()
-                self.expectVal(TokenType.SEPARATOR, "(", "alignment")
-                let size = self.current()
-                let parsed = size.value.parseInt().unwrapOr(0)
-                if (size.type != TokenType.NUMBER_LITERAL or parsed < 1 or (parsed & (parsed - 1)) != 0) {
-                    self.error("`align` takes a power of two, such as `align(4)`")
-                } else {
-                    align = parsed
-                }
-                self.advance()
-                self.expectVal(TokenType.SEPARATOR, ")", "alignment")
-            } else if (word.equals("section")) {
-                self.advance()
-                self.expectVal(TokenType.SEPARATOR, "(", "section name")
-                let name = self.current()
-                if (name.type != TokenType.STRING_LITERAL or name.value.equals("")) {
-                    self.error("`section` takes the section's name as a string literal, such as `section(\".text.boot\")`")
-                    self.advance()
-                } else {
-                    section = name.value
-                    self.advance()
-                }
-                self.expectVal(TokenType.SEPARATOR, ")", "section name")
-            } else {
-                self.error("expected `fn` after a function modifier")
-                break
-            }
-        }
-        if (cold and (flags & 8) == 8) {
-            self.error("a function cannot be both `cold` and `inline`")
-        }
-        let fnNode = self.parseFunctionDecl()
-        if (cold) { nodeMarkCold(fnNode) }
-        if (flags != 0 or align != 0 or section.equals("") == false) {
-            nodeSetFnAttrs(fnNode, flags, align, section)
-        }
-        return fnNode
     }
 }
 
@@ -405,41 +244,6 @@ impl Parser {
 
 
 impl Parser {
-    private fn parseColdFunctionDecl(self) -> ASTNode {
-        self.advance()
-        let fnNode = self.parseFunctionDecl()
-        nodeMarkCold(fnNode)
-        return fnNode
-    }
-}
-
-
-impl Parser {
-    // `async fn fetch(id: Int) -> User { ... }` -- a function that can be awaited. Calling
-    // it does not run it: the call is a `Future<User>`, and the body runs when that
-    // future is awaited, or when a `spawn` starts it on a task of its own.
-    //
-    // **Contextual**, like `cold` and `prop`: `async` is a marker only directly before
-    // `fn`, so a variable or a function called `async` keeps compiling. The flag goes
-    // in the attribute table beside `export` and `naked`, keyed by where the `fn` is,
-    // so a generic instantiation's copy of the declaration is still async.
-    private fn atAsyncDecl(self) -> Bool {
-        if (self.check(TokenType.IDENTIFIER) == false) { return false }
-        if (self.current().value.equals("async") == false) { return false }
-        let next = self.peek()
-        return next.type == TokenType.KEYWORD and next.value.equals("fn")
-    }
-
-    private fn parseAsyncFunctionDecl(self) -> ASTNode {
-        self.advance()
-        let fnNode = self.parseFunctionDecl()
-        nodeSetFnAttrs(fnNode, 4, 0, "")
-        return fnNode
-    }
-}
-
-
-impl Parser {
     // `prop length(self) -> Int` -- a property: a function read as `s.length`, which
     // `s.length()` does not call (semaCheckPropertySpelling). Declared, not inferred
     // from what the function does, because an inferred rule makes the spelling a
@@ -451,7 +255,7 @@ impl Parser {
     // only begin a declaration, so a program with a variable called `prop` keeps
     // compiling. Parsed as a function in every other respect -- FUNCTION.i1 says it
     // is a property (nodeIsProperty).
-    private fn atPropDecl(self) -> Bool {
+    internal fn atPropDecl(self) -> Bool {
         if (self.check(TokenType.IDENTIFIER) == false) { return false }
         if (self.current().value.equals("prop") == false) { return false }
         return self.peek().type == TokenType.IDENTIFIER
@@ -1298,11 +1102,32 @@ impl Parser {
     // Declarations
     // ---------------------------------------------------------
 
+    // `const NAME = expr` is a declaration whose value is worked out at compile time
+    // (src/sema/const_eval.psm). **Contextual**: `const` is a declaration only when a name
+    // follows, so a variable called `const` keeps compiling, and a run of function
+    // modifiers ending in `fn` -- `const fn` -- is not one (atFnModifiers).
+    internal fn atConstDecl(self) -> Bool {
+        if (self.checkVal(TokenType.IDENTIFIER, "const") == false) { return false }
+        let next = self.peek()
+        if (next.type == TokenType.KEYWORD and next.value.equals("mut")) { return true }
+        if (next.type != TokenType.IDENTIFIER) { return false }
+        return self.atFnModifiers() == false
+    }
+
+    // `let [mut] name [: Type] [= value]`, or `const name [: Type] = value`. A constant
+    // is an immutable `let` whose initializer is wrapped in CONST_EXPR; everything
+    // after sema's constant folding sees the literal it came to.
     internal fn parseVariableDecl(self) -> ASTNode {
-        self.expectVal(TokenType.KEYWORD, "let", "variable declaration")
+        let isConst = self.checkVal(TokenType.IDENTIFIER, "const")
+        if (isConst) {
+            self.advance()
+        } else {
+            self.expectVal(TokenType.KEYWORD, "let", "variable declaration")
+        }
         let varNode = self.node(NodeKind.VARIABLE_DECL)
 
         if (self.matchVal(TokenType.KEYWORD, "mut")) {
+            if (isConst) { self.error("a `const` cannot be `mut`: its value is fixed at compile time") }
             varNode.i1 = 1 // is_mutable
         }
 
@@ -1318,6 +1143,16 @@ impl Parser {
 
         if (self.matchVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
             varNode.child2 = node_to_ptr(self.parseExpression(0))
+        } else if (isConst) {
+            self.error("a `const` needs a value: `const NAME = expression`")
+        }
+        if (isConst and nodeExists(varNode.child2)) {
+            let value = ptr_to_node(varNode.child2)
+            let wrapper = createNode(NodeKind.CONST_EXPR)
+            nodeSpanFrom(wrapper, value)
+            wrapper.child1 = node_to_ptr(value)
+            varNode.child2 = node_to_ptr(wrapper)
+            nodeNoteConstExpr()
         }
 
         return varNode
@@ -1530,7 +1365,7 @@ impl Parser {
 
 
 impl Parser {
-    private fn parseFunctionDecl(self) -> ASTNode {
+    internal fn parseFunctionDecl(self) -> ASTNode {
         let isProperty = self.atPropDecl()
         if (isProperty) {
             self.advance()
@@ -1764,35 +1599,12 @@ impl Parser {
             let methodVisibility = self.visibilityLevel()
             if (methodVisibility >= 0) { self.advance() }
 
-            let mut methodIsCold = false
-            let mut methodIsInline = false
-            let mut atMarker = true
-            while (atMarker) {
-                atMarker = false
-                if (self.atMethodMarker("cold")) {
-                    methodIsCold = true
-                    atMarker = true
-                    self.advance()
-                } else if (self.atMethodMarker("inline")) {
-                    methodIsInline = true
-                    atMarker = true
-                    self.advance()
-                }
-            }
-            if (methodIsCold and methodIsInline) {
-                self.error("a function cannot be both `cold` and `inline`")
-            }
-            let methodIsAsync = self.atAsyncDecl()
-            if (methodIsAsync) { self.advance() }
+            let methodMods = self.parseMethodModifiers()
             if (self.checkVal(TokenType.KEYWORD, "fn") == false and self.atPropDecl() == false) {
                 self.fatal("an `impl` block holds `fn`, `prop` and `let` declarations, found ".concat(parserDescribe(self.current())))
             }
             let method = self.parseFunctionDecl()
-            if (methodIsCold) { nodeMarkCold(method) }
-            let mut methodFlags = 0
-            if (methodIsAsync) { methodFlags = 4 }
-            if (methodIsInline) { methodFlags = methodFlags | 8 }
-            if (methodFlags != 0) { nodeSetFnAttrs(method, methodFlags, 0, "") }
+            applyFnModifiers(method, methodMods)
             method.s2 = self.parseImplMethodParams(header.s1, method.s2)
             // A function with no `self` belongs to the type: `impl Config { fn
             // make() -> Config }` is `Config.make()`, and its name says so, so two

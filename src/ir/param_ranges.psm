@@ -101,7 +101,7 @@ private fn paramRangeCandidate(decl: ASTNode) -> Bool {
     if (decl.kind != NodeKind.FUNCTION or nodeIsNull(decl.child2)) { return false }
     if (decl.i2 != 1 or decl.s1.equals("main") or nodeExists(decl.genericInfo)) { return false }
     // export (1) and async (4).
-    if ((nodeFnAttrFlags(decl) & 5) != 0) { return false }
+    if (nodeIsExported(decl) or nodeIsAsync(decl)) { return false }
     if (nodeIsNull(decl.child1)) { return false }
     let first = ptr_to_node(decl.child1)
     if (first.s1.equals("self")) { return false }

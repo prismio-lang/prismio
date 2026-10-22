@@ -1,0 +1,271 @@
+// The words that may stand before `fn`, at the top level and in an `impl` block:
+// one grammar, one place, one table of which words may be combined.
+//
+//   export          the function is also reachable as its source name, the symbol an
+//                   assembler stub or a linker script writes
+//   naked           no prologue or epilogue; the body is `__builtin_asm`
+//   section("...")  the object-file section its code goes in
+//   align(n)        its alignment in bytes, a power of two
+//   async           calling it yields a `Future`; the body runs when it is awaited
+//
+//   inline            a hint that the body is worth folding into callers
+//                     (LLVM's `inlinehint`, Rust's `#[inline]`)
+//   inline(always)    folded into every caller (`alwaysinline`, `#[inline(always)]`),
+//                     for a small function whose callers need its body: std.map's
+//                     probe, which LLVM's cost model stopped inlining once a bounds
+//                     check made it larger. A debug build ignores it, as it ignores
+//                     the inlining codegen chooses itself.
+//   inline(never)     never folded into a caller (`noinline`, `#[inline(never)]`)
+//   noinline          the same request, spelt the way the compiler's own sources do
+//
+//   cold            rarely runs: an error path, or the slow half of an operation split
+//                   so the fast half can be inlined. Never inlined, and a branch that
+//                   calls it is laid out as the unlikely one (`cold` + `noinline`).
+//   hot             runs often: optimised for speed and placed with the hot code
+//   noreturn        control never comes back from a call to it
+//   const           an ordinary function that a constant expression may also call
+//
+// **Contextual**, like `prop` and the visibility markers: each is a modifier only
+// where a declaration can begin and a run of modifiers ends in `fn`, so a variable
+// named `cold` or `const` keeps compiling. They combine in any order; the pairs that
+// contradict each other are refused here (checkFnModifierConflicts), so no later pass
+// has to decide which of two requests wins.
+//
+// What each one means is not decided here. The parser records the bits in the
+// attribute table (ast/fn_attrs.psm) and nothing else: sema reads `noreturn` and
+// `const`, codegen reads the rest (ir/fn_attributes.psm).
+
+import lexer.scanner
+import lexer.token
+import ast.nodes
+import ast.fn_attrs
+import common.diagnostics
+import std.string
+import std.option
+
+struct FnModifiers {
+    flags: Int,
+    align: Int,
+    section: String
+}
+
+private fn fnModifierWord(word: String) -> Bool {
+    return word.equals("export") or word.equals("naked") or word.equals("section")
+        or word.equals("align") or word.equals("async") or word.equals("inline")
+        or word.equals("noinline") or word.equals("cold") or word.equals("hot")
+        or word.equals("noreturn") or word.equals("const")
+}
+
+// The modifiers that are followed by a parenthesised argument. `inline` is the one
+// that may or may not be.
+private fn fnModifierNeedsArgument(word: String) -> Bool {
+    return word.equals("section") or word.equals("align")
+}
+
+private fn fnModifierTakesArgument(word: String) -> Bool {
+    return fnModifierNeedsArgument(word) or word.equals("inline")
+}
+
+// How the request to inline was written: `inline(always)` when that was it.
+private fn inlineSpelling(flags: Int) -> String {
+    if ((flags & fnAttrBitInlineAlways()) != 0) { return "inline(always)" }
+    return "inline"
+}
+
+impl Parser {
+    // Whether a visibility marker may be followed by this word (parseDeclaration).
+    internal fn isFnModifierWord(self, word: String) -> Bool { return fnModifierWord(word) }
+
+    // True when the tokens ahead are a run of modifier words ending in `fn` (or in
+    // `prop` and a name). Looking all the way to the `fn` is what keeps a global called
+    // `const` or `hot` -- `const hot = 3` -- from being read as a function.
+    internal fn atFnModifiers(self) -> Bool {
+        let mut tok = self.current()
+        let mut seen = 0
+        loop {
+            if (tok.type == TokenType.KEYWORD and tok.value.equals("fn")) { return seen > 0 }
+            if (tok.type == TokenType.IDENTIFIER and tok.value.equals("prop")
+                and ptr_to_token(tok.tokNext).type == TokenType.IDENTIFIER) {
+                return seen > 0
+            }
+            if (tok.type != TokenType.IDENTIFIER or fnModifierWord(tok.value) == false) { return false }
+            seen = seen + 1
+            let next = ptr_to_token(tok.tokNext)
+            if (next.type == TokenType.SEPARATOR and next.value.equals("(")) {
+                if (fnModifierTakesArgument(tok.value) == false) { return false }
+                let mut inner = ptr_to_token(next.tokNext)
+                while (inner.type != TokenType.EOF
+                       and (inner.type != TokenType.SEPARATOR or inner.value.equals(")") == false)) {
+                    inner = ptr_to_token(inner.tokNext)
+                }
+                if (inner.type == TokenType.EOF) { return false }
+                tok = ptr_to_token(inner.tokNext)
+            } else {
+                if (fnModifierNeedsArgument(tok.value)) { return false }
+                tok = next
+            }
+        }
+    }
+}
+
+
+impl Parser {
+    private fn atFnBody(self) -> Bool {
+        return self.checkVal(TokenType.KEYWORD, "fn") or self.atPropDecl()
+    }
+
+    // Adds `bit`, once: saying a modifier twice is a mistake worth naming, not a
+    // request to be merged.
+    private fn addFnModifier(self, flags: Int, bit: Int, spelling: String) -> Int {
+        if ((flags & bit) != 0) {
+            self.error("`".concat(spelling, "` is written twice"))
+        }
+        return flags | bit
+    }
+
+    // `inline`, `inline(always)` or `inline(never)`, with the current token on `inline`.
+    private fn parseInlineModifier(self, flags: Int) -> Int {
+        self.advance()
+        if (self.matchVal(TokenType.SEPARATOR, "(") == false) {
+            return self.addFnModifier(flags, fnAttrBitInline(), "inline")
+        }
+        let choice = self.current()
+        let mut result = flags
+        if (choice.type == TokenType.IDENTIFIER and choice.value.equals("always")) {
+            result = self.addFnModifier(flags, fnAttrBitInlineAlways(), "inline(always)")
+        } else if (choice.type == TokenType.IDENTIFIER and choice.value.equals("never")) {
+            result = self.addFnModifier(flags, fnAttrBitNoinline(), "inline(never)")
+        } else {
+            self.error("`inline` takes `always` or `never`, as in `inline(always)`; write `inline` alone for a hint")
+        }
+        self.advance()
+        self.expectVal(TokenType.SEPARATOR, ")", "inline")
+        return result
+    }
+
+    // Consumes the modifiers up to the `fn` (or `prop`) they apply to. `inImpl` is a
+    // method, where the words that say what a *symbol* is -- `export`, `naked`,
+    // `section`, `align` -- do not apply: a method's symbol is the compiler's to name.
+    internal fn parseFnModifiers(self, inImpl: Bool) -> FnModifiers {
+        let mut flags = 0
+        let mut section = ""
+        let mut align = 0
+        while (self.atFnBody() == false) {
+            if (self.check(TokenType.IDENTIFIER) == false) {
+                self.error("expected `fn` after a function modifier")
+                break
+            }
+            let word = self.current().value.clone()
+            if (inImpl and (word.equals("export") or word.equals("naked")
+                            or word.equals("section") or word.equals("align"))) {
+                self.error("`".concat(word, "` is not accepted on a method; write the function outside the `impl` block"))
+            }
+            if (word.equals("export")) {
+                flags = self.addFnModifier(flags, fnAttrBitExport(), word)
+                self.advance()
+            } else if (word.equals("naked")) {
+                flags = self.addFnModifier(flags, fnAttrBitNaked(), word)
+                self.advance()
+            } else if (word.equals("async")) {
+                flags = self.addFnModifier(flags, fnAttrBitAsync(), word)
+                self.advance()
+            } else if (word.equals("inline")) {
+                flags = self.parseInlineModifier(flags)
+            } else if (word.equals("noinline")) {
+                flags = self.addFnModifier(flags, fnAttrBitNoinline(), word)
+                self.advance()
+            } else if (word.equals("cold")) {
+                flags = self.addFnModifier(flags, fnAttrBitCold(), word)
+                self.advance()
+            } else if (word.equals("hot")) {
+                flags = self.addFnModifier(flags, fnAttrBitHot(), word)
+                self.advance()
+            } else if (word.equals("noreturn")) {
+                flags = self.addFnModifier(flags, fnAttrBitNoreturn(), word)
+                self.advance()
+            } else if (word.equals("const")) {
+                flags = self.addFnModifier(flags, fnAttrBitConst(), word)
+                self.advance()
+            } else if (word.equals("align")) {
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, "(", "alignment")
+                let size = self.current()
+                let parsed = size.value.parseInt().unwrapOr(0)
+                if (size.type != TokenType.NUMBER_LITERAL or parsed < 1 or (parsed & (parsed - 1)) != 0) {
+                    self.error("`align` takes a power of two, such as `align(4)`")
+                } else {
+                    align = parsed
+                }
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, ")", "alignment")
+            } else if (word.equals("section")) {
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, "(", "section name")
+                let name = self.current()
+                if (name.type != TokenType.STRING_LITERAL or name.value.equals("")) {
+                    self.error("`section` takes the section's name as a string literal, such as `section(\".text.boot\")`")
+                } else {
+                    section = name.value.clone()
+                }
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, ")", "section name")
+            } else {
+                self.error("expected `fn` after a function modifier")
+                break
+            }
+        }
+        self.checkFnModifierConflicts(flags)
+        return FnModifiers { flags: flags, align: align, section: section }
+    }
+
+    // The pairs that ask for opposite things. `cold` with `noinline` is not among
+    // them -- `cold` already implies it -- and neither is `hot` with any inline
+    // request, since how likely a function is to run says nothing about its size.
+    private fn checkFnModifierConflicts(self, flags: Int) {
+        let wantsInline = (flags & (fnAttrBitInline() | fnAttrBitInlineAlways())) != 0
+        if ((flags & fnAttrBitCold()) != 0 and wantsInline) {
+            self.error("a function cannot be both `cold` and `".concat(inlineSpelling(flags), "`"))
+        }
+        if ((flags & fnAttrBitCold()) != 0 and (flags & fnAttrBitHot()) != 0) {
+            self.error("a function cannot be both `cold` and `hot`")
+        }
+        if ((flags & fnAttrBitInline()) != 0 and (flags & fnAttrBitInlineAlways()) != 0) {
+            self.error("a function cannot be both `inline` and `inline(always)`: the second already says it")
+        } else if (wantsInline and (flags & fnAttrBitNoinline()) != 0) {
+            self.error("a function cannot be both `".concat(inlineSpelling(flags), "` and `noinline`"))
+        }
+        if ((flags & fnAttrBitNaked()) != 0 and wantsInline) {
+            self.error("a `naked` function cannot be inlined: its body is the assembly and no frame is built around it")
+        }
+        if ((flags & fnAttrBitConst()) != 0) {
+            if ((flags & fnAttrBitAsync()) != 0) { self.error("a `const fn` cannot be `async`") }
+            if ((flags & fnAttrBitNaked()) != 0) { self.error("a `const fn` cannot be `naked`") }
+            if ((flags & fnAttrBitNoreturn()) != 0) {
+                self.error("a `const fn` cannot be `noreturn`: a constant has to be a value")
+            }
+        }
+    }
+}
+
+
+impl Parser {
+    // The modifiers before a method's `fn`, none when it has none.
+    internal fn parseMethodModifiers(self) -> FnModifiers {
+        if (self.atFnModifiers()) { return self.parseFnModifiers(true) }
+        return FnModifiers { flags: 0, align: 0, section: "" }
+    }
+
+    internal fn parseModifiedFunctionDecl(self) -> ASTNode {
+        let mods = self.parseFnModifiers(false)
+        let fnNode = self.parseFunctionDecl()
+        applyFnModifiers(fnNode, mods)
+        return fnNode
+    }
+}
+
+// Records what the modifiers said on the function they came before.
+internal fn applyFnModifiers(fnNode: ASTNode, mods: FnModifiers) {
+    if (mods.flags != 0 or mods.align != 0 or mods.section.equals("") == false) {
+        nodeSetFnAttrs(fnNode, mods.flags, mods.align, mods.section)
+    }
+}

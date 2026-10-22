@@ -2337,7 +2337,7 @@ private fn semaSpawnBlock(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
     lifted.child2 = node_to_ptr(body)
     lifted.genericInfo = closureEnclosingGenerics
-    nodeSetFnAttrs(lifted, 4, 0, "")
+    nodeSetFnAttrs(lifted, fnAttrBitAsync(), 0, "")
 
     monoAppendDeclaration(module, lifted)
     indexTopLevel(lifted)
@@ -3981,6 +3981,7 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
         if (mainSaysNothing) { semaMainBareReturns(body) }
         semaBlock(module, body, expectedReturn)
         semaCheckDefiniteAssignment(body)
+        if (nodeIsNoreturn(fnNode)) { semaCheckNoreturn(fnNode, body) }
 
         // Every path out of a value-returning function must return. Falling off
         // the end used to emit `ret <type> 0`, which silently returned zero for
@@ -5904,6 +5905,8 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
 }
 
 public fn analyzeModule(module: ASTNode) {
+    // First, before any pass rewrites the bodies a `const fn` is run from.
+    semaFoldConstants(module)
     ir_clear_var_types()
     ir_reset_globals()
     ir_reset_fn_return_types()

@@ -212,7 +212,7 @@ private fn flowCallNeverReturns(expr: ASTNode) -> Bool {
     let name = callee.s1
     return name.equals("panic") or name.equals("exit") or name.equals("unreachable")
         or name.equals("__builtin_panic") or name.equals("__builtin_exit")
-        or name.equals("__builtin_unreachable")
+        or name.equals("__builtin_unreachable") or semaCallNeverReturns(name)
 }
 
 private fn flowIsArrayDecl(decl: ASTNode) -> Bool {

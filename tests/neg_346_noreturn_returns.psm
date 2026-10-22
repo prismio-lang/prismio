@@ -1,0 +1,20 @@
+// expect-error: is `noreturn`, so it cannot `return`
+// expect-error: is `noreturn`, but control can reach its closing brace
+// A `noreturn` function is held to its promise: LLVM treats the code after a call
+// as unreachable, so one that returns -- on any path -- is undefined behaviour.
+
+noreturn fn returnsEarly(x: Int) {
+    if (x > 0) { return }
+    exit(1)
+}
+
+noreturn fn fallsOff(x: Int) {
+    if (x > 0) { exit(2) }
+}
+
+noreturn fn fine(x: Int) {
+    if (x > 0) { exit(3) }
+    unreachable()
+}
+
+fn main() -> Int { return 0 }

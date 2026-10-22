@@ -3,6 +3,7 @@
 // unreachable-code checking.
 
 import ast.nodes
+import ast.fn_attrs
 import lexer.token
 import ast.types
 import ir.bridge
@@ -131,7 +132,54 @@ internal fn semaCallNeverReturns(name: String) -> Bool {
     }
     // Before sema has rewritten the callee.
     if (name.equals("assert")) { return false }
-    return semaFailureBuiltinApplies(name)
+    return semaFailureBuiltinApplies(name) or semaUserCallNeverReturns(name)
+}
+
+// A call to a function the program declared `noreturn`. The name is all a statement
+// carries, and a call is resolved by its arguments, so every declaration of the name
+// has to be one: with a plain overload beside it the answer could be either, and
+// "can return" is the safe one.
+private fn semaUserCallNeverReturns(name: String) -> Bool {
+    let count = ir_decl_count(name)
+    if (count == 0) { return false }
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind != NodeKind.FUNCTION or nodeIsNoreturn(decl) == false) { return false }
+    }
+    return true
+}
+
+// The first `return` anywhere under `first` and its siblings, or null.
+private fn semaFindReturn(first: Ptr) -> Ptr {
+    let mut p = first
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.RETURN_STATEMENT) { return p }
+        let inChild1 = semaFindReturn(node.child1)
+        if (nodeExists(inChild1)) { return inChild1 }
+        let inChild2 = semaFindReturn(node.child2)
+        if (nodeExists(inChild2)) { return inChild2 }
+        let inChild3 = semaFindReturn(node.child3)
+        if (nodeExists(inChild3)) { return inChild3 }
+        p = node.next
+    }
+    return ptr_null()
+}
+
+// `noreturn fn`: the promise is the whole point, since LLVM treats the code after a
+// call to one as unreachable. So the body is held to it -- no `return`, and no path
+// that reaches the closing brace -- rather than trusted.
+internal fn semaCheckNoreturn(fnNode: ASTNode, body: ASTNode) {
+    let found = semaFindReturn(body.child1)
+    if (nodeExists(found)) {
+        semaErrorAt(ptr_to_node(found), "function ".concat(diagQuote(fnNode.s1), " is `noreturn`, so it cannot `return`"))
+        diag_note("end it with `panic`, `exit`, `unreachable`, an endless `loop`, or a call to another `noreturn` function")
+        return
+    }
+    if (semaBlockDiverges(body) == false) {
+        semaErrorAt(fnNode, "function ".concat(diagQuote(fnNode.s1), " is `noreturn`, but control can reach its closing brace"))
+        diag_note("end it with `panic`, `exit`, `unreachable`, an endless `loop`, or a call to another `noreturn` function")
+    }
 }
 
 // True when control cannot continue past this statement.

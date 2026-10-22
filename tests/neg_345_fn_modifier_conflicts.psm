@@ -1,0 +1,43 @@
+// expect-error: a function cannot be both `cold` and `hot`
+// expect-error: a function cannot be both `inline` and `noinline`
+// expect-error: a function cannot be both `inline(always)` and `noinline`
+// expect-error: a function cannot be both `inline` and `inline(always)`
+// expect-error: a function cannot be both `cold` and `inline(always)`
+// expect-error: a `naked` function cannot be inlined
+// expect-error: `hot` is written twice
+// expect-error: a `const fn` cannot be `noreturn`
+// expect-error: a `const fn` cannot be `async`
+// expect-error: `export` is not accepted on a method
+// Pairs of modifiers that ask for opposite things are refused where they are
+// written (src/parse/modifiers.psm), rather than one winning silently. `cold` with
+// `noinline`, and `hot` with any inline request, are not among them.
+
+cold hot fn a(x: Int) -> Int { return x }
+
+inline noinline fn b(x: Int) -> Int { return x }
+
+inline(always) noinline fn c(x: Int) -> Int { return x }
+
+inline inline(always) fn d(x: Int) -> Int { return x }
+
+cold inline(always) fn e(x: Int) -> Int { return x }
+
+naked inline fn f(x: Int) -> Int { return x }
+
+hot hot fn g(x: Int) -> Int { return x }
+
+const noreturn fn h(x: Int) -> Int { return x }
+
+const async fn i(x: Int) -> Int { return x }
+
+struct Box { value: Int }
+
+impl Box {
+    export fn get(self) -> Int { return self.value }
+}
+
+cold noinline fn fine(x: Int) -> Int { return x }
+
+hot inline(always) fn alsoFine(x: Int) -> Int { return x }
+
+fn main() -> Int { return 0 }

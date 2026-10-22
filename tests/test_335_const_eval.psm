@@ -1,0 +1,174 @@
+// `const fn` and `const`: a constant is worked out by the compiler, and must equal
+// what the same function computes when it is called at run time. Every `const fn`
+// here is also called normally, and the two are compared.
+//
+// `const` is contextual: a local or a parameter may be called `const`, and a global
+// `const hot = 3` is a constant called `hot`, not a function modifier.
+
+import std.io
+
+const fn square(x: Int) -> Int { return x * x }
+
+const fn area(w: Int, h: Int) -> Int { return w * h }
+
+const fn factorial(n: Int) -> Int {
+    if (n <= 1) { return 1 }
+    return n * factorial(n - 1)
+}
+
+const fn fib(n: Int) -> Int {
+    let mut a = 0
+    let mut b = 1
+    for i in 0..<n {
+        let next = a + b
+        a = b
+        b = next
+    }
+    return a
+}
+
+const fn gcd(a: Int, b: Int) -> Int {
+    let mut x = a
+    let mut y = b
+    while (y != 0) {
+        let t = y
+        y = x % y
+        x = t
+    }
+    return x
+}
+
+const fn isPrime(n: Int) -> Bool {
+    if (n < 2) { return false }
+    let mut d = 2
+    while (d * d <= n) {
+        if (n % d == 0) { return false }
+        d += 1
+    }
+    return true
+}
+
+const fn countPrimes(limit: Int) -> Int {
+    let mut count = 0
+    for n in 2..limit {
+        if (isPrime(n)) { count += 1 }
+    }
+    return count
+}
+
+const fn collatzSteps(start: Int) -> Int {
+    let mut n = start
+    let mut steps = 0
+    loop {
+        if (n == 1) { break }
+        if (n % 2 == 0) { n = n / 2 } else { n = 3 * n + 1 }
+        steps += 1
+    }
+    return steps
+}
+
+const fn clampTo(x: Int, lo: Int, hi: Int) -> Int {
+    if (x < lo) {
+        return lo
+    } else if (x > hi) {
+        return hi
+    }
+    return x
+}
+
+// Labels, `continue`, nested loops, `step`, and a range that counts down.
+const fn pairs(n: Int) -> Int {
+    let mut total = 0
+    outer@ for i in 0..<n {
+        for j in 0..<n {
+            if (j > i) { continue@outer }
+            if (i + j > 9) { break@outer }
+            total += i * 10 + j
+        }
+    }
+    return total
+}
+
+const fn stepped(n: Int) -> Int {
+    let mut total = 0
+    for i in 0..<n step 3 { total += i }
+    for i in n..0 { total += i }
+    repeat (4) { total += 100 }
+    return total
+}
+
+const fn choose(n: Int) -> Int {
+    match (n) {
+        1 => { return 10 }
+        2 => { return 20 }
+        _ => { return 0 }
+    }
+}
+
+// Types are enforced as they are at run time: `as` truncates.
+const fn lowByte(x: Int) -> U8 { return (x & 255) as U8 }
+const fn wrapped(x: Int) -> Int { return (x + 200) as U8 as Int }
+const fn negated(x: Int) -> Int { return -x + ~x }
+const fn both(a: Bool, b: Bool) -> Bool { return a and not b or (b and not a) }
+
+const fn guarded(n: Int) -> Bool { return n == 0 or 100 / n > 3 }
+
+const SIDE = 8
+const CELLS = area(SIDE, SIDE)
+const BIGGER = CELLS * 2 + factorial(5)
+const LOW: U8 = lowByte(1000)
+const PRIME = isPrime(97)
+const hot = 3
+
+fn runtimeCells() -> Int { return area(SIDE, SIDE) }
+
+fn const(const: Int) -> Int { return const + 1 }
+
+fn main() -> Int {
+    const local = area(3, 4)
+    const prime91 = isPrime(91)
+    const fibs = fib(20)
+    let const = 4
+    if (local != 12 or area(3, 4) != local) { return 1 }
+    if (CELLS != 64 or CELLS != runtimeCells()) { return 2 }
+    if (BIGGER != 248) { return 3 }
+    if (LOW != 232) { return 4 }
+    if (PRIME != true or prime91 != false or isPrime(91) != prime91) { return 5 }
+    if (fibs != 6765 or fibs != fib(20)) { return 6 }
+    const fact12 = factorial(12)
+    if (fact12 != 479001600 or fact12 != factorial(12)) { return 7 }
+    const g = gcd(1071, 462)
+    if (g != 21 or g != gcd(1071, 462)) { return 8 }
+    const primes = countPrimes(100)
+    if (primes != 25 or primes != countPrimes(100)) { return 9 }
+    const steps = collatzSteps(27)
+    if (steps != 111 or steps != collatzSteps(27)) { return 10 }
+    const c1 = clampTo(5, 10, 20)
+    const c2 = clampTo(50, 10, 20)
+    const c3 = clampTo(15, 10, 20)
+    if (c1 != 10 or c2 != 20 or c3 != 15) { return 11 }
+    if (c1 != clampTo(5, 10, 20) or c2 != clampTo(50, 10, 20)) { return 12 }
+    const p = pairs(6)
+    if (p != pairs(6)) { return 13 }
+    const s = stepped(10)
+    if (s != stepped(10)) { return 14 }
+    const pick1 = choose(1)
+    const pick2 = choose(2)
+    const pick3 = choose(3)
+    if (pick1 != 10 or pick2 != 20 or pick3 != 0) { return 15 }
+    const w = wrapped(100)
+    if (w != wrapped(100) or w != 44) { return 16 }
+    const n = negated(5)
+    if (n != negated(5) or n != -11) { return 17 }
+    const b1 = both(true, false)
+    const b2 = both(true, true)
+    if (b1 != true or b2 != false or b1 != both(true, false)) { return 18 }
+    const short = guarded(0)
+    if (short != true) { return 19 }
+    if (hot != 3 or const != 4 or const(const) != 5) { return 20 }
+    // A constant call is also an array's length.
+    let mut cells: Array<Int, area(2, 3)> = [1, 2, 3, 4, 5, 6]
+    if (cells.length != 6) { return 21 }
+    println("ok")
+    return 0
+}

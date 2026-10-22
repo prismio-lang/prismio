@@ -1,5 +1,6 @@
-// `inline fn`: a function inlined into every caller (LLVM's `alwaysinline`,
-// Rust's `#[inline(always)]`, src/parse/decl.psm). The marker moves code, never
+// `inline fn`: a hint that a function is worth inlining (LLVM's `inlinehint`,
+// Rust's `#[inline]`, src/parse/modifiers.psm; `inline(always)` is the forcing
+// spelling, test_334). The marker moves code, never
 // behaviour, so this checks that every placement parses and computes the same
 // thing it would unmarked -- run_inline_fn_test reads the IR for the attribute.
 //

@@ -1,0 +1,53 @@
+// Which LLVM attributes a source function gets: the one place that turns what a
+// declaration said before its `fn` (ast/fn_attrs.psm) into what the backend is told.
+//
+// The mapping is policy, so it is a table here rather than a branch in the emitter
+// or a helper per marker in C: a new marker is a line below and a bit in
+// fn_attrs.psm, and the C side (`ir_function_attribute`) does not change.
+//
+//   inline            inlinehint
+//   inline(always)    alwaysinline            (not in a debug build)
+//   noinline          noinline
+//   cold              cold, noinline          `cold` alone only lowers the inline
+//                                             threshold, and an internal function's only
+//                                             call wins that regardless
+//   hot               hot
+//   noreturn          noreturn
+//   naked             naked, noinline         inlining a naked function would put its
+//                                             assembly in the middle of a frame it
+//                                             assumes it does not have
+//
+// `export`, `section` and `align` are properties of the symbol, not attributes, and
+// go through their own calls.
+
+import ast.nodes
+import ast.fn_attrs
+import ir.bridge
+
+// The function being emitted has been materialised (ir_function_body_start). `func`
+// is its declaration; `inlineForced` is codegen's own single-callsite state
+// (markSingleLoopCallsiteFunctions), which lowers like `inline(always)`.
+internal fn irEmitFunctionAttributes(func: ASTNode, inlineForced: Bool) {
+    // A debug build keeps the frames the debugger was asked to show, so it ignores
+    // every request to fold a body away -- the ones written in source and the ones
+    // codegen chooses. The markers that only move code stay.
+    let debugging = ir_debug_enabled() != 0
+    if ((inlineForced or nodeIsInlineAlways(func)) and debugging == false) {
+        ir_function_attribute("alwaysinline")
+    }
+    if (nodeIsInlineHint(func)) { ir_function_attribute("inlinehint") }
+    if (nodeIsNoinline(func)) { ir_function_attribute("noinline") }
+    if (nodeIsCold(func)) {
+        ir_function_attribute("cold")
+        ir_function_attribute("noinline")
+    }
+    if (nodeIsHot(func)) { ir_function_attribute("hot") }
+    if (nodeIsNoreturn(func)) { ir_function_attribute("noreturn") }
+
+    if (nodeIsExported(func)) { ir_function_export(func.s1) }
+    if (nodeIsNaked(func)) { ir_function_naked() }
+    let section = nodeFnSection(func)
+    if (section.equals("") == false) { ir_function_section(section) }
+    let align = nodeFnAlign(func)
+    if (align > 0) { ir_function_align(align) }
+}

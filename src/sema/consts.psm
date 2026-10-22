@@ -16,21 +16,36 @@ import std.string
 // treated as a cycle.
 private fn constMaxDepth() -> Int { return 32 }
 
-struct ConstValue {
-    ok: Bool,
-    value: I64,
-    why: String
+// What a constant expression came to. `value` holds an integer, or 0/1 when `isBool`;
+// `why` says what went wrong when `ok` is false, and `at` is the node inside a
+// `const fn` where it went wrong, when that is not the expression asked about.
+internal struct ConstValue {
+    internal ok: Bool,
+    internal value: I64,
+    internal isBool: Bool,
+    internal why: String,
+    internal at: Ptr
 }
 
-private fn constFailed(why: String) -> ConstValue {
-    return ConstValue { ok: false, value: 0 as I64, why: why }
+internal fn constFailed(why: String) -> ConstValue {
+    return ConstValue { ok: false, value: 0 as I64, isBool: false, why: why, at: ptr_null() }
 }
 
-private fn constOf(value: I64) -> ConstValue {
-    return ConstValue { ok: true, value: value, why: "" }
+internal fn constOf(value: I64) -> ConstValue {
+    return ConstValue { ok: true, value: value, isBool: false, why: "", at: ptr_null() }
 }
 
-private fn constGlobal(module: ASTNode, name: String) -> Ptr {
+internal fn constBool(value: Bool) -> ConstValue {
+    if (value) { return ConstValue { ok: true, value: 1 as I64, isBool: true, why: "", at: ptr_null() } }
+    return ConstValue { ok: true, value: 0 as I64, isBool: true, why: "", at: ptr_null() }
+}
+
+// The largest magnitude a constant may have. Narrower than an I64 so that the check in
+// constArithmetic is the only place a result can leave the range, and so that a value
+// is always one every integer type's literal syntax can write back.
+internal fn constLimit() -> I64 { return 4611686018427387903 as I64 }
+
+internal fn constGlobal(module: ASTNode, name: String) -> Ptr {
     let mut p = module.child1
     while (nodeExists(p)) {
         let decl = ptr_to_node(p)
@@ -55,17 +70,32 @@ private fn constName(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
     return constEvaluate(module, ptr_to_node(decl.child2), depth + 1)
 }
 
-private fn constBinary(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
-    let left = constEvaluate(module, ptr_to_node(node.child1), depth)
-    if (left.ok == false) { return left }
-    let right = constEvaluate(module, ptr_to_node(node.child2), depth)
-    if (right.ok == false) { return right }
-    let op = node.s1
-    let a = left.value
-    let b = right.value
-    if (op.equals("+")) { return constOf(a + b) }
-    if (op.equals("-")) { return constOf(a - b) }
-    if (op.equals("*")) { return constOf(a * b) }
+// `a op b` for the operators a constant may use, exactly: a result outside
+// ±constLimit() is an error rather than a wrapped value, because a constant that
+// silently differs from the same arithmetic at run time is worse than a refusal.
+internal fn constArithmetic(op: String, a: I64, b: I64) -> ConstValue {
+    let limit = constLimit()
+    // Operands are within ±limit, so a sum or a difference cannot overflow an I64.
+    if (op.equals("+")) {
+        let sum = a + b
+        if (sum > limit or sum < 0 as I64 - limit) { return constFailed("this addition leaves the range of a constant") }
+        return constOf(sum)
+    }
+    if (op.equals("-")) {
+        let difference = a - b
+        if (difference > limit or difference < 0 as I64 - limit) {
+            return constFailed("this subtraction leaves the range of a constant")
+        }
+        return constOf(difference)
+    }
+    if (op.equals("*")) {
+        let mut m = a
+        if (m < 0 as I64) { m = 0 as I64 - m }
+        let mut n = b
+        if (n < 0 as I64) { n = 0 as I64 - n }
+        if (m != 0 as I64 and n > limit / m) { return constFailed("this multiplication leaves the range of a constant") }
+        return constOf(a * b)
+    }
     if (op.equals("/") or op.equals("%")) {
         if (b == 0 as I64) { return constFailed("a constant divides by zero") }
         if (op.equals("/")) { return constOf(a / b) }
@@ -73,7 +103,13 @@ private fn constBinary(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue
     }
     if (op.equals("<<") or op.equals(">>")) {
         if (b < 0 as I64 or b > 62 as I64) { return constFailed("a constant shifts by more than 62") }
-        if (op.equals("<<")) { return constOf(a << b) }
+        if (op.equals("<<")) {
+            let r = a << b
+            if ((r >> b) != a or r > limit or r < 0 as I64 - limit) {
+                return constFailed("this shift leaves the range of a constant")
+            }
+            return constOf(r)
+        }
         return constOf(a >> b)
     }
     if (op.equals("&")) { return constOf(a & b) }
@@ -82,18 +118,36 @@ private fn constBinary(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue
     return constFailed("`".concat(op, "` is not a constant operator"))
 }
 
-private fn constEvaluate(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
+private fn constBinary(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
+    let left = constEvaluate(module, ptr_to_node(node.child1), depth)
+    if (left.ok == false) { return left }
+    let right = constEvaluate(module, ptr_to_node(node.child2), depth)
+    if (right.ok == false) { return right }
+    return constArithmetic(node.s1, left.value, right.value)
+}
+
+// A written integer literal, with its sign: the parser folds a leading minus into the
+// literal, so a negative constant arrives as one literal rather than as a negation.
+internal fn constIntegerLiteral(node: ASTNode) -> ConstValue {
+    let negative = node.s1.startsWith("-")
+    let mut digits = node.s1.clone()
+    if (negative) { digits = node.s1.substring(1, node.s1.length) }
+    let magnitude = typeIntLiteralValue(digits)
+    if (magnitude < 0 as I64) { return constFailed(diagQuote(node.s1).concat(" is not a usable constant")) }
+    if (negative) { return constOf(0 as I64 - magnitude) }
+    return constOf(magnitude)
+}
+
+internal fn constEvaluate(module: ASTNode, node: ASTNode, depth: Int) -> ConstValue {
     if (depth > constMaxDepth()) { return constFailed("constants refer to each other in a cycle") }
     if (node.kind == NodeKind.LITERAL_EXPR and node.i1 == TokenType.NUMBER_LITERAL as Int) {
-        // The parser folds a leading minus into the literal, so a negative constant
-        // arrives as one literal rather than as a negation.
-        let negative = node.s1.startsWith("-")
-        let mut digits = node.s1.clone()
-        if (negative) { digits = node.s1.substring(1, node.s1.length) }
-        let magnitude = typeIntLiteralValue(digits)
-        if (magnitude < 0 as I64) { return constFailed(diagQuote(node.s1).concat(" is not a usable constant")) }
-        if (negative) { return constOf(0 as I64 - magnitude) }
-        return constOf(magnitude)
+        return constIntegerLiteral(node)
+    }
+    // `area(5)`: a call to a `const fn`, run by the evaluator in const_eval.psm.
+    if (node.kind == NodeKind.CALL_EXPR) {
+        let result = constEvalCall(module, node)
+        if (result.ok and result.isBool) { return constFailed("this constant is a Bool, where an integer is needed") }
+        return result
     }
     if (node.kind == NodeKind.IDENTIFIER_EXPR) { return constName(module, node, depth) }
     if (node.kind == NodeKind.BINARY_EXPR) { return constBinary(module, node, depth) }

@@ -1,0 +1,58 @@
+// expect-error: is not a `const fn`, so it cannot run at compile time
+// expect-error: does not fit Int
+// expect-error: a constant divides by zero
+// expect-error: does a loop never end?
+// expect-error: does `forever` recurse forever?
+// expect-error: only integers and Bool are supported in a constant so far
+// expect-error: `limit` is not a constant
+// expect-error: is not `let mut`, so it cannot be assigned
+// expect-error: reached its closing brace without returning a value
+// A constant that cannot be worked out is reported where it is written, naming the
+// reason -- never approximated and never left to fail at run time.
+
+fn plain(x: Int) -> Int { return x + 1 }
+
+const fn factorial(n: Int) -> Int {
+    if (n <= 1) { return 1 }
+    return n * factorial(n - 1)
+}
+
+const fn divide(a: Int, b: Int) -> Int { return a / b }
+
+const fn spin() -> Int {
+    let mut n = 0
+    while (true) { n += 1 }
+    return n
+}
+
+const fn forever(n: Int) -> Int { return forever(n + 1) }
+
+const fn label() -> Int {
+    let text = "hello"
+    return 1
+}
+
+const fn frozen() -> Int {
+    let x = 1
+    x = 2
+    return x
+}
+
+const fn noReturn(n: Int) -> Int {
+    if (n > 0) { return 1 }
+}
+
+const A = plain(1)
+const B = factorial(13)
+const C = divide(1, 0)
+const D = spin()
+const E = forever(0)
+const F = label()
+const G = frozen()
+const H = noReturn(0)
+
+fn main() -> Int {
+    let limit = 3
+    const local = limit * 2
+    return A + B + C + D + E + F + G + H + local
+}

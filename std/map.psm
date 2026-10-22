@@ -238,9 +238,9 @@ private fn mapHashOf<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Int {
     return h
 }
 
-// `inline`: every lookup and update is this loop, and its callers' loops want it in
+// `inline(always)`: every lookup and update is this loop, and its callers' loops want it in
 // their own bodies (the comment on Map says why it needs telling).
-private inline fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> Int {
+private inline(always) fn mapProbe<K: Key + Copy, V>(m: Map<K, V>, key: K, findSlot: Bool) -> Int {
     let mut at = mapHashOf(m, key) & m.mask
     let mut step = 1
     let mut reusable = -1

@@ -1373,31 +1373,16 @@ void ir_function_body_start(void) {
     }
 }
 
-// A source function with exactly one direct callsite, and the sole source call
-// in its nearest loop. The frontend proves both facts before asking for this
-// attribute, so forcing the inline cannot duplicate the body or exhaust one
-// caller's inline budget on several siblings, and it exposes the caller's loop
-// invariants to LLVM's ordinary -O2 pipeline. This is intentionally separate
-// from parameter attributes: the function has to be materialised first.
-void ir_function_always_inline(void) {
-    if (!g_function) return;
-    unsigned kind = LLVMGetEnumAttributeKindForName("alwaysinline", 12);
+// One named LLVM enum attribute on the function being emitted: `inlinehint`, `noinline`,
+// `hot`, `noreturn` and the rest of the function attributes that take no argument.
+// The policy -- which source marker means which attributes -- lives in
+// src/ir/fn_attributes.psm, so a new marker is a line there and nothing here. A name
+// this LLVM does not know is skipped, as ir_function_naked does.
+void ir_function_attribute(const char *name) {
+    if (!g_function || !name) return;
+    unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
     if (!kind) return;
-    LLVMAddAttributeAtIndex(g_function, ~0U,
-                            LLVMCreateEnumAttribute(g_ctx, kind, 0));
-}
-
-// `cold fn`: LLVM's `cold`, which also makes every block that calls it an
-// unlikely one, and `noinline`, because `cold` alone only lowers the inline
-// threshold -- and an internal function's only call wins that regardless.
-void ir_function_cold(void) {
-    if (!g_function) return;
-    const char *names[2] = { "cold", "noinline" };
-    for (int i = 0; i < 2; i++) {
-        unsigned kind = LLVMGetEnumAttributeKindForName(names[i], strlen(names[i]));
-        if (!kind) continue;
-        LLVMAddAttributeAtIndex(g_function, ~0U, LLVMCreateEnumAttribute(g_ctx, kind, 0));
-    }
+    LLVMAddAttributeAtIndex(g_function, ~0U, LLVMCreateEnumAttribute(g_ctx, kind, 0));
 }
 
 // `naked fn`: no prologue or epilogue, so the body is the assembly and nothing

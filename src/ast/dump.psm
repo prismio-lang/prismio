@@ -96,6 +96,7 @@ private fn nodeKindName(k: NodeKind) -> String {
     else if (k == NodeKind.CODESET_DECL) { return "CODESET_DECL" }
     else if (k == NodeKind.TYPELIST_DECL) { return "TYPELIST_DECL" }
     else if (k == NodeKind.SPREAD_EXPR) { return "SPREAD_EXPR" }
+    else if (k == NodeKind.CONST_EXPR) { return "CONST_EXPR" }
     else if (k == NodeKind.CLOSURE_EXPR) { return "CLOSURE_EXPR" }
     else if (k == NodeKind.TRAIT_DECL) { return "TRAIT_DECL" }
     else if (k == NodeKind.IMPL_DECL) { return "IMPL_DECL" }

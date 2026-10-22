@@ -711,6 +711,22 @@ refused (`monoArgsHoldArray`; neg_198, neg_199) because the array would point in
 gone. A generic function's own `T` may still be an array (`id<T>(x: T) -> T` returns the view), which
 `test_163` relies on.
 
+**`const` is integers and `Bool` only.** `src/sema/const_eval.psm` runs a `const fn` over integers of any
+width and `Bool`; a string, a float, a `Vec`, a struct, a closure, a method (`Type.make(3)`) or a generic
+function in a constant is refused by name (`neg_348`). A `const fn` is also only run, and so only checked
+for being evaluable, where a constant calls it: a body that uses a string is an ordinary function until
+something asks for it at compile time. A *local* `const` cannot read another local, even another `const`
+(`const b = a * 2` after `const a = 5` is "`a` is not a constant"; the fold runs before sema resolves
+scopes, so the global or the arithmetic has to be written). A value that would overflow its declared
+type is an error where the same arithmetic would wrap at run time (a hash in a `U32`).
+
+**Whether a call diverges is decided by its name.** `semaCallNeverReturns` asks `ir_decl_at(name, i)` and answers
+yes only when *every* declaration of the name is `noreturn`, so a `noreturn fn abort` beside an unrelated
+`fn abort` (a free function, or a method on another type: `b.abort()` is looked up as `abort`) leaves a
+function that ends in the call needing an explicit `return` or `unreachable()`. The LLVM attribute is
+emitted either way. Resolving the call to its declaration first needs sema's overload result, which the
+path analysis runs too early to read.
+
 ---
 
 ## Traits

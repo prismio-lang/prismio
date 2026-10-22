@@ -1,0 +1,12 @@
+// expect-error: a `const` cannot be `mut`
+// expect-error: a `const` needs a value
+// expect-error: a `const fn` cannot be `noreturn`
+// `const` declarations are held to what they are: fixed, and given a value.
+
+const mut A = 1
+
+const B: Int
+
+const noreturn fn c(x: Int) -> Int { return x }
+
+fn main() -> Int { return 0 }

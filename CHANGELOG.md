@@ -533,14 +533,40 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `[T]` view is not checked yet: it gets its length in the next step. Twenty fixtures that checked
   the old zero now check the trap, through a new harness form, `// expect-trap: <argument> =>
   <message>`, that runs the program once per case.
-- **`inline fn`.** The opposite of `cold fn`: the function is inlined into every caller, whatever its
-  size (LLVM's `alwaysinline`, Rust's `#[inline(always)]`). It goes where `cold` goes -- after a visibility
-  marker, directly before `fn`, at top level or in an `impl` block -- combines with `export`, `naked`,
-  `section` and `align` in either order, survives monomorphisation, and is ignored by a `-g` build. `inline`
-  and `cold` on one function is a parse error (`P3201`) in either order, as a method too; `cold inline fn`
-  and `cold export fn` used to stop at "expected a declaration" and now parse. Contextual, so a variable or
-  function may still be named `inline`. Fixtures `test_312_inline_fn`, `neg_310_inline_cold`, the
-  `inline_fn` harness test (reads the IR); the IntelliJ plugin and the TextMate grammar know the word.
+- **Function markers: `inline`, `inline(always)`, `inline(never)`, `noinline`, `hot`, `noreturn`.** Written
+  directly before `fn` (after a visibility marker), at top level or in an `impl` block, in any order, with
+  `cold`, `export`, `naked`, `section`, `align` and `async`; contextual, so a variable or function may still be
+  named after any of them. `inline fn` is a hint (`inlinehint`, Rust's `#[inline]`); `inline(always) fn`
+  forces it (`alwaysinline`, `#[inline(always)]`; ignored by a `-g` build); `inline(never) fn` and `noinline fn`
+  are two spellings of `noinline`, the second being the one the compiler's own sources use; `hot fn` is LLVM's
+  `hot`; `noreturn fn` is LLVM's `noreturn`, and is held to it: a `return`, or a path to the closing brace, is
+  an error (`P4001`), while a call to one ends the path for definite-return and definite-assignment, so a
+  function whose last branch calls it needs no `return`. Markers that contradict each other (`cold` with `hot`
+  or `inline`, `inline` with `noinline`, `naked` with `inline`, a word twice) are `P3201` where they are written.
+  **`inline fn` used to mean `alwaysinline`; that is now `inline(always)`.** Fixtures `test_312_inline_fn`,
+  `test_334_fn_attributes`, `neg_310_inline_cold`, `neg_345`-`neg_347`, the `inline_fn` and `fn_attributes`
+  harness tests (read the IR).
+- **`const fn` and `const`.** `const fn area(w: Int, h: Int) -> Int { return w * h }` is an ordinary function that
+  a constant may also call; `const CELLS = area(8, 8)` (top level, with a visibility marker, or in a function)
+  is a declaration whose value the compiler works out and replaces by the literal it came to. The evaluator
+  (`src/sema/const_eval.psm`) is a tree-walking interpreter over the parser's own AST, run first in sema: integers
+  of every width and `Bool`; `let`/`let mut`/assignment; `if`, `match`, `while`, `loop`, `for` over a range (`step`,
+  counting down), `repeat`, labelled `break`/`continue`, `return`; recursion; global constants. Arithmetic is exact
+  and every value meeting a declared type must fit it (`as` truncates), so a constant equals what the function
+  computes at run time or is refused; a step budget and a depth limit turn an endless loop into an error. A
+  constant call is also an array's length (`Array<Int, area(2, 3)>`). Strings, floats, structs, generics and
+  methods are refused by name for now. `const` is contextual (`const hot = 3` is a constant called `hot`).
+  Fixtures `test_335_const_eval`, `neg_348_const_cannot_evaluate`, `neg_349_const_declaration`.
+- **One grammar for function modifiers.** `src/parse/modifiers.psm` replaces four parsers (`cold`, `async`,
+  the `export`/`naked`/`section`/`align`/`inline` run, and the `impl` block's own marker loop); a method now takes
+  every marker a free function does except the symbol ones (`export`, `naked`, `section`, `align`, refused with
+  a message). `src/ast/fn_attrs.psm` names every bit and every question (`nodeIsHot`, `nodeIsNoreturn`, ...), `cold`
+  moved off `FUNCTION.i1` into it, and `src/ir/fn_attributes.psm` is the one table from markers to LLVM
+  attributes, through a single `ir_function_attribute(name)` in `llvm-api-backend.c`.
+  The IntelliJ plugin and the TextMate grammar read the new words; the docs have an *Inlining*, *Hot functions*,
+  *Functions that do not return* and *Constant functions* section on the functions page, a *Constants* section on
+  variables, and the grammar page lists the modifier grammar. `bootstrap/seed.ll` is re-cut: `std/map.psm` uses
+  `inline(always)`, which the previous seed could not parse.
 - **`__builtin_assume(cond)`, std only.** A fact std's own data keeps, handed to LLVM (`llvm.assume`):
   unchecked and undefined when false, so a program cannot call it (`neg_311_assume_outside_std`). It is
   how the Map's `Vec` indices stay proved without a bounds check (below). AIF contract `borrow`;

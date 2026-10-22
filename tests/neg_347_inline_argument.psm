@@ -1,0 +1,6 @@
+// expect-error: `inline` takes `always` or `never`
+// `inline(...)` has two arguments; anything else is named rather than guessed at.
+
+inline(sometimes) fn f(x: Int) -> Int { return x }
+
+fn main() -> Int { return f(1) }
