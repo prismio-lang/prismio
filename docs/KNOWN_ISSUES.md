@@ -787,6 +787,23 @@ link, because `link.exe` is given no builtins library. Not run on Linux or Windo
 
 ---
 
+### A trait method cannot take a type parameter, so it cannot take a pack bounded by one
+
+`trait Logger { fn log<Ts: Printable>(self, ...xs: Ts) }` is refused with *"a generic method in a
+`trait` is not supported yet"* (`P3201`), which is the rule for every generic trait method and not
+something variadics added. A pack with a **concrete** type works in a trait and its impl
+(`fn join(self, ...parts: String) -> String`, `tests/test_330`). Lifting the general restriction would
+lift this.
+
+### An error inside a variadic function's body does not say which call made it
+
+The body is checked once per instantiation, and the error points at the line in the template with no
+mention of the argument types that produced it. Identical errors are reported once
+(`runtime/diagnostics.c`), so the cost is that a body that fails for only *some* shapes names the line
+and not the shape. A generic function has the same behaviour. A note carrying the instantiation's
+argument types would fix both: `packInstantiate` and `monoInstantiateFunction` know them, the checker
+that reports does not.
+
 ## Concurrency
 
 The plan for channels and tasks is `CHANNELS_PLAN.md`.

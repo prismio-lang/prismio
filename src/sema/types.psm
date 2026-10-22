@@ -454,6 +454,8 @@ private fn semaReportHidden(at: ASTNode, what: String, owner: String, level: Int
 // the time sema runs, and the diagnostic names the enum the author wrote.
 private fn semaTypeWord(decl: ASTNode) -> String {
     if (decl.kind == NodeKind.ENUM_DECL or nodeStructIsFromEnum(decl)) { return "enum" }
+    if (decl.kind == NodeKind.CODESET_DECL) { return "codeset" }
+    if (decl.kind == NodeKind.TYPELIST_DECL) { return "typelist" }
     return "struct"
 }
 

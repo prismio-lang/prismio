@@ -672,9 +672,57 @@ static void diag_emit(const char* severity, const char* code, int file,
     fflush(stderr);
 }
 
+// An error already reported at the same place with the same words is not reported again. One source
+// location is checked once per copy a generic or a variadic function is instantiated as, and each
+// copy would say the same thing about the same line; the reader needs it once. The notes that follow
+// a dropped error are dropped with it. Bounded and keyed on a hash of the message, so a long run of
+// errors costs a fixed amount.
+#define DIAG_SEEN_LIMIT 256
+
+typedef struct {
+    int file;
+    int line;
+    int col;
+    uint64_t message_hash;
+} DiagSeen;
+
+static DiagSeen g_seen[DIAG_SEEN_LIMIT];
+static int g_seen_count = 0;
+static int g_drop_notes = 0;
+
+static uint64_t diag_hash(const char* code, const char* message) {
+    uint64_t h = 1469598103934665603ULL;
+    for (const char* p = code ? code : ""; *p; p++) h = (h ^ (unsigned char)*p) * 1099511628211ULL;
+    for (const char* p = message ? message : ""; *p; p++) h = (h ^ (unsigned char)*p) * 1099511628211ULL;
+    return h;
+}
+
+static int diag_already_reported(const char* code, int file, int line, int col, const char* message) {
+    uint64_t h = diag_hash(code, message);
+    for (int i = 0; i < g_seen_count; i++) {
+        if (g_seen[i].file == file && g_seen[i].line == line && g_seen[i].col == col
+                && g_seen[i].message_hash == h) {
+            return 1;
+        }
+    }
+    if (g_seen_count < DIAG_SEEN_LIMIT) {
+        g_seen[g_seen_count].file = file;
+        g_seen[g_seen_count].line = line;
+        g_seen[g_seen_count].col = col;
+        g_seen[g_seen_count].message_hash = h;
+        g_seen_count++;
+    }
+    return 0;
+}
+
 void diag_error_at_code(const char* code, int file, int line, int col, int len,
                         const char* message) {
     g_finished = 0;
+    g_drop_notes = 0;
+    if (file >= 0 && diag_already_reported(code, file, line, col, message)) {
+        g_drop_notes = 1;
+        return;
+    }
     g_error_count++;
 
     if (g_error_count > DIAG_ERROR_LIMIT) {
@@ -737,6 +785,7 @@ void diag_warning(const char* message) {
 // declaration is here", "the loop starts here". Indented so it reads as
 // subordinate rather than as a second, unrelated error.
 void diag_note_at(int file, int line, int col, int len, const char* message) {
+    if (g_drop_notes) return;
     if (g_json_mode) {
         diag_emit("note", NULL, file, line, col, len, message);
         return;
@@ -749,6 +798,7 @@ void diag_note_at(int file, int line, int col, int len, const char* message) {
 }
 
 void diag_note(const char* message) {
+    if (g_drop_notes) return;
     if (g_json_mode) {
         diag_emit("note", NULL, -1, 0, 0, 0, message);
         return;
@@ -809,6 +859,8 @@ void diag_reset(void) {
     }
     g_file_count = 0;
     g_error_count = 0;
+    g_seen_count = 0;
+    g_drop_notes = 0;
     g_warning_count = 0;
     g_finished = 0;
 }

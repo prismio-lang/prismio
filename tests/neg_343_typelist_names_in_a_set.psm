@@ -1,0 +1,3 @@
+// expect-error: only an ordered sequence names its entries
+typelist S { id: Int, String }
+fn main() -> Int { return 0 }

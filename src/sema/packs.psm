@@ -25,6 +25,12 @@ import std.string
 // Declarations
 // ---------------------------------------------------------
 
+// The most arguments one call may bind to its packs. What grows is the call, so that is what is
+// bounded: a pack function that calls itself with more arguments than it received (`f(...xs, 1)`)
+// instantiates a longer function at every step and would never finish. 128 is far past anything
+// written by hand, and a runaway reaches it in 128 steps, so the diagnostic arrives at once.
+let PACK_MAX_ARGUMENTS = 128
+
 internal fn packHasPackParameter(fnNode: ASTNode) -> Bool {
     let mut p = fnNode.child1
     while (nodeExists(p)) {
@@ -76,18 +82,40 @@ private fn packChainAt(first: Ptr, index: Int) -> ASTNode {
     return ptr_to_node(p)
 }
 
+// A trait standing alone as the bound of a pack's type parameter -- `<Ts: Display>` -- is the set
+// holding just that trait: every argument must implement it.
+private fn packTraitList(traitName: String) -> ASTNode {
+    let list = createNode(NodeKind.TYPELIST_DECL)
+    list.s1 = traitName.clone()
+    let entry = createNode(NodeKind.STRUCT_FIELD)
+    let annotation = createNode(NodeKind.TYPE_ANNOTATION)
+    annotation.s1 = traitName.clone()
+    entry.child1 = node_to_ptr(annotation)
+    list.child1 = node_to_ptr(entry)
+    return list
+}
+
 // The `typelist` that bounds a pack's type parameter, or an absent node when the pack is
 // written with a concrete type (`...parts: String`).
-private fn packListOf(template: ASTNode, packParam: ASTNode) -> ASTNode {
+private fn packListOf(module: ASTNode, template: ASTNode, packParam: ASTNode) -> ASTNode {
     let annotation = ptr_to_node(packParam.child1)
+    // A typelist or a trait written directly as the type -- `...args: Printable`, `...args: Display` --
+    // needs no type parameter to carry it.
+    if (packTypeParameterNamed(template, annotation.s1) == false) {
+        let direct = typelistNamed(annotation.s1)
+        if (nodeExists(node_to_ptr(direct))) { return direct }
+        if (nodeExists(node_to_ptr(monoFindTrait(module, annotation.s1)))) { return packTraitList(annotation.s1) }
+    }
     let mut g = template.genericInfo
     while (nodeExists(g)) {
         let generic = ptr_to_node(g)
         if (generic.kind == NodeKind.GENERIC_PARAM and generic.s1.equals(annotation.s1)) {
             let mut b = generic.child1
             while (nodeExists(b)) {
-                let list = typelistNamed(ptr_to_node(b).s1)
+                let boundName = ptr_to_node(b).s1
+                let list = typelistNamed(boundName)
                 if (nodeExists(node_to_ptr(list))) { return list }
+                if (nodeExists(node_to_ptr(monoFindTrait(module, boundName)))) { return packTraitList(boundName) }
                 b = ptr_to_node(b).next
             }
         }
@@ -164,7 +192,7 @@ private fn packBind(module: ASTNode, template: ASTNode, callExpr: ASTNode, fixed
     let mut p = node_to_ptr(packPtr)
     while (nodeExists(p)) {
         let packParam = ptr_to_node(p)
-        let list = packListOf(template, packParam)
+        let list = packListOf(module, template, packParam)
         let annotation = ptr_to_node(packParam.child1)
         if (nodeIsNull(node_to_ptr(list)) and packTypeParameterNamed(template, annotation.s1)) {
             semaErrorAt(callExpr, "the pack type ".concat(diagQuote(annotation.s1), " needs a typelist bound, as in `<",
@@ -173,6 +201,14 @@ private fn packBind(module: ASTNode, template: ASTNode, callExpr: ASTNode, fixed
         }
         let mut concrete = typeInvalid()
         if (nodeIsNull(node_to_ptr(list))) { concrete = semaAnnotationType(module, annotation) }
+
+        if (nodeExists(node_to_ptr(list)) and list.i3 == 1) { return false }
+        // A list is named like a type, so it is as visible as one -- where the function that names it
+        // is declared, not where it is called, so a public function may use a private list of its own
+        // file. A trait standing alone as the bound is a synthesised list with no file.
+        if (nodeExists(node_to_ptr(list)) and list.file > 0 and semaCheckDeclVisible(template, list, list.s1) == false) {
+            return false
+        }
 
         let start = at
         let mut width = 1
@@ -212,7 +248,7 @@ private fn packReportLeftover(module: ASTNode, template: ASTNode, argHead: Ptr, 
                               counts: Vec<Int>, at: Int, total: Int) {
     let lastIndex = counts.length - 1
     let lastParam = packChainAt(template.child1, fixed + lastIndex)
-    let list = packListOf(template, lastParam)
+    let list = packListOf(module, template, lastParam)
     let mut concrete = typeInvalid()
     if (nodeIsNull(node_to_ptr(list))) { concrete = semaAnnotationType(module, ptr_to_node(lastParam.child1)) }
     if (nodeExists(node_to_ptr(list)) and typelistIsSequence(list)) {
@@ -467,10 +503,11 @@ private fn packRewriteChain(first: Ptr) -> Ptr {
 // Instantiating
 // ---------------------------------------------------------
 
-private fn packMangledName(template: ASTNode, callExpr: ASTNode, fixed: Int) -> String {
+// Every argument's type, the fixed ones too: a type parameter solved from `first: T` makes two calls with
+// the same pack arguments different functions.
+private fn packMangledName(template: ASTNode, callExpr: ASTNode) -> String {
     let mut name = template.s1.concat("$pack")
-    let mut p = packChainAt(callExpr.child2, fixed)
-    let mut node = node_to_ptr(p)
+    let mut node = callExpr.child2
     while (nodeExists(node)) {
         name = name.concat(monoSeparator(), semaMangleType(nodeGetType(ptr_to_node(node))))
         node = ptr_to_node(node).next
@@ -494,6 +531,8 @@ private fn packExpandParameters(copy: ASTNode, callExpr: ASTNode, fixed: Int, co
                 let expanded = createNode(NodeKind.FUNCTION_PARAMETER)
                 nodeSpanFrom(expanded, param)
                 expanded.s1 = param.s1.concat("$", j.toString())
+                expanded.s2 = param.s2.clone()
+                expanded.i2 = param.i2
                 let argT = nodeGetType(packChainAt(callExpr.child2, argAt + j))
                 expanded.child1 = node_to_ptr(monoAnnotationFromType(argT))
                 nodeListPush(params, expanded)
@@ -515,7 +554,7 @@ private fn packRewriteBody(module: ASTNode, template: ASTNode, copy: ASTNode, fi
     let mut packIndex = 0
     while (nodeExists(node)) {
         let packParam = ptr_to_node(node)
-        let list = packListOf(template, packParam)
+        let list = packListOf(module, template, packParam)
         packName = packParam.s1.clone()
         packCount = counts[packIndex]
         packWidth = 1
@@ -527,6 +566,72 @@ private fn packRewriteBody(module: ASTNode, template: ASTNode, copy: ASTNode, fi
     }
 }
 
+// Whether a generic parameter is the type of one of the function's packs.
+private fn packIsPackTypeParameter(template: ASTNode, name: String) -> Bool {
+    let mut p = template.child1
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        if (param.i1 == 1 and ptr_to_node(param.child1).s1.equals(name)) { return true }
+        p = param.next
+    }
+    return false
+}
+
+// The ordinary type parameters (`T` in `<T, Ts: List>`) solved from the call's fixed arguments, as a
+// chain aligned with the template's parameter names. A pack's own type parameter is answered by
+// itself, which substitutes to nothing. After reporting an unsolvable one it marks the call (`i1`).
+private fn packSolveGenerics(module: ASTNode, template: ASTNode, callExpr: ASTNode) -> Ptr {
+    let names = template.s2
+    let count = monoParamCount(names)
+    let solved = nodeList()
+    for i in 0..<count {
+        let name = monoParamName(names, i)
+        if (packIsPackTypeParameter(template, name)) {
+            let same = createNode(NodeKind.TYPE_ANNOTATION)
+            same.s1 = name.clone()
+            nodeListPush(solved, same)
+        } else {
+            let found = monoSolveTypeParam(module, template, callExpr.child2, name)
+            if (nodeIsNull(node_to_ptr(found))) {
+                semaErrorAt(callExpr, "cannot infer the type parameter ".concat(diagQuote(name), " of ",
+                                                                               diagQuote(template.s1),
+                                                                               " from the arguments"))
+                callExpr.i1 = 1
+                return ptr_null()
+            }
+            nodeListPush(solved, found)
+        }
+    }
+    return solved.head
+}
+
+// The bounds of the ordinary type parameters, against what they were solved to. The packs' own are
+// the typelists, checked by packBind.
+private fn packCheckGenericBounds(module: ASTNode, template: ASTNode, callExpr: ASTNode, solved: Ptr) -> Bool {
+    let names = template.s2
+    let count = monoParamCount(names)
+    let mut satisfied = true
+    for i in 0..<count {
+        if (packIsPackTypeParameter(template, monoParamName(names, i)) == false) {
+            let argT = semaAnnotationType(module, ptr_to_node(monoChainAt(solved, i)))
+            let genericPtr = monoGenericParamAt(template.genericInfo, i)
+            if (nodeExists(genericPtr)) {
+                let mut boundPtr = ptr_to_node(genericPtr).child1
+                while (nodeExists(boundPtr)) {
+                    let concreteBound = monoCopyOne(boundPtr)
+                    monoSubstituteChain(concreteBound.child1, names, solved)
+                    if (monoCheckOneBound(module, callExpr, template.s1, monoParamName(names, i),
+                                          concreteBound, argT) == false) {
+                        satisfied = false
+                    }
+                    boundPtr = ptr_to_node(boundPtr).next
+                }
+            }
+        }
+    }
+    return satisfied
+}
+
 private fn packInstantiationMarker() -> ASTNode {
     let marker = createNode(NodeKind.GENERIC_PARAM)
     marker.s1 = "$pack"
@@ -534,8 +639,8 @@ private fn packInstantiationMarker() -> ASTNode {
 }
 
 private fn packInstantiate(module: ASTNode, template: ASTNode, callExpr: ASTNode, callee: ASTNode,
-                           fixed: Int, counts: Vec<Int>) {
-    let name = packMangledName(template, callExpr, fixed)
+                           fixed: Int, counts: Vec<Int>, solved: Ptr) {
+    let name = packMangledName(template, callExpr)
     let existing = ir_decl_count(name)
     for i in 0..<existing {
         let decl = ptr_to_node(ir_decl_at(name, i))
@@ -555,6 +660,11 @@ private fn packInstantiate(module: ASTNode, template: ASTNode, callExpr: ASTNode
     if (nodeIsNull(copy.genericInfo)) { copy.genericInfo = node_to_ptr(packInstantiationMarker()) }
     packExpandParameters(copy, callExpr, fixed, counts)
     packRewriteBody(module, template, copy, fixed, counts)
+    if (nodeExists(solved)) {
+        monoSubstituteChain(copy.child1, template.s2, solved)
+        monoSubstituteChain(copy.child2, template.s2, solved)
+        monoSubstituteChain(copy.child3, template.s2, solved)
+    }
 
     monoAppendDeclaration(module, copy)
     indexTopLevel(copy)
@@ -589,10 +699,25 @@ internal fn packResolveCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode)
         argPtr = arg.next
     }
 
+    if (total - fixed > PACK_MAX_ARGUMENTS) {
+        semaErrorAt(callExpr, diagQuote(callee.s1).concat(" is called with ", (total - fixed).toString(),
+                                                          " variadic arguments; the limit is ",
+                                                          PACK_MAX_ARGUMENTS.toString()))
+        diag_note("a function that calls itself with more arguments than it received never ends")
+        callExpr.i1 = 1
+        return
+    }
+
     let mut counts: Vec<Int> = []
     if (packBind(module, template, callExpr, fixed, counts) == false) {
         callExpr.i1 = 1
         return
     }
-    packInstantiate(module, template, callExpr, callee, fixed, counts)
+
+    let solved = packSolveGenerics(module, template, callExpr)
+    if (callExpr.i1 == 1 or packCheckGenericBounds(module, template, callExpr, solved) == false) {
+        callExpr.i1 = 1
+        return
+    }
+    packInstantiate(module, template, callExpr, callee, fixed, counts, solved)
 }

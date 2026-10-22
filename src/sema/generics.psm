@@ -250,7 +250,7 @@ internal fn monoParamIndex(params: String, name: String) -> Int {
     return -1
 }
 
-private fn monoGenericParamAt(infoPtr: Ptr, index: Int) -> Ptr {
+internal fn monoGenericParamAt(infoPtr: Ptr, index: Int) -> Ptr {
     return monoChainAt(infoPtr, index)
 }
 
@@ -725,7 +725,7 @@ private fn monoChainLength(ptr: Ptr) -> Int {
     return count
 }
 
-private fn monoChainAt(ptr: Ptr, index: Int) -> Ptr {
+internal fn monoChainAt(ptr: Ptr, index: Int) -> Ptr {
     let mut p = ptr
     let mut i = 0
     while (nodeExists(p)) {
@@ -1213,7 +1213,7 @@ internal fn monoTypeArgsFromExpected(module: ASTNode, call: ASTNode, expected: T
     }
 }
 
-private fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: Ptr, paramName: String) -> ASTNode {
+internal fn monoSolveTypeParam(module: ASTNode, template: ASTNode, argPtr: Ptr, paramName: String) -> ASTNode {
     let mut param = template.child1
     let mut arg = argPtr
     while (nodeExists(param) and nodeExists(arg)) {

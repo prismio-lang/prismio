@@ -185,3 +185,48 @@ repetition suffixes (a sequence repeats, a set takes any count).
 3. Cut the seed, promote the host.
 4. Convert `concat`, then `print` / `println`, then interpolation, measuring each.
 5. Docs in both apps; `docs/INTELLIJ_PLAN.md` gains `typelist` and the parameter form.
+
+## Built after the first cut (2026-10-22)
+
+Ordinary type parameters beside a pack; a trait or typelist written directly as a pack's type; a trait
+alone as a bound; `sink` / `inout` kept on expanded parameters; the 128-argument limit; typelist
+declarations checked once (empty, self-containing, repeated, unknown or nested-sequence entries, names in
+a set); typelist visibility; `max` / `min` of three or more; duplicate diagnostics dropped.
+
+**A minimum count needs no syntax**: a fixed parameter before the pack. `fn max(a, b, c, ...rest)` is
+"three or more", and for a sequence the first group is the fixed parameters.
+
+**A closure with its own pack is not built.** A pack is a generic, and closures take no type parameters;
+a closure capturing a pack function's pack works.
+
+## Keyword arguments (proposal -- not built)
+
+The language has no named arguments, so a keyword pack (`...kts` beside `...pts`) first needs the call
+syntax. A coherent way to get both from the `typelist` grid already built:
+
+| Typelist | Meaning today | With names |
+|---|---|---|
+| set `{ A, B }` | any of these, any order | `{ verbose: Bool, depth: Int }` -- **named, optional, any order**: keyword arguments |
+| sequence `(A, B)` | this order, repeated | `(id: Int, name: String)` -- named positions (built) |
+
+```prismio
+typelist Options { verbose: Bool, depth: Int }
+
+fn run<Os: Options>(command: String, ...opts: Os) { ... }
+
+run("build", depth: 3, verbose: true)
+```
+
+- **Call syntax**: `name: value` after the positional arguments. Today `f(x: 1)` is a parse error, so the
+  spelling is free; a map literal is braces-only and a struct literal needs a type name, so neither is
+  confused with it.
+- **A pack bounded by a named set takes named arguments only**; one bounded by anything else takes
+  positional arguments. A function may have one of each, which is the `*args` / `**kwargs` pair.
+- **In the body**: `opts.depth` and `opts.verbose` (a compile-time error if the call did not pass it) and
+  `opts.has(depth)`, a constant `true` / `false`, so `if (opts.has(depth)) { ... }` is unrolled away.
+- **Ordinary named arguments** (`f(a: 1, b: 2)` for plain parameters, any order) are the same call syntax and
+  a separate, smaller step; I would build them first.
+- **Open questions**: defaults (`depth: Int = 3` in the typelist entry?) and whether a positional argument may
+  follow a named one (I would say no).
+
+Nothing here is built; it adds call syntax, so it waits for approval.

@@ -20,8 +20,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   space separated (`import std.display`; one argument still calls the per-type overload), `concat` takes
   seven parts or more, and string interpolation is one `concat` however many parts it has. Before the
   standard-library conversion the whole corpus compiled to the IR it did before; after it, the suite passes. `tests/test_330`, `test_331`, `neg_329`-`neg_335`;
-  `parse/typelists.psm`, `sema/typelists.psm`, `sema/packs.psm`, `docs/VARIADICS_PLAN.md`. Not yet: a pack
-  in a closure, keyword arguments, a minimum count.
+  `parse/typelists.psm`, `sema/typelists.psm`, `sema/packs.psm`, `docs/VARIADICS_PLAN.md`. Not yet: keyword
+  arguments (a proposal is in `docs/VARIADICS_PLAN.md`).
+  Packs also work beside ordinary type parameters (`<T: Display, Ts: Printable>(first: T, ...rest: Ts)`),
+  a typelist or a trait can be a pack's type directly (`fn say(...xs: Printable)`), `max` and `min` take
+  three or more integers, a call is limited to 128 variadic arguments (a pack function that calls itself
+  with more never ends otherwise), typelists are checked where they are written and obey visibility, and
+  the compiler reports an error identical in code, place and message once however many copies of a generic
+  or variadic function it was found in (`tests/test_332`, `test_333`, `neg_336`-`neg_344`).
 
 - **Enum discriminants, representation types, struct variants and `codeset`.**
   `enum HttpStatus: U16 { Ok = 200, NotFound = 404 }` gives an enum a representation and

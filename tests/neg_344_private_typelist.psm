@@ -1,0 +1,8 @@
+// expect-error: typelist `Secret` is private to the file that declares it
+import typelist_visibility.lists
+
+fn use<Ts: Secret>(...xs: Ts) -> Int { return xs.length }
+
+fn main() -> Int {
+    return use(1, "a")
+}

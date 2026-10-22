@@ -1,0 +1,8 @@
+// expect-error: cannot infer the type parameter `T` of `f` from the arguments
+import std.display
+typelist Printable { Display }
+fn f<T, Ts: Printable>(...xs: Ts) { }
+fn main() -> Int {
+    f(1)
+    return 0
+}

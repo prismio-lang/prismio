@@ -39,6 +39,19 @@ public fn min(a: Int, b: Int) -> Int {
     return __builtin_min(a, b)
 }
 
+// Three values or more. Two keep the plain overloads above; a fixed overload always wins over a variadic one.
+public fn max(a: Int, b: Int, c: Int, ...rest: Int) -> Int {
+    let mut best = max(max(a, b), c)
+    for value in rest { best = max(best, value) }
+    return best
+}
+
+public fn min(a: Int, b: Int, c: Int, ...rest: Int) -> Int {
+    let mut best = min(min(a, b), c)
+    for value in rest { best = min(best, value) }
+    return best
+}
+
 // `abs(Int.MIN)` is `Int.MIN`. Int is signed 32-bit and wraps in release builds
 // (RESULTS-int-width.md), so this is the same answer the rest of the language's
 // arithmetic gives rather than a special case.

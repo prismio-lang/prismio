@@ -1,0 +1,4 @@
+private typelist Secret { Int, String }
+public typelist Open { Int, String }
+
+public fn takesSecret<Ts: Secret>(...xs: Ts) -> Int { return xs.length }

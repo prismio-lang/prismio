@@ -5961,6 +5961,7 @@ public fn analyzeModule(module: ASTNode) {
 
     semaCheckSupertraitCycles(module)
     semaCheckImplBlocks(module)
+    typelistCheckDeclarations(module)
 
     // A DataView owns several column allocations, while struct fields are
     // released through the struct layout table. Until that table can name this

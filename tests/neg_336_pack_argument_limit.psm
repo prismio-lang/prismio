@@ -1,0 +1,8 @@
+// expect-error: is called with 129 variadic arguments; the limit is 128
+import std.display
+typelist Printable { Display }
+fn grow<Ts: Printable>(...xs: Ts) -> Int {
+    if (xs.length > 200) { return 0 }
+    return grow(...xs, 1)
+}
+fn main() -> Int { return grow(1) }

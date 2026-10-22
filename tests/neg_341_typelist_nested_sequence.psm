@@ -1,0 +1,4 @@
+// expect-error: an entry cannot be an ordered sequence
+typelist Row (Int, String)
+typelist Outer { Int, Row }
+fn main() -> Int { return 0 }

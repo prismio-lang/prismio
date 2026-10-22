@@ -1,0 +1,49 @@
+// Packs beside ordinary type parameters, a trait or typelist written directly as a pack's type, a
+// closure that captures a pack, and the variadic min and max in std.math.
+
+import std.io
+import std.math
+import std.string
+import std.display
+
+typelist Printable { Display }
+
+fn tagged<T: Display, Ts: Printable>(first: T, ...rest: Ts) -> String {
+    let mut out = first.show()
+    for r in rest { out = out.concat("|", r.show()) }
+    return out
+}
+
+fn direct(...xs: Printable) -> Int { return xs.length }
+fn byTrait(...xs: Display) -> Int { return xs.length }
+
+fn viaClosure<Ts: Printable>(...xs: Ts) -> Int {
+    let add = |k: Int| k + xs.length
+    return add(1)
+}
+
+fn owned<Ts: Printable>(sink ...xs: Ts) -> Int { return xs.length }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (tagged(1, "a", 2.5) != "1|a|2.5") { return fail("a type parameter beside a pack") }
+    if (tagged("only") != "only") { return fail("the type parameter alone") }
+    if (tagged("s", 1) == tagged(2, 1)) { return fail("two solutions of T are two functions") }
+
+    if (direct("a", 1) != 2) { return fail("a typelist as the type") }
+    if (byTrait(1, "a", true) != 3) { return fail("a trait as the type") }
+    if (viaClosure("a", "b") != 3) { return fail("a closure capturing a pack's length") }
+    if (owned("a".clone(), "b".clone()) != 2) { return fail("sink on a pack") }
+
+    if (max(3, 9, 4) != 9) { return fail("max of three") }
+    if (min(3, 9, 4, 1, 8) != 1) { return fail("min of five") }
+    if (max(1, 2) != 2) { return fail("max of two keeps its overload") }
+
+    println("test_332 ok")
+    return 0
+}

@@ -66,3 +66,5 @@ Compiler side: `docs/VARIADICS_PLAN.md`, `language/variadics` in the docs site.
 6. **Bounds**: `<Ts: Printable>` names a `typelist`, not a trait; resolve it for goto and do not warn that it is
    not a trait.
 7. `print` / `println` now accept several arguments: signature help for `std.display`.
+8. A pack's type may be a typelist or a trait directly (`...xs: Printable`, `...xs: Display`), and a pack
+   may sit after ordinary parameters and generics; `max` / `min` take three or more integers.

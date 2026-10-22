@@ -92,3 +92,95 @@ internal fn typelistAccepts(module: ASTNode, list: ASTNode, argT: TypeInfo, dept
     }
     return false
 }
+
+// ---------------------------------------------------------
+// Declarations
+// ---------------------------------------------------------
+
+// Whether an entry names `target` directly or through other lists, to a bounded depth.
+private fn typelistReaches(entry: ASTNode, target: String, depth: Int) -> Bool {
+    if (depth > TYPELIST_MAX_DEPTH) { return true }
+    let name = ptr_to_node(entry.child1).s1
+    if (name.equals(target)) { return true }
+    let nested = typelistNamed(name)
+    if (nodeIsNull(node_to_ptr(nested))) { return false }
+    let mut p = nested.child1
+    while (nodeExists(p)) {
+        if (typelistReaches(ptr_to_node(p), target, depth + 1)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+private fn typelistFail(list: ASTNode, at: ASTNode, message: String) {
+    semaErrorAt(at, message)
+    list.i3 = 1
+}
+
+private fn typelistCheckEntry(module: ASTNode, list: ASTNode, entry: ASTNode, position: Int) {
+    let annotation = ptr_to_node(entry.child1)
+    if (typelistIsSequence(list) == false and entry.s1.equals("") == false) {
+        let hint = "only an ordered sequence names its entries: write `(".concat(entry.s1, ": ", annotation.s1, ")`")
+        typelistFail(list, entry, hint)
+        return
+    }
+    let nested = typelistNamed(annotation.s1)
+    if (nodeExists(node_to_ptr(nested))) {
+        if (typelistReaches(entry, list.s1, 0)) {
+            typelistFail(list, entry, "the typelist ".concat(diagQuote(list.s1), " contains itself"))
+        } else if (typelistIsSequence(nested)) {
+            typelistFail(list, entry, "an entry cannot be an ordered sequence: ".concat(diagQuote(nested.s1),
+                                                                                      " is one; use a set"))
+        }
+        return
+    }
+    if (nodeExists(node_to_ptr(monoFindTrait(module, annotation.s1)))) { return }
+    if (typeIsValid(semaAnnotationType(module, annotation)) == false) { list.i3 = 1 }
+}
+
+private fn typelistCheckDuplicates(list: ASTNode) {
+    let mut p = list.child1
+    let mut index = 0
+    while (nodeExists(p)) {
+        let entry = ptr_to_node(p)
+        let mut q = list.child1
+        for j in 0..<index {
+            let earlier = ptr_to_node(q)
+            let sameType = ptr_to_node(earlier.child1).s1.equals(ptr_to_node(entry.child1).s1)
+            let sameName = entry.s1.equals("") == false and earlier.s1.equals(entry.s1)
+            if (sameName or (sameType and typelistIsSequence(list) == false)) {
+                typelistFail(list, entry, "the typelist ".concat(diagQuote(list.s1), " lists ",
+                                                                diagQuote(typelistEntryText(entry)), " twice"))
+                return
+            }
+            q = earlier.next
+        }
+        index = index + 1
+        p = entry.next
+    }
+}
+
+// Every typelist in the program, used or not: a list is checked where it is written, so a mistake in
+// one is reported once, there, and not at each call that tries to use it. A list that fails is marked
+// (`i3`) and the packs bounded by it stay quiet.
+public fn typelistCheckDeclarations(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let list = ptr_to_node(p)
+        if (list.kind == NodeKind.TYPELIST_DECL) {
+            if (nodeIsNull(list.child1)) {
+                typelistFail(list, list, "the typelist ".concat(diagQuote(list.s1), " is empty and accepts nothing"))
+            } else {
+                let mut e = list.child1
+                let mut position = 0
+                while (nodeExists(e)) {
+                    typelistCheckEntry(module, list, ptr_to_node(e), position)
+                    position = position + 1
+                    e = ptr_to_node(e).next
+                }
+                if (list.i3 == 0) { typelistCheckDuplicates(list) }
+            }
+        }
+        p = list.next
+    }
+}

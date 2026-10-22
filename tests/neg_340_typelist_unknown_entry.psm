@@ -1,0 +1,3 @@
+// expect-error: unknown type `Missing`
+typelist Bad { Int, Missing }
+fn main() -> Int { return 0 }

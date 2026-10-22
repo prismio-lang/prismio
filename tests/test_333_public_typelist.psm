@@ -1,0 +1,13 @@
+// A public typelist is usable from another file, and a pack function declared next to a private one
+// is callable: the list is checked where it is named, not where the function is called from.
+import std.io
+import typelist_visibility.lists
+
+fn few<Ts: Open>(...xs: Ts) -> Int { return xs.length }
+
+fn main() -> Int {
+    if (few(1, "a", 2) != 3) { return 1 }
+    if (takesSecret(1, "a") != 2) { return 2 }
+    println("test_333 ok")
+    return 0
+}
