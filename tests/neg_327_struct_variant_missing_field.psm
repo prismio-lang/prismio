@@ -1,0 +1,6 @@
+// expect-error: variant `Click` is missing field `y`
+enum Event { Click { x: Int, y: Int }, Close }
+fn main() -> Int {
+    let e = Event.Click { x: 1 }
+    return 0
+}

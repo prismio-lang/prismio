@@ -13,13 +13,22 @@ import ast.float_width
 import ir.bridge
 import std.string
 
+// An enum converts as the integer it is stored as, so a `U8` enum widens by zero
+// extension and an `I8` one by sign extension.
+private fn numericOperandType(t: TypeInfo) -> TypeInfo {
+    if (t.kind == TypeKind.ENUM) { return typeEnumRepr(t) }
+    return t
+}
+
 // `as`, both sides numbers. Truncating for an integer to a narrower integer,
 // rounding for a float to a narrower float, and **saturating for a float to an
 // integer**, as Rust's `as` is: out-of-range clamps to the type's bound and NaN is
 // 0. A bare `fptosi` makes both poison, so `1e10 as Int` would be whatever the
 // optimiser chose. On AArch64 `fcvtzs` already saturates and the intrinsic is that
 // one instruction; x86-64 adds a compare and select.
-internal fn numericConvert(val: String, fromT: TypeInfo, toT: TypeInfo) -> String {
+internal fn numericConvert(val: String, source: TypeInfo, target: TypeInfo) -> String {
+    let fromT = numericOperandType(source)
+    let toT = numericOperandType(target)
     let fromKey = typeIrKey(fromT)
     let toKey = typeIrKey(toT)
     if (fromKey.equals(toKey)) { return val }
@@ -45,7 +54,9 @@ internal fn numericConvert(val: String, fromT: TypeInfo, toT: TypeInfo) -> Strin
 // Width first, then sign: truncating or extending as `as T` does. Char and Bool are
 // zero-extended: a Char is a byte value, so 'A' as Int must be 65 and never a
 // negative number.
-internal fn integerResize(val: String, fromT: TypeInfo, toT: TypeInfo) -> String {
+internal fn integerResize(val: String, source: TypeInfo, target: TypeInfo) -> String {
+    let fromT = numericOperandType(source)
+    let toT = numericOperandType(target)
     let fromKey = typeIrKey(fromT)
     let toKey = typeIrKey(toT)
     let fromBits = typeIntBits(fromT)

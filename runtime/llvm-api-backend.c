@@ -2963,7 +2963,7 @@ int ir_enum_tag(const char *name, const char *value) {
     int slot = ir_struct_field_ptr(name, value, 0);
     char slot_name[32];
     snprintf(slot_name, sizeof(slot_name), "$$v%d", slot);
-    return ir_struct_load_ptr("i32", slot_name, name, 0);
+    return ir_struct_load_ptr(s->field_count > 0 ? s->field_keys[0] : "i32", slot_name, name, 0);
 }
 
 // The type's ABI size in bytes, read from the **module's** data layout so a
@@ -6270,7 +6270,9 @@ int ir_is_struct_type_name(const char *name);
 int ir_named_type_kind(const char *name);
 int ir_get_enum_variant_count(const char *enum_name);
 const char *ir_get_enum_variant_name_at(const char *enum_name, int index);
-int ir_get_enum_variant_value_at(const char *enum_name, int index);
+int64_t ir_get_enum_variant_value_at(const char *enum_name, int index);
+const char *ir_enum_repr_key(const char *enum_name);
+int ir_enum_repr_unsigned(const char *enum_name);
 
 // DWARF base-type encodings. llvm-c/DebugInfo.h types LLVMDWARFTypeEncoding as a
 // bare `unsigned` and defines no constants for it, so these are DWARF 5 table
@@ -6278,6 +6280,7 @@ int ir_get_enum_variant_value_at(const char *enum_name, int index);
 #define PRISMIO_DW_ATE_boolean 0x02
 #define PRISMIO_DW_ATE_float 0x04
 #define PRISMIO_DW_ATE_signed 0x05
+#define PRISMIO_DW_ATE_unsigned 0x07
 #define PRISMIO_DW_ATE_signed_char 0x06
 #define PRISMIO_DW_TAG_structure_type 0x13
 
@@ -6799,21 +6802,31 @@ static LLVMMetadataRef di_enum_type(const char *name) {
     LLVMMetadataRef *values =
         (LLVMMetadataRef *)malloc(sizeof(LLVMMetadataRef) * (size_t)total);
     if (!values) return NULL;
+    // The width an enum is stored at; an enum with no stated representation is
+    // the i32 it has always been.
+    const char *repr_key = ir_enum_repr_key(name);
+    unsigned repr_bits = (*repr_key == 'i') ? (unsigned)atoi(repr_key + 1) : 32;
+    int repr_unsigned = ir_enum_repr_unsigned(name);
+    char repr_name[16];
+    if (*repr_key) snprintf(repr_name, sizeof(repr_name), "%s%u", repr_unsigned ? "UInt" : "Int", repr_bits);
+    else snprintf(repr_name, sizeof(repr_name), "Int");
+
     unsigned count = 0;
     for (int i = 0; i < total; i++) {
         const char *vname = ir_get_enum_variant_name_at(name, i);
         if (!vname || !*vname) continue;
         values[count++] = LLVMDIBuilderCreateEnumerator(
             g_di, vname, strlen(vname),
-            (int64_t)ir_get_enum_variant_value_at(name, i), 0);
+            ir_get_enum_variant_value_at(name, i), repr_unsigned);
     }
 
     LLVMMetadataRef type = NULL;
     if (count > 0) {
         type = LLVMDIBuilderCreateEnumerationType(
             g_di, g_di_cu, name, strlen(name), site_file, site_line,
-            32, 32, values, count,
-            di_basic("Int", 32, PRISMIO_DW_ATE_signed));
+            repr_bits, repr_bits, values, count,
+            di_basic(repr_name, repr_bits,
+                     repr_unsigned ? PRISMIO_DW_ATE_unsigned : PRISMIO_DW_ATE_signed));
     }
     free(values);
     if (!type) return NULL;

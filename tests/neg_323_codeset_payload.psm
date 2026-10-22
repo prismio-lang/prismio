@@ -1,0 +1,3 @@
+// expect-error: a `codeset` entry names a number and carries no payload
+codeset Status: U16 { Ok(Int) = 200 }
+fn main() -> Int { return 0 }

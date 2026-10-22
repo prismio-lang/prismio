@@ -1,0 +1,3 @@
+// expect-error: a codeset needs a representation type
+codeset Status { Ok = 200 }
+fn main() -> Int { return 0 }

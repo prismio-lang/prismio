@@ -1,0 +1,52 @@
+// `codeset`: named numeric constants, not a type. Two names may share a number, and
+// `Status.Ok` is a `U16` wherever it is written.
+
+import std.io
+import std.string
+
+codeset Status: U16 {
+    Ok = 200,
+    Success = 200,
+    NotFound = 404,
+    Teapot = 400 + 18,
+}
+
+codeset Delta: I8 { Back = -1, Stay, Forward }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn describe(code: U16) -> String {
+    if (code == Status.Ok) { return "ok" }
+    if (code == Status.NotFound) { return "missing" }
+    return "other"
+}
+
+fn classify(code: U16) -> Int {
+    match (code) {
+        Status.Ok => { return 1 }
+        Status.NotFound => { return 2 }
+        _ => { return 0 }
+    }
+}
+
+fn main() -> Int {
+    if (describe(200) != "ok") { return fail("a literal equals the constant") }
+    if (describe(Status.Success) != "ok") { return fail("aliases are the same number") }
+    if (describe(Status.Teapot) != "other") { return fail("computed entry") }
+    if ((Status.Teapot as Int) != 418) { return fail("400 + 18") }
+    if (classify(404) != 2) { return fail("match on a constant") }
+
+    let code: U16 = Status.NotFound
+    if (code != 404) { return fail("typed as U16") }
+
+    if (Delta.Back != -1) { return fail("negative entry") }
+    if (Delta.Stay != 0) { return fail("implicit after negative") }
+    if (Delta.Forward != 1) { return fail("implicit") }
+
+    println("test_328 ok")
+    return 0
+}

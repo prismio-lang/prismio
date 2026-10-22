@@ -1,0 +1,329 @@
+// Discriminants of `enum` and `codeset` variants: evaluating them, numbering the
+// ones left implicit, and refusing the ones that cannot stand.
+//
+//     enum Message: U8 { Quit, Text(String) = 5, Move { x: Int, y: Int } }
+//
+// A variant's discriminant is a **compile-time integer**, kept as decimal text on
+// the variant (`s2`, with `i3` = 1 once assigned) because `Int` is i32 and a `U64`
+// discriminant fits no node field. Arithmetic is a sign and a `U64` magnitude, and
+// the range check is `typeIntLiteralFits` against the representation type.
+//
+// **An enum that writes neither a representation nor a discriminant is left
+// alone**: no values are assigned, and everything downstream keeps numbering its
+// variants by position. That is what keeps every existing program byte-identical.
+//
+// Numbering is never a search. An unnumbered variant is the previous variant's
+// value plus one, and when that does not fit the representation it is an error --
+// the compiler does not skip to a free value, and it does not wrap.
+
+import lexer.token
+import ast.nodes
+import ast.types
+import common.diagnostics
+import ir.bridge
+import std.string
+
+private struct DiscValue {
+    valid: Bool,
+    negative: Bool,
+    magnitude: U64
+}
+
+private fn discInvalid() -> DiscValue {
+    return DiscValue { valid: false, negative: false, magnitude: 0 as U64 }
+}
+
+// Zero has one spelling, so `-0` and `0` compare equal as text.
+private fn discOf(negative: Bool, magnitude: U64) -> DiscValue {
+    return DiscValue { valid: true, negative: negative and magnitude != (0 as U64), magnitude: magnitude }
+}
+
+private fn discMax() -> U64 {
+    return expect("18446744073709551615".parseU64())
+}
+
+private fn discText(v: DiscValue) -> String {
+    if (v.negative) { return "-".concat(v.magnitude.toString()) }
+    return v.magnitude.toString()
+}
+
+// ---------------------------------------------------------
+// Arithmetic: sign and magnitude, no wrap
+// ---------------------------------------------------------
+
+private fn discNegate(v: DiscValue) -> DiscValue {
+    if (v.valid == false) { return discInvalid() }
+    return discOf(v.negative == false, v.magnitude)
+}
+
+private fn discAdd(a: DiscValue, b: DiscValue) -> DiscValue {
+    if (a.valid == false or b.valid == false) { return discInvalid() }
+    if (a.negative == b.negative) {
+        if (a.magnitude > discMax() - b.magnitude) { return discInvalid() }
+        return discOf(a.negative, a.magnitude + b.magnitude)
+    }
+    if (a.magnitude >= b.magnitude) { return discOf(a.negative, a.magnitude - b.magnitude) }
+    return discOf(b.negative, b.magnitude - a.magnitude)
+}
+
+private fn discMultiply(a: DiscValue, b: DiscValue) -> DiscValue {
+    if (a.valid == false or b.valid == false) { return discInvalid() }
+    if (a.magnitude != (0 as U64) and b.magnitude > discMax() / a.magnitude) { return discInvalid() }
+    return discOf(a.negative != b.negative, a.magnitude * b.magnitude)
+}
+
+private fn discShiftLeft(a: DiscValue, b: DiscValue) -> DiscValue {
+    if (a.valid == false or b.valid == false) { return discInvalid() }
+    if (a.negative or b.negative or b.magnitude >= (64 as U64)) { return discInvalid() }
+    let shifted = a.magnitude << b.magnitude
+    if (shifted >> b.magnitude != a.magnitude) { return discInvalid() }
+    return discOf(false, shifted)
+}
+
+private fn discOr(a: DiscValue, b: DiscValue) -> DiscValue {
+    if (a.valid == false or b.valid == false) { return discInvalid() }
+    if (a.negative or b.negative) { return discInvalid() }
+    return discOf(false, a.magnitude | b.magnitude)
+}
+
+// ---------------------------------------------------------
+// Evaluating a discriminant expression
+// ---------------------------------------------------------
+
+private fn discFromLiteral(literal: ASTNode) -> DiscValue {
+    if (literal.i1 != TokenType.NUMBER_LITERAL as Int) { return discInvalid() }
+    let negative = literal.s1.startsWith("-")
+    let mut at = 0
+    if (negative) { at = 1 }
+    let magnitude = typeIntLiteralMagnitude(literal.s1, at)
+    if (magnitude == none) { return discInvalid() }
+    return discOf(negative, expect(magnitude))
+}
+
+private fn discBinary(expr: ASTNode) -> DiscValue {
+    let left = discEval(ptr_to_node(expr.child1))
+    let right = discEval(ptr_to_node(expr.child2))
+    if (expr.s1.equals("+")) { return discAdd(left, right) }
+    if (expr.s1.equals("-")) { return discAdd(left, discNegate(right)) }
+    if (expr.s1.equals("*")) { return discMultiply(left, right) }
+    if (expr.s1.equals("<<")) { return discShiftLeft(left, right) }
+    if (expr.s1.equals("|")) { return discOr(left, right) }
+    return discInvalid()
+}
+
+// Integer literals combined with `+ - * << |`. Anything that names a value --
+// a variable, a call, another variant -- is not constant here, and neither is an
+// operation that would not fit 64 bits.
+private fn discEval(expr: ASTNode) -> DiscValue {
+    if (expr.kind == NodeKind.LITERAL_EXPR) { return discFromLiteral(expr) }
+    if (expr.kind == NodeKind.UNARY_EXPR and expr.s1.equals("-")) {
+        return discNegate(discEval(ptr_to_node(expr.child1)))
+    }
+    if (expr.kind == NodeKind.BINARY_EXPR) { return discBinary(expr) }
+    return discInvalid()
+}
+
+// ---------------------------------------------------------
+// Reading what was assigned
+// ---------------------------------------------------------
+
+public fn enumVariantHasValue(variant: ASTNode) -> Bool {
+    return variant.i3 == 1
+}
+
+// Whether this enum or codeset was numbered. Every variant of one that was is
+// numbered, so the first answers for all.
+public fn enumHasDiscriminants(decl: ASTNode) -> Bool {
+    return nodeExists(decl.child1) and enumVariantHasValue(ptr_to_node(decl.child1))
+}
+
+// The variant's value as the bit pattern of its representation, widened to 64: a
+// `U64` above 2^63 reads as negative, which is what the backend wants to store.
+public fn enumVariantBits(variant: ASTNode) -> I64 {
+    if (variant.s2.startsWith("-")) { return expect(variant.s2.parseI64()) }
+    return expect(variant.s2.parseU64()) as I64
+}
+
+// The representation type: the one written, or `Int` when only discriminants were.
+public fn enumReprType(decl: ASTNode) -> TypeInfo {
+    if (nodeIsNull(decl.child2)) { return typeInt() }
+    let written = typeIntFromName(ptr_to_node(decl.child2).s1)
+    if (typeIsValid(written)) { return written }
+    return typeInt()
+}
+
+// Declares a fieldless enum as a named type, and the integer it is stored as when
+// it states one. Every route that makes an enum a type goes through here, so the
+// representation is registered before the first TypeInfo for the enum is built.
+public fn enumDeclareType(decl: ASTNode) {
+    ir_declare_named_type(decl.s1, 2)
+    if (enumHasDiscriminants(decl) == false) { return }
+    let repr = enumReprType(decl)
+    let mut unsigned = 0
+    if (typeIntIsUnsigned(repr)) { unsigned = 1 }
+    ir_register_enum_repr(decl.s1, typeIrKey(repr), unsigned)
+}
+
+// ---------------------------------------------------------
+// Diagnostics
+// ---------------------------------------------------------
+
+private fn discRangeText(t: TypeInfo) -> String {
+    let bits = typeIntBits(t)
+    if (bits > 64 or bits < 1) { return typeDisplay(t) }
+    let one = 1 as U64
+    if (typeIntIsUnsigned(t)) {
+        if (bits == 64) { return "0 to ".concat(discMax().toString()) }
+        return "0 to ".concat(((one << (bits as U64)) - one).toString())
+    }
+    let half = one << ((bits - 1) as U64)
+    return "-".concat(half.toString(), " to ", (half - one).toString())
+}
+
+private fn discNotConstant(variant: ASTNode) {
+    semaErrorAt(ptr_to_node(variant.child2),
+                "the discriminant of ".concat(diagQuote(variant.s1), " is not a compile-time integer constant"))
+    diag_note("write an integer literal, or literals combined with `+ - * << |`, such as `1 << 3`")
+}
+
+private fn discOutOfRange(variant: ASTNode, value: DiscValue, repr: TypeInfo) {
+    let fits = " does not fit ".concat(diagQuote(typeDisplay(repr)), " (", discRangeText(repr), ")")
+    semaErrorAt(ptr_to_node(variant.child2),
+                "the discriminant ".concat(discText(value), " of ", diagQuote(variant.s1), fits))
+}
+
+private fn discImplicitOverflow(variant: ASTNode, repr: TypeInfo) {
+    let range = diagQuote(typeDisplay(repr)).concat(" (", discRangeText(repr), ")")
+    semaErrorAt(variant, "the implicit discriminant of ".concat(diagQuote(variant.s1), " is past the range of ", range))
+    diag_note("give it an explicit discriminant; the compiler does not wrap or skip to a free value")
+}
+
+private fn discDuplicate(decl: ASTNode, variant: ASTNode, first: ASTNode) {
+    let owner = " in enum ".concat(diagQuote(decl.s1))
+    semaErrorAt(variant, "the discriminant ".concat(variant.s2, " of ", diagQuote(variant.s1),
+                                                    " is already used by ", diagQuote(first.s1)).concat(owner))
+    let implicit = " has no discriminant of its own, so it is one past the variant before it"
+    if (nodeIsNull(variant.child2)) { diag_note(diagQuote(variant.s1).concat(implicit)) }
+    if (nodeIsNull(first.child2)) { diag_note(diagQuote(first.s1).concat(implicit)) }
+    diag_note("a `codeset` allows two names for one number; a tagged enum needs each variant to be distinct")
+}
+
+// ---------------------------------------------------------
+// Assigning
+// ---------------------------------------------------------
+
+private fn discNext(previous: DiscValue) -> DiscValue {
+    return discAdd(previous, discOf(false, 1 as U64))
+}
+
+// The representation annotation, checked: an integer type written plainly.
+// Answers `Invalid` after reporting, and the caller then leaves the variants
+// unnumbered -- the error already stops the build.
+private fn discReprOf(decl: ASTNode, isCodeset: Bool) -> TypeInfo {
+    if (nodeIsNull(decl.child2)) {
+        if (isCodeset) {
+            semaErrorAt(decl, "a codeset needs a representation type, as in `codeset ".concat(decl.s1, ": U16 { ... }`"))
+            return typeInvalid()
+        }
+        return typeInt()
+    }
+    let annotation = ptr_to_node(decl.child2)
+    let repr = typeIntFromName(annotation.s1)
+    let plain = annotation.i1 == 0 and annotation.i3 == 0 and nodeIsNull(annotation.child1)
+    if (typeIsValid(repr) and plain) { return repr }
+    semaErrorAt(annotation, "the representation of ".concat(diagQuote(decl.s1), " must be an integer type, found ",
+                                                            diagQuote(annotation.s1)))
+    diag_note("the integer types are Int, I8, I16, I64, U8, U16, U32, U64 and Int<N> / UInt<N>")
+    return typeInvalid()
+}
+
+private fn discWritesAny(decl: ASTNode) -> Bool {
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        if (nodeExists(variant.child2)) { return true }
+        p = variant.next
+    }
+    return false
+}
+
+// The value of one variant, reported and recorded. False when it could not be
+// given one, so the caller does not number from a value that is not there.
+private fn discAssignVariant(variant: ASTNode, previous: DiscValue, first: Bool, repr: TypeInfo) -> DiscValue {
+    let mut value = discOf(false, 0 as U64)
+    if (nodeExists(variant.child2)) {
+        value = discEval(ptr_to_node(variant.child2))
+        if (value.valid == false) {
+            discNotConstant(variant)
+            return discInvalid()
+        }
+        if (typeIntLiteralFits(discText(value), repr) == false) {
+            discOutOfRange(variant, value, repr)
+            return discInvalid()
+        }
+    } else if (first == false) {
+        value = discNext(previous)
+        if (value.valid == false or typeIntLiteralFits(discText(value), repr) == false) {
+            discImplicitOverflow(variant, repr)
+            return discInvalid()
+        }
+    }
+    variant.s2 = discText(value)
+    variant.i3 = 1
+    return value
+}
+
+private fn discCheckUnique(decl: ASTNode) {
+    let mut p = decl.child1
+    let mut index = 0
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        let mut q = decl.child1
+        for j in 0..<index {
+            let earlier = ptr_to_node(q)
+            if (earlier.s2.equals(variant.s2)) {
+                discDuplicate(decl, variant, earlier)
+                break
+            }
+            q = earlier.next
+        }
+        index = index + 1
+        p = variant.next
+    }
+}
+
+private fn discAssignDecl(decl: ASTNode) {
+    let isCodeset = decl.kind == NodeKind.CODESET_DECL
+    if (isCodeset == false and nodeIsNull(decl.child2) and discWritesAny(decl) == false) { return }
+
+    let repr = discReprOf(decl, isCodeset)
+    if (typeIsValid(repr) == false) { return }
+
+    let mut previous = discOf(false, 0 as U64)
+    let mut first = true
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        previous = discAssignVariant(variant, previous, first, repr)
+        if (previous.valid == false) { return }
+        first = false
+        p = variant.next
+    }
+    if (isCodeset == false) { discCheckUnique(decl) }
+}
+
+// Numbers every enum and codeset in the merged module, templates included: a
+// generic enum's values do not depend on its type arguments, and the instantiation
+// is a copy of what this leaves.
+//
+// Runs before monoCollectTemplates parks the templates off the module chain.
+public fn enumAssignDiscriminants(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.ENUM_DECL or stmt.kind == NodeKind.CODESET_DECL) {
+            discAssignDecl(stmt)
+        }
+        p = stmt.next
+    }
+}

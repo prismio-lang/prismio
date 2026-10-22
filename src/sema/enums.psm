@@ -25,6 +25,7 @@
 
 import ast.nodes
 import ast.types
+import sema.enum_discriminants
 import common.text
 import common.diagnostics
 import ir.bridge
@@ -87,6 +88,9 @@ internal fn enumIsPayloadType(module: ASTNode, t: TypeInfo) -> Bool {
 public fn enumNullVariantTag(module: ASTNode, name: String) -> Int {
     let shadow = enumShadowFind(module, name)
     if (nodeIsNull(node_to_ptr(shadow))) { return 0 }
+    // The null pointer stands for tag 1 or 2 of a two-variant enum, which is not
+    // what a numbered enum's tag holds.
+    if (enumHasDiscriminants(shadow)) { return 0 }
     let mut p = shadow.child1
     let mut count = 0
     let mut emptyCount = 0
@@ -111,7 +115,17 @@ public fn enumNullVariantTag(module: ASTNode, name: String) -> Int {
     return 0
 }
 
-private fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
+// The enum as written, whether it has already become a struct (the shadow) or is
+// still a generic template. A null node when there is no such enum.
+internal fn enumDeclarationNamed(module: ASTNode, name: String) -> ASTNode {
+    let shadow = enumShadowFind(module, name)
+    if (nodeExists(node_to_ptr(shadow))) { return shadow }
+    let template = monoFindTypeTemplate(module, name)
+    if (nodeExists(node_to_ptr(template)) and template.kind == NodeKind.ENUM_DECL) { return template }
+    return ptr_to_node(ptr_null())
+}
+
+internal fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
     let mut p = enumDecl.child1
     while (nodeExists(p)) {
         let variant = ptr_to_node(p)
@@ -139,6 +153,16 @@ private fn enumVariantTag(enumDecl: ASTNode, variantName: String) -> Int {
         p = variant.next
     }
     return -1
+}
+
+// What the tag field holds for a variant, as the text of a literal: its
+// discriminant when the enum was numbered, and its one-based position otherwise.
+// Text because a `U64` discriminant is not an `Int`.
+private fn enumVariantTagText(enumDecl: ASTNode, variantName: String) -> String {
+    if (enumHasDiscriminants(enumDecl)) {
+        return enumVariantNode(enumDecl, variantName).s2.clone()
+    }
+    return enumVariantTag(enumDecl, variantName).toString()
 }
 
 // ---------------------------------------------------------
@@ -179,6 +203,12 @@ private fn enumPayloadSlot(variant: ASTNode, payloadPtr: Ptr, index: Int) -> AST
     return slot
 }
 
+// The tag is stored as the enum's representation when it has one.
+private fn enumTagTypeName(enumDecl: ASTNode) -> String {
+    if (enumHasDiscriminants(enumDecl)) { return enumReprType(enumDecl).name.clone() }
+    return "Int"
+}
+
 // Builds the struct that replaces a payload enum. The enum declaration itself is
 // not modified -- it becomes the shadow.
 internal fn enumDesugarToStruct(enumDecl: ASTNode) -> ASTNode {
@@ -195,7 +225,7 @@ internal fn enumDesugarToStruct(enumDecl: ASTNode) -> ASTNode {
     // The tag first, and it must stay first -- see enumVariantTag for why its
     // values are one-based. `run_aif_layout_test` guards the ordering: the layout
     // optimiser is not allowed to move field 0.
-    nodeListPush(fields, enumFieldNamed(enumTagField(), "Int"))
+    nodeListPush(fields, enumFieldNamed(enumTagField(), enumTagTypeName(enumDecl)))
 
     let mut p = enumDecl.child1
     while (nodeExists(p)) {
@@ -243,10 +273,10 @@ public fn enumDesugarModule(module: ASTNode) {
 // Constructing a variant
 // ---------------------------------------------------------
 
-private fn enumTagLiteral(tag: Int) -> ASTNode {
+private fn enumTagLiteral(tagText: String) -> ASTNode {
     let literal = createNode(NodeKind.LITERAL_EXPR)
     literal.i1 = TokenType.NUMBER_LITERAL as Int
-    literal.s1 = tag.toString()
+    literal.s1 = tagText
     return literal
 }
 
@@ -430,7 +460,7 @@ internal fn enumResolveConstruction(module: ASTNode, expr: ASTNode, enumName: St
     semaCheckDeclVisible(expr, shadow, enumName)
 
     let fields = nodeList()
-    nodeListPush(fields, enumLiteralField(enumTagField(), node_to_ptr(enumTagLiteral(tag))))
+    nodeListPush(fields, enumLiteralField(enumTagField(), node_to_ptr(enumTagLiteral(enumVariantTagText(shadow, variantName)))))
 
     let variant = enumVariantNode(shadow, variantName)
     let mut payload = variant.child1
@@ -502,14 +532,16 @@ private fn enumArmBinders(pattern: ASTNode) -> Ptr {
 }
 
 // Checks one arm of a match over a payload enum, and records on the arm what
-// codegen needs: the tag to compare (`i1`) and the variant whose payload fields
-// the binders read (`s2`).
+// codegen needs: the variant's position (`i1`, which coverage is judged by), the
+// tag value to compare as a literal (`child3`), and the variant whose payload
+// fields the binders read (`s2`).
 //
 // The pattern is deliberately **not** run through semaExpr. `Shape.Circle(r)` as
 // an expression is a constructor call, and typing it would build a value and
 // complain that `r` is undefined -- it is a binding site, not a use.
 private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, expectedReturn: TypeInfo) {
     let pattern = ptr_to_node(arm.child1)
+    if (enumIsVariantLiteral(pattern) and enumVariantLiteralToCall(module, pattern) == false) { return }
     if (pattern.kind != NodeKind.CALL_EXPR and pattern.kind != NodeKind.MEMBER_ACCESS_EXPR) {
         semaErrorAt(pattern, "a match on an enum with payloads takes variant patterns, such as `Shape.Circle(r)`")
         return
@@ -525,6 +557,7 @@ private fn semaCheckPayloadArm(module: ASTNode, arm: ASTNode, shadow: ASTNode, e
         return
     }
     arm.i1 = tag
+    arm.child3 = node_to_ptr(enumTagLiteral(enumVariantTagText(shadow, arm.s2)))
     semaCheckDeclVisible(pattern, shadow, enumArmEnumName(pattern, shadow))
 
     // The binders live in a scope of their own, outside the block's, so they are

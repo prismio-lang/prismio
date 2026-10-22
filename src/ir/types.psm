@@ -39,6 +39,9 @@ private fn mapType(t: String) -> String {
     // `Int<24>` is `Int$24`: the width is in the name.
     let bits = intWidthOfName(t)
     if (bits > 0) { return "i".concat(bits.toString()) }
+    // An enum is its stated representation, and an i32 when it states none.
+    let enumKey = ir_enum_repr_key(t)
+    if (enumKey.equals("") == false) { return enumKey.clone() }
     return "i32"
 }
 
@@ -314,9 +317,8 @@ internal fn getExprType(expr: ASTNode) -> String {
         NodeKind.MEMBER_ACCESS_EXPR => {
             let objectNode = ptr_to_node(expr.child1)
             if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
-                let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
-                if (enumVal >= 0) {
-                    return "i32"
+                if (ir_enum_has_variant(objectNode.s1, expr.s1) == 1) {
+                    return mapType(objectNode.s1)
                 }
             }
             let objectType = getExprType(objectNode)

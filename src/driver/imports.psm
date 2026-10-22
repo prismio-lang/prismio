@@ -631,6 +631,10 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     // on a generic impl has to be collected as a template like any other.
     monoExpandDefaultMethods(merged)
 
+    // Before the templates are collected: a generic enum is numbered once, on
+    // the template, and every instantiation copies the numbers.
+    enumAssignDiscriminants(merged)
+
     // Generic declarations come out of the chain here, at the end of the merge
     // rather than at the start of sema, so that every consumer of a resolved
     // module sees the same thing: a chain of concrete declarations, plus

@@ -1,0 +1,4 @@
+// expect-error: the discriminant 1 of `Move` is already used by `Text` in enum `Message`
+// `Text` is numbered 1 implicitly, which collides with the explicit `Move = 1`.
+enum Message: U8 { Quit = 0, Text(String), Move { x: Int, y: Int } = 1 }
+fn main() -> Int { return 0 }

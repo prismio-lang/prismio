@@ -58,6 +58,7 @@ impl Parser {
         if (self.atStructModifiers()) { return self.parseModifiedStructDecl() }
         if (self.checkVal(TokenType.KEYWORD, "struct")) { return self.parseStructDecl() }
         if (self.checkVal(TokenType.KEYWORD, "enum")) { return self.parseEnumDecl() }
+        if (self.atCodesetDecl()) { return self.parseCodesetDecl() }
         if (self.checkVal(TokenType.KEYWORD, "impl")) { return self.parseImplDecl() }
         if (self.checkVal(TokenType.KEYWORD, "trait")) { return self.parseTraitDecl() }
         if (self.atWorkload()) { return self.parseWorkloadDecl() }
@@ -118,6 +119,7 @@ impl Parser {
         if (next.type == TokenType.IDENTIFIER and next.value.equals("prop")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("cold")) { return level }
         if (next.type == TokenType.IDENTIFIER and next.value.equals("async")) { return level }
+        if (next.type == TokenType.IDENTIFIER and next.value.equals("codeset")) { return level }
         if (next.type == TokenType.IDENTIFIER and self.isFnModifierWord(next.value)) { return level }
         if (next.type == TokenType.IDENTIFIER and self.isStructModifierWord(next.value)) { return level }
         if (next.type != TokenType.KEYWORD) { return -1 }
@@ -158,6 +160,7 @@ impl Parser {
         let next = self.peek()
         return next.value.equals("fn") or next.value.equals("extern") or next.value.equals("prop")
             or next.value.equals("let") or next.value.equals("struct") or next.value.equals("enum")
+            or next.value.equals("codeset")
             or self.isStructModifierWord(next.value)
             or next.value.equals("cold") or next.value.equals("async") or self.isFnModifierWord(next.value)
     }
@@ -676,7 +679,7 @@ impl Parser {
     // TRAIT_REF nodes for its bounds. The split is intentional: names are a flat
     // substitution environment, but a bound such as `From<List<T>>` is a tree and
     // must not be encoded with punctuation delimiters.
-    private fn parseGenericParams(self, owner: ASTNode) -> String {
+    internal fn parseGenericParams(self, owner: ASTNode) -> String {
         if (self.matchVal(TokenType.RELATIONAL_OPERATOR, "<") == false) { return "" }
 
         let mut params = ""
@@ -2262,57 +2265,6 @@ impl Parser {
         self.expectVal(TokenType.SEPARATOR, "}", "struct body")
         structNode.child1 = fields.head
         return structNode
-    }
-}
-
-
-// What an enum with no marker is. The one place the default is chosen: it is
-// `internal`, as a struct's is, and a different default is a change to this return
-// and nothing else.
-private fn enumDefaultVisibility() -> Int { return 2 }
-
-
-impl Parser {
-    private fn parseEnumDecl(self) -> ASTNode {
-        self.expectVal(TokenType.KEYWORD, "enum", "enum")
-
-        let enumNode = self.node(NodeKind.ENUM_DECL)
-        enumNode.i2 = enumDefaultVisibility()
-        let name = self.current()
-        enumNode.s1 = name.value
-        self.expectToken(TokenType.IDENTIFIER, "enum name")
-
-        enumNode.s2 = self.parseGenericParams(enumNode)
-        self.expectVal(TokenType.SEPARATOR, "{", "enum body")
-
-        let variants = nodeList()
-        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
-            let variant = self.node(NodeKind.ENUM_VARIANT)
-            let variantName = self.current()
-            variant.s1 = variantName.value
-            self.expectToken(TokenType.IDENTIFIER, "variant name")
-
-            // `Some(T)` -- a variant that carries values. The payload types hang off
-            // child1 as a `next`-chain, the same shape a parameter list has, because
-            // that is what a variant constructor is.
-            if (self.matchVal(TokenType.SEPARATOR, "(")) {
-                let payload = nodeList()
-                loop {
-                    nodeListPush(payload, self.parseTypeAnnotation())
-                    if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
-                }
-                variant.child1 = payload.head
-                self.expectVal(TokenType.SEPARATOR, ")", "variant payload")
-            }
-
-            nodeListPush(variants, variant)
-
-            self.matchVal(TokenType.SEPARATOR, ",")
-        }
-
-        self.expectVal(TokenType.SEPARATOR, "}", "enum body")
-        enumNode.child1 = variants.head
-        return enumNode
     }
 }
 

@@ -1,0 +1,69 @@
+// `codeset`: named numeric constants, not a type.
+//
+//     codeset Status: U16 { Ok = 200, Success = 200, NotFound = 404 }
+//
+// `Status.Ok` is rewritten in place into `200 as U16`, the way an associated
+// constant is, so nothing after sema knows a codeset exists. A cast is the context
+// that types a literal, which is why the rewrite is not a bare literal: that would
+// be re-typed as `Int` at the use and `Status.Ok` would not be a `U16`.
+//
+// The numbers are assigned and checked with the enum's, in enum_discriminants.psm.
+
+import ast.nodes
+import ast.types
+import common.diagnostics
+import std.string
+
+private fn codesetNamed(name: String) -> ASTNode {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.CODESET_DECL) { return decl }
+    }
+    return ptr_to_node(ptr_null())
+}
+
+private fn codesetEntryNamed(decl: ASTNode, entryName: String) -> ASTNode {
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let entry = ptr_to_node(p)
+        if (entry.s1.equals(entryName)) { return entry }
+        p = entry.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+internal fn codesetExists(name: String) -> Bool {
+    return nodeExists(node_to_ptr(codesetNamed(name)))
+}
+
+// Rewrites `Status.Ok` into `200 as U16`. False after reporting when the codeset
+// has no such entry, leaving the expression for the caller to mark invalid.
+internal fn codesetResolveEntry(expr: ASTNode, codesetName: String) -> Bool {
+    let decl = codesetNamed(codesetName)
+    if (semaCheckDeclVisible(expr, decl, codesetName) == false) { return false }
+
+    let entry = codesetEntryNamed(decl, expr.s1)
+    if (nodeIsNull(node_to_ptr(entry)) or enumVariantHasValue(entry) == false) {
+        if (nodeIsNull(node_to_ptr(entry))) {
+            semaErrorAt(expr, diagQuote(codesetName).concat(" has no entry ", diagQuote(expr.s1)))
+        }
+        return false
+    }
+
+    let value = createNode(NodeKind.LITERAL_EXPR)
+    value.i1 = TokenType.NUMBER_LITERAL as Int
+    value.s1 = entry.s2.clone()
+    nodeSpanFrom(value, expr)
+
+    expr.kind = NodeKind.CAST_EXPR
+    expr.s1 = ""
+    expr.s2 = ""
+    expr.i1 = 0
+    expr.i2 = 0
+    expr.i3 = 0
+    expr.child1 = node_to_ptr(value)
+    expr.child2 = node_to_ptr(monoCopyOne(decl.child2))
+    expr.child3 = ptr_null()
+    return true
+}

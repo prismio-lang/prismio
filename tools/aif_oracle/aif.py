@@ -505,6 +505,8 @@ class Model:
         self.files = {f['id']: f['path'] for f in dump['files']}
         self.structs = {}          # name -> [(field, type)]
         self.enums = set()
+        # An enum that states its representation (`enum E: U8`) is stored as that integer.
+        self.enum_repr = {}
         self.functions = {}        # symbol -> node
         self.fn_name = {}          # symbol -> plain name
         self.fn_file = {}          # symbol -> file id
@@ -536,6 +538,8 @@ class Model:
                 ]
             elif d['k'] == 'ENUM_DECL':
                 self.enums.add(d['s1'])
+                if d['c2']:
+                    self.enum_repr[d['s1']] = d['c2'][0]['s1']
             elif d['k'] == 'FUNCTION':
                 sym = d['s2'] or d['s1']
                 self.functions[sym] = d

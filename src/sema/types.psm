@@ -74,7 +74,7 @@ internal fn semaRegisterNamedTypes(module: ASTNode) {
     while (nodeExists(stmtPtr)) {
         let stmt = ptr_to_node(stmtPtr)
         if (stmt.kind == NodeKind.STRUCT_DECL) { ir_declare_named_type(stmt.s1, 1) }
-        if (stmt.kind == NodeKind.ENUM_DECL) { ir_declare_named_type(stmt.s1, 2) }
+        if (stmt.kind == NodeKind.ENUM_DECL) { enumDeclareType(stmt) }
         stmtPtr = stmt.next
     }
 }

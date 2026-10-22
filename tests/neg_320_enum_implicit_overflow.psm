@@ -1,0 +1,4 @@
+// expect-error: the implicit discriminant of `B` is past the range of `U8`
+// The compiler does not wrap and does not skip to a free value.
+enum State: U8 { A = 255, B }
+fn main() -> Int { return 0 }

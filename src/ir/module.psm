@@ -10,6 +10,7 @@ import common.diagnostics
 import common.target
 import common.float_builtins
 import sema.enums
+import sema.enum_discriminants
 import aif.model
 import std.string
 import std.io
@@ -1283,12 +1284,17 @@ private fn moduleHasFunction(module: ASTNode, name: String) -> Bool {
 }
 
 private fn registerEnumDecl(enumNode: ASTNode) {
+    let numbered = enumHasDiscriminants(enumNode)
     let mut variantPtr = enumNode.child1
-    let mut value = 0
+    let mut ordinal = 0 as I64
     while (nodeExists(variantPtr)) {
         let variant = ptr_to_node(variantPtr)
-        ir_register_enum_variant(enumNode.s1, variant.s1, value)
-        value = value + 1
+        if (numbered) {
+            ir_register_enum_variant(enumNode.s1, variant.s1, enumVariantBits(variant))
+        } else {
+            ir_register_enum_variant(enumNode.s1, variant.s1, ordinal)
+            ordinal = ordinal + (1 as I64)
+        }
         variantPtr = variant.next
     }
 }

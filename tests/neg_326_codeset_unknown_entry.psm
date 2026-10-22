@@ -1,0 +1,5 @@
+// expect-error: `Status` has no entry `Nope`
+codeset Status: U16 { Ok = 200 }
+fn main() -> Int { let c = Status.Nope
+    return 0
+}

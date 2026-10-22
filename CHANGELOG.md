@@ -9,6 +9,26 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **Enum discriminants, representation types, struct variants and `codeset`.**
+  `enum HttpStatus: U16 { Ok = 200, NotFound = 404 }` gives an enum a representation and
+  numbers. A fieldless enum is stored as that integer (`Packet { status, level }` is
+  `{ i16, i8 }` in memory), `as Int` converts through it, a payload enum's tag takes it (so
+  the first variant may be `0`), and `n as E?` tests the set of numbers, gaps included.
+  Numbering continues from the previous variant and neither wraps nor skips to a free value.
+  Refused with a diagnostic: a duplicate number in an enum (naming both variants), a number
+  outside the type, one that is not a compile-time integer, an implicit number past the end,
+  a representation that is not an integer. `Event.Click { x: 1, y: 2 }` and the pattern
+  `Event.Click { x, y }` build and match a struct variant `Click { x: Int, y: Int }`.
+  `codeset Status: U16 { Ok = 200, Success = 200 }` is a set of named integers that may
+  alias; `Status.Ok` is a `U16`. An enum that states neither a representation nor a number
+  compiles exactly as before (304 of the 309 programs in `tests/` and
+  `benchmarks/hosted/prismio/` were compared byte for byte; the other five use syntax the
+  older host cannot parse). `tests/test_327`, `test_328`, `neg_318`-`neg_328`; the
+  modules are `parse/enums.psm`, `sema/enum_discriminants.psm`, `sema/codeset.psm` and
+  `sema/enum_struct_variants.psm` (`docs/ENUM_DISCRIMINANTS_PLAN.md`). The runtime's
+  enum registry is 64-bit (`ir_register_enum_variant`, `ir_enum_has_variant`) and the seed
+  was re-cut for it. A struct variant of a *generic* enum is built positionally for now.
+
 - **Integers of any width, and five float types.** `Int<N>` and `UInt<N>` are an integer of
   exactly `N` bits for any `N` from 1 to 8,388,608 (LLVM's limit): `Int<24>`, `UInt<5>`,
   `Int<128>`, `UInt<4096>`. A width that has a name is that name -- `Int<8>` is `I8`, `Int<32>`

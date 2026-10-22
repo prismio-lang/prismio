@@ -403,6 +403,16 @@ void ir_reset_globals(void) {
 static NameList struct_type_names = { NULL, 0, 0, "the struct name table" };
 static NameList enum_type_names = { NULL, 0, 0, "the enum name table" };
 
+typedef struct {
+    const char* enum_name;
+    const char* key;
+    int is_unsigned;
+} EnumReprInfo;
+
+static EnumReprInfo* enum_reprs = NULL;
+static int enum_repr_count = 0;
+static int enum_repr_capacity = 0;
+
 // kind: 1 = struct, 2 = enum.
 void ir_declare_named_type(const char* name, int kind) {
     NameList* list = (kind == 1) ? &struct_type_names : &enum_type_names;
@@ -420,6 +430,7 @@ int ir_named_type_kind(const char* name) {
 void ir_reset_named_types(void) {
     struct_type_names.count = 0;
     enum_type_names.count = 0;
+    enum_repr_count = 0;
 }
 
 // Top-level declaration index -- "which declarations carry this name?"
@@ -954,7 +965,7 @@ static int struct_info_capacity = 0;
 typedef struct {
     const char* enum_name;
     const char* variant_name;
-    int value;
+    int64_t value;
 } EnumVariantInfo;
 
 static EnumVariantInfo* enum_variants = NULL;
@@ -1065,7 +1076,7 @@ const char* ir_get_struct_field_name_at(const char* struct_name, int index) {
     return s->fields[index].name;
 }
 
-void ir_register_enum_variant(const char* enum_name, const char* variant_name, int value) {
+void ir_register_enum_variant(const char* enum_name, const char* variant_name, int64_t value) {
     if (enum_variant_count == enum_variant_capacity) {
         int next = enum_variant_capacity ? enum_variant_capacity * 2 : 128;
         enum_variants = (EnumVariantInfo*)xrealloc(enum_variants,
@@ -1110,7 +1121,7 @@ const char* ir_get_enum_variant_name_at(const char* enum_name, int index) {
     return "";
 }
 
-int ir_get_enum_variant_value_at(const char* enum_name, int index) {
+int64_t ir_get_enum_variant_value_at(const char* enum_name, int index) {
     const char* e = ir_intern(enum_name);
     int n = 0;
     for (int i = 0; i < enum_variant_count; i++) {
@@ -1121,7 +1132,10 @@ int ir_get_enum_variant_value_at(const char* enum_name, int index) {
     return 0;
 }
 
-int ir_get_enum_variant(const char* enum_name, const char* variant_name) {
+// The value of a registered variant, and 0 for one that is not. A value can be
+// any integer the enum's representation holds, negative included, so absence is
+// asked of ir_enum_has_variant and never read off the value.
+int64_t ir_get_enum_variant(const char* enum_name, const char* variant_name) {
     const char* e = ir_intern(enum_name);
     const char* v = ir_intern(variant_name);
     for (int i = 0; i < enum_variant_count; i++) {
@@ -1129,7 +1143,53 @@ int ir_get_enum_variant(const char* enum_name, const char* variant_name) {
             return enum_variants[i].value;
         }
     }
-    return -1;
+    return 0;
+}
+
+int ir_enum_has_variant(const char* enum_name, const char* variant_name) {
+    const char* e = ir_intern(enum_name);
+    const char* v = ir_intern(variant_name);
+    for (int i = 0; i < enum_variant_count; i++) {
+        if (enum_variants[i].enum_name == e && enum_variants[i].variant_name == v) return 1;
+    }
+    return 0;
+}
+
+// The integer type an enum is stored as, when it names one (`enum E: U8`). An
+// enum that does not is an i32 and has no entry: every caller falls back to that,
+// which is what keeps a program that never writes a representation unchanged.
+// Cleared with the named types, because sema fills it as it declares them.
+void ir_register_enum_repr(const char* enum_name, const char* key, int is_unsigned) {
+    if (enum_repr_count == enum_repr_capacity) {
+        int next = enum_repr_capacity ? enum_repr_capacity * 2 : 16;
+        enum_reprs = (EnumReprInfo*)xrealloc(enum_reprs, (size_t)next * sizeof(EnumReprInfo),
+                                             "the enum representation table");
+        enum_repr_capacity = next;
+    }
+    enum_reprs[enum_repr_count].enum_name = ir_intern(enum_name);
+    enum_reprs[enum_repr_count].key = ir_intern(key);
+    enum_reprs[enum_repr_count].is_unsigned = is_unsigned;
+    enum_repr_count++;
+}
+
+static const EnumReprInfo* find_enum_repr(const char* enum_name) {
+    const char* e = ir_intern(enum_name);
+    for (int i = 0; i < enum_repr_count; i++) {
+        if (enum_reprs[i].enum_name == e) return &enum_reprs[i];
+    }
+    return NULL;
+}
+
+// Interned, so the caller may hold it without owning it; empty for an enum with
+// no stated representation.
+const char* ir_enum_repr_key(const char* enum_name) {
+    const EnumReprInfo* repr = find_enum_repr(enum_name);
+    return repr ? repr->key : "";
+}
+
+int ir_enum_repr_unsigned(const char* enum_name) {
+    const EnumReprInfo* repr = find_enum_repr(enum_name);
+    return repr ? repr->is_unsigned : 0;
 }
 
 // Bindings, innermost last.

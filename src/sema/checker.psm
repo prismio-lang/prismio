@@ -2429,6 +2429,15 @@ private fn semaMemberAccessExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
     }
 
+    if (objectNode.kind == NodeKind.IDENTIFIER_EXPR and ir_has_var_type(objectNode.s1) == 0
+            and codesetExists(objectNode.s1)) {
+        if (codesetResolveEntry(expr, objectNode.s1) == false) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        return semaExpr(module, expr)
+    }
+
     if (objectNode.kind == NodeKind.IDENTIFIER_EXPR and semaEnumHasVariant(module, objectNode.s1, expr.s1)) {
         semaCheckTypeVisible(expr, objectNode.s1)
         let variantT = typeEnum(objectNode.s1)
@@ -2751,6 +2760,13 @@ private fn semaSliceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 }
 
 private fn semaStructLiteralExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
+    if (enumIsVariantLiteral(expr)) {
+        if (enumVariantLiteralToCall(module, expr) == false) {
+            nodeSetType(expr, typeInvalid())
+            return typeInvalid()
+        }
+        return semaExpr(module, expr)
+    }
     // A generic literal names its instantiation through the type annotation
     // the parser hung on child2. Resolving that annotation is what creates
     // the instantiation; rewriting `s1` to the instantiated name is what lets

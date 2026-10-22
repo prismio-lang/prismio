@@ -67,6 +67,8 @@ def field_width(model, ty):
     base = ty.split('<')[0].strip('[]')
     if base in WIDTH:
         return WIDTH[base]
+    if base in model.enum_repr:
+        return field_width(model, model.enum_repr[base])
     if int_width(base) > 0:
         return int_alloc_bytes(int_width(base))
     return PTR              # struct, String, List, array -> a pointer today

@@ -1,0 +1,205 @@
+// `enum` and `codeset` declarations.
+//
+//     enum Message: U8 {
+//         Quit,
+//         Text(String) = 5,
+//         Move { x: Int, y: Int },
+//     }
+//
+//     codeset Status: U16 { Ok = 200, Success = 200, NotFound = 404 }
+//
+// The parser records what was written and decides nothing about values: a
+// variant's discriminant stays an expression until sema/enum_discriminants.psm
+// evaluates it. Shape of the nodes (docs/ENUM_DISCRIMINANTS_PLAN.md):
+//
+//     ENUM_DECL / CODESET_DECL   s1 name, s2 generic parameters, child1 variants,
+//                                child2 the representation annotation, if written
+//     ENUM_VARIANT               s1 name, child1 payload types, child2 the
+//                                discriminant expression, child3 the field names of
+//                                a struct variant (parallel to child1), i1 = 1 for
+//                                a struct variant
+
+import lexer.token
+import common.text
+import ast.nodes
+import common.diagnostics
+import std.string
+
+// What an enum or codeset with no marker is. The one place the default is chosen:
+// it is `internal`, as a struct's is, and a different default is a change to this
+// return and nothing else.
+private fn enumDefaultVisibility() -> Int { return 2 }
+
+impl Parser {
+    internal fn parseEnumDecl(self) -> ASTNode {
+        self.expectVal(TokenType.KEYWORD, "enum", "enum")
+
+        let enumNode = self.node(NodeKind.ENUM_DECL)
+        enumNode.i2 = enumDefaultVisibility()
+        let name = self.current()
+        enumNode.s1 = name.value
+        self.expectToken(TokenType.IDENTIFIER, "enum name")
+
+        enumNode.s2 = self.parseGenericParams(enumNode)
+        self.parseEnumRepr(enumNode)
+        self.expectVal(TokenType.SEPARATOR, "{", "enum body")
+        enumNode.child1 = self.parseEnumVariants(false)
+        self.expectVal(TokenType.SEPARATOR, "}", "enum body")
+        return enumNode
+    }
+}
+
+impl Parser {
+    // `codeset` is **contextual**, like `type` and `prop`: it begins a declaration
+    // only when a name follows, so a variable called `codeset` keeps compiling.
+    internal fn atCodesetDecl(self) -> Bool {
+        if (self.checkVal(TokenType.IDENTIFIER, "codeset") == false) { return false }
+        return self.peek().type == TokenType.IDENTIFIER
+    }
+
+    internal fn parseCodesetDecl(self) -> ASTNode {
+        let codeset = self.node(NodeKind.CODESET_DECL)
+        codeset.i2 = enumDefaultVisibility()
+        self.advance()
+
+        let name = self.current()
+        codeset.s1 = name.value
+        self.expectToken(TokenType.IDENTIFIER, "codeset name")
+
+        self.parseEnumRepr(codeset)
+        self.expectVal(TokenType.SEPARATOR, "{", "codeset body")
+        codeset.child1 = self.parseEnumVariants(true)
+        self.expectVal(TokenType.SEPARATOR, "}", "codeset body")
+        return codeset
+    }
+}
+
+impl Parser {
+    // `: U16` between the name and the body. What the type is, and whether it is an
+    // integer, is sema's to say.
+    private fn parseEnumRepr(self, decl: ASTNode) {
+        if (self.matchVal(TokenType.SEPARATOR, ":") == false) { return }
+        decl.child2 = node_to_ptr(self.parseTypeAnnotation())
+    }
+
+    private fn parseEnumVariants(self, isCodeset: Bool) -> Ptr {
+        let variants = nodeList()
+        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            nodeListPush(variants, self.parseEnumVariant(isCodeset))
+            self.matchVal(TokenType.SEPARATOR, ",")
+        }
+        return variants.head
+    }
+
+    private fn parseEnumVariant(self, isCodeset: Bool) -> ASTNode {
+        let variant = self.node(NodeKind.ENUM_VARIANT)
+        let variantName = self.current()
+        variant.s1 = variantName.value
+        self.expectToken(TokenType.IDENTIFIER, "variant name")
+
+        let payloadAt = self.current()
+        if (self.matchVal(TokenType.SEPARATOR, "(")) {
+            self.parseTuplePayload(variant)
+        } else if (self.matchVal(TokenType.SEPARATOR, "{")) {
+            self.parseStructPayload(variant)
+        }
+        if (isCodeset and nodeExists(variant.child1)) {
+            diag_error_at_code("P3013", payloadAt.file, payloadAt.line, payloadAt.col, payloadAt.len,
+                               "a `codeset` entry names a number and carries no payload")
+            diag_note("use an `enum` for variants that carry values")
+        }
+
+        if (self.matchVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
+            variant.child2 = node_to_ptr(self.parseExpression(0))
+        }
+        return variant
+    }
+
+    // `Some(T)` -- the payload types hang off child1 as a `next`-chain, the same
+    // shape a parameter list has, because that is what a variant constructor is.
+    private fn parseTuplePayload(self, variant: ASTNode) {
+        let payload = nodeList()
+        loop {
+            nodeListPush(payload, self.parseTypeAnnotation())
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        variant.child1 = payload.head
+        self.expectVal(TokenType.SEPARATOR, ")", "variant payload")
+    }
+
+    // `Move { x: Int, y: Int }` -- the types go where a tuple variant's go, and the
+    // names beside them in child3, so everything that walks payload slots by
+    // position serves both spellings.
+    private fn parseStructPayload(self, variant: ASTNode) {
+        variant.i1 = 1
+        let types = nodeList()
+        let names = nodeList()
+        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            let field = self.node(NodeKind.IDENTIFIER_EXPR)
+            let fieldName = self.current()
+            field.s1 = fieldName.value
+            self.expectToken(TokenType.IDENTIFIER, "variant field name")
+            self.expectVal(TokenType.SEPARATOR, ":", "variant field")
+            nodeListPush(names, field)
+            nodeListPush(types, self.parseTypeAnnotation())
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        variant.child1 = types.head
+        variant.child3 = names.head
+        self.expectVal(TokenType.SEPARATOR, "}", "variant payload")
+    }
+}
+
+
+impl Parser {
+    // `Message.Move { x: 1, y: 2 }`, and in a match arm the pattern `Message.Move { x, y }`.
+    // The cursor is on the `{`. A STRUCT_LITERAL_EXPR whose `s1` is `Enum.Variant`;
+    // sema/enum_struct_variants.psm turns it into the positional form.
+    //
+    // A field may be written without its value (`{ x, y }`) here and nowhere else:
+    // in a pattern the name is the binding, and in an expression it is the variable
+    // of that name.
+    internal fn parseVariantLiteral(self, member: ASTNode) -> ASTNode {
+        let owner = ptr_to_node(member.child1)
+        let literal = self.node(NodeKind.STRUCT_LITERAL_EXPR)
+        nodeSpanFrom(literal, member)
+        literal.s1 = owner.s1.concat(".", member.s1)
+        self.expectVal(TokenType.SEPARATOR, "{", "variant literal")
+
+        let fields = nodeList()
+        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            let field = self.node(NodeKind.STRUCT_FIELD)
+            let fieldName = self.current()
+            field.s1 = fieldName.value
+            self.expectToken(TokenType.IDENTIFIER, "variant field")
+            if (self.matchVal(TokenType.SEPARATOR, ":")) {
+                field.child1 = node_to_ptr(self.parseExpression(0))
+            } else {
+                let shorthand = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, fieldName)
+                shorthand.s1 = fieldName.value
+                field.child1 = node_to_ptr(shorthand)
+            }
+            nodeListPush(fields, field)
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        self.expectVal(TokenType.SEPARATOR, "}", "variant literal")
+        literal.child1 = fields.head
+        return literal
+    }
+
+    // `Enum.Variant {` -- both names capitalised, which is how a type and a variant
+    // are written and what keeps `if a.b {` and `x.field {` from being read as one.
+    internal fn atVariantLiteral(self, member: ASTNode) -> Bool {
+        if (self.allowStructLit != 1) { return false }
+        if (self.checkVal(TokenType.SEPARATOR, "{") == false) { return false }
+        let owner = ptr_to_node(member.child1)
+        if (owner.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+        return startsUppercase(owner.s1) and startsUppercase(member.s1)
+    }
+}
+
+private fn startsUppercase(name: String) -> Bool {
+    if (name.length == 0) { return false }
+    let first = name.byteAt(0)
+    return first >= 65 and first <= 90
+}

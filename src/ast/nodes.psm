@@ -190,7 +190,13 @@ public enum NodeKind {
     // sema, which rewrites it in place into a chain of `mapPut` calls or,
     // for `{}`, the annotation's `default` (src/sema/maps.psm). Appended for the
     // same reason as the rest.
-    MAP_LITERAL_EXPR
+    MAP_LITERAL_EXPR,
+
+    // `codeset Status: U16 { Ok = 200 }`: named numeric constants that may share a
+    // value. Laid out as an ENUM_DECL -- ENUM_VARIANT entries, the representation in
+    // child2 -- but never a type: sema turns each `Status.Ok` into a typed constant
+    // (src/sema/codeset.psm). Appended so the pinned seed's ordinals do not move.
+    CODESET_DECL
 }
 
 // Flat AST Node using String for pointers (type punning)

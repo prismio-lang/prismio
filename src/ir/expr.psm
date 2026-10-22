@@ -3596,9 +3596,8 @@ private fn irCallResultIsScalar(call: ASTNode) -> Bool {
 private fn generateMemberAccess(expr: ASTNode) -> String {
     let objectNode = ptr_to_node(expr.child1)
     if (objectNode.kind == NodeKind.IDENTIFIER_EXPR) {
-        let enumVal = ir_get_enum_variant(objectNode.s1, expr.s1)
-        if (enumVal >= 0) {
-            return enumVal.toString()
+        if (ir_enum_has_variant(objectNode.s1, expr.s1) == 1) {
+            return ir_get_enum_variant(objectNode.s1, expr.s1).toString()
         }
     }
 
@@ -3911,6 +3910,24 @@ private fn generateCast(expr: ASTNode) -> String {
     return numericConvert(val, fromT, toT)
 }
 
+// Whether `value`, already in the enum's representation, is one of its variants'
+// values. An enum may be numbered with gaps, so this is a set and not a range.
+private fn enumMembership(value: String, enumT: TypeInfo) -> String {
+    let key = typeIrKey(enumT)
+    let count = ir_get_enum_variant_count(enumT.name)
+    let mut member = "false"
+    for i in 0..<count {
+        let variantValue = ir_get_enum_variant_value_at(enumT.name, i).toString()
+        let isVariant = ir_get_temp_name(ir_icmp_eq(key, value, variantValue))
+        if (member.equals("false")) {
+            member = isVariant.clone()
+        } else {
+            member = ir_get_temp_name(ir_or("i1", member, isVariant))
+        }
+    }
+    return member
+}
+
 // `x as T?` between numbers: the value converted, and present only when the
 // conversion loses nothing a number can say -- in range, and for a Float source
 // neither NaN, infinite nor fractional. Straight-line code, no branch: the flag is
@@ -3936,7 +3953,13 @@ private fn generateCheckedCast(val: String, fromT: TypeInfo, toT: TypeInfo, vari
     // Into an enum: one unsigned compare against the variant count, which is
     // `0 <= n < count` since a negative `n` is a large unsigned one.
     if (inner.kind == TypeKind.ENUM) {
-        if (from.kind == TypeKind.INT) {
+        if (from.kind == TypeKind.INT and typeEnumIsNumbered(inner)) {
+            let repr = typeEnumRepr(inner)
+            converted = numericConvert(value, from, repr)
+            fits = enumMembership(converted, inner)
+            let inRange = numericFits(value, from, repr)
+            if (inRange.equals("true") == false) { fits = ir_get_temp_name(ir_and("i1", inRange, fits)) }
+        } else if (from.kind == TypeKind.INT) {
             fits = ir_get_temp_name(ir_icmp_ult(fromKey, value, variants.toString()))
             converted = numericConvert(value, from, typeInt())
         }

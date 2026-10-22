@@ -626,8 +626,13 @@ public extern fn ir_struct_field_size(name: String, index: Int) -> Int
 // each store ir_intern(type), and the fallbacks ("i32", "i64") are literals. No
 // branch allocates, so neither is a value the caller could release.
 public extern fn ir_get_struct_field_type(structName: String, fieldName: String) -> String alias
-public extern fn ir_register_enum_variant(enumName: String, variantName: String, value: Int)
-public extern fn ir_get_enum_variant(enumName: String, variantName: String) -> Int
+// A variant's value is any integer its enum's representation holds, so absence is
+// asked of ir_enum_has_variant: a negative value is a variant, not a miss.
+public extern fn ir_register_enum_variant(enumName: String, variantName: String, value: I64)
+public extern fn ir_get_enum_variant(enumName: String, variantName: String) -> I64
+public extern fn ir_enum_has_variant(enumName: String, variantName: String) -> Int
+public extern fn ir_get_enum_variant_count(enumName: String) -> Int
+public extern fn ir_get_enum_variant_value_at(enumName: String, index: Int) -> I64
 public extern fn ir_set_var_type(name: String, varType: String)
 public extern fn ir_set_global_var_type(name: String, varType: String)
 public extern fn ir_get_var_type(name: String) -> String alias

@@ -14,12 +14,18 @@ rather than a leak — corruption, not lost bytes:
   pointer into `argv` (as `cli_arg` did) is `alias`; declaring it `produce` hands
   `argv` to the deallocator.
 
-## The seed is tracked but never committed on refresh
+## The seed and `graphify-out/` are tracked but never committed on refresh
 
 `bootstrap/seed.ll` is tracked by git, but a refreshed one is **never staged or committed until the
 maintainer says so**: ~20 MB of IR per refresh would bloat the history. `.githooks/pre-commit` refuses a staged seed (`git config core.hooksPath
 .githooks` enables it; `PRISMIO_ALLOW_SEED_COMMIT=1` overrides, only on the maintainer's word). Commit by
 naming paths, never `git add -A` / `git commit -a`, and leave `bootstrap/` out.
+
+**`graphify-out/` follows the same rule.** `graph.json` and `graph.html` change on every
+`graphify update .`, so a refreshed graph is **never staged or committed until the maintainer says
+so**. The hook refuses it too (`PRISMIO_ALLOW_GRAPH_COMMIT=1` overrides, only on the maintainer's
+word). Run `graphify update .` after a change to keep the working copy current, and leave
+`graphify-out/` out of every commit.
 
 ## Runtime surface
 
@@ -78,14 +84,14 @@ Four hazards, each of which has cost a session:
 
 ## Before a release
 
-`graphify-out/` is refreshed *before* the gate, in the commit that gets tested:
-`prismio build` twice, `graphify update .`. The seed is not: it is cut after the tag
+`graphify-out/` is refreshed *before* the gate: `prismio build` twice, `graphify update .`;
+it is committed only when the maintainer says so. The seed is cut after the tag
 (`prismio seed`), and committed only when the maintainer says so. The full
 procedure is `RELEASE.md`.
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships. `graphify update .` builds it from the tree. Only `graph.json`, `GRAPH_REPORT.md`, `manifest.json` and `graph.html` are tracked; the cache, `cost.json` and the `.graphify_*` sidecars stay local (see `.gitignore`). Commit the three with the change that moved them, not on their own.
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships. `graphify update .` builds it from the tree. Only `graph.json`, `GRAPH_REPORT.md`, `manifest.json` and `graph.html` are tracked; the cache, `cost.json` and the `.graphify_*` sidecars stay local (see `.gitignore`). **Never commit them until the maintainer says so** (see above).
 
 Rules:
 - For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.

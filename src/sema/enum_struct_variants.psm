@@ -1,0 +1,139 @@
+// Struct variants: `Move { x: Int, y: Int }`.
+//
+// A struct variant's payload slots are the tuple variant's, in declaration order --
+// `Move$0`, `Move$1` -- and the field names live beside them on the variant. This
+// module turns the two places a program writes the names into the positional form
+// everything else already handles:
+//
+//     Message.Move { y: 2, x: 1 }   ->   Message.Move(1, 2)
+//     Message.Move { x, y } => ...  ->   Message.Move(x, y) => ...
+//
+// Rewritten in place, as every desugaring in sema is, so that type checking,
+// ownership and codegen see only the form they were built for.
+
+import ast.nodes
+import ast.types
+import common.diagnostics
+import std.string
+
+internal fn enumIsVariantLiteral(expr: ASTNode) -> Bool {
+    return expr.kind == NodeKind.STRUCT_LITERAL_EXPR and expr.s1.contains(".")
+}
+
+private fn enumVariantLiteralOwner(expr: ASTNode) -> String {
+    let at = expr.s1.indexOf(".")
+    return expr.s1.substring(0, at)
+}
+
+private fn enumVariantLiteralName(expr: ASTNode) -> String {
+    let at = expr.s1.indexOf(".")
+    return expr.s1.substring(at + 1, expr.s1.length - at - 1)
+}
+
+private fn literalFieldNamed(expr: ASTNode, name: String) -> ASTNode {
+    let mut p = expr.child1
+    while (nodeExists(p)) {
+        let field = ptr_to_node(p)
+        if (field.s1.equals(name)) { return field }
+        p = field.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+private fn variantHasField(variant: ASTNode, name: String) -> Bool {
+    let mut p = variant.child3
+    while (nodeExists(p)) {
+        let declared = ptr_to_node(p)
+        if (declared.s1.equals(name)) { return true }
+        p = declared.next
+    }
+    return false
+}
+
+// The declaration of the written variant, or an error. A tuple variant written with
+// braces is refused by name rather than failing as a missing field.
+private fn enumStructVariantOf(module: ASTNode, expr: ASTNode) -> ASTNode {
+    let absent = ptr_to_node(ptr_null())
+    let ownerName = enumVariantLiteralOwner(expr)
+    let variantName = enumVariantLiteralName(expr)
+    let decl = enumDeclarationNamed(module, ownerName)
+    if (nodeIsNull(node_to_ptr(decl))) {
+        semaErrorAt(expr, "unknown enum ".concat(diagQuote(ownerName)))
+        return absent
+    }
+    let variant = enumVariantNode(decl, variantName)
+    if (nodeIsNull(node_to_ptr(variant))) {
+        semaErrorAt(expr, diagQuote(ownerName).concat(" has no variant ", diagQuote(variantName)))
+        return absent
+    }
+    if (variant.i1 != 1) {
+        let mut spelling = ownerName.concat(".", variantName)
+        if (nodeExists(variant.child1)) { spelling = spelling.concat("(...)") }
+        semaErrorAt(expr, diagQuote(variantName).concat(" is not a struct variant; write ", diagQuote(spelling)))
+        return absent
+    }
+    return variant
+}
+
+// The written fields checked against the declared ones: each declared field once,
+// nothing else. Answers whether the literal is well formed.
+private fn enumCheckVariantFields(expr: ASTNode, variant: ASTNode, requireAll: Bool) -> Bool {
+    let mut ok = true
+    let mut p = expr.child1
+    while (nodeExists(p)) {
+        let field = ptr_to_node(p)
+        if (variantHasField(variant, field.s1) == false) {
+            semaErrorAt(field, "variant ".concat(diagQuote(variant.s1), " has no field ", diagQuote(field.s1)))
+            ok = false
+        }
+        p = field.next
+    }
+    let mut d = variant.child3
+    while (nodeExists(d)) {
+        let declared = ptr_to_node(d)
+        if (nodeIsNull(node_to_ptr(literalFieldNamed(expr, declared.s1))) and requireAll) {
+            semaErrorAt(expr, "variant ".concat(diagQuote(variant.s1), " is missing field ", diagQuote(declared.s1)))
+            ok = false
+        }
+        d = declared.next
+    }
+    return ok
+}
+
+// The initialisers in declaration order, each detached from the literal's chain.
+private fn enumOrderedInitialisers(expr: ASTNode, variant: ASTNode) -> Ptr {
+    let ordered = nodeList()
+    let mut d = variant.child3
+    while (nodeExists(d)) {
+        let field = literalFieldNamed(expr, ptr_to_node(d).s1)
+        let init = ptr_to_node(field.child1)
+        init.next = ptr_null()
+        nodeListPush(ordered, init)
+        d = ptr_to_node(d).next
+    }
+    return ordered.head
+}
+
+// `Enum.Variant { ... }` as an expression or a pattern: rewritten into the call
+// `Enum.Variant(...)`. False after reporting, with the node left as it was.
+internal fn enumVariantLiteralToCall(module: ASTNode, expr: ASTNode) -> Bool {
+    let variant = enumStructVariantOf(module, expr)
+    if (nodeIsNull(node_to_ptr(variant))) { return false }
+    if (enumCheckVariantFields(expr, variant, true) == false) { return false }
+
+    let owner = createNode(NodeKind.IDENTIFIER_EXPR)
+    owner.s1 = enumVariantLiteralOwner(expr)
+    nodeSpanFrom(owner, expr)
+    let callee = createNode(NodeKind.MEMBER_ACCESS_EXPR)
+    callee.s1 = enumVariantLiteralName(expr)
+    callee.child1 = node_to_ptr(owner)
+    nodeSpanFrom(callee, expr)
+
+    let args = enumOrderedInitialisers(expr, variant)
+    expr.kind = NodeKind.CALL_EXPR
+    expr.s1 = ""
+    expr.child1 = node_to_ptr(callee)
+    expr.child2 = args
+    expr.child3 = ptr_null()
+    return true
+}

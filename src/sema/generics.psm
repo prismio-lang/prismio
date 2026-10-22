@@ -943,7 +943,7 @@ internal fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
     // A generic enum with no payload stays an enum: its values are still i32
     // constants, and nothing about a type parameter changes that.
     if (copy.kind == NodeKind.ENUM_DECL and enumHasPayload(copy) == false) {
-        ir_declare_named_type(copy.s1, 2)
+        enumDeclareType(copy)
         monoAppendDeclaration(module, copy)
         indexTopLevel(copy)
         return copy.s1

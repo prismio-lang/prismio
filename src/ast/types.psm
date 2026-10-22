@@ -248,7 +248,7 @@ private fn typeIntLiteralFitsWide(text: String, bits: Int, unsigned: Bool, negat
 // literal keeps the spelling it was written with, so this reads the base off the
 // prefix exactly as the backend does -- and a leading zero is not octal in
 // either place.
-private fn typeIntLiteralMagnitude(text: String, at: Int) -> U64? {
+public fn typeIntLiteralMagnitude(text: String, at: Int) -> U64? {
     let mut start = at
     let mut radix = 10
     if (text.byteAt(start) == 48 and text.length > start + 1) {
@@ -548,7 +548,22 @@ public fn typeIsValueOptional(t: TypeInfo) -> Bool {
 }
 
 public fn typeEnum(name: String) -> TypeInfo {
-    return typeMake(TypeKind.ENUM, name, "i32")
+    let key = ir_enum_repr_key(name)
+    if (key.equals("")) { return typeMake(TypeKind.ENUM, name, "i32") }
+    return typeMake(TypeKind.ENUM, name, key.clone())
+}
+
+// Whether the enum states a representation or discriminants, and so holds the
+// values it was given instead of its variants' positions.
+public fn typeEnumIsNumbered(t: TypeInfo) -> Bool {
+    return ir_enum_repr_key(t.name).equals("") == false
+}
+
+// The integer type an enum is stored as: `U8` for `enum E: U8`, `Int` for an enum
+// that states none. A conversion to or from an enum is a conversion of this type,
+// which is what decides between sign and zero extension.
+public fn typeEnumRepr(t: TypeInfo) -> TypeInfo {
+    return typeIntN(typeIntBits(t), ir_enum_repr_unsigned(t.name) == 1)
 }
 
 public fn typeArray(elem: TypeInfo) -> TypeInfo {
@@ -863,7 +878,7 @@ public fn typeIrKey(t: TypeInfo) -> String {
     // a pointer in the other is a call that disagrees with its own declaration.
         TypeKind.STRING => { return "struct:prismio.str" }
         TypeKind.PTR => { return "ptr" }
-        TypeKind.ENUM => { return "i32" }
+        TypeKind.ENUM => { return t.llvm }
         TypeKind.STRUCT => { return "struct:".concat(t.name) }
         TypeKind.LIST => { return "ptr" }
         TypeKind.SLICE => { return "struct:prismio.slice" }
@@ -1214,6 +1229,12 @@ public extern fn ir_decl_at(name: String, index: Int) -> String alias
 public extern fn ir_extern_decl_record(file: Int, name: String, visibility: Int)
 public extern fn ir_same_package(fileA: Int, fileB: Int) -> Int
 
+// The integer an enum is stored as (`enum E: U8`), registered by sema as it
+// declares the enum. Empty for an enum that states none, which is an i32.
+public extern fn ir_register_enum_repr(enumName: String, key: String, isUnsigned: Int)
+public extern fn ir_enum_repr_key(enumName: String) -> String alias
+public extern fn ir_enum_repr_unsigned(enumName: String) -> Int
+
 // Which top-level statements have a name worth indexing. Also the import
 // merge's duplicate rule (main.psm), and it has to be the same predicate: the
 // merge fills the index as it goes and every later pass rebuilds it, so a kind
@@ -1227,6 +1248,7 @@ public fn isNamedTopLevel(stmt: ASTNode) -> Bool {
         NodeKind.FUNCTION => { return true }
         NodeKind.STRUCT_DECL => { return true }
         NodeKind.ENUM_DECL => { return true }
+        NodeKind.CODESET_DECL => { return true }
     // LAYOUT 3.1 merges several workloads *by summation*, so a workload that
     // arrives twice through two import paths would weight itself twice over. It
     // is named and it is not overloadable, so the existing rule is exactly right

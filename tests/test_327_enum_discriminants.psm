@@ -1,0 +1,106 @@
+// `enum E: Repr { A = 1, ... }`: a representation type and discriminants.
+//
+// The representation is how the enum is stored and what `as` converts through, so a
+// `U8` enum above 127 widens by zero extension and an `I8` one below zero by sign
+// extension. Numbering continues from the previous variant and never searches.
+// A payload enum keeps the discriminant in its tag, and the first variant may be 0.
+
+import std.io
+import std.string
+
+enum Http: U16 {
+    Ok = 200,
+    NotFound = 404,
+    ServerError = 500,
+}
+
+enum Byte: U8 { Low = 200, High = 255 }
+enum Level: I8 { Low = -5, Mid, High = 100 }
+enum Wide: U64 { Max = 18446744073709551615, Zero = 0 }
+enum Flags: U8 { Read = 1 << 0, Write = 1 << 1, Exec = 1 << 2 }
+enum Color: U8 { Red, Green, Blue }
+
+enum Message: U8 {
+    Quit = 0,
+    Text(String) = 5,
+    Move { x: Int, y: Int },
+    Resize(Int, Int),
+}
+
+enum Maybe: U8 { Nothing = 0, Just(Int) = 1 }
+
+struct Packet { status: Http, level: Level, color: Color, size: Int }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn name(h: Http) -> String {
+    match (h) {
+        Http.Ok => { return "ok" }
+        Http.NotFound => { return "missing" }
+        Http.ServerError => { return "error" }
+    }
+}
+
+fn describe(m: Message) -> String {
+    match (m) {
+        Message.Quit => { return "quit" }
+        Message.Text(s) => { return s }
+        Message.Move { y, x } => { return (x * 100 + y).toString() }
+        Message.Resize(w, h) => { return (w * h).toString() }
+    }
+}
+
+fn unwrap(m: Maybe) -> Int {
+    match (m) {
+        Maybe.Nothing => { return -1 }
+        Maybe.Just(v) => { return v }
+    }
+}
+
+fn main() -> Int {
+    if ((Http.ServerError as Int) != 500) { return fail("explicit U16 value") }
+    if ((Byte.Low as Int) != 200) { return fail("U8 above 127 zero-extends") }
+    if ((Byte.High as I64) != 255) { return fail("U8 255 zero-extends") }
+    if ((Level.Low as Int) != -5) { return fail("I8 below zero sign-extends") }
+    if ((Level.Mid as Int) != -4) { return fail("implicit value continues from -5") }
+    if ((Level.High as Int) != 100) { return fail("explicit after implicit") }
+    if ((Wide.Max as U64).toString() != "18446744073709551615") { return fail("U64 maximum") }
+    if ((Flags.Exec as Int) != 4) { return fail("shift in a discriminant") }
+    if ((Color.Blue as Int) != 2) { return fail("implicit from zero") }
+
+    if (name(Http.NotFound) != "missing") { return fail("match on a numbered enum") }
+
+    let packet = Packet { status: Http.Ok, level: Level.Low, color: Color.Green, size: 9 }
+    if ((packet.status as Int) != 200) { return fail("U16 field") }
+    if ((packet.level as Int) != -5) { return fail("I8 field") }
+    if (packet.size != 9) { return fail("a field after narrow enums") }
+    if (packet.status == Http.NotFound) { return fail("equality") }
+
+    // `n as E?` is present for a value some variant holds, and only then.
+    let hit = 404 as Http?
+    if (hit == none) { return fail("404 is a variant") }
+    let miss = 405 as Http?
+    if (miss != none) { return fail("405 is not a variant") }
+    let wide = 70000 as Http?
+    if (wide != none) { return fail("70000 does not even fit U16") }
+    let low = 200 as Byte?
+    if (low == none) { return fail("200 fits U8 and is a variant") }
+    let negative = -4 as Level?
+    if (negative == none) { return fail("-4 is Level.Mid") }
+
+    if (describe(Message.Quit) != "quit") { return fail("tag 0") }
+    if (describe(Message.Text("hi")) != "hi") { return fail("tag 5") }
+    if (describe(Message.Move(3, 4)) != "304") { return fail("implicit tag after 5, positional") }
+    if (describe(Message.Move { y: 4, x: 3 }) != "304") { return fail("struct variant, any order") }
+    if (describe(Message.Resize(3, 4)) != "12") { return fail("tag 7") }
+
+    if (unwrap(Maybe.Nothing) != -1) { return fail("Nothing") }
+    if (unwrap(Maybe.Just(42)) != 42) { return fail("Just") }
+
+    println("test_327 ok")
+    return 0
+}

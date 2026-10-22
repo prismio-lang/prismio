@@ -40,7 +40,7 @@ refresh before the gate, **provided `src/` still parses with it**. When it does 
 uses visibility markers), the gate and CI cannot pass until a seed that parses `src/` is committed, and
 `tools/refresh_seed.py` followed by the maintainer's commit has to come first; see
 `docs/KNOWN_ISSUES.md` for how that was left. `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `manifest.json`,
-`graph.html`) is committed with the change that moved it.
+`graph.html`) is refreshed before the gate and committed only when the maintainer says so, like the seed.
 
 ```bash
 git log --oneline -1     # the commit CI will run on

@@ -564,7 +564,11 @@ impl Parser {
                 } else {
                     self.expectToken(TokenType.IDENTIFIER, "member name")
                 }
-                expr = member
+                if (self.atVariantLiteral(member)) {
+                    expr = self.parseVariantLiteral(member)
+                } else {
+                    expr = member
+                }
             } else {
                 break
             }

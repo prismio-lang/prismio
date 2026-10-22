@@ -1,0 +1,4 @@
+// expect-error: the discriminant of `A` is not a compile-time integer constant
+fn code() -> Int { return 1 }
+enum E: U8 { A = code() }
+fn main() -> Int { return 0 }

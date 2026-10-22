@@ -7,6 +7,12 @@ import common.diagnostics
 import std.string
 import sema.enums
 
+// The value an arm's tag comparison tests, as sema left it on the arm.
+private fn matchArmTagText(arm: ASTNode) -> String {
+    if (nodeExists(arm.child3)) { return ptr_to_node(arm.child3).s1.clone() }
+    return arm.i1.toString()
+}
+
 // Whether this match is over an enum with payloads. Sema stamps the variant name
 // on every non-wildcard arm of one and on no other kind of match, so one arm
 // settles it.
@@ -86,7 +92,7 @@ private fn reusableArmConstructor(arm: ASTNode, structName: String) -> Ptr {
         if (field.s1.equals("$tag") and nodeExists(field.child1)) {
             let tag = ptr_to_node(field.child1)
             if (tag.kind == NodeKind.LITERAL_EXPR
-                and tag.s1.equals(arm.i1.toString())) {
+                and tag.s1.equals(matchArmTagText(arm))) {
                 sameTag = true
             }
         }
@@ -1541,7 +1547,7 @@ private fn matchPatternIsConstant(pattern: ASTNode) -> Bool {
     if (pattern.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         let owner = ptr_to_node(pattern.child1)
         return owner.kind == NodeKind.IDENTIFIER_EXPR
-            and ir_get_enum_variant(owner.s1, pattern.s1) >= 0
+            and ir_enum_has_variant(owner.s1, pattern.s1) == 1
     }
     return false
 }
@@ -1652,7 +1658,8 @@ private fn generateMatch(stmt: ASTNode) {
     while (nodeExists(armPtr)) {
         let arm = ptr_to_node(armPtr)
         if (payloadMatch and arm.s1.equals("_") == false) {
-            let cmp = ir_icmp_eq("i32", stmt.s2, arm.i1.toString())
+            let tagKey = ir_get_struct_field_type(structTypeName(scrutType), "$tag")
+            let cmp = ir_icmp_eq(tagKey, stmt.s2, matchArmTagText(arm))
             let armLabel = ir_get_label()
             let nextLabel = ir_get_label()
             ir_cond_br_numbered(ir_get_temp_name(cmp), armLabel, nextLabel)

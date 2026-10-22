@@ -1,0 +1,4 @@
+// expect-error: the discriminant 1 of `Running` is already used by `Ready` in enum `State`
+// A tagged enum needs each variant distinct; a `codeset` is the place for aliases.
+enum State: U8 { Ready = 1, Running = 1 }
+fn main() -> Int { return 0 }

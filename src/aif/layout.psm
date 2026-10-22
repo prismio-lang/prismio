@@ -88,7 +88,12 @@ internal fn aifTypeBytes(ann: ASTNode) -> Int {
     // does not exist. If either lowering ever changes, this is the line to change
     // with it.
     if (n.equals("Float")) { return 8 }
-    if (aif_is_enum(n) == 1) { return 4 }
+    if (aif_is_enum(n) == 1) {
+        // An enum that states its representation is that integer; one that does not is an i32.
+        let enumKey = ir_enum_repr_key(n)
+        if (enumKey.equals("")) { return 4 }
+        return intWidthAllocBytes(intWidthOfKey(enumKey))
+    }
     // The other floats are their own width, 2 to 16 bytes. `fp128` is 16-byte
     // aligned on the targets this compiler emits for, and 16 wide, so no padding.
     let floatKey = floatKeyOfName(n)
