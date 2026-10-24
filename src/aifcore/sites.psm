@@ -1,0 +1,372 @@
+// Allocation sites: the table the facts are inferred over, the statement positions the walk stamps on
+// them, the node each one came from and the order the manifest lists them in.
+//
+// A site is one allocating expression. Its facts start at the bottom of every lattice, per INFERENCE 5.2
+// line 2: Region(defscope), Unique, Acyclic, Isolated. T-DEFAULT is that line and nothing else: "any node
+// has T >= Isolated" is a statement about the bottom element, not a rule that has to fire. The solver
+// only ever raises them.
+//
+// Records are columns, one `Vec<Int>` per field, indexed by site id.
+
+import aif.model
+import aifcore.bits
+import aifcore.constants
+import aifcore.structure
+import std.map
+import std.raw
+import std.string
+import std.vec
+import symbols.names
+
+internal let mut siteCount = 0
+internal let mut siteType: Vec<Int>
+internal let mut siteKind: Vec<Int>
+internal let mut siteFn: Vec<Int>
+// Position among its function's sites, in walk order. The manifest is diffed, so a record's name must not
+// move when an unrelated line elsewhere in the file does: numbering within the declaring function means an
+// edit is visible on the function it changed and nowhere else.
+internal let mut siteOrdinal: Vec<Int>
+internal let mut siteScope: Vec<Int>
+internal let mut siteFile: Vec<Int>
+internal let mut siteLine: Vec<Int>
+internal let mut siteCol: Vec<Int>
+internal let mut siteNFields: Vec<Int>
+// M3.2. Position of the statement this site sits in, within its own block, or -1 where the walk did not stamp
+// one. A scope is a lexical *set* of statements and says nothing about their order.
+internal let mut siteStmt: Vec<Int>
+// Stamped once, before iteration.
+internal let mut siteBytes: Vec<Int>
+internal let mut siteE: Vec<Int>
+internal let mut siteA: Vec<Int>
+internal let mut siteC: Vec<Int>
+internal let mut siteT: Vec<Int>
+internal let mut siteTypeAcyclic: Vec<Int>
+// Explicitly dropped: this cannot live in a stack slot, and the source frees it.
+internal let mut siteNoStack: Vec<Int>
+// The allocation is the *callee's*: a produced extern return, so this frame owns the pointer but there is
+// nothing here to place. Distinct from `noStack`, which says somebody else frees it.
+internal let mut siteForeign: Vec<Int>
+// Ownership left this frame: an FFI `consume` takes it and the callee frees it. Conflating this with
+// `noStack` made an explicit `drop` anywhere suppress the release of every other binding sharing the site.
+internal let mut siteTransferred: Vec<Int>
+// Stored into a container by a `retain_in` call. The container owns it from then on, which makes a container
+// teardown a release point and takes the value's own binding off the drop list.
+internal let mut siteInContainer: Vec<Int>
+// Stored into a container *as a view*: read out of another collection and pushed, not freshly made. The one
+// case where two containers holding a String site hold one value.
+internal let mut siteViewStored: Vec<Int>
+// E by every rule except one: the E-RETURN of a bare `return name`, which raises E and leaves this alone.
+// `siteRetKey` is the binding key such a return named (-1: none, -2: more than one). Together they say whether
+// the value is confined to its scope on every path that does not return it.
+internal let mut siteEHeld: Vec<Int>
+internal let mut siteRetKey: Vec<Int>
+// SPEC 5.1. `unique` asserts A = Unique and cuts the aliasing graph: a rule that would raise A above Unique is
+// suppressed rather than applied, and the suppression is reported.
+internal let mut siteAliasAxiom: Vec<Int>
+internal let mut siteAliasSuppressed: Vec<Int>
+// SPEC 5.4. The tier a `pin` froze, or -1, and the verdict `aifCheckPins` reached.
+internal let mut sitePinTier: Vec<Int>
+internal let mut sitePinVerdict: Vec<Int>
+// SPEC 5.4 on placement rather than on the tier: the interned name of the `region` a `pin(<region-name>)`
+// asserted must serve this value, or -1. Separate from `sitePinTier` because they are orthogonal claims.
+internal let mut sitePinRegion: Vec<Int>
+internal let mut sitePinRegionVerdict: Vec<Int>
+
+// Sites with no enclosing function; none today.
+private let mut orphanSites = 0
+// The statement the walk is currently inside, set by the frontend as it goes and read by whatever gets created
+// next. -1 means "not stamped".
+internal let mut currentStmt = -1
+// Per scope, the statement of *that* scope the walk is currently inside. An array rather than a single cursor
+// is what makes a nested use answerable: while the walk is down inside a nested block, `scopeStmt[outer]` still
+// names the statement of `outer` that contains it.
+internal let mut scopeStmt: Vec<Int>
+// M3.2b. The last statement, in a key's own declaring scope, at which the key is read. Monotone by construction,
+// which is why one slot is enough: statements are walked in source order.
+internal let mut keyLastStmt: Vec<Int>
+
+// The AST node each site came from, by address. One site per allocating expression, so a node that already has
+// one is a bug in the walk; recording the first keeps that deterministic.
+internal let mut siteOfNode: Map<Usize, Int>
+
+private let mut recSymbol: Vec<Int>
+private let mut recSite: Vec<Int>
+private let mut sitesOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+internal fn sitesOpen() {
+    if (sitesOpened) { return }
+    sitesOpened = true
+    siteType = []
+    siteKind = []
+    siteFn = []
+    siteOrdinal = []
+    siteScope = []
+    siteFile = []
+    siteLine = []
+    siteCol = []
+    siteNFields = []
+    siteStmt = []
+    siteBytes = []
+    siteE = []
+    siteA = []
+    siteC = []
+    siteT = []
+    siteTypeAcyclic = []
+    siteNoStack = []
+    siteForeign = []
+    siteTransferred = []
+    siteInContainer = []
+    siteViewStored = []
+    siteEHeld = []
+    siteRetKey = []
+    siteAliasAxiom = []
+    siteAliasSuppressed = []
+    sitePinTier = []
+    sitePinVerdict = []
+    sitePinRegion = []
+    sitePinRegionVerdict = []
+    scopeStmt = []
+    keyLastStmt = []
+    let byNode: Map<Usize, Int> = {}
+    siteOfNode = byNode
+    recSymbol = []
+    recSite = []
+}
+
+internal fn sitesReset() {
+    sitesOpened = false
+    sitesOpen()
+    siteCount = 0
+    orphanSites = 0
+    currentStmt = -1
+}
+
+public fn aif_stmt_at(scope: Int, index: Int) {
+    sitesOpen()
+    if (index < 0) {
+        currentStmt = -1
+    } else {
+        currentStmt = index
+    }
+    if (scope < 0) { return }
+    intsPut(scopeStmt, scope, currentStmt, -1)
+}
+
+public fn aif_site_new(type: String, kind: Int, fnId: Int, scope: Int,
+                       file: Int, line: Int, col: Int, nfields: Int) -> Int {
+    sitesOpen()
+    structureOpen()
+    siteType.push(irNameId(type))
+    siteKind.push(kind)
+    siteFn.push(fnId)
+    if (fnId >= 0 and fnId < fnCount) {
+        siteOrdinal.push(fnSiteCount[fnId])
+        fnSiteCount[fnId] = fnSiteCount[fnId] + 1
+    } else {
+        siteOrdinal.push(orphanSites)
+        orphanSites = orphanSites + 1
+    }
+    siteScope.push(scope)
+    siteFile.push(file)
+    siteLine.push(line)
+    siteCol.push(col)
+    siteNFields.push(nfields)
+    siteStmt.push(currentStmt)
+    siteBytes.push(0)
+    siteTypeAcyclic.push(1)
+    siteNoStack.push(0)
+    siteForeign.push(0)
+    siteTransferred.push(0)
+    siteInContainer.push(0)
+    siteViewStored.push(0)
+    siteAliasAxiom.push(0)
+    siteAliasSuppressed.push(0)
+    sitePinTier.push(-1)
+    sitePinVerdict.push(AIF_PIN_NONE)
+    sitePinRegion.push(-1)
+    sitePinRegionVerdict.push(AIF_PIN_NONE)
+    // Bottom, per INFERENCE 5.2 line 2.
+    siteE.push(scope)
+    siteEHeld.push(scope)
+    siteRetKey.push(-1)
+    siteA.push(AIF_A_UNIQUE)
+    siteC.push(AIF_C_ACYCLIC)
+    siteT.push(AIF_T_ISOLATED)
+    siteCount = siteCount + 1
+    return siteCount - 1
+}
+
+public fn aif_site_count() -> Int {
+    return siteCount
+}
+
+public fn aif_site_type(id: Int) -> String {
+    if (id < 0 or id >= siteCount) { return "" }
+    return irNameText(siteType[id])
+}
+
+public fn aif_site_kind(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_KIND_OPAQUE }
+    return siteKind[id]
+}
+
+public fn aif_site_fn(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return -1 }
+    return siteFn[id]
+}
+
+public fn aif_site_scope(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return -1 }
+    return siteScope[id]
+}
+
+public fn aif_site_file(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    return siteFile[id]
+}
+
+public fn aif_site_line(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    return siteLine[id]
+}
+
+public fn aif_site_col(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    return siteCol[id]
+}
+
+public fn aif_site_nfields(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    return siteNFields[id]
+}
+
+public fn aif_site_ordinal(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    return siteOrdinal[id]
+}
+
+public fn aif_site_escape(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_E_GLOBAL }
+    return siteE[id]
+}
+
+public fn aif_site_alias(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_A_SHARED }
+    return siteA[id]
+}
+
+public fn aif_site_cyc(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_C_MAYBE }
+    return siteC[id]
+}
+
+public fn aif_key_last_stmt(key: Int) -> Int {
+    if (key < 0 or key >= keyLastStmt.length) { return -1 }
+    return keyLastStmt[key]
+}
+
+public fn aif_site_note_node(site: Int, node: Ptr) {
+    sitesOpen()
+    if (site < 0 or site >= siteCount or addressOf(node) == 0) { return }
+    let at = addressOf(node)
+    if (siteOfNode.has(at)) { return }
+    siteOfNode.set(at, site)
+}
+
+// The site recorded for `node`, or -1.
+internal fn siteAtNode(node: Ptr) -> Int {
+    sitesOpen()
+    return siteOfNode.getOr(addressOf(node), -1)
+}
+
+public fn aif_site_in_container(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    return siteInContainer[id]
+}
+
+// SPEC 6.2 makes the record order normative -- byte-wise ascending by symbol -- because an unstable order
+// makes every diff useless. The frontend builds each record's symbol and hands it here to be sorted.
+// Insertion-order-stable, so equal symbols keep the order they were added in: relying on there being no equal
+// symbols rather than asserting it would make a future collision reorder the manifest silently.
+public fn aif_order_add(symbol: String, site: Int) {
+    sitesOpen()
+    recSymbol.push(irNameId(symbol))
+    recSite.push(site)
+}
+
+// Whether record `a` sorts before record `b`, the sequence number breaking ties.
+private fn recordBefore(a: Int, b: Int, symbolOf: Vec<Int>) -> Bool {
+    if (symbolOf[a] == symbolOf[b]) { return a < b }
+    return irNameText(symbolOf[a]).compare(irNameText(symbolOf[b])) < 0
+}
+
+public fn aif_order_sort() {
+    sitesOpen()
+    let n = recSymbol.length
+    if (n <= 1) { return }
+    // A stable merge sort of the record indices, then the columns are permuted.
+    let mut order: Vec<Int> = []
+    for i in 0..<n { order.push(i) }
+    let mut width = 1
+    while (width < n) {
+        let mut merged: Vec<Int> = []
+        let mut start = 0
+        while (start < n) {
+            let mid = minOf(start + width, n)
+            let end = minOf(start + 2 * width, n)
+            let mut i = start
+            let mut j = mid
+            while (i < mid and j < end) {
+                if (recordBefore(order[j], order[i], recSymbol)) {
+                    merged.push(order[j])
+                    j = j + 1
+                } else {
+                    merged.push(order[i])
+                    i = i + 1
+                }
+            }
+            while (i < mid) {
+                merged.push(order[i])
+                i = i + 1
+            }
+            while (j < end) {
+                merged.push(order[j])
+                j = j + 1
+            }
+            start = end
+        }
+        order = merged
+        width = width * 2
+    }
+    let mut symbols: Vec<Int> = []
+    let mut sitesOut: Vec<Int> = []
+    for k in 0..<n {
+        symbols.push(recSymbol[order[k]])
+        sitesOut.push(recSite[order[k]])
+    }
+    recSymbol = symbols
+    recSite = sitesOut
+}
+
+internal fn minOf(a: Int, b: Int) -> Int {
+    if (a < b) { return a }
+    return b
+}
+
+public fn aif_order_count() -> Int {
+    sitesOpen()
+    return recSymbol.length
+}
+
+public fn aif_order_symbol(i: Int) -> String {
+    sitesOpen()
+    if (i < 0 or i >= recSymbol.length) { return "" }
+    return irNameText(recSymbol[i])
+}
+
+public fn aif_order_site(i: Int) -> Int {
+    sitesOpen()
+    if (i < 0 or i >= recSite.length) { return -1 }
+    return recSite[i]
+}

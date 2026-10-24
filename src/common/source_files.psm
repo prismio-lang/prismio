@@ -1,0 +1,204 @@
+// The source files a compile has read: their text, the path each was read from and the
+// logical module each was reached as, kept for as long as the process runs.
+//
+// A diagnostic is rendered long after the parser has dropped the text it came from, and
+// `resolveImports` flattens every module into one AST, so "which file" travels on each token
+// and node as an id into this registry. Registering a path twice returns the first id, which
+// keeps the diamond-shaped import graph from spending four slots on one module.
+//
+// **Parallel vectors, not a vector of records.** A struct pushed into a module-level `Vec` from
+// inside a function is placed on that function's stack, and the registry then reads a frame that
+// is gone. A `Vec<String>` has no such frame to point into.
+//
+// **C reads two of these through `diag_file_path_cstr` and `diag_file_module_cstr`.** A Prismio
+// String of twelve bytes or fewer is stored in its own pair and has no pointer to give, so C is
+// handed a NUL-terminated copy the registry owns instead. The copies are never freed before
+// `diag_reset`, which is what makes the pointers stable.
+
+import common.c_text
+import std.mem
+import std.raw
+import std.string
+import std.vec
+
+let DIAG_MAX_FILES = 256
+
+private let mut filePaths: Vec<String>
+private let mut fileContents: Vec<String>
+private let mut fileModules: Vec<String>
+private let mut fileModuleRecorded: Vec<Bool>
+private let mut filePathBlocks: Vec<Usize>
+private let mut fileModuleBlocks: Vec<Usize>
+private let mut registryOpened = false
+private let mut unknownPathBlock: Usize = 0
+private let mut emptyBlock: Usize = 0
+
+// A zero-filled global `Vec` is not an empty one: the first push writes through a null buffer.
+private fn registryOpen() {
+    if (registryOpened) { return }
+    filePaths = []
+    fileContents = []
+    fileModules = []
+    fileModuleRecorded = []
+    filePathBlocks = []
+    fileModuleBlocks = []
+    registryOpened = true
+}
+
+private fn inRegistry(file: Int) -> Bool {
+    return file >= 0 and file < filePaths.length
+}
+
+// Registers a source file and returns the id stamped onto every token and AST node parsed from
+// it, or -1 when the registry is full. The content is copied: the caller's buffer belongs to the
+// frontend, which is free to release it once parsing is done.
+public fn diag_add_file(path: String, content: String) -> Int {
+    registryOpen()
+    for i in 0..<filePaths.length {
+        if (filePaths[i].equals(path)) { return i }
+    }
+    if (filePaths.length >= DIAG_MAX_FILES) { return -1 }
+
+    filePaths.push(path.clone())
+    fileContents.push(content.clone())
+    fileModules.push("")
+    fileModuleRecorded.push(false)
+    filePathBlocks.push(cTextCopy(path))
+    fileModuleBlocks.push(0)
+    return filePaths.length - 1
+}
+
+// Exact registered path, or `<unknown>` for an id outside the registry.
+public fn diag_file_path(file: Int) -> String {
+    registryOpen()
+    if (inRegistry(file) == false) { return "<unknown>" }
+    return filePaths[file].clone()
+}
+
+// The whole text of a registered file. The identifier-security pass re-lexes every file from
+// here once they are all loaded, because the caller's source strings are not guaranteed to
+// outlive their parse.
+public fn diag_file_content(file: Int) -> String {
+    registryOpen()
+    if (inRegistry(file) == false) { return "" }
+    return fileContents[file].clone()
+}
+
+// How many ids `diag_add_file` has handed out.
+//
+// "<unknown>" is a usable answer for a diagnostic and a wrong one for debug info: an
+// out-of-range id would become a DIFile named "<unknown>" and a debugger would go looking for a
+// file by that name. The DWARF emitter asks this first and emits no location for an id outside
+// the registry.
+public export fn diag_file_count() -> Int {
+    registryOpen()
+    return filePaths.length
+}
+
+// The logical module path for a file, recorded by the merge as it resolves each import. Set at
+// most once per file: `diag_add_file` dedupes by path, so a module reached twice through a
+// diamond keeps the spelling it was first reached by, which is the rule the merge already
+// applies to the declarations themselves.
+public fn diag_set_file_module(file: Int, module: String) {
+    registryOpen()
+    if (inRegistry(file) == false) { return }
+    if (fileModuleRecorded[file]) { return }
+    fileModules[file] = module.clone()
+    fileModuleBlocks[file] = cTextCopy(module)
+    fileModuleRecorded[file] = true
+}
+
+// "" rather than "<unknown>" for an unrecorded file: the caller treats an empty qualifier as
+// "this file has no module name", which is the honest answer for the entry file, and
+// "<unknown>" would be a qualifier a program could accidentally match.
+public fn diag_file_module(file: Int) -> String {
+    registryOpen()
+    if (inRegistry(file) == false) { return "" }
+    return fileModules[file].clone()
+}
+
+// `diag_file_path` for C: a NUL-terminated string that stays valid until `diag_reset`.
+public export fn diag_file_path_cstr(file: Int) -> Ptr {
+    registryOpen()
+    if (inRegistry(file)) { return pointerAt(filePathBlocks[file]) }
+    if (unknownPathBlock == 0) { unknownPathBlock = cTextCopy("<unknown>") }
+    return pointerAt(unknownPathBlock)
+}
+
+// `diag_file_module` for C, with the same lifetime.
+public export fn diag_file_module_cstr(file: Int) -> Ptr {
+    registryOpen()
+    if (inRegistry(file) and fileModuleRecorded[file]) { return pointerAt(fileModuleBlocks[file]) }
+    if (emptyBlock == 0) { emptyBlock = cTextCopy("") }
+    return pointerAt(emptyBlock)
+}
+
+// Where the 1-based `line` starts in a file's text, or -1 when the file has fewer lines. A stale
+// or synthesised span asks for one that is not there, and that must degrade to "no snippet"
+// rather than read past the text.
+private fn lineStart(file: Int, line: Int) -> Int {
+    if (inRegistry(file) == false or line <= 0) { return -1 }
+    let length = fileContents[file].length
+    let mut at = 0
+    let mut current = 1
+    while (current < line and at < length) {
+        let newline = fileContents[file].indexOf('\n', at)
+        if (newline < 0) { return -1 }
+        at = newline + 1
+        current = current + 1
+    }
+    if (current == line) { return at }
+    return -1
+}
+
+// The text of the 1-based `line` without its line ending, or `none` when the file has fewer
+// lines. A CRLF file's carriage return is not part of the line: left in, it would pull the
+// caret line of a rendered snippet back to column zero.
+public fn diag_line_text(file: Int, line: Int) -> String? {
+    registryOpen()
+    let start = lineStart(file, line)
+    if (start < 0) { return none }
+    let mut end = fileContents[file].indexOf('\n', start)
+    if (end < 0) { end = fileContents[file].length }
+    if (end > start and fileContents[file].byteAt(end - 1) == 13) { end = end - 1 }
+    return fileContents[file].substring(start, end - start).clone()
+}
+
+// One line of a registered file without its indentation or line ending: what a failed `assert`
+// with no message of its own prints, captured while the source is still in hand. "" for a line
+// that does not exist, since a program must still build without it, and at most 255 bytes.
+public fn diag_source_line(file: Int, line: Int) -> String {
+    registryOpen()
+    let start = lineStart(file, line)
+    if (start < 0) { return "" }
+    let length = fileContents[file].length
+    let mut first = start
+    while (first < length and (fileContents[file].byteAt(first) == 32 or fileContents[file].byteAt(first) == 9)) {
+        first = first + 1
+    }
+    let mut end = first
+    while (end < length and end - first < 255) {
+        let byte = fileContents[file].byteAt(end)
+        if (byte == 10 or byte == 13) { break }
+        end = end + 1
+    }
+    while (end > first and (fileContents[file].byteAt(end - 1) == 32 or fileContents[file].byteAt(end - 1) == 9)) {
+        end = end - 1
+    }
+    return fileContents[file].substring(first, end - first).clone()
+}
+
+// Forgets every file. The C copies go with them, so a pointer handed to C is dead afterwards.
+public fn diag_forget_files() {
+    registryOpen()
+    for i in 0..<filePathBlocks.length {
+        free(filePathBlocks[i])
+        if (fileModuleBlocks[i] != 0) { free(fileModuleBlocks[i]) }
+    }
+    if (unknownPathBlock != 0) { free(unknownPathBlock) }
+    if (emptyBlock != 0) { free(emptyBlock) }
+    unknownPathBlock = 0
+    emptyBlock = 0
+    registryOpened = false
+    registryOpen()
+}

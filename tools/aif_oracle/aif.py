@@ -165,6 +165,7 @@ FFI_CONTRACTS = {
     # One slot of a `char**`, kept by nobody. Its return is static storage; see
     # FFI_RETURNS_STATIC.
     '__builtin_cstring_at': {0: 'borrow', 1: 'borrow'},
+    '__builtin_cstring': {0: 'borrow'},
     # The console write: a descriptor, a pointer and a count, retaining neither
     # the buffer nor anything else. This is `prismioStdIoWriteAll`'s callee, so
     # leaving it out blocks bracketing in every program that prints -- which is
@@ -322,7 +323,7 @@ FFI_RETURNS_ALIAS_OF = {'expect': 0, '__builtin_string_view': 0}
 # arguments: FFI 5.2's `alias` with nothing to alias, for a callee with no
 # declaration to say so. Must match `aifFfiReturnsStatic` in
 # src/aif/contracts.psm.
-FFI_RETURNS_STATIC = {'__builtin_cstring_at'}
+FFI_RETURNS_STATIC = {'__builtin_cstring_at', '__builtin_cstring'}
 
 # Externs that read an element back out of a container: name -> argument index.
 #
@@ -343,13 +344,13 @@ def base_type(ty):
 
 # Every container type an element key was asked for, as (base, full). Read by
 # elem_key_reconcile below. A module-level list because the oracle is one run of
-# one program, exactly as `elem_uses` is a static array in aif_support.c.
+# one program, exactly as `elem_uses` is a static array in src/aifcore/.
 ELEM_USES = []
 
 
 def elem_spelling_resolved(ty):
     """Whether this spelling names one container rather than every instance of a
-    base. Mirrors elem_spelling_resolved in runtime/aif_support.c."""
+    base. Mirrors elemSpellingResolved in src/aifcore/."""
     if '<' not in ty:
         return False                 # a bare base names every instance
     if 'Invalid' in ty:
@@ -519,6 +520,9 @@ class Model:
         # annotations. The compiler stores them on the annotation's `s2`; the
         # dump carries that through verbatim. Index -1 is the return.
         self.contracts = {}            # (fn name, index) -> contract text
+        # Module-level `let`s. A store into one -- or into a field or element of one --
+        # outlives every frame, so what is stored is global.
+        self.globals = set()
 
         for d in dump['decls']:
             if d['k'] == 'EXTERN_FUNCTION':
@@ -531,6 +535,8 @@ class Model:
                     index += 1
                 if d['c2'] and d['c2'][0].get('s2'):
                     self.contracts[(d['s1'], -1)] = d['c2'][0]['s2']
+            if d['k'] in ('VARIABLE_DECL', 'EXTERN_VARIABLE'):
+                self.globals.add(d['s1'])
             if d['k'] == 'STRUCT_DECL':
                 self.structs[d['s1']] = [
                     (f['s1'], ann_leaf_name(f['c1'][0]) if f['c1'] else '')
@@ -683,7 +689,7 @@ def vs_union(a, b):
 
 def vs_view_of(v, container):
     """SPEC 8.4. Mark `v` as denoting views of `container`. Provenance, not a
-    points-to edge -- see the same function in runtime/aif_support.c."""
+    points-to edge -- see the same function in src/aifcore/."""
     return (v[0], v[1], v[2] | frozenset([(container[0], container[1])]))
 
 
@@ -716,14 +722,14 @@ class Engine:
         #     return e                     # ...and must still be here
         #
         # Grown in the points-to phase, which reads no fact. Mirrors key_views
-        # in aif_support.c.
+        # in src/aifcore/.
         self.key_views = defaultdict(set)
         self.E = {}                       # site -> escape
         self.A = {}                       # site -> alias
         self.C = {}                       # site -> cyclicity
         self.T = {}                       # site -> thread affinity
         # INFERENCE 4.3's T-STATIC premise, "the program creates any task", is a
-        # whole-program property. Mirrors program_has_tasks in aif_support.c.
+        # whole-program property. Mirrors programHasTasks in src/aifcore/.
         self.has_tasks = False
         self.holders = defaultdict(set)   # site -> {holder keys}, for A-COPY
         self.constraints = []             # deferred (kind, args) edges
@@ -742,7 +748,7 @@ class Engine:
         # The bindings in scope as the walk goes, innermost last: (fn, name, key). A read
         # or store resolves to the innermost visible declaration of its name, so two
         # declarations of one name are two keys. The first in a function keeps the plain
-        # name; later ones are `name#1`, `name#2`. Mirrors the env in aif_support.c.
+        # name; later ones are `name#1`, `name#2`. Mirrors the env in src/aifcore/.
         self.env = []
         self.env_marks = []
         # SPEC 5.2.1's call graph, for the bracketing summary. One entry per call
@@ -949,6 +955,12 @@ class Engine:
                     # later read gets the element back rather than the container.
                     holder_ty = e['c2'][c[1]]['ty'] if c[1] < len(e['c2']) else ''
                     self.constraints.append(('bind', elem_key(holder_ty), av))
+                    # A container reached through a global is held for the life of the
+                    # program, and a global is never allocated here, so the holder's
+                    # value set has no site to carry that to `av`.
+                    if (c[1] < len(e['c2']) and self.rooted_in_global(e['c2'][c[1]], fn)
+                            and not self.stored_unmanaged(e['c2'][i]['ty'])):
+                        self.constraints.append(('escape_global', av))
                 elif c == 'retain':
                     self.constraints.append(('escape_global', av))
                 else:
@@ -1115,6 +1127,29 @@ class Engine:
             if ename == name and efn == fn:
                 return key
         return ('var', fn, name)
+
+    def rooted_in_global(self, e, fn):
+        """Is this expression a module-level `let`, or a field or element of one?
+
+        A name the function declared shadows the global of the same spelling, so it
+        is a global only when no declaration of it is visible here. The walk stops at
+        the first node that is not a member or element access: a holder reached
+        through a call is not mistaken for one. Mirrors aifRootedInGlobal."""
+        while e is not None:
+            if e['k'] == 'IDENTIFIER_EXPR':
+                return (e['s1'] in self.m.globals
+                        and self.var_key(fn, e['s1']) not in self.var_scope)
+            if e['k'] not in ('MEMBER_ACCESS_EXPR', 'INDEX_EXPR'):
+                return False
+            e = e['c1'][0] if e['c1'] else None
+        return False
+
+    @staticmethod
+    def stored_unmanaged(ty):
+        """A String or a raw pointer stored into a global is not escaped: both have sites
+        every program shares (std's `concat`, an AST node), and the global would stop
+        all of them being released. Mirrors aifStoredIntoGlobal."""
+        return ty.split('<')[0] in ('String', 'Ptr')
 
     def holder_scope(self, fn, name, fallback):
         """Where a value assigned to `name` has to stay alive until."""
@@ -1324,6 +1359,10 @@ class Engine:
                     self.constraints.append(('bind', self.var_key(fn, tgt['s1']), val))
                     self.constraints.append(
                         ('live_in', val, self.holder_scope(fn, tgt['s1'], scope), fn))
+                    # ...and for a global that is not all there is to say: it lives past
+                    # this function, so what it now holds is global too.
+                    if self.rooted_in_global(tgt, fn) and n['c2'] and not self.stored_unmanaged(n['c2'][0]['ty']):
+                        self.constraints.append(('escape_global', val))
                 elif tgt['k'] == 'MEMBER_ACCESS_EXPR':
                     obj = tgt['c1'][0] if tgt['c1'] else None
                     ov = self.sites_of(obj, fn, scope) if obj is not None else VS_EMPTY
@@ -1334,6 +1373,9 @@ class Engine:
                     # fail it: `param.field = Foo{}` stores into an object this
                     # function did not allocate.
                     self.owner_uses.append((fn, ov))
+                    if (obj is not None and self.rooted_in_global(obj, fn)
+                            and n['c2'] and not self.stored_unmanaged(n['c2'][0]['ty'])):
+                        self.constraints.append(('escape_global', val))
             return
 
         if k == 'RETURN_STATEMENT':
@@ -1377,7 +1419,7 @@ class Engine:
         Not recursive past one key hop, and it does not need to be -- a key's
         set is already the union of everything ever bound into it, provenance
         included, so the transitive closure is taken by the points-to fixed
-        point rather than here. Mirrors resolve_views in aif_support.c."""
+        point rather than here. Mirrors vsResolveViews in src/aifcore/."""
         out = set()
         for csites, ckeys in vs[2]:
             out |= self.resolve((csites, ckeys, frozenset()))
@@ -1394,7 +1436,7 @@ class Engine:
         the view, because a view must not outlive what it views.
 
         A is deliberately untouched -- SPEC 8.4 permits overlapping mutable
-        views. Mirrors raise_view_owners in aif_support.c."""
+        views. Mirrors raiseViewOwners in src/aifcore/."""
         owners = self.resolve_views(vs)
         if not owners:
             return False
@@ -1407,11 +1449,11 @@ class Engine:
             # as a return (E-RETURN has it at Caller), or from static storage
             # (E-STATIC has it Global). A view that outlives `in_fn` arrives
             # here with a function-independent target instead. See the same
-            # case analysis in raise_view_owners in aif_support.c.
+            # case analysis in raiseViewOwners in src/aifcore/.
             # The same holds for a Caller target that a `return` in `in_fn`
             # supplies: the view escapes `in_fn`, and a collection from
             # another function already outlives that activation. Mirrors the
-            # `target == AIF_E_CALLER` half of the same test in aif_support.c.
+            # `target == AIF_E_CALLER` half of the same test in src/aifcore/.
             if (in_fn is not None and self.m.sites[c].fn != in_fn
                     and ((isinstance(target, tuple) and target[0] == 'R')
                          or target == CALLER)):
@@ -1427,7 +1469,7 @@ class Engine:
         """Every rule that writes pt or holders reads only pt, so points-to has
         a least fixed point independent of the facts. Reaching it first changes
         no answer; it changes the frontier a truncated fact phase leaves behind
-        (see widen_unconverged). Mirrors solve_points_to in aif_support.c."""
+        (see widen_unconverged). Mirrors solvePointsTo in src/aifcore/."""
         for _ in range(max_rounds):
             self.rounds += 1
             changed = False
@@ -1467,7 +1509,7 @@ class Engine:
         A base with even one unresolved spelling has all of its element keys
         merged, which is the behaviour keying on the full type replaced. Runs
         before the fixed point because it adds constraints. Mirrors
-        elem_key_reconcile in runtime/aif_support.c.
+        elemKeyReconcile in src/aifcore/.
         """
         tainted = {base for base, full in ELEM_USES
                    if not elem_spelling_resolved(full)}
@@ -1854,7 +1896,7 @@ def tier_of(model, eng, sid):
     site = model.sites[sid]
     E, A, C, T = eng.E[sid], eng.A[sid], eng.C[sid], eng.T[sid]
 
-    # An array is a frame slot at every tier (see derived_tier in aif_support.c):
+    # An array is a frame slot at every tier (see derivedTier in src/aifcore/):
     # codegen has no heap form for it, so the size clause below has nothing to
     # choose between. A module-level array is static storage and stays on the ladder.
     if site.kind == 'array' and E != GLOBAL:
@@ -1933,7 +1975,7 @@ def bracket_masks(model, eng):
 
     Obligation 4 is not a blocker but how every clause is evaluated: mutual
     recursion makes the transitive callee set a closure, not a walk. Mirrors
-    aif_fn_bracket_blockers in runtime/aif_support.c.
+    aif_fn_bracket_blockers in src/aifcore/.
     """
     callees = defaultdict(set)
     calls_opaque = set()

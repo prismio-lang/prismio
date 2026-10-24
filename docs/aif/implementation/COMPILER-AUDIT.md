@@ -233,7 +233,7 @@ change no codegen.** Everything still `malloc`s.
 - Prerequisite: §4.1 only.
 - This is the right first step and it is much smaller than it sounds.
 
-**It was.** `src/aif/` + `runtime/aif_support.c`, driven by `prismio aif`. Two notes
+**It was.** `src/aif/` + `src/aifcore/`, driven by `prismio aif`. Two notes
 for whoever does Level 1:
 
 - §4.3's recommendation to land generic containers first was **not** taken, and the reason is worth
@@ -378,7 +378,7 @@ Three things this surfaced, all of which would have been silent:
 - **The escape fact is not sufficient on its own — the language has to agree.** The first build
   freed every region-scoped value, which includes strings, and four tests died with
   `0xC0000374`. RAII needs a single owner, and today only structs are move-only. The predicate now
-  also asks `site_is_move_only`, which is the same switch `--owned-collections` flips — so this
+  also asks `siteIsMoveOnly`, which is the same switch `--owned-collections` flips — so this
   widens by itself when affine collections land, and that is what makes Level 4, not Level 2, the
   point where the leaking stops.
 - **Move state belongs to sema and is gone by codegen.** `ir_mark_moved` is called only from
@@ -491,7 +491,7 @@ a use in another.
 
 **Arrays are deliberately not affine.** They lower to `ir_array_alloca` — frame storage — so there is
 nothing to own, nothing for a drop to reclaim, and `drop(arr)` would hand a stack pointer to the
-deallocator (`neg_18`). This is the one place the language and `site_is_move_only` disagree: the
+deallocator (`neg_18`). This is the one place the language and `siteIsMoveOnly` disagree: the
 solver keeps SPEC's reading, so the oracle still agrees with it, and `aif_frees_at_scope_node`
 declines arrays by kind next to the T0 clause it already had.
 
@@ -654,7 +654,7 @@ follows it, `pin` only when a `(` does — so `let unique = 5` is still a variab
   axiom does the interprocedural half — which is exactly the division §5.0 argues an axiom is for.
 - **SPEC §5.4's middle branch is vacuous here, and that is worth knowing rather than silently
   skipping.** The pseudocode has a case for "the facts permit the pinned tier but the solver did not
-  reach it". `derived_tier` returns the cheapest tier its clauses admit and the clauses read the
+  reach it". `derivedTier` returns the cheapest tier its clauses admit and the clauses read the
   facts directly; there is no search that could settle above its own optimum. An implementation whose
   tier assignment was a separate optimisation would need that branch. This one cannot enter it, so a
   pin below the derived tier is refuted rather than rescued.
@@ -836,7 +836,7 @@ Five things to know before touching it:
   build emitted a call to `__aif_release_String`, because this compiler puns an `ASTNode` pointer as
   `String` and walks node chains through it — so a `String`-declared field receives struct sites, and
   a release named from the sites alone names a function that does not exist. Gen 1 linked fine (it
-  was built by the *old* compiler); gen 2 did not. `field_release_of` now requires the field's
+  was built by the *old* compiler); gen 2 did not. `fieldReleaseOf` now requires the field's
   declared base type to match what the sites say is in the slot, and reclaims nothing when they
   disagree. Same discipline as arrays in `aif_frees_at_scope_node`, which decline by kind for exactly
   this reason.
@@ -844,7 +844,7 @@ Five things to know before touching it:
   one level out, and the naive version of it is wrong. A T0 struct lives in the frame: nothing frees
   it, so nothing runs its release, so barring the field's own binding does not *move* the release —
   it deletes it. `g5_asset_cache`'s `Scene` is four fields and does not escape `main`, so it takes
-  the T0 clause, and barring its `entities` list took g5 from **47 leaked to 2049**. `type_is_reclaimed`
+  the T0 clause, and barring its `entities` list took g5 from **47 leaked to 2049**. `typeIsReclaimed`
   is the guard. The leak count is the only detector; no value test sees it.
 - **Ownership across a return now covers structs, and the soundness argument is different from
   `List`'s.** A `List` qualifies because it has no *literal* form. A struct qualifies because it has
@@ -995,7 +995,7 @@ Four things to know before touching it:
   because the compiler owns the type graph. `__aif_cyclic_children_T` visits exactly the fields whose
   type is in the owner's SCC, so the traversal cannot *leave* the skeleton into the string and token
   graphs hanging off it.
-- **Struct-field ownership and the collector partition the field set.** `field_closes_cycle` makes a
+- **Struct-field ownership and the collector partition the field set.** `fieldClosesCycle` makes a
   generated release decline any field that reaches its owner — otherwise `__aif_release_Node` would
   recurse until the stack gave out — and those are exactly the fields the collector walks. Neither
   mechanism can be understood without the other, and the boundary could not be drawn before

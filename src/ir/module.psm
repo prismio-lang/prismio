@@ -2,11 +2,16 @@
 // helpers generated per struct, and the string interning pass that has to run
 // before any of them.
 
+import symbols.bindings
+import symbols.type_registry
+import symbols.declarations
+import symbols.facts
 import ast.nodes
 import ast.fn_attrs
 import ast.types
 import common.text
 import common.diagnostics
+import common.source_files
 import common.target
 import common.float_builtins
 import sema.enums
@@ -14,8 +19,10 @@ import sema.enum_discriminants
 import aif.model
 import std.string
 import std.io
+import aifcore.dispositions
+import aifcore.layout_search
 
-extern fn compiler_library_emission_module() -> String produce(free)
+extern fn compiler_library_emission_module() -> String produce(rt_free)
 extern fn compiler_plib_module_registered(module: String borrow) -> Int
 
 // A PLIB contributes the original non-generic definitions for its module as
@@ -1566,7 +1573,7 @@ internal fn generateReleaseByDisposition(value: String, disp: Int, typedName: St
         // **Unreachable until M2.1a, and it fell into the plain
         // ir_free_object below.** A CYCLE disposition can only arise
         // on a field that re-enters its owner's type, and
-        // field_closes_cycle vetoed every one of those -- so removing
+        // fieldClosesCycle vetoed every one of those -- so removing
         // that veto turned this missing branch into a double free of
         // a collected object. test_52 reported 8 violations, which is
         // the whole reason its counts are asserted.
@@ -2016,11 +2023,11 @@ public fn generateModule(module: ASTNode) {
 
     // Declare runtime functions
     //
-    // `malloc` allocates and `rt_free` releases -- see `g_alloc_fn` in
-    // runtime/llvm-api-backend.c for why those are not the same family. The
-    // width on the allocator is what `tests/target_cross.psm` reads to prove the
-    // size argument follows the target's pointer width.
-    ir_declare_function_begin("malloc", "ptr")
+    // The object allocator (`rt_base_alloc`, or the ledger's under `--verify`) and
+    // `rt_free` -- see `g_alloc_fn` in runtime/llvm-api-backend.c. The width on the
+    // allocator is what `tests/target_cross.psm` reads to prove the size argument
+    // follows the target's pointer width.
+    ir_declare_function_begin(ir_get_alloc_function(), "ptr")
     ir_declare_function_param(irPtrIntType())
     ir_declare_function_end()
 

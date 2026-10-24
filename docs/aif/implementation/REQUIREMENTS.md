@@ -105,7 +105,7 @@ Four things worth keeping:
   tolerate a null, and all four do.
 - **It forced a guard into struct-field ownership.** `struct Node { parent: Node?, … }` is the first
   type in this project that can reach itself, and a generated release for it would recurse until the
-  stack gave out. `field_closes_cycle` declines any field whose type reaches its owner. That is the
+  stack gave out. `fieldClosesCycle` declines any field whose type reaches its owner. That is the
   boundary between statically generated release and the T4b collector, and it could not be drawn
   before this item existed — which is precisely why CYCLES had nothing to run against.
 

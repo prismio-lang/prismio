@@ -15,6 +15,7 @@
 //
 // Everything after sema sees an ordinary function. docs/VARIADICS_PLAN.md has the design.
 
+import symbols.declarations
 import ast.nodes
 import ast.types
 import lexer.token

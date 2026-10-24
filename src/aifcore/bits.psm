@@ -1,0 +1,233 @@
+// The containers the AIF engine is built on: growable bitsets, and the integer vectors a bitset is
+// enumerated into.
+//
+// Both halves of the solver state are sets of small integers: a points-to node holds a set of
+// sites, and a site holds the set of nodes referencing it. A bitset makes union and subset one
+// word loop each, which keeps the cost of a round proportional to the graph rather than to the
+// constraint list.
+//
+// **A bitset is a handle, and every set's words live in one arena.** The engine keeps a set per
+// key and a set per site, tens of thousands of them, each growing on its own. A handle is an index
+// into three columns (where its words start, how many it has, how many it may use), and growing one
+// extends it in place when it is the last in the arena and moves it to the end when it is not.
+// Abandoned words are not reclaimed: the engine runs once per compile and `bitsReset` drops the lot.
+//
+// SOUNDNESS. Every operation here only ever *sets* bits (INFERENCE.md M2): `bitsClear` empties a
+// set its caller owns outright, and nothing lowers a fact an iteration has already established,
+// which is what keeps the solver's fixed point monotone and safe to abandon.
+
+import std.math
+import std.vec
+
+let BITS_WORD_BITS = 64
+
+private let mut bitWords: Vec<U64>
+private let mut bitOffset: Vec<Int>
+private let mut bitCount: Vec<Int>
+private let mut bitCapacity: Vec<Int>
+private let mut bitsOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+private fn bitsOpen() {
+    if (bitsOpened) { return }
+    bitWords = []
+    bitOffset = []
+    bitCount = []
+    bitCapacity = []
+    bitsOpened = true
+}
+
+// A new empty set. It owns no words until a bit is set in it.
+internal fn bitsNew() -> Int {
+    bitsOpen()
+    bitOffset.push(0)
+    bitCount.push(0)
+    bitCapacity.push(0)
+    return bitOffset.length - 1
+}
+
+// Drops every set and every word. Handles taken before are dead afterwards.
+internal fn bitsReset() {
+    bitsOpened = false
+    bitsOpen()
+}
+
+// Grows `set` until `bit` is addressable. The new words are zero.
+private fn bitsEnsure(set: Int, bit: Int) {
+    let need = bit / BITS_WORD_BITS + 1
+    if (need <= bitCount[set]) { return }
+    if (need <= bitCapacity[set]) {
+        bitCount[set] = need
+        return
+    }
+    let mut grow = 8
+    if (bitCapacity[set] > 0) { grow = bitCapacity[set] * 2 }
+    if (grow < need) { grow = need }
+
+    let start = bitOffset[set]
+    if (bitCapacity[set] == 0 or start + bitCapacity[set] == bitWords.length) {
+        // The last set in the arena grows where it stands.
+        if (bitCapacity[set] == 0) { bitOffset[set] = bitWords.length }
+        let have = bitCapacity[set]
+        for i in have..<grow { bitWords.push(0) }
+        bitCapacity[set] = grow
+        bitCount[set] = need
+        return
+    }
+    let moved = bitWords.length
+    for i in 0..<grow {
+        if (i < bitCount[set]) {
+            bitWords.push(bitWords[start + i])
+        } else {
+            bitWords.push(0)
+        }
+    }
+    bitOffset[set] = moved
+    bitCapacity[set] = grow
+    bitCount[set] = need
+}
+
+internal fn bitsWordCount(set: Int) -> Int {
+    return bitCount[set]
+}
+
+internal fn bitsWord(set: Int, index: Int) -> U64 {
+    return bitWords[bitOffset[set] + index]
+}
+
+internal fn bitsTest(set: Int, bit: Int) -> Bool {
+    if (bit < 0) { return false }
+    let word = bit / BITS_WORD_BITS
+    if (word >= bitCount[set]) { return false }
+    return ((bitWords[bitOffset[set] + word] >> ((bit % BITS_WORD_BITS) as U64)) & 1) != 0
+}
+
+// True only when the bit was absent. The solver's `changed` flag is the disjunction of every such
+// return, so an update that adds nothing must report nothing, or the loop never terminates.
+internal fn bitsSet(set: Int, bit: Int) -> Bool {
+    let word = bit / BITS_WORD_BITS
+    if (word >= bitCount[set]) { bitsEnsure(set, bit) }
+    let at = bitOffset[set] + word
+    let mask = (1 as U64) << ((bit % BITS_WORD_BITS) as U64)
+    let current = bitWords[at]
+    if ((current & mask) != 0) { return false }
+    bitWords[at] = current | mask
+    return true
+}
+
+internal fn bitsClear(set: Int) {
+    let start = bitOffset[set]
+    for i in 0..<bitCount[set] { bitWords[start + i] = 0 }
+}
+
+// The word loops below take the arena as a parameter. A global `Vec` is read through a call per element in the compiler's own
+// build, where the runtime is a separate object and nothing inlines it; a parameter in a plain counted loop is read in place.
+// `bitsOr` and `bitsToVec` are where the solver spends its time, so they are the ones written this way.
+private fn wordsAnyNonZero(words: Vec<U64>, start: Int, count: Int) -> Bool {
+    for i in 0..<count {
+        if (words[start + i] != 0) { return true }
+    }
+    return false
+}
+
+internal fn bitsIsEmpty(set: Int) -> Bool {
+    return wordsAnyNonZero(bitWords, bitOffset[set], bitCount[set]) == false
+}
+
+// One past the last nonzero word of `src`, or 0 when it is empty.
+private fn wordsTop(words: Vec<U64>, start: Int, count: Int) -> Int {
+    let mut top = count
+    while (top > 0 and words[start + top - 1] == 0) { top = top - 1 }
+    return top
+}
+
+// ORs `count` words from `from` into `to`, reporting whether any bit was new.
+private fn wordsOr(inout words: Vec<U64>, to: Int, from: Int, count: Int) -> Bool {
+    let mut changed = false
+    for i in 0..<count {
+        let word = words[from + i]
+        let before = words[to + i]
+        let after = before | word
+        if (after != before) {
+            words[to + i] = after
+            changed = true
+        }
+    }
+    return changed
+}
+
+// `dst |= src`, reporting whether `dst` grew. `dst` only grows as far as the last word `src` has a bit in, so an
+// empty or sparse source adds nothing to it.
+internal fn bitsOr(dst: Int, src: Int) -> Bool {
+    if (dst == src) { return false }
+    let top = wordsTop(bitWords, bitOffset[src], bitCount[src])
+    if (top == 0) { return false }
+    bitsEnsure(dst, (top - 1) * BITS_WORD_BITS)
+    return wordsOr(bitWords, bitOffset[dst], bitOffset[src], top)
+}
+
+internal fn bitsCountAtLeastTwo(set: Int) -> Bool {
+    let mut seen = 0
+    let start = bitOffset[set]
+    for i in 0..<bitCount[set] {
+        let word = bitWords[start + i]
+        if (word == 0) { continue }
+        seen = seen + word.countOnes()
+        if (seen >= 2) { return true }
+    }
+    return false
+}
+
+// Whether every bit of `a` is in `b`.
+internal fn bitsSubset(a: Int, b: Int) -> Bool {
+    for i in 0..<bitCount[a] {
+        let x = bitWords[bitOffset[a] + i]
+        if (x == 0) { continue }
+        let mut y: U64 = 0
+        if (i < bitCount[b]) { y = bitWords[bitOffset[b] + i] }
+        if ((x & ~y) != 0) { return false }
+    }
+    return true
+}
+
+// Empties the set and gives its words up for reuse by nothing: the arena is only reclaimed whole.
+internal fn bitsFree(set: Int) {
+    bitCount[set] = 0
+    bitCapacity[set] = 0
+    bitOffset[set] = 0
+}
+
+// Appends the members of the words at `start` to `out`.
+private fn wordsMembers(words: Vec<U64>, start: Int, count: Int, inout out: Vec<Int>) {
+    for wi in 0..<count {
+        let mut word = words[start + wi]
+        while (word != 0) {
+            out.push(wi * BITS_WORD_BITS + word.trailingZeros())
+            word = word & (word - 1)
+        }
+    }
+}
+
+// The members of `set`, ascending, replacing what `out` held. The rules of the solver need to
+// enumerate a set, sometimes two of them nested, and a plain vector keeps that a pair of loops.
+internal fn bitsToVec(set: Int, inout out: Vec<Int>) {
+    while (out.length > 0) { out.pop() }
+    wordsMembers(bitWords, bitOffset[set], bitCount[set], out)
+}
+
+// Writes `value` at `at` of a column that is grown on demand with `fill` in the gap.
+internal fn intsPut(inout column: Vec<Int>, at: Int, value: Int, fill: Int) {
+    while (column.length <= at) { column.push(fill) }
+    column[at] = value
+}
+
+// Empties a vector without releasing it.
+internal fn intsClear(inout column: Vec<Int>) {
+    while (column.length > 0) { column.pop() }
+}
+
+// A new empty vector each call: pushing one local into several containers would move it.
+internal fn freshInts() -> Vec<Int> {
+    let empty: Vec<Int> = []
+    return empty
+}

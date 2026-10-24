@@ -28,7 +28,7 @@
 // runs `globaldce` before `default<O3>` -- but three whole-module facts the
 // frontend computes did. Guard-safe verdicts were keyed by source name, so
 // `Buffer.eq` calling an extern took the flat guard from every `Map` probe in a
-// program importing `std.mem`; `region_confined` counted dead callers, so an
+// program importing `std.mem`; `regionConfined` counted dead callers, so an
 // unused `eprintln` overload loosened the opaque-call obligation into placing an
 // arena; and call-site counts included dead callers. On a program that prints one
 // line the ownership analysis goes from 0.61 ms to 0.09 and IR generation from
@@ -36,16 +36,25 @@
 // sort partitions gain their guards, sort_strings 5.5% faster); `gcd_lcm` and
 // `edit_distance` moved 10% with identical instructions at another address.
 
+import symbols.declarations
 import ast.nodes
 import ast.fn_attrs
 import ast.types
 import common.diagnostics
+import common.source_files
+import std.option
+import std.process
 import std.string
 
 let REACHED = 7
 
-extern fn compiler_library_emission_module() -> String produce(free)
-extern fn compiler_prune_enabled() -> Int
+extern fn compiler_library_emission_module() -> String produce(rt_free)
+
+// Pruning runs unless PRISMIO_PRUNE=0, the A/B switch for measuring what the standard library a
+// program does not call still costs.
+private fn pruneEnabled() -> Bool {
+    return (process.env("PRISMIO_PRUNE") ?? "").equals("0") == false
+}
 
 let mut pruneModulePtr: Ptr
 
@@ -166,7 +175,7 @@ private fn pruneIsRoot(func: ASTNode) -> Bool {
 // file and reads as a library module, so nothing in it would be a root and the
 // archive would come out empty.
 public fn pruneUnreachableLibrary(module: ASTNode) {
-    if (compiler_prune_enabled() == 0) { return }
+    if (pruneEnabled() == false) { return }
     if (compiler_library_emission_module().equals("") == false) { return }
     pruneModulePtr = node_to_ptr(module)
     let mut indexPtr = module.child1

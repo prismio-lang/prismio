@@ -9,6 +9,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`std.mem.stringFromCString(pointer)` and `std.term.isTerminal(fd)`.** The first copies the NUL-terminated text a C
+  function left at a `Ptr` into a `String` the caller owns (over the new `__builtin_cstring`, which `std/` alone may
+  call); the second is `isatty` and nothing more, where `colorEnabled()` also reads `NO_COLOR` and `FORCE_COLOR`
+  (`prismio_rt_is_terminal` in `runtime/program_support.c`).
+
 - **Variadic parameters and `typelist`.** `fn println<Ts: Printable>(...args: Ts)` takes any number of
   arguments, and a `typelist` says which types they may have: braces for an unordered set
   (`typelist Scalars { Int, Float, Bool }`, `typelist Printable { Display }`), parentheses for an ordered
@@ -403,6 +408,91 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   outliner alone cost 4.1% geomean time on the hosted benchmarks (`sort_strings` 43%).
 
 ### Changed
+
+- **`runtime/aif_support.c` and `runtime/aif_containers.c` are Prismio** (9,248 lines of C gone). The AIF engine is the
+  `src/aifcore` package, 18 modules of about 8,100 lines: `bits` (the bitset arena), `structure`, `nominals`, `keys`,
+  `sites`, `constraints`, `solver`, `tiers`, `arenas`, `call_graph`, `brackets`, `extents`, `dispositions`,
+  `ownership`, `call_results`, `layout_search`, `constants` and `reset`. The public `aif_*` names are unchanged and the
+  `extern fn aif_*` declarations in `src/aif/model.psm` and `src/ir/context.psm` are gone; callers import the module
+  they use. Tables are columns of `Vec<Int>` and every set is a handle into one `Vec<U64>` arena. IR for `src/main.psm`
+  is byte-identical under the C engine and this one, as is IR for all 318 programs in `tests/` and
+  `benchmarks/hosted/prismio/` (and the diagnostics of the 300 `neg_*` tests); the suite passes 698/698 and the IR
+  reaches a fixpoint in two generations. Measured against the compiler before the port, interleaved on one machine,
+  median of eleven: `check src/main.psm` 0.845 -> 0.836 s, `aif src/main.psm` 1.20 -> 1.38 s, IR for `src/main.psm`
+  1.80 -> 1.88 s (+4.5%), binary +352 KB (62,054,544 -> 62,406,688), `__text` +359 KB. Written in Prismio the engine
+  paid 20% on IR emission at first, and the cause was in the build, not the engine: the compiler links the runtime as
+  a separate object, so every `Vec` read outside a proven loop was a call to `list_get_inline_scalar` (5,170 call sites
+  in the binary). See the next entry. `tools/aif_differential.py` still reports the two `src/main.psm` disagreements
+  recorded in `docs/KNOWN_ISSUES.md`; the C engine gives the same counts on this tree. The committed `bootstrap/seed.ll`
+  no longer bootstraps this tree (it declares `aif_*` extern): cut one with `prismio seed` and commit it first.
+- **A target with `runtime = "none"` and its own `lang_runtime.c` is built with the runtime's list and string accessors
+  inlinable.** `compiler_build_executable` merges the curated module (the same `available_externally` bodies a
+  program gets) into such a target's IR before the final compile, and `ir_link_modules` strips the packaging machine's
+  `target-cpu`/`target-features` from it first: left on, the inliner answered "conflicting attributes" for every call
+  and the merge changed nothing. This path had no caller since programs started merging the full runtime bitcode. Calls
+  to `list_get_inline_scalar` in the compiler binary: 5,170 -> 69; IR emission for `src/main.psm` 2.17 -> 1.88 s, `aif`
+  1.63 -> 1.38 s. The merge costs 0.36 s of the compiler's own build. Programs and the IR of every program are unchanged.
+- **`runtime/ir_symbols.c` is Prismio** (1,819 lines of C gone, 122 functions). The compiler's symbol tables are
+  `src/symbols/`: `names.psm` interns every name to an id, so a lookup compares integers as the C compared
+  pointers; `bindings.psm` holds scopes, bindings, drop lists, loops and moved/borrowed sets, `type_registry.psm`
+  structs, enums and return types, `declarations.psm` the declaration index and import visibility, and
+  `facts.psm` the loop analyses' marks. Names and call sites are unchanged (`ir_*`); the eleven struct and enum
+  queries the backend makes are `export fn ..._cstr`. IR for all 318 programs in `tests/` and
+  `benchmarks/hosted/prismio/` is byte-identical to the C tables' (the one exception is `test_352`, which needs the
+  AIF fix), the diagnostics of all 300 `neg_*` tests are identical, and the suite passes 698/698. Measured against
+  the compiler before either port, interleaved on one machine: `check src/main.psm` 0.700 -> 0.680 s, IR for
+  `src/main.psm` 1.470 -> 1.410 s, a full self-build 6.64 -> 6.52 s, `__text` 40,071,220 -> 40,066,100 bytes, the
+  linked binary +19 KB (60,065,144 -> 60,083,832 stripped), `.bss` -87 KB. The committed seed does not bootstrap this
+  tree either (see below); recut it.
+- **`runtime/diagnostics.c` is Prismio** (872 lines of C gone). The file registry is `src/common/source_files.psm`,
+  rendering and error accounting are `src/common/diagnostics.psm`, and colour, the progress line, result lines and
+  help text are `src/common/terminal.psm`; `compiler_prune_enabled` became `pruneEnabled` in `src/driver/prune.psm`.
+  The five symbols C still calls are `export fn`s: `diag_file_count`, `diag_progress_clear`, and the renamed
+  `diag_file_path_cstr`, `diag_file_module_cstr` and `diag_progress_cstr`. A `String` of twelve bytes or fewer has no
+  pointer to give, so the registry hands C a NUL-terminated copy it owns. Diagnostics output is identical to the
+  C renderer's across all 300 `neg_*` tests (plain, JSON, `FORCE_COLOR`, `NO_COLOR`), help text included; the suite
+  passes 696/696 and the IR reaches a fixpoint in two generations. **The committed `bootstrap/seed.ll` no longer
+  bootstraps this tree** (it declares the `diag_*` functions `extern` and the runtime no longer defines them): cut a
+  seed with `prismio seed` and commit it first. The legacy `diag_error`/`diag_warning` entry points had no caller
+  and were not ported. `NO_COLOR=0` is now read as unset, as the compiler's own detection always did, where
+  `std.term` treats any non-empty `NO_COLOR` as set.
+
+- **A slab allocator behind `rt_base_alloc`, and codegen allocates through it** (`docs/ALLOCATOR_PLAN.md`,
+  stages 0-3). On 64-bit macOS and Linux the seam is a 64 GiB reservation carved into 64 KiB spans, each
+  owned by one of 32 size classes (16 to 512 bytes), with a process-local cache for the main thread, a
+  thread-local one per worker, and batches of 64 moving through a per-class shared list once a thread
+  exists. A release is a range compare, a table load and a push; the old recycler's `malloc_size` query,
+  512-block cap and single-thread switch are gone. Every heap object codegen allocates now calls
+  `rt_base_alloc` (it called libc `malloc`), with malloc's attributes said at each call site
+  (`noalias`, `allockind`, `allocsize`, `alloc-family`, inaccessible memory): without them `arena_bump`
+  measured 1.52x, with them 1.000x. Median of 9 interleaved runs on Apple silicon, each pair from one
+  sweep. Objects through the seam, recycler still behind it: `graph_churn_alloc` 52.2 -> 37.6 ms, everything
+  else within 3% (geometric mean 0.991). Then the slab: `graph_churn_single` 22.3 -> 17.4 ms,
+  `graph_churn_alloc` 35.1 -> 28.4, `graph_churn_transfer` 36.3 -> 28.2, `graph_churn_full` 109.6 -> 76.1
+  (1.01x / 0.83x / 1.03x / 0.96x of C++ in that sweep, from 1.02x-1.38x before it), `manual_alloc_churn` 19.9 -> 4.2 (0.21x of C++), `tree_traversal` 0.29 -> 0.15,
+  `s_expression_parse` 1.48 -> 1.15, `csv_parse` 1.08 -> 0.93; geometric mean 0.947 over the 51
+  benchmarks longer than 1 ms, every checksum unchanged. `edit_distance` reads 1.2x on the median and is
+  bimodal (0.58 or 0.71 ms per run, slab on or off alike, equal minimum): code layout, not the allocator. `PRISMIO_SLAB=0`
+  in the environment turns it off at run time (for sanitizers and valgrind). Windows keeps the recycler,
+  and 32-bit and freestanding targets use libc's allocator; Linux has not been run (KNOWN_ISSUES, The
+  allocator). Output changes for every program that allocates an object (`@malloc` -> `@rt_base_alloc`);
+  the compiler's own IR is otherwise unchanged by the runtime half.
+- **The two allocators are interchangeable one way only.** A seam block is released by `rt_free` and
+  resized by `rt_base_realloc`, never by libc; a libc block may still reach `rt_free`. The runtime's own C
+  spells libc's release `tmp_free`/`tmp_realloc` and poisons bare `free`/`realloc` in every source, which
+  turned up 84 releases of seam blocks with libc `free` in `build_driver.c` and the backend (all in the
+  compiler's own driver, none in a program's runtime) and five compiler externs that returned plain
+  `malloc` blocks to Prismio (`ir_get_temp_name` among them; now `rt_base_alloc`). A compiler built with
+  the slab compiles itself to identical IR and passes the suite under `slab_free_shim` with an empty log.
+- **`produce(f)` reads `f`.** The name was ignored and every release was `rt_free`. Now `produce(rt_free)`
+  is the seam's own block, released like any other, and every `std/` and `src/` extern says so (36 of
+  them, all `produce(free)` before); any other deallocator on a `String` result copies the bytes into a
+  seam block at the call and calls `f` on the original there and then, so `produce(free)` on `strdup` is
+  libc `free` and a library's `produce(lib_string_free)` is its own. A `Ptr` or scalar result is never
+  released by Prismio; a struct or `Vec` result with a foreign deallocator is refused (P4112). Output is
+  identical for every program in `tests/` and `benchmarks/hosted/`. `tests/test_350`, `neg_351`,
+  `tests/produce_deallocators/` (`run_produce_deallocator_test`: before, the library got 0 of its 3 blocks
+  back and `--verify` reported 5 violations).
 
 - **A program built by a checkout's compiler is stamped with the real SDK.** The pinned LLVM `clang` that links
   a program from a checkout was given no sysroot, found no SDK to read, and stamped the executable
@@ -875,6 +965,29 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   of their functions' IR changed, which is code layout.
 
 ### Fixed
+
+- **A struct stored into a module-level `let` was placed on the storing function's frame.**
+  The escape analysis read a global as a name it had never seen declared, and a store through it
+  as a store into nothing, so `entries.push(Entry { .. })` from a helper, `last = entry` after a
+  local read of `entry`, and `held.entry = entry` left the struct on the function's frame (`prismio
+  aif`: `stack  small value does not escape`) or released it at the end of the scope. The global
+  then read a frame or a block the next call reused: garbage, or a crash. A store into a global, into
+  a field or element of one, or a push into a container reached through one now escapes globally
+  (`aifRootedInGlobal` in `src/aif/walk.psm`, mirrored in the oracle). **A `String` or a `Ptr` is
+  left alone**: their sites are shared across the program (every `concat` and `clone` result comes
+  from one site in std, every AST node from `ASTNode`'s), so escaping one stored value would stop
+  all of them being released -- the compiler's own `irCoalesceSpills = irCoalesceSpills.concat(..)`
+  took 145 functions' releases with it in the first version of this fix -- and no wrong store of
+  either was found. The IR of every program in `tests/` and `benchmarks/hosted/prismio/` is byte-identical,
+  and of `src/` it differs in one function: the `Instant.now()` that `phaseTime` reads is no longer
+  released after `since`, because the same site is stored into `phaseStart`
+  (`tests/test_352_global_store_escapes.psm`, asserted by `--verify` and by `prismio aif`).
+
+- **`--verify` had stopped counting allocations LLVM could delete.** The call-site attributes that tell
+  LLVM what `malloc` means were also put on the ledger's `aif_verify_alloc`, which licenses LLVM to remove
+  an allocation it can see does not escape -- one that is never freed included. `test_269` read 4
+  allocated / 0 leaked where the program makes 13 and leaks 9, `test_273` 300 / 200 for 400 / 300, and
+  `aif_verify` failed for it. The attributes are now on `rt_base_alloc` only.
 
 - **`edit_distance` had lost its element bound** to its own `min`. The bound on what its rows hold
   (`src/ir/contents.psm`) asked whether `min` was std.math's, and a freestanding program cannot

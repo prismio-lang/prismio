@@ -1,0 +1,16 @@
+// `produce(f)` with a foreign `f` on a type Prismio releases itself. A struct result
+// is released with `rt_free`, later and wherever it has moved, so `f` would never be
+// called; that is refused rather than ignored. `rt_free` and a `Ptr` result stay legal.
+
+struct Box { x: Int }
+
+extern fn box_make(n: Int) -> Box produce(box_free)
+// expect-error: returns Box, which Prismio releases itself, so `produce(box_free)` cannot be honoured
+
+extern fn box_seam(n: Int) -> Box produce(rt_free)
+extern fn box_raw(n: Int) -> Ptr<Int> produce(box_free)
+extern fn handle_open(n: Int) -> Int produce(handle_close)
+
+fn main() {
+    let b = box_make(1)
+}

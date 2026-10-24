@@ -30,6 +30,7 @@ import lexer.scanner
 import lexer.identifier_tables
 import common.text
 import common.diagnostics
+import common.source_files
 import std.string
 import std.unicode
 

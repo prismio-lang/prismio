@@ -49,7 +49,7 @@
 #include <utility>
 #include <vector>
 
-// A malloc'd copy, which the C side releases with free().
+// A malloc'd copy, which the C side releases with tmp_free() (prismio_runtime.h).
 static char* bridge_message(const std::string& text) {
     char* copy = static_cast<char*>(std::malloc(text.size() + 1));
     if (copy) std::memcpy(copy, text.c_str(), text.size() + 1);

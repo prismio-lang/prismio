@@ -37,16 +37,16 @@ private extern fn proc_spawn_run(stdinMode: Int, stdoutMode: Int, stderrMode: In
 private extern fn proc_wait(handle: I64) -> Int
 private extern fn proc_kill(handle: I64) -> Int
 private extern fn proc_exec() -> Int
-private extern fn proc_read_all(descriptor: Int) -> String produce(free)
+private extern fn proc_read_all(descriptor: Int) -> String produce(rt_free)
 // `bytes`, so a view crosses without a NUL-terminated copy: the count is passed
 // beside it and the callee never looks for a terminator.
 private extern fn proc_write(descriptor: Int, text: String bytes, length: Int) -> Int
 private extern fn proc_close(descriptor: Int) -> Int
 private extern fn proc_env_has(name: String borrow) -> Int
-private extern fn proc_env_get(name: String borrow) -> String produce(free)
+private extern fn proc_env_get(name: String borrow) -> String produce(rt_free)
 private extern fn proc_env_set(name: String borrow, value: String borrow) -> Int
 private extern fn proc_env_remove(name: String borrow) -> Int
-private extern fn proc_env_all() -> String produce(free)
+private extern fn proc_env_all() -> String produce(rt_free)
 private extern fn proc_pid() -> Int
 
 private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {

@@ -23,6 +23,8 @@
 // its existing ordinals, so every enum written before this file behaves exactly
 // as it did. `enumHasPayload` is the whole of the switch.
 
+import symbols.bindings
+import symbols.declarations
 import ast.nodes
 import ast.types
 import sema.enum_discriminants

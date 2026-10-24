@@ -52,6 +52,25 @@
 // For the threading primitives the `--verify` ledger locks with, and for the
 // rt_base_alloc/rt_free seam this file's allocations sit on.
 #include "prismio_runtime.h"
+// The allocator's headers sit up here with the rest, not beside the code that uses them,
+// because the poison below has to follow every include.
+#if !defined(PRISMIO_FREESTANDING) && !defined(PRISMIO_AIF_VERIFY)
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <sched.h>
+#include <pthread.h>
+#endif
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
+#endif
+#if defined(_MSC_VER) && !defined(__clang__)
+#include <intrin.h>
+#endif
+
+// Every libc `free`/`realloc` in this file is spelled `tmp_free`/`tmp_realloc` (prismio_runtime.h),
+// because a block from the allocator seam must reach `rt_free` instead. See docs/ALLOCATOR_PLAN.md.
+#pragma GCC poison free realloc
 
 #if defined(_MSC_VER)
 #define PRISMIO_NOINLINE __declspec(noinline)
@@ -130,188 +149,68 @@ void rt_arena_hint_pop(void) {
     if (*hint > 0) (*hint)--;
 }
 
-// The small-block recycler.
+// The small-object allocator behind the seam (docs/ALLOCATOR_PLAN.md).
 //
-// Measured on the `tokenization` benchmark, which cuts 54 000 tokens of one to
-// eight bytes out of a 204 KB buffer and frees each one before cutting the next:
-// **67% of that run was inside libmalloc's free path**, and over half of *that*
-// was `mach_absolute_time`, which macOS's xzone allocator calls on every free to
-// age its quarantine. Prismio and Rust make the same number of allocations there
-// (54 033 against 54 037); C++ makes 29, because every token fits libc++'s
-// 22-byte inline buffer and never reaches the heap at all. That is the whole of
-// a 4x gap, and it is not a gap in the generated code: with token materialisation
-// removed the same scan runs in 148 us against clang -O3's 149 us.
+// Why the seam needs one at all: on `tokenization`, which cuts 54 000 one- to eight-byte
+// tokens out of a buffer and frees each before cutting the next, **67% of the run was
+// libmalloc's free path**, over half of it `mach_absolute_time`, which macOS's xzone
+// allocator calls on every free. The small-block recycler that stood here before priced
+// 54 000 pairs at 168 000 ns against malloc/free's 2 225 000 -- as cheap as not allocating
+// at all. But it classified each freed block with `malloc_size` (~14 ns), held at most 512
+// blocks and switched itself off once a thread existed, so it could not serve the object
+// churn codegen has sent through the seam since stage 2: the `graph_churn_*` arms sat at
+// 1.24x-1.48x of C++, half of `graph_churn_alloc` inside libsystem_malloc.
 //
-// A free list is the half of that which does not need a representation change.
-// Priced against the system allocator on that workload's shape, in ns for 54 000
-// blocks: malloc/free 2 225 000, this recycler 168 000, **not allocating at all
-// 176 000**. Recycling is not merely cheaper than the allocator here, it is as
-// cheap as the allocation not happening -- so an inline-string representation
-// would win the copy back, not the allocator.
+// **A 64 GiB address range carved into 64 KiB spans, each owned by one of 32 size classes
+// (16 .. 512 bytes)**, reserved once with no commit step and touched only as it is carved.
+// A block's class is its span's entry in a side table, so `rt_free` is a range compare, a
+// load and a push -- no header, no `malloc_size`. Anything outside the range (a libc block,
+// a size over 512, everything after a refused reservation) is libc's and goes to `free`,
+// which is what keeps a foreign block reaching `rt_free` sound. The reverse is not: **a
+// block from here must never reach libc `free` or `realloc`** -- hence the poison at the
+// top of this file and `tmp_free` in prismio_runtime.h.
 //
-// **Buckets are recovered from the block, not from a header.** A header would
-// offset every pointer this runtime hands out, and the one thing the seam above
-// promises is that a block from `rt_base_alloc` and a block from plain `malloc`
-// are interchangeable -- C_CODE_STYLE's "internal temporaries stay on plain
-// malloc/free" means both kinds reach `rt_free`. Asking the allocator for the
-// block's usable size keeps that true in both directions: a plain `malloc` block
-// arriving here is recycled correctly, and a recycled block handed to plain
-// `free` is an ordinary block. The bucket index is `usable / GRAIN` rounded
-// down, and a request of `n` takes from `ceil(n / GRAIN)`, so the block a
-// request receives always has at least the usable size it asked for -- true for
-// macOS's exact 16-byte classes and for glibc's 16n+8 alike.
+// The main thread keeps a process-local cache (a `_Thread_local` read on Darwin is a
+// `tlv_get_addr` call, which cost the arena 3x), each worker (`prismio_memory_worker`) a
+// thread-local one. An allocation pops and a free pushes. Once a thread exists, a cache
+// holding 128 blocks of a class hands the oldest 64 to that class's shared list as one
+// batch, and an empty cache takes a batch back: a single-threaded program never takes a
+// lock, and a block freed on another thread migrates through the shared list. A worker's
+// leftovers go back when it exits (prismio_memory_thread_cleanup, with a pthread key's
+// destructor as the backstop).
 //
-// **Single-threaded only, by the same doctrine as the arena hint above.** The
-// pool is plain memory with no lock; `prismio_task_spawn` publishes
-// `prismio_memory_threads_enable()` *before* the OS can run the new thread, so
-// once any second thread exists every thread reads the switch as set and nothing
-// touches the pool again. Whatever it held at that moment stays allocated until
-// exit -- bounded by RT_RECYCLE_DEPTH x the bucket sizes, under 256 KB -- which
-// is the conservative direction and the price of not paying a lock on every
-// allocation in the programs that never spawn.
-//
-// **Not compiled into a `--verify` build at all.** There the seam is still the
-// two ledger macros, so the ledger sees every allocation and release exactly as
-// it did before, and a recycled block cannot be mistaken for a live one.
-// ---------------------------------------------------------------------------------
-// PROTOTYPE allocators (docs/ALLOCATOR_PLAN.md). Off unless the runtime is compiled
-// with -DPRISMIO_ALLOC_MODE=N; mode 0 is the recycler below, unchanged.
-//
-//   1  the recycler with its cap lifted (still malloc_size on every free, still
-//      single-threaded)                                          -- option (b), honest
-//   3  a size-header recycler: the size class is read from a word in front of the
-//      block, so no malloc_size. Breaks interchangeability on purpose; it is the
-//      ceiling of what a sized free could buy, not a proposal   -- option (b), ideal
-//   2  the address-range slab with per-thread caches             -- option (a)
-//
-// None of these is compiled into a --verify or freestanding build.
-// ---------------------------------------------------------------------------------
-#ifndef PRISMIO_ALLOC_MODE
-#define PRISMIO_ALLOC_MODE 0
-#endif
-// The slab needs mmap and pthreads; anywhere else mode 2 is the recycler below.
-#if PRISMIO_ALLOC_MODE == 2 && !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING) \
-    && (defined(__unix__) || defined(__APPLE__))
+// `PRISMIO_SLAB=0` in the environment turns it off at run time, every block then libc's:
+// the escape hatch for a sanitizer or valgrind, which cannot see slab blocks. Not compiled
+// into a `--verify` build (the seam is the ledger there, so the ledger never exercises
+// this), a freestanding one (the program's allocator is the seam), a 32-bit target (no 64
+// GiB to reserve) or Windows (not ported; it keeps the recycler below). Measured in
+// docs/ALLOCATOR_PLAN.md: the graph arms at 0.83x-1.01x of C++, an alloc+free pair 2-4 ns
+// against libmalloc's 10-14.
+#if !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING) \
+    && (defined(__unix__) || defined(__APPLE__)) && UINTPTR_MAX > 0xFFFFFFFFu
 #define PRISMIO_SLAB_ACTIVE 1
 #endif
 
-#if PRISMIO_ALLOC_MODE != 0 && !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING) \
-    && (defined(__unix__) || defined(__APPLE__))
-
-#if PRISMIO_ALLOC_MODE == 1 || PRISMIO_ALLOC_MODE == 3
-// ---- (b) --------------------------------------------------------------------------
-#if defined(__APPLE__)
-#include <malloc/malloc.h>
-#define RT_USABLE_SIZE(p) malloc_size(p)
-#else
-#include <malloc.h>
-#define RT_USABLE_SIZE(p) malloc_usable_size(p)
-#endif
-#define RT_RECYCLE_GRAIN    16
-#define RT_RECYCLE_BUCKETS  8
-static void* rt_recycle_head[RT_RECYCLE_BUCKETS];
-
-#if PRISMIO_ALLOC_MODE == 1
-PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
-    if (size <= (size_t)RT_RECYCLE_GRAIN * RT_RECYCLE_BUCKETS && !prismio_memory_threads_are_enabled()) {
-        size_t k = (size + RT_RECYCLE_GRAIN - 1) / RT_RECYCLE_GRAIN;
-        if (k == 0) k = 1;
-        void* reused = rt_recycle_head[k - 1];
-        if (reused) { rt_recycle_head[k - 1] = *(void**)reused; return reused; }
-        return malloc(k * RT_RECYCLE_GRAIN);
-    }
-    return malloc(size);
-}
-PRISMIO_NOINLINE void rt_free(void* p) {
-    if (!p) return;
-    if (!prismio_memory_threads_are_enabled()) {
-        size_t k = RT_USABLE_SIZE(p) / RT_RECYCLE_GRAIN;
-        if (k >= 1 && k <= RT_RECYCLE_BUCKETS) {
-            *(void**)p = rt_recycle_head[k - 1];
-            rt_recycle_head[k - 1] = p;
-            return;
-        }
-    }
-    free(p);
-}
-PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) { return realloc(p, size); }
-#else
-// Mode 3. Every block carries a 16-byte header: word 0 is its class (0 = not pooled).
-PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
-    if (size <= (size_t)RT_RECYCLE_GRAIN * RT_RECYCLE_BUCKETS && !prismio_memory_threads_are_enabled()) {
-        size_t k = (size + RT_RECYCLE_GRAIN - 1) / RT_RECYCLE_GRAIN;
-        if (k == 0) k = 1;
-        void* reused = rt_recycle_head[k - 1];
-        if (reused) { rt_recycle_head[k - 1] = *(void**)reused; return reused; }
-        unsigned char* m = (unsigned char*)malloc(16 + k * RT_RECYCLE_GRAIN);
-        if (!m) return NULL;
-        *(size_t*)m = k;
-        return m + 16;
-    }
-    unsigned char* m = (unsigned char*)malloc(16 + size);
-    if (!m) return NULL;
-    *(size_t*)m = 0;
-    return m + 16;
-}
-PRISMIO_NOINLINE void rt_free(void* p) {
-    if (!p) return;
-    unsigned char* m = (unsigned char*)p - 16;
-    size_t k = *(size_t*)m;
-    if (k && !prismio_memory_threads_are_enabled()) {
-        *(void**)p = rt_recycle_head[k - 1];
-        rt_recycle_head[k - 1] = p;
-        return;
-    }
-    free(m);
-}
-PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
-    if (!p) return rt_base_alloc(size);
-    unsigned char* m = (unsigned char*)p - 16;
-    size_t k = *(size_t*)m;
-    size_t have = k ? k * RT_RECYCLE_GRAIN : 0;
-    if (!k) {
-        unsigned char* r = (unsigned char*)realloc(m, 16 + size);
-        if (!r) return NULL;
-        return r + 16;
-    }
-    if (size <= have) return p;
-    void* n = rt_base_alloc(size);
-    memcpy(n, p, have);
-    rt_free(p);
-    return n;
-}
-#endif
-
-#else
-// ---- (a) --------------------------------------------------------------------------
-// Address-range slab. One 2 GiB virtual region per size class, reserved up front and
-// touched only as it is carved: a block's class is (address - base) >> 31, so freeing
-// is one range compare and a shift, no header and no malloc_size. Anything outside the
-// range -- a libc block, an arena pointer's neighbour, a size over 512 -- is handed to
-// libc free exactly as before.
-#include <sys/mman.h>
-#include <sched.h>
-
+#ifdef PRISMIO_SLAB_ACTIVE
+// ---- slab ----
 #define SLAB_GRAIN         16
 #define SLAB_CLASSES       32                 /* 16 .. 512 bytes */
 #define SLAB_MAX           (SLAB_GRAIN * SLAB_CLASSES)
-#define SLAB_REGION_SHIFT  31
-// Each class region starts this many bytes later than the one before, so the first blocks
-// of different classes -- the hot ones, in a small program -- do not share their low address
-// bits. Without it `key_value_update` measured 7% slower than with malloc on identical code.
+#define SLAB_RESERVE       ((size_t)64 << 30)
+#define SLAB_SPAN_SHIFT    16
+// A class's first block in each span starts this many bytes (mod 4 KiB) later than the
+// class before it, so the hot first blocks of different classes -- in a small program,
+// nearly all of them -- do not share their low address bits. Measured on the region
+// layout this replaced: `key_value_update` 1.071x of malloc with every class aligned,
+// 0.992x staggered.
 #ifndef SLAB_STAGGER
-#define SLAB_STAGGER 1088
+#define SLAB_STAGGER       1088   /* -DSLAB_STAGGER=0 is the aliasing control (ab.py s5) */
 #endif
 #define SLAB_BATCH         64
 #define SLAB_WINDOW_BYTES  8192
-#ifdef PRISMIO_SLAB_INLINE
-#define SLAB_ENTRY
-#else
-#define SLAB_ENTRY PRISMIO_NOINLINE
-#endif
 #define SLAB_HIGH          (2 * SLAB_BATCH)
 
-// `cur`..`end` is memory this cache has been given by the region but not yet cut into
+// `cur`..`end` is memory this cache has been given by a span but not yet cut into
 // blocks: untouched until the block is handed out, so a program that stops early never
 // pays to link, or to fault in, the tail.
 typedef struct { void* head; uint32_t count; uint32_t pad; unsigned char* cur; unsigned char* end; } SlabBin;
@@ -322,7 +221,7 @@ typedef struct {
     void*     batches;      /* chains of SLAB_BATCH blocks: w0 next block, w1 next batch */
     void*     loose;        /* a thread's leftovers, singly linked */
     uint32_t  loose_n;
-    uintptr_t bump;
+    uintptr_t bump;         /* the class's current span: next uncut byte and its end */
     uintptr_t limit;
 } SlabGlobal;
 
@@ -333,18 +232,13 @@ static SlabCache slab_main;             /* the process-local cache: the main thr
 static PRISMIO_THREAD_LOCAL SlabCache slab_tls;
 static PRISMIO_THREAD_LOCAL int slab_tls_used;
 static SlabGlobal slab_global[SLAB_CLASSES];
-#ifdef SLAB_SPANS
-// Span layout (the production shape): one region, carved in 64 KiB spans, each owned by one
-// class; a side table answers "which class" for a span instead of the address's high bits.
-// That is what lets a wholly free span be given to another class or returned to the OS.
-#define SLAB_SPAN_SHIFT 16
-static unsigned char slab_span_class[((size_t)SLAB_CLASSES << SLAB_REGION_SHIFT) >> SLAB_SPAN_SHIFT];
+// Which class owns each span. A table rather than the address's high bits is what lets a
+// wholly free span be given to another class or back to the OS (stages 4-5 of the plan);
+// measured against a 2 GiB region per class it costs nothing (the plan's span/region rows).
+// 1 MiB of zero pages, touched one entry per span carved.
+static unsigned char slab_span_class[SLAB_RESERVE >> SLAB_SPAN_SHIFT];
 static uintptr_t slab_span_next;
 static int slab_span_lock;
-#define SLAB_CLASS_OF(off) ((unsigned)slab_span_class[(off) >> SLAB_SPAN_SHIFT])
-#else
-#define SLAB_CLASS_OF(off) ((unsigned)((off) >> SLAB_REGION_SHIFT))
-#endif
 
 static inline void slab_lock(SlabGlobal* g) {
     while (__atomic_exchange_n(&g->lock, 1, __ATOMIC_ACQUIRE)) sched_yield();
@@ -355,26 +249,18 @@ static void slab_init(void) {
     slab_state = -1;
     const char* off = getenv("PRISMIO_SLAB");
     if (off && off[0] == '0') return;
-    size_t span = (size_t)SLAB_CLASSES << SLAB_REGION_SHIFT;
     // A preferred address, not a demand: a debugging shim can then recognise a slab
     // block by range, and a hint the system declines costs nothing but that.
-    void* m = mmap((void*)(uintptr_t)0x600000000000ULL, span, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON
+    void* m = mmap((void*)(uintptr_t)0x600000000000ULL, SLAB_RESERVE, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON
 #ifdef MAP_NORESERVE
                    | MAP_NORESERVE
 #endif
                    , -1, 0);
     if (m == MAP_FAILED) return;
     slab_base = (uintptr_t)m;
-#ifdef SLAB_SPANS
     slab_span_next = slab_base;
-    for (int c = 0; c < SLAB_CLASSES; c++) slab_global[c].bump = slab_global[c].limit = 0;
-#else
-    for (int c = 0; c < SLAB_CLASSES; c++) {
-        slab_global[c].bump = slab_base + ((uintptr_t)c << SLAB_REGION_SHIFT) + (uintptr_t)(c * SLAB_STAGGER);
-        slab_global[c].limit = slab_global[c].bump + ((uintptr_t)1 << SLAB_REGION_SHIFT);
-    }
-#endif
-    slab_span = span;
+    slab_span = SLAB_RESERVE;
     slab_state = 1;
 }
 
@@ -388,7 +274,8 @@ static inline SlabCache* slab_cache(void) {
 
 static void slab_thread_key_init(void);
 
-// Cache empty: a batch from the shared list, then a thread's leftovers, then fresh memory.
+// Cache empty: a batch from the shared list, then a thread's leftovers, then fresh memory
+// from the class's span, then a new span.
 static PRISMIO_NOINLINE void* slab_refill(SlabBin* bin, unsigned c) {
     if (slab_state == 0) slab_init();
     size_t sz = (size_t)(c + 1) * SLAB_GRAIN;
@@ -424,19 +311,21 @@ static PRISMIO_NOINLINE void* slab_refill(SlabBin* bin, unsigned c) {
     }
     uintptr_t start = g->bump;
     size_t take = sz * (SLAB_WINDOW_BYTES / sz > 8 ? SLAB_WINDOW_BYTES / sz : 8);
-#ifdef SLAB_SPANS
     if (start + take > g->limit) {
         while (__atomic_exchange_n(&slab_span_lock, 1, __ATOMIC_ACQUIRE)) sched_yield();
         uintptr_t fresh = slab_span_next;
         int ok = fresh + ((uintptr_t)1 << SLAB_SPAN_SHIFT) <= slab_base + slab_span;
-        if (ok) { slab_span_next = fresh + ((uintptr_t)1 << SLAB_SPAN_SHIFT); slab_span_class[(fresh - slab_base) >> SLAB_SPAN_SHIFT] = (unsigned char)c; }
+        if (ok) {
+            slab_span_next = fresh + ((uintptr_t)1 << SLAB_SPAN_SHIFT);
+            slab_span_class[(fresh - slab_base) >> SLAB_SPAN_SHIFT] = (unsigned char)c;
+        }
         __atomic_store_n(&slab_span_lock, 0, __ATOMIC_RELEASE);
+        // The reservation is used up: libc from here on, which the range test sends
+        // back to `free` in its turn.
         if (!ok) { slab_unlock(g); return malloc(sz); }
         start = fresh + (uintptr_t)(c * SLAB_STAGGER) % 4096;
         g->limit = fresh + ((uintptr_t)1 << SLAB_SPAN_SHIFT);
     }
-#endif
-    if (start + take > g->limit) { slab_unlock(g); return malloc(sz); }
     g->bump = start + take;
     slab_unlock(g);
     bin->cur = (unsigned char*)start + sz;
@@ -444,7 +333,9 @@ static PRISMIO_NOINLINE void* slab_refill(SlabBin* bin, unsigned c) {
     return (void*)start;
 }
 
-SLAB_ENTRY void* rt_base_alloc(size_t size) {
+// Out of line, like `rt_free`: inlining both fast paths (the prototype's
+// -DPRISMIO_SLAB_INLINE) measured the same to within noise on all four graph arms.
+PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
     if (__builtin_expect(size - 1 < (size_t)SLAB_MAX, 1)) {
         unsigned c = (unsigned)((size - 1) >> 4);
         SlabBin* bin = &slab_cache()->bin[c];
@@ -456,6 +347,8 @@ SLAB_ENTRY void* rt_base_alloc(size_t size) {
         }
         return slab_refill(bin, c);
     }
+    // A zero-byte request still takes a whole first block: the free list threads its
+    // next pointer through the block itself.
     if (size == 0) {
         SlabBin* bin = &slab_cache()->bin[0];
         void* b = bin->head;
@@ -480,11 +373,13 @@ static PRISMIO_NOINLINE void slab_spill(SlabBin* bin, unsigned c) {
     slab_unlock(g);
 }
 
-SLAB_ENTRY void rt_free(void* p) {
+// **Not curated, and that is a measurement** -- see the note beside `rt_free` in
+// PRISMIO_CURATED_OPS (build_driver.c).
+PRISMIO_NOINLINE void rt_free(void* p) {
     if (!p) return;
     uintptr_t off = (uintptr_t)p - slab_base;
     if (__builtin_expect(off < slab_span, 1)) {
-        unsigned c = SLAB_CLASS_OF(off);
+        unsigned c = (unsigned)slab_span_class[off >> SLAB_SPAN_SHIFT];
         SlabBin* bin = &slab_cache()->bin[c];
         *(void**)p = bin->head;
         bin->head = p;
@@ -493,14 +388,17 @@ SLAB_ENTRY void rt_free(void* p) {
             slab_spill(bin, c);
         return;
     }
-    free(p);
+    tmp_free(p);
 }
 
+// A block keeps its place while the request fits its class; otherwise it moves, with the
+// class's whole size copied (the caller's old length is not known here, and every byte of
+// the block is the caller's). A libc block is libc's to resize.
 PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
     if (!p) return rt_base_alloc(size);
     uintptr_t off = (uintptr_t)p - slab_base;
     if (off < slab_span) {
-        size_t have = ((size_t)SLAB_CLASS_OF(off) + 1) * SLAB_GRAIN;
+        size_t have = ((size_t)slab_span_class[off >> SLAB_SPAN_SHIFT] + 1) * SLAB_GRAIN;
         if (size <= have) return p;
         void* n = rt_base_alloc(size);
         if (!n) return NULL;
@@ -508,7 +406,7 @@ PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
         rt_free(p);
         return n;
     }
-    return realloc(p, size);
+    return tmp_realloc(p, size);
 }
 
 // A worker thread's leftover blocks go back to the shared list when it exits; the
@@ -536,7 +434,6 @@ static void slab_flush_tls(void) {
         bin->count = 0;
     }
 }
-#include <pthread.h>
 static pthread_key_t slab_key;
 static pthread_once_t slab_key_once = PTHREAD_ONCE_INIT;
 static void slab_key_destroy(void* unused) { (void)unused; slab_flush_tls(); }
@@ -546,59 +443,36 @@ static void slab_thread_key_init(void) {
     pthread_setspecific(slab_key, (void*)1);
 }
 void prismio_slab_thread_flush(void) { slab_flush_tls(); }
-#endif  /* mode 2 */
+// ---- end slab ----
 
-#elif !defined(PRISMIO_AIF_VERIFY)
-
-#if defined(_WIN32)
-#include <malloc.h>
-#define RT_USABLE_SIZE(p) ((size_t)_msize(p))
-#elif defined(__APPLE__)
-#include <malloc/malloc.h>
-#define RT_USABLE_SIZE(p) malloc_size(p)
-#elif defined(__linux__) || defined(__ANDROID__)
-#include <malloc.h>
-#define RT_USABLE_SIZE(p) malloc_usable_size(p)
-#endif
-
-#ifdef RT_USABLE_SIZE
-// 16 bytes is the smallest block any of the three allocators hands out, and
-// eight buckets covers every string and small struct the corpus allocates in a
-// loop.
+#elif defined(_WIN32) && !defined(PRISMIO_AIF_VERIFY) && !defined(PRISMIO_FREESTANDING)
+// Windows, until the slab's page layer is ported (stage 7 of the plan): the small-block
+// recycler the slab replaced on POSIX. It recovers a block's bucket from the allocator
+// (`_msize`) rather than a header, holds at most RT_RECYCLE_HELD_MAX blocks, and is off
+// once any thread exists -- the pool is plain memory with no lock, and
+// `prismio_task_spawn` publishes `prismio_memory_threads_enable()` before the OS can run
+// the new thread.
 //
-// **The held-block cap is what makes the query affordable, and that is the whole
-// reason it is a single total rather than a depth per bucket.** Asking the
-// allocator for a block's usable size is not cheap -- `malloc_size` measured at
-// ~14 ns per call on macOS, more than the malloc/free pair it is meant to save --
-// so a free that ends up calling `free` anyway must not pay for it. Checking the
-// cap first costs one predictable branch and skips the query outright once the
-// pool is full.
-//
-// That is the difference between the two shapes this sees. A tokenizer frees
-// each block before cutting the next, so the pool holds one or two and every
-// free both queries and hits: `tokenization` runs 1.67x faster. A tree build
-// allocates 32 000 nodes and frees them all at teardown with nothing to reuse
-// them; it fills the cap in the first few hundred frees and the remaining 98%
-// skip the query and go straight to the allocator, which is what keeps that
-// shape from paying for a pool it cannot use.
+// **The held-block cap is what makes the query affordable**, and that is why it is one
+// total rather than a depth per bucket. Asking for a block's usable size is not cheap
+// (`malloc_size`, its macOS counterpart, measured ~14 ns, more than the pair it saves),
+// so a free that ends up in `free` anyway must not pay for it: checking the cap first
+// costs one predictable branch. A tokenizer frees each block before cutting the next and
+// hits every time (`tokenization` 1.67x faster); a tree build frees 32 000 nodes at
+// teardown, fills the cap in the first few hundred, and the rest skip the query.
+#define RT_USABLE_SIZE(p)    ((size_t)_msize(p))
 #define RT_RECYCLE_GRAIN     16
 #define RT_RECYCLE_BUCKETS   8
 #define RT_RECYCLE_HELD_MAX  512
 
 static void* rt_recycle_head[RT_RECYCLE_BUCKETS];
 static int   rt_recycle_held;
-#endif
 
-// Out of line, like `rt_free` below. Codegen emits libc `malloc` for object
-// allocation -- see g_alloc_fn in llvm-api-backend.c -- so the only callers are
-// inside this runtime, where one call per string is already in the noise.
 PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
-#ifdef RT_USABLE_SIZE
     if (size <= (size_t)RT_RECYCLE_GRAIN * RT_RECYCLE_BUCKETS
         && !prismio_memory_threads_are_enabled()) {
         // A zero-byte request still takes a whole first bucket: the free list
-        // threads its next pointer through the block itself, so every block the
-        // pool holds has to be at least a pointer wide.
+        // threads its next pointer through the block itself.
         size_t k = (size + RT_RECYCLE_GRAIN - 1) / RT_RECYCLE_GRAIN;
         if (k == 0) k = 1;
         void* reused = rt_recycle_head[k - 1];
@@ -609,23 +483,17 @@ PRISMIO_NOINLINE void* rt_base_alloc(size_t size) {
         }
         return malloc(k * RT_RECYCLE_GRAIN);
     }
-#endif
     return malloc(size);
 }
 
-// The reallocating half of the allocator seam. Consuming String append carries
-// its geometric-growth fact in a reserved representation bit, so this path does
-// not need to query allocator metadata on every append.
 PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) {
-    return realloc(p, size);
+    return tmp_realloc(p, size);
 }
 
-#ifdef RT_USABLE_SIZE
 // Split out so that `rt_free` below has no path that needs a frame: both of its
 // exits are tail calls, which matters because the shape that gets nothing from
 // the pool -- build a tree, free all of it at teardown -- runs every one of its
-// frees through the fallback and would otherwise pay a prologue per block for a
-// pool it never touches.
+// frees through the fallback and would otherwise pay a prologue per block.
 static PRISMIO_NOINLINE void rt_pool_put_or_free(void* p) {
     size_t k = RT_USABLE_SIZE(p) / RT_RECYCLE_GRAIN;
     if (k >= 1 && k <= RT_RECYCLE_BUCKETS) {
@@ -634,28 +502,25 @@ static PRISMIO_NOINLINE void rt_pool_put_or_free(void* p) {
         rt_recycle_held++;
         return;
     }
-    free(p);
+    tmp_free(p);
 }
-#endif
 
-// **Not curated, and that is a measurement** -- see the note beside `rt_free` in
-// PRISMIO_CURATED_OPS (build_driver.c). Inlining the gate into every release site
-// removes a call per release and moves nothing, because what a bulk-free shape
-// pays is the gate itself.
 PRISMIO_NOINLINE void rt_free(void* p) {
     if (!p) return;
-#ifdef RT_USABLE_SIZE
-    // The cap is tested *before* the usable-size query, not after: see the note
-    // over RT_RECYCLE_HELD_MAX. Everything past it costs one load and a branch.
     if (rt_recycle_held < RT_RECYCLE_HELD_MAX
         && !prismio_memory_threads_are_enabled()) {
         rt_pool_put_or_free(p);
         return;
     }
-#endif
-    free(p);
+    tmp_free(p);
 }
 
+#elif !defined(PRISMIO_AIF_VERIFY)
+// Everywhere else -- a 32-bit target, a freestanding program (whose `malloc` is its own
+// `prismio_alloc`) -- the seam is the C library's allocator, unadorned.
+PRISMIO_NOINLINE void* rt_base_alloc(size_t size) { return malloc(size); }
+PRISMIO_NOINLINE void* rt_base_realloc(void* p, size_t size) { return tmp_realloc(p, size); }
+PRISMIO_NOINLINE void rt_free(void* p) { tmp_free(p); }
 #endif  // PRISMIO_AIF_VERIFY
 
 static void* rt_alloc(size_t size) {
@@ -1664,7 +1529,7 @@ static ArenaChunk* arena_chunk_new(ArenaState* state, size_t need) {
     ArenaChunk* c = (ArenaChunk*)malloc(sizeof(ArenaChunk));
     if (!c) return NULL;
     c->base = (unsigned char*)malloc(cap);
-    if (!c->base) { free(c); return NULL; }
+    if (!c->base) { tmp_free(c); return NULL; }
     c->used = 0;
     c->cap = cap;
     c->next = NULL;
@@ -1695,8 +1560,8 @@ void arena_pop(void) {
             state->pool = c;
             state->pool_count++;
         } else {
-            free(c->base);
-            free(c);
+            tmp_free(c->base);
+            tmp_free(c);
         }
         c = next;
     }
@@ -1769,8 +1634,8 @@ void prismio_memory_thread_cleanup(void) {
     while (state->depth > 0) arena_pop();
     while (state->pool) {
         ArenaChunk* next = state->pool->next;
-        free(state->pool->base);
-        free(state->pool);
+        tmp_free(state->pool->base);
+        tmp_free(state->pool);
         state->pool = next;
     }
     state->pool_count = 0;
@@ -2046,8 +1911,8 @@ void aif_verify_release(void* p) {
     // node and the block it names, which no other thread can reach now that it
     // is off the chain.
     memset(p, AIF_VERIFY_POISON, n->size);
-    free(n);
-    free(p);
+    tmp_free(n);
+    tmp_free(p);
 }
 
 // Growable list (List<T> for reference elements) — backs Prismio's List<T>.
@@ -2149,7 +2014,6 @@ void rc_retain(void* p) {
 // builtins are the supported way to do exactly that, and clang is the compiler
 // on all three CI platforms.
 #if defined(_MSC_VER) && !defined(__clang__)
-#include <intrin.h>
 #define PRISMIO_ATOMIC_INC(p) ((size_t)_InterlockedIncrement64((volatile __int64*)(p)))
 #define PRISMIO_ATOMIC_DEC(p) ((size_t)_InterlockedDecrement64((volatile __int64*)(p)))
 #else
@@ -2318,7 +2182,7 @@ static long long cyc_allocated, cyc_collected, cyc_collections;
 static void cyc_walk_push(void* p) {
     if (cyc_walk_len == cyc_walk_cap) {
         int grow = cyc_walk_cap ? cyc_walk_cap * 2 : 64;
-        cyc_walk = (void**)realloc(cyc_walk, (size_t)grow * sizeof(void*));
+        cyc_walk = (void**)tmp_realloc(cyc_walk, (size_t)grow * sizeof(void*));
         cyc_walk_cap = grow;
     }
     cyc_walk[cyc_walk_len++] = p;
@@ -2327,7 +2191,7 @@ static void cyc_walk_push(void* p) {
 static void cyc_buffer(void* p) {
     if (cyc_cand_count == cyc_cand_cap) {
         int grow = cyc_cand_cap ? cyc_cand_cap * 2 : 256;
-        cyc_candidates = (void**)realloc(cyc_candidates, (size_t)grow * sizeof(void*));
+        cyc_candidates = (void**)tmp_realloc(cyc_candidates, (size_t)grow * sizeof(void*));
         cyc_cand_cap = grow;
     }
     cyc_candidates[cyc_cand_count++] = p;
@@ -2427,7 +2291,7 @@ static void cyc_collect_white(void* x) {
     for (int i = 0; i < n; i++) {
         if (kids[i]) cyc_collect_white(kids[i]);
     }
-    free(kids);
+    tmp_free(kids);
 }
 
 // CYCLES 6.2: at most K roots per collection, and the rest stay buffered.
@@ -2462,7 +2326,7 @@ static void cyc_collect(int all) {
     for (int i = 0; i < take; i++) cyc_scan(roots[i]);
     for (int i = 0; i < take; i++) cyc_collect_white(roots[i]);
 
-    free(roots);
+    tmp_free(roots);
 }
 
 // A final pass at exit, which is CYCLES 6.1's "explicit request". Without it a
@@ -2473,8 +2337,8 @@ static int cyc_exit_registered;
 static void cyc_final(void) {
     cyc_enter();
     while (cyc_cand_count > 0) cyc_collect(1);
-    free(cyc_candidates);
-    free(cyc_walk);
+    tmp_free(cyc_candidates);
+    tmp_free(cyc_walk);
     cyc_candidates = NULL;
     cyc_walk = NULL;
     cyc_cand_count = cyc_cand_cap = 0;
@@ -2594,7 +2458,7 @@ long long cyc_collections_run(void) {
 // **These eight values are one wire protocol with three definitions, and nothing
 // but this comment holds them together.** Codegen emits the mode from
 // `AIF_ELEM_*` in src/ir/context.psm; the analysis answers with `AIF_ELEM_*` in
-// aif_support.c; the runtime compares against these. A variant inserted in one
+// src/aifcore/; the runtime compares against these. A variant inserted in one
 // list and not the others does not fail to build -- it releases elements with
 // the wrong deallocator, which is a violation rather than a leak.
 //
@@ -3460,7 +3324,7 @@ void list_set_str(void* lp, int index, void* raw, long long word) {
 static void list_park(RtList* l, void* owned) {
     if (l->grave_len == l->grave_cap) {
         int next = l->grave_cap ? l->grave_cap * 2 : 4;
-        void** grown = (void**)realloc(l->grave, sizeof(void*) * (size_t)next);
+        void** grown = (void**)tmp_realloc(l->grave, sizeof(void*) * (size_t)next);
         if (!grown) {
             fprintf(stderr, "runtime error: out of memory removing an element\n");
             exit(1);
@@ -3476,7 +3340,7 @@ static void list_park(RtList* l, void* owned) {
 // hold a reference to one removed before it, never after.
 static void list_release_parked(RtList* l) {
     for (int i = l->grave_len - 1; i >= 0; i--) list_release_element(l, l->grave[i]);
-    free(l->grave);
+    tmp_free(l->grave);
     l->grave = NULL;
     l->grave_len = 0;
     l->grave_cap = 0;
@@ -3576,7 +3440,7 @@ static void list_move_last(RtList* l, int index) {
     memmove(base + (size_t)(index + 1) * stride, base + (size_t)index * stride,
             (size_t)(l->len - 1 - index) * stride);
     memcpy(base + (size_t)index * stride, held, stride);
-    if (held != on_stack) free(held);
+    if (held != on_stack) tmp_free(held);
 }
 
 // One per push entry point, with the same argument conventions plus the index.

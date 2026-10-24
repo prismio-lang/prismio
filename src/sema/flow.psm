@@ -2,6 +2,8 @@
 // statement, and does this loop have a break. Both feed definite-return and
 // unreachable-code checking.
 
+import symbols.bindings
+import symbols.declarations
 import ast.nodes
 import ast.fn_attrs
 import lexer.token

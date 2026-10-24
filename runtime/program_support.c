@@ -2225,6 +2225,16 @@ void chan_free(void* handle) {
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif
 
+// Whether `fd` is a terminal, with nothing else asked: the compiler's progress line is rewritten
+// in place, which a log that merely renders ANSI (FORCE_COLOR) must not receive.
+int prismio_rt_is_terminal(int fd) {
+#ifdef _WIN32
+    return _isatty(fd) ? 1 : 0;
+#else
+    return isatty(fd) ? 1 : 0;
+#endif
+}
+
 int prismio_rt_color_supported(int fd) {
     const char* no_color = getenv("NO_COLOR");
     if (no_color && no_color[0]) return 0;

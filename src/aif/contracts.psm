@@ -11,6 +11,7 @@ import common.int_builtins
 import common.mem_builtins
 import std.string
 import std.option
+import aifcore.keys
 
 // ---------------------------------------------------------------------------
 // FFI ownership contracts (FFI 5)
@@ -100,6 +101,7 @@ private fn aifCompilerBuiltinContract(name: String, index: Int) -> Int {
     // Reads one slot of a `char**` and keeps nothing. What it returns is the
     // other half of its contract, answered by `aifFfiReturnsStatic`.
     if (name.equals("__builtin_cstring_at")) { return AIF_FFI_BORROW }
+    if (name.equals("__builtin_cstring")) { return AIF_FFI_BORROW }
     // errno and its two comparison constants. They take no arguments, read a
     // per-thread `int` the program does not own, and hand back a copy of it --
     // so there is nothing to retain and nothing to place. Described here rather
@@ -331,7 +333,7 @@ internal fn aifFfiAliasOf(name: String) -> Int {
 // declared-alias path would answer "a view of that global" -- true, and useless,
 // since nothing here allocated either.
 internal fn aifFfiReturnsStatic(name: String) -> Bool {
-    return name.equals("__builtin_cstring_at")
+    return name.equals("__builtin_cstring_at") or name.equals("__builtin_cstring")
 }
 
 // Which argument's element field a call reads, or -1. The counterpart of

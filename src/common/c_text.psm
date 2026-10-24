@@ -1,0 +1,15 @@
+// Text handed to C. A String of twelve bytes or fewer is stored in its own pair and has no pointer
+// to give, so a C caller that keeps a `const char*` is handed a NUL-terminated copy at an address
+// of its own instead.
+
+import std.mem
+
+// A NUL-terminated copy of `text` that lives until it is passed to `free`.
+public fn cTextCopy(text: String) -> Usize {
+    let count = text.length
+    let block = alloc((count + 1) as Usize)
+    let source = Buffer.fromString(text)
+    copy(block, source.address, count as Usize)
+    storeU8(block + (count as Usize), 0)
+    return block
+}

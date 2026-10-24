@@ -1,0 +1,285 @@
+// Tier derivation (SPEC 4.2), pins (SPEC 5.4) and the minimal cause (INFERENCE 5.6, SPEC 6.3).
+//
+// The derivation is the spec's, clause for clause, first match wins. Theta_stack is the size a value may have
+// and still live in a frame: bytes by default, or field count in the prototype's approximation (its A5), which
+// stays switchable because the oracle reads a JSON dump with no layout in it and cannot compute the other.
+//
+// **The single-threaded path is unchanged structurally rather than by measurement.** A module with no `spawn`
+// raises no site above `AIF_T_ISOLATED`: T-SPAWN-* fires only on a spawn constraint, T-REACH can only propagate
+// a value some rule already raised, and T-STATIC is guarded on `programHasTasks`. So `T <= TRANSFERRED` holds at
+// every site and T4a is unreachable.
+
+import aif.model
+import aifcore.constants
+import aifcore.constraints
+import aifcore.solver
+import aifcore.sites
+import std.vec
+
+private let mut thetaMode = 0
+
+// The cause path, innermost edge first, which is the order it reads in. One buffer is enough because a diff
+// explains one record at a time.
+private let mut causeSite: Vec<Int>
+private let mut causeRule: Vec<Int>
+private let mut causeValue: Vec<Int>
+private let mut causeFile: Vec<Int>
+private let mut causeLine: Vec<Int>
+private let mut causeCol: Vec<Int>
+private let mut causeLen = 0
+private let mut causeOpened = false
+
+private fn causeOpen() {
+    if (causeOpened) { return }
+    causeOpened = true
+    causeSite = []
+    causeRule = []
+    causeValue = []
+    causeFile = []
+    causeLine = []
+    causeCol = []
+}
+
+internal fn tiersReset() {
+    causeOpened = false
+    causeOpen()
+    causeLen = 0
+}
+
+public fn aif_set_theta_mode(mode: Int) {
+    if (mode == AIF_THETA_MODE_FIELDS) {
+        thetaMode = AIF_THETA_MODE_FIELDS
+    } else {
+        thetaMode = AIF_THETA_MODE_BYTES
+    }
+}
+
+public fn aif_theta_mode() -> Int {
+    return thetaMode
+}
+
+public fn aif_theta_stack() -> Int {
+    if (thetaMode == AIF_THETA_MODE_FIELDS) { return AIF_THETA_STACK_FIELDS }
+    return AIF_THETA_STACK_BYTES
+}
+
+// SPEC 4.2 requires the size be *statically known* as well as under the threshold. A struct whose size the
+// frontend never computed is not known, and unknown must not read as small.
+internal fn fitsOnStack(s: Int) -> Bool {
+    if (thetaMode == AIF_THETA_MODE_FIELDS) { return siteNFields[s] <= AIF_THETA_STACK_FIELDS }
+    return siteBytes[s] > 0 and siteBytes[s] <= AIF_THETA_STACK_BYTES
+}
+
+// The cheapest tier the converged facts permit: where SPEC 3's ladder becomes a decision.
+internal fn derivedTier(s: Int) -> Int {
+    // An array is a frame slot at every tier: codegen lowers an array literal to `ir_array_alloca` and an
+    // `Array<T, N>` is `[N x T]` by value, so nothing allocates, nothing is released and no arena is entered. The
+    // size test cannot move it. A module-level array is static storage, not a frame, and keeps going through the
+    // ladder.
+    if (siteKind[s] == AIF_KIND_ARRAY and siteE[s] != AIF_E_GLOBAL) { return AIF_T0 }
+    // in_container joins no_stack here for the same reason it sits next to it in the drop predicate: the
+    // container reclaims its elements, and a frame slot is not something a deallocator can take. `foreign` joins
+    // them for a third reason: T0 says the value lives in this frame's storage, and a produced extern return has
+    // no allocation here to move there.
+    if (siteE[s] == siteScope[s] and siteA[s] <= AIF_A_BORROWED
+            and siteKind[s] == AIF_KIND_STRUCT and fitsOnStack(s)
+            and siteNoStack[s] == 0 and siteForeign[s] == 0 and siteInContainer[s] == 0) {
+        return AIF_T0
+    }
+    // Neither the T1 clause nor T0's tests T, and that is SPEC 4.2 read literally. A value whose escape bottoms
+    // inside a region did not leave it, and E-SPAWN-J is what keeps a joined task's arguments there.
+    //
+    // Nor does it test A, because SPEC 4.2's "region membership dominates aliasing" rests on the arena: a reset
+    // frees nothing individually. A container element is never arena-served (the container tears it down through
+    // the deallocator), so for an element held Shared, T1 was a free per holder. Falling through lands it where
+    // A-CONTAIN says it belongs: counted, at T3.
+    if (siteE[s] != AIF_E_CALLER and siteE[s] != AIF_E_GLOBAL
+            and (siteInContainer[s] != 0 and siteA[s] == AIF_A_SHARED) == false) {
+        return AIF_T1
+    }
+    if (siteA[s] <= AIF_A_BORROWED and siteT[s] <= AIF_T_TRANSFERRED) { return AIF_T2 }
+    if (siteT[s] <= AIF_T_TRANSFERRED and siteC[s] == AIF_C_ACYCLIC) { return AIF_T3 }
+    // SPEC 3: "a value meeting both conditions pays both". The sub-class named here is the one that decides the
+    // *count*; a T4a site that is also cyclic still reports C = MaybeCyclic, so collector registration is decided
+    // from the fact and not from this name.
+    if (siteT[s] == AIF_T_CROSS) { return AIF_T4A }
+    return AIF_T4B
+}
+
+public fn aif_tier_of(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_T4B }
+    // SPEC 5.4: a honoured pin freezes the tier, and everything downstream (codegen, the drop predicate, the
+    // arena test) has to read the frozen one or they would disagree with the manifest about what was built.
+    if (sitePinVerdict[id] == AIF_PIN_HONOURED) { return sitePinTier[id] }
+    return derivedTier(id)
+}
+
+// SPEC 5.4, after convergence. The pin derives nothing and seeds nothing; it constrains the output, so this runs
+// once the facts are final. The middle branch of SPEC's pseudocode, "the facts permit the pinned tier but the
+// solver did not reach it", is **vacuous here**: `derivedTier` returns the cheapest tier its clauses admit, so a
+// pin below the derived tier is refuted rather than rescued.
+public fn aif_check_pins(converged: Int) {
+    for i in 0..<siteCount {
+        if (sitePinTier[i] < 0) { continue }
+        let derived = derivedTier(i)
+        if (sitePinTier[i] >= derived) {
+            sitePinVerdict[i] = AIF_PIN_HONOURED
+        } else if (converged != 0) {
+            sitePinVerdict[i] = AIF_PIN_REFUTED
+        } else {
+            // SPEC 5.4.2: unproven is not disproven. Failing here would punish the programmer for the budget,
+            // which SPEC 1 forbids. The tier is kept so the warning can name what was asked for.
+            sitePinVerdict[i] = AIF_PIN_UNPROVEN
+        }
+    }
+}
+
+public fn aif_site_pin_verdict(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_PIN_NONE }
+    return sitePinVerdict[id]
+}
+
+public fn aif_site_pin_tier(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return -1 }
+    return sitePinTier[id]
+}
+
+// The tier the facts would have given, so a refuted pin's diagnostic can say what the analysis actually proved.
+public fn aif_site_derived_tier(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_T4B }
+    return derivedTier(id)
+}
+
+// INFERENCE 2.3, read back. Codegen needs it to choose an atomic count, and the manifest needs it to say why.
+public fn aif_site_thread(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_T_CROSS }
+    return siteT[id]
+}
+
+public fn aif_site_alias_axiom(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    return siteAliasAxiom[id]
+}
+
+// Which fact cost this site its tier, and therefore which derivation explains it. The order matters and is the
+// reverse of the tier clauses': aliasing is checked before escape because A > Borrowed is what separates T3 from
+// T2, so a T3 record whose E is also Caller would otherwise be explained by the escape that only got it as far as
+// T2, a confident answer to the wrong question. 0 is escape, 1 is aliasing.
+public fn aif_cause_domain_for(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    if (siteA[id] > AIF_A_BORROWED) { return 1 }
+    return 0
+}
+
+// Walks the derivation backward from a site through maximal contributors until a root: an allocation, an axiom, or
+// a rule with no incoming site. Returns the path length.
+public fn aif_cause_build(id: Int, domain: Int) -> Int {
+    causeOpen()
+    causeLen = 0
+    intsClear(causeSite)
+    intsClear(causeRule)
+    intsClear(causeValue)
+    intsClear(causeFile)
+    intsClear(causeLine)
+    intsClear(causeCol)
+    if (id < 0 or id >= siteCount or derivRule.length == 0) { return 0 }
+
+    let mut base = 0
+    if (domain == 1) { base = derivSites }
+    let mut cur = id
+    let mut hops = 0
+    while (hops < AIF_CAUSE_MAX) {
+        let at = base + cur
+        causeSite.push(cur)
+        causeRule.push(derivRule[at])
+        causeValue.push(derivValue[at])
+        causeFile.push(derivFile[at])
+        causeLine.push(derivLine[at])
+        causeCol.push(derivCol[at])
+        causeLen = causeLen + 1
+
+        let next = derivFrom[at]
+        if (next < 0 or next >= siteCount) { break }   // a root: nothing fed it
+        // The derivation is a DAG by construction, but a cap costs nothing and turns a bug here into a truncated
+        // explanation rather than a hang.
+        let mut seen = false
+        for i in 0..<causeLen {
+            if (causeSite[i] == next) {
+                seen = true
+                break
+            }
+        }
+        if (seen) { break }
+        cur = next
+        hops = hops + 1
+    }
+    return causeLen
+}
+
+public fn aif_cause_len() -> Int {
+    return causeLen
+}
+
+public fn aif_cause_site(i: Int) -> Int {
+    if (i < 0 or i >= causeLen) { return -1 }
+    return causeSite[i]
+}
+
+public fn aif_cause_rule(i: Int) -> Int {
+    if (i < 0 or i >= causeLen) { return -1 }
+    return causeRule[i]
+}
+
+public fn aif_cause_value(i: Int) -> Int {
+    if (i < 0 or i >= causeLen) { return -1 }
+    return causeValue[i]
+}
+
+public fn aif_cause_file(i: Int) -> Int {
+    if (i < 0 or i >= causeLen) { return 0 }
+    return causeFile[i]
+}
+
+public fn aif_cause_line(i: Int) -> Int {
+    if (i < 0 or i >= causeLen) { return 0 }
+    return causeLine[i]
+}
+
+public fn aif_cause_col(i: Int) -> Int {
+    if (i < 0 or i >= causeLen) { return 0 }
+    return causeCol[i]
+}
+
+// The E value an edge raised to, spelled the way the manifest spells a scope. Region ids are per-function and
+// meaningless outside one, so a scope reports as a region rather than as its slot.
+public fn aif_escape_name(value: Int) -> String {
+    if (value == AIF_E_CALLER) { return "Caller" }
+    if (value == AIF_E_GLOBAL) { return "Global" }
+    return "Region"
+}
+
+public fn aif_alias_name(value: Int) -> String {
+    if (value <= AIF_A_UNIQUE) { return "Unique" }
+    if (value <= AIF_A_BORROWED) { return "Borrowed" }
+    return "Shared"
+}
+
+// SPEC 6.3 prints the rule that fired on each edge, because that is what makes a repair derivable: breaking the
+// edge restores the tier, and the rule says what breaking it would mean.
+public fn aif_rule_name(rule: Int) -> String {
+    if (rule == AIF_CON_BIND) { return "E-BIND" }
+    if (rule == AIF_CON_ARG) { return "A-CALL" }
+    if (rule == AIF_CON_STORE) { return "A-STORE" }
+    if (rule == AIF_CON_LIVE_IN) { return "E-BIND" }
+    if (rule == AIF_CON_OPAQUE) { return "E-OPAQUE" }
+    if (rule == AIF_CON_RETAIN_IN) { return "A-RETAIN" }
+    if (rule == AIF_CON_BORROW) { return "A-CALL" }
+    if (rule == AIF_CON_ESCAPE_CALLER) { return "E-RETURN" }
+    if (rule == AIF_CON_ESCAPE_GLOBAL) { return "E-STATIC" }
+    if (rule == AIF_RULE_A_ESCAPE) { return "A-ESCAPE" }
+    if (rule == AIF_RULE_A_COPY) { return "A-COPY" }
+    if (rule == AIF_RULE_A_CONTAIN) { return "A-CONTAIN" }
+    if (rule == AIF_CON_VIEW_OF) { return "E-VIEW" }
+    if (rule == AIF_RULE_ALLOC) { return "ALLOC" }
+    return "?"
+}

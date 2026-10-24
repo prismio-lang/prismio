@@ -1,0 +1,211 @@
+// Facts the loop analyses attach to functions and to AST nodes, for codegen to read back.
+//
+// A proof belongs to one *copy* of a loop: `generateWhile` emits the body twice, and only the copy
+// behind the guard may drop a bounds check. Each analysis takes a fresh number, marks the access
+// nodes it proved with it, and codegen drops a check only where the node's mark equals the proof
+// active in the copy it is emitting. Numbers are never reused, not across loops and not across the
+// modules one bootstrap process compiles, so a mark left on a node, or on a node allocated later at
+// the same address, can never match a later proof.
+
+import std.io
+import std.map
+import std.option
+import std.process
+import std.raw
+import std.string
+import std.vec
+import symbols.names
+
+// Functions the flat-List guard may look through.
+//
+// `irFlatGuardCount` declines a loop on any call it does not recognise, because the callee could push
+// to one of the loop's lists, which reallocates the element block, or free it. A function that **calls
+// nothing and indexes nothing** can do neither, so it has nothing to say about the guard. Marked once
+// per module, before any body is generated. The criterion is deliberately the conservative one Rust
+// settled on for inferring cross-crate inlinability: no calls, nothing clever. It is what makes a
+// two-line `maxInt(a, b)` free in a hot loop instead of 1.79x.
+//
+// **Keyed by the source name, which is why both verdicts are kept.** The guard sees the spelling at
+// the call site, and overloading means one spelling can name several functions. A name is safe only
+// when *every* function carrying it is, so one unsafe overload poisons the name for all of them.
+let FACT_GUARD_SAFE_SEEN = 1
+let FACT_GUARD_UNSAFE_SEEN = 2
+
+private let mut guardVerdicts: Map<Int, Int>
+
+// Per node address: an index into the columns below.
+private let mut markSlots: Map<Usize, Int>
+private let mut markProof: Vec<Int>
+// The receiver's element base, loaded once in the preheader (an interned name).
+private let mut markData: Vec<Int>
+// The access-facts pass that proved this `+`/`-` cannot wrap, or 0. Kept apart from `markProof`: that
+// fact holds in every copy of the loop, and a copy re-marking the node for its own proof must not
+// erase it.
+private let mut markNowrap: Vec<Int>
+// The same pass's answer for a `%` by a literal: which conditional add or subtract replaces the
+// remainder (REM_* in src/ir/residues.psm), and the pass that gave it.
+private let mut markRemPass: Vec<Int>
+private let mut markRemForm: Vec<Int>
+private let mut lastProof = 0
+private let mut factsOpened = false
+
+// Measurement switches, read once: 0 until asked, then 1 for off and 2 for on.
+private let mut nowrapSwitch = 0
+private let mut proofSwitch = 0
+private let mut traceSwitch = 0
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+private fn factsOpen() {
+    if (factsOpened) { return }
+    let verdicts: Map<Int, Int> = {}
+    guardVerdicts = verdicts
+    let slots: Map<Usize, Int> = {}
+    markSlots = slots
+    markProof = []
+    markData = []
+    markNowrap = []
+    markRemPass = []
+    markRemForm = []
+    factsOpened = true
+}
+
+public fn ir_mark_guard_safe_fn(name: String, safe: Int) {
+    factsOpen()
+    let id = irNameId(name)
+    let seen = guardVerdicts.getOr(id, 0)
+    if (safe != 0) {
+        guardVerdicts.set(id, seen | FACT_GUARD_SAFE_SEEN)
+    } else {
+        guardVerdicts.set(id, seen | FACT_GUARD_UNSAFE_SEEN)
+    }
+}
+
+// 1 safe, 0 unsafe, -1 for a key nothing has marked. The resolved-symbol keys need the third answer: a
+// symbol with no body in this module (an extern, a runtime primitive) is not a verdict of "unsafe", it
+// is a reason to ask the name.
+public fn ir_guard_safe_verdict(name: String) -> Int {
+    factsOpen()
+    if (name.length == 0) { return -1 }
+    let seen = guardVerdicts.getOr(irNameId(name), 0)
+    if (seen == 0) { return -1 }
+    if ((seen & FACT_GUARD_SAFE_SEEN) != 0 and (seen & FACT_GUARD_UNSAFE_SEEN) == 0) { return 1 }
+    return 0
+}
+
+public fn ir_is_guard_safe_fn(name: String) -> Int {
+    if (ir_guard_safe_verdict(name) == 1) { return 1 }
+    return 0
+}
+
+public fn ir_range_proof_new() -> Int {
+    lastProof = lastProof + 1
+    return lastProof
+}
+
+private fn markIndex(node: Ptr) -> Int {
+    factsOpen()
+    return markSlots.getOr(addressOf(node), -1)
+}
+
+private fn markIndexOrNew(node: Ptr) -> Int {
+    let known = markIndex(node)
+    if (known >= 0) { return known }
+    let slot = markProof.length
+    markSlots.set(addressOf(node), slot)
+    markProof.push(0)
+    markData.push(0)
+    markNowrap.push(0)
+    markRemPass.push(0)
+    markRemForm.push(0)
+    return slot
+}
+
+public fn ir_range_proof_mark(node: Ptr, proof: Int, data: String) {
+    let slot = markIndexOrNew(node)
+    markProof[slot] = proof
+    markData[slot] = irNameId(data)
+}
+
+// `pass` is an `ir_range_proof_new` number, never reused, for the reason a proof's is.
+public fn ir_nowrap_mark(node: Ptr, pass: Int) {
+    let slot = markIndexOrNew(node)
+    markNowrap[slot] = pass
+}
+
+// The mark itself, which the analysis reads back while it walks.
+public fn ir_nowrap_marked(node: Ptr) -> Int {
+    let slot = markIndex(node)
+    if (slot < 0) { return 0 }
+    return markNowrap[slot]
+}
+
+// Whether a measurement switch is set to "0". `PRISMIO_NOWRAP=0` and `PRISMIO_RANGE_PROOFS=0` are
+// measurement switches, not modes: the facts are still computed and the loops still versioned, but
+// codegen is never told an op cannot wrap, or an access proved. They separate what the marks buy from
+// what the guards do, which a comparison against an older compiler cannot: that one differs in both.
+private fn switchIsOff(name: String) -> Bool {
+    return (process.env(name) ?? "").equals("0")
+}
+
+public fn ir_nowrap_of(node: Ptr) -> Int {
+    if (nowrapSwitch == 0) {
+        nowrapSwitch = 2
+        if (switchIsOff("PRISMIO_NOWRAP")) { nowrapSwitch = 1 }
+    }
+    if (nowrapSwitch == 1) { return 0 }
+    return ir_nowrap_marked(node)
+}
+
+public fn ir_rem_form_mark(node: Ptr, pass: Int, form: Int) {
+    let slot = markIndexOrNew(node)
+    markRemPass[slot] = pass
+    markRemForm[slot] = form
+}
+
+// The form `pass` gave this `%`, or 0 (keep the remainder). `PRISMIO_NOWRAP=0` answers 0 here too: the
+// forms come from the same facts as the `nsw` marks.
+public fn ir_rem_form_of(node: Ptr, pass: Int) -> Int {
+    if (nowrapSwitch == 0) {
+        nowrapSwitch = 2
+        if (switchIsOff("PRISMIO_NOWRAP")) { nowrapSwitch = 1 }
+    }
+    if (nowrapSwitch == 1) { return 0 }
+    let slot = markIndex(node)
+    if (slot >= 0 and markRemPass[slot] == pass) { return markRemForm[slot] }
+    return 0
+}
+
+// The mark itself, whatever the measurement switch says: what the analysis asks when a second tier
+// must not prove an access the first one already did.
+public fn ir_range_proof_marked(node: Ptr) -> Int {
+    let slot = markIndex(node)
+    if (slot < 0) { return 0 }
+    return markProof[slot]
+}
+
+public fn ir_range_proof_of(node: Ptr) -> Int {
+    if (proofSwitch == 0) {
+        proofSwitch = 2
+        if (switchIsOff("PRISMIO_RANGE_PROOFS")) { proofSwitch = 1 }
+    }
+    if (proofSwitch == 1) { return 0 }
+    return ir_range_proof_marked(node)
+}
+
+// `PRISMIO_RANGE_TRACE=1`: one line per analysed loop copy, so a fixture can assert that a proof fired
+// rather than only that the answers were right: a guard that never holds passes every totality test.
+public fn ir_range_trace(line: Int, proved: Int, total: Int) {
+    if (traceSwitch == 0) {
+        traceSwitch = 1
+        if (process.env("PRISMIO_RANGE_TRACE") != none) { traceSwitch = 2 }
+    }
+    if (traceSwitch == 1) { return }
+    eprint("range proof: line ".concat(line.toString(), " proved ", proved.toString(), " of ",
+                                       total.toString(), "\n"))
+}
+
+public fn ir_range_proof_data(node: Ptr) -> String {
+    let slot = markIndex(node)
+    if (slot < 0) { return "" }
+    return irNameText(markData[slot])
+}

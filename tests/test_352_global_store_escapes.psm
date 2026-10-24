@@ -1,0 +1,157 @@
+// A value stored into a module-level `let` -- directly, into one of its fields, or pushed into
+// a container reached through it -- outlives the function that stores it.
+//
+// The escape analysis read a global as a name it had never seen declared and stored through it
+// as a store into nothing, so a struct built or bound inside a function and kept in a global
+// stayed on that function's frame (`stack  small value does not escape`) or was released at
+// its scope end, and the global then read memory the next call reused. The failure is a wrong
+// answer or a crash, so every case below allocates over the freed storage (`clobber`) before it
+// reads the global back. Lines marked `site:` are the allocations `run_global_store_escape_test`
+// requires `prismio aif` to place somewhere other than the frame; the unmarked ones in
+// `clobber` are the control, which still go to the frame.
+//
+// --verify (run_aif_verify_test) must see no violation: the globals are never released here, so
+// what they hold at exit is the leak count recorded there, and a free of any of it would be one.
+
+import std.io
+import std.string
+import std.time
+
+struct Entry {
+    path: String,
+    id: Int
+}
+
+struct Holder {
+    entry: Entry,
+    items: Vec<Entry>
+}
+
+let mut entries: Vec<Entry>
+let mut names: Vec<String>
+let mut last: Entry
+let mut held: Holder
+let mut start: Instant
+
+fn tail(tag: String) -> String {
+    return tag.concat(" and a long tail of text")
+}
+
+// The same shapes as the globals, never stored: these are what reuse the frame or the block.
+fn clobber(tag: String) -> Int {
+    let a = Entry { path: tail(tag), id: 7 }
+    let b = Entry { path: tail(tag), id: 8 }
+    let c = Entry { path: tail(tag), id: 9 }
+    return a.id + b.id + c.id + a.path.length + b.path.length + c.path.length
+}
+
+// A struct built in the call that stores it.
+fn pushEntry(tag: String, id: Int) {
+    entries.push(Entry { path: tail(tag), id: id })    // site: pushed literal
+}
+
+// A struct bound to a local, read, and then pushed.
+fn pushBound(tag: String, id: Int) -> Int {
+    let entry = Entry { path: tail(tag), id: id }      // site: pushed binding
+    let seen = entry.id + entry.path.length
+    entries.push(entry)
+    return seen
+}
+
+fn replaceElement(tag: String, id: Int) {
+    entries[0] = Entry { path: tail(tag), id: id }     // site: element store
+}
+
+// The global is assigned from a binding the function also reads.
+fn assignLast(tag: String, id: Int) -> Int {
+    let entry = Entry { path: tail(tag), id: id }      // site: assigned binding
+    let seen = entry.id + 1
+    last = entry
+    return seen
+}
+
+fn assignLastLiteral(tag: String, id: Int) {
+    last = Entry { path: tail(tag), id: id }           // site: assigned literal
+}
+
+// A field store on a global struct.
+fn storeField(tag: String, id: Int) {
+    let entry = Entry { path: tail(tag), id: id }      // site: field-stored binding
+    held.entry = entry
+}
+
+fn storeFieldLiteral(tag: String, id: Int) {
+    held.entry = Entry { path: tail(tag), id: id }     // site: field-stored literal
+}
+
+// A container held by a field of a global.
+fn pushHeld(tag: String, id: Int) {
+    held.items.push(Entry { path: tail(tag), id: id }) // site: pushed into a field
+}
+
+// The control: a String is copied into a Vec, so a global Vec<String> was always sound.
+fn pushName(tag: String) {
+    names.push(tail(tag))
+}
+
+fn tick() -> I64 {
+    let now = Instant.now()
+    let spent = now.since(start)
+    start = now
+    return spent.asNanos
+}
+
+fn main() -> Int {
+    entries = []
+    names = []
+    held = Holder { entry: Entry { path: "init", id: 0 }, items: [] }
+    last = Entry { path: "init", id: 0 }
+
+    pushEntry("a", 1)
+    clobber("x")
+    if (entries[0].path.equals("a and a long tail of text") == false or entries[0].id != 1) { return 1 }
+
+    if (pushBound("b", 2) != 2 + 25) { return 2 }
+    clobber("x")
+    if (entries[1].path.equals("b and a long tail of text") == false or entries[1].id != 2) { return 3 }
+    if (entries[0].path.equals("a and a long tail of text") == false) { return 4 }
+
+    replaceElement("c", 3)
+    clobber("x")
+    if (entries[0].path.equals("c and a long tail of text") == false or entries[0].id != 3) { return 5 }
+    if (entries.length != 2) { return 6 }
+
+    if (assignLast("d", 4) != 5) { return 7 }
+    clobber("x")
+    if (last.path.equals("d and a long tail of text") == false or last.id != 4) { return 8 }
+
+    assignLastLiteral("e", 5)
+    clobber("x")
+    if (last.path.equals("e and a long tail of text") == false or last.id != 5) { return 9 }
+
+    storeField("f", 6)
+    clobber("x")
+    if (held.entry.path.equals("f and a long tail of text") == false or held.entry.id != 6) { return 10 }
+
+    storeFieldLiteral("g", 7)
+    clobber("x")
+    if (held.entry.path.equals("g and a long tail of text") == false or held.entry.id != 7) { return 11 }
+
+    pushHeld("h", 8)
+    pushHeld("i", 9)
+    clobber("x")
+    if (held.items.length != 2) { return 12 }
+    if (held.items[0].path.equals("h and a long tail of text") == false or held.items[1].id != 9) { return 13 }
+
+    pushName("j")
+    pushName("k")
+    clobber("x")
+    if (names[0].equals("j and a long tail of text") == false or names[1].equals("k and a long tail of text") == false) { return 14 }
+
+    start = Instant.now()
+    tick()
+    sleep(Duration.fromMillis(2))
+    let mark = Instant.now()
+    if (start.since(mark).asNanos >= 0) { return 15 }
+    return 0
+}

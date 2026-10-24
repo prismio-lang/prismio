@@ -1,6 +1,9 @@
 // The checking passes themselves: expressions, statements, functions, and the
 // module-level walk that drives them.
 
+import symbols.bindings
+import symbols.type_registry
+import symbols.declarations
 import ast.nodes
 import lexer.token
 import ast.types
@@ -5995,7 +5998,7 @@ public fn analyzeModule(module: ASTNode) {
             semaPredeclareFunction(module, stmt)
         }
         if (stmt.kind == NodeKind.EXTERN_FUNCTION) {
-            semaCheckExternContracts(stmt)
+            semaCheckExternContracts(module, stmt)
         }
         fnPtr = stmt.next
     }

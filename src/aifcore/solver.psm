@@ -1,0 +1,837 @@
+// The fixed point: points-to sets, then the escape, aliasing, thread and cyclicity facts over them.
+//
+// Iteration runs to full convergence, so by Kleene's theorem the result is the least fixed point regardless of
+// the order constraints are applied in (INFERENCE 5.1 permits asynchronous iteration on exactly that
+// condition). Order-independence is what licenses updating in place rather than double-buffering, and it is
+// why this engine's manifest must equal the Python oracle's, which applies the same constraints the same way.
+//
+// `aif_solve` returns 1 on convergence and 0 when the round budget ran out. A 0 return is NOT safe to assign
+// tiers from: see `aif_widen`.
+//
+// Every rule that writes points-to or holders reads only points-to, so its least fixed point is independent of
+// the facts, and reaching it first changes no answer. What it changes is the frontier: solved together,
+// points-to is still growing when a budget bites, and a set that may still gain members this pass cannot name
+// makes every site a possible successor. Separated, the fact phase always truncates over a final graph.
+//
+// The derivation DAG (INFERENCE 5.6, SPEC 6.3). A manifest diff has to answer *why* a tier moved. This keeps
+// **one edge per site per domain**, written the moment a rule first raises the fact to the value it ends at,
+// which is a maximal contributor by construction. The path is *a* witness, not provably the shortest, and
+// memory is O(sites). Domain 0 is escape and domain 1 is aliasing; an edge lives at `domain * sites + site`.
+
+import aif.model
+import aifcore.bits
+import aifcore.constants
+import aifcore.constraints
+import aifcore.keys
+import aifcore.nominals
+import aifcore.sites
+import aifcore.structure
+import std.option
+import std.vec
+
+// Key id -> set of sites. Handles into the bitset arena.
+internal let mut pt: Vec<Int>
+// Site id -> set of keys holding it.
+internal let mut holders: Vec<Int>
+// Site id -> set of *container sites* holding it. Separate from `holders`, which counts keys: a container
+// element is neither a key nor a move, so two pushes of one value are two owners the language never noticed.
+internal let mut containerOf: Vec<Int>
+// SPEC 8.4. Key id -> set of *collection sites* that values bound to this key are views of. Provenance has to
+// ride the points-to graph and not the value set alone, because a view is nearly always bound to a name before
+// it travels.
+internal let mut keyViews: Vec<Int>
+internal let mut ptLen = 0
+internal let mut holdersLen = 0
+private let mut scratchVal = -1
+private let mut scratchOwn = -1
+private let mut scratchViews = -1
+private let mut viewTemp = -1
+private let mut vecVal: Vec<Int>
+private let mut vecOwn: Vec<Int>
+private let mut vecViews: Vec<Int>
+private let mut solveRounds = 0
+private let mut ptRoundsUsed = 0
+
+// What moved in the round that just ran. On a truncated run that is the frontier the widening starts from, so it
+// is reset at the top of every round and only the last one's survives.
+private let mut deltaSites = -1
+private let mut deltaPt = false
+// Sites `aifWiden` raised, for the manifest.
+private let mut widenedSites = -1
+
+internal let mut derivSites = 0
+internal let mut derivRule: Vec<Int>
+internal let mut derivFrom: Vec<Int>
+internal let mut derivValue: Vec<Int>
+internal let mut derivFile: Vec<Int>
+internal let mut derivLine: Vec<Int>
+internal let mut derivCol: Vec<Int>
+// The constraint being applied, for attribution; the rule when there is none; or E-VIEW, which rides others.
+private let mut curCon = -1
+private let mut synthRule = -1
+private let mut forceRule = -1
+
+private let mut solverOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+private fn solverOpen() {
+    if (solverOpened) { return }
+    solverOpened = true
+    pt = []
+    holders = []
+    containerOf = []
+    keyViews = []
+    vecVal = []
+    vecOwn = []
+    vecViews = []
+    derivRule = []
+    derivFrom = []
+    derivValue = []
+    derivFile = []
+    derivLine = []
+    derivCol = []
+    scratchVal = bitsNew()
+    scratchOwn = bitsNew()
+    scratchViews = bitsNew()
+    viewTemp = bitsNew()
+    deltaSites = bitsNew()
+    widenedSites = bitsNew()
+}
+
+internal fn solverReset() {
+    solverOpened = false
+    solverOpen()
+    ptLen = 0
+    holdersLen = 0
+    derivSites = 0
+    solveRounds = 0
+    ptRoundsUsed = 0
+    deltaPt = false
+    curCon = -1
+    synthRule = -1
+    forceRule = -1
+}
+
+// A move-only value can be held by several bindings over its lifetime without ever being aliased -- the move
+// checker guarantees the earlier binding is dead -- so multiple holders means sequential ownership, not sharing.
+// A copyable one has no such guarantee.
+internal fn siteIsMoveOnly(s: Int) -> Bool {
+    if (siteKind[s] == AIF_KIND_STRUCT) { return true }
+    if (ownedCollections == false) { return false }
+    return siteKind[s] == AIF_KIND_STRING or siteKind[s] == AIF_KIND_ARRAY or siteKind[s] == AIF_KIND_LIST
+}
+
+private fn noteDeriv(domain: Int, site: Int, from: Int, value: Int) {
+    let at = domain * derivSites + site
+    let live = curCon >= 0 and curCon < conCount
+    // SPEC 8.4. A provenance raise is E-VIEW whichever constraint carried it: the constraint says where the
+    // view escaped to, the rule says why the collection had to follow. The file:line stays the constraint's.
+    if (forceRule >= 0) {
+        derivRule[at] = forceRule
+    } else if (live) {
+        derivRule[at] = conKind[curCon]
+    } else {
+        derivRule[at] = synthRule
+    }
+    derivFrom[at] = from
+    derivValue[at] = value
+    if (live) {
+        derivFile[at] = conFile[curCon]
+        derivLine[at] = conLine[curCon]
+        derivCol[at] = conCol[curCon]
+    } else {
+        derivFile[at] = siteFile[site]
+        derivLine[at] = siteLine[site]
+        derivCol[at] = siteCol[site]
+    }
+}
+
+private fn solverAlloc() {
+    solverOpen()
+    ptLen = keyCount
+    holdersLen = siteCount
+    pt = []
+    holders = []
+    containerOf = []
+    keyViews = []
+    for k in 0..<ptLen {
+        pt.push(bitsNew())
+        keyViews.push(bitsNew())
+    }
+    for s in 0..<holdersLen {
+        holders.push(bitsNew())
+        containerOf.push(bitsNew())
+    }
+    // INFERENCE 5.6 requires the derivation be retained through tier assignment. A site nothing ever raised is
+    // at its own allocation, which is the root every witness path terminates at; its bottom values are stamped
+    // so a fact nothing ever raised still reports what it is.
+    derivSites = siteCount
+    derivRule = []
+    derivFrom = []
+    derivValue = []
+    derivFile = []
+    derivLine = []
+    derivCol = []
+    for domain in 0..<2 {
+        for s in 0..<siteCount {
+            derivRule.push(AIF_RULE_ALLOC)
+            derivFrom.push(-1)
+            if (domain == 0) {
+                derivValue.push(siteE[s])
+            } else {
+                derivValue.push(siteA[s])
+            }
+            derivFile.push(siteFile[s])
+            derivLine.push(siteLine[s])
+            derivCol.push(siteCol[s])
+        }
+    }
+    for s in 0..<siteCount {
+        siteTypeAcyclic[s] = typeAcyclicId(siteType[s])
+        let t = nominalFindId(siteType[s])
+        if (t >= 0) {
+            siteBytes[s] = nominalBytes[t]
+        } else {
+            siteBytes[s] = 0
+        }
+    }
+}
+
+// Flattens a value-set expression against the current points-to state.
+internal fn vsResolve(vs: Int, out: Int) {
+    bitsClear(out)
+    if (vs < 0 or vs >= vsCount) { return }
+    for i in 0..<vsItems[vs].length {
+        let item = vsItems[vs][i]
+        if (item % 2 != 0) {
+            let key = item / 2
+            if (key < ptLen) { bitsOr(out, pt[key]) }
+        } else {
+            bitsSet(out, item / 2)
+        }
+    }
+}
+
+// SPEC 8.4. The collections whose lifetime this value set depends on: its own provenance, plus that of every
+// key it reads through. Not recursive past one key hop, and it does not need to be: a key's set is already the
+// union of everything ever bound into it, provenance included, so the transitive closure is taken by the
+// points-to fixed point rather than here.
+internal fn vsResolveViews(vs: Int, out: Int) {
+    solverOpen()
+    bitsClear(out)
+    if (vs < 0 or vs >= vsCount) { return }
+    for i in 0..<vsViews[vs].length {
+        vsResolve(vsViews[vs][i], viewTemp)
+        bitsOr(out, viewTemp)
+    }
+    for i in 0..<vsItems[vs].length {
+        let item = vsItems[vs][i]
+        if (item % 2 != 0) {
+            let key = item / 2
+            if (key < ptLen) { bitsOr(out, keyViews[key]) }
+        }
+    }
+}
+
+// Records the site in this round's delta and answers true, so a rule reads
+// `if (raiseAlias(s, X)) { changed = markMoved(s) }`.
+private fn markMoved(site: Int) -> Bool {
+    bitsSet(deltaSites, site)
+    return true
+}
+
+private fn raiseEscape(site: Int, target: Int, from: Int) -> Bool {
+    siteEHeld[site] = escapeJoin(siteEHeld[site], target)
+    let j = escapeJoin(siteE[site], target)
+    if (j == siteE[site]) { return false }
+    siteE[site] = j
+    noteDeriv(0, site, from, j)
+    return true
+}
+
+// `raiseEscape` for the two rules E_held does not follow: a bare `return name` in the site's own function, and a
+// return or binding in another function. See the E-RETURN case in the solver.
+private fn raiseEscapeNotHeld(site: Int, target: Int) -> Bool {
+    let j = escapeJoin(siteE[site], target)
+    if (j == siteE[site]) { return false }
+    siteE[site] = j
+    noteDeriv(0, site, -1, j)
+    return true
+}
+
+// SPEC 8.4 E-VIEW:  v is a view of c  =>  E(c) is at least E(v).
+//
+// Applied wherever a rule bounds how long the *view* lives, because that bound is exactly what the collection
+// has to satisfy. `target` is the escape the caller's rule just established for the view; `inFn` is the function
+// that bound is expressed in, or -1 when the target is function-independent.
+//
+// **The direction is the opposite of every other rule in this solver, and that is the whole mechanism.**
+// Everywhere else a value inherits a fact from something holding it; here the *collection* is raised to cover
+// the view, because a view must not outlive what it views. **A is deliberately untouched**: SPEC 8.4 permits
+// overlapping mutable views, and raising A here would import Rust's no-aliasing property.
+private fn raiseViewOwners(vs: Int, target: Int, inFn: Int) -> Bool {
+    vsResolveViews(vs, scratchViews)
+    if (bitsIsEmpty(scratchViews)) { return false }
+    bitsToVec(scratchViews, vecViews)
+    let mut any = false
+    forceRule = AIF_CON_VIEW_OF
+    for i in 0..<vecViews.length {
+        let c = vecViews[i]
+        // A Region target is a scope id, and a scope id means something only inside the function that owns it.
+        // When the collection was allocated in a *different* function, this rule contributes nothing, and that
+        // is a case analysis, not a shortcut. The collection reached `inFn` in exactly one of three ways:
+        // passed down as an argument (live across the call by construction), returned up (E-RETURN has it at
+        // Caller already), or read from static storage (E-STATIC has it Global). In all three the constraint
+        // is already implied; raising to Caller "to be safe" demoted g5's `ents` for nothing.
+        //
+        // A view that outlives `inFn` is NOT this case: escaping one is a return, a store or a push, and those
+        // arrive here with a Caller, Global or holder-derived target, which passes straight through.
+        if (inFn >= 0 and siteFn[c] != inFn and (target >= 0 or target == AIF_E_CALLER)) { continue }
+        if (raiseEscape(c, target, -1)) {
+            any = true
+            markMoved(c)
+        }
+    }
+    forceRule = -1
+    return any
+}
+
+private fn raiseAlias(site: Int, level: Int, from: Int) -> Bool {
+    if (siteA[site] >= level) { return false }
+    // SPEC 5.1: `unique` is an axiom, so the solver takes A = Unique as given and does not propagate aliasing
+    // into the annotated binding. What makes it sound here rather than merely asserted is the language: a second
+    // *owning* reference within the declaring scope is already a compile error under affine collections, so the
+    // local verification SPEC 5.1 asks for is discharged by the move checker. The suppression is recorded so
+    // the manifest can say which values rest on the assertion.
+    if (siteAliasAxiom[site] != 0 and level > AIF_A_UNIQUE) {
+        siteAliasSuppressed[site] = 1
+        return false
+    }
+    siteA[site] = level
+    noteDeriv(1, site, from, level)
+    return true
+}
+
+// INFERENCE 4.3. No axiom cuts this one: SPEC 5's four annotations say nothing about thread affinity.
+// Deliberately without a derivation edge: the domain a witness path walks is chosen from the tier, and a T4a
+// site's interesting fact is *aliasing*.
+private fn raiseThread(site: Int, level: Int) -> Bool {
+    if (siteT[site] >= level) { return false }
+    siteT[site] = level
+    return true
+}
+
+private fn solvePointsTo(maxRounds: Int) -> Bool {
+    let mut r = 0
+    while (r < maxRounds) {
+        solveRounds = solveRounds + 1
+        let mut changed = false
+
+        for ci in 0..<conCount {
+            let kind = conKind[ci]
+            if (kind != AIF_CON_BIND and kind != AIF_CON_ARG and kind != AIF_CON_STORE) { continue }
+            let key = conA[ci]
+
+            vsResolve(conB[ci], scratchVal)
+            if (bitsOr(pt[key], scratchVal)) { changed = true }
+
+            // SPEC 8.4. View provenance flows with the value, into the key it is bound, passed or stored into.
+            // Grown here rather than in the fact loop because it reads only value sets and pt, so it is a
+            // points-to-shaped relation and the fact phase gets to run over a finished one.
+            vsResolveViews(conB[ci], scratchViews)
+            if (bitsIsEmpty(scratchViews) == false) {
+                if (bitsOr(keyViews[key], scratchViews)) { changed = true }
+            }
+
+            // Passing a value as an argument does not make the parameter a holder of it, so ARG records none.
+            if (kind == AIF_CON_ARG) { continue }
+            bitsToVec(scratchVal, vecVal)
+            for i in 0..<vecVal.length {
+                if (bitsSet(holders[vecVal[i]], key)) { changed = true }
+            }
+        }
+
+        if (changed == false) { return true }
+        r = r + 1
+    }
+    return false
+}
+
+public fn aif_solve(maxRounds: Int) -> Int {
+    solverOpen()
+    elemKeyReconcile()
+    solverAlloc()
+    solveRounds = 0
+
+    if (solvePointsTo(maxRounds) == false) {
+        deltaPt = true
+        ptRoundsUsed = solveRounds
+        return 0
+    }
+    ptRoundsUsed = solveRounds
+
+    // SPEC 5: annotations enter here, after points-to and before the facts. After, because a value set may name
+    // a variable rather than a site, and resolving one needs the points-to relation. Before, because both are
+    // statements about the *result*: an axiom applied mid-iteration would only cut the rules that had not fired
+    // yet, which would make the answer depend on constraint order.
+    for ci in 0..<conCount {
+        let kind = conKind[ci]
+        if (kind != AIF_CON_UNIQUE and kind != AIF_CON_PIN and kind != AIF_CON_PIN_REGION) { continue }
+        vsResolve(conA[ci], scratchVal)
+        bitsToVec(scratchVal, vecVal)
+        for i in 0..<vecVal.length {
+            let s = vecVal[i]
+            if (kind == AIF_CON_UNIQUE) {
+                siteAliasAxiom[s] = 1
+            } else if (kind == AIF_CON_PIN_REGION) {
+                // First writer wins, unlike the tier pin below, and there is no "stricter reading" to prefer:
+                // two region names on one site are two incompatible claims, not two strengths of one claim.
+                if (sitePinRegion[s] < 0) { sitePinRegion[s] = conB[ci] }
+            } else if (conB[ci] > sitePinTier[s]) {
+                // Two pins on one site is a program that annotated the same allocation twice; the stricter
+                // reading is the more expensive tier, which is the one that cannot be unsound.
+                sitePinTier[s] = conB[ci]
+            }
+        }
+    }
+
+    // Nothing has been proved about any site yet, so if the budget leaves no round for the facts the frontier is
+    // the whole graph. Overwritten by the first round that runs.
+    for s in 0..<siteCount { bitsSet(deltaSites, s) }
+
+    let mut r = solveRounds
+    while (r < maxRounds) {
+        solveRounds = r + 1
+        let mut changed = false
+        bitsClear(deltaSites)
+        deltaPt = false
+
+        for ci in 0..<conCount {
+            let kind = conKind[ci]
+            let ka = conA[ci]
+            let kb = conB[ci]
+            let kc = conC[ci]
+            curCon = ci
+
+            if (kind == AIF_CON_BIND) {
+                vsResolve(kb, scratchVal)
+                if (bitsOr(pt[ka], scratchVal)) {
+                    changed = true
+                    deltaPt = true
+                }
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    if (bitsSet(holders[vecVal[i]], ka)) {
+                        changed = true
+                        deltaPt = true
+                    }
+                }
+
+            } else if (kind == AIF_CON_ARG) {
+                vsResolve(kb, scratchVal)
+                if (bitsOr(pt[ka], scratchVal)) {
+                    changed = true
+                    deltaPt = true
+                }
+                bitsToVec(scratchVal, vecVal)
+                // A-CALL: passing a value hands out a borrow of it. `sink` still flows through this fact:
+                // Borrowed means one owner plus a call-duration borrow, not another owner.
+                for i in 0..<vecVal.length {
+                    if (raiseAlias(vecVal[i], AIF_A_BORROWED, -1)) { changed = markMoved(vecVal[i]) }
+                }
+
+            } else if (kind == AIF_CON_STORE) {
+                vsResolve(kb, scratchVal)
+                vsResolve(kc, scratchOwn)
+                if (bitsOr(pt[ka], scratchVal)) {
+                    changed = true
+                    deltaPt = true
+                }
+                bitsToVec(scratchVal, vecVal)
+                bitsToVec(scratchOwn, vecOwn)
+                for i in 0..<vecVal.length {
+                    let s = vecVal[i]
+                    if (bitsSet(holders[s], ka)) {
+                        changed = true
+                        deltaPt = true
+                    }
+                    for j in 0..<vecOwn.length {
+                        let o = vecOwn[j]
+                        // E-STORE: reachable from the container, so it lives at least as long as the container.
+                        if (raiseEscape(s, siteE[o], o)) { changed = markMoved(s) }
+                        // A-STORE: sharing is inherited through reachability.
+                        if (raiseAlias(s, siteA[o], o)) { changed = markMoved(s) }
+                        // T-REACH: and so is thread affinity. A value reachable from something a task can see is
+                        // something that task can see.
+                        if (raiseThread(s, siteT[o])) { changed = markMoved(s) }
+                    }
+                }
+                // E-VIEW: storing a view into a field makes the viewed collection live at least as long as the
+                // object holding it.
+                for j in 0..<vecOwn.length {
+                    if (raiseViewOwners(kb, siteE[vecOwn[j]], siteFn[vecOwn[j]])) { changed = true }
+                }
+
+            } else if (kind == AIF_CON_LIVE_IN) {
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    let s = vecVal[i]
+                    // Cross-function flow does not extend a lifetime: only a binding in the site's own function
+                    // says anything about which of that function's scopes the value outlives. Nor does it lift
+                    // E_held: a binding in another frame holds this value only once this frame has returned it,
+                    // or during a call this frame made.
+                    if (siteFn[s] == kc) {
+                        if (raiseEscape(s, kb, -1)) { changed = markMoved(s) }
+                    } else if (raiseEscapeNotHeld(s, AIF_E_CALLER)) {
+                        changed = markMoved(s)
+                    }
+                }
+                // E-VIEW: this binding is how long the view lives, so it is how long the collection has to.
+                if (raiseViewOwners(ka, kb, kc)) { changed = true }
+
+            } else if (kind == AIF_CON_OPAQUE) {
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    let s = vecVal[i]
+                    if (siteE[s] != AIF_E_GLOBAL and raiseEscape(s, AIF_E_CALLER, -1)) { changed = markMoved(s) }
+                    if (raiseAlias(s, AIF_A_SHARED, -1)) { changed = markMoved(s) }
+                }
+                // A view handed to something we cannot see could be kept.
+                if (raiseViewOwners(ka, AIF_E_CALLER, -1)) { changed = true }
+
+            } else if (kind == AIF_CON_RETAIN_IN) {
+                // E-STORE / A-STORE against a container reached through a call rather than through a field
+                // assignment (FFI `retain_in`).
+                vsResolve(ka, scratchVal)
+                vsResolve(kb, scratchOwn)
+                bitsToVec(scratchVal, vecVal)
+                bitsToVec(scratchOwn, vecOwn)
+                for i in 0..<vecVal.length {
+                    let s = vecVal[i]
+                    for j in 0..<vecOwn.length {
+                        let h = vecOwn[j]
+                        if (raiseEscape(s, siteE[h], h)) { changed = markMoved(s) }
+                        if (raiseAlias(s, siteA[h], h)) { changed = markMoved(s) }
+                        // T-REACH, through a container rather than a field.
+                        if (raiseThread(s, siteT[h])) { changed = markMoved(s) }
+                        // Which containers hold it, not merely that one does. The count is the fact A-CONTAIN
+                        // reads, and it is the only thing separating "the container owns this, free it at
+                        // teardown" from a double free through the second one.
+                        if (bitsSet(containerOf[s], h)) { changed = markMoved(s) }
+                    }
+                    if (siteInContainer[s] == 0 and vecOwn.length > 0) {
+                        siteInContainer[s] = 1
+                        changed = markMoved(s)
+                    }
+                    if (raiseAlias(s, AIF_A_BORROWED, -1)) { changed = markMoved(s) }
+                }
+                // A-CONTAIN through a view. An element read is not a second holder while it is only read, but
+                // storing it makes one: the container it came from still holds it. A-CONTAIN counts containers,
+                // so `list_set(xs, i, list_get(xs, j))` -- one container, two slots -- never reached it, and
+                // teardown freed that box twice. A String is exempt: storing a view copies it into a block of
+                // its own.
+                vsResolveViews(ka, scratchViews)
+                // A String element read pushed into a Vec is copied into a block of its own at the push, so it
+                // is not a second holder of the block it read and taints nothing.
+                let copies = kc == 1 and bitsIsEmpty(scratchViews) == false
+                if (vecOwn.length > 0 and bitsIsEmpty(scratchViews) == false) {
+                    forceRule = AIF_RULE_A_CONTAIN
+                    for i in 0..<vecVal.length {
+                        let s = vecVal[i]
+                        if (copies == false and siteViewStored[s] == 0) {
+                            siteViewStored[s] = 1
+                            changed = markMoved(s)
+                        }
+                        if (siteKind[s] == AIF_KIND_STRING) { continue }
+                        if (raiseAlias(s, AIF_A_SHARED, -1)) { changed = markMoved(s) }
+                    }
+                    forceRule = -1
+                }
+                // E-VIEW: pushing a view into a container makes the viewed collection live at least as long as
+                // that container.
+                for j in 0..<vecOwn.length {
+                    if (raiseViewOwners(ka, siteE[vecOwn[j]], siteFn[vecOwn[j]])) { changed = true }
+                }
+
+            } else if (kind == AIF_CON_BORROW) {
+                // Raises A to Borrowed for the call's duration and nothing else. Escape is untouched: a callee
+                // that does not retain cannot extend a lifetime (FFI 6, `borrow` row).
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    if (raiseAlias(vecVal[i], AIF_A_BORROWED, -1)) { changed = markMoved(vecVal[i]) }
+                }
+
+            } else if (kind == AIF_CON_ESCAPE_CALLER) {
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    let s = vecVal[i]
+                    // E_held is not raised by two kinds of return. A bare `return name` in the site's own
+                    // function, which is recorded instead: codegen keeps the value on exactly the paths that
+                    // take one. And any return in another function: a value allocated here reaches another frame
+                    // only by being returned from this one, or as an argument whose return hands it back to this
+                    // frame, or through a container, field, global or task, each of which raises E_held by its
+                    // own rule. Without the second, `toUpper(self) { return strToUpper(self) }` lifted every
+                    // site strToUpper returns.
+                    let own = kb == siteFn[s]
+                    if (kc != 0 and (kc >= AIF_RETURN_KEY_BASE or own == false)) {
+                        if (own) {
+                            let key = kc - AIF_RETURN_KEY_BASE
+                            if (siteRetKey[s] == -1) {
+                                siteRetKey[s] = key
+                            } else if (siteRetKey[s] != key) {
+                                siteRetKey[s] = -2
+                            }
+                        }
+                        if (raiseEscapeNotHeld(s, AIF_E_CALLER)) { changed = markMoved(s) }
+                    } else if (raiseEscape(s, AIF_E_CALLER, -1)) {
+                        changed = markMoved(s)
+                    }
+                }
+                // E-VIEW, and the case the safety gap was actually about: `return list_get(l, i)` hands the
+                // caller a reference into a collection this frame owns, and the collection follows it out. A
+                // view of a parameter does not extend the caller's collection to *its* caller. `c`
+                // distinguishes a source-level return from other escape-to-caller constraints such as FFI
+                // consume.
+                let mut viewFn = -1
+                if (kc != 0) { viewFn = kb }
+                if (raiseViewOwners(ka, AIF_E_CALLER, viewFn)) { changed = true }
+
+            } else if (kind == AIF_CON_TRANSFERRED) {
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    if (siteTransferred[vecVal[i]] == 0) {
+                        siteTransferred[vecVal[i]] = 1
+                        changed = markMoved(vecVal[i])
+                    }
+                }
+
+            } else if (kind == AIF_CON_FOREIGN) {
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    if (siteForeign[vecVal[i]] == 0) {
+                        siteForeign[vecVal[i]] = 1
+                        changed = markMoved(vecVal[i])
+                    }
+                }
+
+            } else if (kind == AIF_CON_NO_STACK) {
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    if (siteNoStack[vecVal[i]] == 0) {
+                        siteNoStack[vecVal[i]] = 1
+                        changed = markMoved(vecVal[i])
+                    }
+                }
+
+            } else if (kind == AIF_CON_SPAWN) {
+                // INFERENCE 4.1's E-SPAWN / E-SPAWN-J and 4.3's T-SPAWN-MOVE / T-SPAWN-SHARE, which are the same
+                // four arguments seen through two domains.
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    let s = vecVal[i]
+
+                    if (kc != 0) {
+                        // E-SPAWN-J. The task is joined on every path before the scope exits, so the argument
+                        // has to outlive the join and nothing more. This is the clause INFERENCE calls "where
+                        // structured concurrency pays": the whole difference between concurrent code at T1 and
+                        // the same code at T4.
+                        if (raiseEscape(s, kb, -1)) { changed = markMoved(s) }
+                    } else {
+                        // E-SPAWN. An unjoined task may outlive every scope in this function, so the value is
+                        // reachable from a root this analysis cannot see the end of.
+                        siteEHeld[s] = AIF_E_GLOBAL
+                        if (siteE[s] != AIF_E_GLOBAL) {
+                            siteE[s] = AIF_E_GLOBAL
+                            noteDeriv(0, s, -1, AIF_E_GLOBAL)
+                            changed = markMoved(s)
+                        }
+                    }
+
+                    // T-SPAWN-MOVE. The argument was moved in -- sema's semaConsumeOperand guarantees it -- so
+                    // exactly one task can reach it at a time. Transferred, not CrossThread. T-SPAWN-SHARE is
+                    // *not* here: it is a per-site rule below, because everything reachable from the argument is
+                    // reachable by the task too.
+                    if (raiseThread(s, AIF_T_TRANSFERRED)) { changed = markMoved(s) }
+                }
+
+            } else if (kind == AIF_CON_ESCAPE_GLOBAL) {
+                vsResolve(ka, scratchVal)
+                bitsToVec(scratchVal, vecVal)
+                for i in 0..<vecVal.length {
+                    let s = vecVal[i]
+                    siteEHeld[s] = AIF_E_GLOBAL
+                    if (siteE[s] != AIF_E_GLOBAL) {
+                        siteE[s] = AIF_E_GLOBAL
+                        noteDeriv(0, s, -1, AIF_E_GLOBAL)
+                        changed = markMoved(s)
+                    }
+                }
+            }
+        }
+
+        // Rules that read a site's own state rather than an incoming edge. They have no constraint to attribute
+        // to, so the derivation names the rule directly.
+        curCon = -1
+        for s in 0..<siteCount {
+            // A-ESCAPE: anything globally reachable is reachable more than once.
+            synthRule = AIF_RULE_A_ESCAPE
+            if (siteE[s] == AIF_E_GLOBAL and raiseAlias(s, AIF_A_SHARED, -1)) { changed = markMoved(s) }
+
+            // A-COPY: only a copyable value can be genuinely multiply held.
+            synthRule = AIF_RULE_A_COPY
+            if (siteIsMoveOnly(s) == false and bitsCountAtLeastTwo(holders[s])
+                    and raiseAlias(s, AIF_A_SHARED, -1)) {
+                changed = markMoved(s)
+            }
+
+            // A-CONTAIN: two containers holding one value is sharing, whatever the type. A-COPY exempts move-only
+            // values because a second *binding* is a move, so the earlier one is provably dead. That argument
+            // does not reach a container: `list_push(l, x)` is a call, and a call is not a move, so
+            // `store(l1, x); store(l2, x)` puts one value under two owners with nothing in the language to
+            // notice. Making it Shared lands the value on the tier built for exactly this shape.
+            //
+            // **A String site that is never stored as a view is exempt.** One site is a *function's*
+            // allocation, not one value: every caller of `strClone` shares the allocation inside it, so two
+            // containers each receiving a clone read as two holders of one value. An element read pushed is the
+            // other thing: it stores the block it read, so three containers hold one value. `viewStored` keeps
+            // that on the old rule.
+            synthRule = AIF_RULE_A_CONTAIN
+            if ((siteIsMoveOnly(s) == false or siteViewStored[s] != 0)
+                    and bitsCountAtLeastTwo(containerOf[s])
+                    and raiseAlias(s, AIF_A_SHARED, -1)) {
+                changed = markMoved(s)
+            }
+
+            // T-SPAWN-SHARE. Stated as a per-site rule over the two facts rather than as a clause on the spawn.
+            // The premise is `A = Shared` and not syntax: under affine references a value can be live in the
+            // parent without its *binding* being, and `Shared` is exactly INFERENCE 2.2's "two or more
+            // references whose relative lifetimes are not statically ordered". Per-site because the spawn's
+            // argument is the *container*; the shared thing is the element, which reaches Transferred through
+            // T-REACH and never appears in any spawn's value set (tests/aif_concurrency_shared.psm).
+            if (siteT[s] >= AIF_T_TRANSFERRED and siteA[s] >= AIF_A_SHARED and raiseThread(s, AIF_T_CROSS)) {
+                changed = markMoved(s)
+            }
+
+            // T-STATIC. A static root in a program with concurrency is assumed reachable from every task:
+            // deliberately blunt, and the honest answer to "when is T4a actually reachable?".
+            if (programHasTasks and siteE[s] == AIF_E_GLOBAL and raiseThread(s, AIF_T_CROSS)) {
+                changed = markMoved(s)
+            }
+
+            // C-UNIQUE / C-TYPE (INFERENCE 4.4 stage 2).
+            let acyclic = siteA[s] == AIF_A_UNIQUE or siteTypeAcyclic[s] != 0
+            let mut want = AIF_C_MAYBE
+            if (acyclic) { want = AIF_C_ACYCLIC }
+            if (want > siteC[s]) {
+                siteC[s] = want
+                changed = markMoved(s)
+            }
+        }
+
+        if (changed == false) { return 1 }
+        r = r + 1
+    }
+    return 0
+}
+
+public fn aif_rounds() -> Int {
+    return solveRounds
+}
+
+public fn aif_pt_rounds() -> Int {
+    return ptRoundsUsed
+}
+
+// INFERENCE 5.3: a truncated ascending iteration is a *pre*-fixed point, so its facts are too optimistic:
+// assigning tiers from one would hand a value T2 where the unexplored rounds would have proved it Shared. That is
+// a use-after-free, not a slowdown, so truncation must be followed by widening to a post-fixed point.
+//
+// U := delta union transitive_succs(delta). Fact flow between sites runs owner -> value and only through STORE and
+// RETAIN_IN; every other rule raises a site from a constant, and the per-site rules are self-edges. Those two
+// edges are read out of the points-to state, which takes no input from the facts, so once points-to has settled
+// the successor graph is final and the frontier is exact. While points-to is still growing it is not, so there
+// the whole graph is the only sound answer.
+private fn widenSites(frontier: Int) {
+    for s in 0..<siteCount {
+        if (frontier >= 0 and bitsTest(frontier, s) == false) { continue }
+        siteE[s] = AIF_E_GLOBAL
+        siteEHeld[s] = AIF_E_GLOBAL
+        siteA[s] = AIF_A_SHARED
+        siteC[s] = AIF_C_MAYBE
+        // Top of the T lattice too, but only where a task exists to reach it from. "This program contains no
+        // spawn" is not something widening was trying to prove, it is something the constraint set already said,
+        // so CrossThread in a task-free module is not conservatism, it is a false statement that costs atomics.
+        if (programHasTasks) { siteT[s] = AIF_T_CROSS }
+        bitsSet(widenedSites, s)
+    }
+}
+
+public fn aif_widen() {
+    solverOpen()
+    if (siteCount <= 0) { return }
+
+    if (deltaPt) {
+        widenSites(-1)
+        return
+    }
+
+    let succ: Vec<Int> = successorSets()
+    let u = bitsNew()
+    bitsOr(u, deltaSites)
+
+    let mut work: Vec<Int> = []
+    bitsToVec(deltaSites, vecVal)
+    for i in 0..<vecVal.length { work.push(vecVal[i]) }
+
+    while (work.length > 0) {
+        let s = work.pop() ?? 0
+        bitsToVec(succ[s], vecOwn)
+        for i in 0..<vecOwn.length {
+            if (bitsSet(u, vecOwn[i])) { work.push(vecOwn[i]) }
+        }
+    }
+
+    widenSites(u)
+}
+
+// For each site, the sites a fact can flow to from it: what each STORE and RETAIN_IN of the program stores into
+// it.
+private fn successorSets() -> Vec<Int> {
+    let mut succ: Vec<Int> = []
+    for s in 0..<siteCount { succ.push(bitsNew()) }
+    for ci in 0..<conCount {
+        let kind = conKind[ci]
+        let mut valueSet = 0
+        let mut ownerSet = 0
+        if (kind == AIF_CON_STORE) {
+            valueSet = conB[ci]
+            ownerSet = conC[ci]
+        } else if (kind == AIF_CON_RETAIN_IN) {
+            valueSet = conA[ci]
+            ownerSet = conB[ci]
+        } else {
+            continue
+        }
+        vsResolve(valueSet, scratchVal)
+        vsResolve(ownerSet, scratchOwn)
+        bitsToVec(scratchOwn, vecOwn)
+        for j in 0..<vecOwn.length { bitsOr(succ[vecOwn[j]], scratchVal) }
+    }
+    return succ
+}
+
+// Whether this site's facts were raised by the widening rather than inferred. SPEC 6.2 marks exactly those records
+// budget-exhausted; the rest of a truncated build carries facts that converged.
+public fn aif_site_widened(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    if (bitsTest(widenedSites, id)) { return 1 }
+    return 0
+}

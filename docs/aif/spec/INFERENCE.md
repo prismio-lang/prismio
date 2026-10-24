@@ -237,6 +237,15 @@ region r { … }         region block
 | E-SPAWN | `spawn f(… yᵢ …)`, task not joined on all paths before scope exit | `E(yᵢ) ⊒ Global` |
 | E-SPAWN-J | `spawn f(… yᵢ …)`, joined on every path before scope `s` exits | `E(yᵢ) ⊒ Region(s)` |
 
+**A static root is a module-level `let`, a field or element of one, or a container reached through
+one** (`aifRootedInGlobal`). A name the function declares shadows a global of the same spelling. The
+rule applies to every stored value except a `String` or a `Ptr`: the sites of those are shared by the
+whole program (every `concat` result comes from one site in std), so raising one would stop all of
+them being released, and no wrong store of either was found -- a `String` is a flat block whose
+binding codegen keeps off the scope release when it is stored, and a `Ptr` is unmanaged. This is a
+precision decision, not a soundness one, and it is made in both engines (`aifStoredIntoGlobal`,
+`stored_unmanaged` in the oracle).
+
 `subst` translates a callee's summary escape into the caller's scope tree: `Caller` in the callee
 becomes the call site's scope; `Global` stays `Global`; a callee-internal `Region` never escapes and
 contributes nothing.

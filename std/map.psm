@@ -64,7 +64,7 @@
 // of IndexMap's `swap_remove`.
 //
 // Integer keys were never a consolation prize for the caller this was written
-// for: runtime/aif_support.c interns every name, type and site to an `int` id
+// for: src/aifcore/ interns every name, type and site to an `int` id
 // and keys its tables on those.
 //
 // **That used to be the argument for an avalanche hash and it is the argument

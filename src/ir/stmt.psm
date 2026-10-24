@@ -1,11 +1,19 @@
 // Lowering statements, and the scope and region unwinding that leaving one implies.
 
+import symbols.bindings
+import symbols.type_registry
 import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.source_files
 import std.string
 import sema.enums
+import aifcore.arenas
+import aifcore.call_results
+import aifcore.dispositions
+import aifcore.extents
+import aifcore.ownership
 
 // The value an arm's tag comparison tests, as sema left it on the arm.
 private fn matchArmTagText(arm: ASTNode) -> String {
@@ -407,7 +415,7 @@ private fn generateStringDispatch(firstPtr: Ptr, count: Int) -> Ptr {
 // A struct literal AIF placed on the frame, of a type whose fields own what
 // they hold. Nothing else releases those fields: once some object of the type is
 // reclaimed, a value stored into an owning field has no other owner (AIF's
-// site_in_released_field) -- including one stored into a frame instance, since
+// siteInReleasedField) -- including one stored into a frame instance, since
 // the field's points-to set is the type's and not the object's. A heap object
 // gets `__aif_release_T`; this one gets the same field walk without the free.
 //

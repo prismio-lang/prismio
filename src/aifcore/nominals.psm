@@ -1,0 +1,470 @@
+// The program's nominal types as the engine sees them: structs with their fields, enums, and the type
+// reference graph that says which types can reach which.
+//
+// Structs carry a field count (the T0/T1 size proxy), a declared byte width per field, an access
+// profile over the fields and the permutation the layout search chose. Enums are recorded only so the
+// frontend can exclude them: an enum is an i32 and participates in no memory model.
+//
+// The per-field arrays are one vector per nominal, indexed by declaration index, and `order[i]` is the
+// declaration index placed i-th.
+
+import aifcore.bits
+import aifcore.constants
+import aifcore.layout_search
+import aifcore.structure
+import std.fs
+import std.map
+import std.option
+import std.string
+import std.vec
+import symbols.names
+
+internal let mut nominalCount = 0
+internal let mut nominalName: Vec<Int>
+internal let mut nominalNFields: Vec<Int>
+// 0 until the frontend computes a layout for it.
+internal let mut nominalBytes: Vec<Int>
+internal let mut nominalIsEnum: Vec<Int>
+// Direct edges, then closed transitively. A bitset handle.
+internal let mut nominalReaches: Vec<Int>
+internal let mut nominalAcyclic: Vec<Int>
+internal let mut nominalReordered: Vec<Int>
+// 0 for an unsplit type and otherwise the number of fields the hot record keeps.
+internal let mut nominalHotCount: Vec<Int>
+// The fields the hot record keeps, by declaration index. A bitset handle.
+internal let mut nominalHot: Vec<Int>
+// A veto pushed in before the split decision is taken, never after: `typeReleasesOf` reads the
+// decision during the solve. It means the cold block cannot be reached at all.
+internal let mut nominalNoSplit: Vec<Int>
+// The *other* kind of veto: the model declined to choose because an input is absent. A forced candidate
+// is evidence being gathered, so it clears this one and never `nominalNoSplit`.
+internal let mut nominalNoSplitUnmodelled: Vec<Int>
+// A pointer-free List element whose complete row is consumed by a sequential traversal. A performance
+// guard that a force may override, not a soundness restriction.
+internal let mut nominalNoSplitListFullScan: Vec<Int>
+// The layout is an ABI: declaration order, never split, for a type some other compilation also lays out.
+internal let mut nominalLayoutFixed: Vec<Int>
+internal let mut nominalByName: Map<Int, Int>
+
+internal let mut fieldName: Vec<Vec<Int>>
+// The field's *declared* type, base-named. Struct-field ownership compares it against what the sites
+// say is in the slot: this compiler puns an ASTNode pointer as `String`.
+internal let mut fieldType: Vec<Vec<Int>>
+// Width, from the frontend, which knows the lowering.
+internal let mut fieldBytes: Vec<Vec<Int>>
+internal let mut fieldAcc: Vec<Vec<I64>>
+internal let mut fieldOrder: Vec<Vec<Int>>
+// LAYOUT 2.1's `range(f)`, observed by a `workload`. Zero when no profile was loaded, and the packer
+// declines then: "no range recorded" and "range is 0..0" are the same bits.
+internal let mut fieldLow: Vec<Vec<I64>>
+internal let mut fieldHigh: Vec<Vec<I64>>
+internal let mut fieldHasRange: Vec<Vec<Int>>
+// 1 when the field's storage is the object's own: a struct value copied in rather than a pointer
+// stored. An inline field **owns nothing**, so the analysis has to be told.
+internal let mut fieldInline: Vec<Vec<Int>>
+
+// Interned "workload:NAME", or -1 for the static estimate.
+private let mut profileSource = -1
+private let mut profileRuns = 0
+
+private let mut nominalsOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+internal fn nominalsOpen() {
+    if (nominalsOpened) { return }
+    nominalsOpened = true
+    nominalName = []
+    nominalNFields = []
+    nominalBytes = []
+    nominalIsEnum = []
+    nominalReaches = []
+    nominalAcyclic = []
+    nominalReordered = []
+    nominalHotCount = []
+    nominalHot = []
+    nominalNoSplit = []
+    nominalNoSplitUnmodelled = []
+    nominalNoSplitListFullScan = []
+    nominalLayoutFixed = []
+    let byName: Map<Int, Int> = {}
+    nominalByName = byName
+    fieldName = []
+    fieldType = []
+    fieldBytes = []
+    fieldAcc = []
+    fieldOrder = []
+    fieldLow = []
+    fieldHigh = []
+    fieldHasRange = []
+    fieldInline = []
+}
+
+// Cleared with the engine, and the ordering is the reason it is safe to clear the profile: it is loaded
+// *into* this table, so it can only be loaded after the declaration walk has repopulated the table in the
+// second pass.
+internal fn nominalsReset() {
+    nominalsOpened = false
+    nominalsOpen()
+    nominalCount = 0
+    profileSource = -1
+    profileRuns = 0
+}
+
+internal fn nominalFindId(name: Int) -> Int {
+    nominalsOpen()
+    return nominalByName.getOr(name, -1)
+}
+
+internal fn nominalFind(name: String) -> Int {
+    return nominalFindId(irNameId(name))
+}
+
+private fn freshWide() -> Vec<I64> {
+    let empty: Vec<I64> = []
+    return empty
+}
+
+private fn nominalIntern(name: String, isEnum: Int) -> Int {
+    let existing = nominalFind(name)
+    if (existing >= 0) { return existing }
+    let id = irNameId(name)
+    nominalName.push(id)
+    nominalNFields.push(0)
+    nominalBytes.push(0)
+    nominalIsEnum.push(isEnum)
+    nominalReaches.push(bitsNew())
+    nominalAcyclic.push(1)
+    nominalReordered.push(0)
+    nominalHotCount.push(0)
+    nominalHot.push(bitsNew())
+    nominalNoSplit.push(0)
+    nominalNoSplitUnmodelled.push(0)
+    nominalNoSplitListFullScan.push(0)
+    nominalLayoutFixed.push(0)
+    fieldName.push(freshInts())
+    fieldType.push(freshInts())
+    fieldBytes.push(freshInts())
+    fieldAcc.push(freshWide())
+    fieldOrder.push(freshInts())
+    fieldLow.push(freshWide())
+    fieldHigh.push(freshWide())
+    fieldHasRange.push(freshInts())
+    fieldInline.push(freshInts())
+    nominalByName.set(id, nominalCount)
+    nominalCount = nominalCount + 1
+    return nominalCount - 1
+}
+
+public fn aif_struct_new(name: String) {
+    nominalIntern(name, 0)
+}
+
+public fn aif_enum_new(name: String) {
+    nominalIntern(name, 1)
+}
+
+public fn aif_is_struct(name: String) -> Int {
+    let id = nominalFind(name)
+    if (id >= 0 and nominalIsEnum[id] == 0) { return 1 }
+    return 0
+}
+
+public fn aif_is_enum(name: String) -> Int {
+    let id = nominalFind(name)
+    if (id >= 0 and nominalIsEnum[id] != 0) { return 1 }
+    return 0
+}
+
+public fn aif_struct_nfields(name: String) -> Int {
+    let id = nominalFind(name)
+    if (id >= 0) { return nominalNFields[id] }
+    return 0
+}
+
+public fn aif_struct_add_field(name: String, field: String, type: String, bytes: Int) {
+    let t = nominalIntern(name, 0)
+    let index = nominalNFields[t]
+    fieldName[t].push(irNameId(field))
+    fieldType[t].push(irNameId(type))
+    fieldBytes[t].push(bytes)
+    fieldAcc[t].push(0)
+    fieldOrder[t].push(index)
+    fieldLow[t].push(0)
+    fieldHigh[t].push(0)
+    fieldHasRange[t].push(0)
+    fieldInline[t].push(0)
+    nominalNFields[t] = index + 1
+}
+
+// The layout half of a field, told to the analysis rather than derived by it. Separate from
+// `aif_struct_add_field` because adding an FFI function is one step and changing one is two.
+public fn aif_struct_field_inline(name: String, field: String, inlined: Int) {
+    let id = nominalFind(name)
+    if (id < 0) { return }
+    let f = irNameId(field)
+    for i in 0..<nominalNFields[id] {
+        if (fieldName[id][i] == f) {
+            if (inlined != 0) {
+                fieldInline[id][i] = 1
+            } else {
+                fieldInline[id][i] = 0
+            }
+            return
+        }
+    }
+}
+
+internal fn fieldIsInline(typeName: Int, name: Int) -> Int {
+    let id = nominalFindId(typeName)
+    if (id < 0) { return 0 }
+    for i in 0..<nominalNFields[id] {
+        if (fieldName[id][i] == name) { return fieldInline[id][i] }
+    }
+    return 0
+}
+
+// The declaration index of `field` in nominal `id`, or -1.
+internal fn fieldIndexOf(id: Int, field: Int) -> Int {
+    for i in 0..<nominalNFields[id] {
+        if (fieldName[id][i] == field) { return i }
+    }
+    return -1
+}
+
+// LAYOUT 2.2 asks an implementation to record in the manifest which profile was used.
+public fn aif_profile_source() -> String {
+    if (profileSource < 0) { return "static" }
+    return irNameText(profileSource)
+}
+
+public fn aif_profile_is_measured() -> Int {
+    if (profileSource >= 0) { return 1 }
+    return 0
+}
+
+private fn profileSetField(type: String, field: String, reads: I64, writes: I64,
+                           hasRange: Int, low: I64, high: I64) {
+    let id = nominalFind(type)
+    if (id < 0) { return }
+    let f = irNameId(field)
+    for i in 0..<nominalNFields[id] {
+        if (fieldName[id][i] != f) { continue }
+        fieldAcc[id][i] = reads + writes
+        fieldHasRange[id][i] = hasRange
+        fieldLow[id][i] = low
+        fieldHigh[id][i] = high
+        return
+    }
+}
+
+// Reads a measured profile back (LAYOUT 2.2). The format is the one `rt_profile_dump` writes, and the
+// parser is deliberately forgiving: an unknown line is skipped rather than rejected. A profile is an
+// *input to codegen only* (W4), so a malformed one can make the layout worse and can never make the
+// program wrong, which means failing the build over it would trade a real cost for no correctness.
+//
+// 1 on success. A type or field the profile names but this module does not declare is dropped rather
+// than diagnosed: a checked-in profile outlives edits to the source it was taken against.
+public fn aif_profile_load(path: String) -> Int {
+    let text = tryReadFile(path)
+    if (text == none) { return 0 }
+
+    // Every field this module declares that the profile does not mention was not touched by the measured
+    // region, and its count is therefore a measured *zero*, not "unknown". Clearing first is what makes
+    // that true: without it an untouched field would keep the static estimate and read as hot, which is
+    // precisely backwards for the hot/cold cut the counts feed.
+    for n in 0..<nominalCount {
+        for i in 0..<nominalNFields[n] {
+            fieldAcc[n][i] = 0
+            fieldHasRange[n][i] = 0
+        }
+    }
+
+    let mut any = 0
+    for line in (text ?? "").lines() {
+        if (line.startsWith("#")) { continue }
+        let words = line.splitWhitespace()
+        if (words.length == 0) { continue }
+        let kind = words[0]
+
+        if (kind.equals("source")) {
+            if (words.length >= 2) { profileSource = irNameId(words[1]) }
+        } else if (kind.equals("runs")) {
+            if (words.length >= 2) {
+                let runs = words[1].parseInt()
+                if (runs != none) { profileRuns = runs ?? 0 }
+            }
+        } else if (kind.equals("field")) {
+            if (words.length < 4) { continue }
+            let reads = words[2].parseI64()
+            let writes = words[3].parseI64()
+            if (reads == none or writes == none) { continue }
+            // "Type.field", split at the last dot: a field name cannot contain one and neither can a
+            // type name, but splitting at the first would break if that ever changed.
+            let dot = words[1].lastIndexOf('.')
+            if (dot < 0) { continue }
+            let mut hasRange = 0
+            let mut low: I64 = 0
+            let mut high: I64 = 0
+            if (words.length >= 5) {
+                let split = words[4].indexOf("..")
+                if (split > 0) {
+                    let a = words[4].substring(0, split).parseI64()
+                    let b = words[4].substring(split + 2, words[4].length - split - 2).parseI64()
+                    if (a != none and b != none) {
+                        hasRange = 1
+                        low = a ?? 0
+                        high = b ?? 0
+                    }
+                }
+            }
+            profileSetField(words[1].substring(0, dot), words[1].substring(dot + 1, words[1].length - dot - 1),
+                            reads ?? 0, writes ?? 0, hasRange, low, high)
+            any = 1
+        } else if (kind.equals("type")) {
+            if (words.length >= 4 and words[2].parseI64() != none and words[3].parseI64() != none) { any = 1 }
+        }
+    }
+    return any
+}
+
+public fn aif_field_has_range(type: String, field: String) -> Int {
+    let id = nominalFind(type)
+    if (id < 0) { return 0 }
+    let at = fieldIndexOf(id, irNameId(field))
+    if (at < 0) { return 0 }
+    return fieldHasRange[id][at]
+}
+
+public fn aif_field_range_lo(type: String, field: String) -> I64 {
+    let id = nominalFind(type)
+    if (id < 0) { return 0 }
+    let at = fieldIndexOf(id, irNameId(field))
+    if (at < 0) { return 0 }
+    return fieldLow[id][at]
+}
+
+public fn aif_field_range_hi(type: String, field: String) -> I64 {
+    let id = nominalFind(type)
+    if (id < 0) { return 0 }
+    let at = fieldIndexOf(id, irNameId(field))
+    if (at < 0) { return 0 }
+    return fieldHigh[id][at]
+}
+
+// The narrowest signed width that holds the measured range, in bytes. Signed even when the range is
+// non-negative: the field's declared type is signed, and a narrowing that changed signedness would
+// change what a comparison against it means.
+public fn aif_field_range_bytes(type: String, field: String) -> Int {
+    if (aif_field_has_range(type, field) == 0) { return 8 }
+    let low = aif_field_range_lo(type, field)
+    let high = aif_field_range_hi(type, field)
+    if (low >= -128 and high <= 127) { return 1 }
+    if (low >= -32768 and high <= 32767) { return 2 }
+    if (low >= -2147483648 and high <= 2147483647) { return 4 }
+    return 8
+}
+
+// The access profile: one count per syntactic access, weighted by AIF_LOOP_ITERS per enclosing loop,
+// which is exactly how automatic arena placement estimates allocs_in(s).
+public fn aif_field_access(type: String, field: String, loops: Int) {
+    let id = nominalFind(type)
+    if (id < 0) { return }
+    let f = irNameId(field)
+    let mut weight: I64 = 1
+    let mut depth = loops
+    if (depth > 6) { depth = 6 }       // capped as `weightOf` caps it, and for the same reason
+    if (depth < 0) { depth = 0 }
+    for i in 0..<depth { weight = weight * (AIF_LOOP_ITERS as I64) }
+    for i in 0..<nominalNFields[id] {
+        if (fieldName[id][i] == f) {
+            fieldAcc[id][i] = fieldAcc[id][i] + weight
+            // LAYOUT 5's cost model needs which fields are touched *together*, not just how often each
+            // is touched. Same call site, because a second walk would be a second chance to disagree
+            // about what an access is.
+            traversalNoteField(nominalName[id], i)
+            return
+        }
+    }
+}
+
+public fn aif_struct_set_size(name: String, bytes: Int) {
+    nominalBytes[nominalIntern(name, 0)] = bytes
+}
+
+public fn aif_struct_size(name: String) -> Int {
+    let id = nominalFind(name)
+    if (id >= 0) { return nominalBytes[id] }
+    return 0
+}
+
+// One edge of the type reference graph (INFERENCE 4.4 stage 1). The frontend walks each field's type
+// annotation and reports every nominal type it can reach, so `List<Node>` and `[Node]` both produce an
+// edge to Node: the element is reachable from the container whatever the container is.
+public fn aif_type_edge(from: String, to: String) {
+    let a = nominalFind(from)
+    let b = nominalFind(to)
+    if (a < 0 or b < 0) { return }
+    bitsSet(nominalReaches[a], b)
+}
+
+// Transitive closure, then: a type is cyclic when it reaches itself, or reaches anything that reaches
+// itself. Closure rather than Tarjan because the graph has one node per nominal type, tens and not
+// thousands, so an O(n^3/64) fixpoint is free and has no recursion depth to get wrong.
+public fn aif_compute_type_acyclic() {
+    nominalsOpen()
+    let mut changed = true
+    while (changed) {
+        changed = false
+        for t in 0..<nominalCount {
+            for u in 0..<nominalCount {
+                if (bitsTest(nominalReaches[t], u) == false) { continue }
+                if (bitsOr(nominalReaches[t], nominalReaches[u])) { changed = true }
+            }
+        }
+    }
+    for t in 0..<nominalCount {
+        let mut cyclic = bitsTest(nominalReaches[t], t)
+        let mut u = 0
+        while (cyclic == false and u < nominalCount) {
+            if (bitsTest(nominalReaches[t], u) and bitsTest(nominalReaches[u], u)) { cyclic = true }
+            u = u + 1
+        }
+        if (cyclic) {
+            nominalAcyclic[t] = 0
+        } else {
+            nominalAcyclic[t] = 1
+        }
+    }
+}
+
+// Unknown types report acyclic. They are scalars and externs' opaque returns, none of which can hold a
+// reference back into the program.
+internal fn typeAcyclicId(name: Int) -> Int {
+    let id = nominalFindId(name)
+    if (id < 0) { return 1 }
+    return nominalAcyclic[id]
+}
+
+public fn aif_type_acyclic(name: String) -> Int {
+    return typeAcyclicId(irNameId(name))
+}
+
+public fn aif_nominal_count() -> Int {
+    return nominalCount
+}
+
+public fn aif_nominal_name(i: Int) -> String {
+    if (i < 0 or i >= nominalCount) { return "" }
+    return irNameText(nominalName[i])
+}
+
+public fn aif_nominal_is_struct(i: Int) -> Int {
+    if (i < 0 or i >= nominalCount) { return 0 }
+    if (nominalIsEnum[i] == 0) { return 1 }
+    return 0
+}
+
+public fn aif_nominal_acyclic(i: Int) -> Int {
+    if (i < 0 or i >= nominalCount) { return 1 }
+    return nominalAcyclic[i]
+}

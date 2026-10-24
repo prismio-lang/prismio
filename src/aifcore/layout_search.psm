@@ -1,0 +1,765 @@
+// LAYOUT 6 and 7.2: choosing the order of a struct's fields and, where the cost model says it pays,
+// splitting it into a hot record and a cold block.
+//
+// `aifLayoutSelect` runs one greedy placement. The cost model below scores every admissible cut
+// (LAYOUT 5, ported from tools/aif_oracle/layout.py) and `aif_layout_split_select` takes the cheapest
+// one the vetoes allow. Costs are per element and scaled by 100, in integer arithmetic throughout as
+// LAYOUT 9 obligation 2 requires: a parallel float reduction can flip a tie, and layout must be
+// reproducible.
+//
+// Three deliberate divergences from the prototype, each of which changes the answer and was measured:
+//   1. Candidates are AoS x splits, not AoS/SoA x splits. SoA needs handles, which do not exist, so a
+//      compiler that ranked it would select a layout it cannot emit.
+//   2. The hot record carries the 8-byte link word to the cold block. The prototype's split is indexed,
+//      this one is linked, and without the link word the model over-values every split.
+//   3. There is no SimdCredit term. Restricted to AoS the credit cannot arise, which resolves LAYOUT
+//      5.4's defect by construction (it does not resolve the specification defect).
+//
+// **The first field never moves.** The compiler puns a struct pointer as `String` and spells "this slot
+// is empty" as `str_equals(ptr, "")`, which reads the first byte of the pointed-to struct. That is why
+// NodeKind and TypeKind reserve ordinal 0: a live node whose first field is zero is byte-for-byte an
+// empty slot (tests/test_41_punned_slot_bytes.psm). Sorting by width would put an 8-byte pointer at
+// offset 0, and the generation built by the first compiler that did this could not parse its own source.
+
+import aifcore.bits
+import aifcore.constants
+import aifcore.nominals
+import aifcore.structure
+import std.map
+import std.option
+import std.string
+import std.vec
+import symbols.names
+
+// A loop, and the fields of one type it touches: LAYOUT 2.1's "co-accessed" half, the structural fact the
+// model needs and a per-field count cannot supply. Two fields with equal counts touched by *different*
+// loops want opposite sides of a cut.
+private let mut trType: Vec<Int>
+private let mut trLoop: Vec<Int>
+private let mut trDepth: Vec<Int>
+// 1 sequential, 0 random. Random until something says otherwise: a field walked through a chain of
+// member accesses is a pointer chase, and treating an unproven walk as sequential would credit a split
+// with locality nothing established.
+private let mut trSequential: Vec<Int>
+private let mut trTouched: Vec<Int>
+private let mut loopIds: Vec<Int>
+private let mut loopDepthNow = 0
+private let mut loopNextId = 0
+
+// The candidate space: cuts at strict frequency boundaries down the access-count ranking, candidate 0
+// being the unsplit record, the baseline every ratio is against.
+private let mut candHotCount: Vec<Int>
+private let mut candCost: Vec<I64>
+private let mut candHot: Vec<Int>
+private let mut candType = -1
+private let mut candBest = 0
+
+// LAYOUT 8's forced candidate. It lives outside the nominal table because the engine tears every
+// nominal down between runs and a declared `workload` runs it twice in one process: a force stored on the
+// type would apply to the instrumented pass and silently not to the one that ships.
+private let mut forcedType: Vec<String>
+private let mut forcedHot: Vec<Int>
+private let mut forcedApplied: Vec<Int>
+
+private let mut layoutOpened = false
+
+internal fn layoutOpen() {
+    if (layoutOpened) { return }
+    layoutOpened = true
+    trType = []
+    trLoop = []
+    trDepth = []
+    trSequential = []
+    trTouched = []
+    loopIds = Vec<Int>.filled(64, 0)
+    candHotCount = []
+    candCost = []
+    candHot = []
+    forcedType = []
+    forcedHot = []
+    forcedApplied = []
+}
+
+// The padding a field of `width` bytes needs to be aligned at `offset`.
+private fn layoutPad(offset: Int, width: Int) -> Int {
+    if (width <= 0) { return 0 }
+    let slack = offset % width
+    if (slack == 0) { return 0 }
+    return width - slack
+}
+
+// Greedy placement over the running offset, because a sort is optimal for padding only when placement
+// starts at offset 0 with nothing fixed. The pinned first field breaks that: pinning a 4-byte `kind`
+// leaves a 4-byte hole that only a narrow field can fill. At each step take the widest remaining field
+// that needs *no* padding where the last one ended, and only when nothing fits fall back to the widest
+// overall. Frequency is the tie-break rather than the primary key.
+//
+// **A fixed type keeps declaration order.** A layout is observable the moment a second compilation reads
+// the type, and a standard-library struct always has one: a program built against an installed toolchain
+// links `stdlib/*.plib` bitcode that was laid out when the toolchain was packaged.
+public fn aif_layout_fix(type: String) {
+    let id = nominalFind(type)
+    if (id >= 0) { nominalLayoutFixed[id] = 1 }
+}
+
+public fn aif_layout_select() {
+    nominalsOpen()
+    for n in 0..<nominalCount {
+        if (nominalIsEnum[n] != 0 or nominalNFields[n] < 3) { continue }   // nothing to permute past field 0
+        if (nominalLayoutFixed[n] != 0) { continue }
+
+        // The first field never moves. Everything else is chosen by greedy best-fit from the offset the
+        // pinned prefix left.
+        let count = nominalNFields[n]
+        let mut offset = fieldBytes[n][0]
+        for slot in 1..<count {
+            let mut best = -1
+            let mut bestPad = 0
+            for c in slot..<count {
+                let f = fieldOrder[n][c]
+                let pad = layoutPad(offset, fieldBytes[n][f])
+                if (best < 0) {
+                    best = c
+                    bestPad = pad
+                    continue
+                }
+                let b = fieldOrder[n][best]
+                // Fits without padding beats anything that does not; then wider; then hotter; then
+                // declaration index, so the order is total and the output deterministic (LAYOUT 9).
+                let mut better = false
+                if ((pad == 0) != (bestPad == 0)) {
+                    better = pad == 0
+                } else if (fieldBytes[n][f] != fieldBytes[n][b]) {
+                    better = fieldBytes[n][f] > fieldBytes[n][b]
+                } else if (fieldAcc[n][f] != fieldAcc[n][b]) {
+                    better = fieldAcc[n][f] > fieldAcc[n][b]
+                } else {
+                    better = f < b
+                }
+                if (better) {
+                    best = c
+                    bestPad = pad
+                }
+            }
+            let chosen = fieldOrder[n][best]
+            fieldOrder[n][best] = fieldOrder[n][slot]
+            fieldOrder[n][slot] = chosen
+            offset = offset + bestPad + fieldBytes[n][chosen]
+        }
+
+        for i in 0..<count {
+            if (fieldOrder[n][i] != i) {
+                nominalReordered[n] = 1
+                break
+            }
+        }
+    }
+}
+
+public fn aif_traversal_begin() {
+    layoutOpen()
+    if (loopDepthNow < 64) {
+        loopNextId = loopNextId + 1
+        loopIds[loopDepthNow] = loopNextId
+    }
+    loopDepthNow = loopDepthNow + 1
+}
+
+public fn aif_traversal_end() {
+    if (loopDepthNow > 0) { loopDepthNow = loopDepthNow - 1 }
+}
+
+// The traversal record for `type` in the loop the walk is inside, made on first use, or -1 outside one.
+private fn traversalFor(type: Int) -> Int {
+    layoutOpen()
+    if (loopDepthNow <= 0 or loopDepthNow > 64) { return -1 }
+    let loopId = loopIds[loopDepthNow - 1]
+    for i in 0..<trType.length {
+        if (trType[i] == type and trLoop[i] == loopId) { return i }
+    }
+    trType.push(type)
+    trLoop.push(loopId)
+    trDepth.push(loopDepthNow)
+    trSequential.push(0)
+    trTouched.push(bitsNew())
+    return trType.length - 1
+}
+
+// The walk calls this when a loop binds a container element (`let p = list_get(ps, i)`). That is the
+// shape the cost model's `sequential` means: the records are visited in container order, so a smaller
+// hot record puts more of them per line.
+//
+// Weaker than the prototype's rule, and the difference is nameable: layout.py additionally requires the
+// index to be an induction variable of the loop, so a gather is random there and sequential here. No loop
+// in `tests/` indexes a container by anything but its own counter, so the two rules agree on every
+// program in this tree; the first gather written will separate them silently.
+public fn aif_traversal_elem(type: String, sequential: Int) {
+    let id = nominalFind(type)
+    if (id < 0) { return }
+    let t = traversalFor(nominalName[id])
+    if (t < 0) { return }
+    if (sequential != 0) {
+        trSequential[t] = 1
+    } else {
+        trSequential[t] = 0
+    }
+}
+
+internal fn traversalNoteField(typeName: Int, fieldIndex: Int) {
+    let t = traversalFor(typeName)
+    if (t < 0) { return }
+    bitsSet(trTouched[t], fieldIndex)
+}
+
+// A declared `workload` runs the engine twice in one process, and traversals that survived would be
+// counted against a second set of loop ids, doubling every co-access set and the cost of a candidate.
+internal fn traversalsReset() {
+    layoutOpen()
+    trType = []
+    trLoop = []
+    trDepth = []
+    trSequential = []
+    trTouched = []
+    loopDepthNow = 0
+    loopNextId = 0
+}
+
+// Size of a subset of a type's fields, padded, fields placed widest-first (layout.py's record_size).
+// `link` adds the 8-byte pointer to the cold block.
+private fn recordSizeOf(t: Int, subset: Int, link: Bool) -> Int {
+    let mut off = 0
+    let mut width = 8
+    while (width >= 1) {
+        for i in 0..<nominalNFields[t] {
+            if (bitsTest(subset, i) == false) { continue }
+            let mut w = fieldBytes[t][i]
+            if (w > 8) { w = 8 }
+            if (w != width) { continue }
+            let a = w
+            if (a > 0 and off % a != 0) { off = off + a - off % a }
+            off = off + fieldBytes[t][i]
+        }
+        width = width / 2
+    }
+    if (link) {
+        if (off % 8 != 0) { off = off + 8 - off % 8 }
+        off = off + 8
+    }
+    if (off < 1) { off = 1 }
+    return (off + 7) / 8 * 8
+}
+
+private fn minSizeOf(t: Int) -> Int {
+    let mut s = 0
+    for i in 0..<nominalNFields[t] { s = s + fieldBytes[t][i] }
+    return s
+}
+
+private fn muFor(footprint: I64) -> Int {
+    if (footprint <= (AIF_C1 as I64)) { return AIF_MU1 }
+    if (footprint <= (AIF_C2 as I64)) { return AIF_MU2 }
+    if (footprint <= (AIF_C3 as I64)) { return AIF_MU3 }
+    return AIF_MUM
+}
+
+private fn itersOf(depth: Int) -> I64 {
+    let mut it: I64 = 1
+    let mut d = depth
+    if (d < 1) { d = 1 }
+    if (d > 6) { d = 6 }
+    for i in 0..<d { it = it * (AIF_LOOP_ITERS as I64) }
+    return it
+}
+
+// LAYOUT 5's Cost for one candidate: `hot` is the set kept in the primary allocation, everything else
+// splits cold. Returns cost per element, x100.
+private fn layoutCost(t: Int, hot: Int, isSplit: Bool) -> I64 {
+    let hotSize = recordSizeOf(t, hot, isSplit)
+    let cold = bitsNew()
+    let mut coldSize = 0
+    if (isSplit) {
+        for i in 0..<nominalNFields[t] {
+            if (bitsTest(hot, i) == false) { bitsSet(cold, i) }
+        }
+        coldSize = recordSizeOf(t, cold, false)
+    }
+
+    let mut total: I64 = 0
+    for i in 0..<trType.length {
+        if (trType[i] != nominalName[t]) { continue }
+
+        let mut hotTouched = false
+        let mut coldTouched = false
+        for f in 0..<nominalNFields[t] {
+            if (bitsTest(trTouched[i], f) == false) { continue }
+            if (bitsTest(hot, f)) {
+                hotTouched = true
+            } else {
+                coldTouched = true
+            }
+        }
+        if (hotTouched == false and coldTouched == false) { continue }
+
+        let iters = itersOf(trDepth[i])
+        let mut hotBytes = hotSize
+        if (hotBytes < 1) { hotBytes = 1 }
+        let fp = (AIF_N_ASSUMED as I64) * (hotBytes as I64)
+        if (trSequential[i] == 0) {
+            // A pointer chase pays a line per group it lands in, so a split that both halves are read
+            // through costs a second miss. This is the term that stops the model splitting everything.
+            let mut groups = 0
+            if (hotTouched) { groups = groups + 1 }
+            if (coldTouched) { groups = groups + 1 }
+            let bytesPer = (groups as I64) * (AIF_LINE as I64)
+            total = total + iters * bytesPer * (muFor(fp) as I64) * (AIF_PI_RANDOM as I64) / (AIF_LINE as I64)
+        } else {
+            // The hot record is walked in container order.
+            total = total + iters * (hotSize as I64) * (muFor(fp) as I64) * (AIF_PI_SEQ as I64) / (AIF_LINE as I64)
+
+            // **A cold touch is a pointer chase, not a longer scan.** This implementation's cold block is
+            // *linked*: the hot record holds a pointer to it, which is why hot/cold needs no handles.
+            // Reaching a cold field is therefore a dependent load into a separately allocated block, a
+            // miss at random-access probability. Priced as the prototype's extra scan, the link word alone
+            // flipped g1's 8/12 cut to 2/12, which measured slower.
+            if (coldTouched) {
+                let mut coldBytes = coldSize
+                if (coldBytes < 1) { coldBytes = 1 }
+                let cfp = (AIF_N_ASSUMED as I64) * (coldBytes as I64)
+                total = total + iters * (AIF_LINE as I64) * (muFor(cfp) as I64) * (AIF_PI_RANDOM as I64) / (AIF_LINE as I64)
+            }
+        }
+    }
+
+    // LAYOUT 5's footprint penalty: padding the layout added over the packed minimum, weighted by lambda.
+    let size = hotSize + coldSize
+    let slack = size - minSizeOf(t)
+    if (slack > 0) {
+        total = total + (slack as I64) * (AIF_LAMBDA_NUM as I64) * 100 / (AIF_LAMBDA_DEN as I64)
+    }
+    bitsFree(cold)
+    return total
+}
+
+private fn candidatesClear() {
+    layoutOpen()
+    for i in 0..<candHot.length { bitsFree(candHot[i]) }
+    candHotCount = []
+    candCost = []
+    candHot = []
+    candType = -1
+    candBest = 0
+}
+
+internal fn candidatesDrop() {
+    candidatesClear()
+}
+
+// Ranks every admissible layout for `type`, cheapest first-scoring winning. Returns the number of
+// candidates, 0 when the type is not splittable at all. Candidate 0 is the unsplit record: a real
+// candidate, because if no split beats it, none is taken.
+//
+// Cuts are taken at strict frequency boundaries down the access-count ranking. **The first boundary is
+// not the answer**: on Particle it cuts 2/12 and pushes `integrate`'s own six fields cold, which is
+// slower. Only scoring every cut finds 8/12. Field 0 of the *chosen order* is pinned hot and never
+// offered to a cut: a cut by frequency alone would happily put a never-read field there.
+public fn aif_layout_rank(type: String) -> Int {
+    candidatesClear()
+    let id = nominalFind(type)
+    if (id < 0) { return 0 }
+    if (nominalIsEnum[id] != 0 or nominalNFields[id] < 3) { return 0 }
+    candType = nominalName[id]
+    let count = nominalNFields[id]
+
+    let all = bitsNew()
+    for i in 0..<count { bitsSet(all, i) }
+    candHotCount.push(count)
+    candHot.push(all)
+    candCost.push(layoutCost(id, all, false))
+
+    // Rank the movable fields by access count descending, then by declaration index, so the order is total
+    // and the output deterministic (LAYOUT 9).
+    let pinned = fieldOrder[id][0]
+    let mut rank: Vec<Int> = []
+    for i in 0..<count {
+        if (i != pinned and rank.length < 256) { rank.push(i) }
+    }
+    for a in 0..<rank.length {
+        for b in (a + 1)..<rank.length {
+            let x = rank[a]
+            let y = rank[b]
+            let swap = fieldAcc[id][y] > fieldAcc[id][x]
+                or (fieldAcc[id][y] == fieldAcc[id][x] and y < x)
+            if (swap) {
+                rank[a] = y
+                rank[b] = x
+            }
+        }
+    }
+
+    let mut cut = 1
+    while (cut < rank.length and candHotCount.length < AIF_MAX_CANDIDATES) {
+        if (fieldAcc[id][rank[cut - 1]] != fieldAcc[id][rank[cut]]) {
+            let hot = bitsNew()
+            bitsSet(hot, pinned)
+            for i in 0..<cut { bitsSet(hot, rank[i]) }
+            candHotCount.push(cut + 1)
+            candHot.push(hot)
+            candCost.push(layoutCost(id, hot, true))
+        }
+        cut = cut + 1
+    }
+
+    candBest = 0
+    for i in 1..<candHotCount.length {
+        // Strictly cheaper wins, so a tie keeps the unsplit record: a split costs a second allocation and
+        // a second free at run time, and none of that is in the model.
+        if (candCost[i] < candCost[candBest]) { candBest = i }
+    }
+    return candHotCount.length
+}
+
+public fn aif_layout_candidates() -> Int {
+    layoutOpen()
+    return candHotCount.length
+}
+
+public fn aif_layout_best() -> Int {
+    return candBest
+}
+
+public fn aif_layout_cand_hot(i: Int) -> Int {
+    if (i >= 0 and i < candHotCount.length) { return candHotCount[i] }
+    return 0
+}
+
+// LAYOUT 8 compiles "the top-k candidates, ranked by modelled cost". The candidates stay in cut order,
+// because every other accessor here is indexed by it, so the ranking is computed rather than stored:
+// k = 0 is the argmin, k = 1 the next cheapest. Ties break on the candidate index, LAYOUT 9.1's total order.
+public fn aif_layout_cand_at_rank(k: Int) -> Int {
+    layoutOpen()
+    if (k < 0 or k >= candHotCount.length) { return -1 }
+    // Selection rather than a sort: the candidates must stay in cut order.
+    let mut prev = -1
+    for rank in 0..(k) {
+        let mut pick = -1
+        for i in 0..<candHotCount.length {
+            // Skip everything at or before `prev` in the (cost, index) order.
+            if (prev >= 0 and (candCost[i] < candCost[prev] or (candCost[i] == candCost[prev] and i <= prev))) {
+                continue
+            }
+            // `i` ascends, so a strict `<` leaves ties on the lower index.
+            if (pick < 0 or candCost[i] < candCost[pick]) { pick = i }
+        }
+        if (pick < 0) { return -1 }
+        prev = pick
+    }
+    return prev
+}
+
+// LAYOUT 8 selects a layout by *measuring* the top candidates instead of trusting the model's argmin, and
+// this is the one mechanism that needs: a way to say "emit this candidate". **A candidate is named by its
+// hot-field count, not by its rank**, because ranks move whenever the cost model is retuned. **A force that
+// matches nothing is reported, not ignored**: `aif_layout_force_applied` is how the frontend raises it.
+public fn aif_layout_force(type: String, hotCount: Int) {
+    layoutOpen()
+    if (type.length == 0 or hotCount < 1) { return }
+    for i in 0..<forcedType.length {
+        if (forcedType[i].equals(type)) {
+            forcedHot[i] = hotCount            // last writer wins, so a repeated --force-layout
+            forcedApplied[i] = 0               // is not two forces
+            return
+        }
+    }
+    if (forcedType.length >= AIF_MAX_FORCED) { return }
+    forcedType.push(type.clone())
+    forcedHot.push(hotCount)
+    forcedApplied.push(0)
+}
+
+// -1 when `type` carries no force, which is the common case and the one the selection loop asks about.
+private fn forcedHotFor(type: String) -> Int {
+    layoutOpen()
+    for i in 0..<forcedType.length {
+        if (forcedType[i].equals(type)) { return forcedHot[i] }
+    }
+    return -1
+}
+
+private fn forcedMarkApplied(type: String) {
+    for i in 0..<forcedType.length {
+        if (forcedType[i].equals(type)) { forcedApplied[i] = 1 }
+    }
+}
+
+public fn aif_layout_forced_count() -> Int {
+    layoutOpen()
+    return forcedType.length
+}
+
+public fn aif_layout_forced_type(i: Int) -> String {
+    layoutOpen()
+    if (i >= 0 and i < forcedType.length) { return forcedType[i].clone() }
+    return ""
+}
+
+public fn aif_layout_forced_hot(i: Int) -> Int {
+    layoutOpen()
+    if (i >= 0 and i < forcedType.length) { return forcedHot[i] }
+    return 0
+}
+
+public fn aif_layout_force_applied(i: Int) -> Int {
+    layoutOpen()
+    if (i >= 0 and i < forcedType.length) { return forcedApplied[i] }
+    return 0
+}
+
+// Costs are reported as a ratio against the unsplit baseline, x100: 100 means "no better than not
+// splitting"; 87 would mean the model expects 0.87x.
+public fn aif_layout_cand_ratio(i: Int) -> Int {
+    layoutOpen()
+    if (i < 0 or i >= candHotCount.length or candHotCount.length == 0) { return 100 }
+    let base = candCost[0]
+    if (base <= 0) { return 100 }
+    return (candCost[i] * 100 / base) as Int
+}
+
+// Whether field `f` (declaration index) is hot in candidate `i`. The report needs it to name the cold
+// fields, which is the part a reader can act on.
+public fn aif_layout_cand_field_hot(i: Int, f: Int) -> Int {
+    layoutOpen()
+    if (i < 0 or i >= candHotCount.length) { return 1 }
+    if (bitsTest(candHot[i], f)) { return 1 }
+    return 0
+}
+
+public fn aif_layout_cand_bytes(i: Int, cold: Int) -> Int {
+    layoutOpen()
+    if (i < 0 or i >= candHotCount.length or candType < 0) { return 0 }
+    let id = nominalFindId(candType)
+    if (id < 0) { return 0 }
+    let isSplit = candHotCount[i] < nominalNFields[id]
+    if (cold == 0) { return recordSizeOf(id, candHot[i], isSplit) }
+    if (isSplit == false) { return 0 }
+    let c = bitsNew()
+    for f in 0..<nominalNFields[id] {
+        if (bitsTest(candHot[i], f) == false) { bitsSet(c, f) }
+    }
+    let b = recordSizeOf(id, c, false)
+    bitsFree(c)
+    return b
+}
+
+// LAYOUT 6's hot/cold split, taken rather than reported. The split is **linked** (LAYOUT 5.2.1): the hot
+// record ends in a pointer to a separately allocated cold block, which is why it needs no handles, and why
+// a split object is *two* allocations and every release path has to know it.
+//
+// Vetoes, each a way the second allocation cannot be reached rather than a way it would be slow:
+//   1. `no_split`, pushed in for any type embedded **inline** in another struct: nothing calls an
+//      allocator for it, so its link word would hold whatever the owner's allocation left there.
+//   2. A type in a non-trivial SCC (a T4b candidate): the collector's release contract is a separate
+//      question.
+//   3. Fewer than three fields, or an enum: there is no cut past the pinned field 0.
+//   4. A type with no sequential traversal. Measured: the model prefers a split for a singleton because
+//      `muFor` reads a cache tier off `AIF_N_ASSUMED * hot_size`, a fabricated 2^20 for every type, so
+//      shaving 8 bytes off one object can cross a tier boundary and divide its cost by six.
+//   5. A type with an inline struct field, whose size the model does not know.
+//   6. A type whose layout is fixed: another compilation reads it without knowing a cut was taken.
+// Runs after `aif_layout_select` and after the sizes, and *before* the solve, because
+// `typeReleasesOf` reads the answer.
+public fn aif_layout_no_split(type: String) {
+    let id = nominalFind(type)
+    if (id >= 0) { nominalNoSplit[id] = 1 }
+}
+
+// Veto 5's channel, separate from veto 1's because LAYOUT 8 may override this one and must never
+// override that one.
+public fn aif_layout_no_split_unmodelled(type: String) {
+    let id = nominalFind(type)
+    if (id >= 0) { nominalNoSplitUnmodelled[id] = 1 }
+}
+
+// True only when one proven sequential traversal reads/writes every field of the row. Requiring one
+// complete traversal, rather than unioning fields across unrelated loops, is the conservative distinction
+// the blanket List-element veto lacked.
+public fn aif_layout_all_fields_sequential(type: String) -> Int {
+    layoutOpen()
+    let id = nominalFind(type)
+    if (id < 0) { return 0 }
+    for i in 0..<trType.length {
+        if (trType[i] != nominalName[id] or trSequential[i] == 0) { continue }
+        let mut complete = true
+        for f in 0..<nominalNFields[id] {
+            if (bitsTest(trTouched[i], f) == false) {
+                complete = false
+                break
+            }
+        }
+        if (complete) { return 1 }
+    }
+    return 0
+}
+
+public fn aif_layout_no_split_list_full_scan(type: String) {
+    let id = nominalFind(type)
+    if (id >= 0) { nominalNoSplitListFullScan[id] = 1 }
+}
+
+// Veto 4's test: `sequential` is set when a loop binds a container element, which is the only shape the
+// 0.87x measurement is evidence for.
+private fn hasSequentialTraversal(id: Int) -> Bool {
+    layoutOpen()
+    for i in 0..<trType.length {
+        if (trType[i] == nominalName[id] and trSequential[i] != 0) { return true }
+    }
+    return false
+}
+
+public fn aif_layout_veto_reason(type: String) -> String {
+    let id = nominalFind(type)
+    if (id < 0) { return "" }
+    if (nominalLayoutFixed[id] != 0) { return "layout is fixed: another compilation reads this type" }
+    if (nominalNoSplit[id] != 0) { return "split is unsafe for an inline-contained type" }
+    if (bitsTest(nominalReaches[id], id)) { return "split is unsafe for a cyclic type" }
+    if (nominalNoSplitListFullScan[id] != 0) { return "kept flat: a List traversal consumes the complete row" }
+    if (nominalNoSplitUnmodelled[id] != 0) { return "split cost is not modelled for an inline field" }
+    if (hasSequentialTraversal(id) == false) { return "no sequential traversal evidence" }
+    return ""
+}
+
+// `forced` says a human named this type's cut, so the two vetoes that exist because the *model* had no
+// basis to choose (4 and 5) are not reasons to decline: gathering the missing evidence is what LAYOUT 8
+// does. The three that say the cold block cannot be reached are checked either way, and no measurement
+// makes a wild load or a double free acceptable.
+private fn splitAdmissible(id: Int, forced: Bool) -> Bool {
+    if (nominalIsEnum[id] != 0 or nominalNFields[id] < 3) { return false }     // veto 3
+    if (nominalLayoutFixed[id] != 0) { return false }                          // veto 6
+    if (nominalNoSplit[id] != 0) { return false }                              // veto 1, and veto 2 via the frontend
+    if (bitsTest(nominalReaches[id], id)) { return false }                     // veto 2
+    if (forced) { return true }
+    if (nominalNoSplitListFullScan[id] != 0) { return false }                  // container representation cost
+    if (nominalNoSplitUnmodelled[id] != 0) { return false }                    // veto 5
+    if (hasSequentialTraversal(id) == false) { return false }                  // veto 4
+    return true
+}
+
+// The candidate whose hot group is exactly `hotCount` fields, or -1. Cuts are generated one per distinct
+// access-count boundary, so at most one candidate has any given hot count.
+private fn candidateWithHot(hotCount: Int) -> Int {
+    for i in 0..<candHotCount.length {
+        if (candHotCount[i] == hotCount) { return i }
+    }
+    return -1
+}
+
+public fn aif_layout_split_select() {
+    nominalsOpen()
+    layoutOpen()
+    for n in 0..<nominalCount {
+        nominalHotCount[n] = 0
+        bitsFree(nominalHot[n])
+        let name = irNameText(nominalName[n])
+        let forced = forcedHotFor(name)
+        if (splitAdmissible(n, forced >= 0) == false) { continue }
+        if (aif_layout_rank(name) < 2) { continue }
+
+        let mut pick = candBest
+        if (forced >= 0) {
+            // A forced cut still has to *be* a candidate. Anything else would let a typo emit a layout the
+            // model never scored and the report never printed.
+            let matched = candidateWithHot(forced)
+            if (matched >= 0) {
+                forcedMarkApplied(name)
+                pick = matched
+            } else if (splitAdmissible(n, false) == false) {
+                // "Did not apply" has to mean nothing changed. An unmatched force falls through to the
+                // argmin, except for a type that only became admissible *because* it was forced, where
+                // the argmin is a split the vetoes had excluded.
+                continue
+            }
+        }
+
+        // Candidate 0 is the unsplit record and wins ties, so `pick != 0` already means "strictly cheaper
+        // than not splitting". A force of the unsplit candidate lands here too, and correctly.
+        if (pick == 0) { continue }
+        let hc = candHotCount[pick]
+        if (hc < 1 or hc >= nominalNFields[n]) { continue }
+        for f in 0..<nominalNFields[n] {
+            if (bitsTest(candHot[pick], f)) { bitsSet(nominalHot[n], f) }
+        }
+        nominalHotCount[n] = hc
+    }
+    candidatesClear()
+}
+
+// How many fields the hot record keeps, or 0 when the type is not split. Codegen reads it once per type
+// and passes it straight to `ir_struct_type_split`.
+public fn aif_layout_hot_count(type: String) -> Int {
+    let id = nominalFind(type)
+    if (id >= 0) { return nominalHotCount[id] }
+    return 0
+}
+
+// The declaration index of the field placed i-th in the order codegen emits. Unsplit that is `order` and
+// nothing else. Split, it is `order` read twice, the hot fields in placement order and then the cold ones,
+// so the emitted index space is exactly `[0, hot_count)` hot and `[hot_count, nfields)` cold.
+internal fn splitSlot(t: Int, i: Int) -> Int {
+    if (nominalHotCount[t] <= 0) { return fieldOrder[t][i] }
+    let mut seen = 0
+    for j in 0..<nominalNFields[t] {
+        let f = fieldOrder[t][j]
+        if (bitsTest(nominalHot[t], f) == false) { continue }
+        if (seen == i) { return f }
+        seen = seen + 1
+    }
+    for j in 0..<nominalNFields[t] {
+        let f = fieldOrder[t][j]
+        if (bitsTest(nominalHot[t], f)) { continue }
+        if (seen == i) { return f }
+        seen = seen + 1
+    }
+    return fieldOrder[t][i]
+}
+
+// How many traversals the profile recorded for a type. A type with none is one the model has nothing to
+// say about, and the report says so rather than printing a ratio derived from an empty sum.
+public fn aif_layout_traversals(type: String) -> Int {
+    layoutOpen()
+    let id = nominalFind(type)
+    if (id < 0) { return 0 }
+    let mut n = 0
+    for i in 0..<trType.length {
+        if (trType[i] == nominalName[id]) { n = n + 1 }
+    }
+    return n
+}
+
+// The i-th field of `type` in the chosen order, or "" when there is none. Codegen reads this to emit the
+// struct body, and `ir_register_struct_field` follows in the same loop, so the name -> index map and the
+// LLVM type stay in lockstep.
+public fn aif_layout_field(type: String, i: Int) -> String {
+    let id = nominalFind(type)
+    if (id < 0) { return "" }
+    if (i < 0 or i >= nominalNFields[id]) { return "" }
+    return irNameText(fieldName[id][splitSlot(id, i)])
+}
+
+public fn aif_layout_reordered(type: String) -> Int {
+    let id = nominalFind(type)
+    if (id >= 0) { return nominalReordered[id] }
+    return 0
+}
+
+// The width of the field placed i-th, so the size computation walks the layout the search chose rather
+// than the one the source wrote.
+//
+// **Deliberately `order` and not `splitSlot`, and the link word is deliberately not counted.** This feeds
+// the size computation, which feeds Theta_stack, which the T0 clause reads, so anything it returns can move
+// a tier. The split is chosen *after* the sizes for exactly that reason: a split that added 8 bytes per
+// object to the stack budget would be layout feeding back into the solve that chose it.
+public fn aif_layout_field_bytes(type: String, i: Int) -> Int {
+    let id = nominalFind(type)
+    if (id < 0) { return 0 }
+    if (i < 0 or i >= nominalNFields[id]) { return 0 }
+    return fieldBytes[id][fieldOrder[id][i]]
+}

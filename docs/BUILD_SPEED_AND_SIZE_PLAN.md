@@ -74,7 +74,7 @@ runs on one thread. On the compiler, the pipeline splits like this (opt `-time-t
       step. On the compiler's `-g` build (now ~1.8 s), the frontend is ~1.05 s and the library
       merge 324 ms. These whole-program facts make one function's code depend on code elsewhere,
       so an edit there must invalidate it:
-      - **The AIF engine** (`runtime/aif_support.c`) is one fixed point over the whole program:
+      - **The AIF engine** (`src/aifcore/`) is one fixed point over the whole program:
         the points-to graph, the constraint solver, the call graph by caller
         (`caller_edges_build`), arena placement that counts every caller (`region_confined`), and
         callee summaries the callers read (`param_returns`, `fn_may_return_param`).

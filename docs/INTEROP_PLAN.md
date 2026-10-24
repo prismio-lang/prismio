@@ -80,6 +80,7 @@ Read from the tree and the docs, and one probe run (1.2).
 | Area | State | Where |
 |---|---|---|
 | Calling C, `extern fn` | Works for integers, `Float`, `Bool`, `Char`, `Ptr`, `String` and structs. Contracts: `borrow`, `bytes`, `retain`, `retain_in(k)`, `consume`, `out`, `alias`, `produce(f)` | `src/parse/decl.psm:995`, `src/sema/ownership.psm:415` |
+| `produce(f)`, the deallocator | **Read since the allocator's stage 1** (`docs/ALLOCATOR_PLAN.md`). `produce(rt_free)` is a block from `rt_base_alloc`, released by Prismio like its own. Any other `f` on a `String` result: the bytes are copied into a seam block at the call and `f` releases the original there and then, so the foreign block never enters Prismio's ownership (`fatAdopted`, `src/ir/expr.psm`). On a `Ptr` or a scalar, `f` is documentation: Prismio releases neither. On anything Prismio releases itself (a struct, a `Vec`), a foreign `f` is refused, P4112 | `src/ir/expr.psm`, `src/sema/ownership.psm` (`semaCheckForeignProduce`), `tests/produce_deallocators/` |
 | `String` to C | The pointer half only (`ffiType`); the buffer is NUL-terminated. A view gets a NUL-terminated copy unless the parameter is `bytes` | `src/ir/types.psm:149` |
 | Structs to C | **Always by pointer.** `storageType` collapses `struct:T` to `ptr`; nothing passes or returns a struct by value | `src/ir/types.psm:137`, comment at `:162` |
 | Struct layout | `repr(C)` and `packed` keep declaration order. An **unmarked struct's fields may be permuted** even when handed to C | `docs/KNOWN_ISSUES.md` (Language surface) |
@@ -409,10 +410,19 @@ A Prismio library inside someone else's process raises questions an executable n
   create**. Verify, don't assume.
 - **Two Prismio libraries in one process** each carry a runtime. Runtime symbols must be
   internalised per library, or one shared runtime dylib must be used. And `rt_base_alloc`
-  recycles small blocks per runtime, so **a block allocated by library A must be freed by
-  library A**. The generated contracts already make every owned value travel with its
-  producer's `free` (`produce(pmath_string_free)`). That is a correctness invariant here, not
-  style, and the `--verify` ledger must be able to see it.
+  is a slab allocator per runtime (`docs/ALLOCATOR_PLAN.md`), so **a block allocated by
+  library A must be freed by library A**: B's `rt_free` sees a pointer outside its own slab
+  and hands it to libc `free`, which is corruption. The generated contracts already make
+  every owned value travel with its producer's `free` (`produce(pmath_string_free)`). That
+  is a correctness invariant here, not style, and the `--verify` ledger must be able to see
+  it. On the importing side the name is honoured now: a `String` declared
+  `produce(pmath_string_free)` is copied into the importer's own seam and
+  `pmath_string_free` is called on the original at once, so it never reaches the importer's
+  `rt_free`.
+- **Threads Prismio did not create** share the main thread's allocator cache unless they
+  call `prismio_memory_thread_enter` first: the slab reads `prismio_memory_worker` to pick a
+  cache, and an unregistered thread reads 0. Same rule as the arena hint; an embedder must
+  call it on every thread that runs Prismio code.
 - **Symbol surface.** Only `export fn` and the generated ownership functions are visible:
   hidden visibility by default, `dllexport` on Windows. The `exportDynamic` and
   `ir_function_export` machinery exists.

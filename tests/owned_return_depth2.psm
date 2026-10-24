@@ -8,7 +8,7 @@
 // returned". It requires the returned site to have been allocated *in the callee
 // itself*:
 //
-//     if (sites[s].fn != c->fn) return AIF_ELEM_NONE;   // aif_support.c
+//     if (sites[s].fn != c->fn) return AIF_ELEM_NONE;   // src/aifcore/
 //
 // The guard is not arbitrary -- the comment above it is the reason: a
 // pass-through leaves the value owned where it was created, and freeing it at
@@ -41,7 +41,7 @@ import std.string
 
 // A fresh heap String the test fills itself. std keeps this entry point
 // internal, so a program that wants one raw declares it.
-extern fn str_with_capacity(length: Int) -> String produce(free)
+extern fn str_with_capacity(length: Int) -> String produce(rt_free)
 
 // The producing runtime call is in this function's own body, so the site's `fn`
 // is this function and the caller is allowed to own the result.

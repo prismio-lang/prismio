@@ -37,8 +37,8 @@ import std.string
 // Every line and the rest-of-input String are allocated by the runtime for the
 // caller, "" at the end of input rather than a literal.
 private extern fn io_stdin_has_line() -> Int
-private extern fn io_stdin_take_line() -> String produce(free)
-private extern fn io_stdin_read_all() -> String produce(free)
+private extern fn io_stdin_take_line() -> String produce(rt_free)
+private extern fn io_stdin_read_all() -> String produce(rt_free)
 
 // The next line, or `none` at the end of input.
 //

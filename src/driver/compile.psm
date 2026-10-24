@@ -11,27 +11,32 @@ import parse.*
 import ir.*
 import sema.*
 import common.diagnostics
+import common.source_files
+import common.terminal
 import ast.dump
 import aif.*
+import aifcore.layout_search
+import aifcore.ownership
+import aifcore.solver
 
 from std import { fs, io, string, option }
 from lexer import { scanner, token, identifier_security }
 from driver import { imports, workload, prune }
 
 public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
-public extern fn compiler_installed_runtime_hash() -> String produce(free)
+public extern fn compiler_installed_runtime_hash() -> String produce(rt_free)
 // Starts a program with the arguments queued by compiler_spawn_arg, as an
 // argument vector -- never a shell line -- in `directory` ("" keeps this
 // process's), and answers its exit status, or -1 when it could not be started.
 public extern fn compiler_spawn_arg(argument: String borrow)
 public extern fn compiler_spawn_wait(program: String borrow, directory: String borrow) -> Int
-public extern fn compiler_library_emission_module() -> String produce(free)
+public extern fn compiler_library_emission_module() -> String produce(rt_free)
 // Every path through both mallocs, including the failure paths, which allocate a
 // one-byte empty string rather than returning a literal. That is the same
 // invariant Level 4 had to give str_substring and str_trim -- anything declared
 // to return String returns something a release can take -- and it is what makes
 // `produce` true here rather than nearly true.
-public extern fn compiler_runtime_source_hash() -> String produce(free)
+public extern fn compiler_runtime_source_hash() -> String produce(rt_free)
 // `-g`. Two things the driver does differently once the module carries debug
 // info: the object step drops to -O0, and on Darwin a .dSYM is written before
 // the object -- which is where Mach-O keeps the DWARF -- is deleted.
@@ -41,7 +46,7 @@ public extern fn compiler_set_debug_info(on: Int)
 // same accounting as everything ir_alloc_object handed out.
 public extern fn compiler_set_verify_mode(on: Int)
 extern fn compiler_is_freestanding() -> Int
-public extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(free)
+public extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(rt_free)
 // `run --jit`: merges the imported standard-library bitcode into `irFile`, as a
 // build does, and runs `main` in this process.
 public extern fn compiler_jit_run(irFile: String borrow, programName: String borrow) -> Int
@@ -381,7 +386,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     // `true` for owned collections is AIF Level 4: types.psm made String and List
     // move-only, so the copy rule no longer applies to them and the analysis has
     // to agree with the language. This is the switch that gives the 184 T1 string
-    // sites a free point -- with it off, site_is_move_only admits structs only and
+    // sites a free point -- with it off, siteIsMoveOnly admits structs only and
     // aif_frees_at_scope_node declines every one of them.
     // SPEC 7.2's level, as a budget. `debug` is zero rounds: the same engine
     // runs, builds the same graph and records the same pins, but nothing is
@@ -461,13 +466,13 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
         // every string a program drops reports as a release of something that was
         // never live.
         compiler_set_verify_mode(1)
-    }
-
-    // A freestanding program has no `malloc`. An object comes from the runtime's
-    // seam instead, which the freestanding runtime routes to the program's own
-    // `prismio_alloc`; `rt_free` is already the release half, so the pairing holds.
-    if (compiler_is_freestanding() == 1 and options.verify == false) {
+    } else {
+        // The seam's own pair, hosted and freestanding alike (docs/ALLOCATOR_PLAN.md,
+        // stage 2): a freestanding runtime routes it to the program's `prismio_alloc`,
+        // a hosted one to its small-block allocator. Set rather than left to the
+        // backend's defaults, which nothing resets after a `--verify` compilation.
         ir_set_alloc_function("rt_base_alloc")
+        ir_set_free_function("rt_free")
     }
 
     // Before generateModule, because the first thing it does after starting the

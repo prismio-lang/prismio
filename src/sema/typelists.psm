@@ -8,6 +8,7 @@
 // is bounded by it asks entry by entry (sema/packs.psm). Nested lists are flattened by
 // asking the inner list the same question, to a bounded depth so a list cannot contain itself.
 
+import symbols.declarations
 import ast.nodes
 import ast.types
 import common.diagnostics

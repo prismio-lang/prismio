@@ -1,0 +1,591 @@
+// Ownership inside containers and struct fields: what each holder of a value has to do with it when it goes.
+//
+// A container teardown is a release point, and the container has to be told what its elements are: probing a pointer's
+// header to find out would be reading memory in front of a pointer this compilation did not allocate. So the disposition
+// is decided here, once, and codegen stamps it on the container at construction. It is a property of the *container
+// site*, because that is the only granularity a teardown loop has: one call per element, all elements alike. A mixed
+// container has no answer, and the honest outcome is to reclaim nothing: a leak rather than a wrong free.
+//
+// A struct's fields are the sibling case and deliberately not the same mechanism. A container's contents are dynamic, so
+// it is *told* its disposition; a struct's fields are known statically, so the answer is a **function generated per type**
+// with one release per owned field emitted in line. The disposition is therefore per field, not per type, and no runtime
+// word is needed: the type selects the function. The fact it reads is not new: a struct literal's field initialiser has
+// been a STORE into the field's key since Level 0, so the sites that may reach a field are exactly its points-to set.
+//
+// Dispositions are `AIF_ELEM_*`, defined in `ir/context.psm` beside the code that emits them.
+
+import aif.model
+import aifcore.arenas
+import aifcore.bits
+import aifcore.constants
+import aifcore.constraints
+import aifcore.keys
+import aifcore.nominals
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import aifcore.tiers
+import ir.context
+import std.string
+import std.vec
+import symbols.names
+
+// Whether a key may hold a value that is no site: a string literal, or static storage, stored into it directly or through
+// any chain of bindings, arguments, returns and field reads. **A field's points-to set cannot answer this, and the gap is a
+// free of `.rodata`.** `fn blank() -> Named { return Named { name: "" } }` stores a literal, which contributes no site, while
+// `n.name = word.concat("!")` elsewhere stores one that does. The field's set is then that one owned site, the agreement
+// says OBJECT, and the generated release frees whichever value the object holds. Read from the constraints rather than
+// raised by the solver; monotone, so a build that finds more constraints than last time extends the answer.
+private let mut keyUntracked = -1
+private let mut keyUntrackedCons = -1
+// The same closure for one question: may a `return` hand back static storage? Less one source, a literal bound straight into
+// a local: codegen clones that literal wherever the binding is also given owned values, so `let mut out = ""; out = out + x;
+// return out` returns an allocation on every path.
+private let mut keyUntrackedRet = -1
+private let mut keyUntrackedRetCons = -1
+// The closure for containers handed a value that may be no allocation at all: `keep.push(optionOr(o, "fallback"))` may push
+// the literal. It does not pass through a String view, since pushing one copies it.
+private let mut holdsUntracked = -1
+private let mut keyKeptUntracked = -1
+private let mut holdsUntrackedReady = false
+private let mut copiedViews = -1
+
+// An enum, or a payload enum after sema has turned it into a tagged struct, is recognised by its `$tag` field.
+private let mut typeReleases: Vec<Int>
+private let mut typeReclaimed: Vec<Int>
+private let mut typeReclaimedValid = false
+
+// Whether any released field may hold this site: the double-free rule `inContainer` encodes, one level out.
+private let mut inReleasedField = -1
+private let mut inReleasedFieldDone = false
+// The released fields again, by key rather than by the sites they hold, and without those that re-enter their owner's type.
+// A site is per function, not per instance, so a self-recursive constructor is *one* site playing two roles: the root the
+// caller is meant to own, and every interior node the recursion stores into a payload field. Asked of flow the root still
+// meets the field, so the recursive fields are left out: the field's release and the caller's drop are the **same
+// traversal**, and what such a field holds is a struct, which is move-only.
+internal let mut plainReleasedFieldKeys = -1
+internal let mut recursiveReleasedFieldKeys = -1
+
+private let mut dispositionsOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+internal fn dispositionsOpen() {
+    if (dispositionsOpened) { return }
+    dispositionsOpened = true
+    typeReleases = []
+    typeReclaimed = []
+    keyUntracked = bitsNew()
+    keyUntrackedRet = bitsNew()
+    holdsUntracked = bitsNew()
+    keyKeptUntracked = bitsNew()
+    inReleasedField = bitsNew()
+    plainReleasedFieldKeys = bitsNew()
+    recursiveReleasedFieldKeys = bitsNew()
+    copiedViews = bitsNew()
+}
+
+internal fn dispositionsReset() {
+    dispositionsOpened = false
+    dispositionsOpen()
+    keyUntrackedCons = -1
+    keyUntrackedRetCons = -1
+    holdsUntrackedReady = false
+    typeReclaimedValid = false
+    inReleasedFieldDone = false
+}
+
+// `List<Token>` -> `List`, on interned ids. The frontend's base type exists for the same reason field keys are
+// object-insensitive: `list_new()` types as `List<Invalid>` and an annotated field does not, so a raw comparison of the two
+// spellings would reject every container field.
+internal fn baseTypeId(name: Int) -> Int {
+    let text = irNameText(name)
+    let lt = text.indexOf('<')
+    if (lt < 0) { return name }
+    let mut n = lt
+    if (n >= 128) { n = 127 }
+    return irNameId(text.substring(0, n))
+}
+
+// Whether releasing this field would re-enter the type that owns it. `struct Node { parent: Node?, children: List<Node> }`
+// is the shape: a statically generated release is for the acyclic part of the type graph by construction, and a cycle is
+// what SPEC's T4b collector is for.
+private fn fieldClosesCycle(owner: Int, declaredType: Int) -> Bool {
+    if (owner < 0 or declaredType < 0) { return false }
+    let fid = nominalFindId(declaredType)
+    if (fid < 0) { return false }
+    if (fid == owner) { return true }
+    return bitsTest(nominalReaches[fid], owner)
+}
+
+private fn vsMayBeUntracked(vs: Int) -> Bool {
+    if (vs < 0 or vs >= vsCount) { return false }
+    if (vsHazard[vs] != 0) { return true }
+    for i in 0..<vsItems[vs].length {
+        let item = vsItems[vs][i]
+        if (item % 2 != 0 and bitsTest(keyUntracked, item / 2)) { return true }
+    }
+    return false
+}
+
+internal fn keyMayBeUntracked(key: Int) -> Bool {
+    dispositionsOpen()
+    if (keyUntrackedCons != conCount) {
+        keyUntrackedCons = conCount
+        let mut changed = true
+        while (changed) {
+            changed = false
+            for i in 0..<conCount {
+                let kind = conKind[i]
+                if (kind != AIF_CON_BIND and kind != AIF_CON_STORE and kind != AIF_CON_ARG) { continue }
+                let into = conA[i]
+                if (into < 0 or bitsTest(keyUntracked, into)) { continue }
+                if (vsMayBeUntracked(conB[i]) == false) { continue }
+                bitsSet(keyUntracked, into)
+                changed = true
+            }
+        }
+    }
+    return bitsTest(keyUntracked, key)
+}
+
+private fn vsIsBareLiteral(vs: Int) -> Bool {
+    return vsUntracked[vs] != 0 and vsItems[vs].length == 0 and vsViews[vs].length == 0
+}
+
+private fn vsMayReturnUntracked(vs: Int) -> Bool {
+    if (vs < 0 or vs >= vsCount) { return false }
+    if (vsHazard[vs] != 0) { return true }
+    for i in 0..<vsItems[vs].length {
+        let item = vsItems[vs][i]
+        if (item % 2 != 0 and bitsTest(keyUntrackedRet, item / 2)) { return true }
+    }
+    return false
+}
+
+internal fn keyMayReturnUntracked(key: Int) -> Bool {
+    dispositionsOpen()
+    if (keyUntrackedRetCons != conCount) {
+        keyUntrackedRetCons = conCount
+        let mut changed = true
+        while (changed) {
+            changed = false
+            for i in 0..<conCount {
+                let kind = conKind[i]
+                if (kind != AIF_CON_BIND and kind != AIF_CON_STORE and kind != AIF_CON_ARG) { continue }
+                let into = conA[i]
+                if (into < 0 or bitsTest(keyUntrackedRet, into)) { continue }
+                let b = conB[i]
+                if (b < 0 or b >= vsCount) { continue }
+                if (kind == AIF_CON_BIND and vsIsBareLiteral(b) and into < keyCount
+                        and keyKind[into] == AIF_KEY_VAR) {
+                    continue
+                }
+                if (vsMayReturnUntracked(b) == false) { continue }
+                bitsSet(keyUntrackedRet, into)
+                changed = true
+            }
+        }
+    }
+    return bitsTest(keyUntrackedRet, key)
+}
+
+internal fn vsReturnsUntracked(vs: Int) -> Bool {
+    return vsMayReturnUntracked(vs)
+}
+
+// An enum, or a payload enum after `src/sema/enums.psm` has turned it into a tagged struct, which is every enum that has a
+// payload to view and which the declaration walk therefore registers as a struct. Its tag field is `$tag`, a name no source
+// field can have.
+internal fn siteIsEnum(s: Int) -> Bool {
+    if (s < 0 or s >= siteCount) { return false }
+    let n = nominalFindId(baseTypeId(siteType[s]))
+    if (n < 0) { return false }
+    if (nominalIsEnum[n] != 0) { return true }
+    let tag = irNameId("$tag")
+    for i in 0..<nominalNFields[n] {
+        if (fieldName[n][i] == tag) { return true }
+    }
+    return false
+}
+
+private fn fieldHoldsEnumView(key: Int) -> Bool {
+    if (key < 0 or key >= ptLen) { return false }
+    for w in 0..<bitsWordCount(keyViews[key]) {
+        let mut word = bitsWord(keyViews[key], w)
+        while (word != 0) {
+            let s = w * BITS_WORD_BITS + word.trailingZeros()
+            word = word & (word - 1)
+            if (siteIsEnum(s)) { return true }
+        }
+    }
+    return false
+}
+
+// AIF Level 5. Whether this site is allocated with a reference count. Three exclusions, and each is a different kind of "we
+// did not allocate this": OPAQUE (the pointer came back from a function this compilation cannot see, so there is no header
+// in front of it), STRING and LIST (allocated inside the runtime, past the seam, so the site cannot choose its allocator),
+// and ARRAY (frame storage). And a positive requirement: the site must be in a container, because a count is a count of
+// container edges, so a value in none of them would be born at zero and pay 16 bytes of header for nothing.
+internal fn siteIsRc(s: Int, tier: Int) -> Bool {
+    // T4a counts too: SPEC 3's cost table gives it an "atomic count word", the same header and the same container edges as
+    // T3's, differing only in the instruction that touches it, which is decided where the decrement is emitted.
+    if (tier != AIF_T3 and tier != AIF_T4A) { return false }
+    if (siteKind[s] != AIF_KIND_STRUCT) { return false }
+    if (siteNoStack[s] != 0) { return false }     // an explicit drop needs a plain free
+    return siteInContainer[s] != 0
+}
+
+// AIF T4b. The same shape one tier up, and the exclusions are the same: the object must be one this compilation allocated,
+// so there is a header in front of it, and it must be in a container. The extra requirement over T3 is structural: a T4b
+// site is one whose type is *not* acyclic, so there is an SCC to walk.
+internal fn siteIsCyclic(s: Int, tier: Int) -> Bool {
+    // SPEC 3: "An implementation SHALL NOT charge atomics to a T4b value that is thread-local, nor collector participation
+    // to a T4a value that is provably acyclic." Both halves are enforced right here: T4b never reaches the atomic path
+    // because `siteIsRc`'s tier test excludes it, and a T4a value that is provably acyclic is turned away by the
+    // `siteTypeAcyclic` test below.
+    if (tier != AIF_T4B and tier != AIF_T4A) { return false }
+    if (siteKind[s] != AIF_KIND_STRUCT) { return false }
+    if (siteNoStack[s] != 0) { return false }
+    if (siteTypeAcyclic[s] != 0) { return false }
+    return siteInContainer[s] != 0
+}
+
+// The disposition of one site's value when its holder goes: the `AIF_ELEM_*` code, or `AIF_ELEM_NONE`.
+internal fn elemDispositionOf(id: Int, tier: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_ELEM_NONE }
+    if (siteKind[id] == AIF_KIND_ARRAY or siteKind[id] == AIF_KIND_OPAQUE) { return AIF_ELEM_NONE }
+    // SPEC 5.2.1.1's disposition half. An arena reclaims in bulk when its region exits, so a value it serves is never
+    // released individually: handing a pointer into the middle of a chunk to the deallocator is heap corruption.
+    //
+    // One clause rather than one per consumer, and that is the load-bearing part: `aif_elem_owner_at_node`,
+    // `fieldReleaseOf`, `typeIsReclaimed` and `aif_owns_call_result_at_node` all read this function.
+    if (siteArenaScope(id) >= 0) { return AIF_ELEM_NONE }
+    // SPEC 3, in one place. The four outcomes below are that sentence: T4a with an acyclic type gets the atomic count and no
+    // collector; T4a whose type lies in an SCC gets both; T4b gets the collector and a *plain* decrement; T3 gets neither.
+    // Checked before the T3 clause because `siteIsRc` admits T4a as well: an atomic value must not be able to fall through
+    // to the non-atomic disposition on any path.
+    if (tier == AIF_T4A) {
+        if (siteIsCyclic(id, tier)) { return AIF_ELEM_CYCLE_ATOMIC }
+        if (siteIsRc(id, tier)) { return AIF_ELEM_RC_ATOMIC }
+        return AIF_ELEM_NONE
+    }
+    if (siteIsRc(id, tier)) { return AIF_ELEM_RC }
+    if (siteIsCyclic(id, tier)) { return AIF_ELEM_CYCLE }
+    // T0 is the frame, and a T3 or T4b site the two predicates above declined has no header to decrement.
+    if (tier != AIF_T1 and tier != AIF_T2) { return AIF_ELEM_NONE }
+    // `noStack` is deliberately not consulted here, and that is a fix rather than an omission. It is a property of the
+    // *site* ("this value cannot live in a stack slot") while "has this binding already been freed" is a property of the
+    // *binding*: native `std` routes every `concat` through the one `str_with_capacity`, so a single site backs every string
+    // binding in the program, and one `drop(x)` anywhere used to cancel the release of every other binding. The
+    // binding-level question is asked by `chainDropsName` in `src/ir/stmt.psm`.
+    //
+    // A *transfer* is still site-level here and must stay that way: an FFI `consume` hands the allocation to a callee that
+    // frees it, so emitting a release here as well is a use-after-free rather than a leak.
+    if (siteTransferred[id] != 0) { return AIF_ELEM_NONE }
+    if (siteKind[id] == AIF_KIND_LIST) { return AIF_ELEM_LIST }
+    // Struct-field ownership. Handing a struct with owned fields to the plain deallocator frees the object and leaks
+    // everything it owns, which was g3's entire residue: 1365 Nodes, three owned struct fields each, 4095 leaks.
+    if (siteKind[id] == AIF_KIND_STRUCT and typeReleasesOf(nominalFindId(siteType[id])) != 0) {
+        return AIF_ELEM_TYPED
+    }
+    return AIF_ELEM_OBJECT
+}
+
+// What release `type.field` needs, or NONE. Agreement over the field's points-to set, for the same reason the container
+// case agrees over its elements: one field holds one pointer, but the analysis may not be able to say which site produced it,
+// and a field that is a `List` on one path and an opaque on another has no single correct release.
+internal fn fieldReleaseOf(typeName: Int, name: Int, declaredType: Int) -> Int {
+    let key = keyFind(AIF_KEY_FIELD, typeName, name)
+    if (key < 0 or key >= ptLen) { return AIF_ELEM_NONE }
+    // Before the agreement over the sites, because a value that is no site is invisible to it. Declining leaks what the
+    // field's owned values would have returned; the alternative is freeing a literal.
+    if (keyMayBeUntracked(key)) { return AIF_ELEM_NONE }
+    // M2.1a. A field that re-enters its owner's type used to decline here, which declined every recursive type, since the type
+    // graph cannot tell a cycle from a tree. **The values answer what the type graph cannot, and the language already decided
+    // it**: storing into a field is a *move*, so a field store leaves exactly one owner, and two references to one value
+    // require a container, which is precisely what `siteIsCyclic` tests. So the disposition loop is the gate: a re-entering
+    // field is released only when every site it can hold answers with a *plain ownership* disposition. **A counted or
+    // collected site still declines**: cyclic edges belong to the collector, so a release that also decremented them would be
+    // reclaiming an edge twice.
+    let closes = fieldClosesCycle(nominalFindId(typeName), declaredType)
+
+    // **An inline field owns nothing.** Its storage is the object's own and the value was copied in, so there is no pointer
+    // to release and the address is interior: handing it to a deallocator would free the middle of this allocation. Codegen
+    // has always known this; saying it here is the *end* of one rule, because this answer is also what `siteInReleasedField`
+    // reads.
+    if (fieldIsInline(typeName, name) != 0) { return AIF_ELEM_NONE }
+
+    // **A field that may hold a view of an enum's payload does not own it.** `Option<String>.Some(e)` for a payload binder
+    // `e` stores a value that still belongs to the enum it was read out of, and an enum's release always frees its payload.
+    // Declining leaves the enum as the one owner. Only an enum: a struct whose field value is read out and kept elsewhere is
+    // not released with that field, so the holder is the one owner there.
+    if (fieldHoldsEnumView(key)) { return AIF_ELEM_NONE }
+
+    let mut agreed = AIF_ELEM_NONE
+    for s in 0..<siteCount {
+        if (bitsTest(pt[key], s) == false) { continue }
+        // **The slot has to hold what it says it holds.** This compiler puns an ASTNode pointer as `String` and walks node
+        // chains through it, so a `String` field can receive struct sites, and a release chosen from the sites alone emits
+        // `__aif_release_String`, which is not a function. The honest answer is to reclaim nothing.
+        if (declaredType >= 0 and baseTypeId(siteType[s]) != declaredType) { return AIF_ELEM_NONE }
+        let d = elemDispositionOf(s, aif_tier_of(s))
+        if (d == AIF_ELEM_NONE) { return AIF_ELEM_NONE }
+        // See `closes` above: only the edges the collector does not own.
+        if (closes and d != AIF_ELEM_TYPED and d != AIF_ELEM_OBJECT) { return AIF_ELEM_NONE }
+        if (agreed == AIF_ELEM_NONE) {
+            agreed = d
+        } else if (agreed != d) {
+            return AIF_ELEM_NONE
+        }
+    }
+    return agreed
+}
+
+// The declared type of a struct's i-th field, base-named, or -1.
+internal fn fieldDeclaredType(t: Int, i: Int) -> Int {
+    return fieldType[t][i]
+}
+
+// -1 not computed, -2 in progress. The in-progress marker is what a self-referential type needs: `struct Node { child: Node }`
+// would otherwise have to know whether Node releases in order to decide whether Node releases. **It reads as "does" since
+// M2.1a**, which is what makes the recursive field's disposition TYPED rather than OBJECT: OBJECT frees the child block
+// alone and leaks its subtree, TYPED calls `__aif_release_T` on it and the recursion reaches the leaves. The optimism is
+// bounded by `fieldReleaseOf`, not by this marker.
+internal fn typeReleasesOf(nominal: Int) -> Int {
+    dispositionsOpen()
+    if (nominal < 0 or nominal >= nominalCount) { return 0 }
+    if (nominalIsEnum[nominal] != 0) { return 0 }
+
+    // **The release half of the hot/cold split, and it is one clause.** A split object is two allocations. The type-blind
+    // deallocator frees one block and cannot name the type, so it would leak the cold half of every split object it ever
+    // saw. Forcing this true routes every drop, every container element and every owned field of a split type through the
+    // generated `__aif_release_T`, which frees the cold block before the base. Not cached, and deliberately ahead of the
+    // cache: a split decision that arrived after a cached 0 would be a leak nothing reports.
+    if (nominalHotCount[nominal] > 0) { return 1 }
+
+    intsPutFill(typeReleases, nominal, -1)
+    if (typeReleases[nominal] == -2) { return 1 }
+    if (typeReleases[nominal] >= 0) { return typeReleases[nominal] }
+
+    typeReleases[nominal] = -2
+    let mut any = 0
+    let mut i = 0
+    while (i < nominalNFields[nominal] and any == 0) {
+        if (fieldReleaseOf(nominalName[nominal], fieldName[nominal][i], fieldDeclaredType(nominal, i))
+                != AIF_ELEM_NONE) {
+            any = 1
+        }
+        i = i + 1
+    }
+    typeReleases[nominal] = any
+    return any
+}
+
+// Makes `column` at least `at + 1` long with `fill` in the gap, leaving an existing entry alone.
+private fn intsPutFill(inout column: Vec<Int>, at: Int, fill: Int) {
+    while (column.length <= at) { column.push(fill) }
+}
+
+public fn aif_type_releases(name: String) -> Int {
+    return typeReleasesOf(nominalFind(name))
+}
+
+// CYCLES 4 -- the cyclic-edge restriction. Every edge of a value-level reference cycle connects two types in one SCC of the
+// type reference graph, so a collector that traverses only fields whose type is in the owner's SCC still finds every cycle and
+// never *leaves* the skeleton.
+private fn sameScc(a: Int, b: Int) -> Bool {
+    if (a < 0 or b < 0) { return false }
+    if (a == b) { return bitsTest(nominalReaches[a], a) }      // a non-trivial self-loop
+    return bitsTest(nominalReaches[a], b) and bitsTest(nominalReaches[b], a)
+}
+
+// Whether this type lies in a non-trivial SCC. The transitive closure marks a type as reaching itself exactly then, which is
+// also what makes it not acyclic.
+public fn aif_type_in_cycle(name: String) -> Int {
+    let id = nominalFind(name)
+    if (id < 0 or nominalIsEnum[id] != 0) { return 0 }
+    if (bitsTest(nominalReaches[id], id)) { return 1 }
+    return 0
+}
+
+// Whether this field is a cyclic edge, i.e. one the collector traverses.
+public fn aif_field_is_cyclic(type: String, field: String) -> Int {
+    let owner = nominalFind(type)
+    if (owner < 0 or nominalIsEnum[owner] != 0) { return 0 }
+    let at = fieldIndexOf(owner, irNameId(field))
+    if (at < 0) { return 0 }
+    if (sameScc(owner, nominalFindId(fieldDeclaredType(owner, at)))) { return 1 }
+    return 0
+}
+
+// Whether a store into this field must move a reference count. **Bacon-Rajan requires the count to reflect every reference the
+// traversal walks.** An edge the collector traverses but nobody ever counted makes trial deletion subtract a reference that was
+// never added, and the arithmetic says unreachable for a live object: a premature free. So a cyclic field is counted, and only
+// when every site that can reach it is one the collector can take; a field mixing a counted object with an opaque or stack one
+// has no correct answer and moves no count, which leaks rather than corrupting.
+public fn aif_field_is_counted(type: String, field: String) -> Int {
+    if (aif_field_is_cyclic(type, field) == 0) { return 0 }
+    let owner = nominalFind(type)
+    if (owner < 0) { return 0 }
+    let key = keyFind(AIF_KEY_FIELD, nominalName[owner], irNameId(field))
+    if (key < 0 or key >= ptLen) { return 0 }
+
+    let mut any = 0
+    for s in 0..<siteCount {
+        if (bitsTest(pt[key], s) == false) { continue }
+        any = 1
+        if (siteIsCyclic(s, aif_tier_of(s)) == false) { return 0 }
+    }
+    return any
+}
+
+// CYCLES 2's headline result, as a number the manifest can print: how many types lie in a non-trivial SCC. Zero means the
+// program cannot leak a cycle and the collector is omitted from the binary entirely.
+public fn aif_scc_type_count() -> Int {
+    let mut n = 0
+    for i in 0..<nominalCount {
+        if (nominalIsEnum[i] != 0) { continue }
+        if (bitsTest(nominalReaches[i], i)) { n = n + 1 }
+    }
+    return n
+}
+
+public fn aif_t4b_site_count() -> Int {
+    let mut n = 0
+    for s in 0..<siteCount {
+        if (aif_tier_of(s) == AIF_T4B) { n = n + 1 }
+    }
+    return n
+}
+
+public fn aif_field_release(type: String, field: String) -> Int {
+    let id = nominalFind(type)
+    if (id < 0 or nominalIsEnum[id] != 0) { return AIF_ELEM_NONE }
+    let name = irNameId(field)
+    let at = fieldIndexOf(id, name)
+    if (at < 0) { return AIF_ELEM_NONE }
+    return fieldReleaseOf(nominalName[id], name, fieldDeclaredType(id, at))
+}
+
+// Whether anything actually reclaims a value of this type. **A field is only a release point if its owner has one**, and that
+// is not implied by the owner having a generated release function. A T0 struct lives in the frame: nothing frees it, so
+// nothing runs its release, so its fields are reclaimed by nobody. Barring the field's own binding there does not move the
+// release, it deletes it. g5_asset_cache is the case, and it cost a 47 -> 2049 regression to find.
+private fn typeIsReclaimed(nominal: Int) -> Bool {
+    dispositionsOpen()
+    if (nominal < 0 or nominal >= nominalCount) { return false }
+    if (typeReclaimedValid == false) {
+        typeReclaimed = Vec<Int>.filled(nominalCount, 0)
+        for s in 0..<siteCount {
+            if (elemDispositionOf(s, aif_tier_of(s)) == AIF_ELEM_NONE) { continue }
+            let id = nominalFindId(baseTypeId(siteType[s]))
+            if (id >= 0) { typeReclaimed[id] = 1 }
+        }
+        typeReclaimedValid = true
+    }
+    return typeReclaimed[nominal] != 0
+}
+
+// Whether a field of this type is its values' release point, the premise `siteInReleasedField` bars every other owner on.
+// Codegen asks it for a struct on the frame: when it holds, the fields are released by nobody unless the frame struct's own
+// drop releases them.
+public fn aif_type_is_reclaimed(name: String) -> Int {
+    if (typeIsReclaimed(nominalFind(name))) { return 1 }
+    return 0
+}
+
+private fn computeReleasedFields() {
+    dispositionsOpen()
+    if (inReleasedFieldDone) { return }
+    inReleasedFieldDone = true
+    for n in 0..<nominalCount {
+        if (nominalIsEnum[n] != 0) { continue }
+        if (typeIsReclaimed(n) == false) { continue }
+        for i in 0..<nominalNFields[n] {
+            if (fieldReleaseOf(nominalName[n], fieldName[n][i], fieldDeclaredType(n, i)) == AIF_ELEM_NONE) { continue }
+            let key = keyFind(AIF_KEY_FIELD, nominalName[n], fieldName[n][i])
+            if (key < 0 or key >= ptLen) { continue }
+            bitsOr(inReleasedField, pt[key])
+            if (fieldClosesCycle(n, fieldDeclaredType(n, i)) == false) {
+                bitsSet(plainReleasedFieldKeys, key)
+            } else {
+                bitsSet(recursiveReleasedFieldKeys, key)
+            }
+        }
+    }
+}
+
+// The same fields, for the callers that need the key sets rather than the site set.
+internal fn releasedFieldsReady() {
+    computeReleasedFields()
+}
+
+// This is the double-free rule `inContainer` encodes, one level out. A value stored into a field the type now releases has the
+// struct's teardown as its release point, so its own binding is not one; otherwise it is freed at the scope exit *and* again
+// when the struct goes. Reachable for the same narrow reason the container case is: normally E-STORE has already raised the
+// value's escape to the struct's, and the `E == scope` test declines first. It is only when the struct and the field's value
+// share a scope that both tests pass and this one has to say no.
+internal fn siteInReleasedField(s: Int) -> Bool {
+    computeReleasedFields()
+    return bitsTest(inReleasedField, s)
+}
+
+// Whether codegen should allocate this node's value through rc_alloc. It must agree with `elemDispositionOf` exactly: a
+// container told its elements are counted will decrement every one of them, so a site that reached that container without a
+// header is a write through a pointer into someone else's allocation.
+public fn aif_rc_at_node(node: Ptr) -> Int {
+    let site = siteAtNode(node)
+    if (site < 0) { return 0 }
+    if (siteIsRc(site, aif_tier_of(site))) { return 1 }
+    return 0
+}
+
+// Containers handed a value that may be no allocation at all. Declining costs the container's owned elements, the same trade
+// `fieldReleaseOf` makes for a field that may hold a literal.
+private fn vsKeepsUntracked(vs: Int) -> Bool {
+    if (vs < 0 or vs >= vsCount) { return false }
+    if (vsCopiedOnKeep[vs] != 0) { return false }
+    if (vsHazard[vs] != 0) { return true }
+    for i in 0..<vsItems[vs].length {
+        let item = vsItems[vs][i]
+        if (item % 2 != 0 and bitsTest(keyKeptUntracked, item / 2)) { return true }
+    }
+    return false
+}
+
+internal fn containerMayHoldUntracked(container: Int) -> Bool {
+    dispositionsOpen()
+    if (holdsUntrackedReady == false) {
+        holdsUntrackedReady = true
+        let mut changed = true
+        while (changed) {
+            changed = false
+            for i in 0..<conCount {
+                let kind = conKind[i]
+                if (kind != AIF_CON_BIND and kind != AIF_CON_STORE and kind != AIF_CON_ARG) { continue }
+                let into = conA[i]
+                if (into < 0 or bitsTest(keyKeptUntracked, into)) { continue }
+                if (vsKeepsUntracked(conB[i]) == false) { continue }
+                bitsSet(keyKeptUntracked, into)
+                changed = true
+            }
+        }
+        let holdersOf = bitsNew()
+        for ci in 0..<conCount {
+            if (conKind[ci] != AIF_CON_RETAIN_IN or conA[ci] < 0 or conA[ci] >= vsCount) { continue }
+            let vs = conA[ci]
+            // A literal written at the push is copied in by codegen: untracked with no items is exactly that one.
+            if (vsUntracked[vs] != 0 and vsItems[vs].length == 0) { continue }
+            if (vsKeepsUntracked(vs) == false) { continue }
+            // A String view pushed with a copy holds the copy, not what it viewed.
+            if (conC[ci] == 1) {
+                vsResolveViews(vs, copiedViews)
+                if (bitsIsEmpty(copiedViews) == false) { continue }
+            }
+            vsResolve(conB[ci], holdersOf)
+            bitsOr(holdsUntracked, holdersOf)
+        }
+        bitsFree(holdersOf)
+    }
+    return bitsTest(holdsUntracked, container)
+}

@@ -52,6 +52,7 @@ import ast.nodes
 import ast.types
 import std.string
 import std.vec
+import aifcore.call_results
 
 // One line per store that may release now: `\n<function symbol>@<line>:<col>`. Rebuilt
 // by overwritesMark before each emission of the module.

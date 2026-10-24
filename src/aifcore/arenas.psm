@@ -1,0 +1,693 @@
+// Where a value is served from: automatic arena placement (LAYOUT 7.1), the one gate every consumer reads
+// (SPEC 5.2), the arena high-water estimate and budget gate (REQUIREMENTS 19), and the placement pins.
+//
+//     ArenaBenefit(s) = allocs_in(s)*(alpha_T2 - alpha_T1) - entries(s)*arenaSetupCost
+//                     - lambda*(bytes_held(s) - peak_live_bytes(s))
+//
+// Every scope is already an implicit region (SPEC 4.1), so the question is which ones are worth the setup.
+// `entries(s)` factors out of both terms, so the *sign* of the benefit, which is all the decision reads, does
+// not depend on it. `allocs_in(s)` is per entry: one per site the arena would serve, weighted by AIF_LOOP_ITERS
+// for each loop between the site and s. `bytes_held` is the same weighted sum in bytes, and `peak_live` is one
+// instance per site, unweighted: their difference is the bytes a scope allocates and then abandons while holding
+// on to them. A site whose size is not statically known contributes 0 to both rather than a guess.
+//
+// Placement is greedy innermost-first, which needs no separate nesting rule: a site can only be served by an arena
+// its escape bottoms at or below, so an inner arena takes exactly the values that die earlier. Ties break by scope
+// id, which is creation order and therefore node order.
+
+import aif.model
+import aifcore.bits
+import aifcore.brackets
+import aifcore.constants
+import aifcore.extents
+import aifcore.keys
+import aifcore.sites
+import aifcore.structure
+import aifcore.tiers
+import std.io
+import std.map
+import std.option
+import std.process
+import std.raw
+import std.string
+import std.vec
+import symbols.names
+
+// 1 once `aif_place_arenas` has run. Read by the bracket pass to decide whether a cost-model arena is a region it
+// may bracket into.
+internal let mut arenasPlaced = false
+
+// The sites whose scope lives in each function, ascending. An arena at `cand` can serve a site only if `cand` is
+// an ancestor of the site's scope, and a scope's ancestors are all in its own function, so asking every site about
+// every scope was a product of two table sizes for an answer that needs one function's sites.
+private let mut scopeSiteFirst: Vec<Int>
+private let mut scopeSiteList: Vec<Int>
+private let mut scopeSiteBuiltSites = -1
+private let mut scopeSiteBuiltFns = -1
+
+// A scope's descendants are the scopes numbered from it to `scopeEnd[s]`, because the walk creates a scope's whole
+// subtree before its next sibling. That is checked, not assumed, and a numbering that fails it falls back to the
+// function's sites. The sites grouped by scope id then make a scope's subtree one contiguous slice.
+private let mut scopeEnd: Vec<Int>
+private let mut subSiteFirst: Vec<Int>
+private let mut subSiteList: Vec<Int>
+private let mut subRangesOk = -1
+// The slice `subtreeSites` last answered.
+private let mut subtreeBuffer: Vec<Int>
+
+private let mut scopeByNode: Map<Usize, Int>
+private let mut scopeByNodeBuilt = -1
+
+private let mut arenasOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+internal fn arenasOpen() {
+    if (arenasOpened) { return }
+    arenasOpened = true
+    scopeSiteFirst = []
+    scopeSiteList = []
+    scopeEnd = []
+    subSiteFirst = []
+    subSiteList = []
+    subtreeBuffer = []
+    let byNode: Map<Usize, Int> = {}
+    scopeByNode = byNode
+}
+
+internal fn arenasReset() {
+    arenasOpened = false
+    arenasOpen()
+    arenasPlaced = false
+    scopeSiteBuiltSites = -1
+    scopeSiteBuiltFns = -1
+    subRangesOk = -1
+    scopeByNodeBuilt = -1
+}
+
+// The innermost scope at or above this one that has an arena, or -1. "Has an arena" is a `region` statement (which
+// pins one) or a scope the cost model chose; both are the same thing to every question below.
+internal fn enclosingRegion(scope: Int) -> Int {
+    let mut s = scope
+    while (s >= 0) {
+        if (scopeArena[s] != 0) { return s }
+        s = scopeParent[s]
+    }
+    return -1
+}
+
+// Loops between `inner` and its ancestor `outer`, or 0 if unrelated.
+private fn loopsBetween(inner: Int, outer: Int) -> Int {
+    if (inner < 0 or outer < 0) { return 0 }
+    let d = scopeLoopDepth[inner] - scopeLoopDepth[outer]
+    if (d > 0) { return d }
+    return 0
+}
+
+internal fn weightOf(siteScopeId: Int, arenaScope: Int) -> I64 {
+    let mut w: I64 = 1
+    let mut loops = loopsBetween(siteScopeId, arenaScope)
+    // Capped so a deeply nested site cannot overflow the benefit; anything past the cap is already far above the
+    // threshold and the exact value is noise.
+    if (loops > 6) { loops = 6 }
+    for i in 0..<loops { w = w * (AIF_LOOP_ITERS as I64) }
+    return w
+}
+
+internal fn isAncestorOrSelf(anc: Int, s: Int) -> Bool {
+    let mut p = s
+    while (p >= 0) {
+        if (p == anc) { return true }
+        p = scopeParent[p]
+    }
+    return false
+}
+
+// CSR of sites by the function that owns their scope.
+internal fn scopeSitesBuild() {
+    arenasOpen()
+    if (scopeSiteBuiltSites == siteCount and scopeSiteBuiltFns == fnCount and scopeSiteFirst.length > 0) { return }
+    scopeSiteFirst = Vec<Int>.filled(fnCount + 1, 0)
+    for k in 0..<siteCount {
+        let sc = siteScope[k]
+        if (sc < 0 or sc >= scopeCount) { continue }
+        let f = scopeOwner[sc]
+        if (f >= 0 and f < fnCount) { scopeSiteFirst[f + 1] = scopeSiteFirst[f + 1] + 1 }
+    }
+    for f in 0..<fnCount { scopeSiteFirst[f + 1] = scopeSiteFirst[f + 1] + scopeSiteFirst[f] }
+    scopeSiteList = Vec<Int>.filled(scopeSiteFirst[fnCount] + 1, 0)
+    let fill: Vec<Int> = Vec<Int>.filled(fnCount + 1, 0)
+    let mut fills = fill
+    for k in 0..<siteCount {
+        let sc = siteScope[k]
+        if (sc < 0 or sc >= scopeCount) { continue }
+        let f = scopeOwner[sc]
+        if (f >= 0 and f < fnCount) {
+            scopeSiteList[scopeSiteFirst[f] + fills[f]] = k
+            fills[f] = fills[f] + 1
+        }
+    }
+    scopeSiteBuiltSites = siteCount
+    scopeSiteBuiltFns = fnCount
+}
+
+internal fn scopeSiteStart(f: Int) -> Int {
+    return scopeSiteFirst[f]
+}
+
+internal fn scopeSiteEnd(f: Int) -> Int {
+    return scopeSiteFirst[f + 1]
+}
+
+internal fn scopeSiteAt(i: Int) -> Int {
+    return scopeSiteList[i]
+}
+
+private fn subtreeSitesBuild() {
+    arenasOpen()
+    if (subRangesOk >= 0) { return }
+    subRangesOk = 0
+    if (scopeCount <= 0) { return }
+    scopeEnd = []
+    let mut size: Vec<Int> = []
+    for s in 0..<scopeCount {
+        scopeEnd.push(s)
+        size.push(1)
+    }
+    let mut ok = true
+    let mut s = scopeCount - 1
+    while (s >= 0) {
+        let par = scopeParent[s]
+        if (par >= 0) {
+            if (par >= s) {
+                ok = false
+                break
+            }
+            if (scopeEnd[s] > scopeEnd[par]) { scopeEnd[par] = scopeEnd[s] }
+            size[par] = size[par] + size[s]
+        }
+        s = s - 1
+    }
+    let mut t = 0
+    while (ok and t < scopeCount) {
+        if (size[t] != scopeEnd[t] - t + 1) { ok = false }
+        t = t + 1
+    }
+    if (ok == false) { return }
+    subSiteFirst = Vec<Int>.filled(scopeCount + 1, 0)
+    for k in 0..<siteCount {
+        let sc = siteScope[k]
+        if (sc >= 0 and sc < scopeCount) { subSiteFirst[sc + 1] = subSiteFirst[sc + 1] + 1 }
+    }
+    for q in 0..<scopeCount { subSiteFirst[q + 1] = subSiteFirst[q + 1] + subSiteFirst[q] }
+    subSiteList = Vec<Int>.filled(subSiteFirst[scopeCount] + 1, 0)
+    let mut fills: Vec<Int> = Vec<Int>.filled(scopeCount + 1, 0)
+    for k in 0..<siteCount {
+        let sc = siteScope[k]
+        if (sc >= 0 and sc < scopeCount) {
+            subSiteList[subSiteFirst[sc] + fills[sc]] = k
+            fills[sc] = fills[sc] + 1
+        }
+    }
+    subRangesOk = 1
+}
+
+// The sites an arena at `cand` could serve, those in its subtree, left in `subtreeBuffer`. Any order. Returns how
+// many.
+private fn subtreeSites(cand: Int) -> Int {
+    subtreeSitesBuild()
+    intsClear(subtreeBuffer)
+    if (subRangesOk == 1) {
+        let first = subSiteFirst[cand]
+        let last = subSiteFirst[scopeEnd[cand] + 1]
+        for i in first..<last { subtreeBuffer.push(subSiteList[i]) }
+        return subtreeBuffer.length
+    }
+    let owner = scopeOwner[cand]
+    scopeSitesBuild()
+    if (owner >= 0 and owner < fnCount) {
+        for i in scopeSiteFirst[owner]..<scopeSiteFirst[owner + 1] { subtreeBuffer.push(scopeSiteList[i]) }
+        return subtreeBuffer.length
+    }
+    for k in 0..<siteCount { subtreeBuffer.push(k) }
+    return siteCount
+}
+
+// Would an arena at `cand` serve this site, given the arenas chosen so far?
+internal fn arenaWouldServe(site: Int, cand: Int) -> Bool {
+    if (aif_tier_of(site) != AIF_T1) { return false }   // T0 has the frame already
+    if (siteNoStack[site] != 0) { return false }         // an explicit drop frees it
+    // Nothing was allocated here to route into the arena. The pointer is the callee's heap block; bulk-resetting a
+    // region does not reclaim it, so an arena would take the site off the drop list and free nothing in its place.
+    if (siteForeign[site] != 0) { return false }
+    if (siteKind[site] == AIF_KIND_LIST) { return false }   // grows past its site
+    // An array literal lowers to ir_array_alloca whatever its tier, so an arena would bracket nothing.
+    if (siteKind[site] == AIF_KIND_ARRAY) { return false }
+    // The container reclaims it, so codegen will not route it here whatever this model decides.
+    if (siteInContainer[site] != 0) { return false }
+    if (siteE[site] < 0) { return false }                // Caller or Global
+    if (isAncestorOrSelf(cand, siteScope[site]) == false) { return false }
+    if (scopeLca(siteE[site], cand) != cand) { return false }   // outlives the arena
+    // A nearer arena already claimed it. Innermost-first placement means any scope strictly between the site and
+    // `cand` that has one gets it first.
+    let mut p = siteScope[site]
+    while (p >= 0 and p != cand) {
+        if (scopeArena[p] != 0) { return false }
+        p = scopeParent[p]
+    }
+    return true
+}
+
+// Chosen after the fixed point, because every input is a converged fact.
+public fn aif_place_arenas() {
+    arenasOpen()
+    // Innermost-first: a higher scope id is a scope created later, and the walk creates a parent before its
+    // children, so descending id visits every child before its parent.
+    let mut s = scopeCount - 1
+    while (s >= 0) {
+        let here = s
+        s = s - 1
+        if (scopeArena[here] != 0) { continue }                // pinned by `region`
+        if (scopeNode[here] == 0) { continue }                 // no block for codegen to bracket
+
+        // Inside a `region`, the region decides. SPEC 5.2 makes `region` a pin on this decision, and a pin that
+        // the cost model can undercut by placing a tighter arena two lines in is not one. Only *explicit*
+        // ancestors count, and the traversal is what makes that true for free: innermost-first means an
+        // ancestor's flag is set here only if `region` set it, never if this pass did.
+        let mut pinnedAbove = false
+        let mut p = scopeParent[here]
+        while (p >= 0) {
+            if (scopeArena[p] != 0) {
+                pinnedAbove = true
+                break
+            }
+            p = scopeParent[p]
+        }
+        if (pinnedAbove) { continue }
+
+        let mut served: I64 = 0
+        let mut held: I64 = 0
+        let mut live: I64 = 0
+        let n = subtreeSites(here)
+        for ki in 0..<n {
+            let k = subtreeBuffer[ki]
+            if (arenaWouldServe(k, here) == false) { continue }
+            let w = weightOf(siteScope[k], here)
+            served = served + w
+            held = held + (siteBytes[k] as I64) * w
+            live = live + (siteBytes[k] as I64)
+        }
+        // The other half of the traffic, and on this corpus it is nearly all of it: sites in a callee, where
+        // `arenaWouldServe` cannot reach them by construction. Those sites are asked of the bracket obligations
+        // instead, which are a call-graph question and answer across functions.
+        bracketServedReset()
+        served = served + bracketCandidateServes(here)
+        held = held + bracketServedHeld()
+        live = live + bracketServedLive()
+        if (served == 0) { continue }
+
+        let benefit = served * ((AIF_ALPHA_T2 - AIF_ALPHA_T1) as I64)
+            - (AIF_ARENA_SETUP as I64)
+            - ((AIF_LAMBDA_NUM as I64) * (held - live)) / (AIF_LAMBDA_DEN as I64)
+        if (benefit > 0) { scopeArena[here] = 1 }
+    }
+
+    // From here a cost-model arena is as good a region to bracket into as a written one, and any answer cached
+    // while that was false has to go.
+    arenasPlaced = true
+    bracketInvalidate()
+
+    // M3.2b's data, on demand. "The IR did not change" only proves a field is inert, not that it is right.
+    if (process.env("AIF_STMT_TRACE") != none) { traceArenas() }
+}
+
+private fn traceArenas() {
+    for s in 0..<scopeCount {
+        if (scopeArena[s] == 0) { continue }
+        let mut how = " (auto)"
+        if (scopeRegionName[s] >= 0) { how = " (written)" }
+        if (arenaStmtRange(s)) {
+            eprint("aif: arena scope ".concat(s.toString(), " extent [", arenaLo.toString(), ",",
+                                              arenaHi.toString(), "]", how, "\n"))
+        } else {
+            eprint("aif: arena scope ".concat(s.toString(), " extent whole-block", how, "\n"))
+        }
+        // What codegen will actually bracket, which is the answer that matters and is not always the extent's.
+        if (arenaEmitRange(s)) {
+            eprint("aif: arena scope ".concat(s.toString(), " emit [", emitLo.toString(), ",",
+                                              emitHi.toString(), "]\n"))
+        } else {
+            eprint("aif: arena scope ".concat(s.toString(), " emit whole-block\n"))
+        }
+    }
+    // And the candidate ranges, over every scope the obligation could have asked about. A scope printed here and
+    // absent above has no arena *because* of what follows from the range.
+    for s in 0..<scopeCount {
+        if (candStmtRange(s) == false) { continue }
+        let mut placed = " (not placed)"
+        if (scopeArena[s] != 0) { placed = " (placed)" }
+        eprint("aif: candidate scope ".concat(s.toString(), " extent [", candLo.toString(), ",",
+                                              candHi.toString(), "]", placed, "\n"))
+    }
+    for k in 0..<keyCount {
+        if (keyKind[k] != AIF_KEY_VAR) { continue }
+        let last = aif_key_last_stmt(k)
+        if (last < 0) { continue }
+        let mut d = -1
+        if (k < varScope.length) { d = varScope[k] }
+        let mut owner = "?"
+        if (keyA[k] >= 0 and keyA[k] < fnCount) { owner = irNameText(fnName[keyA[k]]) }
+        eprint("aif: last-use ".concat(owner, ".", irNameText(keyB[k]), " scope ", d.toString(), " stmt ",
+                                       last.toString(), "\n"))
+    }
+}
+
+// REQUIREMENTS 19 -- memory budget reporting. The arena high-water mark, statically estimated: a region's peak is
+// the sum of what it serves, and the peak for a program is the largest sum along a **root-to-leaf chain** of arena
+// scopes, not the total, which would add sibling regions that are never live at the same time. Sites whose size
+// is not statically known are counted separately rather than guessed at, because a fabricated per-string constant
+// would make a budget gate that passes or fails on a number nobody computed.
+public fn aif_arena_high_water() -> Int {
+    if (scopeCount <= 0) { return 0 }
+    let mut own: Vec<I64> = []
+    for s in 0..<scopeCount { own.push(0) }
+
+    for s in 0..<scopeCount {
+        if (scopeArena[s] == 0) { continue }
+        let mut b: I64 = 0
+        let n = subtreeSites(s)
+        for ki in 0..<n {
+            let k = subtreeBuffer[ki]
+            if (arenaWouldServe(k, s) == false) { continue }
+            b = b + (siteBytes[k] as I64) * weightOf(siteScope[k], s)
+        }
+        own[s] = b + bracketBytesOf(s, false)
+    }
+
+    let mut peak: I64 = 0
+    for s in 0..<scopeCount {
+        if (scopeArena[s] == 0) { continue }
+        let mut chain: I64 = 0
+        let mut p = s
+        while (p >= 0) {
+            if (scopeArena[p] != 0) { chain = chain + own[p] }
+            p = scopeParent[p]
+        }
+        if (chain > peak) { peak = chain }
+    }
+    return peak as Int
+}
+
+// What one region's arena serves, for the `pin(N)` gate. Its own scope only: a nested region has its own arena and
+// its own cap.
+private fn arenaBytesOf(scope: Int) -> I64 {
+    let mut b: I64 = 0
+    for k in 0..<siteCount {
+        if (arenaWouldServe(k, scope) == false) { continue }
+        b = b + (siteBytes[k] as I64) * weightOf(siteScope[k], scope)
+    }
+    // SPEC 5.2.1.1. What a bracketed call routes here is memory this region holds, so a `pin(N)` gate has to see it.
+    return b + bracketBytesOf(scope, false)
+}
+
+public fn aif_budget_count() -> Int {
+    return scopeCount
+}
+
+public fn aif_scope_budget(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return scopeBudget[s]
+}
+
+public fn aif_scope_served(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return arenaBytesOf(s) as Int
+}
+
+public fn aif_scope_region(s: Int) -> String {
+    if (s < 0 or s >= scopeCount or scopeRegionName[s] < 0) { return "" }
+    return irNameText(scopeRegionName[s])
+}
+
+public fn aif_scope_budget_file(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return scopeBudgetFile[s]
+}
+
+public fn aif_scope_budget_line(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return scopeBudgetLine[s]
+}
+
+public fn aif_scope_budget_col(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return scopeBudgetCol[s]
+}
+
+public fn aif_scope_region_file(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return scopeRegionFile[s]
+}
+
+public fn aif_scope_region_line(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return scopeRegionLine[s]
+}
+
+public fn aif_scope_region_col(s: Int) -> Int {
+    if (s < 0 or s >= scopeCount) { return 0 }
+    return scopeRegionCol[s]
+}
+
+// Arena-served sites whose size is not statically known -- strings, whose length is a run-time value. Reported
+// alongside the estimate so the number is read as covering what it covers.
+public fn aif_arena_unsized_sites() -> Int {
+    bracketUnsizedReset()
+    let mut n = 0
+    for s in 0..<scopeCount {
+        if (scopeArena[s] == 0) { continue }
+        for k in 0..<siteCount {
+            if (arenaWouldServe(k, s) and siteBytes[k] == 0) { n = n + 1 }
+        }
+        bracketBytesOf(s, true)    // and the bracketed ones it cannot size either
+    }
+    return n + bracketUnsizedCount()
+}
+
+// The scope of the arena this BLOCK node opens, or -1. Codegen asks this once per block, so the scope a node opens
+// comes from a table keyed by the node rather than a scan of every scope; the first scope that names a node is the
+// one a scan would return, and the table keeps that one.
+private fn scopeOfNode(node: Ptr) -> Int {
+    arenasOpen()
+    if (scopeByNodeBuilt != scopeCount) {
+        let fresh: Map<Usize, Int> = {}
+        scopeByNode = fresh
+        for s in 0..<scopeCount {
+            if (scopeNode[s] == 0) { continue }
+            if (scopeByNode.has(scopeNode[s]) == false) { scopeByNode.set(scopeNode[s], s) }
+        }
+        scopeByNodeBuilt = scopeCount
+    }
+    return scopeByNode.getOr(addressOf(node), -1)
+}
+
+// The scope of the arena the cost model chose for this BLOCK node, or -1. A `region` statement is excluded: codegen
+// already brackets that one, and bracketing it twice would push two arenas and pop only the inner one at an early
+// exit.
+internal fn autoArenaScopeAtNode(node: Ptr) -> Int {
+    if (addressOf(node) == 0) { return -1 }
+    let s = scopeOfNode(node)
+    if (s < 0) { return -1 }
+    if (scopeRegionName[s] >= 0) { return -1 }
+    if (scopeArena[s] != 0) { return s }
+    return -1
+}
+
+// 1 when this BLOCK node opens an arena the cost model chose.
+public fn aif_auto_arena_at_node(node: Ptr) -> Int {
+    if (autoArenaScopeAtNode(node) >= 0) { return 1 }
+    return 0
+}
+
+// SPEC 5.2: may this value come from the enclosing region's arena?
+//
+// **This is the only arena gate.** Codegen (`aif_arena_at_node`), the manifest's placement column
+// (`aif_region_name_at_site`), the zero-serving diagnostic (`aif_region_serves`), the LAYOUT 7.1 cost model and
+// `--why`'s placement section all read this one function. A disagreement between them is a manifest describing a
+// build that did not happen.
+//
+// **`blockers` receives EVERY clause that rejected, not the first**, and that is the whole reason it is a mask. A
+// short-circuiting answer told a reader "the tier is not T1", true and the wrong thing to act on, because
+// `in_container` and `no_region` reject the same site immediately afterwards.
+private let mut lastBlockers = 0
+
+private fn siteArenaScopeFull(id: Int) -> Int {
+    lastBlockers = 0
+    if (id < 0 or id >= siteCount) {
+        lastBlockers = AIF_ARENA_B_NOT_T1
+        return -1
+    }
+    let mut mask = 0
+
+    // SPEC 5.2.1.1's placement. This site is in a bracketed extent, so its arena is the caller's region and the five
+    // clauses below do not apply to it: every one of them asks about an arena in *this* function. What survives is
+    // what a *deallocator* would still do to this value, which bracketing does not change: T0 storage is the
+    // frame, T3 and T4b carry a count in a prefix header, `drop(x)` frees it explicitly, and a `foreign` block
+    // came from the allocator, not the arena. T1 and T2 both pass, and T2 passing is the point: the tier is the
+    // derived fact and the placement a codegen decision.
+    let br = siteBracketRegion(id)
+    if (br >= 0) {
+        let tier = aif_tier_of(id)
+        if (tier != AIF_T1 and tier != AIF_T2) { mask = mask | AIF_ARENA_B_NOT_T1 }
+        if (siteNoStack[id] != 0) { mask = mask | AIF_ARENA_B_NO_STACK }
+        // A block the arena hint did not allocate is not reclaimed by the caller's region either; bracketing
+        // moves the arena, not the allocator.
+        if (siteForeign[id] != 0) { mask = mask | AIF_ARENA_B_NO_STACK }
+        lastBlockers = mask
+        if (mask == 0) { return br }
+        return -1
+    }
+
+    if (aif_tier_of(id) != AIF_T1) { mask = mask | AIF_ARENA_B_NOT_T1 }   // T0 has the frame
+    // The same reason the T0 clause asks: an arena pointer is not a thing a deallocator can take, and `drop(x)` emits
+    // one unconditionally.
+    if (siteNoStack[id] != 0) { mask = mask | AIF_ARENA_B_NO_STACK }
+    // A produced extern return has no allocation here to serve; reported under the same blocker because the reason
+    // a reader needs is the same one: this site's storage is not this frame's.
+    if (siteForeign[id] != 0) { mask = mask | AIF_ARENA_B_NO_STACK }
+    // The container frees its elements through the deallocator, and a pointer into the middle of an arena chunk is
+    // not one it can take.
+    if (siteInContainer[id] != 0) { mask = mask | AIF_ARENA_B_IN_CONTAINER }
+    // An arena serves values allocated once. A list is not one: `list_push` reallocates the element block long after
+    // this site returned, at whatever arena depth the program happens to be at then.
+    if (siteKind[id] == AIF_KIND_LIST) { mask = mask | AIF_ARENA_B_IS_LIST }
+
+    // **The clause that decides the corpus.** `enclosingRegion` walks `scopeParent`, a *lexical* tree rooted per
+    // function, so a site in a callee can never find an arena its caller opened, however its escape is spelled: E
+    // holds a scope id in the site's own function while the arena that would serve a callee's allocation is chosen
+    // at run time by the region stack. SPEC 5.2.1 states it normatively.
+    let r = enclosingRegion(siteScope[id])
+    if (r < 0) {
+        mask = mask | AIF_ARENA_B_NO_REGION
+    } else if (siteE[id] < 0) {
+        mask = mask | AIF_ARENA_B_ESCAPES                // Caller or Global
+    } else if (scopeLca(siteE[id], r) != r) {
+        mask = mask | AIF_ARENA_B_OUTLIVES
+    }
+
+    lastBlockers = mask
+    if (mask == 0) { return r }
+    return -1
+}
+
+internal fn siteArenaScope(id: Int) -> Int {
+    return siteArenaScopeFull(id)
+}
+
+// SPEC 6.3's witness path, for placement rather than for the tier.
+public fn aif_arena_blockers(id: Int) -> Int {
+    siteArenaScopeFull(id)
+    return lastBlockers
+}
+
+// The region a site would have been served by if the gate had not declined: the nearest enclosing one, ignoring
+// every other clause. "" when there is none; this exists so the OUTLIVES case can name the arena the value escaped
+// past.
+public fn aif_nearest_region_name(id: Int) -> String {
+    if (id < 0 or id >= siteCount) { return "" }
+    let r = enclosingRegion(siteScope[id])
+    if (r < 0) { return "" }
+    if (scopeRegionName[r] < 0) { return "auto" }
+    return irNameText(scopeRegionName[r])
+}
+
+public fn aif_arena_at_node(node: Ptr) -> Int {
+    if (addressOf(node) == 0) { return 0 }
+    let site = siteAtNode(node)
+    if (site < 0) { return 0 }
+    if (siteArenaScope(site) >= 0) { return 1 }
+    return 0
+}
+
+// The region name to report for this site, or "" when it is not arena-placed. An arena the cost model chose has no
+// name to report, so it reports "auto", which is what distinguishes it in the manifest from a `region` the
+// programmer pinned.
+public fn aif_region_name_at_site(id: Int) -> String {
+    let r = siteArenaScope(id)
+    if (r < 0) { return "" }
+    if (scopeRegionName[r] < 0) { return "auto" }
+    return irNameText(scopeRegionName[r])
+}
+
+// SPEC 5.2's diagnostic. How many allocation sites this scope's arena actually serves, by the codegen gate and not by
+// the cost model's estimate, because the question a programmer is asking is "did my annotation do anything".
+public fn aif_region_serves(scope: Int) -> Int {
+    if (scope < 0 or scope >= scopeCount) { return 0 }
+    let mut n = 0
+    for i in 0..<siteCount {
+        if (siteArenaScope(i) == scope) { n = n + 1 }
+    }
+    return n
+}
+
+// SPEC 5.4 applied to placement -- `pin(<region-name>)`. SPEC 5.2.1.1 says of regime (a) that it is fragile as a
+// language guarantee, which is why the manifest records which call sites were bracketed. A diff is only read by
+// somebody who looks; this is the same fact stated by the *programmer*, so a build fails instead.
+//
+// **It reads `aif_region_name_at_site` and computes nothing**: that is the one arena gate. It is an assertion, never
+// a directive (SPEC 5.0.1): nothing below writes to an arena flag, so a build with these annotations deleted emits
+// the same instructions. Ordering: this runs after `aif_place_arenas`, unlike `aif_check_pins`, because a placement
+// pin is an assertion about the *output* of placement.
+public fn aif_check_placement_pins(converged: Int) {
+    for i in 0..<siteCount {
+        if (sitePinRegion[i] < 0) { continue }
+        let placed = aif_region_name_at_site(i)
+        if (placed.length > 0 and placed.equals(irNameText(sitePinRegion[i]))) {
+            sitePinRegionVerdict[i] = AIF_PIN_HONOURED
+        } else if (converged != 0) {
+            // SPEC 5.4.1. Placement has no order like a tier's: an arena either serves this site or does not, so
+            // "served by some other region" is a refutation rather than a weaker honour.
+            sitePinRegionVerdict[i] = AIF_PIN_REFUTED
+        } else {
+            // SPEC 5.4.2. A truncated analysis widens every unproven site to its top tier, which takes the arena
+            // away from sites a converged run keeps it for.
+            sitePinRegionVerdict[i] = AIF_PIN_UNPROVEN
+        }
+    }
+}
+
+public fn aif_site_pin_region_verdict(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return AIF_PIN_NONE }
+    return sitePinRegionVerdict[id]
+}
+
+public fn aif_site_pin_region(id: Int) -> String {
+    if (id < 0 or id >= siteCount or sitePinRegion[id] < 0) { return "" }
+    return irNameText(sitePinRegion[id])
+}
+
+// 1 when this site's arena was pinned by a `region` statement rather than chosen by the cost model. SPEC 6.2's
+// `origin` column distinguishes them: a pin that stops being honoured is a gate regression, an inferred placement
+// moving is not.
+public fn aif_site_arena_is_pinned(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    // SPEC 5.2.1.1. A bracketed site's arena is a `region` in *another* function, which `enclosingRegion` cannot
+    // see, and it is always a pinned one because bracketing only ever targets a `region` until placement has run.
+    // Asked of the gate rather than of the lexical tree, and asked first so the lexical answer below is left exactly
+    // as it was for every other site.
+    let served = siteArenaScope(id)
+    if (served >= 0 and scopeRegionName[served] >= 0) { return 1 }
+    let r = enclosingRegion(siteScope[id])
+    if (r < 0) { return 0 }
+    if (scopeRegionName[r] >= 0) { return 1 }
+    return 0
+}
+
+// Level 2's question for a tier lookup by AST node: -1 when no site was inferred for this node. Codegen must read
+// that as "no information" and allocate the way it always did, which is what makes SPEC 7.1's zero-analysis build
+// behaviourally identical rather than merely intended to be.
+public fn aif_tier_at_node(node: Ptr) -> Int {
+    if (addressOf(node) == 0) { return -1 }
+    let site = siteAtNode(node)
+    if (site < 0) { return -1 }
+    return aif_tier_of(site)
+}

@@ -1,6 +1,8 @@
 // Resolving type annotations, and the assignability rules between the types they
 // name.
 
+import symbols.type_registry
+import symbols.declarations
 import ast.nodes
 import lexer.token
 import ast.types

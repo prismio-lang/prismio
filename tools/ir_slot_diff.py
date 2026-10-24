@@ -8,7 +8,7 @@ separately from a real difference.
 
 Two checks, because the first alone would hide the failure that matters. A bug
 that made two distinct bindings share one slot -- the exact defect the interning
-comment in ir_symbols.c records -- collapses two names into one, so the count of
+comment in `src/symbols/names.psm` records -- collapses two names into one, so the count of
 distinct slot names is compared as well as the normalised text.
 """
 import re, sys, os

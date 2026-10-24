@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 # The solver's ordinal order, T4a above T4b -- see AIF_T4A in
-# runtime/aif_support.c. A tier missing here is a KeyError on the line that
+# src/aifcore/. A tier missing here is a KeyError on the line that
 # decides regressions, not a quiet miss, which is the right failure mode.
 TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4, "T4a": 5}
 

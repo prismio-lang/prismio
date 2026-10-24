@@ -1,0 +1,112 @@
+// Fact encodings and the rule numbering the AIF engine works in.
+//
+// Escape is a single integer so that it fits a column slot and a Prismio `Int` alike: the two top
+// elements are negative, and every Region(s) is the scope id itself. The ordering
+// Region(s) < Caller < Global is not the integer ordering, so `escapeJoin` implements it.
+//
+// Constants shared with the rest of the compiler keep their one definition where it already was:
+// the site kinds (`AIF_KIND_*`), the pin verdicts, the arena and bracket blocker masks and the
+// derivation root `AIF_RULE_ALLOC` are `aif/model.psm`'s, and the element dispositions
+// (`AIF_ELEM_*`) are `ir/context.psm`'s.
+
+let AIF_E_GLOBAL = -2
+let AIF_E_CALLER = -1
+
+let AIF_A_UNIQUE = 0
+let AIF_A_BORROWED = 1
+let AIF_A_SHARED = 2
+
+let AIF_C_ACYCLIC = 0
+let AIF_C_MAYBE = 1
+
+// INFERENCE 2.3. Thread affinity: Isolated < Transferred < CrossThread. `Transferred` means ownership
+// moved between tasks but only one may reach the value at a time, so the transfer point is itself a
+// synchronisation edge and the count stays **non-atomic**. Only CrossThread forces atomics.
+let AIF_T_ISOLATED = 0
+let AIF_T_TRANSFERRED = 1
+let AIF_T_CROSS = 2
+
+// LAYOUT 4. Assumed trip count of a loop with no profile, and the one estimator both static
+// profiles share -- arena placement's allocs_in(s) and the layout search's access counts.
+let AIF_LOOP_ITERS = 16
+
+let AIF_KEY_VAR = 0
+let AIF_KEY_FIELD = 1
+let AIF_KEY_RET = 2
+let AIF_KEY_PARAM = 3
+let AIF_KEY_EXTERN = 4
+
+// One entry per transfer-rule instance the AST walk discovered. Solving is re-applying all of them
+// until nothing rises. The numbers are a wire protocol with `aif/model.psm`, so new ones are appended.
+let AIF_CON_BIND = 0
+let AIF_CON_ARG = 1
+let AIF_CON_STORE = 2
+let AIF_CON_LIVE_IN = 3
+let AIF_CON_OPAQUE = 4
+let AIF_CON_RETAIN_IN = 5
+let AIF_CON_BORROW = 6
+let AIF_CON_ESCAPE_CALLER = 7
+// ESCAPE_CALLER's `c`: 0 for an escape that is not a return, 1 for a return of an expression, and
+// this plus the binding's key for a bare `return name`.
+let AIF_RETURN_KEY_BASE = 2
+let AIF_CON_ESCAPE_GLOBAL = 8
+let AIF_CON_NO_STACK = 9
+let AIF_CON_TRANSFERRED = 24
+let AIF_CON_FOREIGN = 25
+// SPEC 5's annotations. Neither is a transfer rule: both are applied once, between the points-to
+// fixed point and the fact loop, because an axiom that arrives mid-iteration would only cut what had
+// not already been raised.
+let AIF_CON_UNIQUE = 10
+let AIF_CON_PIN = 11
+// Not constraints: the rules that read a site's own state rather than an incoming edge. They still
+// need names, because a witness path that ends at one has to say so.
+let AIF_RULE_A_ESCAPE = 12
+let AIF_RULE_A_COPY = 13
+let AIF_RULE_A_CONTAIN = 15
+// SPEC 8.4's view of a collection: the rule *name* the derivation prints. `aif_vs_view_of` attaches it.
+let AIF_CON_VIEW_OF = 16
+// SPEC 5.4 applied to placement: `pin(<region-name>)`. `b` is the interned region name.
+let AIF_CON_PIN_REGION = 17
+// REQUIREMENTS 15, INFERENCE 4.1/4.3. The arguments of one `spawn`; `b` is the enclosing scope and `c`
+// is 1 when the task is joined in that scope.
+let AIF_CON_SPAWN = 18
+
+// SPEC 4.2's tiers. T4a above T4b is a real decision: the order has to be a linear extension of the
+// fact lattice for `aifCheckPins` to stay sound, and raising T must never lower the ordinal.
+let AIF_T0 = 0
+let AIF_T1 = 1
+let AIF_T2 = 2
+let AIF_T3 = 3
+let AIF_T4B = 4
+let AIF_T4A = 5
+
+// Which Theta_stack to apply. Bytes is the real threshold and the default; fields is the prototype's
+// approximation, kept switchable because the oracle reads a JSON dump with no layout in it.
+let AIF_THETA_STACK_FIELDS = 8
+let AIF_THETA_STACK_BYTES = 256
+let AIF_THETA_MODE_BYTES = 0
+let AIF_THETA_MODE_FIELDS = 1
+
+// LAYOUT 4's cost model, in integer arithmetic throughout as LAYOUT 9 requires.
+let AIF_LINE = 64
+let AIF_C1 = 32768
+let AIF_C2 = 1048576
+let AIF_C3 = 33554432
+let AIF_MU1 = 4
+let AIF_MU2 = 12
+let AIF_MU3 = 40
+let AIF_MUM = 250
+let AIF_N_ASSUMED = 1048576
+let AIF_PI_SEQ = 15
+let AIF_PI_RANDOM = 100
+let AIF_LAMBDA_NUM = 2
+let AIF_LAMBDA_DEN = 100
+let AIF_MAX_CANDIDATES = 32
+let AIF_MAX_FORCED = 32
+
+// LAYOUT 4's allocation costs for automatic arena placement.
+let AIF_ALPHA_T1 = 3
+let AIF_ALPHA_T2 = 90
+let AIF_ARENA_SETUP = 40
+
+let AIF_CAUSE_MAX = 32

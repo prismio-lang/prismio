@@ -9,6 +9,7 @@
 //
 // The numbers are assigned and checked with the enum's, in enum_discriminants.psm.
 
+import symbols.declarations
 import ast.nodes
 import ast.types
 import common.diagnostics

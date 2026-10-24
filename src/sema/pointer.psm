@@ -15,6 +15,7 @@
 //     its whole point (stage 5), because a plain load there would be silently wrong;
 //   - a write through any pointer (stage 3).
 
+import symbols.declarations
 import ast.nodes
 import lexer.token
 import ast.types

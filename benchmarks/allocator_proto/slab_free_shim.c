@@ -28,5 +28,17 @@ void* my_realloc(void* p, size_t n) {
     if (in_slab(p)) { note("realloc", p); void* q = malloc(n); if (q) memcpy(q, p, n < 16 ? n : 16); return q; }
     return realloc(p, n);
 }
+// The positive control: an empty log means nothing only if the slab was there to misuse. With
+// SHIM_REQUIRE_SLAB set, a process that exits without the hinted range mapped says so in the log
+// (the slab maps lazily, so set it only for a run that is known to allocate small blocks).
+#include <sys/mman.h>
+__attribute__((destructor)) static void require_slab(void) {
+    if (!getenv("SHIM_REQUIRE_SLAB")) return;
+    if (madvise((void*)0x600000000000ULL, 4096, MADV_NORMAL) == 0) return;
+    const char* path = getenv("SHIM_LOG");
+    FILE* f = path ? fopen(path, "a") : stderr; if (!f) f = stderr;
+    fprintf(f, "SLAB-NOT-MAPPED[%s]: the slab range was never reserved, so this run checked nothing\n", getprogname());
+    if (f != stderr) fclose(f);
+}
 DYLD_INTERPOSE(my_free, free)
 DYLD_INTERPOSE(my_realloc, realloc)

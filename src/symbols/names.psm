@@ -1,0 +1,62 @@
+// Every name the symbol tables hold, stored once at full length and referred to by an id.
+//
+// The tables are searched on every identifier the compiler reads, so a lookup must compare
+// integers, not bytes: `find_binding` scans backwards over the whole binding table. A name is
+// interned on the way into a table and on the way into a query, which costs one hash, and the
+// tables themselves hold nothing but ids. Nothing is truncated and nothing is ever released: a
+// compiler run ends when compilation does.
+//
+// Id 0 is the empty name, so a table can default to "" without interning it.
+//
+// C reads interned names too (struct fields, enumerators, enum representations), and a String of
+// twelve bytes or fewer has no pointer, so `irNameBlock` hands out a NUL-terminated copy made on
+// first request and kept for the life of the process.
+
+import common.c_text
+import std.map
+import std.raw
+import std.string
+import std.vec
+
+private let mut nameIds: Map<String, Int>
+private let mut nameTexts: Vec<String>
+private let mut nameBlocks: Vec<Usize>
+private let mut namesOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+private fn namesOpen() {
+    if (namesOpened) { return }
+    let ids: Map<String, Int> = {}
+    nameIds = ids
+    nameTexts = []
+    nameBlocks = []
+    namesOpened = true
+    nameIds.set("", 0)
+    nameTexts.push("")
+    nameBlocks.push(0)
+}
+
+public fn irNameId(name: String) -> Int {
+    namesOpen()
+    let known = nameIds.getOr(name, -1)
+    if (known >= 0) { return known }
+    let id = nameTexts.length
+    nameIds.set(name.clone(), id)
+    nameTexts.push(name.clone())
+    nameBlocks.push(0)
+    return id
+}
+
+// The name, as a view of the stored text: nothing is allocated and nothing is released, which is
+// what the symbol tables' string answers were when they were C.
+public fn irNameText(id: Int) -> String {
+    namesOpen()
+    return nameTexts[id].substring(0, nameTexts[id].length)
+}
+
+// The same text as a NUL-terminated C string, valid for the rest of the process.
+public fn irNameBlock(id: Int) -> Ptr {
+    namesOpen()
+    if (nameBlocks[id] == 0) { nameBlocks[id] = cTextCopy(nameTexts[id]) }
+    return pointerAt(nameBlocks[id])
+}

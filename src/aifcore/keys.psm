@@ -1,0 +1,295 @@
+// Points-to keys: the locations that can hold references, the walk's environment of declared
+// bindings, the scope each binding was declared in and the FFI contracts an extern declares.
+//
+// A key names a location that can hold references: a local binding, a struct field (field-sensitive,
+// object-insensitive -- INFERENCE 3.1), a return position, or a parameter. Identity is the tuple, so the
+// same name in two functions is two keys, and `Lexer.source` is one key across every Lexer. A key is
+// interned from `(kind, a, b)` and its tuple is kept by id.
+
+import aifcore.bits
+import aifcore.constants
+import aifcore.constraints
+import aifcore.sites
+import aifcore.structure
+import std.io
+import std.map
+import std.option
+import std.process
+import std.string
+import std.vec
+import symbols.names
+
+internal let mut keyCount = 0
+internal let mut keyKind: Vec<Int>
+internal let mut keyA: Vec<Int>
+internal let mut keyB: Vec<Int>
+private let mut keyIds: Map<U64, Int>
+
+// Bindings are keyed per declaration, not per name. A key used to be (function, name), so `let frag = ...`
+// in one block and a later `for frag in ...` were one variable: the `for` binder is a view of an element,
+// the earlier `let` stored an owner, and joining the two read the owner's store as a view store, which
+// taints every site of the type. The walk now keeps the bindings in scope as it goes, and a read or a store
+// resolves to the innermost declaration of its name that is visible there, as the source does. The first
+// declaration of a name in a function keeps the plain (function, name) key; later ones are `name#1`,
+// `name#2`, a spelling no source name can have.
+private let mut envFn: Vec<Int>
+private let mut envName: Vec<Int>
+private let mut envKey: Vec<Int>
+private let mut envLen = 0
+private let mut envMarks: Vec<Int>
+private let mut envMarkLen = 0
+
+// E-BIND needs the scope a *variable* was declared in, not the scope the assignment sits in. Without it a
+// value created inside a loop and assigned to a binding declared outside keeps the loop body's escape, which
+// reads as "dies at the end of this iteration" and is false. Shadowing joins outward: two declarations of one
+// name in sibling blocks join to their least common ancestor.
+internal let mut varScope: Vec<Int>
+
+// What an `extern` declaration says about ownership (FFI 5), keyed by the callee's name and a parameter index:
+// index -1 holds the return contract and -2 marks the name as declared at all. Key id -> interned contract
+// text, -1 unset.
+private let mut externContract: Vec<Int>
+
+// Which parameters are declared `sink`, by PARAM key: the one thing the pass-through guard needs and could
+// not ask. A `sink` parameter is a **move**, enforced by sema, so a callee handing a consuming parameter back
+// is ownership returning to a caller that no longer has it, not the double free the guard exists to prevent.
+internal let mut paramConsuming = -1
+
+private let mut elemBase: Vec<Int>
+private let mut elemFull: Vec<Int>
+
+private let mut keysOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+internal fn keysOpen() {
+    if (keysOpened) { return }
+    keysOpened = true
+    keyKind = []
+    keyA = []
+    keyB = []
+    let ids: Map<U64, Int> = {}
+    keyIds = ids
+    envFn = []
+    envName = []
+    envKey = []
+    envMarks = []
+    varScope = []
+    externContract = []
+    elemBase = []
+    elemFull = []
+    paramConsuming = bitsNew()
+}
+
+// Interned names stay across a reset. Nothing outside this module holds an id across one.
+internal fn keysReset() {
+    keysOpened = false
+    keysOpen()
+    keyCount = 0
+    envLen = 0
+    envMarkLen = 0
+}
+
+// The tuple as one integer: `a` is a function or type id (-1 for a global), `b` an interned name, an index, or
+// -1 and -2 for an extern's return and presence.
+private fn keyPack(kind: Int, a: Int, b: Int) -> U64 {
+    return ((kind as U64) << 60) | (((a + 1) as U64) << 30) | ((b + 2) as U64)
+}
+
+internal fn keyIntern(kind: Int, a: Int, b: Int) -> Int {
+    keysOpen()
+    let packed = keyPack(kind, a, b)
+    let known = keyIds.getOr(packed, -1)
+    if (known >= 0) { return known }
+    keyKind.push(kind)
+    keyA.push(a)
+    keyB.push(b)
+    keyIds.set(packed, keyCount)
+    keyCount = keyCount + 1
+    return keyCount - 1
+}
+
+// Lookup without interning. A query after the solve must not add a key: the points-to sets are sized to
+// `keyCount` when the solve starts, so a fresh id would index past them.
+internal fn keyFind(kind: Int, a: Int, b: Int) -> Int {
+    keysOpen()
+    return keyIds.getOr(keyPack(kind, a, b), -1)
+}
+
+public fn aif_key_count() -> Int {
+    return keyCount
+}
+
+// A new function starts with nothing in scope.
+public fn aif_env_reset() {
+    envLen = 0
+    envMarkLen = 0
+}
+
+public fn aif_env_enter() {
+    keysOpen()
+    intsPut(envMarks, envMarkLen, envLen, 0)
+    envMarkLen = envMarkLen + 1
+}
+
+public fn aif_env_leave() {
+    if (envMarkLen == 0) { return }
+    envMarkLen = envMarkLen - 1
+    envLen = envMarks[envMarkLen]
+}
+
+// The key of the innermost visible declaration of `name`, or -1: a global, a name the walk never declared (a
+// closure's parameter), or a read outside any walk.
+private fn envResolve(fnId: Int, name: Int) -> Int {
+    let mut i = envLen - 1
+    while (i >= 0) {
+        if (envName[i] == name and envFn[i] == fnId) { return envKey[i] }
+        i = i - 1
+    }
+    return -1
+}
+
+public fn aif_key_var(fnId: Int, name: String) -> Int {
+    let interned = irNameId(name)
+    let resolved = envResolve(fnId, interned)
+    if (resolved >= 0) { return resolved }
+    return keyIntern(AIF_KEY_VAR, fnId, interned)
+}
+
+// A declaration of `name` in `scope`. Takes the first key of the name's spellings that no earlier declaration
+// of this function used, and puts it in scope until the block it was declared in is left. A global (function
+// -1) has one key and is not in the walk's environment.
+public fn aif_var_note_scope(fnId: Int, name: String, scope: Int) {
+    let interned = irNameId(name)
+    let mut key = keyIntern(AIF_KEY_VAR, fnId, interned)
+    if (fnId >= 0) {
+        let mut ordinal = 1
+        while (key < varScope.length and varScope[key] >= 0) {
+            key = keyIntern(AIF_KEY_VAR, fnId, irNameId(name.concat("#", ordinal.toString())))
+            ordinal = ordinal + 1
+        }
+    }
+    if (key >= varScope.length or varScope[key] < 0) {
+        intsPut(varScope, key, scope, -1)
+    } else {
+        let m = scopeLca(varScope[key], scope)
+        if (m >= 0) { varScope[key] = m }
+    }
+    if (fnId < 0) { return }
+    intsPut(envFn, envLen, fnId, 0)
+    intsPut(envName, envLen, interned, 0)
+    intsPut(envKey, envLen, key, 0)
+    envLen = envLen + 1
+}
+
+// Called at every read of a binding. Declines rather than guesses in the two cases where the answer would not
+// mean anything: a name with no declaration on record yet, and a read that is not underneath its declaring
+// scope's statement list at all.
+public fn aif_var_note_use(fnId: Int, name: String, scope: Int) {
+    let key = aif_key_var(fnId, name)
+    let mut declared = -1
+    if (key < varScope.length) { declared = varScope[key] }
+    if (declared < 0 or declared >= scopeStmt.length) { return }
+    let at = scopeStmt[declared]
+    if (at < 0) { return }
+    if (key >= keyLastStmt.length or at > keyLastStmt[key]) { intsPut(keyLastStmt, key, at, -1) }
+}
+
+// -1 when the name has no declaration on record: a global, or an assignment the walk reached before the
+// declaration. The caller falls back to the assignment's own scope.
+public fn aif_var_scope(fnId: Int, name: String) -> Int {
+    let key = aif_key_var(fnId, name)
+    if (key < varScope.length) { return varScope[key] }
+    return -1
+}
+
+public fn aif_key_field(type: String, fld: String) -> Int {
+    return keyIntern(AIF_KEY_FIELD, irNameId(type), irNameId(fld))
+}
+
+public fn aif_key_ret(fnId: Int) -> Int {
+    return keyIntern(AIF_KEY_RET, fnId, 0)
+}
+
+public fn aif_key_param(fnId: Int, index: Int) -> Int {
+    return keyIntern(AIF_KEY_PARAM, fnId, index)
+}
+
+public fn aif_note_param_consuming(fnId: Int, index: Int) {
+    keysOpen()
+    if (fnId < 0 or index < 0) { return }
+    bitsSet(paramConsuming, keyIntern(AIF_KEY_PARAM, fnId, index))
+}
+
+public fn aif_extern_contract_set(fnId: String, index: Int, contract: String) {
+    let key = keyIntern(AIF_KEY_EXTERN, irNameId(fnId), index)
+    intsPut(externContract, key, irNameId(contract), -1)
+}
+
+// "" when nothing was declared, which the frontend reads as "fall through to the default" rather than as a
+// contract in its own right.
+public fn aif_extern_contract(fnId: String, index: Int) -> String {
+    let key = keyIntern(AIF_KEY_EXTERN, irNameId(fnId), index)
+    if (key >= externContract.length or externContract[key] < 0) { return "" }
+    return irNameText(externContract[key])
+}
+
+// Container element keys, and the one thing that makes keying them precisely sound (INFERENCE 3.1). An
+// element read gets back whatever was pushed, through a field key on the container's type. Keying that on the
+// *base* type put every list in the program into one set; keying it on the full type (`List<Actor>` against
+// `List<Order>`) separates them, and is sound **because a container's static type is the same at every
+// mention**: Prismio has no subtyping, and generics are monomorphised into concrete types before the walk.
+//
+// **The exception is a spelling the frontend could not resolve**, a bare `List` or `List<Invalid>`. Those
+// really can name the same container as a resolved spelling elsewhere, so a base type with even one of them
+// has all of its element keys bound together.
+
+// The container type as the frontend spelled it, up to the first `<`.
+private fn elemBaseOf(type: String) -> Int {
+    let lt = type.indexOf('<')
+    if (lt < 0) { return irNameId(type) }
+    let mut n = lt
+    if (n >= 128) { n = 127 }
+    return irNameId(type.substring(0, n))
+}
+
+private fn elemSpellingResolved(type: String) -> Bool {
+    if (type.indexOf('<') < 0) { return false }       // a bare base names every instance
+    if (type.contains("Invalid")) { return false }     // inference had nothing to give
+    return true
+}
+
+public fn aif_elem_key(containerType: String) -> Int {
+    keysOpen()
+    elemBase.push(elemBaseOf(containerType))
+    elemFull.push(irNameId(containerType))
+    return aif_key_field(containerType, "@elem")
+}
+
+// Run before the solve, because it adds constraints. Binds both ways, so the base key and every precise key of
+// a tainted base hold the same set.
+internal fn elemKeyReconcile() {
+    keysOpen()
+    let trace = process.env("AIF_BRACKET_TRACE") != none
+    for i in 0..<elemFull.length {
+        if (elemSpellingResolved(irNameText(elemFull[i]))) { continue }
+        let base = elemBase[i]
+        // Loud, because the consequence shows up a long way from the cause: with the base merged, an element
+        // read comes back holding every element of every container of that base.
+        if (trace) {
+            eprint("aif: element keys for `".concat(irNameText(base), "` merged -- `", irNameText(elemFull[i]),
+                                                    "` is not a resolved container type\n"))
+        }
+        for j in 0..<elemFull.length {
+            if (elemBase[j] != base) { continue }
+            let precise = aif_key_field(irNameText(elemFull[j]), "@elem")
+            let bare = aif_key_field(irNameText(base), "@elem")
+            if (precise == bare) { continue }
+            let a = aif_vs_new()
+            aif_vs_key(a, bare)
+            aif_con_bind(precise, a)
+            let b = aif_vs_new()
+            aif_vs_key(b, precise)
+            aif_con_bind(bare, b)
+        }
+    }
+}

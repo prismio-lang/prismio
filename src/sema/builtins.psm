@@ -1,5 +1,7 @@
 // The calls the compiler knows the shape of without a declaration.
 
+import symbols.bindings
+import symbols.declarations
 import ast.nodes
 import lexer.token
 import ast.types
@@ -134,6 +136,9 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // The `index`th `char*` of a `char**`, as a String. How std.process reads
     // the argument vector it names with `extern let`.
     if (name.equals("__builtin_cstring_at")) { return typeString() }
+    // A NUL-terminated `char*` as a String: the other direction from `std.mem`'s
+    // callers, which are C functions handing the program a pointer.
+    if (name.equals("__builtin_cstring")) { return typeString() }
 
     // REQUIREMENTS 4. The narrowing half. `T?` cannot be used as a `T` -- that
     // is what the type buys -- so there has to be one way across, and this is it.
@@ -844,6 +849,12 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         let c0 = ptr_to_node(argPtr)
         semaCheckValue(module, c0, typePtr(), "C string array")
         semaCheckValue(module, ptr_to_node(c0.next), typeInt(), "C string array index")
+        return true
+    }
+
+    if (name.equals("__builtin_cstring")) {
+        if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
+        semaCheckValue(module, ptr_to_node(argPtr), typePtr(), "C string")
         return true
     }
 

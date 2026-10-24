@@ -6,7 +6,7 @@ management), owns physical layout, and whatever it cannot prove costs performanc
 correctness. `prismio aif <file.psm>` shows the decisions.
 
 This directory is the **design record**. The authoritative description of what the compiler does today
-is the source (`src/aif/`, `runtime/aif_support.c`) and the two documentation sites:
+is the source (`src/aif/`, `src/aifcore/`) and the two documentation sites:
 [the language docs](https://docs.prismio.org/guides/memory-and-aif) for using it and
 [the developer docs](https://developers.prismio.org/aif/overview) for working on it.
 

@@ -51,11 +51,21 @@
 #include <unistd.h>
 #endif
 
+#include "prismio_runtime.h"
+
+// The JIT defines the symbol `free` as this process's own (`allocator[]` in the JIT
+// runner), the one place this file needs the bare name; it is taken before the poison.
+static void (*const libc_free_fn)(void *) = free;
+
+// Every libc `free`/`realloc` in this file is spelled `tmp_free`/`tmp_realloc` (prismio_runtime.h),
+// because a block from the allocator seam must reach `rt_free` instead. See docs/ALLOCATOR_PLAN.md.
+#pragma GCC poison free realloc
+
 // The value and block tables are indexed by a counter that runs for the whole
 // module, so their old fixed sizes were a ceiling on *program size* rather than
 // on anything a single function could do: a 922 KB source stopped with
 // `value table exhausted`, which is the first hard limit anyone has hit here.
-// They grow now, the way every table in ir_symbols.c does and for the reason
+// They grow now, the way every table in src/symbols/ does and for the reason
 // stated there. These two names are the initial capacity, not a maximum.
 #define INITIAL_VALUES 65536
 #define INITIAL_LABELS 16384
@@ -159,29 +169,27 @@ static int g_has_returned;
 // Object allocation is deliberately indirect. The frontend asks for "an object
 // of this struct type" and this layer decides what that means, so swapping
 // malloc for an arena, a refcounting allocator, or anything else is a change
-// here and not a change to codegen. Defaults keep today's behaviour exactly.
+// here and not a change to codegen.
 
-// **The deallocator is the runtime's seam; the allocator stays libc's, and the
-// asymmetry is a measurement rather than an oversight.**
+// **Both halves are the runtime's seam.** `rt_free` has always been: a release emitted
+// as libc `free` would hand the allocator behind the seam a block it never gets back
+// (1.85x on `tokenization` when that allocator was a small-block recycler). Object
+// allocation joined it in the allocator rollout (docs/ALLOCATOR_PLAN.md, stage 2), so
+// a struct box comes from the same small-block allocator the release returns it to.
 //
-// `rt_free` recycles small blocks (lang_runtime.c), and a pool only fills if the
-// releases reach it -- a release emitted as libc `free` hands the allocator a
-// block the pool never gets back. That half is worth 1.85x on `tokenization`.
-//
-// Naming the seam on the allocator side too was tried and reverted. It buys
-// nothing -- `struct_creation` and `transient_allocation` both read 1.00x,
-// because the allocations that benefit are made *inside* the runtime by
-// `str_with_capacity` and friends, which already call `rt_base_alloc` directly.
-// And it costs: `malloc` is a name LLVM's TargetLibraryInfo knows, so the call
-// carries `noalias`, `allocsize` and inaccessible-memory-only for free, while an
-// opaque `rt_base_alloc` must be assumed to clobber everything. `tree_traversal`
-// -- 32 000 nodes built, then traversed 32 times -- measured **0.88x** with the
-// swap and 1.00x without it. Nothing about the pool needs it, so it is not paid.
+// It was tried once before and reverted, and the reason is still the thing to keep:
+// `malloc` is a name LLVM's TargetLibraryInfo knows, so a call to it carries `noalias`,
+// `allocsize` and inaccessible-memory-only for free, while an opaque `rt_base_alloc`
+// must be assumed to clobber everything -- `tree_traversal` read 0.88x. What makes the
+// seam free now is tag_alloc_callsite, which says those facts on every call site
+// (they do not survive on the declaration: the runtime's definition replaces it at
+// link time). Without them `arena_bump` regresses 1.52x (77 -> 117 ms: its `Arena`
+// struct stops being promoted to registers once the allocation is opaque).
 //
 // Under `--verify` both are overridden together with the ledger's own pair
 // (src/driver/compile.psm), which is the discipline that actually matters here:
 // the two halves of one *pairing* swap together or neither does.
-static char g_alloc_fn[NAME_LEN] = "malloc";
+static char g_alloc_fn[NAME_LEN] = "rt_base_alloc";
 static char g_free_fn[NAME_LEN] = "rt_free";
 
 // Pointer-sized integer for the current target, in LLVM spelling. Set once per
@@ -237,7 +245,7 @@ static void grow_table(void **items, int *capacity, int wanted, size_t item_size
     if (wanted < *capacity) return;
     int next = *capacity ? *capacity * 2 : initial;
     while (next <= wanted) next *= 2;
-    void *grown = realloc(*items, (size_t)next * item_size);
+    void *grown = tmp_realloc(*items, (size_t)next * item_size);
     if (!grown) backend_fail("out of memory growing", what);
     // New slots are zeroed: block_for() reads a slot to decide whether the block
     // has been materialised, and ir_get_label() only clears the one it hands out.
@@ -255,13 +263,13 @@ static int intern_value(LLVMValueRef v) {
 }
 
 const char *ir_get_temp_name(int id) {
-    char *out = (char *)malloc(32);
+    char *out = (char *)rt_base_alloc(32);
     snprintf(out, 32, "$$v%d", id);
     return out;
 }
 
 const char *ir_get_label_name(int id) {
-    char *out = (char *)malloc(32);
+    char *out = (char *)rt_base_alloc(32);
     snprintf(out, 32, "label_%d", id);
     return out;
 }
@@ -541,7 +549,7 @@ static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
             if (!big) backend_fail("out of memory reading a wide constant", s);
             snprintf(big, cap, "%s%s", sign ? "-" : "", digits);
             LLVMValueRef v = LLVMConstIntOfString(ty, big, (uint8_t)base);
-            free(big);
+            tmp_free(big);
             return v;
         }
         snprintf(wide, sizeof(wide), "%s%s", sign ? "-" : "", digits);
@@ -1535,7 +1543,7 @@ int ir_switch_case_value(int switch_id, const char *type, const char *value, int
     }
     if (g_case_count == g_case_cap) {
         g_case_cap = g_case_cap ? g_case_cap * 2 : 64;
-        g_case_values = (long long *)realloc(g_case_values, (size_t)g_case_cap * sizeof(long long));
+        g_case_values = (long long *)tmp_realloc(g_case_values, (size_t)g_case_cap * sizeof(long long));
         if (!g_case_values) backend_fail("out of memory growing a switch", NULL);
     }
     g_case_values[g_case_count++] = v;
@@ -2394,7 +2402,7 @@ void ir_store_global(const char *type, const char *value, const char *name) {
 // bottom at its own defining scope, i.e. nothing from one iteration is still
 // reachable in the next. The escape module has to be right about that; when it
 // was not, this was a miscompile rather than a slowdown (see aif_var_scope in
-// aif_support.c).
+// src/aifcore/).
 //
 // Unnamed and never deduplicated, unlike ir_alloca: two struct literals of the
 // same type in one function are two values and need two slots.
@@ -2472,23 +2480,21 @@ static void attach_cold(const StructType *s, LLVMValueRef hot, const char *alloc
     tag_struct_record(store, s, 0, (unsigned)s->hot_count, "ptr");
 }
 
-// PROTOTYPE (docs/ALLOCATOR_PLAN.md): PRISMIO_PROTO_ALLOC=rt_base_alloc sends object
-// allocation through the runtime seam instead of libc `malloc`. Only consulted while
-// the name is still the default, so a verify build keeps its own pair.
-static const char *effective_alloc_fn(void) {
-    if (strcmp(g_alloc_fn, "malloc") == 0) {
-        const char *proto = getenv("PRISMIO_PROTO_ALLOC");
-        if (proto && *proto) return proto;
-    }
-    return g_alloc_fn;
-}
-
-// PROTOTYPE: what LLVM already knows about `malloc` by name, said at the call site so it
-// survives the runtime's definition of `rt_base_alloc` replacing the declaration's
-// attributes when the bitcode is linked. A call site's attributes are consulted before
-// the callee's, and the effective memory behaviour is the intersection of the two.
+// What LLVM already knows about `malloc` by name, said at the call site so it survives
+// the runtime's definition of `rt_base_alloc` replacing the declaration's attributes when
+// the bitcode is linked. A call site's attributes are consulted before the callee's, and
+// the effective memory behaviour is the intersection of the two. `PRISMIO_PROTO_NOATTR=1`
+// leaves them off: the control the allocator A/B (benchmarks/allocator_proto/ab.py) uses
+// to measure what they are worth.
+//
+// **Only on `rt_base_alloc`, never on the `--verify` ledger's `aif_verify_alloc`.** The
+// attributes license LLVM to delete an allocation whose result it can see does not
+// escape -- including one that is never freed -- and an allocation the optimiser removed
+// is one the ledger cannot count. With them on the ledger's allocator, `test_269` read
+// 4 allocated / 0 leaked instead of 13 / 9 and `test_273` 300 / 200 instead of 400 / 300:
+// the leaks were still in the program as written, and verify mode had stopped seeing them.
 static void tag_alloc_callsite(LLVMValueRef call, const char *name) {
-    if (strcmp(name, "malloc") == 0) return;
+    if (strcmp(name, "rt_base_alloc") != 0) return;
     unsigned k_allockind = LLVMGetEnumAttributeKindForName("allockind", 9);
     unsigned k_allocsize = LLVMGetEnumAttributeKindForName("allocsize", 9);
     unsigned k_noalias = LLVMGetEnumAttributeKindForName("noalias", 7);
@@ -2519,13 +2525,12 @@ int ir_alloc_object(const char *struct_name) {
     }
 
     LLVMTypeRef alloc_ty = LLVMFunctionType(ptr, &size_ty, 1, 0);
-    const char *alloc_name = effective_alloc_fn();
-    LLVMValueRef alloc_fn = get_or_declare_alloc_fn(alloc_name, alloc_ty);
+    LLVMValueRef alloc_fn = get_or_declare_alloc_fn(g_alloc_fn, alloc_ty);
 
     LLVMValueRef args[1] = {size};
     LLVMValueRef hot = LLVMBuildCall2(g_builder, alloc_ty, alloc_fn, args, 1, "");
-    tag_alloc_callsite(hot, alloc_name);
-    attach_cold(s, hot, alloc_name, size_ty);
+    tag_alloc_callsite(hot, g_alloc_fn);
+    attach_cold(s, hot, g_alloc_fn, size_ty);
     return intern_value(hot);
 }
 
@@ -2711,6 +2716,30 @@ static void ir_release_call(const char *value, const char *fn_name) {
 
 void ir_free_object(const char *value) { ir_release_call(value, g_free_fn); }
 
+// FFI 5.2 `produce(f)` where `f` is not the seam's `rt_free`: a C function that returned
+// a string from an allocator of its own. The bytes are copied into a seam block here and
+// `f` is called on the original at once, so the foreign block never enters Prismio's
+// ownership -- moves, containers and the `--verify` ledger all see an ordinary String,
+// and this is the only call that names `f`. With a slab behind the seam, the alternative
+// (`rt_free` on a block `f` should release) is a libc `free` of a foreign block at best.
+// `len` is the length the caller has just measured; the copy is returned.
+//
+// `str_clone_n` is declared here, on first use, so a program without such a call gets
+// no new declaration.
+int ir_string_adopt(const char *raw_value, const char *len_value, const char *dealloc) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(g_ctx, 0);
+    LLVMTypeRef i32 = LLVMInt32TypeInContext(g_ctx);
+    LLVMTypeRef cargs[2] = {ptr, i32};
+    LLVMTypeRef cty = LLVMFunctionType(ptr, cargs, 2, 0);
+    LLVMValueRef cfn = LLVMGetNamedFunction(g_module, "str_clone_n");
+    if (!cfn) cfn = LLVMAddFunction(g_module, "str_clone_n", cty);
+    LLVMValueRef args[2] = {coerce_for(resolve_value(raw_value, "ptr"), "ptr"),
+                            resolve_value(len_value, "i32")};
+    LLVMValueRef copy = LLVMBuildCall2(g_builder, cty, cfn, args, 2, "");
+    ir_release_call(raw_value, dealloc);
+    return intern_value(copy);
+}
+
 // LAYOUT 6's hot/cold split, the release half.
 //
 // A split object is two allocations and `ir_free_object` above frees one block
@@ -2877,9 +2906,9 @@ int ir_struct_field_ptr(const char *struct_name, const char *object, int field_i
 // not seen answers "not flat" and the element stays boxed. Unknown means boxed
 // is the only safe direction here: a wrong "flat" is a memcpy of something that
 // owns memory.
-int ir_get_struct_field_count(const char *struct_name);
-const char *ir_get_struct_field_type_at(const char *struct_name, int index);
-int ir_is_struct_type_name(const char *name);
+int ir_get_struct_field_count_cstr(const char *struct_name);
+const char *ir_get_struct_field_type_at_cstr(const char *struct_name, int index);
+int ir_is_struct_type_name_cstr(const char *name);
 
 static int struct_is_flat_by_name(const char *name, int depth);
 
@@ -2899,13 +2928,13 @@ static int type_key_is_flat(const char *key, int depth) {
 
 static int struct_is_flat_by_name(const char *name, int depth) {
     if (depth > 16) return 0;
-    if (!ir_is_struct_type_name(name)) return 0;
+    if (!ir_is_struct_type_name_cstr(name)) return 0;
     StructType *s = struct_entry(name);
     if (!s || !s->type || s->hot_count > 0) return 0;
-    int n = ir_get_struct_field_count(name);
+    int n = ir_get_struct_field_count_cstr(name);
     if (n <= 0) return 0;
     for (int i = 0; i < n; i++) {
-        if (!type_key_is_flat(ir_get_struct_field_type_at(name, i), depth)) return 0;
+        if (!type_key_is_flat(ir_get_struct_field_type_at_cstr(name, i), depth)) return 0;
     }
     return 1;
 }
@@ -2957,7 +2986,7 @@ int ir_enum_tag(const char *name, const char *value) {
 // size once at construction and a constant is what makes the chunk arithmetic
 // fold.
 int ir_struct_size(const char *struct_name) {
-    if (!ir_is_struct_type_name(struct_name)) return 0;
+    if (!ir_is_struct_type_name_cstr(struct_name)) return 0;
     StructType *s = struct_entry(struct_name);
     if (!s || !s->type) return 0;
     return (int)LLVMABISizeOfType(LLVMGetModuleDataLayout(g_module), s->type);
@@ -2967,26 +2996,26 @@ int ir_struct_size(const char *struct_name) {
 // hot/cold splitting for its element type, so a source field index is also an
 // LLVM element index and its offset/size describe the complete AoS row.
 int ir_struct_field_offset(const char *struct_name, int index) {
-    if (!ir_is_struct_type_name(struct_name)) return -1;
+    if (!ir_is_struct_type_name_cstr(struct_name)) return -1;
     StructType *s = struct_entry(struct_name);
     if (!s || !s->type || s->hot_count > 0) return -1;
-    int count = ir_get_struct_field_count(struct_name);
+    int count = ir_get_struct_field_count_cstr(struct_name);
     if (index < 0 || index >= count) return -1;
     return (int)LLVMOffsetOfElement(LLVMGetModuleDataLayout(g_module), s->type,
                                     (unsigned)index);
 }
 
 int ir_struct_field_size(const char *struct_name, int index) {
-    if (!ir_is_struct_type_name(struct_name)) return 0;
+    if (!ir_is_struct_type_name_cstr(struct_name)) return 0;
     StructType *s = struct_entry(struct_name);
     if (!s || !s->type || s->hot_count > 0) return 0;
-    int count = ir_get_struct_field_count(struct_name);
+    int count = ir_get_struct_field_count_cstr(struct_name);
     if (index < 0 || index >= count) return 0;
     // The registry is populated in the physical order chosen by the layout
     // pass, so its type at index is the same element LLVM laid out here. Using
     // the key also stays within the older C-API surface packaged toolchains
     // expose; LLVMStructGetTypeAtIndex is not available in all of them.
-    LLVMTypeRef field = type_from_key(ir_get_struct_field_type_at(struct_name, index));
+    LLVMTypeRef field = type_from_key(ir_get_struct_field_type_at_cstr(struct_name, index));
     return (int)LLVMABISizeOfType(LLVMGetModuleDataLayout(g_module), field);
 }
 
@@ -3152,7 +3181,7 @@ void ir_array_literal_begin(void) {
 static void array_literal_push(LLVMValueRef element) {
     if (g_array_literal_count == g_array_literal_capacity) {
         int capacity = g_array_literal_capacity ? g_array_literal_capacity * 2 : 256;
-        LLVMValueRef *grown = realloc(g_array_literal, (size_t)capacity * sizeof(LLVMValueRef));
+        LLVMValueRef *grown = tmp_realloc(g_array_literal, (size_t)capacity * sizeof(LLVMValueRef));
         if (!grown) backend_fail("out of memory for an array literal", NULL);
         g_array_literal = grown;
         g_array_literal_capacity = capacity;
@@ -6150,7 +6179,7 @@ int ir_string_ptr(const char *global_name) {
 }
 
 // Return tracking, the struct/enum/global registries, var types and move/borrow
-// state all live in ir_symbols.c -- they are compiler bookkeeping shared by both
+// state all live in src/symbols/ -- they are compiler bookkeeping shared by both
 // backends, not emission state.
 
 // The text backend let the frontend splice arbitrary IR text into the output,
@@ -6225,12 +6254,12 @@ void ir_blank_line(void) { /* formatting only */ }
 
 #ifdef PRISMIO_DWARF
 
-// From diagnostics.c. A file id on an AST node indexes that registry; the path
+// From src/common/source_files.psm. A file id on an AST node indexes that registry; the path
 // is what a DIFile needs. diag_file_count() is the difference between "file 7"
 // and "there is no file 7" -- without it an out-of-range id renders as
 // "<unknown>", which is a filename a debugger would go looking for.
 int diag_file_count(void);
-const char *diag_file_path(int file);
+const char *diag_file_path_cstr(int file);
 
 // From program_support.c, for DW_AT_comp_dir. A source path reaches the
 // compiler as the user typed it, so it is usually relative, and a debugger
@@ -6241,23 +6270,23 @@ char *current_directory(void);
 // does not include prismio_runtime.h.
 void rt_free(void *p);
 
-// From ir_symbols.c. The field *names* of a registered struct, in the order they
+// From src/symbols/type_registry.psm. The field *names* of a registered struct, in the order they
 // were registered -- which generateStructDecl guarantees is the physical order
 // the layout search chose, not the declaration order.
-int ir_get_struct_field_count(const char *struct_name);
-const char *ir_get_struct_field_name_at(const char *struct_name, int index);
-const char *ir_get_struct_field_type_at(const char *struct_name, int index);
-int ir_is_struct_type_name(const char *name);
+int ir_get_struct_field_count_cstr(const char *struct_name);
+const char *ir_get_struct_field_name_at_cstr(const char *struct_name, int index);
+const char *ir_get_struct_field_type_at_cstr(const char *struct_name, int index);
+int ir_is_struct_type_name_cstr(const char *name);
 
-// Same file. `ir_named_type_kind` is how a struct is told from an enum: guessing
+// Same file. `ir_named_type_kind_cstr` is how a struct is told from an enum: guessing
 // from the name is wrong, because `TokenType` is an enum and does not look like
 // one. 1 = struct, 2 = enum, 0 = not a declared type.
-int ir_named_type_kind(const char *name);
-int ir_get_enum_variant_count(const char *enum_name);
-const char *ir_get_enum_variant_name_at(const char *enum_name, int index);
-int64_t ir_get_enum_variant_value_at(const char *enum_name, int index);
-const char *ir_enum_repr_key(const char *enum_name);
-int ir_enum_repr_unsigned(const char *enum_name);
+int ir_named_type_kind_cstr(const char *name);
+int ir_get_enum_variant_count_cstr(const char *enum_name);
+const char *ir_get_enum_variant_name_at_cstr(const char *enum_name, int index);
+int64_t ir_get_enum_variant_value_at_cstr(const char *enum_name, int index);
+const char *ir_enum_repr_key_cstr(const char *enum_name);
+int ir_enum_repr_unsigned_cstr(const char *enum_name);
 
 // DWARF base-type encodings. llvm-c/DebugInfo.h types LLVMDWARFTypeEncoding as a
 // bare `unsigned` and defines no constants for it, so these are DWARF 5 table
@@ -6340,7 +6369,7 @@ static DIStructSite g_di_enum_sites[256];
 static int g_di_enum_site_count;
 
 // The source-level type name of one field, for the same reason a local has one:
-// ir_symbols.c stores the *storage* key, and String, List<T>, [T], `T?` and every
+// The type registry stores the *storage* key, and String, List<T>, [T], `T?` and every
 // struct are all `ptr` there. Without this a struct's String field reads as an
 // anonymous address instead of printing its characters.
 //
@@ -6418,7 +6447,7 @@ static LLVMMetadataRef di_file(int file_id) {
     if (file_id >= diag_file_count()) return NULL;
     if (g_di_files[file_id]) return g_di_files[file_id];
 
-    const char *path = diag_file_path(file_id);
+    const char *path = diag_file_path_cstr(file_id);
     g_di_files[file_id] = LLVMDIBuilderCreateFile(g_di, path, strlen(path),
                                                   g_di_dir, strlen(g_di_dir));
     return g_di_files[file_id];
@@ -6643,7 +6672,7 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
         // the frontend had one to send. With it, `p kind` prints STRUCT_DECL
         // instead of 12, which on a compiler written around NodeKind, TypeKind
         // and TokenType is most of what a debugger is for.
-        if (name && *name && ir_named_type_kind(name) == 2) {
+        if (name && *name && ir_named_type_kind_cstr(name) == 2) {
             LLVMMetadataRef e = di_enum_type(name);
             if (e) return e;
         }
@@ -6710,7 +6739,7 @@ static LLVMMetadataRef di_type_for(const char *key, const char *name) {
             return di_pointer_to("$char", di_basic("char", 8, PRISMIO_DW_ATE_signed_char));
         }
         // A struct-typed binding whose key was already collapsed to `ptr`.
-        if (name && *name && ir_is_struct_type_name(name)) {
+        if (name && *name && ir_is_struct_type_name_cstr(name)) {
             return di_pointer_to(name, di_struct_type(name));
         }
         // A List, an Optional, an array, an opaque extern return. Each is an
@@ -6744,7 +6773,7 @@ static LLVMMetadataRef di_type_for_llvm(LLVMTypeRef ty) {
 // The composite for a registered struct, built from the type LLVM really
 // created rather than from the declaration.
 //
-// The field *names* come from ir_symbols.c in registration order, and
+// The field *names* come from src/symbols/type_registry.psm in registration order, and
 // generateStructDecl registers them in the physical order aif_layout_field
 // chose -- so index i is the same field in both, and a permuted layout is
 // described correctly without this having to know a search ran.
@@ -6771,7 +6800,7 @@ static LLVMMetadataRef di_enum_type(const char *name) {
     LLVMMetadataRef hit = di_cached(key);
     if (hit) return hit;
 
-    int total = ir_get_enum_variant_count(name);
+    int total = ir_get_enum_variant_count_cstr(name);
     if (total <= 0) return NULL;
     if (total > 512) total = 512;
 
@@ -6789,20 +6818,20 @@ static LLVMMetadataRef di_enum_type(const char *name) {
     if (!values) return NULL;
     // The width an enum is stored at; an enum with no stated representation is
     // the i32 it has always been.
-    const char *repr_key = ir_enum_repr_key(name);
+    const char *repr_key = ir_enum_repr_key_cstr(name);
     unsigned repr_bits = (*repr_key == 'i') ? (unsigned)atoi(repr_key + 1) : 32;
-    int repr_unsigned = ir_enum_repr_unsigned(name);
+    int repr_unsigned = ir_enum_repr_unsigned_cstr(name);
     char repr_name[16];
     if (*repr_key) snprintf(repr_name, sizeof(repr_name), "%s%u", repr_unsigned ? "UInt" : "Int", repr_bits);
     else snprintf(repr_name, sizeof(repr_name), "Int");
 
     unsigned count = 0;
     for (int i = 0; i < total; i++) {
-        const char *vname = ir_get_enum_variant_name_at(name, i);
+        const char *vname = ir_get_enum_variant_name_at_cstr(name, i);
         if (!vname || !*vname) continue;
         values[count++] = LLVMDIBuilderCreateEnumerator(
             g_di, vname, strlen(vname),
-            ir_get_enum_variant_value_at(name, i), repr_unsigned);
+            ir_get_enum_variant_value_at_cstr(name, i), repr_unsigned);
     }
 
     LLVMMetadataRef type = NULL;
@@ -6813,7 +6842,7 @@ static LLVMMetadataRef di_enum_type(const char *name) {
             di_basic(repr_name, repr_bits,
                      repr_unsigned ? PRISMIO_DW_ATE_unsigned : PRISMIO_DW_ATE_signed));
     }
-    free(values);
+    tmp_free(values);
     if (!type) return NULL;
     return di_cache(key, type);
 }
@@ -6846,14 +6875,14 @@ static LLVMMetadataRef di_struct_type(const char *name) {
         site_file, site_line, 0, 0, 0, LLVMDIFlagZero, "", 0);
     di_cache(key, placeholder);
 
-    int total = ir_get_struct_field_count(name);
+    int total = ir_get_struct_field_count_cstr(name);
     int hot = s->hot_count > 0 ? s->hot_count : total;
 
     LLVMMetadataRef members[66];
     unsigned count = 0;
     for (int i = 0; i < hot && i < total && count < 64; i++) {
-        const char *fname = ir_get_struct_field_name_at(name, i);
-        const char *ftype = ir_get_struct_field_type_at(name, i);
+        const char *fname = ir_get_struct_field_name_at_cstr(name, i);
+        const char *ftype = ir_get_struct_field_type_at_cstr(name, i);
         LLVMMetadataRef fty = di_type_for(ftype, di_field_type_name(name, fname));
         if (!fty) continue;
         LLVMTypeRef llvm_field = LLVMStructGetTypeAtIndex(s->type, (unsigned)i);
@@ -6871,8 +6900,8 @@ static LLVMMetadataRef di_struct_type(const char *name) {
         LLVMMetadataRef cold_members[64];
         unsigned cold_count = 0;
         for (int i = hot; i < total && cold_count < 64; i++) {
-            const char *fname = ir_get_struct_field_name_at(name, i);
-            const char *ftype = ir_get_struct_field_type_at(name, i);
+            const char *fname = ir_get_struct_field_name_at_cstr(name, i);
+            const char *ftype = ir_get_struct_field_type_at_cstr(name, i);
             LLVMMetadataRef fty = di_type_for(ftype, di_field_type_name(name, fname));
             if (!fty) continue;
             LLVMTypeRef llvm_field = LLVMStructGetTypeAtIndex(s->cold, (unsigned)(i - hot));
@@ -7857,6 +7886,8 @@ int ir_curate_module(const char *runtime_ir, const char *const *names, int count
 //
 // LLVMLinkModules2 consumes the source module, so it must not be disposed here
 // on success -- the same ownership shape as LLVMParseIRInContext above.
+static void clear_packaging_target_attributes(LLVMModuleRef library);
+
 int ir_link_modules(const char *dest_ir, const char *src_ir, const char *out_path) {
     LLVMContextRef ctx = LLVMContextCreate();
     LLVMMemoryBufferRef dbuf = NULL, sbuf = NULL;
@@ -7887,6 +7918,10 @@ int ir_link_modules(const char *dest_ir, const char *src_ir, const char *out_pat
     }
 
     int failed = 0;
+    // The curated bodies carry the packaging machine's CPU and feature strings, and the program's
+    // functions carry none, so the inliner answers "conflicting attributes" for every one of them.
+    // The target is the final compile's to choose, as it is for the runtime modules above.
+    clear_packaging_target_attributes(sm);
     if (LLVMLinkModules2(dm, sm) != 0) {
         fprintf(stderr, "ERROR: could not merge the curated runtime module\n");
         failed = 1;  // sm is consumed even on failure
@@ -7913,7 +7948,7 @@ static void copy_attributes_at_index(LLVMValueRef from, LLVMValueRef to,
     for (unsigned i = 0; i < count; i++) {
         LLVMAddAttributeAtIndex(to, index, attributes[i]);
     }
-    free(attributes);
+    tmp_free(attributes);
 }
 
 // The program module owns the language-level declaration contract. LLVM's
@@ -8179,7 +8214,7 @@ void ir_hold_merged_module(int on) { g_hold_merged = on ? 1 : 0; }
 void ir_release_held_module(void) {
     if (g_held_module) LLVMDisposeModule(g_held_module);
     if (g_held_ctx) LLVMContextDispose(g_held_ctx);
-    free(g_held_path);
+    tmp_free(g_held_path);
     g_held_module = NULL;
     g_held_ctx = NULL;
     g_held_path = NULL;
@@ -8393,7 +8428,7 @@ static void library_symbol_need(LibrarySymbols* table, LLVMValueRef global) {
     s->needed = 1;
     if (table->work_count == table->work_cap) {
         table->work_cap = table->work_cap ? table->work_cap * 2 : 256;
-        table->work = (LLVMValueRef*)realloc(table->work, table->work_cap * sizeof(LLVMValueRef));
+        table->work = (LLVMValueRef*)tmp_realloc(table->work, table->work_cap * sizeof(LLVMValueRef));
     }
     table->work[table->work_count++] = s->value;
 }
@@ -8421,7 +8456,7 @@ static int library_symbols_close(LibrarySymbols* table) {
         if (prismio_llvm_materialize(value, &error) != 0) {
             fprintf(stderr, "ERROR: Prismio library function could not be read: %s\n"
                     "       Reinstall Prismio and try again.\n", error ? error : "?");
-            free(error);
+            tmp_free(error);
             return 1;
         }
         for (LLVMBasicBlockRef block = LLVMGetFirstBasicBlock(value); block;
@@ -8552,9 +8587,9 @@ static int link_library_modules_lazy(LLVMContextRef ctx, LLVMModuleRef dm,
             failed = 1;  // consumed even when linking fails
         }
     }
-    free(table.slots);
-    free(table.work);
-    free(modules);
+    tmp_free(table.slots);
+    tmp_free(table.work);
+    tmp_free(modules);
     return failed;
 }
 #endif
@@ -8678,7 +8713,7 @@ int ir_jit_run_file(const char *ir_path, const char *program_name) {
     allocator[0].Name = LLVMOrcLLJITMangleAndIntern(jit, "malloc");
     allocator[0].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)(void *)&malloc;
     allocator[1].Name = LLVMOrcLLJITMangleAndIntern(jit, "free");
-    allocator[1].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)(void *)&free;
+    allocator[1].Sym.Address = (LLVMOrcExecutorAddress)(uintptr_t)(void *)libc_free_fn;
     for (int i = 0; i < 2; i++) {
         allocator[i].Sym.Flags.GenericFlags =
             LLVMJITSymbolGenericFlagsExported | LLVMJITSymbolGenericFlagsCallable;
@@ -8750,7 +8785,7 @@ int ir_jit_run_file(const char *ir_path, const char *program_name) {
     // the compiler keeps running after this returns.
     prismio_argc = saved_argc;
     prismio_argv = saved_argv;
-    free(jit_argv);
+    tmp_free(jit_argv);
 
     LLVMOrcDisposeLLJIT(jit);
     return status;
@@ -9099,7 +9134,7 @@ static int assign_partitions(LLVMModuleRef m, int partitions) {
     }
     PartitionItem *items = (PartitionItem *)calloc(count ? count : 1, sizeof(PartitionItem));
     unsigned long *load = (unsigned long *)calloc((size_t)partitions, sizeof(unsigned long));
-    if (!items || !load) { free(items); free(load); return 1; }
+    if (!items || !load) { tmp_free(items); tmp_free(load); return 1; }
     unsigned k = 0;
     for (LLVMValueRef f = LLVMGetFirstFunction(m); f; f = LLVMGetNextFunction(f)) {
         if (LLVMIsDeclaration(f)) continue;
@@ -9117,8 +9152,8 @@ static int assign_partitions(LLVMModuleRef m, int partitions) {
         load[lightest] += items[i].weight;
         set_function_partition(items[i].function, lightest);
     }
-    free(items);
-    free(load);
+    tmp_free(items);
+    tmp_free(load);
     return 0;
 }
 
@@ -9246,7 +9281,7 @@ static int run_pipeline_half(LLVMModuleRef m, LLVMTargetMachineRef tm, const cha
                                       vectorize && opt_level != IR_OPT_MIN_SIZE, vectorize,
                                       pipeline_policies(opt_level), &msg) != 0) {
         snprintf(error, error_size, "%s", msg ? msg : "the optimisation pipeline failed");
-        free(msg);
+        tmp_free(msg);
         return 1;
     }
     return 0;
@@ -9281,7 +9316,7 @@ static int emit_one_partition(PartitionJob *job) {
         if (prismio_llvm_materialize(f, &merr) != 0) {
             snprintf(job->error, sizeof(job->error), "could not read a function: %.400s",
                      merr ? merr : "?");
-            free(merr);
+            tmp_free(merr);
             LLVMDisposeModule(m);
             LLVMContextDispose(ctx);
             return 1;
@@ -9486,9 +9521,9 @@ static int emit_partitioned(LLVMModuleRef m, int partitions, const char *triple,
     if (failed) {
         for (int p = 0; p < partitions; p++) remove(jobs[p].obj_path);
     }
-    free(started);
-    free(threads);
-    free(jobs);
+    tmp_free(started);
+    tmp_free(threads);
+    tmp_free(jobs);
     LLVMDisposeMemoryBuffer(bitcode);
     return failed;
 }
@@ -9630,7 +9665,7 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
         m = g_held_module;
         g_held_ctx = NULL;
         g_held_module = NULL;
-        free(g_held_path);
+        tmp_free(g_held_path);
         g_held_path = NULL;
     } else if ((ctx = LLVMContextCreate()) == NULL
         || LLVMCreateMemoryBufferWithContentsOfFile(ir_path, &buf, &err) != 0
@@ -9774,7 +9809,7 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
             if (err) LLVMDisposeMessage(err);
             failed = 1;
         }
-        free(path);
+        tmp_free(path);
     }
 
     LLVMDisposeTargetMachine(tm);

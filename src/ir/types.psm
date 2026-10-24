@@ -1,5 +1,7 @@
 // Mapping Prismio types onto LLVM types, and the symbol names that go with them.
 
+import symbols.bindings
+import symbols.type_registry
 import ast.nodes
 import ast.types
 import ast.int_width
@@ -7,6 +9,8 @@ import ast.float_width
 import common.text
 import common.diagnostics
 import std.string
+import aifcore.dispositions
+import aifcore.ownership
 
 private fn mapType(t: String) -> String {
     if (t.equals("Int")) { return "i32" }

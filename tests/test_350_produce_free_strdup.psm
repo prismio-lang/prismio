@@ -1,0 +1,30 @@
+// A `strdup`'d result, declared `produce(free)`, is libc's block: it is copied into a
+// String at the call and handed to libc `free` there (src/ir/expr.psm, fatAdopted), so
+// nothing Prismio releases later came from `strdup`. With a slab allocator behind
+// `rt_free` the old reading -- release the `strdup` block through `rt_free` -- was
+// a libc block reaching the seam; this runs in every allocator configuration the
+// suite is run under.
+
+import std.io
+import std.string
+
+extern fn strdup(s: String borrow) -> String produce(free)
+
+fn duplicated(text: String) -> String {
+    return strdup(text)
+}
+
+fn main() -> Int {
+    let long = duplicated("longer than twelve bytes, so not the inline form")
+    let short = duplicated("tiny")
+    let mut kept: Vec<String> = []
+    kept.push(long)
+    kept.push(short)
+    kept.push(strdup(""))
+    if (kept[0].length != 48 or kept[1].equals("tiny") == false or kept[2].length != 0) {
+        print("FAIL")
+        return 1
+    }
+    print(kept[0])
+    return 0
+}

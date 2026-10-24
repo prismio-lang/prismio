@@ -1,0 +1,437 @@
+// The call graph the bracket obligations (SPEC 5.2.1.1) are asked of, and the per-function facts read off the
+// converged solution.
+//
+// One entry per call *expression*, so the count of entries naming a callee is its static call-site count, which is
+// what regime (a) asks about. A bitset would collapse two calls to one and silently make every callee sole-owned.
+//
+// The obligations, as a mask rather than a verdict, for the same reason `aif_arena_blockers` is one: a conjunction
+// reported as its first failure sends a reader to the wrong work.
+//   GLOBAL       an allocation in the extent escapes to static storage, so nothing bounds its lifetime.
+//   PARAM_STORE  the extent stores into something it did not allocate (`fn add_to(dest, n) { push(dest, Node{..}) }`
+//                inside a region whose list outlives it). Caught by asking whether every *owner* the extent stores
+//                into was itself allocated inside the extent.
+//   OPAQUE       a callee with no visible body. A summary of a body nobody can see is a guess, and the optimistic
+//                direction is the one that produces a use-after-free.
+//   DROP         `drop(x)` inside the extent: the source decided when that value dies, and a bump pointer is not a
+//                thing free() can take.
+//   SHARED_BODY  the body serves more than one placement regime (SPEC 5.2.1's regime (a)): codegen's frees are
+//                static decisions, so a body reachable both inside and outside a bracket would have to free arena
+//                memory on one path or leak heap memory on the other.
+//   MULTI_CALL   which regime this body serves is not a property of the program and has to be asked of a region.
+// Obligation 4, that the summary is a fixpoint over the call graph, is how every clause above is evaluated:
+// recursion means the transitive callee set is a closure, not a walk.
+
+import aif.model
+import aifcore.bits
+import aifcore.constants
+import aifcore.constraints
+import aifcore.keys
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import std.option
+import std.process
+import std.vec
+
+internal let mut edgeCount = 0
+internal let mut edgeCaller: Vec<Int>
+// -1 for a call this compilation cannot summarise: a sealed function, or an extern the contract table says nothing
+// about. Recorded as an edge to callee -1 because the walk creates functions as it goes, so a per-function flag
+// array sized at the first opaque call would be short by every function declared after it.
+internal let mut edgeCallee: Vec<Int>
+// The caller's scope the call sits in, for "calls in a region".
+internal let mut edgeScope: Vec<Int>
+// M3.2. The clause that refuses `g2.psm` is "an opaque call is in the region body", asked of the whole block; a
+// non-lexical extent has to ask it of a statement range, so the call edge needs a position as much as a site does.
+internal let mut edgeStmt: Vec<Int>
+
+// Value sets a function stores *into*: the holder of a `retain_in` and the owner set of a field store. Resolved
+// after the solve, because until then a value set names keys rather than sites.
+private let mut ownerFn: Vec<Int>
+private let mut ownerVs: Vec<Int>
+
+// The per-function facts the closure walk reads. Built once, lazily, because every one of them needs the
+// converged facts.
+internal let mut fnCallees: Vec<Int>        // fn -> direct callees (a bitset), for the closure
+internal let mut fnOwnerFns: Vec<Int>       // fn -> functions that allocated what it stores into (a bitset)
+internal let mut fnHasGlobal: Vec<Int>
+internal let mut fnHasDrop: Vec<Int>
+internal let mut fnCallsOpaque: Vec<Int>
+// 1 when this function or anything it reaches has an allocation site. It is what makes regime (a)'s shared-body
+// clause a question about bodies the bracket changes rather than about every body it touches.
+internal let mut fnAllocsReach: Vec<Int>
+private let mut bracketReady = false
+// How many functions the arrays above were sized for.
+internal let mut bracketFnCap = 0
+internal let mut bracketClosure = -1
+internal let mut bracketScratch = -1
+// fn -> everything it reaches, filled on first ask.
+private let mut fnClosure: Vec<Int>
+private let mut fnClosureKnown: Vec<Int>
+private let mut closureWork: Vec<Int>
+// fn -> `aif_fn_bracket_blockers`, or -1 before the first ask. Every input is frozen by `bracketPrepare` except
+// `sealed`, so `aif_fn_seal` empties it.
+private let mut fnBlockers: Vec<Int>
+internal let mut bracketTrace = false
+
+// The call graph by caller, and how many calls each function has. Static once the graph is collected.
+private let mut callerEdgeFirst: Vec<Int>
+private let mut callerEdgeList: Vec<Int>
+private let mut calleeInTotal: Vec<Int>
+private let mut calleeEdgeFirst: Vec<Int>
+private let mut calleeEdgeList: Vec<Int>
+private let mut callerEdgesBuiltEdges = -1
+private let mut callerEdgesBuiltFns = -1
+
+private let mut callGraphOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+internal fn callGraphOpen() {
+    if (callGraphOpened) { return }
+    callGraphOpened = true
+    edgeCaller = []
+    edgeCallee = []
+    edgeScope = []
+    edgeStmt = []
+    ownerFn = []
+    ownerVs = []
+    fnCallees = []
+    fnOwnerFns = []
+    fnHasGlobal = []
+    fnHasDrop = []
+    fnCallsOpaque = []
+    fnAllocsReach = []
+    fnClosure = []
+    fnClosureKnown = []
+    closureWork = []
+    fnBlockers = []
+    callerEdgeFirst = []
+    callerEdgeList = []
+    calleeInTotal = []
+    calleeEdgeFirst = []
+    calleeEdgeList = []
+    bracketClosure = bitsNew()
+    bracketScratch = bitsNew()
+}
+
+// A declared `workload` runs the whole engine twice in one process, so edges that survived a reset would double every
+// call-site count, and regime (a) turns on exactly that count: every callee would report two call sites and no
+// function would ever be sole-regime. A wrong answer, silently, on the programs that carry a profile and on no others.
+internal fn callGraphReset() {
+    callGraphOpened = false
+    callGraphOpen()
+    edgeCount = 0
+    bracketReady = false
+    bracketFnCap = 0
+    callerEdgesBuiltEdges = -1
+    callerEdgesBuiltFns = -1
+}
+
+public fn aif_call_edge(caller: Int, callee: Int, scope: Int) {
+    callGraphOpen()
+    if (caller < 0 or callee < 0) { return }
+    edgeCaller.push(caller)
+    edgeCallee.push(callee)
+    edgeScope.push(scope)
+    edgeStmt.push(currentStmt)
+    edgeCount = edgeCount + 1
+}
+
+// A call this compilation cannot summarise. An extern the table *does* know is already modelled: `retain_in` puts
+// the value under a container, `retain` sends it to Global, `consume` marks it no_stack.
+public fn aif_call_opaque(caller: Int, scope: Int) {
+    callGraphOpen()
+    if (caller < 0) { return }
+    edgeCaller.push(caller)
+    edgeCallee.push(-1)
+    edgeScope.push(scope)
+    edgeStmt.push(currentStmt)
+    edgeCount = edgeCount + 1
+}
+
+public fn aif_note_owner_use(fnId: Int, vs: Int) {
+    callGraphOpen()
+    if (fnId < 0 or vs < 0) { return }
+    ownerFn.push(fnId)
+    ownerVs.push(vs)
+}
+
+internal fn bracketBlockersForget() {
+    for g in 0..<fnBlockers.length { fnBlockers[g] = -1 }
+}
+
+internal fn bracketPrepare() {
+    callGraphOpen()
+    if (bracketReady or fnCount == 0) { return }
+    bracketReady = true
+    // Set here rather than in the placement pass, which runs *second*. The candidate pass is the one that decides
+    // whether a scope gets an arena at all, and a trace that starts after that decision cannot say why a scope was
+    // never a candidate.
+    bracketTrace = process.env("AIF_BRACKET_TRACE") != none
+
+    bracketFnCap = fnCount
+    fnCallees = []
+    fnOwnerFns = []
+    fnClosure = []
+    fnHasGlobal = Vec<Int>.filled(fnCount, 0)
+    fnHasDrop = Vec<Int>.filled(fnCount, 0)
+    fnCallsOpaque = Vec<Int>.filled(fnCount, 0)
+    fnAllocsReach = Vec<Int>.filled(fnCount, 0)
+    fnClosureKnown = Vec<Int>.filled(fnCount, 0)
+    fnBlockers = Vec<Int>.filled(fnCount, -1)
+    for f in 0..<fnCount {
+        fnCallees.push(bitsNew())
+        fnOwnerFns.push(bitsNew())
+        fnClosure.push(bitsNew())
+    }
+
+    for i in 0..<edgeCount {
+        let caller = edgeCaller[i]
+        if (caller < 0 or caller >= fnCount) { continue }
+        if (edgeCallee[i] < 0) {
+            fnCallsOpaque[caller] = 1
+        } else if (edgeCallee[i] < fnCount) {
+            bitsSet(fnCallees[caller], edgeCallee[i])
+        }
+    }
+
+    // Does this function, or anything it can reach, allocate at all? Regime (a)'s shared-body clause is about a body
+    // the bracket would *change*. A function with no allocation anywhere below it compiles identically inside and
+    // outside a bracket, so sharing it with the world outside the extent decides nothing. Transitive rather than
+    // local: a site-free function that calls an allocating one *is* changed, one hop down.
+    for s in 0..<siteCount {
+        let f = siteFn[s]
+        if (f >= 0 and f < fnCount) { fnAllocsReach[f] = 1 }
+    }
+    let mut spread = true
+    while (spread) {
+        spread = false
+        for g in 0..<fnCount {
+            if (fnAllocsReach[g] != 0) { continue }
+            let mut wi = 0
+            while (wi < bitsWordCount(fnCallees[g]) and fnAllocsReach[g] == 0) {
+                let mut x = bitsWord(fnCallees[g], wi)
+                while (x != 0) {
+                    let h = wi * BITS_WORD_BITS + x.trailingZeros()
+                    x = x & (x - 1)
+                    if (h >= fnCount or fnAllocsReach[h] == 0) { continue }
+                    fnAllocsReach[g] = 1
+                    spread = true
+                    break
+                }
+                wi = wi + 1
+            }
+        }
+    }
+
+    for s in 0..<siteCount {
+        let f = siteFn[s]
+        if (f < 0 or f >= fnCount) { continue }
+        if (siteE[s] == AIF_E_GLOBAL) { fnHasGlobal[f] = 1 }
+        if (siteNoStack[s] != 0) { fnHasDrop[f] = 1 }
+    }
+
+    // A store's owners are sites; which *function* allocated them is the fact the closure test needs, and it does
+    // not depend on which caller is asking, so it is computed once here rather than per query.
+    for i in 0..<ownerFn.length {
+        let f = ownerFn[i]
+        if (f < 0 or f >= fnCount) { continue }
+        vsResolve(ownerVs[i], bracketScratch)
+        for wi in 0..<bitsWordCount(bracketScratch) {
+            let mut x = bitsWord(bracketScratch, wi)
+            while (x != 0) {
+                let s = wi * BITS_WORD_BITS + x.trailingZeros()
+                x = x & (x - 1)
+                if (s >= siteCount) { break }
+                // An orphan site belongs to no function, so no closure can contain it. `fnCount` is the id reserved
+                // for exactly that, one past the end, so a closure bitset never holds it and the subset test below
+                // rejects, which is the sound direction.
+                let ownerFunction = siteFn[s]
+                if (ownerFunction < 0 or ownerFunction >= fnCount) {
+                    bitsSet(fnOwnerFns[f], fnCount)
+                } else {
+                    bitsSet(fnOwnerFns[f], ownerFunction)
+                }
+            }
+        }
+    }
+}
+
+// Every function reachable from `f` through the call graph, `f` included, left in `out`. A worklist over the set
+// bits of each callee set; a function is pushed only when it is new, so a cycle is visited once. **Computed once per
+// function and copied out**: the answer depends on `fnCallees` alone, which `bracketPrepare` freezes, and placement
+// asks it for the same callee once per candidate scope. Rescanning per ask was most of the compiler compiling itself.
+internal fn bracketReachable(f: Int, out: Int) {
+    bitsClear(out)
+    if (f < 0 or f >= bracketFnCap or fnClosure.length == 0) {
+        bitsSet(out, f)
+        return
+    }
+    let closure = fnClosure[f]
+    if (fnClosureKnown[f] == 0) {
+        fnClosureKnown[f] = 1
+        bitsSet(closure, f)
+        intsClear(closureWork)
+        closureWork.push(f)
+        while (closureWork.length > 0) {
+            let g = closureWork.pop() ?? 0
+            let callees = fnCallees[g]
+            for wi in 0..<bitsWordCount(callees) {
+                let mut x = bitsWord(callees, wi)
+                while (x != 0) {
+                    let h = wi * BITS_WORD_BITS + x.trailingZeros()
+                    x = x & (x - 1)
+                    if (bitsSet(closure, h)) { closureWork.push(h) }
+                }
+            }
+        }
+    }
+    bitsOr(out, closure)
+}
+
+// The call graph by caller and by callee, as lists of edge indices.
+internal fn callerEdgesBuild() {
+    callGraphOpen()
+    if (callerEdgeFirst.length > 0 and callerEdgesBuiltEdges == edgeCount and callerEdgesBuiltFns == fnCount) { return }
+    callerEdgeFirst = Vec<Int>.filled(fnCount + 1, 0)
+    calleeInTotal = Vec<Int>.filled(fnCount + 1, 0)
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] < 0 or edgeCallee[i] >= fnCount) { continue }
+        calleeInTotal[edgeCallee[i]] = calleeInTotal[edgeCallee[i]] + 1
+        if (edgeCaller[i] >= 0 and edgeCaller[i] < fnCount) {
+            callerEdgeFirst[edgeCaller[i] + 1] = callerEdgeFirst[edgeCaller[i] + 1] + 1
+        }
+    }
+    for f in 0..<fnCount { callerEdgeFirst[f + 1] = callerEdgeFirst[f + 1] + callerEdgeFirst[f] }
+    callerEdgeList = Vec<Int>.filled(callerEdgeFirst[fnCount] + 1, 0)
+    let mut fill: Vec<Int> = Vec<Int>.filled(fnCount + 1, 0)
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] < 0 or edgeCallee[i] >= fnCount) { continue }
+        if (edgeCaller[i] >= 0 and edgeCaller[i] < fnCount) {
+            callerEdgeList[callerEdgeFirst[edgeCaller[i]] + fill[edgeCaller[i]]] = i
+            fill[edgeCaller[i]] = fill[edgeCaller[i]] + 1
+        }
+    }
+
+    calleeEdgeFirst = Vec<Int>.filled(fnCount + 1, 0)
+    for c in 0..<fnCount { calleeEdgeFirst[c + 1] = calleeEdgeFirst[c] + calleeInTotal[c] }
+    calleeEdgeList = Vec<Int>.filled(calleeEdgeFirst[fnCount] + 1, 0)
+    let mut cfill: Vec<Int> = Vec<Int>.filled(fnCount + 1, 0)
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] < 0 or edgeCallee[i] >= fnCount) { continue }
+        calleeEdgeList[calleeEdgeFirst[edgeCallee[i]] + cfill[edgeCallee[i]]] = i
+        cfill[edgeCallee[i]] = cfill[edgeCallee[i]] + 1
+    }
+    callerEdgesBuiltEdges = edgeCount
+    callerEdgesBuiltFns = fnCount
+}
+
+// The edges out of `caller`, as `[start, end)` into `callerEdgeAt`.
+internal fn callerEdgeStart(caller: Int) -> Int {
+    return callerEdgeFirst[caller]
+}
+
+internal fn callerEdgeEnd(caller: Int) -> Int {
+    return callerEdgeFirst[caller + 1]
+}
+
+internal fn callerEdgeAt(i: Int) -> Int {
+    return callerEdgeList[i]
+}
+
+internal fn calleeEdgeStart(callee: Int) -> Int {
+    return calleeEdgeFirst[callee]
+}
+
+internal fn calleeEdgeEnd(callee: Int) -> Int {
+    return calleeEdgeFirst[callee + 1]
+}
+
+internal fn calleeEdgeAt(i: Int) -> Int {
+    return calleeEdgeList[i]
+}
+
+internal fn calleeCallTotal(callee: Int) -> Int {
+    return calleeInTotal[callee]
+}
+
+// Placement asks this once per call edge per candidate scope, so the same callee many times over, and each answer
+// walks its closure and every call edge.
+public fn aif_fn_bracket_blockers(f: Int) -> Int {
+    if (f < 0 or f >= fnCount) { return AIF_BR_B_OPAQUE }
+    bracketPrepare()
+    if (fnBlockers.length == 0 or f >= bracketFnCap) { return bracketBlockersCompute(f) }
+    if (fnBlockers[f] < 0) { fnBlockers[f] = bracketBlockersCompute(f) }
+    return fnBlockers[f]
+}
+
+private fn bracketBlockersCompute(f: Int) -> Int {
+    bracketReachable(f, bracketClosure)
+
+    let mut mask = 0
+    for wi in 0..<bitsWordCount(bracketClosure) {
+        let mut x = bitsWord(bracketClosure, wi)
+        while (x != 0) {
+            let g = wi * BITS_WORD_BITS + x.trailingZeros()
+            x = x & (x - 1)
+            if (g >= fnCount) { break }
+            if (fnHasGlobal[g] != 0) { mask = mask | AIF_BR_B_GLOBAL }
+            if (fnHasDrop[g] != 0) { mask = mask | AIF_BR_B_DROP }
+            if (fnCallsOpaque[g] != 0) { mask = mask | AIF_BR_B_OPAQUE }
+            if (fnSealed[g] != 0) { mask = mask | AIF_BR_B_OPAQUE }
+            if (bitsSubset(fnOwnerFns[g], bracketClosure) == false) { mask = mask | AIF_BR_B_PARAM_STORE }
+        }
+    }
+
+    // Regime (a), in two clauses that used to be one bit. **SHARED_BODY** is the region-independent half: everything
+    // `f` reaches must be reached only from inside the extent, or that callee's body would have to free arena
+    // memory on one path and heap memory on the other. No choice of region fixes it; regime (b), specialisation, is
+    // what does. **MULTI_CALL** is the half that depends on where the region is: one call site settles it from the
+    // program alone, more than one settles it only if they are all bracketed into the same region. Reported here so
+    // `--why` can still say "the body has N call sites", and **excluded from the reject in `bracketEdgeOkAt`**.
+    callerEdgesBuild()
+    let fCalls = calleeInTotal[f]
+    for wi in 0..<bitsWordCount(bracketClosure) {
+        let mut x = bitsWord(bracketClosure, wi)
+        while (x != 0) {
+            let h = wi * BITS_WORD_BITS + x.trailingZeros()
+            x = x & (x - 1)
+            if (h >= fnCount) { break }
+            if (h == f) { continue }
+            // Reached from outside the extent, and that only matters for a body the bracket would change.
+            if (fnAllocsReach[h] == 0) { continue }
+            for j in calleeEdgeFirst[h]..<calleeEdgeFirst[h + 1] {
+                if (bitsTest(bracketClosure, edgeCaller[calleeEdgeList[j]]) == false) {
+                    mask = mask | AIF_BR_B_SHARED_BODY
+                    break
+                }
+            }
+        }
+    }
+    if (fCalls != 1) { mask = mask | AIF_BR_B_MULTI_CALL }
+    return mask
+}
+
+// The obligations that are the *function's* alone. MULTI_CALL is not one of them: a body with two call sites is
+// bracketable or not depending on where they are, and the answer belongs to `bracketRegimeOk`.
+internal fn fnBracketHardBlockers(f: Int) -> Int {
+    return aif_fn_bracket_blockers(f) & ~AIF_BR_B_MULTI_CALL
+}
+
+public fn aif_fn_call_sites(f: Int) -> Int {
+    let mut n = 0
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] == f) { n = n + 1 }
+    }
+    return n
+}
+
+public fn aif_call_edge_count() -> Int {
+    // Call sites whose callee this compilation can see. The opaque ones are not in the denominator because they are
+    // not in the numerator either.
+    let mut n = 0
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] >= 0) { n = n + 1 }
+    }
+    return n
+}

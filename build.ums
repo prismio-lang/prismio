@@ -40,9 +40,8 @@ targets {
             // Must match RUNTIME_SOURCES in tools/bootstrap.py;
             // tools/check_source_lists.py checks that it does.
             source("runtime/lang_runtime.c", "runtime/program_support.c",
-            "runtime/build_driver.c", "runtime/ir_symbols.c",
-            "runtime/aif_containers.c", "runtime/aif_support.c",
-            "runtime/diagnostics.c", "runtime/llvm-api-backend.c",
+            "runtime/build_driver.c",
+            "runtime/llvm-api-backend.c",
             "runtime/llvm_bridge.cpp")
             include("runtime")
             define("PRISMIO_LLVM_REAL_HEADERS", "PRISMIO_BOOTSTRAP_COMPAT")

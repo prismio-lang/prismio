@@ -343,7 +343,7 @@ def traversal_cost(model, ty, L, t):
         bytes_per = groups * LINE
         resident = record_size(model, ty, L.hot)
     elif L.grouping == 'AoS':
-        # DIVERGENCE from the compiler (runtime/aif_support.c, layout_cost), and
+        # DIVERGENCE from the compiler (src/aifcore/, layoutCost), and
         # deliberate on both sides. This models an INDEXED split: the cold half of
         # element i is at a computed offset in a parallel block, so touching it is
         # more sequential scanning and adding its bytes is right.

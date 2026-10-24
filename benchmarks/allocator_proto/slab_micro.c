@@ -11,7 +11,11 @@
 static volatile long prismio_memory_threads_enabled;
 static PRISMIO_THREAD_LOCAL int prismio_memory_worker;
 static int prismio_memory_threads_are_enabled(void) { return __atomic_load_n(&prismio_memory_threads_enabled, __ATOMIC_ACQUIRE) != 0; }
-#define PRISMIO_ALLOC_MODE 2
+// What lang_runtime.c provides above the body: its includes, and the two libc spellings.
+#include <sys/mman.h>
+#include <sched.h>
+#define tmp_free(p) free(p)
+#define tmp_realloc(p, n) realloc((p), (n))
 #include "slab_body.inc"
 #ifdef USE_SYSTEM
 #define A(n) malloc(n)

@@ -75,7 +75,10 @@
 // Only allocations **returned to Prismio** go through it. An internal temporary
 // that this runtime frees itself must stay on plain malloc/free: routing one
 // through the ledger would record an allocation that no generated release ever
-// pairs with, which reads as a leak.
+// pairs with, which reads as a leak. And the mirror of that, one-way since the slab:
+// a block from `rt_base_alloc` is released by `rt_free` and resized by
+// `rt_base_realloc`, never by libc (`tmp_free` below). A libc block may still reach
+// `rt_free`, which hands anything outside the slab to `free`.
 #ifndef rt_base_alloc
 #ifndef PRISMIO_FREESTANDING
 #include <stdlib.h>
@@ -93,16 +96,16 @@ void  aif_verify_arm(void);
 #define rt_base_realloc(p, n) aif_verify_realloc((p), (n))
 #define rt_free(p)       aif_verify_release(p)
 #else
-// Functions rather than macros over malloc/free, because the ordinary build
-// recycles small blocks between them -- see rt_base_alloc in lang_runtime.c for
-// why, and for what makes it safe.
+// Functions rather than macros over malloc/free, because the ordinary build has an
+// allocator of its own behind them: a slab of small blocks on 64-bit POSIX -- see
+// rt_base_alloc in lang_runtime.c for why, and for what makes it safe.
 //
-// **`rt_free` is also the symbol codegen emits for every release**
-// (`g_free_fn` in llvm-api-backend.c). That is what puts a program's releases
-// and this runtime's own into the same pool; emitting libc `free` for one half
-// would hand the recycler blocks it never gets back. The verify branch above
-// keeps its own pairing for the same reason, and `--verify` overrides
-// `g_free_fn` to match it (src/driver/compile.psm).
+// **These are also the symbols codegen emits for every object allocation and every
+// release** (`g_alloc_fn`/`g_free_fn` in llvm-api-backend.c). That is what puts a
+// program's blocks and this runtime's own into the same allocator; a release emitted
+// as libc `free` would hand libc a slab block, which is corruption, not a leak. The
+// verify branch above keeps its own pairing for the same reason, and `--verify`
+// overrides both names to match it (src/driver/compile.psm).
 void* rt_base_alloc(size_t size);
 void* rt_base_realloc(void* p, size_t size);
 int str_int_inline_words(int value, uint64_t words[2]);
@@ -118,10 +121,10 @@ void  rt_free(void* p);
 // bare names (`#pragma GCC poison free realloc`, after their includes), so a call that
 // does not say which world its pointer is from does not compile. A macro defined before
 // the pragma is still expandable after it.
-#ifndef PRISMIO_FREESTANDING
+// A freestanding build has them too: prismio_freestanding.h's `free` is the program's
+// `prismio_free`, the same world as its `rt_free`.
 #define tmp_free(p) free(p)
 #define tmp_realloc(p, n) realloc((p), (n))
-#endif
 
 // Program support: the half of the old driver.c that a *compiled Prismio program*
 // can legitimately call at its own runtime. Implemented in program_support.c and

@@ -1,0 +1,298 @@
+// What the AST walk hands the engine: value-set expressions, the call-argument stack and the constraint
+// list the solver iterates.
+//
+// A value set is the set of sites an expression may denote: part known while walking (a struct literal is
+// its own site), part only at the fixed point (an identifier is whatever its binding points to). Holding both
+// in one object is what lets the walk compose expressions uniformly without knowing which it has. Items are
+// tagged integers: an even item is a site, an odd item is a key.
+//
+// Constraints are one entry per transfer-rule instance the walk discovered. Solving is re-applying all of them
+// until nothing rises.
+
+import aifcore.bits
+import aifcore.constants
+import std.vec
+import symbols.names
+
+internal let mut vsCount = 0
+internal let mut vsItems: Vec<Vec<Int>>
+// SPEC 8.4 view provenance: the collections these values are views *of*, held as value-set ids and resolved
+// with everything else at solve time. Empty for nearly every value set.
+internal let mut vsViews: Vec<Vec<Int>>
+// The expression may also denote a value that is no site at all: a string literal, or static storage an `alias`
+// extern handed back. Resolving the items cannot say so, since a literal contributes nothing to them.
+internal let mut vsUntracked: Vec<Int>
+// Untracked *and* indistinguishable at a release: static storage an `alias` extern handed back, or a module
+// global's value. A string literal is untracked without being a hazard: its pair carries the borrowed tag, every
+// release of a pair skips that tag, and every conversion to a bare pointer copies it.
+internal let mut vsHazard: Vec<Int>
+// A String view: pushed into a container, it is copied into a block of its own, so the literal it may be a
+// view of is never what that container holds.
+internal let mut vsCopiedOnKeep: Vec<Int>
+
+// Which value set each union was built from. A union copies its operands' items, so a call's result can reach a
+// constraint under a value-set id other than its own: `let x = if (c) { f() } else { g() }` binds the union,
+// not either call.
+internal let mut unionFrom: Vec<Int>
+internal let mut unionTo: Vec<Int>
+
+// Two FFI contracts refer to another argument of the same call: `retain_in(k)` says "the callee stores me into
+// argument k", and `alias` says "my return is argument k". Both need the call's arguments addressable by index
+// while it is being walked, and calls nest. Evaluating an argument creates allocation sites, so it must happen
+// exactly once: hence a stack. The frontend opens a frame, pushes each argument's value set, indexes freely, and
+// closes the frame.
+private let mut argv: Vec<Int>
+private let mut argvLen = 0
+
+internal let mut conCount = 0
+internal let mut conKind: Vec<Int>
+internal let mut conA: Vec<Int>
+internal let mut conB: Vec<Int>
+internal let mut conC: Vec<Int>
+// Where in the source the constraint came from, so a manifest diff can name the store or the call that moved a
+// fact (SPEC 6.3's example puts a file:line on every edge of the witness path).
+internal let mut conFile: Vec<Int>
+internal let mut conLine: Vec<Int>
+internal let mut conCol: Vec<Int>
+// The function whose body the walk was in, or -1 for a module-level `let`.
+internal let mut conFn: Vec<Int>
+private let mut conAtFile = 0
+private let mut conAtLine = 0
+private let mut conAtCol = 0
+private let mut conAtFn = -1
+
+// INFERENCE 4.3's T-STATIC premise is "the program creates any task", a whole-program property that no
+// per-site rule can ask. Recorded as the constraints are built, so a module with no spawn never pays for it.
+internal let mut programHasTasks = false
+// Whether collections are affine, i.e. whether the copy rule applies to them. Today's Prismio makes only structs
+// move-only; AIF specifies affine references for every heap value. The difference is 100% of the measured T3
+// residue, so it is a switch rather than an assumption.
+internal let mut ownedCollections = false
+
+private let mut constraintsOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+internal fn constraintsOpen() {
+    if (constraintsOpened) { return }
+    constraintsOpened = true
+    vsItems = []
+    vsViews = []
+    vsUntracked = []
+    vsHazard = []
+    vsCopiedOnKeep = []
+    unionFrom = []
+    unionTo = []
+    argv = []
+    conKind = []
+    conA = []
+    conB = []
+    conC = []
+    conFile = []
+    conLine = []
+    conCol = []
+    conFn = []
+}
+
+internal fn constraintsReset() {
+    constraintsOpened = false
+    constraintsOpen()
+    vsCount = 0
+    argvLen = 0
+    conCount = 0
+    conAtFn = -1
+    programHasTasks = false
+    ownedCollections = false
+}
+
+public fn aif_vs_new() -> Int {
+    constraintsOpen()
+    vsItems.push(freshInts())
+    vsViews.push(freshInts())
+    vsUntracked.push(0)
+    vsHazard.push(0)
+    vsCopiedOnKeep.push(0)
+    vsCount = vsCount + 1
+    return vsCount - 1
+}
+
+private fn vsPush(vs: Int, item: Int) {
+    if (vs < 0 or vs >= vsCount) { return }
+    for i in 0..<vsItems[vs].length {
+        if (vsItems[vs][i] == item) { return }
+    }
+    vsItems[vs].push(item)
+}
+
+public fn aif_vs_site(vs: Int, site: Int) {
+    vsPush(vs, site * 2)
+}
+
+public fn aif_vs_key(vs: Int, key: Int) {
+    vsPush(vs, key * 2 + 1)
+}
+
+private fn vsPushView(vs: Int, cvs: Int) {
+    if (vs < 0 or vs >= vsCount or cvs < 0) { return }
+    for i in 0..<vsViews[vs].length {
+        if (vsViews[vs][i] == cvs) { return }
+    }
+    vsViews[vs].push(cvs)
+}
+
+// SPEC 8.4. Mark this value set as denoting views of `collection`. Provenance rather than a points-to edge: the
+// element key still says *which values* a read can return, which is what stores through the result need, and
+// merging the container into it is the bug that made a receiving container call `list_release` on a struct.
+// Provenance says something the points-to graph cannot: *how long the container must live* for the reference to
+// be legal.
+public fn aif_vs_view_of(vs: Int, collection: Int) {
+    vsPushView(vs, collection)
+}
+
+public fn aif_vs_mark_untracked(vs: Int) {
+    if (vs >= 0 and vs < vsCount) {
+        vsUntracked[vs] = 1
+        vsHazard[vs] = 1
+    }
+}
+
+// A string literal: untracked, not a hazard.
+public fn aif_vs_mark_literal(vs: Int) {
+    if (vs >= 0 and vs < vsCount) { vsUntracked[vs] = 1 }
+}
+
+public fn aif_vs_mark_copied_on_keep(vs: Int) {
+    if (vs >= 0 and vs < vsCount) { vsCopiedOnKeep[vs] = 1 }
+}
+
+public fn aif_vs_is_empty(vs: Int) -> Int {
+    if (vs < 0 or vs >= vsCount) { return 1 }
+    if (vsItems[vs].length == 0) { return 1 }
+    return 0
+}
+
+private fn noteUnion(from: Int, to: Int) {
+    if (from < 0) { return }
+    unionFrom.push(from)
+    unionTo.push(to)
+}
+
+public fn aif_vs_union(a: Int, b: Int) -> Int {
+    let out = aif_vs_new()
+    noteUnion(a, out)
+    noteUnion(b, out)
+    if (a >= 0 and a < vsCount) {
+        for i in 0..<vsItems[a].length { vsPush(out, vsItems[a][i]) }
+        for i in 0..<vsViews[a].length { vsPushView(out, vsViews[a][i]) }
+        if (vsUntracked[a] != 0) { vsUntracked[out] = 1 }
+        if (vsHazard[a] != 0) { vsHazard[out] = 1 }
+    }
+    if (b >= 0 and b < vsCount) {
+        for i in 0..<vsItems[b].length { vsPush(out, vsItems[b][i]) }
+        for i in 0..<vsViews[b].length { vsPushView(out, vsViews[b][i]) }
+        if (vsUntracked[b] != 0) { vsUntracked[out] = 1 }
+        if (vsHazard[b] != 0) { vsHazard[out] = 1 }
+    }
+    return out
+}
+
+public fn aif_argv_begin() -> Int {
+    constraintsOpen()
+    return argvLen
+}
+
+public fn aif_argv_push(vs: Int) {
+    constraintsOpen()
+    intsPut(argv, argvLen, vs, 0)
+    argvLen = argvLen + 1
+}
+
+public fn aif_argv_count(base: Int) -> Int {
+    return argvLen - base
+}
+
+// Out of range yields -1, which every consumer reads as the empty value set: a contract naming an argument the
+// call does not have contributes nothing.
+public fn aif_argv_get(base: Int, i: Int) -> Int {
+    let at = base + i
+    if (i < 0 or at >= argvLen) { return -1 }
+    return argv[at]
+}
+
+public fn aif_argv_end(base: Int) {
+    argvLen = base
+}
+
+// Where the constraint currently being *built* came from. Constraints are added during the walk, one node at a
+// time, so a sticky position costs nothing and keeps ten signatures unchanged.
+public fn aif_con_at(file: Int, line: Int, col: Int) {
+    conAtFile = file
+    conAtLine = line
+    conAtCol = col
+}
+
+public fn aif_con_fn(fnId: Int) {
+    conAtFn = fnId
+}
+
+private fn conAdd(kind: Int, a: Int, b: Int, c: Int) {
+    constraintsOpen()
+    conFile.push(conAtFile)
+    conLine.push(conAtLine)
+    conCol.push(conAtCol)
+    conFn.push(conAtFn)
+    conKind.push(kind)
+    conA.push(a)
+    conB.push(b)
+    conC.push(c)
+    conCount = conCount + 1
+}
+
+public fn aif_con_bind(key: Int, vs: Int) { conAdd(AIF_CON_BIND, key, vs, 0) }
+public fn aif_con_arg(key: Int, vs: Int) { conAdd(AIF_CON_ARG, key, vs, 0) }
+public fn aif_con_store(key: Int, vs: Int, owners: Int) { conAdd(AIF_CON_STORE, key, vs, owners) }
+public fn aif_con_live_in(vs: Int, scope: Int, fnId: Int) { conAdd(AIF_CON_LIVE_IN, vs, scope, fnId) }
+public fn aif_con_opaque(vs: Int) { conAdd(AIF_CON_OPAQUE, vs, 0, 0) }
+public fn aif_con_retain_in(vs: Int, holder: Int) { conAdd(AIF_CON_RETAIN_IN, vs, holder, 0) }
+// A `retain_in` of a String element that codegen copies when the value is a view of another collection. `c` = 1
+// says so; no other store reads it. The two sides have to agree: a store the analysis counts as a copy and
+// codegen does not copy would leave one block under two owners.
+public fn aif_con_retain_in_string(vs: Int, holder: Int) { conAdd(AIF_CON_RETAIN_IN, vs, holder, 1) }
+public fn aif_con_borrow(vs: Int) { conAdd(AIF_CON_BORROW, vs, 0, 0) }
+public fn aif_con_escape_caller(vs: Int) { conAdd(AIF_CON_ESCAPE_CALLER, vs, 0, 0) }
+public fn aif_con_return(vs: Int, fnId: Int) { conAdd(AIF_CON_ESCAPE_CALLER, vs, fnId, 1) }
+// The same rule for `return name`: `c` carries the binding's key, offset past the 0/1 above so `c` still reads as
+// "a source-level return" everywhere.
+public fn aif_con_return_binding(vs: Int, fnId: Int, key: Int) {
+    conAdd(AIF_CON_ESCAPE_CALLER, vs, fnId, AIF_RETURN_KEY_BASE + key)
+}
+public fn aif_con_escape_global(vs: Int) { conAdd(AIF_CON_ESCAPE_GLOBAL, vs, 0, 0) }
+public fn aif_con_unique(vs: Int) { conAdd(AIF_CON_UNIQUE, vs, 0, 0) }
+public fn aif_con_pin(vs: Int, tier: Int) { conAdd(AIF_CON_PIN, vs, tier, 0) }
+// `drop(x)` lowers to a free, and a stack slot is not a thing that can be freed. This is not a fact about the
+// value and deliberately does not touch E, A or C: it suppresses the T0 clause and nothing else, so the value
+// lands T1/T2, heap-allocated, with something to free.
+public fn aif_con_no_stack(vs: Int) { conAdd(AIF_CON_NO_STACK, vs, 0, 0) }
+public fn aif_con_transferred(vs: Int) { conAdd(AIF_CON_TRANSFERRED, vs, 0, 0) }
+public fn aif_con_foreign(vs: Int) { conAdd(AIF_CON_FOREIGN, vs, 0, 0) }
+
+public fn aif_con_spawn(vs: Int, scope: Int, joined: Int) {
+    programHasTasks = true
+    conAdd(AIF_CON_SPAWN, vs, scope, joined)
+}
+
+public fn aif_con_pin_region(vs: Int, name: String) {
+    conAdd(AIF_CON_PIN_REGION, vs, irNameId(name), 0)
+}
+
+public fn aif_con_count() -> Int {
+    return conCount
+}
+
+public fn aif_program_has_tasks() -> Int {
+    if (programHasTasks) { return 1 }
+    return 0
+}
+
+public fn aif_set_owned_collections(on: Int) {
+    ownedCollections = on != 0
+}

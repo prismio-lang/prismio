@@ -13,13 +13,18 @@
 //
 // **The ownership contract, declared once.** `read_file`, `get_directory`,
 // `join_path`, `current_directory`, `executable_directory` and `list_modules`
-// all return `malloc`ed memory the caller must release, and only the first three
+// all return memory from `rt_base_alloc` the caller must release, and only the first three
 // are in the analysis's fallback table (src/aif/contracts.psm). An application
 // that declared the other three itself and left the contract off got an opaque
 // return -- no owner, and a leak per call. Declaring them here means no
 // application has to know which of the six the table happens to cover.
 //
-// **A `produce(free)` belongs only on a function that allocates.** A C function
+// They say `produce(rt_free)`, not `produce(free)`: the name is the deallocator the
+// block needs, and a block from the allocator seam is released by `rt_free`. A
+// `produce(free)` String is copied in and handed to libc `free` at the call, which is
+// right for `strdup` and a pointless copy here.
+//
+// **A `produce(...)` belongs only on a function that allocates.** A C function
 // returning a pointer into memory it does not own -- the shape `cli_arg` had
 // before std/process.psm read `argv` itself -- is `alias`, and a `produce` on it
 // corrupts memory rather than leaking: it hands that memory to the deallocator.
@@ -39,7 +44,7 @@ import std.time
 import std.vec
 
 internal extern fn file_exists(path: String borrow) -> Int
-internal extern fn read_file(path: String borrow) -> String produce(free)
+internal extern fn read_file(path: String borrow) -> String produce(rt_free)
 internal extern fn delete_file(path: String borrow) -> Int
 // Both return a status rather than a pointer, so neither carries `produce` or
 // `alias`: there is nothing for a deallocator to take. `borrow` on the arguments
@@ -48,11 +53,11 @@ internal extern fn delete_file(path: String borrow) -> Int
 internal extern fn write_file(path: String borrow, content: String borrow) -> Int
 internal extern fn make_directory(path: String borrow) -> Int
 internal extern fn directory_exists(path: String borrow) -> Int
-internal extern fn get_directory(path: String borrow) -> String produce(free)
-internal extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(free)
-internal extern fn current_directory() -> String produce(free)
-internal extern fn executable_directory() -> String produce(free)
-internal extern fn list_modules(directory: String borrow) -> String produce(free)
+internal extern fn get_directory(path: String borrow) -> String produce(rt_free)
+internal extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(rt_free)
+internal extern fn current_directory() -> String produce(rt_free)
+internal extern fn executable_directory() -> String produce(rt_free)
+internal extern fn list_modules(directory: String borrow) -> String produce(rt_free)
 
 public fn fileExists(path: String) -> Bool {
     return file_exists(path) == 1
@@ -166,7 +171,7 @@ public fn isSourcePath(path: String) -> Bool {
 // The rest of the file-system capability: a directory's entries, appending,
 // renaming, removing a directory, and what a path is.
 private extern fn fs_list_begin(path: String borrow) -> Int
-private extern fn fs_list_name(index: Int) -> String produce(free)
+private extern fn fs_list_name(index: Int) -> String produce(rt_free)
 private extern fn fs_list_end()
 // `bytes`, with the count beside it: a view crosses without the NUL-terminated
 // copy a `borrow` would make, since the callee never looks for a terminator.
@@ -175,9 +180,9 @@ private extern fn fs_rename(from: String borrow, to: String borrow) -> Int
 private extern fn fs_remove_directory(path: String borrow) -> Int
 private extern fn fs_symlink(target: String borrow, linkPath: String borrow) -> Int
 private extern fn fs_readlink_exists(path: String borrow) -> Int
-private extern fn fs_readlink(path: String borrow) -> String produce(free)
+private extern fn fs_readlink(path: String borrow) -> String produce(rt_free)
 private extern fn fs_realpath_exists(path: String borrow) -> Int
-private extern fn fs_realpath(path: String borrow) -> String produce(free)
+private extern fn fs_realpath(path: String borrow) -> String produce(rt_free)
 private extern fn fs_metadata(path: String borrow, out: MetadataOut) -> Int
 
 // The names in `directory` -- files, directories and anything else -- sorted by
@@ -278,7 +283,7 @@ public fn metadata(path: String) -> Metadata? {
 // last line without a terminator is still a line.
 private extern fn fs_lines_open(path: String borrow) -> Int
 private extern fn fs_lines_has_line(handle: Int) -> Int
-private extern fn fs_lines_take_line(handle: Int) -> String produce(free)
+private extern fn fs_lines_take_line(handle: Int) -> String produce(rt_free)
 private extern fn fs_lines_close(handle: Int)
 
 public struct FileLines {

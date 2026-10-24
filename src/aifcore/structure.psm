@@ -1,0 +1,227 @@
+// The shape of the program the engine reasons about: the scope forest and the function table.
+//
+// Each function body is a root; a block nests inside its parent. The join of two Region values is
+// their least common ancestor, which exists because scopes nest (INFERENCE 2.1). Scopes in different
+// functions have no common region: `scopeLca` reports -1 and `escapeJoin` falls back to Caller.
+//
+// Records are columns, one `Vec<Int>` per field, indexed by scope or function id.
+
+import aifcore.brackets
+import aifcore.constants
+import std.map
+import std.raw
+import std.vec
+import symbols.names
+
+internal let mut scopeCount = 0
+internal let mut scopeParent: Vec<Int>
+internal let mut scopeNesting: Vec<Int>
+internal let mut scopeOwner: Vec<Int>
+// SPEC 5.2. -1 unless a `region` statement opened this scope, in which case it is the interned name,
+// which is what the manifest's `region:<name>` placement reports.
+internal let mut scopeRegionName: Vec<Int>
+// LAYOUT 7.1. Set by `aif_place_arenas` when the cost model chooses this scope, or unconditionally
+// when `region` pinned it. Codegen reads it through the block node.
+internal let mut scopeArena: Vec<Int>
+// How many loops enclose this scope, within its function: the weight a site contributes to its
+// arena's benefit is one allocation per entry, times the trip count of every loop between them.
+internal let mut scopeLoopDepth: Vec<Int>
+// The BLOCK this scope came from, as an address, for the codegen lookup. 0 for none.
+internal let mut scopeNode: Vec<Usize>
+// REQUIREMENTS 19. A byte cap asserted by `region name pin(N)`, or 0, and the span it was written at
+// so a refuted budget can underline the annotation rather than the block.
+internal let mut scopeBudget: Vec<Int>
+internal let mut scopeBudgetFile: Vec<Int>
+internal let mut scopeBudgetLine: Vec<Int>
+internal let mut scopeBudgetCol: Vec<Int>
+// SPEC 5.2's diagnostic. Recorded for every `region`, not only one with a budget, because the warning
+// that matters most fires on the plain form: a region that serves nothing and says nothing.
+internal let mut scopeRegionFile: Vec<Int>
+internal let mut scopeRegionLine: Vec<Int>
+internal let mut scopeRegionCol: Vec<Int>
+
+internal let mut fnCount = 0
+// The interned mangled symbol is the identity.
+internal let mut fnSymbol: Vec<Int>
+internal let mut fnName: Vec<Int>
+internal let mut fnFile: Vec<Int>
+// No visible body: analysed like an FFI call (PIR 5).
+internal let mut fnSealed: Vec<Int>
+// A running count, so each site gets a stable ordinal.
+internal let mut fnSiteCount: Vec<Int>
+internal let mut fnBySymbol: Map<Int, Int>
+
+private let mut structureOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+internal fn structureOpen() {
+    if (structureOpened) { return }
+    structureOpened = true
+    scopeParent = []
+    scopeNesting = []
+    scopeOwner = []
+    scopeRegionName = []
+    scopeArena = []
+    scopeLoopDepth = []
+    scopeNode = []
+    scopeBudget = []
+    scopeBudgetFile = []
+    scopeBudgetLine = []
+    scopeBudgetCol = []
+    scopeRegionFile = []
+    scopeRegionLine = []
+    scopeRegionCol = []
+    fnSymbol = []
+    fnName = []
+    fnFile = []
+    fnSealed = []
+    fnSiteCount = []
+    let bySymbol: Map<Int, Int> = {}
+    fnBySymbol = bySymbol
+}
+
+// Forgets every scope and function.
+internal fn structureReset() {
+    structureOpened = false
+    structureOpen()
+    scopeCount = 0
+    fnCount = 0
+}
+
+public fn aif_scope_new(parent: Int, owner: Int) -> Int {
+    structureOpen()
+    let mut depth = 0
+    if (parent >= 0) { depth = scopeNesting[parent] + 1 }
+    scopeParent.push(parent)
+    scopeOwner.push(owner)
+    scopeNesting.push(depth)
+    scopeRegionName.push(-1)
+    scopeArena.push(0)
+    scopeLoopDepth.push(0)
+    scopeNode.push(0)
+    scopeBudget.push(0)
+    scopeBudgetFile.push(0)
+    scopeBudgetLine.push(0)
+    scopeBudgetCol.push(0)
+    scopeRegionFile.push(0)
+    scopeRegionLine.push(0)
+    scopeRegionCol.push(0)
+    scopeCount = scopeCount + 1
+    return scopeCount - 1
+}
+
+public fn aif_scope_set_region_span(scope: Int, file: Int, line: Int, col: Int) {
+    if (scope < 0 or scope >= scopeCount) { return }
+    scopeRegionFile[scope] = file
+    scopeRegionLine[scope] = line
+    scopeRegionCol[scope] = col
+}
+
+public fn aif_scope_set_budget(scope: Int, bytes: Int, file: Int, line: Int, col: Int) {
+    if (scope < 0 or scope >= scopeCount) { return }
+    scopeBudget[scope] = bytes
+    scopeBudgetFile[scope] = file
+    scopeBudgetLine[scope] = line
+    scopeBudgetCol[scope] = col
+}
+
+// SPEC 5.2: `region` is a pin on the placement decision, not an input to it. The cost model never
+// sees this scope -- it is guaranteed an arena whether or not the model would have chosen one, and the
+// manifest records that.
+public fn aif_scope_set_region(scope: Int, name: String) {
+    if (scope < 0 or scope >= scopeCount) { return }
+    scopeRegionName[scope] = irNameId(name)
+    scopeArena[scope] = 1
+}
+
+public fn aif_scope_set_loop_depth(scope: Int, depth: Int) {
+    if (scope < 0 or scope >= scopeCount) { return }
+    if (depth < 0) {
+        scopeLoopDepth[scope] = 0
+    } else {
+        scopeLoopDepth[scope] = depth
+    }
+}
+
+public fn aif_scope_note_node(scope: Int, node: Ptr) {
+    if (scope < 0 or scope >= scopeCount) { return }
+    scopeNode[scope] = addressOf(node)
+}
+
+public fn aif_scope_count() -> Int {
+    return scopeCount
+}
+
+internal fn scopeLca(a0: Int, b0: Int) -> Int {
+    let mut a = a0
+    let mut b = b0
+    if (a < 0 or b < 0 or a >= scopeCount or b >= scopeCount) { return -1 }
+    if (scopeOwner[a] != scopeOwner[b]) { return -1 }
+    while (scopeNesting[a] > scopeNesting[b]) { a = scopeParent[a] }
+    while (scopeNesting[b] > scopeNesting[a]) { b = scopeParent[b] }
+    while (a != b) {
+        a = scopeParent[a]
+        b = scopeParent[b]
+        if (a < 0 or b < 0) { return -1 }
+    }
+    return a
+}
+
+// Least upper bound on Region(s) < Caller < Global.
+internal fn escapeJoin(x: Int, y: Int) -> Int {
+    if (x == AIF_E_GLOBAL or y == AIF_E_GLOBAL) { return AIF_E_GLOBAL }
+    if (x == AIF_E_CALLER or y == AIF_E_CALLER) { return AIF_E_CALLER }
+    let m = scopeLca(x, y)
+    if (m < 0) { return AIF_E_CALLER }
+    return m
+}
+
+public fn aif_fn_new(symbol: String, name: String, file: Int) -> Int {
+    structureOpen()
+    let sym = irNameId(symbol)
+    let known = fnBySymbol.getOr(sym, -1)
+    if (known >= 0) { return known }
+    fnSymbol.push(sym)
+    fnName.push(irNameId(name))
+    fnFile.push(file)
+    fnSealed.push(0)
+    fnSiteCount.push(0)
+    fnBySymbol.set(sym, fnCount)
+    fnCount = fnCount + 1
+    return fnCount - 1
+}
+
+public fn aif_fn_lookup(symbol: String) -> Int {
+    structureOpen()
+    return fnBySymbol.getOr(irNameId(symbol), -1)
+}
+
+public fn aif_fn_count() -> Int {
+    return fnCount
+}
+
+public fn aif_fn_symbol(f: Int) -> String {
+    if (f < 0 or f >= fnCount) { return "" }
+    return irNameText(fnSymbol[f])
+}
+
+public fn aif_fn_name(f: Int) -> String {
+    if (f < 0 or f >= fnCount) { return "" }
+    return irNameText(fnName[f])
+}
+
+public fn aif_fn_file(f: Int) -> Int {
+    if (f < 0 or f >= fnCount) { return 0 }
+    return fnFile[f]
+}
+
+public fn aif_fn_seal(f: Int) {
+    if (f < 0 or f >= fnCount) { return }
+    fnSealed[f] = 1
+    bracketBlockersForget()
+}
+
+public fn aif_fn_is_sealed(f: Int) -> Int {
+    if (f < 0 or f >= fnCount) { return 0 }
+    return fnSealed[f]
+}

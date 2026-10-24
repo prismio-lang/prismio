@@ -6,9 +6,24 @@ import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.source_files
+import common.terminal
 import std.string
 import std.option
 import aif.model
+import aifcore.arenas
+import aifcore.brackets
+import aifcore.call_graph
+import aifcore.constraints
+import aifcore.dispositions
+import aifcore.layout_search
+import aifcore.nominals
+import aifcore.ownership
+import aifcore.reset
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import aifcore.tiers
 
 // ---------------------------------------------------------------------------
 // Reporting
@@ -20,7 +35,7 @@ private fn aifTierName(tier: Int) -> String {
     if (tier == 2) { return "T2" }
     if (tier == 3) { return "T3" }
     // SPEC 3: T4 is one tier with two sub-classes, and they are ordered here
-    // with T4a on top -- see AIF_T4A in runtime/aif_support.c for why that
+    // with T4a on top -- see AIF_T4A in src/aifcore/ for why that
     // ordinal rather than the other. The consequence a reader meets first is
     // that the tables below print T4b before T4a, which is ordinal order and
     // not a mistake.
@@ -1085,7 +1100,7 @@ public fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: B
     // the unsplit ones, deliberately.
     //
     // **Before the solve**, because the release half *is* `aif_type_releases` and
-    // the solve is what reads it -- through elem_disposition_of, which is how a
+    // the solve is what reads it -- through elemDispositionOf, which is how a
     // container learns to reclaim a split element. A split decided afterwards is a
     // type whose cold block nothing ever frees.
     //

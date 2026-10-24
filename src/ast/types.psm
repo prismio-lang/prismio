@@ -1,3 +1,5 @@
+import symbols.type_registry
+import symbols.declarations
 import ast.nodes
 import ast.int_width
 import ast.float_width
@@ -6,6 +8,7 @@ import common.text
 import common.target
 import std.string
 import std.option
+import aifcore.ownership
 
 // As with NodeKind (ast.psm), **nothing may take ordinal 0**: a TypeInfo is
 // punned as a String and `kind` is its first field, so a zero-valued kind makes
@@ -313,7 +316,7 @@ public fn typeIntIsUnsigned(t: TypeInfo) -> Bool {
 // AIF Level 4. Strings and lists join structs here, which is what gives the
 // memory model a single owner for the values that make up most of a real
 // program's allocation traffic -- aif_frees_at_scope_node asks the same question
-// through site_is_move_only, so a T1 string now has a free point.
+// through siteIsMoveOnly, so a T1 string now has a free point.
 //
 // Arrays deliberately do not. An array literal lowers to ir_array_alloca, which
 // is frame storage: there is no allocation to own, nothing for a drop to
@@ -1215,25 +1218,15 @@ public fn nodeGetType(node: ASTNode) -> TypeInfo {
 // than containment ones. That distinction is what lets a recursive type be
 // spelled `T?` -- the only spelling for one -- and therefore what lets
 // containment be required acyclic without rejecting any program.
-public extern fn ir_is_struct_type_name(name: String) -> Int
 
 // REQUIREMENTS 16. Every lookup of a declaration by name goes through the index
 // these four declare, and the index is a cache of exactly what a walk of the
 // module's statement list would have found, in the same order. The walk itself
 // is here once, in indexModuleDeclarations(), instead of once per pass that
 // wanted an answer from it.
-public extern fn ir_reset_decl_index()
-public extern fn ir_index_decl(name: String, node: Ptr)
-public extern fn ir_decl_count(name: String) -> Int
-public extern fn ir_decl_at(name: String, index: Int) -> String alias
-public extern fn ir_extern_decl_record(file: Int, name: String, visibility: Int)
-public extern fn ir_same_package(fileA: Int, fileB: Int) -> Int
 
 // The integer an enum is stored as (`enum E: U8`), registered by sema as it
 // declares the enum. Empty for an enum that states none, which is an i32.
-public extern fn ir_register_enum_repr(enumName: String, key: String, isUnsigned: Int)
-public extern fn ir_enum_repr_key(enumName: String) -> String alias
-public extern fn ir_enum_repr_unsigned(enumName: String) -> Int
 
 // Which top-level statements have a name worth indexing. Also the import
 // merge's duplicate rule (main.psm), and it has to be the same predicate: the

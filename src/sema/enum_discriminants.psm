@@ -16,6 +16,7 @@
 // value plus one, and when that does not fit the representation it is an error --
 // the compiler does not skip to a free value, and it does not wrap.
 
+import symbols.type_registry
 import lexer.token
 import ast.nodes
 import ast.types

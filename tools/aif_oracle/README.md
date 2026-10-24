@@ -3,7 +3,7 @@
 An independent Python implementation of the memory-model analysis: the inference engine (`aif.py`,
 INFERENCE sections 2-5 and tier derivation per SPEC 4.2) and the layout optimiser (`layout.py`,
 LAYOUT sections 2 and 4-7). It shares no code with the in-compiler engine in `src/aif/` and
-`runtime/aif_support.c`, which is the point: `tools/aif_differential.py` runs both over the same sources
+`src/aifcore/`, which is the point: `tools/aif_differential.py` runs both over the same sources
 and their tier distributions must agree.
 
 That is differential testing against an independent implementation, and it is the only reliable

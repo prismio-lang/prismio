@@ -8,8 +8,9 @@ import {ums_cli, host, commands} from project
 import {compile, imports} from driver
 import {scanner, token} from lexer
 
-import {text, diagnostics, target} from common
+import {text, diagnostics, terminal, target} from common
 import std.string
+import aifcore.layout_search
 
 from std import {io, string, option, process, fs}
 from ast import {nodes, dump}
@@ -17,7 +18,7 @@ from ast import {nodes, dump}
 // Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
 // a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
 // does the same. The caller owns them.
-public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
+public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(rt_free)
 
 /**
    Every path through both mallocs, including the failure paths, which allocate a
@@ -26,7 +27,7 @@ public extern fn compiler_default_exe_path(sourcePath: String) -> String produce
    to return String returns something a release can take -- and it is what makes
    `produce` true here rather than nearly true.
 */
-public extern fn compiler_runtime_source_hash() -> String produce(free)
+public extern fn compiler_runtime_source_hash() -> String produce(rt_free)
 
 /**
    `--sysroot`. Where *this machine* keeps the SDK for the target -- not a

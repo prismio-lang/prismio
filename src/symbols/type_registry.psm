@@ -1,0 +1,419 @@
+// What the compiler knows about the program's types: which names are structs or enums, each
+// struct's fields in physical order, each enum's variants and representation, and the return type
+// of every function by mangled symbol.
+//
+// The named-type lists are filled by sema before checking begins and answer only the question a
+// type annotation asks. They exist for speed: `semaAnnotationType` used to walk the whole module
+// for a matching declaration once per annotation, which on a 1600-function module was the
+// difference between quadratic and cubic. The struct registry holds field layouts and is populated
+// by codegen.
+//
+// The backend reads the struct and enum tables through the `_cstr` exports at the bottom, because it
+// asks in C strings and keeps the answers.
+
+import common.c_text
+import std.map
+import std.mem
+import std.raw
+import std.string
+import std.vec
+import symbols.names
+import aifcore.layout_search
+
+private let mut structTypeNames: Vec<Int>
+private let mut enumTypeNames: Vec<Int>
+private let mut enumReprNames: Vec<Int>
+private let mut enumReprKeys: Vec<Int>
+private let mut enumReprUnsigned: Vec<Int>
+
+// Fields in the order codegen registered them, which is the order `aif_layout_field` chose. Every
+// field of every struct is one record in the three columns below; a struct knows where its chain
+// starts, ends and how long it is, and a record knows the next. The lookups are the linear scans they
+// always were, over a handful of fields.
+private let mut structNames: Vec<Int>
+private let mut structFirstField: Vec<Int>
+private let mut structLastField: Vec<Int>
+private let mut structFieldCount: Vec<Int>
+private let mut fieldNames: Vec<Int>
+private let mut fieldTypes: Vec<Int>
+private let mut fieldNext: Vec<Int>
+
+// Flat: every variant of every enum in one array, so "index i of this enum" means the i-th entry
+// whose enum matches, not the i-th entry.
+private let mut variantEnums: Vec<Int>
+private let mut variantNames: Vec<Int>
+private let mut variantValues: Vec<I64>
+
+// By interned mangled symbol. This was a binding in the table of locals under a `$fn$` key, which
+// made every one permanent and made `find_binding`, which scans backwards, walk past one entry per
+// function in the module for every identifier in every body. A table of its own retires the prefix
+// and the concatenation that built one per call site.
+private let mut returnTypes: Map<Int, Int>
+
+private let mut typeTablesOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+private fn typeTablesOpen() {
+    if (typeTablesOpened) { return }
+    structTypeNames = []
+    enumTypeNames = []
+    enumReprNames = []
+    enumReprKeys = []
+    enumReprUnsigned = []
+    structNames = []
+    structFirstField = []
+    structLastField = []
+    structFieldCount = []
+    fieldNames = []
+    fieldTypes = []
+    fieldNext = []
+    variantEnums = []
+    variantNames = []
+    variantValues = []
+    let types: Map<Int, Int> = {}
+    returnTypes = types
+    typeTablesOpened = true
+}
+
+private fn hasId(list: Vec<Int>, id: Int) -> Bool {
+    for i in 0..<list.length {
+        if (list[i] == id) { return true }
+    }
+    return false
+}
+
+// kind: 1 = struct, 2 = enum.
+public fn ir_declare_named_type(name: String, kind: Int) {
+    typeTablesOpen()
+    let id = irNameId(name)
+    if (kind == 1) {
+        if (hasId(structTypeNames, id) == false) { structTypeNames.push(id) }
+    } else {
+        if (hasId(enumTypeNames, id) == false) { enumTypeNames.push(id) }
+    }
+}
+
+// 1 = struct, 2 = enum, 0 = not a declared type.
+public fn ir_named_type_kind(name: String) -> Int {
+    typeTablesOpen()
+    let id = irNameId(name)
+    if (hasId(structTypeNames, id)) { return 1 }
+    if (hasId(enumTypeNames, id)) { return 2 }
+    return 0
+}
+
+public fn ir_reset_named_types() {
+    typeTablesOpen()
+    structTypeNames = []
+    enumTypeNames = []
+    enumReprNames = []
+    enumReprKeys = []
+    enumReprUnsigned = []
+}
+
+// The structs and variants of a module. A reset is followed by another module being compiled in the
+// same process only during bootstrap.
+public fn ir_reset_types() {
+    typeTablesOpen()
+    structNames = []
+    structFirstField = []
+    structLastField = []
+    structFieldCount = []
+    fieldNames = []
+    fieldTypes = []
+    fieldNext = []
+    variantEnums = []
+    variantNames = []
+    variantValues = []
+}
+
+// Last writer wins, which is what a shadowing binding did.
+public fn ir_set_fn_return_type(symbol: String, returnType: String) {
+    typeTablesOpen()
+    returnTypes.set(irNameId(symbol), irNameId(returnType))
+}
+
+// "i64" for an unknown symbol, which is what the binding table answered for a `$fn$` key that was
+// never set. A different default would change the IR emitted for a call the frontend failed to
+// predeclare.
+public fn ir_get_fn_return_type(symbol: String) -> String {
+    typeTablesOpen()
+    let found = returnTypes.getOr(irNameId(symbol), -1)
+    if (found >= 0) { return irNameText(found) }
+    return "i64"
+}
+
+// Emptied rather than kept, because the table is read with two vocabularies: sema stores its own
+// type keys and codegen stores LLVM storage types. An entry left behind by sema and not overwritten
+// by codegen, an extern that a profile build stubs rather than declares, would be read as a storage
+// type.
+public fn ir_reset_fn_return_types() {
+    typeTablesOpen()
+    returnTypes.clear()
+}
+
+private fn structIndex(name: String) -> Int {
+    typeTablesOpen()
+    let id = irNameId(name)
+    for i in 0..<structNames.length {
+        if (structNames[i] == id) { return i }
+    }
+    return -1
+}
+
+public fn ir_is_struct_type_name(name: String) -> Int {
+    if (structIndex(name) >= 0) { return 1 }
+    return 0
+}
+
+public fn ir_register_struct(name: String) {
+    if (structIndex(name) >= 0) { return }
+    structNames.push(irNameId(name))
+    structFirstField.push(-1)
+    structLastField.push(-1)
+    structFieldCount.push(0)
+}
+
+public fn ir_register_struct_field(structName: String, fieldName: String, fieldType: String) {
+    let at = structIndex(structName)
+    if (at < 0) { return }
+    let field = fieldNames.length
+    fieldNames.push(irNameId(fieldName))
+    fieldTypes.push(irNameId(fieldType))
+    fieldNext.push(-1)
+    if (structLastField[at] < 0) {
+        structFirstField[at] = field
+    } else {
+        fieldNext[structLastField[at]] = field
+    }
+    structLastField[at] = field
+    structFieldCount[at] = structFieldCount[at] + 1
+}
+
+// The record of a struct's `index`-th field, or -1.
+private fn fieldAt(structAt: Int, index: Int) -> Int {
+    if (index < 0 or index >= structFieldCount[structAt]) { return -1 }
+    let mut field = structFirstField[structAt]
+    for step in 0..<index { field = fieldNext[field] }
+    return field
+}
+
+// The record of the field of that name, or -1.
+private fn fieldNamed(structAt: Int, fieldName: String) -> Int {
+    let id = irNameId(fieldName)
+    let mut field = structFirstField[structAt]
+    while (field >= 0) {
+        if (fieldNames[field] == id) { return field }
+        field = fieldNext[field]
+    }
+    return -1
+}
+
+public fn ir_get_struct_field_index(structName: String, fieldName: String) -> Int {
+    let at = structIndex(structName)
+    if (at < 0) { return -1 }
+    let id = irNameId(fieldName)
+    let mut field = structFirstField[at]
+    let mut index = 0
+    while (field >= 0) {
+        if (fieldNames[field] == id) { return index }
+        field = fieldNext[field]
+        index = index + 1
+    }
+    return -1
+}
+
+private fn structFieldTypeId(structName: String, fieldName: String) -> Int {
+    let at = structIndex(structName)
+    if (at >= 0) {
+        let field = fieldNamed(at, fieldName)
+        if (field >= 0) { return fieldTypes[field] }
+    }
+    return irNameId("i32")
+}
+
+public fn ir_get_struct_field_type(structName: String, fieldName: String) -> String {
+    return irNameText(structFieldTypeId(structName, fieldName))
+}
+
+// Number of fields registered for a struct, so a backend can build the type body without knowing
+// how the frontend stored it.
+public fn ir_get_struct_field_count(structName: String) -> Int {
+    let at = structIndex(structName)
+    if (at < 0) { return 0 }
+    return structFieldCount[at]
+}
+
+private fn structFieldTypeIdAt(structName: String, index: Int) -> Int {
+    let at = structIndex(structName)
+    if (at < 0) { return irNameId("i32") }
+    let field = fieldAt(at, index)
+    if (field < 0) { return irNameId("i32") }
+    return fieldTypes[field]
+}
+
+public fn ir_get_struct_field_type_at(structName: String, index: Int) -> String {
+    return irNameText(structFieldTypeIdAt(structName, index))
+}
+
+// The field's *source* name at a physical index. The sibling above answers what occupies slot i;
+// this answers what the programmer called it, which is the half DWARF needs and the only place the
+// two orders have to be reconciled. Empty rather than a placeholder for an unknown index: a made-up
+// field name in a debugger is worse than a gap.
+private fn structFieldNameIdAt(structName: String, index: Int) -> Int {
+    let at = structIndex(structName)
+    if (at < 0) { return 0 }
+    let field = fieldAt(at, index)
+    if (field < 0) { return 0 }
+    return fieldNames[field]
+}
+
+public fn ir_register_enum_variant(enumName: String, variantName: String, value: I64) {
+    typeTablesOpen()
+    variantEnums.push(irNameId(enumName))
+    variantNames.push(irNameId(variantName))
+    variantValues.push(value)
+}
+
+public fn ir_get_enum_variant_count(enumName: String) -> Int {
+    typeTablesOpen()
+    let id = irNameId(enumName)
+    let mut n = 0
+    for i in 0..<variantEnums.length {
+        if (variantEnums[i] == id) { n = n + 1 }
+    }
+    return n
+}
+
+// The flat index of the `index`-th variant of an enum, or -1.
+private fn variantAt(enumName: String, index: Int) -> Int {
+    typeTablesOpen()
+    let id = irNameId(enumName)
+    let mut n = 0
+    for i in 0..<variantEnums.length {
+        if (variantEnums[i] != id) { continue }
+        if (n == index) { return i }
+        n = n + 1
+    }
+    return -1
+}
+
+// Empty name and a zero value for an index that is not there, matching `structFieldNameIdAt`: a
+// made-up enumerator in a debugger is worse than a gap, and the caller checks the name.
+private fn enumVariantNameIdAt(enumName: String, index: Int) -> Int {
+    let at = variantAt(enumName, index)
+    if (at < 0) { return 0 }
+    return variantNames[at]
+}
+
+public fn ir_get_enum_variant_name_at(enumName: String, index: Int) -> String {
+    return irNameText(enumVariantNameIdAt(enumName, index))
+}
+
+public fn ir_get_enum_variant_value_at(enumName: String, index: Int) -> I64 {
+    let at = variantAt(enumName, index)
+    if (at < 0) { return 0 }
+    return variantValues[at]
+}
+
+// The flat index of a registered variant, or -1.
+private fn variantNamed(enumName: String, variantName: String) -> Int {
+    typeTablesOpen()
+    let enumId = irNameId(enumName)
+    let variantId = irNameId(variantName)
+    for i in 0..<variantEnums.length {
+        if (variantEnums[i] == enumId and variantNames[i] == variantId) { return i }
+    }
+    return -1
+}
+
+// The value of a registered variant, and 0 for one that is not. A value can be any integer the
+// enum's representation holds, negative included, so absence is asked of `ir_enum_has_variant` and
+// never read off the value.
+public fn ir_get_enum_variant(enumName: String, variantName: String) -> I64 {
+    let at = variantNamed(enumName, variantName)
+    if (at < 0) { return 0 }
+    return variantValues[at]
+}
+
+public fn ir_enum_has_variant(enumName: String, variantName: String) -> Int {
+    if (variantNamed(enumName, variantName) >= 0) { return 1 }
+    return 0
+}
+
+// The integer type an enum is stored as, when it names one (`enum E: U8`). An enum that does not is
+// an i32 and has no entry: every caller falls back to that, which is what keeps a program that never
+// writes a representation unchanged. Cleared with the named types, because sema fills it as it
+// declares them.
+public fn ir_register_enum_repr(enumName: String, key: String, isUnsigned: Int) {
+    typeTablesOpen()
+    enumReprNames.push(irNameId(enumName))
+    enumReprKeys.push(irNameId(key))
+    enumReprUnsigned.push(isUnsigned)
+}
+
+private fn enumReprIndex(enumName: String) -> Int {
+    typeTablesOpen()
+    let id = irNameId(enumName)
+    for i in 0..<enumReprNames.length {
+        if (enumReprNames[i] == id) { return i }
+    }
+    return -1
+}
+
+// Empty for an enum with no stated representation.
+public fn ir_enum_repr_key(enumName: String) -> String {
+    let at = enumReprIndex(enumName)
+    if (at < 0) { return "" }
+    return irNameText(enumReprKeys[at])
+}
+
+public fn ir_enum_repr_unsigned(enumName: String) -> Int {
+    let at = enumReprIndex(enumName)
+    if (at < 0) { return 0 }
+    return enumReprUnsigned[at]
+}
+
+// What the C backend calls. It passes C strings and keeps the strings it gets back, so each answer
+// is an interned name's NUL-terminated copy, valid for the rest of the process.
+public export fn ir_is_struct_type_name_cstr(name: Ptr) -> Int {
+    return ir_is_struct_type_name(stringFromCString(name))
+}
+
+public export fn ir_named_type_kind_cstr(name: Ptr) -> Int {
+    return ir_named_type_kind(stringFromCString(name))
+}
+
+public export fn ir_get_struct_field_count_cstr(structName: Ptr) -> Int {
+    return ir_get_struct_field_count(stringFromCString(structName))
+}
+
+public export fn ir_get_struct_field_type_at_cstr(structName: Ptr, index: Int) -> Ptr {
+    return irNameBlock(structFieldTypeIdAt(stringFromCString(structName), index))
+}
+
+public export fn ir_get_struct_field_name_at_cstr(structName: Ptr, index: Int) -> Ptr {
+    return irNameBlock(structFieldNameIdAt(stringFromCString(structName), index))
+}
+
+public export fn ir_get_enum_variant_count_cstr(enumName: Ptr) -> Int {
+    return ir_get_enum_variant_count(stringFromCString(enumName))
+}
+
+public export fn ir_get_enum_variant_name_at_cstr(enumName: Ptr, index: Int) -> Ptr {
+    return irNameBlock(enumVariantNameIdAt(stringFromCString(enumName), index))
+}
+
+public export fn ir_get_enum_variant_value_at_cstr(enumName: Ptr, index: Int) -> I64 {
+    return ir_get_enum_variant_value_at(stringFromCString(enumName), index)
+}
+
+public export fn ir_enum_repr_key_cstr(enumName: Ptr) -> Ptr {
+    let at = enumReprIndex(stringFromCString(enumName))
+    if (at < 0) { return irNameBlock(0) }
+    return irNameBlock(enumReprKeys[at])
+}
+
+public export fn ir_enum_repr_unsigned_cstr(enumName: Ptr) -> Int {
+    return ir_enum_repr_unsigned(stringFromCString(enumName))
+}

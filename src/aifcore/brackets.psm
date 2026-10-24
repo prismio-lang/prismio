@@ -1,0 +1,955 @@
+// Call-site placement (SPEC 5.2.1.1): may a caller's region reach a callee's allocations, and which sites does it
+// hand an arena?
+//
+// **There is no new codegen mechanism.** An arena is on a dynamic stack: `region r { ... }` already emits
+// arena_push at entry and arena_pop at every exit, so while a bracketed callee runs, its caller's arena is the top
+// of that stack. All that was missing was for the *analysis* to say a callee's site belongs to it, after which the
+// two hooks that already exist do the work, both keyed on `aif_arena_at_node`.
+//
+// Three decisions, none of them re-derivable from the code alone:
+//   * **Placement may bracket into any arena once `aif_place_arenas` has run**, and only into a `region`-pinned one
+//     before it. Otherwise placement depends on bracketing depends on placement; `arenasPlaced` and
+//     `bracketInvalidate` cut the loop, and the obligations read no arena flag.
+//   * **Obligation 3 is not readable from E.** "The value the call returns does not outlive R" is a property of the
+//     call site, and E cannot express it: AIF_CON_LIVE_IN sets E = Caller for every site whose function is not the
+//     binding function, by construction. The fact wanted is the *caller-side* binding, which the points-to graph
+//     already holds, so obligation 3 is asked of the keys and of the owner sites.
+//   * **Regime (a) makes one body serve one regime**: the callee has exactly one call site, or every call site is
+//     bracketed into the same region, and every function the extent reaches is reached only from inside it.
+
+import aif.model
+import aifcore.arenas
+import aifcore.bits
+import aifcore.call_graph
+import aifcore.constants
+import aifcore.constraints
+import aifcore.extents
+import aifcore.keys
+import aifcore.nominals
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import aifcore.tiers
+import std.io
+import std.option
+import std.vec
+import symbols.names
+
+// Which *objects* hold each site: the owner set of every field store and of every `retain_in` call. `containerOf`
+// already records the second, and E-STORE consumes the first without keeping it, so this reconstructs both from the
+// constraints after the solve. It is the half of obligation 3 the keys cannot answer: a FIELD key is
+// object-insensitive, so `Wrapper.list` says nothing about *which* Wrapper, and which is exactly the question.
+private let mut siteOwnerSites: Vec<Int>
+private let mut siteOwnersBuilt = false
+private let mut ownerBitsVal = -1
+private let mut ownerBitsOwn = -1
+private let mut ownerVecVal: Vec<Int>
+private let mut ownerVecOwn: Vec<Int>
+
+// Reverse views for the bracket obligations. `bracketSiteBounded` is asked about every site of every candidate
+// extent, and each of its three questions used to be answered by scanning a whole table (58% of a self-build).
+// Each answer is now the row of a table built once, listing the same entries in the same ascending order, so the
+// first rejection, and the trace line that names it, are the ones the scan found.
+//   siteKey*    site s -> the keys k with s in pt[k]
+//   siteOwned*  site s -> the sites o with s in siteOwnerSites[o]
+//   fnSite*     function f -> its sites
+private let mut siteKeyFirst: Vec<Int>
+private let mut siteKeyList: Vec<Int>
+private let mut siteOwnedFirst: Vec<Int>
+private let mut siteOwnedList: Vec<Int>
+internal let mut fnSiteFirst: Vec<Int>
+internal let mut fnSiteList: Vec<Int>
+private let mut extentSiteBuffer: Vec<Int>
+private let mut bracketIndexReady = false
+
+// site -> the region scope a bracketed call hands it, or -1.
+private let mut siteBracket: Vec<Int>
+private let mut bracketPlaceReady = false
+// Each pass gets its own extent and confinement pair: the candidate pass runs inside `aif_place_arenas`, which is not
+// on the placement pass's stack, but the byte estimate and the served count both reuse buffers, and two passes
+// sharing one answer-in-progress is the kind of aliasing that shows up as a placement that moved without a source
+// change. The range pass gets a third, because it is reached from inside `bracketEdgeOk`, which reads its own
+// `confined` again after the call returns.
+private let mut placeExtent = -1
+private let mut placeConfined = -1
+internal let mut candExtent = -1
+internal let mut candConfined = -1
+internal let mut rangeExtent = -1
+internal let mut rangeConfined = -1
+
+// One entry per bracketed call. SPEC 5.2.1.1 requires the manifest to record them, because regime (a) is fragile as a
+// language guarantee: adding a second call to a bracketed callee silently removes the placement.
+private let mut brCallee: Vec<Int>
+private let mut brScope: Vec<Int>
+// The caller scope the call sits in, for the footprint estimate, and the statement of the region it sits at.
+private let mut brCallScope: Vec<Int>
+internal let mut brCallStmt: Vec<Int>
+internal let mut bracketCount = 0
+
+private let mut confinedGood: Vec<Int>
+private let mut confinedWork: Vec<Int>
+
+// What `bracketCandidateServes` adds to the served set's bytes, and the unsized count `bracketBytesOf` keeps.
+private let mut candidateHeld: I64 = 0
+private let mut candidateLive: I64 = 0
+private let mut unsizedCount = 0
+
+private let mut bracketsOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+internal fn bracketsOpen() {
+    if (bracketsOpened) { return }
+    bracketsOpened = true
+    siteOwnerSites = []
+    ownerVecVal = []
+    ownerVecOwn = []
+    siteKeyFirst = []
+    siteKeyList = []
+    siteOwnedFirst = []
+    siteOwnedList = []
+    fnSiteFirst = []
+    fnSiteList = []
+    extentSiteBuffer = []
+    siteBracket = []
+    brCallee = []
+    brScope = []
+    brCallScope = []
+    brCallStmt = []
+    confinedGood = []
+    confinedWork = []
+    ownerBitsVal = bitsNew()
+    ownerBitsOwn = bitsNew()
+    placeExtent = bitsNew()
+    placeConfined = bitsNew()
+    candExtent = bitsNew()
+    candConfined = bitsNew()
+    rangeExtent = bitsNew()
+    rangeConfined = bitsNew()
+}
+
+// Torn down with the call graph, for the same reason: `siteBracket` indexed by a *previous* run's site ids would hand
+// this run's sites an arena chosen for someone else's program.
+internal fn bracketsReset() {
+    bracketsOpened = false
+    bracketsOpen()
+    siteOwnersBuilt = false
+    bracketIndexReady = false
+    bracketPlaceReady = false
+    bracketCount = 0
+    candidateHeld = 0
+    candidateLive = 0
+    unsizedCount = 0
+}
+
+private fn siteOwnersBuild() {
+    bracketsOpen()
+    if (siteOwnersBuilt or siteCount == 0) { return }
+    siteOwnersBuilt = true
+    siteOwnerSites = []
+    for s in 0..<siteCount { siteOwnerSites.push(bitsNew()) }
+
+    for i in 0..<conCount {
+        let mut valueSet = 0
+        let mut ownerSet = 0
+        if (conKind[i] == AIF_CON_STORE) {
+            valueSet = conB[i]
+            ownerSet = conC[i]
+        } else if (conKind[i] == AIF_CON_RETAIN_IN) {
+            valueSet = conA[i]
+            ownerSet = conB[i]
+        } else {
+            continue
+        }
+        vsResolve(valueSet, ownerBitsVal)
+        vsResolve(ownerSet, ownerBitsOwn)
+        bitsToVec(ownerBitsVal, ownerVecVal)
+        bitsToVec(ownerBitsOwn, ownerVecOwn)
+        for a in 0..<ownerVecVal.length {
+            for b in 0..<ownerVecOwn.length {
+                bitsSet(siteOwnerSites[ownerVecVal[a]], ownerVecOwn[b])
+            }
+        }
+    }
+}
+
+// Row r's set bits c < ncols become entry r of column c's list, ascending in r. `first` holds each column's start, so that
+// column c's entries are `list[first[c] ..< first[c + 1]]`.
+private fn csrFirst(rows: Vec<Int>, nrows: Int, ncols: Int) -> Vec<Int> {
+    let mut first = Vec<Int>.filled(ncols + 1, 0)
+    for r in 0..<nrows {
+        for wi in 0..<bitsWordCount(rows[r]) {
+            let mut x = bitsWord(rows[r], wi)
+            while (x != 0) {
+                let c = wi * BITS_WORD_BITS + x.trailingZeros()
+                x = x & (x - 1)
+                if (c < ncols) { first[c + 1] = first[c + 1] + 1 }
+            }
+        }
+    }
+    for c in 0..<ncols { first[c + 1] = first[c + 1] + first[c] }
+    return first
+}
+
+private fn csrList(rows: Vec<Int>, nrows: Int, ncols: Int, first: Vec<Int>) -> Vec<Int> {
+    let mut list = Vec<Int>.filled(first[ncols] + 1, 0)
+    let mut fill: Vec<Int> = Vec<Int>.filled(ncols + 1, 0)
+    for r in 0..<nrows {
+        for wi in 0..<bitsWordCount(rows[r]) {
+            let mut x = bitsWord(rows[r], wi)
+            while (x != 0) {
+                let c = wi * BITS_WORD_BITS + x.trailingZeros()
+                x = x & (x - 1)
+                if (c < ncols) {
+                    list[first[c] + fill[c]] = r
+                    fill[c] = fill[c] + 1
+                }
+            }
+        }
+    }
+    return list
+}
+
+internal fn bracketIndexBuild() {
+    bracketsOpen()
+    if (bracketIndexReady) { return }
+    siteOwnersBuild()
+    if (siteCount == 0) { return }
+    bracketIndexReady = true
+
+    siteKeyFirst = csrFirst(pt, ptLen, siteCount)
+    siteKeyList = csrList(pt, ptLen, siteCount, siteKeyFirst)
+    siteOwnedFirst = csrFirst(siteOwnerSites, siteCount, siteCount)
+    siteOwnedList = csrList(siteOwnerSites, siteCount, siteCount, siteOwnedFirst)
+
+    fnSiteFirst = Vec<Int>.filled(fnCount + 1, 0)
+    for s in 0..<siteCount {
+        let f = siteFn[s]
+        if (f >= 0 and f < fnCount) { fnSiteFirst[f + 1] = fnSiteFirst[f + 1] + 1 }
+    }
+    for f in 0..<fnCount { fnSiteFirst[f + 1] = fnSiteFirst[f + 1] + fnSiteFirst[f] }
+    fnSiteList = Vec<Int>.filled(fnSiteFirst[fnCount] + 1, 0)
+    let mut fill: Vec<Int> = Vec<Int>.filled(fnCount + 1, 0)
+    for s in 0..<siteCount {
+        let f = siteFn[s]
+        if (f >= 0 and f < fnCount) {
+            fnSiteList[fnSiteFirst[f] + fill[f]] = s
+            fill[f] = fill[f] + 1
+        }
+    }
+    extentSiteBuffer = Vec<Int>.filled(siteCount, 0)
+}
+
+// The distinct keys that point at `s` live at `siteKeyList[siteKeyFirst[s] ..< siteKeyFirst[s + 1]]`.
+internal fn siteKeyStart(s: Int) -> Int {
+    return siteKeyFirst[s]
+}
+
+internal fn siteKeyEnd(s: Int) -> Int {
+    return siteKeyFirst[s + 1]
+}
+
+internal fn siteKeyAt(i: Int) -> Int {
+    return siteKeyList[i]
+}
+
+internal fn siteOwnersBits(s: Int) -> Int {
+    return siteOwnerSites[s]
+}
+
+// The innermost `region` enclosing this scope, or -1. Distinct from `enclosingRegion`, which also answers for an
+// arena the cost model chose: only a pinned one may be bracketed into before placement has run.
+private fn enclosingPinnedRegion(scope: Int) -> Int {
+    let mut s = scope
+    while (s >= 0) {
+        if (scopeArena[s] != 0 and scopeRegionName[s] >= 0) { return s }
+        s = scopeParent[s]
+    }
+    return -1
+}
+
+// Functions that cannot be running unless the region is. The bracketed extent is one of them, and it is not all of
+// them: `submit(cmds)` in g2_region takes the list the bracketed `cull` returned, and the walk binds a parameter to a
+// local of the same name, so `cmds` lands in a VAR key belonging to a function that is in no extent at all.
+// Rejecting that would reject the case the whole feature exists for, and accepting it unconditionally would accept a
+// function that also runs somewhere the region does not.
+//
+// So the set is closed the same way regime (a) closes the extent: a function joins when **every** call site of it is
+// inside the region, either from a member or from the bracketing caller at a scope at or below `r`. A function with
+// no callers at all never joins; `main` is the one that matters there. The bracketing caller is excluded by
+// construction: it is running when the region is *not*.
+//
+// The set is the least fixpoint of that rule, computed so that a function joins the moment its last outside call
+// site does, found by following only the edges of the functions already in.
+private fn regionConfinedFast(r: Int, callerFn: Int, extent: Int, out: Int) {
+    bitsClear(out)
+    bitsOr(out, extent)
+    if (callerFn < 0 or callerFn >= fnCount) {
+        regionConfinedScan(r, callerFn, out)
+        return
+    }
+    callerEdgesBuild()
+    confinedGood = Vec<Int>.filled(fnCount + 1, 0)
+    intsClear(confinedWork)
+
+    for wi in 0..<bitsWordCount(out) {
+        let mut x = bitsWord(out, wi)
+        while (x != 0) {
+            let f = wi * BITS_WORD_BITS + x.trailingZeros()
+            x = x & (x - 1)
+            if (f >= fnCount) { break }
+            for j in callerEdgeStart(f)..<callerEdgeEnd(f) {
+                let callee = edgeCallee[callerEdgeAt(j)]
+                confinedGood[callee] = confinedGood[callee] + 1
+            }
+        }
+    }
+    if (bitsTest(out, callerFn) == false) {
+        for j in callerEdgeStart(callerFn)..<callerEdgeEnd(callerFn) {
+            let e = callerEdgeAt(j)
+            if (scopeLca(edgeScope[e], r) == r) { confinedGood[edgeCallee[e]] = confinedGood[edgeCallee[e]] + 1 }
+        }
+    }
+    for g in 0..<fnCount {
+        if (calleeCallTotal(g) > 0 and confinedGood[g] == calleeCallTotal(g) and g != callerFn
+                and bitsTest(out, g) == false) {
+            confinedWork.push(g)
+        }
+    }
+    while (confinedWork.length > 0) {
+        let g = confinedWork.pop() ?? 0
+        if (bitsTest(out, g)) { continue }
+        bitsSet(out, g)
+        for j in callerEdgeStart(g)..<callerEdgeEnd(g) {
+            let c = edgeCallee[callerEdgeAt(j)]
+            confinedGood[c] = confinedGood[c] + 1
+            if (confinedGood[c] == calleeCallTotal(c) and c != callerFn and bitsTest(out, c) == false) {
+                confinedWork.push(c)
+            }
+        }
+    }
+}
+
+// The original: a pass over every call edge per function added. Kept as the fallback for a caller the index does not
+// cover. `out` arrives holding the extent.
+//
+// Tri-state per function: 0 no call site seen yet, 1 every call site so far is inside r, -1 entered from outside, final
+// and never promoted back.
+private fn regionConfinedScan(r: Int, callerFn: Int, out: Int) {
+    let mut ok: Vec<Int> = Vec<Int>.filled(fnCount + 1, 0)
+    let mut pass = 0
+    while (pass <= fnCount) {
+        for g in 0..<fnCount { ok[g] = 0 }
+        for i in 0..<edgeCount {
+            let callee = edgeCallee[i]
+            if (callee < 0 or callee >= fnCount) { continue }
+            if (ok[callee] < 0) { continue }
+            if (bitsTest(out, edgeCaller[i])) {
+                if (ok[callee] == 0) { ok[callee] = 1 }
+                continue
+            }
+            if (edgeCaller[i] == callerFn and scopeLca(edgeScope[i], r) == r) {
+                if (ok[callee] == 0) { ok[callee] = 1 }
+                continue
+            }
+            ok[callee] = -1      // entered from somewhere the region is not
+        }
+        let mut changed = false
+        for g in 0..<fnCount {
+            if (ok[g] != 1 or g == callerFn or bitsTest(out, g)) { continue }
+            bitsSet(out, g)
+            changed = true
+        }
+        if (changed == false) { break }
+        pass = pass + 1
+    }
+}
+
+private fn regionConfined(r: Int, callerFn: Int, extent: Int, out: Int) {
+    regionConfinedFast(r, callerFn, extent, out)
+}
+
+private fn bracketReject(s: Int, why: String, detail: Int) -> Bool {
+    if (bracketTrace) {
+        let mut owner = "?"
+        if (siteFn[s] >= 0) { owner = irNameText(fnName[siteFn[s]]) }
+        eprint("aif: site ".concat(s.toString(), " (", irNameText(siteType[s]), " ", owner, ":",
+                                    siteLine[s].toString(), ") not bounded: ", why, " ", detail.toString(), "\n"))
+    }
+    return false
+}
+
+// The same, where `fn` is a function id. Printed by name, because the id is an index into a table the reader does not
+// have and "bound in 38" costs a session the time it takes to count functions.
+private fn bracketRejectFn(s: Int, why: String, fnId: Int) -> Bool {
+    if (bracketTrace) {
+        let mut owner = "?"
+        if (siteFn[s] >= 0) { owner = irNameText(fnName[siteFn[s]]) }
+        let mut named = "?"
+        if (fnId >= 0 and fnId < fnCount) { named = irNameText(fnName[fnId]) }
+        eprint("aif: site ".concat(s.toString(), " (", irNameText(siteType[s]), " ", owner, ":",
+                                    siteLine[s].toString(), ") not bounded: ", why, " ", named, " (fnId ",
+                                    fnId.toString(), ")\n"))
+    }
+    return false
+}
+
+// Obligation 3, for one site of a bracketed extent.
+//
+// Every location that may hold this value has to die no later than `r`. Three kinds of location can, and everything
+// else fails: a binding, a parameter or a return in a function confined to the region (those frames are gone before the
+// region exits); a binding in the bracketing caller declared at or below `r`; and a field or element of an object the
+// extent itself allocated. A PARAM key is allowed and that is not a hole: the walk binds every parameter to a local of
+// the same name, so the same value reaches a VAR key of the same function and that is the one this decides on. A RET
+// key of the bracketing caller is `return f(...)` straight through the region, the case an E-based test cannot see.
+private fn bracketSiteBounded(s: Int, confined: Int, extent: Int, r: Int, callerFn: Int) -> Bool {
+    for ki in siteKeyFirst[s]..<siteKeyFirst[s + 1] {
+        let k = siteKeyList[ki]
+        let kind = keyKind[k]
+        if (kind == AIF_KEY_PARAM) { continue }          // decided at the callee's own VAR key
+        if (kind == AIF_KEY_FIELD) { continue }          // decided by the owner set below
+        if (kind == AIF_KEY_RET) {
+            if (keyA[k] == callerFn) { return bracketReject(s, "returned past the region", k) }
+            continue
+        }
+        if (kind != AIF_KEY_VAR) { return bracketReject(s, "extern key", k) }
+        let fnId = keyA[k]
+        if (fnId >= 0 and fnId < fnCount and bitsTest(confined, fnId)) { continue }
+        if (fnId != callerFn) { return bracketRejectFn(s, "bound in", fnId) }
+        let mut declared = -1
+        if (k < varScope.length) { declared = varScope[k] }
+        if (declared < 0) { return bracketReject(s, "undeclared binding", k) }
+        if (scopeLca(declared, r) != r) { return bracketReject(s, "binding above r, scope", declared) }
+    }
+    // The owner has to be in the *extent*, not merely confined to the region. An object a confined function allocated
+    // may still be returned out of the region (confinement bounds the activation, not the value), whereas every
+    // extent site is one this same loop is deciding, so requiring the owner to be one of those makes the answer
+    // inductive rather than assumed.
+    for wi in 0..<bitsWordCount(siteOwnerSites[s]) {
+        let mut x = bitsWord(siteOwnerSites[s], wi)
+        while (x != 0) {
+            let o = wi * BITS_WORD_BITS + x.trailingZeros()
+            x = x & (x - 1)
+            if (o >= siteCount) { break }
+            let of = siteFn[o]
+            if (of < 0 or of >= fnCount or bitsTest(extent, of) == false) {
+                return bracketReject(s, "owner site outside the extent", o)
+            }
+        }
+    }
+    // **The inverse, and it is a separate obligation rather than the same one read backwards.** Above asks that
+    // nothing outside the extent *owns* this value, which is about the value outliving the region. This asks that
+    // this value owns nothing from outside, which is about the *teardown*: serving a container from the arena deletes
+    // its teardown, and the teardown is what applies the element disposition. Rejecting the *container* rather than
+    // the element is deliberate: an extent is served whole or not at all.
+    for oi in siteOwnedFirst[s]..<siteOwnedFirst[s + 1] {
+        let o = siteOwnedList[oi]
+        let of = siteFn[o]
+        if (of < 0 or of >= fnCount or bitsTest(extent, of) == false) {
+            return bracketReject(s, "owns a site outside the extent", o)
+        }
+    }
+    return true
+}
+
+// A call this compilation cannot summarise may be handed one of the extent's values, and FFI 5.1's `borrow` default is
+// an assumption adequate for assigning a tier and **not** adequate for handing a callee arena memory. It is invisible to
+// every other check, so it is asked of the call graph over every function that can be running while the region is.
+// `AIF_BR_B_OPAQUE` already covers the extent; what this adds is the caller's own region body, and the confined
+// functions it reaches through calls other than the bracketed one.
+//
+// **M3.2c-ii narrows the second half from the block to a statement range**, which is what unblocks the benchmarked
+// `g2.psm`: its frame loop holds two `clock_gettime_nsec_np` calls, one on either side of the two calls that allocate.
+// Nothing is relaxed: an opaque call *inside* the extent still rejects, and so does one this pass cannot position.
+private fn bracketOpaqueOk(r: Int, callerFn: Int, confined: Int) -> Bool {
+    let mut narrowed = false
+    let mut asked = false
+    let mut lo = 0
+    let mut hi = 0
+
+    for j in 0..<edgeCount {
+        if (edgeCallee[j] >= 0) { continue }
+        // A confined function runs entirely inside the region however narrow the extent is: there is no statement of
+        // `r` to compare it against.
+        if (bitsTest(confined, edgeCaller[j])) { return false }
+        if (edgeCaller[j] != callerFn) { continue }
+        if (scopeLca(edgeScope[j], r) != r) { continue }
+
+        // Only now, and once. Deriving the extent costs a pass over the call graph per candidate scope; every region
+        // body with no opaque call in it, which is nearly all of them, pays nothing for a narrowing it does not need.
+        if (asked == false) {
+            asked = true
+            narrowed = candStmtRange(r)
+            lo = candLo
+            hi = candHi
+        }
+        if (narrowed == false) { return false }
+        // `stmt` indexes the block the call sits in, and a nested block numbers its own from 0, so a call one level
+        // down has no position in `r`'s numbering to compare, and is refused rather than guessed at.
+        if (edgeScope[j] != r or edgeStmt[j] < 0) { return false }
+        if (edgeStmt[j] >= lo and edgeStmt[j] <= hi) { return false }
+    }
+    return true
+}
+
+// The obligations SPEC 5.2.1.1 puts on one bracketed call, asked of an arbitrary region scope `r` instead of the one
+// `enclosingRegion` happens to return. **It reads no arena flag**, which is the property all of M3.1 rests on:
+// `aif_place_arenas` can ask it about a scope it has not chosen yet, so the circularity between placement and bracketing
+// is cut by making the dependency one-way. `ask_opaque` is false for exactly one caller, `candRangeCompute`, which
+// derives the extent the opaque clause compares against: asking it there would make the obligation depend on the range
+// that depends on the obligation.
+internal fn bracketEdgeOkAt(r: Int, callerFn: Int, e: Int, extent: Int, confined: Int, askOpaque: Bool) -> Bool {
+    bracketsOpen()
+    if (fnBracketHardBlockers(edgeCallee[e]) != 0) { return false }
+
+    bracketReachable(edgeCallee[e], extent)
+    regionConfined(r, callerFn, extent, confined)
+
+    if (askOpaque and bracketOpaqueOk(r, callerFn, confined) == false) { return false }
+
+    // The extent's sites in site order, which is the order the scan over every site visited them in.
+    bracketIndexBuild()
+    let mut n = 0
+    let mut sorted = true
+    for wi in 0..<bitsWordCount(extent) {
+        let mut x = bitsWord(extent, wi)
+        while (x != 0) {
+            let f = wi * BITS_WORD_BITS + x.trailingZeros()
+            x = x & (x - 1)
+            if (f >= fnCount) { break }
+            for i in fnSiteFirst[f]..<fnSiteFirst[f + 1] {
+                let s = fnSiteList[i]
+                if (n > 0 and extentSiteBuffer[n - 1] > s) { sorted = false }
+                extentSiteBuffer[n] = s
+                n = n + 1
+            }
+        }
+    }
+    if (sorted == false) { sortPrefix(extentSiteBuffer, n) }
+    for i in 0..<n {
+        if (bracketSiteBounded(extentSiteBuffer[i], confined, extent, r, callerFn) == false) { return false }
+    }
+    return true
+}
+
+// Sorts the first `n` entries of `values` ascending. The entries are distinct site ids, so stability is moot.
+private fn sortPrefix(inout values: Vec<Int>, n: Int) {
+    let mut width = 1
+    let mut scratch: Vec<Int> = Vec<Int>.filled(n, 0)
+    while (width < n) {
+        let mut start = 0
+        while (start < n) {
+            let mid = minInt(start + width, n)
+            let end = minInt(start + 2 * width, n)
+            let mut i = start
+            let mut j = mid
+            let mut k = start
+            while (i < mid and j < end) {
+                if (values[j] < values[i]) {
+                    scratch[k] = values[j]
+                    j = j + 1
+                } else {
+                    scratch[k] = values[i]
+                    i = i + 1
+                }
+                k = k + 1
+            }
+            while (i < mid) {
+                scratch[k] = values[i]
+                i = i + 1
+                k = k + 1
+            }
+            while (j < end) {
+                scratch[k] = values[j]
+                j = j + 1
+                k = k + 1
+            }
+            start = end
+        }
+        for t in 0..<n { values[t] = scratch[t] }
+        width = width * 2
+    }
+}
+
+private fn minInt(a: Int, b: Int) -> Int {
+    if (a < b) { return a }
+    return b
+}
+
+internal fn bracketEdgeOk(r: Int, callerFn: Int, e: Int, extent: Int, confined: Int) -> Bool {
+    return bracketEdgeOkAt(r, callerFn, e, extent, confined, true)
+}
+
+// Regime (a), asked of a region instead of of the program.
+//
+// A callee with more than one call site serves one placement regime exactly when **every one of those calls runs with
+// `r`'s arena innermost**, because then the body is only ever entered in one state. Three things have to hold at each
+// of them, and each is a use-after-free or a leak if dropped: the call is in `r`'s own function and lexically inside
+// `r`; no arena sits between the call and `r`, so `r` really is the innermost; and the call is inside the *emitted*
+// statement range, because M3.2d made "inside the region" a range rather than a block.
+//
+// **It reads `scopeArena`, which is why it is a filter the callers of `bracketEdgeOk` apply rather than a clause
+// inside it.** The obligations stay one-way, as M3.1 left them.
+internal fn bracketRegimeOk(r: Int, callerFn: Int, callee: Int) -> Bool {
+    let narrowed = candStmtRange(r)
+    let lo = candLo
+    let hi = candHi
+
+    // The calls into `callee`, from the callee-indexed list; any order gives the same answer, since it is "no
+    // violation, and at least one call".
+    callerEdgesBuild()
+    let mut seen = 0
+    let mut first = 0
+    let mut count = edgeCount
+    let indexed = callee >= 0 and callee < fnCount
+    if (indexed) {
+        first = calleeEdgeStart(callee)
+        count = calleeEdgeEnd(callee) - first
+    }
+    for ei in 0..<count {
+        let mut i = ei
+        if (indexed) { i = calleeEdgeAt(first + ei) }
+        if (edgeCallee[i] != callee) { continue }
+        seen = seen + 1
+        if (edgeCaller[i] != callerFn) { return false }
+        if (scopeLca(edgeScope[i], r) != r) { return false }
+        let mut p = edgeScope[i]
+        while (p >= 0 and p != r) {
+            if (scopeArena[p] != 0) { return false }      // a nearer arena takes this one
+            p = scopeParent[p]
+        }
+        if (narrowed) {
+            if (edgeScope[i] != r or edgeStmt[i] < 0) { return false }
+            if (edgeStmt[i] < lo or edgeStmt[i] > hi) { return false }
+        }
+    }
+    return seen > 0
+}
+
+internal fn bracketInvalidate() {
+    bracketsOpen()
+    siteBracket = []
+    bracketCount = 0
+    bracketPlaceReady = false
+    intsClear(brCallee)
+    intsClear(brScope)
+    intsClear(brCallScope)
+    intsClear(brCallStmt)
+}
+
+private fn siteIsLoopStruct(site: Int, callerScope: Int) -> Bool {
+    if (siteKind[site] != AIF_KIND_STRUCT) { return false }
+    if (fitsOnStack(site) == false) { return false }
+    if (siteInContainer[site] != 0) { return false }
+
+    if (callerScope >= 0 and scopeLoopDepth[callerScope] > 0) { return true }
+    if (scopeLoopDepth[siteScope[site]] > 0) { return true }
+    let f = siteFn[site]
+    for j in 0..<edgeCount {
+        if (edgeCallee[j] == f and scopeLoopDepth[edgeScope[j]] > 0) { return true }
+    }
+    return false
+}
+
+// A site allocated inside a loop of its own function whose value does not outlive an iteration of it: its escape scope is
+// inside a loop too. Its own tier releases it at the end of that iteration. An automatic bracket moves it into the
+// caller's region instead, which lasts the whole call, so every iteration's block stays until the call returns: memory
+// in proportion to the trip count, and each new block a fresh page. Declining is the placement the site had before
+// bracketing existed, so it is sound whatever else is true. A `region` the programmer wrote is not second-guessed.
+private fn siteDiesPerIteration(site: Int) -> Bool {
+    if (siteScope[site] < 0 or siteScope[site] >= scopeCount) { return false }
+    if (scopeLoopDepth[siteScope[site]] == 0) { return false }
+    if (siteE[site] < 0 or siteE[site] >= scopeCount) { return false }     // Caller or Global
+    return scopeLoopDepth[siteE[site]] > 0
+}
+
+private fn bracketPlace() {
+    bracketsOpen()
+    if (bracketPlaceReady) { return }
+    bracketPlaceReady = true
+    if (siteCount == 0) { return }
+
+    bracketPrepare()
+    siteOwnersBuild()
+
+    siteBracket = Vec<Int>.filled(siteCount, -1)
+
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] < 0 or edgeCallee[i] >= fnCount) { continue }
+        // Placement has run by now, so an arena the cost model chose is as good a region to bracket into as a written
+        // one. Before placement the only safe answer is still the pinned one: the auto table is empty, and a "no
+        // bracket" cached from it would outlive the placement that would have justified one.
+        let mut r = enclosingPinnedRegion(edgeScope[i])
+        if (arenasPlaced) { r = enclosingRegion(edgeScope[i]) }
+        if (r < 0) { continue }
+
+        // The bracketing caller. It is the region's owner and not necessarily the call's function in name only: the
+        // call's scope is a scope of its function and `enclosingRegion` walked its own parents.
+        let callerFn = scopeOwner[r]
+
+        // Regime (a), and it has to be asked here rather than inside the obligations because it reads which scopes
+        // got arenas.
+        if (bracketRegimeOk(r, callerFn, edgeCallee[i]) == false) { continue }
+
+        if (bracketEdgeOk(r, callerFn, i, placeExtent, placeConfined) == false) { continue }
+
+        brCallee.push(edgeCallee[i])
+        brScope.push(r)
+        brCallScope.push(edgeScope[i])
+        brCallStmt.push(edgeStmt[i])
+        bracketCount = bracketCount + 1
+
+        for s in 0..<siteCount {
+            let f = siteFn[s]
+            if (f < 0 or f >= fnCount or bitsTest(placeExtent, f) == false) { continue }
+            if (scopeRegionName[r] < 0 and (siteIsLoopStruct(s, edgeScope[i]) or siteDiesPerIteration(s))) { continue }
+            // If an inner arena (inside a callee in the extent) already claimed this site, that inner arena is
+            // tighter and takes precedence.
+            if (siteBracket[s] >= 0 and siteBracket[s] != r) {
+                let existingOwner = scopeOwner[siteBracket[s]]
+                if (existingOwner != callerFn and existingOwner >= 0 and existingOwner < fnCount
+                        and bitsTest(placeExtent, existingOwner)) {
+                    // Inner arena in a callee already claimed it; preserve it.
+                    continue
+                }
+                siteBracket[s] = -1
+                continue
+            }
+            siteBracket[s] = r
+        }
+    }
+}
+
+// Runs the placement pass if it has not run since the last invalidation.
+internal fn bracketPlaceNow() {
+    bracketPlace()
+}
+
+// SPEC 5.2.1.1. The region a bracketed call hands this site, or -1.
+internal fn siteBracketRegion(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return -1 }
+    bracketPlace()
+    if (siteBracket.length == 0) { return -1 }
+    return siteBracket[id]
+}
+
+public fn aif_bracket_count() -> Int {
+    bracketPlace()
+    return bracketCount
+}
+
+public fn aif_bracket_callee(i: Int) -> Int {
+    bracketPlace()
+    if (i < 0 or i >= bracketCount) { return -1 }
+    return brCallee[i]
+}
+
+public fn aif_bracket_scope(i: Int) -> Int {
+    bracketPlace()
+    if (i < 0 or i >= bracketCount) { return -1 }
+    return brScope[i]
+}
+
+internal fn bracketCallee(i: Int) -> Int {
+    return brCallee[i]
+}
+
+internal fn bracketScope(i: Int) -> Int {
+    return brScope[i]
+}
+
+internal fn bracketCallScope(i: Int) -> Int {
+    return brCallScope[i]
+}
+
+// How many sites this bracket actually places. A bracket that reaches nothing is still recorded: it is a real placement
+// decision and a later edit can make it serve something, but the manifest has to be able to say so, for the same reason
+// `region` warns when it serves nothing. Per *extent*, not per scope: two brackets into one region is the ordinary case,
+// and counting by scope would report each of them as serving the other's sites.
+public fn aif_bracket_served(i: Int) -> Int {
+    bracketPlace()
+    if (i < 0 or i >= bracketCount) { return 0 }
+    bracketReachable(brCallee[i], placeExtent)
+    let mut n = 0
+    for s in 0..<siteCount {
+        let f = siteFn[s]
+        if (f < 0 or f >= fnCount or bitsTest(placeExtent, f) == false) { continue }
+        if (siteArenaScope(s) >= 0) { n = n + 1 }
+    }
+    return n
+}
+
+// 1 when this site is served by a bracketed call rather than by a `region` in its own function. `--why` needs the two
+// apart: the second is what the programmer wrote and the first is what the compiler decided on their behalf.
+public fn aif_site_is_bracketed(id: Int) -> Int {
+    if (siteBracketRegion(id) >= 0 and siteArenaScope(id) >= 0) { return 1 }
+    return 0
+}
+
+public fn aif_fn_calls_in_region(f: Int) -> Int {
+    // Of this function's call sites, how many sit inside a region. A function can clear every obligation and still
+    // never be placed, because nobody calls it from a region.
+    let mut n = 0
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] != f) { continue }
+        if (enclosingRegion(edgeScope[i]) >= 0) { n = n + 1 }
+    }
+    return n
+}
+
+// How many call expressions sit lexically inside a `region` (or inside a scope the cost model gave an arena): the
+// population call-site placement can draw from.
+public fn aif_region_call_sites() -> Int {
+    let mut n = 0
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] < 0) { continue }           // an opaque call is never bracketed
+        if (enclosingRegion(edgeScope[i]) >= 0) { n = n + 1 }
+    }
+    return n
+}
+
+// Of those, the ones whose callee clears every obligation: the number a placement would act on.
+public fn aif_bracketable_region_call_sites() -> Int {
+    let mut n = 0
+    for i in 0..<edgeCount {
+        if (edgeCallee[i] < 0) { continue }
+        let r = enclosingRegion(edgeScope[i])
+        if (r < 0) { continue }
+        // Both halves of regime (a), each asked where it can be answered: the hard obligations of the function, and
+        // the call-site half of the region this call actually sits in.
+        if (fnBracketHardBlockers(edgeCallee[i]) != 0) { continue }
+        if (bracketRegimeOk(r, scopeOwner[r], edgeCallee[i]) == false) { continue }
+        n = n + 1
+    }
+    return n
+}
+
+// What a bracketed call adds to its region's footprint (REQUIREMENTS 19). `arenaWouldServe` deliberately does not count
+// these, because it is the input to placement. But the high-water estimate and the `pin(N)` gate run *after* placement,
+// and the question they ask is how much the arena will hold: leaving the bracketed sites out is a budget gate passing on
+// memory the binary really does bump-allocate.
+//
+// The weight is a product of two estimates: how many times the site runs per entry of its own function is its loop depth
+// there, and how many times the call runs per entry of the region is the call site's loop depth relative to `r`.
+// `weightOf` cannot be used for the first half: loop depth is counted *within* a function.
+private fn weightInOwnFn(siteScopeId: Int) -> I64 {
+    if (siteScopeId < 0 or siteScopeId >= scopeCount) { return 1 }
+    let mut loops = scopeLoopDepth[siteScopeId]
+    if (loops > 6) { loops = 6 }             // capped as `weightOf` caps it
+    let mut w: I64 = 1
+    for i in 0..<loops { w = w * (AIF_LOOP_ITERS as I64) }
+    return w
+}
+
+// `unsized` counts sites whose size the frontend never computed (a string or a list) rather than guessing at one.
+internal fn bracketBytesOf(scope: Int, countUnsized: Bool) -> I64 {
+    bracketPlace()
+    let mut total: I64 = 0
+    for i in 0..<bracketCount {
+        if (brScope[i] != scope) { continue }
+        let callw = weightOf(brCallScope[i], scope)
+        bracketReachable(brCallee[i], placeExtent)
+        for k in 0..<siteCount {
+            let f = siteFn[k]
+            if (f < 0 or f >= fnCount or bitsTest(placeExtent, f) == false) { continue }
+            if (siteArenaScope(k) != scope) { continue }
+            if (siteBytes[k] == 0) {
+                if (countUnsized) { unsizedCount = unsizedCount + 1 }
+                continue
+            }
+            total = total + (siteBytes[k] as I64) * weightInOwnFn(siteScope[k]) * callw
+        }
+    }
+    return total
+}
+
+internal fn bracketUnsizedReset() {
+    unsizedCount = 0
+}
+
+internal fn bracketUnsizedCount() -> Int {
+    return unsizedCount
+}
+
+internal fn bracketServedReset() {
+    candidateHeld = 0
+    candidateLive = 0
+}
+
+internal fn bracketServedHeld() -> I64 {
+    return candidateHeld
+}
+
+internal fn bracketServedLive() -> I64 {
+    return candidateLive
+}
+
+// SPEC 5.2.1.1 as an input to LAYOUT 7.1's cost model: what a bracketed call sitting in `cand` would serve, had `cand`
+// an arena.
+//
+// The cross-function mirror of `arenaWouldServe`, and it has to be a separate function rather than a clause in that one:
+// `isAncestorOrSelf(cand, site scope)` fails for a site in a callee however its escape is spelled, because scopes form a
+// lexical tree rooted per function. Only the call graph can cross that, which is what the bracket obligations are asked of.
+//
+// **The per-site gate here is the bracketed one, not the lexical one**: tier in {T1,T2} and not explicitly dropped,
+// exactly the two clauses `siteArenaScopeFull` applies once it has a bracket region. Applying the lexical list instead
+// would count in_container and is_list against these sites, and those are precisely the clauses bracketing replaces.
+// Keeping this in step with that gate is the whole correctness argument.
+internal fn bracketCandidateServes(cand: Int) -> I64 {
+    if (cand < 0 or cand >= scopeCount or siteCount == 0) { return 0 }
+    let callerFn = scopeOwner[cand]
+    if (callerFn < 0 or callerFn >= fnCount) { return 0 }
+
+    bracketPrepare()
+    siteOwnersBuild()
+
+    // The function's own calls, from the caller-indexed list; the totals below are sums, so the order they are taken in
+    // does not matter.
+    bracketIndexBuild()
+    callerEdgesBuild()
+    let mut served: I64 = 0
+    for ei in callerEdgeStart(callerFn)..<callerEdgeEnd(callerFn) {
+        let e = callerEdgeAt(ei)
+        // The call has to sit in this scope and belong to the function that owns it, asked directly because `cand` has
+        // no arena flag set yet for `enclosingRegion` to find.
+        if (scopeLca(edgeScope[e], cand) != cand) { continue }
+        // Innermost-first, as the lexical loop: an arena already placed between the call and `cand` brackets it first,
+        // and counting its traffic here too would justify `cand` with allocations it will never see.
+        let mut claimed = false
+        let mut p = edgeScope[e]
+        while (p >= 0 and p != cand) {
+            if (scopeArena[p] != 0) {
+                claimed = true
+                break
+            }
+            p = scopeParent[p]
+        }
+        if (claimed) { continue }
+        // The same regime question `bracketPlace` will ask, so the cost model does not justify an arena with traffic
+        // that will then be refused. The two passes must agree or a scope gets an arena nothing brackets into.
+        if (bracketRegimeOk(cand, callerFn, edgeCallee[e]) == false) { continue }
+        if (bracketEdgeOk(cand, callerFn, e, candExtent, candConfined) == false) { continue }
+
+        let callw = weightOf(edgeScope[e], cand)
+        for wi in 0..<bitsWordCount(candExtent) {
+            let mut x = bitsWord(candExtent, wi)
+            while (x != 0) {
+                let f = wi * BITS_WORD_BITS + x.trailingZeros()
+                x = x & (x - 1)
+                if (f >= fnCount) { break }
+                for si in fnSiteFirst[f]..<fnSiteFirst[f + 1] {
+                    let k = fnSiteList[si]
+                    let tier = aif_tier_of(k)
+                    if (tier != AIF_T1 and tier != AIF_T2) { continue }
+                    // The gate's clauses, so no arena is placed for traffic it refuses.
+                    if (siteNoStack[k] != 0 or siteForeign[k] != 0) { continue }
+                    if (siteIsLoopStruct(k, edgeScope[e])) { continue }
+                    let w = weightInOwnFn(siteScope[k]) * callw
+                    served = served + w
+                    candidateHeld = candidateHeld + (siteBytes[k] as I64) * w
+                    candidateLive = candidateLive + (siteBytes[k] as I64)
+                }
+            }
+        }
+    }
+    return served
+}

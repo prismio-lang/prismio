@@ -7,6 +7,7 @@
 
 import std.io
 import common.diagnostics
+import common.terminal
 import std.string
 import std.option
 import std.process
@@ -22,7 +23,7 @@ import project.host
 import project.commands
 import std.fs
 
-public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(free)
+public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(rt_free)
 public extern fn compiler_is_current_executable(path: String borrow) -> Int
 public extern fn compiler_is_hosted() -> Int
 // A target's linker and native-compile inputs, recorded one at a time and

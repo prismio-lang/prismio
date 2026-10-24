@@ -1,0 +1,251 @@
+// The questions codegen asks about one node: may this binding's value be freed when its scope exits, may an assignment
+// release what it displaces, what must a container do with its elements, and is a type counted.
+//
+// All of them are asked by AST node, because the AIF pass and codegen walk the same in-memory tree in the same process, so the
+// address the parser allocated is a name for the expression that costs nothing to carry and cannot collide.
+
+import aif.model
+import aifcore.arenas
+import aifcore.bits
+import aifcore.constants
+import aifcore.constraints
+import aifcore.dispositions
+import aifcore.keys
+import aifcore.nominals
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import aifcore.tiers
+import ir.context
+import std.raw
+import std.string
+import symbols.names
+
+private let mut literalHolders = -1
+private let mut ownershipOpened = false
+
+internal fn ownershipOpen() {
+    if (ownershipOpened) { return }
+    ownershipOpened = true
+    literalHolders = bitsNew()
+}
+
+internal fn ownershipReset() {
+    ownershipOpened = false
+    ownershipOpen()
+}
+
+// Level 2's question: may the value this node allocates be freed when the scope that allocated it exits?
+//
+// Two things have to hold, and the analysis supplies only one of them. The escape must bottom at that scope, the same test the
+// T0 clause opens with: the tier alone does not answer it, because T1 says "some region", which may be an enclosing scope if the
+// value was also bound further out, and freeing at the inner exit would then be a use-after-free rather than a leak. The
+// *language* must also guarantee a single owner, which is what `siteIsMoveOnly` reports.
+public fn aif_frees_at_scope_node(node: Ptr) -> Int {
+    if (addressOf(node) == 0) { return 0 }
+    // An arena releases in bulk when its region exits. Freeing one of its objects individually would hand a pointer into the
+    // middle of a chunk to the deallocator, so a value the arena serves is never on a drop list.
+    if (aif_arena_at_node(node) != 0) { return 0 }
+    let site = siteAtNode(node)
+    if (site < 0) { return 0 }
+    if (siteE[site] != siteScope[site]) { return 0 }
+    if (siteIsMoveOnly(site) == false) { return 0 }
+    // An array literal lowers to ir_array_alloca: frame storage, like T0 below, so there is nothing here for a deallocator to
+    // take. This is the one place the language and `siteIsMoveOnly` disagree: affine collections make arrays move-only in the
+    // model, and types.psm deliberately does not, because an affine value with no allocation behind it buys the aliasing rule
+    // and costs a `drop(arr)` that frees a stack pointer.
+    if (siteKind[site] == AIF_KIND_ARRAY) { return 0 }
+    // An explicit `drop` already frees it; a scope drop as well is a double free. Site-level is right here: this clause is
+    // reached only for a value whose E is its own scope, i.e. one allocated in this very function, so the site and the binding
+    // are the same thing.
+    if (siteNoStack[site] != 0) { return 0 }
+    // A container took ownership, so the container's teardown is the release point and this binding is not.
+    if (siteInContainer[site] != 0) { return 0 }
+    // The same rule one level out: a struct field the type now releases is this value's release point, so its binding is not.
+    if (siteInReleasedField(site)) { return 0 }
+    if (aif_tier_of(site) == AIF_T0) { return 0 }       // T0 storage is the frame
+    return 1
+}
+
+// The scope-exit drop for a binding some path returns with `return name`. `aif_frees_at_scope_node` declines once E leaves the
+// scope, and a return lifts E to Caller: correct on the path that returns the value, and a leak on every path that does not. So
+// this asks E_held instead: E by every rule but the direct E-RETURN of a bare `return name`. Confined by that measure, the
+// value's only way out is a return of the binding, and codegen skips the drop at exactly those returns. `retKey` must name
+// `name`'s own binding: `let t = out; return t` returns out's value through `t`, and the drop of `out` at that return would free
+// what the caller receives. Keys are per function and name, so two bindings of one name share one; the frontend declines a name
+// bound more than once.
+public fn aif_frees_unless_returned_node(node: Ptr, name: String) -> Int {
+    if (addressOf(node) == 0) { return 0 }
+    if (aif_arena_at_node(node) != 0) { return 0 }
+    let site = siteAtNode(node)
+    if (site < 0) { return 0 }
+    if (siteEHeld[site] != siteScope[site]) { return 0 }
+    // Two bindings' returns (-2) have no one name to keep the value for. None (-1) is the pass-through: E was lifted only by a
+    // return in *another* function, which hands the value back to this frame and its constraints. Without this a struct handed
+    // to any function that returns one of its parameters was never released.
+    if (siteRetKey[site] == -2) { return 0 }
+    if (siteRetKey[site] >= 0 and siteRetKey[site] != keyFind(AIF_KEY_VAR, siteFn[site], irNameId(name))) { return 0 }
+    if (siteIsMoveOnly(site) == false) { return 0 }
+    if (siteKind[site] == AIF_KIND_ARRAY) { return 0 }
+    if (siteNoStack[site] != 0) { return 0 }
+    if (siteInContainer[site] != 0) { return 0 }
+    if (siteInReleasedField(site)) { return 0 }
+    if (aif_tier_of(site) == AIF_T0) { return 0 }
+    return 1
+}
+
+// AIF Level 4, the reassignment half: may an assignment release what it displaces? Every clause of
+// `aif_frees_at_scope_node` applies unchanged except the one that asks whether the value is confined to the scope that allocated
+// it. An accumulator is not: `let mut out = ""` binds in the caller's scope and allocates in a loop body. Relaxing that clause is
+// sound because the question is different: this asks whether *this* value is still reachable once the slot stops naming it, and a
+// return does not make it reachable. What would is another owner, and the surviving clauses are exactly the model's answers to
+// that. Only AIF_E_GLOBAL has to be added back. This is what 3599 of g7's 5021 allocations were waiting on.
+public fn aif_releases_on_overwrite_node(node: Ptr) -> Int {
+    if (addressOf(node) == 0) { return 0 }
+    if (aif_arena_at_node(node) != 0) { return 0 }
+    let site = siteAtNode(node)
+    if (site < 0) { return 0 }
+    if (siteE[site] == AIF_E_GLOBAL) { return 0 }
+    if (siteIsMoveOnly(site) == false) { return 0 }
+    if (siteKind[site] == AIF_KIND_ARRAY) { return 0 }
+    if (siteNoStack[site] != 0) { return 0 }
+    if (siteInContainer[site] != 0) { return 0 }
+    if (siteInReleasedField(site)) { return 0 }
+    if (aif_tier_of(site) == AIF_T0) { return 0 }
+    return 1
+}
+
+public fn aif_site_is_cyclic(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    if (siteIsCyclic(id, aif_tier_of(id))) { return 1 }
+    return 0
+}
+
+public fn aif_cycle_at_node(node: Ptr) -> Int {
+    let site = siteAtNode(node)
+    if (site < 0) { return 0 }
+    if (siteIsCyclic(site, aif_tier_of(site))) { return 1 }
+    return 0
+}
+
+// M2.1b. Whether a consuming parameter can supply an in-place reuse token. This is an agreement query over the converged parameter
+// points-to set, not a new inference rule. `sink` proves that the caller gives up its owner; A says whether another owner can still
+// observe mutation of that block. Borrowed is admitted because A-CALL borrows last only for the duration of the call that records
+// them. The storage must also be T2: returning a reused T0 stack slot or T1 arena address would preserve the bytes but not the
+// allocation disposition. T-Cross and foreign values are excluded explicitly. The query uses `keyFind` rather than interning after
+// the solve, for the same bounds reason as `fieldReleaseOf`.
+public fn aif_param_reusable(symbol: String, index: Int) -> Int {
+    let fnId = aif_fn_lookup(symbol)
+    if (fnId < 0 or index < 0) { return 0 }
+    let key = keyFind(AIF_KEY_PARAM, fnId, index)
+    if (key < 0 or key >= ptLen or bitsIsEmpty(pt[key])) { return 0 }
+    if (bitsTest(paramConsuming, key) == false) { return 0 }
+
+    for s in 0..<siteCount {
+        if (bitsTest(pt[key], s) == false) { continue }
+        if (siteIsMoveOnly(s) == false) { return 0 }
+        if (aif_tier_of(s) != AIF_T2) { return 0 }
+        if (siteA[s] > AIF_A_BORROWED) { return 0 }
+        if (siteT[s] > AIF_T_TRANSFERRED) { return 0 }
+        if (siteForeign[s] != 0 or siteInContainer[s] != 0) { return 0 }
+    }
+    return 1
+}
+
+// What the container allocated at this node should do with its elements.
+public fn aif_elem_owner_at_node(node: Ptr) -> Int {
+    if (addressOf(node) == 0) { return AIF_ELEM_NONE }
+    let container = siteAtNode(node)
+    if (container < 0) { return AIF_ELEM_NONE }
+    if (containerMayHoldUntracked(container)) { return AIF_ELEM_NONE }
+
+    let mut agreed = AIF_ELEM_NONE
+    for s in 0..<siteCount {
+        if (bitsTest(containerOf[s], container) == false) { continue }
+        let d = elemDispositionOf(s, aif_tier_of(s))
+        if (d == AIF_ELEM_NONE) { return AIF_ELEM_NONE }
+        if (agreed == AIF_ELEM_NONE) {
+            agreed = d
+        } else if (agreed != d) {
+            return AIF_ELEM_NONE
+        }
+    }
+    return agreed
+}
+
+// Whether the only elements that reach this container are literals written at a push, which codegen copies in
+// (`generateOwnedStringLiteral`), so every one is an owned block the container should release. `aif_elem_owner_at_node` cannot say
+// so: it decides from the sites that reach the container, and a literal copy is not a site. Answers the site half only: a literal
+// copy is a String, and only codegen knows the element type, so it asks this for a `Vec<String>` and nothing else.
+public fn aif_elem_literal_copies_only(node: Ptr) -> Int {
+    ownershipOpen()
+    if (addressOf(node) == 0) { return 0 }
+    let container = siteAtNode(node)
+    if (container < 0) { return 0 }
+    if (containerMayHoldUntracked(container)) { return 0 }
+    for s in 0..<siteCount {
+        if (bitsTest(containerOf[s], container)) { return 0 }
+    }
+    let mut literal = false
+    let mut ci = 0
+    while (ci < conCount and literal == false) {
+        if (conKind[ci] == AIF_CON_RETAIN_IN and conA[ci] >= 0 and conA[ci] < vsCount) {
+            let vs = conA[ci]
+            if (vsUntracked[vs] != 0 and vsItems[vs].length == 0) {
+                vsResolve(conB[ci], literalHolders)
+                if (bitsTest(literalHolders, container)) { literal = true }
+                bitsClear(literalHolders)
+            }
+        }
+        ci = ci + 1
+    }
+    if (literal) { return 1 }
+    return 0
+}
+
+// The element type of a container whose elements are released by type. Read from the sites rather than from the container's spelled
+// type, for the same reason the element key is object-insensitive: `list_new()` types as `List<Invalid>`, so the annotation is not
+// always there to read. "" when they disagree, which `aif_elem_owner_at_node` has already turned into NONE.
+public fn aif_elem_type_at_node(node: Ptr) -> String {
+    if (addressOf(node) == 0) { return "" }
+    let container = siteAtNode(node)
+    if (container < 0) { return "" }
+
+    let mut agreed = -1
+    for s in 0..<siteCount {
+        if (bitsTest(containerOf[s], container) == false) { continue }
+        if (agreed < 0) {
+            agreed = siteType[s]
+        } else if (agreed != siteType[s]) {
+            return ""
+        }
+    }
+    if (agreed < 0) { return "" }
+    return irNameText(agreed)
+}
+
+// M4.2. Whether any site of this type carries a reference count or is collected. **A type question, not a site question, and it has
+// to be.** Inline element storage is decided per element *type* at every call site: the stamp, the push, the get and the set all
+// read `ir_struct_is_flat` and have to reach the same answer. A counted value keeps its count in a header in front of the object, and
+// an inline body has no header and no identity of its own. Unknown answers 1, refuse inline, because boxing is always correct and
+// inlining a counted type is not.
+public fn aif_type_is_counted(type: String) -> Int {
+    if (type.length == 0) { return 1 }
+    let id = irNameId(type)
+    for s in 0..<siteCount {
+        if (siteType[s] != id) { continue }
+        let tier = aif_tier_of(s)
+        if (tier == AIF_T4A) { return 1 }
+        if (siteIsRc(s, tier)) { return 1 }
+        if (siteIsCyclic(s, tier)) { return 1 }
+    }
+    return 0
+}
+
+// The manifest's half of `aif_rc_at_node`. SPEC 6.2's placement column has to say what was *built*, and "rc" for a T3 site nothing
+// counts would be the manifest asserting a mechanism the binary does not contain.
+public fn aif_site_is_rc(id: Int) -> Int {
+    if (id < 0 or id >= siteCount) { return 0 }
+    if (siteIsRc(id, aif_tier_of(id))) { return 1 }
+    return 0
+}

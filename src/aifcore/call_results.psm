@@ -1,0 +1,845 @@
+// Ownership transfer across a call: who owns what a call returns, whether a call keeps an argument it is handed, and the
+// value-flow graph those answers are read from.
+//
+// `let cmds = cull(scene, ...)` allocates in the callee and reclaims in the caller, and the escape lattice cannot say so: E is per
+// site, a site belongs to one function, and Region(s) can only name a scope in that function. So a returned value is Caller and
+// stays Caller no matter how briefly the caller keeps it. INFERENCE 6's ownership contexts are the specified fix and a project, not a
+// clause. What is available without it is asked of the converged points-to facts and of the constraints themselves, key by key.
+
+import aif.model
+import aifcore.arenas
+import aifcore.bits
+import aifcore.constants
+import aifcore.constraints
+import aifcore.dispositions
+import aifcore.keys
+import aifcore.nominals
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import aifcore.tiers
+import ir.context
+import std.map
+import std.option
+import std.raw
+import std.string
+import std.vec
+import symbols.names
+
+// One call node's own result: its value set and the function it calls. The walk gives every call a fresh value set, so the
+// constraints that consume that set are this node's consumers and nobody else's.
+private let mut callNodes: Map<Usize, Int>
+private let mut callVs: Vec<Int>
+private let mut callFn: Vec<Int>
+
+// Whether a call keeps the argument it is handed at `index`, by call node. Codegen needs it for a binding whose *view* is passed on:
+// `keep.push(optionOr(o, d))` stores the String inside `o`, so the scope drop of `o` and the container's teardown both free it. The
+// points-to flow cannot see that, so codegen asks it of the syntax and needs to know which arguments are kept: a contract for an
+// extern, and the flow graph's answer for a function this compilation can see.
+private let mut argNodes: Map<Usize, Int>
+// The callee, or -1 for one only a contract describes.
+private let mut argFn: Vec<Int>
+// Contract-retained argument indices, one bit each; bit 31 is "31 or later".
+private let mut argRetained: Vec<U32>
+// Arguments an extern's result may be, or be a view into.
+private let mut argAliased: Vec<U32>
+// The element argument of a String push, or -1, and its value set.
+private let mut argCopyIndex: Vec<Int>
+private let mut argCopyVs: Vec<Int>
+
+// FFI 5.2's `alias` question, asked of a *Prismio* function: is every value this one may return an allocation it made itself? It is only
+// a question for a type with a **literal form**: a `String` breaks the completeness argument, since `return "0"` hands back static storage,
+// contributes no site, and is *invisible* in the returned value set. So the fact is derived from the returns themselves, and one return
+// this pass cannot account for makes the function partial and its result unowned: a leak rather than a free of something the caller never owned.
+private let mut retPartial: Vec<Int>
+private let mut retPartialReady = false
+private let mut retScratch = -1
+private let mut querySet = -1
+
+// The PARAM keys of each function, ascending.
+private let mut paramKeyFirst: Vec<Int>
+private let mut paramKeyList: Vec<Int>
+private let mut paramKeysBuiltKeys = -1
+private let mut paramKeysBuiltFns = -1
+
+private let mut fnHoldsView: Vec<Int>
+private let mut fnHoldsViewReady = false
+// Field keys by owner type: the head of each type's chain, and the next key of the chain, indexed by key.
+private let mut fieldKeyHead: Map<Int, Int>
+private let mut fieldKeyNext: Vec<Int>
+private let mut fieldKeysBuilt = false
+private let mut heldReached = -1
+private let mut heldViews = -1
+
+// The value-flow graph.
+private let mut flowSucc: Vec<Vec<Int>>      // key -> keys a value held there can move to
+private let mut flowSuccFn: Vec<Vec<Int>>    // ...and the function each of those moves is in
+private let mut flowPred: Vec<Vec<Int>>
+private let mut paramReturns: Vec<Int>       // PARAM key: its function may hand it back
+private let mut flowHolder: Vec<Int>         // key: a holder (a released field, or a container element)
+private let mut flowReaches: Vec<Int>        // key: a value here can end up in a holder
+private let mut vsConsumers: Vec<Vec<Int>>   // value set -> constraints taking it as the value
+private let mut vsDerived: Vec<Vec<Int>>     // value set -> unions built from it
+private let mut fnResultHeld: Vec<Int>       // per fn: -1 not yet asked
+// Visited marks for the walks, by generation so that a query does not clear an array the size of the program.
+private let mut keyMark: Vec<Int>
+private let mut vsMark: Vec<Int>
+private let mut flowGeneration = 0
+private let mut flowKeys = 0
+private let mut flowVsets = 0
+private let mut flowFns = 0
+private let mut flowReady = false
+
+private let mut callResultsOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+internal fn callResultsOpen() {
+    if (callResultsOpened) { return }
+    callResultsOpened = true
+    let calls: Map<Usize, Int> = {}
+    callNodes = calls
+    let args: Map<Usize, Int> = {}
+    argNodes = args
+    let heads: Map<Int, Int> = {}
+    fieldKeyHead = heads
+    callVs = []
+    callFn = []
+    argFn = []
+    argRetained = []
+    argAliased = []
+    argCopyIndex = []
+    argCopyVs = []
+    retPartial = []
+    paramKeyFirst = []
+    paramKeyList = []
+    fnHoldsView = []
+    fieldKeyNext = []
+    flowSucc = []
+    flowSuccFn = []
+    flowPred = []
+    paramReturns = []
+    flowHolder = []
+    flowReaches = []
+    vsConsumers = []
+    vsDerived = []
+    fnResultHeld = []
+    keyMark = []
+    vsMark = []
+    retScratch = bitsNew()
+    querySet = bitsNew()
+    heldReached = bitsNew()
+    heldViews = bitsNew()
+}
+
+internal fn callResultsReset() {
+    callResultsOpened = false
+    callResultsOpen()
+    retPartialReady = false
+    paramKeysBuiltKeys = -1
+    paramKeysBuiltFns = -1
+    fnHoldsViewReady = false
+    fieldKeysBuilt = false
+    flowGeneration = 0
+    flowKeys = 0
+    flowVsets = 0
+    flowFns = 0
+    flowReady = false
+}
+
+public fn aif_note_call_result(node: Ptr, vs: Int, fnId: Int) {
+    callResultsOpen()
+    if (addressOf(node) == 0 or fnId < 0) { return }
+    if (callNodes.has(addressOf(node))) { return }
+    callNodes.set(addressOf(node), callVs.length)
+    callVs.push(vs)
+    callFn.push(fnId)
+}
+
+private fn argNodeOf(node: Ptr) -> Int {
+    callResultsOpen()
+    return argNodes.getOr(addressOf(node), -1)
+}
+
+public fn aif_note_call_args(node: Ptr, fnId: Int) {
+    callResultsOpen()
+    if (addressOf(node) == 0 or argNodeOf(node) >= 0) { return }
+    argNodes.set(addressOf(node), argFn.length)
+    argFn.push(fnId)
+    argRetained.push(0)
+    argAliased.push(0)
+    argCopyIndex.push(-1)
+    argCopyVs.push(-1)
+}
+
+private fn argBit(index: Int) -> U32 {
+    let mut k = index
+    if (k > 31) { k = 31 }
+    return (1 as U32) << (k as U32)
+}
+
+public fn aif_note_arg_retained(node: Ptr, index: Int) {
+    let at = argNodeOf(node)
+    if (at < 0 or index < 0) { return }
+    argRetained[at] = argRetained[at] | argBit(index)
+}
+
+// Kept apart from `retained` on purpose. Whether a callee keeps an argument is what `chainRetainsAliasOf` asks; whether the result may *be*
+// the argument is `irValueAliasesName`'s business, one statement later. Folding the second into the first refused every binding handed to an
+// extern with an undeclared return: line_processing leaked 8,194 of 8,209.
+public fn aif_note_arg_aliased(node: Ptr, index: Int) {
+    let at = argNodeOf(node)
+    if (at < 0 or index < 0) { return }
+    argAliased[at] = argAliased[at] | argBit(index)
+}
+
+// The element argument of a `Vec<String>` push or insert, and the value set it carries: what `aif_arg_copies_view` answers from once the
+// facts have converged.
+public fn aif_note_arg_copied(node: Ptr, index: Int, vs: Int) {
+    let at = argNodeOf(node)
+    if (at < 0 or index < 0) { return }
+    argCopyIndex[at] = index
+    argCopyVs[at] = vs
+}
+
+// Whether codegen must copy this String into a block of its own as it is stored: the value is a view of another collection, so storing it
+// as it is would leave one block under two owners and a release from each, a double free.
+public fn aif_arg_copies_view(node: Ptr, index: Int) -> Int {
+    let at = argNodeOf(node)
+    if (at < 0 or argCopyIndex[at] != index or argCopyVs[at] < 0) { return 0 }
+    vsResolveViews(argCopyVs[at], retScratch)
+    if (bitsIsEmpty(retScratch)) { return 0 }
+    return 1
+}
+
+private fn paramKeysBuild() {
+    callResultsOpen()
+    if (paramKeyFirst.length > 0 and paramKeysBuiltKeys == keyCount and paramKeysBuiltFns == fnCount) { return }
+    paramKeyFirst = Vec<Int>.filled(fnCount + 2, 0)
+    for k in 0..<keyCount {
+        if (keyKind[k] != AIF_KEY_PARAM) { continue }
+        if (keyA[k] < 0 or keyA[k] >= fnCount) { continue }
+        paramKeyFirst[keyA[k] + 1] = paramKeyFirst[keyA[k] + 1] + 1
+    }
+    for f in 0..<fnCount { paramKeyFirst[f + 1] = paramKeyFirst[f + 1] + paramKeyFirst[f] }
+    paramKeyList = Vec<Int>.filled(paramKeyFirst[fnCount] + 1, 0)
+    let mut fill: Vec<Int> = Vec<Int>.filled(fnCount + 1, 0)
+    for k in 0..<keyCount {
+        if (keyKind[k] != AIF_KEY_PARAM) { continue }
+        if (keyA[k] < 0 or keyA[k] >= fnCount) { continue }
+        paramKeyList[paramKeyFirst[keyA[k]] + fill[keyA[k]]] = k
+        fill[keyA[k]] = fill[keyA[k]] + 1
+    }
+    paramKeysBuiltKeys = keyCount
+    paramKeysBuiltFns = fnCount
+}
+
+// The PARAM keys of `f` live at `paramKeyList[paramKeyStart(f) ..< paramKeyEnd(f)]`; none for an unknown function.
+private fn paramKeyStart(f: Int) -> Int {
+    paramKeysBuild()
+    if (f < 0 or f >= fnCount) { return 0 }
+    return paramKeyFirst[f]
+}
+
+private fn paramKeyEnd(f: Int) -> Int {
+    paramKeysBuild()
+    if (f < 0 or f >= fnCount) { return 0 }
+    return paramKeyFirst[f + 1]
+}
+
+private fn retPartialBuild() {
+    callResultsOpen()
+    if (retPartialReady) { return }
+    retPartialReady = true
+    if (fnCount == 0) { return }
+    retPartial = Vec<Int>.filled(fnCount, 0)
+
+    for i in 0..<conCount {
+        if (conKind[i] != AIF_CON_BIND) { continue }
+        let key = conA[i]
+        if (key < 0 or key >= keyCount) { continue }
+        if (keyKind[key] != AIF_KEY_RET) { continue }
+        let f = keyA[key]
+        if (f < 0 or f >= fnCount) { continue }
+        vsResolve(conB[i], retScratch)
+        // `return ""` hands back a literal, whose pair is tagged borrowed: the caller releasing it is a no-op, so it takes nothing
+        // from the caller's ownership of what the function's other returns allocate. strRepeat's empty case made every repeated
+        // String unowned (test_205).
+        if (bitsIsEmpty(retScratch) and conB[i] >= 0 and conB[i] < vsCount
+                and vsUntracked[conB[i]] != 0 and vsHazard[conB[i]] == 0 and vsViews[conB[i]].length == 0) {
+            continue
+        }
+        // Some sites is not all of them. `return v` for a payload binder resolves to every site stored into that payload field
+        // anywhere, while the Option in hand holds a literal. `keyMayReturnUntracked` follows literals through stores, binds and
+        // arguments; asking it of the return is the question "no site at all" was standing in for.
+        if (bitsIsEmpty(retScratch) == false) {
+            keyMayReturnUntracked(0)    // builds the closure
+            if (vsReturnsUntracked(conB[i]) == false) { continue }
+        }
+        retPartial[f] = 1
+    }
+}
+
+// 1 when some `return` in `f` yields a value with no site behind it, so the caller must not take ownership of what `f` hands back.
+private fn fnReturnsPartial(f: Int) -> Bool {
+    retPartialBuild()
+    if (f < 0 or f >= fnCount) { return true }
+    if (retPartial.length == 0) { return true }
+    return retPartial[f] != 0
+}
+
+// Whether `f` may hand one of its own parameters back through its return value. Swift's parameter convention question, asked in the
+// direction the drop path needs it: a parameter passed through to the result leaves the argument outliving the call, and the caller's
+// binding is no longer the last owner. **Site-granular, and conservative in the same direction `inContainer` is**: a false positive
+// therefore costs a leak and never a free. **A symbol this pass does not know answers no, not yes**: "unknown" here means *extern*, not
+// *unanalysed*, and answering yes was measured to decline the drop at every `print(value)`, leaking one String per integer printed.
+private fn fnMayReturnParam(f: Int) -> Bool {
+    if (f < 0) { return false }
+    let rk = keyFind(AIF_KEY_RET, f, 0)
+    if (rk < 0 or rk >= ptLen) { return false }
+    if (bitsIsEmpty(pt[rk])) { return false }
+
+    for pi in paramKeyStart(f)..<paramKeyEnd(f) {
+        let k = paramKeyList[pi]
+        if (k >= ptLen) { break }
+        // A shared site is not a path; see `paramReturnsBuild`.
+        if (paramMayReturn(k) == false) { continue }
+        let n = minOf(bitsWordCount(pt[rk]), bitsWordCount(pt[k]))
+        for w in 0..<n {
+            if ((bitsWord(pt[rk], w) & bitsWord(pt[k], w)) != 0) { return true }
+        }
+    }
+    return false
+}
+
+public fn aif_fn_may_return_param(symbol: String) -> Int {
+    if (fnMayReturnParam(aif_fn_lookup(symbol))) { return 1 }
+    return 0
+}
+
+// The same hazard asked of **one site** rather than of the whole function. `fnMayReturnParam` collapses the question to a single bit per
+// callee, and `aif_owns_call_result_at_node` then applied that bit to *every* site the call may return, which refused ownership of allocations
+// no parameter can reach: `passes(sink t, n)` returning `t` on its base path took `mapAdd`'s fresh nodes with it, 10,235 of g8's 12,282
+// leaks. If a parameter may point at this site, returning it may be handing back the argument and the caller must not free it; if no parameter
+// of the callee can point at it, no return path can make it the argument.
+private fn siteMayBeParamOf(f: Int, s: Int) -> Bool {
+    if (f < 0 or s < 0) { return false }
+    for pi in paramKeyStart(f)..<paramKeyEnd(f) {
+        let k = paramKeyList[pi]
+        if (k >= ptLen) { break }
+        // A move, not a borrow: see `aif_note_param_consuming`. The caller cannot free what it no longer owns.
+        if (bitsTest(paramConsuming, k)) { continue }
+        // No path from this parameter to the return: the site is shared with one, the chain case `paramReturnsBuild` exists for.
+        if (paramMayReturn(k) == false) { continue }
+        if (bitsTest(pt[k], s)) { return true }
+    }
+    return false
+}
+
+private fn fieldKeysBuild() {
+    callResultsOpen()
+    if (fieldKeysBuilt) { return }
+    fieldKeysBuilt = true
+    let heads: Map<Int, Int> = {}
+    fieldKeyHead = heads
+    fieldKeyNext = Vec<Int>.filled(keyCount, -1)
+    let mut tails: Map<Int, Int> = {}
+    for k in 0..<keyCount {
+        if (keyKind[k] != AIF_KEY_FIELD) { continue }
+        let owner = keyA[k]
+        if (owner < 0) { continue }
+        if (fieldKeyHead.has(owner)) {
+            fieldKeyNext[tails.getOr(owner, -1)] = k
+        } else {
+            fieldKeyHead.set(owner, k)
+        }
+        tails.set(owner, k)
+    }
+}
+
+// The view half of the question above, and the reason codegen had to fall back on "does the result carry a pointer at all": a callee
+// returning a *view* of a parameter carries **provenance** rather than the parameter's sites (SPEC 8.4), so the points-to intersection is
+// silent about it. The same question one level in: the return is a fresh object, and a *field* of it holds the view (`fn errOf(r)` returning an
+// `Option` whose payload is `r`'s). A caller that freed its argument at scope exit while the Option lived handed back a payload already freed.
+// Every field of every object the return may reach is asked. Field keys are per type, not per object, so this is conservative the usual way:
+// any view stored into that field anywhere counts, and the cost is a leak.
+private fn fnReturnHoldsViewOfParam(f: Int) -> Bool {
+    if (f < 0 or f >= fnCount) { return false }
+    if (fnHoldsViewReady == false) {
+        fnHoldsViewReady = true
+        fnHoldsView = Vec<Int>.filled(fnCount, -1)
+    }
+    if (fnHoldsView[f] >= 0) { return fnHoldsView[f] != 0 }
+    fnHoldsView[f] = 0
+
+    let rk = keyFind(AIF_KEY_RET, f, 0)
+    if (rk < 0 or rk >= ptLen or bitsIsEmpty(pt[rk])) { return false }
+    fieldKeysBuild()
+
+    bitsClear(heldReached)
+    bitsClear(heldViews)
+    let mut work: Vec<Int> = []
+    let mut start: Vec<Int> = []
+    bitsToVec(pt[rk], start)
+    for i in 0..<start.length {
+        work.push(start[i])
+        bitsSet(heldReached, start[i])
+    }
+    while (work.length > 0) {
+        let s = work.pop() ?? 0
+        let t = baseTypeId(siteType[s])
+        if (t < 0) { continue }
+        let mut k = fieldKeyHead.getOr(t, -1)
+        while (k >= 0) {
+            if (k < ptLen) {
+                bitsOr(heldViews, keyViews[k])
+                for w in 0..<bitsWordCount(pt[k]) {
+                    let mut word = bitsWord(pt[k], w)
+                    while (word != 0) {
+                        let s2 = w * BITS_WORD_BITS + word.trailingZeros()
+                        word = word & (word - 1)
+                        if (bitsSet(heldReached, s2)) { work.push(s2) }
+                    }
+                }
+            }
+            k = fieldKeyNext[k]
+        }
+    }
+    if (bitsIsEmpty(heldViews)) { return false }
+
+    for pi in paramKeyStart(f)..<paramKeyEnd(f) {
+        let k = paramKeyList[pi]
+        if (k >= ptLen) { break }
+        let n = minOf(bitsWordCount(heldViews), bitsWordCount(pt[k]))
+        for w in 0..<n {
+            let mut both = bitsWord(heldViews, w) & bitsWord(pt[k], w)
+            while (both != 0) {
+                let site = w * BITS_WORD_BITS + both.trailingZeros()
+                both = both & (both - 1)
+                // An enum's, for `fieldHoldsEnumView`'s reason: a struct whose field value was read out is not released with it, so
+                // freeing the struct leaves the value alone. Counting structs too declined `parseSource`'s lexer and parser, reached
+                // through every punned `Ptr` field of every ASTNode.
+                if (siteIsEnum(site)) {
+                    fnHoldsView[f] = 1
+                    return true
+                }
+            }
+        }
+    }
+    return false
+}
+
+private fn fnMayReturnViewOfParam(f: Int) -> Bool {
+    if (f < 0) { return false }
+    if (fnReturnHoldsViewOfParam(f)) { return true }
+    let rk = keyFind(AIF_KEY_RET, f, 0)
+    if (rk < 0 or rk >= ptLen) { return false }
+    if (bitsIsEmpty(keyViews[rk])) { return false }
+
+    for pi in paramKeyStart(f)..<paramKeyEnd(f) {
+        let k = paramKeyList[pi]
+        if (k >= ptLen) { break }
+        let n = minOf(bitsWordCount(keyViews[rk]), bitsWordCount(pt[k]))
+        for w in 0..<n {
+            if ((bitsWord(keyViews[rk], w) & bitsWord(pt[k], w)) != 0) { return true }
+        }
+    }
+    return false
+}
+
+public fn aif_fn_may_return_view_of_param(symbol: String) -> Int {
+    if (fnMayReturnViewOfParam(aif_fn_lookup(symbol))) { return 1 }
+    return 0
+}
+
+private fn keyIsRet(k: Int) -> Bool {
+    return k >= 0 and k < flowKeys and keyKind[k] == AIF_KEY_RET
+}
+
+private fn flowEdge(from: Int, to: Int, fnId: Int) {
+    if (from < 0 or to < 0 or from >= flowKeys or to >= flowKeys) { return }
+    flowSucc[from].push(to)
+    flowSuccFn[from].push(fnId)
+    flowPred[to].push(from)
+}
+
+// The value set a constraint moves, or -1 for the kinds that move nothing. A store's owner (`c`) and a container call's holder (`b`) are
+// where a value goes, not values themselves.
+private fn conValueVs(ci: Int) -> Int {
+    let kind = conKind[ci]
+    if (kind == AIF_CON_BIND or kind == AIF_CON_ARG or kind == AIF_CON_STORE) { return conB[ci] }
+    if (kind == AIF_CON_RETAIN_IN) { return conA[ci] }
+    return -1
+}
+
+// Whether a function may hand back what it was given as parameter `start`: a path from PARAM(g, i) to RET(g) along moves g itself makes.
+// This is the question the pass-through guard asks, and it used to be asked of sites: a site in both the parameter's set and the return's.
+// **Chains defeat that.** `public fn toUpper(self) -> String { return strToUpper(self) }` returns strToUpper's allocation, and in
+// `x.toUpper().toUpper()` the first result is the second call's argument, so strToUpper's one site is in both sets and every chained call
+// looked like it returned its receiver: 2,000 of 3,001 leaked over 1,000 iterations, for every String method written as a one-line wrapper.
+// Asked of flow, a call crosses into the callee only through this same answer for the callee, and comes back out along the uses g makes of its
+// result. A least fixed point over all parameters, since a summary can depend on its own function's.
+private fn paramReachesRet(g: Int, start: Int, mark: Int) -> Bool {
+    let rk = keyFind(AIF_KEY_RET, g, 0)
+    if (rk < 0) { return false }
+    let mut work: Vec<Int> = []
+    keyMark[start] = mark
+    work.push(start)
+    let mut found = false
+    while (work.length > 0 and found == false) {
+        let k = work.pop() ?? 0
+        for i in 0..<flowSucc[k].length {
+            if (flowSuccFn[k][i] != g) { continue }
+            let t = flowSucc[k][i]
+            if (t == rk) {
+                found = true
+                break
+            }
+            if (t >= keyCount) { continue }
+            let mut next = t
+            if (keyKind[t] == AIF_KEY_PARAM) {
+                // Into a callee: back out only if it hands the argument back.
+                if (paramReturns[t] == 0) { continue }
+                next = keyFind(AIF_KEY_RET, keyA[t], 0)
+                if (next < 0 or next >= flowKeys) { continue }
+            } else if (keyKind[t] == AIF_KEY_RET) {
+                continue
+            }
+            if (keyMark[next] == mark) { continue }
+            keyMark[next] = mark
+            work.push(next)
+        }
+    }
+    return found
+}
+
+private fn paramMayReturn(k: Int) -> Bool {
+    flowBuild()
+    return k >= 0 and k < flowKeys and paramReturns[k] != 0
+}
+
+private fn paramReturnsBuild() {
+    let mut changed = true
+    while (changed) {
+        changed = false
+        for k in 0..<flowKeys {
+            if (keyKind[k] != AIF_KEY_PARAM or paramReturns[k] != 0) { continue }
+            flowGeneration = flowGeneration + 1
+            if (paramReachesRet(keyA[k], k, flowGeneration) == false) { continue }
+            paramReturns[k] = 1
+            changed = true
+        }
+    }
+}
+
+private fn flowBuild() {
+    callResultsOpen()
+    if (flowReady) { return }
+    flowReady = true
+    releasedFieldsReady()
+
+    flowKeys = keyCount
+    flowVsets = vsCount
+    flowFns = fnCount
+    flowSucc = []
+    flowSuccFn = []
+    flowPred = []
+    for k in 0..<(flowKeys + 1) {
+        flowSucc.push(freshInts())
+        flowSuccFn.push(freshInts())
+        flowPred.push(freshInts())
+    }
+    vsConsumers = []
+    vsDerived = []
+    for v in 0..<(flowVsets + 1) {
+        vsConsumers.push(freshInts())
+        vsDerived.push(freshInts())
+    }
+    paramReturns = Vec<Int>.filled(flowKeys + 1, 0)
+    flowHolder = Vec<Int>.filled(flowKeys + 1, 0)
+    flowReaches = Vec<Int>.filled(flowKeys + 1, 0)
+    fnResultHeld = Vec<Int>.filled(flowFns + 1, -1)
+    keyMark = Vec<Int>.filled(flowKeys + 1, 0)
+    vsMark = Vec<Int>.filled(flowVsets + 1, 0)
+    flowGeneration = 0
+
+    let elem = irNameId("@elem")
+    for k in 0..<flowKeys {
+        if (keyKind[k] != AIF_KEY_FIELD) { continue }
+        if (keyB[k] == elem or bitsTest(plainReleasedFieldKeys, k)) { flowHolder[k] = 1 }
+    }
+
+    for i in 0..<unionFrom.length {
+        let from = unionFrom[i]
+        if (from < flowVsets) { vsDerived[from].push(unionTo[i]) }
+    }
+
+    for ci in 0..<conCount {
+        let vs = conValueVs(ci)
+        if (vs < 0 or vs >= flowVsets) { continue }
+        vsConsumers[vs].push(ci)
+        for i in 0..<vsItems[vs].length {
+            let item = vsItems[vs][i]
+            if (item % 2 == 0) { continue }
+            let from = item / 2
+            // A container call is a holder for whatever it is handed, whether or not its element key is bound as well, except a call's
+            // result handed straight in. That is one call node's value, not every value the callee returns, and `callResultHeld` finds it
+            // at that node.
+            if (conKind[ci] == AIF_CON_RETAIN_IN) {
+                if (from < flowKeys and keyIsRet(from) == false) { flowHolder[from] = 1 }
+            } else {
+                flowEdge(from, conA[ci], conFn[ci])
+            }
+        }
+    }
+
+    // Backward from every holder. Edges out of a RET key are followed like any other: a value a callee hands back through a parameter is
+    // the caller's value still, so where the callee's callers put its result is where the caller's argument may end up. It joins every
+    // caller of that callee, which is the conservative direction; only a pass-through has such an edge.
+    let mut work: Vec<Int> = []
+    for k in 0..<flowKeys {
+        if (flowHolder[k] == 0) { continue }
+        flowReaches[k] = 1
+        work.push(k)
+    }
+    while (work.length > 0) {
+        let k = work.pop() ?? 0
+        for i in 0..<flowPred[k].length {
+            let p = flowPred[k][i]
+            if (flowReaches[p] != 0) { continue }
+            flowReaches[p] = 1
+            work.push(p)
+        }
+    }
+
+    paramReturnsBuild()
+}
+
+// Whether anything `f` returns may also be held by a field or a container by the time it returns: read out of one, or stored into one and
+// returned as well. The keys that can flow into RET(f) are its cone. A holder in the cone is the first case. A cone key with an edge to a key
+// *outside* the cone that reaches a holder is the second: `let s = make(); v.push(s); return s`. An edge to a key inside the cone is not a
+// store, it is the same value on its way out, and an edge into a RET key is a return: a callee's result leaving through its own caller is that
+// caller's question, asked at its own call node. **Nor is an edge out of a RET key**, for the same reason one level up: it sits in a caller of
+// that function, and every caller's use of the result is on it.
+private fn callFnResultHeld(f: Int) -> Bool {
+    if (f < 0 or f >= flowFns) { return true }
+    if (fnResultHeld[f] >= 0) { return fnResultHeld[f] != 0 }
+    let rk = keyFind(AIF_KEY_RET, f, 0)
+    if (rk < 0 or rk >= flowKeys) {
+        fnResultHeld[f] = 0
+        return false
+    }
+
+    flowGeneration = flowGeneration + 1
+    let cone = flowGeneration
+    let mut work: Vec<Int> = []
+    let mut members: Vec<Int> = []
+    keyMark[rk] = cone
+    work.push(rk)
+    while (work.length > 0) {
+        let k = work.pop() ?? 0
+        members.push(k)
+        for i in 0..<flowPred[k].length {
+            let p = flowPred[k][i]
+            if (keyMark[p] == cone) { continue }
+            keyMark[p] = cone
+            work.push(p)
+        }
+    }
+
+    let mut held = false
+    let mut m = 0
+    while (m < members.length and held == false) {
+        let k = members[m]
+        m = m + 1
+        if (flowHolder[k] != 0) {
+            held = true
+            break
+        }
+        if (keyIsRet(k)) { continue }
+        for i in 0..<flowSucc[k].length {
+            let t = flowSucc[k][i]
+            if (keyMark[t] == cone or keyIsRet(t)) { continue }
+            if (flowReaches[t] != 0) {
+                held = true
+                break
+            }
+        }
+    }
+    if (held) {
+        fnResultHeld[f] = 1
+    } else {
+        fnResultHeld[f] = 0
+    }
+    return held
+}
+
+// Whether this frame stores the value into a field that re-enters its owner's type, directly or through its own bindings. `plainReleasedFieldKeys`
+// leaves those fields out so that a tree's root stays its caller's. That holds for the root. It does not hold for a value this frame binds and then
+// makes a child (`let left = build(d - 1); return Expr.Op(d, left, right)`): `left` became part of the returned tree, which the tree's release
+// frees, and the binding's scope drop freed it as well. Walked only through VAR keys, so a value that reaches such a field through a return or a
+// parameter stays the question it was.
+private fn vsStoredInRecursiveField(vs0: Int) -> Bool {
+    let mut found = false
+    flowGeneration = flowGeneration + 1
+    let seen = flowGeneration
+    let mut vwork: Vec<Int> = []
+    let mut kwork: Vec<Int> = []
+    vwork.push(vs0)
+    vsMark[vs0] = seen
+    while (vwork.length > 0 and found == false) {
+        let vs = vwork.pop() ?? 0
+        let mut i = 0
+        while (i < vsConsumers[vs].length and found == false) {
+            let ci = vsConsumers[vs][i]
+            i = i + 1
+            if (conKind[ci] != AIF_CON_BIND and conKind[ci] != AIF_CON_STORE) { continue }
+            let a = conA[ci]
+            if (a < 0 or a >= flowKeys or keyMark[a] == seen) { continue }
+            if (bitsTest(recursiveReleasedFieldKeys, a)) {
+                found = true
+                break
+            }
+            if (keyKind[a] != AIF_KEY_VAR) { continue }
+            keyMark[a] = seen
+            kwork.push(a)
+        }
+        for j in 0..<vsDerived[vs].length {
+            let d = vsDerived[vs][j]
+            if (d < 0 or d >= flowVsets or vsMark[d] == seen) { continue }
+            vsMark[d] = seen
+            vwork.push(d)
+        }
+    }
+    while (kwork.length > 0 and found == false) {
+        let k = kwork.pop() ?? 0
+        for i in 0..<flowSucc[k].length {
+            let t = flowSucc[k][i]
+            if (t < 0 or t >= flowKeys or keyMark[t] == seen) { continue }
+            if (bitsTest(recursiveReleasedFieldKeys, t)) {
+                found = true
+                break
+            }
+            if (keyKind[t] != AIF_KEY_VAR) { continue }
+            keyMark[t] = seen
+            kwork.push(t)
+        }
+    }
+    return found
+}
+
+// A RETAIN_IN that codegen performs as a copy (`aif_con_retain_in_string`, and the value is a view): it keeps nothing it was handed, so the binding
+// it read from is still the owner and still released.
+private fn retainInIsCopy(ci: Int) -> Bool {
+    if (conC[ci] != 1 or conA[ci] < 0 or conA[ci] >= vsCount) { return false }
+    vsResolveViews(conA[ci], retScratch)
+    return bitsIsEmpty(retScratch) == false
+}
+
+// Whether the value this call node produced is handed to something that keeps it: every constraint that takes the node's own value set, or a
+// union built from it, as the value it moves. A return is not one: the caller that receives it asks at its own node.
+private fn callResultHeld(vs0: Int, fnId: Int) -> Bool {
+    if (callFnResultHeld(fnId)) { return true }
+    if (vs0 < 0 or vs0 >= flowVsets) { return false }
+    if (vsStoredInRecursiveField(vs0)) { return true }
+
+    let mut held = false
+    flowGeneration = flowGeneration + 1
+    let seen = flowGeneration
+    let mut work: Vec<Int> = []
+    work.push(vs0)
+    vsMark[vs0] = seen
+    while (work.length > 0 and held == false) {
+        let vs = work.pop() ?? 0
+        for i in 0..<vsConsumers[vs].length {
+            let ci = vsConsumers[vs][i]
+            if (conKind[ci] == AIF_CON_RETAIN_IN) {
+                if (retainInIsCopy(ci)) { continue }
+                held = true
+                break
+            }
+            if (keyIsRet(conA[ci])) { continue }
+            if (conA[ci] >= 0 and conA[ci] < flowKeys and flowReaches[conA[ci]] != 0) {
+                held = true
+                break
+            }
+        }
+        for j in 0..<vsDerived[vs].length {
+            let d = vsDerived[vs][j]
+            if (d < 0 or d >= flowVsets or vsMark[d] == seen) { continue }
+            vsMark[d] = seen
+            work.push(d)
+        }
+    }
+    return held
+}
+
+// A call node the walk never saw answers yes: an unknown keeper is assumed, which fails towards the leak.
+public fn aif_call_arg_retained(node: Ptr, index: Int) -> Int {
+    let at = argNodeOf(node)
+    if (at < 0 or index < 0) { return 1 }
+    if (argFn[at] < 0) {
+        if (index == argCopyIndex[at] and aif_arg_copies_view(node, index) != 0) { return 0 }
+        if ((argRetained[at] & argBit(index)) != 0) { return 1 }
+        return 0
+    }
+    flowBuild()
+    let k = keyFind(AIF_KEY_PARAM, argFn[at], index)
+    if (k >= 0 and k < flowKeys and flowReaches[k] != 0) { return 1 }
+    return 0
+}
+
+// Whether an extern's argument may be released once the call returns: neither kept by its contract nor possibly the result. Only asked of
+// externs; a Prismio callee's release is `irCallReleasesTemporaries`'s question.
+public fn aif_call_arg_outlives_call(node: Ptr, index: Int) -> Int {
+    let at = argNodeOf(node)
+    if (at < 0 or index < 0 or argFn[at] >= 0) { return 1 }
+    if (((argRetained[at] | argAliased[at]) & argBit(index)) != 0) { return 1 }
+    return 0
+}
+
+// Where one call's result goes, rather than where its allocation site has been.
+//
+// This used to refuse a call outright when any site it could return was in a container or a released field **anywhere in the program**. A
+// site is per allocating function, so that bit is shared by every value the function ever makes: one `Box { text: make(n) }`, in a function
+// nobody calls, refused every other `make(n)` its drop. What the exclusion protects against is a *second owner of this value*, which a value
+// returned by a call can have in exactly two ways, and both are questions about flow: before it came back (the callee stored it into a holder
+// and returned it as well, `callFnResultHeld`) or after (the caller hands it on, `callResultHeld`). **Sound in the same direction as before**:
+// every path followed here is a path the points-to solve propagated sites along.
+public fn aif_owns_call_result_at_node(node: Ptr) -> Int {
+    callResultsOpen()
+    if (addressOf(node) == 0) { return AIF_ELEM_NONE }
+    let c = callNodes.getOr(addressOf(node), -1)
+    if (c < 0) { return AIF_ELEM_NONE }
+
+    // A field the type releases, or a container, is already this value's release point, so the caller must not become a second one.
+    flowBuild()
+    if (callResultHeld(callVs[c], callFn[c])) { return AIF_ELEM_NONE }
+
+    vsResolve(callVs[c], querySet)
+    let mut agreed = AIF_ELEM_NONE
+    let mut any = false
+    for s in 0..<siteCount {
+        if (bitsTest(querySet, s) == false) { continue }
+        any = true
+        // Allocated below this callee, not handed *to* it. This used to require the site to belong to the callee outright, which is one hop
+        // and declined every producer written in Prismio the moment a second frame appeared between the allocation and the binding.
+        // **What made it safe to relax is the pass-through guard**, asked per site: a value handed *in* and handed straight back is owned by
+        // the caller's argument, and freeing it here double-frees. The other half, "no intermediate frame owns it", needs nothing computed,
+        // because **returning a value already implies not dropping it**.
+        if (siteFn[s] != callFn[c] and siteMayBeParamOf(callFn[c], s)) { return AIF_ELEM_NONE }
+        if (aif_tier_of(s) != AIF_T2) { return AIF_ELEM_NONE }
+        let d = elemDispositionOf(s, AIF_T2)
+        // A struct that owns something joins `List` here: the value set has to be complete. A `List` qualifies because it has no literal
+        // form, a struct because it has no *sentinel* form. **A plain object joins them where the returns are accounted for**: a callee with
+        // even one `return` this pass cannot place a site behind is declined. It is where the remaining leak is: every integer `print` goes
+        // through `prismio_std_io_signed_integer`, which returns a String the caller had no way to own.
+        if (d != AIF_ELEM_LIST and d != AIF_ELEM_TYPED) {
+            if (d != AIF_ELEM_OBJECT) { return AIF_ELEM_NONE }
+            if (fnReturnsPartial(callFn[c])) { return AIF_ELEM_NONE }
+        }
+        if (agreed != AIF_ELEM_NONE and agreed != d) { return AIF_ELEM_NONE }
+        agreed = d
+    }
+    if (any) { return agreed }
+    return AIF_ELEM_NONE
+}

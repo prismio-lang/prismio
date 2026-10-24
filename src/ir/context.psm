@@ -84,7 +84,6 @@ let mut irLoopHoistedDataValue = ""
 let mut irLoopPushGuard = ""
 let mut irLoopPushGuardCounter = 0
 
-
 // Names the stack slot a `spawn`'s owned temporary argument is spilled into, so
 // the ordinary scope drop can reach it. Dotted like `sc.`, which no Prismio
 // identifier can contain, so it cannot collide with a user variable.
@@ -205,7 +204,7 @@ let mut irFrameStructSlots = ""
 // AIF item 3. What a container does with its elements when it is released, and
 // what a known callee's return leaves the caller owning. One encoding for both,
 // because both answer "which release does this pointer need" and both are
-// decided by the same per-site disposition in aif_support.c.
+// decided by the same per-site disposition in src/aifcore/.
 let AIF_ELEM_NONE = 0
 let AIF_ELEM_OBJECT = 1
 let AIF_ELEM_LIST = 2
@@ -218,7 +217,7 @@ let AIF_ELEM_TYPED = 4
 //
 // 5 is AIF_ELEM_CYCLE. This file named it without switching on it, because the
 // only field that can carry a cyclic disposition is one that re-enters its
-// owner's type and field_closes_cycle vetoed every one of them. **M2.1a removed
+// owner's type and fieldClosesCycle vetoed every one of them. **M2.1a removed
 // that veto and generateReleaseFn switches on it now** -- it had been falling
 // into the plain-object branch, which frees a collected object a second time.
 let AIF_ELEM_CYCLE = 5
@@ -228,125 +227,6 @@ let AIF_ELEM_CYCLE_ATOMIC = 7
 // `List<String>`, whose elements are pairs rather than pointers, so teardown
 // frees an owned long form and skips an inline one.
 let AIF_ELEM_STRING = 8
-
-// Where a value the memory model inferred lives, keyed by the AST node that
-// allocates it -- both passes walk the same tree, so the node is a name for the
-// expression that cannot collide. -1 means no inference ran for this node; see
-// the use site in generateExpression.
-internal extern fn aif_tier_at_node(node: Ptr) -> Int
-
-// M2.1b. True only when every allocation site that may reach this consuming
-// parameter has one owner (Unique or a call-duration Borrowed fact). A
-// mixed/shared points-to set declines, keeping the ordinary allocation path.
-internal extern fn aif_param_reusable(symbol: String, index: Int) -> Int
-
-// Whether the value this node allocates dies with the scope that allocates it,
-// which is what licenses a free at that scope's exits. Not derivable from the
-// tier: T1 is "some region", and it may be an enclosing one.
-internal extern fn aif_frees_at_scope_node(node: Ptr) -> Int
-
-// The same question at an assignment rather than at a scope exit: may the store
-// release what it overwrites? Every clause of the one above holds except
-// confinement, because an accumulator allocates in a loop body and binds outside
-// it -- and `return out` puts E at Caller for a value no return ever carried.
-internal extern fn aif_releases_on_overwrite_node(node: Ptr) -> Int
-
-// The scope-exit question for a binding some path hands back with `return name`:
-// confined on every path that does not return it. Codegen skips the drop at the
-// returns that do (generateReturn).
-internal extern fn aif_frees_unless_returned_node(node: Ptr, name: String borrow) -> Int
-
-// Whether it may come from the enclosing `region`'s arena instead of the heap.
-// Stricter than "is inside a region block": the value must also be unable to
-// outlive that region, which a nested region makes a real question.
-internal extern fn aif_arena_at_node(node: Ptr) -> Int
-
-// Whether the cost model placed an arena at this block (LAYOUT 7.1). A `region`
-// statement answers 0 here -- codegen already brackets that one by keyword, and
-// bracketing it twice would push two arenas and pop one.
-internal extern fn aif_auto_arena_at_node(node: Ptr) -> Int
-
-// M3.2d. Which statements of that block the arena has to cover: the first that
-// puts something in it, and the last that still reads something it holds, as
-// indices into the block's own statement list. Both answer -1 for "the whole
-// block", which is the lexical extent and what every arena got before the range
-// existed -- so a compiler that cannot narrow behaves exactly as it did.
-//
-// Two calls rather than one, because a pair is not a thing this language can
-// return; they ask the same question and are answered from one cached range.
-internal extern fn aif_arena_range_first(node: Ptr) -> Int
-internal extern fn aif_arena_range_last(node: Ptr) -> Int
-
-// AIF item 3. What the container allocated at this node owns: AIF_ELEM_NONE
-// unless every element site agrees on one release, because a teardown loop makes
-// one call per element and cannot dispatch per element.
-internal extern fn aif_elem_owner_at_node(node: Ptr) -> Int
-
-// 1 when the only elements reaching that container are literals copied in at a
-// push, which no site describes; codegen asks it for a `Vec<String>` only.
-internal extern fn aif_elem_literal_copies_only(node: Ptr) -> Int
-
-// 1 when the String stored at argument `index` of this push or insert is a view
-// of another collection, so codegen copies it into a block of its own as it goes
-// in (the analysis counted the store as that copy).
-internal extern fn aif_arg_copies_view(node: Ptr, index: Int) -> Int
-
-// AIF Level 5. Whether this node's value carries a reference count. Reads the
-// same predicate the element disposition does, because a container told its
-// elements are counted decrements every one of them -- so a site that reached it
-// without a header would be a write into someone else's allocation.
-internal extern fn aif_rc_at_node(node: Ptr) -> Int
-
-// LAYOUT 7.2. The i-th field of this struct in the physical order the search
-// chose, or "" when no inference ran.
-public extern fn aif_layout_field(type: String, i: Int) -> String alias
-
-// Whether binding this call's result gives the binding something to release.
-// Answers the question the escape lattice structurally cannot: a returned value
-// is Caller and stays Caller, however briefly the caller keeps it.
-internal extern fn aif_owns_call_result_at_node(node: Ptr) -> Int
-
-// Whether a callee may hand one of its parameters back through its return value,
-// which is the other half of the guard above. `aif_owns_call_result_at_node`
-// says the caller owns what the callee allocated; this says whether passing that
-// value into a further call lets it outlive the frame. An unknown symbol answers
-// yes -- a false positive is a leak, a false negative is a use-after-free.
-internal extern fn aif_fn_may_return_param(symbol: String) -> Int
-// SPEC 8.4's other way a result can be an argument: a view carries provenance
-// rather than the argument's sites, so the points-to answer above misses it.
-internal extern fn aif_fn_may_return_view_of_param(symbol: String) -> Int
-internal extern fn aif_call_arg_retained(node: Ptr, index: Int) -> Int
-internal extern fn aif_call_arg_outlives_call(node: Ptr, index: Int) -> Int
-
-// Struct-field ownership. Whether this type owns anything, and what each field
-// needs. Per field, because a struct mixes -- `World` is five owned Lists and an
-// Int, and one answer for the whole type would have to be "nothing" for all six.
-internal extern fn aif_type_releases(type: String) -> Int
-internal extern fn aif_type_is_reclaimed(type: String) -> Int
-internal extern fn aif_field_release(type: String, field: String) -> Int
-
-// The element type of a container whose elements are released by type. Read from
-// the sites, because `list_new()` types as `List<Invalid>` and the annotation is
-// not always there to read.
-internal extern fn aif_elem_type_at_node(node: Ptr) -> String alias
-
-// M4.2. Whether any site of this type is reference-counted or collected, asked
-// of the type rather than of a container -- inline element storage is decided
-// per element type at four different call sites and they have to agree, and a
-// container's own disposition is visible only where it is constructed. A counted
-// value's header cannot survive being copied into an element block.
-internal extern fn aif_type_is_counted(type: String) -> Int
-
-// AIF T4b (CYCLES). Whether this node's value is collected as a possible cycle
-// member, and which of a type's fields are the cyclic edges the collector walks.
-internal extern fn aif_cycle_at_node(node: Ptr) -> Int
-internal extern fn aif_type_in_cycle(type: String) -> Int
-internal extern fn aif_field_is_cyclic(type: String, field: String) -> Int
-
-// Whether a store into this field moves a count. Trial deletion subtracts the
-// edges it traverses, so an edge nobody counted makes it subtract a reference
-// that was never added -- which reads a live object as unreachable.
-internal extern fn aif_field_is_counted(type: String, field: String) -> Int
 
 // The integer the backend sizes an allocation and indexes an array GEP with:
 // pointer width, in LLVM spelling. A target property, read from the target

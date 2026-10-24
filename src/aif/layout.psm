@@ -1,16 +1,20 @@
 // Struct sizes and the type graph they are computed over. Layout is what turns a
 // tier into a byte figure, which is what a region budget is checked against.
 
+import symbols.type_registry
 import ast.nodes
 import ast.types
 import ast.int_width
 import ast.float_width
 import common.text
 import common.diagnostics
+import common.source_files
 import common.target
 import std.string
 import aif.model
 import ir.bridge
+import aifcore.layout_search
+import aifcore.nominals
 
 // ---------------------------------------------------------------------------
 // Building the fact graph

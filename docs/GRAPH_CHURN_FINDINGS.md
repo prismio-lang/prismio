@@ -1,6 +1,6 @@
 # What `graph_churn_*` and `register_pressure_torture` found
 
-Written 2026-10-16, updated 2026-10-21. Five benchmarks were added (`benchmarks/hosted/*/graph_churn.*` and
+Written 2026-10-16, updated 2026-10-21 and 2026-10-24 (the allocator, below the results table). Five benchmarks were added (`benchmarks/hosted/*/graph_churn.*` and
 `register_pressure_torture` in `adversarial.*`). Writing the Prismio arm of the first four turned up
 seven compiler problems. Five are fixed (the sections headed *Fixed* below, each with a reproducer small enough
 to paste, its cause and its guard); two are open. This file is the record, and `docs/KNOWN_ISSUES.md` points here
@@ -35,6 +35,21 @@ small Vec's header and first element block became one allocation (below).
 | `graph_churn_full` | 111.2 ms | 81.5 ms | 76.1 ms | 1.99x | 1.68x | 1.63x | **1.36x** | 1.46x | 96.0 MB | **7.0 MB** | 19.3x | **1.47x** |
 | `register_pressure_torture` | 14.9 ms | 15.0 ms | 14.9 ms | 1.00x | | | 1.00x | 1.00x | 1.7 MB | 1.7 MB | 1.05x | 1.05x |
 
+**2026-10-24, the allocator** (`docs/ALLOCATOR_PLAN.md`, stages 0-3): codegen allocates objects through
+`rt_base_alloc` and a slab sits behind it. One interleaved sweep, 9 runs, against the build before it:
+
+| Benchmark | before | **slab** | C++ | Rust | vs C++ | vs Rust |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `graph_churn_single` | 22.3 ms | **17.4 ms** | 17.2 ms | 17.3 ms | **1.01x** | 1.01x |
+| `graph_churn_alloc` | 35.1 ms | **28.4 ms** | 34.2 ms | 33.1 ms | **0.83x** | 0.86x |
+| `graph_churn_transfer` | 36.3 ms | **28.2 ms** | 27.4 ms | 23.8 ms | **1.03x** | 1.19x |
+| `graph_churn_full` | 109.6 ms | **76.1 ms** | 79.3 ms | 74.2 ms | **0.96x** | 1.03x |
+
+("before" already allocated objects through the seam, with the old recycler behind it; that step alone took
+`graph_churn_alloc` from 52.2 to 37.6 ms in its own sweep.) Peak RSS rose by 0.1-0.5 MB (thread caches hold up
+to 128 blocks per class). The ledger counts below were re-run after the `--verify` fix of the same day, which had
+been letting LLVM delete ledger allocations: unchanged.
+
 `--verify` on all four graph arms (`graph_churn_*` built from `suite.psm`): 0 leaked, 0 violations, and the
 peak live bytes are what the program needs rather than what it ever allocated.
 
@@ -57,12 +72,11 @@ Read three things from it.
    ~0.8M, because C++ and Rust keep each `ChurnNode` inline in the vector and own one buffer per node, while
    Prismio boxes a struct that owns a `Vec`: the node, then the `Vec` (header and elements together, since the fusion)
    -- two blocks per node where it was three, and a pointer chase on every `nodes[u].field`. Two things would close
-   the rest, and neither is built: storing a struct that owns a Vec inline in the element Vec (per-element release
-   hooks on overwrite, removal and teardown, and a shell-free push), and a small-block allocator of the runtime's
-   own (the recycler in `lang_runtime.c` is capped at 512 blocks, off once a program spawns, and asks the system
-   allocator for each block's size on every free; codegen allocates objects with libc `malloc` directly).
-   The second is a cross-cutting change to the "any block is a malloc block" invariant `C_CODE_STYLE.md` states, and
-   needs its own design.
+   the rest. The second is built (2026-10-24): a small-block allocator of the runtime's own, the slab in
+   `docs/ALLOCATOR_PLAN.md`, which took the four arms to 0.83x-1.03x of C++ (the table above) and made the
+   "any block is a malloc block" invariant one-way. The first is not: storing a struct that owns a Vec inline in
+   the element Vec (per-element release hooks on overwrite, removal and teardown, and a shell-free push), which
+   would halve the allocations rather than make each cheaper.
 2. **`register_pressure_torture` is at parity, and that is a tripwire, not a victory.** All
    three arms go through LLVM, so register allocation is shared; a regression would mean the
    IR Prismio emits changed shape. Its first version had independent updates, every compiler

@@ -1,0 +1,406 @@
+// How much of a block an arena has to cover (M3.2): the statement range from the first statement that puts something in
+// the arena to the last statement that still reads something it holds.
+//
+// Three ranges bracket the same arena from different sides. `arenaStmtRange` is the range of an arena that exists, and
+// describes what it actually holds. `candStmtRange` is the range of one that does not exist yet and may never, and the
+// obligation check needs it before deciding: the benchmarked `g2.psm` is rejected on its two opaque calls before any arena
+// is placed. It is an over-approximation on purpose, and that is the safety argument in one line: its served set drops every
+// clause that reads a placement, so it contains the set the placed arena will compute, and a superset can only widen the
+// range or force "whole block", never narrow it. `arenaEmitRange` picks between them, which is what codegen brackets with.
+//
+// **Every uncertainty returns "whole block" rather than a guess**: a range that is too wide is the arena we already emit,
+// and a range that is too narrow frees memory the program is still using.
+//
+// Each range function reports through its own pair of variables: `arenaLo`/`arenaHi`, `candLo`/`candHi`, `emitLo`/`emitHi`.
+// They call one another, so one shared pair would have the inner answer overwrite the outer one.
+
+import aifcore.arenas
+import aifcore.bits
+import aifcore.brackets
+import aifcore.call_graph
+import aifcore.constants
+import aifcore.keys
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import aifcore.tiers
+import std.raw
+import std.vec
+
+internal let mut arenaLo = 0
+internal let mut arenaHi = 0
+internal let mut candLo = 0
+internal let mut candHi = 0
+internal let mut emitLo = 0
+internal let mut emitHi = 0
+private let mut overLo = 0
+private let mut overHi = 0
+
+// One buffer pair per builder rather than one shared pair. The placed-arena fill loop asks `siteArenaScope`, which can run
+// the whole bracket pass, which asks the candidate range, and a shared pair would have the inner answer overwrite the outer
+// one halfway through building it.
+private let mut placedServed: Vec<Int>
+private let mut placedAt: Vec<Int>
+private let mut candServed: Vec<Int>
+private let mut candAt: Vec<Int>
+private let mut rangeScratchCap = 0
+// The sites `candServed` / `candAt` currently hold, so clearing is proportional to what was served.
+private let mut candDirty: Vec<Int>
+private let mut candClearCap = 0
+private let mut rangeKeyMark: Vec<Int>
+private let mut rangeKeyStamp = 0
+
+// Memoised per scope, and safe to memoise because nothing it reads changes after the solve converges. It has to be:
+// `aif_place_arenas` asks the obligation about every scope in turn while it is setting arena flags, and the placement pass
+// asks it again afterwards. The two must get the same answer, or a scope gets an arena that nothing brackets into.
+private let mut candRangeLo: Vec<Int>
+private let mut candRangeHi: Vec<Int>
+private let mut candRangeState: Vec<Int>
+
+private let mut extentsOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+internal fn extentsOpen() {
+    if (extentsOpened) { return }
+    extentsOpened = true
+    placedServed = []
+    placedAt = []
+    candServed = []
+    candAt = []
+    candDirty = []
+    rangeKeyMark = []
+    candRangeLo = []
+    candRangeHi = []
+    candRangeState = []
+}
+
+internal fn extentsReset() {
+    extentsOpened = false
+    extentsOpen()
+    rangeScratchCap = 0
+    candClearCap = 0
+    rangeKeyStamp = 0
+}
+
+// The range over a served set the caller supplies. `served[k]` is 1 for each site the arena takes and `at[k]` is the
+// statement of `scope` at which that site's memory appears, or -1 where nothing positions it. `useList` says the caller
+// kept `list`, the served sites and nothing else; the answer does not depend on the order they are visited in.
+private fn stmtRangeOver(scope: Int, served: Vec<Int>, at: Vec<Int>, useList: Bool, list: Vec<Int>) -> Bool {
+    let mut lo = -1
+    let mut hi = -1
+    let mut any = false
+
+    let mut nscan = siteCount
+    if (useList) { nscan = list.length }
+    for i in 0..<nscan {
+        let mut k = i
+        if (useList) { k = list[i] }
+        if (served[k] == 0) { continue }
+        any = true
+        if (at[k] < 0) { return false }                // unpositioned: cannot narrow
+        if (lo < 0 or at[k] < lo) { lo = at[k] }
+        if (at[k] > hi) { hi = at[k] }
+    }
+    if (any == false or lo < 0) { return false }
+
+    // The end is the last *use*, not the last allocation, and it is asked of the keys because a value outlives the
+    // statement that made it. A key declared in a nested block is declined outright: `keyLastStmt` is recorded against
+    // that block's numbering, and there is no way from here to say which statement of `scope` contains it.
+    //
+    // With the served sites in hand the keys that hold one are the union of their site -> keys rows. Each key is judged
+    // once, and every verdict below is a decline or a maximum, so the order the keys are taken in does not change the
+    // answer.
+    if (useList) {
+        bracketIndexBuild()
+        while (rangeKeyMark.length < keyCount) { rangeKeyMark.push(0) }
+        rangeKeyStamp = rangeKeyStamp + 1
+    }
+    let mut nkeys = keyCount
+    if (useList) { nkeys = list.length }
+    for ki in 0..<nkeys {
+        let mut nrow = 1
+        if (useList) { nrow = siteKeyEnd(list[ki]) - siteKeyStart(list[ki]) }
+        for kj in 0..<nrow {
+            let mut k = ki
+            if (useList) {
+                k = siteKeyAt(siteKeyStart(list[ki]) + kj)
+                if (k >= rangeKeyMark.length or rangeKeyMark[k] == rangeKeyStamp) { continue }
+                rangeKeyMark[k] = rangeKeyStamp
+            }
+            if (keyKind[k] != AIF_KEY_VAR) { continue }
+            // Over the sites the key points to rather than every site: the set is sparse, and the full scan made this
+            // keys x sites per candidate scope.
+            let mut holds = useList
+            let mut wi = 0
+            while (wi < bitsWordCount(pt[k]) and holds == false) {
+                let mut x = bitsWord(pt[k], wi)
+                while (x != 0) {
+                    let s = wi * BITS_WORD_BITS + x.trailingZeros()
+                    x = x & (x - 1)
+                    if (s < siteCount and served[s] != 0) {
+                        holds = true
+                        break
+                    }
+                }
+                wi = wi + 1
+            }
+            if (holds == false) { continue }
+            let mut d = -1
+            if (k < varScope.length) { d = varScope[k] }
+            if (d < 0) { return false }                // no declaration on record
+            // A key belonging to a *different* function needs no position here. It lives in the bracketed extent, and
+            // `regionConfined` already proved every one of those activations is gone before the region exits: that is
+            // the whole content of obligation 3. Declining on it would decline every bracketed region.
+            if (scopeOwner[d] != scopeOwner[scope]) { continue }
+            if (d != scope) { return false }           // same function, deeper: position unknown
+            let lu = aif_key_last_stmt(k)
+            if (lu < 0) { return false }               // no use on record: do not narrow
+            if (lu > hi) { hi = lu }
+        }
+    }
+
+    if (hi < lo) { return false }
+    overLo = lo
+    overHi = hi
+    return true
+}
+
+private fn rangeScratchEnsure() {
+    extentsOpen()
+    if (siteCount <= rangeScratchCap) { return }
+    while (placedServed.length < siteCount) {
+        placedServed.push(0)
+        candServed.push(0)
+        placedAt.push(-1)
+        candAt.push(-1)
+    }
+    rangeScratchCap = siteCount
+}
+
+// M3.2c-i. The range of an arena that exists. Positions are taken in `scope`'s own numbering. For a lexically served site
+// that is the site's own `stmt`; for a bracketed one it is the *call's* statement, because the site's own position is an
+// index into the callee's block and says nothing about where this region opens.
+internal fn arenaStmtRange(scope: Int) -> Bool {
+    if (scope < 0 or scope >= scopeCount or scopeArena[scope] == 0) { return false }
+    // Before the fill loop, not inside it: `siteArenaScope` below runs this on its first call, and a bracket pass starting
+    // halfway through the fill would reach the candidate range with the arrays half written.
+    bracketPlaceNow()
+    if (siteCount == 0) { return false }
+    rangeScratchEnsure()
+
+    for k in 0..<siteCount {
+        placedServed[k] = 0
+        placedAt[k] = -1
+        if (siteArenaScope(k) != scope) { continue }
+        placedServed[k] = 1
+        if (siteScope[k] == scope) {
+            placedAt[k] = siteStmt[k]               // lexical: the site is a statement here
+            continue
+        }
+        for b in 0..<bracketCount {                 // bracketed: ask the call
+            if (bracketScope(b) != scope) { continue }
+            if (bracketCallScope(b) != scope) { continue }
+            bracketReachable(bracketCallee(b), candExtent)
+            if (bitsTest(candExtent, siteFn[k]) == false) { continue }
+            if (brCallStmt[b] < 0) {
+                placedAt[k] = -1
+                break
+            }
+            if (placedAt[k] < 0 or brCallStmt[b] < placedAt[k]) { placedAt[k] = brCallStmt[b] }
+        }
+    }
+
+    let noRanges: Vec<Int> = []
+    if (stmtRangeOver(scope, placedServed, placedAt, false, noRanges)) {
+        arenaLo = overLo
+        arenaHi = overHi
+        return true
+    }
+    return false
+}
+
+// M3.2c-ii. The range of an arena that does not exist yet, and may never. It is the M3.1 circularity again (the range
+// depends on which sites are served, which depends on acceptance, which depends on the range) and it breaks the same way:
+// the served set here is drawn only from the call graph, the points-to graph and scope shape. Nothing below reads
+// `scopeArena`.
+private fn candRangeCompute(scope: Int) -> Bool {
+    if (scope < 0 or scope >= scopeCount) { return false }
+    if (scopeNode[scope] == 0) { return false }       // no block for codegen to bracket
+    // SPEC 5.2 brackets a written `region` at its braces and M3.2d does not narrow it, so neither may the obligation that
+    // guards it.
+    if (scopeRegionName[scope] >= 0) { return false }
+    let owner = scopeOwner[scope]
+    if (owner < 0 or owner >= fnCount) { return false }
+    if (siteCount == 0) { return false }
+
+    bracketPrepare()
+    rangeScratchEnsure()
+    bracketIndexBuild()
+    callerEdgesBuild()
+    scopeSitesBuild()
+
+    // Only the entries the last call set are set: it kept them in `candDirty`, so clearing is proportional to what was
+    // served rather than to every site.
+    if (candClearCap != rangeScratchCap) {
+        for k in 0..<siteCount {
+            candServed[k] = 0
+            candAt[k] = -1
+        }
+        candClearCap = rangeScratchCap
+    } else {
+        for i in 0..<candDirty.length {
+            candServed[candDirty[i]] = 0
+            candAt[candDirty[i]] = -1
+        }
+    }
+    intsClear(candDirty)
+
+    // What an arena here would serve lexically: `arenaWouldServe`, minus its one clause that reads `scopeArena` ("a nearer
+    // arena claimed it"), which can only ever take a site away.
+    for ki in scopeSiteStart(owner)..<scopeSiteEnd(owner) {
+        let k = scopeSiteAt(ki)
+        if (siteFn[k] != owner) { continue }        // a lexical arena and its site share a function
+        if (aif_tier_of(k) != AIF_T1) { continue }
+        if (siteNoStack[k] != 0 or siteInContainer[k] != 0) { continue }
+        if (siteKind[k] == AIF_KIND_LIST) { continue }
+        if (siteE[k] < 0) { continue }
+        if (isAncestorOrSelf(scope, siteScope[k]) == false) { continue }
+        if (scopeLca(siteE[k], scope) != scope) { continue }
+        candServed[k] = 1
+        candDirty.push(k)
+        if (siteScope[k] == scope) { candAt[k] = siteStmt[k] }
+        // Otherwise it stays -1 and `stmtRangeOver` declines, which is what the placed range does with the same site: a
+        // position in a nested block is not a position in this one.
+    }
+
+    // And what a bracketed call sitting here would serve. The edge set is the one the placement pass can draw from, every
+    // call in this scope belonging to the function that owns it, filtered by the obligations that mention no statement.
+    for ei in callerEdgeStart(owner)..<callerEdgeEnd(owner) {
+        let e = callerEdgeAt(ei)
+        if (scopeLca(edgeScope[e], scope) != scope) { continue }
+        if (bracketEdgeOkAt(scope, owner, e, rangeExtent, rangeConfined, false) == false) { continue }
+
+        // Does this edge put anything in the arena at all? A bracket that serves nothing contributes no statement.
+        // Counting it anyway would stretch the range over calls the arena never sees: on `g2.psm` that is the difference
+        // between an extent of [1,2] and one that swallows a clock.
+        let mut serves = false
+        let mut wi = 0
+        while (wi < bitsWordCount(rangeExtent) and serves == false) {
+            let mut x = bitsWord(rangeExtent, wi)
+            while (x != 0 and serves == false) {
+                let f = wi * BITS_WORD_BITS + x.trailingZeros()
+                x = x & (x - 1)
+                if (f >= fnCount) { break }
+                for i in fnSiteFirst[f]..<fnSiteFirst[f + 1] {
+                    let k = fnSiteList[i]
+                    let tier = aif_tier_of(k)
+                    if (tier != AIF_T1 and tier != AIF_T2) { continue }      // the bracketed gate
+                    if (siteNoStack[k] != 0) { continue }
+                    serves = true
+                    break
+                }
+            }
+            wi = wi + 1
+        }
+        if (serves == false) { continue }
+
+        // The call has to be a statement of *this* block. `stmt` indexes the block the call sits in and a nested one
+        // numbers its own from 0, so a call one level down cannot be placed in this numbering.
+        if (edgeScope[e] != scope or edgeStmt[e] < 0) { return false }
+
+        for wj in 0..<bitsWordCount(rangeExtent) {
+            let mut x = bitsWord(rangeExtent, wj)
+            while (x != 0) {
+                let f = wj * BITS_WORD_BITS + x.trailingZeros()
+                x = x & (x - 1)
+                if (f >= fnCount) { break }
+                for i in fnSiteFirst[f]..<fnSiteFirst[f + 1] {
+                    let k = fnSiteList[i]
+                    let tier = aif_tier_of(k)
+                    if (tier != AIF_T1 and tier != AIF_T2) { continue }
+                    if (siteNoStack[k] != 0) { continue }
+                    if (candServed[k] == 0) { candDirty.push(k) }
+                    candServed[k] = 1
+                    if (candAt[k] < 0 or edgeStmt[e] < candAt[k]) { candAt[k] = edgeStmt[e] }
+                }
+            }
+        }
+    }
+
+    return stmtRangeOver(scope, candServed, candAt, true, candDirty)
+}
+
+internal fn candStmtRange(scope: Int) -> Bool {
+    extentsOpen()
+    if (scope < 0 or scope >= scopeCount) { return false }
+    if (scope >= candRangeState.length) {
+        while (candRangeState.length <= scope) {
+            candRangeLo.push(-1)
+            candRangeHi.push(-1)
+            candRangeState.push(0)
+        }
+    }
+    if (candRangeState[scope] == 0) {
+        let ok = candRangeCompute(scope)
+        if (ok) {
+            candRangeState[scope] = 1
+            candRangeLo[scope] = overLo
+            candRangeHi[scope] = overHi
+        } else {
+            candRangeState[scope] = -1
+            candRangeLo[scope] = -1
+            candRangeHi[scope] = -1
+        }
+    }
+    if (candRangeState[scope] < 0) { return false }
+    candLo = candRangeLo[scope]
+    candHi = candRangeHi[scope]
+    return true
+}
+
+// M3.2d. The statement range codegen brackets an automatically placed arena with, or false for "the whole block", which is
+// what every arena got before the range existed.
+//
+// Two ranges bracket the same arena from opposite sides and this picks between them. The placed range's is the tighter and
+// describes what the arena actually holds; the candidate's is the one the opaque-call obligation was checked against, and
+// emitting anything wider than it would put an opaque call inside the arena. The placed range lies inside the candidate's by
+// construction, so the first branch is the one that fires. The second is what happens if that argument is ever wrong, and it
+// is safe rather than clever: it falls back to the range the obligation actually cleared, never to the whole block.
+internal fn arenaEmitRange(scope: Int) -> Bool {
+    if (scope < 0 or scope >= scopeCount or scopeArena[scope] == 0) { return false }
+    if (scopeRegionName[scope] >= 0) { return false }   // `region` brackets its braces
+
+    let narrowed = candStmtRange(scope)
+    let clo = candLo
+    let chi = candHi
+
+    if (arenaStmtRange(scope)) {
+        let plo = arenaLo
+        let phi = arenaHi
+        if (narrowed == false or (plo >= clo and phi <= chi)) {
+            emitLo = plo
+            emitHi = phi
+            return true
+        }
+    }
+    if (narrowed) {
+        emitLo = clo
+        emitHi = chi
+        return true
+    }
+    return false
+}
+
+// M3.2d's two accessors. -1 from either means "bracket the whole block", which is the lexical extent and what codegen did
+// before the range existed. They are two calls rather than one out-parameter because the frontend has no way to spell one.
+public fn aif_arena_range_first(node: Ptr) -> Int {
+    let s = autoArenaScopeAtNode(node)
+    if (s < 0 or arenaEmitRange(s) == false) { return -1 }
+    return emitLo
+}
+
+public fn aif_arena_range_last(node: Ptr) -> Int {
+    let s = autoArenaScopeAtNode(node)
+    if (s < 0 or arenaEmitRange(s) == false) { return -1 }
+    return emitHi
+}

@@ -19,6 +19,9 @@
 // deliberate -- see monoInstantiateFunction for why that matters beyond this
 // file.
 
+import symbols.bindings
+import symbols.type_registry
+import symbols.declarations
 import ast.nodes
 import ast.types
 import common.text

@@ -1,0 +1,45 @@
+// FFI 5.2 `produce(f)` with an `f` that is not the seam's `rt_free`. The String is
+// copied in at the call and `f` releases the library's block there and then, so by
+// the time a result has been pushed, returned and read, the library has had every one
+// of its blocks back -- and what Prismio releases later is its own copy. Built with
+// strings.c by run_produce_deallocator_test, which also reads the IR and runs it
+// under `--verify`.
+
+import std.io
+import std.string
+
+extern fn lib_string_make(n: Int) -> String produce(lib_string_free)
+extern fn lib_string_released() -> Int
+// libc's own pairing: `produce(free)` is libc `free` now, not the seam's release.
+extern fn strdup(s: String borrow) -> String produce(free)
+
+fn made(count: Int) -> Vec<String> {
+    let mut out: Vec<String> = []
+    for i in 0..<count {
+        out.push(lib_string_make(i))
+    }
+    return out
+}
+
+fn main() -> Int {
+    let items = made(3)
+    if (lib_string_released() != 3) {
+        print("FAIL: the library got back ".concat(lib_string_released().toString(), " of 3 blocks"))
+        return 1
+    }
+    if (items[2].equals("item-2 from the library's own heap") == false) {
+        print("FAIL: the copy reads ".concat(items[2]))
+        return 1
+    }
+
+    let mut copies: Vec<String> = []
+    for word in ["a string longer than the inline form", "short"] {
+        copies.push(strdup(word))
+    }
+    if (copies[0].equals("a string longer than the inline form") == false or copies[1].equals("short") == false) {
+        print("FAIL: a strdup'd copy reads wrong")
+        return 1
+    }
+    print("PASS")
+    return 0
+}

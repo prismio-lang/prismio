@@ -103,7 +103,7 @@ import std.unicode_case
 // because the loop form leaks -- which capped these functions at 150 000
 // characters. The write builtin does not check its upper bound; every use below
 // is immediately after a `str_with_capacity` whose length bounds the loop.
-internal extern fn str_with_capacity(length: Int) -> String produce(free)
+internal extern fn str_with_capacity(length: Int) -> String produce(rt_free)
 
 // Optional search accelerators, not part of the irreducible String core.
 // `str_find_byte` delegates a one-byte scan to libc. `str_find_byte_pair` is a

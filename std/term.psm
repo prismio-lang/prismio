@@ -26,6 +26,7 @@ import std.display
 import std.string
 
 private extern fn prismio_rt_color_supported(fd: Int) -> Int
+private extern fn prismio_rt_is_terminal(fd: Int) -> Int
 
 // ---------------------------------------------------------------------------
 // How every method here is built
@@ -142,6 +143,12 @@ public fn colorEnabled() -> Bool {
 // The same question for stderr, which is redirected independently of stdout.
 public fn stderrColorEnabled() -> Bool {
     return prismio_rt_color_supported(2) == 1
+}
+
+// Whether the stream `fd` (1 for stdout, 2 for stderr) is a terminal, and nothing more: a
+// `FORCE_COLOR` that makes `colorEnabled()` say yes for a pipe does not make this one.
+public fn isTerminal(fd: Int) -> Bool {
+    return prismio_rt_is_terminal(fd) == 1
 }
 
 impl String {

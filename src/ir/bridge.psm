@@ -152,41 +152,18 @@ public extern fn ir_switch_begin_typed(type: String, value: String, defaultLabel
 public extern fn ir_switch_case_value(switchId: Int, type: String, value: String, label: Int) -> Int
 
 // Loop context (break/continue targets)
-public extern fn ir_loop_push(continueLabel: Int, breakLabel: Int)
-public extern fn ir_loop_pop()
-public extern fn ir_loop_continue_label() -> Int
-public extern fn ir_loop_break_label() -> Int
 // `outer@ for ...`. ir_loop_label names the innermost loop once its drop barrier
 // is pushed; the `_named` reads answer for the innermost loop carrying a label.
-public extern fn ir_loop_label(name: String borrow)
-public extern fn ir_loop_break_label_named(name: String borrow) -> Int
-public extern fn ir_loop_continue_label_named(name: String borrow) -> Int
-public extern fn ir_loop_drop_floor_named(name: String borrow) -> Int
-public extern fn ir_loop_region_depth_named(name: String borrow) -> Int
 
 // Move tracking (ownership / MVS)
-public extern fn ir_clear_moved()
-public extern fn ir_mark_moved(name: String)
-public extern fn ir_unmark_moved(name: String)
-public extern fn ir_is_moved(name: String) -> Int
 // Exclusive branches: each arm starts from the moved set the branches opened with,
 // and after them the set is the union of the arms that can fall through.
-public extern fn ir_moved_branches_begin()
-public extern fn ir_moved_branch_end(diverges: Int)
-public extern fn ir_moved_branches_end(hasFallthroughArm: Int)
 // A scoped, conservative capability for `list_set_exclusive`: local list_new
 // starts exclusive; any operation that can expose an element or the handle
 // clears it. Unlike borrowed state this belongs to the List owner, not a value
 // read from it.
-public extern fn ir_mark_list_exclusive(name: String)
-public extern fn ir_unmark_list_exclusive(name: String)
-public extern fn ir_is_list_exclusive(name: String) -> Int
 
 // Borrow tracking (non-owning bindings: let/inout params)
-public extern fn ir_clear_borrowed()
-public extern fn ir_mark_borrowed(name: String)
-public extern fn ir_unmark_borrowed(name: String)
-public extern fn ir_is_borrowed(name: String) -> Int
 
 // Globals
 public extern fn ir_global_string(name: String, strContent: String)
@@ -266,11 +243,10 @@ public extern fn ir_alloc_cycle(structName: String) -> Int
 // where it was called from -- so the call site brackets it instead.
 public extern fn ir_arena_hint_begin()
 public extern fn ir_arena_hint_end()
-public extern fn ir_region_enter()
-public extern fn ir_region_exit()
-public extern fn ir_region_depth() -> Int
-public extern fn ir_loop_region_depth() -> Int
 public extern fn ir_free_object(value: String)
+// A C String result whose `produce(f)` names a deallocator other than the seam's: copied
+// into a seam block, with `f` called on the original at once (llvm-api-backend.c).
+public extern fn ir_string_adopt(raw: String, length: String, deallocator: String) -> Int
 
 // AIF Level 4's second deallocator. A List is a handle plus an element block, so
 // the seam's fn(ptr) -> void cannot reclaim it; this routes to the runtime's own
@@ -373,26 +349,12 @@ public extern fn ir_list_flat_copy(dstValue: String, srcValue: String, fromValue
 public extern fn ir_list_flat_zero_append(listValue: String, countValue: String, stride: Int)
 // The flat-List guard's view of a callee: marked once per module, read at every
 // call site inside a guarded loop.
-public extern fn ir_mark_guard_safe_fn(name: String borrow, safe: Int)
-public extern fn ir_is_guard_safe_fn(name: String borrow) -> Int
-public extern fn ir_guard_safe_verdict(name: String borrow) -> Int
 // Loop range proofs (ir/ranges.psm): a fresh proof number per analysed loop copy,
 // which of this loop's access nodes it covers, and the receiver's element base the
 // preheader loaded for each. The node is our own AST; the base is interned.
-public extern fn ir_range_proof_new() -> Int
-public extern fn ir_range_proof_mark(node: Ptr, proof: Int, data: String borrow)
-public extern fn ir_range_proof_of(node: Ptr) -> Int
-public extern fn ir_range_proof_marked(node: Ptr) -> Int
-public extern fn ir_range_proof_data(node: Ptr) -> String alias
-public extern fn ir_range_trace(line: Int, proved: Int, total: Int)
 // Access facts (ir/nowrap.psm): the pass that proved a `+`/`-` node cannot wrap.
 // `_of` is what codegen asks, which PRISMIO_NOWRAP=0 answers 0; `_marked` is the mark.
-public extern fn ir_nowrap_mark(node: Ptr, pass: Int)
-public extern fn ir_nowrap_of(node: Ptr) -> Int
-public extern fn ir_nowrap_marked(node: Ptr) -> Int
 // The same pass's form for a `%` by a literal (ir/residues.psm), 0 to keep it.
-public extern fn ir_rem_form_mark(node: Ptr, pass: Int, form: Int)
-public extern fn ir_rem_form_of(node: Ptr, pass: Int) -> Int
 public extern fn ir_array_alloca(elemType: String, count: Int) -> Int
 public extern fn ir_array_alloca_zeroed(elemType: String, count: Int) -> Int
 public extern fn ir_array_copy(elemType: String, count: Int, src: String) -> Int
@@ -547,28 +509,17 @@ public extern fn ir_data_store_ptr(type: String, value: String, ptrValue: String
 public extern fn ir_copy_struct(structName: String, dest: String, src: String)
 
 // Helpers
-public extern fn ir_get_temp_name(tempNum: Int) -> String produce(free)
-public extern fn ir_get_label_name(labelNum: Int) -> String produce(free)
-public extern fn ir_register_global_name(name: String)
-public extern fn ir_is_global_name(name: String) -> Int
-public extern fn ir_reset_globals()
-public extern fn ir_reset_types()
+public extern fn ir_get_temp_name(tempNum: Int) -> String produce(rt_free)
+public extern fn ir_get_label_name(labelNum: Int) -> String produce(rt_free)
 // Named-type registry, filled by sema before checking begins. Distinct from the
 // struct registry below, which holds field layouts and is filled by codegen:
 // this one only answers "is this identifier a struct, an enum, or neither?",
 // which a type annotation asks for every parameter of every function.
-public extern fn ir_declare_named_type(name: String, kind: Int)
-public extern fn ir_named_type_kind(name: String) -> Int
-public extern fn ir_reset_named_types()
 
 // Top-level declaration index (REQUIREMENTS 16), filled by
 // indexModuleDeclarations() in ast/types.psm before either sema or codegen runs.
 // `ir_decl_at` returns the AST pointer that was indexed -- our own memory, not a
 // fresh allocation.
-public extern fn ir_reset_decl_index()
-public extern fn ir_index_decl(name: String, node: Ptr)
-public extern fn ir_decl_count(name: String) -> Int
-public extern fn ir_decl_at(name: String, index: Int) -> Ptr
 
 // Selective imports (v0.1 3.5): which names a file took from a module, when it
 // took some rather than all. Recorded by the merge, which is the only place that
@@ -576,39 +527,16 @@ public extern fn ir_decl_at(name: String, index: Int) -> Ptr
 // record for a module imported it wholesale, so absence means "everything" --
 // `ir_select_active` is the guard that keeps the lookup off the hot path for
 // every program that does not use the syntax.
-public extern fn ir_select_record(file: Int, module: String, name: String)
-public extern fn ir_select_active(file: Int) -> Int
-public extern fn ir_select_any(file: Int, module: String) -> Int
-public extern fn ir_select_has(file: Int, module: String, name: String) -> Int
-public extern fn ir_reset_selections()
 
-public extern fn ir_import_record(file: Int, module: String)
-public extern fn ir_file_imports_module(file: Int, module: String) -> Int
-public extern fn ir_reset_imports()
 // `import std.io as io`. The alias is per file and never replaces the module's
 // import path -- ir_import_alias_target answers "" for a name this file did not
 // bind, which is also how a duplicate `as` is detected at the second one.
-public extern fn ir_import_alias_record(file: Int, alias: String, module: String)
-public extern fn ir_import_alias_target(file: Int, alias: String) -> String alias
-public extern fn ir_reset_import_aliases()
 
-public extern fn ir_extern_decl_record(file: Int, name: String, visibility: Int)
-public extern fn ir_file_declares_extern(file: Int, name: String) -> Int
-public extern fn ir_caller_can_access_extern(callerFile: Int, qualifier: String, name: String) -> Int
-public extern fn ir_caller_extern_hidden_level(callerFile: Int, qualifier: String, name: String) -> Int
-public extern fn ir_reset_extern_decls()
 
 // A function's return type, keyed by its mangled symbol. Its own table rather
 // than a "$fn$" binding: those were permanent, so every identifier lookup in
 // every function body scanned past one per function in the module.
-public extern fn ir_set_fn_return_type(symbol: String, returnType: String)
-public extern fn ir_get_fn_return_type(symbol: String) -> String alias
-public extern fn ir_reset_fn_return_types()
 
-public extern fn ir_register_struct(name: String)
-public extern fn ir_register_struct_field(structName: String, fieldName: String, fieldType: String)
-public extern fn ir_is_struct_type_name(name: String) -> Int
-public extern fn ir_get_struct_field_index(structName: String, fieldName: String) -> Int
 // M4.2. Whether a container may store elements of this type **inline** -- the
 // element bodies in the list rather than pointers to separately allocated ones
 // -- and how many bytes one of them takes. Both are questions about the layout
@@ -617,86 +545,41 @@ public extern fn ir_get_struct_field_index(structName: String, fieldName: String
 // is the module data layout's, so a --target build sizes for the target.
 public extern fn ir_struct_is_flat(name: String) -> Int
 public extern fn ir_struct_size(name: String) -> Int
-public extern fn ir_get_struct_field_count(name: String) -> Int
-public extern fn ir_get_struct_field_type_at(structName: String, index: Int) -> String alias
 public extern fn ir_struct_field_offset(name: String, index: Int) -> Int
 public extern fn ir_struct_field_size(name: String, index: Int) -> Int
 // Both return an *interned* type name -- ir_add_struct_field and add_binding
 // each store ir_intern(type), and the fallbacks ("i32", "i64") are literals. No
 // branch allocates, so neither is a value the caller could release.
-public extern fn ir_get_struct_field_type(structName: String, fieldName: String) -> String alias
 // A variant's value is any integer its enum's representation holds, so absence is
 // asked of ir_enum_has_variant: a negative value is a variant, not a miss.
-public extern fn ir_register_enum_variant(enumName: String, variantName: String, value: I64)
-public extern fn ir_get_enum_variant(enumName: String, variantName: String) -> I64
-public extern fn ir_enum_has_variant(enumName: String, variantName: String) -> Int
-public extern fn ir_get_enum_variant_count(enumName: String) -> Int
-public extern fn ir_get_enum_variant_value_at(enumName: String, index: Int) -> I64
-public extern fn ir_set_var_type(name: String, varType: String)
-public extern fn ir_set_global_var_type(name: String, varType: String)
-public extern fn ir_get_var_type(name: String) -> String alias
-public extern fn ir_has_var_type(name: String) -> Int
 
 // Lexical scoping. A block pushes on entry and pops on exit; a binding is
 // visible only until its scope is popped, and re-declaring a name shadows the
 // outer one rather than overwriting it.
-public extern fn ir_scope_push()
-public extern fn ir_scope_pop()
 
 // Loop barriers, so move checking can tell a binding the loop created from one
 // it inherited. Moving out of the latter inside a loop repeats every iteration.
-public extern fn ir_loop_barrier_push()
-public extern fn ir_loop_barrier_pop()
-public extern fn ir_binding_predates_loop(name: String) -> Int
 // M2.1c. The binding an assignment is re-initialising, while its right-hand side
 // is checked. `acc = f(acc)` moves and immediately rebinds, so the move does not
 // repeat on the next iteration and the loop rule has to make that exception.
-public extern fn ir_set_reinit_target(name: String borrow)
-public extern fn ir_is_reinit_target(name: String borrow) -> Int
 
 // Scope drop lists (AIF Level 2). A floor is a binding-table watermark: the
 // current scope's for a block exit, the loop's for break/continue, 0 for a
 // return. Enumeration is reverse construction order.
 // `kind` is which deallocator reclaims the binding (IR_DROP_* in ir.psm). The
 // storage type cannot answer it: a String and a List are both `ptr`.
-public extern fn ir_mark_droppable(name: String borrow, kind: Int)
 // The reassignment half, and deliberately not is_droppable: a returned
 // accumulator must not be dropped at the scope exit and must still release every
 // value its assignments displace.
-public extern fn ir_mark_owns_slot(name: String borrow)
-public extern fn ir_binding_owns_slot(name: String borrow) -> Int
-public extern fn ir_scope_drop_floor() -> Int
-public extern fn ir_drop_barrier_push()
-public extern fn ir_drop_barrier_pop()
-public extern fn ir_loop_drop_floor() -> Int
-public extern fn ir_drop_count(floor: Int) -> Int
-public extern fn ir_drop_slot(floor: Int, i: Int) -> String alias
-public extern fn ir_drop_type(floor: Int, i: Int) -> String alias
-public extern fn ir_drop_kind(floor: Int, i: Int) -> Int
 
 // The LLVM-level name of the innermost binding, and whether that binding is
 // module-level. Both are shadowing-aware, which is what codegen needs to pick
 // between @global and %slot and to give sibling blocks separate stack slots.
-public extern fn ir_get_var_slot(name: String borrow) -> String alias
-public extern fn ir_var_is_global(name: String) -> Int
-public extern fn ir_mark_mutable(name: String)
-public extern fn ir_var_is_mutable(name: String) -> Int
-public extern fn ir_mark_inout(name: String)
-public extern fn ir_var_is_inout(name: String) -> Int
-public extern fn ir_mark_readonly_view(name: String)
-public extern fn ir_var_is_readonly_view(name: String) -> Int
 // The resolved byte pointer for a String binding: asked once where the binding
 // is made, so a byte loop does not ask per character. `-1` when the binding has
 // none -- a mutable one never does, because the value replacing it would be
 // defined in a block that need not dominate a later use.
-public extern fn ir_set_var_data(name: String borrow , value: Int)
-public extern fn ir_get_var_data(name: String borrow ) -> Int
 
-public extern fn ir_clear_var_types()
-public extern fn ir_clear_local_var_types()
-public extern fn ir_set_returned()
-public extern fn ir_has_returned() -> Int
-public extern fn ir_clear_returned()
 public extern fn ir_comment(comment: String)
 public extern fn ir_blank_line()
 

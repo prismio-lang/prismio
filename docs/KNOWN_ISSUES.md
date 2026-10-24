@@ -29,6 +29,7 @@ AArch64 backend, a benchmark arm and docs, none of the analysis):
 | [Language surface](#language-surface) | What the language does not do yet, and decisions worth knowing |
 | [Traits](#traits) | What the trait system deliberately leaves out |
 | [Concurrency](#concurrency) | Task and channel limits |
+| [The allocator](#the-allocator) | What the slab behind `rt_base_alloc` does not do yet, and where it is not built |
 | [Toolchain, packaging and tests](#toolchain-packaging-and-tests) | The `ums` fixture, linking, `.plib` coverage, cross builds |
 | [Platform](#platform) | Windows, WebAssembly and the VM-tested archives |
 | [Measuring this compiler](#measuring-this-compiler) | Guidance that has prevented wrong conclusions |
@@ -227,7 +228,7 @@ releases what its fields were given. Still open:
   in `items`, and each function's temporaries there lose their owner.
 - **A `let mut s = "lit"` that is not an owning accumulator** (so the literal is not cloned),
   later given both an owned value and an unowned one that is not itself a literal source, and
-  returned. See `key_may_return_untracked` in `../runtime/aif_support.c`.
+  returned. See `keyMayReturnUntracked` in `../src/aifcore/`.
 
 ### Library producers share one allocation site
 
@@ -254,7 +255,7 @@ the store would reclaim it, but is not sound across a `.plib`: `Process()` is in
 ### A container that may be handed a string literal releases none of its elements
 
 **Not re-run.** `keep.push(optionOr(x, "fallback"))` may push the literal itself, and a
-teardown would free `.rodata`; `container_may_hold_untracked` declines the element release,
+teardown would free `.rodata`; `containerMayHoldUntracked` declines the element release,
 which leaks the owned ones. A literal written at the push is copied in and does not count, nor
 does a String view. Copying at the push whenever the pushed value may be untracked would close
 it.
@@ -331,7 +332,17 @@ explicit worklist (`RESULTS-recursive-release-depth.md`).
 `../tools/aif_differential.py` compares with the in-compiler engine. **They agree on all 17
 default sources (re-run 2026-10-09)**, in both collection models: `[owned]`, the default, and
 `[as-is]`, the pre-Level-4 `--copyable-collections` model that stays as the second arm. Two
-sources outside that set disagree:
+sources outside that set disagree, and one inside it, `src/main.psm`, has since come to:
+
+### `src/main.psm`: three struct sites are T3 in the oracle and T2 in the engine
+
+Found 2026-10-24, and the same on the sources of `HEAD`, so it predates the working tree. The oracle tiers
+`UmsAstValue` (`ums/parser/parser.psm`, `parseValue`), `UmsLinkInput` and `UmsNativeInput`
+(`ums/targets/target.psm`) T3 with `E=Caller A=Shared`, where the engine says T2: each is returned to a
+caller that pushes it into a container or reads an element back into a binding. One more site is T0 in the
+engine and T1 in the oracle. The other sixteen default sources agree. `--why` on the engine's side names
+`E-BIND ums/model/lowering.psm` as the cause of the escape and nothing about sharing, which puts the
+difference in how an element read bound to a name is counted as a holder (`A-CONTAIN`), not in a tier clause.
 
 ### `benchmarks/hosted/prismio/suite.psm`, in the default (owned) model
 
@@ -350,6 +361,14 @@ has narrowed**: on 2026-10-09 every tier count agrees and the only difference is
 **one more oracle round (compiler 7, oracle 8)**, in *both* models. It is not a default source.
 A round is not a tier, but it is the same shape of disagreement (an extra propagation step in the
 oracle) and worth a look the next time either file is touched.
+
+### A zero-filled global `Vec` is not an empty one
+
+Found 2026-10-24 while porting `runtime/diagnostics.c`. The first `push` onto a module-level `Vec` writes
+through a null buffer and crashes, so a module that keeps one assigns `= []` before first use
+(`registryOpen` in `src/common/source_files.psm`). A global `Vec` cannot take an initializer
+(`global ... needs a constant initializer`), and a local one with no initializer is `= []` already
+(`test_159`), so the declaration is the one place the two differ.
 
 ---
 
@@ -819,6 +838,36 @@ mention of the argument types that produced it. Identical errors are reported on
 and not the shape. A generic function has the same behaviour. A note carrying the instantiation's
 argument types would fix both: `packInstantiate` and `monoInstantiateFunction` know them, the checker
 that reports does not.
+
+## The allocator
+
+Since 2026-10-24 `rt_base_alloc`/`rt_free` are a slab allocator on 64-bit macOS and Linux, and codegen
+allocates every heap object through them (`docs/ALLOCATOR_PLAN.md`, stages 0-3). What that plan has not
+built yet, in its stage order:
+
+- **Linux has never run it.** The slab compiles for any 64-bit `__unix__`, but every measurement and
+  every suite run is macOS. Expect `MAP_NORESERVE` to be honoured except under
+  `vm.overcommit_memory=2` or a small `RLIMIT_AS`, where the reservation is refused and every block
+  comes from libc (sound, and slower). `slab_free_shim.c` interposes with Darwin's `__interpose`
+  section only; an `LD_PRELOAD` build of it is not written. Stage 4 (reserve `PROT_NONE`, commit in
+  1 MiB steps) is what makes strict overcommit work.
+- **Memory never goes back to the OS.** A span stays with its size class for the life of the
+  process. A program that fills one class, frees it and moves to another keeps both resident (macOS
+  libmalloc segregates by size too, and measured the same: 321.7 MB against 323.9 MB; glibc
+  coalesces, so this is a regression there). Stage 5: span free counts and decommit.
+- **`--verify` never exercises the slab.** The ledger replaces the seam in a verify build, so
+  neither `prismio verify` nor the AIF differential can find a slab bug; `slab_stress.c` under
+  ASan and TSan and the shim are the checks (stage 6).
+- **A thread Prismio did not create shares the main thread's cache**, which is a data race,
+  unless it calls `prismio_memory_thread_enter` first (the arena hint's rule). There is no
+  `pthread_atfork` handler either; the runtime never forks itself (`posix_spawn`), so only foreign
+  code that forks and then allocates in the child can meet a held class lock.
+- **Windows keeps the old recycler** (`_msize`, 512 blocks, off once a thread exists), and 32-bit
+  and freestanding targets use libc's allocator directly (stage 7).
+- **No mimalloc or jemalloc reference arm.** Every comparison is against libmalloc and the C++/Rust
+  arms, which use it; "faster than the system allocator" is all the numbers show.
+- **Two Prismio runtimes in one process each have a slab**, and a block from one reaching the
+  other's `rt_free` is handed to libc `free` (`docs/INTEROP_PLAN.md`, D10).
 
 ## Concurrency
 

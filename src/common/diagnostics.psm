@@ -1,93 +1,388 @@
-// Diagnostics FFI.
+// Diagnostics: rendering a message with the source line it is about, and the error accounting
+// behind every message the compiler prints.
 //
-// The renderer lives in runtime/diagnostics.c because it needs the original text
-// of the file a node came from, which the frontend has thrown away by the time it
-// reports anything -- and because `resolveImports` flattens every module into a
-// single AST, so "which file" has to travel on the node itself as an id into the
-// registry rather than being implied by context.
+// Prismio has no varargs, so a message is composed by the caller with `concat` and handed over
+// finished. A located diagnostic points at a file id from `common.source_files`; `len` is the
+// width of the caret run -- the length of the token the node starts at -- and may be 0 for "just
+// point at the column".
 //
-// Prismio has no varargs, so a message is composed here with str_concat and
-// handed over finished.
+// Output goes to stderr, because a diagnostic is not program output. It is styled only when
+// stderr is a terminal that decodes ANSI (`common.terminal`) and otherwise is the plain text it
+// always was, byte for byte.
 
-
-// Registers a source file's text and returns the id stamped onto every token and
-// AST node parsed from it. Registering the same path twice returns the first id.
+import common.source_files
+import common.terminal
+import std.io
+import std.option
 import std.string
-public extern fn diag_add_file(path: String, content: String) -> Int
-public extern fn diag_file_path(file: Int) -> String alias
-public extern fn diag_file_content(file: Int) -> String alias
-public extern fn diag_source_line(file: Int, line: Int) -> String alias
-// How many files the registry holds. Used by v0.1 3.5's name resolution to ask
-// "is this identifier a module?" without a module table of its own -- the file
-// registry already is one.
-public extern fn diag_file_count() -> Int
+import std.vec
 
-// The logical import path a file was reached by -- `std.string`, not `string`
-// and not the directory it happens to sit in. Recorded by the merge rather than
-// derived from the path, because `resolveImportPath` flattens `std/` to
-// `stdlib/` on install: a qualifier computed from the path would read
-// `std.string` in a checkout and `stdlib.string` from an installed toolchain.
-// "" for a file the merge never named, which is the entry file.
-//
-// `alias` for the same reason as diag_file_path: the pointer is into the
-// registry's own storage and the runtime frees it in diag_reset.
-public extern fn diag_set_file_module(file: Int, module: String)
-public extern fn diag_file_module(file: Int) -> String alias
+// Past this many errors the compiler stops rather than continuing to recover. Beyond roughly this
+// point the output is cascade, not information, and every further recovery step is another chance
+// to walk a half-built AST.
+let DIAG_ERROR_LIMIT = 25
 
-// A located diagnostic. `len` is the width of the caret run -- the length of the
-// token the node starts at -- and may be 0 for "just point at the column".
-public extern fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String)
-public extern fn diag_warning_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String)
-public extern fn diag_note_at(file: Int, line: Int, col: Int, len: Int, message: String)
+// An error already reported at the same place with the same words is not reported again. One
+// source location is checked once per copy a generic or a variadic function is instantiated as,
+// and each copy would say the same thing about the same line; the reader needs it once. The notes
+// that follow a dropped error are dropped with it. Bounded and keyed on a hash of the message, so
+// a long run of errors costs a fixed amount.
+let DIAG_SEEN_LIMIT = 256
 
-// Unlocated forms, for anything that is not about a particular piece of source:
-// a missing file, a bad command-line argument.
-public extern fn diag_error_code(code: String, message: String)
-public extern fn diag_warning_code(code: String, message: String)
-public extern fn diag_note(message: String)
+private let mut errorCount = 0
+private let mut warningCount = 0
+private let mut finished = false
+private let mut dropNotes = false
+private let mut seenFiles: Vec<Int>
+private let mut seenLines: Vec<Int>
+private let mut seenColumns: Vec<Int>
+private let mut seenHashes: Vec<U64>
+private let mut seenOpened = false
 
-public extern fn diag_error_count() -> Int
-public extern fn diag_warning_count() -> Int
+// Same reason as the registry's: a zero-filled global `Vec` is not an empty one.
+private fn seenOpen() {
+    if (seenOpened) { return }
+    seenFiles = []
+    seenLines = []
+    seenColumns = []
+    seenHashes = []
+    seenOpened = true
+}
 
-// Switches the renderer to the versioned JSON Lines protocol consumed by IDEs.
-// This changes presentation only; diagnostic accounting and exit status stay the
-// same as the human renderer.
-public extern fn diag_set_json_mode(on: Int)
-
-// Prints the "aborting due to N previous errors" line. That wording is the
-// contract the negative tests match on: it distinguishes a program the compiler
-// deliberately rejected from one that made it crash.
-public extern fn diag_finish()
-public extern fn diag_reset()
-
-// Terminal presentation. Every one of these is styled only when its stream is a
-// terminal, and prints exactly the old plain text -- or nothing -- when it is
-// not, so a pipe, a log and the test suite read what they always read.
-//
-// The progress line: `begin` names the source and starts the clock the result
-// line reports; each `progress` rewrites one line on stderr with the phase now
-// running. A diagnostic or result clears it first.
-public extern fn diag_progress_begin(subject: String)
-public extern fn diag_progress(phase: String)
-public extern fn diag_progress_clear()
-// `Built ./hello  (optimized, 0.84s)` on a terminal; `<plain><subject>` on a
-// pipe, or nothing when `plain` is "".
-public extern fn diag_result(plain: String, verb: String, subject: String, detail: String)
-// A styled status line with no plain form, such as `Running ./hello`.
-public extern fn diag_status(verb: String, subject: String)
-// Text in a role -- "ok", "fail", "warn", "alert", "heading", "command", "dim",
-// "accent" -- on
-// stdout, or on stderr for the `_err` form. No newline is added.
-public extern fn diag_styled(style: String, text: String)
-public extern fn diag_styled_err(style: String, text: String)
-// The usage text, with headings and commands styled on a terminal.
-public extern fn diag_print_help(text: String)
-// 1 when fd 1 or 2 is styled, for output that only a terminal gets at all -- the
-// bars beside `aif`'s storage plan, which a pipe must not grow.
-public extern fn diag_tty_styled(fd: Int) -> Int
-
-// Quotes a name the way every message in the compiler quotes one, so the style
-// cannot drift between call sites.
+// Quotes a name the way every message in the compiler quotes one, so the style cannot drift
+// between call sites.
 public fn diagQuote(name: String) -> String {
     return "`".concat(name, "`")
+}
+
+private fn severityStyle(severity: String) -> String {
+    if (severity.equals("error")) { return SGR_RED.clone() }
+    if (severity.equals("warning")) { return SGR_YELLOW.clone() }
+    return SGR_CYAN.clone()
+}
+
+// Columns count characters, not bytes: a UTF-8 continuation byte adds none. A column is one
+// character wide, which is short by one for an East Asian wide character or an emoji -- that
+// needs the width tables std.unicode has.
+private fn isContinuation(byte: Int) -> Bool {
+    return byte >= 0x80 and byte <= 0xBF
+}
+
+// Whether `text` has a bidirectional override or isolate at `at`: U+202A-U+202E or
+// U+2066-U+2069, which are E2 80 AA-AE and E2 81 A6-A9 in UTF-8.
+private fn isBidiControl(text: String, at: Int) -> Bool {
+    if (text.length - at < 3 or text.byteAt(at) != 0xE2) { return false }
+    let second = text.byteAt(at + 1)
+    let third = text.byteAt(at + 2)
+    if (second == 0x80) { return third >= 0xAA and third <= 0xAE }
+    if (second == 0x81) { return third >= 0xA6 and third <= 0xA9 }
+    return false
+}
+
+// The source line as the snippet shows it, with each bidi control as U+FFFD.
+//
+// **Echoed raw, the error about Trojan Source was Trojan Source.** P2002 quotes the line it
+// refuses, and a terminal applies the override it holds, so the snippet showed the reordered text
+// the diagnostic exists to warn about. rustc replaces them the same way.
+private fn visibleLine(text: String) -> String {
+    let length = text.length
+    let mut out = ""
+    let mut runStart = 0
+    let mut at = 0
+    while (at < length) {
+        if (isBidiControl(text, at)) {
+            out = out.concat(text.substring(runStart, at - runStart), "\u{FFFD}")
+            at = at + 3
+            runStart = at
+        } else {
+            at = at + 1
+        }
+    }
+    return out.concat(text.substring(runStart, length - runStart))
+}
+
+private fn digitCount(value: Int) -> Int {
+    let mut n = 1
+    let mut rest = value
+    while (rest >= 10) {
+        rest = rest / 10
+        n = n + 1
+    }
+    return n
+}
+
+// The snippet block, in the rustc shape:
+//
+//      --> src/foo.psm:12:5
+//       |
+//    12 |     x = 6
+//       |     ^
+//
+// `gutter` is the width of the line number, so the vertical bars line up no matter how long the
+// file is. `accent` colours the carets: the severity's colour, so an error's underline is red and a
+// note's is cyan. The frame -- arrow, bars, line number -- is blue, as rustc draws it.
+private fn renderSpan(file: Int, line: Int, column: Int, len: Int, accent: String) -> String {
+    if (file < 0 or file >= diag_file_count() or line <= 0) { return "" }
+    let frame = sgr(2, SGR_BLUE)
+    let mark = sgr(2, accent)
+    let reset = sgr(2, SGR_RESET)
+    let path = diag_file_path(file)
+    let mut col = column
+    if (col < 1) { col = 1 }
+
+    let found = diag_line_text(file, line)
+    if (found == none) {
+        // No snippet available, but the location itself is still worth having.
+        return " ".concat(frame, "-->", reset, " ", path, ":", line.toString(), ":", col.toString(), "\n")
+    }
+    let text = found ?? ""
+    let lineLength = text.length
+    let gutter = digitCount(line)
+
+    let mut out = " ".repeat(gutter).concat(frame, "-->", reset, " ", path, ":", line.toString(), ":",
+                                           col.toString(), "\n")
+    out = out.concat(" ".repeat(gutter + 1), frame, "|", reset, "\n")
+    out = out.concat(frame, line.toString(), " |", reset, " ", visibleLine(text), "\n")
+    out = out.concat(" ".repeat(gutter + 1), frame, "|", reset, " ")
+
+    // Pad with the source's own whitespace so a tab-indented line keeps the caret under the right
+    // character instead of drifting by seven columns. `col` and `len` are bytes (IDE_PROTOCOL.md);
+    // what is drawn is characters, or a caret after an `é` drifted a column right per `é`.
+    let mut pad = col - 1
+    if (pad > lineLength) { pad = lineLength }
+    for i in 0..<pad {
+        let byte = text.byteAt(i)
+        if (isContinuation(byte)) { continue }
+        if (byte == 9) {
+            out = out.concat("\t")
+        } else {
+            out = out.concat(" ")
+        }
+    }
+
+    let mut width = len
+    if (width <= 0) { width = 1 }
+    let mut end = pad + width
+    if (end > lineLength) { end = lineLength }
+    let mut carets = 0
+    for i in pad..<end {
+        if (isContinuation(text.byteAt(i)) == false) { carets = carets + 1 }
+    }
+    if (carets < 1) { carets = 1 }
+    return out.concat(mark, "^".repeat(carets), reset, "\n")
+}
+
+// JSON Lines is used instead of one enclosing array so an IDE can consume each diagnostic as soon
+// as the compiler reports it.
+private fn hexNibbleText(value: Int) -> String {
+    if (value < 10) { return value.toString() }
+    return "abcdef".substring(value - 10, 1)
+}
+
+private fn jsonQuoted(text: String) -> String {
+    let length = text.length
+    let mut out = "\""
+    let mut runStart = 0
+    for at in 0..<length {
+        let byte = text.byteAt(at)
+        let mut escape = ""
+        if (byte == 34) {
+            escape = "\\\""
+        } else if (byte == 92) {
+            escape = "\\\\"
+        } else if (byte == 8) {
+            escape = "\\b"
+        } else if (byte == 12) {
+            escape = "\\f"
+        } else if (byte == 10) {
+            escape = "\\n"
+        } else if (byte == 13) {
+            escape = "\\r"
+        } else if (byte == 9) {
+            escape = "\\t"
+        } else if (byte < 32) {
+            escape = "\\u00".concat(hexNibbleText(byte / 16), hexNibbleText(byte % 16))
+        }
+        if (escape.length > 0) {
+            out = out.concat(text.substring(runStart, at - runStart), escape)
+            runStart = at + 1
+        }
+    }
+    return out.concat(text.substring(runStart, length - runStart), "\"")
+}
+
+// `code` is "" for a diagnostic that has none, which JSON spells `null`.
+private fn jsonDiagnostic(severity: String, code: String, file: Int, line: Int, column: Int, len: Int,
+                          message: String) -> String {
+    let mut codeText = "null"
+    if (code.length > 0) { codeText = jsonQuoted(code) }
+    let mut fileText = "null"
+    if (file >= 0 and file < diag_file_count()) { fileText = jsonQuoted(diag_file_path(file)) }
+    return "{\"kind\":\"diagnostic\",\"schemaVersion\":1,\"severity\":".concat(
+        jsonQuoted(severity), ",\"code\":", codeText, ",\"file\":", fileText,
+        ",\"line\":", line.toString(), ",\"column\":", column.toString(), ",\"length\":", len.toString(),
+        ",\"message\":", jsonQuoted(message), "}\n")
+}
+
+private fn jsonSummary() -> String {
+    return "{\"kind\":\"summary\",\"schemaVersion\":1,\"errors\":".concat(
+        errorCount.toString(), ",\"warnings\":", warningCount.toString(), "}\n")
+}
+
+// `error[P4001]` in the severity's colour, the message in bold -- rustc's shape, and the plain
+// text is unchanged when stderr is not a terminal.
+private fn emit(severity: String, code: String, file: Int, line: Int, column: Int, len: Int,
+                message: String) {
+    if (diagJsonMode()) {
+        eprint(jsonDiagnostic(severity, code, file, line, column, len, message))
+        return
+    }
+    diag_progress_clear()
+    let head = sgr(2, severityStyle(severity))
+    let bold = sgr(2, SGR_BOLD)
+    let reset = sgr(2, SGR_RESET)
+    let mut label = severity.clone()
+    if (code.length > 0) { label = severity.concat("[", code, "]") }
+    let heading = head.concat(label, reset, bold, ": ", message, reset, "\n")
+    eprint(heading.concat(renderSpan(file, line, column, len, severityStyle(severity))))
+}
+
+// FNV-1a over the code and then the message.
+private fn messageHash(code: String, message: String) -> U64 {
+    let mut hash: U64 = 1469598103934665603
+    for i in 0..<code.length {
+        hash = (hash ^ (code.byteAt(i) as U64)) * 1099511628211
+    }
+    for i in 0..<message.length {
+        hash = (hash ^ (message.byteAt(i) as U64)) * 1099511628211
+    }
+    return hash
+}
+
+private fn alreadyReported(code: String, file: Int, line: Int, column: Int, message: String) -> Bool {
+    seenOpen()
+    let hash = messageHash(code, message)
+    for i in 0..<seenFiles.length {
+        if (seenFiles[i] == file and seenLines[i] == line and seenColumns[i] == column and seenHashes[i] == hash) {
+            return true
+        }
+    }
+    if (seenFiles.length < DIAG_SEEN_LIMIT) {
+        seenFiles.push(file)
+        seenLines.push(line)
+        seenColumns.push(column)
+        seenHashes.push(hash)
+    }
+    return false
+}
+
+public fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String) {
+    finished = false
+    dropNotes = false
+    if (file >= 0 and alreadyReported(code, file, line, col, message)) {
+        dropNotes = true
+        return
+    }
+    errorCount = errorCount + 1
+
+    if (errorCount > DIAG_ERROR_LIMIT) {
+        if (diagJsonMode()) {
+            eprint(jsonDiagnostic("error", "P0001", -1, 0, 0, 0, "too many errors; stopping after 25"))
+            eprint(jsonSummary())
+            exit(1)
+        }
+        diag_progress_clear()
+        eprint(sgr(2, SGR_RED).concat("error[P0001]", sgr(2, SGR_RESET), sgr(2, SGR_BOLD),
+                                      ": too many errors; stopping after ", DIAG_ERROR_LIMIT.toString(),
+                                      sgr(2, SGR_RESET), "\n"))
+        exit(1)
+    }
+
+    emit("error", code, file, line, col, len, message)
+}
+
+// Unlocated, for anything that is not about a particular piece of source: a missing file, a bad
+// command-line argument.
+public fn diag_error_code(code: String, message: String) {
+    diag_error_at_code(code, -1, 0, 0, 0, message)
+}
+
+public fn diag_warning_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String) {
+    finished = false
+    warningCount = warningCount + 1
+    emit("warning", code, file, line, col, len, message)
+}
+
+// Unlocated, the counterpart of `diag_error_code`. A workload that fails to build or times out has
+// to warn, and the thing that went wrong is a build step rather than a span of source, so there is
+// no honest place to point a caret.
+public fn diag_warning_code(code: String, message: String) {
+    diag_warning_at_code(code, -1, 0, 0, 0, message)
+}
+
+// A secondary span belonging to the diagnostic just reported -- "the first declaration is here",
+// "the loop starts here". Indented so it reads as subordinate rather than as a second, unrelated
+// error.
+public fn diag_note_at(file: Int, line: Int, col: Int, len: Int, message: String) {
+    if (dropNotes) { return }
+    if (diagJsonMode()) {
+        emit("note", "", file, line, col, len, message)
+        return
+    }
+    diag_progress_clear()
+    let line1 = "  ".concat(sgr(2, SGR_CYAN), "note", sgr(2, SGR_RESET), ": ", message, "\n")
+    eprint(line1.concat(renderSpan(file, line, col, len, SGR_CYAN)))
+}
+
+public fn diag_note(message: String) {
+    if (dropNotes) { return }
+    if (diagJsonMode()) {
+        emit("note", "", -1, 0, 0, 0, message)
+        return
+    }
+    diag_progress_clear()
+    eprint("  ".concat(sgr(2, SGR_CYAN), "note", sgr(2, SGR_RESET), ": ", message, "\n"))
+}
+
+public fn diag_error_count() -> Int {
+    return errorCount
+}
+
+public fn diag_warning_count() -> Int {
+    return warningCount
+}
+
+// The closing line, printed once when compilation gives up. Its wording is the contract the
+// negative tests match on: a test passes because the compiler *rejected* the program, which a
+// crash or a linker failure must not be able to impersonate.
+public fn diag_finish() {
+    if (finished) { return }
+    finished = true
+
+    if (diagJsonMode()) {
+        eprint(jsonSummary())
+        return
+    }
+    if (errorCount <= 0) { return }
+
+    diag_progress_clear()
+    let head = sgr(2, SGR_RED)
+    let bold = sgr(2, SGR_BOLD)
+    let reset = sgr(2, SGR_RESET)
+    if (errorCount == 1) {
+        eprint(head.concat("error", reset, bold, ": aborting due to 1 previous error", reset, "\n"))
+    } else {
+        eprint(head.concat("error", reset, bold, ": aborting due to ", errorCount.toString(),
+                           " previous errors", reset, "\n"))
+    }
+}
+
+public fn diag_reset() {
+    diag_forget_files()
+    errorCount = 0
+    seenOpened = false
+    seenOpen()
+    dropNotes = false
+    warningCount = 0
+    finished = false
 }

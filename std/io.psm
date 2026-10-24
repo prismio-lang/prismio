@@ -25,7 +25,7 @@
 
 import std.float_text
 
-internal extern fn str_with_capacity(length: Int) -> String produce(free)
+internal extern fn str_with_capacity(length: Int) -> String produce(rt_free)
 
 // A String of twelve bytes or fewer is the inline form: the bytes live in the
 // pair rather than behind the pointer, so there is nothing to offset and

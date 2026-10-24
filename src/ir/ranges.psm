@@ -38,10 +38,13 @@
 // wrapping measured 6.26M, worse than none: a widened `c` with an unproved
 // `c - w` costs a truncation and an extension per access.
 
+import symbols.bindings
+import symbols.facts
 import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.source_files
 import std.string
 
 let RANGE_OPAQUE = 0

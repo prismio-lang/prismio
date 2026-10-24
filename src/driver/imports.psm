@@ -9,6 +9,7 @@
 // The surface is `resolveImports` and `standardModulePath`. The other fifteen
 // functions and the merge-tail cache are private to this file.
 
+import symbols.declarations
 import std.io
 import lexer.scanner
 import lexer.token
@@ -20,14 +21,15 @@ import ir.*
 import sema.*
 import driver.derived_impls
 import common.diagnostics
+import common.source_files
 import std.string
 import std.fs
 
 // Declared here as well as in the modules that share them: the merge keeps the
 // first EXTERN_FUNCTION of a given name and drops the rest, which is what lets
 // each module name the externs it actually uses.
-public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(free)
-public extern fn compiler_plib_error() -> String produce(free)
+public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(rt_free)
+public extern fn compiler_plib_error() -> String produce(rt_free)
 // `--freestanding`: no C library under the program, and only the `std` modules
 // freestandingSafeModule names over it.
 extern fn compiler_is_freestanding() -> Int

@@ -23,10 +23,10 @@
 #include "prismio_runtime.h"
 #include <time.h>
 
-// The terminal's progress line, owned by diagnostics.c. A build step reports
+// The terminal's progress line, owned by src/common/terminal.psm. A build step reports
 // the phase it starts, and anything that writes to the terminal clears the
 // line first -- a failed tool's log, or the program `run` hands the terminal to.
-void diag_progress(const char* phase);
+void diag_progress_cstr(const char* phase);
 void diag_progress_clear(void);
 #include <errno.h>
 #ifndef _WIN32
@@ -115,10 +115,10 @@ static char* path_without_extension(const char* path) {
 char* compiler_default_exe_path(const char* source_path) {
     char* stem = path_without_extension(source_path);
 #ifdef _WIN32
-    char* result = (char*)malloc(strlen(stem) + 5);
+    char* result = (char*)rt_base_alloc(strlen(stem) + 5);
     sprintf(result, "%s.exe", stem);
 #else
-    char* result = (char*)malloc(strlen(stem) + 1);
+    char* result = (char*)rt_base_alloc(strlen(stem) + 1);
     sprintf(result, "%s", stem);
 #endif
     tmp_free(stem);
@@ -846,14 +846,14 @@ char* compiler_runtime_source_hash(void) {
 
     for (int i = 0; i < PRISMIO_TOOLCHAIN_FILE_COUNT; i++) {
         if (!find_toolchain_source(path, sizeof(path), prismio_toolchain_files[i].name)) {
-            char* empty = (char*)malloc(1);
+            char* empty = (char*)rt_base_alloc(1);
             empty[0] = '\0';
             return empty;
         }
 
         char* text = read_file(path);
         if (!text) {
-            char* empty = (char*)malloc(1);
+            char* empty = (char*)rt_base_alloc(1);
             empty[0] = '\0';
             return empty;
         }
@@ -865,7 +865,7 @@ char* compiler_runtime_source_hash(void) {
         hashed++;
     }
 
-    char* result = (char*)malloc(32);
+    char* result = (char*)rt_base_alloc(32);
     if (hashed == 0) {
         result[0] = '\0';
     } else {
@@ -879,14 +879,14 @@ char* compiler_runtime_source_hash(void) {
 char* compiler_installed_runtime_hash(void) {
     char path[1024];
     if (!find_in_lib_dir(path, sizeof(path), "runtime.hash")) {
-        char* empty = (char*)malloc(1);
+        char* empty = (char*)rt_base_alloc(1);
         empty[0] = '\0';
         return empty;
     }
 
     char* text = read_file(path);
     if (!text) {
-        char* empty = (char*)malloc(1);
+        char* empty = (char*)rt_base_alloc(1);
         empty[0] = '\0';
         return empty;
     }
@@ -1720,7 +1720,7 @@ static int compile_ir_to_object(const char* ir_file, const char* program_obj,
     // In process first. The clang command below is what this reproduces, flag
     // for flag, and stays as the fallback for a backend built without headers.
     int opt_level = program_opt_level();
-    diag_progress(opt_level == 0 ? "generating code" : "optimizing");
+    diag_progress_cstr(opt_level == 0 ? "generating code" : "optimizing");
     if (!codegen_uses_clang()) {
         double t0 = build_trace_ms();
         int emitted = ir_emit_object(ir_file, program_obj,
@@ -2960,7 +2960,7 @@ static int compile_native_source(const char* source, const char* flags, int inde
         snprintf(command, command_len, "%s %s -MD -MF %s -c %s -o %s",
                  native_clang_command(), flags, q_dep, q_src, q_out);
         double t0 = build_trace_ms();
-        diag_progress("compiling native sources");
+        diag_progress_cstr("compiling native sources");
         if (run_build_command(command) != 0) result = 1;
         build_trace_stage(role, t0);
     }
@@ -3386,6 +3386,13 @@ static void add_freestanding_panic_core(void) {
     if (g_freestanding_runtime) add_freestanding_core_file("libc.c");
 }
 
+static int native_sources_include(const char* name) {
+    for (int i = 0; i < g_native_source_count; i++) {
+        if (strcmp(path_file_name(g_native_sources[i]), name) == 0) return 1;
+    }
+    return 0;
+}
+
 int compiler_build_executable(const char* ir_file, const char* exe_file) {
     add_freestanding_panic_core();
     if (compiler_prepare_output_path(exe_file) != 0) {
@@ -3396,9 +3403,29 @@ int compiler_build_executable(const char* ir_file, const char* exe_file) {
 
     // In memory unless clang is the one reading it (PRISMIO_CODEGEN=clang). The
     // path is still made: it is how ir_emit_object recognises the module.
+    // A program that links the installed runtime merges its bitcode, so the list and string
+    // accessors codegen emits inline. A target with `runtime = "none"` links the runtime as
+    // C it compiles itself, and without this its every `Vec` read outside a proven loop is a
+    // call into a separate object -- the Prismio compiler, which is such a target, paid 20%
+    // on IR emission for it once the AIF engine was written in Prismio. The curated module
+    // is the same bodies as `available_externally`, so a call the inliner declines still
+    // resolves to the object the target links.
+    char* curated_ir = NULL;
+    const char* program_ir = ir_file;
+    if (!g_installed_runtime && !g_freestanding && inline_runtime_enabled()
+            && native_sources_include("lang_runtime.c")) {
+        char flags[256];
+        macos_min_flag(flags, sizeof(flags));
+        curated_ir = merge_curated_into_program(ir_file, flags);
+        if (curated_ir) program_ir = curated_ir;
+    }
     ir_hold_merged_module(!codegen_uses_clang());
-    char* merged_ir = merge_libraries_into_program(ir_file, exe_file);
+    char* merged_ir = merge_libraries_into_program(program_ir, exe_file);
     ir_hold_merged_module(0);
+    if (curated_ir) {
+        delete_file(curated_ir);
+        tmp_free(curated_ir);
+    }
     if (!merged_ir) return 1;
 
     char* program_obj = compiler_temp_obj_path(exe_file, "program");
@@ -4257,11 +4284,11 @@ static unsigned long long clang_identity(unsigned long long hash) {
 static int runtime_cache_key(char* out, int out_size) {
     char* source = compiler_runtime_source_hash();
     if (!source || !source[0]) {
-        tmp_free(source);
+        rt_free(source);
         return 1;
     }
     unsigned long long hash = fnv1a_bytes(PRISMIO_FNV_OFFSET, (const unsigned char*)source);
-    tmp_free(source);
+    rt_free(source);
     // The deployment version the bitcode is compiled for (emit_runtime_bitcode): a
     // toolchain built before it was passed holds bitcode with no SDK stamp, and must
     // be re-emitted, not reused.
@@ -4402,7 +4429,7 @@ int compiler_emit_local_toolchain(const char* root, const char* compiler) {
         if (!failed) {
             char* value = compiler_runtime_source_hash();
             failed = write_text_file(hash_path, value) != 0;
-            tmp_free(value);
+            rt_free(value);
         }
     }
     if (!failed && have_runtime_key) {

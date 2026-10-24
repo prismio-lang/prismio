@@ -34,10 +34,14 @@
 // (ir/counters.psm), and a local array whose stores the walk can see keeps a bound on its
 // elements (ir/contents.psm), which edit distance's `min(a + 1, b + 1)` needs.
 
+import symbols.bindings
+import symbols.declarations
+import symbols.facts
 import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.source_files
 import std.string
 
 let NOWRAP_RECORD = 0

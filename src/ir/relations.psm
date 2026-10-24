@@ -30,6 +30,8 @@
 // Decisions depend on the abstract state only, never on the walk mode, so the
 // emission walk is the last verification walk of the fixpoint with IR attached.
 
+import symbols.bindings
+import symbols.facts
 import ast.nodes
 import ast.types
 import common.text

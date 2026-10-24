@@ -1,4 +1,4 @@
-// Standalone stress for the mode-2 slab body, extracted verbatim from runtime/lang_runtime.c.
+// Standalone stress for the slab body, extracted verbatim from runtime/lang_runtime.c.
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -9,7 +9,11 @@
 static volatile long prismio_memory_threads_enabled;
 static PRISMIO_THREAD_LOCAL int prismio_memory_worker;
 static int prismio_memory_threads_are_enabled(void) { return __atomic_load_n(&prismio_memory_threads_enabled, __ATOMIC_ACQUIRE) != 0; }
-#define PRISMIO_ALLOC_MODE 2
+// What lang_runtime.c provides above the body: its includes, and the two libc spellings.
+#include <sys/mman.h>
+#include <sched.h>
+#define tmp_free(p) free(p)
+#define tmp_realloc(p, n) realloc((p), (n))
 #include "slab_body.inc"  /* extracted by extract_slab.py */
 void  slab_cleanup(void) { prismio_slab_thread_flush(); }
 
@@ -58,12 +62,7 @@ int main(int argc,char**argv){
     }
     for(int i=0;i<XCH;i++) if(xch[i]) rt_free(xch[i]);
     // main thread as pure consumer after workers exit: blocks must be reusable
-    size_t used=0;
-#ifdef SLAB_SPANS
-    used = slab_span_next - slab_base;
-#else
-    for(int c=0;c<SLAB_CLASSES;c++) used += (slab_global[c].bump - (slab_base + ((uintptr_t)c<<SLAB_REGION_SHIFT)));
-#endif
+    size_t used = slab_span_next - slab_base;
     printf("ok threads=%d iters=%ld carved=%zu KB\n", NT, ITERS, used>>10);
     return 0;
 }

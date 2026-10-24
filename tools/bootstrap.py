@@ -54,9 +54,8 @@ RESET = "" if WINDOWS else "\033[0m"
 # Must match the native sources of the prismio target in build.ums; checked by
 # tools/check_source_lists.py.
 RUNTIME_SOURCES = [
-    "lang_runtime.c", "program_support.c", "build_driver.c", "ir_symbols.c",
-    "aif_containers.c", "aif_support.c", "diagnostics.c", "llvm-api-backend.c",
-    "llvm_bridge.cpp",
+    "lang_runtime.c", "program_support.c", "build_driver.c",
+    "llvm-api-backend.c", "llvm_bridge.cpp",
 ]
 
 COMPILE_FLAGS = "-O2 -DPRISMIO_LLVM_REAL_HEADERS -DPRISMIO_BOOTSTRAP_COMPAT"

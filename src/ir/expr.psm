@@ -1,9 +1,14 @@
 // Lowering expressions to values.
 
+import symbols.bindings
+import symbols.type_registry
+import symbols.declarations
+import symbols.facts
 import ast.nodes
 import ast.types
 import common.text
 import common.diagnostics
+import common.source_files
 import common.target
 import common.float_builtins
 import common.int_builtins
@@ -12,6 +17,13 @@ import std.string
 import aif.model
 import ir.numeric
 import ast.float_width
+import aifcore.arenas
+import aifcore.call_results
+import aifcore.constraints
+import aifcore.dispositions
+import aifcore.keys
+import aifcore.ownership
+import aifcore.structure
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
 // answer. Previously both operands were generated unconditionally and combined
@@ -497,7 +509,7 @@ private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
         // `--verify` reports as `release of a pointer that is not live`. It is
         // the shape in the comment above, one callee kind further out.
         //
-        // The distinction that makes this safe is the one fn_may_return_param
+        // The distinction that makes this safe is the one fnMayReturnParam
         // draws: **a declared `alias` is a stated fact about one function, and an
         // unknown symbol is an abstention about all of them.** Answering yes for
         // every unknown extern was measured and declines the drop at every
@@ -506,7 +518,7 @@ private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
         // was not written.
         //
         // **So does a view of a parameter.** `optionOr(o, d)` hands back the
-        // String inside `o`, which is not `o`'s allocation -- fn_may_return_param
+        // String inside `o`, which is not `o`'s allocation -- fnMayReturnParam
         // compares sites, and a payload's are not the Option's -- but it lives
         // only as long as `o` does. Freeing `o` at the scope exit while the view
         // was returned is the same use-after-free one step removed.
@@ -603,7 +615,7 @@ private fn chainBindingAliasesName(head: Ptr, boundName: String, name: String, h
 // tests/owned_temporary_argument.psm.
 //
 // The same predicate is the guard as well as the trigger. A callee that retains
-// the value has already raised `in_container` or `site_in_released_field` on the
+// the value has already raised `in_container` or `siteInReleasedField` on the
 // site, and this declines on both -- which is why `list_push(l, band(...))` gets
 // no release here even though it is exactly the shape that would double-free.
 private fn irArgumentIsOwnedTemporary(argNode: ASTNode) -> Bool {
@@ -1325,7 +1337,7 @@ private fn inlineElemSize(typeName: String) -> Int {
     if (ir_struct_is_flat(typeName) == 0) { return 0 }
     // A counted element cannot be inline: the count lives in a header in front
     // of the object and an inline body has neither header nor identity. See
-    // aif_type_is_counted in runtime/aif_support.c, and test_48.
+    // aif_type_is_counted in src/aifcore/, and test_48.
     if (aif_type_is_counted(typeName) == 1) { return 0 }
     return ir_struct_size(typeName)
 }
@@ -1466,6 +1478,29 @@ internal fn fatFromPtr(raw: String) -> String {
     ir_call_arg("ptr", raw)
     let len = ir_get_temp_name(ir_call_end("i32", "prismio_cstr_len"))
     return fatWithLength(raw, len)
+}
+
+// FFI 5.2 `produce(f)`: the deallocator `f` names, or "" when it is the seam's own
+// `rt_free`, whose blocks Prismio releases like any other. A String from any other
+// allocator -- `strdup` declared `produce(free)`, a library's `produce(lib_string_free)` --
+// is copied into a seam block at the call and `f` releases the original there and then
+// (fatAdopted). Honouring `f` at the eventual release instead would mean carrying a
+// deallocator through every move, container and return, and a foreign block reaching
+// `rt_free` is the bug a slab behind the seam turns into corruption.
+private fn foreignDeallocator(funcName: String) -> String {
+    let contract = aif_extern_contract(funcName, 0 - 1)
+    if (contract.startsWith("produce:") == false) { return "" }
+    let name = contract.substring(8, contract.length - 8)
+    if (name.equals("rt_free")) { return "" }
+    return name
+}
+
+private fn fatAdopted(raw: String, deallocator: String) -> String {
+    ir_call_begin()
+    ir_call_arg("ptr", raw)
+    let len = ir_get_temp_name(ir_call_end("i32", "prismio_cstr_len"))
+    let copy = ir_get_temp_name(ir_string_adopt(raw, len, deallocator))
+    return fatWithLength(copy, len)
 }
 
 // The pair, from a pointer and a length the caller already knows -- no `strlen`.
@@ -5262,6 +5297,11 @@ private fn generateCall(expr: ASTNode) -> String {
         let indexVal = generateExpression(ptr_to_node(arrayNode.next))
         return fatFromPtr(ir_get_temp_name(ir_ptr_load_at(arrayVal, indexVal)))
     }
+    // The pointer's bytes in place, measured by one `strlen`. Static for the same
+    // reason as the slot read above: the caller's buffer is not ours to release.
+    if (funcName.equals("__builtin_cstring") and nodeExists(expr.child2)) {
+        return fatFromPtr(generateExpression(ptr_to_node(expr.child2)))
+    }
     if (funcName.equals("__builtin_errno_intr")) {
         return ir_get_temp_name(ir_errno_constant("EINTR"))
     }
@@ -6028,6 +6068,10 @@ private fn generateCall(expr: ASTNode) -> String {
         if (arenaPlaced) { ir_arena_hint_begin() }
         let raw = ir_get_temp_name(ir_call_end("ptr", callName))
         if (arenaPlaced) { ir_arena_hint_end() }
+        let deallocator = foreignDeallocator(funcName)
+        if (deallocator.equals("") == false) {
+            return fatAdopted(raw, deallocator)
+        }
         return fatFromPtr(raw)
     }
 

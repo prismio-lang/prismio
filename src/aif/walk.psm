@@ -7,6 +7,15 @@ import sema.enums
 import common.text
 import common.diagnostics
 import std.string
+import aifcore.arenas
+import aifcore.call_graph
+import aifcore.call_results
+import aifcore.constraints
+import aifcore.keys
+import aifcore.layout_search
+import aifcore.nominals
+import aifcore.sites
+import aifcore.structure
 
 // ---------------------------------------------------------------------------
 // Abstract evaluation
@@ -172,7 +181,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
                     // sites -- but a *reference*-shaped field is a *view* of the
                     // object it was read out of, exactly as a `List` element is a
                     // view of the List above. Recording that is what lets
-                    // `fn_may_return_view_of_param` see a function that returns a
+                    // `fnMayReturnViewOfParam` see a function that returns a
                     // field of a parameter.
                     //
                     // **Without it the caller frees the argument before reading the
@@ -181,7 +190,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
                     // temporary was emitted immediately after the call and before
                     // the `println` that reads it, so the value came back empty.
                     // Neither existing fact could see it: the return is not the
-                    // parameter (`fn_may_return_param` compares sites, and a field's
+                    // parameter (`fnMayReturnParam` compares sites, and a field's
                     // sites are not the struct's), and with no view edge here
                     // `key_views` was empty. `--verify` could not see it either --
                     // both releases are ledger-legal, so the run reported
@@ -380,6 +389,12 @@ private fn aifCallSites(callPtr: Ptr, fnId: Int, scope: Int) -> Int {
                 // ...and the container's element field now points at it, so a
                 // later read gets the element back rather than the container.
                 aif_con_bind(aifElemKey(aifElementContainerType(aifArgTypeAt(e, holderIndex))), av)
+                // A container reached through a global is held for the life of the
+                // program, and the holder's value set has no site to carry that to
+                // `av` through aif_con_retain_in: a global is never allocated here.
+                if (aifArgRootedInGlobal(e, holderIndex, fnId)) {
+                    aifStoredIntoGlobal(av, aifArgTypeAt(e, i))
+                }
             } else if (contract == AIF_FFI_RETAIN) {
                 aif_con_escape_global(av)
             } else if (contract == AIF_FFI_CONSUME) {
@@ -806,6 +821,11 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
                     let mut holderScope = aif_var_scope(fnId, tgt.s1)
                     if (holderScope < 0) { holderScope = scope }
                     aif_con_live_in(val, holderScope, fnId)
+                    // ...and for a global that is not all there is to say: it lives
+                    // past this function, so what it now holds is global too.
+                    if (aifRootedInGlobal(n.child1, fnId) and nodeExists(n.child2)) {
+                        aifStoredIntoGlobal(val, aifNodeType(ptr_to_node(n.child2)))
+                    }
                 } else if (tgt.kind == NodeKind.MEMBER_ACCESS_EXPR) {
                     let mut owner = aifVsEmpty()
                     let mut base = ""
@@ -821,6 +841,9 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
                     // function did not allocate, so the Foo outlives any region a
                     // caller could bracket the call with.
                     aif_note_owner_use(fnId, owner)
+                    if (aifRootedInGlobal(tgt.child1, fnId) and nodeExists(n.child2)) {
+                        aifStoredIntoGlobal(val, aifNodeType(ptr_to_node(n.child2)))
+                    }
                 }
             }
             return
@@ -829,7 +852,7 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
         NodeKind.RETURN_STATEMENT => {
             // `return none` hands back no value at all, which is not the same as a
             // value with no site behind it: binding its empty set marked the
-            // function as returning something untracked (fn_returns_partial), and
+            // function as returning something untracked (fnReturnsPartial), and
             // every caller of `find() -> Node?` declined to own the Node the other
             // return makes -- one leak per call. A null is released by nothing, and
             // every release tests for it.
@@ -859,8 +882,8 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
     // That is what let a caller free the argument before reading the result.
     // `optionOr(maybeName(), "!")` returns the String inside the Option it was
     // handed, but with `v` bound to nothing the return carried neither `o`'s
-    // sites nor a view of them, so `fn_may_return_param` and
-    // `fn_may_return_view_of_param` both answered a truthful no to the question
+    // sites nor a view of them, so `fnMayReturnParam` and
+    // `fnMayReturnViewOfParam` both answered a truthful no to the question
     // codegen was asking. The release for the unbound temporary was emitted
     // immediately after the call and before the `println` that read its result,
     // and the value came back empty. `--verify` could not see it: both releases
@@ -891,6 +914,59 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
     aifWalkChildren(n.child1, fnId, scope)
     aifWalkChildren(n.child2, fnId, scope)
     aifWalkChildren(n.child3, fnId, scope)
+}
+
+// Is this expression a module-level `let`, or a field or element of one? A store
+// into it outlives every frame, so what is stored must too.
+//
+// A name the function declared shadows the global of the same spelling, which is
+// what aif_var_scope answers for the innermost visible declaration: a miss there
+// and a hit under function -1, where aifDeclare records the globals, is a global.
+// The walk stops at the first node that is not a member or element access, so a
+// holder reached through a call (`makeBox().items`) is not mistaken for one.
+private fn aifRootedInGlobal(ptr: Ptr, fnId: Int) -> Bool {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.IDENTIFIER_EXPR) {
+            return aif_var_scope(fnId, n.s1) < 0 and aif_var_scope(0 - 1, n.s1) >= 0
+        }
+        if (n.kind != NodeKind.MEMBER_ACCESS_EXPR and n.kind != NodeKind.INDEX_EXPR) {
+            return false
+        }
+        p = n.child1
+    }
+    return false
+}
+
+// What a store into a global does to the value stored.
+//
+// **Not for a String or a raw pointer**, and both for the same reason: the value is
+// not what the analysis could place wrongly, but its site is shared. A String is one
+// flat block that codegen already keeps off the scope release when it is stored (the
+// alias guards in src/ir), so `label = s` and `names.push(s)` were not found wrong; yet every
+// `concat` and `clone` result comes from one site in std, and escaping one stored String
+// would stop every String the program builds that way from being released. A `Ptr` is
+// an address the program manages by hand, and `mergeTailPtr = node_to_ptr(stmt)` would
+// do the same to every AST node. A struct, or a container of them, is the case that was
+// wrong: stack-promoted, or released at the end of the function that stored it.
+private fn aifStoredIntoGlobal(val: Int, ty: String) {
+    let base = aifBaseType(ty)
+    if (base.equals("String") or base.equals("Ptr")) { return }
+    aif_con_escape_global(val)
+}
+
+// The same question of a call's k-th argument, which is how a container method
+// names its holder.
+private fn aifArgRootedInGlobal(call: ASTNode, index: Int, fnId: Int) -> Bool {
+    let mut i = 0
+    let mut aPtr = call.child2
+    while (nodeExists(aPtr)) {
+        if (i == index) { return aifRootedInGlobal(aPtr, fnId) }
+        i = i + 1
+        aPtr = ptr_to_node(aPtr).next
+    }
+    return false
 }
 
 // One payload arm's binders, bound to the fields they read.

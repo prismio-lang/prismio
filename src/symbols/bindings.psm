@@ -1,0 +1,734 @@
+// What the compiler knows about the names in scope while it walks a function: each binding's type
+// and slot, the scopes and loops that bound them, which values were moved or borrowed, and what a
+// `return`, `break` or `continue` has to release.
+//
+// The binding table is a flat array with a watermark per scope. A block pushes a scope on entry
+// and pops it on exit, which truncates the table back to where it started. Lookup scans backwards,
+// so the innermost binding of a name wins and an outer one is visible again once the inner scope
+// is popped. Each binding carries its own slot name, the identifier codegen uses for the alloca:
+// two `let x` in sibling blocks are two entries with two distinct slots, which is what stops them
+// sharing one stack allocation sized by whichever appeared first.
+//
+// Columns, not records: a binding is eleven fields and the table is read once per identifier, so
+// each column is a `Vec<Int>` of interned ids or flag bits that the scan touches alone.
+
+import common.diagnostics
+import std.io
+import std.option
+import std.string
+import std.vec
+import symbols.names
+
+let BINDING_MAX_SCOPES = 1024
+let BINDING_MAX_LOOP_DEPTH = 256
+
+// A module-level binding, which codegen addresses as @name rather than %slot. A separate registry
+// asking "is this name a global?" was wrong under shadowing: a local named like a global had its
+// writes go to the local slot and its reads come from the global.
+let BINDING_GLOBAL = 1
+let BINDING_MUTABLE = 2
+// An `inout` parameter. Its contents may change but the binding is never rebound, because `inout`
+// is a borrow and not a reference to the caller's slot.
+let BINDING_INOUT = 4
+// A Slice that views something this scope may not change: a slice of a non-`mut` Vec, of another
+// such view, or one returned by a function with no `inout` parameter. A store through it is
+// refused even when the binding itself is `mut`, which only lets the view be rebound.
+let BINDING_READONLY_VIEW = 8
+// A boxed list may release an overwritten element only while the compiler still has exclusive
+// knowledge of the handle. Set on a local `list_new` binding and cleared for good when an element
+// is borrowed, a Slice is made, or the handle crosses an arbitrary call. Kept on the scoped binding
+// so shadowing and block exit preserve the conservative direction.
+let BINDING_LIST_EXCLUSIVE = 16
+// AIF Level 2: this binding's initialiser allocated a value whose escape bottoms at the scope
+// holding the binding, so the scope's exits are where it is freed.
+let BINDING_DROPPABLE = 32
+// AIF Level 4, the reassignment half. Distinct from droppable and it has to be: a returned
+// accumulator hands its *last* value to the caller, so the scope must not drop it, but every value
+// an assignment displaced before that one is still this scope's to release.
+let BINDING_OWNS_SLOT = 64
+
+private let mut bindName: Vec<Int>
+private let mut bindType: Vec<Int>
+private let mut bindSlot: Vec<Int>
+private let mut bindFlags: Vec<Int>
+// AIF Level 4: which deallocator reclaims it. A list owns a second block, its element array, so a
+// plain free on the handle leaks that block, and the storage type cannot tell you.
+private let mut bindDropKind: Vec<Int>
+// The German-string representation, resolved once per binding: where its bytes are. -1 when there
+// is none. Asked per binding rather than per byte, because per byte put the test inside every scan
+// loop.
+private let mut bindData: Vec<Int>
+private let mut bindCount = 0
+private let mut scopeMarks: Vec<Int>
+private let mut scopeDepth = 0
+// Monotonic across a whole module, so a slot name is unique however many blocks declare the same
+// identifier.
+private let mut slotSerial = 0
+
+private let mut loopContinue: Vec<Int>
+private let mut loopBreak: Vec<Int>
+// `outer@ for ...`: the label's id and where a jump to that loop unwinds to, set by
+// `ir_loop_label` after the loop's drop barrier is pushed. -1 on an unlabelled loop, which only an
+// unlabelled break or continue can reach.
+private let mut loopName: Vec<Int>
+private let mut loopFloor: Vec<Int>
+private let mut loopRegion: Vec<Int>
+private let mut loopDepth = 0
+
+// The binding-table watermark on entry to each loop body. Move checking runs over the AST in
+// source order, so it sees a `drop(x)` inside a loop once and concludes the value is consumed once
+// while the loop runs it repeatedly. A binding that predates the innermost loop is one the loop did
+// not create, so moving out of it inside the loop is the case that actually repeats.
+private let mut loopBarriers: Vec<Int>
+private let mut loopBarrierDepth = 0
+
+// Codegen's own stack, apart from the barriers above, which are sema's: sharing it made
+// break/continue read a watermark of 0 and drop the whole function.
+private let mut dropBarriers: Vec<Int>
+private let mut barrierRegions: Vec<Int>
+private let mut dropBarrierDepth = 0
+// How many `region` blocks are open. A return closes all of them and a break or continue those the
+// loop did not open, for the same reason each runs the drops: an arena still on the stack at
+// function exit is never released.
+private let mut regionDepth = 0
+
+// Module-level names, registered before any body is walked.
+private let mut globalNames: Vec<Int>
+private let mut movedNames: Vec<Int>
+private let mut borrowedNames: Vec<Int>
+private let mut reinitTarget = -1
+private let mut returned = 0
+
+// Exclusive branches. Moved-from state is one set per function, filled in source order, so a value
+// moved in the `then` arm of an `if` read as moved in the `else` arm and after a `continue`. A frame
+// saves the set when the branches open (`base`) and collects the union of the sets the arms that can
+// fall through end with (`joined`). Each arm starts from `base`; after the last arm the set is that
+// union, or `base` if every arm leaves.
+//
+// Frames nest strictly, and only the innermost is ever written, so every frame's lists are one
+// segment of two shared arrays and a frame is just where its segments start.
+private let mut frameBase: Vec<Int>
+private let mut frameBaseStart: Vec<Int>
+private let mut frameJoined: Vec<Int>
+private let mut frameJoinedStart: Vec<Int>
+private let mut frameFellThrough: Vec<Int>
+
+private let mut bindingsOpened = false
+
+// A zero-filled global `Vec` is not an empty one.
+private fn bindingsOpen() {
+    if (bindingsOpened) { return }
+    bindName = []
+    bindType = []
+    bindSlot = []
+    bindFlags = []
+    bindDropKind = []
+    bindData = []
+    scopeMarks = Vec<Int>.filled(BINDING_MAX_SCOPES, 0)
+    loopContinue = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, 0)
+    loopBreak = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, 0)
+    loopName = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, -1)
+    loopFloor = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, 0)
+    loopRegion = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, 0)
+    loopBarriers = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, 0)
+    dropBarriers = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, 0)
+    barrierRegions = Vec<Int>.filled(BINDING_MAX_LOOP_DEPTH, 0)
+    globalNames = []
+    movedNames = []
+    borrowedNames = []
+    frameBase = []
+    frameBaseStart = []
+    frameJoined = []
+    frameJoinedStart = []
+    frameFellThrough = []
+    bindingsOpened = true
+}
+
+// Writes `value` at `at`, which is either a slot already in the column or the one just past its
+// end. A column grows with the binding table and a pop only lowers the count, so the slots above it
+// are reused.
+private fn putInt(inout stack: Vec<Int>, at: Int, value: Int) {
+    if (at < stack.length) {
+        stack[at] = value
+    } else {
+        stack.push(value)
+    }
+}
+
+private fn truncateInts(inout list: Vec<Int>, length: Int) {
+    while (list.length > length) { list.pop() }
+}
+
+private fn listHas(list: Vec<Int>, id: Int) -> Bool {
+    for i in 0..<list.length {
+        if (list[i] == id) { return true }
+    }
+    return false
+}
+
+private fn listRemove(inout list: Vec<Int>, id: Int) {
+    for i in 0..<list.length {
+        if (list[i] == id) {
+            list.removeAt(i)
+            return
+        }
+    }
+}
+
+private fn overflow(what: String, limit: Int) {
+    eprint("internal error: ".concat(what, " nested more than ", limit.toString(), " deep\n"))
+    exit(1)
+}
+
+public fn ir_register_global_name(name: String) {
+    bindingsOpen()
+    let id = irNameId(name)
+    if (listHas(globalNames, id) == false) { globalNames.push(id) }
+}
+
+public fn ir_is_global_name(name: String) -> Int {
+    bindingsOpen()
+    if (listHas(globalNames, irNameId(name))) { return 1 }
+    return 0
+}
+
+public fn ir_reset_globals() {
+    bindingsOpen()
+    truncateInts(globalNames, 0)
+}
+
+public fn ir_loop_push(continueLabel: Int, breakLabel: Int) {
+    bindingsOpen()
+    if (loopDepth >= BINDING_MAX_LOOP_DEPTH) { overflow("loops", BINDING_MAX_LOOP_DEPTH) }
+    loopContinue[loopDepth] = continueLabel
+    loopBreak[loopDepth] = breakLabel
+    loopName[loopDepth] = -1
+    loopDepth = loopDepth + 1
+}
+
+public fn ir_loop_pop() {
+    if (loopDepth > 0) { loopDepth = loopDepth - 1 }
+}
+
+public fn ir_loop_continue_label() -> Int {
+    if (loopDepth > 0) { return loopContinue[loopDepth - 1] }
+    return -1
+}
+
+public fn ir_loop_break_label() -> Int {
+    if (loopDepth > 0) { return loopBreak[loopDepth - 1] }
+    return -1
+}
+
+public fn ir_scope_push() {
+    bindingsOpen()
+    if (scopeDepth >= BINDING_MAX_SCOPES) { overflow("blocks", BINDING_MAX_SCOPES) }
+    scopeMarks[scopeDepth] = bindCount
+    scopeDepth = scopeDepth + 1
+}
+
+public fn ir_scope_pop() {
+    if (scopeDepth > 0) {
+        scopeDepth = scopeDepth - 1
+        bindCount = scopeMarks[scopeDepth]
+    }
+}
+
+public fn ir_loop_barrier_push() {
+    bindingsOpen()
+    if (loopBarrierDepth < BINDING_MAX_LOOP_DEPTH) {
+        loopBarriers[loopBarrierDepth] = bindCount
+        loopBarrierDepth = loopBarrierDepth + 1
+    }
+}
+
+public fn ir_loop_barrier_pop() {
+    if (loopBarrierDepth > 0) { loopBarrierDepth = loopBarrierDepth - 1 }
+}
+
+// The index of the innermost binding of `name`, or -1.
+private fn bindingFind(name: String) -> Int {
+    bindingsOpen()
+    let id = irNameId(name)
+    let mut i = bindCount - 1
+    while (i >= 0) {
+        if (bindName[i] == id) { return i }
+        i = i - 1
+    }
+    return -1
+}
+
+private fn flagIsSet(at: Int, flag: Int) -> Int {
+    if ((bindFlags[at] & flag) != 0) { return 1 }
+    return 0
+}
+
+private fn flagOn(name: String, flag: Int) {
+    let at = bindingFind(name)
+    if (at >= 0) { bindFlags[at] = bindFlags[at] | flag }
+}
+
+private fn flagOff(name: String, flag: Int) {
+    let at = bindingFind(name)
+    if (at >= 0) { bindFlags[at] = bindFlags[at] & ~flag }
+}
+
+// Whether the innermost binding of `name` carries `flag`, or `unknown` when there is none.
+private fn flagOf(name: String, flag: Int, unknown: Int) -> Int {
+    let at = bindingFind(name)
+    if (at < 0) { return unknown }
+    return flagIsSet(at, flag)
+}
+
+// 1 when `name` is bound outside the innermost enclosing loop.
+public fn ir_binding_predates_loop(name: String) -> Int {
+    if (loopBarrierDepth == 0) { return 0 }
+    let at = bindingFind(name)
+    if (at < 0) { return 0 }
+    if (at < loopBarriers[loopBarrierDepth - 1]) { return 1 }
+    return 0
+}
+
+// Scope drop lists (AIF Level 2). A drop list is not a separate structure: the binding table is
+// already a flat array with a watermark per scope, so "what dies when this scope exits" is the
+// droppable bindings above that watermark. The same read with a different floor answers it for a
+// `return` (the whole function) and for `break`/`continue` (the loop barrier). Enumeration is
+// reverse construction order, which RAII requires: a value may hold a reference to one constructed
+// before it, never after. Whether a binding was moved is deliberately not consulted: move state
+// belongs to sema and is cleared per function before codegen starts.
+public fn ir_mark_droppable(name: String, kind: Int) {
+    let at = bindingFind(name)
+    if (at >= 0) {
+        bindFlags[at] = bindFlags[at] | BINDING_DROPPABLE
+        bindDropKind[at] = kind
+    }
+}
+
+// Codegen asks this at the assignment rather than recomputing the declaration's reasoning, because
+// two answers to "does this binding own its contents" is exactly how a value ends up with no owner
+// at all.
+public fn ir_binding_owns_slot(name: String) -> Int {
+    return flagOf(name, BINDING_OWNS_SLOT, 0)
+}
+
+public fn ir_mark_owns_slot(name: String) {
+    flagOn(name, BINDING_OWNS_SLOT)
+}
+
+public fn ir_scope_drop_floor() -> Int {
+    if (scopeDepth > 0) { return scopeMarks[scopeDepth - 1] }
+    return 0
+}
+
+public fn ir_region_enter() {
+    regionDepth = regionDepth + 1
+}
+
+public fn ir_region_exit() {
+    if (regionDepth > 0) { regionDepth = regionDepth - 1 }
+}
+
+public fn ir_region_depth() -> Int {
+    return regionDepth
+}
+
+public fn ir_loop_region_depth() -> Int {
+    if (dropBarrierDepth > 0) { return barrierRegions[dropBarrierDepth - 1] }
+    return 0
+}
+
+public fn ir_drop_barrier_push() {
+    bindingsOpen()
+    if (dropBarrierDepth < BINDING_MAX_LOOP_DEPTH) {
+        barrierRegions[dropBarrierDepth] = regionDepth
+        dropBarriers[dropBarrierDepth] = bindCount
+        dropBarrierDepth = dropBarrierDepth + 1
+    }
+}
+
+public fn ir_drop_barrier_pop() {
+    if (dropBarrierDepth > 0) { dropBarrierDepth = dropBarrierDepth - 1 }
+}
+
+public fn ir_loop_drop_floor() -> Int {
+    if (dropBarrierDepth > 0) { return dropBarriers[dropBarrierDepth - 1] }
+    return 0
+}
+
+// Labelled loops. A `break@outer` leaves every scope and region down to the named loop's, not the
+// innermost one's, so the floor and region depth are captured when the loop is named, after its own
+// barrier is pushed, which is the order every loop in ir/stmt.psm enters in.
+public fn ir_loop_label(name: String) {
+    if (loopDepth == 0 or name.length == 0) { return }
+    loopName[loopDepth - 1] = irNameId(name)
+    loopFloor[loopDepth - 1] = ir_loop_drop_floor()
+    loopRegion[loopDepth - 1] = ir_loop_region_depth()
+}
+
+// The innermost open loop with this label, or -1. Sema has already refused a label no enclosing
+// loop carries, so -1 here means codegen is out of step.
+private fn loopNamed(name: String) -> Int {
+    if (name.length == 0) { return -1 }
+    let id = irNameId(name)
+    let mut i = loopDepth - 1
+    while (i >= 0) {
+        if (loopName[i] == id) { return i }
+        i = i - 1
+    }
+    return -1
+}
+
+public fn ir_loop_break_label_named(name: String) -> Int {
+    let at = loopNamed(name)
+    if (at >= 0) { return loopBreak[at] }
+    return -1
+}
+
+public fn ir_loop_continue_label_named(name: String) -> Int {
+    let at = loopNamed(name)
+    if (at >= 0) { return loopContinue[at] }
+    return -1
+}
+
+public fn ir_loop_drop_floor_named(name: String) -> Int {
+    let at = loopNamed(name)
+    if (at >= 0) { return loopFloor[at] }
+    return 0
+}
+
+public fn ir_loop_region_depth_named(name: String) -> Int {
+    let at = loopNamed(name)
+    if (at >= 0) { return loopRegion[at] }
+    return 0
+}
+
+public fn ir_drop_count(floor: Int) -> Int {
+    let mut from = floor
+    if (from < 0) { from = 0 }
+    if (from >= bindCount) { return 0 }
+    let mut n = 0
+    for i in from..<bindCount {
+        if ((bindFlags[i] & BINDING_DROPPABLE) != 0) { n = n + 1 }
+    }
+    return n
+}
+
+// The index of the i-th droppable binding at or above `floor`, counting from the most recently
+// constructed, or -1.
+private fn dropIndex(floor: Int, i: Int) -> Int {
+    let mut low = floor
+    if (low < 0) { low = 0 }
+    let mut n = 0
+    let mut k = bindCount - 1
+    while (k >= low) {
+        if ((bindFlags[k] & BINDING_DROPPABLE) != 0) {
+            if (n == i) { return k }
+            n = n + 1
+        }
+        k = k - 1
+    }
+    return -1
+}
+
+public fn ir_drop_slot(floor: Int, i: Int) -> String {
+    let at = dropIndex(floor, i)
+    if (at >= 0) { return irNameText(bindSlot[at]) }
+    return ""
+}
+
+public fn ir_drop_type(floor: Int, i: Int) -> String {
+    let at = dropIndex(floor, i)
+    if (at >= 0) { return irNameText(bindType[at]) }
+    return ""
+}
+
+public fn ir_drop_kind(floor: Int, i: Int) -> Int {
+    let at = dropIndex(floor, i)
+    if (at >= 0) { return bindDropKind[at] }
+    return 0
+}
+
+private fn bindingAdd(name: String, type: String, isGlobal: Bool) {
+    bindingsOpen()
+    let nameId = irNameId(name)
+    let mut slotId = nameId
+    let mut flags = 0
+    if (isGlobal) {
+        // Globals are addressed by their own name (@name), so no renaming.
+        flags = BINDING_GLOBAL
+    } else {
+        // '.' cannot appear in a Prismio identifier, so a slot name can never collide with a user
+        // variable. Built at full length: truncating here was how two long distinct names ended up
+        // sharing one stack slot.
+        slotId = irNameId(irNameText(nameId).concat(".", slotSerial.toString()))
+        slotSerial = slotSerial + 1
+    }
+    putInt(bindName, bindCount, nameId)
+    putInt(bindType, bindCount, irNameId(type))
+    putInt(bindSlot, bindCount, slotId)
+    putInt(bindFlags, bindCount, flags)
+    putInt(bindDropKind, bindCount, 0)
+    putInt(bindData, bindCount, -1)
+    bindCount = bindCount + 1
+}
+
+// Declares a binding in the current scope. Each call is a distinct binding, so re-declaring a name
+// shadows rather than overwrites.
+public fn ir_set_var_type(name: String, varType: String) {
+    bindingAdd(name, varType, false)
+}
+
+public fn ir_set_global_var_type(name: String, varType: String) {
+    bindingAdd(name, varType, true)
+}
+
+// "i64" for an unknown name.
+public fn ir_get_var_type(name: String) -> String {
+    let at = bindingFind(name)
+    if (at >= 0) { return irNameText(bindType[at]) }
+    return "i64"
+}
+
+// The LLVM-level name for the innermost binding of `name`.
+public fn ir_get_var_slot(name: String) -> String {
+    let at = bindingFind(name)
+    if (at >= 0) { return irNameText(bindSlot[at]) }
+    return irNameText(irNameId(name))
+}
+
+// Whether the innermost binding of `name` is module-level. Shadowing-aware, so a local that happens
+// to share a global's name reports 0.
+public fn ir_var_is_global(name: String) -> Int {
+    return flagOf(name, BINDING_GLOBAL, 0)
+}
+
+public fn ir_has_var_type(name: String) -> Int {
+    if (bindingFind(name) >= 0) { return 1 }
+    return 0
+}
+
+// The resolved byte pointer for a String binding, recorded where the binding is made.
+public fn ir_set_var_data(name: String, value: Int) {
+    let at = bindingFind(name)
+    if (at >= 0) { bindData[at] = value }
+}
+
+public fn ir_get_var_data(name: String) -> Int {
+    let at = bindingFind(name)
+    if (at >= 0) { return bindData[at] }
+    return -1
+}
+
+// `let mut` marks the binding just declared. Assignment to anything not so marked is rejected.
+public fn ir_mark_mutable(name: String) {
+    flagOn(name, BINDING_MUTABLE)
+}
+
+// Unknown names error elsewhere, so they read as mutable here.
+public fn ir_var_is_mutable(name: String) -> Int {
+    return flagOf(name, BINDING_MUTABLE, 1)
+}
+
+public fn ir_mark_inout(name: String) {
+    flagOn(name, BINDING_INOUT)
+}
+
+public fn ir_var_is_inout(name: String) -> Int {
+    return flagOf(name, BINDING_INOUT, 0)
+}
+
+public fn ir_mark_readonly_view(name: String) {
+    flagOn(name, BINDING_READONLY_VIEW)
+}
+
+public fn ir_var_is_readonly_view(name: String) -> Int {
+    return flagOf(name, BINDING_READONLY_VIEW, 0)
+}
+
+public fn ir_mark_list_exclusive(name: String) {
+    flagOn(name, BINDING_LIST_EXCLUSIVE)
+}
+
+public fn ir_unmark_list_exclusive(name: String) {
+    flagOff(name, BINDING_LIST_EXCLUSIVE)
+}
+
+public fn ir_is_list_exclusive(name: String) -> Int {
+    return flagOf(name, BINDING_LIST_EXCLUSIVE, 0)
+}
+
+public fn ir_clear_var_types() {
+    bindCount = 0
+    scopeDepth = 0
+    slotSerial = 0
+}
+
+// Drops everything a function introduced, keeping module-level bindings and the `$fn$` return-type
+// keys. Scopes handle blocks; this handles the function boundary itself.
+public fn ir_clear_local_var_types() {
+    bindingsOpen()
+    let mut write = 0
+    for read in 0..<bindCount {
+        let keep = (bindFlags[read] & BINDING_GLOBAL) != 0 or irNameText(bindName[read]).startsWith("$fn$")
+        if (keep) {
+            if (write != read) {
+                bindName[write] = bindName[read]
+                bindType[write] = bindType[read]
+                bindSlot[write] = bindSlot[read]
+                bindFlags[write] = bindFlags[read]
+                bindDropKind[write] = bindDropKind[read]
+                bindData[write] = bindData[read]
+            }
+            write = write + 1
+        }
+    }
+    bindCount = write
+    scopeDepth = 0
+}
+
+public fn ir_clear_moved() {
+    bindingsOpen()
+    truncateInts(movedNames, 0)
+    truncateInts(frameBase, 0)
+    truncateInts(frameBaseStart, 0)
+    truncateInts(frameJoined, 0)
+    truncateInts(frameJoinedStart, 0)
+    truncateInts(frameFellThrough, 0)
+}
+
+public fn ir_is_moved(name: String) -> Int {
+    bindingsOpen()
+    if (listHas(movedNames, irNameId(name))) { return 1 }
+    return 0
+}
+
+public fn ir_mark_moved(name: String) {
+    bindingsOpen()
+    let id = irNameId(name)
+    if (listHas(movedNames, id) == false) { movedNames.push(id) }
+}
+
+// Moved-from state is tracked per name, but a `let` binds a *fresh* value to that name, so whatever
+// was moved out of the previous binding no longer applies. Without this, reusing an ordinary name
+// (`let t = ...` twice in one function, in different branches) makes every use after the first
+// move a spurious "use of moved value".
+public fn ir_unmark_moved(name: String) {
+    bindingsOpen()
+    listRemove(movedNames, irNameId(name))
+}
+
+// Replaces the moved set with the ids in `source` from `start`.
+private fn movedReplace(source: Vec<Int>, start: Int) {
+    truncateInts(movedNames, 0)
+    for i in start..<source.length { movedNames.push(source[i]) }
+}
+
+// Adds each id of `from` (starting at `start`) that the segment of `into` from `intoStart` lacks.
+private fn unionInto(inout into: Vec<Int>, intoStart: Int, from: Vec<Int>, start: Int) {
+    for i in start..<from.length {
+        let mut present = false
+        for j in intoStart..<into.length {
+            if (into[j] == from[i]) {
+                present = true
+                break
+            }
+        }
+        if (present == false) { into.push(from[i]) }
+    }
+}
+
+public fn ir_moved_branches_begin() {
+    bindingsOpen()
+    frameBaseStart.push(frameBase.length)
+    for i in 0..<movedNames.length { frameBase.push(movedNames[i]) }
+    frameJoinedStart.push(frameJoined.length)
+    frameFellThrough.push(0)
+}
+
+// Ends one arm. `diverges` is whether control cannot leave the arm's bottom (return, break,
+// continue, panic): its moves never reach the join.
+public fn ir_moved_branch_end(diverges: Int) {
+    let top = frameBaseStart.length - 1
+    if (top < 0) { return }
+    if (diverges == 0) {
+        unionInto(frameJoined, frameJoinedStart[top], movedNames, 0)
+        frameFellThrough[top] = 1
+    }
+    movedReplace(frameBase, frameBaseStart[top])
+}
+
+// Closes the frame. `hasFallthroughArm` is 1 when no arm covers the case that matches none of them
+// (an `if` without `else`): that implicit arm falls through with the state the branches opened with.
+public fn ir_moved_branches_end(hasFallthroughArm: Int) {
+    let top = frameBaseStart.length - 1
+    if (top < 0) { return }
+    if (hasFallthroughArm != 0) {
+        unionInto(frameJoined, frameJoinedStart[top], frameBase, frameBaseStart[top])
+        frameFellThrough[top] = 1
+    }
+    if (frameFellThrough[top] != 0) {
+        movedReplace(frameJoined, frameJoinedStart[top])
+    } else {
+        movedReplace(frameBase, frameBaseStart[top])
+    }
+    truncateInts(frameBase, frameBaseStart[top])
+    truncateInts(frameJoined, frameJoinedStart[top])
+    truncateInts(frameBaseStart, top)
+    truncateInts(frameJoinedStart, top)
+    truncateInts(frameFellThrough, top)
+}
+
+// The binding an assignment is re-initialising, while its right-hand side is being checked.
+//
+// `acc = f(acc)` moves `acc` and immediately rebinds it, so the move does not repeat on the next
+// iteration the way `f(acc)` alone would, but move state is tracked per name in source order, which
+// cannot see that the store puts a fresh value back. One slot rather than a set: an assignment's
+// right-hand side cannot contain another assignment, so the target never nests.
+public fn ir_set_reinit_target(name: String) {
+    reinitTarget = -1
+    if (name.length > 0) { reinitTarget = irNameId(name) }
+}
+
+public fn ir_is_reinit_target(name: String) -> Int {
+    if (reinitTarget >= 0 and irNameId(name) == reinitTarget) { return 1 }
+    return 0
+}
+
+public fn ir_clear_borrowed() {
+    bindingsOpen()
+    truncateInts(borrowedNames, 0)
+}
+
+public fn ir_is_borrowed(name: String) -> Int {
+    bindingsOpen()
+    if (listHas(borrowedNames, irNameId(name))) { return 1 }
+    return 0
+}
+
+public fn ir_mark_borrowed(name: String) {
+    bindingsOpen()
+    let id = irNameId(name)
+    if (listHas(borrowedNames, id) == false) { borrowedNames.push(id) }
+}
+
+// Same reason `ir_unmark_moved` exists. A `let` binds a fresh value, and AIF Level 4 made borrowing
+// something a `let` can do (`let p = node.child1` reborrows the field), so a name that reborrowed
+// once and owns the next time must not keep the first answer.
+public fn ir_unmark_borrowed(name: String) {
+    bindingsOpen()
+    listRemove(borrowedNames, irNameId(name))
+}
+
+// Set when a block has emitted its terminator, so the caller knows not to emit a fall-through
+// branch. break/continue reuse it for the same purpose.
+public fn ir_set_returned() {
+    returned = 1
+}
+
+public fn ir_has_returned() -> Int {
+    return returned
+}
+
+public fn ir_clear_returned() {
+    returned = 0
+}

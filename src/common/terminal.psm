@@ -1,0 +1,321 @@
+// What the compiler says to a terminal that is not a diagnostic: colour, the live progress line,
+// the result lines (`Built`, `Checked`) and styled help text.
+//
+// Each is decided per stream, because `prismio build | tee log` has a terminal on stderr and a
+// pipe on stdout, and the pipe must get the plain text. Styled output is the exact plain text
+// plus escape sequences: the test suite, an IDE and every script that greps a build log match on
+// that text, and none of them is a terminal.
+//
+// **Output goes through `print` and `eprint`, which write straight to the descriptor.** Nothing
+// here is buffered, so a line on stdout cannot be overtaken by one on stderr.
+
+import std.io
+import std.mem
+import std.option
+import std.platform
+import std.process
+import std.string
+import std.term
+import std.time
+
+let SGR_RESET = "\x1b[0m"
+let SGR_BOLD = "\x1b[1m"
+let SGR_DIM = "\x1b[2m"
+let SGR_RED = "\x1b[1;31m"
+let SGR_GREEN = "\x1b[1;32m"
+let SGR_YELLOW = "\x1b[1;33m"
+let SGR_BLUE = "\x1b[1;34m"
+let SGR_MAGENTA = "\x1b[1;35m"
+let SGR_CYAN = "\x1b[1;36m"
+
+// The longest subject the progress line keeps. Longer is cut at this many bytes.
+let PROGRESS_SUBJECT_LIMIT = 255
+
+private let mut jsonMode = false
+// Per stream, 0 until first asked, then 1 for plain and 2 for styled.
+private let mut stdoutStyle = 0
+private let mut stderrStyle = 0
+private let mut clockStarted = false
+private let mut clockStart: Instant
+private let mut progressSubject = ""
+private let mut progressShown = false
+private let mut phaseTimes = 0
+private let mut phaseRunning = false
+private let mut phaseName = ""
+private let mut phaseStart: Instant
+
+// Switches the renderer to the versioned JSON Lines protocol consumed by IDEs. This changes
+// presentation only: a machine is reading stderr, so nothing is ever styled, and diagnostic
+// accounting and exit status stay the same as the human renderer's.
+public fn diag_set_json_mode(on: Int) {
+    jsonMode = on != 0
+}
+
+public fn diagJsonMode() -> Bool {
+    return jsonMode
+}
+
+private fn envSet(name: String) -> Bool {
+    let value = process.env(name) ?? ""
+    return value.length > 0 and value.equals("0") == false
+}
+
+private fn detectColor(fd: Int) -> Bool {
+    if (envSet("NO_COLOR")) { return false }
+    if (envSet("FORCE_COLOR") or envSet("CLICOLOR_FORCE")) { return true }
+    if ((process.env("TERM") ?? "").equals("dumb")) { return false }
+    // A Windows console is a terminal that may not interpret the sequences until
+    // ENABLE_VIRTUAL_TERMINAL_PROCESSING is on, which asking std.term for the answer turns on.
+    if (platform.isWindows) {
+        if (fd == 2) { return stderrColorEnabled() }
+        return colorEnabled()
+    }
+    return isTerminal(fd)
+}
+
+private fn styleOf(fd: Int) -> Int {
+    if (detectColor(fd)) { return 2 }
+    return 1
+}
+
+// 1 when fd 1 or 2 gets styled output, for output that only a terminal gets at all: the bars
+// beside `aif`'s storage plan, which a pipe must not grow.
+public fn diag_tty_styled(fd: Int) -> Int {
+    if (fd != 1 and fd != 2) { return 0 }
+    if (jsonMode) { return 0 }
+    if (fd == 1) {
+        if (stdoutStyle == 0) { stdoutStyle = styleOf(1) }
+        return stdoutStyle - 1
+    }
+    if (stderrStyle == 0) { stderrStyle = styleOf(2) }
+    return stderrStyle - 1
+}
+
+// An SGR sequence, or "" when the stream is plain, so a message can carry its styling
+// unconditionally and still print plain text to a pipe.
+public fn sgr(fd: Int, code: String) -> String {
+    if (diag_tty_styled(fd) == 1) { return code.clone() }
+    return ""
+}
+
+private fn padLeft(text: String, width: Int) -> String {
+    if (text.length >= width) { return text.clone() }
+    return " ".repeat(width - text.length).concat(text)
+}
+
+private fn padRight(text: String, width: Int) -> String {
+    if (text.length >= width) { return text.clone() }
+    return text.concat(" ".repeat(width - text.length))
+}
+
+// Milliseconds with three decimals, as `%.3f` writes them.
+private fn millisecondsText(spent: Duration) -> String {
+    let micros = (spent.asNanos + 500) / 1000
+    let fraction = (micros % 1000).toString()
+    return (micros / 1000).toString().concat(".", "0".repeat(3 - fraction.length), fraction)
+}
+
+// Erases the progress line, if one is showing. Everything that writes to the terminal while a
+// compile is running calls this first -- a diagnostic, a result line, a failed tool's output,
+// the program `run` starts -- or it would be printed onto the end of
+// "Compiling main.psm (generating IR)".
+public export fn diag_progress_clear() {
+    if (progressShown == false) { return }
+    eprint("\r\x1b[2K")
+    progressShown = false
+}
+
+// Starts the clock the result line reports, and names what is being compiled. Nothing is printed
+// until the first phase.
+public fn diag_progress_begin(subject: String) {
+    clockStart = Instant.now()
+    clockStarted = true
+    if (subject.length > PROGRESS_SUBJECT_LIMIT) {
+        progressSubject = subject.substring(0, PROGRESS_SUBJECT_LIMIT).clone()
+    } else {
+        progressSubject = subject.clone()
+    }
+}
+
+// PRISMIO_PHASE_TIMES=1 prints how long each phase took, on stderr, when the next one starts and
+// when the result line is written. The phases are the names `diag_progress` already carries, so
+// this costs an environment read per phase and says where a compile's time went without a
+// profiler. `running` is false for the result line, which starts no phase.
+private fn phaseTime(next: String, running: Bool) {
+    if (phaseTimes == 0) {
+        phaseTimes = 1
+        if (envSet("PRISMIO_PHASE_TIMES")) { phaseTimes = 2 }
+    }
+    if (phaseTimes == 1) { return }
+    if (phaseRunning) {
+        let spent = Instant.now().since(phaseStart)
+        eprint("phase ".concat(padRight(phaseName, 20), " ", padLeft(millisecondsText(spent), 8), " ms\n"))
+    }
+    phaseRunning = running
+    if (running) { phaseName = next.clone() }
+    // Stored straight from the clock. Bound to a local that is also read, the reading is released
+    // at the end of this call and the global is left pointing at a block the next call reuses.
+    phaseStart = Instant.now()
+}
+
+// The phase now running, as one line rewritten in place on stderr:
+//
+//      Compiling main.psm (checking types)
+//
+// A real terminal only -- FORCE_COLOR colours a CI log, but a line rewritten with `\r` is noise in
+// any log it lands in, and the result line says everything it would have. ASCII, because a
+// Windows console that decodes VT sequences may still not be on a UTF-8 code page.
+public fn diag_progress(phase: String) {
+    phaseTime(phase, true)
+    if (diag_tty_styled(2) == 0 or isTerminal(2) == false or progressSubject.length == 0) { return }
+    eprint("\r\x1b[2K".concat(SGR_CYAN, padLeft("Compiling", 12), SGR_RESET, " ", progressSubject, " ",
+                             SGR_DIM, "(", phase, ")", SGR_RESET))
+    progressShown = true
+}
+
+// `diag_progress` for the C driver, whose phase names are string literals.
+public export fn diag_progress_cstr(phase: Ptr) {
+    diag_progress(stringFromCString(phase))
+}
+
+// Seconds since `diag_progress_begin`, formatted for a result line, or "" when no clock was
+// started.
+private fn elapsedText() -> String {
+    if (clockStarted == false) { return "" }
+    let nanos = clockStart.elapsed().asNanos
+    if (nanos < 1000000000) { return ((nanos + 500000) / 1000000).toString().concat("ms") }
+    let hundredths = (nanos + 5000000) / 10000000
+    let fraction = (hundredths % 100).toString()
+    return (hundredths / 100).toString().concat(".", "0".repeat(2 - fraction.length), fraction, "s")
+}
+
+// A result line on stdout: what was produced, and how long it took.
+//
+//   plain  `<plain><subject>` -- "Built ./hello", "Wrote LLVM IR: out.ll". The exact text these
+//          lines always had; the suite and scripts match it. Nothing at all when `plain` is
+//          empty: a quiet success stays quiet.
+//   styled `       Built ./hello  (optimized, 0.84s)`, the verb right-aligned in bold green,
+//          cargo's shape.
+public fn diag_result(plain: String, verb: String, subject: String, detail: String) {
+    phaseTime("", false)
+    diag_progress_clear()
+    if (diag_tty_styled(1) == 0) {
+        if (plain.length > 0) { print(plain.concat(subject, "\n")) }
+        return
+    }
+    let elapsed = elapsedText()
+    let mut line = SGR_GREEN.concat(padLeft(verb, 12), SGR_RESET, " ", subject)
+    if (detail.length > 0 or elapsed.length > 0) {
+        let mut separator = ""
+        if (detail.length > 0 and elapsed.length > 0) { separator = ", " }
+        line = line.concat(SGR_DIM, "  (", detail, separator, elapsed, ")", SGR_RESET)
+    }
+    print(line.concat("\n"))
+}
+
+// A status line with no plain form -- `Running ./hello` before a program's own output. Styled
+// terminals only; piped, the program's output stands alone.
+public fn diag_status(verb: String, subject: String) {
+    diag_progress_clear()
+    if (diag_tty_styled(1) == 0) { return }
+    print(SGR_GREEN.concat(padLeft(verb, 12), SGR_RESET, " ", subject, "\n"))
+}
+
+// The escape sequence for a stdout role. The roles are names rather than colours so the palette
+// stays in this file.
+private fn stdoutRole(style: String) -> String {
+    if (style.equals("ok")) { return SGR_GREEN.clone() }
+    if (style.equals("fail")) { return SGR_RED.clone() }
+    if (style.equals("warn")) { return SGR_YELLOW.clone() }
+    if (style.equals("alert")) { return SGR_MAGENTA.clone() }
+    if (style.equals("heading")) { return SGR_BOLD.clone() }
+    if (style.equals("command")) { return SGR_CYAN.clone() }
+    if (style.equals("dim")) { return SGR_DIM.clone() }
+    if (style.equals("accent")) { return SGR_BLUE.clone() }
+    return ""
+}
+
+// Text on stdout in a role -- "ok", "fail", "warn", "alert", "heading", "command", "dim",
+// "accent" -- or plain. No newline is added.
+public fn diag_styled(style: String, text: String) {
+    let code = stdoutRole(style)
+    diag_progress_clear()
+    if (code.length == 0) {
+        print(text)
+        return
+    }
+    print(sgr(1, code).concat(text, sgr(1, SGR_RESET)))
+}
+
+// The same on stderr, for the launcher's banner and anything else that is commentary on a build
+// rather than its result. Only three roles exist there.
+public fn diag_styled_err(style: String, text: String) {
+    let mut code = ""
+    if (style.equals("dim")) { code = SGR_DIM.clone() }
+    if (style.equals("accent")) { code = SGR_BLUE.clone() }
+    if (style.equals("ok")) { code = SGR_GREEN.clone() }
+    diag_progress_clear()
+    if (code.length == 0) {
+        eprint(text)
+        return
+    }
+    eprint(sgr(2, code).concat(text, sgr(2, SGR_RESET)))
+}
+
+// The run of spaces starting at `at`.
+private fn spacesFrom(line: String, at: Int) -> Int {
+    let mut n = 0
+    while (at + n < line.length and line.byteAt(at + n) == 32) { n = n + 1 }
+    return n
+}
+
+// The run of non-spaces starting at `at`.
+private fn untilSpace(line: String, at: Int) -> Int {
+    let mut n = 0
+    while (at + n < line.length and line.byteAt(at + n) != 32) { n = n + 1 }
+    return n
+}
+
+// One help line, styled: a line that starts in column 0 is a heading, `prismio <command>` at the
+// start of an indented line is the command, and a flag paragraph's flag is bold. Anything else
+// passes through.
+private fn styledHelpLine(line: String) -> String {
+    if (line.length > 0 and line.byteAt(0) != 32) { return SGR_BOLD.concat(line, SGR_RESET) }
+    let indent = spacesFrom(line, 0)
+    let rest = line.length - indent
+    let word = line.substring(indent, rest)
+    if (rest > 8 and word.startsWith("prismio ")) {
+        let command = 8 + untilSpace(word, 8)
+        return line.substring(0, indent).concat(SGR_CYAN, word.substring(0, command), SGR_RESET,
+                                                word.substring(command, rest - command))
+    }
+    if (rest > 1 and word.byteAt(0) == 45) {
+        let flag = untilSpace(word, 0)
+        return line.substring(0, indent).concat(SGR_BOLD, word.substring(0, flag), SGR_RESET,
+                                                word.substring(flag, rest - flag))
+    }
+    return line.clone()
+}
+
+// Help text, styled line by line when stdout is a terminal. Piped, it is passed through
+// unchanged.
+public fn diag_print_help(text: String) {
+    if (diag_tty_styled(1) == 0) {
+        print(text.concat("\n"))
+        return
+    }
+    let length = text.length
+    let mut out = ""
+    let mut at = 0
+    while (at < length) {
+        let newline = text.indexOf('\n', at)
+        let mut end = newline
+        if (newline < 0) { end = length }
+        out = out.concat(styledHelpLine(text.substring(at, end - at)), "\n")
+        if (newline < 0) { break }
+        at = newline + 1
+    }
+    // println's newline after the text's own, as the plain path prints it.
+    if (length > 0 and text.byteAt(length - 1) == 10) { out = out.concat("\n") }
+    print(out)
+}

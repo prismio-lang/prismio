@@ -1,0 +1,358 @@
+// Which declarations carry a name, and which of them a file may see.
+//
+// The merge flattens every imported declaration into one module, so what an import changes is
+// *visibility*, and visibility is a filter over the overload set: a candidate is dropped when the
+// file that declared it does not match a qualifier, when the importing file took only some names from
+// its module, or when the importing file never imported that module at all. Every table here is keyed
+// by importing file, because two files may import the same module differently and the module is merged
+// once for both.
+//
+// **Absence means "everything", and that is what keeps this free.** A file with no selection for a
+// module imported it wholesale, so the filter declines to filter, which is every file in every program
+// written before selective imports existed.
+
+import common.source_files
+import std.map
+import std.option
+import std.raw
+import std.string
+import std.vec
+import symbols.names
+
+// Top-level declarations by name, in source order. Every pass that wanted a declaration by name used
+// to walk the module's statement list looking for it, and overload resolution does that once per call
+// site: a module with D declarations and C calls paid D*C. Source order matters to two readers: the
+// duplicate-definition diagnostic points at the *first* declaration carrying a symbol, and overload
+// resolution reports the first match. Filled once per module by `index_module_declarations`, which
+// every pass that reads the index calls first.
+//
+// A name's declarations are `declNodes[(slot, ordinal)]`, one entry in a map keyed by both, and the
+// number it has so far is `declCounts[slot]`. Entries are never nested lists, so reading the n-th
+// declaration of a name is one probe however many overloads the name has.
+private let mut declSlots: Map<Int, Int>
+private let mut declCounts: Vec<Int>
+private let mut declNodes: Map<Usize, Ptr>
+
+// `import std.string.strTrim` brings one name into scope, not the module.
+private let mut selectFiles: Vec<Int>
+private let mut selectModules: Vec<Int>
+private let mut selectNames: Vec<Int>
+
+// Which modules a file explicitly imported. A file may only resolve declarations from modules it
+// explicitly imported, avoiding implicit transitive leakage across module boundaries.
+private let mut importFiles: Vec<Int>
+private let mut importModules: Vec<Int>
+
+// `import std.io as io` binds `io` to `std.io` for one file. A second name for the module, not a
+// replacement: the alias never reaches the import table above, so the gate and every diagnostic go on
+// naming `std.io`.
+private let mut aliasFiles: Vec<Int>
+private let mut aliasNames: Vec<Int>
+private let mut aliasModules: Vec<Int>
+
+// Which files declared an extern function, so deduplicated EXTERN_FUNCTION nodes remain callable by any
+// file that explicitly declared them, or imported the module that declared them as public. The module
+// is recorded when the declaration is and filled in later if the file's module was not yet known.
+private let mut externFiles: Vec<Int>
+private let mut externNames: Vec<Int>
+private let mut externVisibility: Vec<Int>
+private let mut externModules: Vec<Int>
+
+private let mut packageOf: Map<Int, Int>
+private let mut declarationsOpened = false
+
+// A zero-filled global `Vec` or `Map` is not an empty one.
+private fn declarationsOpen() {
+    if (declarationsOpened) { return }
+    let slots: Map<Int, Int> = {}
+    declSlots = slots
+    declCounts = []
+    let nodes: Map<Usize, Ptr> = {}
+    declNodes = nodes
+    selectFiles = []
+    selectModules = []
+    selectNames = []
+    importFiles = []
+    importModules = []
+    aliasFiles = []
+    aliasNames = []
+    aliasModules = []
+    externFiles = []
+    externNames = []
+    externVisibility = []
+    externModules = []
+    let packages: Map<Int, Int> = {}
+    packageOf = packages
+    declarationsOpened = true
+}
+
+// Empties the index. A second module is compiled in the same process during bootstrap; the names
+// keep their slots and start again from no declarations.
+public fn ir_reset_decl_index() {
+    declarationsOpen()
+    declNodes.clear()
+    for i in 0..<declCounts.length { declCounts[i] = 0 }
+}
+
+// Where a name's `ordinal`-th declaration is filed.
+private fn declKey(slot: Int, ordinal: Int) -> Usize {
+    return ((slot as Usize) << 24) | (ordinal as Usize)
+}
+
+public fn ir_index_decl(name: String, node: Ptr) {
+    declarationsOpen()
+    let id = irNameId(name)
+    let mut slot = declSlots.getOr(id, -1)
+    if (slot < 0) {
+        slot = declCounts.length
+        declCounts.push(0)
+        declSlots.set(id, slot)
+    }
+    declNodes.set(declKey(slot, declCounts[slot]), node)
+    declCounts[slot] = declCounts[slot] + 1
+}
+
+public fn ir_decl_count(name: String) -> Int {
+    declarationsOpen()
+    let slot = declSlots.getOr(irNameId(name), -1)
+    if (slot < 0) { return 0 }
+    return declCounts[slot]
+}
+
+// A null handle for an out-of-range index.
+public fn ir_decl_at(name: String, index: Int) -> Ptr {
+    declarationsOpen()
+    let slot = declSlots.getOr(irNameId(name), -1)
+    if (slot < 0 or index < 0 or index >= declCounts[slot]) { return pointerAt(0) }
+    return declNodes.getOr(declKey(slot, index), pointerAt(0))
+}
+
+public fn ir_select_record(file: Int, module: String, name: String) {
+    declarationsOpen()
+    selectFiles.push(file)
+    selectModules.push(irNameId(module))
+    selectNames.push(irNameId(name))
+}
+
+// Whether `file` took *some* names from `module` rather than all of them.
+public fn ir_select_any(file: Int, module: String) -> Int {
+    declarationsOpen()
+    if (selectFiles.length == 0) { return 0 }
+    let id = irNameId(module)
+    for i in 0..<selectFiles.length {
+        if (selectFiles[i] == file and selectModules[i] == id) { return 1 }
+    }
+    return 0
+}
+
+// Whether `file` made any selection at all, asked once per call site so the per-candidate work is
+// never reached by a program that does not use the syntax. Takes no module name, so it costs no
+// interning.
+public fn ir_select_active(file: Int) -> Int {
+    declarationsOpen()
+    for i in 0..<selectFiles.length {
+        if (selectFiles[i] == file) { return 1 }
+    }
+    return 0
+}
+
+public fn ir_select_has(file: Int, module: String, name: String) -> Int {
+    declarationsOpen()
+    if (selectFiles.length == 0) { return 0 }
+    let moduleId = irNameId(module)
+    let nameId = irNameId(name)
+    for i in 0..<selectFiles.length {
+        if (selectFiles[i] == file and selectModules[i] == moduleId and selectNames[i] == nameId) {
+            return 1
+        }
+    }
+    return 0
+}
+
+public fn ir_reset_selections() {
+    declarationsOpen()
+    selectFiles = []
+    selectModules = []
+    selectNames = []
+}
+
+public fn ir_import_record(file: Int, module: String) {
+    declarationsOpen()
+    importFiles.push(file)
+    importModules.push(irNameId(module))
+}
+
+public fn ir_file_imports_module(file: Int, module: String) -> Int {
+    declarationsOpen()
+    if (importFiles.length == 0) { return 0 }
+    return importsModuleId(file, irNameId(module))
+}
+
+private fn importsModuleId(file: Int, module: Int) -> Int {
+    for i in 0..<importFiles.length {
+        if (importFiles[i] == file and importModules[i] == module) { return 1 }
+    }
+    return 0
+}
+
+public fn ir_reset_imports() {
+    declarationsOpen()
+    importFiles = []
+    importModules = []
+}
+
+// "" when this file already bound the alias, so the caller can report a duplicate against the module
+// it already names rather than silently keeping the first or the last.
+public fn ir_import_alias_target(file: Int, alias: String) -> String {
+    declarationsOpen()
+    if (aliasFiles.length == 0) { return "" }
+    let id = irNameId(alias)
+    for i in 0..<aliasFiles.length {
+        if (aliasFiles[i] == file and aliasNames[i] == id) { return irNameText(aliasModules[i]) }
+    }
+    return ""
+}
+
+public fn ir_import_alias_record(file: Int, alias: String, module: String) {
+    declarationsOpen()
+    aliasFiles.push(file)
+    aliasNames.push(irNameId(alias))
+    aliasModules.push(irNameId(module))
+}
+
+public fn ir_reset_import_aliases() {
+    declarationsOpen()
+    aliasFiles = []
+    aliasNames = []
+    aliasModules = []
+}
+
+// The module path without its last segment, which for a module outside any package is "" (id 0), so
+// every file of a single-file program, and of a project's root, shares one.
+private fn packageId(module: Int) -> Int {
+    let known = packageOf.getOr(module, -1)
+    if (known >= 0) { return known }
+    let text = irNameText(module)
+    let dot = text.lastIndexOf('.')
+    let mut package = 0
+    if (dot >= 0) { package = irNameId(text.substring(0, dot)) }
+    packageOf.set(module, package)
+    return package
+}
+
+private fn moduleOfFile(file: Int) -> Int {
+    return irNameId(diag_file_module(file))
+}
+
+// Whether two files are in one package.
+public fn ir_same_package(fileA: Int, fileB: Int) -> Int {
+    declarationsOpen()
+    if (fileA == fileB) { return 1 }
+    if (packageId(moduleOfFile(fileA)) == packageId(moduleOfFile(fileB))) { return 1 }
+    return 0
+}
+
+public fn ir_extern_decl_record(file: Int, name: String, visibility: Int) {
+    declarationsOpen()
+    let id = irNameId(name)
+    for i in 0..<externFiles.length {
+        if (externFiles[i] == file and externNames[i] == id) {
+            if (visibility < externVisibility[i]) { externVisibility[i] = visibility }
+            return
+        }
+    }
+    externFiles.push(file)
+    externNames.push(id)
+    externVisibility.push(visibility)
+    externModules.push(moduleOfFile(file))
+}
+
+public fn ir_file_declares_extern(file: Int, name: String) -> Int {
+    declarationsOpen()
+    if (externFiles.length == 0) { return 0 }
+    let id = irNameId(name)
+    for i in 0..<externFiles.length {
+        if (externFiles[i] == file and externNames[i] == id) { return 1 }
+    }
+    return 0
+}
+
+// The module an extern was declared in, filled in now if the file's module was not known when it was
+// recorded. 0 ("") for a file with none.
+private fn externModule(at: Int) -> Int {
+    if (externModules[at] == 0) { externModules[at] = moduleOfFile(externFiles[at]) }
+    return externModules[at]
+}
+
+public fn ir_caller_can_access_extern(callerFile: Int, qualifier: String, name: String) -> Int {
+    declarationsOpen()
+    if (externFiles.length == 0) { return 0 }
+    let nameId = irNameId(name)
+    let mut qualifierId = -1
+    if (qualifier.length > 0) { qualifierId = irNameId(qualifier) }
+    let callerPackage = packageId(moduleOfFile(callerFile))
+
+    for i in 0..<externFiles.length {
+        if (externNames[i] != nameId) { continue }
+        let declModule = externModule(i)
+        if (qualifierId >= 0 and declModule != qualifierId) { continue }
+
+        // Rule 1: declared in the caller's own file.
+        if (externFiles[i] == callerFile) { return 1 }
+
+        // Rules 2 and 3: declared in another file. Private to the declaring file is invisible from
+        // any other.
+        let visibility = externVisibility[i]
+        if (visibility == 1) { continue }
+
+        let declPackage = packageId(declModule)
+        // Package internal access.
+        if (declPackage != 0 and callerPackage != 0 and declPackage == callerPackage) { return 1 }
+
+        // Public access via explicit import.
+        if (visibility == 0 and declModule != 0) {
+            if (importsModuleId(callerFile, declModule) == 1) {
+                if (ir_select_any(callerFile, irNameText(declModule)) == 1
+                        and ir_select_has(callerFile, irNameText(declModule), name) == 0) {
+                    continue
+                }
+                return 1
+            }
+        }
+    }
+    return 0
+}
+
+public fn ir_caller_extern_hidden_level(callerFile: Int, qualifier: String, name: String) -> Int {
+    declarationsOpen()
+    if (externFiles.length == 0) { return 0 }
+    let nameId = irNameId(name)
+    let mut qualifierId = -1
+    if (qualifier.length > 0) { qualifierId = irNameId(qualifier) }
+    let callerPackage = packageId(moduleOfFile(callerFile))
+
+    let mut foundHidden = 0
+    for i in 0..<externFiles.length {
+        if (externNames[i] != nameId) { continue }
+        let declModule = externModule(i)
+        if (qualifierId >= 0 and declModule != qualifierId) { continue }
+        if (externFiles[i] == callerFile) { continue }
+
+        let visibility = externVisibility[i]
+        let declPackage = packageId(declModule)
+        let samePackage = declPackage != 0 and callerPackage != 0 and declPackage == callerPackage
+        let imported = declModule != 0 and importsModuleId(callerFile, declModule) == 1
+
+        if (visibility == 1 and (imported or samePackage)) { return 1 }
+        if (visibility == 2 and imported and samePackage == false) { foundHidden = 2 }
+    }
+    return foundHidden
+}
+
+public fn ir_reset_extern_decls() {
+    declarationsOpen()
+    externFiles = []
+    externNames = []
+    externVisibility = []
+    externModules = []
+}

@@ -27,16 +27,16 @@ The seam is in [`prismio_runtime.h`](runtime/prismio_runtime.h):
 #define rt_base_alloc(n) aif_verify_alloc(n)
 #define rt_free(p)       aif_verify_release(p)
 #else
-void* rt_base_alloc(size_t size);   // recycles small blocks; lang_runtime.c
+void* rt_base_alloc(size_t size);   // the slab on 64-bit POSIX; lang_runtime.c
 void  rt_free(void* p);
 #endif
 ```
 
 The ordinary branch is a pair of functions rather than macros over `malloc`/`free`
-because it recycles small blocks between them, and **`rt_free` is also the symbol
-codegen emits for every release** (`g_alloc_fn`/`g_free_fn` in
-`llvm-api-backend.c`). Both halves of that pairing have to name the seam: a
-release emitted as libc `free` hands the pool a block it never gets back.
+because a small-block allocator sits between them (a slab on 64-bit POSIX,
+docs/ALLOCATOR_PLAN.md), and **they are also the symbols codegen emits for every
+object allocation and every release** (`g_alloc_fn`/`g_free_fn` in
+`llvm-api-backend.c`). Both halves of that pairing have to name the seam.
 
 A bare `malloc` whose pointer is returned to Prismio does not leak. It reports as
 `release of a pointer that is not live` — a **violation**, which reads as
@@ -53,6 +53,30 @@ leak. `list_modules` allocates both kinds, four lines apart.
 If a C library allocates for you and you return that pointer — `getcwd(NULL, 0)`,
 `strdup` — copy it into `rt_base_alloc` memory and free the original.
 
+### The two allocators are interchangeable in one direction only
+
+A block from the seam is released by `rt_free` and resized by `rt_base_realloc`,
+**never** by libc `free` or `realloc`: behind the seam is a slab, and a slab block
+handed to libc is corruption, not a leak. The other direction holds: a libc block
+may reach `rt_free`, which sends anything outside the slab's address range to
+`free`. That range test is permanent, because embedders, JIT output and C a program
+brings all hand Prismio libc blocks.
+
+The rule is mechanical, not remembered. Every runtime source spells a libc release
+`tmp_free` / `tmp_realloc` (`prismio_runtime.h`) and poisons the bare names after
+its includes (`#pragma GCC poison free realloc`), so a release that does not say
+which world its pointer is from does not compile. Choosing the spelling is still a
+reading of where the pointer came from, and **the reading has been wrong**: 18 of
+84 sites in `build_driver.c` were missed by reading arguments back to their
+producers (a ternary, an out-parameter, an array element). The gate is dynamic:
+build a compiler with the slab, run it and the suite under
+`benchmarks/allocator_proto/slab_free_shim.c`, and the log must be empty.
+
+A free of something a `program_support.c` producer returned (`join_path`,
+`get_directory`, `current_directory`, `read_file`, `command_quote_arg`,
+`executable_directory` ...) is `rt_free`; a libc temporary (`malloc`, `calloc`,
+`strdup`, `getcwd`, `realpath`) is `tmp_free`.
+
 ### A returned `String` must be freeable on every path
 
 Never return a string literal from a function declared to return `String`. Static
@@ -67,7 +91,8 @@ case is exactly it.
 Every function returning a pointer that Prismio will hold falls into one of two
 groups, and the answer belongs in a `std/*.psm` wrapper:
 
-- **allocates** → the wrapper declares `produce(free)`
+- **allocates** → the wrapper declares `produce(rt_free)` (the block is from
+  `rt_base_alloc`; `produce(free)` would mean libc's, and copy the string in)
 - **returns a pointer it does not own** → the wrapper declares `alias`
 
 Getting this backwards on a function that returns a pointer into `argv` — as
@@ -78,11 +103,11 @@ is written wrong.
 
 ### A constant shared across the seam has one spelling everywhere
 
-The element-ownership mode is one wire protocol with three definitions —
-`AIF_ELEM_*` in `src/ir/context.psm` (what codegen emits), in `aif_support.c`
-(what the analysis answers), and in `lang_runtime.c` (what the runtime compares
-against). The int crosses two seams and is never re-derived, so a variant added
-to one list and not the others still builds and then releases elements with the
+The element-ownership mode is one wire protocol with two definitions —
+`AIF_ELEM_*` in `src/ir/context.psm` (what codegen emits and what the analysis in
+`src/aifcore` answers with) and in `lang_runtime.c` (what the runtime compares
+against). The int crosses one seam and is never re-derived, so a variant added
+to one list and not the other still builds and then releases elements with the
 wrong deallocator.
 
 Two rules follow. **Same prefix in all three**, because the odd one out is what
@@ -103,11 +128,11 @@ a refactor. `tests/*.psm` and every application declare these by name.
 
 ## Files and modules
 
-**A file is named after what it holds, and holds only that.** The current
-offender is `aif_support.c` at 7014 lines, which is the inference engine, the
-constraint solver, the tier assignment, the layout chooser, the manifest writer
-and the verify ledger in one translation unit. That is six responsibilities and
-six names.
+**A file is named after what it holds, and holds only that.** The inference
+engine was the standing offender, one 9,000-line translation unit holding the
+constraint solver, the tier assignment, the layout chooser and the manifest
+order. It is now the `src/aifcore` package, one module per responsibility, and
+no runtime source is that size any more.
 
 Splitting a runtime source is not a free operation — the file list is duplicated
 in the bootstrap and packaging paths and checked against the driver table:
@@ -121,9 +146,8 @@ Run `check_source_lists.py` after any change to the set, and bootstrap two
 generations before believing it.
 
 **`runtime/` splits in two and the dependency runs one way.** `lang_runtime.c`
-and `program_support.c` are linked into every compiled program. `build_driver.c`,
-`ir_symbols.c`, `aif_support.c`, `diagnostics.c` and `llvm-api-backend.c` are the
-compiler's own. Backend may call runtime; runtime may never call backend. A
+and `program_support.c` are linked into every compiled program. `build_driver.c` and
+`llvm-api-backend.c` are the compiler's own. Backend may call runtime; runtime may never call backend. A
 program that prints a string must not drag in LLVM.
 
 **`static` unless it is called from another translation unit.** A non-`static`
@@ -228,18 +252,12 @@ differential — which is the bar CLAUDE.md sets for a behaviour-preserving chan
 
 ### Done
 
-- **The container layer is out of `aif_support.c`.** `runtime/aif_containers.c`
-  and `.h` hold the allocation helpers, the growable bitset and the int vector —
-  the layer that file's own header comment already named, and the one with the
-  widest reach: `xmalloc` was referenced across 6,865 of its lines and
-  `bits_test` across 5,766.
-
-  **The layer was not contiguous, and that is the thing to know before splitting
-  anything else out.** The fact encodings (`AIF_E_*`, `AIF_A_*`, `AIF_C_*`,
-  `AIF_K_*`) sit *between* the allocation helpers and the bitsets. A first attempt
-  cut by line range, swept the encodings into the new file, and left
-  `aif_support.c` using constants it no longer defined. The sections interleave;
-  a line range is not a boundary.
+- **The container layer, and then the engine around it, left C.** `aif_containers.c` held the
+  allocation helpers, the growable bitset and the int vector; they are `src/aifcore/bits.psm`
+  now, and the rest of `aif_support.c` is the other modules of `src/aifcore`. The one thing
+  to know from the first attempt, which cut by line range: the fact encodings (`AIF_E_*`,
+  `AIF_A_*`, `AIF_C_*`) sat *between* the allocation helpers and the bitsets, and a line range
+  is not a boundary.
 
 - **The 41 banner rule lines are gone** across `runtime/`, prose kept. The count
   in the previous version of this section (54) was stale.
@@ -251,15 +269,8 @@ differential — which is the bar CLAUDE.md sets for a behaviour-preserving chan
 
 ### Left, with what the next attempt should know
 
-1. **The rest of `aif_support.c`** (now 7,100 lines). The remaining five
-   responsibilities are real, but the coupling is measured and it is dense: with
-   six equal cuts, **42% of its static functions are referenced across a
-   boundary**, and 26 have references spanning more than 1,500 lines —
-   `nominal_find`, `candidates_clear`, `scope_lca` among them. Each crossing is a
-   symbol that stops being `static` and joins the linked surface. Splitting
-   further is worth doing, but it is a partition problem, not a cut: decide the
-   six groups first, then measure crossings per grouping, and only then move
-   text.
+1. **`aif_support.c` is gone** (9,113 lines). It is the sixteen modules of `src/aifcore`, one per
+   responsibility. Nothing is left of it to split.
 
 2. **`llvm-api-backend.c` — the premise here was partly wrong.** "IR construction
    and target/layout query, which do not call each other" holds only for target

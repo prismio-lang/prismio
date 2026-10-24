@@ -1,6 +1,7 @@
 // Move, borrow and drop enforcement, plus the FFI contracts that describe what
 // foreign code does to ownership.
 
+import symbols.bindings
 import ast.nodes
 import lexer.token
 import ast.types
@@ -8,6 +9,7 @@ import ir.bridge
 import common.diagnostics
 import std.string
 import std.option
+import aifcore.ownership
 
 // Whether binding this expression to a name produces a *borrow* rather than an
 // owned value.
@@ -421,7 +423,27 @@ internal fn semaCheckExternGlobalType(annotation: ASTNode, name: String, varT: T
     }
 }
 
-internal fn semaCheckExternContracts(extNode: ASTNode) {
+// `produce(f)` with an `f` that is not the seam's `rt_free` is honoured where the value
+// crosses in: a String is copied into a seam block and `f` releases the original at once
+// (fatAdopted, src/ir/expr.psm), and a scalar or a `Ptr` is never released by Prismio, so
+// `f` is the program's to call. Anything else -- a struct, a Vec -- Prismio would release
+// itself, with `rt_free`, later and wherever it has moved to; that is not `f`, so it is
+// refused rather than ignored.
+private fn semaCheckForeignProduce(module: ASTNode, extNode: ASTNode, ret: ASTNode, deallocator: String) {
+    let t = semaAnnotationType(module, ret)
+    if (typeIsValid(t) == false) { return }
+    let k = t.kind
+    if (k == TypeKind.STRING or k == TypeKind.PTR or k == TypeKind.INT or k == TypeKind.FLOAT
+        or k == TypeKind.BOOL or k == TypeKind.CHAR) {
+        return
+    }
+    diag_error_at_code("P4112", extNode.file, extNode.line, extNode.col, extNode.s1.length,
+        diagQuote(extNode.s1).concat(" returns ", typeDisplay(t), ", which Prismio releases itself, so `produce(",
+                                     deallocator, ")` cannot be honoured"))
+    diag_note("a foreign deallocator applies to a String result (copied in, then released at the call) or to a `Ptr` the program releases itself; `produce(rt_free)` is for a block from `rt_base_alloc`")
+}
+
+internal fn semaCheckExternContracts(module: ASTNode, extNode: ASTNode) {
     // Counted first: `retain_in(k)` names another parameter by index, so the
     // arity has to be known before any of them can be checked.
     let mut arity = 0
@@ -505,10 +527,13 @@ internal fn semaCheckExternContracts(extNode: ASTNode) {
                     diagQuote(name).concat(" is a parameter contract and cannot appear on a return type"))
                 diag_note("returns take `alias` or `produce(free_fn)`")
             } else if (name.equals("produce")) {
-                if (semaContractArgument(ret.s2).equals("")) {
+                let deallocator = semaContractArgument(ret.s2)
+                if (deallocator.equals("")) {
                     diag_error_at_code("P4109", extNode.file, extNode.line, extNode.col, extNode.s1.length,
                         "`produce` requires the name of the function that releases the value")
                     diag_note("FFI 5.2: calling `free` on something from a custom allocator is the bug this prevents")
+                } else if (deallocator.equals("rt_free") == false) {
+                    semaCheckForeignProduce(module, extNode, ret, deallocator)
                 }
             }
         }

@@ -28,6 +28,7 @@
 // `--freestanding` (small stacks, L1-sized data) or `--overflow-checks` (the copy
 // evaluates S where the original might not).
 
+import symbols.bindings
 import ast.nodes
 import ast.types
 import common.target

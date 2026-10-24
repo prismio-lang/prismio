@@ -61,7 +61,7 @@ private extern fn mem_bytes_copy(to: Vec<U8> borrow, toOffset: Int, from: Vec<U8
 private extern fn mem_bytes_equal(a: Vec<U8> borrow, b: Vec<U8> borrow) -> Int
 private extern fn mem_bytes_index_of(bytes: Vec<U8> borrow, value: Int, from: Int) -> Int
 private extern fn mem_bytes_write_text(bytes: Vec<U8> borrow, offset: Int, text: String bytes, count: Int)
-private extern fn mem_bytes_text(bytes: Vec<U8> borrow, offset: Int, count: Int) -> String produce(free)
+private extern fn mem_bytes_text(bytes: Vec<U8> borrow, offset: Int, count: Int) -> String produce(rt_free)
 
 // Manual memory. Each allocation answers a fresh block's address, never 0: a
 // program out of memory stops with a message instead of handing back a value
@@ -101,6 +101,10 @@ public fn reallocOf<T>(block: Ptr<mut T>, count: Int) -> Ptr<mut T> {
 
 // Returns a block from `allocOf`, `allocZeroedOf` or `reallocOf`.
 public fn free<T>(block: Ptr<mut T>) { mem_free(block.addr) }
+
+// A copy of the NUL-terminated text at `pointer`: what a C function leaves behind when it hands
+// the program a `const char*`. The caller owns the String; the pointer's bytes stay where they were.
+public fn stringFromCString(pointer: Ptr) -> String { return __builtin_cstring(pointer).clone() }
 
 // memmove: the two ranges may overlap.
 public fn copy(to: Usize, from: Usize, count: Usize) { mem_copy(to, from, count) }

@@ -37,13 +37,13 @@ public extern fn compiler_set_verify_mode(on: Int)
 extern fn compiler_set_workload_mode(on: Int)
 // Same ".prismio-<stem>-<suffix>" convention as compiler_temp_ir_path, and the
 // same malloc'd result.
-extern fn compiler_temp_path_for(sourcePath: String, suffix: String) -> String produce(free)
+extern fn compiler_temp_path_for(sourcePath: String, suffix: String) -> String produce(rt_free)
 // The same, with the pid in the name. For a temporary that must not be shared
 // between two compiles of one source -- RESULTS-layout 7, where sharing three of
 // them made the IR differential report a false difference under any concurrent
 // load. `compiler_publish_file` is how the one artifact that *is* supposed to
 // have a predictable name gets there afterwards.
-extern fn compiler_temp_private_path(sourcePath: String, suffix: String) -> String produce(free)
+extern fn compiler_temp_private_path(sourcePath: String, suffix: String) -> String produce(rt_free)
 
 public fn runWorkloadProfile(module: ASTNode, sourcePath: String, verifyMode: Bool) -> String {
     let count = moduleWorkloadCount(module)

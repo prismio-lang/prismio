@@ -9,10 +9,16 @@ rather than a leak — corruption, not lost bytes:
 
 - **An allocation returned to Prismio goes through `rt_base_alloc`**, and an
   internal temporary this runtime frees itself does not. The seam is in
-  `runtime/prismio_runtime.h`.
-- **`produce(free)` versus `alias` is not a guess.** A function returning a
-  pointer into `argv` (as `cli_arg` did) is `alias`; declaring it `produce` hands
-  `argv` to the deallocator.
+  `runtime/prismio_runtime.h`. **The two worlds are one-way**: a slab allocator sits
+  behind the seam (docs/ALLOCATOR_PLAN.md), so a seam block is released only by
+  `rt_free`/`rt_base_realloc`, never libc `free`/`realloc`; a libc block may reach
+  `rt_free`. Runtime sources spell libc's release `tmp_free`/`tmp_realloc` and poison
+  the bare names, and the gate for a missed one is `slab_free_shim` (an empty log).
+- **`produce(f)` versus `alias` is not a guess, and `f` is read.** A function
+  returning a pointer into `argv` (as `cli_arg` did) is `alias`; declaring it
+  `produce` hands `argv` to the deallocator. A runtime function that returns a seam
+  block is `produce(rt_free)`; `produce(free)` means libc `free` (a `String` result is
+  copied in and `free` called at once).
 
 ## The seed and `graphify-out/` are tracked but never committed on refresh
 

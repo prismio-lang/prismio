@@ -2391,6 +2391,67 @@ def run_aif_loop_bracket_test():
     return True
 
 
+def run_global_store_escape_test():
+    """A value stored into a global is never placed on the storing function's frame.
+
+    The fixture's own exit code says the values come back right, but the frame is
+    only reused by luck on a given target, so the placement is asserted as well:
+    every allocation it marks `site:` is stored into a module-level `let`, a field
+    of one or a container reached through one, and must not be `stack`. The three
+    in `clobber` are the control -- the same struct, stored nowhere -- and stay
+    on the frame, so this cannot pass by moving everything off it.
+    """
+    print(f"\n{BLUE}--- Running global_store_escape ---{RESET}")
+    fixture = TEST_DIR / "test_352_global_store_escapes.psm"
+    problems = []
+
+    marked, control = [], []
+    for number, line in enumerate(fixture.read_text(encoding="utf-8").splitlines(), 1):
+        if "// site:" in line:
+            marked.append(number)
+        elif re.match(r"\s+let [abc] = Entry \{", line):
+            control.append(number)
+
+    report = run_command([str(PRISMIO_EXE), "aif", str(fixture)])
+    if report.returncode != 0:
+        problems.append(f"aif exited {report.returncode}")
+    placed = {}
+    for line in report.stdout.splitlines():
+        found = re.match(r"^\d+\s+test_352_global_store_escapes\.psm:(\d+):\d+\s+Entry\s+(.+?)\s{2,}(.+)$",
+                         line)
+        if found:
+            placed[int(found.group(1))] = found.group(2).strip()
+    for number in marked:
+        if number not in placed:
+            problems.append(f"line {number}: no report row for the stored Entry")
+        elif placed[number] == "stack":
+            problems.append(f"line {number}: stored into a global but placed on the frame")
+    if len(marked) < 8:
+        problems.append(f"expected at least 8 marked sites, found {len(marked)}")
+    for number in control:
+        if placed.get(number) != "stack":
+            problems.append(f"line {number}: the control is {placed.get(number)!r}, not 'stack', "
+                            "so the check is vacuous")
+
+    exe = TEST_DIR / "global_store_escape_probe.exe"
+    built = run_command([str(PRISMIO_EXE), "build", str(fixture), "-o", str(exe)])
+    if built.returncode != 0:
+        problems.append(f"build exited {built.returncode}")
+    else:
+        ran = run_command([str(exe)])
+        if ran.returncode != 0:
+            problems.append(f"the fixture exited {ran.returncode}")
+        cleanup_files(exe)
+
+    if problems:
+        print(f"{RED}[FAIL] global store escape{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] a value stored into a global is not placed on the frame{RESET}")
+    return True
+
+
 def run_aif_array_frame_test():
     """An array literal is T0, reports as a frame array, and brings no arena.
 
@@ -2786,13 +2847,13 @@ def run_aif_concurrency_test():
 
 
 def run_elem_mode_agreement_test():
-    """The element-ownership mode is one wire protocol with three definitions.
+    """The element-ownership mode is one wire protocol with two definitions.
 
     Codegen emits the mode from `AIF_ELEM_*` in src/ir/context.psm, the analysis
-    answers with `AIF_ELEM_*` in runtime/aif_support.c, and the runtime compares
-    against `AIF_ELEM_*` in runtime/lang_runtime.c. The int crosses two seams and
-    is never re-derived, so all three have to agree on every name *and* every
-    value, forever.
+    (src/aifcore, which imports that same list) answers with it, and the runtime
+    compares against `AIF_ELEM_*` in runtime/lang_runtime.c. The int crosses one
+    seam and is never re-derived, so both have to agree on every name *and* every
+    value, forever. It was three definitions until the analysis moved out of C.
 
     Nothing checked that until now, and the failure is silent in the worst way: a
     variant inserted in one list and not the others still builds, and releases
@@ -2809,7 +2870,6 @@ def run_elem_mode_agreement_test():
 
     sources = {
         "src/ir/context.psm":        r"let\s+AIF_ELEM_([A-Z_]+)\s*=\s*(\d+)",
-        "runtime/aif_support.c":     r"#define\s+AIF_ELEM_([A-Z_]+)\s+(\d+)",
         "runtime/lang_runtime.c":    r"#define\s+AIF_ELEM_([A-Z_]+)\s+(\d+)",
     }
 
@@ -2851,18 +2911,18 @@ def run_elem_mode_agreement_test():
         code = "\n".join(line.split("//")[0] for line in text.split("\n"))
         if "XEFY_ELEM_" in code:
             problems.append(f"{path} still spells these XEFY_ELEM_* in code, "
-                            f"which puts the third definition back out of grep "
-                            f"range of the other two")
+                            f"which puts the second definition back out of grep "
+                            f"range of the first")
 
     if problems:
-        print(f"{RED}[FAIL] the three element-mode tables disagree -- elements "
+        print(f"{RED}[FAIL] the two element-mode tables disagree -- elements "
               f"will be released with the wrong deallocator{RESET}")
         for p in problems:
             print(f"  {p}")
         return False
 
     print(f"{GREEN}[PASS] all {len(reference)} element modes agree across "
-          f"src/ir/context.psm, aif_support.c and lang_runtime.c{RESET}")
+          f"src/ir/context.psm and lang_runtime.c{RESET}")
     return True
 
 
@@ -3865,7 +3925,7 @@ def run_bootstrap_cache_key_test():
             problems.append("the key is not stable across two runs on one tree, so nothing "
                             "would ever be reused and the cache is pure overhead")
 
-        other = key("aif_support.c")
+        other = key("program_support.c")
         if base and other == base:
             problems.append("two different sources produce the same cache entry")
 
@@ -5497,7 +5557,8 @@ def run_scalar_optional_test():
     """
     print(f"\n{BLUE}--- Running scalar_optional ---{RESET}")
     problems = []
-    alloc = re.compile(r"call ptr @(malloc|rt_alloc|rt_base_alloc|rc_alloc|arena_alloc|cyc_alloc)\b")
+    # `call (attrs) ptr`: the seam's `rt_base_alloc` carries malloc's attributes at the call.
+    alloc = re.compile(r"call (?:\w+ )*ptr @(malloc|rt_alloc|rt_base_alloc|rc_alloc|arena_alloc|cyc_alloc)\b")
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
     with tempfile.TemporaryDirectory(prefix="prismio-scalar-optional-") as tmp:
         ir_path = Path(tmp) / "optionals.ll"
@@ -5533,6 +5594,70 @@ def run_scalar_optional_test():
             print(f"  {problem}")
         return False
     print(f"{GREEN}[PASS] scalar T? allocates nothing and expect(none) panics at its line{RESET}")
+    return True
+
+
+def run_produce_deallocator_test():
+    """`produce(f)` calls `f` when `f` is not the seam's `rt_free`.
+
+    tests/produce_deallocators/ is a C library that counts the blocks its own
+    deallocator gets back, and a program that pushes, returns and reads its strings
+    and some `strdup`'d ones. A String with a foreign deallocator is copied in at
+    the call and `f` releases the original there (src/ir/expr.psm, fatAdopted), so
+    the IR must show the copy and the named call, the program must see all three
+    blocks returned, and the `--verify` ledger must be clean. Before, every one of
+    those blocks reached `rt_free` -- 5 ledger violations, and none returned to the
+    library -- which with a slab behind the seam is a libc `free` of a foreign block.
+    """
+    print(f"\n{BLUE}--- Running produce_deallocator ---{RESET}")
+    fixture = TEST_DIR / "produce_deallocators"
+    source, native = fixture / "main.psm", fixture / "strings.c"
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-produce-") as tmp:
+        ir_path = Path(tmp) / "produce.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(source), "-o", str(ir_path)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] produce deallocator IR: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ir_path.read_text()
+        made = re.search(r"^define [^\n]*@made(__[\w$]*)?\(.*?^}", ir, re.M | re.S)
+        made = made.group(0) if made else ""
+        if not re.search(r"@lib_string_make\(.*?@str_clone_n\(.*?call void @lib_string_free\(", made, re.S):
+            problems.append("`made` does not copy the library's string in and call "
+                            "lib_string_free on the original")
+        if not re.search(r"@strdup\(.*?@str_clone_n\(.*?call void @free\(", ir, re.S):
+            problems.append("a `produce(free)` strdup is not copied in and released by libc `free`")
+
+        for verify in (False, True):
+            exe = Path(tmp) / ("produce-verify" if verify else "produce")
+            command = [str(PRISMIO_EXE), "build", str(source), "--native", str(native), "-o", str(exe)]
+            if verify:
+                command.insert(3, "--verify")
+            built = run_command(command)
+            if built.returncode != 0:
+                problems.append(f"the fixture did not build{' under --verify' if verify else ''}: "
+                                f"{built.stdout} {built.stderr}")
+                continue
+            ran = run_command([str(exe)])
+            if ran.returncode != 0 or "PASS" not in (ran.stdout or ""):
+                problems.append(f"the fixture failed{' under --verify' if verify else ''}: exit "
+                                f"{ran.returncode}, {(ran.stdout or '').strip()!r}")
+            if not verify:
+                continue
+            ledger = re.search(r"aif-verify:\s+(\d+) allocated,\s+(\d+) released,"
+                               r"\s+(\d+) leaked,\s+(\d+) violation", ran.stdout + ran.stderr)
+            if ledger is None:
+                problems.append("no aif-verify ledger line, so the --verify half checked nothing")
+            elif int(ledger.group(4)) != 0 or ledger.group(1) != ledger.group(2):
+                problems.append(f"the ledger is not clean: {ledger.group(0)} -- a foreign "
+                                f"block reached the seam's release")
+
+    if problems:
+        for p in problems:
+            print(f"{RED}[FAIL] {p}{RESET}")
+        return False
+    print(f"{GREEN}[PASS] produce(f): a foreign String is copied in and f releases the "
+          f"original at the call; ledger clean{RESET}")
     return True
 
 
@@ -6437,10 +6562,10 @@ def run_target_test():
                         "data layout on the module")
 
     # 3. Pointer width, in both halves of the compiler.
-    if "declare ptr @malloc(i32)" not in wasm_ir:
+    if "declare ptr @rt_base_alloc(i32)" not in wasm_ir:
         problems.append("the allocator still takes a 64-bit size on wasm32 -- "
                         "codegen is not reading the target's pointer width")
-    if "declare ptr @malloc(i64)" not in host_ir:
+    if "declare ptr @rt_base_alloc(i64)" not in host_ir:
         problems.append("the allocator does not take a 64-bit size on the host")
     if not re.search(r"= (zext|sext) i32 %\d+ to i64", wasm_ir):
         problems.append("no widening cast in the wasm32 module: sema still "
@@ -8635,6 +8760,15 @@ def run_aif_verify_test():
         # A small Vec of known capacity is one block, header and elements; every way it
         # stops being one (growth, reserve, a field replaced) must free each block once.
         "test_323_fused_list": 0,
+        # A value stored into a module-level `let`, a field of one or a container
+        # reached through one. **Read `violations`, not `leaked`**: a global is never
+        # released, so everything it holds at exit is counted -- 59 of 62, the
+        # globals' values and every value of a site they share (all `concat` results
+        # here come from one site, so the clobbering strings count too). The defect
+        # was a double owner: the value's own function released it at scope end while
+        # the global still pointed at it, which reports as a violation and, in the
+        # fixture's own exit code, as the wrong string.
+        "test_352_global_store_escapes": 59,
     }
 
     max_allocations = {
@@ -8829,7 +8963,7 @@ def run_aif_minimal_cause_test():
 
 
 # REQUIREMENTS 15 added T4a. The order is the solver's ordinal order, T4a above
-# T4b -- see AIF_T4A in runtime/aif_support.c for the argument. This dict is not
+# T4b -- see AIF_T4A in src/aifcore/ for the argument. This dict is not
 # decoration: aif_records() filters records by membership, so a tier missing
 # here vanishes from the parse and reads as "the site population changed".
 TIER_ORDER = {"T0": 0, "T1": 1, "T2": 2, "T3": 3, "T4b": 4, "T4a": 5}
@@ -10556,6 +10690,7 @@ def main():
         ("counted_fill_codegen", run_counted_fill_codegen_test),
         ("remainder_steps_codegen", run_remainder_steps_codegen_test),
         ("channel_copies", run_channel_copies_test),
+        ("produce_deallocator", run_produce_deallocator_test),
         ("scalar_optional", run_scalar_optional_test),
         ("loop_range_proofs", run_loop_range_proofs_test),
         ("stride_tiling", run_stride_tiling_test),
@@ -10581,6 +10716,7 @@ def main():
         ("aif_struct_fields", run_aif_struct_field_test),
         ("no_inference", run_no_inference_test),
         ("aif_verify", run_aif_verify_test),
+        ("global_store_escape", run_global_store_escape_test),
         ("aif_annotations", run_aif_annotation_test),
         ("aif_minimal_cause", run_aif_minimal_cause_test),
         ("punned_slot_invariant", run_punned_slot_invariant_test),

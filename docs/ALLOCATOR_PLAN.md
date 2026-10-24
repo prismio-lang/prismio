@@ -1,7 +1,9 @@
 # A small-block allocator for Prismio
 
-Written 2026-10-21. Design and measurement only: nothing here is committed, and the prototype is off unless
-a build flag turns it on. The question came out of `docs/GRAPH_CHURN_FINDINGS.md`: after the ownership fixes the
+Written 2026-10-21; **stages 0-3 built 2026-10-24** (status after the staged-rollout table): the slab is the
+default on 64-bit POSIX, codegen allocates through `rt_base_alloc`, and `produce(f)` reads `f`. The sections up to
+"Staged rollout" are the design record as measured on the prototype; where they name `PRISMIO_ALLOC_MODE`,
+`PRISMIO_PROTO_ALLOC` or the recycler, those are gone from the tree (Git history has them). The question came out of `docs/GRAPH_CHURN_FINDINGS.md`: after the ownership fixes the
 four `graph_churn_*` arms are 1.24x-1.48x of C++, a `sample` profile puts about half of `graph_churn_alloc` in
 libsystem_malloc (`_xzm_free_main`, `_xzm_xzone_malloc_tiny`), and the arm makes 1.68M allocations to C++'s ~0.8M.
 
@@ -330,6 +332,44 @@ logged any slab address by `file:line`; it is not in the tree. A mechanical read
 (a result passed through a ternary, an out-parameter, an array element), so the shim run remains the gate, not the
 grep.
 
+**Stage 0 finished, and stages 1-3 (2026-10-24).**
+
+- *Stage 0.* The other runtime sources (`lang_runtime.c`, `ir_symbols.c`, `aif_support.c`, `diagnostics.c`,
+  `aif_containers.c`, `llvm-api-backend.c`) spell libc's release `tmp_free`/`tmp_realloc` and poison the bare names
+  (`llvm_bridge.cpp` has no `free` call; the backend keeps libc `free`'s address for the JIT as `libc_free_fn`, taken
+  before the poison). Every one of their 200-odd sites frees a libc temporary. Five compiler externs returned plain
+  `malloc` blocks to Prismio (`ir_get_temp_name`, `ir_get_label_name`, `compiler_default_exe_path`,
+  `compiler_runtime_source_hash`, `compiler_installed_runtime_hash`); they use `rt_base_alloc` now.
+  `compiler_temp_path` stays on `malloc` (15 C callers `tmp_free` it; its Prismio wrappers release through
+  `rt_free`, which accepts it). The gate: a compiler built with the slab as default and objects through the seam
+  compiled `src/main.psm` to IR byte-identical to HEAD's, and passed the suite (692 of 693, `aif_verify` only)
+  under the shim with an **empty log**. The shim gained a positive control, `SHIM_REQUIRE_SLAB=1`, which logs
+  `SLAB-NOT-MAPPED` for a process that exits without the slab range reserved: an empty log means nothing
+  otherwise, and the control showed the range mapped in the compiler, in test programs and through Homebrew
+  Python's children. No `LD_PRELOAD` port: there was no Linux host to test it on.
+- *Stage 1.* `produce(rt_free)` on the 18 `std/` and 16 `src/` externs and `tests/owned_return_depth2.psm`;
+  codegen honours any other name for a `String` by copying in at the call and calling it on the original
+  (`fatAdopted`, `src/ir/expr.psm`; `ir_string_adopt` in the backend). Honouring `f` at the eventual release instead
+  would mean a deallocator carried through every move, container and return. A struct or `Vec` result with a
+  foreign `f` is refused (P4112); `Ptr` and scalars are never released. Output byte-identical for all 358
+  programs in `tests/` and `benchmarks/hosted/` that compile, and for the 299 that do not; the stage 0 and stage
+  1 compilers emit identical IR for the stage 1 `src/main.psm`. Tests: `test_350`, `neg_351`,
+  `run_produce_deallocator_test`.
+- *Stage 2.* `g_alloc_fn` defaults to `rt_base_alloc` and `compile.psm` sets the pair explicitly outside
+  `--verify`; `PRISMIO_PROTO_ALLOC` is gone, `tag_alloc_callsite` stays, and `PRISMIO_PROTO_NOATTR` is kept as
+  the measurement control. Sweep (70 benchmarks, 9 runs, recycler behind both): geometric mean 0.991,
+  `graph_churn_alloc` 0.721x, `arena_bump` 0.999x, `tree_traversal` equal on the minimum. The attributes had one
+  casualty: they were also on the ledger's `aif_verify_alloc`, so LLVM deleted allocations a `--verify` build
+  must count (`test_269` read 4 allocated / 0 leaked for 13 / 9). They are on `rt_base_alloc` only now.
+- *Stage 3.* The span layout is the only one; modes 1 and 3, the region layout, `PRISMIO_SLAB_INLINE` and the
+  POSIX recycler with its `malloc_size` query are deleted. Windows keeps the `_msize` recycler (the migration
+  table's rule); 32-bit and freestanding use libc. Compiler output byte-identical to stage 2 (the runtime is the
+  only change). Suite 695 of 696 with the slab, 695 of 696 with `PRISMIO_SLAB=0` (the same `aif_verify`
+  failure, fixed afterwards), shim log empty; `slab_stress` clean under ASan (8 threads) and TSan (4). Sweep
+  against stage 2, same run: geometric mean 0.947; graph arms 17.4 / 28.4 / 28.2 / 76.1 ms, 1.01x / 0.83x /
+  1.03x / 0.96x of C++ (the expected 17.4 / 28.4 / 28.5 / 76.6); against `PRISMIO_SLAB=0` on the same binary,
+  0.926.
+
 Stages 0-2 are worth doing without 3: they remove a latent bug class and the `malloc`/`rt_free` asymmetry, and stage 2
 with the recycler's cap lifted is the (b) result (`graph_churn_alloc` 49.8 to 34.2 ms).
 
@@ -358,16 +398,16 @@ with the recycler's cap lifted is the (b) result (`graph_churn_alloc` 49.8 to 34
 ## Reproducing
 
 ```bash
-python3 benchmarks/allocator_proto/mk_toolchains.py /tmp/alloc          # tc0..tc6 from .prismio/build
+python3 benchmarks/allocator_proto/mk_toolchains.py /tmp/alloc          # tc0 (as shipped), tc5 (no stagger)
 cp benchmarks/build/hosted/cpp-suite  /tmp/alloc/suite-cpp               # optional reference arms
 cp benchmarks/build/hosted/rust-suite /tmp/alloc/suite-rust
 ALLOC_SCRATCH=/tmp/alloc python3 benchmarks/allocator_proto/ab.py \
-    --configs base,cpp,rust,b1,s2 --bench graph_churn_alloc,graph_churn_transfer --runs 9 --build
+    --configs base,off,cpp,rust --bench graph_churn_alloc,graph_churn_transfer --runs 9 --build
 ```
 
-`ab.py` writes nothing under `benchmarks/results/`. Configurations: `base` (today), `p0` (seam, unchanged recycler), `b1`,
-`b3` ((b) honest and ceiling), `s2` (the slab), `s4` (inlined fast path), `s5` (no stagger), `s6` (64 KiB spans with a class table), and `s2n`/`b1n`
-(`PRISMIO_PROTO_NOATTR`). The harness must run from outside the checkout, or `runtime.hash` has to match the
+`ab.py` writes nothing under `benchmarks/results/`. Configurations: `base` (the slab), `off` (`PRISMIO_SLAB=0`),
+`noattr` (`PRISMIO_PROTO_NOATTR`), `s5` (no stagger); any other name runs a `suite-<name>` already in the scratch
+directory, which is how a toolchain from before a change is compared. The harness must run from outside the checkout, or `runtime.hash` has to match the
 sources, which `mk_toolchains.py` arranges. The shim and the stress harness:
 
 ```bash

@@ -1,0 +1,42 @@
+// A compiler run analyses one program, but the test harness and a declared `workload` want a clean slate: the workload runs the whole
+// engine twice in one process, so a table that survived would count every call edge, traversal and bracket twice. Interned names are
+// kept on purpose: they cost nothing and nothing outside the engine holds an id across a reset.
+
+import aifcore.arenas
+import aifcore.bits
+import aifcore.brackets
+import aifcore.call_graph
+import aifcore.call_results
+import aifcore.constraints
+import aifcore.dispositions
+import aifcore.extents
+import aifcore.keys
+import aifcore.layout_search
+import aifcore.nominals
+import aifcore.ownership
+import aifcore.sites
+import aifcore.solver
+import aifcore.structure
+import aifcore.tiers
+
+// The bit arena goes first: every other module's open step allocates its handles from it, and a handle made before the reset would
+// name a set the arena no longer has.
+public fn aif_reset() {
+    bitsReset()
+    structureReset()
+    nominalsReset()
+    keysReset()
+    sitesReset()
+    constraintsReset()
+    solverReset()
+    tiersReset()
+    arenasReset()
+    callGraphReset()
+    bracketsReset()
+    extentsReset()
+    dispositionsReset()
+    ownershipReset()
+    callResultsReset()
+    traversalsReset()
+    candidatesDrop()
+}

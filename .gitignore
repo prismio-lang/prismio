@@ -107,6 +107,8 @@ tests/*
 !tests/*/
 tests/*/*
 !tests/*/*.psm
+# The C half of run_produce_deallocator_test's fixture: a library with its own deallocator.
+!tests/produce_deallocators/*.c
 
 # ...except this one, which is generated: run_workload_test writes it from
 # workload_static.psm with the `workload` block stripped, as the control the

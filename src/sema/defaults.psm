@@ -11,6 +11,7 @@
 // no buckets to probe. The one place zeroes are the answer is an array of
 // numbers in a `let`, which is exactly what that `let` does with no initializer.
 
+import symbols.declarations
 import ast.nodes
 import lexer.token
 import ast.types
