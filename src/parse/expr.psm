@@ -289,6 +289,7 @@ impl Parser {
 
         let fields = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             let field = self.node(NodeKind.STRUCT_FIELD)
             let fieldName = self.current()
             field.s1 = fieldName.value
@@ -426,6 +427,7 @@ impl Parser {
         let keys = nodeList()
         let values = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             nodeListPush(keys, self.parseBracketed())
             self.expectVal(TokenType.SEPARATOR, ":", "map literal entry")
             nodeListPush(values, self.parseBracketed())

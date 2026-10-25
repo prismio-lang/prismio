@@ -63,13 +63,27 @@ struct Parser {
     internal hoistTail: Ptr, // ASTNode, or null
     // Above zero while an array's length is being read inside `Array<T, ...>`, where a
     // `>>` closes two argument lists and is not a shift.
-    internal lengthDepth: Int
+    internal lengthDepth: Int,
+    // 1 from the moment `fatal` reports until `parseModule` has dropped the
+    // declaration it was in. While it is set the parser sits on the end-of-file token,
+    // so every loop that tests for `}` or for end of input ends by itself and every
+    // `expect` is silent; what is built meanwhile is thrown away.
+    internal dead: Int,
+    // Where the first failure was, as a position rather than a pointer: recovery
+    // resumes at the first declaration that starts at or after it.
+    internal faultLine: Int,
+    internal faultCol: Int,
+    // Failures reported to a parser that was already dead. A loop that only ended
+    // because `fatal` used to exit would count up here forever, so this is what turns
+    // a missed `break` into a stop with a message instead of a hang.
+    internal silentFaults: Int
 }
 
 public fn parserCreate(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null(),
                     implParams: ptr_null(), implParamSeq: 0, implPosition: 0, lastLine: tokens.line,
-                    fnNode: ptr_null(), hoistHead: ptr_null(), hoistTail: ptr_null(), lengthDepth: 0 }
+                    fnNode: ptr_null(), hoistHead: ptr_null(), hoistTail: ptr_null(), lengthDepth: 0,
+                    dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0 }
 }
 impl Parser {
 
@@ -132,18 +146,62 @@ impl Parser {
     // Reports against the token the parser is looking at -- which is the token that
     // was *unexpected*, and so the one worth underlining.
     internal fn error(self, message: String) {
+        // Whatever is reported while dead is the failure being echoed by the code
+        // still unwinding, not a second mistake in the source.
+        if (self.dead == 1) { return }
         let tok = self.current()
         diag_error_at_code("P3201", tok.file, tok.line, tok.col, tok.len, message)
     }
 
-    // A parse error the parser cannot recover from locally. Reports, then stops:
-    // continuing past a malformed type or parameter list means handing sema an AST
-    // whose shape does not match what its callers assume, and a crash there is a
-    // worse experience than one honest error.
+    // A parse error the parser cannot recover from locally. Reports it, then gives up
+    // on the declaration it is in: continuing past a malformed type or parameter list
+    // means building an AST whose shape does not match what its callers assume, so
+    // what is built from here on is discarded, not checked. `parseModule` drops that
+    // declaration and resumes at the next one (`recover`), which is what lets a file
+    // with two broken declarations say so, and lets a program with one broken file
+    // still have its other files read.
+    //
+    // **It returns.** A caller that used to rely on it not returning must stop on its
+    // own -- `return`, or `break` out of its loop -- or it runs on against the
+    // end-of-file token; one that does not is caught by `stall` below.
     internal fn fatal(self, message: String) {
+        if (self.dead == 1) {
+            self.stall()
+            return
+        }
         self.error(message)
-        diag_finish()
-        exit(1)
+        self.abandon()
+    }
+
+    // Gives up on the current declaration without a message, for a site that has
+    // already reported its own. Parks the parser on the end-of-file token.
+    internal fn abandon(self) {
+        if (self.dead == 1) { return }
+        let tok = self.current()
+        self.dead = 1
+        self.faultLine = tok.line
+        self.faultCol = tok.col
+
+        let mut at = self.current
+        loop {
+            let t = ptr_to_token(at)
+            if (t.type == TokenType.EOF) { break }
+            at = t.tokNext
+        }
+        self.current = at
+    }
+
+    // One more failure while dead. A loop that does not notice the parser has stopped
+    // would come back here for ever, so past a generous bound this ends the run the
+    // way `fatal` used to: the diagnostics already reported, then exit. Never hit by
+    // a correct site; the truncation corpus (tools/check_truncation.py) is what looks.
+    private fn stall(self) {
+        self.silentFaults = self.silentFaults + 1
+        if (self.silentFaults > 100000) {
+            diag_error_code("P3299", "internal error: the parser did not stop after a syntax error")
+            diag_finish()
+            exit(1)
+        }
     }
 
     internal fn expectToken(self, t: TokenType, context: String) {
@@ -386,6 +444,7 @@ impl Parser {
         self.expectVal(TokenType.SEPARATOR, "{", "import group")
         let entries = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             nodeListPush(entries, parseImportGroupEntry(self))
             if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
         }
@@ -427,7 +486,15 @@ impl Parser {
         loop {
             if (self.check(TokenType.EOF)) { break }
 
+            let declarationStart = self.current
             let stmt = self.parseDeclaration()
+
+            // A declaration `fatal` gave up on is dropped whole, with whatever was
+            // built of it, and parsing resumes at the next one.
+            if (self.dead == 1) {
+                self.recover(declarationStart)
+                continue
+            }
 
             // An `impl` block's methods are spliced into the module's own chain, and
             // that splice is the whole lowering: a method is a free function whose

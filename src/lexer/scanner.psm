@@ -32,7 +32,15 @@ struct Lexer {
     // `interpolation` says which kind of string the open `${` belongs to, and
     // `interpBrace` is the depth within it.
     interpolation: Interpolation,
-    interpBrace: Int
+    interpBrace: Int,
+    // Set when `stringChunk` has already reported the string it is reading as
+    // unterminated, so the caller that finds no closing quote does not report the
+    // same string a second time at a different column.
+    chunkFailed: Int,
+    // The line of the last string reported unterminated. A closing quote left on the
+    // next line opens a string of its own that is unterminated for the same reason,
+    // and saying so twice for one missing quote buries the one that matters.
+    unterminatedLine: Int
 }
 
 // Whether the scanner is inside the `${...}` of a string, and of which kind: the
@@ -66,7 +74,9 @@ impl Lexer {
             file: file,
             length: input.length,
             interpolation: Interpolation.Off,
-            interpBrace: 0
+            interpBrace: 0,
+            chunkFailed: 0,
+            unterminatedLine: 0 - 5
         }
     }
 
@@ -87,14 +97,24 @@ impl Lexer {
         }
     }
 
-    // A lexer error, reported against the span that is open at the time. The scanner
-    // has no way to resynchronise -- it cannot know what the malformed text was meant
-    // to be -- so this is the one place in the frontend that still stops at the first
-    // error rather than recovering.
+    // A lexer error, reported against the span that is open at the time.
+    //
+    // **It returns.** The scanner cannot know what malformed text was meant to be,
+    // so each caller picks the continuation that costs the parser least: a
+    // character that belongs to no token is skipped, a string stops at its line, an
+    // escape is replaced by `?`. The token stream stays well formed, which is what
+    // lets the parser still run and report its own errors in the rest of the file
+    // instead of this one ending the compile.
     private fn fatal(self, line: Int, col: Int, message: String) {
         diag_error_at_code("P2001", self.file, line, col, 1, message)
-        diag_finish()
-        exit(1)
+    }
+
+    // `unterminated string literal` and its variants, once per run of lines.
+    private fn unterminated(self, line: Int, col: Int, message: String) {
+        let follows = line == self.unterminatedLine + 1
+        self.unterminatedLine = line
+        if (follows) { return }
+        self.fatal(line, col, message)
     }
 
     private fn peek(self, offset: Int) -> Char {
@@ -141,8 +161,6 @@ impl Lexer {
             "unescaped bidirectional control ".concat(notation, " in ", place,
                 ": it reorders how the line is displayed, so what a reader sees is not what compiles; ",
                 advice))
-        diag_finish()
-        exit(1)
     }
 
     // `/* ... */`, and they nest.
@@ -244,29 +262,34 @@ private fn utf8Text(code: Int) -> String {
 }
 impl Lexer {
 
-    // `\xHH`: exactly two hex digits, one byte. The escape starts at `at`.
+    // `\xHH`: exactly two hex digits, one byte. The escape starts at `at`. -1 after
+    // reporting a malformed one, which the caller steps over.
     private fn hexByteEscape(self, raw: String, at: Int, line: Int, baseCol: Int) -> Int {
         let hi = hexDigitValue(raw.charAt(at + 2))
         let lo = hexDigitValue(raw.charAt(at + 3))
         if (hi < 0 or lo < 0 or at + 3 >= raw.length) {
             self.fatal(line, baseCol + at,
                 "`\\x` takes exactly two hex digits, as in `\\x1b`")
+            return 0 - 1
         }
         let code = hi * 16 + lo
         if (code == 0) {
             self.fatal(line, baseCol + at,
                 "a NUL escape cannot appear in a string literal, because String is NUL-terminated")
+            return 0 - 1
         }
         return code
     }
 
     // `\u{1F600}`: one to six hex digits naming a Unicode scalar value. Answers the
-    // value; the escape's length is the digits' count plus four.
+    // value; the escape's length is the digits' count plus four. -1 after reporting a
+    // malformed one, which the caller steps over.
     private fn unicodeEscape(self, raw: String, at: Int, line: Int, baseCol: Int) -> Int {
         let n = raw.length
         if (raw.charAt(at + 2) != '{') {
             self.fatal(line, baseCol + at,
                 "`\\u` takes a code point in braces, as in `\\u{1F600}`")
+            return 0 - 1
         }
         let mut j = at + 3
         let mut code = 0
@@ -275,6 +298,7 @@ impl Lexer {
             if (digit < 0 or j - at - 3 >= 6) {
                 self.fatal(line, baseCol + at,
                     "`\\u{...}` holds one to six hex digits, as in `\\u{1F600}`")
+                return 0 - 1
             }
             code = code * 16 + digit
             j = j + 1
@@ -282,11 +306,13 @@ impl Lexer {
         if (j >= n or j == at + 3) {
             self.fatal(line, baseCol + at,
                 "`\\u{...}` holds one to six hex digits, as in `\\u{1F600}`")
+            return 0 - 1
         }
         // Zero, past U+10FFFF, or a UTF-16 surrogate half, which no UTF-8 text holds.
         if (code == 0 or code > 1114111 or (code >= 55296 and code <= 57343)) {
             self.fatal(line, baseCol + at,
                 "`\\u{...}` must name a Unicode scalar value other than NUL")
+            return 0 - 1
         }
         return code
     }
@@ -316,12 +342,24 @@ impl Lexer {
             let ch = raw.charAt(i)
 
             if (ch == '\\' and i + 1 < n and raw.charAt(i + 1) == 'x') {
-                out = out.concat(byteText(self.hexByteEscape(raw, i, line, baseCol)))
-                i = i + 4
+                let byte = self.hexByteEscape(raw, i, line, baseCol)
+                if (byte < 0) {
+                    // Reported already; `?` stands in and the scan resumes after `\x`.
+                    out = out.concat("?")
+                    i = i + 2
+                } else {
+                    out = out.concat(byteText(byte))
+                    i = i + 4
+                }
             } else if (ch == '\\' and i + 1 < n and raw.charAt(i + 1) == 'u') {
                 let code = self.unicodeEscape(raw, i, line, baseCol)
-                out = out.concat(utf8Text(code))
-                i = raw.indexOf("}", i) + 1
+                if (code < 0) {
+                    out = out.concat("?")
+                    i = i + 2
+                } else {
+                    out = out.concat(utf8Text(code))
+                    i = raw.indexOf("}", i) + 1
+                }
             } else if (ch == '\\' and i + 1 < n) {
                 let esc = raw.charAt(i + 1)
                 let mut decoded = esc
@@ -608,13 +646,16 @@ impl Lexer {
         let bodyCol = self.col
         let startLine = self.line
         let mut hasEscape = false
+        self.chunkFailed = 0
 
         while (self.pos < self.length) {
             let c = self.current()
             if (c == '"') { break }
             if (c == '\n' or c == '\r') {
-                self.fatal(startLine, bodyCol,
+                self.unterminated(startLine, bodyCol,
                     "unterminated string literal; multiline strings require triple quotes \"\"\"...\"\"\"")
+                self.chunkFailed = 1
+                break
             }
             if (c == '$' and self.peek(1) == '{') { break }
             if (charCode(c) == 226) { self.refuseBidiControl("a string literal") }
@@ -622,8 +663,10 @@ impl Lexer {
                 hasEscape = true
                 self.advance() // consume the backslash; the pair is skipped below
                 if (self.current() == '\n' or self.current() == '\r') {
-                    self.fatal(startLine, bodyCol,
+                    self.unterminated(startLine, bodyCol,
                         "unterminated string literal; multiline strings require triple quotes \"\"\"...\"\"\"")
+                    self.chunkFailed = 1
+                    break
                 }
             }
             self.advance()
@@ -668,8 +711,8 @@ impl Lexer {
 
         if (self.current() == '"') {
             self.advance()
-        } else {
-            self.fatal(line, col, "unterminated string literal")
+        } else if (self.chunkFailed == 0) {
+            self.unterminated(line, col, "unterminated string literal")
         }
 
         return self.token(TokenType.STRING_LITERAL, value, line, col, start)
@@ -783,8 +826,8 @@ impl Lexer {
         } else {
             if (self.current() == '"') {
                 self.advance()
-            } else {
-                self.fatal(line, col, "unterminated string literal")
+            } else if (self.chunkFailed == 0) {
+                self.unterminated(line, col, "unterminated string literal")
             }
         }
         self.interpolation = Interpolation.Off
@@ -952,17 +995,21 @@ impl Lexer {
     // This used to produce an UNKNOWN token and carry on, which meant a stray
     // character surfaced much later as "Unknown declaration" pointing at something
     // entirely innocent. Say what was actually wrong, where.
-    private fn unexpected(self, c: Char) -> Token {
+    //
+    // Reported and skipped: no token is made for it, so the parser reads the line as
+    // if the character were not there and says nothing more about it. (An UNKNOWN
+    // token was the first way, and is what produced the misleading error above.)
+    private fn unexpected(self, c: Char) {
         let line = self.line
         let col = self.col
-        let start = self.pos
 
         if (charCode(c) >= 128) {
             self.fatal(line, col, lexerNonAsciiMessage(self.currentScalar(), charCode(c)))
+            self.advanceScalar()
+            return
         }
         self.advance()
         self.fatal(line, col, "unexpected character ".concat(diagQuote(c.toString())))
-        return self.token(TokenType.UNKNOWN, "?", line, col, start)
     }
 }
 
@@ -1003,11 +1050,22 @@ public fn lexerScalarNotation(scalar: Int) -> String {
 impl Lexer {
 
     private fn nextToken(self) -> Token {
-        self.skipWhitespace()
+        loop {
+            self.skipWhitespace()
 
-        if (self.pos >= self.length) {
-            return self.token(TokenType.EOF, "EOF", self.line, self.col, self.pos)
+            if (self.pos >= self.length) {
+                return self.token(TokenType.EOF, "EOF", self.line, self.col, self.pos)
+            }
+
+            let made = self.nextTokenAt()
+            if (made.type != TokenType.UNKNOWN) { return made }
         }
+    }
+
+    // The token at the cursor, which is not whitespace or the end. UNKNOWN stands
+    // for "a character that belongs to no token, already reported and skipped", and
+    // is never handed on.
+    private fn nextTokenAt(self) -> Token {
 
         let c = self.current()
 
@@ -1043,7 +1101,8 @@ impl Lexer {
             return self.separator()
         }
 
-        return self.unexpected(c)
+        self.unexpected(c)
+        return self.token(TokenType.UNKNOWN, "?", self.line, self.col, self.pos)
     }
 }
 

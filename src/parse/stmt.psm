@@ -21,11 +21,12 @@ impl Parser {
             // Without this the loop spins at EOF until some inner parser happens to
             // fail, and blames whatever it was looking at instead of the brace that
             // was never closed.
+            if (self.dead == 1) { break }
             if (self.check(TokenType.EOF)) {
                 diag_error_at_code("P3301", open.file, open.line, open.col, open.len,
                               "this block is never closed; reached end of file looking for `}`")
-                diag_finish()
-                exit(1)
+                self.abandon()
+                break
             }
             if (self.atNestedFn()) {
                 self.parseNestedFn()
@@ -65,8 +66,8 @@ impl Parser {
                 "compound assignment ".concat(diagQuote(operatorToken.value),
                                               " requires a plain variable on the left"))
             diag_note("the desugaring names the target twice, so a subexpression here would be evaluated twice; write the assignment out in full instead")
-            diag_finish()
-            exit(1)
+            self.abandon()
+            return target
         }
 
         // Anchored on the operator for the same reason the ordinary binary
@@ -453,6 +454,7 @@ impl Parser {
         self.expectVal(TokenType.SEPARATOR, "{", "match body")
         let arms = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             nodeListPush(arms, self.parseMatchArm())
             self.matchVal(TokenType.SEPARATOR, ",")
         }

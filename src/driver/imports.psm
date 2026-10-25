@@ -311,8 +311,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
                 "compiled standard-library module ".concat(diagQuote(moduleName),
                     " is missing, incompatible, or corrupted: ", compiler_plib_error()))
             diag_note("reinstall Prismio and try again")
-            diag_finish()
-            exit(1)
+            return seen
         }
     } else {
         content = readSource(importPath)
@@ -322,8 +321,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
             "cannot read imported module ".concat(diagQuote(moduleName),
                                                   ": no such file ",
                                                   importPath))
-        diag_finish()
-        exit(1)
+        return seen
     }
 
     // Registered before parsing so every token from this file carries an id that
@@ -355,8 +353,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     if (modules.length == 0) {
         diag_error_at_code("P1002", site.file, site.line, site.col, site.len,
             "package ".concat(diagQuote(site.s1), " contains no modules: ", dirPath))
-        diag_finish()
-        exit(1)
+        return visited
     }
 
     let mut seen = visited
@@ -457,18 +454,20 @@ private fn freestandingNeedsRuntime(name: String) -> Bool {
 // failure was a page of undefined `list_*` symbols from the linker, and from an
 // installed toolchain it was a report of a corrupted installation. Both were the
 // same mistake and neither said so.
-private fn refuseHostedImport(stmt: ASTNode) {
-    if (compiler_is_freestanding() != 1) { return }
-    if (stmt.s1.startsWith("std.") == false) { return }
+//
+// Answers whether it refused. The import is then skipped, not merged, so the rest of
+// the program is still read and its own errors still reported.
+private fn refuseHostedImport(stmt: ASTNode) -> Bool {
+    if (compiler_is_freestanding() != 1) { return false }
+    if (stmt.s1.startsWith("std.") == false) { return false }
     if (freestandingSafeModule(stmt.s1)) {
         if (freestandingNeedsRuntime(stmt.s1)) { compiler_use_freestanding_runtime() }
-        return
+        return false
     }
     diag_error_at_code("P1094", stmt.file, stmt.line, stmt.col, stmt.len,
         diagQuote(stmt.s1).concat(" cannot be imported by a `--freestanding` program"))
     diag_note("std.io, std.display, std.input, std.fs, std.process, std.time, std.term and std.math need an operating system or a C library")
-    diag_finish()
-    exit(1)
+    return true
 }
 
 // An entry of `import {a, b} from dir` names a file, never a declaration
@@ -476,18 +475,18 @@ private fn refuseHostedImport(stmt: ASTNode) {
 // can see the difference: `import {Option} from std.option` would otherwise
 // reach mergeNamedModule's selective-import fallback and quietly select a name.
 // An entry that names nothing at all falls through to P1001's "no such file".
-private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) {
-    if (stmt.i2 != 1) { return }
-    if (fileExists(resolveImportPath(baseDir, stmt.s1))) { return }
+// Answers whether it refused, like refuseHostedImport.
+private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
+    if (stmt.i2 != 1) { return false }
+    if (fileExists(resolveImportPath(baseDir, stmt.s1))) { return false }
     let cut = stmt.s1.lastIndexOf(".")
     let directory = stmt.s1.substring(0, cut)
-    if (fileExists(resolveImportPath(baseDir, directory)) == false) { return }
+    if (fileExists(resolveImportPath(baseDir, directory)) == false) { return false }
     diag_error_at_code("P1072", stmt.file, stmt.line, stmt.col, stmt.len,
         "an import group names modules, and ".concat(diagQuote(stmt.s1), " is a declaration inside ",
                                                      diagQuote(directory)))
     diag_note("select a declaration with its own import: `import ".concat(stmt.s1, "`"))
-    diag_finish()
-    exit(1)
+    return true
 }
 
 private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
@@ -502,9 +501,7 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
         if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
             if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
-            } else {
-                refuseHostedImport(stmt)
-                refuseGroupDeclaration(stmt, baseDir)
+            } else if (refuseHostedImport(stmt) == false and refuseGroupDeclaration(stmt, baseDir) == false) {
                 ir_import_record(stmt.file, stmt.s1)
                 recordImportAlias(stmt, baseDir)
                 seen = mergeNamedModule(merged, stmt, stmt.s1, baseDir, seen)

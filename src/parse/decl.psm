@@ -1,6 +1,7 @@
 // Top-level declarations, type annotations, and the annotations that ride on
 // them: AIF's `unique`/`pin` and the FFI ownership contracts.
 
+import lexer.scanner
 import lexer.token
 import common.text
 import ast.nodes
@@ -33,6 +34,7 @@ impl Parser {
             let enforced = self.visibilityIsEnforced()
             self.advance()
             let declaration = self.parseDeclaration()
+            if (self.dead == 1) { return declaration }
             if (enforced) {
                 declaration.i2 = visibility
             } else {
@@ -72,6 +74,78 @@ impl Parser {
                                                         " (expected one of `import`, `let`, `fn`, `extern`, `struct`, `enum`, `impl`, `trait`)"))
         self.synchronize()
         return bad
+    }
+
+    // Whether the token the parser is on begins a top-level declaration. It asks
+    // the grammar's own predicates, so a new declaration form is recognised here
+    // the moment `parseDeclaration` learns it.
+    private fn atDeclarationStart(self) -> Bool {
+        if (self.visibilityLevel() >= 0) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "import") or self.atFromImport()) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "let") or self.atConstDecl()) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "extern")) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "fn") or self.atPropDecl() or self.atFnModifiers()) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "struct") or self.atStructModifiers()) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "enum") or self.atCodesetDecl() or self.atTypelistDecl()) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "impl") or self.checkVal(TokenType.KEYWORD, "trait")) { return true }
+        return self.atWorkload()
+    }
+
+    // Puts a parser that `fatal` gave up on back on the grammar: clears the state
+    // the abandoned declaration left half-set, and moves to the first declaration
+    // that starts at or after the failure.
+    //
+    // **Where a declaration ends is not known** -- that is what the failure took away
+    // -- so two things stand in for it. A declaration keyword at brace depth zero,
+    // counted from where the broken declaration began, is a boundary. So is one in
+    // column 1: top-level declarations are not indented, and a `{` that was never
+    // closed would otherwise swallow every declaration after it. Resuming inside a
+    // body by mistake costs a spurious error, never a crash.
+    //
+    // Never resumes at `declarationStart` itself, so each failure moves the parser
+    // forward and the module loop ends. (The first token examined is the one after it,
+    // and a resume point must begin a later line than the token before it.)
+    internal fn recover(self, declarationStart: Ptr) {
+        self.dead = 0
+        self.silentFaults = 0
+        self.fnNode = ptr_null()
+        self.implType = ptr_null()
+        self.implParams = ptr_null()
+        self.implParamSeq = 0
+        self.implPosition = 0
+        self.lengthDepth = 0
+        self.allowStructLit = 1
+        self.hoistHead = ptr_null()
+        self.hoistTail = ptr_null()
+
+        let start = ptr_to_token(declarationStart)
+        let mut at = start.tokNext
+        let mut depth = 0
+        let mut previousLine = start.line
+        loop {
+            let t = ptr_to_token(at)
+            if (t.type == TokenType.EOF) { break }
+
+            // A declaration begins its line. Without that, the `import` inside
+            // `from std as s import {io}` is a declaration of its own.
+            let afterFault = t.line > self.faultLine
+                or (t.line == self.faultLine and t.col >= self.faultCol)
+            if (afterFault and t.line > previousLine and (depth == 0 or t.col == 1)) {
+                self.current = at
+                if (self.atDeclarationStart()) {
+                    self.lastLine = t.line
+                    return
+                }
+            }
+
+            if (t.type == TokenType.SEPARATOR) {
+                if (t.value.equals("{")) { depth = depth + 1 }
+                if (t.value.equals("}") and depth > 0) { depth = depth - 1 }
+            }
+            previousLine = t.line
+            at = t.tokNext
+        }
+        self.current = at
     }
 }
 
@@ -1581,8 +1655,10 @@ impl Parser {
         let methodRecords = nodeList()
         let constants = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             if (self.check(TokenType.EOF)) {
                 self.fatal("this `impl` block is never closed; reached end of file looking for `}`")
+                break
             }
             // A method carries a visibility marker exactly as a top-level `fn` does.
             // Without this the two features did not compose: `impl` was the natural
@@ -1602,6 +1678,7 @@ impl Parser {
             let methodMods = self.parseMethodModifiers()
             if (self.checkVal(TokenType.KEYWORD, "fn") == false and self.atPropDecl() == false) {
                 self.fatal("an `impl` block holds `fn`, `prop` and `let` declarations, found ".concat(parserDescribe(self.current())))
+                break
             }
             let method = self.parseFunctionDecl()
             applyFnModifiers(method, methodMods)
@@ -1721,6 +1798,7 @@ impl Parser {
         // own, and std gives it `Copy`, `Eq` and `Display` this way.
         if (target.i1 == 1) {
             self.fatal("an `impl` target must be a named type, not an array")
+            return
         }
         // An inherent `impl T` has no trait to give the methods a home and would put
         // a method on every type at once. A *trait* impl over a bare parameter is a
@@ -1729,6 +1807,7 @@ impl Parser {
         if (target.i2 == 0 and implParamsContain(header.s1, target.s1)
             and implNode.s2.equals("")) {
             self.fatal("an inherent `impl` target must have a nominal type constructor, not a type parameter")
+            return
         }
 
         let count = implParamCount(header.s1)
@@ -1739,6 +1818,7 @@ impl Parser {
                                                 implParamNameAt(header.s1, i)) == false)) {
                 self.fatal("unconstrained type parameter `".concat(implParamNameAt(header.s1, i),
                                                                 "` in `impl`; every impl parameter must occur in its target or trait arguments"))
+                return
             }
         }
     }
@@ -1755,6 +1835,7 @@ impl Parser {
             if (implParamsContain(implParams, name)) {
                 self.fatal("method type parameter `".concat(name,
                                                          "` duplicates an `impl` type parameter"))
+                return methodParams
             }
             i = i + 1
         }
@@ -1854,8 +1935,10 @@ impl Parser {
         let signatures = nodeList()
         let constants = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             if (self.check(TokenType.EOF)) {
                 self.fatal("this `trait` is never closed; reached end of file looking for `}`")
+                break
             }
             if (self.checkVal(TokenType.KEYWORD, "let")) {
                 nodeListPush(constants, self.parseAssocConst(false))
@@ -1864,6 +1947,7 @@ impl Parser {
             } else {
                 if (self.checkVal(TokenType.KEYWORD, "fn") == false) {
                     self.fatal("a `trait` holds `fn` signatures, `let` constants and `type` members, found ".concat(parserDescribe(self.current())))
+                    break
                 }
                 let signature = self.parseTraitSignature()
                 self.parseImplCheckReceiver(signature)
@@ -2009,8 +2093,10 @@ impl Parser {
 
         self.expectVal(TokenType.SEPARATOR, "{", "workload body")
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             if (self.check(TokenType.EOF)) {
                 self.fatal("this workload is never closed; reached end of file looking for `}`")
+                return node
             }
 
             let clause = self.current()
@@ -2056,6 +2142,7 @@ impl Parser {
         let tok = self.current()
         if (tok.type != TokenType.NUMBER_LITERAL) {
             self.fatal("expected a count after `".concat(clause, "`"))
+            return 1
         }
         let n = tok.value.parseInt().unwrapOr(0)
         self.advance()
@@ -2089,6 +2176,7 @@ impl Parser {
 
         let fields = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             let field = self.node(NodeKind.STRUCT_FIELD)
             // The declaring file, unless a marker says otherwise.
             field.i2 = 1
@@ -2139,6 +2227,7 @@ impl Parser {
             if (nodeIsNull(node_to_ptr(param))) {
                 self.fatal("`where` names `".concat(name.value,
                                                  "`, which is not a type parameter of this declaration"))
+                return
             }
 
             self.expectVal(TokenType.SEPARATOR, ":", "`where` bound")

@@ -409,6 +409,26 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **The frontend no longer ends the run at the first lexical, syntax or import error.** A syntax error the parser could
+  not recover from locally (`Parser.fatal`, 38 call sites), a lexer error (`Lexer.fatal`, 24) and an unresolvable
+  import (5) each called `exit(1)`. Now each reports and carries on: the parser gives up on the declaration it is in
+  (`dead` state: it parks on the end-of-file token, so every loop ends and every `expect` is silent) and
+  `parseModule` resumes at the next declaration that begins a line (`recover` in `parse/decl.psm`; a declaration
+  keyword at brace depth zero, or in column 1 so a `{` left open does not swallow the rest). The lexer skips a
+  stray character, ends a string at its line, and replaces a bad escape with `?`, so the token stream stays well
+  formed and adds no errors of its own. An import that cannot be read is skipped and the imports after it are still
+  resolved. A file with three broken declarations now says so, in one run, across the whole program; type checking
+  still does not run once an error exists, as before. A parser that does not stop after a failure (a loop missing
+  its `break`) ends the run with `P3299` after 100,000 failures instead of hanging. The `exit` calls left in the frontend
+  are the 25-error limit, `P3299`, an internal nesting overflow, and the stale-runtime check in `build`. No change for a
+  valid program: IR is byte-identical for the 351 valid programs in `tests/`, the 9 hosted benchmark programs and
+  `src/main.psm` itself; of the 300 negative tests that existed, 299 print the same diagnostics under `check`, `neg_209` also reports its
+  second bidirectional control, and `neg_150` / `neg_262` needed two cascade fixes (a closing quote left on the line
+  after an unterminated string is not reported again; recovery never resumes in the middle of a `from … import`).
+  `tests/neg_353`-`neg_355`; `tools/check_truncation.py` damages every program in `tests/`, `std/` and `src/` (cut,
+  deleted bytes, stray brackets and quotes; standalone and through `--overlay`) and fails on a crash, a hang, a missing
+  summary line or a silent non-zero exit: 9,468 variants, none. This is Phase 0 of `docs/LSP_PLAN.md`.
+
 - **`runtime/aif_support.c` and `runtime/aif_containers.c` are Prismio** (9,248 lines of C gone). The AIF engine is the
   `src/aifcore` package, 18 modules of about 8,100 lines: `bits` (the bitset arena), `structure`, `nominals`, `keys`,
   `sites`, `constraints`, `solver`, `tiers`, `arenas`, `call_graph`, `brackets`, `extents`, `dispositions`,

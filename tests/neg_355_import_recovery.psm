@@ -1,0 +1,16 @@
+// expect-error: cannot read imported module `no_such_module_one`
+// expect-error: cannot read imported module `no_such_module_two`
+// expect-error: aborting due to 2 previous errors
+//
+// A missing import is reported and skipped, and the imports after it are still
+// resolved. An editor holds the file in this state for as long as the module name
+// is half typed, and the other module's errors should not wait on it.
+
+import no_such_module_one
+import std.io
+import no_such_module_two
+
+fn main() -> Int {
+    println("hi")
+    return 0
+}

@@ -1,0 +1,19 @@
+// expect-error: unknown escape sequence \q
+// expect-error: unexpected character `#`
+// expect-error: `\x` takes exactly two hex digits
+// expect-error: aborting due to 3 previous errors
+//
+// A lexer error no longer ends the run. Each is reported and the scanner carries
+// on: an unknown escape keeps the character, a stray character produces no token,
+// a malformed `\x` stands for `?`. The token stream stays well formed, so the
+// parser sees the program as if the offending text were nearly right and adds no
+// errors of its own -- which is why the count above is exactly three.
+
+import std.io
+
+fn main() -> Int {
+    println("a \q b")
+    let x = 1 # 2
+    println("bad \xZZ byte")
+    return x - 1
+}

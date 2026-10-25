@@ -85,6 +85,7 @@ impl Parser {
     private fn parseEnumVariants(self, isCodeset: Bool) -> Ptr {
         let variants = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             nodeListPush(variants, self.parseEnumVariant(isCodeset))
             self.matchVal(TokenType.SEPARATOR, ",")
         }
@@ -135,6 +136,7 @@ impl Parser {
         let types = nodeList()
         let names = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             let field = self.node(NodeKind.IDENTIFIER_EXPR)
             let fieldName = self.current()
             field.s1 = fieldName.value
@@ -171,6 +173,7 @@ impl Parser {
 
         let fields = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
             let field = self.node(NodeKind.STRUCT_FIELD)
             let fieldName = self.current()
             field.s1 = fieldName.value

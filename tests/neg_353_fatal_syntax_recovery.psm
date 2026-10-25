@@ -1,0 +1,43 @@
+// expect-error: expected IDENTIFIER in parameter name, found `{`
+// expect-error: expected a type name, found `}`
+// expect-error: `step` needs a range to count through
+// expect-error: aborting due to 3 previous errors
+//
+// A syntax error the parser cannot recover from locally (`fatal`) ends that
+// declaration, not the run. parseModule drops the declaration and resumes at the
+// next one that begins a line, so three broken declarations report three errors
+// and the good functions between them are still read. Before, the first of these
+// printed one message and the process exited, hiding the rest.
+//
+// What the second and third errors prove: the parser really was put back on the
+// grammar. Neither is a cascade of the first, which is what a recovery that
+// resumed one token too early would produce.
+
+import std.io
+
+fn broken(a: Int, {
+    return a
+}
+
+fn fine() -> Int {
+    return 1
+}
+
+struct P { x: Int, y: }
+
+fn also_fine() -> Int {
+    for i in 0..<3 {
+        println(i)
+    }
+    return fine()
+}
+
+fn steps(n: Int) {
+    for i in n step 2 {
+        println(i)
+    }
+}
+
+fn main() -> Int {
+    return also_fine()
+}
