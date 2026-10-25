@@ -1,0 +1,221 @@
+// Semantic tokens: the colour of every name, from what it refers to.
+//
+// An editor colours a name by its lexical shape at once and by its meaning when the server answers; the
+// meaning is what tells a type from a variable from a function. The index holds both ends of it: a
+// declaration has a kind, and a reference points at one. Every name in the file becomes a token, the
+// tokens are sorted into reading order, and each is written relative to the one before, as the protocol
+// asks.
+
+import lsp.documents
+import lsp.index
+import lsp.locator
+import lsp.positions
+import std.json
+import std.string
+import std.vec
+
+// The legend, in the order the numbers in a token refer to it.
+public fn tokensLegend() -> String {
+    return "{\"tokenTypes\":[\"namespace\",\"type\",\"enum\",\"interface\",\"struct\",\"typeParameter\",\"parameter\","
+        .concat("\"variable\",\"property\",\"enumMember\",\"function\",\"method\"],",
+                "\"tokenModifiers\":[\"declaration\",\"readonly\",\"defaultLibrary\"]}")
+}
+
+// The legend index of a declaration kind, or -1 for one that is not coloured.
+fn tokensTypeOf(kind: String) -> Int {
+    if (kind.equals("import")) { return 0 }
+    if (kind.equals("enum") or kind.equals("codeset")) { return 2 }
+    if (kind.equals("trait")) { return 3 }
+    if (kind.equals("struct") or kind.equals("typelist")) { return 4 }
+    if (kind.equals("typeparam") or kind.equals("assoctype")) { return 5 }
+    if (kind.equals("param")) { return 6 }
+    if (kind.equals("let") or kind.equals("global") or kind.equals("const") or kind.equals("externvar")
+            or kind.equals("assocconst")) {
+        return 7
+    }
+    if (kind.equals("field") or kind.equals("prop")) { return 8 }
+    if (kind.equals("variant") or kind.equals("code")) { return 9 }
+    if (kind.equals("fn") or kind.equals("extern")) { return 10 }
+    if (kind.equals("method")) { return 11 }
+    return 0 - 1
+}
+
+fn tokensModifiersOf(decl: IndexDecl, isDeclaration: Bool) -> Int {
+    let mut bits = 0
+    if (isDeclaration) { bits = bits + 1 }
+    if (decl.kind.equals("const")) { bits = bits + 2 }
+    if (decl.user == false) { bits = bits + 4 }
+    return bits
+}
+
+// A token before sorting: where, how long, what and with which modifiers.
+struct TokenRow {
+    line: Int,
+    col: Int,
+    len: Int,
+    type: Int,
+    modifiers: Int
+}
+
+// The kind of every declaration a reference in this file points at, by id. The ids in an index are
+// written in ascending order, so the lookup is a binary search.
+struct TokenKinds {
+    ids: Vec<Int>,
+    decls: Vec<IndexDecl>
+}
+
+fn tokensKindsFor(index: String, refs: Vec<IndexRef>) -> TokenKinds {
+    let mut wanted: Vec<Int> = []
+    for ref in refs {
+        if (ref.to >= 0) { wanted.push(ref.to) }
+    }
+    tokensSortInts(wanted)
+    let decls = indexDeclsByIds(index, wanted)
+    let mut ids: Vec<Int> = []
+    for decl in decls { ids.push(decl.id) }
+    return TokenKinds { ids: ids, decls: decls }
+}
+
+fn tokensFind(kinds: TokenKinds, id: Int) -> Int {
+    let mut low = 0
+    let mut high = kinds.ids.length - 1
+    while (low <= high) {
+        let middle = (low + high) / 2
+        if (kinds.ids[middle] == id) { return middle }
+        if (kinds.ids[middle] < id) { low = middle + 1 } else { high = middle - 1 }
+    }
+    return 0 - 1
+}
+
+// Merge sort of integers.
+fn tokensSortInts(inout values: Vec<Int>) {
+    if (values.length < 2) { return }
+    let mut scratch: Vec<Int> = []
+    for value in values { scratch.push(value) }
+    tokensMergeInts(values, scratch, 0, values.length)
+}
+
+fn tokensMergeInts(inout values: Vec<Int>, inout scratch: Vec<Int>, from: Int, to: Int) {
+    if (to - from < 2) { return }
+    let middle = (from + to) / 2
+    tokensMergeInts(values, scratch, from, middle)
+    tokensMergeInts(values, scratch, middle, to)
+    let mut left = from
+    let mut right = middle
+    let mut at = from
+    while (at < to) {
+        if (left < middle and (right >= to or values[left] <= values[right])) {
+            scratch[at] = values[left]
+            left = left + 1
+        } else {
+            scratch[at] = values[right]
+            right = right + 1
+        }
+        at = at + 1
+    }
+    at = from
+    while (at < to) {
+        values[at] = scratch[at]
+        at = at + 1
+    }
+}
+
+// Whether row `a` reads before row `b`.
+fn tokensBefore(rows: Vec<TokenRow>, a: Int, b: Int) -> Bool {
+    if (rows[a].line != rows[b].line) { return rows[a].line < rows[b].line }
+    return rows[a].col < rows[b].col
+}
+
+fn tokensSortRows(rows: Vec<TokenRow>, inout order: Vec<Int>, inout scratch: Vec<Int>, from: Int, to: Int) {
+    if (to - from < 2) { return }
+    let middle = (from + to) / 2
+    tokensSortRows(rows, order, scratch, from, middle)
+    tokensSortRows(rows, order, scratch, middle, to)
+    let mut left = from
+    let mut right = middle
+    let mut at = from
+    while (at < to) {
+        if (left < middle and (right >= to or tokensBefore(rows, order[right], order[left]) == false)) {
+            scratch[at] = order[left]
+            left = left + 1
+        } else {
+            scratch[at] = order[right]
+            right = right + 1
+        }
+        at = at + 1
+    }
+    at = from
+    while (at < to) {
+        order[at] = scratch[at]
+        at = at + 1
+    }
+}
+
+public fn tokensFull(index: String, file: Int, docs: Documents, loc: Locator) -> String {
+    let decls = indexDeclsOfFile(index, file)
+    let refs = indexRefsOfFile(index, file)
+    let kinds = tokensKindsFor(index, refs)
+    let mut rows: Vec<TokenRow> = []
+    for decl in decls {
+        let type = tokensTypeOf(decl.kind)
+        if (type < 0) { continue }
+        rows.push(TokenRow { line: decl.line, col: decl.col, len: decl.len, type: type,
+                             modifiers: tokensModifiersOf(decl, true) })
+    }
+    for ref in refs {
+        if (ref.to == 0 - 1) {
+            // Something the compiler provides: a type, a function or a member.
+            let mut type = 0 - 1
+            if (ref.builtin.equals("type")) { type = 1 }
+            if (ref.builtin.equals("member")) { type = 8 }
+            if (ref.builtin.equals("module")) { type = 0 }
+            if (ref.role.equals("call") and type < 0) { type = 10 }
+            if (type >= 0) { rows.push(TokenRow { line: ref.line, col: ref.col, len: ref.len, type: type, modifiers: 4 }) }
+            continue
+        }
+        let at = tokensFind(kinds, ref.to)
+        if (at < 0) { continue }
+        let target = kinds.decls[at]
+        let type = tokensTypeOf(target.kind)
+        if (type < 0) { continue }
+        rows.push(TokenRow { line: ref.line, col: ref.col, len: ref.len, type: type,
+                             modifiers: tokensModifiersOf(target, false) })
+    }
+    let mut order: Vec<Int> = []
+    let mut scratch: Vec<Int> = []
+    let mut i = 0
+    while (i < rows.length) {
+        order.push(i)
+        scratch.push(i)
+        i = i + 1
+    }
+    tokensSortRows(rows, order, scratch, 0, rows.length)
+
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("data")
+    out.beginArray()
+    let mut previousLine = 0
+    let mut previousChar = 0
+    for slot in order {
+        let row = rows[slot]
+        let start = loc.position(docs, file, row.line, row.col)
+        let end = loc.position(docs, file, row.line, row.col + row.len)
+        let length = end.character - start.character
+        if (length <= 0 or end.line != start.line) { continue }
+        let deltaLine = start.line - previousLine
+        let mut deltaStart = start.character
+        if (deltaLine == 0) { deltaStart = start.character - previousChar }
+        if (deltaLine == 0 and deltaStart <= 0 and previousChar > 0) { continue }
+        out.int(deltaLine)
+        out.int(deltaStart)
+        out.int(length)
+        out.int(row.type)
+        out.int(row.modifiers)
+        previousLine = start.line
+        previousChar = start.character
+    }
+    out.endArray()
+    out.endObject()
+    return out.finish()
+}

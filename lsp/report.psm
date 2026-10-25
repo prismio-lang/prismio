@@ -18,7 +18,9 @@ public struct CompilerDiagnostic {
     public length: Int,
     public severity: String,
     public code: String,
-    public message: String
+    public message: String,
+    // The module a quick fix would import (the compiler's `fix.addImport`), or "".
+    public fix: String
 }
 
 public struct CheckReport {
@@ -43,6 +45,7 @@ public fn parseReport(stderr: String) -> CheckReport {
     let mut severity = "".clone()
     let mut code = "".clone()
     let mut message = "".clone()
+    let mut fix = "".clone()
     for text in stderr.split("\n") {
         if (text.startsWith("{") == false) { continue }
         let doc = parseJson(text)
@@ -51,12 +54,14 @@ public fn parseReport(stderr: String) -> CheckReport {
         let isNote = kind.equals("diagnostic") and doc.text(doc.member(doc.root, "severity").unwrapOr(0 - 1)).equals("note")
         if (isNote) {
             message = message.concat("\n", doc.text(doc.member(doc.root, "message").unwrapOr(0 - 1)))
+            let addImport = doc.path(doc.root, "fix.addImport")
+            if (addImport != none) { fix = doc.text(expect(addImport)) }
             continue
         }
         if (open) {
             report.diagnostics.push(CompilerDiagnostic {
                 path: path.clone(), line: line, column: column, length: length,
-                severity: severity.clone(), code: code.clone(), message: message.clone()
+                severity: severity.clone(), code: code.clone(), message: message.clone(), fix: fix.clone()
             })
             open = false
         }
@@ -74,12 +79,13 @@ public fn parseReport(stderr: String) -> CheckReport {
         severity = doc.text(doc.member(doc.root, "severity").unwrapOr(0 - 1))
         code = doc.text(doc.member(doc.root, "code").unwrapOr(0 - 1))
         message = doc.text(doc.member(doc.root, "message").unwrapOr(0 - 1))
+        fix = "".clone()
         open = true
     }
     if (open) {
         report.diagnostics.push(CompilerDiagnostic {
             path: path.clone(), line: line, column: column, length: length,
-            severity: severity.clone(), code: code.clone(), message: message.clone()
+            severity: severity.clone(), code: code.clone(), message: message.clone(), fix: fix.clone()
         })
     }
     return report

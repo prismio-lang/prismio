@@ -1,0 +1,180 @@
+// The features that change the text: rename, and the quick fix for a missing import.
+
+import lsp.documents
+import lsp.features
+import lsp.index
+import lsp.locator
+import std.json
+import std.string
+import std.vec
+
+fn editsRenamable(kind: String) -> Bool {
+    return kind.equals("let") or kind.equals("param") or kind.equals("fn") or kind.equals("method")
+        or kind.equals("prop") or kind.equals("struct") or kind.equals("enum") or kind.equals("trait")
+        or kind.equals("field") or kind.equals("variant") or kind.equals("global") or kind.equals("const")
+        or kind.equals("typelist") or kind.equals("codeset") or kind.equals("code") or kind.equals("typeparam")
+}
+
+// The declaration the cursor is on when it can be renamed, else a declaration with `found` false.
+fn editsTarget(q: FeatureQuery) -> IndexDecl {
+    let decl = featureDeclAt(q)
+    if (decl.found == false or decl.user == false or editsRenamable(decl.kind) == false) { return indexDecl("", 0 - 1) }
+    if (decl.name.equals("self")) { return indexDecl("", 0 - 1) }
+    return decl
+}
+
+// The span of the name under the cursor (a use, or the declaration) as line, column and length.
+struct EditsSpan {
+    found: Bool,
+    line: Int,
+    col: Int,
+    len: Int
+}
+
+fn editsSpanAt(q: FeatureQuery) -> EditsSpan {
+    let ref = indexRefAt(q.index, q.file, q.line, q.col)
+    if (ref.to >= 0) { return EditsSpan { found: true, line: ref.line, col: ref.col, len: ref.len } }
+    let decl = indexDeclAt(q.index, q.file, q.line, q.col)
+    if (decl.found) { return EditsSpan { found: true, line: decl.line, col: decl.col, len: decl.len } }
+    return EditsSpan { found: false, line: 0, col: 0, len: 0 }
+}
+
+public fn featurePrepareRename(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
+    let decl = editsTarget(q)
+    let span = editsSpanAt(q)
+    if (decl.found == false or span.found == false) { return "null".clone() }
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("range")
+    out.raw(loc.range(docs, q.file, span.line, span.col, span.line, span.col + span.len))
+    out.key("placeholder")
+    out.string(decl.name)
+    out.endObject()
+    return out.finish()
+}
+
+fn editsIsIdentifier(name: String) -> Bool {
+    if (name.length == 0) { return false }
+    let mut i = 0
+    while (i < name.length) {
+        let b = name.byteAt(i)
+        let letter = (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or b >= 128
+        if (letter == false and (i == 0 or b < 48 or b > 57)) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Why `newName` cannot be the name of the declaration under the cursor, or "".
+public fn featureRenameProblem(q: FeatureQuery, newName: String, keywords: Vec<String>) -> String {
+    let decl = editsTarget(q)
+    if (decl.found == false) { return "there is nothing here that can be renamed".clone() }
+    if (editsIsIdentifier(newName) == false) { return diagQuoteName(newName).concat(" is not a name").clone() }
+    for word in keywords {
+        if (word.equals(newName)) { return diagQuoteName(newName).concat(" is a keyword").clone() }
+    }
+    if (newName.equals(decl.name)) { return "".clone() }
+    // Another declaration of that name in the same place.
+    let clash = " fn method ".contains(" ".concat(decl.kind, " "))
+    for other in indexNamed(q.index, newName, "let param fn method prop struct enum trait field variant global const typelist codeset code") {
+        if (other.id == decl.id or other.container != decl.container or other.file != decl.file) { continue }
+        if (clash and " fn method ".contains(" ".concat(other.kind, " "))) { continue }
+        return diagQuoteName(newName).concat(" is already declared here").clone()
+    }
+    return "".clone()
+}
+
+fn diagQuoteName(name: String) -> String {
+    return "`".concat(name, "`")
+}
+
+fn editsTextEdit(out: JsonWriter, range: String, newText: String) {
+    out.beginObject()
+    out.key("range")
+    out.raw(range)
+    out.key("newText")
+    out.string(newText)
+    out.endObject()
+}
+
+public fn featureRename(q: FeatureQuery, docs: Documents, loc: Locator, newName: String) -> String {
+    let decl = editsTarget(q)
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("changes")
+    out.beginObject()
+    if (decl.found) {
+        let refs = indexRefsTo(q.index, decl.id)
+        for file in indexFiles(q.index) {
+            if (file.user == false) { continue }
+            let mut any = decl.file == file.id
+            for ref in refs {
+                if (ref.file == file.id) { any = true }
+            }
+            if (any == false or loc.openable(file.id) == false) { continue }
+            out.key(loc.uriOf(file.id))
+            out.beginArray()
+            if (decl.file == file.id) {
+                editsTextEdit(out, loc.range(docs, file.id, decl.line, decl.col, decl.line, decl.col + decl.len), newName)
+            }
+            for ref in refs {
+                if (ref.file == file.id) {
+                    editsTextEdit(out, loc.range(docs, file.id, ref.line, ref.col, ref.line, ref.col + ref.len), newName)
+                }
+            }
+            out.endArray()
+        }
+    }
+    out.endObject()
+    out.endObject()
+    return out.finish()
+}
+
+// A quick fix for each diagnostic that carries `addImport`: the import goes after the file's last one.
+public fn featureCodeActions(q: FeatureQuery, docs: Documents, loc: Locator, context: JsonDocument, contextNode: Int) -> String {
+    let out = JsonWriter()
+    out.beginArray()
+    let diagnostics = context.member(contextNode, "diagnostics").unwrapOr(0 - 1)
+    if (diagnostics >= 0) {
+        let mut offered: Vec<String> = []
+        for diagnostic in context.children(diagnostics) {
+            let module = context.text(context.path(diagnostic, "data.addImport").unwrapOr(0 - 1))
+            if (module.equals("")) { continue }
+            let mut seen = false
+            for earlier in offered {
+                if (earlier.equals(module)) { seen = true }
+            }
+            if (seen) { continue }
+            offered.push(module.clone())
+            let line = indexImportInsertLine(q.index, q.file) - 1
+            out.beginObject()
+            out.key("title")
+            out.string("Add `import ".concat(module, "`"))
+            out.key("kind")
+            out.string("quickfix")
+            out.key("diagnostics")
+            out.beginArray()
+            out.raw(context.raw(diagnostic))
+            out.endArray()
+            out.key("edit")
+            out.beginObject()
+            out.key("changes")
+            out.beginObject()
+            out.key(loc.uriOf(q.file))
+            out.beginArray()
+            out.beginObject()
+            out.key("range")
+            out.raw("{\"start\":{\"line\":".concat(line.toString(), ",\"character\":0},\"end\":{\"line\":", line.toString(),
+                                                   ",\"character\":0}}"))
+            out.key("newText")
+            out.string("import ".concat(module, "\n"))
+            out.endObject()
+            out.endArray()
+            out.endObject()
+            out.endObject()
+            out.endObject()
+        }
+    }
+    out.endArray()
+    return out.finish()
+}

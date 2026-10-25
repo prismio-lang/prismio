@@ -1,0 +1,366 @@
+// Reading the semantic index (`prismio check --emit-index`, src/index/command.psm).
+//
+// The server holds no index in memory. The last good one of each program is a file, and every
+// request is a pass over it: lines are picked by their first bytes (the writer puts the record
+// kind, the file and the line first and in a fixed order, so most lines are skipped by a prefix
+// test) and only the few that match are parsed. A request therefore costs one read of the file,
+// allocates what it answers with and nothing else, and the server's memory stays flat however many
+// requests it serves.
+//
+// A line is JSON, so parsing it is `std.json`'s; the helpers below name the fields the features
+// read.
+
+import std.fs
+import std.json
+import std.option
+import std.string
+import std.vec
+
+public struct IndexFile {
+    public id: Int,
+    public path: String,
+    public user: Bool
+}
+
+public struct IndexRef {
+    public file: Int,
+    public line: Int,
+    public col: Int,
+    public len: Int,
+    // The declaration it points at, or -1 for something the compiler provides.
+    public to: Int,
+    public role: String,
+    public type: String,
+    public builtin: String
+}
+
+public struct IndexDecl {
+    // Whether a declaration was found; the rest is only meaningful if it was.
+    public found: Bool,
+    public id: Int,
+    public kind: String,
+    public name: String,
+    public container: Int,
+    public file: Int,
+    public line: Int,
+    public col: Int,
+    public len: Int,
+    public startLine: Int,
+    public startCol: Int,
+    public endLine: Int,
+    public endCol: Int,
+    public user: Bool,
+    public inferred: Bool,
+    public vis: String,
+    public sig: String,
+    public type: String,
+    public owner: String,
+    public recv: String,
+    public doc: String
+}
+
+fn indexField(doc: JsonDocument, name: String) -> Int {
+    return doc.member(doc.root, name).unwrapOr(0 - 1)
+}
+
+fn indexInt(doc: JsonDocument, name: String, fallback: Int) -> Int {
+    let node = doc.member(doc.root, name)
+    if (node == none) { return fallback }
+    return doc.int(expect(node))
+}
+
+fn indexText(doc: JsonDocument, name: String) -> String {
+    let node = doc.member(doc.root, name)
+    if (node == none) { return "".clone() }
+    return doc.text(expect(node))
+}
+
+fn indexFlag(doc: JsonDocument, name: String) -> Bool {
+    let node = doc.member(doc.root, name)
+    if (node == none) { return false }
+    return doc.bool(expect(node))
+}
+
+fn indexNoDecl() -> IndexDecl {
+    return IndexDecl { found: false, id: 0 - 1, kind: "".clone(), name: "".clone(), container: 0 - 1, file: 0 - 1,
+                       line: 0, col: 0, len: 0, startLine: 0, startCol: 0, endLine: 0, endCol: 0, user: false,
+                       inferred: false, vis: "".clone(), sig: "".clone(), type: "".clone(), owner: "".clone(),
+                       recv: "".clone(), doc: "".clone() }
+}
+
+fn indexParseDecl(line: String) -> IndexDecl {
+    let doc = parseJson(line)
+    if (doc.ok == false) { return indexNoDecl() }
+    return IndexDecl {
+        found: true,
+        id: indexInt(doc, "id", 0 - 1),
+        kind: indexText(doc, "kind"),
+        name: indexText(doc, "name"),
+        container: indexInt(doc, "container", 0 - 1),
+        file: indexInt(doc, "f", 0 - 1),
+        line: indexInt(doc, "l", 0),
+        col: indexInt(doc, "c", 0),
+        len: indexInt(doc, "n", 0),
+        startLine: indexInt(doc, "sl", 0),
+        startCol: indexInt(doc, "sc", 0),
+        endLine: indexInt(doc, "el", 0),
+        endCol: indexInt(doc, "ec", 0),
+        user: indexFlag(doc, "user"),
+        inferred: indexFlag(doc, "inferred"),
+        vis: indexText(doc, "vis"),
+        sig: indexText(doc, "sig"),
+        type: indexText(doc, "ty"),
+        owner: indexText(doc, "owner"),
+        recv: indexText(doc, "recv"),
+        doc: indexText(doc, "doc")
+    }
+}
+
+fn indexParseRef(line: String) -> IndexRef {
+    let doc = parseJson(line)
+    return IndexRef {
+        file: indexInt(doc, "f", 0 - 1),
+        line: indexInt(doc, "l", 0),
+        col: indexInt(doc, "c", 0),
+        len: indexInt(doc, "n", 0),
+        to: indexInt(doc, "to", 0 - 1),
+        role: indexText(doc, "role"),
+        type: indexText(doc, "ty"),
+        builtin: indexText(doc, "builtin")
+    }
+}
+
+// The files of the program, by id.
+public fn indexFiles(path: String) -> Vec<IndexFile> {
+    let mut files: Vec<IndexFile> = []
+    for line in readLines(path) {
+        if (line.startsWith("{\"k\":\"file\"") == false) { continue }
+        let doc = parseJson(line)
+        files.push(IndexFile { id: indexInt(doc, "id", 0 - 1), path: indexText(doc, "path"), user: indexFlag(doc, "user") })
+    }
+    return files
+}
+
+// Whether two paths name the same file, ignoring `./` segments and doubled slashes.
+fn indexSamePath(a: String, b: String) -> Bool {
+    if (a.equals(b)) { return true }
+    return indexNormal(a).equals(indexNormal(b))
+}
+
+fn indexNormal(path: String) -> String {
+    let mut text = path.replaceAll("\\", "/")
+    while (text.contains("/./")) { text = text.replaceAll("/./", "/") }
+    while (text.contains("//")) { text = text.replaceAll("//", "/") }
+    if (text.startsWith("./")) { text = text.substring(2, text.length - 2) }
+    return text
+}
+
+// The id the index gives `path`, or -1.
+public fn indexFileId(index: String, path: String) -> Int {
+    for line in readLines(index) {
+        if (line.startsWith("{\"k\":\"file\"") == false) { continue }
+        let doc = parseJson(line)
+        if (indexSamePath(indexText(doc, "path"), path)) { return indexInt(doc, "id", 0 - 1) }
+    }
+    return 0 - 1
+}
+
+public fn indexFilePath(files: Vec<IndexFile>, id: Int) -> String {
+    for known in files {
+        if (known.id == id) { return known.path.clone() }
+    }
+    return "".clone()
+}
+
+// The reference whose span holds this position, if any. `col` is a 1-based byte column.
+public fn indexRefAt(index: String, file: Int, line: Int, col: Int) -> IndexRef {
+    let prefix = "{\"k\":\"ref\",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",")
+    for text in readLines(index) {
+        if (text.startsWith(prefix) == false) { continue }
+        let found = indexParseRef(text)
+        if (col >= found.col and col <= found.col + found.len) { return found }
+    }
+    return IndexRef { file: 0 - 1, line: 0, col: 0, len: 0, to: 0 - 2, role: "".clone(), type: "".clone(), builtin: "".clone() }
+}
+
+// The declaration with this id.
+public fn indexDecl(index: String, id: Int) -> IndexDecl {
+    let prefix = "{\"k\":\"decl\",\"id\":".concat(id.toString(), ",")
+    for text in readLines(index) {
+        if (text.startsWith(prefix)) { return indexParseDecl(text) }
+    }
+    return indexNoDecl()
+}
+
+// The declaration whose name holds this position, if any.
+public fn indexDeclAt(index: String, file: Int, line: Int, col: Int) -> IndexDecl {
+    let needle = ",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",")
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"decl\"") == false or text.contains(needle) == false) { continue }
+        let found = indexParseDecl(text)
+        if (found.line == line and found.file == file and col >= found.col and col <= found.col + found.len) { return found }
+    }
+    return indexNoDecl()
+}
+
+// Every declaration of one file, in the order they were written.
+public fn indexDeclsOfFile(index: String, file: Int) -> Vec<IndexDecl> {
+    let mut decls: Vec<IndexDecl> = []
+    let needle = ",\"f\":".concat(file.toString(), ",\"l\":")
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"decl\"") == false or text.contains(needle) == false) { continue }
+        let found = indexParseDecl(text)
+        if (found.file == file) { decls.push(found) }
+    }
+    return decls
+}
+
+// The user's declarations whose name contains `query` (any case), at most `limit`.
+public fn indexSearch(index: String, query: String, limit: Int) -> Vec<IndexDecl> {
+    let mut found: Vec<IndexDecl> = []
+    let wanted = query.toLower()
+    for text in readLines(index) {
+        if (found.length >= limit) { break }
+        if (text.startsWith("{\"k\":\"decl\"") == false or text.contains(",\"user\":true") == false) { continue }
+        let decl = indexParseDecl(text)
+        if (decl.found == false or decl.kind.equals("param") or decl.kind.equals("let") or decl.kind.equals("typeparam")) {
+            continue
+        }
+        if (wanted.equals("") or decl.name.toLower().contains(wanted)) { found.push(decl) }
+    }
+    return found
+}
+
+// Declarations called `name`, of any kind in `kinds` (space separated).
+public fn indexNamed(index: String, name: String, kinds: String) -> Vec<IndexDecl> {
+    let mut found: Vec<IndexDecl> = []
+    let needle = ",\"name\":".concat(jsonQuote(name), ",")
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"decl\"") == false or text.contains(needle) == false) { continue }
+        let decl = indexParseDecl(text)
+        if (decl.found and (" ".concat(kinds, " ")).contains(" ".concat(decl.kind, " "))) { found.push(decl) }
+    }
+    return found
+}
+
+// The parameters of a function, in order (they were declared in order).
+public fn indexParameters(index: String, function: Int) -> Vec<IndexDecl> {
+    let mut found: Vec<IndexDecl> = []
+    let needle = ",\"kind\":\"param\",".concat("")
+    let container = ",\"container\":".concat(function.toString(), ",")
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"decl\"") == false or text.contains(needle) == false or text.contains(container) == false) {
+            continue
+        }
+        found.push(indexParseDecl(text))
+    }
+    return found
+}
+
+// Every reference to declaration `id`, in the order they were written.
+public fn indexRefsTo(index: String, id: Int) -> Vec<IndexRef> {
+    let mut found: Vec<IndexRef> = []
+    let needle = ",\"to\":".concat(id.toString(), ",")
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"ref\"") == false or text.contains(needle) == false) { continue }
+        found.push(indexParseRef(text))
+    }
+    return found
+}
+
+// Every reference in one file.
+public fn indexRefsOfFile(index: String, file: Int) -> Vec<IndexRef> {
+    let mut found: Vec<IndexRef> = []
+    let prefix = "{\"k\":\"ref\",\"f\":".concat(file.toString(), ",")
+    for text in readLines(index) {
+        if (text.startsWith(prefix)) { found.push(indexParseRef(text)) }
+    }
+    return found
+}
+
+public struct IndexArg {
+    public line: Int,
+    public col: Int,
+    public parameter: String,
+    public position: Int
+}
+
+// The argument hints of one file.
+public fn indexArgsOfFile(index: String, file: Int) -> Vec<IndexArg> {
+    let mut found: Vec<IndexArg> = []
+    let prefix = "{\"k\":\"arg\",\"f\":".concat(file.toString(), ",")
+    for text in readLines(index) {
+        if (text.startsWith(prefix) == false) { continue }
+        let doc = parseJson(text)
+        found.push(IndexArg { line: indexInt(doc, "l", 0), col: indexInt(doc, "c", 0), parameter: indexText(doc, "p"),
+                              position: indexInt(doc, "i", 0) })
+    }
+    return found
+}
+
+public struct IndexCompletion {
+    public label: String,
+    public kind: String,
+    public detail: String,
+    public doc: String,
+    public rank: Int
+}
+
+// What the compiler offered at the cursor (`--complete`).
+public fn indexCompletions(index: String) -> Vec<IndexCompletion> {
+    let mut found: Vec<IndexCompletion> = []
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"completion\"") == false) { continue }
+        let doc = parseJson(text)
+        found.push(IndexCompletion { label: indexText(doc, "label"), kind: indexText(doc, "kind"),
+                                     detail: indexText(doc, "detail"), doc: indexText(doc, "doc"),
+                                     rank: indexInt(doc, "rank", 2) })
+    }
+    return found
+}
+
+// The 1-based line after the last `import` of a file, or 1 when it has none: where a new import goes.
+public fn indexImportInsertLine(index: String, file: Int) -> Int {
+    let mut after = 1
+    for decl in indexDeclsOfFile(index, file) {
+        if (decl.kind.equals("import") and decl.line + 1 > after) { after = decl.line + 1 }
+    }
+    return after
+}
+
+// The id at the start of a declaration line, `{"k":"decl","id":12,...`, without parsing the line.
+fn indexLineId(text: String) -> Int {
+    let prefix = 17
+    if (text.length <= prefix) { return 0 - 1 }
+    let mut value = 0
+    let mut i = prefix
+    while (i < text.length) {
+        let b = text.byteAt(i)
+        if (b < 48 or b > 57) { break }
+        value = value * 10 + (b - 48)
+        i = i + 1
+    }
+    if (i == prefix) { return 0 - 1 }
+    return value
+}
+
+fn indexHas(sorted: Vec<Int>, value: Int) -> Bool {
+    let mut low = 0
+    let mut high = sorted.length - 1
+    while (low <= high) {
+        let middle = (low + high) / 2
+        if (sorted[middle] == value) { return true }
+        if (sorted[middle] < value) { low = middle + 1 } else { high = middle - 1 }
+    }
+    return false
+}
+
+// The declarations with these ids (`sorted`, ascending), in index order.
+public fn indexDeclsByIds(index: String, sorted: Vec<Int>) -> Vec<IndexDecl> {
+    let mut found: Vec<IndexDecl> = []
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"decl\",\"id\":") == false) { continue }
+        if (indexHas(sorted, indexLineId(text))) { found.push(indexParseDecl(text)) }
+    }
+    return found
+}

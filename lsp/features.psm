@@ -1,0 +1,528 @@
+// The read-only features: what an editor asks about a place in the source, answered from the index.
+//
+// Every function takes a query (the document, the place, the index file it is asked of) and returns
+// the JSON of the LSP result. None of them holds anything between requests; each reads the index file
+// it is given and builds what it answers with.
+
+import lsp.documents
+import lsp.index
+import lsp.locator
+import lsp.positions
+import std.fs
+import std.json
+import std.option
+import std.string
+import std.vec
+
+public struct FeatureQuery {
+    // The index file of the program the document belongs to.
+    public index: String,
+    // The document's id in that index, or -1 if the program does not contain it.
+    public file: Int,
+    public path: String,
+    public text: String,
+    // The place asked about, as the compiler counts: 1-based line, 1-based byte column.
+    public line: Int,
+    public col: Int,
+    public utf16: Bool
+}
+
+// ---------------------------------------------------------------------------------------------
+// What is at a place
+
+// The declaration a place names or uses: the one a reference points at, else the one declared there.
+public fn featureDeclAt(q: FeatureQuery) -> IndexDecl {
+    let ref = indexRefAt(q.index, q.file, q.line, q.col)
+    if (ref.to >= 0) { return indexDecl(q.index, ref.to) }
+    return indexDeclAt(q.index, q.file, q.line, q.col)
+}
+
+fn featureNoDecl() -> IndexDecl {
+    return indexDecl("", 0 - 1)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hover
+
+fn featureHoverMarkdown(decl: IndexDecl, type: String, builtin: String, role: String) -> String {
+    let mut text = "".clone()
+    if (decl.found) {
+        let mut signature = decl.sig.clone()
+        if (signature.equals("")) { signature = decl.name.clone() }
+        text = "```prismio\n".concat(signature, "\n```")
+        if (type.equals("") == false and decl.kind.equals("fn") == false and decl.kind.equals("method") == false
+                and decl.kind.equals("struct") == false and decl.kind.equals("enum") == false
+                and signature.contains(type) == false) {
+            text = text.concat("\n\n`", type, "`")
+        }
+        if (decl.doc.equals("") == false) { text = text.concat("\n\n", decl.doc) }
+        return text
+    }
+    if (builtin.equals("") == false or role.equals("")) {
+        text = "```prismio\n".concat(type, "\n```")
+        if (builtin.equals("type")) { text = "```prismio\n".concat(type, "\n```\n\nA type the compiler provides.") }
+        if (builtin.equals("member")) { text = "A member the compiler provides." }
+        if (builtin.equals("intrinsic")) { text = "A function the compiler provides." }
+    }
+    return text
+}
+
+public fn featureHover(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
+    let ref = indexRefAt(q.index, q.file, q.line, q.col)
+    let mut decl = featureNoDecl()
+    let mut line = ref.line
+    let mut col = ref.col
+    let mut len = ref.len
+    let mut type = ref.type.clone()
+    if (ref.to >= 0) {
+        decl = indexDecl(q.index, ref.to)
+    } else if (ref.to == 0 - 2) {
+        decl = indexDeclAt(q.index, q.file, q.line, q.col)
+        line = decl.line
+        col = decl.col
+        len = decl.len
+        type = decl.type.clone()
+    }
+    if (decl.found == false and ref.to != 0 - 1) { return "null".clone() }
+    let markdown = featureHoverMarkdown(decl, type, ref.builtin, ref.role)
+    if (markdown.equals("")) { return "null".clone() }
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("contents")
+    out.beginObject()
+    out.key("kind")
+    out.string("markdown")
+    out.key("value")
+    out.string(markdown)
+    out.endObject()
+    out.key("range")
+    out.raw(loc.range(docs, q.file, line, col, line, col + len))
+    out.endObject()
+    return out.finish()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Definition, type definition, references, highlights
+
+fn featureDeclLocation(decl: IndexDecl, docs: Documents, loc: Locator) -> String {
+    return loc.location(docs, decl.file, decl.line, decl.col, decl.line, decl.col + decl.len)
+}
+
+public fn featureDefinition(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
+    let decl = featureDeclAt(q)
+    if (decl.found == false or loc.openable(decl.file) == false) { return "[]".clone() }
+    return "[".concat(featureDeclLocation(decl, docs, loc), "]")
+}
+
+// The first name in a written type that is a type the program declares: `Vec<Point>` is `Point`'s.
+fn featureTypeNames(type: String) -> Vec<String> {
+    let mut names: Vec<String> = []
+    let mut start = 0 - 1
+    let mut i = 0
+    while (i <= type.length) {
+        let mut word = false
+        if (i < type.length) {
+            let b = type.byteAt(i)
+            word = (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or (b >= 48 and b <= 57) or b >= 128
+        }
+        if (word and start < 0) { start = i }
+        if (word == false and start >= 0) {
+            names.push(type.substring(start, i - start).clone())
+            start = 0 - 1
+        }
+        i = i + 1
+    }
+    return names
+}
+
+public fn featureTypeDefinition(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
+    let decl = featureDeclAt(q)
+    if (decl.found == false) { return "[]".clone() }
+    let mut type = decl.type.clone()
+    let ref = indexRefAt(q.index, q.file, q.line, q.col)
+    if (ref.type.equals("") == false) { type = ref.type.clone() }
+    let out = JsonWriter()
+    out.beginArray()
+    for name in featureTypeNames(type) {
+        let found = indexNamed(q.index, name, "struct enum trait codeset typelist")
+        if (found.length == 0) { continue }
+        if (loc.openable(found[0].file)) {
+            out.raw(featureDeclLocation(found[0], docs, loc))
+        }
+        break
+    }
+    out.endArray()
+    return out.finish()
+}
+
+public fn featureReferences(q: FeatureQuery, docs: Documents, loc: Locator, includeDeclaration: Bool) -> String {
+    let decl = featureDeclAt(q)
+    let out = JsonWriter()
+    out.beginArray()
+    if (decl.found) {
+        if (includeDeclaration and loc.openable(decl.file)) { out.raw(featureDeclLocation(decl, docs, loc)) }
+        for ref in indexRefsTo(q.index, decl.id) {
+            if (loc.openable(ref.file)) {
+                out.raw(loc.location(docs, ref.file, ref.line, ref.col, ref.line, ref.col + ref.len))
+            }
+        }
+    }
+    out.endArray()
+    return out.finish()
+}
+
+public fn featureDocumentHighlight(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
+    let decl = featureDeclAt(q)
+    let out = JsonWriter()
+    out.beginArray()
+    if (decl.found and decl.file == q.file) {
+        out.beginObject()
+        out.key("range")
+        out.raw(loc.range(docs, q.file, decl.line, decl.col, decl.line, decl.col + decl.len))
+        out.key("kind")
+        out.int(3)
+        out.endObject()
+    }
+    if (decl.found) {
+        for ref in indexRefsTo(q.index, decl.id) {
+            if (ref.file != q.file) { continue }
+            out.beginObject()
+            out.key("range")
+            out.raw(loc.range(docs, q.file, ref.line, ref.col, ref.line, ref.col + ref.len))
+            out.key("kind")
+            if (ref.role.equals("write") or ref.role.equals("fieldwrite")) { out.int(3) } else { out.int(2) }
+            out.endObject()
+        }
+    }
+    out.endArray()
+    return out.finish()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Symbols
+
+// LSP `SymbolKind` of a declaration kind.
+public fn featureSymbolKind(kind: String) -> Int {
+    if (kind.equals("fn") or kind.equals("extern")) { return 12 }
+    if (kind.equals("method")) { return 6 }
+    if (kind.equals("prop")) { return 7 }
+    if (kind.equals("struct") or kind.equals("typelist")) { return 23 }
+    if (kind.equals("enum") or kind.equals("codeset")) { return 10 }
+    if (kind.equals("variant") or kind.equals("code")) { return 22 }
+    if (kind.equals("trait")) { return 11 }
+    if (kind.equals("impl")) { return 3 }
+    if (kind.equals("field")) { return 8 }
+    if (kind.equals("const")) { return 14 }
+    if (kind.equals("global") or kind.equals("externvar") or kind.equals("let") or kind.equals("param")) { return 13 }
+    if (kind.equals("typeparam")) { return 26 }
+    if (kind.equals("import")) { return 2 }
+    return 13
+}
+
+fn featureInOutline(kind: String) -> Bool {
+    return kind.equals("let") == false and kind.equals("param") == false and kind.equals("typeparam") == false
+        and kind.equals("import") == false
+}
+
+fn featureOutlineNode(decls: Vec<IndexDecl>, at: Int, docs: Documents, loc: Locator, out: JsonWriter, included: Vec<Bool>) {
+    let decl = decls[at]
+    out.beginObject()
+    out.key("name")
+    out.string(decl.name)
+    out.key("detail")
+    if (decl.sig.equals("")) { out.string(decl.type) } else { out.string(decl.sig) }
+    out.key("kind")
+    out.int(featureSymbolKind(decl.kind))
+    out.key("range")
+    out.raw(loc.range(docs, decl.file, decl.startLine, decl.startCol, decl.endLine, decl.endCol))
+    out.key("selectionRange")
+    out.raw(loc.range(docs, decl.file, decl.line, decl.col, decl.line, decl.col + decl.len))
+    out.key("children")
+    out.beginArray()
+    let mut i = 0
+    while (i < decls.length) {
+        if (included[i] and decls[i].container == decl.id and i != at) {
+            featureOutlineNode(decls, i, docs, loc, out, included)
+        }
+        i = i + 1
+    }
+    out.endArray()
+    out.endObject()
+}
+
+public fn featureDocumentSymbols(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
+    let decls = indexDeclsOfFile(q.index, q.file)
+    let mut included: Vec<Bool> = []
+    let mut ids: Vec<Int> = []
+    for decl in decls {
+        included.push(featureInOutline(decl.kind))
+        ids.push(decl.id)
+    }
+    let out = JsonWriter()
+    out.beginArray()
+    let mut i = 0
+    while (i < decls.length) {
+        if (included[i]) {
+            // A root is a declaration whose container is not in this outline.
+            let mut hasParent = false
+            let mut j = 0
+            while (j < decls.length) {
+                if (included[j] and decls[j].id == decls[i].container) { hasParent = true }
+                j = j + 1
+            }
+            if (hasParent == false) { featureOutlineNode(decls, i, docs, loc, out, included) }
+        }
+        i = i + 1
+    }
+    out.endArray()
+    return out.finish()
+}
+
+public fn featureWorkspaceSymbols(indexes: Vec<String>, query: String, docs: Documents, utf16: Bool) -> String {
+    let out = JsonWriter()
+    out.beginArray()
+    let mut shown = 0
+    for index in indexes {
+        let files = indexFiles(index)
+        let loc = locator(files, utf16)
+        for decl in indexSearch(index, query, 100) {
+            if (shown >= 200 or decl.kind.equals("impl") or loc.openable(decl.file) == false) { continue }
+            out.beginObject()
+            out.key("name")
+            out.string(decl.name)
+            out.key("kind")
+            out.int(featureSymbolKind(decl.kind))
+            out.key("location")
+            out.raw(loc.location(docs, decl.file, decl.line, decl.col, decl.line, decl.col + decl.len))
+            if (decl.owner.equals("") == false) {
+                out.key("containerName")
+                out.string(decl.owner)
+            }
+            out.endObject()
+            shown = shown + 1
+        }
+    }
+    out.endArray()
+    return out.finish()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Signature help
+
+// The offset of the `(` that is open at `offset`, scanning back over balanced brackets, or -1.
+fn featureOpenParen(text: String, offset: Int) -> Int {
+    let mut depth = 0
+    let mut i = offset - 1
+    let floor = offset - 4000
+    while (i >= 0 and i >= floor) {
+        let b = text.byteAt(i)
+        if (b == 41 or b == 93 or b == 125) { depth = depth + 1 }
+        if (b == 40 or b == 91 or b == 123) {
+            if (depth == 0) {
+                if (b == 40) { return i }
+                return 0 - 1
+            }
+            depth = depth - 1
+        }
+        i = i - 1
+    }
+    return 0 - 1
+}
+
+// How many commas stand between `open` and `offset` at the top level of that call.
+fn featureCommasBetween(text: String, open: Int, offset: Int) -> Int {
+    let mut depth = 0
+    let mut commas = 0
+    let mut inString = false
+    let mut i = open + 1
+    while (i < offset) {
+        let b = text.byteAt(i)
+        if (b == 92 and inString) {
+            i = i + 2
+            continue
+        }
+        if (b == 34) { inString = inString == false }
+        if (inString == false) {
+            if (b == 40 or b == 91 or b == 123) { depth = depth + 1 }
+            if (b == 41 or b == 93 or b == 125) { depth = depth - 1 }
+            if (b == 44 and depth == 0) { commas = commas + 1 }
+        }
+        i = i + 1
+    }
+    return commas
+}
+
+fn featureIsWordByte(b: Int) -> Bool {
+    return (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or (b >= 48 and b <= 57) or b >= 128
+}
+
+public fn featureSignatureHelp(q: FeatureQuery, docs: Documents, loc: Locator, offset: Int) -> String {
+    let open = featureOpenParen(q.text, offset)
+    if (open < 0) { return "null".clone() }
+    // The word before the parenthesis.
+    let mut end = open
+    while (end > 0 and (q.text.byteAt(end - 1) == 32 or q.text.byteAt(end - 1) == 9)) { end = end - 1 }
+    let mut start = end
+    while (start > 0 and featureIsWordByte(q.text.byteAt(start - 1))) { start = start - 1 }
+    if (start == end) { return "null".clone() }
+    let calledAfterDot = start > 0 and q.text.byteAt(start - 1) == 46
+    // Its place, as the compiler counts.
+    let index = lineIndex(q.text)
+    let mut line0 = 0
+    while (line0 + 1 < index.lineCount() and index.lineStart(line0 + 1) <= start) { line0 = line0 + 1 }
+    let col1 = start - index.lineStart(line0) + 1
+    let ref = indexRefAt(q.index, q.file, line0 + 1, col1)
+    if (ref.to < 0) { return "null".clone() }
+    let decl = indexDecl(q.index, ref.to)
+    if (decl.found == false or decl.sig.equals("") or (decl.kind.equals("fn") == false and decl.kind.equals("method") == false
+            and decl.kind.equals("extern") == false)) {
+        return "null".clone()
+    }
+    let parameters = indexParameters(q.index, decl.id)
+    let mut active = featureCommasBetween(q.text, open, offset)
+    if (calledAfterDot and parameters.length > 0) { active = active + 1 }
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("signatures")
+    out.beginArray()
+    out.beginObject()
+    out.key("label")
+    out.string(decl.sig)
+    if (decl.doc.equals("") == false) {
+        out.key("documentation")
+        out.beginObject()
+        out.key("kind")
+        out.string("markdown")
+        out.key("value")
+        out.string(decl.doc)
+        out.endObject()
+    }
+    out.key("parameters")
+    out.beginArray()
+    let mut searchFrom = decl.sig.indexOf("(")
+    for parameter in parameters {
+        let found = decl.sig.indexOf(parameter.name, searchFrom)
+        out.beginObject()
+        out.key("label")
+        if (found >= 0) {
+            // Through the type, up to the next top-level comma or the closing parenthesis.
+            let mut stop = found + parameter.name.length
+            let mut depth = 0
+            while (stop < decl.sig.length) {
+                let b = decl.sig.byteAt(stop)
+                if (b == 40 or b == 91 or b == 60) { depth = depth + 1 }
+                if (b == 93 or b == 62) { depth = depth - 1 }
+                if (b == 41 and depth == 0) { break }
+                if (b == 41) { depth = depth - 1 }
+                if (b == 44 and depth == 0) { break }
+                stop = stop + 1
+            }
+            out.beginArray()
+            out.int(found)
+            out.int(stop)
+            out.endArray()
+            searchFrom = stop
+        } else {
+            out.string(parameter.name)
+        }
+        out.endObject()
+    }
+    out.endArray()
+    out.endObject()
+    out.endArray()
+    out.key("activeSignature")
+    out.int(0)
+    out.key("activeParameter")
+    out.int(active)
+    out.endObject()
+    return out.finish()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Inlay hints
+
+fn featureInRange(line: Int, from: Int, to: Int) -> Bool {
+    return line >= from and line <= to
+}
+
+// Types after bindings that did not write one, and the parameter each argument fills. `fromLine` and
+// `toLine` are 1-based and inclusive.
+public fn featureInlayHints(q: FeatureQuery, docs: Documents, loc: Locator, fromLine: Int, toLine: Int) -> String {
+    let out = JsonWriter()
+    out.beginArray()
+    for decl in indexDeclsOfFile(q.index, q.file) {
+        if (decl.inferred == false or decl.type.equals("") or featureInRange(decl.line, fromLine, toLine) == false) { continue }
+        if (decl.name.equals("self") or decl.name.startsWith("$")) { continue }
+        let at = loc.position(docs, q.file, decl.line, decl.col + decl.len)
+        out.beginObject()
+        out.key("position")
+        out.beginObject()
+        out.key("line")
+        out.int(at.line)
+        out.key("character")
+        out.int(at.character)
+        out.endObject()
+        out.key("label")
+        out.string(": ".concat(decl.type))
+        out.key("kind")
+        out.int(1)
+        out.endObject()
+    }
+    for arg in indexArgsOfFile(q.index, q.file) {
+        if (featureInRange(arg.line, fromLine, toLine) == false) { continue }
+        let at = loc.position(docs, q.file, arg.line, arg.col)
+        out.beginObject()
+        out.key("position")
+        out.beginObject()
+        out.key("line")
+        out.int(at.line)
+        out.key("character")
+        out.int(at.character)
+        out.endObject()
+        out.key("label")
+        out.string(arg.parameter.concat(":"))
+        out.key("kind")
+        out.int(2)
+        out.key("paddingRight")
+        out.bool(true)
+        out.endObject()
+    }
+    out.endArray()
+    return out.finish()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Folding
+
+public fn featureFoldingRanges(q: FeatureQuery) -> String {
+    let out = JsonWriter()
+    out.beginArray()
+    let mut firstImport = 0
+    let mut lastImport = 0
+    for decl in indexDeclsOfFile(q.index, q.file) {
+        if (decl.kind.equals("import")) {
+            if (firstImport == 0) { firstImport = decl.line }
+            lastImport = decl.line
+            continue
+        }
+        if (featureInOutline(decl.kind) == false or decl.endLine <= decl.startLine) { continue }
+        out.beginObject()
+        out.key("startLine")
+        out.int(decl.startLine - 1)
+        out.key("endLine")
+        out.int(decl.endLine - 2)
+        out.endObject()
+    }
+    if (lastImport > firstImport) {
+        out.beginObject()
+        out.key("startLine")
+        out.int(firstImport - 1)
+        out.key("endLine")
+        out.int(lastImport - 1)
+        out.key("kind")
+        out.string("imports")
+        out.endObject()
+    }
+    out.endArray()
+    return out.finish()
+}

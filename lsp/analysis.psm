@@ -57,12 +57,16 @@ impl Analysis {
     // Starts `compiler check` over `program` with every open document's text overlaid: the file
     // each document keeps its text in is handed over as it is. False if the process could not be
     // started.
-    public fn start(self, compiler: String, program: Program, docs: Documents) -> Bool {
+    public fn start(self, compiler: String, program: Program, docs: Documents, indexOut: String) -> Bool {
         let mut arguments: Vec<String> = []
         arguments.push("check")
         arguments.push(program.entry.clone())
         arguments.push("--diagnostic-format=json")
         arguments.push("--partial")
+        // The index of the program, for the features that read it. A run that is killed leaves a file
+        // nobody takes; one that finishes is moved to where the server looks.
+        arguments.push("--emit-index")
+        arguments.push(indexOut.clone())
         if (program.module.equals("") == false) {
             arguments.push("--module")
             arguments.push(program.module.clone())

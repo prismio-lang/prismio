@@ -1,0 +1,83 @@
+// Where things the index names are, in the terms a client counts.
+//
+// The index speaks in files, 1-based lines and byte columns. A client wants a URI and a 0-based line
+// and a column in the encoding it negotiated. Both ends of that are in files the server may not have
+// open, so a location in another file is turned into client terms from that file's text, read from
+// the open document if there is one and from disk if not. One locator lives for one request and
+// reads each file once.
+
+import lsp.documents
+import lsp.index
+import lsp.positions
+import lsp.uri
+import std.fs
+import std.json
+import std.option
+import std.string
+import std.vec
+
+public struct Locator {
+    public utf16: Bool,
+    files: Vec<IndexFile>,
+    // The files looked at so far, and what each looks like.
+    paths: Vec<String>,
+    lines: Vec<LineIndex>
+}
+
+public fn locator(files: Vec<IndexFile>, utf16: Bool) -> Locator {
+    return Locator { utf16: utf16, files: files, paths: [], lines: [] }
+}
+
+impl Locator {
+    public fn pathOf(self, file: Int) -> String {
+        return indexFilePath(self.files, file)
+    }
+
+    public fn uriOf(self, file: Int) -> String {
+        return pathToUri(self.pathOf(file))
+    }
+
+    // Whether the file can be shown to the user: a source file that exists. The standard library of an
+    // installed toolchain is a compiled module with its source inside, which no editor can open.
+    public fn openable(self, file: Int) -> Bool {
+        let path = self.pathOf(file)
+        return path.endsWith(".psm") and fileExists(path)
+    }
+
+    // The slot of the file's line index, loading it from `docs` or from disk the first time.
+    fn slot(self, docs: Documents, file: Int) -> Int {
+        let path = self.pathOf(file)
+        let mut i = 0
+        while (i < self.paths.length) {
+            if (self.paths[i].equals(path)) { return i }
+            i = i + 1
+        }
+        let at = docs.indexOfPath(path)
+        let mut text = "".clone()
+        if (at != none) { text = docs.text(expect(at)) } else { text = readFile(path) }
+        self.paths.push(path.clone())
+        self.lines.push(lineIndex(text))
+        return self.paths.length - 1
+    }
+
+    // The client's position for a 1-based line and byte column of `file`.
+    public fn position(self, docs: Documents, file: Int, line: Int, col: Int) -> Position {
+        let at = self.slot(docs, file)
+        return self.lines[at].position(line, col, self.utf16)
+    }
+
+    // The JSON range between two compiler positions of one file.
+    public fn range(self, docs: Documents, file: Int, line1: Int, col1: Int, line2: Int, col2: Int) -> String {
+        let start = self.position(docs, file, line1, col1)
+        let end = self.position(docs, file, line2, col2)
+        return "{\"start\":{\"line\":".concat(start.line.toString(), ",\"character\":", start.character.toString(),
+                                              "},\"end\":{\"line\":", end.line.toString(), ",\"character\":",
+                                              end.character.toString(), "}}")
+    }
+
+    // A `Location` JSON object.
+    public fn location(self, docs: Documents, file: Int, line1: Int, col1: Int, line2: Int, col2: Int) -> String {
+        return "{\"uri\":".concat(jsonQuote(self.uriOf(file)), ",\"range\":",
+                                  self.range(docs, file, line1, col1, line2, col2), "}")
+    }
+}

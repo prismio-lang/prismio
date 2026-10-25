@@ -1,0 +1,99 @@
+// Formatting: `prismio fmt` run over the document, and the difference as edits.
+//
+// The formatter is the compiler's (`src/fmt/`), so the server holds no formatting rule. It hands the
+// document's scratch file to `fmt` (with `--range` for a selection) and turns the answer into the one
+// edit that replaces what changed: the text between the common head and the common tail, widened to
+// whole lines.
+
+import lsp.documents
+import lsp.positions
+import lsp.runner
+import std.json
+import std.string
+import std.vec
+
+// How many bytes the two texts share at their start.
+fn formatCommonHead(a: String, b: String) -> Int {
+    let limit = a.length
+    let mut i = 0
+    let shorter = b.length
+    while (i < limit and i < shorter and a.byteAt(i) == b.byteAt(i)) { i = i + 1 }
+    return i
+}
+
+fn formatCommonTail(a: String, b: String, head: Int) -> Int {
+    let mut n = 0
+    while (n < a.length - head and n < b.length - head and a.byteAt(a.length - 1 - n) == b.byteAt(b.length - 1 - n)) {
+        n = n + 1
+    }
+    return n
+}
+
+// The 0-based line holding `offset`, and where it starts.
+fn formatLineOf(index: LineIndex, offset: Int) -> Int {
+    let mut line = 0
+    while (line + 1 < index.lineCount() and index.lineStart(line + 1) <= offset) { line = line + 1 }
+    return line
+}
+
+fn formatPosition(index: LineIndex, offset: Int, utf16: Bool) -> Position {
+    let line = formatLineOf(index, offset)
+    return index.position(line + 1, offset - index.lineStart(line) + 1, utf16)
+}
+
+// The JSON array of edits that turn `text` into what the formatter made of it: none if it is already
+// formatted.
+public fn formattingEdits(compiler: String, docFile: String, text: String, utf16: Bool, fromLine: Int,
+                          toLine: Int) -> String {
+    let mut arguments: Vec<String> = []
+    arguments.push("fmt")
+    arguments.push(docFile.clone())
+    if (fromLine > 0) {
+        arguments.push("--range")
+        arguments.push(fromLine.toString().concat(":", toLine.toString()))
+    }
+    let result = runCaptured(compiler, arguments, 10000)
+    if (result.ok == false or result.output.equals(text)) { return "[]".clone() }
+    let formatted = result.output
+    let index = lineIndex(text)
+    let mut head = formatCommonHead(text, formatted)
+    // Widen to whole lines: back to where the line containing the first difference starts.
+    let headLine = formatLineOf(index, head)
+    head = index.lineStart(headLine)
+    let tail = formatCommonTail(text, formatted, head)
+    let mut oldEnd = text.length - tail
+    let mut newEnd = formatted.length - tail
+    // ... and forward to the end of the line the last difference is on; the tail is the same bytes in
+    // both texts, so the two ends move together.
+    while (oldEnd < text.length and text.byteAt(oldEnd) != 10) {
+        oldEnd = oldEnd + 1
+        newEnd = newEnd + 1
+    }
+    let start = formatPosition(index, head, utf16)
+    let end = formatPosition(index, oldEnd, utf16)
+    let out = JsonWriter()
+    out.beginArray()
+    out.beginObject()
+    out.key("range")
+    out.beginObject()
+    out.key("start")
+    out.beginObject()
+    out.key("line")
+    out.int(start.line)
+    out.key("character")
+    out.int(start.character)
+    out.endObject()
+    out.key("end")
+    out.beginObject()
+    out.key("line")
+    out.int(end.line)
+    out.key("character")
+    out.int(end.character)
+    out.endObject()
+    out.endObject()
+    out.key("newText")
+    out.string(formatted.substring(head, newEnd - head))
+    out.endObject()
+    out.endArray()
+    return out.finish()
+}

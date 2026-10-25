@@ -2554,6 +2554,534 @@ def run_fmt_test():
     return True
 
 
+def run_index_test():
+    """`check --emit-index`: the semantic index an editor answers hover, definition and completion from.
+
+    Three layers. The corpus (tools/check_index.py) indexes every compilable program, every standard
+    library module and the compiler itself, and holds the index to the text: no dangling reference, the
+    name under every span is the name it points at, nothing unresolved in a program that compiles, and
+    something was indexed at all. Then a small program is indexed and asked about by name, so a wrong
+    answer is a specific one: what a call points at, the signature as written, the comment above, a
+    generic nothing instantiates, a variant with no payload, a closure's capture. Then completion: members
+    after a dot, names in scope, a module's contents, a Vec's builtins. Last, the structured fix a missing
+    import carries.
+    """
+    print(f"\n{BLUE}--- Running index ---{RESET}")
+    problems = []
+
+    result = run_command([sys.executable, str(PROJECT_ROOT / "tools" / "check_index.py"), "--compiler", str(PRISMIO_EXE)])
+    if result.returncode != 0:
+        problems.append("tools/check_index.py failed:\n" + "\n".join(
+            line for line in result.stdout.splitlines() if line.startswith("FAIL") or "programs," in line)[:3000])
+
+    source = (
+        "import std.io\n"                                         # 1
+        "\n"
+        "// A point in the plane.\n"                              # 3
+        "struct Point { x: Int, y: Int }\n"                      # 4
+        "\n"
+        "enum Shape {\n"                                          # 6
+        "    Empty,\n"
+        "    Circle(Int)\n"
+        "}\n"
+        "\n"
+        "impl Point {\n"                                          # 11
+        "    // The sum of both coordinates.\n"
+        "    fn sum(self) -> Int { return self.x + self.y }\n"   # 13
+        "}\n"
+        "\n"
+        "fn first<T>(a: T, b: T) -> T { return a }\n"            # 16
+        "\n"
+        "fn unused<U>(u: U) -> U { return u }\n"                 # 18
+        "\n"
+        "fn main() -> Int {\n"                                    # 20
+        "    let p = Point { x: 1, y: 2 }\n"
+        "    let mut total = 0\n"
+        "    let f = |v: Int| v + total\n"                       # 23
+        "    total = first(p.sum(), 3)\n"                        # 24
+        "    match (Shape.Circle(2)) {\n"
+        "        Shape.Empty => { total = 0 }\n"                 # 26
+        "        Shape.Circle(r) => { total = r }\n"
+        "    }\n"
+        "    println(f(total))\n"                                # 29
+        "    return 0\n"
+        "}\n")
+    with tempfile.TemporaryDirectory(prefix="prismio-index-") as tmp:
+        root = Path(tmp).resolve()
+        program = root / "p.psm"
+        program.write_text(source)
+        env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
+
+        def indexed(*extra, target=program, buffer=None):
+            out = root / "out.idx"
+            if out.exists():
+                out.unlink()
+            args = [str(PRISMIO_EXE), "check", str(target), "--partial", "--emit-index", str(out), *extra]
+            if buffer is not None:
+                args += ["--overlay", str(target), str(buffer)]
+            done = subprocess.run(args, capture_output=True, text=True, env=env)
+            records = [json.loads(line) for line in out.read_text().splitlines()] if out.exists() else []
+            return done, records
+
+        done, records = indexed()
+        if done.returncode != 0:
+            problems.append(f"the sample program should check clean: {done.stderr[:300]}")
+        decls = {(d["name"], d["kind"]): d for d in records if d["k"] == "decl" and d["user"]}
+        refs = [r for r in records if r["k"] == "ref"]
+        by_id = {d["id"]: d for d in records if d["k"] == "decl"}
+
+        def named(name, kind):
+            found = decls.get((name, kind))
+            if found is None:
+                problems.append(f"no {kind} `{name}` in the index")
+            return found
+
+        def points_at(line, col, name, kind):
+            hit = [r for r in refs if r["l"] == line and r["c"] == col and r["to"] >= 0]
+            if not hit:
+                problems.append(f"no reference at {line}:{col}")
+                return
+            target = by_id.get(hit[0]["to"])
+            if target is None or target["name"] != name or target["kind"] != kind:
+                problems.append(f"{line}:{col} points at {target and (target['name'], target['kind'])}, not {(name, kind)}")
+
+        sum_decl = named("sum", "method")
+        if sum_decl:
+            if sum_decl["sig"] != "fn sum(self) -> Int":
+                problems.append(f"the signature of `sum` reads {sum_decl['sig']!r}")
+            if sum_decl.get("doc") != "The sum of both coordinates.":
+                problems.append(f"the doc of `sum` reads {sum_decl.get('doc')!r}")
+            if sum_decl.get("owner") != "Point" or (sum_decl["sl"], sum_decl["el"]) != (13, 13):
+                problems.append(f"`sum` owner/extent wrong: {sum_decl.get('owner')} {sum_decl['sl']}-{sum_decl['el']}")
+        point = named("Point", "struct")
+        if point and point.get("doc") != "A point in the plane.":
+            problems.append(f"the doc of `Point` reads {point.get('doc')!r}")
+        shape = named("Shape", "enum")
+        if shape and (shape["sl"], shape["el"]) != (6, 9):
+            problems.append(f"`Shape` extent {shape['sl']}-{shape['el']}, want 6-9")
+        for variant in ("Empty", "Circle"):
+            v = named(variant, "variant")
+            if v and shape and v["container"] != shape["id"]:
+                problems.append(f"variant `{variant}` is not inside `Shape`")
+        if named("first", "fn") is None or named("unused", "fn") is None:
+            problems.append("a generic, instantiated or not, is a declaration")
+        generic = named("T", "typeparam")
+        if generic and generic["container"] != (decls.get(("first", "fn")) or {}).get("id"):
+            problems.append("`T` is not the parameter of `first`")
+        named("total", "let")
+        named("f", "let")
+        named("v", "param")
+        named("r", "let")
+        named("std.io", "import")
+
+        points_at(24, 21, "sum", "method")            # p.sum()
+        points_at(24, 13, "first", "fn")              # first(...)
+        points_at(24, 5, "total", "let")              # total = ...
+        points_at(21, 13, "Point", "struct")          # Point { ... }
+        points_at(23, source.split("\n")[22].index("total") + 1, "total", "let")   # the closure's use of total
+        points_at(26, 15, "Empty", "variant")         # a variant with no payload
+        points_at(27, 15, "Circle", "variant")
+        points_at(27, source.split("\n")[26].rindex("r") + 1, "r", "let")
+        points_at(29, source.split("\n")[28].index("total") + 1, "total", "let")
+        hints = [r for r in records if r["k"] == "arg" and r["l"] == 24]
+        if sorted((h["p"], h["i"]) for h in hints) != [("a", 0), ("b", 1)]:
+            problems.append(f"argument hints on line 24: {hints}")
+        stats = [r for r in records if r["k"] == "stats"]
+        if not stats or stats[0]["unresolved"] != 0:
+            problems.append(f"stats: {stats}")
+
+        # A name that is nothing is unresolved, with its place.
+        broken = root / "broken.psm"
+        broken.write_text("fn main() -> Int {\n    return nothing(1)\n}\n")
+        done, records = indexed(target=broken)
+        unresolved = [r for r in records if r["k"] == "unresolved"]
+        if not unresolved or unresolved[0]["name"] != "nothing" or (unresolved[0]["l"], unresolved[0]["c"]) != (2, 12):
+            problems.append(f"an unknown function should be unresolved at 2:12: {unresolved}")
+
+        # Completion: the placeholder is where the word being typed starts.
+        def complete(replacement, line, col):
+            buffer = root / "buffer.psm"
+            lines = source.split("\n")
+            lines[line - 1] = replacement
+            buffer.write_text("\n".join(lines))
+            done, records = indexed("--complete", str(program), str(line), str(col), buffer=buffer)
+            return [(r["label"], r["kind"]) for r in records if r["k"] == "completion"]
+
+        members = complete("    total = p.ixcursor__", 24, 15)
+        if ("x", "field") not in members or ("y", "field") not in members or ("sum", "method") not in members:
+            problems.append(f"members of a Point: {members}")
+        if any(label in ("total", "first") for label, _ in members):
+            problems.append(f"locals and functions are not members of a Point: {members}")
+        scope = complete("    total = ixcursor__", 24, 13)
+        for want in (("p", "let"), ("total", "let"), ("f", "let"), ("first", "fn"), ("Point", "struct"), ("main", "fn")):
+            if want not in scope:
+                problems.append(f"{want} is in scope at 24:13: {scope[:12]}")
+        if any(label.startswith("prismioStd") for label, _ in scope):
+            problems.append("a private function of another file is not in scope")
+        if scope.count(("first", "fn")) != 1:
+            problems.append("a function is offered once")
+        module = complete("    total = io.ixcursor__", 24, 16)
+        if ("println", "fn") not in module or any(label == "total" for label, _ in module):
+            problems.append(f"members of a module: {module[:8]}")
+        variants = complete("    total = Shape.ixcursor__", 24, 19)
+        if ("Empty", "variant") not in variants or ("Circle", "variant") not in variants:
+            problems.append(f"members of an enum: {variants}")
+        vec = root / "vec.psm"
+        vec.write_text("fn main() -> Int {\n    let v: Vec<Int> = []\n    v.ixcursor__\n    return 0\n}\n")
+        done, records = indexed("--complete", str(vec), "3", "7", target=vec)
+        builtin = sorted(r["label"] for r in records if r["k"] == "completion")
+        # The compiler's own table of what it lowers is the reference.
+        vec_source = (PROJECT_ROOT / "src" / "sema" / "vec.psm").read_text()
+        table = vec_source[vec_source.index("fn semaVecArity"):]
+        table = table[:table.index("\n}\n")]
+        lowered = sorted(set(re.findall(r'name\.equals\("(\w+)"\)', table)))
+        if builtin != lowered:
+            problems.append(f"a Vec's members {builtin} differ from what sema lowers {lowered}")
+
+        # A missing import is a diagnostic with a fix an editor can apply: `joinPath` is in a module the
+        # program has (a helper imports it) and this file does not.
+        (root / "helper.psm").write_text("import std.fs\n\npublic fn size(s: String) -> Int {\n    return joinPath(s, s).length\n}\n")
+        fixme = root / "fixme.psm"
+        fixme.write_text("import helper\nimport std.io\n\nfn main() -> Int {\n    let s = joinPath(\"a\", \"b\")\n    return size(s)\n}\n")
+        done = subprocess.run([str(PRISMIO_EXE), "check", str(fixme), "--diagnostic-format=json"], capture_output=True,
+                              text=True, env=env)
+        fixes = [json.loads(line).get("fix") for line in done.stderr.splitlines() if line.startswith("{")]
+        fixes = [f for f in fixes if f]
+        if fixes != [{"addImport": "std.fs"}]:
+            problems.append(f"the missing import should carry a fix, got {fixes} from {done.stderr[:300]}")
+
+    if problems:
+        print(f"{RED}[FAIL] index{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] the index is true to the text, answers by name, completes, and carries the import fix{RESET}")
+    return True
+
+
+def run_lsp_features_test():
+    """`prismio lsp`, past diagnostics: the features that read the semantic index.
+
+    A two-file program is opened in a client, and every feature is asked about a place whose answer is
+    known from the text: hover (signature, doc and type, across files), definition, type definition,
+    references, highlights, the outline, workspace symbols, signature help with the active parameter,
+    inlay hints, semantic tokens, folding, the import quick fix, rename (with its refusals), completion
+    (members, scope, keywords) and formatting. Then the timing: a request made while a check is pending
+    waits for it and sees the edit, and a waiting request can be cancelled.
+    """
+    print(f"\n{BLUE}--- Running lsp_features ---{RESET}")
+    sys.path.insert(0, str(TEST_DIR))
+    from lsp_client import LspClient
+
+    problems = []
+
+    def note(condition, message):
+        if not condition:
+            problems.append(message)
+        return condition
+
+    main_text = (
+        "import std.io\n"                                         # 1
+        "import shapes\n"                                         # 2
+        "\n"
+        "// Add two numbers.\n"                                   # 4
+        "fn add(a: Int, b: Int) -> Int {\n"                       # 5
+        "    let total = a + b\n"                                 # 6
+        "    return total\n"                                      # 7
+        "}\n"                                                     # 8
+        "\n"
+        "fn main() -> Int {\n"                                    # 10
+        "    let p = Point { x: 1, y: 2 }\n"                      # 11
+        "    let n = add(p.x, p.sum())\n"                         # 12
+        "    println(n)\n"                                        # 13
+        "    return 0\n"                                          # 14
+        "}\n")
+    shapes_text = (
+        "public struct Point { public x: Int, public y: Int }\n"   # 1
+        "\n"
+        "impl Point {\n"                                          # 3
+        "    // The sum of both coordinates.\n"
+        "    public fn sum(self) -> Int { return self.x + self.y }\n"   # 5
+        "}\n")
+
+    def where(text, needle, occurrence=0, within=None):
+        """(line, character) of an occurrence of `needle`, 0-based; `within` narrows to a line's text."""
+        lines = text.split("\n")
+        seen = 0
+        for number, line in enumerate(lines):
+            if within is not None and within not in line:
+                continue
+            start = 0
+            while True:
+                at = line.find(needle, start)
+                if at < 0:
+                    break
+                if seen == occurrence:
+                    return {"line": number, "character": at}
+                seen += 1
+                start = at + 1
+        raise AssertionError(f"{needle!r} not found")
+
+    with tempfile.TemporaryDirectory(prefix="prismio-lspf-") as tmp:
+        root = Path(tmp).resolve()
+        main_path = root / "main.psm"
+        shapes_path = root / "shapes.psm"
+        main_path.write_text(main_text)
+        shapes_path.write_text(shapes_text)
+        # A manifest says which program the modules belong to; without one each file would be its own.
+        (root / "build.ums").write_text(
+            'project {\n    name = "demo"\n    version = "0.1.0"\n    prismio = "0.1.0"\n}\n\n'
+            'targets {\n    executable("demo") {\n        entry = "main.psm"\n    }\n}\n')
+        main_uri = main_path.as_uri()
+        shapes_uri = shapes_path.as_uri()
+
+        client = LspClient([str(PRISMIO_EXE), "lsp"], env={"PRISMIO_INTERNAL_HOSTED": "1"})
+        try:
+            init = client.initialize(root.as_uri(), {"general": {"positionEncodings": ["utf-16"]}})
+            caps = init["result"]["capabilities"]
+            for name in ("hoverProvider", "definitionProvider", "referencesProvider", "documentSymbolProvider",
+                         "renameProvider", "completionProvider", "semanticTokensProvider", "inlayHintProvider",
+                         "signatureHelpProvider", "foldingRangeProvider", "codeActionProvider",
+                         "documentFormattingProvider", "workspaceSymbolProvider", "typeDefinitionProvider",
+                         "documentHighlightProvider"):
+                note(name in caps, f"the server should advertise {name}")
+            for uri, text in ((main_uri, main_text), (shapes_uri, shapes_text)):
+                client.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": "prismio",
+                                                                         "version": 1, "text": text}})
+            first = client.diagnostics_for(main_uri)
+            note(first["diagnostics"] == [], f"the sample program should be clean: {first['diagnostics']}")
+
+            def ask(method, uri=main_uri, **extra):
+                reply = client.request(method, {"textDocument": {"uri": uri}, **extra})
+                note("error" not in reply, f"{method} failed: {reply.get('error')}")
+                return reply.get("result")
+
+            # --- hover ---
+            hover = ask("textDocument/hover", position=where(main_text, "add", 0, "add(p.x"))
+            value = (hover or {}).get("contents", {}).get("value", "")
+            note("fn add(a: Int, b: Int) -> Int" in value and "Add two numbers." in value,
+                 f"hover on a call shows the signature and the comment: {value!r}")
+            hover = ask("textDocument/hover", position=where(main_text, "sum", 0, "p.sum"))
+            value = (hover or {}).get("contents", {}).get("value", "")
+            note("fn sum(self) -> Int" in value and "The sum of both coordinates." in value,
+                 f"hover on a method of another file: {value!r}")
+            hover = ask("textDocument/hover", position=where(main_text, "n", 0, "let n"))
+            note("let n: Int" in ((hover or {}).get("contents", {}).get("value", "")), f"hover on a binding: {hover}")
+            note(ask("textDocument/hover", position={"line": 3, "character": 3}) is None, "hover on a comment says nothing")
+
+            # --- definition, type definition ---
+            definition = ask("textDocument/definition", position=where(main_text, "Point", 0, "Point {"))
+            note(len(definition) == 1 and definition[0]["uri"] == shapes_uri
+                 and definition[0]["range"]["start"] == {"line": 0, "character": 14},
+                 f"definition of a type declared in another file: {definition}")
+            definition = ask("textDocument/definition", position=where(main_text, "add", 0, "add(p.x"))
+            note(len(definition) == 1 and definition[0]["uri"] == main_uri
+                 and definition[0]["range"]["start"] == {"line": 4, "character": 3}, f"definition of a function: {definition}")
+            kinds = ask("textDocument/typeDefinition", position=where(main_text, "p", 0, "let p"))
+            note(len(kinds) == 1 and kinds[0]["uri"] == shapes_uri, f"type definition of a variable: {kinds}")
+
+            # --- references and highlights ---
+            references = ask("textDocument/references", position=where(main_text, "add", 0, "fn add"),
+                             context={"includeDeclaration": True})
+            note(len(references) == 2, f"references of add, with its declaration: {references}")
+            references = ask("textDocument/references", position=where(main_text, "add", 0, "fn add"),
+                             context={"includeDeclaration": False})
+            note(len(references) == 1, f"references of add, without its declaration: {references}")
+            references = ask("textDocument/references", position=where(shapes_text, "Point", 0, "struct"), uri=shapes_uri,
+                             context={"includeDeclaration": True})
+            note({r["uri"] for r in references} == {main_uri, shapes_uri}, f"a type's references span files: {references}")
+            highlights = ask("textDocument/documentHighlight", position=where(main_text, "total", 0, "return total"))
+            note(len(highlights) == 2 and sorted(h["kind"] for h in highlights) == [2, 3], f"highlights of total: {highlights}")
+
+            # --- outline and workspace symbols ---
+            symbols = ask("textDocument/documentSymbol", uri=shapes_uri)
+            names = [(s["name"], [c["name"] for c in s.get("children", [])]) for s in symbols]
+            note(("Point", ["x", "y"]) in names and ("impl Point", ["sum"]) in names, f"outline of shapes.psm: {names}")
+            symbols = ask("textDocument/documentSymbol")
+            note([s["name"] for s in symbols] == ["add", "main"], f"outline of main.psm: {[s['name'] for s in symbols]}")
+            found = client.request("workspace/symbol", {"query": "poi"})["result"]
+            note([s["name"] for s in found] == ["Point"] and found[0]["location"]["uri"] == shapes_uri,
+                 f"workspace symbols: {found}")
+
+            # --- signature help ---
+            inside = where(main_text, "p.x", 0, "add(p.x")
+            help_ = ask("textDocument/signatureHelp", position={"line": inside["line"], "character": inside["character"] + 1})
+            note(help_ and help_["signatures"][0]["label"] == "fn add(a: Int, b: Int) -> Int" and help_["activeParameter"] == 0,
+                 f"signature help in the first argument: {help_}")
+            comma = where(main_text, ", p.sum", 0, "add(p.x")
+            help_ = ask("textDocument/signatureHelp", position={"line": comma["line"], "character": comma["character"] + 2})
+            note(help_ and help_["activeParameter"] == 1, f"signature help in the second argument: {help_}")
+            labels = [help_["signatures"][0]["label"][a:b] for a, b in
+                      (p["label"] for p in help_["signatures"][0]["parameters"])] if help_ else []
+            note(labels == ["a: Int", "b: Int"], f"the parameters' labels point into the signature: {labels}")
+
+            # --- inlay hints ---
+            hints = ask("textDocument/inlayHint", range={"start": {"line": 0, "character": 0}, "end": {"line": 20, "character": 0}})
+            texts = sorted(h["label"] for h in hints)
+            note(texts == [": Int", ": Int", ": Point", "a:", "b:", "value:"], f"inlay hints: {texts}")
+
+            # --- semantic tokens, folding ---
+            tokens = ask("textDocument/semanticTokens/full")["data"]
+            note(len(tokens) > 20 and len(tokens) % 5 == 0, f"semantic tokens: {len(tokens)} numbers")
+            line, character, found_function = 0, 0, False
+            for i in range(0, len(tokens), 5):
+                line += tokens[i]
+                character = tokens[i + 1] if tokens[i] else character + tokens[i + 1]
+                if line == 4 and character == 3 and tokens[i + 3] == 10:
+                    found_function = True
+            note(found_function, "the name in `fn add` is coloured as a function")
+            ranges = ask("textDocument/foldingRange")
+            note({"startLine": 4, "endLine": 6} in [{k: v for k, v in r.items() if k != "kind"} for r in ranges],
+                 f"folding ranges: {ranges}")
+
+            # --- rename ---
+            prepared = ask("textDocument/prepareRename", position=where(main_text, "total", 0, "let total"))
+            note(prepared and prepared["placeholder"] == "total", f"prepareRename: {prepared}")
+            note(ask("textDocument/prepareRename", position={"line": 0, "character": 3}) is None, "nothing to rename in an import")
+            changes = ask("textDocument/rename", position=where(main_text, "total", 0, "let total"), newName="sum")["changes"]
+            note(list(changes) == [main_uri] and len(changes[main_uri]) == 2, f"rename a local: {changes}")
+            changes = ask("textDocument/rename", position=where(shapes_text, "Point", 0, "struct"), uri=shapes_uri,
+                          newName="Dot")["changes"]
+            note(set(changes) == {main_uri, shapes_uri}, f"rename a type across files: {list(changes)}")
+            for bad, why in (("b", "already declared"), ("fn", "keyword"), ("9x", "not a name")):
+                reply = client.request("textDocument/rename", {"textDocument": {"uri": main_uri},
+                                                              "position": where(main_text, "a: Int", 0, "fn add"), "newName": bad})
+                note("error" in reply and why in reply["error"]["message"], f"renaming to {bad!r} should be refused ({why}): {reply}")
+
+            # --- completion ---
+            edited = main_text.replace("add(p.x, p.sum())", "add(p., p.sum())")
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 2},
+                                                     "contentChanges": [{"text": edited}]})
+            at = where(edited, "p.", 0, "add(p.")
+            items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 2})
+            labels = {i["label"] for i in items["items"]}
+            note({"x", "y", "sum"} <= labels and "total" not in labels and "if" not in labels,
+                 f"members after a dot: {sorted(labels)[:12]}")
+            edited = main_text.replace("    println(n)\n", "    pri\n")
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 3},
+                                                     "contentChanges": [{"text": edited}]})
+            at = where(edited, "pri", 0, "    pri")
+            items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 3})
+            labels = {i["label"] for i in items["items"]}
+            note({"println", "add", "main", "p", "n", "Point", "if", "return"} <= labels, f"names in scope: {sorted(labels)[:14]}")
+
+            # --- a request made while a check is pending waits for it ---
+            added = main_text + "\nfn fresh() -> Int { return 7 }\n"
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 4},
+                                                     "contentChanges": [{"text": added}]})
+            symbols = ask("textDocument/documentSymbol")
+            note("fresh" in [s["name"] for s in symbols], "a request after an edit sees the edit")
+
+            # --- a waiting request can be cancelled ---
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 5},
+                                                     "contentChanges": [{"text": main_text}]})
+            waiting = client.next_id
+            client.send({"jsonrpc": "2.0", "id": waiting, "method": "textDocument/documentSymbol",
+                         "params": {"textDocument": {"uri": main_uri}}})
+            client.next_id += 1
+            client.notify("$/cancelRequest", {"id": waiting})
+            reply = client.wait_for(lambda m: m.get("id") == waiting and "method" not in m)
+            note(reply.get("error", {}).get("code") == -32800, f"a cancelled request is answered as cancelled: {reply}")
+
+            # --- the import quick fix, and formatting ---
+            (root / "helper.psm").write_text("import std.fs\n\npublic fn size(s: String) -> Int {\n    return joinPath(s, s).length\n}\n")
+            fixme = root / "fixme.psm"
+            fixme_text = "import helper\nimport std.io\n\nfn main() -> Int {\n    let s = joinPath(\"a\", \"b\")\n    return size(s)\n}\n"
+            fixme.write_text(fixme_text)
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": fixme.as_uri(), "languageId": "prismio",
+                                                                     "version": 1, "text": fixme_text}})
+            published = client.diagnostics_for(fixme.as_uri())["diagnostics"]
+            fixable = [d for d in published if d.get("data", {}).get("addImport") == "std.fs"]
+            note(len(fixable) == 1, f"the diagnostic carries the fix: {published}")
+            if fixable:
+                actions = ask("textDocument/codeAction", uri=fixme.as_uri(), range=fixable[0]["range"],
+                              context={"diagnostics": fixable})
+                edit = actions[0]["edit"]["changes"][fixme.as_uri()][0] if actions else None
+                note(actions and actions[0]["title"] == "Add `import std.fs`" and edit["newText"] == "import std.fs\n"
+                     and edit["range"]["start"] == {"line": 2, "character": 0}, f"the quick fix: {actions}")
+
+            messy = "fn  f( ) {\nlet a=1\n   return  a\n}\n"
+            ugly = root / "ugly.psm"
+            ugly.write_text(messy)
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": ugly.as_uri(), "languageId": "prismio",
+                                                                     "version": 1, "text": messy}})
+            edits = ask("textDocument/formatting", uri=ugly.as_uri(), options={"tabSize": 4, "insertSpaces": True})
+            applied = messy
+            for edit in sorted(edits, key=lambda e: -e["range"]["start"]["line"]):
+                lines = applied.split("\n")
+                start, end = edit["range"]["start"], edit["range"]["end"]
+                head = "\n".join(lines[:start["line"]]) + ("\n" if start["line"] else "") + lines[start["line"]][:start["character"]]
+                tail = lines[end["line"]][end["character"]:] + ("\n" + "\n".join(lines[end["line"] + 1:]) if end["line"] + 1 < len(lines) else "")
+                applied = head + edit["newText"] + tail
+            note(applied == "fn f() {\n    let a = 1\n    return a\n}\n", f"formatting: {applied!r}")
+            edits = ask("textDocument/rangeFormatting", uri=ugly.as_uri(), options={"tabSize": 4, "insertSpaces": True},
+                        range={"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 5}})
+            note(len(edits) == 1 and edits[0]["range"]["start"]["line"] == 1 and edits[0]["range"]["end"]["line"] == 1,
+                 f"range formatting touches only its line: {edits}")
+
+            client.shutdown()
+        except Exception as error:
+            problems.append(f"the session failed: {type(error).__name__}: {error}")
+            try:
+                client.close()
+            except Exception:
+                pass
+
+        # --- the features leave the server's memory where they found it ------------------------------
+        # Each request is a pass over a file and builds its answer from scratch; none may keep a copy of
+        # what it read. A 100 KiB document is edited and asked about 150 times (a check, hover, the
+        # outline, the tokens, completion, hints, references); after a warm-up the server must not grow.
+        import subprocess as sp
+        big_path = root / "big.psm"
+        big = "fn main() -> Int {\n" + "".join(f"    let v{i}: Int = {i}\n" for i in range(4000)) + "    return v1\n}\n"
+        big_path.write_text(big)
+        client = LspClient([str(PRISMIO_EXE), "lsp"], env={"PRISMIO_INTERNAL_HOSTED": "1"})
+        try:
+            client.initialize(root.as_uri(), {"general": {"positionEncodings": ["utf-16"]}})
+            big_uri = big_path.as_uri()
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": big_uri, "languageId": "prismio",
+                                                                     "version": 1, "text": big}})
+            client.diagnostics_for(big_uri, timeout=60)
+
+            def rss():
+                out = sp.run(["ps", "-o", "rss=", "-p", str(client.process.pid)], capture_output=True, text=True)
+                return int(out.stdout.strip() or 0)
+
+            def round_(version):
+                client.notify("textDocument/didChange", {"textDocument": {"uri": big_uri, "version": version},
+                                                         "contentChanges": [{"text": big + "\n" * (version % 4)}]})
+                at = {"line": 100, "character": 8}
+                td = {"uri": big_uri}
+                for method, extra in (("textDocument/hover", {"position": at}),
+                                      ("textDocument/documentSymbol", {}),
+                                      ("textDocument/semanticTokens/full", {}),
+                                      ("textDocument/inlayHint", {"range": {"start": {"line": 0, "character": 0},
+                                                                            "end": {"line": 400, "character": 0}}}),
+                                      ("textDocument/references", {"position": at, "context": {"includeDeclaration": True}}),
+                                      ("textDocument/completion", {"position": {"line": 100, "character": 6}})):
+                    client.request(method, {"textDocument": td, **extra}, timeout=60)
+
+            for version in range(2, 22):
+                round_(version)
+            before = rss()
+            for version in range(22, 152):
+                round_(version)
+            growth = rss() - before
+            note(growth < 6000, f"130 rounds of requests on a {len(big) // 1024} KiB document grew the server by {growth} KiB (limit 6,000)")
+        except Exception as error:
+            problems.append(f"the features' memory: {type(error).__name__}: {error}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+    if problems:
+        print(f"{RED}[FAIL] lsp_features{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] the server answers hover, definition, references, symbols, hints, tokens, rename, completion, fixes and formatting{RESET}")
+    return True
+
+
 def run_lsp_test():
     """`prismio lsp`: the language server, spoken to over its pipes as an editor does.
 
@@ -11422,7 +11950,9 @@ def main():
         ("source_file_limit", run_source_file_limit_test),
         ("token_tables", run_token_tables_test),
         ("fmt", run_fmt_test),
+        ("index", run_index_test),
         ("lsp", run_lsp_test),
+        ("lsp_features", run_lsp_features_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

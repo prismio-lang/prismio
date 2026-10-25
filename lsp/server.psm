@@ -14,11 +14,18 @@
 // `prismio build`. See docs/LSP_PLAN.md for where the rest of the features come from.
 
 import lsp.analysis
+import lsp.completion
 import lsp.documents
+import lsp.edits
+import lsp.features
+import lsp.formatting
+import lsp.index
+import lsp.locator
 import lsp.positions
 import lsp.projects
 import lsp.protocol
 import lsp.report
+import lsp.tokens
 import lsp.transport
 import lsp.uri
 import std.fs
@@ -57,7 +64,18 @@ struct Server {
     // Which files this server has published diagnostics for, and for which program: a program
     // that no longer reports a file clears it, and another program's files are left alone.
     publishedUris: Vec<String>,
-    publishedOwners: Vec<String>
+    publishedOwners: Vec<String>,
+    // The programs that have been checked, by entry file. Each has an index file in the scratch
+    // directory, `index-<position>.jsonl`, replaced when a run of that program finishes.
+    entries: Vec<String>,
+    // The keywords of the language, asked of the compiler the first time completion wants them.
+    keywords: Vec<String>,
+    keywordsLoaded: Bool,
+    // Requests that need the analysis of the text as it now is, kept until it arrives: the numbers of
+    // their files in the scratch directory. A request is a file rather than a string so that an answered
+    // or cancelled one can be forgotten, which a string in a Vec cannot be.
+    pending: Vec<Int>,
+    pendingNext: Int
 }
 
 // Runs the server until the client exits or closes standard input. The exit status is the
@@ -82,7 +100,12 @@ public fn lspServe(version: String, compiler: String) -> Int {
         clock: Instant.now(),
         lastChangeMs: 0,
         publishedUris: [],
-        publishedOwners: []
+        publishedOwners: [],
+        entries: [],
+        keywords: [],
+        keywordsLoaded: false,
+        pending: [],
+        pendingNext: 0
     }
     makeDirectory(server.scratchDirectory)
 
@@ -188,7 +211,10 @@ impl Server {
             }
             return
         }
-        if (method.equals("initialized")) { return }
+        if (method.equals("initialized")) {
+            self.registerWatchers()
+            return
+        }
         if (method.equals("shutdown")) {
             self.shuttingDown = true
             self.send(rpcResult(idRaw, "null"))
@@ -208,6 +234,14 @@ impl Server {
         }
         if (method.equals("textDocument/didSave") or method.equals("workspace/didChangeWatchedFiles")) {
             self.markAllDirty()
+            return
+        }
+        if (method.equals("$/cancelRequest")) {
+            self.cancelRequest(message)
+            return
+        }
+        if (isRequest and self.isFeature(method)) {
+            self.feature(message, method, idRaw)
             return
         }
         // Notifications this server has nothing to do for, and `$/` messages, which a server
@@ -247,6 +281,7 @@ impl Server {
         out.bool(false)
         out.endObject()
         out.endObject()
+        self.writeProviders(out)
         out.endObject()
         out.key("serverInfo")
         out.beginObject()
@@ -325,7 +360,8 @@ impl Server {
                 at = at + 1
             }
         }
-        if (self.analysis.start(self.compiler, program, self.docs) == false) {
+        let slot = self.entrySlot(program.entry)
+        if (self.analysis.start(self.compiler, program, self.docs, self.indexTemp(slot)) == false) {
             self.send(logMessage(1, "could not start ".concat(self.compiler, " to check ", program.entry)))
         }
     }
@@ -337,9 +373,17 @@ impl Server {
         if (report.complete == false) {
             // Killed or crashed. What was shown before is still the best answer there is.
             self.send(logMessage(2, "checking ".concat(entry, " ended without a result")))
+            self.flushPending()
             return
         }
+        // The index of this run replaces the last good one.
+        let slot = self.entrySlot(entry)
+        if (fileExists(self.indexTemp(slot))) {
+            deleteFile(self.indexFile(slot))
+            rename(self.indexTemp(slot), self.indexFile(slot))
+        }
         self.publish(entry, report)
+        self.flushPending()
     }
 
     // --- diagnostics --------------------------------------------------------
@@ -483,9 +527,365 @@ impl Server {
             out.string("prismio")
             out.key("message")
             out.string(found.message)
+            if (found.fix.equals("") == false) {
+                out.key("data")
+                out.beginObject()
+                out.key("addImport")
+                out.string(found.fix)
+                out.endObject()
+            }
             out.endObject()
         }
         out.endArray()
         return out.finish()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Features
+
+impl Server {
+    // The slot of a program's entry in `entries`, adding it the first time.
+    fn entrySlot(self, entry: String) -> Int {
+        for i in 0..<self.entries.length {
+            if (self.entries[i].equals(entry)) { return i }
+        }
+        self.entries.push(entry.clone())
+        return self.entries.length - 1
+    }
+
+    // The last good index of the program in `slot`, and where a run in progress writes the next.
+    fn indexFile(self, slot: Int) -> String {
+        return joinPath(self.scratchDirectory, "index-".concat(slot.toString(), ".jsonl"))
+    }
+
+    fn indexTemp(self, slot: Int) -> String {
+        return joinPath(self.scratchDirectory, "index-".concat(slot.toString(), ".tmp"))
+    }
+
+    // The text the analysis has not caught up with: an edit is waiting for its check, or one is running.
+    fn stale(self) -> Bool {
+        return self.dirty.length > 0 or self.analysis.active
+    }
+
+    fn isFeature(self, method: String) -> Bool {
+        return method.equals("textDocument/hover") or method.equals("textDocument/definition")
+            or method.equals("textDocument/typeDefinition") or method.equals("textDocument/references")
+            or method.equals("textDocument/documentHighlight") or method.equals("textDocument/documentSymbol")
+            or method.equals("workspace/symbol") or method.equals("textDocument/signatureHelp")
+            or method.equals("textDocument/inlayHint") or method.equals("textDocument/semanticTokens/full")
+            or method.equals("textDocument/foldingRange") or method.equals("textDocument/codeAction")
+            or method.equals("textDocument/prepareRename") or method.equals("textDocument/rename")
+            or method.equals("textDocument/completion") or method.equals("textDocument/formatting")
+            or method.equals("textDocument/rangeFormatting")
+    }
+
+    // Advertised only for what works.
+    fn writeProviders(self, out: JsonWriter) {
+        out.key("hoverProvider")
+        out.bool(true)
+        out.key("definitionProvider")
+        out.bool(true)
+        out.key("typeDefinitionProvider")
+        out.bool(true)
+        out.key("referencesProvider")
+        out.bool(true)
+        out.key("documentHighlightProvider")
+        out.bool(true)
+        out.key("documentSymbolProvider")
+        out.bool(true)
+        out.key("workspaceSymbolProvider")
+        out.bool(true)
+        out.key("signatureHelpProvider")
+        out.beginObject()
+        out.key("triggerCharacters")
+        out.beginArray()
+        out.string("(")
+        out.string(",")
+        out.endArray()
+        out.endObject()
+        out.key("inlayHintProvider")
+        out.bool(true)
+        out.key("semanticTokensProvider")
+        out.beginObject()
+        out.key("legend")
+        out.raw(tokensLegend())
+        out.key("full")
+        out.bool(true)
+        out.endObject()
+        out.key("foldingRangeProvider")
+        out.bool(true)
+        out.key("codeActionProvider")
+        out.beginObject()
+        out.key("codeActionKinds")
+        out.beginArray()
+        out.string("quickfix")
+        out.endArray()
+        out.endObject()
+        out.key("renameProvider")
+        out.beginObject()
+        out.key("prepareProvider")
+        out.bool(true)
+        out.endObject()
+        out.key("completionProvider")
+        out.beginObject()
+        out.key("triggerCharacters")
+        out.beginArray()
+        out.string(".")
+        out.endArray()
+        out.endObject()
+        out.key("documentFormattingProvider")
+        out.bool(true)
+        out.key("documentRangeFormattingProvider")
+        out.bool(true)
+    }
+
+    // The result of a request that has nothing to say.
+    fn emptyResult(self, method: String) -> String {
+        if (method.equals("textDocument/hover") or method.equals("textDocument/signatureHelp")
+                or method.equals("textDocument/prepareRename")) {
+            return "null".clone()
+        }
+        if (method.equals("textDocument/semanticTokens/full")) { return "{\"data\":[]}".clone() }
+        if (method.equals("textDocument/rename")) { return "{\"changes\":{}}".clone() }
+        if (method.equals("textDocument/completion")) { return "{\"isIncomplete\":false,\"items\":[]}".clone() }
+        return "[]".clone()
+    }
+
+    // --- requests that wait for the analysis -------------------------------------------------
+
+    fn deferRequest(self, message: JsonDocument) {
+        self.pendingNext = self.pendingNext + 1
+        writeFile(joinPath(self.scratchDirectory, "pending-".concat(self.pendingNext.toString(), ".json")),
+                  message.raw(message.root))
+        self.pending.push(self.pendingNext)
+    }
+
+    // Serves every waiting request once the text is current; those that wait still stay.
+    fn flushPending(self) {
+        if (self.stale()) { return }
+        while (self.pending.length > 0) {
+            let number = self.pending[0]
+            self.pending.removeAt(0)
+            let file = joinPath(self.scratchDirectory, "pending-".concat(number.toString(), ".json"))
+            let body = readFile(file)
+            deleteFile(file)
+            let message = parseJson(body)
+            if (message.ok == false) { continue }
+            let method = message.text(message.member(message.root, "method").unwrapOr(0 - 1))
+            let idRaw = message.raw(message.member(message.root, "id").unwrapOr(0 - 1))
+            self.feature(message, method, idRaw)
+        }
+    }
+
+    // `$/cancelRequest`: a waiting request with that id is answered as cancelled and forgotten.
+    fn cancelRequest(self, message: JsonDocument) {
+        let wanted = message.raw(message.path(message.root, "params.id").unwrapOr(0 - 1))
+        let mut i = 0
+        while (i < self.pending.length) {
+            let file = joinPath(self.scratchDirectory, "pending-".concat(self.pending[i].toString(), ".json"))
+            let waiting = parseJson(readFile(file))
+            let id = waiting.raw(waiting.member(waiting.root, "id").unwrapOr(0 - 1))
+            if (waiting.ok and id.equals(wanted)) {
+                deleteFile(file)
+                self.pending.removeAt(i)
+                self.send(rpcError(id, REQUEST_CANCELLED, "the request was cancelled"))
+                return
+            }
+            i = i + 1
+        }
+    }
+
+    // --- the keywords ------------------------------------------------------------------------
+
+    fn loadKeywords(self) {
+        if (self.keywordsLoaded) { return }
+        self.keywordsLoaded = true
+        let mut arguments: Vec<String> = []
+        arguments.push("dump-tokens")
+        let result = runCaptured(self.compiler, arguments, 5000)
+        if (result.ok == false) { return }
+        let doc = parseJson(result.output)
+        if (doc.ok == false) { return }
+        let words = doc.member(doc.root, "keywords").unwrapOr(0 - 1)
+        for node in doc.children(words) { self.keywords.push(doc.text(node).clone()) }
+        let literals = doc.member(doc.root, "literals").unwrapOr(0 - 1)
+        for node in doc.children(literals) {
+            let word = doc.text(node)
+            let mut known = false
+            for earlier in self.keywords {
+                if (earlier.equals(word)) { known = true }
+            }
+            if (known == false) { self.keywords.push(word.clone()) }
+        }
+    }
+
+    // --- dynamic registration ----------------------------------------------------------------
+
+    // Asks the client to tell us when a `.psm` file or a manifest changes on disk, so an edit made by
+    // another tool (a branch switch, a formatter) is checked again.
+    fn registerWatchers(self) {
+        let out = JsonWriter()
+        out.beginObject()
+        out.key("registrations")
+        out.beginArray()
+        out.beginObject()
+        out.key("id")
+        out.string("prismio-watch")
+        out.key("method")
+        out.string("workspace/didChangeWatchedFiles")
+        out.key("registerOptions")
+        out.beginObject()
+        out.key("watchers")
+        out.beginArray()
+        out.beginObject()
+        out.key("globPattern")
+        out.string("**/*.psm")
+        out.endObject()
+        out.beginObject()
+        out.key("globPattern")
+        out.string("**/build.ums")
+        out.endObject()
+        out.endArray()
+        out.endObject()
+        out.endObject()
+        out.endArray()
+        out.endObject()
+        self.pendingNext = self.pendingNext + 1
+        self.send(rpcRequest(1000000 + self.pendingNext, "client/registerCapability", out.finish()))
+    }
+
+    // --- serving a feature -------------------------------------------------------------------
+
+    fn feature(self, message: JsonDocument, method: String, idRaw: String) {
+        if (method.equals("workspace/symbol")) {
+            self.workspaceSymbols(message, idRaw)
+            return
+        }
+        let uri = message.text(message.path(message.root, "params.textDocument.uri").unwrapOr(0 - 1))
+        let path = uriToPath(uri)
+        if (path.equals("")) {
+            self.send(rpcResult(idRaw, self.emptyResult(method)))
+            return
+        }
+        let text = self.textOf(path)
+        if (method.equals("textDocument/formatting") or method.equals("textDocument/rangeFormatting")) {
+            self.format(message, method, idRaw, path, text)
+            return
+        }
+        if (method.equals("textDocument/completion")) {
+            self.complete(message, idRaw, path, text)
+            return
+        }
+
+        // The rest read the index of the program the file belongs to, as of the text it has now.
+        let program = programFor(path, text)
+        let slot = self.entrySlot(program.entry)
+        if (self.stale()) {
+            self.deferRequest(message)
+            return
+        }
+        if (fileExists(self.indexFile(slot)) == false) {
+            // Never checked: ask for it, and answer when it comes.
+            let open = self.docs.indexOfPath(path)
+            if (open != none) {
+                self.markDirty(path)
+                self.deferRequest(message)
+                return
+            }
+            self.send(rpcResult(idRaw, self.emptyResult(method)))
+            return
+        }
+        let index = self.indexFile(slot)
+        let file = indexFileId(index, path)
+        if (file < 0) {
+            self.send(rpcResult(idRaw, self.emptyResult(method)))
+            return
+        }
+        let lines = lineIndex(text)
+        let line0 = message.int(message.path(message.root, "params.position.line").unwrapOr(0 - 1))
+        let character = message.int(message.path(message.root, "params.position.character").unwrapOr(0 - 1))
+        let offset = lines.offset(line0, character, self.utf16)
+        let query = FeatureQuery { index: index.clone(), file: file, path: path.clone(), text: text.clone(), line: line0 + 1,
+                                   col: offset - lines.lineStart(line0) + 1, utf16: self.utf16 }
+        let loc = locator(indexFiles(index), self.utf16)
+
+        if (method.equals("textDocument/hover")) {
+            self.send(rpcResult(idRaw, featureHover(query, self.docs, loc)))
+        } else if (method.equals("textDocument/definition")) {
+            self.send(rpcResult(idRaw, featureDefinition(query, self.docs, loc)))
+        } else if (method.equals("textDocument/typeDefinition")) {
+            self.send(rpcResult(idRaw, featureTypeDefinition(query, self.docs, loc)))
+        } else if (method.equals("textDocument/references")) {
+            let include = message.bool(message.path(message.root, "params.context.includeDeclaration").unwrapOr(0 - 1))
+            self.send(rpcResult(idRaw, featureReferences(query, self.docs, loc, include)))
+        } else if (method.equals("textDocument/documentHighlight")) {
+            self.send(rpcResult(idRaw, featureDocumentHighlight(query, self.docs, loc)))
+        } else if (method.equals("textDocument/documentSymbol")) {
+            self.send(rpcResult(idRaw, featureDocumentSymbols(query, self.docs, loc)))
+        } else if (method.equals("textDocument/signatureHelp")) {
+            self.send(rpcResult(idRaw, featureSignatureHelp(query, self.docs, loc, offset)))
+        } else if (method.equals("textDocument/inlayHint")) {
+            let from = message.int(message.path(message.root, "params.range.start.line").unwrapOr(0 - 1)) + 1
+            let to = message.int(message.path(message.root, "params.range.end.line").unwrapOr(0 - 1)) + 1
+            self.send(rpcResult(idRaw, featureInlayHints(query, self.docs, loc, from, to)))
+        } else if (method.equals("textDocument/semanticTokens/full")) {
+            self.send(rpcResult(idRaw, tokensFull(index, file, self.docs, loc)))
+        } else if (method.equals("textDocument/foldingRange")) {
+            self.send(rpcResult(idRaw, featureFoldingRanges(query)))
+        } else if (method.equals("textDocument/prepareRename")) {
+            self.send(rpcResult(idRaw, featurePrepareRename(query, self.docs, loc)))
+        } else if (method.equals("textDocument/rename")) {
+            self.rename(message, idRaw, query, loc)
+        } else if (method.equals("textDocument/codeAction")) {
+            let context = message.path(message.root, "params.context").unwrapOr(0 - 1)
+            self.send(rpcResult(idRaw, featureCodeActions(query, self.docs, loc, message, context)))
+        }
+    }
+
+    fn rename(self, message: JsonDocument, idRaw: String, query: FeatureQuery, loc: Locator) {
+        self.loadKeywords()
+        let newName = message.text(message.path(message.root, "params.newName").unwrapOr(0 - 1))
+        let problem = featureRenameProblem(query, newName, self.keywords)
+        if (problem.equals("") == false) {
+            self.send(rpcError(idRaw, 0 - 32803, problem))
+            return
+        }
+        self.send(rpcResult(idRaw, featureRename(query, self.docs, loc, newName)))
+    }
+
+    fn workspaceSymbols(self, message: JsonDocument, idRaw: String) {
+        let query = message.text(message.path(message.root, "params.query").unwrapOr(0 - 1))
+        let mut indexes: Vec<String> = []
+        for slot in 0..<self.entries.length {
+            if (fileExists(self.indexFile(slot))) { indexes.push(self.indexFile(slot)) }
+        }
+        self.send(rpcResult(idRaw, featureWorkspaceSymbols(indexes, query, self.docs, self.utf16)))
+    }
+
+    fn complete(self, message: JsonDocument, idRaw: String, path: String, text: String) {
+        self.loadKeywords()
+        let lines = lineIndex(text)
+        let line0 = message.int(message.path(message.root, "params.position.line").unwrapOr(0 - 1))
+        let character = message.int(message.path(message.root, "params.position.character").unwrapOr(0 - 1))
+        let offset = lines.offset(line0, character, self.utf16)
+        let program = programFor(path, text)
+        self.send(rpcResult(idRaw, completionItems(self.compiler, program, self.docs, path, text, offset,
+                                                    self.scratchDirectory, self.keywords)))
+    }
+
+    fn format(self, message: JsonDocument, method: String, idRaw: String, path: String, text: String) {
+        let open = self.docs.indexOfPath(path)
+        if (open == none) {
+            self.send(rpcResult(idRaw, "[]"))
+            return
+        }
+        let mut from = 0
+        let mut to = 0
+        if (method.equals("textDocument/rangeFormatting")) {
+            from = message.int(message.path(message.root, "params.range.start.line").unwrapOr(0 - 1)) + 1
+            to = message.int(message.path(message.root, "params.range.end.line").unwrapOr(0 - 1)) + 1
+        }
+        self.send(rpcResult(idRaw, formattingEdits(self.compiler, self.docs.files[expect(open)], text, self.utf16, from, to)))
     }
 }

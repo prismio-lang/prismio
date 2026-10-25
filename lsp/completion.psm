@@ -1,0 +1,150 @@
+// Completion: what could be written where the cursor is.
+//
+// The buffer at the cursor seldom parses, and a name the user is half way through typing is not yet a
+// name. So the word under the cursor is replaced by a placeholder identifier and the compiler is asked
+// to analyse that buffer and to say what it could have been (`check --complete`, src/index/complete.psm):
+// the members of the type before a `.`, the names in scope, the contents of a module. The server adds
+// the keywords of the language (from `dump-tokens`, never a list of its own) and the protocol's shape.
+
+import lsp.analysis
+import lsp.documents
+import lsp.index
+import lsp.positions
+import lsp.projects
+import lsp.runner
+import std.fs
+import std.json
+import std.string
+import std.vec
+
+// Must be the same word as `ixPlaceholder` in src/index/complete.psm.
+let COMPLETION_PLACEHOLDER = "ixcursor__"
+
+fn completionIsWordByte(b: Int) -> Bool {
+    return (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or (b >= 48 and b <= 57) or b >= 128
+}
+
+fn completionItemKind(kind: String) -> Int {
+    if (kind.equals("fn") or kind.equals("extern")) { return 3 }
+    if (kind.equals("method")) { return 2 }
+    if (kind.equals("prop")) { return 10 }
+    if (kind.equals("field")) { return 5 }
+    if (kind.equals("let") or kind.equals("param") or kind.equals("global") or kind.equals("externvar")) { return 6 }
+    if (kind.equals("const") or kind.equals("assocconst")) { return 21 }
+    if (kind.equals("struct") or kind.equals("typelist")) { return 22 }
+    if (kind.equals("enum") or kind.equals("codeset")) { return 13 }
+    if (kind.equals("variant") or kind.equals("code")) { return 20 }
+    if (kind.equals("trait")) { return 8 }
+    if (kind.equals("import")) { return 9 }
+    if (kind.equals("typeparam") or kind.equals("assoctype")) { return 25 }
+    if (kind.equals("keyword")) { return 14 }
+    return 1
+}
+
+// The empty result, which a client reads as "nothing to offer".
+fn completionNone() -> String {
+    return "{\"isIncomplete\":false,\"items\":[]}".clone()
+}
+
+public fn completionItems(compiler: String, program: Program, docs: Documents, docPath: String, text: String, offset: Int,
+                          scratch: String, keywords: Vec<String>) -> String {
+    // The word being typed: back from the cursor to its start, forward to its end.
+    let mut start = offset
+    while (start > 0 and completionIsWordByte(text.byteAt(start - 1))) { start = start - 1 }
+    let mut end = offset
+    while (end < text.length and completionIsWordByte(text.byteAt(end))) { end = end + 1 }
+    let mut before = start
+    while (before > 0 and (text.byteAt(before - 1) == 32 or text.byteAt(before - 1) == 9)) { before = before - 1 }
+    let afterDot = before > 0 and text.byteAt(before - 1) == 46
+
+    // The placeholder's place, in the compiler's terms.
+    let index = lineIndex(text)
+    let mut line0 = 0
+    while (line0 + 1 < index.lineCount() and index.lineStart(line0 + 1) <= start) { line0 = line0 + 1 }
+    let col = start - index.lineStart(line0) + 1
+
+    let buffer = joinPath(scratch, "complete-buffer.psm")
+    let output = joinPath(scratch, "complete.idx")
+    writeFile(buffer, text.substring(0, start))
+    appendFile(buffer, COMPLETION_PLACEHOLDER)
+    appendFile(buffer, text.substring(end, text.length - end))
+    deleteFile(output)
+
+    let mut arguments: Vec<String> = []
+    arguments.push("check")
+    arguments.push(program.entry.clone())
+    arguments.push("--partial")
+    if (program.module.equals("") == false) {
+        arguments.push("--module")
+        arguments.push(program.module.clone())
+    }
+    for i in 0..<docs.count() {
+        if (docs.files[i].equals("")) { continue }
+        arguments.push("--overlay")
+        arguments.push(docs.paths[i].clone())
+        if (docs.paths[i].equals(docPath)) { arguments.push(buffer.clone()) } else { arguments.push(docs.files[i].clone()) }
+    }
+    arguments.push("--emit-index")
+    arguments.push(output.clone())
+    arguments.push("--complete")
+    arguments.push(docPath.clone())
+    arguments.push((line0 + 1).toString())
+    arguments.push(col.toString())
+    // A check that finds errors exits non-zero, which is the normal case here: only the index counts.
+    let mut result = runCapturedAnyStatus(compiler, arguments, 8000)
+    deleteFile(buffer)
+    if (result == false or fileExists(output) == false) { return completionNone() }
+
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("isIncomplete")
+    out.bool(false)
+    out.key("items")
+    out.beginArray()
+    let mut offered: Vec<String> = []
+    for item in indexCompletions(output) {
+        offered.push(item.label.clone())
+        out.beginObject()
+        out.key("label")
+        out.string(item.label)
+        out.key("kind")
+        out.int(completionItemKind(item.kind))
+        if (item.detail.equals("") == false) {
+            out.key("detail")
+            out.string(item.detail)
+        }
+        if (item.doc.equals("") == false) {
+            out.key("documentation")
+            out.beginObject()
+            out.key("kind")
+            out.string("markdown")
+            out.key("value")
+            out.string(item.doc)
+            out.endObject()
+        }
+        out.key("sortText")
+        out.string(item.rank.toString().concat(item.label))
+        out.endObject()
+    }
+    if (afterDot == false) {
+        for word in keywords {
+            let mut taken = false
+            for earlier in offered {
+                if (earlier.equals(word)) { taken = true }
+            }
+            if (taken) { continue }
+            out.beginObject()
+            out.key("label")
+            out.string(word)
+            out.key("kind")
+            out.int(14)
+            out.key("sortText")
+            out.string("9".concat(word))
+            out.endObject()
+        }
+    }
+    out.endArray()
+    out.endObject()
+    deleteFile(output)
+    return out.finish()
+}

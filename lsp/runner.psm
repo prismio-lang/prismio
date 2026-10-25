@@ -1,0 +1,74 @@
+// Running the compiler to answer one request, and waiting for it.
+//
+// Diagnostics are a run the server does not wait for (lsp/analysis.psm). Completion and formatting are
+// answers the user is waiting for, so they are runs the server does wait for, with a limit: a compiler
+// that has not answered in `limitMs` is killed and the request answered with nothing.
+
+import std.option
+import std.poll
+import std.process
+import std.string
+import std.time
+import std.vec
+
+// Runs `program` with `arguments`, discarding its standard input and error, and returns what it wrote to
+// standard output; "" if it could not be started, did not finish within `limitMs`, or exited non-zero.
+// `ok` is set to whether it ran to a zero exit.
+public struct Captured {
+    public ok: Bool,
+    public output: String
+}
+
+public fn runCaptured(program: String, arguments: Vec<String>, limitMs: Int) -> Captured {
+    let process = Process()
+    process.program = program.clone()
+    process.arguments = arguments
+    process.stdin = StreamMode.Discard
+    process.stdout = StreamMode.Pipe
+    process.stderr = StreamMode.Discard
+    let child = process.spawn()
+    if (child.handle < 0) { return Captured { ok: false, output: "".clone() } }
+    let started = Instant.now()
+    let mut output = "".clone()
+    let mut finished = false
+    while (finished == false) {
+        let elapsed = started.elapsed().asMillis as Int
+        if (elapsed > limitMs) { break }
+        if (waitReadable(child.stdout.descriptor, 50)) {
+            let piece = child.stdout.readSome(65536)
+            if (piece.equals("")) {
+                finished = true
+            } else {
+                output = output.concat(piece)
+            }
+        }
+    }
+    if (finished == false) { child.kill() }
+    child.stdout.close()
+    let status = child.wait()
+    if (finished == false or status != 0) { return Captured { ok: false, output: "".clone() } }
+    return Captured { ok: true, output: output }
+}
+
+// Runs `program` and waits for it to finish within `limitMs`, whatever it exits with; false if it could
+// not be started or had to be killed. Its output is not read.
+public fn runCapturedAnyStatus(program: String, arguments: Vec<String>, limitMs: Int) -> Bool {
+    let process = Process()
+    process.program = program.clone()
+    process.arguments = arguments
+    process.stdin = StreamMode.Discard
+    process.stdout = StreamMode.Discard
+    process.stderr = StreamMode.Discard
+    let child = process.spawn()
+    if (child.handle < 0) { return false }
+    let started = Instant.now()
+    loop {
+        let status = child.tryWait()
+        if (status != none) { return true }
+        if (started.elapsed().asMillis as Int > limitMs) { break }
+        sleep(Duration.fromMillis(5 as I64))
+    }
+    child.kill()
+    child.wait()
+    return false
+}
