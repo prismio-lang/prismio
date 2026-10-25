@@ -110,6 +110,15 @@ def main() -> int:
         installed.chmod(0o755)
     print(f"  {EXE:<14} {installed.stat().st_size:>10} bytes")
 
+    # The language server `prismio lsp` starts, which is looked for beside the compiler.
+    server_name = "prismio-lsp" + (".exe" if WINDOWS else "")
+    server = dist / "bin" / server_name
+    if server.is_file():
+        shutil.copyfile(server, bin_dir / server_name)
+        if not WINDOWS:
+            (bin_dir / server_name).chmod(0o755)
+        print(f"  {server_name:<14} {(bin_dir / server_name).stat().st_size:>10} bytes")
+
     for name in LIB_FILES:
         origin = dist / "lib" / name
         if origin.is_file():

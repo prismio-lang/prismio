@@ -1,0 +1,73 @@
+// Which program a file belongs to.
+//
+// A module is not a program, and checking it as one is wrong (IDE_PROTOCOL.md): its imports
+// resolve against the entry's directory, and it may use names the program shares without
+// importing them. So the server checks the program a file belongs to, with the file's text
+// overlaid. The compiler cannot say which program that is; this can, from the same sources the
+// build uses:
+//
+//   1. the file declares `main`: it is a program of its own;
+//   2. it is a module of the standard library in a Prismio checkout: checked alone, under the
+//      name its importers use (`--module std.map`), which is what gives it its package's access;
+//   3. a `build.ums` above it names entries: the entry whose directory holds the file, nearest
+//      first (a module is found by its entry's directory);
+//   4. otherwise the file alone.
+
+import std.fs
+import std.option
+import std.string
+import std.vec
+import ums.model.project
+import ums.model.workspace
+import ums.targets.target
+
+public struct Program {
+    // The file to hand `check`.
+    public entry: String,
+    // The name for `--module`, or "" when `entry` is a program.
+    public module: String
+}
+
+// Whether `path` is below `directory`, as a path and not as a prefix of a longer name.
+fn projectIsUnder(path: String, directory: String) -> Bool {
+    if (directory.equals("")) { return false }
+    return path.startsWith(directory.concat("/"))
+}
+
+// `std.map` for a file `.../std/map.psm` in a checkout, "" for any other file.
+fn projectStandardModuleName(path: String) -> String {
+    let directory = directoryOf(path)
+    if (directory.endsWith("/std") == false and directory.endsWith("\\std") == false) { return "".clone() }
+    let root = directoryOf(directory)
+    if (fileExists(joinPath(joinPath(root, "runtime"), "lang_runtime.c")) == false) { return "".clone() }
+    let leaf = path.substring(directory.length + 1, path.length - directory.length - 1)
+    if (leaf.endsWith(".psm") == false) { return "".clone() }
+    return "std.".concat(leaf.substring(0, leaf.length - 4))
+}
+
+// The entry of the nearest `build.ums` target whose directory holds `path`, or "".
+fn projectManifestEntry(path: String) -> String {
+    let workspace = umsLoadProject(directoryOf(path), "debug")
+    let mut best = "".clone()
+    let mut bestDirectory = "".clone()
+    for target in workspace.project.targets {
+        let entry = target.sourcePath
+        if (entry.equals("")) { continue }
+        if (entry.equals(path)) { return entry.clone() }
+        let directory = directoryOf(entry)
+        if (projectIsUnder(path, directory) and directory.length > bestDirectory.length) {
+            best = entry.clone()
+            bestDirectory = directory.clone()
+        }
+    }
+    return best
+}
+
+public fn programFor(path: String, text: String) -> Program {
+    if (text.contains("fn main(")) { return Program { entry: path.clone(), module: "" } }
+    let module = projectStandardModuleName(path)
+    if (module.equals("") == false) { return Program { entry: path.clone(), module: module } }
+    let entry = projectManifestEntry(path)
+    if (entry.equals("") == false) { return Program { entry: entry, module: "" } }
+    return Program { entry: path.clone(), module: "" }
+}

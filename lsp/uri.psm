@@ -1,0 +1,93 @@
+// `file:` URIs and the paths they name.
+//
+// An editor identifies a document by URI and the compiler by path, and every message crosses
+// that line. Only `file:` is understood: an `untitled:` buffer has no program to belong to.
+// The server compares paths, never URIs, so `file:///a/b.psm` and the percent-encoded spelling
+// of the same file agree.
+
+import std.string
+import std.vec
+
+public fn isFileUri(uri: String) -> Bool {
+    return uri.startsWith("file://")
+}
+
+// The value of one hex digit, or -1.
+fn uriHexDigit(c: Int) -> Int {
+    if (c >= 48 and c <= 57) { return c - 48 }
+    if (c >= 97 and c <= 102) { return c - 87 }
+    if (c >= 65 and c <= 70) { return c - 55 }
+    return 0 - 1
+}
+
+fn uriPercentDecode(text: String) -> String {
+    let n = text.length
+    let mut out = "".clone()
+    let mut run = 0
+    let mut i = 0
+    while (i < n) {
+        if (text.byteAt(i) != 37 or i + 2 >= n) {
+            i = i + 1
+            continue
+        }
+        let high = uriHexDigit(text.byteAt(i + 1))
+        let low = uriHexDigit(text.byteAt(i + 2))
+        if (high < 0 or low < 0) {
+            i = i + 1
+            continue
+        }
+        if (i > run) { out = out.concat(text.substring(run, i - run)) }
+        out = out.concat(((high * 16 + low) as Char).toString())
+        i = i + 3
+        run = i
+    }
+    if (n > run) { out = out.concat(text.substring(run, n - run)) }
+    return out
+}
+
+// The path a `file:` URI names: `file:///Users/me/a.psm` is `/Users/me/a.psm`, and
+// `file:///C:/work/a.psm` is `C:/work/a.psm`. "" for anything that is not one.
+public fn uriToPath(uri: String) -> String {
+    if (isFileUri(uri) == false) { return "".clone() }
+    let mut rest = uri.substring(7, uri.length - 7)
+    // `file://host/path`: only the empty host and `localhost` are this machine.
+    if (rest.startsWith("localhost/")) { rest = rest.substring(9, rest.length - 9) }
+    let path = uriPercentDecode(rest)
+    if (path.length > 2 and path.charAt(0) == '/' and path.charAt(2) == ':') {
+        return path.substring(1, path.length - 1)
+    }
+    return path
+}
+
+fn uriIsUnreserved(c: Int) -> Bool {
+    if (c >= 48 and c <= 57) { return true }
+    if (c >= 65 and c <= 90) { return true }
+    if (c >= 97 and c <= 122) { return true }
+    return c == 45 or c == 46 or c == 95 or c == 126 or c == 47 or c == 58
+}
+
+// The `file:` URI for an absolute path, as editors write them: unreserved characters and `/`
+// as they are, the rest as `%XX`, and a Windows drive letter behind a third slash.
+public fn pathToUri(path: String) -> String {
+    let digits = "0123456789ABCDEF"
+    let mut text = path.replaceAll("\\", "/")
+    let mut out = "file://".clone()
+    if (text.length > 1 and text.charAt(1) == ':') { out = out.concat("/") }
+    if (text.startsWith("/") == false and out.equals("file://")) { out = out.concat("/") }
+    let n = text.length
+    let mut run = 0
+    let mut i = 0
+    while (i < n) {
+        let c = text.byteAt(i)
+        if (uriIsUnreserved(c)) {
+            i = i + 1
+            continue
+        }
+        if (i > run) { out = out.concat(text.substring(run, i - run)) }
+        out = out.concat("%", digits.substring(c / 16, 1), digits.substring(c % 16, 1))
+        i = i + 1
+        run = i
+    }
+    if (n > run) { out = out.concat(text.substring(run, n - run)) }
+    return out
+}

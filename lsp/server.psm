@@ -1,0 +1,491 @@
+// The language server: `prismio lsp`.
+//
+// **One thread, one loop.** The server waits on two things at once, the client's messages on
+// standard input and the output of the compiler run it has in flight, with a timeout that is
+// also its timer (std.poll), and handles whichever speaks. A message is always served before
+// the compiler's output is read, so an edit reaches the server while a run is still going, and
+// the run, which is now about stale text, is killed rather than waited for. No tasks, no
+// channels, no locks, and cancellation is a `kill`.
+//
+// **What it does with an edit.** It records the text, marks the file dirty and starts a timer;
+// when the client has been quiet for DEBOUNCE_MS it checks the program the file belongs to with
+// every open document's text overlaid, and publishes what the compiler found. The compiler is
+// the language: the server holds no knowledge of Prismio itself, so it cannot disagree with
+// `prismio build`. See docs/LSP_PLAN.md for where the rest of the features come from.
+
+import lsp.analysis
+import lsp.documents
+import lsp.positions
+import lsp.projects
+import lsp.protocol
+import lsp.report
+import lsp.transport
+import lsp.uri
+import std.fs
+import std.input
+import std.io
+import std.json
+import std.option
+import std.poll
+import std.process
+import std.string
+import std.time
+import std.vec
+
+// How long the client must be quiet before the program is checked. Short enough that a pause
+// in typing shows its errors, long enough that typing does not start a run per keystroke.
+let DEBOUNCE_MS = 150
+let IDLE_MS = 60000
+
+struct Server {
+    version: String,
+    initialized: Bool,
+    shuttingDown: Bool,
+    done: Bool,
+    exitCode: Int,
+    utf16: Bool,
+    docs: Documents,
+    compiler: String,
+    scratchDirectory: String,
+    analysis: Analysis,
+    // Documents changed since the last run started.
+    dirty: Vec<String>,
+    // Milliseconds on `clock` when the text last changed. An integer, not an `Instant`: a store
+    // of an owned value into a field is never released, and an `Instant` is a heap value.
+    clock: Instant,
+    lastChangeMs: Int,
+    // Which files this server has published diagnostics for, and for which program: a program
+    // that no longer reports a file clears it, and another program's files are left alone.
+    publishedUris: Vec<String>,
+    publishedOwners: Vec<String>
+}
+
+// Runs the server until the client exits or closes standard input. The exit status is the
+// protocol's: 0 after `shutdown`, 1 without it. `compiler` is the `prismio` that runs each check.
+public fn lspServe(version: String, compiler: String) -> Int {
+    useBinaryStdio()
+    // The checks it starts are this compiler, not the project host a launcher would route to.
+    process.setEnv("PRISMIO_INTERNAL_HOSTED", "1")
+
+    let server = Server {
+        version: version.clone(),
+        initialized: false,
+        shuttingDown: false,
+        done: false,
+        exitCode: 1,
+        utf16: true,
+        docs: documents(serverScratchDirectoryPath()),
+        compiler: serverCompilerPath(compiler),
+        scratchDirectory: serverScratchDirectoryPath(),
+        analysis: idleAnalysis(),
+        dirty: [],
+        clock: Instant.now(),
+        lastChangeMs: 0,
+        publishedUris: [],
+        publishedOwners: []
+    }
+    makeDirectory(server.scratchDirectory)
+
+    while (server.done == false) {
+        let ready = waitReadable(0, server.analysis.descriptor(), server.timeoutMilliseconds())
+        let which = ready.unwrapOr(0 - 1)
+        if (which == 0) {
+            server.serveOne()
+        } else if (which == 1) {
+            server.pumpAnalysis()
+        }
+        server.tick()
+    }
+
+    server.analysis.cancel()
+    server.docs.discard()
+    removeDirectory(server.scratchDirectory)
+    return server.exitCode
+}
+
+// The executable that runs each check: the one the launcher named, unless PRISMIO_LSP_CHECK names
+// another. The override exists for tests that need a compiler that crashes or hangs, and for an
+// editor that wants checks run by a different build than the one serving the protocol.
+fn serverCompilerPath(launched: String) -> String {
+    let named = process.env("PRISMIO_LSP_CHECK").unwrapOr("")
+    if (named.equals("") == false) { return named }
+    return launched.clone()
+}
+
+// Where this server's scratch files go: under the system's temporary directory, in a directory
+// of its own named for the process so two servers do not meet.
+fn serverScratchDirectoryPath() -> String {
+    let mut base = process.env("TMPDIR").unwrapOr("")
+    if (base.equals("")) { base = process.env("TEMP").unwrapOr("") }
+    if (base.equals("")) { base = process.env("TMP").unwrapOr("") }
+    if (base.equals("")) { base = "/tmp" }
+    return joinPath(base, "prismio-lsp-".concat(process.pid.toString()))
+}
+
+impl Server {
+    // How long the loop may sleep: until the debounce expires if a run is waiting for it,
+    // otherwise a long time. A running check is waited on through its descriptor, not a timer.
+    fn timeoutMilliseconds(self) -> Int {
+        if (self.dirty.length == 0 or self.analysis.active) { return IDLE_MS }
+        let waited = self.nowMs() - self.lastChangeMs
+        if (waited >= DEBOUNCE_MS) { return 0 }
+        return DEBOUNCE_MS - waited
+    }
+
+    fn nowMs(self) -> Int {
+        return self.clock.elapsed().asMillis as Int
+    }
+
+    fn tick(self) {
+        if (self.dirty.length == 0 or self.analysis.active) { return }
+        if (self.nowMs() - self.lastChangeMs < DEBOUNCE_MS) { return }
+        self.startAnalysis()
+    }
+
+    fn send(self, body: String) {
+        writeMessage(body)
+    }
+
+    // --- messages -----------------------------------------------------------
+
+    fn serveOne(self) {
+        let body = readMessage()
+        if (body.length == 0) {
+            // Input ended: there is no client. Exit as the protocol says, by whether it said
+            // goodbye first.
+            self.done = true
+            if (self.shuttingDown) { self.exitCode = 0 }
+            return
+        }
+        let message = parseJson(body)
+        if (message.ok == false) {
+            self.send(rpcError("null", PARSE_ERROR, "invalid JSON: ".concat(message.error)))
+            return
+        }
+        self.dispatch(message)
+    }
+
+    fn dispatch(self, message: JsonDocument) {
+        let root = message.root
+        let method = message.text(message.member(root, "method").unwrapOr(0 - 1))
+        let idNode = message.member(root, "id")
+        let isRequest = idNode != none and method.equals("") == false
+        let idRaw = message.raw(idNode.unwrapOr(0 - 1))
+
+        if (method.equals("")) { return }
+        if (method.equals("exit")) {
+            self.done = true
+            if (self.shuttingDown) { self.exitCode = 0 }
+            return
+        }
+        if (method.equals("initialize")) {
+            self.initialize(message, idRaw)
+            return
+        }
+        if (self.initialized == false) {
+            if (isRequest) {
+                self.send(rpcError(idRaw, SERVER_NOT_INITIALIZED, "the server is not initialized"))
+            }
+            return
+        }
+        if (method.equals("initialized")) { return }
+        if (method.equals("shutdown")) {
+            self.shuttingDown = true
+            self.send(rpcResult(idRaw, "null"))
+            return
+        }
+        if (method.equals("textDocument/didOpen")) {
+            self.didOpen(message)
+            return
+        }
+        if (method.equals("textDocument/didChange")) {
+            self.didChange(message)
+            return
+        }
+        if (method.equals("textDocument/didClose")) {
+            self.didClose(message)
+            return
+        }
+        if (method.equals("textDocument/didSave") or method.equals("workspace/didChangeWatchedFiles")) {
+            self.markAllDirty()
+            return
+        }
+        // Notifications this server has nothing to do for, and `$/` messages, which a server
+        // may ignore.
+        if (isRequest == false) { return }
+        self.send(rpcError(idRaw, METHOD_NOT_FOUND, "method not supported: ".concat(method)))
+    }
+
+    fn initialize(self, message: JsonDocument, idRaw: String) {
+        // UTF-8 columns are what the compiler counts, so they need no conversion; UTF-16 is
+        // what every client must support.
+        let encodings = message.path(message.root, "params.capabilities.general.positionEncodings")
+        let mut clientUtf8 = false
+        if (encodings != none) {
+            for node in message.children(expect(encodings)) {
+                if (message.text(node).equals("utf-8")) { clientUtf8 = true }
+            }
+        }
+        self.utf16 = clientUtf8 == false
+        self.initialized = true
+
+        let out = JsonWriter()
+        out.beginObject()
+        out.key("capabilities")
+        out.beginObject()
+        out.key("positionEncoding")
+        if (self.utf16) { out.string("utf-16") } else { out.string("utf-8") }
+        out.key("textDocumentSync")
+        out.beginObject()
+        out.key("openClose")
+        out.bool(true)
+        out.key("change")
+        out.int(1)
+        out.key("save")
+        out.beginObject()
+        out.key("includeText")
+        out.bool(false)
+        out.endObject()
+        out.endObject()
+        out.endObject()
+        out.key("serverInfo")
+        out.beginObject()
+        out.key("name")
+        out.string("prismio")
+        out.key("version")
+        out.string(self.version)
+        out.endObject()
+        out.endObject()
+        self.send(rpcResult(idRaw, out.finish()))
+    }
+
+    fn didOpen(self, message: JsonDocument) {
+        let item = message.path(message.root, "params.textDocument").unwrapOr(0 - 1)
+        let uri = message.text(message.member(item, "uri").unwrapOr(0 - 1))
+        if (isFileUri(uri) == false) { return }
+        let version = message.int(message.member(item, "version").unwrapOr(0 - 1))
+        let text = message.text(message.member(item, "text").unwrapOr(0 - 1))
+        self.docs.open(uri, version, text)
+        self.markDirty(uriToPath(uri))
+    }
+
+    fn didChange(self, message: JsonDocument) {
+        let target = message.path(message.root, "params.textDocument").unwrapOr(0 - 1)
+        let uri = message.text(message.member(target, "uri").unwrapOr(0 - 1))
+        if (isFileUri(uri) == false) { return }
+        let version = message.int(message.member(target, "version").unwrapOr(0 - 1))
+        // Full synchronisation: the last change carries the whole text.
+        let changes = message.path(message.root, "params.contentChanges").unwrapOr(0 - 1)
+        let count = message.length(changes)
+        if (count == 0) { return }
+        let last = message.element(changes, count - 1).unwrapOr(0 - 1)
+        self.docs.change(uri, version, message.text(message.member(last, "text").unwrapOr(0 - 1)))
+        self.markDirty(uriToPath(uri))
+    }
+
+    // A closed document goes back to what is on disk, which may differ from what was typed.
+    fn didClose(self, message: JsonDocument) {
+        let uri = message.text(message.path(message.root, "params.textDocument.uri").unwrapOr(0 - 1))
+        self.docs.close(uri)
+        self.markDirty(uriToPath(uri))
+    }
+
+    // --- running the compiler ----------------------------------------------
+
+    // The text changed, so any run in flight is about text that no longer exists.
+    fn markDirty(self, path: String) {
+        self.analysis.cancel()
+        self.lastChangeMs = self.nowMs()
+        for known in self.dirty {
+            if (known.equals(path)) { return }
+        }
+        self.dirty.push(path.clone())
+    }
+
+    fn markAllDirty(self) {
+        for path in self.docs.paths { self.markDirty(path) }
+    }
+
+    fn textOf(self, path: String) -> String {
+        let at = self.docs.indexOfPath(path)
+        if (at != none) { return self.docs.text(expect(at)) }
+        return readFile(path)
+    }
+
+    fn startAnalysis(self) {
+        let path = self.dirty[0].clone()
+        let program = programFor(path, self.textOf(path))
+        // Every dirty file this run covers is done with it; the others wait for their own.
+        // Edited in place: reassigning the Vec would leak the one it replaces.
+        let mut at = 0
+        while (at < self.dirty.length) {
+            if (programFor(self.dirty[at], self.textOf(self.dirty[at])).entry.equals(program.entry)) {
+                self.dirty.removeAt(at)
+            } else {
+                at = at + 1
+            }
+        }
+        if (self.analysis.start(self.compiler, program, self.docs) == false) {
+            self.send(logMessage(1, "could not start ".concat(self.compiler, " to check ", program.entry)))
+        }
+    }
+
+    fn pumpAnalysis(self) {
+        if (self.analysis.pump() == false) { return }
+        let entry = self.analysis.entry()
+        let report = self.analysis.finish()
+        if (report.complete == false) {
+            // Killed or crashed. What was shown before is still the best answer there is.
+            self.send(logMessage(2, "checking ".concat(entry, " ended without a result")))
+            return
+        }
+        self.publish(entry, report)
+    }
+
+    // --- diagnostics --------------------------------------------------------
+
+    fn publish(self, entry: String, report: CheckReport) {
+        // Everything this run has something to say about, and every open document it covered
+        // even when it has nothing to say: an empty list is how a client learns a file was
+        // checked and is clean. A document the program never reached comes back from the
+        // compiler as "not part of the program" (P1075) and is left alone.
+        let mut paths: Vec<String> = []
+        let mut outside: Vec<String> = []
+        for found in report.diagnostics {
+            if (found.code.equals("P1075")) {
+                outside.push(found.message.clone())
+            }
+        }
+        self.addPath(paths, entry)
+        for found in report.diagnostics {
+            if (found.code.equals("P1075")) { continue }
+            if (found.path.equals("")) { continue }
+            self.addPath(paths, found.path)
+        }
+        for open in self.docs.paths {
+            let mentioned = self.mentionedAsOutside(outside, open)
+            if (mentioned == false and open.endsWith(".psm")) { self.addPath(paths, open) }
+        }
+
+        // Files this program reported before and no longer does are cleared.
+        let mut stale: Vec<String> = []
+        let mut at = 0
+        while (at < self.publishedUris.length) {
+            if (self.publishedOwners[at].equals(entry)) {
+                let path = uriToPath(self.publishedUris[at])
+                let mut still = false
+                for existing in paths {
+                    if (existing.equals(path)) { still = true }
+                }
+                if (still == false) { stale.push(self.publishedUris[at].clone()) }
+            }
+            at = at + 1
+        }
+        for uri in stale {
+            self.send(self.diagnosticsMessage(uri, "[]"))
+            self.forget(uri, entry)
+        }
+
+        for path in paths {
+            let uri = pathToUri(path)
+            self.send(self.diagnosticsMessage(uri, self.diagnosticsFor(path, entry, report)))
+            self.remember(uri, entry)
+        }
+    }
+
+    fn addPath(self, inout paths: Vec<String>, path: String) {
+        for existing in paths {
+            if (existing.equals(path)) { return }
+        }
+        paths.push(path.clone())
+    }
+
+    // Whether a P1075 message ("`<path>` is not part of the program ...") names `path`.
+    fn mentionedAsOutside(self, messages: Vec<String>, path: String) -> Bool {
+        for message in messages {
+            if (message.contains("`".concat(path, "`"))) { return true }
+        }
+        return false
+    }
+
+    fn remember(self, uri: String, owner: String) {
+        for i in 0..<self.publishedUris.length {
+            if (self.publishedUris[i].equals(uri) and self.publishedOwners[i].equals(owner)) { return }
+        }
+        self.publishedUris.push(uri.clone())
+        self.publishedOwners.push(owner.clone())
+    }
+
+    fn forget(self, uri: String, owner: String) {
+        let mut i = 0
+        while (i < self.publishedUris.length) {
+            if (self.publishedUris[i].equals(uri) and self.publishedOwners[i].equals(owner)) {
+                self.publishedUris.removeAt(i)
+                self.publishedOwners.removeAt(i)
+                return
+            }
+            i = i + 1
+        }
+    }
+
+    fn diagnosticsMessage(self, uri: String, diagnosticsJson: String) -> String {
+        let out = JsonWriter()
+        out.beginObject()
+        out.key("uri")
+        out.string(uri)
+        let at = self.docs.indexOfUri(uri)
+        if (at != none) {
+            out.key("version")
+            out.int(self.docs.versions[expect(at)])
+        }
+        out.key("diagnostics")
+        out.raw(diagnosticsJson)
+        out.endObject()
+        return rpcNotification("textDocument/publishDiagnostics", out.finish())
+    }
+
+    // The diagnostics of `path`, as a JSON array.
+    fn diagnosticsFor(self, path: String, entry: String, report: CheckReport) -> String {
+        let index = lineIndex(self.textOf(path))
+        let out = JsonWriter()
+        out.beginArray()
+        for found in report.diagnostics {
+            let mut owner = found.path.clone()
+            if (owner.equals("")) { owner = entry.clone() }
+            if (owner.equals(path) == false or found.code.equals("P1075")) { continue }
+            let start = index.position(found.line, found.column, self.utf16)
+            let end = index.position(found.line, found.column + found.length, self.utf16)
+            out.beginObject()
+            out.key("range")
+            out.beginObject()
+            out.key("start")
+            out.beginObject()
+            out.key("line")
+            out.int(start.line)
+            out.key("character")
+            out.int(start.character)
+            out.endObject()
+            out.key("end")
+            out.beginObject()
+            out.key("line")
+            out.int(end.line)
+            out.key("character")
+            out.int(end.character)
+            out.endObject()
+            out.endObject()
+            out.key("severity")
+            if (found.severity.equals("error")) { out.int(1) } else { out.int(2) }
+            if (found.code.equals("") == false) {
+                out.key("code")
+                out.string(found.code)
+            }
+            out.key("source")
+            out.string("prismio")
+            out.key("message")
+            out.string(found.message)
+            out.endObject()
+        }
+        out.endArray()
+        return out.finish()
+    }
+}

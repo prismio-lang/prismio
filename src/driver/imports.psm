@@ -42,14 +42,24 @@ extern fn compiler_use_freestanding_runtime()
 // call, and a zero-filled pointer is NULL, which is the empty cache this wants.
 let mut mergeTailPtr: Ptr
 
-// `check --overlay`: an editor's unsaved text for one file of the program.
-// Wherever the merge reads `overlayPath` -- as the entry or as a module some
-// import reaches -- it reads `overlayContents` instead, so the file keeps its
-// own path, its diagnostics name it, and an import cycle back to it is the file
-// already merged rather than a second copy.
-let mut overlayPath = ""
-let mut overlayContents = ""
-let mut overlayRead = false
+// `check --overlay`: an editor's unsaved text for files of the program, any number of them.
+// Wherever the merge reads an overlaid path -- as the entry or as a module some import
+// reaches -- it reads that overlay's text file instead, so the file keeps its own path, its
+// diagnostics name it, and an import cycle back to it is the file already merged rather
+// than a second copy. Parallel columns; a zero-filled global `Vec` is not an empty one, hence
+// `overlaysOpened`.
+let mut overlayPaths: Vec<String>
+let mut overlayFiles: Vec<String>
+let mut overlayReads: Vec<Bool>
+let mut overlaysOpened = false
+
+private fn overlaysOpen() {
+    if (overlaysOpened) { return }
+    overlayPaths = []
+    overlayFiles = []
+    overlayReads = []
+    overlaysOpened = true
+}
 
 // A path as read from the working directory, so one file named relatively on
 // one side of a comparison and absolutely on the other is still one file.
@@ -78,22 +88,44 @@ public fn entryModule() -> String {
     return entryModuleName.clone()
 }
 
-public fn setSourceOverlay(path: String, contents: String) {
-    overlayPath = absolutePath(path)
-    overlayContents = contents.clone()
-    overlayRead = false
+// `textFile` holds the text to read wherever the program reads `path`. Overlaying a path
+// twice keeps the later text.
+public fn addSourceOverlay(path: String, textFile: String) {
+    overlaysOpen()
+    let absolute = absolutePath(path)
+    for i in 0..<overlayPaths.length {
+        if (overlayPaths[i].equals(absolute)) {
+            overlayFiles[i] = textFile.clone()
+            overlayReads[i] = false
+            return
+        }
+    }
+    overlayPaths.push(absolute)
+    overlayFiles.push(textFile.clone())
+    overlayReads.push(false)
 }
 
 // Whether the program read the overlaid file at all: one it never imports was
 // not checked, and the caller has to say so rather than report it clean.
-public fn sourceOverlayRead() -> Bool {
-    return overlayRead
+public fn sourceOverlayRead(path: String) -> Bool {
+    overlaysOpen()
+    let absolute = absolutePath(path)
+    for i in 0..<overlayPaths.length {
+        if (overlayPaths[i].equals(absolute)) { return overlayReads[i] }
+    }
+    return false
 }
 
 public fn readSource(path: String) -> String {
-    if (overlayPath.equals("") == false and absolutePath(path).equals(overlayPath)) {
-        overlayRead = true
-        return readFile(overlayContents)
+    overlaysOpen()
+    if (overlayPaths.length > 0) {
+        let absolute = absolutePath(path)
+        for i in 0..<overlayPaths.length {
+            if (overlayPaths[i].equals(absolute)) {
+                overlayReads[i] = true
+                return readFile(overlayFiles[i])
+            }
+        }
     }
     return readFile(path)
 }
@@ -222,15 +254,18 @@ private fn resolveUnder(baseDir: String, relative: String) -> String {
 }
 
 // Compiler subsystems normally live below src/, which is also the source root.
-// UMS is deliberately different: it is a first-class toolchain subsystem beside
-// src/, not compiler implementation. Reserving the `ums` import root lets the
-// self-hosted CLI consume that subsystem without a mirror, symlink, or C bridge.
-// The rule is narrow on purpose so ordinary user module resolution remains
+// UMS and the language server are deliberately different: first-class toolchain
+// subsystems beside src/, not compiler implementation. Reserving the `ums` and `lsp`
+// import roots lets the self-hosted CLI consume them without a mirror, symlink, or C
+// bridge. The rule is narrow on purpose so ordinary user module resolution remains
 // relative to the entry source exactly as before.
-
+private fn isReservedRoot(moduleName: String) -> Bool {
+    return moduleName.equals("ums") or moduleName.startsWith("ums.")
+        or moduleName.equals("lsp") or moduleName.startsWith("lsp.")
+}
 
 private fn importBaseDir(baseDir: String, moduleName: String) -> String {
-    if (moduleName.equals("ums") or moduleName.startsWith("ums.")) {
+    if (isReservedRoot(moduleName)) {
         return directoryOf(baseDir)
     }
     return baseDir

@@ -50,6 +50,7 @@ private extern fn proc_env_set(name: String borrow, value: String borrow) -> Int
 private extern fn proc_env_remove(name: String borrow) -> Int
 private extern fn proc_env_all() -> String produce(rt_free)
 private extern fn proc_pid() -> Int
+private extern fn stdio_binary()
 
 private fn prismioStdProcessCopyInto(out: String, source: String, length: Int) {
     let mut i = 0
@@ -375,4 +376,12 @@ impl Process {
         processPushArguments(self.arguments)
         return proc_exec()
     }
+}
+
+// Makes standard input and output carry bytes, not text. On Windows the C library turns `\n`
+// into `\r\n` on the way out and ends input at a Ctrl-Z; a program that frames messages by
+// byte count (a language server) corrupts every message without this. Call it first, before
+// anything is read or written. Nothing happens on other systems.
+public fn useBinaryStdio() {
+    stdio_binary()
 }

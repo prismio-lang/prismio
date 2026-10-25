@@ -1,0 +1,47 @@
+// `prismio-lsp`: the language server as a program of its own.
+//
+// It is not part of the compiler binary, and that is a decision about memory. The ownership
+// analysis is whole-program, and it shares one allocation site per library function: the
+// compiler stores `substring` and `concat` results in containers all over its 85,000 lines, so
+// linked into it every string this server read from a message was treated as escaping and never
+// released -- a 99 KiB document leaked several copies of itself on every keystroke. Built alone
+// the same code releases everything (the allocation ledger reads 2 blocks and 0 bytes live per
+// edit). `prismio lsp` starts this program, so the command clients run is unchanged.
+//
+//     prismio-lsp [--compiler <path>] [--version <text>]
+//
+// `--compiler` is the `prismio` that runs each check; without it, the one beside this program.
+
+import lsp.server
+import std.fs
+import std.platform
+import std.process
+import std.string
+
+fn main() -> Int {
+    let mut compiler = "".clone()
+    let mut version = "unknown".clone()
+    let mut at = 1
+    while (at + 1 < process.args.count) {
+        let option = process.args[at]
+        if (option.equals("--compiler")) {
+            compiler = process.args[at + 1]
+            at = at + 2
+        } else if (option.equals("--version")) {
+            version = process.args[at + 1]
+            at = at + 2
+        } else {
+            at = at + 1
+        }
+    }
+    if (compiler.equals("")) {
+        let name = compilerFileName()
+        compiler = joinPath(executableDirectory(), name)
+    }
+    return lspServe(version, compiler)
+}
+
+fn compilerFileName() -> String {
+    if (platform.isWindows) { return "prismio.exe".clone() }
+    return "prismio".clone()
+}

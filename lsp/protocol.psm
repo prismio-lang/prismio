@@ -1,0 +1,43 @@
+// JSON-RPC 2.0 messages, as the Language Server Protocol uses them.
+//
+// Builders return the message body; `transport.writeMessage` frames it. Parameters and results
+// arrive as already-written JSON because the handlers build them with `JsonWriter` where they
+// know the shape, and this layer only adds the envelope.
+
+import std.json
+import std.string
+
+// JSON-RPC and LSP error codes.
+let PARSE_ERROR = 0 - 32700
+let INVALID_REQUEST = 0 - 32600
+let METHOD_NOT_FOUND = 0 - 32601
+let INVALID_PARAMS = 0 - 32602
+let INTERNAL_ERROR = 0 - 32603
+let SERVER_NOT_INITIALIZED = 0 - 32002
+let REQUEST_CANCELLED = 0 - 32800
+
+// `idRaw` is the request's id exactly as it arrived: a number or a string, and the reply must
+// repeat the same one.
+public fn rpcResult(idRaw: String, resultJson: String) -> String {
+    return "{\"jsonrpc\":\"2.0\",\"id\":".concat(idRaw, ",\"result\":", resultJson, "}")
+}
+
+public fn rpcError(idRaw: String, code: Int, message: String) -> String {
+    return "{\"jsonrpc\":\"2.0\",\"id\":".concat(idRaw, ",\"error\":{\"code\":", code.toString(),
+                                              ",\"message\":", jsonQuote(message), "}}")
+}
+
+public fn rpcNotification(method: String, paramsJson: String) -> String {
+    return "{\"jsonrpc\":\"2.0\",\"method\":".concat(jsonQuote(method), ",\"params\":", paramsJson, "}")
+}
+
+public fn rpcRequest(id: Int, method: String, paramsJson: String) -> String {
+    return "{\"jsonrpc\":\"2.0\",\"id\":".concat(id.toString(), ",\"method\":", jsonQuote(method),
+                                              ",\"params\":", paramsJson, "}")
+}
+
+// `window/logMessage`: 1 error, 2 warning, 3 info, 4 log.
+public fn logMessage(level: Int, text: String) -> String {
+    return rpcNotification("window/logMessage",
+        "{\"type\":".concat(level.toString(), ",\"message\":", jsonQuote(text), "}"))
+}

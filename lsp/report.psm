@@ -1,0 +1,86 @@
+// What `prismio check --diagnostic-format=json` said, read back.
+//
+// One JSON object per line on stderr (IDE_PROTOCOL.md): `diagnostic` records, a `note` that
+// explains the one before it, and a final `summary`. **A run with no summary line did not
+// finish** -- the compiler was killed, or crashed -- and says nothing about the program: the
+// server keeps what it showed before rather than clearing it, which a missing summary would
+// otherwise look like.
+
+import std.json
+import std.string
+import std.vec
+
+public struct CompilerDiagnostic {
+    // The file as the compiler registered it; "" for a message about the run, not a file.
+    public path: String,
+    public line: Int,
+    public column: Int,
+    public length: Int,
+    public severity: String,
+    public code: String,
+    public message: String
+}
+
+public struct CheckReport {
+    // Whether the summary line arrived.
+    public complete: Bool,
+    public errors: Int,
+    public warnings: Int,
+    public diagnostics: Vec<CompilerDiagnostic>
+}
+
+// A note rides on the diagnostic it follows, on its own line of the message, so the editor
+// shows them together and a client that lists problems does not list the note as one. The
+// diagnostic being built is held in locals until the next one starts: `let mut` bindings release
+// what they replace, and a field of a struct inside a Vec does not.
+public fn parseReport(stderr: String) -> CheckReport {
+    let mut report = CheckReport { complete: false, errors: 0, warnings: 0, diagnostics: [] }
+    let mut open = false
+    let mut path = "".clone()
+    let mut line = 0
+    let mut column = 0
+    let mut length = 0
+    let mut severity = "".clone()
+    let mut code = "".clone()
+    let mut message = "".clone()
+    for text in stderr.split("\n") {
+        if (text.startsWith("{") == false) { continue }
+        let doc = parseJson(text)
+        if (doc.ok == false) { continue }
+        let kind = doc.text(doc.member(doc.root, "kind").unwrapOr(0 - 1))
+        let isNote = kind.equals("diagnostic") and doc.text(doc.member(doc.root, "severity").unwrapOr(0 - 1)).equals("note")
+        if (isNote) {
+            message = message.concat("\n", doc.text(doc.member(doc.root, "message").unwrapOr(0 - 1)))
+            continue
+        }
+        if (open) {
+            report.diagnostics.push(CompilerDiagnostic {
+                path: path.clone(), line: line, column: column, length: length,
+                severity: severity.clone(), code: code.clone(), message: message.clone()
+            })
+            open = false
+        }
+        if (kind.equals("summary")) {
+            report.complete = true
+            report.errors = doc.int(doc.member(doc.root, "errors").unwrapOr(0 - 1))
+            report.warnings = doc.int(doc.member(doc.root, "warnings").unwrapOr(0 - 1))
+            continue
+        }
+        if (kind.equals("diagnostic") == false) { continue }
+        path = doc.text(doc.member(doc.root, "file").unwrapOr(0 - 1))
+        line = doc.int(doc.member(doc.root, "line").unwrapOr(0 - 1))
+        column = doc.int(doc.member(doc.root, "column").unwrapOr(0 - 1))
+        length = doc.int(doc.member(doc.root, "length").unwrapOr(0 - 1))
+        severity = doc.text(doc.member(doc.root, "severity").unwrapOr(0 - 1))
+        code = doc.text(doc.member(doc.root, "code").unwrapOr(0 - 1))
+        message = doc.text(doc.member(doc.root, "message").unwrapOr(0 - 1))
+        open = true
+    }
+    if (open) {
+        report.diagnostics.push(CompilerDiagnostic {
+            path: path.clone(), line: line, column: column, length: length,
+            severity: severity.clone(), code: code.clone(), message: message.clone()
+        })
+    }
+    return report
+}

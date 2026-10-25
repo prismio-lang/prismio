@@ -28,6 +28,20 @@ targets {
     // The compiler is an ordinary Prismio program who-se runtime and backend are
     // C. Nothing about it is built into the toolchain: this target names every
     // source, flag and library, and any project can declare the same things.
+    // The language server, a program of its own so that nothing in the compiler's 85,000 lines
+    // can decide a string it reads is never released (lsp/main.psm says why). `prismio lsp`
+    // starts the copy beside the compiler.
+    executable("prismio-lsp") {
+        entry = "lsp/main.psm"
+        // This checkout's runtime, compiled from source, as the compiler carries it: the build
+        // needs no installed toolchain, and a runtime/ edit reaches the server with the next build.
+        runtime = "none"
+        native {
+            source("runtime/lang_runtime.c", "runtime/program_support.c")
+            include("runtime")
+        }
+    }
+
     executable("prismio") {
         entry = "src/main.psm"
         // It carries this checkout's runtime, compiled from source, rather than

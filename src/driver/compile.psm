@@ -223,17 +223,26 @@ public fn dumpAstCommand(path: String) -> Int {
 // A module is checked as part of its program, not alone: the program's modules
 // share the names the merge gives them, so `parse/stmt.psm` can use a type it
 // never imports. An editor therefore checks the program's entry, with the file
-// being edited overlaid (`overlay`, read from `contents`; both "" for none).
+// being edited overlaid (`overlays`: file and text file, pairs; any number).
 // A module no program is at hand for is checked alone, as `module` ("" when
 // the file is a program).
-public fn checkCommand(path: String, overlay: String, contents: String, module: String) -> Int {
+public fn checkCommand(path: String, overlays: Vec<String>, module: String) -> Int {
     diag_progress_begin(path)
-    if (overlay.equals("") == false) { setSourceOverlay(overlay, contents) }
+    // `overlays` is pairs: the file, then the file holding its text.
+    let mut at = 0
+    while (at + 1 < overlays.length) {
+        addSourceOverlay(overlays[at], overlays[at + 1])
+        at = at + 2
+    }
     setEntryModuleName(module)
     analyzedModule(path)
-    if (overlay.equals("") == false and sourceOverlayRead() == false) {
-        diag_warning_code("P1075", diagQuote(overlay).concat(" is not part of the program ",
-            diagQuote(path), ", so it was not checked"))
+    at = 0
+    while (at + 1 < overlays.length) {
+        if (sourceOverlayRead(overlays[at]) == false) {
+            diag_warning_code("P1075", diagQuote(overlays[at]).concat(" is not part of the program ",
+                diagQuote(path), ", so it was not checked"))
+        }
+        at = at + 2
     }
     diag_finish()
     if (diag_error_count() > 0) {

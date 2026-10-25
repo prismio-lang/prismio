@@ -1,0 +1,133 @@
+// One run of the compiler's `check` over a program, in a child process.
+//
+// **Why a child.** The frontend keeps module-level state, has no way to be reset between runs,
+// and is not garbage collected; a long-lived server that called it in process would leak with
+// every keystroke and could be ended by any input. A child is crash isolated, cancelled by
+// killing it, and leaves nothing behind. It costs a process start per run (a `check` of a
+// small program is tens of milliseconds); docs/LSP_PLAN.md is where that is weighed against an
+// in-process analysis.
+//
+// The run is not waited for. `descriptor` is the child's stderr, for the server to wait on
+// beside everything else; `pump` reads what has arrived; the run is over when it answers true.
+
+import lsp.documents
+import lsp.projects
+import lsp.report
+import std.fs
+import std.option
+import std.process
+import std.string
+import std.vec
+
+public struct Analysis {
+    public active: Bool,
+    child: Child,
+    // The strings that change from run to run, in cells: 0 the program being checked, 1 what
+    // the child has written so far. **Replaced values live in a `Vec`, not in fields.** A store
+    // into a Vec element releases the value it displaces; a store into a struct field reached
+    // through `self` never does (the ownership analysis cannot prove the caller holds no view),
+    // so a field kept the text of every run it ever held.
+    cells: Vec<String>
+}
+
+fn analysisNoStream() -> Stream {
+    return Stream { descriptor: 0 - 1 }
+}
+
+fn analysisNoChild() -> Child {
+    return Child { handle: (0 - 1) as I64, stdin: analysisNoStream(), stdout: analysisNoStream(),
+                   stderr: analysisNoStream() }
+}
+
+// No run in progress. One of these lives as long as the server and `start` reuses it.
+public fn idleAnalysis() -> Analysis {
+    return Analysis {
+        active: false,
+        child: analysisNoChild(),
+        cells: ["".clone(), "".clone()]
+    }
+}
+
+impl Analysis {
+    // The program being checked: whose diagnostics a result is.
+    public fn entry(self) -> String {
+        return self.cells[0].clone()
+    }
+
+    // Starts `compiler check` over `program` with every open document's text overlaid: the file
+    // each document keeps its text in is handed over as it is. False if the process could not be
+    // started.
+    public fn start(self, compiler: String, program: Program, docs: Documents) -> Bool {
+        let mut arguments: Vec<String> = []
+        arguments.push("check")
+        arguments.push(program.entry.clone())
+        arguments.push("--diagnostic-format=json")
+        arguments.push("--partial")
+        if (program.module.equals("") == false) {
+            arguments.push("--module")
+            arguments.push(program.module.clone())
+        }
+
+        for i in 0..<docs.count() {
+            if (docs.files[i].equals("")) { continue }
+            arguments.push("--overlay")
+            arguments.push(docs.paths[i].clone())
+            arguments.push(docs.files[i].clone())
+        }
+
+        let process = Process()
+        process.program = compiler.clone()
+        process.arguments = arguments
+        // Nothing is read from the child but its stderr, and it must not share the server's
+        // standard input: those bytes are the client's messages.
+        process.stdin = StreamMode.Discard
+        process.stdout = StreamMode.Discard
+        process.stderr = StreamMode.Pipe
+        let child = process.spawn()
+        if (child.handle < 0) { return false }
+        self.child = child
+        self.cells[0] = program.entry.clone()
+        self.cells[1] = "".clone()
+        self.active = true
+        return true
+    }
+
+    // What to wait on: the child's stderr, or -1 when there is no run.
+    public fn descriptor(self) -> Int {
+        if (self.active == false) { return 0 - 1 }
+        return self.child.stderr.descriptor
+    }
+
+    // Reads whatever the child has written, which does not wait if the caller saw the
+    // descriptor ready. True once it has closed its end: the run is over.
+    public fn pump(self) -> Bool {
+        if (self.active == false) { return true }
+        let piece = self.child.stderr.readSome(65536)
+        if (piece.equals("")) { return true }
+        self.cells[1] = self.cells[1].concat(piece)
+        return false
+    }
+
+    // The result of a run that `pump` reported over. Reaps the child and removes the scratch
+    // files; the analysis is idle afterwards.
+    public fn finish(self) -> CheckReport {
+        let report = parseReport(self.cells[1])
+        self.release()
+        return report
+    }
+
+    // Ends a run whose result nobody wants (the text changed), without reading more of it.
+    public fn cancel(self) {
+        if (self.active == false) { return }
+        self.child.kill()
+        self.release()
+    }
+
+    fn release(self) {
+        self.child.wait()
+        self.child.stderr.close()
+        self.cells[1] = "".clone()
+        self.active = false
+        self.child = analysisNoChild()
+    }
+}

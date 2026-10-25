@@ -120,10 +120,50 @@ prismio check src/main.psm --diagnostic-format=json --partial
 Without the flag the output is exactly what it was. `build` never type checks a program that
 failed to parse.
 
+## The language server
+
+`prismio lsp` speaks the Language Server Protocol 3.17 over standard input and output. It is
+the boundary an editor should use: it checks the right program for the open file, with every
+unsaved buffer, and keeps up with typing. The one-shot `check` above is what it runs.
+
+```text
+prismio lsp          # started by the editor, no arguments
+```
+
+**What it provides (version 1):** `textDocumentSync` (open, close, full-text change, save) and
+`textDocument/publishDiagnostics`. Hover, definition, completion and the rest are not offered yet;
+the server answers any request it does not implement with `-32601`, and ignores notifications it
+does not know. Capabilities are only advertised for what works.
+
+**Diagnostics.** After the client has been quiet for 150 ms the server checks the program the
+changed file belongs to (the file itself if it declares `main`, else the nearest `build.ums` entry
+whose directory holds it, else the file alone; a standard-library module in a checkout is checked
+alone under its module name) with `--partial`, and every open document's text overlaid. Results
+are published per file, with the document `version` it was computed for, `source: "prismio"`, the
+`P####` code as `code`, severity error or warning, and a compiler note appended to its
+diagnostic's message on a line of its own. A file that had diagnostics and no longer does gets an
+empty list. A check that is killed or crashes publishes nothing and is reported with
+`window/logMessage`: the last answer stays. An edit while a check runs kills it and starts over.
+
+**Positions.** `initialize` negotiates `positionEncoding`: `utf-8` when the client offers it,
+else `utf-16`. The conversion from the compiler's byte columns happens in one place
+(`lsp/positions.psm`).
+
+**Process.** The server is a program of its own, `prismio-lsp`, installed beside `prismio`;
+`prismio lsp` replaces itself with it, so a client needs no other path. `PRISMIO_LSP_CHECK` names
+a different executable to run the checks (tests, or an editor that wants another build to do the
+checking). Exit status follows the protocol: 0 after `shutdown` and `exit`, 1 otherwise. It keeps
+no document text in memory (each open document's text lives in a scratch file, which is also the
+overlay the compiler reads), so its memory stays flat however long it runs and however large the
+file; `tests/test_runner.py` (`lsp`) holds it to that.
+
+**Writing a client.** The test client `tests/lsp_client.py` is a complete example of the wire
+format. A client needs: spawn `prismio lsp`, `initialize` / `initialized`, `didOpen` for each open
+`.psm` file, `didChange` with the whole text (`contentChanges[-1].text`), `didClose`, and
+`shutdown` / `exit`. `build.ums` is not analysed yet: opening it produces no diagnostics.
+
 ## Current boundary
 
-Each invocation is one process over files: unsaved text arrives through
-`--overlay`, one file per run. Cancellation messages, symbol queries, completion
-and long-lived workspace state are outside this protocol version; those require
-a daemon or language-server protocol rather than more flags on a one-shot
-compiler process.
+Each `check` invocation is one process over files: unsaved text arrives through
+`--overlay`, any number of files per run. Symbol queries, completion and hover are not
+part of it; they are the language server's to answer (docs/LSP_PLAN.md, Phase 2).

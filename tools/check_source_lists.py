@@ -75,11 +75,17 @@ def runtime_table():
 
 
 def manifest_native_sources():
-    """The `source(...)` arguments of build.ums, in order, as runtime/ file names.
+    """The `source(...)` arguments of the compiler's target in build.ums, in order, as runtime/ file names.
 
     Read with a pattern rather than the UMS parser, for the reason every reader
     here is a pattern: this runs before any compiler exists."""
     text = read(REPO / "build.ums")
+    # Only the compiler's target. The language server carries two of the same files and is not
+    # the compiler: bootstrap builds the compiler alone.
+    start = text.find('executable("prismio")')
+    if start < 0:
+        raise Failure('build.ums has no executable("prismio") target')
+    text = text[start:]
     names = []
     for call in re.findall(r"\bsource\(([^)]*)\)", text):
         for value in re.findall(r'"([^"]+)"', call):

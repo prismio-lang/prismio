@@ -667,37 +667,54 @@ int fs_metadata(const char* path, FsMetadataOut* out) {
     return 1;
 }
 
-char* prismio_executable_directory(void) {
+// The running executable's path, written into `out`; 0 when the platform cannot say.
+static int executable_path_into(char* out, size_t size) {
 #ifdef _WIN32
-    char exe_path[1024];
-    DWORD len = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
-    if (len > 0 && len < sizeof(exe_path)) {
-        return get_directory(exe_path);
-    }
+    DWORD len = GetModuleFileNameA(NULL, out, (DWORD)size);
+    if (len > 0 && len < size) return 1;
 
-    if (__argc > 0 && __argv[0] && __argv[0][0] != '\0') {
-        return get_directory(__argv[0]);
+    if (__argc > 0 && __argv[0] && __argv[0][0] != '\0' && strlen(__argv[0]) < size) {
+        strcpy(out, __argv[0]);
+        return 1;
     }
 #elif defined(__APPLE__)
     // macOS has no /proc, so the Linux branch below silently fails there.
     char raw_path[1024];
-    uint32_t size = sizeof(raw_path);
-    if (_NSGetExecutablePath(raw_path, &size) == 0) {
-        char resolved_path[1024];
-        if (realpath(raw_path, resolved_path) != NULL) {
-            return get_directory(resolved_path);
+    uint32_t raw_size = sizeof(raw_path);
+    if (_NSGetExecutablePath(raw_path, &raw_size) == 0) {
+        if (realpath(raw_path, out) != NULL) return 1;
+        if (strlen(raw_path) < size) {
+            strcpy(out, raw_path);
+            return 1;
         }
-        return get_directory(raw_path);
     }
 #else
-    char exe_path[1024];
-    ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+    ssize_t len = readlink("/proc/self/exe", out, size - 1);
     if (len > 0) {
-        exe_path[len] = '\0';
-        return get_directory(exe_path);
+        out[len] = '\0';
+        return 1;
     }
 #endif
-    return NULL;
+    return 0;
+}
+
+char* prismio_executable_directory(void) {
+    char path[1024];
+    if (!executable_path_into(path, sizeof(path))) return NULL;
+    return get_directory(path);
+}
+
+// The full path of this executable, for a program that starts a copy of itself: a name looked
+// up on PATH would find whichever `prismio` comes first there, not the one that is running.
+// "" when the platform cannot say.
+char* executable_path(void) {
+    char path[1024];
+    size_t length = executable_path_into(path, sizeof(path)) ? strlen(path) : 0;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (!out) return NULL;
+    if (length > 0) memcpy(out, path, length);
+    out[length] = '\0';
+    return out;
 }
 
 char* executable_directory(void) {
@@ -1602,6 +1619,16 @@ char* io_stdin_read_all(void) {
     out[length] = '\0';
     r->start = r->end;
     return out;
+}
+
+// Standard input and output carry bytes, not text. Windows translates `\n` to `\r\n` on the
+// way out and stops reading at a Ctrl-Z, which corrupts any protocol that counts bytes; the
+// CRT's per-descriptor mode is the switch. A no-op everywhere else.
+void stdio_binary(void) {
+#ifdef _WIN32
+    _setmode(0, _O_BINARY);
+    _setmode(1, _O_BINARY);
+#endif
 }
 
 // Exactly `count` bytes of standard input, or fewer when it ends first, found

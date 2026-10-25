@@ -57,6 +57,7 @@ internal extern fn get_directory(path: String borrow) -> String produce(rt_free)
 internal extern fn join_path(directory: String borrow, filename: String borrow) -> String produce(rt_free)
 internal extern fn current_directory() -> String produce(rt_free)
 internal extern fn executable_directory() -> String produce(rt_free)
+internal extern fn executable_path() -> String produce(rt_free)
 internal extern fn list_modules(directory: String borrow) -> String produce(rt_free)
 
 public fn fileExists(path: String) -> Bool {
@@ -122,6 +123,13 @@ public fn currentDirectory() -> String {
 // to find files shipped beside it. `"."` when the platform cannot answer.
 public fn executableDirectory() -> String {
     return executable_directory()
+}
+
+// The full path of the running executable, for a program that starts a copy of itself. A bare
+// name would be looked up on PATH and might find a different build. "" when the platform
+// cannot say.
+public fn executablePath() -> String {
+    return executable_path()
 }
 
 // The `.psm` files in `directory`, sorted by name.

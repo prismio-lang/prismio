@@ -27,6 +27,7 @@
 // Strictly RFC 8259: no comments, no trailing commas, no raw control characters in a string,
 // no leading zeros. Nesting deeper than 256 is refused rather than recursed into.
 
+import std.io
 import std.option
 import std.string
 import std.vec
@@ -42,14 +43,14 @@ enum JsonKind {
 
 // Kinds as stored in the tape. An enum is its own type and a column of them is a column of
 // words either way; plain integers keep the parser's comparisons cheap.
-let KIND_NULL = 0
-let KIND_BOOL = 1
-let KIND_NUMBER = 2
-let KIND_STRING = 3
-let KIND_ARRAY = 4
-let KIND_OBJECT = 5
+let JSON_KIND_NULL = 0
+let JSON_KIND_BOOL = 1
+let JSON_KIND_NUMBER = 2
+let JSON_KIND_STRING = 3
+let JSON_KIND_ARRAY = 4
+let JSON_KIND_OBJECT = 5
 
-let MAX_DEPTH = 256
+let JSON_MAX_DEPTH = 256
 
 public struct JsonDocument {
     // False when the text was not valid JSON; then `error` and `errorAt` say why and where,
@@ -72,33 +73,26 @@ public struct JsonDocument {
     counts: Vec<Int>
 }
 
+// Where the parser is in the text. Scalars only: the columns being built live in the document
+// the parser is handed (`inout`), and are never moved between two structs. Building them in the
+// parser and moving them into a `JsonDocument` at the end looks the same and leaks -- a struct
+// that has had fields moved out of it is not released, so every message a server read left its
+// copy of the text behind -- and so does keeping the document as a field of the parser.
 struct JsonParser {
-    text: String,
     length: Int,
     at: Int,
     depth: Int,
-    failed: Bool,
-    message: String,
-    failedAt: Int,
-    kinds: Vec<Int>,
-    starts: Vec<Int>,
-    ends: Vec<Int>,
-    escaped: Vec<Int>,
-    firsts: Vec<Int>,
-    nexts: Vec<Int>,
-    counts: Vec<Int>
+    failed: Bool
 }
 
 // Reads `text` as one JSON value, with only whitespace around it.
 public fn parseJson(text: String) -> JsonDocument {
-    let parser = JsonParser {
-        text: text.clone(),
-        length: text.length,
-        at: 0,
-        depth: 0,
-        failed: false,
-        message: "",
-        failedAt: 0,
+    let mut doc = JsonDocument {
+        ok: true,
+        error: "",
+        errorAt: 0,
+        root: 0 - 1,
+        source: text.clone(),
         kinds: [],
         starts: [],
         ends: [],
@@ -107,46 +101,34 @@ public fn parseJson(text: String) -> JsonDocument {
         nexts: [],
         counts: []
     }
-    parser.skipSpace()
-    let root = parser.parseValue()
-    parser.skipSpace()
+    let parser = JsonParser { length: text.length, at: 0, depth: 0, failed: false }
+    parser.skipSpace(doc)
+    let root = parser.parseValue(doc)
+    parser.skipSpace(doc)
     if (parser.failed == false and parser.at < parser.length) {
-        parser.fail("unexpected text after the value")
+        parser.fail(doc, "unexpected text after the value")
     }
-    let mut start = root
-    if (parser.failed) { start = 0 - 1 }
-    return JsonDocument {
-        ok: parser.failed == false,
-        error: parser.message.clone(),
-        errorAt: parser.failedAt,
-        root: start,
-        source: parser.text.clone(),
-        kinds: parser.kinds,
-        starts: parser.starts,
-        ends: parser.ends,
-        escaped: parser.escaped,
-        firsts: parser.firsts,
-        nexts: parser.nexts,
-        counts: parser.counts
-    }
+    if (parser.failed == false) { doc.root = root }
+    return doc
 }
 
 impl JsonParser {
-    fn fail(self, message: String) {
+    fn fail(self, inout doc: JsonDocument, message: String) {
         if (self.failed) { return }
         self.failed = true
-        self.message = message
-        self.failedAt = self.at
+        doc.error = message.clone()
+        doc.ok = false
+        doc.errorAt = self.at
     }
 
-    fn peek(self) -> Int {
+    fn peek(self, inout doc: JsonDocument) -> Int {
         if (self.at >= self.length) { return 0 - 1 }
-        return self.text.byteAt(self.at) as Int
+        return doc.source.byteAt(self.at) as Int
     }
 
-    fn skipSpace(self) {
+    fn skipSpace(self, inout doc: JsonDocument) {
         loop {
-            let c = self.peek()
+            let c = self.peek(doc)
             if (c == 32 or c == 9 or c == 10 or c == 13) {
                 self.at = self.at + 1
             } else {
@@ -156,272 +138,270 @@ impl JsonParser {
     }
 
     // A node whose bytes are known, its children not yet.
-    fn add(self, kind: Int, start: Int, end: Int) -> Int {
-        let node = self.kinds.length
-        self.kinds.push(kind)
-        self.starts.push(start)
-        self.ends.push(end)
-        self.escaped.push(0)
-        self.firsts.push(0 - 1)
-        self.nexts.push(0 - 1)
-        self.counts.push(0)
+    fn add(self, inout doc: JsonDocument, kind: Int, start: Int, end: Int) -> Int {
+        let node = doc.kinds.length
+        doc.kinds.push(kind)
+        doc.starts.push(start)
+        doc.ends.push(end)
+        doc.escaped.push(0)
+        doc.firsts.push(0 - 1)
+        doc.nexts.push(0 - 1)
+        doc.counts.push(0)
         return node
     }
 
-    fn expectWord(self, word: String, kind: Int) -> Int {
+    fn expectWord(self, inout doc: JsonDocument, word: String, kind: Int) -> Int {
         let start = self.at
-        if (self.length - self.at < word.length or self.text.substring(self.at, word.length).equals(word) == false) {
-            self.fail("expected a JSON value")
+        if (self.length - self.at < word.length or doc.source.substring(self.at, word.length).equals(word) == false) {
+            self.fail(doc, "expected a JSON value")
             return 0 - 1
         }
         self.at = self.at + word.length
-        return self.add(kind, start, self.at)
+        return self.add(doc, kind, start, self.at)
     }
 
-    fn parseValue(self) -> Int {
+    fn parseValue(self, inout doc: JsonDocument) -> Int {
         if (self.failed) { return 0 - 1 }
-        let c = self.peek()
-        if (c == 123) { return self.parseObject() }
-        if (c == 91) { return self.parseArray() }
-        if (c == 34) { return self.parseString() }
-        if (c == 116) { return self.expectWord("true", KIND_BOOL) }
-        if (c == 102) { return self.expectWord("false", KIND_BOOL) }
-        if (c == 110) { return self.expectWord("null", KIND_NULL) }
-        if (c == 45 or (c >= 48 and c <= 57)) { return self.parseNumber() }
-        self.fail("expected a JSON value")
+        let c = self.peek(doc)
+        if (c == 123) { return self.parseObject(doc) }
+        if (c == 91) { return self.parseArray(doc) }
+        if (c == 34) { return self.parseString(doc) }
+        if (c == 116) { return self.expectWord(doc, "true", JSON_KIND_BOOL) }
+        if (c == 102) { return self.expectWord(doc, "false", JSON_KIND_BOOL) }
+        if (c == 110) { return self.expectWord(doc, "null", JSON_KIND_NULL) }
+        if (c == 45 or (c >= 48 and c <= 57)) { return self.parseNumber(doc) }
+        self.fail(doc, "expected a JSON value")
         return 0 - 1
     }
 
-    fn digits(self) -> Int {
+    fn digits(self, inout doc: JsonDocument) -> Int {
         let start = self.at
         loop {
-            let c = self.peek()
+            let c = self.peek(doc)
             if (c >= 48 and c <= 57) { self.at = self.at + 1 } else { break }
         }
         return self.at - start
     }
 
     // -?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?
-    fn parseNumber(self) -> Int {
+    fn parseNumber(self, inout doc: JsonDocument) -> Int {
         let start = self.at
-        if (self.peek() == 45) { self.at = self.at + 1 }
-        let leading = self.peek()
+        if (self.peek(doc) == 45) { self.at = self.at + 1 }
+        let leading = self.peek(doc)
         let firstDigit = self.at
-        let whole = self.digits()
+        let whole = self.digits(doc)
         if (whole == 0) {
-            self.fail("expected a digit")
+            self.fail(doc, "expected a digit")
             return 0 - 1
         }
         if (leading == 48 and whole > 1) {
             self.at = firstDigit + 1
-            self.fail("a number cannot have a leading zero")
+            self.fail(doc, "a number cannot have a leading zero")
             return 0 - 1
         }
-        if (self.peek() == 46) {
+        if (self.peek(doc) == 46) {
             self.at = self.at + 1
-            if (self.digits() == 0) {
-                self.fail("expected a digit after the decimal point")
+            if (self.digits(doc) == 0) {
+                self.fail(doc, "expected a digit after the decimal point")
                 return 0 - 1
             }
         }
-        let e = self.peek()
+        let e = self.peek(doc)
         if (e == 101 or e == 69) {
             self.at = self.at + 1
-            let sign = self.peek()
+            let sign = self.peek(doc)
             if (sign == 43 or sign == 45) { self.at = self.at + 1 }
-            if (self.digits() == 0) {
-                self.fail("expected a digit in the exponent")
+            if (self.digits(doc) == 0) {
+                self.fail(doc, "expected a digit in the exponent")
                 return 0 - 1
             }
         }
-        return self.add(KIND_NUMBER, start, self.at)
+        return self.add(doc, JSON_KIND_NUMBER, start, self.at)
     }
 
-    fn parseString(self) -> Int {
+    fn parseString(self, inout doc: JsonDocument) -> Int {
         self.at = self.at + 1
         let start = self.at
         let mut hasEscape = 0
         loop {
-            let c = self.peek()
+            let c = self.peek(doc)
             if (c < 0) {
-                self.fail("unterminated string")
+                self.fail(doc, "unterminated string")
                 return 0 - 1
             }
             if (c == 34) { break }
             if (c < 32) {
-                self.fail("a control character in a string must be escaped")
+                self.fail(doc, "a control character in a string must be escaped")
                 return 0 - 1
             }
             if (c == 92) {
                 hasEscape = 1
                 self.at = self.at + 1
-                let next = self.peek()
+                let next = self.peek(doc)
                 if (next < 0) {
-                    self.fail("unterminated string")
+                    self.fail(doc, "unterminated string")
                     return 0 - 1
                 }
             }
             self.at = self.at + 1
         }
-        let node = self.add(KIND_STRING, start, self.at)
-        self.escaped[node] = hasEscape
+        let node = self.add(doc, JSON_KIND_STRING, start, self.at)
+        doc.escaped[node] = hasEscape
         self.at = self.at + 1
         return node
     }
 
-    fn parseArray(self) -> Int {
+    fn parseArray(self, inout doc: JsonDocument) -> Int {
         let start = self.at
         self.at = self.at + 1
         self.depth = self.depth + 1
-        if (self.depth > MAX_DEPTH) {
-            self.fail("nested more than 256 deep")
+        if (self.depth > JSON_MAX_DEPTH) {
+            self.fail(doc, "nested more than 256 deep")
             return 0 - 1
         }
-        let node = self.add(KIND_ARRAY, start, start)
+        let node = self.add(doc, JSON_KIND_ARRAY, start, start)
         let mut last = 0 - 1
-        self.skipSpace()
-        if (self.peek() == 93) {
+        self.skipSpace(doc)
+        if (self.peek(doc) == 93) {
             self.at = self.at + 1
         } else {
             loop {
-                self.skipSpace()
-                let element = self.parseValue()
+                self.skipSpace(doc)
+                let element = self.parseValue(doc)
                 if (self.failed) { return 0 - 1 }
-                last = self.link(node, last, element)
-                self.skipSpace()
-                let c = self.peek()
+                last = self.link(doc, node, last, element)
+                self.skipSpace(doc)
+                let c = self.peek(doc)
                 self.at = self.at + 1
                 if (c == 93) { break }
                 if (c != 44) {
                     self.at = self.at - 1
-                    self.fail("expected `,` or `]`")
+                    self.fail(doc, "expected `,` or `]`")
                     return 0 - 1
                 }
             }
         }
-        self.ends[node] = self.at
+        doc.ends[node] = self.at
         self.depth = self.depth - 1
         return node
     }
 
-    fn parseObject(self) -> Int {
+    fn parseObject(self, inout doc: JsonDocument) -> Int {
         let start = self.at
         self.at = self.at + 1
         self.depth = self.depth + 1
-        if (self.depth > MAX_DEPTH) {
-            self.fail("nested more than 256 deep")
+        if (self.depth > JSON_MAX_DEPTH) {
+            self.fail(doc, "nested more than 256 deep")
             return 0 - 1
         }
-        let node = self.add(KIND_OBJECT, start, start)
+        let node = self.add(doc, JSON_KIND_OBJECT, start, start)
         let mut last = 0 - 1
-        self.skipSpace()
-        if (self.peek() == 125) {
+        self.skipSpace(doc)
+        if (self.peek(doc) == 125) {
             self.at = self.at + 1
         } else {
             loop {
-                self.skipSpace()
-                if (self.peek() != 34) {
-                    self.fail("expected a string for the member name")
+                self.skipSpace(doc)
+                if (self.peek(doc) != 34) {
+                    self.fail(doc, "expected a string for the member name")
                     return 0 - 1
                 }
-                let name = self.parseString()
+                let name = self.parseString(doc)
                 if (self.failed) { return 0 - 1 }
-                self.skipSpace()
-                if (self.peek() != 58) {
-                    self.fail("expected `:` after the member name")
+                self.skipSpace(doc)
+                if (self.peek(doc) != 58) {
+                    self.fail(doc, "expected `:` after the member name")
                     return 0 - 1
                 }
                 self.at = self.at + 1
-                self.skipSpace()
-                let value = self.parseValue()
+                self.skipSpace(doc)
+                let value = self.parseValue(doc)
                 if (self.failed) { return 0 - 1 }
-                last = self.link(node, last, name)
-                last = self.link(node, last, value)
-                self.counts[node] = self.counts[node] + 1
-                self.skipSpace()
-                let c = self.peek()
+                last = self.link(doc, node, last, name)
+                last = self.link(doc, node, last, value)
+                doc.counts[node] = doc.counts[node] + 1
+                self.skipSpace(doc)
+                let c = self.peek(doc)
                 self.at = self.at + 1
                 if (c == 125) { break }
                 if (c != 44) {
                     self.at = self.at - 1
-                    self.fail("expected `,` or `}`")
+                    self.fail(doc, "expected `,` or `}`")
                     return 0 - 1
                 }
             }
         }
-        self.ends[node] = self.at
+        doc.ends[node] = self.at
         self.depth = self.depth - 1
         return node
     }
 
     // Appends `child` after `last` in `parent`'s chain, and answers it as the new last.
-    fn link(self, parent: Int, last: Int, child: Int) -> Int {
+    fn link(self, inout doc: JsonDocument, parent: Int, last: Int, child: Int) -> Int {
         if (last < 0) {
-            self.firsts[parent] = child
+            doc.firsts[parent] = child
         } else {
-            self.nexts[last] = child
+            doc.nexts[last] = child
         }
-        if (self.kinds[parent] == KIND_ARRAY) {
-            self.counts[parent] = self.counts[parent] + 1
+        if (doc.kinds[parent] == JSON_KIND_ARRAY) {
+            doc.counts[parent] = doc.counts[parent] + 1
         }
         return child
     }
 }
 
-fn isHexDigit(c: Int) -> Bool {
+// `length` bytes of `source` from `start`, in an allocation of their own. Built byte by byte
+// rather than with `substring`: the ownership analysis shares one allocation site per library
+// function, so whether a `substring` result is released depends on what every other caller in the
+// program does with theirs, and a server that read strings out of every message leaked them.
+fn jsonCopy(source: String, start: Int, length: Int) -> String {
+    let out = str_with_capacity(length)
+    let mut i = 0
+    while (i < length) {
+        __builtin_string_put_byte(out, i, source.byteAt(start + i) as Char)
+        i = i + 1
+    }
+    return out
+}
+
+fn jsonIsHexDigit(c: Int) -> Bool {
     return (c >= 48 and c <= 57) or (c >= 97 and c <= 102) or (c >= 65 and c <= 70)
 }
 
-fn hexValue(c: Int) -> Int {
+fn jsonHexValue(c: Int) -> Int {
     if (c >= 48 and c <= 57) { return c - 48 }
     if (c >= 97 and c <= 102) { return c - 87 }
     return c - 55
 }
 
-fn byteText(code: Int) -> String {
-    return (code as Char).toString()
-}
-
-// A Unicode scalar value as UTF-8.
-fn utf8Text(code: Int) -> String {
-    if (code < 128) { return byteText(code) }
-    if (code < 2048) { return byteText(192 + code / 64).concat(byteText(128 + code % 64)) }
-    if (code < 65536) {
-        return byteText(224 + code / 4096).concat(byteText(128 + (code / 64) % 64), byteText(128 + code % 64))
-    }
-    return byteText(240 + code / 262144).concat(byteText(128 + (code / 4096) % 64),
-                                                byteText(128 + (code / 64) % 64),
-                                                byteText(128 + code % 64))
-}
-
 impl JsonDocument {
     public fn kind(self, node: Int) -> JsonKind {
         let k = self.kinds[node]
-        if (k == KIND_BOOL) { return JsonKind.Bool }
-        if (k == KIND_NUMBER) { return JsonKind.Number }
-        if (k == KIND_STRING) { return JsonKind.String }
-        if (k == KIND_ARRAY) { return JsonKind.Array }
-        if (k == KIND_OBJECT) { return JsonKind.Object }
+        if (k == JSON_KIND_BOOL) { return JsonKind.Bool }
+        if (k == JSON_KIND_NUMBER) { return JsonKind.Number }
+        if (k == JSON_KIND_STRING) { return JsonKind.String }
+        if (k == JSON_KIND_ARRAY) { return JsonKind.Array }
+        if (k == JSON_KIND_OBJECT) { return JsonKind.Object }
         return JsonKind.Null
     }
 
     public fn isNull(self, node: Int) -> Bool {
-        return node >= 0 and self.kinds[node] == KIND_NULL
+        return node >= 0 and self.kinds[node] == JSON_KIND_NULL
     }
 
     public fn isObject(self, node: Int) -> Bool {
-        return node >= 0 and self.kinds[node] == KIND_OBJECT
+        return node >= 0 and self.kinds[node] == JSON_KIND_OBJECT
     }
 
     public fn isArray(self, node: Int) -> Bool {
-        return node >= 0 and self.kinds[node] == KIND_ARRAY
+        return node >= 0 and self.kinds[node] == JSON_KIND_ARRAY
     }
 
     // How many elements an array has, or members an object has; 0 for anything else.
     public fn length(self, node: Int) -> Int {
         if (node < 0) { return 0 }
         let k = self.kinds[node]
-        if (k != KIND_ARRAY and k != KIND_OBJECT) { return 0 }
+        if (k != JSON_KIND_ARRAY and k != JSON_KIND_OBJECT) { return 0 }
         return self.counts[node]
     }
 
@@ -498,45 +478,48 @@ impl JsonDocument {
     }
 
     // A string value's characters with its escapes decoded, "" for any other kind.
+    // **Always a copy of its own.** A substring of `source` returned as it is reads, to the
+    // ownership analysis, as a view of the document; passed on to another function it makes the
+    // whole document look like it escapes, and a server that read a string out of every message
+    // then leaked the message's entire tape (16 blocks) per message.
     public fn text(self, node: Int) -> String {
-        if (node < 0 or self.kinds[node] != KIND_STRING) { return "" }
+        if (node < 0 or self.kinds[node] != JSON_KIND_STRING) { return "".clone() }
         let start = self.starts[node]
-        let raw = self.source.substring(start, self.ends[node] - start)
-        if (self.escaped[node] == 0) { return raw }
-        return decodeEscapes(raw)
+        if (self.escaped[node] == 0) { return jsonCopy(self.source, start, self.ends[node] - start) }
+        return jsonDecodeEscapes(jsonCopy(self.source, start, self.ends[node] - start))
     }
 
     // A number as an integer, or the bool/number/string under `node` read leniently:
     // 0 when it is not a number, and the part before the point of a decimal.
     public fn int(self, node: Int) -> Int {
-        if (node < 0 or self.kinds[node] != KIND_NUMBER) { return 0 }
+        if (node < 0 or self.kinds[node] != JSON_KIND_NUMBER) { return 0 }
         let start = self.starts[node]
         let whole = self.source.substring(start, self.ends[node] - start)
         return whole.parseInt().unwrapOr(whole.parseFloat().unwrapOr(0.0) as Int)
     }
 
     public fn float(self, node: Int) -> Float {
-        if (node < 0 or self.kinds[node] != KIND_NUMBER) { return 0.0 }
+        if (node < 0 or self.kinds[node] != JSON_KIND_NUMBER) { return 0.0 }
         let start = self.starts[node]
         return self.source.substring(start, self.ends[node] - start).parseFloat().unwrapOr(0.0)
     }
 
     public fn bool(self, node: Int) -> Bool {
-        if (node < 0 or self.kinds[node] != KIND_BOOL) { return false }
+        if (node < 0 or self.kinds[node] != JSON_KIND_BOOL) { return false }
         return self.source.byteAt(self.starts[node]) == 116
     }
 
     // The value exactly as written, to put back unchanged: a JSON-RPC response echoes the
     // request's `id`, which may be a number or a string and must come back as the same one.
     public fn raw(self, node: Int) -> String {
-        if (node < 0) { return "null" }
+        if (node < 0) { return "null".clone() }
         let mut start = self.starts[node]
         let mut end = self.ends[node]
-        if (self.kinds[node] == KIND_STRING) {
+        if (self.kinds[node] == JSON_KIND_STRING) {
             start = start - 1
             end = end + 1
         }
-        return self.source.substring(start, end - start)
+        return jsonCopy(self.source, start, end - start)
     }
 
     // Where in the source the value begins, for a message about it.
@@ -546,97 +529,169 @@ impl JsonDocument {
     }
 }
 
-// The characters a string's backslash escapes stand for. `raw` was accepted by the
-// parser, so every escape is one of the eight single-character ones or `\u` with four
-// digits -- except that the parser does not look inside, so a bad one becomes U+FFFD
-// here rather than failing a document that was otherwise readable.
-fn decodeEscapes(raw: String) -> String {
-    let mut out = ""
-    let mut run = 0
-    let mut i = 0
+// The characters a string's backslash escapes stand for. `raw` was accepted by the parser, so
+// every escape is one of the eight single-character ones or `\u` with four digits -- except
+// that the parser does not look inside, so a bad one becomes U+FFFD here rather than failing a
+// document that was otherwise readable.
+//
+// **Two passes over one allocation.** The first measures the decoded text, the second writes it.
+// Appending as it went (`out = out.concat(...)` once per escape) copied everything decoded so
+// far on every escape, which is quadratic: a 100 KiB document with a few thousand newlines
+// took half a gigabyte of churn to read.
+fn jsonDecodeEscapes(raw: String) -> String {
+    let length = jsonDecodeScan(raw, raw, false)
+    let out = str_with_capacity(length)
+    jsonDecodeScan(raw, out, true)
+    return out
+}
+
+// Walks `raw` decoding its escapes. Returns the decoded length; writes the bytes to `out` when
+// `write` is set. One routine for both passes, so they cannot disagree about a surrogate pair.
+fn jsonDecodeScan(raw: String, out: String, write: Bool) -> Int {
     let n = raw.length
+    let mut at = 0
+    let mut i = 0
     while (i < n) {
-        if (raw.byteAt(i) != 92) {
+        let c = raw.byteAt(i)
+        if (c != 92) {
+            if (write) { __builtin_string_put_byte(out, at, c as Char) }
+            at = at + 1
             i = i + 1
             continue
         }
-        if (i > run) { out = out.concat(raw.substring(run, i - run)) }
         let mut e = 0
-        if (i + 1 < n) { e = raw.byteAt(i + 1) as Int }
+        if (i + 1 < n) { e = raw.byteAt(i + 1) }
         i = i + 2
-        if (e == 110) { out = out.concat("\n") }
-        else if (e == 116) { out = out.concat("\t") }
-        else if (e == 114) { out = out.concat("\r") }
-        else if (e == 98) { out = out.concat(byteText(8)) }
-        else if (e == 102) { out = out.concat(byteText(12)) }
-        else if (e == 34) { out = out.concat("\"") }
-        else if (e == 92) { out = out.concat("\\") }
-        else if (e == 47) { out = out.concat("/") }
-        else if (e == 117) {
-            let high = hexQuad(raw, i)
+        let mut single = 0 - 1
+        if (e == 110) { single = 10 }
+        else if (e == 116) { single = 9 }
+        else if (e == 114) { single = 13 }
+        else if (e == 98) { single = 8 }
+        else if (e == 102) { single = 12 }
+        else if (e == 34) { single = 34 }
+        else if (e == 92) { single = 92 }
+        else if (e == 47) { single = 47 }
+        if (single >= 0) {
+            if (write) { __builtin_string_put_byte(out, at, single as Char) }
+            at = at + 1
+            continue
+        }
+        let mut code = 65533
+        if (e == 117) {
+            let high = jsonHexQuad(raw, i)
             i = i + 4
-            let mut code = high
+            code = high
             if (high >= 55296 and high <= 56319 and i + 5 < n and raw.byteAt(i) == 92 and raw.byteAt(i + 1) == 117) {
-                let low = hexQuad(raw, i + 2)
+                let low = jsonHexQuad(raw, i + 2)
                 if (low >= 56320 and low <= 57343) {
                     code = 65536 + (high - 55296) * 1024 + (low - 56320)
                     i = i + 6
                 }
             }
             if (code < 0 or (code >= 55296 and code <= 57343)) { code = 65533 }
-            out = out.concat(utf8Text(code))
-        } else {
-            out = out.concat(utf8Text(65533))
         }
-        run = i
+        at = at + jsonPutScalar(out, at, code, write)
     }
-    if (n > run) { out = out.concat(raw.substring(run, n - run)) }
-    return out
+    return at
+}
+
+// The UTF-8 bytes of scalar `code` written at `at` when `write` is set; how many there are.
+fn jsonPutScalar(out: String, at: Int, code: Int, write: Bool) -> Int {
+    if (code < 128) {
+        if (write) { __builtin_string_put_byte(out, at, code as Char) }
+        return 1
+    }
+    if (code < 2048) {
+        if (write) {
+            __builtin_string_put_byte(out, at, (192 + code / 64) as Char)
+            __builtin_string_put_byte(out, at + 1, (128 + code % 64) as Char)
+        }
+        return 2
+    }
+    if (code < 65536) {
+        if (write) {
+            __builtin_string_put_byte(out, at, (224 + code / 4096) as Char)
+            __builtin_string_put_byte(out, at + 1, (128 + (code / 64) % 64) as Char)
+            __builtin_string_put_byte(out, at + 2, (128 + code % 64) as Char)
+        }
+        return 3
+    }
+    if (write) {
+        __builtin_string_put_byte(out, at, (240 + code / 262144) as Char)
+        __builtin_string_put_byte(out, at + 1, (128 + (code / 4096) % 64) as Char)
+        __builtin_string_put_byte(out, at + 2, (128 + (code / 64) % 64) as Char)
+        __builtin_string_put_byte(out, at + 3, (128 + code % 64) as Char)
+    }
+    return 4
 }
 
 // Four hex digits at `at` as a number, or -1.
-fn hexQuad(raw: String, at: Int) -> Int {
+fn jsonHexQuad(raw: String, at: Int) -> Int {
     if (at + 4 > raw.length) { return 0 - 1 }
     let mut value = 0
     let mut k = 0
     while (k < 4) {
-        let c = raw.byteAt(at + k) as Int
-        if (isHexDigit(c) == false) { return 0 - 1 }
-        value = value * 16 + hexValue(c)
+        let c = raw.byteAt(at + k)
+        if (jsonIsHexDigit(c) == false) { return 0 - 1 }
+        value = value * 16 + jsonHexValue(c)
         k = k + 1
     }
     return value
 }
 
-// `text` as a JSON string literal, quotes included.
+// `text` as a JSON string literal, quotes included. Two passes over one allocation, for the
+// reason `jsonDecodeEscapes` gives.
 public fn jsonQuote(text: String) -> String {
+    let length = jsonQuoteScan(text, text, false)
+    let out = str_with_capacity(length)
+    jsonQuoteScan(text, out, true)
+    return out
+}
+
+// The bytes `text` takes as a JSON literal; written to `out` when `write` is set.
+fn jsonQuoteScan(text: String, out: String, write: Bool) -> Int {
     let n = text.length
-    let mut out = "\""
-    let mut run = 0
+    let digits = "0123456789abcdef"
+    let mut at = 0
+    if (write) { __builtin_string_put_byte(out, at, '"') }
+    at = at + 1
     let mut i = 0
     while (i < n) {
-        let c = text.byteAt(i) as Int
+        let c = text.byteAt(i)
+        i = i + 1
         if (c >= 32 and c != 34 and c != 92) {
-            i = i + 1
+            if (write) { __builtin_string_put_byte(out, at, c as Char) }
+            at = at + 1
             continue
         }
-        if (i > run) { out = out.concat(text.substring(run, i - run)) }
-        if (c == 34) { out = out.concat("\\\"") }
-        else if (c == 92) { out = out.concat("\\\\") }
-        else if (c == 10) { out = out.concat("\\n") }
-        else if (c == 13) { out = out.concat("\\r") }
-        else if (c == 9) { out = out.concat("\\t") }
-        else if (c == 8) { out = out.concat("\\b") }
-        else if (c == 12) { out = out.concat("\\f") }
-        else {
-            let digits = "0123456789abcdef"
-            out = out.concat("\\u00", digits.substring(c / 16, 1), digits.substring(c % 16, 1))
+        let mut short = 0
+        if (c == 34) { short = 34 }
+        else if (c == 92) { short = 92 }
+        else if (c == 10) { short = 110 }
+        else if (c == 13) { short = 114 }
+        else if (c == 9) { short = 116 }
+        else if (c == 8) { short = 98 }
+        else if (c == 12) { short = 102 }
+        if (short > 0) {
+            if (write) {
+                __builtin_string_put_byte(out, at, '\\')
+                __builtin_string_put_byte(out, at + 1, short as Char)
+            }
+            at = at + 2
+            continue
         }
-        i = i + 1
-        run = i
+        if (write) {
+            __builtin_string_put_byte(out, at, '\\')
+            __builtin_string_put_byte(out, at + 1, 'u')
+            __builtin_string_put_byte(out, at + 2, '0')
+            __builtin_string_put_byte(out, at + 3, '0')
+            __builtin_string_put_byte(out, at + 4, digits.byteAt(c / 16) as Char)
+            __builtin_string_put_byte(out, at + 5, digits.byteAt(c % 16) as Char)
+        }
+        at = at + 6
     }
-    if (n > run) { out = out.concat(text.substring(run, n - run)) }
-    return out.concat("\"")
+    if (write) { __builtin_string_put_byte(out, at, '"') }
+    return at + 1
 }
 
 // Builds a document in one pass. Commas and the colon after a key are the writer's job:

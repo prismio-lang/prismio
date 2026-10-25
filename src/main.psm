@@ -12,7 +12,7 @@ import {text, diagnostics, terminal, target} from common
 import std.string
 import aifcore.layout_search
 
-from std import {io, string, option, process, fs}
+from std import {io, string, option, process, fs, platform, vec}
 from ast import {nodes, dump}
 
 // Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
@@ -86,8 +86,9 @@ let USAGE =
                      [--target-features <list>] [--code-model <model>] [--no-red-zone]]
       prismio run <source.psm> [-o output] [-g] [--overflow-checks] [--jit]
                     [-- args...]
-      prismio check <source.psm> [--diagnostic-format=json]
-                    [--overlay <file.psm> <text>] [--module <name>]
+      prismio check <source.psm> [--diagnostic-format=json] [--partial]
+                    [--overlay <file.psm> <text>]... [--module <name>]
+      prismio lsp                  the language server, over standard input and output
 
       prismio --version            which compiler, LLVM and standard library
       prismio --help-all           every command and flag, the compiler-development ones too
@@ -137,7 +138,9 @@ let USAGE_DEVELOPER =
           --verify builds with the allocation ledger.
 
           check --overlay reads <file.psm>, wherever the program reaches it, from
-          the file <text> instead -- an editor's unsaved buffer. Check a module
+          the file <text> instead -- an editor's unsaved buffer; repeat it for each
+          unsaved file. --partial type checks what parsed, holding back errors that
+          only the unparsed text caused. Check a module
           through its program's entry, since a module uses names its program
           shares: `prismio check src/main.psm --overlay src/parse/stmt.psm buf`.
           --module names a module checked on its own, as its importers name it:
@@ -256,6 +259,25 @@ private fn cliRuntimeHash() -> Int {
     return 0
 }
 
+// `prismio lsp`: starts the language server, which is a program of its own beside this one
+// (lsp/main.psm; the reason is in its header). Replaces this process, so the client's pipes are
+// the server's. A packaged toolchain has it in bin/; a checkout has it where `prismio build` put
+// it.
+private fn cliLsp() -> Int {
+    let mut name = "prismio-lsp"
+    if (platform.isWindows) { name = "prismio-lsp.exe" }
+    let server = joinPath(executableDirectory(), name)
+    if (fileExists(server) == false) {
+        diag_error_code("P1099", "the language server is not installed: no ".concat(server))
+        diag_note("`prismio build` in a checkout, or an installed toolchain, provides it")
+        return 1
+    }
+    let launch = Process()
+    launch.program = server
+    launch.arguments = ["--compiler", executablePath(), "--version", PRISMIO_VERSION]
+    return launch.exec()
+}
+
 private fn cliCheck() -> Int {
     if (process.args.count <= 2) {
         diag_error_code("P1025", "missing source file")
@@ -263,8 +285,7 @@ private fn cliCheck() -> Int {
         return 1
     }
 
-    let mut overlay = ""
-    let mut contents = ""
+    let mut overlays: Vec<String> = []
     let mut module = ""
     let mut checkArg = 3
     while (checkArg < process.args.count) {
@@ -279,8 +300,8 @@ private fn cliCheck() -> Int {
                 pointAtUsage()
                 return 1
             }
-            overlay = process.args[checkArg + 1].clone()
-            contents = process.args[checkArg + 2].clone()
+            overlays.push(process.args[checkArg + 1].clone())
+            overlays.push(process.args[checkArg + 2].clone())
             checkArg = checkArg + 2
         } else if (option.equals("--module")) {
             if (checkArg + 1 >= process.args.count) {
@@ -298,7 +319,7 @@ private fn cliCheck() -> Int {
         checkArg = checkArg + 1
     }
 
-    return checkCommand(process.args[2], overlay, contents, module)
+    return checkCommand(process.args[2], overlays, module)
 }
 
 // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
@@ -465,6 +486,7 @@ fn main() -> Int {
     // reimplemented in the packaging script.
     if (first.equals("runtime-hash")) { return cliRuntimeHash() }
     if (first.equals("check")) { return cliCheck() }
+    if (first.equals("lsp")) { return cliLsp() }
     // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
     // touches no codegen, so it cannot affect what `build` generates. Exists for
     // the AIF memory-model work, which analyses the real AST out-of-process.

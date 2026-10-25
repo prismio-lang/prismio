@@ -171,7 +171,8 @@ def check_floor(staged: Path, work: Path) -> tuple:
         return (f"compiler macOS {macos_minos(compiler)}+ \u00b7 its programs {macos_minos(program)}+", [])
     elif WINDOWS:
         needed = {}
-        for binary in [compiler, program, *sorted((staged / "bin").glob("*.dll"))]:
+        server = staged / "bin" / f"prismio-lsp{EXE}"
+        for binary in [compiler, program, server, *sorted((staged / "bin").glob("*.dll"))]:
             r = run([llvm_objdump(), "--private-headers", binary])
             names = re.findall(r"DLL Name: (\S+)", r.stdout)
             needed[binary.name] = names

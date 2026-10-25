@@ -1,0 +1,112 @@
+// Where things are in a document: lines, and the two ways a column is counted.
+//
+// The compiler reports a 1-based line and a 1-based column in UTF-8 bytes
+// (IDE_PROTOCOL.md). An LSP client counts a column in UTF-16 code units unless the server and
+// client agreed on UTF-8 during `initialize`. **This is the one place the two meet**: nothing
+// else in the server does arithmetic on columns, so an `é` or an emoji earlier on the line
+// cannot be handled differently in two features.
+
+import std.string
+import std.vec
+
+public struct Position {
+    public line: Int,
+    public character: Int
+}
+
+// Where each line of a document starts, so a line is found without rescanning the text.
+public struct LineIndex {
+    public text: String,
+    starts: Vec<Int>
+}
+
+public fn lineIndex(text: String) -> LineIndex {
+    let mut starts: Vec<Int> = [0]
+    let n = text.length
+    let mut i = 0
+    while (i < n) {
+        if (text.byteAt(i) == 10) { starts.push(i + 1) }
+        i = i + 1
+    }
+    return LineIndex { text: text.clone(), starts: starts }
+}
+
+// How many UTF-16 code units a scalar whose first byte is `lead` takes: four-byte UTF-8
+// (U+10000 and up) is a surrogate pair.
+fn positionUtf16Units(lead: Int) -> Int {
+    if (lead >= 240) { return 2 }
+    return 1
+}
+
+fn positionIsContinuation(byte: Int) -> Bool {
+    return byte >= 128 and byte < 192
+}
+
+impl LineIndex {
+    public fn lineCount(self) -> Int {
+        return self.starts.length
+    }
+
+    // The byte offset where the 0-based `line` starts, clamped to the document.
+    public fn lineStart(self, line: Int) -> Int {
+        if (line <= 0) { return 0 }
+        if (line >= self.starts.length) { return self.text.length }
+        return self.starts[line]
+    }
+
+    // The byte offset just past the last character of the 0-based `line`, before its newline.
+    public fn lineEnd(self, line: Int) -> Int {
+        if (line + 1 >= self.starts.length) { return self.text.length }
+        let next = self.starts[line + 1]
+        if (next > 0 and self.text.byteAt(next - 1) == 10) { return next - 1 }
+        return next
+    }
+
+    // The compiler's 1-based `line` and byte `column` as the client counts them.
+    public fn position(self, line: Int, byteColumn: Int, utf16: Bool) -> Position {
+        let zeroLine = positionZeroBased(line)
+        if (utf16 == false) {
+            return Position { line: zeroLine, character: positionZeroBased(byteColumn) }
+        }
+        let start = self.lineStart(zeroLine)
+        let stop = start + positionZeroBased(byteColumn)
+        let limit = self.lineEnd(zeroLine)
+        let mut units = 0
+        let mut at = start
+        while (at < stop and at < limit) {
+            let byte = self.text.byteAt(at)
+            if (positionIsContinuation(byte) == false) { units = units + positionUtf16Units(byte) }
+            at = at + 1
+        }
+        // A column past the end of the line counts the characters it would have had.
+        if (stop > limit) { units = units + (stop - limit) }
+        return Position { line: zeroLine, character: units }
+    }
+
+    // The byte offset in the document of a client position: the inverse of `position`, used
+    // when a request names a place in the text.
+    public fn offset(self, line: Int, character: Int, utf16: Bool) -> Int {
+        let start = self.lineStart(line)
+        let limit = self.lineEnd(line)
+        if (utf16 == false) {
+            let at = start + character
+            if (at > limit) { return limit }
+            return at
+        }
+        let mut units = 0
+        let mut at = start
+        while (at < limit and units < character) {
+            let byte = self.text.byteAt(at)
+            units = units + positionUtf16Units(byte)
+            at = at + 1
+            while (at < limit and positionIsContinuation(self.text.byteAt(at))) { at = at + 1 }
+        }
+        return at
+    }
+}
+
+// A 1-based number as 0-based, never below zero (a diagnostic without a location is line 0).
+fn positionZeroBased(n: Int) -> Int {
+    if (n < 1) { return 0 }
+    return n - 1
+}

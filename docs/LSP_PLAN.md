@@ -4,8 +4,14 @@
 IntelliJ plugin and the Phase 3 VS Code extension both become thin clients of it.
 
 This plan fixes **where each piece of language knowledge lives**, what the compiler must
-change before a server can exist, and the order to build it in. Nothing here is built yet
-except the `check` boundary described in `IDE_PROTOCOL.md`.
+change before a server can exist, and the order to build it in.
+
+**Status (2026-10-25): Phase 0 and Phase 1 are built.** `prismio lsp` serves diagnostics for
+open files with unsaved buffers, debounced and cancelled, on one thread (`lsp/`); the contract a
+client needs is in `IDE_PROTOCOL.md` ("The language server"). Not built: the semantic index and
+every feature that needs it (Phase 2), `prismio fmt`, exported token tables, and both editors'
+use of the server (the IntelliJ migration and the VS Code extension are separate work, picked
+up from the section "Handing over to the clients" at the end).
 
 ## Why now
 
@@ -157,23 +163,54 @@ motivates step 3.
 
 ### Where the server is written
 
-In Prismio, as `lsp/` beside `ums/`, built into the same `prismio` binary and started as
-`prismio lsp`. Versioning then follows the toolchain, which is the property the plugin
-works hard for today ("completion and error checking follow the version of the compiler
-you pick"). Both editors only need to spawn one command.
+In Prismio, as `lsp/` beside `ums/`, built as **its own program, `prismio-lsp`**, installed
+beside `prismio`; `prismio lsp` replaces itself with it. Versioning follows the toolchain,
+which is the property the plugin works hard for today ("completion and error checking follow
+the version of the compiler you pick"). Both editors only need to spawn one command.
 
-Missing pieces (checked in `std/`, 2026-10-25):
+**It is not part of the compiler binary, and that is a measured decision.** The ownership
+analysis is whole-program and shares one allocation site per library function. The compiler stores
+`substring` and `concat` results in containers throughout its 85,000 lines, so linked into it every
+string the server read from a message was treated as escaping and never released: a 99 KiB document
+leaked several copies of itself per keystroke, 515 MB at open, 2.2 GB after twenty edits, then the
+operating system killed the process. Built alone, the same code releases everything. The `prismio lsp`
+command, which is the interface, is unchanged by this.
 
-| Gap | Where | Size |
-|---|---|---|
-| Read exactly N bytes of stdin (LSP `Content-Length` framing). `std.input` has lines and read-all only, and `Stream { descriptor: 0 }` bypasses its buffer | `runtime/program_support.c` + `std/input.psm` (`io_stdin_take_bytes`); follows the seam/`produce(rt_free)` rules in `CLAUDE.md` | small |
-| JSON value parse + write | new `std/json.psm`; useful beyond the server | medium |
-| Pipes to a child: `std.process` has `Child`/`Stream`, `kill`, `wait` | exists; `readAll` blocks to EOF, so the server reads the index through a file or a bounded reader | check |
-| Concurrency: reader thread + worker | channels and `spawn` exist | exists |
+What the missing pieces turned out to be, and what was built (all in `std/`, all used by the
+server, none specific to it):
 
-The escape hatch: the server talks to analysis only through the child-process boundary, so
-if Prismio-hosted I/O proves too costly, the front can be replaced without touching the
-compiler.
+| Needed | Built |
+|---|---|
+| exactly N bytes of stdin, for `Content-Length` framing | `std.input.readBytes`, through the line reader's own buffer |
+| wait on stdin and a child's pipe, with a timeout | `std.poll.waitReadable` (`poll(2)`; `PeekNamedPipe` on Windows, untested here) |
+| read what a child has written so far; ask if it has exited | `Stream.readSome`, `Child.tryWait` |
+| JSON | `std.json`: a tape reader, strict RFC 8259, and a writer |
+| binary stdio on Windows, own executable path | `useBinaryStdio`, `executablePath` |
+| several unsaved buffers per check | `check --overlay` repeated; `--partial` |
+
+Compiler defects found and fixed along the way: storing a variable into an `Int?` stored 0
+(`std.json` found it); `check` stopped at the first syntax error; an unresolved operand also
+reported "operator requires numeric operands"; a program could read only 256 files, and a module
+past that lost its diagnostic locations.
+
+**Rules the server code follows because the ownership analysis requires them** (found by
+measuring; the allocation ledger, `--verify`, and its *peak live bytes* are how):
+
+1. A function returning a `String` allocates it on every path. `return ""` makes the whole result
+   unowned and leaks the others (`"".clone()`).
+2. Do not store a library result (`substring`, `trim`) in a container as it is: push a `.clone()`.
+3. Private functions share one namespace across the merged program: prefix them (`uriHexDigit`).
+4. **Replace nothing in a `Vec<String>` or a struct field.** A Vec element store, `removeAt` or
+   `pop` keeps the displaced value until the Vec dies, and a field store through `self` never
+   releases it; a local `let mut` binding does. This is why a document's text lives in a file, and why
+   the ledger read clean while memory grew: its exit-time total counts parked values as released.
+   Use *peak live bytes*, and watch the process, not only the ledger.
+5. Build large strings in two passes over one allocation (`str_with_capacity` plus
+   `__builtin_string_put_byte`, `std/` only). Appending with `concat` in a loop is quadratic.
+
+Measured result with those rules: 1,200 edits of a 99 KiB document hold the server at 2.8 to 3.0 MB;
+a small document grows 0.27 KB per edit; an edit reaches published diagnostics in 160 ms, of which
+150 is the debounce.
 
 ## Compiler prerequisites (Phase 0)
 
@@ -215,7 +252,9 @@ failed, and with the loop exits removed it fails 90 of 5,884, so the net does ca
 what it is for); byte-identical output for valid programs (351 programs in `tests/`, the
 hosted benchmarks, and `src/main.psm` itself).
 
-**Phase 1: server skeleton + diagnostics.** `std.input` byte read, `std/json.psm`,
+**Phase 1: server skeleton + diagnostics. Done 2026-10-25** (two items left: the IntelliJ
+setting that switches its annotator to the server's diagnostics, which is client work, and the
+Windows halves of the poll primitive, untested here). `std.input` byte read, `std/json.psm`,
 `lsp/` with transport, document store, scheduler, child analysis, `publishDiagnostics`,
 `$/cancelRequest`, `initialize` negotiation including position encoding. Gate: a scripted
 LSP client (fixture with recorded request/response streams, rust-analyzer's "heavy test"
@@ -277,3 +316,29 @@ cache, then the body-independent item summary.
   together), so it may change freely. The LSP surface and `IDE_PROTOCOL.md`'s `check`
   JSON are the stable edges; per rust-analyzer's lesson, anything third parties might
   depend on needs an explicit version field before it has users.
+
+## Handing over to the clients
+
+The compiler side of Phase 1 is complete and committed. What a client session can rely on:
+
+- **`prismio lsp`** over stdio, LSP 3.17, full-text sync, diagnostics only. The contract is
+  `IDE_PROTOCOL.md`; `tests/lsp_client.py` is a working client in 130 lines, and the `lsp` fixture in
+  `tests/test_runner.py` shows every behaviour it has (negotiation, positions, unsaved buffers,
+  bursts, a crashed check, invalid input, memory).
+- **IntelliJ.** Spawn `prismio lsp` through the platform LSP API (all IDEs since 2025.3, not Android
+  Studio; spike LSP4IJ if a feature is missing). Keep its lexer-based highlighting, run configurations,
+  wizard and settings. Then delete, in this order and one package per commit, with the old external
+  annotator's output as the differential: `annotator/PrismioExternalAnnotator`, `PrismioCheckTarget`
+  (the server decides the program now). The semantic features (`symbols/`, completion, navigation,
+  imports, documentation, hints, formatter) wait for Phase 2's index; do not delete them yet.
+- **VS Code (Phase 3).** `vscode-languageclient` starting `prismio lsp`; a TextMate grammar (the
+  token tables are not exported yet, Phase 0 item 4, so generate it from the plugin's
+  `lexer/PrismioLexer.java` and `lang/PrismioWords.java` for now and replace it when they are);
+  tasks from `build.ums`. Anything over about 300 lines of TypeScript is logic that belongs in the server.
+- **Do not hardcode the server path**: `prismio lsp` is the interface, it finds its own server, and
+  `PRISMIO_LSP_CHECK` is only for tests.
+
+Next for the compiler: Phase 2, the semantic index (`check --emit-index`) and the read-only
+features on top of it, then `prismio fmt` and the exported token tables. The first concrete step is
+the index schema in "The semantic index" above; the `--partial` mode is what lets it exist for
+a file that is mid-edit.

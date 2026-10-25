@@ -1,0 +1,107 @@
+// The documents the editor has open, with the text it has typed into them.
+//
+// What is on disk is the compiler's to read; what the editor has typed is what it must read
+// instead (`check --overlay`), because the editor's buffer is the source of truth for a file it
+// has open. **The text is not held in memory.** Each open document has a file of its own in the
+// server's scratch directory, rewritten on every change, and that file is the overlay handed to
+// the compiler as it is. Holding the text in a `Vec<String>` instead was the one thing that grew
+// without bound: the ownership analysis parks a value a Vec element store displaces until the Vec
+// dies, so every keystroke kept the whole previous text (100 KiB a keystroke in a large file).
+// A local `String` is released the moment it is replaced, and a file is simply overwritten.
+//
+// Parallel columns, as elsewhere: a handful of open documents makes a linear search the right
+// structure, and nothing here is a hot path.
+
+import lsp.uri
+import std.fs
+import std.option
+import std.string
+import std.vec
+
+public struct Documents {
+    public uris: Vec<String>,
+    public paths: Vec<String>,
+    public versions: Vec<Int>,
+    // The file holding each document's current text; "" for a document that is not Prismio
+    // source and so is never overlaid.
+    public files: Vec<String>,
+    directory: String,
+    created: Int
+}
+
+public fn documents(directory: String) -> Documents {
+    return Documents { uris: [], paths: [], versions: [], files: [], directory: directory.clone(), created: 0 }
+}
+
+impl Documents {
+    public fn count(self) -> Int {
+        return self.uris.length
+    }
+
+    public fn indexOfUri(self, uri: String) -> Int? {
+        for i in 0..<self.uris.length {
+            if (self.uris[i].equals(uri)) { return i }
+        }
+        return none
+    }
+
+    public fn indexOfPath(self, path: String) -> Int? {
+        for i in 0..<self.paths.length {
+            if (self.paths[i].equals(path)) { return i }
+        }
+        return none
+    }
+
+    // The text of document `i`.
+    public fn text(self, i: Int) -> String {
+        if (self.files[i].equals("")) { return "".clone() }
+        return readFile(self.files[i])
+    }
+
+    // Opening a document that is already open replaces its text, as a client that reconnects does.
+    public fn open(self, uri: String, version: Int, text: String) {
+        let at = self.indexOfUri(uri)
+        if (at != none) {
+            let i = expect(at)
+            self.versions[i] = version
+            if (self.files[i].equals("") == false) { writeFile(self.files[i], text) }
+            return
+        }
+        let path = uriToPath(uri)
+        let mut file = "".clone()
+        if (path.endsWith(".psm")) {
+            self.created = self.created + 1
+            file = joinPath(self.directory, "doc-".concat(self.created.toString(), ".psm"))
+            writeFile(file, text)
+        }
+        self.uris.push(uri.clone())
+        // Pushed as copies: see lsp/uri.psm on why a library result is not stored as it is.
+        self.paths.push(path.clone())
+        self.versions.push(version)
+        self.files.push(file.clone())
+    }
+
+    // The full text of a change. A client that sends a change for a document it never opened has
+    // made a mistake the server can survive: the text is kept as an open document.
+    public fn change(self, uri: String, version: Int, text: String) {
+        self.open(uri, version, text)
+    }
+
+    public fn close(self, uri: String) {
+        let at = self.indexOfUri(uri)
+        if (at == none) { return }
+        let i = expect(at)
+        if (self.files[i].equals("") == false) { deleteFile(self.files[i]) }
+        self.uris.removeAt(i)
+        self.paths.removeAt(i)
+        self.versions.removeAt(i)
+        self.files.removeAt(i)
+    }
+
+    // Removes every scratch file: the server is going away.
+    public fn discard(self) {
+        for file in self.files {
+            if (file.equals("") == false) { deleteFile(file) }
+        }
+    }
+}

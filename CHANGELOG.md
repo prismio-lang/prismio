@@ -9,6 +9,25 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`prismio lsp`: a language server.** LSP 3.17 over standard input and output: document synchronisation and
+  `publishDiagnostics`, computed by the compiler itself. After the client is quiet for 150 ms it runs `prismio
+  check --partial` over the program the edited file belongs to (the file if it declares `main`, else the nearest
+  `build.ums` entry, a standard-library module under its module name) with **every open document's unsaved text
+  overlaid**, publishes per file with the document version and the `P####` code, clears files that became clean, and
+  keeps the last answer if a check is killed or crashes. An edit while a check runs kills it. One thread: it waits on
+  the client and the running check together (`std.poll`), so cancellation is a `kill`. Columns are UTF-8 when the
+  client offers it, else UTF-16, converted in one place. It is a program of its own, **`prismio-lsp`**, beside
+  `prismio` (`build.ums` target `prismio-lsp`, built by `tools/package.py`, copied by `tools/run_suite.py`);
+  `prismio lsp` replaces itself with it (`P1099` if it is missing). Not part of the compiler binary on purpose:
+  linked into it, the whole-program ownership analysis never released the strings the server read, and a 99 KiB
+  document leaked several copies of itself per keystroke (515 MB at open, 2.2 GB after twenty edits). Built alone it
+  holds 1,200 edits of a 99 KiB document at 2.8-3.0 MB. Document text is kept in a file per document, not in memory
+  (a `Vec` element store parks what it displaces). `check --overlay` now takes any number of buffers. `lsp/`,
+  `IDE_PROTOCOL.md` ("The language server"), `docs/LSP_PLAN.md`; the `lsp` fixture in `tests/test_runner.py` (negotiation,
+  positions in both encodings, unsaved buffers, partial analysis, a burst of 40 edits, a killed check, invalid input,
+  memory) with the Python client `tests/lsp_client.py`. Diagnostics only so far; hover, definition and completion
+  need the semantic index (Phase 2 of the plan). `std.fs.executablePath()` and `std.process.useBinaryStdio()` came with it.
+
 - **A program can serve a client and supervise a child on one thread.** `std.poll.waitReadable` waits on one, two or
   many descriptors with a timeout and answers which has something to read (`poll_clear` / `poll_add` / `poll_wait` in
   `runtime/program_support.c`; `poll(2)` on POSIX, a 1 ms `PeekNamedPipe` loop for pipes on Windows). Descriptor 0 counts

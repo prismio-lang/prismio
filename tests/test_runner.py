@@ -2285,6 +2285,307 @@ def run_source_file_limit_test():
     return True
 
 
+def run_lsp_test():
+    """`prismio lsp`: the language server, spoken to over its pipes as an editor does.
+
+    The server holds no knowledge of Prismio -- every diagnostic is the compiler's -- so what is
+    tested is the protocol and the plumbing around the compiler: negotiation, positions in the
+    unit the client counts, unsaved buffers reaching the compiler, a burst of edits becoming
+    one check, a check that dies leaving the last answer in place, input that is not valid, and
+    that none of it leaks a byte per keystroke. The client is Python (tests/lsp_client.py), so
+    a framing bug in the server is a failure here and not something both halves agree on.
+    """
+    print(f"\n{BLUE}--- Running lsp ---{RESET}")
+    sys.path.insert(0, str(TEST_DIR))
+    from lsp_client import LspClient
+    import subprocess as sp
+
+    problems = []
+    env = {"PRISMIO_INTERNAL_HOSTED": "1"}
+
+    def note(condition, message):
+        if not condition:
+            problems.append(message)
+        return condition
+
+    def start(extra_env=None):
+        merged = dict(env)
+        if extra_env:
+            merged.update(extra_env)
+        return LspClient([str(PRISMIO_EXE), "lsp"], env=merged)
+
+    def opened(client, path, text, version=1):
+        uri = path.resolve().as_uri()
+        client.notify("textDocument/didOpen", {"textDocument": {
+            "uri": uri, "languageId": "prismio", "version": version, "text": text}})
+        return uri
+
+    def edited(client, uri, text, version):
+        client.notify("textDocument/didChange", {
+            "textDocument": {"uri": uri, "version": version},
+            "contentChanges": [{"text": text}]})
+
+    def messages_of(diagnostics):
+        return sorted(d["message"] for d in diagnostics["diagnostics"])
+
+    def server_rss(client):
+        out = sp.run(["ps", "-o", "rss=", "-p", str(client.process.pid)], capture_output=True, text=True)
+        return int(out.stdout.strip() or 0) if out.returncode == 0 else 0
+
+    wrong = "fn main() -> Int {\n    let n: Int = \"x\"\n    return n\n}\n"
+    right = "fn main() -> Int {\n    let n: Int = 1\n    return n\n}\n"
+
+    with tempfile.TemporaryDirectory(prefix="prismio-lsp-") as tmp:
+        root = Path(tmp).resolve()
+
+        # --- negotiation and the protocol's refusals ------------------------------------
+        client = start()
+        try:
+            early = client.request("textDocument/hover", {})
+            note(early.get("error", {}).get("code") == -32002,
+                 f"a request before initialize should be refused with -32002: {early}")
+            reply = client.initialize()
+            caps = reply["result"]["capabilities"]
+            note(caps.get("positionEncoding") == "utf-16", f"UTF-16 unless the client offers UTF-8: {caps}")
+            note(caps["textDocumentSync"] == {"openClose": True, "change": 1, "save": {"includeText": False}},
+                 f"full-text synchronisation: {caps}")
+            note(reply["result"]["serverInfo"]["name"] == "prismio", "serverInfo")
+            unknown = client.request("textDocument/rename", {})
+            note(unknown.get("error", {}).get("code") == -32601, f"an unknown request is -32601: {unknown}")
+            client.notify("$/somethingNew", {"x": 1})
+            client.notify("workspace/didChangeConfiguration", {"settings": {}})
+            note(client.request("shutdown").get("result") is None, "shutdown answers null")
+            client.notify("exit")
+            client.process.wait(timeout=20)
+            note(client.process.returncode == 0, f"exit after shutdown is 0: {client.process.returncode}")
+        except Exception as error:
+            problems.append(f"negotiation: {error!r}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+        client = start()
+        try:
+            client.initialize(capabilities={"general": {"positionEncodings": ["utf-8", "utf-16"]}})
+            reply = client.request("shutdown")
+            client.close()
+            client = start()
+            reply = client.initialize(capabilities={"general": {"positionEncodings": ["utf-8", "utf-16"]}})
+            note(reply["result"]["capabilities"]["positionEncoding"] == "utf-8",
+                 f"UTF-8 when the client offers it: {reply}")
+            client.close()
+            note(client.process.returncode == 1, f"stdin closed without shutdown exits 1: {client.process.returncode}")
+        except Exception as error:
+            problems.append(f"utf-8 negotiation: {error!r}")
+        finally:
+            client.close()
+
+        # --- diagnostics, positions, and a fix clearing them ----------------------------
+        client = start()
+        try:
+            client.initialize()
+            path = root / "one.psm"
+            path.write_text(wrong)
+            uri = opened(client, path, wrong)
+            published = client.diagnostics_for(uri)
+            note(published["version"] == 1, f"the document's version rides along: {published}")
+            note(len(published["diagnostics"]) == 1, f"one error expected: {published}")
+            found = published["diagnostics"][0]
+            note(found["range"] == {"start": {"line": 1, "character": 17}, "end": {"line": 1, "character": 20}},
+                 f"the error underlines the string literal: {found['range']}")
+            note(found["severity"] == 1 and found["code"] == "P4001" and found["source"] == "prismio",
+                 f"severity, code and source: {found}")
+            edited(client, uri, right, 2)
+            cleared = client.diagnostics_for(uri)
+            note(cleared["diagnostics"] == [] and cleared["version"] == 2, f"fixing it clears it: {cleared}")
+        except Exception as error:
+            problems.append(f"diagnostics: {error!r}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+        # --- a column after non-ASCII text, in both units -------------------------------
+        # `    let s = ["é😀", 5]`: the error is on the `5`, byte column 24. Before it sit a
+        # two-byte and a four-byte scalar, which are one and two UTF-16 units, so the client
+        # that counts UTF-16 is told 20 and the one that counts bytes is told 23.
+        accented = 'fn main() -> Int {\n    let s = ["\u00e9\U0001F600", 5]\n    return 0\n}\n'
+        for encodings, want in ((None, 20), (["utf-8"], 23)):
+            client = start()
+            try:
+                capabilities = {"general": {"positionEncodings": encodings}} if encodings else {}
+                client.initialize(capabilities=capabilities)
+                path = root / "accented.psm"
+                path.write_text(accented, encoding="utf-8")
+                uri = opened(client, path, accented)
+                published = client.diagnostics_for(uri)
+                starts = [d["range"]["start"] for d in published["diagnostics"]]
+                note(starts == [{"line": 1, "character": want}],
+                     f"{encodings or 'utf-16'}: the error's start should be line 1, character {want}: {starts}")
+            except Exception as error:
+                problems.append(f"positions {encodings}: {error!r}")
+            finally:
+                client.close()
+
+        # --- unsaved text in a file the program imports ---------------------------------
+        (root / "app").mkdir()
+        (root / "app" / "main.psm").write_text(
+            "import std.io\nimport helper\n\nfn main() -> Int {\n    println(twice(2))\n    return 0\n}\n")
+        helper_ok = "public fn twice(n: Int) -> Int {\n    return n * 2\n}\n"
+        helper_bad = "public fn twice(n: Int) -> Int {\n    return n * \"2\"\n}\n"
+        (root / "app" / "helper.psm").write_text(helper_ok)
+        client = start()
+        try:
+            client.initialize()
+            main_uri = opened(client, root / "app" / "main.psm", (root / "app" / "main.psm").read_text())
+            helper_uri = opened(client, root / "app" / "helper.psm", helper_bad)
+            first = client.diagnostics_for(helper_uri)
+            note(len(first["diagnostics"]) >= 1, f"the unsaved helper's error is reported on the helper: {first}")
+            edited(client, helper_uri, helper_ok, 2)
+            second = client.diagnostics_for(helper_uri)
+            note(second["diagnostics"] == [], f"fixing the buffer clears it, though the disk never changed: {second}")
+        except Exception as error:
+            problems.append(f"overlays: {error!r}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+        # --- a syntax error beside a type error: partial analysis ---------------------------
+        both = ("import std.io\n\nfn broken(x: Int) -> Int {\n    return x +\n}\n\n"
+                "fn typo() -> Int {\n    let n: Int = \"text\"\n    return n\n}\n\n"
+                "fn main() -> Int {\n    println(typo())\n    return 0\n}\n")
+        client = start()
+        try:
+            client.initialize()
+            path = root / "both.psm"
+            path.write_text(both)
+            uri = opened(client, path, both)
+            published = client.diagnostics_for(uri)
+            texts = messages_of(published)
+            note(any("expected an expression" in t for t in texts), f"the syntax error: {texts}")
+            note(any("expected Int, found String" in t for t in texts), f"and the type error beside it: {texts}")
+        except Exception as error:
+            problems.append(f"partial: {error!r}")
+        finally:
+            client.close()
+
+        # --- a burst of edits is one check, and the last text wins ------------------------------
+        client = start()
+        try:
+            client.initialize()
+            path = root / "burst.psm"
+            path.write_text(wrong)
+            uri = opened(client, path, wrong)
+            for version in range(2, 42):
+                edited(client, uri, (wrong if version % 2 == 0 else right), version)
+            edited(client, uri, wrong, 99)
+            last = None
+            while True:
+                try:
+                    last = client.diagnostics_for(uri, timeout=3)
+                except TimeoutError:
+                    break
+            note(last is not None and last["version"] == 99 and len(last["diagnostics"]) == 1,
+                 f"the burst should end on the last text's diagnostics: {last}")
+        except Exception as error:
+            problems.append(f"burst: {error!r}")
+        finally:
+            client.close()
+
+        # --- a check that dies leaves the last answer alone ---------------------------------------
+        crasher = root / "crasher.py"
+        crasher.write_text("#!/bin/sh\nkill -9 $$\n")
+        crasher.chmod(0o755)
+        client = start({"PRISMIO_LSP_CHECK": str(crasher)})
+        try:
+            client.initialize()
+            path = root / "crash.psm"
+            path.write_text(wrong)
+            opened(client, path, wrong)
+            logged = client.wait_for(lambda m: m.get("method") == "window/logMessage", timeout=15)
+            note("without a result" in logged["params"]["message"],
+                 f"a check that is killed is logged, not published: {logged}")
+            note(client.quiet_for(1.0), "nothing is published for a check that never finished")
+            note(client.request("shutdown").get("result") is None, "the server is still alive after a crashed check")
+            client.notify("exit")
+        except Exception as error:
+            problems.append(f"crashing check: {error!r}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+        # --- input that is not valid -------------------------------------------------------------
+        client = start()
+        try:
+            client.initialize()
+            client.send_raw("{not json")
+            bad = client.wait_for(lambda m: "error" in m and m["error"]["code"] == -32700, timeout=10)
+            note(bad["id"] is None, f"a parse error answers with a null id: {bad}")
+            client.process.stdin.write(b"X-Unknown: 1\r\n\r\n")
+            client.process.stdin.flush()
+            client.send({"jsonrpc": "2.0", "id": 77, "method": "textDocument/hover", "params": {}})
+            after = client.wait_for(lambda m: m.get("id") == 77, timeout=10)
+            note(after["error"]["code"] == -32601, f"the server survives a block without Content-Length: {after}")
+            client.send({"jsonrpc": "2.0", "id": "string-id", "method": "nope"})
+            string_id = client.wait_for(lambda m: m.get("id") == "string-id", timeout=10)
+            note(string_id["id"] == "string-id", "a string id comes back as a string")
+            # Half a message, then the client goes away.
+            client.process.stdin.write(b"Content-Length: 500\r\n\r\n{\"jsonrpc\"")
+            client.process.stdin.flush()
+        except Exception as error:
+            problems.append(f"invalid input: {error!r}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+            note(client.process.returncode is not None, "a message cut off by EOF ends the server")
+
+        # --- a big document, and no growth per keystroke ------------------------------------------
+        # The failure this guards is quiet and large: the server once held every previous text of a
+        # document it had been sent (a Vec element store parks what it displaces), which at 100 KiB
+        # a keystroke is a gigabyte in ten thousand. A document of that size, edited 600 times,
+        # must leave the server's memory where it found it.
+        client = start()
+        try:
+            client.initialize()
+            path = root / "big.psm"
+            big = "fn main() -> Int {\n" + "".join(f"    let v{i}: Int = {i}\n" for i in range(4000)) + "    return 0\n}\n"
+            path.write_text(big)
+            uri = opened(client, path, big)
+            published = client.diagnostics_for(uri, timeout=60)
+            note(published["diagnostics"] == [], f"a {len(big) // 1024} KiB document is accepted: {published}")
+            for version in range(2, 52):
+                edited(client, uri, big + "\n" * (version % 4), version)
+            client.diagnostics_for(uri, timeout=60)
+            before = server_rss(client)
+            for version in range(52, 652):
+                edited(client, uri, big + "\n" * (version % 4), version)
+            client.diagnostics_for(uri, timeout=60)
+            growth = server_rss(client) - before
+            note(growth < 3000, f"600 edits of a {len(big) // 1024} KiB document grew the server by {growth} KiB (limit 3,000)")
+        except Exception as error:
+            problems.append(f"size and memory: {error!r}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+        # --- `prismio lsp` without the server beside it says so ---------------------------------------
+        lone = root / "lone"
+        (lone / "bin").mkdir(parents=True)
+        shutil.copy2(PRISMIO_EXE, lone / "bin" / PRISMIO_EXE.name)
+        for directory in ("lib", "stdlib"):
+            if (PRISMIO_EXE.parent.parent / directory).is_dir():
+                shutil.copytree(PRISMIO_EXE.parent.parent / directory, lone / directory)
+        refused = sp.run([str(lone / "bin" / PRISMIO_EXE.name), "lsp"], capture_output=True, text=True,
+                         env=dict(os.environ, **env), stdin=sp.DEVNULL, timeout=30)
+        note(refused.returncode != 0 and "P1099" in refused.stderr,
+             f"a compiler with no server beside it should refuse with P1099: {refused.stderr[:300]}")
+
+    note(not [p for p in Path(tempfile.gettempdir()).glob("prismio-lsp-*") if p.is_dir() and any(p.iterdir())],
+         "scratch files were left behind")
+
+    if problems:
+        print(f"{RED}[FAIL] lsp{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] lsp: negotiation, positions, unsaved buffers, partial analysis, bursts, "
+          f"a crashed check, invalid input, size and memory{RESET}")
+    return True
+
+
 def run_check_command_test():
     """The analysis-only IDE boundary and its versioned JSON Lines output."""
     print(f"\n{BLUE}--- Running cli_check_protocol ---{RESET}")
@@ -10850,6 +11151,7 @@ def main():
         ("check_overlay", run_check_overlay_test),
         ("check_partial", run_check_partial_test),
         ("source_file_limit", run_source_file_limit_test),
+        ("lsp", run_lsp_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

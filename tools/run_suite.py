@@ -88,6 +88,12 @@ def main() -> int:
         shutil.copy2(source, copy)
         copy.chmod(0o755)
 
+        # The language server is launched from beside the compiler (`prismio lsp`), so a copy of
+        # the compiler without it cannot run it.
+        server = source.parent / ("prismio-lsp.exe" if sys.platform == "win32" else "prismio-lsp")
+        if server.is_file():
+            shutil.copy2(server, copy.parent / server.name)
+
         toolchain = source.parent.parent
         missing = [str(d) for d in ("lib", "stdlib")
                    if not (toolchain / d).is_dir()]

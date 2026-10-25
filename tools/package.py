@@ -361,12 +361,32 @@ def main() -> int:
         for name in ("lang_runtime.c", "prismio_runtime.h", "prismio_freestanding.h"):
             shutil.copyfile(REPO / "runtime" / name, core_dir / name)
 
+    # The language server is a program of its own (lsp/main.psm), built with the compiler it
+    # ships beside. After the libraries and standard modules, which building any program reads.
+    build_language_server(installed, bin_dir)
+
     shutil.rmtree(work)
 
     print(f"{GREEN}Packaged toolchain at {out}{RESET}")
     for path in sorted(p for p in out.rglob("*") if p.is_file()):
         print(f"  {path.relative_to(out)}")
     return 0
+
+
+def build_language_server(compiler, bin_dir):
+    """Compile lsp/main.psm to bin/prismio-lsp with the packaged compiler.
+
+    PRISMIO_INTERNAL_HOSTED keeps a binary named `prismio` from handing the build to the
+    checkout's project host, which would build it with a different compiler than the one
+    being shipped.
+    """
+    target = bin_dir / ("prismio-lsp.exe" if WINDOWS else "prismio-lsp")
+    env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
+    result = subprocess.run([str(compiler), "build", str(REPO / "lsp" / "main.psm"), "-o", str(target)],
+                            env=env, capture_output=True, text=True)
+    if result.returncode != 0:
+        die("could not build the language server (lsp/main.psm):\n" + result.stderr[-2000:])
+    print(f"  {'prismio-lsp':<12} {target.stat().st_size} bytes  <- lsp/main.psm")
 
 
 if __name__ == "__main__":
