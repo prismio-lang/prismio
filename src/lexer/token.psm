@@ -139,9 +139,17 @@ let reservedWords = [
     "default"
 ]
 
+public fn reservedWordCount() -> Int {
+    return reservedWords.length
+}
+
+public fn reservedWordAt(index: Int) -> String {
+    return reservedWords[index].clone()
+}
+
 // A list searched with `contains` rather than a lookup table: the set is small and
 // this runs once per identifier.
-internal fn isKeyword(word: String) -> Bool {
+public fn isKeyword(word: String) -> Bool {
     return reservedWords.contains(word)
 }
 

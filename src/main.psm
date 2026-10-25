@@ -6,7 +6,8 @@ import ums.ums
 
 import {ums_cli, host, commands} from project
 import {compile, imports} from driver
-import {scanner, token} from lexer
+import fmt.command
+import {scanner, token, dump_tokens} from lexer
 
 import {text, diagnostics, terminal, target} from common
 import std.string
@@ -88,6 +89,8 @@ let USAGE =
                     [-- args...]
       prismio check <source.psm> [--diagnostic-format=json] [--partial]
                     [--overlay <file.psm> <text>]... [--module <name>]
+      prismio fmt <source.psm>... [--check] [--write] [--range <from>:<to>]
+                                   format source, or check that it is formatted
       prismio lsp                  the language server, over standard input and output
 
       prismio --version            which compiler, LLVM and standard library
@@ -487,6 +490,10 @@ fn main() -> Int {
     if (first.equals("runtime-hash")) { return cliRuntimeHash() }
     if (first.equals("check")) { return cliCheck() }
     if (first.equals("lsp")) { return cliLsp() }
+    // The lexical vocabulary as JSON, for an editor's lexer and a TextMate grammar to be
+    // generated from rather than copy.
+    if (first.equals("dump-tokens")) { return dumpTokensCommand() }
+    if (first.equals("fmt")) { return fmtCommand() }
     // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
     // touches no codegen, so it cannot affect what `build` generates. Exists for
     // the AIF memory-model work, which analyses the real AST out-of-process.

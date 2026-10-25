@@ -1,0 +1,126 @@
+// `prismio fmt`: the formatter as a command.
+//
+//   prismio fmt <file.psm>...  [--check] [--write] [--range <from>:<to>]
+//   prismio fmt --stdin        [--range <from>:<to>]
+//
+// Without a flag the formatted text goes to standard output. `--write` rewrites the files whose
+// text would change; `--check` writes nothing and exits 1 if any would (the CI form). `--stdin`
+// formats what is piped in, which is how an editor formats an unsaved buffer. `--range` formats
+// only the tokens that begin on lines `from` to `to` (1-based, inclusive) and leaves every other
+// gap as it was.
+
+import std.io
+import std.fs
+import std.input
+import std.process
+import std.string
+import std.vec
+import common.diagnostics
+import fmt.scan
+import fmt.layout
+
+// A file with CRLF line ends keeps them; any other gets LF.
+private fn fmtLineEnding(text: String) -> String {
+    let at = text.indexOf("\n")
+    if (at > 0 and text.byteAt(at - 1) == 13) { return "\r\n".clone() }
+    return "\n".clone()
+}
+
+public fn fmtSource(text: String, fromLine: Int, toLine: Int) -> String {
+    let tokens = fmtScan(text)
+    let pieces = fmtLayout(text, tokens, fromLine, toLine, fmtLineEnding(text))
+    return pieces.join("")
+}
+
+private fn fmtUsage() {
+    diag_note("usage: prismio fmt <file.psm>... [--check] [--write] [--range <from>:<to>], or prismio fmt --stdin")
+}
+
+public fn fmtCommand() -> Int {
+    let mut files: Vec<String> = []
+    let mut check = false
+    let mut write = false
+    let mut fromStdin = false
+    let mut fromLine = 0
+    let mut toLine = 0
+    let mut argIndex = 2
+    while (argIndex < process.args.count) {
+        let argument = process.args[argIndex]
+        if (argument.equals("--check")) {
+            check = true
+        } else if (argument.equals("--write")) {
+            write = true
+        } else if (argument.equals("--stdin")) {
+            fromStdin = true
+        } else if (argument.equals("--range")) {
+            if (argIndex + 1 >= process.args.count) {
+                diag_error_code("P1105", "`--range` needs `<from>:<to>`")
+                fmtUsage()
+                return 1
+            }
+            let parts = process.args[argIndex + 1].split(":")
+            if (parts.length != 2) {
+                diag_error_code("P1106", "`--range` needs `<from>:<to>`, two line numbers")
+                fmtUsage()
+                return 1
+            }
+            fromLine = parts[0].parseIntOr(0)
+            toLine = parts[1].parseIntOr(0)
+            if (fromLine < 1 or toLine < fromLine) {
+                diag_error_code("P1107", "`--range` needs line numbers counted from 1, `from` not after `to`")
+                return 1
+            }
+            argIndex = argIndex + 1
+        } else if (argument.startsWith("--")) {
+            diag_error_code("P1108", "unknown argument ".concat(diagQuote(argument)))
+            fmtUsage()
+            return 1
+        } else {
+            files.push(argument.clone())
+        }
+        argIndex = argIndex + 1
+    }
+
+    if (fromStdin) {
+        if (files.length > 0 or write or check) {
+            diag_error_code("P1109", "`--stdin` takes no file and no `--write` or `--check`")
+            return 1
+        }
+        print(fmtSource(readAll(), fromLine, toLine))
+        return 0
+    }
+    if (files.length == 0) {
+        diag_error_code("P1110", "missing source file")
+        fmtUsage()
+        return 1
+    }
+    if (files.length > 1 and write == false and check == false) {
+        diag_error_code("P1111", "several files need `--write` or `--check`")
+        return 1
+    }
+
+    let mut changed = 0
+    for path in files {
+        let text = tryReadFile(path)
+        if (text == none) {
+            diag_error_code("P1112", "cannot read ".concat(diagQuote(path)))
+            return 1
+        }
+        let original = expect(text)
+        let formatted = fmtSource(original, fromLine, toLine)
+        if (check == false and write == false) {
+            print(formatted)
+            continue
+        }
+        if (formatted.equals(original)) { continue }
+        changed = changed + 1
+        if (check) {
+            println("would reformat ".concat(path))
+        } else if (writeFile(path, formatted) == false) {
+            diag_error_code("P1113", "cannot write ".concat(diagQuote(path)))
+            return 1
+        }
+    }
+    if (check and changed > 0) { return 1 }
+    return 0
+}

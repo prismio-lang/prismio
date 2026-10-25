@@ -884,7 +884,7 @@ impl Lexer {
 // Whether `first` followed by `second` is a two-character operator. Shifts are
 // included: `>>` also closes two nested generic arguments, which the parser
 // splits back apart when it expects a single '>'.
-private fn isTwoCharOperator(first: Char, second: Char) -> Bool {
+public fn isTwoCharOperator(first: Char, second: Char) -> Bool {
     if (first == '=' and second == '=') { return true }
     if (first == '!' and second == '=') { return true }
     if (first == '<' and second == '=') { return true }
@@ -905,7 +905,7 @@ private fn isTwoCharOperator(first: Char, second: Char) -> Bool {
     return false
 }
 
-private fn twoCharOperatorType(value: String) -> TokenType {
+internal fn twoCharOperatorType(value: String) -> TokenType {
     if (value.equals("==") or value.equals("!=")
         or value.equals("<=") or value.equals(">=")) {
         return TokenType.RELATIONAL_OPERATOR
@@ -922,7 +922,7 @@ private fn twoCharOperatorType(value: String) -> TokenType {
     return TokenType.ARITHMETIC_OPERATOR
 }
 
-private fn oneCharOperatorType(c: Char) -> TokenType {
+internal fn oneCharOperatorType(c: Char) -> TokenType {
     if (c == '<' or c == '>') { return TokenType.RELATIONAL_OPERATOR }
     if (c == '=') { return TokenType.ASSIGNMENT_OPERATOR }
     if (c == '!') { return TokenType.NEGATION }

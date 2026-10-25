@@ -1,0 +1,99 @@
+// The words an editor needs to know about, beyond the reserved ones in lexer/token.psm.
+//
+// A contextual keyword is an identifier the parser gives a meaning in one position only
+// (`prop` before a name, `pin` before a statement): it is not in `reservedWords`, so it is
+// still a legal name everywhere else. The parser compares against these spellings where it
+// meets them, so this table cannot be derived from the grammar; it is kept beside the lexer,
+// exported by `prismio dump-tokens`, and checked against the parser's own comparisons by
+// tests/test_runner.py (`run_token_tables_test`), which is what stops it drifting.
+//
+// Each word is followed by the position that gives it meaning, in the order the language
+// reference reads them. The two arrays are the same length and are read in step.
+
+import std.vec
+
+let vocabularyContextualWords = [
+    "public", "private", "internal",
+    "dyn", "Self", "type", "spawn",
+    "pin", "unique",
+    "produce", "borrow", "alias", "free",
+    "repeat", "from", "step",
+    "prop", "cold", "hot", "inline", "noinline", "noreturn", "const",
+    "async", "await", "scope", "join",
+    "export", "naked", "section", "align", "repr", "packed",
+    "volatile",
+    "codeset", "typelist", "workload", "setup", "measure",
+    "Fn", "always", "never", "C"
+]
+
+let vocabularyContextualContexts = [
+    "visibility marker before a declaration", "visibility marker before a declaration", "visibility marker before a declaration",
+    "trait object type", "the receiver type inside impl and trait", "associated type member of impl and trait", "expression",
+    "statement", "annotation",
+    "FFI ownership contract on an extern", "FFI ownership contract on an extern", "FFI ownership contract on an extern", "FFI ownership contract on an extern",
+    "loop statement", "import statement", "for header",
+    "declaration of a property", "function marker before fn", "function marker before fn", "function marker before fn", "function marker before fn", "function marker before fn", "before fn or a declaration name",
+    "function marker before fn", "before a name", "before a block", "before a name",
+    "function marker before fn", "function marker before fn", "function marker before fn", "function marker before fn", "type marker before struct", "type marker before struct",
+    "qualifier inside Ptr<...>",
+    "declaration of a set of codes", "declaration of a list of types", "declaration of a benchmark", "clause inside workload", "clause inside workload",
+    "the function type Fn(...)", "argument of inline(...)", "argument of inline(...)", "argument of repr(...)"
+]
+
+// Integer types by spelling. `I32` is another name for `Int` (the parser renames it), and
+// `UInt` and `Int` also take a width, `Int<24>`. Every name here must resolve through
+// `typeIntFromName`; `prismio dump-tokens` refuses to print a table that does not.
+let vocabularyIntTypes = [
+    "Int", "UInt", "I8", "I16", "I32", "I64", "Isize", "U8", "U16", "U32", "U64", "Usize"
+]
+
+// The float family (ast/float_width.psm). `F64` is `Float`.
+let vocabularyFloatTypes = [
+    "Float", "F16", "F32", "F64", "F128", "BF16"
+]
+
+// The remaining types the compiler itself knows. `Ptr` takes a pointee, `Ptr<T>`.
+let vocabularyOtherTypes = [
+    "Bool", "Char", "String", "Ptr", "Void"
+]
+
+public fn vocabularyContextualCount() -> Int {
+    return vocabularyContextualWords.length
+}
+
+public fn vocabularyContextualWord(index: Int) -> String {
+    return vocabularyContextualWords[index].clone()
+}
+
+public fn vocabularyContextualContext(index: Int) -> String {
+    return vocabularyContextualContexts[index].clone()
+}
+
+public fn vocabularyIntTypeCount() -> Int {
+    return vocabularyIntTypes.length
+}
+
+public fn vocabularyIntType(index: Int) -> String {
+    return vocabularyIntTypes[index].clone()
+}
+
+public fn vocabularyFloatTypeCount() -> Int {
+    return vocabularyFloatTypes.length
+}
+
+public fn vocabularyFloatType(index: Int) -> String {
+    return vocabularyFloatTypes[index].clone()
+}
+
+public fn vocabularyOtherTypeCount() -> Int {
+    return vocabularyOtherTypes.length
+}
+
+public fn vocabularyOtherType(index: Int) -> String {
+    return vocabularyOtherTypes[index].clone()
+}
+
+// Whether `word` is one the parser reads in one position only.
+public fn vocabularyIsContextual(word: String) -> Bool {
+    return vocabularyContextualWords.contains(word)
+}

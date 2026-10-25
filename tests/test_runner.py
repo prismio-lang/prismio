@@ -2198,6 +2198,31 @@ def run_check_partial_test():
         if mentions(errors, "requires numeric operands"):
             problems.append(f"--partial blamed the operator for an operand that already failed: {errors}")
 
+        # A broken method drops itself, not its `impl`: the methods around it are still read and
+        # checked, and the trait it was meant to satisfy is not blamed for the method it lost.
+        members = root / "members.psm"
+        members.write_text(
+            "import std.io\n\n"
+            "trait Named { fn name(self) -> Int }\n"
+            "struct Counter { n: Int }\n\n"
+            "impl Named for Counter {\n    fn name(self) -> Int {\n        return 7 +\n    }\n}\n\n"
+            "impl Counter {\n"
+            "    fn first(self) -> Int {\n        let n: Int = \"text\"\n        return n\n    }\n"
+            "    fn broken(self, {\n        return 1\n    }\n"
+            "    fn last(self) -> Int {\n        return self.first() + self.broken()\n    }\n}\n\n"
+            "fn main() -> Int {\n    let c = Counter { n: 1 }\n    println(c.last())\n    return 0\n}\n")
+        code, errors = check(members, "--partial")
+        if not mentions(errors, "parameter name") or not mentions(errors, "expected an expression"):
+            problems.append(f"--partial lost a syntax error inside an impl: {errors}")
+        if not mentions(errors, "expected Int, found String"):
+            problems.append(f"--partial did not check the method before the broken one: {errors}")
+        if mentions(errors, "unknown function `first`") or mentions(errors, "unknown function `last`"):
+            problems.append(f"--partial lost a method that parsed: {errors}")
+        if mentions(errors, "does not implement"):
+            problems.append(f"--partial blamed the impl for the method it dropped: {errors}")
+        if mentions(errors, "unknown function `broken`"):
+            problems.append(f"--partial reported the dropped method as unknown: {errors}")
+
         # An import that cannot be read: any name may have come from it, so no "unknown" is
         # trustworthy -- but a type error is still one.
         lost = root / "lost.psm"
@@ -2282,6 +2307,250 @@ def run_source_file_limit_test():
             print(f"  {problem}")
         return False
     print(f"{GREEN}[PASS] 300 modules check clean; the limit, when reached, names the module it stopped at{RESET}")
+    return True
+
+
+def run_token_tables_test():
+    """`prismio dump-tokens`: the vocabulary an editor copies, and the copies.
+
+    The compiler's lexical tables are exported once so no editor has to keep its own. Three
+    things are held to it:
+
+    - the export is well formed and not empty (a table that printed nothing would let every
+      check below pass),
+    - every word the parser compares an identifier with is in it, which is what keeps the table
+      from drifting behind the grammar (the contextual keywords are spelled in the parser, so
+      the table cannot be derived from it and this is the guard),
+    - the IntelliJ plugin's hand-written word tables, when its checkout is beside this one,
+      list exactly the same words.
+    """
+    print(f"\n{BLUE}--- Running token_tables ---{RESET}")
+    problems = []
+    result = run_command([str(PRISMIO_EXE), "dump-tokens"])
+    try:
+        tables = json.loads(result.stdout)
+    except ValueError:
+        print(f"{RED}[FAIL] token_tables{RESET}\n  dump-tokens printed no JSON: {result.stdout[:200]!r} {result.stderr[:200]!r}")
+        return False
+
+    keywords = set(tables["keywords"])
+    contextual = {entry["word"] for entry in tables["contextualKeywords"]}
+    types = tables["types"]
+    if len(keywords) < 30 or len(contextual) < 30 or len(tables["operators"]) < 25 or len(tables["separators"]) < 10:
+        problems.append("dump-tokens exported too little to be the language's vocabulary")
+    if len(contextual) != len(tables["contextualKeywords"]):
+        problems.append("a contextual keyword is listed twice")
+    if keywords & contextual:
+        problems.append(f"reserved and contextual at once: {sorted(keywords & contextual)}")
+    if any(not entry["context"] for entry in tables["contextualKeywords"]):
+        problems.append("a contextual keyword has no context")
+    if not all(types[kind] for kind in ("integer", "float", "other")):
+        problems.append("a type family is empty")
+
+    # Every identifier spelling the parser tests against is a contextual word.
+    import re
+    compared = set()
+    for source in (PROJECT_ROOT / "src" / "parse").glob("*.psm"):
+        text = source.read_text()
+        compared.update(re.findall(r'(?:checkVal|matchVal|expectVal)\(TokenType\.IDENTIFIER, *"(\w+)"', text))
+        compared.update(re.findall(r'\.value\.equals\("(\w+)"\)', text))
+    # Words that are reserved, are an operator spelling, or are not language words at all.
+    known = keywords | set(tables["wordOperators"]) | {"_"}
+    missing = sorted(w for w in compared if w not in known and w not in contextual)
+    if not compared:
+        problems.append("found no identifier comparisons in src/parse: the scan is vacuous")
+    if missing:
+        problems.append(f"the parser compares identifiers with words the token table lacks: {missing}")
+
+    # The IntelliJ plugin's copy, if it is checked out beside this repository.
+    words_java = PROJECT_ROOT.parent / "intellij-plugin" / "src/main/java/io/prismio/lang/PrismioWords.java"
+    if words_java.exists():
+        java = words_java.read_text()
+
+        def java_set(name):
+            body = re.search(name + r"\s*=\s*Set\.of\((.*?)\);", java, re.S).group(1)
+            body = re.sub(r"/\*.*?\*/|//[^\n]*", "", body, flags=re.S)
+            return set(re.findall(r'"(\w+)"', body))
+
+        # Words the plugin's lexer reads as plain names on purpose, or does not know yet. Listed
+        # so a new word cannot be left out by accident, and so the list shrinks when the plugin
+        # learns one: a word here that the plugin does highlight is itself reported.
+        plugin_plain = {"C", "Fn", "always", "never"}
+        plugin_gaps = {"codeset", "typelist", "workload", "setup", "measure"}
+        for name, expected in (
+            ("KEYWORDS", keywords),
+            ("CONTEXTUAL_KEYWORDS", contextual - plugin_plain - plugin_gaps),
+            ("BUILTIN_TYPES", set(types["integer"]) | set(types["float"]) | set(types["other"])),
+        ):
+            have = java_set(name)
+            if name == "CONTEXTUAL_KEYWORDS" and have & (plugin_plain | plugin_gaps):
+                problems.append(f"the plugin now knows {sorted(have & (plugin_plain | plugin_gaps))}: take them off the allowance")
+            if have != expected:
+                problems.append(f"plugin {name} disagrees with dump-tokens: "
+                                f"only in the plugin {sorted(have - expected)}, only in the compiler {sorted(expected - have)}")
+    else:
+        print(f"  (the IntelliJ plugin is not beside this checkout; its tables were not compared)")
+
+    if problems:
+        print(f"{RED}[FAIL] token_tables{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] dump-tokens exports the vocabulary, the parser stays inside it{RESET}")
+    return True
+
+
+def run_fmt_test():
+    """`prismio fmt`: the formatter, held to the rules it was written from and to the repository.
+
+    The cases are the IntelliJ plugin's formatter tests, which is where the rules came from; each
+    was a change the old formatter made to the compiler's own source, and is kept as the proof the
+    new one does not. Then the whole of it is run over every source in the checkout
+    (tools/check_fmt.py: whitespace only, settles, damaged copies, IR unchanged), the flags are
+    exercised, and the ranges leave the rest of the file alone.
+    """
+    print(f"\n{BLUE}--- Running fmt ---{RESET}")
+    problems = []
+
+    def fmt(text, *flags):
+        # Bytes in and out: the text mode would turn CRLF into LF on the way and hide what is tested.
+        result = subprocess.run([str(PRISMIO_EXE), "fmt", "--stdin", *flags], input=text.encode("utf-8"),
+                                capture_output=True)
+        if result.returncode != 0:
+            return f"<exit {result.returncode}: {result.stderr[:120]!r}>"
+        return result.stdout.decode("utf-8")
+
+    cases = [
+        # Word operators and keywords after an operand keep their spaces.
+        ("let ok = a and b\n", "let ok = a and b\n"),
+        ("let ok = a and b or c\n", "let ok = a and b or c\n"),
+        ("let n = value as Int\n", "let n = value as Int\n"),
+        ("for item in items { }\n", "for item in items { }\n"),
+        # `default` is a name after `.` and `fn`, a keyword elsewhere.
+        ("let c = Config.default()\n", "let c = Config.default()\n"),
+        ("fn default() -> Self { }\n", "fn default() -> Self { }\n"),
+        ("let c: Config = default\n", "let c: Config = default\n"),
+        # Labels, ranges, step and repeat.
+        ("outer@ for i in 0..<n { break@outer }\n", "outer@ for i in 0..<n { break@outer }\n"),
+        ("for i in 10..0 step 2 { }\n", "for i in 10..0 step 2 { }\n"),
+        ("repeat(3) { }\n", "repeat(3) { }\n"),
+        ("let s = \"ab\".repeat(3)\n", "let s = \"ab\".repeat(3)\n"),
+        ("import {io, string} from std\n", "import {io, string} from std\n"),
+        # An operand keeps its space before a bracket.
+        ("let p = power * (2 as U64)\n", "let p = power * (2 as U64)\n"),
+        ("let v = [1, 2]\n", "let v = [1, 2]\n"),
+        ("fn f() -> [Int] { }\n", "fn f() -> [Int] { }\n"),
+        ("let xs = listOf<Int>(1, 2)\n", "let xs = listOf<Int>(1, 2)\n"),
+        # Signs hug, subtraction does not.
+        ("f(-1, 0)\n", "f(-1, 0)\n"),
+        ("let x = -y\n", "let x = -y\n"),
+        ("return -1\n", "return -1\n"),
+        ("let d = a - b\n", "let d = a - b\n"),
+        ("let d=f(a)-1\n", "let d = f(a) - 1\n"),
+        # A word before punctuation closes up.
+        ("extern fn f(name: String borrow) -> Int\n", "extern fn f(name: String borrow) -> Int\n"),
+        ("f(current.type, none)\n", "f(current.type, none)\n"),
+        ("struct S { type: Int }\n", "struct S { type: Int }\n"),
+        # Continuation lines keep their indentation; too shallow ones move one step in.
+        ("fn f() {\n    if (a\n        or b) {\n        g()\n    }\n}\n",
+         "fn f() {\n    if (a\n        or b) {\n        g()\n    }\n}\n"),
+        ("fn f() {\n    let s = join(a,\n                 b)\n}\n",
+         "fn f() {\n    let s = join(a,\n                 b)\n}\n"),
+        ("fn f() {\n    let s = a +\nb\n}\n", "fn f() {\n    let s = a +\n        b\n}\n"),
+        ("fn f() -> Int {\n    return a\n+ b\n}\n", "fn f() -> Int {\n    return a\n        + b\n}\n"),
+        ("import ir.*\nimport std.io\n", "import ir.*\nimport std.io\n"),
+        ("enum E {\n  A,\n    B\n}\n", "enum E {\n    A,\n    B\n}\n"),
+        ("fn f() {\n    xs.sortBy(fn(a: Int, b: Int) -> Bool {\n        return a < b\n    })\n}\n",
+         "fn f() {\n    xs.sortBy(fn(a: Int, b: Int) -> Bool {\n        return a < b\n    })\n}\n"),
+        # Type arguments are not comparisons.
+        ("let items: List<Int> = list_new()\n", "let items: List<Int> = list_new()\n"),
+        ("fn first<T>(values: List<T>) -> T { }\n", "fn first<T>(values: List<T>) -> T { }\n"),
+        ("let a: Int<24> = 5\n", "let a: Int<24> = 5\n"),
+        ("let v: Vec<Int<24>> = []\n", "let v: Vec<Int<24>> = []\n"),
+        ("if (a<24 and b>3) { }\n", "if (a < 24 and b > 3) { }\n"),
+        ("let grid: Array<Array<U8, 4>, 4> = default\n", "let grid: Array<Array<U8, 4>, 4> = default\n"),
+        ("fn map<T, U, F: Fn(T) -> U>(o: T?, f: F) -> U? { }\n", "fn map<T, U, F: Fn(T) -> U>(o: T?, f: F) -> U? { }\n"),
+        ("let g: Array<Int, N * N>\n", "let g: Array<Int, N * N>\n"),
+        ("impl<T, E> Result<T, E> { }\n", "impl<T, E> Result<T, E> { }\n"),
+        ("let n = x<y\n", "let n = x < y\n"),
+        # Bitwise not, comparisons, none-coalescing, indexing, optional.
+        ("let m = a & ~ b\n", "let m = a & ~b\n"),
+        ("if (a<b) { }\n", "if (a < b) { }\n"),
+        ("let n = a??0\n", "let n = a ?? 0\n"),
+        ("let x = values[0]\n", "let x = values[0]\n"),
+        ("let maybe: Int? = none\n", "let maybe: Int? = none\n"),
+        # A closure's bars hug its parameters.
+        ("let f = xs.map(|x: Int| x + 1)\n", "let f = xs.map(|x: Int| x + 1)\n"),
+        ("let f = xs.map(| x: Int | x+1)\n", "let f = xs.map(|x: Int| x + 1)\n"),
+        ("let f = a | b\n", "let f = a | b\n"),
+        # Trailing comments keep their column; trailing blanks and extra blank lines go.
+        ("let a = 1   // one\nlet bb = 2 // two\n", "let a = 1   // one\nlet bb = 2 // two\n"),
+        ("let a = 1   \n\n\n\n\nlet b = 2\n", "let a = 1\n\n\nlet b = 2\n"),
+        ("let a = 1", "let a = 1\n"),
+        ("\n\nlet a = 1\n\n\n", "let a = 1\n"),
+        # Interpolation is one token whatever it holds.
+        ("let s = \"a ${f( x ,y)} b\"\n", "let s = \"a ${f( x ,y)} b\"\n"),
+        ("let s = \"\"\"\n  keep   this\n  \"\"\"\n", "let s = \"\"\"\n  keep   this\n  \"\"\"\n"),
+        # A block comment's body goes under its opener.
+        ("fn f() {\n/*\nnote\n*/\n}\n", "fn f() {\n    /*\n       note\n    */\n}\n"),
+        ("/*\n * doc\n   */\nlet a = 1\n", "/*\n * doc\n */\nlet a = 1\n"),
+        # A bracket left open does not indent what follows a new declaration.
+        ("fn a(x: Int,\nfn b() {\n    g()\n}\n", "fn a(x: Int,\nfn b() {\n    g()\n}\n"),
+        # Aligned braces stay aligned; a lone gap is one space.
+        ("impl Eq for Int    { }\nimpl Eq for Float  { }\n", "impl Eq for Int    { }\nimpl Eq for Float  { }\n"),
+        ("struct P{ x: Int }\n", "struct P { x: Int }\n"),
+    ]
+    for given, expected in cases:
+        got = fmt(given)
+        if got != expected:
+            problems.append(f"fmt({given!r})\n      = {got!r}\n   want {expected!r}")
+        elif fmt(got) != got:
+            problems.append(f"fmt does not settle on {got!r}")
+
+    # A range formats the lines it names and nothing else.
+    text = "let   a = 1\nlet   b = 2\nlet   c = 3\n"
+    if fmt(text, "--range", "2:2") != "let   a = 1\nlet b = 2\nlet   c = 3\n":
+        problems.append(f"--range changed lines outside its range: {fmt(text, '--range', '2:2')!r}")
+    if fmt(text, "--range", "2:9") == "<exit":
+        problems.append("--range past the end of the file failed")
+
+    # CRLF stays CRLF.
+    crlf = fmt("fn f() {\r\nlet a=1\r\n}\r\n")
+    if crlf != "fn f() {\r\n    let a = 1\r\n}\r\n":
+        problems.append(f"fmt did not keep CRLF line ends: {crlf!r}")
+
+    # Files: --check, --write, and the default.
+    with tempfile.TemporaryDirectory(prefix="prismio-fmt-") as tmp:
+        messy = Path(tmp) / "messy.psm"
+        tidy = Path(tmp) / "tidy.psm"
+        messy.write_text("fn f( ) {\nlet a=1\n}\n")
+        tidy.write_text("fn f() {\n    let a = 1\n}\n")
+        check = run_command([str(PRISMIO_EXE), "fmt", "--check", str(messy), str(tidy)])
+        if check.returncode != 1 or "messy.psm" in check.stdout and "tidy.psm" in check.stdout:
+            problems.append(f"--check should name only the file it would change and exit 1: {check.returncode} {check.stdout!r}")
+        if messy.read_text() != "fn f( ) {\nlet a=1\n}\n":
+            problems.append("--check wrote a file")
+        if run_command([str(PRISMIO_EXE), "fmt", "--check", str(tidy)]).returncode != 0:
+            problems.append("--check failed on formatted source")
+        run_command([str(PRISMIO_EXE), "fmt", "--write", str(messy)])
+        if messy.read_text() != "fn f() {\n    let a = 1\n}\n":
+            problems.append(f"--write left {messy.read_text()!r}")
+        if run_command([str(PRISMIO_EXE), "fmt", str(Path(tmp) / "missing.psm")]).returncode == 0:
+            problems.append("fmt of a missing file succeeded")
+
+    # The whole checkout.
+    result = run_command([sys.executable, str(PROJECT_ROOT / "tools" / "check_fmt.py"), "--compiler", str(PRISMIO_EXE),
+                          "--damaged", "150", "--ir", "10"])
+    if result.returncode != 0:
+        problems.append("tools/check_fmt.py failed:\n" + "\n".join(
+            line for line in result.stdout.splitlines() if line.startswith("FAIL") or "files," in line)[:2000])
+
+    if problems:
+        print(f"{RED}[FAIL] fmt{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] fmt follows its rules, moves only whitespace, settles, and leaves programs unchanged{RESET}")
     return True
 
 
@@ -11151,6 +11420,8 @@ def main():
         ("check_overlay", run_check_overlay_test),
         ("check_partial", run_check_partial_test),
         ("source_file_limit", run_source_file_limit_test),
+        ("token_tables", run_token_tables_test),
+        ("fmt", run_fmt_test),
         ("lsp", run_lsp_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),

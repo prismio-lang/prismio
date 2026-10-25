@@ -156,6 +156,80 @@ impl Parser {
         }
         self.current = at
     }
+
+    // The same recovery one level down: a member of an `impl` or `trait` body that
+    // `fatal` gave up on is dropped on its own, and the block keeps every member that
+    // parsed. Without it one broken method took the whole block with it, and with the
+    // block every method in it, so an editor lost the completion and the diagnostics
+    // for code that was perfectly well formed.
+    //
+    // Resumes at the first member-start on a line of its own after the failure, at the
+    // member's own indentation or at brace depth zero from where it began, or at the
+    // `}` that closes the block (left for the caller). `hoistTail` is what the nested
+    // functions of the members already read ended at, so the ones the broken member
+    // wrote are cut off and the others stay.
+    private fn recoverMember(self, memberStart: Ptr, hoistTail: Ptr) {
+        self.dead = 0
+        self.silentFaults = 0
+        self.fnNode = ptr_null()
+        self.implParams = ptr_null()
+        self.implParamSeq = 0
+        self.implPosition = 0
+        self.lengthDepth = 0
+        self.allowStructLit = 1
+        if (nodeExists(hoistTail)) {
+            ptr_to_node(hoistTail).next = ptr_null()
+            self.hoistTail = hoistTail
+        } else {
+            self.hoistHead = ptr_null()
+            self.hoistTail = ptr_null()
+        }
+
+        let start = ptr_to_token(memberStart)
+        self.noteDropped(start)
+        let mut at = start.tokNext
+        let mut depth = 0
+        let mut previousLine = start.line
+        loop {
+            let t = ptr_to_token(at)
+            if (t.type == TokenType.EOF) { break }
+
+            let afterFault = t.line > self.faultLine
+                or (t.line == self.faultLine and t.col >= self.faultCol)
+            if (afterFault and t.line > previousLine) {
+                if (t.type == TokenType.SEPARATOR and t.value.equals("}")
+                        and (depth == 0 or t.col < start.col)) {
+                    self.current = at
+                    self.lastLine = previousLine
+                    return
+                }
+                if (depth == 0 or t.col <= start.col) {
+                    self.current = at
+                    if (self.atMemberStart()) {
+                        self.lastLine = previousLine
+                        return
+                    }
+                }
+            }
+
+            if (t.type == TokenType.SEPARATOR) {
+                if (t.value.equals("{")) { depth = depth + 1 }
+                if (t.value.equals("}") and depth > 0) { depth = depth - 1 }
+            }
+            previousLine = t.line
+            self.noteDropped(t)
+            at = t.tokNext
+        }
+        self.current = at
+    }
+
+    // Whether the token the parser is on begins a member of an `impl` or `trait` body.
+    private fn atMemberStart(self) -> Bool {
+        if (self.visibilityLevel() >= 0) { return true }
+        if (self.checkVal(TokenType.KEYWORD, "fn") or self.checkVal(TokenType.KEYWORD, "let")) { return true }
+        if (self.atPropDecl() or self.atFnModifiers()) { return true }
+        return self.parseAtAssocType()
+    }
 }
 
 
@@ -1666,9 +1740,15 @@ impl Parser {
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
             if (self.dead == 1) { break }
             if (self.check(TokenType.EOF)) {
-                self.fatal("this `impl` block is never closed; reached end of file looking for `}`")
-                break
+                self.error("this `impl` block is never closed; reached end of file looking for `}`")
+                self.implType = ptr_null()
+                implNode.child1 = methods.head
+                implNode.child2 = methodRecords.head
+                header.child3 = constants.head
+                return implNode
             }
+            let memberStart = self.current
+            let memberHoist = self.hoistTail
             // A method carries a visibility marker exactly as a top-level `fn` does.
             // Without this the two features did not compose: `impl` was the natural
             // home for the helpers most worth marking `private`, and marking them
@@ -1677,9 +1757,19 @@ impl Parser {
             // function whose first parameter is the receiver, and it carries the same
             // `file` id either way.
             if (self.checkVal(TokenType.KEYWORD, "let")) {
-                nodeListPush(constants, self.parseAssocConst(true))
+                let constant = self.parseAssocConst(true)
+                if (self.dead == 1) {
+                    self.recoverMember(memberStart, memberHoist)
+                    continue
+                }
+                nodeListPush(constants, constant)
             } else if (self.parseAtAssocType()) {
-                nodeListPush(constants, self.parseAssocType(true))
+                let constant = self.parseAssocType(true)
+                if (self.dead == 1) {
+                    self.recoverMember(memberStart, memberHoist)
+                    continue
+                }
+                nodeListPush(constants, constant)
             } else {
             let methodVisibility = self.visibilityLevel()
             if (methodVisibility >= 0) { self.advance() }
@@ -1687,9 +1777,14 @@ impl Parser {
             let methodMods = self.parseMethodModifiers()
             if (self.checkVal(TokenType.KEYWORD, "fn") == false and self.atPropDecl() == false) {
                 self.fatal("an `impl` block holds `fn`, `prop` and `let` declarations, found ".concat(parserDescribe(self.current())))
-                break
+                self.recoverMember(memberStart, memberHoist)
+                continue
             }
             let method = self.parseFunctionDecl()
+            if (self.dead == 1) {
+                self.recoverMember(memberStart, memberHoist)
+                continue
+            }
             applyFnModifiers(method, methodMods)
             method.s2 = self.parseImplMethodParams(header.s1, method.s2)
             // A function with no `self` belongs to the type: `impl Config { fn
@@ -1717,6 +1812,10 @@ impl Parser {
                 method.i2 = 0
             }
             self.parseImplCheckReceiver(method)
+            if (self.dead == 1) {
+                self.recoverMember(memberStart, memberHoist)
+                continue
+            }
 
             // The method itself is moved into the module's declaration chain after
             // this block returns. Keep its name and unique source span in a separate
@@ -1946,20 +2045,40 @@ impl Parser {
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
             if (self.dead == 1) { break }
             if (self.check(TokenType.EOF)) {
-                self.fatal("this `trait` is never closed; reached end of file looking for `}`")
-                break
+                self.error("this `trait` is never closed; reached end of file looking for `}`")
+                self.implType = ptr_null()
+                traitNode.child1 = signatures.head
+                traitNode.child3 = constants.head
+                return traitNode
             }
+            let memberStart = self.current
+            let memberHoist = self.hoistTail
             if (self.checkVal(TokenType.KEYWORD, "let")) {
-                nodeListPush(constants, self.parseAssocConst(false))
+                let constant = self.parseAssocConst(false)
+                if (self.dead == 1) {
+                    self.recoverMember(memberStart, memberHoist)
+                    continue
+                }
+                nodeListPush(constants, constant)
             } else if (self.parseAtAssocType()) {
-                nodeListPush(constants, self.parseAssocType(false))
+                let constant = self.parseAssocType(false)
+                if (self.dead == 1) {
+                    self.recoverMember(memberStart, memberHoist)
+                    continue
+                }
+                nodeListPush(constants, constant)
             } else {
                 if (self.checkVal(TokenType.KEYWORD, "fn") == false) {
                     self.fatal("a `trait` holds `fn` signatures, `let` constants and `type` members, found ".concat(parserDescribe(self.current())))
-                    break
+                    self.recoverMember(memberStart, memberHoist)
+                    continue
                 }
                 let signature = self.parseTraitSignature()
-                self.parseImplCheckReceiver(signature)
+                if (self.dead == 0) { self.parseImplCheckReceiver(signature) }
+                if (self.dead == 1) {
+                    self.recoverMember(memberStart, memberHoist)
+                    continue
+                }
                 nodeListPush(signatures, signature)
             }
         }

@@ -384,8 +384,13 @@ public fn diag_note_dropped_everything() {
 // Whether `message` is an "unknown ..." about a name whose declaration may have been lost. Only
 // meaningful in partial mode, and only ever hides: a wrong answer here costs a missing
 // diagnostic until the text parses, never a wrong one.
+//
+// A dropped method makes its `impl` look incomplete, so "does not implement" is held back
+// the same way when the method it says is missing was among the dropped text.
 fn diag_hides(message: String) -> Bool {
-    if (message.startsWith("unknown ") == false) { return false }
+    if (message.startsWith("unknown ") == false and message.contains(" does not implement ") == false) {
+        return false
+    }
     if (droppedEverything) { return true }
     if (droppedOpened == false) { return false }
     for name in droppedNames {

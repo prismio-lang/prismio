@@ -1,0 +1,478 @@
+// The formatter's tokens: a source file cut into spans, trivia kept.
+//
+// The compiler's own lexer discards comments and keeps no whitespace, which is what a
+// formatter must not do, and it reports errors, which a formatter must not. So this reads the
+// same language its own way: every byte of the file belongs to exactly one token or to the gap
+// between two, comments are tokens, a string with `${...}` in it is one token whatever it
+// holds, and a character that means nothing is a token of its own kind. It never fails; text
+// the compiler would refuse still comes out in spans, which is what lets an editor format a
+// file that is mid-edit.
+//
+// Where a word's class depends on its neighbours (`default` as a name, `scope` as a variable),
+// the decision is the one the IntelliJ plugin's lexer made, because the formatter took over its
+// rules. The tables are the compiler's: lexer/token.psm and lexer/vocabulary.psm.
+
+import std.string
+import std.vec
+import common.text
+import lexer.token
+import lexer.scanner
+import lexer.vocabulary
+
+public enum FmtKind {
+    NONE,
+    WORD,
+    KEYWORD,
+    CONTEXTUAL,
+    NUMBER,
+    STRING,
+    CHAR,
+    LINE_COMMENT,
+    BLOCK_COMMENT,
+    ARROW,
+    FAT_ARROW,
+    RELATIONAL,
+    LOGICAL,
+    SHIFT,
+    ASSIGN,
+    BITWISE,
+    ARITH,
+    NEGATION,
+    RANGE,
+    DOT,
+    COMMA,
+    COLON,
+    OPTIONAL,
+    AT,
+    LPAREN,
+    RPAREN,
+    LBRACE,
+    RBRACE,
+    LBRACKET,
+    RBRACKET,
+    OTHER
+}
+
+// Parallel columns, one entry per token. `breaks` is how many line breaks sit between the
+// previous token and this one, and `columns` the width of the indentation in front of this token
+// when it is the first on its line (a tab counts four), or -1 when it is not. `lines` is the
+// 1-based line the token begins on.
+public struct FmtTokens {
+    public kinds: Vec<FmtKind>,
+    public starts: Vec<Int>,
+    public ends: Vec<Int>,
+    public breaks: Vec<Int>,
+    public columns: Vec<Int>,
+    public lines: Vec<Int>
+}
+
+public fn fmtTokenCount(tokens: FmtTokens) -> Int {
+    return tokens.kinds.length
+}
+
+private fn fmtByte(text: String, at: Int) -> Int {
+    if (at < 0 or at >= text.length) { return 0 }
+    return text.byteAt(at)
+}
+
+private fn fmtIs(text: String, at: Int, c: Char) -> Bool {
+    return at >= 0 and at < text.length and text.byteAt(at) == charCode(c)
+}
+
+private fn fmtIsSpace(b: Int) -> Bool {
+    return b == 32 or b == 9 or b == 10 or b == 13 or b == 12
+}
+
+private fn fmtIsDigit(b: Int) -> Bool {
+    return b >= 48 and b <= 57
+}
+
+private fn fmtIsWordStart(b: Int) -> Bool {
+    return (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or b == 95 or b >= 128
+}
+
+private fn fmtIsWordPart(b: Int) -> Bool {
+    return fmtIsWordStart(b) or fmtIsDigit(b)
+}
+
+private fn fmtIsRadixDigit(b: Int, radix: Int) -> Bool {
+    if (radix == 16) { return fmtIsDigit(b) or (b >= 97 and b <= 102) or (b >= 65 and b <= 70) }
+    if (radix == 8) { return b >= 48 and b <= 55 }
+    if (radix == 2) { return b == 48 or b == 49 }
+    return fmtIsDigit(b)
+}
+
+// One run of digits from `from`, where `_` between two digits is a separator (`1_000`).
+private fn fmtDigitRun(text: String, from: Int, radix: Int) -> Int {
+    let mut end = from
+    while (end < text.length and fmtIsRadixDigit(text.byteAt(end), radix)) {
+        end = end + 1
+        let mut ahead = end
+        while (fmtIs(text, ahead, '_')) { ahead = ahead + 1 }
+        if (ahead > end and ahead < text.length and fmtIsRadixDigit(text.byteAt(ahead), radix)) {
+            end = ahead
+        }
+    }
+    return end
+}
+
+private fn fmtRadixAfterZero(text: String, at: Int) -> Int {
+    if (at + 2 >= text.length) { return 10 }
+    let marker = text.byteAt(at + 1)
+    let mut radix = 10
+    if (marker == 120 or marker == 88) { radix = 16 }
+    if (marker == 111 or marker == 79) { radix = 8 }
+    if (marker == 98 or marker == 66) { radix = 2 }
+    if (radix != 10 and fmtIsRadixDigit(text.byteAt(at + 2), radix) == false) { return 10 }
+    return radix
+}
+
+// The end of the number that starts at `at`. A `.` continues it only when a digit follows, which
+// keeps `0..n` a range, and an exponent only when a digit follows it, so `1e` is `1` and a name.
+private fn fmtNumberEnd(text: String, at: Int) -> Int {
+    if (text.byteAt(at) == 48) {
+        let radix = fmtRadixAfterZero(text, at)
+        if (radix != 10) { return fmtDigitRun(text, at + 2, radix) }
+    }
+    let mut end = fmtDigitRun(text, at, 10)
+    if (fmtIs(text, end, '.') and fmtIsDigit(fmtByte(text, end + 1))) {
+        end = fmtDigitRun(text, end + 1, 10)
+    }
+    if (fmtIs(text, end, 'e') or fmtIs(text, end, 'E')) {
+        let mut digitAt = end + 1
+        if (fmtIs(text, end + 1, '+') or fmtIs(text, end + 1, '-')) { digitAt = end + 2 }
+        if (fmtIsDigit(fmtByte(text, digitAt))) { end = fmtDigitRun(text, digitAt, 10) }
+    }
+    return end
+}
+
+// A character literal, `'a'`, `'\n'`, `'\x1b'`: to the closing quote, or to the line's end when
+// it has none, so the damage of an unterminated one stays on its line.
+private fn fmtCharEnd(text: String, at: Int) -> Int {
+    let mut i = at + 1
+    while (i < text.length) {
+        let b = text.byteAt(i)
+        if (b == 10 or b == 13) { return i }
+        if (b == 92 and i + 1 < text.length) {
+            i = i + 2
+            continue
+        }
+        i = i + 1
+        if (b == 39) { return i }
+    }
+    return i
+}
+
+// The end of the string that starts at `at`, an interpolation `${...}` included: a quote inside
+// one is the start of another string and its braces count, so neither ends this one.
+private fn fmtStringEnd(text: String, at: Int) -> Int {
+    let mut i = at + 1
+    while (i < text.length) {
+        let b = text.byteAt(i)
+        if (b == 10 or b == 13) { return i }
+        if (b == 92 and i + 1 < text.length) {
+            i = i + 2
+            continue
+        }
+        if (b == 34) { return i + 1 }
+        if (b == 36 and fmtIs(text, i + 1, '{')) {
+            i = fmtInterpolationEnd(text, i + 2)
+            continue
+        }
+        i = i + 1
+    }
+    return i
+}
+
+// From just inside `${` to just past its `}`.
+private fn fmtInterpolationEnd(text: String, from: Int) -> Int {
+    let mut depth = 1
+    let mut i = from
+    while (i < text.length) {
+        let b = text.byteAt(i)
+        if (b == 123) { depth = depth + 1 }
+        if (b == 125) {
+            depth = depth - 1
+            if (depth == 0) { return i + 1 }
+        }
+        if (b == 34) {
+            if (fmtIs(text, i + 1, '"') and fmtIs(text, i + 2, '"')) {
+                i = fmtTripleEnd(text, i)
+            } else {
+                i = fmtStringEnd(text, i)
+            }
+            continue
+        }
+        if (b == 39) {
+            i = fmtCharEnd(text, i)
+            continue
+        }
+        if (b == 10 or b == 13) { return i }
+        i = i + 1
+    }
+    return i
+}
+
+private fn fmtTripleEnd(text: String, at: Int) -> Int {
+    let mut i = at + 3
+    while (i < text.length) {
+        if (fmtIs(text, i, '"') and fmtIs(text, i + 1, '"') and fmtIs(text, i + 2, '"')) { return i + 3 }
+        if (fmtIs(text, i, '$') and fmtIs(text, i + 1, '{')) {
+            i = fmtInterpolationEnd(text, i + 2)
+            continue
+        }
+        i = i + 1
+    }
+    return i
+}
+
+// Block comments nest, counting delimiters and nothing else, as the compiler does.
+private fn fmtBlockCommentEnd(text: String, at: Int) -> Int {
+    let mut depth = 1
+    let mut i = at + 2
+    while (i < text.length and depth > 0) {
+        if (fmtIs(text, i, '/') and fmtIs(text, i + 1, '*')) {
+            depth = depth + 1
+            i = i + 2
+        } else if (fmtIs(text, i, '*') and fmtIs(text, i + 1, '/')) {
+            depth = depth - 1
+            i = i + 2
+        } else {
+            i = i + 1
+        }
+    }
+    return i
+}
+
+private fn fmtLineEnd(text: String, at: Int) -> Int {
+    let mut i = at
+    while (i < text.length and text.byteAt(i) != 10 and text.byteAt(i) != 13) { i = i + 1 }
+    return i
+}
+
+private fn fmtIsOperatorByte(b: Int) -> Bool {
+    return b > 0 and b < 128 and isOperator(b as Char)
+}
+
+private fn fmtIsCompoundBase(b: Int) -> Bool {
+    return b == 43 or b == 45 or b == 42 or b == 47 or b == 37 or b == 38 or b == 124 or b == 94
+}
+
+// The kind of the operator that starts at `at`, and `twoLong` says whether it spans two
+// characters. The pairs are the scanner's own (`isTwoCharOperator`); the kind is what the
+// spacing rules need, which is finer than the compiler's token types.
+private fn fmtOperatorKind(first: Int, second: Int, twoLong: Bool) -> FmtKind {
+    if (twoLong) {
+        if (first == 45 and second == 62) { return FmtKind.ARROW }
+        if (first == 61 and second == 62) { return FmtKind.FAT_ARROW }
+        if (second == 61 and (first == 61 or first == 33 or first == 60 or first == 62)) { return FmtKind.RELATIONAL }
+        if ((first == 38 and second == 38) or (first == 124 and second == 124)) { return FmtKind.LOGICAL }
+        if ((first == 60 and second == 60) or (first == 62 and second == 62)) { return FmtKind.SHIFT }
+        if (second == 61 and fmtIsCompoundBase(first)) { return FmtKind.ASSIGN }
+        return FmtKind.ARITH
+    }
+    if (first == 60 or first == 62) { return FmtKind.RELATIONAL }
+    if (first == 61) { return FmtKind.ASSIGN }
+    if (first == 33) { return FmtKind.NEGATION }
+    if (first == 38 or first == 124 or first == 94 or first == 126) { return FmtKind.BITWISE }
+    return FmtKind.ARITH
+}
+
+private fn fmtSeparatorKind(b: Int) -> FmtKind {
+    if (b == 40) { return FmtKind.LPAREN }
+    if (b == 41) { return FmtKind.RPAREN }
+    if (b == 123) { return FmtKind.LBRACE }
+    if (b == 125) { return FmtKind.RBRACE }
+    if (b == 91) { return FmtKind.LBRACKET }
+    if (b == 93) { return FmtKind.RBRACKET }
+    if (b == 44) { return FmtKind.COMMA }
+    if (b == 58) { return FmtKind.COLON }
+    if (b == 46) { return FmtKind.DOT }
+    if (b == 63) { return FmtKind.OPTIONAL }
+    if (b == 64) { return FmtKind.AT }
+    return FmtKind.OTHER
+}
+
+// The nearest byte before `at` that is not a space or tab, and where it is; -1 for none.
+private fn fmtPreviousSolid(text: String, at: Int) -> Int {
+    let mut i = at - 1
+    while (i >= 0 and (text.byteAt(i) == 32 or text.byteAt(i) == 9)) { i = i - 1 }
+    return i
+}
+
+// `default` is a keyword (`let c: Config = default`) and also the name of a type's own function,
+// after a `.` or after `fn` (`Config.default()`).
+private fn fmtDefaultIsName(text: String, start: Int) -> Bool {
+    let at = fmtPreviousSolid(text, start)
+    if (at < 0) { return false }
+    if (text.byteAt(at) == 46) { return true }
+    return at >= 1 and text.byteAt(at) == 110 and text.byteAt(at - 1) == 102
+        and (at < 2 or fmtIsWordPart(text.byteAt(at - 2)) == false)
+}
+
+// Whether `volatile` here is a pointer capability: inside `Ptr<...>`, after any `mut` or
+// `volatile`, and followed by a type. Anywhere else it is a name.
+private fn fmtVolatileQualifies(text: String, start: Int, end: Int) -> Bool {
+    let mut after = end
+    while (after < text.length and fmtIsSpace(text.byteAt(after))) { after = after + 1 }
+    if (after >= text.length) { return false }
+    if (text.byteAt(after) != 91 and fmtIsWordStart(text.byteAt(after)) == false) { return false }
+    let mut at = start
+    loop {
+        while (at > 0 and fmtIsSpace(text.byteAt(at - 1))) { at = at - 1 }
+        if (at == 0) { return false }
+        if (text.byteAt(at - 1) == 60) {
+            at = at - 1
+            while (at > 0 and fmtIsSpace(text.byteAt(at - 1))) { at = at - 1 }
+            let mut from = at
+            while (from > 0 and fmtIsWordPart(text.byteAt(from - 1))) { from = from - 1 }
+            return text.substring(from, at - from).equals("Ptr")
+        }
+        let mut from = at
+        while (from > 0 and fmtIsWordPart(text.byteAt(from - 1))) { from = from - 1 }
+        let word = text.substring(from, at - from)
+        if (word.equals("mut") == false and word.equals("volatile") == false) { return false }
+        at = from
+    }
+}
+
+// A contextual word is only a keyword where the compiler reads it as one; elsewhere it is a name
+// (a variable `scope`, the library's `join`). The rules are the plugin's, which matched the
+// parser: some words need a word after them, `scope` needs a `{`, `async` needs `fn`.
+private fn fmtIsNameHere(text: String, word: String, start: Int, end: Int) -> Bool {
+    if (word.equals("volatile")) { return fmtVolatileQualifies(text, start, end) == false }
+    let isAsync = word.equals("async")
+    let isScope = word.equals("scope")
+    let needsWord = word.equals("await") or word.equals("join") or word.equals("hot")
+        or word.equals("const") or word.equals("noinline") or word.equals("noreturn")
+    if (isAsync == false and isScope == false and needsWord == false) { return false }
+    let mut at = end
+    while (at < text.length and (text.byteAt(at) == 32 or text.byteAt(at) == 9)) { at = at + 1 }
+    if (at >= text.length) { return true }
+    let next = text.byteAt(at)
+    if (isScope) { return next != 123 }
+    if (at == end) { return true }
+    if (isAsync) {
+        return (next == 102 and fmtIs(text, at + 1, 'n')
+                and (at + 2 >= text.length or fmtIsWordPart(text.byteAt(at + 2)) == false)) == false
+    }
+    return (fmtIsWordStart(next) and next < 128) == false
+}
+
+private fn fmtWordKind(text: String, start: Int, end: Int) -> FmtKind {
+    let word = text.substring(start, end - start)
+    if (word.equals("true") or word.equals("false")) { return FmtKind.WORD }
+    if (isKeyword(word)) {
+        if (word.equals("default") and fmtDefaultIsName(text, start)) { return FmtKind.WORD }
+        return FmtKind.KEYWORD
+    }
+    if (vocabularyIsContextual(word) and fmtIsNameHere(text, word, start, end) == false) {
+        return FmtKind.CONTEXTUAL
+    }
+    return FmtKind.WORD
+}
+
+private fn fmtPush(inout tokens: FmtTokens, kind: FmtKind, start: Int, end: Int, breaks: Int, column: Int, line: Int) {
+    tokens.kinds.push(kind)
+    tokens.starts.push(start)
+    tokens.ends.push(end)
+    tokens.breaks.push(breaks)
+    tokens.columns.push(column)
+    tokens.lines.push(line)
+}
+
+public fn fmtScan(text: String) -> FmtTokens {
+    let mut tokens = FmtTokens { kinds: [], starts: [], ends: [], breaks: [], columns: [], lines: [] }
+    let length = text.length
+    let mut i = 0
+    let mut breaks = 0
+    // Width of the indentation after the last line break; reset by each break.
+    let mut indent = 0
+    let mut first = true
+    let mut line = 1
+    while (i < length) {
+        let b = text.byteAt(i)
+        if (b == 10) {
+            breaks = breaks + 1
+            line = line + 1
+            indent = 0
+            i = i + 1
+            continue
+        }
+        if (b == 9) {
+            indent = indent + 4
+            i = i + 1
+            continue
+        }
+        if (fmtIsSpace(b)) {
+            if (b == 32) { indent = indent + 1 }
+            i = i + 1
+            continue
+        }
+
+        let start = i
+        let mut kind = FmtKind.OTHER
+        let mut end = i + 1
+        if (b == 47 and fmtIs(text, i + 1, '/')) {
+            kind = FmtKind.LINE_COMMENT
+            end = fmtLineEnd(text, i)
+        } else if (b == 47 and fmtIs(text, i + 1, '*')) {
+            kind = FmtKind.BLOCK_COMMENT
+            end = fmtBlockCommentEnd(text, i)
+        } else if (fmtIsWordStart(b)) {
+            end = i + 1
+            while (end < length and fmtIsWordPart(text.byteAt(end))) { end = end + 1 }
+            kind = fmtWordKind(text, start, end)
+        } else if (fmtIsDigit(b)) {
+            kind = FmtKind.NUMBER
+            end = fmtNumberEnd(text, i)
+        } else if (b == 34) {
+            kind = FmtKind.STRING
+            if (fmtIs(text, i + 1, '"') and fmtIs(text, i + 2, '"')) {
+                end = fmtTripleEnd(text, i)
+            } else {
+                end = fmtStringEnd(text, i)
+            }
+        } else if (b == 39) {
+            kind = FmtKind.CHAR
+            end = fmtCharEnd(text, i)
+        } else if (fmtIsOperatorByte(b)) {
+            let second = fmtByte(text, i + 1)
+            let twoLong = i + 1 < length and isTwoCharOperator(b as Char, second as Char)
+            kind = fmtOperatorKind(b, second, twoLong)
+            if (twoLong) { end = i + 2 }
+        } else if (b == 46 and fmtIs(text, i + 1, '.')) {
+            if (fmtIs(text, i + 2, '.')) {
+                kind = FmtKind.OTHER
+                end = i + 3
+            } else {
+                kind = FmtKind.RANGE
+                end = i + 2
+                if (fmtIs(text, i + 2, '<')) { end = i + 3 }
+            }
+        } else if (b == 63 and fmtIs(text, i + 1, '?')) {
+            kind = FmtKind.ARITH
+            end = i + 2
+        } else {
+            kind = fmtSeparatorKind(b)
+        }
+
+        let startsLine = first or breaks > 0
+        let mut column = 0 - 1
+        if (startsLine) { column = indent }
+        fmtPush(tokens, kind, start, end, breaks, column, line)
+        first = false
+        breaks = 0
+        indent = 0
+        let mut inside = start
+        while (inside < end) {
+            if (text.byteAt(inside) == 10) { line = line + 1 }
+            inside = inside + 1
+        }
+        // A token that spans lines (a string, a block comment) moves the line we are on; the
+        // next token's `breaks` counts only the breaks after it, and its column only the
+        // indentation on its own line.
+        i = end
+    }
+    return tokens
+}

@@ -1,0 +1,63 @@
+// expect-error: expected IDENTIFIER in parameter name, found `{`
+// expect-error: expected a type name, found `{`
+// expect-error: expected IDENTIFIER in parameter name, found `fn`
+// expect-error: expected an expression, found `}`
+// expect-error: aborting due to 4 previous errors
+//
+// A syntax error `fatal` gives up on drops the member it is in, not the block around it.
+// `impl Counter` has two broken methods and `trait Shape` one, and each is reported once:
+// parsing resumed at the next member of the same block, so neither is a cascade of the
+// one before it. Before, the first broken method dropped the whole `impl`, and the methods
+// after it were never read at all.
+//
+// The last error is in a trait impl. The method after it is still read, which is what lets
+// the block end where it ends rather than swallowing the declaration that follows.
+
+import std.io
+
+struct Counter { n: Int }
+
+impl Counter {
+    fn good1(self) -> Int {
+        return self.n
+    }
+
+    fn broken(self, {
+        return 1
+    }
+
+    fn good2(self) -> Int {
+        return self.n + 1
+    }
+
+    fn broken2(self) -> {
+        return 2
+    }
+
+    public fn good3(self) -> Int {
+        return self.good1() + self.good2()
+    }
+}
+
+trait Shape {
+    fn area(self) -> Int
+    fn bad(self,
+    fn perimeter(self) -> Int
+}
+
+trait Named { fn name(self) -> Int }
+
+impl Named for Counter {
+    fn name(self) -> Int {
+        return 7 +
+    }
+    fn other(self) -> Int {
+        return 8
+    }
+}
+
+fn main() -> Int {
+    let c = Counter { n: 1 }
+    println(c.good3())
+    return 0
+}

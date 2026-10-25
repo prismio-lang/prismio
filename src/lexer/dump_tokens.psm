@@ -1,0 +1,186 @@
+// `prismio dump-tokens`: the lexical vocabulary as JSON, for tools that must agree with the
+// compiler about it and would otherwise keep a copy: an editor's lexer and keyword colouring,
+// a TextMate grammar. Reads the compiler's own tables, so it cannot drift from them; what it
+// prints is one JSON object on one line of stdout.
+//
+//   {"kind":"tokens","schemaVersion":1,
+//    "keywords":[...], "wordOperators":[...], "literals":[...],
+//    "contextualKeywords":[{"word":"prop","context":"..."}],
+//    "types":{"integer":[...],"float":[...],"other":[...]},
+//    "operators":[{"text":"==","kind":"RELATIONAL_OPERATOR"}],
+//    "separators":["(",...]}
+//
+// The words are all ASCII and none contains a quote or a backslash, so they are written
+// between quotes as they are.
+
+import lexer.token
+import lexer.vocabulary
+import common.text
+import common.diagnostics
+import ast.types
+import ast.float_width
+import std.string
+import std.io
+import std.vec
+
+private fn dumpQuoted(text: String) -> String {
+    return "\"".concat(text, "\"")
+}
+
+private fn dumpKindName(t: TokenType) -> String {
+    match (t) {
+        TokenType.RELATIONAL_OPERATOR => { return "RELATIONAL_OPERATOR" }
+        TokenType.ASSIGNMENT_OPERATOR => { return "ASSIGNMENT_OPERATOR" }
+        TokenType.ARITHMETIC_OPERATOR => { return "ARITHMETIC_OPERATOR" }
+        TokenType.NEGATION => { return "NEGATION" }
+        TokenType.ARROW => { return "ARROW" }
+        TokenType.FAT_ARROW => { return "FAT_ARROW" }
+        TokenType.RANGE => { return "RANGE" }
+        TokenType.ELLIPSIS => { return "ELLIPSIS" }
+    }
+    return "TOKEN"
+}
+
+// `["a","b"]` for the words the callback names; a function value cannot be passed, so each
+// list is joined by its own loop below.
+private fn dumpOperatorEntry(text: String, t: TokenType) -> String {
+    return "{\"text\":".concat(dumpQuoted(text), ",\"kind\":", dumpQuoted(dumpKindName(t)), "}")
+}
+
+// Every operator the scanner can make: the one-character ones, then every pair it joins into a
+// two-character one. Asked of the scanner's own predicates, over the whole ASCII range, so an
+// operator added there appears here with no edit.
+private fn dumpOperators() -> String {
+    let mut out = "["
+    let mut first = true
+    let mut a = 33
+    while (a < 127) {
+        let c = a as Char
+        if (isOperator(c)) {
+            if (first == false) { out = out.concat(",") }
+            first = false
+            out = out.concat(dumpOperatorEntry(c.toString(), oneCharOperatorType(c)))
+        }
+        a = a + 1
+    }
+    a = 33
+    while (a < 127) {
+        let c = a as Char
+        let mut b = 33
+        while (b < 127) {
+            let d = b as Char
+            if (isOperator(c) and isOperator(d) and isTwoCharOperator(c, d)) {
+                let text = c.toString().concat(d.toString())
+                if (first == false) { out = out.concat(",") }
+                first = false
+                out = out.concat(dumpOperatorEntry(text, twoCharOperatorType(text)))
+            }
+            b = b + 1
+        }
+        a = a + 1
+    }
+    // The ones the scanner reads by hand: `??`, the range pair and the variadic marker.
+    out = out.concat(",", dumpOperatorEntry("??", TokenType.ARITHMETIC_OPERATOR))
+    out = out.concat(",", dumpOperatorEntry("..", TokenType.RANGE))
+    out = out.concat(",", dumpOperatorEntry("..<", TokenType.RANGE))
+    out = out.concat(",", dumpOperatorEntry("...", TokenType.ELLIPSIS))
+    return out.concat("]")
+}
+
+private fn dumpSeparators() -> String {
+    let mut out = "["
+    let mut first = true
+    let mut a = 33
+    while (a < 127) {
+        let c = a as Char
+        if (isSeparator(c)) {
+            if (first == false) { out = out.concat(",") }
+            first = false
+            out = out.concat(dumpQuoted(c.toString()))
+        }
+        a = a + 1
+    }
+    return out.concat("]")
+}
+
+private fn dumpReserved() -> String {
+    let mut out = "["
+    let mut i = 0
+    while (i < reservedWordCount()) {
+        if (i > 0) { out = out.concat(",") }
+        out = out.concat(dumpQuoted(reservedWordAt(i)))
+        i = i + 1
+    }
+    return out.concat("]")
+}
+
+private fn dumpContextual() -> String {
+    let mut out = "["
+    let mut i = 0
+    while (i < vocabularyContextualCount()) {
+        if (i > 0) { out = out.concat(",") }
+        out = out.concat("{\"word\":", dumpQuoted(vocabularyContextualWord(i)),
+                         ",\"context\":", dumpQuoted(vocabularyContextualContext(i)), "}")
+        i = i + 1
+    }
+    return out.concat("]")
+}
+
+// The integer names, refused if the compiler does not know one: the table is claimed to be
+// what a program can write, and a name sema rejects would make the claim false.
+private fn dumpIntTypes() -> String {
+    let mut out = "["
+    let mut i = 0
+    while (i < vocabularyIntTypeCount()) {
+        let name = vocabularyIntType(i)
+        if (name.equals("UInt") == false and name.equals("I32") == false
+                and typeIntFromName(name).kind != TypeKind.INT) {
+            diag_error_code("P2005", "the token table names an integer type the compiler does not know: ".concat(diagQuote(name)))
+            return ""
+        }
+        if (i > 0) { out = out.concat(",") }
+        out = out.concat(dumpQuoted(name))
+        i = i + 1
+    }
+    return out.concat("]")
+}
+
+private fn dumpFloatTypes() -> String {
+    let mut out = "["
+    let mut i = 0
+    while (i < vocabularyFloatTypeCount()) {
+        let name = vocabularyFloatType(i)
+        if (floatKeyOfName(name).equals("")) {
+            diag_error_code("P2006", "the token table names a float type the compiler does not know: ".concat(diagQuote(name)))
+            return ""
+        }
+        if (i > 0) { out = out.concat(",") }
+        out = out.concat(dumpQuoted(name))
+        i = i + 1
+    }
+    return out.concat("]")
+}
+
+private fn dumpOtherTypes() -> String {
+    let mut out = "["
+    let mut i = 0
+    while (i < vocabularyOtherTypeCount()) {
+        if (i > 0) { out = out.concat(",") }
+        out = out.concat(dumpQuoted(vocabularyOtherType(i)))
+        i = i + 1
+    }
+    return out.concat("]")
+}
+
+public fn dumpTokensCommand() -> Int {
+    let integers = dumpIntTypes()
+    let floats = dumpFloatTypes()
+    if (integers.equals("") or floats.equals("")) { return 1 }
+    println("{\"kind\":\"tokens\",\"schemaVersion\":1,\"keywords\":".concat(dumpReserved(),
+        ",\"wordOperators\":[\"and\",\"or\",\"is\",\"not\"],\"literals\":[\"true\",\"false\",\"none\"]",
+        ",\"contextualKeywords\":", dumpContextual(),
+        ",\"types\":{\"integer\":", integers, ",\"float\":", floats, ",\"other\":", dumpOtherTypes(), "}",
+        ",\"operators\":", dumpOperators(),
+        ",\"separators\":", dumpSeparators(), "}"))
+    return 0
+}

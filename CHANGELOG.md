@@ -28,6 +28,31 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   memory) with the Python client `tests/lsp_client.py`. Diagnostics only so far; hover, definition and completion
   need the semantic index (Phase 2 of the plan). `std.fs.executablePath()` and `std.process.useBinaryStdio()` came with it.
 
+- **`prismio fmt`: the formatter, in the compiler.** `prismio fmt <file>...` prints formatted source; `--write`
+  rewrites files that would change, `--check` writes nothing and exits 1 if any would (the CI form), `--stdin` formats
+  piped text (an editor's unsaved buffer), `--range <from>:<to>` formats only the tokens that begin on those lines.
+  The rules are the IntelliJ plugin's `SpacingBuilder`, moved out of Java so an editor, the server and CI share one
+  formatter (`src/fmt/`): only whitespace changes (the output has the input's tokens by construction), line breaks are
+  the author's, indentation is counted in braces with continuation lines kept where the author put them, a closure's
+  bars hug its parameters, type-argument lists are told from comparisons by scanning to the matching `>`, and CRLF stays
+  CRLF. It never fails and reads text the compiler would refuse, which is what lets an editor format a file mid-edit.
+  Held to the repository by `tools/check_fmt.py` (run by the `fmt` fixture): every one of the 875 `.psm` files formats
+  without error, with only whitespace moved, and settles; 300 damaged copies do the same; the IR of the formatted `tests/`
+  programs is byte-identical; and the formatter would change 0.16% of the repository's lines.
+
+- **`prismio dump-tokens`: the lexical vocabulary as JSON.** Keywords, word operators, contextual keywords with the
+  position that gives each meaning, the integer, float and other type names, every operator the scanner can make (with
+  its token kind) and the separators, read from the compiler's own tables (`lexer/token.psm`, `lexer/vocabulary.psm`,
+  the scanner's `isOperator` / `isTwoCharOperator` / `isSeparator`) so a tool never keeps a copy. The `token_tables`
+  fixture fails when the parser compares an identifier with a word the table lacks (it found nine the IntelliJ
+  plugin's hand-copied list had no entry for) and when the plugin's `PrismioWords.java` disagrees.
+
+- **Error recovery inside an `impl` or `trait`.** A syntax error in one method drops that method, not the block: the
+  members around it are still read, so the editor keeps completion and diagnostics for code that is well formed.
+  Parsing resumes at the next `fn`, `prop`, `let`, `type` or modifier that starts a line at the member's indentation
+  or at brace depth zero from where it began (`tests/neg_356_member_recovery.psm`; the fuzz gate stays at zero
+  failures). Under `check --partial`, a trait impl is not blamed for the method it lost.
+
 - **A program can serve a client and supervise a child on one thread.** `std.poll.waitReadable` waits on one, two or
   many descriptors with a timeout and answers which has something to read (`poll_clear` / `poll_add` / `poll_wait` in
   `runtime/program_support.c`; `poll(2)` on POSIX, a 1 ms `PeekNamedPipe` loop for pipes on Windows). Descriptor 0 counts

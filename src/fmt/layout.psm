@@ -1,0 +1,544 @@
+// What a formatted file looks like: the spacing between tokens on a line, and the indentation
+// of each line.
+//
+// **Only whitespace changes.** The formatter walks the tokens fmt/scan.psm cut and writes each
+// back byte for byte, so the token stream of its output is the input's by construction; what it
+// decides is the gap in front of each token. (The one exception to "byte for byte" is the inside
+// of a multi-line block comment, whose lines are re-indented, and a line comment's trailing
+// blanks.) Line breaks are the author's: the formatter never joins or splits a line, it only
+// limits a run of blank lines to two.
+//
+// Indentation is counted in braces, four spaces a level, except on a *continuation* line: one
+// inside an open `(` or `[`, one after a line that stopped mid-expression, one that opens with an
+// operator. A formatter cannot tell which alignment the author meant, so there the author's own
+// indentation is kept, and only moved right when it is shallower than one step inside the block.
+//
+// The rules were the IntelliJ plugin's before they were the compiler's (formatter/PrismioBlock.java)
+// and the comments say what each one is for.
+
+import std.string
+import std.vec
+import fmt.scan
+
+private fn fmtText(text: String, tokens: FmtTokens, at: Int) -> String {
+    return text.substring(tokens.starts[at], tokens.ends[at] - tokens.starts[at])
+}
+
+private fn fmtKindOf(tokens: FmtTokens, at: Int) -> FmtKind {
+    if (at < 0 or at >= tokens.kinds.length) { return FmtKind.NONE }
+    return tokens.kinds[at]
+}
+
+private fn fmtIsComment(kind: FmtKind) -> Bool {
+    return kind == FmtKind.LINE_COMMENT or kind == FmtKind.BLOCK_COMMENT
+}
+
+private fn fmtIsOperator(kind: FmtKind) -> Bool {
+    return kind == FmtKind.ARITH or kind == FmtKind.RELATIONAL or kind == FmtKind.ASSIGN
+        or kind == FmtKind.LOGICAL or kind == FmtKind.BITWISE or kind == FmtKind.SHIFT
+        or kind == FmtKind.ARROW or kind == FmtKind.FAT_ARROW
+}
+
+private fn fmtIsOpening(kind: FmtKind) -> Bool {
+    return kind == FmtKind.LPAREN or kind == FmtKind.LBRACKET
+}
+
+// One byte of a one-byte token, or -1.
+private fn fmtSingle(text: String, tokens: FmtTokens, at: Int) -> Int {
+    if (tokens.ends[at] - tokens.starts[at] != 1) { return 0 - 1 }
+    return text.byteAt(tokens.starts[at])
+}
+
+private fn fmtIsAngleOpen(text: String, tokens: FmtTokens, at: Int) -> Bool {
+    return tokens.kinds[at] == FmtKind.RELATIONAL and fmtSingle(text, tokens, at) == 60
+}
+
+private fn fmtIsAngleClose(text: String, tokens: FmtTokens, at: Int) -> Bool {
+    return tokens.kinds[at] == FmtKind.RELATIONAL and fmtSingle(text, tokens, at) == 62
+}
+
+private fn fmtIsShiftClose(text: String, tokens: FmtTokens, at: Int) -> Bool {
+    return tokens.kinds[at] == FmtKind.SHIFT and tokens.ends[at] - tokens.starts[at] == 2
+        and text.byteAt(tokens.starts[at]) == 62
+}
+
+// The previous token that is not a comment, or -1.
+private fn fmtPreviousCode(tokens: FmtTokens, at: Int) -> Int {
+    let mut i = at - 1
+    while (i >= 0 and fmtIsComment(tokens.kinds[i])) { i = i - 1 }
+    return i
+}
+
+// Whether this `-` or `+` is a sign (`(-1, 0)`, `x = -y`) rather than an operator (`a - b`):
+// what comes right before it is nothing, an opening bracket, a separator, another operator, or
+// a keyword (`return -1`, `in -3..3`).
+private fn fmtIsSign(text: String, tokens: FmtTokens, at: Int) -> Bool {
+    if (tokens.kinds[at] != FmtKind.ARITH) { return false }
+    let b = fmtSingle(text, tokens, at)
+    if (b != 45 and b != 43) { return false }
+    // A line that opens with `-5 =>` or `-x` is a sign when it hugs its operand; a continuation puts
+    // a space after the operator (`- b`).
+    if (tokens.breaks[at] > 0 and at + 1 < tokens.kinds.length and tokens.starts[at + 1] == tokens.ends[at]) { return true }
+    let before = fmtKindOf(tokens, fmtPreviousCode(tokens, at))
+    if (before == FmtKind.NONE) { return true }
+    if (fmtIsOperator(before)) { return true }
+    return before == FmtKind.LPAREN or before == FmtKind.LBRACKET or before == FmtKind.LBRACE
+        or before == FmtKind.COMMA or before == FmtKind.COLON or before == FmtKind.RANGE
+        or before == FmtKind.KEYWORD
+}
+
+// What a type-argument list may contain: names, `,` `:` `.` `?` and brackets, `mut` and `+`
+// (a bound). When the `<` touches the name before it, as in every generic anyone writes, a list may
+// hold more: a function type (`F: Fn(T) -> U`) and an array length that is an expression
+// (`Array<Int, N * N>`).
+private fn fmtAllowedInAngles(text: String, tokens: FmtTokens, at: Int, adjacent: Bool) -> Bool {
+    let kind = tokens.kinds[at]
+    if (kind == FmtKind.WORD or kind == FmtKind.CONTEXTUAL or kind == FmtKind.COMMA
+            or kind == FmtKind.COLON or kind == FmtKind.DOT or kind == FmtKind.OPTIONAL
+            or kind == FmtKind.LBRACKET or kind == FmtKind.RBRACKET) {
+        return true
+    }
+    if (kind == FmtKind.KEYWORD) {
+        let word = fmtText(text, tokens, at)
+        return word.equals("mut") or (adjacent and word.equals("sink"))
+    }
+    if (kind == FmtKind.ARITH and fmtSingle(text, tokens, at) == 43) { return true }
+    if (adjacent) {
+        return kind == FmtKind.LPAREN or kind == FmtKind.RPAREN or kind == FmtKind.ARROW
+            or kind == FmtKind.NUMBER or kind == FmtKind.ARITH or kind == FmtKind.BITWISE
+            or (kind == FmtKind.ASSIGN and fmtSingle(text, tokens, at) == 61)
+    }
+    return false
+}
+
+// The length in `Array<U32, 64>`, an integer after a comma and right before the closing `>`, and
+// the width in `Int<24>`. Anywhere else a number marks a comparison (`x < 5`).
+private fn fmtIsArrayLength(text: String, tokens: FmtTokens, code: Vec<Int>, at: Int) -> Bool {
+    let index = code[at]
+    if (tokens.kinds[index] != FmtKind.NUMBER or at == 0 or at + 1 >= code.length) { return false }
+    let next = code[at + 1]
+    if (fmtIsAngleClose(text, tokens, next) == false and fmtIsShiftClose(text, tokens, next) == false) { return false }
+    if (tokens.kinds[code[at - 1]] == FmtKind.COMMA) { return true }
+    if (at < 2 or fmtIsAngleOpen(text, tokens, code[at - 1]) == false) { return false }
+    let name = fmtText(text, tokens, code[at - 2])
+    return name.equals("Int") or name.equals("UInt")
+}
+
+// Which `<`, `>` and `>>` delimit a type-argument list. They lex as comparison and shift
+// operators, so the rule that puts air around a comparison would turn `List<Int>` into
+// `List < Int >`. Told apart the way the compiler's parser tells them apart: scan from the `<` to
+// its matching `>` and require everything between to be something a type is made of. `a < b` has no
+// closing `>`, `if (a < b)` hits a `)`, `x < 5` hits an integer, and `List<Map<String, Int>>`
+// closes cleanly with the `>>` counting for two. Only a name can introduce one: a `<` after `)` or
+// a literal is a comparison whatever follows it.
+private fn fmtTypeAngles(text: String, tokens: FmtTokens) -> Vec<Bool> {
+    let mut angles: Vec<Bool> = []
+    let mut code: Vec<Int> = []
+    let mut i = 0
+    while (i < tokens.kinds.length) {
+        angles.push(false)
+        if (fmtIsComment(tokens.kinds[i]) == false) { code.push(i) }
+        i = i + 1
+    }
+
+    let mut a = 0
+    while (a < code.length) {
+        if (fmtIsAngleOpen(text, tokens, code[a]) == false or a == 0) {
+            a = a + 1
+            continue
+        }
+        let before = tokens.kinds[code[a - 1]]
+        let adjacent = tokens.starts[code[a]] == tokens.ends[code[a - 1]]
+        let afterImpl = before == FmtKind.KEYWORD and adjacent and fmtText(text, tokens, code[a - 1]).equals("impl")
+        if (before != FmtKind.WORD and before != FmtKind.CONTEXTUAL and afterImpl == false) {
+            a = a + 1
+            continue
+        }
+        let mut depth = 0
+        let mut span: Vec<Int> = []
+        let mut b = a
+        while (b < code.length) {
+            let token = code[b]
+            // An unspaced list can run over lines; a spaced one is a comparison unless it stays on one.
+            if (adjacent == false and b > a and tokens.breaks[token] > 0) {
+                depth = 0 - 1
+                break
+            }
+            if (fmtIsAngleOpen(text, tokens, token)) {
+                depth = depth + 1
+                span.push(token)
+            } else if (fmtIsShiftClose(text, tokens, token)) {
+                depth = depth - 2
+                span.push(token)
+            } else if (fmtIsAngleClose(text, tokens, token)) {
+                depth = depth - 1
+                span.push(token)
+            } else if (fmtAllowedInAngles(text, tokens, token, adjacent) == false
+                    and fmtIsArrayLength(text, tokens, code, b) == false) {
+                depth = 0 - 1
+                break
+            }
+            if (depth <= 0) { break }
+            b = b + 1
+            if (b > a + 256) {
+                depth = 0 - 1
+                break
+            }
+        }
+        if (depth == 0) {
+            for token in span { angles[token] = true }
+        }
+        a = a + 1
+    }
+    return angles
+}
+
+// Whether the token at `at` is a keyword that can begin a declaration or a statement but not an
+// operand, so a bracket still open in front of it was left open by mistake. A named `fn` is one; the
+// anonymous `fn(` is an expression and is not.
+private fn fmtOpensStatement(text: String, tokens: FmtTokens, at: Int) -> Bool {
+    if (tokens.kinds[at] != FmtKind.KEYWORD or tokens.breaks[at] == 0) { return false }
+    let word = fmtText(text, tokens, at)
+    if (word.equals("fn")) { return fmtKindOf(tokens, at + 1) == FmtKind.WORD }
+    return word.equals("struct") or word.equals("enum") or word.equals("impl") or word.equals("trait")
+        or word.equals("import") or word.equals("extern") or word.equals("let") or word.equals("return")
+        or word.equals("while") or word.equals("for") or word.equals("loop")
+}
+
+// The `|` that open and close a closure's parameter list: `|x: Int| x + 1`. A bar where an
+// operand is expected opens one and the next bar closes it, and neither is the bitwise operator
+// the rule that spaces operators would take it for. 1 opens, 2 closes, 0 otherwise.
+private fn fmtClosurePipes(text: String, tokens: FmtTokens) -> Vec<Int> {
+    let mut pipes: Vec<Int> = []
+    let mut i = 0
+    while (i < tokens.kinds.length) {
+        pipes.push(0)
+        i = i + 1
+    }
+    i = 0
+    while (i < tokens.kinds.length) {
+        if (tokens.kinds[i] == FmtKind.BITWISE and fmtSingle(text, tokens, i) == 124) {
+            let before = fmtKindOf(tokens, fmtPreviousCode(tokens, i))
+            let operandExpected = before == FmtKind.NONE or fmtIsOperator(before)
+                or before == FmtKind.LPAREN or before == FmtKind.LBRACKET or before == FmtKind.LBRACE
+                or before == FmtKind.COMMA or before == FmtKind.COLON or before == FmtKind.KEYWORD
+            if (operandExpected) {
+                let mut j = i + 1
+                while (j < tokens.kinds.length and j < i + 64) {
+                    if (tokens.kinds[j] == FmtKind.BITWISE and fmtSingle(text, tokens, j) == 124) {
+                        pipes[i] = 1
+                        pipes[j] = 2
+                        i = j
+                        break
+                    }
+                    if (tokens.kinds[j] == FmtKind.LBRACE or tokens.kinds[j] == FmtKind.RBRACE) { break }
+                    j = j + 1
+                }
+            }
+        }
+        i = i + 1
+    }
+    return pipes
+}
+
+// The spaces that belong between two tokens on one line, or -1 to leave the gap as the author
+// wrote it. The first rule that matches wins, so the order is the design.
+//
+// There is deliberately no blanket "no space after a word" rule: `and`, `or`, `as` and `in` are
+// keywords that follow an expression, and one used to collapse `a and b` into `aand b`.
+private fn fmtSpacing(text: String, tokens: FmtTokens, angles: Vec<Bool>, pipes: Vec<Int>, left: Int, right: Int) -> Int {
+    let l = tokens.kinds[left]
+    let r = tokens.kinds[right]
+
+    // A comment keeps the gap before it, which is how a column of trailing comments stays a column.
+    if (r == FmtKind.LINE_COMMENT or r == FmtKind.BLOCK_COMMENT or l == FmtKind.BLOCK_COMMENT) { return 0 - 1 }
+
+    // `List<Int>` closes up; `a < b` keeps its air. Only inside the brackets: what follows the
+    // closing `>` is ordinary code (`List<Int> = x`, `Point<Int> { }`).
+    if (angles[right] or (angles[left] and fmtIsAngleOpen(text, tokens, left))) { return 0 }
+    if (angles[left] and r == FmtKind.LPAREN) { return 0 }
+    // An anonymous function is written like a call: `fn(a: Int) -> Int { }`.
+    if (l == FmtKind.KEYWORD and r == FmtKind.LPAREN and fmtText(text, tokens, left).equals("fn")) { return 0 }
+    // `~` is only ever prefix, so it hugs its operand: `(~e) & g`.
+    if (l == FmtKind.BITWISE and fmtSingle(text, tokens, left) == 126) { return 0 }
+    // A sign hugs what it signs: `(-1, 0)`.
+    if (fmtIsSign(text, tokens, left)) { return 0 }
+
+    // A closure's parameter list hugs its bars: `|x: Int| x + 1`.
+    if (pipes[right] == 2 or pipes[left] == 1) { return 0 }
+
+    // Tightest first: these bind harder than anything they sit between.
+    if (l == FmtKind.DOT or r == FmtKind.DOT) { return 0 }
+    if (l == FmtKind.RANGE or r == FmtKind.RANGE) { return 0 }
+    if (r == FmtKind.OPTIONAL) { return 0 }
+    // A label: `outer@ for`, `break@outer`. The mark hugs the name on both sides; only the loop
+    // keyword after a label's declaration keeps a space.
+    if (r == FmtKind.AT) { return 0 }
+    if (l == FmtKind.AT and (r == FmtKind.KEYWORD or r == FmtKind.CONTEXTUAL)) { return 1 }
+    if (l == FmtKind.AT) { return 0 }
+
+    // Punctuation that closes up on its neighbour, above the keyword rules: `(none)`,
+    // `name: String borrow)`, `x.type)` and a field named `type:` are a keyword beside a bracket,
+    // and the bracket wins.
+    if (r == FmtKind.COMMA or r == FmtKind.COLON or r == FmtKind.RPAREN or r == FmtKind.RBRACKET) { return 0 }
+    if (l == FmtKind.LPAREN or l == FmtKind.LBRACKET) { return 0 }
+    // An operator before a bracket is an operand's bracket, not a call or an index:
+    // `a * (b + c)`, `let v = [1, 2]`, `-> [Int]`.
+    if (fmtIsOperator(l) and fmtIsOpening(r)) { return 1 }
+
+    // A keyword always has air around it. Above the parenthesis rules, so `if (a)` keeps its space
+    // while `println(a)` does not.
+    if (l == FmtKind.KEYWORD or r == FmtKind.KEYWORD) { return 1 }
+    // `repeat(3)` and `produce(free)` are calls in shape, and `step[i]` indexes a variable that
+    // happens to share a contextual word's name; a contextual word before anything else is a
+    // keyword and keeps its air.
+    if (l == FmtKind.CONTEXTUAL and (r == FmtKind.LPAREN or r == FmtKind.LBRACKET)) { return 0 }
+    if (l == FmtKind.CONTEXTUAL) { return 1 }
+
+    if (l == FmtKind.COMMA or l == FmtKind.COLON) { return 1 }
+    if (r == FmtKind.LPAREN or r == FmtKind.LBRACKET) { return 0 }
+    if (fmtIsOperator(l) or fmtIsOperator(r)) { return 1 }
+    // At least one: columns aligned on a brace (`impl Eq for Int    {`) stay aligned.
+    if (r == FmtKind.LBRACE) { return 0 - 2 }
+    return 0 - 1
+}
+
+private fn fmtSpaces(count: Int) -> String {
+    return " ".repeat(count)
+}
+
+private fn fmtLeadingBlank(line: String) -> Int {
+    let mut count = 0
+    while (count < line.length and (line.byteAt(count) == 32 or line.byteAt(count) == 9)) { count = count + 1 }
+    return count
+}
+
+private fn fmtTrimEnd(line: String) -> String {
+    let mut end = line.length
+    while (end > 0 and (line.byteAt(end - 1) == 32 or line.byteAt(end - 1) == 9 or line.byteAt(end - 1) == 13 or line.byteAt(end - 1) == 10)) {
+        end = end - 1
+    }
+    return line.substring(0, end).clone()
+}
+
+// The lines of a block comment that sits after `baseIndent`. A comment with the opener alone on its
+// first line and no comment inside it is laid out: a leading `*` on every line lines the stars up one
+// column in from the opener; otherwise the body is indented three spaces under it, and the closer goes
+// back to the base. Anything else is left alone.
+private fn fmtBlockComment(comment: String, baseIndent: String, eol: String) -> String {
+    let lines = comment.split("\n")
+    if (lines.length <= 1 or comment.endsWith("*/") == false) { return comment.clone() }
+    let opener = fmtTrimEnd(lines[0]).trim()
+    if ((opener.equals("/*") or opener.equals("/**")) == false) { return comment.clone() }
+    if (comment.substring(2, comment.length - 2).contains("/*")) { return comment.clone() }
+
+    let mut out: Vec<String> = []
+    out.push(fmtTrimEnd(lines[0]))
+
+    let lastTrimmed = lines[lines.length - 1].trim()
+    let mut starred = lastTrimmed.equals("*/")
+    let mut any = false
+    let mut i = 1
+    while (starred and i < lines.length - 1) {
+        let trimmed = lines[i].trim()
+        if (trimmed.equals("") == false) {
+            if (trimmed.startsWith("*") == false) { starred = false }
+            any = true
+        }
+        i = i + 1
+    }
+    if (any == false) { starred = false }
+
+    if (starred) {
+        let starIndent = baseIndent.concat(" ")
+        i = 1
+        while (i < lines.length) {
+            let trimmed = lines[i].trim()
+            if (i == lines.length - 1) {
+                out.push(starIndent.concat("*/"))
+            } else if (trimmed.equals("")) {
+                out.push("".clone())
+            } else {
+                out.push(starIndent.concat(trimmed))
+            }
+            i = i + 1
+        }
+        return out.join(eol)
+    }
+
+    let contentIndent = baseIndent.concat("   ")
+    i = 1
+    while (i < lines.length) {
+        let line = fmtTrimEnd(lines[i])
+        let trimmed = line.trim()
+        if (i == lines.length - 1 and trimmed.equals("*/")) {
+            out.push(baseIndent.concat("*/"))
+        } else if (trimmed.equals("")) {
+            out.push("".clone())
+        } else {
+            let leading = fmtLeadingBlank(line)
+            let mut extra = leading - contentIndent.length
+            if (extra < 0) { extra = 0 }
+            if (extra > 0 and leading > baseIndent.length) {
+                out.push(contentIndent.concat(fmtSpaces(extra), trimmed))
+            } else {
+                out.push(contentIndent.concat(trimmed))
+            }
+        }
+        i = i + 1
+    }
+    return out.join(eol)
+}
+
+// The text of the line a token ends on, from its start: what `fmtBlockComment` calls the base
+// indent is the leading blank of the line the comment begins on.
+private fn fmtLineIndentOf(emitted: String) -> String {
+    return emitted.substring(0, fmtLeadingBlank(emitted)).clone()
+}
+
+// The formatted file as a list of pieces to write out in order (not lines: a piece may hold a
+// line break). `fromLine`/`toLine` (1-based, inclusive) limit the formatting to the tokens that
+// begin on those lines; every other gap is written as it was. Both 0 formats the whole file.
+public fn fmtLayout(text: String, tokens: FmtTokens, fromLine: Int, toLine: Int, eol: String) -> Vec<String> {
+    let mut out: Vec<String> = []
+    let count = tokens.kinds.length
+    if (count == 0) {
+        if (fromLine != 0) { out.push(text.clone()) }
+        return out
+    }
+    let whole = fromLine == 0
+    let angles = fmtTypeAngles(text, tokens)
+    let pipes = fmtClosurePipes(text, tokens)
+
+    let mut open: Vec<FmtKind> = []
+    let mut braceDepth = 0
+    let mut previous = FmtKind.NONE
+    let mut previousText = "".clone()
+    let mut beforePrevious = FmtKind.NONE
+    let mut previousIsAngle = false
+    // The leading blank of the output line being written, which is what a block comment on it is
+    // indented from.
+    let mut lineIndent = "".clone()
+
+    let mut i = 0
+    while (i < count) {
+        let kind = tokens.kinds[i]
+        let inRange = whole or (tokens.lines[i] >= fromLine and tokens.lines[i] <= toLine)
+        if (kind == FmtKind.RBRACE) { braceDepth = braceDepth - 1 }
+        if (braceDepth < 0) { braceDepth = 0 }
+
+        // A keyword that only begins a statement or a declaration, met directly inside a bracket that
+        // is still open, shows that the bracket was never closed: drop it, so one missing `)` does not
+        // indent the rest of the file.
+        if (fmtOpensStatement(text, tokens, i)) {
+            while (open.length > 0 and (open[open.length - 1] == FmtKind.LPAREN or open[open.length - 1] == FmtKind.LBRACKET)) {
+                open.pop()
+            }
+        }
+
+        let mut target = braceDepth * 4
+        let existing = tokens.columns[i]
+        if (existing >= 0 and kind != FmtKind.RBRACE) {
+            let closing = kind == FmtKind.RPAREN or kind == FmtKind.RBRACKET
+            let mut innermost = FmtKind.NONE
+            if (open.length > 0) { innermost = open[open.length - 1] }
+            let insideBrackets = innermost == FmtKind.LPAREN or innermost == FmtKind.LBRACKET
+            // `items: Vec<Int>` ends in a `>` that is a bracket, not a comparison, and `import ir.*`
+            // in a `*` that is a wildcard, not a multiplication.
+            let wildcard = previous == FmtKind.ARITH and previousText.equals("*") and beforePrevious == FmtKind.DOT
+            let continuing = previous == FmtKind.DOT or previous == FmtKind.RANGE or fmtIsOperator(previous)
+                or (previous == FmtKind.KEYWORD and (previousText.equals("and") or previousText.equals("or")))
+            let midExpression = previous != FmtKind.NONE and previousIsAngle == false and wildcard == false and continuing
+            // A line that opens with an operator continues the one before: `+ b`, `.next()`, `or c`.
+            let word = fmtText(text, tokens, i)
+            let leadingOperator = kind == FmtKind.DOT or (fmtIsOperator(kind) and fmtIsSign(text, tokens, i) == false)
+                or (kind == FmtKind.KEYWORD and (word.equals("and") or word.equals("or")))
+            if (insideBrackets or midExpression or leadingOperator) {
+                if (closing == false) { target = target + 4 }
+                if (existing > target) { target = existing }
+            } else if (previous == FmtKind.COMMA and innermost == FmtKind.LBRACE) {
+                // The next field of a struct literal or the next variant of an enum: kept where the
+                // author aligned it, but never shallower than its block.
+                if (existing > target) { target = existing }
+            }
+        }
+
+        // The gap in front of the token.
+        let mut gapStart = 0
+        if (i > 0) { gapStart = tokens.ends[i - 1] }
+        let gap = text.substring(gapStart, tokens.starts[i] - gapStart)
+        if (inRange == false) {
+            out.push(gap.clone())
+            if (gap.contains("\n")) {
+                let at = gap.lastIndexOf("\n")
+                lineIndent = fmtLineIndentOf(gap.substring(at + 1, gap.length - at - 1))
+            }
+        } else if (i == 0) {
+            lineIndent = fmtSpaces(target)
+            if (whole == false) { lineIndent = fmtLineIndentOf(gap) }
+            if (whole) { out.push(lineIndent.clone()) } else { out.push(gap.clone()) }
+        } else if (tokens.breaks[i] > 0) {
+            let mut breaks = tokens.breaks[i]
+            if (breaks > 3) { breaks = 3 }
+            out.push(eol.repeat(breaks))
+            lineIndent = fmtSpaces(target)
+            out.push(lineIndent.clone())
+        } else {
+            let spaces = fmtSpacing(text, tokens, angles, pipes, i - 1, i)
+            if (spaces == 0 - 2) {
+                // Several spaces are kept, a tab or none is one space.
+                if (gap.length > 1 and gap.trim().equals("") and gap.contains("\t") == false and gap.contains("\r") == false) {
+                    out.push(gap.clone())
+                } else {
+                    out.push(" ".clone())
+                }
+            } else if (spaces < 0) {
+                out.push(gap.replaceAll("\r", ""))
+            } else {
+                out.push(fmtSpaces(spaces))
+            }
+        }
+
+        // The token itself.
+        let word = fmtText(text, tokens, i)
+        if (kind == FmtKind.LINE_COMMENT and inRange) {
+            out.push(fmtTrimEnd(word))
+        } else if (kind == FmtKind.BLOCK_COMMENT and inRange) {
+            if (word.endsWith("*/")) {
+                out.push(fmtBlockComment(word, lineIndent, eol))
+            } else {
+                // Never closed: it runs to the end of the file, and its trailing blanks are the file's.
+                out.push(fmtTrimEnd(word))
+            }
+        } else {
+            out.push(word.clone())
+        }
+        if (word.contains("\n")) {
+            let at = word.lastIndexOf("\n")
+            lineIndent = fmtLineIndentOf(word.substring(at + 1, word.length - at - 1))
+        }
+
+        // State for the tokens after.
+        if (kind == FmtKind.LBRACE) { braceDepth = braceDepth + 1 }
+        if (kind == FmtKind.LPAREN or kind == FmtKind.LBRACKET or kind == FmtKind.LBRACE) {
+            open.push(kind)
+        } else if ((kind == FmtKind.RPAREN or kind == FmtKind.RBRACKET or kind == FmtKind.RBRACE) and open.length > 0) {
+            open.pop()
+        }
+        if (fmtIsComment(kind) == false) {
+            beforePrevious = previous
+            previous = kind
+            previousText = word.clone()
+            previousIsAngle = angles[i]
+        }
+        i = i + 1
+    }
+
+    // What follows the last token: a whole file ends with one line break and nothing after.
+    if (whole) {
+        out.push(eol.clone())
+    } else {
+        out.push(text.substring(tokens.ends[count - 1], text.length - tokens.ends[count - 1]).clone())
+    }
+    return out
+}
