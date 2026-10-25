@@ -1,0 +1,387 @@
+// Reading the source text behind a node.
+//
+// The AST keeps one span per node (where its name is) and no extents, no doc comments and no
+// written types. The index needs all three, and they are all in the text, so this answers them
+// from the formatter's tokens (fmt/scan.psm): where a declaration starts and ends, what its
+// signature says as written, what the comment above it says, and what a name is spelled as at a
+// span. Spans are compared with the text on purpose: a node the compiler synthesised (a
+// closure's lifted function, a generic instance's mangled name) carries a span but not the name
+// at it, and a reference that does not match its text is not a reference the user can click.
+
+import fmt.scan
+import common.source_files
+import std.string
+import std.vec
+
+public struct IxSources {
+    // The file ids loaded so far, and for each its text, tokens and the offset of every line.
+    public files: Vec<Int>,
+    public texts: Vec<String>,
+    public tokens: Vec<FmtTokens>,
+    public lineStarts: Vec<Vec<Int>>
+}
+
+public fn ixSources() -> IxSources {
+    return IxSources { files: [], texts: [], tokens: [], lineStarts: [] }
+}
+
+// The slot of `file`, scanning it on first use; -1 for a file the registry does not have.
+public fn ixView(inout src: IxSources, file: Int) -> Int {
+    let mut i = 0
+    while (i < src.files.length) {
+        if (src.files[i] == file) { return i }
+        i = i + 1
+    }
+    if (file < 0 or file >= diag_file_count()) { return 0 - 1 }
+    let text = diag_file_content(file)
+    let mut starts: Vec<Int> = [0, 0]
+    let mut at = 0
+    while (at < text.length) {
+        if (text.byteAt(at) == 10) { starts.push(at + 1) }
+        at = at + 1
+    }
+    src.files.push(file)
+    src.texts.push(text.clone())
+    src.tokens.push(fmtScan(text))
+    src.lineStarts.push(starts)
+    return src.files.length - 1
+}
+
+// The offset where the 1-based `line` begins, or -1.
+public fn ixLineOffset(src: IxSources, slot: Int, line: Int) -> Int {
+    if (slot < 0 or line < 1 or line >= src.lineStarts[slot].length) { return 0 - 1 }
+    return src.lineStarts[slot][line]
+}
+
+public fn ixLineCount(src: IxSources, slot: Int) -> Int {
+    if (slot < 0) { return 0 }
+    return src.lineStarts[slot].length - 1
+}
+
+// The text at a span, or "" when the span is outside the file.
+public fn ixTextAt(src: IxSources, slot: Int, line: Int, col: Int, len: Int) -> String {
+    let start = ixLineOffset(src, slot, line)
+    if (start < 0 or col < 1 or len < 1) { return "".clone() }
+    let at = start + col - 1
+    if (at + len > src.texts[slot].length) { return "".clone() }
+    return src.texts[slot].substring(at, len).clone()
+}
+
+// The token that begins at this 1-based line and byte column, or -1.
+public fn ixTokenAt(src: IxSources, slot: Int, line: Int, col: Int) -> Int {
+    let start = ixLineOffset(src, slot, line)
+    if (start < 0 or col < 1) { return 0 - 1 }
+    let offset = start + col - 1
+    let tokens = src.tokens[slot]
+    let mut low = 0
+    let mut high = tokens.starts.length - 1
+    while (low <= high) {
+        let middle = (low + high) / 2
+        let value = tokens.starts[middle]
+        if (value == offset) { return middle }
+        if (value < offset) { low = middle + 1 } else { high = middle - 1 }
+    }
+    return 0 - 1
+}
+
+// The 1-based line and byte column of a token.
+public fn ixTokenLine(src: IxSources, slot: Int, token: Int) -> Int {
+    return src.tokens[slot].lines[token]
+}
+
+public fn ixTokenCol(src: IxSources, slot: Int, token: Int) -> Int {
+    let line = src.tokens[slot].lines[token]
+    return src.tokens[slot].starts[token] - src.lineStarts[slot][line] + 1
+}
+
+public fn ixTokenLen(src: IxSources, slot: Int, token: Int) -> Int {
+    return src.tokens[slot].ends[token] - src.tokens[slot].starts[token]
+}
+
+public fn ixTokenText(src: IxSources, slot: Int, token: Int) -> String {
+    if (token < 0 or token >= src.tokens[slot].starts.length) { return "".clone() }
+    let t = src.tokens[slot]
+    return src.texts[slot].substring(t.starts[token], t.ends[token] - t.starts[token]).clone()
+}
+
+public fn ixKindAt(src: IxSources, slot: Int, token: Int) -> FmtKind {
+    if (slot < 0 or token < 0 or token >= src.tokens[slot].kinds.length) { return FmtKind.NONE }
+    return src.tokens[slot].kinds[token]
+}
+
+public fn ixTokenCount(src: IxSources, slot: Int) -> Int {
+    return src.tokens[slot].kinds.length
+}
+
+private fn ixIsLineComment(kind: FmtKind) -> Bool {
+    return kind == FmtKind.LINE_COMMENT or kind == FmtKind.BLOCK_COMMENT
+}
+
+// Whether the word at `token` is spelled `text`.
+private fn ixWordIs(src: IxSources, slot: Int, token: Int, text: String) -> Bool {
+    return ixTokenText(src, slot, token).equals(text)
+}
+
+// The first token of the declaration whose name is `name`: back over the keywords and markers
+// in front of it on its line (`public fn`, `extern let mut`, `async fn`).
+public fn ixDeclStart(src: IxSources, slot: Int, name: Int) -> Int {
+    let tokens = src.tokens[slot]
+    let line = tokens.lines[name]
+    let mut start = name
+    while (start > 0 and tokens.lines[start - 1] == line) {
+        let before = tokens.kinds[start - 1]
+        if (before == FmtKind.KEYWORD or before == FmtKind.CONTEXTUAL) {
+            start = start - 1
+        } else if (before == FmtKind.RPAREN or before == FmtKind.RBRACKET) {
+            // `inline(always) fn` / `section("x") fn`: skip a marker's argument list, which is
+            // preceded by its contextual word.
+            let mut depth = 0
+            let mut at = start - 1
+            while (at >= 0 and tokens.lines[at] == line) {
+                if (tokens.kinds[at] == FmtKind.RPAREN) { depth = depth + 1 }
+                if (tokens.kinds[at] == FmtKind.LPAREN) {
+                    depth = depth - 1
+                    if (depth == 0) { break }
+                }
+                at = at - 1
+            }
+            if (at > 0 and depth == 0 and tokens.kinds[at - 1] == FmtKind.CONTEXTUAL) {
+                start = at - 1
+            } else {
+                break
+            }
+        } else {
+            break
+        }
+    }
+    return start
+}
+
+// The token index of the bracket that closes the one at `open`, or the last token.
+public fn ixMatching(src: IxSources, slot: Int, open: Int) -> Int {
+    let tokens = src.tokens[slot]
+    let opener = tokens.kinds[open]
+    let mut closer = FmtKind.RBRACE
+    if (opener == FmtKind.LPAREN) { closer = FmtKind.RPAREN }
+    if (opener == FmtKind.LBRACKET) { closer = FmtKind.RBRACKET }
+    let mut depth = 0
+    let mut at = open
+    while (at < tokens.kinds.length) {
+        if (tokens.kinds[at] == opener) { depth = depth + 1 }
+        if (tokens.kinds[at] == closer) {
+            depth = depth - 1
+            if (depth == 0) { return at }
+        }
+        at = at + 1
+    }
+    return tokens.kinds.length - 1
+}
+
+// Where the signature of a function ends: the token before its body's `{` when the line that
+// closes the parameter list carries one, else the last token of that line. -1 if there is no
+// parameter list.
+public fn ixSignatureEnd(src: IxSources, slot: Int, name: Int) -> Int {
+    let tokens = src.tokens[slot]
+    let mut at = name + 1
+    // Generic parameters sit between the name and the parameter list.
+    while (at < tokens.kinds.length and tokens.kinds[at] != FmtKind.LPAREN and tokens.lines[at] == tokens.lines[name]) {
+        at = at + 1
+    }
+    if (at >= tokens.kinds.length or tokens.kinds[at] != FmtKind.LPAREN) { return 0 - 1 }
+    let close = ixMatching(src, slot, at)
+    let line = tokens.lines[close]
+    let mut last = close
+    let mut next = close + 1
+    while (next < tokens.kinds.length and tokens.lines[next] == line) {
+        if (tokens.kinds[next] == FmtKind.LBRACE) { return last }
+        if (ixIsLineComment(tokens.kinds[next]) == false) { last = next }
+        next = next + 1
+    }
+    return last
+}
+
+// The last token of a declaration that opens a brace after its name (struct, enum, trait, impl,
+// a function with a body): the matching `}`. For a function whose signature ends the line, the
+// signature's last token.
+public fn ixDeclEnd(src: IxSources, slot: Int, name: Int, hasParameters: Bool) -> Int {
+    let tokens = src.tokens[slot]
+    let mut at = name
+    if (hasParameters) {
+        let signatureEnd = ixSignatureEnd(src, slot, name)
+        if (signatureEnd < 0) { return name }
+        at = signatureEnd
+        if (signatureEnd + 1 < tokens.kinds.length and tokens.kinds[signatureEnd + 1] == FmtKind.LBRACE
+                and tokens.lines[signatureEnd + 1] == tokens.lines[signatureEnd]) {
+            return ixMatching(src, slot, signatureEnd + 1)
+        }
+        // A brace on the next line is still the body when nothing else came between.
+        if (signatureEnd + 1 < tokens.kinds.length and tokens.kinds[signatureEnd + 1] == FmtKind.LBRACE) {
+            return ixMatching(src, slot, signatureEnd + 1)
+        }
+        return signatureEnd
+    }
+    let line = tokens.lines[name]
+    while (at < tokens.kinds.length) {
+        if (tokens.kinds[at] == FmtKind.LBRACE) { return ixMatching(src, slot, at) }
+        // A declaration with no brace of its own ends with its line.
+        if (at > name and tokens.lines[at] != line and tokens.breaks[at] > 0) { return at - 1 }
+        at = at + 1
+    }
+    return tokens.kinds.length - 1
+}
+
+// The last token of a statement that begins at `start`: through the end of its line, continuing
+// while a bracket is open or the line ends in an operator.
+public fn ixStatementEnd(src: IxSources, slot: Int, start: Int) -> Int {
+    let tokens = src.tokens[slot]
+    let mut depth = 0
+    let mut at = start
+    let mut last = start
+    while (at < tokens.kinds.length) {
+        let kind = tokens.kinds[at]
+        if (at > start and tokens.breaks[at] > 0 and depth <= 0 and ixIsLineComment(kind) == false) {
+            let previous = tokens.kinds[last]
+            let continues = previous == FmtKind.ARITH or previous == FmtKind.RELATIONAL or previous == FmtKind.ASSIGN
+                or previous == FmtKind.LOGICAL or previous == FmtKind.BITWISE or previous == FmtKind.DOT
+                or previous == FmtKind.COMMA or previous == FmtKind.ARROW
+            let leading = kind == FmtKind.DOT or kind == FmtKind.LOGICAL
+            if (continues == false and leading == false) { return last }
+        }
+        if (kind == FmtKind.LPAREN or kind == FmtKind.LBRACKET or kind == FmtKind.LBRACE) { depth = depth + 1 }
+        if (kind == FmtKind.RPAREN or kind == FmtKind.RBRACKET or kind == FmtKind.RBRACE) { depth = depth - 1 }
+        if (ixIsLineComment(kind) == false) { last = at }
+        at = at + 1
+    }
+    return last
+}
+
+// The source from the first byte of token `first` to the last of `last`, with each run of
+// whitespace (line breaks, indentation) one space.
+public fn ixSlice(src: IxSources, slot: Int, first: Int, last: Int) -> String {
+    if (slot < 0 or first < 0 or last < first) { return "".clone() }
+    let tokens = src.tokens[slot]
+    let text = src.texts[slot]
+    let from = tokens.starts[first]
+    let to = tokens.ends[last]
+    let raw = text.substring(from, to - from)
+    if (raw.contains("\n") == false) { return raw.clone() }
+    let mut out = ""
+    let mut gap = false
+    let mut i = 0
+    while (i < raw.length) {
+        let b = raw.byteAt(i)
+        if (b == 10 or b == 13 or b == 9 or b == 32) {
+            gap = true
+        } else {
+            if (gap) { out = out.concat(" ") }
+            gap = false
+            out = out.concat(raw.substring(i, 1))
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// The type written after the `:` or `->` at `colon`, as the source says it: tokens up to a comma,
+// closing bracket, `=`, brace or line break outside every bracket and `<...>`.
+public fn ixTypeAfter(src: IxSources, slot: Int, colon: Int) -> String {
+    let tokens = src.tokens[slot]
+    if (colon < 0 or colon + 1 >= tokens.kinds.length) { return "".clone() }
+    let first = colon + 1
+    let mut depth = 0
+    let mut angles = 0
+    let mut last = first - 1
+    let mut at = first
+    while (at < tokens.kinds.length) {
+        let kind = tokens.kinds[at]
+        if (at > first and tokens.breaks[at] > 0 and depth == 0 and angles <= 0) { break }
+        if (ixIsLineComment(kind)) { break }
+        if (depth == 0 and angles <= 0) {
+            if (kind == FmtKind.COMMA or kind == FmtKind.RPAREN or kind == FmtKind.RBRACKET or kind == FmtKind.RBRACE
+                    or kind == FmtKind.LBRACE or kind == FmtKind.ASSIGN) { break }
+            if (kind == FmtKind.KEYWORD and ixWordIs(src, slot, at, "where")) { break }
+        }
+        if (kind == FmtKind.LPAREN or kind == FmtKind.LBRACKET) { depth = depth + 1 }
+        if (kind == FmtKind.RPAREN or kind == FmtKind.RBRACKET) { depth = depth - 1 }
+        if (kind == FmtKind.RELATIONAL) {
+            let text = ixTokenText(src, slot, at)
+            if (text.equals("<")) { angles = angles + 1 }
+            if (text.equals(">")) { angles = angles - 1 }
+        }
+        if (kind == FmtKind.SHIFT and ixTokenText(src, slot, at).equals(">>")) { angles = angles - 2 }
+        last = at
+        at = at + 1
+    }
+    return ixSlice(src, slot, first, last)
+}
+
+// The comment block directly above `line` (1-based): consecutive `//` lines, or one `/* */`
+// block that ends on the line above, with the markers removed. "" when there is none.
+public fn ixDocAbove(src: IxSources, slot: Int, line: Int) -> String {
+    if (slot < 0) { return "".clone() }
+    let mut lines: Vec<String> = []
+    let mut at = line - 1
+    let text = src.texts[slot]
+    while (at >= 1) {
+        let start = ixLineOffset(src, slot, at)
+        let mut end = text.length
+        if (at + 1 < src.lineStarts[slot].length) { end = src.lineStarts[slot][at + 1] - 1 }
+        if (end > start and text.byteAt(end - 1) == 13) { end = end - 1 }
+        let row = text.substring(start, end - start).trim()
+        if (row.startsWith("//")) {
+            let mut body = row.substring(2, row.length - 2)
+            if (body.startsWith("/")) { body = body.substring(1, body.length - 1) }
+            if (body.startsWith(" ")) { body = body.substring(1, body.length - 1) }
+            lines.push(body.clone())
+            at = at - 1
+            continue
+        }
+        if (row.endsWith("*/")) {
+            // Walk up to the opener.
+            let mut block: Vec<String> = []
+            let mut up = at
+            let mut opened = false
+            while (up >= 1) {
+                let s = ixLineOffset(src, slot, up)
+                let mut e = text.length
+                if (up + 1 < src.lineStarts[slot].length) { e = src.lineStarts[slot][up + 1] - 1 }
+                if (e > s and text.byteAt(e - 1) == 13) { e = e - 1 }
+                let piece = text.substring(s, e - s).trim()
+                block.push(piece.clone())
+                if (piece.startsWith("/*")) {
+                    opened = true
+                    break
+                }
+                up = up - 1
+            }
+            if (opened == false) { break }
+            // `block` is bottom to top; emit top to bottom into `lines`'s own order (also bottom
+            // to top, reversed once below).
+            for piece in block {
+                let mut body = piece.clone()
+                if (body.startsWith("/**")) {
+                    body = body.substring(3, body.length - 3)
+                } else if (body.startsWith("/*")) {
+                    body = body.substring(2, body.length - 2)
+                }
+                if (body.endsWith("*/")) { body = body.substring(0, body.length - 2) }
+                body = body.trim()
+                if (body.startsWith("*")) { body = body.substring(1, body.length - 1).trim() }
+                lines.push(body.clone())
+            }
+            break
+        }
+        break
+    }
+    // `lines` was filled from the line above the declaration upward.
+    let mut out = ""
+    let mut i = lines.length - 1
+    while (i >= 0) {
+        if (out.length > 0 or lines[i].equals("") == false) {
+            if (out.length > 0) { out = out.concat("\n") }
+            out = out.concat(lines[i])
+        }
+        i = i - 1
+    }
+    return out.trim()
+}

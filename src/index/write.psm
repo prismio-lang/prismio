@@ -1,0 +1,105 @@
+// The lines of the index file: JSON objects, one per line, with the fields a consumer filters on
+// first and in a fixed order (`"k"`, then the file and line), so the language server can pick the
+// lines it wants by their first bytes without parsing the rest.
+
+import std.string
+
+// How many bytes of well-formed UTF-8 start at `at`, or 0 when what is there is not.
+fn ixUtf8Width(text: String, at: Int) -> Int {
+    let lead = text.byteAt(at)
+    if (lead < 128) { return 1 }
+    let mut width = 0
+    if (lead >= 194 and lead <= 223) { width = 2 }
+    if (lead >= 224 and lead <= 239) { width = 3 }
+    if (lead >= 240 and lead <= 244) { width = 4 }
+    if (width == 0 or at + width > text.length) { return 0 }
+    let mut i = 1
+    while (i < width) {
+        let b = text.byteAt(at + i)
+        if (b < 128 or b > 191) { return 0 }
+        i = i + 1
+    }
+    return width
+}
+
+// One JSON string literal. A source file may hold bytes that are not UTF-8 (a damaged one, mid-edit);
+// each becomes U+FFFD, so the index is always a valid document.
+public fn ixQuote(text: String) -> String {
+    let mut out = "\""
+    let mut run = 0
+    let mut i = 0
+    while (i < text.length) {
+        let b = text.byteAt(i)
+        let mut escape = ""
+        let mut step = 1
+        if (b == 34) {
+            escape = "\\\""
+        } else if (b == 92) {
+            escape = "\\\\"
+        } else if (b == 10) {
+            escape = "\\n"
+        } else if (b == 13) {
+            escape = "\\r"
+        } else if (b == 9) {
+            escape = "\\t"
+        } else if (b < 32) {
+            escape = "\\u00".concat(ixHexDigit(b / 16), ixHexDigit(b % 16))
+        } else if (b >= 128) {
+            step = ixUtf8Width(text, i)
+            if (step == 0) {
+                step = 1
+                escape = "\\ufffd"
+            }
+        }
+        if (escape.length > 0) {
+            out = out.concat(text.substring(run, i - run), escape)
+            run = i + step
+        }
+        i = i + step
+    }
+    return out.concat(text.substring(run, text.length - run), "\"")
+}
+
+fn ixHexDigit(n: Int) -> String {
+    return "0123456789abcdef".substring(n, 1)
+}
+
+public fn ixFileLine(id: Int, path: String, module: String, user: Bool) -> String {
+    let mut flag = "false"
+    if (user) { flag = "true" }
+    return "{\"k\":\"file\",\"id\":".concat(id.toString(), ",\"path\":", ixQuote(path), ",\"module\":", ixQuote(module),
+                                            ",\"user\":", flag, "}")
+}
+
+public fn ixRefLine(file: Int, line: Int, col: Int, len: Int, to: Int, role: String, type: String,
+                    builtin: String) -> String {
+    let mut out = "{\"k\":\"ref\",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",\"c\":", col.toString(),
+                                                 ",\"n\":", len.toString(), ",\"to\":", to.toString(),
+                                                 ",\"role\":", ixQuote(role))
+    if (type.equals("") == false) { out = out.concat(",\"ty\":", ixQuote(type)) }
+    if (builtin.equals("") == false) { out = out.concat(",\"builtin\":", ixQuote(builtin)) }
+    return out.concat("}")
+}
+
+public fn ixUnresolvedLine(file: Int, line: Int, col: Int, len: Int, name: String, what: String) -> String {
+    return "{\"k\":\"unresolved\",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",\"c\":", col.toString(),
+                                                  ",\"n\":", len.toString(), ",\"name\":", ixQuote(name),
+                                                  ",\"what\":", ixQuote(what), "}")
+}
+
+// A call's argument, for the editor to name the parameter it fills: where the argument begins, the
+// parameter's name and its index.
+public fn ixArgLine(file: Int, line: Int, col: Int, name: String, index: Int) -> String {
+    return "{\"k\":\"arg\",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",\"c\":", col.toString(),
+                                           ",\"p\":", ixQuote(name), ",\"i\":", index.toString(), "}")
+}
+
+// One thing that could be written at the cursor. `rank` orders them: 0 a name in scope, 1 a member,
+// 2 a declaration of the program.
+public fn ixCompletionLine(label: String, kind: String, detail: String, doc: String, rank: Int) -> String {
+    let mut out = "{\"k\":\"completion\",\"label\":".concat(ixQuote(label), ",\"kind\":", ixQuote(kind), ",\"rank\":",
+                                                               rank.toString())
+    if (detail.equals("") == false) { out = out.concat(",\"detail\":", ixQuote(detail)) }
+    if (doc.equals("") == false) { out = out.concat(",\"doc\":", ixQuote(doc)) }
+    return out.concat("}")
+}

@@ -20,6 +20,7 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 import std.string
+import std.vec
 
 // The runtime entry point a method becomes by prepending the receiver, or "" when
 // the name is not a plain one. The shaped ones -- `clear`, `first`, `last`,
@@ -67,6 +68,20 @@ private fn semaVecArity(kind: TypeKind, name: String) -> Int {
     if (name.equals("isEmpty")) { return 0 }
     if (name.equals("isNotEmpty")) { return 0 }
     return 0 - 1
+}
+
+// Every method and property of a Vec that the compiler builds itself, for an editor to offer after
+// the dot. Kept beside `semaVecArity`, which decides what is lowered; the `index` fixture asks the
+// compiler about each one, so a name here that is not lowered fails a test.
+public fn semaVecMemberNames() -> Vec<String> {
+    let mut names: Vec<String> = ["push", "set", "replace", "swap", "insert", "reserve", "truncate", "capacity"]
+    names.push("length")
+    names.push("clear")
+    names.push("first")
+    names.push("last")
+    names.push("isEmpty")
+    names.push("isNotEmpty")
+    return names
 }
 
 // Whether a Vec has a method or property of this name that the compiler builds

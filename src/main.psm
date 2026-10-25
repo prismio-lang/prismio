@@ -89,6 +89,7 @@ let USAGE =
                     [-- args...]
       prismio check <source.psm> [--diagnostic-format=json] [--partial]
                     [--overlay <file.psm> <text>]... [--module <name>]
+                    [--emit-index <file> [--complete <file.psm> <line> <column>]]
       prismio fmt <source.psm>... [--check] [--write] [--range <from>:<to>]
                                    format source, or check that it is formatted
       prismio lsp                  the language server, over standard input and output
@@ -290,6 +291,10 @@ private fn cliCheck() -> Int {
 
     let mut overlays: Vec<String> = []
     let mut module = ""
+    let mut indexPath = ""
+    let mut cursorPath = ""
+    let mut cursorLine = 0
+    let mut cursorCol = 0
     let mut checkArg = 3
     while (checkArg < process.args.count) {
         let option = process.args[checkArg]
@@ -306,6 +311,24 @@ private fn cliCheck() -> Int {
             overlays.push(process.args[checkArg + 1].clone())
             overlays.push(process.args[checkArg + 2].clone())
             checkArg = checkArg + 2
+        } else if (option.equals("--emit-index")) {
+            if (checkArg + 1 >= process.args.count) {
+                diag_error_code("P1115", "`--emit-index` needs the file to write the index to")
+                pointAtUsage()
+                return 1
+            }
+            indexPath = process.args[checkArg + 1].clone()
+            checkArg = checkArg + 1
+        } else if (option.equals("--complete")) {
+            if (checkArg + 3 >= process.args.count) {
+                diag_error_code("P1116", "`--complete` needs the file, the line and the column of the placeholder")
+                pointAtUsage()
+                return 1
+            }
+            cursorPath = process.args[checkArg + 1].clone()
+            cursorLine = process.args[checkArg + 2].parseIntOr(0)
+            cursorCol = process.args[checkArg + 3].parseIntOr(0)
+            checkArg = checkArg + 3
         } else if (option.equals("--module")) {
             if (checkArg + 1 >= process.args.count) {
                 diag_error_code("P1076", "`--module` needs the name the file is imported by")
@@ -322,7 +345,7 @@ private fn cliCheck() -> Int {
         checkArg = checkArg + 1
     }
 
-    return checkCommand(process.args[2], overlays, module)
+    return checkCommand(process.args[2], overlays, module, indexPath, cursorPath, cursorLine, cursorCol)
 }
 
 // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and

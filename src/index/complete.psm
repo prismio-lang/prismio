@@ -1,0 +1,157 @@
+// Completion: what could be written at the cursor.
+//
+// The buffer at the cursor rarely parses, so the language server does what rust-analyzer does: it
+// puts a placeholder identifier where the word being typed starts, asks the compiler to analyse that
+// (`check ... --complete <file> <line> <col> --emit-index out`), and the walk, on reaching the
+// placeholder, writes what is in scope there. After a `.` the placeholder is a member name and the
+// type of what stands before the dot, which sema typed before it found the member missing, is what
+// the members are listed for.
+//
+// Everything offered is a declaration the program has, or a member the compiler provides and names
+// (sema/vec.psm): no list of library names is kept here.
+
+import ast.nodes
+import index.collect
+import index.source
+import index.tables
+import index.write
+import sema.vec
+import std.string
+import std.vec
+import common.source_files
+
+// The identifier the server writes where the word being completed starts.
+public fn ixPlaceholder() -> String {
+    return "ixcursor__"
+}
+
+fn ixCompletionKind(kind: String) -> String {
+    return kind.clone()
+}
+
+fn ixDetail(ix: Ix, id: Int) -> String {
+    let sig = ix.dType[id]
+    return sig.clone()
+}
+
+// One completion line for declaration `id`.
+fn ixCompleteDecl(inout ix: Ix, inout src: IxSources, id: Int, rank: Int) {
+    if (ix.dName[id].equals("self") or ix.dName[id].equals("") or ix.dName[id].startsWith("$")) { return }
+    let slot = ixView(src, ix.dFile[id])
+    let mut doc = "".clone()
+    let mut sig = ix.dType[id].clone()
+    let kind = ix.dKind[id]
+    if (kind.equals("fn") or kind.equals("method") or kind.equals("prop") or kind.equals("extern")) {
+        let token = ixTokenAt(src, slot, ix.dLine[id], ix.dCol[id])
+        if (token >= 0) {
+            let first = ixDeclStart(src, slot, token)
+            let end = ixSignatureEnd(src, slot, token)
+            if (end >= first) { sig = ixSlice(src, slot, first, end) }
+            doc = ixDocAbove(src, slot, ixTokenLine(src, slot, first))
+        }
+    }
+    // Overloads and generic instances that read the same are one entry.
+    if (ix.seen.putFirst("complete ".concat(ix.dName[id], "|", sig), 1) == false) { return }
+    ix.out.push(ixCompletionLine(ix.dName[id], kind, sig, doc, rank))
+}
+
+// A member the compiler builds for a type, which no source declares.
+fn ixCompleteBuiltinMembers(inout ix: Ix, head: String) {
+    if (head.equals("Vec") or head.equals("List")) {
+        let names = semaVecMemberNames()
+        for name in names {
+            ix.out.push(ixCompletionLine(name, "method", "", "", 1))
+        }
+    }
+}
+
+fn ixOwnerIs(ix: Ix, id: Int, head: String) -> Bool {
+    return ix.dOwner[id].equals(head)
+}
+
+// The members of the type `head`: its fields, the methods written for it and every function whose first
+// parameter is one (`x.f(a)` is `f(x, a)`), through the imports of the file being edited.
+public fn ixCompleteMembers(inout ix: Ix, inout src: IxSources, head: String, file: Int, asType: Bool) {
+    let typeId = ix.byType.get(head)
+    let mut id = 0
+    while (id < ix.dKind.length) {
+        let kind = ix.dKind[id]
+        let visible = ixVisibleFrom(ix, id, file)
+        if (visible == false) {
+            id = id + 1
+            continue
+        }
+        if (kind.equals("field") and typeId >= 0 and ix.dContainer[id] == typeId and asType == false) {
+            ixCompleteDecl(ix, src, id, 1)
+        } else if ((kind.equals("variant") or kind.equals("code")) and typeId >= 0 and ix.dContainer[id] == typeId and asType) {
+            ixCompleteDecl(ix, src, id, 1)
+        } else if (kind.equals("fn") or kind.equals("method") or kind.equals("prop")) {
+            let receiver = ixReceiverName(ix, id)
+            if (ixOwnerIs(ix, id, head) or (asType == false and receiver.equals(head))) {
+                if (ix.dName[id].startsWith("$") == false) { ixCompleteDecl(ix, src, id, 1) }
+            }
+        }
+        id = id + 1
+    }
+    if (asType == false) { ixCompleteBuiltinMembers(ix, head) }
+}
+
+// The type a function would be found on by method-call syntax; "" if none.
+fn ixReceiverName(ix: Ix, id: Int) -> String {
+    return ix.dRecv[id].clone()
+}
+
+// Whether declaration `id` can be named from `file`: anything in the user's own files, and a library
+// declaration only from a module the file imports.
+public fn ixVisibleFrom(ix: Ix, id: Int, file: Int) -> Bool {
+    // `private` is the declaring file's own.
+    if (ix.dVis[id] == 1 and ix.dFile[id] != file) { return false }
+    if (ix.dUser[id]) { return true }
+    let module = diag_file_module(ix.dFile[id])
+    if (module.equals("")) { return true }
+    let imports = ix.dKind.length
+    let mut i = 0
+    while (i < imports) {
+        if (ix.dKind[i].equals("import") and ix.dFile[i] == file and ix.dName[i].equals(module)) { return true }
+        i = i + 1
+    }
+    return false
+}
+
+// Everything in scope at the cursor: the names the walk has seen (innermost first), then the
+// program's functions, types and globals.
+public fn ixCompleteScope(inout ix: Ix, inout src: IxSources, names: Vec<String>, ids: Vec<Int>, file: Int) {
+    let mut written = ixMap()
+    let mut i = names.length - 1
+    while (i >= 0) {
+        if (written.putFirst(names[i], 1) and ids[i] >= 0) { ixCompleteDecl(ix, src, ids[i], 0) }
+        i = i - 1
+    }
+    let mut id = 0
+    while (id < ix.dKind.length) {
+        let kind = ix.dKind[id]
+        let top = ix.dContainer[id] < 0 or ix.dKind[ix.dContainer[id]].equals("impl")
+        let importable = kind.equals("fn") or kind.equals("extern") or kind.equals("struct") or kind.equals("enum")
+            or kind.equals("trait") or kind.equals("global") or kind.equals("const") or kind.equals("externvar")
+            or kind.equals("typelist") or kind.equals("codeset")
+        if (importable and top and ixVisibleFrom(ix, id, file) and ix.dName[id].startsWith("$") == false) {
+            if (written.putFirst(ix.dName[id], 1)) { ixCompleteDecl(ix, src, id, 2) }
+        }
+        id = id + 1
+    }
+}
+
+// What the module `path` declares that a program may name: `io.` offers the functions and types of std.io.
+public fn ixCompleteModule(inout ix: Ix, inout src: IxSources, path: String, file: Int) {
+    let mut id = 0
+    while (id < ix.dKind.length) {
+        let kind = ix.dKind[id]
+        let top = ix.dContainer[id] < 0
+        let nameable = kind.equals("fn") or kind.equals("extern") or kind.equals("struct") or kind.equals("enum")
+            or kind.equals("trait") or kind.equals("global") or kind.equals("const") or kind.equals("externvar")
+        if (top and nameable and diag_file_module(ix.dFile[id]).equals(path) and ix.dName[id].startsWith("$") == false) {
+            ixCompleteDecl(ix, src, id, 1)
+        }
+        id = id + 1
+    }
+}

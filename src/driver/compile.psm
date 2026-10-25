@@ -19,7 +19,8 @@ import aifcore.layout_search
 import aifcore.ownership
 import aifcore.solver
 
-from std import { fs, io, string, option }
+from std import { fs, io, string, option, vec }
+import index.command
 from lexer import { scanner, token, identifier_security }
 from driver import { imports, workload, prune }
 
@@ -155,7 +156,7 @@ private fn checkRuntimeFreshness() {
 // compiler uses -- and it silently reported every successful parse as a failure,
 // because a punned pointer compares as a string and an ASTNode begins with its
 // `kind`, of which MODULE is 0. See ast.psm.
-private fn analyzedModule(path: String) -> ASTNode {
+private fn analyzedModule(path: String, prune: Bool) -> ASTNode {
     let content = readSource(path)
     if (content.equals("") and fileExists(path) == false) {
         diag_error_code("P1005", "cannot read ".concat(path))
@@ -195,7 +196,7 @@ private fn analyzedModule(path: String) -> ASTNode {
 
     if (diag_error_count() > 0) {
         diag_finish()
-    } else {
+    } else if (prune) {
         pruneUnreachableLibrary(mergedAst)
     }
 
@@ -207,7 +208,7 @@ private fn analyzedModule(path: String) -> ASTNode {
 // node's resolved type, and without it the `ty` field would be empty on every
 // node.
 public fn dumpAstCommand(path: String) -> Int {
-    let merged = analyzedModule(path)
+    let merged = analyzedModule(path, true)
     if (diag_error_count() > 0) {
         return 1
     }
@@ -226,7 +227,8 @@ public fn dumpAstCommand(path: String) -> Int {
 // being edited overlaid (`overlays`: file and text file, pairs; any number).
 // A module no program is at hand for is checked alone, as `module` ("" when
 // the file is a program).
-public fn checkCommand(path: String, overlays: Vec<String>, module: String) -> Int {
+public fn checkCommand(path: String, overlays: Vec<String>, module: String, indexPath: String,
+                         cursorPath: String, cursorLine: Int, cursorCol: Int) -> Int {
     diag_progress_begin(path)
     // `overlays` is pairs: the file, then the file holding its text.
     let mut at = 0
@@ -235,7 +237,19 @@ public fn checkCommand(path: String, overlays: Vec<String>, module: String) -> I
         at = at + 2
     }
     setEntryModuleName(module)
-    analyzedModule(path)
+    // The index wants the whole library the program imported, not what a build would keep.
+    let merged = analyzedModule(path, indexPath.equals(""))
+    if (indexPath.equals("") == false) {
+        let mut userPaths: Vec<String> = [path.clone()]
+        at = 0
+        while (at + 1 < overlays.length) {
+            userPaths.push(overlays[at].clone())
+            at = at + 2
+        }
+        if (indexProgram(merged, userPaths, indexPath, cursorPath, cursorLine, cursorCol) == false) {
+            diag_error_code("P1114", "cannot write the index ".concat(diagQuote(indexPath)))
+        }
+    }
     at = 0
     while (at + 1 < overlays.length) {
         if (sourceOverlayRead(overlays[at]) == false) {
@@ -267,7 +281,7 @@ private fn checkedDetail() -> String {
 // measurable before any of it is risked on the self-host.
 public fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaFields: Bool,
                budget: Int, why: String, layout: Bool, manifest: Bool) -> Int {
-    let merged = analyzedModule(path)
+    let merged = analyzedModule(path, true)
     if (diag_error_count() > 0) {
         return 1
     }

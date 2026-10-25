@@ -28,6 +28,21 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   memory) with the Python client `tests/lsp_client.py`. Diagnostics only so far; hover, definition and completion
   need the semantic index (Phase 2 of the plan). `std.fs.executablePath()` and `std.process.useBinaryStdio()` came with it.
 
+- **The semantic index: `check <entry> --emit-index <file>`.** JSON Lines after the run: every declaration (kind, name
+  span, whole extent, signature as written, comment above, type, owner, receiver), every use of a name resolved to its
+  declaration (calls by sema's symbol, fields, variants, locals with their scopes, closures' captures, generics' templates),
+  the parameter each argument fills, and `unresolved` for a name that is nothing (`src/index/`). Indexing the compiler itself
+  (85,000 lines, 21,000 declarations, 114,000 references) costs 0.1 s over a plain check. `--complete <file> <line> <col>` adds
+  what could be written at a placeholder (members after a dot, names in scope, a module's contents, a Vec's builtins).
+  A missing-import error now carries `fix.addImport`. `--partial` no longer stops at 25 errors. Held to the text by
+  `tools/check_index.py` (353 programs, std modules and the compiler: no dangling reference, every name under a span is the
+  name it points at, nothing unresolved) and by the `index` fixture; 4,848 damaged programs still get a whole index.
+
+- **The language server answers hover, definition, type definition, references, highlights, outline, workspace symbols,
+  signature help, inlay hints, semantic tokens, folding, rename, the add-import quick fix, completion and formatting**
+  (`lsp/features.psm`, `tokens.psm`, `edits.psm`, `completion.psm`, `formatting.psm`). Requests read the last good index of the
+  program from a file, wait for a pending check, and can be cancelled. Fixture `lsp_features`.
+
 - **`prismio fmt`: the formatter, in the compiler.** `prismio fmt <file>...` prints formatted source; `--write`
   rewrites files that would change, `--check` writes nothing and exits 1 if any would (the CI form), `--stdin` formats
   piped text (an editor's unsaved buffer), `--range <from>:<to>` formats only the tokens that begin on those lines.

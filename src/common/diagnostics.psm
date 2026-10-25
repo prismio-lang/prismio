@@ -21,6 +21,7 @@ import std.vec
 // point the output is cascade, not information, and every further recovery step is another chance
 // to walk a half-built AST.
 let DIAG_ERROR_LIMIT = 25
+let PARTIAL_ERROR_LIMIT = 500
 
 // An error already reported at the same place with the same words is not reported again. One
 // source location is checked once per copy a generic or a variadic function is instantiated as,
@@ -298,7 +299,17 @@ public fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: 
     }
     errorCount = errorCount + 1
 
-    if (errorCount > DIAG_ERROR_LIMIT) {
+    // An editor's run (`--partial`) is not stopped by a flood of errors: it still has the index to
+    // write, and the rest of the program to say something about. It shows the first PARTIAL_ERROR_LIMIT
+    // and counts the rest.
+    if (partialMode and errorCount > PARTIAL_ERROR_LIMIT) {
+        if (errorCount == PARTIAL_ERROR_LIMIT + 1) {
+            emit("error", "P0001", -1, 0, 0, 0, "too many errors; showing the first ".concat(PARTIAL_ERROR_LIMIT.toString()))
+        }
+        return
+    }
+
+    if (partialMode == false and errorCount > DIAG_ERROR_LIMIT) {
         if (diagJsonMode()) {
             eprint(jsonDiagnostic("error", "P0001", -1, 0, 0, 0, "too many errors; stopping after 25"))
             eprint(jsonSummary())
@@ -345,6 +356,19 @@ public fn diag_note_at(file: Int, line: Int, col: Int, len: Int, message: String
     diag_progress_clear()
     let line1 = "  ".concat(sgr(2, SGR_CYAN), "note", sgr(2, SGR_RESET), ": ", message, "\n")
     eprint(line1.concat(renderSpan(file, line, col, len, SGR_CYAN)))
+}
+
+// A note that offers a change an editor can make for the user. Written as any note is, and in JSON
+// also as `"fix":{"addImport":"<module>"}` (IDE_PROTOCOL.md), the data a quick fix is built from.
+public fn diag_note_add_import(module: String, message: String) {
+    if (dropNotes) { return }
+    if (diagJsonMode()) {
+        let record = jsonDiagnostic("note", "", -1, 0, 0, 0, message)
+        let cut = record.length - 2
+        eprint(record.substring(0, cut).concat(",\"fix\":{\"addImport\":", jsonQuoted(module), "}}\n"))
+        return
+    }
+    diag_note(message)
 }
 
 public fn diag_note(message: String) {

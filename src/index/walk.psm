@@ -1,0 +1,924 @@
+// Pass two of the semantic index: every use of a name, resolved to the declaration it names.
+//
+// This reads the program as sema left it, and trusts sema for what sema decided: a call carries
+// the symbol of the overload resolution chose (`CALL_EXPR.s2`), an expression carries its type.
+// What sema does not keep, a binding's scope, is rebuilt by walking blocks as the language scopes
+// them, so a name resolves to the nearest enclosing declaration of it. Templates (a generic's
+// original body, which sema never reads) are walked too, with no types and no symbols, resolving by
+// name; they are the only trace a generic nothing instantiates leaves.
+//
+// A use is recorded only if the text at its span is the name it claims. Sema rewrites the program (a
+// method call becomes a call of a free function with the receiver first, a closure becomes a struct
+// and a function), and the rewrites keep spans that now sit on text that is not the name of what the
+// node says. The text check keeps a rewrite from becoming a reference the user would find wrong. A name
+// that is where it says it is and resolves to nothing is written as `unresolved`: in a program that
+// compiles there should be none, which is what the corpus test holds this to.
+
+import ast.nodes
+import ast.types
+import fmt.scan
+import index.collect
+import index.complete
+import index.source
+import index.tables
+import index.write
+import std.string
+import std.vec
+
+public struct IxWalk {
+    // Lexical scopes: names and what they declare, with the start of each scope in `marks`.
+    names: Vec<String>,
+    ids: Vec<Int>,
+    marks: Vec<Int>,
+    // Generic parameters in scope, by name.
+    typeNames: Vec<String>,
+    typeIds: Vec<Int>,
+    typeMarks: Vec<Int>,
+    // The function being walked, or -1.
+    fnDecl: Int,
+    // What a closure captured: "Closure.field" to the variable it names.
+    captures: IxMap,
+    // For the corpus gate: uses that resolved to a declaration, to a builtin, and to nothing.
+    public resolved: Int,
+    public builtin: Int,
+    public unresolved: Int,
+    // Where completion is asked for (the placeholder's position), or file -1.
+    public cursorFile: Int,
+    public cursorLine: Int,
+    public cursorCol: Int
+}
+
+public fn ixWalkCreate() -> IxWalk {
+    return IxWalk { names: [], ids: [], marks: [], typeNames: [], typeIds: [], typeMarks: [], fnDecl: 0 - 1,
+                    captures: ixMap(), resolved: 0, builtin: 0, unresolved: 0,
+                    cursorFile: 0 - 1, cursorLine: 0, cursorCol: 0 }
+}
+
+fn ixPushScope(inout w: IxWalk) {
+    w.marks.push(w.names.length)
+}
+
+fn ixPopScope(inout w: IxWalk) {
+    let mark = w.marks[w.marks.length - 1]
+    w.marks.pop()
+    while (w.names.length > mark) {
+        w.names.pop()
+        w.ids.pop()
+    }
+}
+
+fn ixDeclareLocal(inout w: IxWalk, name: String, id: Int) {
+    w.names.push(name.clone())
+    w.ids.push(id)
+}
+
+// The declaration a name means in the scopes walked so far; -2 when no scope has it.
+fn ixLookupLocal(w: IxWalk, name: String) -> Int {
+    let mut i = w.names.length - 1
+    while (i >= 0) {
+        if (w.names[i].equals(name)) { return w.ids[i] }
+        i = i - 1
+    }
+    return 0 - 2
+}
+
+fn ixLookupTypeParameter(w: IxWalk, name: String) -> Int {
+    let mut i = w.typeNames.length - 1
+    while (i >= 0) {
+        if (w.typeNames[i].equals(name)) { return w.typeIds[i] }
+        i = i - 1
+    }
+    return 0 - 2
+}
+
+// The token a node's span names, when the text there is `name`; -1 otherwise.
+fn ixTokenIfNamed(inout src: IxSources, slot: Int, node: ASTNode, name: String) -> Int {
+    if (slot < 0) { return 0 - 1 }
+    let token = ixTokenAt(src, slot, node.line, node.col)
+    if (token < 0 or ixTokenText(src, slot, token).equals(name) == false) { return 0 - 1 }
+    return token
+}
+
+fn ixIsUserFile(ix: Ix, file: Int) -> Bool {
+    return file >= 0 and file < ix.userFiles.length and ix.userFiles[file]
+}
+
+// Writes the reference at the token `token` (of the file `file`). `to` is -1 for something the
+// compiler provides. Answers whether it was written (it is not if the position was taken).
+fn ixEmitAt(inout ix: Ix, inout src: IxSources, inout w: IxWalk, file: Int, slot: Int, token: Int, to: Int,
+            role: String, type: String, builtin: String) -> Bool {
+    if (ixIsUserFile(ix, file) == false or token < 0) { return false }
+    let line = ixTokenLine(src, slot, token)
+    let col = ixTokenCol(src, slot, token)
+    if (ix.seen.putFirst(ixKey(file, line, col), 1) == false) { return false }
+    if (to >= 0) {
+        ix.dUsed[to] = true
+        w.resolved = w.resolved + 1
+    } else {
+        w.builtin = w.builtin + 1
+    }
+    ix.out.push(ixRefLine(file, line, col, ixTokenLen(src, slot, token), to, role, type, builtin))
+    return true
+}
+
+fn ixEmitRef(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, name: String, to: Int, role: String,
+             type: String, builtin: String) -> Bool {
+    let slot = ixView(src, node.file)
+    let token = ixTokenIfNamed(src, slot, node, name)
+    return ixEmitAt(ix, src, w, node.file, slot, token, to, role, type, builtin)
+}
+
+fn ixEmitUnresolved(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, name: String, what: String) {
+    if (ixIsUserFile(ix, node.file) == false) { return }
+    let slot = ixView(src, node.file)
+    let token = ixTokenIfNamed(src, slot, node, name)
+    if (token < 0) { return }
+    let line = ixTokenLine(src, slot, token)
+    let col = ixTokenCol(src, slot, token)
+    if (ix.seen.putFirst(ixKey(node.file, line, col), 1) == false) { return }
+    w.unresolved = w.unresolved + 1
+    ix.out.push(ixUnresolvedLine(node.file, line, col, ixTokenLen(src, slot, token), name, what))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Types
+
+fn ixIsBuiltinType(name: String) -> Bool {
+    if (name.equals("Int") or name.equals("UInt") or name.equals("Float") or name.equals("Bool")
+            or name.equals("Char") or name.equals("String") or name.equals("Ptr") or name.equals("Void")
+            or name.equals("Vec") or name.equals("Array") or name.equals("Map") or name.equals("Self")
+            or name.equals("Fn") or name.equals("List") or name.equals("Task") or name.equals("Result")
+            or name.equals("Slice") or name.equals("Channel") or name.equals("Chan") or name.equals("Future")
+            or name.equals("DataView") or name.equals("Option")) {
+        return true
+    }
+    // I8, U16, F32, Isize, Usize, BF16: a letter and a width.
+    if (name.length >= 2 and name.length <= 5) {
+        let first = name.byteAt(0)
+        if (first == 73 or first == 85 or first == 70 or first == 66) { return true }
+    }
+    return false
+}
+
+fn ixWalkAnnotation(inout ix: Ix, inout src: IxSources, inout w: IxWalk, ptr: Ptr) {
+    if (nodeIsNull(ptr)) { return }
+    let node = ptr_to_node(ptr)
+    if (node.kind != NodeKind.TRAIT_REF and node.kind != NodeKind.TYPE_ANNOTATION) {
+        ixWalkExpr(ix, src, w, node, "read")
+        return
+    }
+    if (node.s1.equals("") == false and node.line > 0 and node.s1.startsWith("$") == false) {
+        let parameter = ixLookupTypeParameter(w, node.s1)
+        if (parameter >= 0) {
+            ixEmitRef(ix, src, w, node, node.s1, parameter, "type", "", "")
+        } else {
+            let id = ix.byType.get(node.s1)
+            if (id >= 0) {
+                ixEmitRef(ix, src, w, node, node.s1, id, "type", "", "")
+            } else if (ixIsBuiltinType(node.s1)) {
+                ixEmitRef(ix, src, w, node, node.s1, 0 - 1, "type", "", "type")
+            } else {
+                ixEmitUnresolved(ix, src, w, node, node.s1, "type")
+            }
+        }
+    }
+    // Type arguments, or the element type of an array and its length.
+    let mut child = node.child1
+    while (nodeExists(child)) {
+        let argument = ptr_to_node(child)
+        child = argument.next
+        ixWalkAnnotation(ix, src, w, node_to_ptr(argument))
+    }
+    if (node.kind == NodeKind.TRAIT_REF) {
+        // A callable bound `Fn(A) -> R`: the result is on child3.
+        ixWalkAnnotation(ix, src, w, node.child3)
+        return
+    }
+    let mut second = node.child2
+    while (nodeExists(second)) {
+        let extra = ptr_to_node(second)
+        second = extra.next
+        ixWalkAnnotation(ix, src, w, node_to_ptr(extra))
+    }
+}
+
+// Generic parameters in scope for the node that declares them: a type parameter is a declaration of
+// its own, at its name, and its bounds are references.
+fn ixEnterGenerics(inout ix: Ix, inout src: IxSources, inout w: IxWalk, owner: ASTNode, container: Int) {
+    w.typeMarks.push(w.typeNames.length)
+    let mut ptr = owner.genericInfo
+    while (nodeExists(ptr)) {
+        let param = ptr_to_node(ptr)
+        ptr = param.next
+        if (param.kind != NodeKind.GENERIC_PARAM) { continue }
+        let id = ixDeclareNode(ix, src, "typeparam", param, container, 0 - 1, "", "")
+        w.typeNames.push(param.s1.clone())
+        w.typeIds.push(id)
+        let mut bound = param.child1
+        while (nodeExists(bound)) {
+            let bounded = ptr_to_node(bound)
+            bound = bounded.next
+            ixWalkAnnotation(ix, src, w, node_to_ptr(bounded))
+        }
+    }
+}
+
+fn ixLeaveGenerics(inout w: IxWalk) {
+    let mark = w.typeMarks[w.typeMarks.length - 1]
+    w.typeMarks.pop()
+    while (w.typeNames.length > mark) {
+        w.typeNames.pop()
+        w.typeIds.pop()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Expressions
+
+// The name of the type an expression's value has, with the generic arguments and the instance mark
+// taken off: `Box$Int` and `Box<Int>` are `Box`.
+fn ixTypeHead(node: ASTNode) -> String {
+    let shown = ixNodeType(node)
+    let mut end = shown.length
+    let angle = shown.indexOf("<")
+    if (angle >= 0 and angle < end) { end = angle }
+    let mut head = shown.substring(0, end).clone()
+    if (head.endsWith("?")) { head = head.substring(0, head.length - 1).clone() }
+    return head
+}
+
+// A function by name for a use that has no symbol (a generic template's body, a rewritten method):
+// the overload whose receiver is `owner` if there is one, else the first of that name.
+fn ixFunctionByName(ix: Ix, name: String, owner: String) -> Int {
+    let first = ix.byFn.get(name)
+    if (first < 0) { return 0 - 1 }
+    let mut at = first
+    while (at >= 0) {
+        if (owner.equals("") == false and ix.dOwner[at].equals(owner)) { return at }
+        at = ix.dOverload[at]
+    }
+    return first
+}
+
+fn ixWalkChain(inout ix: Ix, inout src: IxSources, inout w: IxWalk, head: Ptr, role: String) {
+    let mut ptr = head
+    while (nodeExists(ptr)) {
+        let node = ptr_to_node(ptr)
+        ptr = node.next
+        ixWalkExpr(ix, src, w, node, role)
+    }
+}
+
+// `Type.Variant`, or `Type.function`: the member of a name that is a type and not a value. True if the
+// node was one.
+fn ixWalkQualified(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, base: ASTNode) -> Bool {
+    if (base.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    if (ixLookupLocal(w, base.s1) != 0 - 2) { return false }
+    // `T.default()`, `U.from(x)`: a function of a type parameter's bound.
+    let parameter = ixLookupTypeParameter(w, base.s1)
+    if (parameter >= 0) {
+        ixEmitRef(ix, src, w, base, base.s1, parameter, "type", "", "")
+        let bound = ixFunctionByName(ix, node.s1, "")
+        if (bound >= 0) {
+            ixEmitRef(ix, src, w, node, node.s1, bound, "call", ixNodeType(node), "")
+        } else {
+            ixEmitRef(ix, src, w, node, node.s1, 0 - 1, "call", ixNodeType(node), "member")
+        }
+        return true
+    }
+    let typeId = ix.byType.get(base.s1)
+    if (typeId < 0) { return false }
+    ixEmitRef(ix, src, w, base, base.s1, typeId, "type", "", "")
+    let member = ix.byMember.get(base.s1.concat(".", node.s1))
+    if (member >= 0) {
+        ixEmitRef(ix, src, w, node, node.s1, member, "variant", ixNodeType(node), "")
+        return true
+    }
+    let function = ixFunctionByName(ix, node.s1, base.s1)
+    if (function >= 0) {
+        ixEmitRef(ix, src, w, node, node.s1, function, "call", ixNodeType(node), "")
+    } else {
+        ixEmitUnresolved(ix, src, w, node, node.s1, "member")
+    }
+    return true
+}
+
+// What stands before a `.` at the cursor: a type (its variants and functions), a module (what it
+// declares), or a value (its fields, its methods and the functions that take it first).
+fn ixCompleteAfterDot(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, base: ASTNode) {
+    if (base.kind == NodeKind.IDENTIFIER_EXPR and ixLookupLocal(w, base.s1) == 0 - 2) {
+        if (ix.byType.get(base.s1) >= 0) {
+            ixCompleteMembers(ix, src, base.s1, node.file, true)
+            return
+        }
+        let imported = ix.byImport.get(base.s1)
+        if (imported >= 0) {
+            ixCompleteModule(ix, src, ix.dName[imported], node.file)
+            return
+        }
+    }
+    ixWalkExpr(ix, src, w, base, "read")
+    ixCompleteMembers(ix, src, ixBaseHead(ix, w, base), node.file, false)
+}
+
+// The head of the type of a base expression: sema's when it typed it, else what the variable it
+// names was declared as (a template's body has no types of its own).
+fn ixBaseHead(ix: Ix, w: IxWalk, base: ASTNode) -> String {
+    let typed = ixTypeHead(base)
+    if (typed.equals("") == false) { return typed }
+    if (base.kind != NodeKind.IDENTIFIER_EXPR) { return "".clone() }
+    let id = ixLookupLocal(w, base.s1)
+    if (id < 0) { return "".clone() }
+    let mut written = ix.dType[id].clone()
+    let angle = written.indexOf("<")
+    if (angle >= 0) { written = written.substring(0, angle).clone() }
+    if (written.endsWith("?")) { written = written.substring(0, written.length - 1).clone() }
+    return written
+}
+
+fn ixWalkMember(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, role: String) {
+    let base = ptr_to_node(node.child1)
+    if (ixAtCursor(w, node)) {
+        ixCompleteAfterDot(ix, src, w, node, base)
+        return
+    }
+    if (ixWalkQualified(ix, src, w, node, base)) { return }
+    ixWalkExpr(ix, src, w, base, "read")
+    let head = ixBaseHead(ix, w, base)
+    let mut field = 0 - 1
+    if (head.equals("") == false) { field = ix.byMember.get(head.concat(".", node.s1)) }
+    if (field < 0 and head.startsWith("Closure")) {
+        field = w.captures.get(ixTypeFull(base).concat(".", node.s1))
+    }
+    if (field >= 0) {
+        let mut r = "field"
+        if (role.equals("write")) { r = "fieldwrite" }
+        ixEmitRef(ix, src, w, node, node.s1, field, r, ixNodeType(node), "")
+        return
+    }
+    // A property of the type (`prop count`), or something the compiler provides (`xs.length`).
+    let property = ixFunctionByName(ix, node.s1, head)
+    if (property >= 0 and head.equals("") == false and ix.dOwner[property].equals(head)) {
+        ixEmitRef(ix, src, w, node, node.s1, property, "prop", ixNodeType(node), "")
+        return
+    }
+    if (head.equals("") == false or nodeIsNull(base.typeInfo) or ixNodeType(node).equals("") == false) {
+        // With no types to go on, only a field the program has one declaration of can be named.
+        let any = ixFieldNamed(ix, node.s1)
+        if (head.equals("") and any >= 0) {
+            ixEmitRef(ix, src, w, node, node.s1, any, "field", "", "")
+        } else {
+            ixEmitRef(ix, src, w, node, node.s1, 0 - 1, "prop", ixNodeType(node), "member")
+        }
+    } else {
+        ixEmitUnresolved(ix, src, w, node, node.s1, "field")
+    }
+}
+
+// The one field called `name` in the program, or -1 when there are none or several.
+fn ixFieldNamed(ix: Ix, name: String) -> Int {
+    let mut found = 0 - 1
+    let mut i = 0
+    while (i < ix.dKind.length) {
+        if (ix.dKind[i].equals("field") and ix.dName[i].equals(name)) {
+            if (found >= 0) { return 0 - 1 }
+            found = i
+        }
+        i = i + 1
+    }
+    return found
+}
+
+// The full display name of an expression's type (an instance keeps its `$` mark).
+fn ixTypeFull(node: ASTNode) -> String {
+    if (nodeIsNull(node.typeInfo)) { return "".clone() }
+    return typeDisplay(nodeGetType(node))
+}
+
+// A position in a file: the leftmost found so far.
+struct IxPos {
+    line: Int,
+    col: Int
+}
+
+// The leftmost position of any node under `node`: where an argument begins, since an AST node sits
+// at its operator.
+fn ixLeftmost(node: ASTNode, inout best: IxPos) {
+    if (node.line > 0 and (node.line < best.line or (node.line == best.line and node.col < best.col))) {
+        best.line = node.line
+        best.col = node.col
+    }
+    if (node.kind == NodeKind.TYPE_ANNOTATION) { return }
+    let mut c1 = node.child1
+    while (nodeExists(c1)) {
+        let child = ptr_to_node(c1)
+        c1 = child.next
+        ixLeftmost(child, best)
+    }
+    let mut c2 = node.child2
+    while (nodeExists(c2)) {
+        let child = ptr_to_node(c2)
+        c2 = child.next
+        ixLeftmost(child, best)
+    }
+}
+
+// Names the parameter each argument fills, for the editor's inlay hints.
+fn ixNoteArguments(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call: ASTNode, target: Int) {
+    if (target < 0 or ixIsUserFile(ix, call.file) == false) { return }
+    if (nodeIsNull(ix.dNode[target])) { return }
+    let decl = ptr_to_node(ix.dNode[target])
+    if (decl.kind != NodeKind.FUNCTION and decl.kind != NodeKind.EXTERN_FUNCTION) { return }
+    let mut param = decl.child1
+    let mut arg = call.child2
+    let mut index = 0
+    while (nodeExists(arg) and nodeExists(param)) {
+        let argument = ptr_to_node(arg)
+        let parameter = ptr_to_node(param)
+        arg = argument.next
+        param = parameter.next
+        let name = parameter.s1
+        let plain = argument.kind == NodeKind.IDENTIFIER_EXPR and argument.s1.equals(name)
+        if (name.equals("self") == false and name.startsWith("$") == false and plain == false and argument.line > 0) {
+            let mut best = IxPos { line: argument.line, col: argument.col }
+            ixLeftmost(argument, best)
+            ix.out.push(ixArgLine(call.file, best.line, best.col, name, index))
+        }
+        index = index + 1
+    }
+}
+
+// `io.println(x)`: the module a call is qualified by.
+fn ixNoteQualifier(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call: ASTNode, callee: ASTNode) {
+    if (call.s1.equals("")) { return }
+    let slot = ixView(src, callee.file)
+    let name = ixTokenIfNamed(src, slot, callee, ixBaseName(callee.s1))
+    if (name < 2) { return }
+    if (ixKindAt(src, slot, name - 1) != FmtKind.DOT or ixKindAt(src, slot, name - 2) != FmtKind.WORD) { return }
+    let text = ixTokenText(src, slot, name - 2)
+    ixEmitAt(ix, src, w, callee.file, slot, name - 2, ix.byImport.get(text), "module", "", "module")
+}
+
+// The calls the compiler provides without a declaration. In sema's output they are the calls it typed
+// and found no function for; in a template's body, which it never types, they are known by name.
+fn ixIsIntrinsicName(name: String) -> Bool {
+    if (name.startsWith("__builtin_") or name.startsWith("list_") or name.startsWith("str_")) { return true }
+    return name.equals("panic") or name.equals("exit") or name.equals("assert") or name.equals("unreachable")
+        or name.equals("drop") or name.equals("expect") or name.equals("unwrapOr")
+}
+
+fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    let callee = ptr_to_node(node.child1)
+    let mut target = 0 - 1
+    if (callee.kind == NodeKind.IDENTIFIER_EXPR) {
+        let name = ixBaseName(callee.s1)
+        if (node.s2.equals("") == false) { target = ix.bySymbol.get(node.s2) }
+        let local = ixLookupLocal(w, callee.s1)
+        let mut role = "call"
+        if (target < 0 and local >= 0) {
+            target = local
+            role = "read"
+        }
+        if (target < 0 and local == 0 - 2) {
+            // No symbol: a generic template's body, or a builtin the compiler provides.
+            let mut owner = "".clone()
+            if (nodeExists(node.child2)) { owner = ixTypeHead(ptr_to_node(node.child2)) }
+            target = ixFunctionByName(ix, name, owner)
+            if (target < 0) { target = ix.byGlobal.get(name) }
+        }
+        if (target >= 0) {
+            ixEmitRef(ix, src, w, callee, name, target, role, ixNodeType(node), "")
+        } else if (node.s2.equals("") == false or local == 0 - 1) {
+            // Sema resolved it to something this program has no declaration of: a builtin.
+            ixEmitRef(ix, src, w, callee, name, 0 - 1, "call", ixNodeType(node), node.s2)
+        } else if (local == 0 - 2) {
+            // Sema accepted the call, so it is one the compiler provides (`drop`, `expect`).
+            if (ixNodeType(node).equals("") == false or ixIsIntrinsicName(name)) {
+                ixEmitRef(ix, src, w, callee, name, 0 - 1, "call", ixNodeType(node), "intrinsic")
+            } else {
+                ixEmitUnresolved(ix, src, w, callee, name, "fn")
+            }
+        }
+        ixNoteQualifier(ix, src, w, node, callee)
+    } else if (callee.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        // Not rewritten yet (a template's body): `x.f(a)`, `Type.f(a)`, `Enum.Variant(a)`.
+        let base = ptr_to_node(callee.child1)
+        if (ixWalkQualified(ix, src, w, callee, base) == false) {
+            ixWalkExpr(ix, src, w, base, "read")
+            let method = ixFunctionByName(ix, callee.s1, "")
+            if (method >= 0) {
+                target = method
+                ixEmitRef(ix, src, w, callee, callee.s1, method, "call", ixNodeType(node), "")
+            } else {
+                ixEmitRef(ix, src, w, callee, callee.s1, 0 - 1, "call", ixNodeType(node), "member")
+            }
+        }
+    } else {
+        ixWalkExpr(ix, src, w, callee, "read")
+    }
+    ixNoteArguments(ix, src, w, node, target)
+    ixWalkChain(ix, src, w, node.child2, "read")
+}
+
+// `Point { x: 1 }`, `Box<Int> { value: 3 }`, and the literal an enum constructor `Shape.Circle(2)` became.
+fn ixWalkStructLiteral(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    let slot = ixView(src, node.file)
+    let name = ixBaseName(node.s1)
+    let typeId = ix.byType.get(name)
+    let brace = ixTokenAt(src, slot, node.line, node.col)
+    if (slot >= 0 and brace >= 1) {
+        if (ixKindAt(src, slot, brace) == FmtKind.LBRACE) {
+            // The type name is the word before the brace, past any `<...>`.
+            let mut at = brace - 1
+            let closing = ixKindAt(src, slot, at)
+            if (closing == FmtKind.RELATIONAL or closing == FmtKind.SHIFT) {
+                let mut depth = 0
+                while (at >= 0) {
+                    let text = ixTokenText(src, slot, at)
+                    if (text.equals(">")) { depth = depth + 1 }
+                    if (text.equals(">>")) { depth = depth + 2 }
+                    if (text.equals("<")) { depth = depth - 1 }
+                    if (depth <= 0) { break }
+                    at = at - 1
+                }
+                at = at - 1
+            }
+            if (at >= 0 and ixTokenText(src, slot, at).equals(name)) {
+                ixEmitAt(ix, src, w, node.file, slot, at, typeId, "type", "", "")
+            }
+        } else if (typeId >= 0) {
+            // An enum constructor: the span is the variant, and `Type .` stands in front of it.
+            let variant = ix.byMember.get(name.concat(".", ixTokenText(src, slot, brace)))
+            if (variant >= 0) {
+                ixEmitAt(ix, src, w, node.file, slot, brace, variant, "variant", ixNodeType(node), "")
+                if (brace >= 2 and ixKindAt(src, slot, brace - 1) == FmtKind.DOT
+                        and ixTokenText(src, slot, brace - 2).equals(name)) {
+                    ixEmitAt(ix, src, w, node.file, slot, brace - 2, typeId, "type", "", "")
+                }
+            }
+        }
+    }
+    let mut ptr = node.child1
+    let closure = name.startsWith("Closure")
+    while (nodeExists(ptr)) {
+        let field = ptr_to_node(ptr)
+        ptr = field.next
+        if (field.kind != NodeKind.STRUCT_FIELD) {
+            ixWalkExpr(ix, src, w, field, "read")
+            continue
+        }
+        if (field.s1.startsWith("$") == false and closure == false) {
+            let declared = ix.byMember.get(name.concat(".", field.s1))
+            if (declared >= 0) {
+                ixEmitRef(ix, src, w, field, field.s1, declared, "field", "", "")
+            }
+        }
+        if (nodeExists(field.child1)) {
+            let value = ptr_to_node(field.child1)
+            ixWalkExpr(ix, src, w, value, "read")
+            // A closure's capture: the variable the lifted body reaches through its environment.
+            if (closure and value.kind == NodeKind.IDENTIFIER_EXPR) {
+                let captured = ixLookupLocal(w, value.s1)
+                if (captured >= 0) { w.captures.put(node.s1.concat(".", field.s1), captured) }
+            }
+        }
+    }
+}
+
+// Whether this node is the placeholder the server put where completion was asked.
+fn ixAtCursor(w: IxWalk, node: ASTNode) -> Bool {
+    return node.file == w.cursorFile and node.line == w.cursorLine and node.col == w.cursorCol
+        and node.s1.equals(ixPlaceholder())
+}
+
+fn ixWalkIdentifier(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, role: String) {
+    let name = ixBaseName(node.s1)
+    if (node.s1.startsWith("$") or node.s1.equals("")) { return }
+    if (ixAtCursor(w, node)) {
+        ixCompleteScope(ix, src, w.names, w.ids, node.file)
+        return
+    }
+    let local = ixLookupLocal(w, node.s1)
+    if (local >= 0) {
+        ixEmitRef(ix, src, w, node, name, local, role, ixNodeType(node), "")
+        return
+    }
+    if (local == 0 - 1) { return }
+    let global = ix.byGlobal.get(name)
+    if (global >= 0) {
+        ixEmitRef(ix, src, w, node, name, global, role, ixNodeType(node), "")
+        return
+    }
+    let function = ixFunctionByName(ix, name, "")
+    if (function >= 0) {
+        ixEmitRef(ix, src, w, node, name, function, "call", ixNodeType(node), "")
+        return
+    }
+    let typeId = ix.byType.get(name)
+    if (typeId >= 0) {
+        ixEmitRef(ix, src, w, node, name, typeId, "type", "", "")
+        return
+    }
+    ixEmitUnresolved(ix, src, w, node, name, "var")
+}
+
+// A closure before sema has rewritten it: `|a: Int| a + 1`.
+fn ixWalkClosure(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    ixPushScope(w)
+    let mut ptr = node.child1
+    while (nodeExists(ptr)) {
+        let param = ptr_to_node(ptr)
+        ptr = param.next
+        if (param.kind != NodeKind.FUNCTION_PARAMETER) { continue }
+        ixWalkAnnotation(ix, src, w, param.child1)
+        let id = ixDeclareNode(ix, src, "param", param, w.fnDecl, 0 - 1, ixWrittenType(src, param), "")
+        ixDeclareLocal(w, param.s1, id)
+    }
+    if (nodeExists(node.child2)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child2), "read") }
+    ixPopScope(w)
+}
+
+fn ixWalkExpr(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, role: String) {
+    match (node.kind) {
+        NodeKind.IDENTIFIER_EXPR => { ixWalkIdentifier(ix, src, w, node, role) }
+        NodeKind.CALL_EXPR => { ixWalkCall(ix, src, w, node) }
+        NodeKind.MEMBER_ACCESS_EXPR => { ixWalkMember(ix, src, w, node, role) }
+        NodeKind.STRUCT_LITERAL_EXPR => { ixWalkStructLiteral(ix, src, w, node) }
+        NodeKind.CLOSURE_EXPR => { ixWalkClosure(ix, src, w, node) }
+        NodeKind.TYPE_ANNOTATION => { ixWalkAnnotation(ix, src, w, node_to_ptr(node)) }
+        NodeKind.LITERAL_EXPR => { }
+        NodeKind.NONE_LITERAL_EXPR => { }
+        NodeKind.CAST_EXPR => {
+            ixWalkChain(ix, src, w, node.child1, "read")
+            ixWalkAnnotation(ix, src, w, node.child2)
+        }
+        NodeKind.BINARY_EXPR => {
+            ixWalkChain(ix, src, w, node.child1, "read")
+            ixWalkChain(ix, src, w, node.child2, "read")
+        }
+        NodeKind.INDEX_EXPR => {
+            ixWalkExpr(ix, src, w, ptr_to_node(node.child1), role)
+            ixWalkChain(ix, src, w, node.child2, "read")
+        }
+        NodeKind.SLICE_EXPR => {
+            ixWalkChain(ix, src, w, node.child1, "read")
+            ixWalkChain(ix, src, w, node.child2, "read")
+            ixWalkChain(ix, src, w, node.child3, "read")
+        }
+        NodeKind.UNARY_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.MAP_LITERAL_EXPR => {
+            ixWalkChain(ix, src, w, node.child1, "read")
+            ixWalkChain(ix, src, w, node.child2, "read")
+        }
+        NodeKind.ARRAY_LITERAL_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.CONST_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.SPAWN_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.JOIN_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.SPREAD_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.BLOCK => { ixWalkBlock(ix, src, w, node) }
+        _ => { }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Statements
+
+// The pattern of a `match` arm: `Shape.Circle(r)` names the variant and binds `r`; `Color.Red`
+// names a variant; a literal binds nothing.
+fn ixWalkPattern(inout ix: Ix, inout src: IxSources, inout w: IxWalk, pattern: ASTNode) {
+    if (pattern.kind == NodeKind.CALL_EXPR) {
+        let callee = ptr_to_node(pattern.child1)
+        if (callee.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+            ixWalkMember(ix, src, w, callee, "read")
+        } else {
+            ixWalkExpr(ix, src, w, callee, "read")
+        }
+        let mut ptr = pattern.child2
+        while (nodeExists(ptr)) {
+            let binding = ptr_to_node(ptr)
+            ptr = binding.next
+            if (binding.kind == NodeKind.IDENTIFIER_EXPR and binding.s1.equals("_") == false) {
+                let id = ixDeclareNode(ix, src, "let", binding, w.fnDecl, 0 - 1, ixNodeType(binding), "")
+                ixDeclareLocal(w, binding.s1, id)
+            } else {
+                ixWalkExpr(ix, src, w, binding, "read")
+            }
+        }
+        return
+    }
+    ixWalkExpr(ix, src, w, pattern, "read")
+}
+
+fn ixWalkMatch(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    ixWalkChain(ix, src, w, node.child1, "read")
+    let mut ptr = node.child2
+    while (nodeExists(ptr)) {
+        let arm = ptr_to_node(ptr)
+        ptr = arm.next
+        ixPushScope(w)
+        if (nodeExists(arm.child1)) { ixWalkPattern(ix, src, w, ptr_to_node(arm.child1)) }
+        if (nodeExists(arm.child2)) { ixWalkExpr(ix, src, w, ptr_to_node(arm.child2), "read") }
+        ixPopScope(w)
+    }
+}
+
+fn ixWalkFor(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    ixWalkChain(ix, src, w, node.child1, "read")
+    ixWalkChain(ix, src, w, node.child2, "read")
+    ixPushScope(w)
+    if (node.s1.equals("") == false and node.s1.startsWith("$") == false) {
+        let id = ixDeclareNode(ix, src, "let", node, w.fnDecl, 0 - 1, ixNodeType(node), "")
+        ixDeclareLocal(w, node.s1, id)
+    }
+    if (nodeExists(node.child3)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child3), "read") }
+    ixPopScope(w)
+}
+
+fn ixWalkVariable(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    ixWalkAnnotation(ix, src, w, node.child1)
+    if (nodeExists(node.child2)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child2), "read") }
+    let id = ixDeclareNode(ix, src, "let", node, w.fnDecl, 0 - 1, ixBindingType(src, node), "")
+    ixDeclareLocal(w, node.s1, id)
+}
+
+fn ixWalkStatement(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    match (node.kind) {
+        NodeKind.VARIABLE_DECL => { ixWalkVariable(ix, src, w, node) }
+        NodeKind.BLOCK => { ixWalkBlock(ix, src, w, node) }
+        NodeKind.IF_STATEMENT => {
+            ixWalkChain(ix, src, w, node.child1, "read")
+            if (nodeExists(node.child2)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child2), "read") }
+            if (nodeExists(node.child3)) { ixWalkStatement(ix, src, w, ptr_to_node(node.child3)) }
+        }
+        NodeKind.WHILE_STATEMENT => {
+            ixWalkChain(ix, src, w, node.child1, "read")
+            if (nodeExists(node.child2)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child2), "read") }
+        }
+        NodeKind.LOOP_STATEMENT => {
+            if (nodeExists(node.child1)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child1), "read") }
+        }
+        NodeKind.REGION_STATEMENT => {
+            if (nodeExists(node.child1)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child1), "read") }
+        }
+        NodeKind.FOR_STATEMENT => { ixWalkFor(ix, src, w, node) }
+        NodeKind.MATCH_STATEMENT => { ixWalkMatch(ix, src, w, node) }
+        NodeKind.RETURN_STATEMENT => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.ASSIGNMENT_STATEMENT => {
+            ixWalkChain(ix, src, w, node.child1, "write")
+            ixWalkChain(ix, src, w, node.child2, "read")
+        }
+        NodeKind.EXPRESSION_STATEMENT => { ixWalkChain(ix, src, w, node.child1, "read") }
+        _ => { }
+    }
+}
+
+fn ixWalkBlock(inout ix: Ix, inout src: IxSources, inout w: IxWalk, block: ASTNode) {
+    ixPushScope(w)
+    let mut ptr = block.child1
+    while (nodeExists(ptr)) {
+        let statement = ptr_to_node(ptr)
+        ptr = statement.next
+        ixWalkStatement(ix, src, w, statement)
+    }
+    ixPopScope(w)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Declarations
+
+fn ixWalkFunction(inout ix: Ix, inout src: IxSources, inout w: IxWalk, fnNode: ASTNode) {
+    if (fnNode.line < 1) { return }
+    let slot = ixView(src, fnNode.file)
+    let token = ixNameToken(src, slot, fnNode)
+    let mut id = 0 - 1
+    if (token >= 0) { id = ix.byKey.get(ixKey(fnNode.file, ixTokenLine(src, slot, token), ixTokenCol(src, slot, token))) }
+    let saved = w.fnDecl
+    w.fnDecl = id
+    ixEnterGenerics(ix, src, w, fnNode, id)
+    ixPushScope(w)
+    let mut ptr = fnNode.child1
+    while (nodeExists(ptr)) {
+        let param = ptr_to_node(ptr)
+        ptr = param.next
+        if (param.kind != NodeKind.FUNCTION_PARAMETER) { continue }
+        let pslot = ixView(src, param.file)
+        let ptoken = ixNameToken(src, pslot, param)
+        let mut pid = 0 - 1
+        if (ptoken >= 0) {
+            pid = ix.byKey.get(ixKey(param.file, ixTokenLine(src, pslot, ptoken), ixTokenCol(src, pslot, ptoken)))
+        }
+        ixDeclareLocal(w, param.s1, pid)
+        // A parameter's type lives where it was written; a bare `self` borrows the block's, whose
+        // annotation sits on the impl.
+        if (ptoken >= 0 and ixKindAt(src, pslot, ptoken + 1) == FmtKind.COLON) {
+            ixWalkAnnotation(ix, src, w, param.child1)
+        }
+    }
+    ixWalkAnnotation(ix, src, w, fnNode.child3)
+    if (nodeExists(fnNode.child2)) {
+        let body = ptr_to_node(fnNode.child2)
+        if (body.kind == NodeKind.BLOCK) { ixWalkBlock(ix, src, w, body) }
+    }
+    ixPopScope(w)
+    ixLeaveGenerics(w)
+    w.fnDecl = saved
+}
+
+fn ixWalkStruct(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    if (node.line < 1) { return }
+    let slot = ixView(src, node.file)
+    let token = ixNameToken(src, slot, node)
+    let mut id = 0 - 1
+    if (token >= 0) { id = ix.byKey.get(ixKey(node.file, ixTokenLine(src, slot, token), ixTokenCol(src, slot, token))) }
+    ixEnterGenerics(ix, src, w, node, id)
+    let mut ptr = node.child1
+    while (nodeExists(ptr)) {
+        let field = ptr_to_node(ptr)
+        ptr = field.next
+        if (field.kind != NodeKind.STRUCT_FIELD or field.line < 1) { continue }
+        let fslot = ixView(src, field.file)
+        let ftoken = ixNameToken(src, fslot, field)
+        if (ftoken >= 0 and ixKindAt(src, fslot, ftoken + 1) == FmtKind.COLON) {
+            ixWalkAnnotation(ix, src, w, field.child1)
+        }
+    }
+    ixLeaveGenerics(w)
+}
+
+fn ixWalkEnum(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    if (node.line < 1) { return }
+    ixEnterGenerics(ix, src, w, node, 0 - 1)
+    let mut ptr = node.child1
+    while (nodeExists(ptr)) {
+        let variant = ptr_to_node(ptr)
+        ptr = variant.next
+        if (variant.kind != NodeKind.ENUM_VARIANT) { continue }
+        ixWalkChain(ix, src, w, variant.child1, "read")
+    }
+    ixLeaveGenerics(w)
+}
+
+fn ixWalkTrait(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    if (node.line < 1) { return }
+    let slot = ixView(src, node.file)
+    let token = ixNameToken(src, slot, node)
+    let mut id = 0 - 1
+    if (token >= 0) { id = ix.byKey.get(ixKey(node.file, ixTokenLine(src, slot, token), ixTokenCol(src, slot, token))) }
+    ixEnterGenerics(ix, src, w, node, id)
+    let mut supers = node.child2
+    while (nodeExists(supers)) {
+        let super = ptr_to_node(supers)
+        supers = super.next
+        ixWalkAnnotation(ix, src, w, node_to_ptr(super))
+    }
+    let mut ptr = node.child1
+    while (nodeExists(ptr)) {
+        let signature = ptr_to_node(ptr)
+        ptr = signature.next
+        if (signature.kind == NodeKind.FUNCTION) { ixWalkFunction(ix, src, w, signature) }
+    }
+    ixLeaveGenerics(w)
+}
+
+// The head of an `impl`: the trait and the type it is for, which are references.
+fn ixWalkImpl(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    if (nodeIsNull(node.child3)) { return }
+    let header = ptr_to_node(node.child3)
+    ixEnterGenerics(ix, src, w, header, 0 - 1)
+    if (nodeExists(header.child2)) { ixWalkAnnotation(ix, src, w, header.child2) }
+    ixWalkAnnotation(ix, src, w, header.child1)
+    ixLeaveGenerics(w)
+}
+
+fn ixWalkGlobal(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    ixWalkAnnotation(ix, src, w, node.child1)
+    if (nodeExists(node.child2)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child2), "read") }
+}
+
+fn ixWalkChainDecls(inout ix: Ix, inout src: IxSources, inout w: IxWalk, head: Ptr) {
+    let mut ptr = head
+    while (nodeExists(ptr)) {
+        let node = ptr_to_node(ptr)
+        ptr = node.next
+        match (node.kind) {
+            NodeKind.FUNCTION => { ixWalkFunction(ix, src, w, node) }
+            NodeKind.EXTERN_FUNCTION => { ixWalkFunction(ix, src, w, node) }
+            NodeKind.STRUCT_DECL => { ixWalkStruct(ix, src, w, node) }
+            NodeKind.ENUM_DECL => { ixWalkEnum(ix, src, w, node) }
+            NodeKind.CODESET_DECL => { ixWalkEnum(ix, src, w, node) }
+            NodeKind.TRAIT_DECL => { ixWalkTrait(ix, src, w, node) }
+            NodeKind.IMPL_DECL => { ixWalkImpl(ix, src, w, node) }
+            NodeKind.VARIABLE_DECL => { ixWalkGlobal(ix, src, w, node) }
+            NodeKind.EXTERN_VARIABLE => { ixWalkGlobal(ix, src, w, node) }
+            _ => { }
+        }
+    }
+}
+
+// Every use of a name in the program. The concrete chain first, which sema checked and which knows
+// each call's symbol and each expression's type; then the templates, which fill in the positions
+// only they reach.
+public fn ixWalk(inout ix: Ix, inout src: IxSources, inout w: IxWalk, merged: ASTNode) {
+    ixWalkChainDecls(ix, src, w, merged.child1)
+    ixWalkChainDecls(ix, src, w, merged.child2)
+}

@@ -1,0 +1,144 @@
+// Pass three of the semantic index: the declaration lines, and the file.
+//
+// A declaration line carries what an editor shows about it without asking again: where its name is,
+// where the whole declaration is, its signature as written, the comment above it, its type. The
+// extents, the signature and the comment come from the text (index/source.psm); everything else is
+// in the tables already. Declarations in the user's files are always written; one in the library
+// only if something refers to it.
+
+import ast.nodes
+import common.source_files
+import fmt.scan
+import index.collect
+import index.source
+import index.tables
+import index.write
+import std.fs
+import std.string
+import std.vec
+
+fn ixVisibilityName(vis: Int) -> String {
+    if (vis == 0) { return "public".clone() }
+    if (vis == 1) { return "private".clone() }
+    if (vis == 2) { return "internal".clone() }
+    return "".clone()
+}
+
+fn ixHasParameters(kind: String) -> Bool {
+    return kind.equals("fn") or kind.equals("method") or kind.equals("prop") or kind.equals("extern")
+}
+
+fn ixHasBody(kind: String) -> Bool {
+    return kind.equals("struct") or kind.equals("enum") or kind.equals("trait") or kind.equals("impl")
+        or kind.equals("codeset") or kind.equals("typelist")
+}
+
+fn ixIsBinding(kind: String) -> Bool {
+    return kind.equals("let") or kind.equals("global") or kind.equals("const") or kind.equals("externvar")
+}
+
+// One declaration, as a line.
+fn ixDeclLine(inout ix: Ix, inout src: IxSources, id: Int) -> String {
+    let file = ix.dFile[id]
+    let slot = ixView(src, file)
+    let kind = ix.dKind[id]
+    let nameToken = ixTokenAt(src, slot, ix.dLine[id], ix.dCol[id])
+    let mut startLine = ix.dLine[id]
+    let mut startCol = ix.dCol[id]
+    let mut endLine = ix.dLine[id]
+    let mut endCol = ix.dCol[id] + ix.dLen[id]
+    let mut signature = "".clone()
+    let mut doc = "".clone()
+    if (nameToken >= 0) {
+        let mut first = nameToken
+        let mut last = nameToken
+        if (ixHasParameters(kind) or ixHasBody(kind) or ixIsBinding(kind)) {
+            first = ixDeclStart(src, slot, nameToken)
+            if (ixHasParameters(kind)) {
+                last = ixDeclEnd(src, slot, nameToken, true)
+                let sigEnd = ixSignatureEnd(src, slot, nameToken)
+                if (sigEnd >= first) { signature = ixSlice(src, slot, first, sigEnd) }
+            } else if (ixHasBody(kind)) {
+                last = ixDeclEnd(src, slot, nameToken, false)
+                // The header: up to the brace that opens the body.
+                let mut head = nameToken
+                let count = ixTokenCount(src, slot)
+                while (head < count and ixKindAt(src, slot, head) != FmtKind.LBRACE and head < last) { head = head + 1 }
+                signature = ixSlice(src, slot, first, head - 1)
+            } else {
+                // A binding. A `let`, a `const` or an `extern let` is a statement of its own; a
+                // pattern's variable or a `for` variable is only its name.
+                let opener = ixTokenText(src, slot, first)
+                if (opener.equals("let") or opener.equals("const") or opener.equals("extern") or opener.equals("public")
+                        or opener.equals("private") or opener.equals("internal")) {
+                    last = ixStatementEnd(src, slot, first)
+                    signature = ixSlice(src, slot, first, nameToken)
+                } else {
+                    first = nameToken
+                    last = nameToken
+                    signature = ix.dName[id].clone()
+                }
+                if (ix.dType[id].equals("") == false) { signature = signature.concat(": ", ix.dType[id]) }
+            }
+        }
+        startLine = ixTokenLine(src, slot, first)
+        startCol = ixTokenCol(src, slot, first)
+        endLine = ixTokenLine(src, slot, last)
+        endCol = ixTokenCol(src, slot, last) + ixTokenLen(src, slot, last)
+        if (ixHasParameters(kind) or ixHasBody(kind) or ixIsBinding(kind)) {
+            doc = ixDocAbove(src, slot, startLine)
+        }
+    }
+    if (signature.equals("") and ix.dType[id].equals("") == false) {
+        signature = ix.dName[id].concat(": ", ix.dType[id])
+    }
+    let mut out = "{\"k\":\"decl\",\"id\":".concat(id.toString(), ",\"kind\":", ixQuote(kind), ",\"name\":",
+                                                    ixQuote(ix.dName[id]), ",\"container\":", ix.dContainer[id].toString(),
+                                                    ",\"f\":", file.toString(), ",\"l\":", ix.dLine[id].toString(),
+                                                    ",\"c\":", ix.dCol[id].toString(), ",\"n\":", ix.dLen[id].toString(),
+                                                    ",\"sl\":", startLine.toString(), ",\"sc\":", startCol.toString(),
+                                                    ",\"el\":", endLine.toString(), ",\"ec\":", endCol.toString())
+    let mut flag = "false"
+    if (ix.dUser[id]) { flag = "true" }
+    out = out.concat(",\"user\":", flag)
+    // A binding whose type nobody wrote: an editor offers it as a hint after the name.
+    if (nameToken >= 0 and (kind.equals("let") or kind.equals("param")) and ix.dType[id].equals("") == false
+            and ixKindAt(src, slot, nameToken + 1) != FmtKind.COLON) {
+        out = out.concat(",\"inferred\":true")
+    }
+    let vis = ixVisibilityName(ix.dVis[id])
+    if (vis.equals("") == false and ixHasParameters(kind)) { out = out.concat(",\"vis\":", ixQuote(vis)) }
+    if (signature.equals("") == false) { out = out.concat(",\"sig\":", ixQuote(signature)) }
+    if (ix.dType[id].equals("") == false) { out = out.concat(",\"ty\":", ixQuote(ix.dType[id])) }
+    if (ix.dOwner[id].equals("") == false) { out = out.concat(",\"owner\":", ixQuote(ix.dOwner[id])) }
+    if (ixHasParameters(kind)) {
+        if (ix.dRecv[id].equals("") == false) { out = out.concat(",\"recv\":", ixQuote(ix.dRecv[id])) }
+    }
+    if (doc.equals("") == false) { out = out.concat(",\"doc\":", ixQuote(doc)) }
+    return out.concat("}")
+}
+
+// Writes the index to `path`: the files, then the declarations worth writing, then what the walk found.
+public fn ixWrite(inout ix: Ix, inout src: IxSources, path: String, resolved: Int, builtin: Int, unresolved: Int) -> Bool {
+    let mut lines: Vec<String> = []
+    let mut file = 0
+    while (file < ix.userFiles.length) {
+        lines.push(ixFileLine(file, diag_file_path(file), diag_file_module(file), ix.userFiles[file]))
+        file = file + 1
+    }
+    let mut id = 0
+    let mut written = 0
+    while (id < ix.dKind.length) {
+        if (ix.dUser[id] or ix.dUsed[id]) {
+            lines.push(ixDeclLine(ix, src, id))
+            written = written + 1
+        }
+        id = id + 1
+    }
+    for line in ix.out { lines.push(line.clone()) }
+    lines.push("{\"k\":\"stats\",\"decls\":".concat(written.toString(), ",\"resolved\":", resolved.toString(),
+                                                    ",\"builtin\":", builtin.toString(), ",\"unresolved\":",
+                                                    unresolved.toString(), "}"))
+    // One file, one write: the lines are joined once.
+    return writeFile(path, lines.join("\n").concat("\n"))
+}

@@ -1,0 +1,204 @@
+// The tables the semantic index is built in: declarations as parallel columns, and the lookups
+// that turn a name, a symbol or a source position back into a declaration.
+//
+// `prismio check <entry> --emit-index <file>` writes one JSON object per line (docs/LSP_PLAN.md,
+// "The semantic index"); this is what it is built from. The index is internal to the toolchain,
+// the language server and the compiler ship together, so nothing here is a stable interface.
+
+import std.string
+import std.vec
+
+// A string-keyed table of integers: open addressing over the bytes of the key. Small and local
+// on purpose; the index needs "name to declaration" in a dozen shapes and nothing more.
+public struct IxMap {
+    public keys: Vec<String>,
+    public values: Vec<Int>,
+    buckets: Vec<Int>,
+    mask: Int
+}
+
+public fn ixMap() -> IxMap {
+    let mut buckets: Vec<Int> = []
+    let mut i = 0
+    while (i < 64) {
+        buckets.push(0 - 1)
+        i = i + 1
+    }
+    return IxMap { keys: [], values: [], buckets: buckets, mask: 63 }
+}
+
+private fn ixHash(key: String) -> Int {
+    let mut h = 5381
+    let mut i = 0
+    while (i < key.length) {
+        h = (h * 33 + key.byteAt(i)) & 0x3fffffff
+        i = i + 1
+    }
+    return h
+}
+
+impl IxMap {
+    // The index of `key` in the dense columns, or -1.
+    public fn find(self, key: String) -> Int {
+        let mut at = ixHash(key) & self.mask
+        loop {
+            let slot = self.buckets[at]
+            if (slot < 0) { return 0 - 1 }
+            if (self.keys[slot].equals(key)) { return slot }
+            at = (at + 1) & self.mask
+        }
+    }
+
+    public fn has(self, key: String) -> Bool {
+        return self.find(key) >= 0
+    }
+
+    // The value for `key`, or -1.
+    public fn get(self, key: String) -> Int {
+        let slot = self.find(key)
+        if (slot < 0) { return 0 - 1 }
+        return self.values[slot]
+    }
+
+    private fn grow(self) {
+        let size = (self.mask + 1) * 2
+        let mut fresh: Vec<Int> = []
+        let mut i = 0
+        while (i < size) {
+            fresh.push(0 - 1)
+            i = i + 1
+        }
+        self.buckets = fresh
+        self.mask = size - 1
+        let mut n = 0
+        while (n < self.keys.length) {
+            let mut at = ixHash(self.keys[n]) & self.mask
+            while (self.buckets[at] >= 0) { at = (at + 1) & self.mask }
+            self.buckets[at] = n
+            n = n + 1
+        }
+    }
+
+    // Sets `key`, replacing an earlier value.
+    public fn put(self, key: String, value: Int) {
+        let slot = self.find(key)
+        if (slot >= 0) {
+            self.values[slot] = value
+            return
+        }
+        if ((self.keys.length + 1) * 2 > self.mask + 1) { self.grow() }
+        let mut at = ixHash(key) & self.mask
+        while (self.buckets[at] >= 0) { at = (at + 1) & self.mask }
+        self.buckets[at] = self.keys.length
+        self.keys.push(key.clone())
+        self.values.push(value)
+    }
+
+    // Sets `key` only if it has no value yet; true if it was set.
+    public fn putFirst(self, key: String, value: Int) -> Bool {
+        if (self.find(key) >= 0) { return false }
+        self.put(key, value)
+        return true
+    }
+}
+
+// Declaration kinds, as the index spells them.
+//   fn method prop struct enum variant trait impl field param let global const extern
+//   externvar typeparam import codeset code typelist assoctype assocconst
+public struct Ix {
+    public dKind: Vec<String>,
+    public dName: Vec<String>,
+    public dFile: Vec<Int>,
+    public dLine: Vec<Int>,
+    public dCol: Vec<Int>,
+    public dLen: Vec<Int>,
+    public dContainer: Vec<Int>,
+    // 0 public, 1 private, 2 internal.
+    public dVis: Vec<Int>,
+    // The declared type as written (a field, a parameter, a global), the inferred one for a `let`,
+    // the return type for a function.
+    public dType: Vec<String>,
+    // The symbol a call to a function carries in `CALL_EXPR.s2`.
+    public dSymbol: Vec<String>,
+    // Declared in a file the user is working in, as opposed to the standard library.
+    public dUser: Vec<Bool>,
+    // Some reference points here, so a library declaration is written out.
+    public dUsed: Vec<Bool>,
+    public dNode: Vec<Ptr>,
+    // The next function of the same name, or -1: overloads in the order they were declared.
+    public dOverload: Vec<Int>,
+    // For a method, the type it belongs to ("" otherwise).
+    public dOwner: Vec<String>,
+    // For a function, the type its first parameter has (method-call syntax finds it there).
+    public dRecv: Vec<String>,
+
+    // "file:line:col" of a declaration's name.
+    public byKey: IxMap,
+    public bySymbol: IxMap,
+    // A type by its name: struct, enum, trait, codeset, typelist.
+    public byType: IxMap,
+    // "Type.member": a field, a variant, a code.
+    public byMember: IxMap,
+    // A top-level let, const or extern let by name.
+    public byGlobal: IxMap,
+    // The first function of a plain name; the rest are on `dOverload`.
+    public byFn: IxMap,
+    // An import by the name a program writes it with: its alias, or its last segment.
+    public byImport: IxMap,
+
+    // The files whose declarations are the user's, by id.
+    public userFiles: Vec<Bool>,
+
+    // Reference positions already written, so the template and each instance of a generic
+    // (which share source positions) say it once.
+    public seen: IxMap,
+    public out: Vec<String>
+}
+
+public fn ixCreate() -> Ix {
+    return Ix {
+        dKind: [], dName: [], dFile: [], dLine: [], dCol: [], dLen: [], dContainer: [], dVis: [],
+        dType: [], dSymbol: [], dUser: [], dUsed: [], dNode: [], dOverload: [], dOwner: [], dRecv: [],
+        byKey: ixMap(), bySymbol: ixMap(), byType: ixMap(), byMember: ixMap(), byGlobal: ixMap(),
+        byFn: ixMap(), byImport: ixMap(),
+        userFiles: [], seen: ixMap(), out: []
+    }
+}
+
+public fn ixKey(file: Int, line: Int, col: Int) -> String {
+    return file.toString().concat(":", line.toString(), ":", col.toString())
+}
+
+public fn ixDeclCount(ix: Ix) -> Int {
+    return ix.dKind.length
+}
+
+// Adds a declaration unless one already stands at the same name position (a generic's template
+// and its instances share one), and answers its id either way.
+public fn ixAddDecl(inout ix: Ix, kind: String, name: String, file: Int, line: Int, col: Int, len: Int,
+                    container: Int, vis: Int, type: String, symbol: String, node: Ptr) -> Int {
+    let key = ixKey(file, line, col)
+    let existing = ix.byKey.get(key)
+    if (existing >= 0) { return existing }
+    let id = ix.dKind.length
+    ix.dKind.push(kind.clone())
+    ix.dName.push(name.clone())
+    ix.dFile.push(file)
+    ix.dLine.push(line)
+    ix.dCol.push(col)
+    ix.dLen.push(len)
+    ix.dContainer.push(container)
+    ix.dVis.push(vis)
+    ix.dType.push(type.clone())
+    ix.dSymbol.push(symbol.clone())
+    let mut user = false
+    if (file >= 0 and file < ix.userFiles.length) { user = ix.userFiles[file] }
+    ix.dUser.push(user)
+    ix.dUsed.push(false)
+    ix.dNode.push(node)
+    ix.dOverload.push(0 - 1)
+    ix.dOwner.push("".clone())
+    ix.dRecv.push("".clone())
+    ix.byKey.put(key, id)
+    return id
+}

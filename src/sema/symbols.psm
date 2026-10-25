@@ -855,7 +855,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         semaErrorAt(call, diagQuote(name).concat(" is declared in ",
                                                  diagQuote(unimportedModule),
                                                  ", which this file does not import"))
-        diag_note("add `import ".concat(unimportedModule,
+        diag_note_add_import(unimportedModule, "add `import ".concat(unimportedModule,
                                         "`; an import is not transitive, so importing a module that imports it is not enough"))
         return createNode(NodeKind.MODULE)
     }

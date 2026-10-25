@@ -1,0 +1,66 @@
+// `prismio check <entry> --emit-index <file>`: the semantic index of a program.
+//
+// The index is what a language server answers hover, go to definition, references, rename, outline
+// and completion from: the program's declarations, and every use of a name resolved to the
+// declaration it means (docs/LSP_PLAN.md, "The semantic index"). It is JSON Lines, internal to the
+// toolchain and free to change, because the server that reads it ships in the same toolchain.
+//
+//   file        {"k":"file","id","path","module","user"}
+//   decl        {"k":"decl","id","kind","name","container","f","l","c","n","sl","sc","el","ec","user",
+//                "vis","sig","ty","owner","recv","doc"}   name span, whole extent, signature, comment
+//   ref         {"k":"ref","f","l","c","n","to","role","ty","builtin"}   a use of a name; `to` is -1 for
+//                                                                         something the compiler provides
+//   arg         {"k":"arg","f","l","c","p","i"}      where an argument begins, and the parameter it fills
+//   unresolved  {"k":"unresolved","f","l","c","n","name","what"}   a name that is nothing, with the
+//                                                                    diagnostic it also has
+//   stats       {"k":"stats","decls","resolved","builtin","unresolved"}
+//
+// Lines are 1-based and columns are 1-based UTF-8 bytes, as in every other span the compiler reports.
+// Declarations in the standard library are written only if something refers to them.
+
+import ast.nodes
+import common.source_files
+import index.collect
+import index.emit
+import index.source
+import index.tables
+import index.walk
+import std.string
+import std.vec
+
+// A file belongs to the user unless it came from the standard library, which the merge names `std.*`
+// (the entry and the files an editor has open are the user's whatever they are called).
+fn ixIsUserPath(path: String, module: String, userPaths: Vec<String>) -> Bool {
+    for known in userPaths {
+        if (known.equals(path)) { return true }
+    }
+    return module.startsWith("std.") == false
+}
+
+// Writes the index of the program `merged` to `outPath`. False if the file could not be written. With a
+// cursor (`cursorPath`, `cursorLine`, `cursorCol`: the placeholder the server wrote, ixPlaceholder), it also
+// writes what could be completed there.
+public fn indexProgram(merged: ASTNode, userPaths: Vec<String>, outPath: String, cursorPath: String, cursorLine: Int,
+                       cursorCol: Int) -> Bool {
+    let mut ix = ixCreate()
+    let mut src = ixSources()
+    let mut w = ixWalkCreate()
+    let mut file = 0
+    while (file < diag_file_count()) {
+        ix.userFiles.push(ixIsUserPath(diag_file_path(file), diag_file_module(file), userPaths))
+        file = file + 1
+    }
+    if (cursorPath.equals("") == false) {
+        file = 0
+        while (file < diag_file_count()) {
+            if (diag_file_path(file).equals(cursorPath)) { w.cursorFile = file }
+            file = file + 1
+        }
+        w.cursorLine = cursorLine
+        w.cursorCol = cursorCol
+    }
+    ixCollect(ix, src, merged)
+    ixCollectImports(ix, src)
+    ixWalk(ix, src, w, merged)
+    return ixWrite(ix, src, outPath, w.resolved, w.builtin, w.unresolved)
+}

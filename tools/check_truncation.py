@@ -112,6 +112,33 @@ def judge(code, stderr, failure):
     return "", errors, past
 
 
+def index_args(opts, work, path, indexes):
+    """`--emit-index` for a variant, when asked; remembers where the index will be."""
+    if not opts.index:
+        return []
+    target = work / (path.name + ".idx")
+    indexes[path] = target
+    return ["--emit-index", str(target)]
+
+
+def judge_index(target):
+    """Why an index is not whole, or "". An editor reads it while the user is typing, so a
+    damaged program must still get one: every line a JSON object, the last one the stats."""
+    try:
+        lines = target.read_text().splitlines()
+    except OSError:
+        return "no index written"
+    if not lines:
+        return "empty index"
+    try:
+        records = [json.loads(line) for line in lines]
+    except ValueError:
+        return "an index line is not JSON"
+    if records[-1].get("k") != "stats":
+        return "the index does not end in its stats line"
+    return ""
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--compiler", required=True, help="compiler under test (not named prismio)")
@@ -122,6 +149,9 @@ def main():
     ap.add_argument("--jobs", type=int, default=8)
     ap.add_argument("--partial", action="store_true",
                     help="check with --partial, so type checking runs over what parsed")
+    ap.add_argument("--index", action="store_true",
+                    help="also ask for the semantic index (--emit-index); it must be written whole,\n"
+                         "one JSON object per line, ending in its stats line")
     ap.add_argument("--limit", type=int, default=0, help="only the first N files of each set (a smoke run)")
     ap.add_argument("--out", default="", help="where failing variants are written")
     opts = ap.parse_args()
@@ -138,6 +168,7 @@ def main():
         standalone, modules = standalone[:opts.limit], modules[:opts.limit]
 
     extra = ["--partial"] if opts.partial else []
+    indexes = {}
     jobs = []  # (label, file, args, cwd)
     for index, source in enumerate(standalone):
         data = source.read_bytes()
@@ -146,7 +177,8 @@ def main():
             path = work / f"s{index}_{n}_{source.name}"
             path.write_bytes(damaged)
             jobs.append((f"{source.relative_to(ROOT)} {how}", path,
-                         [str(path), "--diagnostic-format=json", *extra], str(ROOT)))
+                         [str(path), "--diagnostic-format=json", *extra, *index_args(opts, work, path, indexes)],
+                         str(ROOT)))
     entry = ROOT / "src" / "main.psm"
     for index, source in enumerate(modules):
         data = source.read_bytes()
@@ -155,13 +187,16 @@ def main():
             path = work / f"m{index}_{n}.psm"
             path.write_bytes(damaged)
             jobs.append((f"{source.relative_to(ROOT)} {how}", path,
-                         [str(entry), "--diagnostic-format=json", *extra, "--overlay", str(source), str(path)],
+                         [str(entry), "--diagnostic-format=json", *extra, "--overlay", str(source), str(path),
+                          *index_args(opts, work, path, indexes)],
                          str(ROOT)))
 
     def one(job):
         label, path, args, cwd = job
         code, stderr, failure = run(compiler, args, cwd, opts.timeout)
         why, errors, past = judge(code, stderr, failure)
+        if not why and opts.index:
+            why = judge_index(indexes[path])
         return label, path, args, why, errors, past
 
     failures = []
