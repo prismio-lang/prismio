@@ -185,6 +185,11 @@ void proc_spawn_arg(const char* argument);
 int  proc_spawn_run(int stdin_mode, int stdout_mode, int stderr_mode, PrismioSpawnOut* out);
 int  proc_wait(int64_t handle);
 
+// `proc_try_wait` answers this while the child has not exited: a status is 0..255 (128 + a
+// signal), so -2 cannot be one, and -1 stays "could not be waited for".
+#define PRISMIO_STILL_RUNNING (-2)
+int  proc_try_wait(int64_t handle);
+
 // Moves `from` over `to`, replacing one that is there -- on Windows too, where plain
 // `rename` refuses. 0 on success. Defined in program_support.c.
 int  fs_rename(const char* from, const char* to);

@@ -803,6 +803,7 @@ int execute_command(const char* command) {
 #else
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -988,6 +989,38 @@ int proc_wait(int64_t handle) {
 
 int proc_kill(int64_t handle) {
     return kill((pid_t)handle, SIGKILL) == 0 ? 0 : -1;
+}
+
+int proc_try_wait(int64_t handle) {
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid((pid_t)handle, &status, WNOHANG);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0) return -1;
+    if (waited == 0) return PRISMIO_STILL_RUNNING;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}
+
+char* proc_read_some(int fd, int max) {
+    if (max < 1) max = 1;
+    char* scratch = fd >= 0 ? (char*)malloc((size_t)max) : NULL;
+    ssize_t n = 0;
+    if (scratch) {
+        do {
+            n = read(fd, scratch, (size_t)max);
+        } while (n < 0 && errno == EINTR);
+    }
+    size_t length = n > 0 ? (size_t)n : 0;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (out) {
+        if (length > 0) memcpy(out, scratch, length);
+        out[length] = '\0';
+    }
+    tmp_free(scratch);
+    return out;
 }
 
 int proc_exec(void) {
@@ -1210,6 +1243,32 @@ int proc_wait(int64_t handle) {
 
 int proc_kill(int64_t handle) {
     return TerminateProcess((HANDLE)(intptr_t)handle, 1) ? 0 : -1;
+}
+
+int proc_try_wait(int64_t handle) {
+    HANDLE process = (HANDLE)(intptr_t)handle;
+    DWORD waited = WaitForSingleObject(process, 0);
+    if (waited == WAIT_TIMEOUT) return PRISMIO_STILL_RUNNING;
+    if (waited != WAIT_OBJECT_0) return -1;
+    DWORD status = 0;
+    if (!GetExitCodeProcess(process, &status)) { CloseHandle(process); return -1; }
+    CloseHandle(process);
+    return (int)status;
+}
+
+char* proc_read_some(int fd, int max) {
+    if (max < 1) max = 1;
+    char* scratch = fd >= 0 ? (char*)malloc((size_t)max) : NULL;
+    int n = 0;
+    if (scratch) n = _read(fd, scratch, (unsigned int)max);
+    size_t length = n > 0 ? (size_t)n : 0;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (out) {
+        if (length > 0) memcpy(out, scratch, length);
+        out[length] = '\0';
+    }
+    tmp_free(scratch);
+    return out;
 }
 
 // **Windows has no `execvp`.** `_execvp` spawns a new process and exits this
@@ -1543,6 +1602,115 @@ char* io_stdin_read_all(void) {
     out[length] = '\0';
     r->start = r->end;
     return out;
+}
+
+// Exactly `count` bytes of standard input, or fewer when it ends first, found
+// through the same reader as the lines so the calls can be mixed: a header read
+// with `readLine`, then a body of the length it announced. A line found by
+// `io_stdin_has_line` and not yet taken is part of what is counted.
+//
+// Bytes, not text: a NUL among them is copied, but a String ends at the first one.
+char* io_stdin_take_bytes(int count) {
+    LineReader* r = &io_stdin_reader;
+    r->pending = 0;
+    size_t want = count > 0 ? (size_t)count : 0;
+    while (r->end - r->start < want && line_reader_fill(r) > 0) {}
+    size_t length = r->end - r->start;
+    if (length > want) length = want;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (!out) return NULL;
+    if (length > 0) memcpy(out, r->buffer + r->start, length);
+    out[length] = '\0';
+    r->start += length;
+    return out;
+}
+
+// Waiting on several descriptors at once, with a timeout: the one primitive a program
+// that serves a client and supervises children needs, and the reason it needs no thread.
+//
+// Descriptor 0 is special in one way. This process's stdin has a buffer (the line
+// reader above), and bytes already in it will never make the descriptor readable
+// again, so a poll that looked only at the kernel would sleep through a message that
+// is already here. Buffered input, and the end of input, count as ready.
+//
+// The set is built with `poll_clear` and `poll_add` and waited on with `poll_wait`,
+// the shape `proc_spawn_begin` and `proc_spawn_arg` already have; like them it is
+// process-global and unlocked. At most POLL_MAX descriptors.
+#define POLL_MAX 64
+
+static int poll_descriptors[POLL_MAX];
+static int poll_count;
+
+static int stdin_has_buffered(void) {
+    return io_stdin_reader.end > io_stdin_reader.start || io_stdin_reader.eof;
+}
+
+#ifdef _WIN32
+// A pipe handle cannot be waited on, so it is polled; a console or a file is always
+// "ready" and the read blocks, as it would have.
+static int descriptor_ready(int fd) {
+    if (fd == 0 && stdin_has_buffered()) return 1;
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE || GetFileType(h) != FILE_TYPE_PIPE) return 1;
+    DWORD available = 0;
+    if (!PeekNamedPipe(h, NULL, 0, NULL, &available, NULL)) return 1;
+    return available > 0;
+}
+
+static int poll_wait_on(const int* fds, int count, int ms) {
+    for (int waited = 0;; waited++) {
+        for (int i = 0; i < count; i++) {
+            if (fds[i] >= 0 && descriptor_ready(fds[i])) return i;
+        }
+        if (waited >= ms) return -1;
+        Sleep(1);
+    }
+}
+#else
+static int poll_wait_on(const int* fds, int count, int ms) {
+    for (int i = 0; i < count; i++) {
+        if (fds[i] == 0 && stdin_has_buffered()) return i;
+    }
+    struct pollfd watched[POLL_MAX];
+    for (int i = 0; i < count; i++) {
+        watched[i].fd = fds[i];
+        watched[i].events = POLLIN;
+        watched[i].revents = 0;
+    }
+    for (;;) {
+        int n = poll(watched, (nfds_t)count, ms);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return -1;
+        for (int i = 0; i < count; i++) {
+            if (watched[i].revents != 0) return i;
+        }
+        return -1;
+    }
+}
+#endif
+
+void poll_clear(void) {
+    poll_count = 0;
+}
+
+// The position of the descriptor in the set, or -1 when the set is full.
+int poll_add(int fd) {
+    if (poll_count >= POLL_MAX) return -1;
+    poll_descriptors[poll_count] = fd;
+    return poll_count++;
+}
+
+// The position of the first descriptor with something to read (or that has hung up,
+// which a read reports at once), or -1 when `ms` milliseconds pass with none. A
+// negative descriptor is never ready, so a closed stream can stay in the set.
+int poll_wait(int ms) {
+    return poll_wait_on(poll_descriptors, poll_count, ms < 0 ? 0 : ms);
+}
+
+// 1 when reading standard input would not block: `waitForInput` in std/input.psm.
+int io_stdin_ready(int ms) {
+    int only = 0;
+    return poll_wait_on(&only, 1, ms < 0 ? 0 : ms) >= 0;
 }
 
 // A file's lines: `readLines(path)` in std/fs.psm.

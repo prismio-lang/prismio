@@ -39,6 +39,8 @@ import std.string
 private extern fn io_stdin_has_line() -> Int
 private extern fn io_stdin_take_line() -> String produce(rt_free)
 private extern fn io_stdin_read_all() -> String produce(rt_free)
+private extern fn io_stdin_take_bytes(count: Int) -> String produce(rt_free)
+private extern fn io_stdin_ready(ms: Int) -> Int
 
 // The next line, or `none` at the end of input.
 //
@@ -92,6 +94,29 @@ public fn readWords() -> Vec<String> {
 // Everything not yet read, to the end of input, terminators included.
 public fn readAll() -> String {
     return io_stdin_read_all()
+}
+
+// The next `count` bytes, or fewer when the input ends first, and "" at the end.
+// Read through the same buffer as the lines, so a header can be read with `readLine`
+// and the body it announced with this:
+//
+//     let header = readLine()            // "Content-Length: 12"
+//     let body = readBytes(12)
+//
+// **Bytes, not text.** A String ends at its first NUL, so binary input is cut there;
+// a protocol that frames text by length is unaffected.
+public fn readBytes(count: Int) -> String {
+    return io_stdin_take_bytes(count)
+}
+
+// Whether a read of the input would return without waiting: something is buffered,
+// something arrives within `milliseconds`, or the input has ended. `false` means the
+// sender has been quiet for that long. Zero asks without waiting.
+//
+// For waiting on this and something else at once -- a child's output, say -- use
+// `waitReadable` in std.poll with descriptor 0.
+public fn waitForInput(milliseconds: Int) -> Bool {
+    return io_stdin_ready(milliseconds) == 1
 }
 
 // Whether there is no line left to read. A `readLine()` now would be `none`.

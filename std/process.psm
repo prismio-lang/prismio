@@ -35,6 +35,8 @@ private extern fn proc_spawn_arg(argument: String borrow)
 private extern fn proc_spawn_run(stdinMode: Int, stdoutMode: Int, stderrMode: Int,
                          out: SpawnOut) -> Int
 private extern fn proc_wait(handle: I64) -> Int
+private extern fn proc_try_wait(handle: I64) -> Int
+private extern fn proc_read_some(descriptor: Int, max: Int) -> String produce(rt_free)
 private extern fn proc_kill(handle: I64) -> Int
 private extern fn proc_exec() -> Int
 private extern fn proc_read_all(descriptor: Int) -> String produce(rt_free)
@@ -208,6 +210,18 @@ impl Stream {
         return proc_read_all(self.descriptor)
     }
 
+    // Up to `max` bytes the child has written, waiting only until there are some:
+    // what one read returns, which may be a fraction of a message. "" means the
+    // child closed its end (or the stream has none), because a read that waits
+    // returns at least one byte otherwise.
+    //
+    // This is the call to make after `waitReadable` (std.poll) says the descriptor
+    // has something, and in a loop that also watches other things: `readAll` waits
+    // for the end and so cannot be one of several things a program is doing.
+    public fn readSome(self, max: Int) -> String {
+        return proc_read_some(self.descriptor, max)
+    }
+
     // Bytes written, or -1. Partial writes are retried, so a short count means
     // the child closed its end.
     public fn write(self, text: String) -> Int {
@@ -242,6 +256,18 @@ impl Child {
     // that killed it, or -1 if it could not be waited for.
     public fn wait(self) -> Int {
         return proc_wait(self.handle)
+    }
+
+    // Its exit status if it has exited, reaping it, and `none` while it is still
+    // running. Never waits. A child answered here is finished: calling `wait` on it
+    // afterwards fails with -1, because it has been reaped.
+    //
+    // Wakes with `waitReadable` on the child's pipes: a child that closed its output
+    // is usually (not always) about to exit, so a loop reads until "" and then asks.
+    public fn tryWait(self) -> Int? {
+        let status = proc_try_wait(self.handle)
+        if (status == -2) { return none }
+        return status
     }
 
     // Terminate it. The child's status afterwards is the platform's answer for a

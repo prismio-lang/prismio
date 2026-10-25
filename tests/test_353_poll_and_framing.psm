@@ -1,0 +1,206 @@
+// What a program that serves a client and supervises a child needs, and does not need a thread
+// for: `readBytes`, `waitForInput`, `waitReadable`, `Stream.readSome` and `Child.tryWait`.
+//
+// **The child is this program**, as in test_153, so no system command is involved.
+//
+// 1. `frame`: a length-prefixed message, as the Language Server Protocol frames them. A header
+//    read with `readLine`, then exactly the announced bytes with `readBytes`. The body holds a
+//    newline and a CR LF, which a line-based read would have changed, and the next header
+//    follows without a gap, so the byte count is what finds it. A read past the end answers
+//    what is left, then "".
+// 2. `stdin`: `waitForInput` and descriptor 0 in `waitReadable` see bytes the line reader has
+//    already taken from the pipe, not only what the kernel has. With "a\nb\n" written at once
+//    and the pipe still open, the second line is buffered and so "ready", and after it nothing
+//    is until the parent closes the pipe, which is ready too (a read reports the end).
+// 3. `slow`: a child that writes late. `waitReadable` times out first and says `none`,
+//    `tryWait` says `none` while it runs, then the output arrives, `readSome` returns it, a
+//    second `readSome` after the child closes its end returns "", and `tryWait` finds the
+//    status. `kill` then ends a child that never speaks, and `tryWait` reaps it.
+
+import std.input
+import std.io
+import std.option
+import std.poll
+import std.process
+import std.string
+import std.time
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+// Visible, so a mismatch shows where the CR and LF were.
+fn shown(text: String) -> String {
+    return text.replaceAll("\r", "<CR>").replaceAll("\n", "<LF>")
+}
+
+fn childFrame() -> Int {
+    let mut messages = 0
+    loop {
+        let header = readLine()
+        if (header == none) { break }
+        let length = expect(header).replaceAll("Content-Length: ", "").parseInt().unwrapOr(0 - 1)
+        let blank = readLine()
+        let body = readBytes(length)
+        println("message ".concat(messages.toString(), " length ", body.length.toString(),
+                                  ": ", shown(body)))
+        messages = messages + 1
+    }
+    println("tail ".concat(readBytes(10).length.toString()))
+    return 0
+}
+
+fn childStdin() -> Int {
+    let first = expect(readLine())
+    println("first ".concat(first))
+    println("buffered ".concat(waitForInput(0).toString()))
+    let second = expect(readLine())
+    println("second ".concat(second))
+    println("quiet ".concat(waitForInput(40).toString()))
+    // The parent closes its end once it has read the line above.
+    println("ended ".concat(waitForInput(10000).toString()))
+    if (readLine() == none) {
+        println("last none")
+    } else {
+        println("last something")
+    }
+    return 0
+}
+
+fn childSlow() -> Int {
+    sleep(Duration.fromMillis(400))
+    println("late")
+    return 4
+}
+
+fn childSilent() -> Int {
+    sleep(Duration.fromMillis(60000))
+    return 0
+}
+
+fn again(mode: String) -> Process {
+    let p = Process()
+    p.program = process.args[0]
+    p.arguments = [mode]
+    return p
+}
+
+// Everything the child has written so far, waiting up to `milliseconds` for the first of it.
+fn drain(child: Child, milliseconds: Int) -> String {
+    let mut text = ""
+    let mut wait = milliseconds
+    loop {
+        if (waitReadable(child.stdout.descriptor, wait) == false) { break }
+        let piece = child.stdout.readSome(4096)
+        if (piece.equals("")) { break }
+        text = text.concat(piece)
+        wait = 50
+    }
+    return text
+}
+
+fn main() -> Int {
+    if (process.args.count > 1) {
+        let mode = process.args[1]
+        if (mode.equals("frame")) { return childFrame() }
+        if (mode.equals("stdin")) { return childStdin() }
+        if (mode.equals("slow")) { return childSlow() }
+        if (mode.equals("silent")) { return childSilent() }
+        return 99
+    }
+
+    // --- 1. length-prefixed messages ---------------------------------------
+    let framer = again("frame")
+    framer.stdin = StreamMode.Pipe
+    framer.stdout = StreamMode.Pipe
+    let framed = framer.spawn()
+    framed.stdin.write("Content-Length: 11\r\n\r\nhello\nworld")
+    framed.stdin.write("Content-Length: 4\r\n\r\na\r\nb")
+    framed.stdin.write("xyz")
+    framed.stdin.close()
+    let framedOut = framed.stdout.readAll()
+    framed.wait()
+    let wantFramed = "message 0 length 11: hello<LF>world\n"
+        .concat("message 1 length 4: a<CR><LF>b\n")
+    // "xyz" is not a header: `readLine` takes it as a header with no length, and the body
+    // read finds the end. What matters is that the two real messages arrived whole.
+    if (framedOut.startsWith(wantFramed) == false) {
+        return fail("framed messages should arrive whole: ".concat(shown(framedOut)))
+    }
+    if (framedOut.contains("tail 0") == false) {
+        return fail("a read past the end should answer \"\": ".concat(shown(framedOut)))
+    }
+
+    // --- 2. stdin: buffered bytes count as ready ---------------------------
+    let reader = again("stdin")
+    reader.stdin = StreamMode.Pipe
+    reader.stdout = StreamMode.Pipe
+    let watched = reader.spawn()
+    watched.stdin.write("a\nb\n")
+    let seen = drain(watched, 5000)
+    // Wait for the line that says the quiet period passed, then close.
+    let mut quiet = seen
+    let mut tries = 0
+    while (quiet.contains("quiet ") == false and tries < 100) {
+        quiet = quiet.concat(drain(watched, 100))
+        tries = tries + 1
+    }
+    watched.stdin.close()
+    let rest = watched.stdout.readAll()
+    watched.wait()
+    let stdinOut = quiet.concat(rest)
+    let wantStdin = "first a\nbuffered true\nsecond b\nquiet false\nended true\nlast none\n"
+    if (stdinOut.equals(wantStdin) == false) {
+        return fail("stdin readiness: ".concat(shown(stdinOut)))
+    }
+
+    // --- 3. a child that writes late ---------------------------------------
+    let slow = again("slow")
+    slow.stdout = StreamMode.Pipe
+    let slowChild = slow.spawn()
+    if (waitReadable(slowChild.stdout.descriptor, 30)) {
+        return fail("a child that has not written yet should time the wait out")
+    }
+    if (slowChild.tryWait() != none) {
+        return fail("tryWait should say none while the child runs")
+    }
+    let late = drain(slowChild, 10000)
+    if (late.equals("late\n") == false) {
+        return fail("the late output should arrive: ".concat(shown(late)))
+    }
+    let mut status: Int? = none
+    let mut spins = 0
+    while (status == none and spins < 500) {
+        status = slowChild.tryWait()
+        spins = spins + 1
+        if (status == none) { sleep(Duration.fromMillis(10)) }
+    }
+    if (status.unwrapOr(0 - 1) != 4) {
+        return fail("tryWait should find the child's status 4 once it exits")
+    }
+
+    // --- kill, then tryWait reaps ------------------------------------------
+    let silent = again("silent")
+    silent.stdout = StreamMode.Pipe
+    let silentChild = silent.spawn()
+    if (waitReadable(silentChild.stdout.descriptor, 0 - 1, 20) != none) {
+        return fail("a silent child, and a closed descriptor beside it, should time out")
+    }
+    silentChild.kill()
+    let mut killed: Int? = none
+    spins = 0
+    while (killed == none and spins < 500) {
+        killed = silentChild.tryWait()
+        spins = spins + 1
+        if (killed == none) { sleep(Duration.fromMillis(10)) }
+    }
+    if (killed == none or killed.unwrapOr(0) == 0) {
+        return fail("a killed child should be reaped with a failure status")
+    }
+
+    println("PASS: length-prefixed reads, stdin readiness, polling, readSome and tryWait")
+    return 0
+}

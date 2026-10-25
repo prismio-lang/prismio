@@ -1,0 +1,150 @@
+// std.json: the document tape, the strictness of the parser, and the writer.
+//
+// 1. Reading: nested members and elements, dotted paths, every kind, number forms, escapes
+//    including a `\u` surrogate pair that decodes to one four-byte character, and the raw text
+//    of a value (a JSON-RPC id must come back as the same number or the same string).
+// 2. Refusing: each way a document can be malformed is refused with the offset of the
+//    first thing wrong, and a document that does not parse has no root.
+// 3. Writing: commas and colons are the writer's, escapes are complete, and what the writer
+//    produces the parser reads back to the same values.
+
+import std.io
+import std.json
+import std.option
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn refused(text: String, wantAt: Int, label: String) -> Int {
+    let doc = parseJson(text)
+    if (doc.ok) { return fail("accepted ".concat(label)) }
+    if (doc.root != 0 - 1) { return fail("a refused document has a root: ".concat(label)) }
+    if (doc.errorAt != wantAt) {
+        return fail(label.concat(": error at ", doc.errorAt.toString(), ", wanted ", wantAt.toString(),
+                                 " (", doc.error, ")"))
+    }
+    return 0
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // --- reading -----------------------------------------------------------
+    let source = "  {\"method\": \"textDocument/didOpen\", \"id\": 7, \"params\": {\"textDocument\": "
+        .concat("{\"uri\": \"file:///a/b.psm\", \"version\": -3, \"text\": \"let x = \\\"q\\\"\\nlet y = 1\\u00e9\"},",
+                " \"flags\": [true, false, null, 1.5e2, \"s\"]}, \"empty\": {}, \"none\": []} ")
+    let doc = parseJson(source)
+    if (doc.ok == false) { return fail("did not parse: ".concat(doc.error)) }
+    let root = doc.root
+    if (doc.isObject(root) == false) { bad = bad + fail("root should be an object") }
+    if (doc.text(doc.member(root, "method").unwrapOr(0 - 1)) != "textDocument/didOpen") {
+        bad = bad + fail("member method")
+    }
+    if (doc.int(doc.member(root, "id").unwrapOr(0 - 1)) != 7) { bad = bad + fail("member id") }
+    if (doc.member(root, "missing") != none) { bad = bad + fail("an absent member should be none") }
+    let uri = doc.path(root, "params.textDocument.uri")
+    if (doc.text(uri.unwrapOr(0 - 1)) != "file:///a/b.psm") { bad = bad + fail("dotted path") }
+    if (doc.path(root, "params.nothing.uri") != none) { bad = bad + fail("a path through a missing step") }
+    if (doc.int(doc.path(root, "params.textDocument.version").unwrapOr(0 - 1)) != 0 - 3) {
+        bad = bad + fail("a negative number")
+    }
+    let text = doc.text(doc.path(root, "params.textDocument.text").unwrapOr(0 - 1))
+    if (text != "let x = \"q\"\nlet y = 1\u{e9}") { bad = bad + fail("escapes decoded: ".concat(text)) }
+
+    let flags = doc.path(root, "params.flags").unwrapOr(0 - 1)
+    if (doc.length(flags) != 5) { bad = bad + fail("array length") }
+    if (doc.bool(doc.element(flags, 0).unwrapOr(0 - 1)) != true) { bad = bad + fail("true") }
+    if (doc.bool(doc.element(flags, 1).unwrapOr(0 - 1)) != false) { bad = bad + fail("false") }
+    if (doc.isNull(doc.element(flags, 2).unwrapOr(0 - 1)) == false) { bad = bad + fail("null") }
+    if (doc.float(doc.element(flags, 3).unwrapOr(0 - 1)) != 150.0) { bad = bad + fail("an exponent") }
+    if (doc.text(doc.element(flags, 4).unwrapOr(0 - 1)) != "s") { bad = bad + fail("element string") }
+    if (doc.element(flags, 5) != none) { bad = bad + fail("an element past the end") }
+    if (doc.length(doc.member(root, "empty").unwrapOr(0 - 1)) != 0) { bad = bad + fail("empty object") }
+    if (doc.length(doc.member(root, "none").unwrapOr(0 - 1)) != 0) { bad = bad + fail("empty array") }
+    let keys = doc.keys(root)
+    if (keys.length != 5 or keys[0] != "method" or keys[4] != "none") { bad = bad + fail("keys in order") }
+    if (doc.children(flags).length != 5) { bad = bad + fail("children") }
+    if (doc.raw(doc.member(root, "id").unwrapOr(0 - 1)) != "7") { bad = bad + fail("raw number") }
+
+    let ids = parseJson("[\"abc\", 12, 3.50]")
+    if (doc.ok == false) { bad = bad + fail("ids") }
+    if (ids.raw(ids.element(ids.root, 0).unwrapOr(0 - 1)) != "\"abc\"") { bad = bad + fail("raw string keeps its quotes") }
+    if (ids.raw(ids.element(ids.root, 2).unwrapOr(0 - 1)) != "3.50") { bad = bad + fail("raw number keeps its spelling") }
+
+    let astral = parseJson("\"\\ud83d\\ude00 \\u00e9 \\/ \\b\\f\"")
+    if (astral.ok == false) { return fail("escapes document: ".concat(astral.error)) }
+    let decoded = astral.text(astral.root)
+    if (decoded.length != 4 + 1 + 2 + 1 + 1 + 1 + 1 + 1) { bad = bad + fail("surrogate pair is four bytes: ".concat(decoded.length.toString())) }
+    if (decoded.startsWith("\u{1F600}") == false) { bad = bad + fail("surrogate pair decodes") }
+
+    let lone = parseJson("\"\\ud800x\"")
+    if (lone.ok == false or lone.text(lone.root) != "\u{FFFD}x") { bad = bad + fail("a lone surrogate becomes U+FFFD") }
+
+    // --- refusing -----------------------------------------------------------
+    bad = bad + refused("", 0, "an empty document")
+    bad = bad + refused("   ", 3, "only whitespace")
+    bad = bad + refused("{\"a\": 1,}", 8, "a trailing comma in an object")
+    bad = bad + refused("[1, 2,]", 6, "a trailing comma in an array")
+    bad = bad + refused("[1 2]", 3, "a missing comma")
+    bad = bad + refused("{\"a\" 1}", 5, "a missing colon")
+    bad = bad + refused("{a: 1}", 1, "an unquoted key")
+    bad = bad + refused("\"abc", 4, "an unterminated string")
+    bad = bad + refused("\"a\nb\"", 2, "a raw newline in a string")
+    bad = bad + refused("01", 1, "a leading zero")
+    bad = bad + refused("-", 1, "a bare minus")
+    bad = bad + refused("1.", 2, "a decimal point with no digit")
+    bad = bad + refused("1e", 2, "an exponent with no digit")
+    bad = bad + refused("tru", 0, "a truncated literal")
+    bad = bad + refused("{} {}", 3, "text after the value")
+    bad = bad + refused("[", 1, "an unclosed array")
+    bad = bad + refused("{\"a\":", 5, "an object cut after the colon")
+    let deep = "".concat("[".repeat(300), "]".repeat(300))
+    if (parseJson(deep).ok) { bad = bad + fail("300 levels of nesting should be refused") }
+    let fine = "".concat("[".repeat(200), "]".repeat(200))
+    if (parseJson(fine).ok == false) { bad = bad + fail("200 levels of nesting should be accepted") }
+
+    // --- writing ------------------------------------------------------------
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("jsonrpc")
+    out.string("2.0")
+    out.key("id")
+    out.raw("\"x-1\"")
+    out.key("result")
+    out.beginObject()
+    out.key("list")
+    out.beginArray()
+    out.int(1)
+    out.string("two")
+    out.bool(true)
+    out.null()
+    out.beginArray()
+    out.endArray()
+    out.beginObject()
+    out.endObject()
+    out.endArray()
+    out.key("text")
+    out.string("a\"b\\c\n\t\u{1}\u{e9}")
+    out.endObject()
+    out.endObject()
+    let written = out.finish()
+    let want = "{\"jsonrpc\":\"2.0\",\"id\":\"x-1\",\"result\":{\"list\":[1,\"two\",true,null,[],{}],"
+        .concat("\"text\":\"a\\\"b\\\\c\\n\\t\\u0001\u{e9}\"}}")
+    if (written != want) { bad = bad + fail("writer output: ".concat(written)) }
+
+    let back = parseJson(written)
+    if (back.ok == false) { return fail("the writer's output did not parse: ".concat(back.error)) }
+    if (back.text(back.path(back.root, "result.text").unwrapOr(0 - 1)) != "a\"b\\c\n\t\u{1}\u{e9}") {
+        bad = bad + fail("the text did not survive a round trip")
+    }
+    if (back.raw(back.member(back.root, "id").unwrapOr(0 - 1)) != "\"x-1\"") { bad = bad + fail("id round trip") }
+
+    if (bad > 0) { return 1 }
+    println("PASS: std.json reads, refuses and writes")
+    return 0
+}

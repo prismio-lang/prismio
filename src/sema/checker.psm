@@ -3412,7 +3412,13 @@ private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeIn
     // `p = 5` on a `Ptr<mut Int>` replaces the pointer; a literal adopts the pointee's type.
     if (typeIsTypedPtr(targetT) and semaIsIntLiteral(value)
         and semaPtrAssignedItsPointee(value, targetT, typePtrPointee(targetT))) { return }
-    if (semaIsIntLiteral(value) or semaIsFloatLiteral(value) or value.kind == NodeKind.DEFAULT_EXPR) {
+    //
+    // Also any value stored into a scalar optional (`found = i` into an `Int?`): that path is
+    // what wraps a present value, as `let` and `return` already do. Without it the check
+    // passed and the store wrote the bare value where a `{ present, value }` pair belongs,
+    // so `found` read back as 0 (or as `none`) in a loop that had set it.
+    if (semaIsIntLiteral(value) or semaIsFloatLiteral(value) or value.kind == NodeKind.DEFAULT_EXPR
+        or typeIsValueOptional(targetT)) {
         semaCheckValue(module, value, targetT, "assignment")
     } else {
         let valueT = semaValueTypeAgainst(module, value, targetT)

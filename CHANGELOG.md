@@ -9,6 +9,22 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **A program can serve a client and supervise a child on one thread.** `std.poll.waitReadable` waits on one, two or
+  many descriptors with a timeout and answers which has something to read (`poll_clear` / `poll_add` / `poll_wait` in
+  `runtime/program_support.c`; `poll(2)` on POSIX, a 1 ms `PeekNamedPipe` loop for pipes on Windows). Descriptor 0 counts
+  bytes the line reader has already taken from the pipe as ready, which the kernel alone would not say. With it:
+  `Stream.readSome(max)` reads what a child has written without waiting for it to finish, `Child.tryWait()` answers
+  the exit status or `none` without blocking (`proc_try_wait`, `PRISMIO_STILL_RUNNING` = -2), and `std.input` gains
+  `readBytes(count)` (exactly `count` bytes through the same buffer as `readLine`, for length-prefixed protocols) and
+  `waitForInput(ms)`. `tests/test_353_poll_and_framing.psm`; it passed 25 of 25 runs idle and 15 of 15 under CPU load.
+  The Windows halves are not built or run here.
+
+- **`std.json`.** `parseJson(text)` reads a document into a tape of parallel columns (a value is an `Int`, its place on
+  the tape), strictly per RFC 8259, with the offset of the first error and a nesting limit of 256; `member`, `element`,
+  `path("a.b.c")`, `text`, `int`, `float`, `bool`, `raw` (a value as written, so a JSON-RPC id comes back unchanged),
+  `keys`, `children`. `JsonWriter` builds a document and does the commas and colons; `jsonQuote` escapes one string.
+  `tests/test_354_json.psm`.
+
 - **`std.mem.stringFromCString(pointer)` and `std.term.isTerminal(fd)`.** The first copies the NUL-terminated text a C
   function left at a `Ptr` into a `String` the caller owns (over the new `__builtin_cstring`, which `std/` alone may
   call); the second is `isatty` and nothing more, where `colorEnabled()` also reads `NO_COLOR` and `FORCE_COLOR`
@@ -997,6 +1013,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   of their functions' IR changed, which is code layout.
 
 ### Fixed
+
+- **Assigning a variable to an `Int?` stored 0.** `found = i` into a scalar optional passed the type check and stored the
+  bare value where a `{ present, value }` pair belongs, so a loop that remembers its last match read back as 0 or as
+  `none`; only a literal (`found = 5`) was wrapped. `semaAssignment` now sends every value stored into a scalar
+  optional through `semaCheckValue`, the path `let` and `return` already used. Found by `std.json`'s `member`. IR for the
+  351 existing test programs differs only by the new extern declarations in `std.process` / `std.input`.
+  `tests/test_355_optional_assignment.psm`.
 
 - **An unresolved operand is reported once.** `foo(1) + bar(2)` said `unknown function` twice and then `operator `+`
   requires numeric operands`, blaming the arithmetic for a name that did not resolve. An operand whose type is already

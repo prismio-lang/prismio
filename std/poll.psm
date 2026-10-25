@@ -1,0 +1,70 @@
+// Waiting on several descriptors at once, with a timeout.
+//
+//     import std.poll
+//
+//     let ready = waitReadable(0, child.stdout.descriptor, 250)
+//     if (ready == 0) { ... }          // standard input has something
+//     if (ready == 1) { ... }          // so has the child's output
+//     if (ready == none) { ... }       // a quarter of a second passed with neither
+//
+// One descriptor answers a `Bool`, two answer which one, and a `Vec<Int>` of more does
+// the same. (A fixed-length array does not convert to a `Vec` at a call, which is why
+// the common two are spelled out.)
+//
+// **This is what lets one thread do the work of several.** A program that serves a
+// client and supervises a child cannot read either one first: whichever it picks may
+// never speak. Waiting on both, then reading whichever answered with a call that
+// returns at once (`readLine`, `Stream.readSome`), needs no tasks, no channels and no
+// locks, and a timeout doubles as a timer.
+//
+// Descriptor 0 is this process's standard input *with its buffer*: bytes already
+// read from the pipe into it count as ready, which the kernel alone would not say.
+// Any other descriptor is the operating system's answer. A negative one (a stream
+// that was closed or never opened) is never ready, so it may stay in the list.
+//
+// "Ready" is "a read will not wait": there is data, or the other end has closed and
+// the read reports it. It does not say how much, and a message may arrive in pieces.
+//
+// On Windows a pipe is polled about once a millisecond, because a pipe handle cannot
+// be waited on; a console or a file is always ready. Nothing here covers sockets.
+
+import std.option
+import std.vec
+
+// The list is pushed one descriptor at a time and waited on in a call, the shape
+// `proc_spawn_arg` has: a `Vec` does not cross into the runtime. The set is
+// process-global, so this is not safe from two tasks at once.
+private extern fn poll_clear()
+private extern fn poll_add(descriptor: Int) -> Int
+private extern fn poll_wait(milliseconds: Int) -> Int
+
+// The position in `descriptors` of the first one with something to read, or `none`
+// when `milliseconds` pass without any. At most 64 descriptors; any past that are
+// not watched.
+public fn waitReadable(descriptors: Vec<Int>, milliseconds: Int) -> Int? {
+    poll_clear()
+    for descriptor in descriptors {
+        poll_add(descriptor)
+    }
+    let at = poll_wait(milliseconds)
+    if (at < 0) { return none }
+    return at
+}
+
+// Whether `descriptor` has something to read within `milliseconds`.
+public fn waitReadable(descriptor: Int, milliseconds: Int) -> Bool {
+    poll_clear()
+    poll_add(descriptor)
+    return poll_wait(milliseconds) == 0
+}
+
+// Which of two has something to read first: 0, 1, or `none` on timeout. Where both are
+// ready, the first listed.
+public fn waitReadable(first: Int, second: Int, milliseconds: Int) -> Int? {
+    poll_clear()
+    poll_add(first)
+    poll_add(second)
+    let at = poll_wait(milliseconds)
+    if (at < 0) { return none }
+    return at
+}
