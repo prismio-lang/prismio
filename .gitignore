@@ -115,3 +115,4 @@ tests/*/*
 # measured build is compared against.
 tests/workload_static_control.psm
 scratch/
+docs/porting/decode_example
