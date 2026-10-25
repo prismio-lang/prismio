@@ -39,6 +39,15 @@ private let mut seenColumns: Vec<Int>
 private let mut seenHashes: Vec<U64>
 private let mut seenOpened = false
 
+// `check --partial`: analysis runs over a program the parser could only partly read. What the
+// parser dropped, and what an import that could not be read would have provided, make sema
+// report "unknown ..." for names that are not wrong, so those are held back (see
+// `diag_hides`). A zero-filled global `Vec` is not an empty one, hence `droppedOpened`.
+private let mut partialMode = false
+private let mut droppedNames: Vec<String>
+private let mut droppedOpened = false
+private let mut droppedEverything = false
+
 // Same reason as the registry's: a zero-filled global `Vec` is not an empty one.
 private fn seenOpen() {
     if (seenOpened) { return }
@@ -279,6 +288,10 @@ private fn alreadyReported(code: String, file: Int, line: Int, column: Int, mess
 public fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String) {
     finished = false
     dropNotes = false
+    if (partialMode and code.equals("P4001") and diag_hides(message)) {
+        dropNotes = true
+        return
+    }
     if (file >= 0 and alreadyReported(code, file, line, col, message)) {
         dropNotes = true
         return
@@ -344,6 +357,43 @@ public fn diag_note(message: String) {
     eprint("  ".concat(sgr(2, SGR_CYAN), "note", sgr(2, SGR_RESET), ": ", message, "\n"))
 }
 
+public fn diag_set_partial(on: Bool) {
+    partialMode = on
+}
+
+public fn diag_partial() -> Bool {
+    return partialMode
+}
+
+// The parser gave up on text that mentions `name`; a later "unknown ... `name`" may be that
+// text's fault, not the program's.
+public fn diag_note_dropped(name: String) {
+    if (partialMode == false) { return }
+    if (droppedOpened == false) {
+        droppedNames = []
+        droppedOpened = true
+    }
+    if (droppedNames.length < 4096) { droppedNames.push(name.clone()) }
+}
+
+// An import could not be read, so any name may have come from it.
+public fn diag_note_dropped_everything() {
+    droppedEverything = true
+}
+
+// Whether `message` is an "unknown ..." about a name whose declaration may have been lost. Only
+// meaningful in partial mode, and only ever hides: a wrong answer here costs a missing
+// diagnostic until the text parses, never a wrong one.
+fn diag_hides(message: String) -> Bool {
+    if (message.startsWith("unknown ") == false) { return false }
+    if (droppedEverything) { return true }
+    if (droppedOpened == false) { return false }
+    for name in droppedNames {
+        if (message.contains("`".concat(name, "`"))) { return true }
+    }
+    return false
+}
+
 public fn diag_error_count() -> Int {
     return errorCount
 }
@@ -385,4 +435,7 @@ public fn diag_reset() {
     dropNotes = false
     warningCount = 0
     finished = false
+    partialMode = false
+    droppedOpened = false
+    droppedEverything = false
 }

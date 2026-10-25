@@ -429,6 +429,18 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   deleted bytes, stray brackets and quotes; standalone and through `--overlay`) and fails on a crash, a hang, a missing
   summary line or a silent non-zero exit: 9,468 variants, none. This is Phase 0 of `docs/LSP_PLAN.md`.
 
+- **`prismio check --partial` type checks what parsed.** Without the flag a syntax error still ends the analysis. With it,
+  the declarations that parsed are checked, so a type error in one function is reported beside the syntax error in
+  another. An `unknown ...` error that only exists because the parser dropped text that mentions the name is held back,
+  and so is every one once an import could not be read (`diag_hides` in `common/diagnostics.psm`); nothing else is
+  suppressed. `IDE_PROTOCOL.md` has the contract. `tools/check_truncation.py --partial` fuzzes it and counts the variants
+  that type-checked past a syntax error (1,900 of 15,780, none failed); `check_partial` in `tests/test_runner.py`.
+
+- **A program may read 4,096 source files, up from 256, and says so past that.** The registry returned -1 beyond its
+  limit and the import resolver parsed the module anyway, with every token carrying file -1 and every diagnostic
+  losing its location. Now `P1098` names the first module that was not read. The compiler's own program reads about
+  140 files. `source_file_limit` in `tests/test_runner.py`.
+
 - **`runtime/aif_support.c` and `runtime/aif_containers.c` are Prismio** (9,248 lines of C gone). The AIF engine is the
   `src/aifcore` package, 18 modules of about 8,100 lines: `bits` (the bitset arena), `structure`, `nominals`, `keys`,
   `sites`, `constraints`, `solver`, `tiers`, `arenas`, `call_graph`, `brackets`, `extents`, `dispositions`,
@@ -985,6 +997,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   of their functions' IR changed, which is code layout.
 
 ### Fixed
+
+- **An unresolved operand is reported once.** `foo(1) + bar(2)` said `unknown function` twice and then `operator `+`
+  requires numeric operands`, blaming the arithmetic for a name that did not resolve. An operand whose type is already
+  invalid no longer adds the operator error (`semaBinaryExpr`).
 
 - **A struct stored into a module-level `let` was placed on the storing function's frame.**
   The escape analysis read a global as a name it had never seen declared, and a store through it

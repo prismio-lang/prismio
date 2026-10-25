@@ -76,6 +76,13 @@ impl Parser {
         return bad
     }
 
+    // The text skipped over is gone from the program, so a name in it may be one the
+    // rest of the program uses. `check --partial` holds back "unknown ..." errors about
+    // these (diagnostics.psm, diag_hides).
+    private fn noteDropped(self, tok: Token) {
+        if (tok.type == TokenType.IDENTIFIER) { diag_note_dropped(tok.value) }
+    }
+
     // Whether the token the parser is on begins a top-level declaration. It asks
     // the grammar's own predicates, so a new declaration form is recognised here
     // the moment `parseDeclaration` learns it.
@@ -119,6 +126,7 @@ impl Parser {
         self.hoistTail = ptr_null()
 
         let start = ptr_to_token(declarationStart)
+        self.noteDropped(start)
         let mut at = start.tokNext
         let mut depth = 0
         let mut previousLine = start.line
@@ -143,6 +151,7 @@ impl Parser {
                 if (t.value.equals("}") and depth > 0) { depth = depth - 1 }
             }
             previousLine = t.line
+            self.noteDropped(t)
             at = t.tokNext
         }
         self.current = at

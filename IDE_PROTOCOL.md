@@ -3,7 +3,7 @@
 The compiler exposes a file-based analysis boundary for editors and build tools:
 
 ```text
-prismio check <source.psm> [--diagnostic-format=json]
+prismio check <source.psm> [--diagnostic-format=json] [--partial]
                            [--overlay <file.psm> <text-file>] [--module <name>]
 ```
 
@@ -93,6 +93,32 @@ tries, in order: the file itself when it declares `main`; `--module std.<leaf>`
 for a module of a standard library; each `entry` in the nearest `build.ums`; a
 program in the file's directory or an ancestor that imports it by the module
 name it has from there; and the file alone.
+
+## Checking a file that does not parse
+
+A file open in an editor is syntactically broken most of the time it is being edited. Every
+lexical, syntax and import error in the program is reported in one run: the parser gives up on
+the one declaration it cannot read and resumes at the next that begins a line, a stray character
+or bad escape does not end the scan, and an import that cannot be read is skipped.
+
+By default type checking then does not run, as before: a program with a declaration missing
+produces cascades, not information. `--partial` runs it anyway, over the declarations that did
+parse:
+
+```text
+prismio check src/main.psm --diagnostic-format=json --partial
+```
+
+- A type error in a function that parsed is reported beside the syntax error in another.
+- An `unknown ...` error (`P4001`) is held back when it names an identifier that appeared in
+  text the parser dropped, and **all** of them are held back once an import could not be read
+  (any name may have come from it). Held back, never wrong: a real typo is shown again as soon
+  as the text parses or the import resolves. These are the only diagnostics `--partial`
+  suppresses.
+- The exit status and the summary line mean what they always did.
+
+Without the flag the output is exactly what it was. `build` never type checks a program that
+failed to parse.
 
 ## Current boundary
 

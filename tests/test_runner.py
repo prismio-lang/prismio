@@ -2146,6 +2146,145 @@ def run_check_overlay_test():
     return True
 
 
+def run_check_partial_test():
+    """`check --partial`: type checking over a program the parser could only partly read.
+
+    Without it a syntax error ends the analysis, so an editor shows nothing about the rest of
+    the file while one declaration is half typed. With it, the declarations that parsed are
+    checked, and an "unknown ..." error that only exists because text was dropped is held back
+    -- the cascade, not the finding. The default must not change: a plain `check` still stops
+    at the syntax error, and so does `build`.
+    """
+    print(f"\n{BLUE}--- Running check_partial ---{RESET}")
+    problems = []
+
+    def check(path, *flags):
+        result = run_command([str(PRISMIO_EXE), "check", str(path), "--diagnostic-format=json", *flags])
+        records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
+        errors = [r["message"] for r in records if r.get("kind") == "diagnostic" and r.get("severity") == "error"]
+        return result.returncode, errors
+
+    def mentions(errors, text):
+        return any(text in message for message in errors)
+
+    with tempfile.TemporaryDirectory(prefix="prismio-partial-") as tmp:
+        root = Path(tmp).resolve()
+
+        # `helper` does not parse and is dropped; `typo` has a real type error; `uses` calls both
+        # the dropped function (a cascade) and one that never existed (a finding).
+        broken = root / "broken.psm"
+        broken.write_text(
+            "import std.io\n\n"
+            "fn helper(x: Int) -> Int {\n    return x +\n}\n\n"
+            "fn typo() -> Int {\n    let n: Int = \"text\"\n    return n\n}\n\n"
+            "fn uses() -> Int {\n    return helper(1) + missing(2)\n}\n\n"
+            "fn main() -> Int {\n    println(uses())\n    return typo()\n}\n")
+
+        code, errors = check(broken)
+        if code == 0 or len(errors) != 1 or not mentions(errors, "expected an expression"):
+            problems.append(f"plain check should stop at the one syntax error: {errors}")
+
+        code, errors = check(broken, "--partial")
+        if code == 0:
+            problems.append("--partial accepted a program with errors")
+        if not mentions(errors, "expected an expression"):
+            problems.append(f"--partial lost the syntax error: {errors}")
+        if not mentions(errors, "expected Int, found String"):
+            problems.append(f"--partial did not type-check the declarations that parsed: {errors}")
+        if not mentions(errors, "unknown function `missing`"):
+            problems.append(f"--partial hid a real unknown name: {errors}")
+        if mentions(errors, "unknown function `helper`"):
+            problems.append(f"--partial reported the dropped declaration as unknown: {errors}")
+        if mentions(errors, "requires numeric operands"):
+            problems.append(f"--partial blamed the operator for an operand that already failed: {errors}")
+
+        # An import that cannot be read: any name may have come from it, so no "unknown" is
+        # trustworthy -- but a type error is still one.
+        lost = root / "lost.psm"
+        lost.write_text(
+            "import std.io\nimport no_such_module\n\n"
+            "fn main() -> Int {\n    let n: Int = \"text\"\n    println(from_the_missing_module(n))\n    return 0\n}\n")
+        code, errors = check(lost, "--partial")
+        if not mentions(errors, "cannot read imported module"):
+            problems.append(f"--partial lost the import error: {errors}")
+        if not mentions(errors, "expected Int, found String"):
+            problems.append(f"--partial did not type-check past an unreadable import: {errors}")
+        if mentions(errors, "unknown function"):
+            problems.append(f"--partial blamed the program for a name the lost import may provide: {errors}")
+
+        # Nothing wrong means nothing said, with or without the flag.
+        fine = root / "fine.psm"
+        fine.write_text("import std.io\n\nfn main() -> Int {\n    println(1)\n    return 0\n}\n")
+        for flags in ((), ("--partial",)):
+            code, errors = check(fine, *flags)
+            if code != 0 or errors:
+                problems.append(f"a valid program was rejected with {flags}: {errors}")
+
+        # An unknown name inside arithmetic is one error, not two.
+        sums = root / "sums.psm"
+        sums.write_text("fn main() -> Int {\n    return foo(1) + bar(2)\n}\n")
+        code, errors = check(sums)
+        if len(errors) != 2 or mentions(errors, "requires numeric operands"):
+            problems.append(f"an unresolved operand should be reported once, not again as an operator error: {errors}")
+
+    if problems:
+        print(f"{RED}[FAIL] check --partial{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] --partial type-checks what parsed and holds back errors the dropped text caused{RESET}")
+    return True
+
+
+def run_source_file_limit_test():
+    """A program may read thousands of source files, and past the limit says so.
+
+    The registry of files read was 256 long and returned -1 beyond it, which the import
+    resolver ignored: the module was parsed with every token carrying file -1, and its
+    diagnostics lost their location. The compiler's own program uses about 140, so a workspace
+    that checks several programs at once, or a monorepo, reaches 256 first. 300 modules is
+    past the old limit and must check clean; past the new one the first unread module is named.
+    """
+    print(f"\n{BLUE}--- Running source_file_limit ---{RESET}")
+    problems = []
+
+    def program(directory, count):
+        for i in range(count):
+            (directory / f"m{i}.psm").write_text(f"public fn f{i}() -> Int {{ return {i} }}\n")
+        imports = "".join(f"import m{i}\n" for i in range(count))
+        main = directory / "main.psm"
+        main.write_text(imports + "\nfn main() -> Int {\n    return f0() + f%d()\n}\n" % (count - 1))
+        return main
+
+    def check(path):
+        result = run_command([str(PRISMIO_EXE), "check", str(path), "--diagnostic-format=json"])
+        records = [json.loads(line) for line in result.stderr.splitlines() if line.startswith("{")]
+        return result.returncode, [r for r in records if r.get("kind") == "diagnostic" and r.get("severity") == "error"]
+
+    with tempfile.TemporaryDirectory(prefix="prismio-files-") as tmp:
+        under = Path(tmp) / "under"
+        under.mkdir()
+        code, errors = check(program(under, 300))
+        if code != 0 or errors:
+            problems.append(f"300 modules (past the old limit of 256) should check clean: {errors[:2]}")
+
+        over = Path(tmp) / "over"
+        over.mkdir()
+        code, errors = check(program(over, 4200))
+        if not any(e.get("code") == "P1098" and "was not read" in e.get("message", "") for e in errors):
+            problems.append(f"4200 modules should report P1098 for the first one past the limit: {errors[:2]}")
+        if any(e.get("file") is None and e.get("code") != "P0001" for e in errors):
+            problems.append("an error lost its location")
+
+    if problems:
+        print(f"{RED}[FAIL] source file limit{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] 300 modules check clean; the limit, when reached, names the module it stopped at{RESET}")
+    return True
+
+
 def run_check_command_test():
     """The analysis-only IDE boundary and its versioned JSON Lines output."""
     print(f"\n{BLUE}--- Running cli_check_protocol ---{RESET}")
@@ -10709,6 +10848,8 @@ def main():
         ("freestanding_bench", run_freestanding_bench_test),
         ("ownership_probes", run_ownership_probes_test),
         ("check_overlay", run_check_overlay_test),
+        ("check_partial", run_check_partial_test),
+        ("source_file_limit", run_source_file_limit_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

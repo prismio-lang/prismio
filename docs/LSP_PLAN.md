@@ -183,16 +183,21 @@ These come first and are independently valuable (`prismio check` itself is bette
    puts the parser in a dead state (parked on end of file); `parseModule` drops that
    declaration and resumes at the next one that begins a line. The lexer skips what it cannot
    read and keeps the token stream well formed; an unreadable import is skipped. Sema still
-   does not run once an error exists, which is what keeps a malformed AST away from it. Left
+   does not run once an error exists (unless asked to, item 2), which is what keeps a malformed AST away from it by default. Left
    on purpose: the 25-error limit, a `P3299` stop for a parser that fails to stop (a missing
    `break`), an internal nesting overflow, and `build`'s stale-runtime check. The fuzz gate
    is `tools/check_truncation.py`; directed tests are `tests/neg_353`-`neg_355`. What it
    does *not* give yet: recovery inside a declaration (a broken method drops its whole
    `impl`), and a partial index, which needs item 2.
-2. **Error-tolerant sema**: after an error, keep `typeInfo` for unaffected nodes, so hover and
-   completion work in the rest of a broken file.
-3. **File registry not capped at 256** (`DIAG_MAX_FILES`), or at least a clear diagnostic.
-   The compiler's own program uses 136 of them today, so a monorepo workspace hits it first.
+2. **Type checking over a broken program. Done 2026-10-25** as `check --partial`
+   (IDE_PROTOCOL.md). Sema already reports every error rather than stopping, so it keeps a
+   `typeInfo` on every node it could type; what stopped it was the driver, which gave up after
+   any parse error. With the flag it runs over the declarations that parsed, and holds back
+   only the `unknown ...` errors the dropped text could have caused. Found on the way and
+   fixed: an unresolved operand also produced "operator requires numeric operands". Not done:
+   the semantic index itself (`--emit-index`, Phase 2), which is what makes use of this.
+3. **File registry not capped at 256. Done 2026-10-25**: 4,096, and `P1098` names the module
+   it stopped at (a module past the old cap was parsed with file -1 and lost its locations).
 4. **Token tables exported**: `prismio dump-tokens` (or generated into the plugin build),
    from `src/lexer/token.psm`, `src/ast/types.psm`, `src/parse/decl.psm`.
 5. **`prismio fmt`**: move the formatter rules out of Java. The plugin's own findings (187 of
@@ -203,7 +208,7 @@ These come first and are independently valuable (`prismio check` itself is bette
 
 Each phase ends with something a user can see and a gate that can fail.
 
-**Phase 0: frontend that survives.** Item 1 is done; items 2 and 3 remain. Gate: damaged
+**Phase 0: frontend that survives. Done 2026-10-25** (items 1-3; 4 and 5 below are Phase 1-2 inputs). Gate: damaged
 copies of every `.psm` in the repo (cut, bytes deleted, stray brackets) make `check` end with
 a summary line and never crash or hang (`tools/check_truncation.py`; 9,468 variants, none
 failed, and with the loop exits removed it fails 90 of 5,884, so the net does catch

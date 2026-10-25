@@ -21,7 +21,7 @@ import std.raw
 import std.string
 import std.vec
 
-let DIAG_MAX_FILES = 256
+public let DIAG_MAX_FILES = 4096
 
 private let mut filePaths: Vec<String>
 private let mut fileContents: Vec<String>

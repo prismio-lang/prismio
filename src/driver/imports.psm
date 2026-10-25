@@ -311,6 +311,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
                 "compiled standard-library module ".concat(diagQuote(moduleName),
                     " is missing, incompatible, or corrupted: ", compiler_plib_error()))
             diag_note("reinstall Prismio and try again")
+            diag_note_dropped_everything()
             return seen
         }
     } else {
@@ -321,6 +322,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
             "cannot read imported module ".concat(diagQuote(moduleName),
                                                   ": no such file ",
                                                   importPath))
+        diag_note_dropped_everything()
         return seen
     }
 
@@ -328,6 +330,13 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // resolves back to its text, long after the merge has erased which module a
     // declaration came from.
     let file = diag_add_file(importPath, content)
+    if (file < 0) {
+        diag_error_at_code("P1098", site.file, site.line, site.col, site.len,
+            "this program reads more than ".concat(DIAG_MAX_FILES.toString(),
+                " source files; ", diagQuote(moduleName), " was not read"))
+        diag_note_dropped_everything()
+        return seen
+    }
     // ...and the name it was reached by, which the id alone cannot recover: the
     // installed layout stores `std/string.psm` as `stdlib/string.plib`, so a
     // qualifier derived from the path would differ between a checkout and an
@@ -353,6 +362,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     if (modules.length == 0) {
         diag_error_at_code("P1002", site.file, site.line, site.col, site.len,
             "package ".concat(diagQuote(site.s1), " contains no modules: ", dirPath))
+        diag_note_dropped_everything()
         return visited
     }
 
@@ -467,6 +477,7 @@ private fn refuseHostedImport(stmt: ASTNode) -> Bool {
     diag_error_at_code("P1094", stmt.file, stmt.line, stmt.col, stmt.len,
         diagQuote(stmt.s1).concat(" cannot be imported by a `--freestanding` program"))
     diag_note("std.io, std.display, std.input, std.fs, std.process, std.time, std.term and std.math need an operating system or a C library")
+    diag_note_dropped_everything()
     return true
 }
 
@@ -486,6 +497,7 @@ private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
         "an import group names modules, and ".concat(diagQuote(stmt.s1), " is a declaration inside ",
                                                      diagQuote(directory)))
     diag_note("select a declaration with its own import: `import ".concat(stmt.s1, "`"))
+    diag_note_dropped_everything()
     return true
 }
 

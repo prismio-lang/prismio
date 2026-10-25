@@ -1451,7 +1451,9 @@ private fn semaBinaryExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     }
 
     if (op.equals("+") or op.equals("-") or op.equals("*") or op.equals("/")) {
-        if (typeIsNumeric(leftT) == false) {
+        // An operand that already failed has said why; a second error about the
+        // operator would blame the arithmetic for a name that did not resolve.
+        if (typeIsNumeric(leftT) == false and typeIsValid(leftT)) {
             semaErrorAt(leftNode, "operator ".concat(diagQuote(op),
                                                      " requires numeric operands"))
         }

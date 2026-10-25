@@ -181,7 +181,11 @@ private fn analyzedModule(path: String) -> ASTNode {
 
     // Parsing recovers, so errors may already be waiting here. Type checking a
     // module with a declaration missing produces cascades, not information.
-    if (diag_error_count() > 0) {
+    //
+    // `check --partial` is the exception: an editor wants what the rest of the program
+    // says while one declaration is half typed, and diag_hides holds back the
+    // "unknown ..." errors the missing text would cause.
+    if (diag_error_count() > 0 and diag_partial() == false) {
         diag_finish()
         return mergedAst
     }
