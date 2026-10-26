@@ -1083,6 +1083,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **The first project build in a fresh `TMPDIR` aborted.** `merge_curated_into_program` released the results of `command_quote_arg`
+  (`rt_base_alloc` blocks) with libc `free`, which aborts on a slab block ("pointer being freed was not allocated", exit -6)
+  whenever the curated-module cache entry had to be built; a warm cache skipped the path, so it passed on every machine that had
+  built anything and failed in the suite's fresh TMPDIR (`ums`: "stage 0 did not build the first project host") and would have in
+  CI. The three `tmp_free` calls are `rt_free`; the `ums` fixture's first build always runs with a fresh `TMPDIR`, which fails on
+  the compiler before the fix and passes after; `slab_free_shim` reports nothing over cold builds of both targets.
+
 - **The language server leaked 66 KiB a request, and the ledger could not see it.** A `for line in readLines(path)` left by
   `return` or `break` keeps its descriptor and 64 KiB buffer until exit (`std.fs` says so: call `close`); every index lookup in
   `lsp/index.psm` returned from inside one. And `completionItems` cut the document with `substring`, which made every request

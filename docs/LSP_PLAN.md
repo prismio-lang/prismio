@@ -34,6 +34,27 @@ the server by about 450 KiB (limit 6,000). Two defects were found by bisecting i
 document in `completionItems` made every request path that held the document leak a copy; `slice` is the same
 cut. A manifest is never loaded on a request path (its lexer leaks about 20 KB a call): see KNOWN_ISSUES.
 
+## Not verified, and how to continue (2026-10-26)
+
+What a later session must not assume. "Verified" means run for real on this Mac (Apple Silicon, macOS 27) this session.
+
+| Item | State | How to verify or finish it |
+|---|---|---|
+| **Windows** | **Nothing run.** `std.poll`'s `PeekNamedPipe` half, binary stdio, the scratch directory from `TEMP`, and `lsp/uri.psm`'s `pathCanonical` (forward slashes, upper-case drive letter; checked on sample strings on macOS only) are untested. Paths are compared as text, so a Windows path in any other spelling (lower-case beyond the drive, 8.3 names, a different casing of a directory) still will not match. | UTM VM `prismio-win` (memory `prismio-windows-vm-ci-replay`): sync the tree to `C:\work\prismio`, bootstrap, package, run `test_353_poll_and_framing`, `test_354_json` and the `lsp`, `lsp_features`, `lsp_manifest`, `lsp_workspace` fixtures. Expect to tune `lsp_features`' 6,000 KiB limit. Fix what breaks or list it. |
+| **IntelliJ in a real IDE** | The platform LSP client was compiled and unit-tested (231 plugin tests, the server corpus and the diagnostics differential) but **never run in an IDE**. Whether `PrismioLspServerSupportProvider` starts the server, whether the diagnostics and the import quick fix appear, whether turning the setting off leaves a quiet editor: unseen. | `./gradlew runIde` (a sandbox IDE) on a project with a `build.ums`; or open the checkout. Look for the server in the IDE's language-services widget and for the process `prismio-lsp`. |
+| **Remaining plugin packages** | Still Java and still the editor's answer: `documentation/`, `hints/`, `PrismioParameterInfoHandler`, `completion/`, `navigation/`, `symbols/`, `imports/`, the formatter, and the lexer tables. `PrismioLspFeatures.SERVED` holds `diagnostics` and `codeActions` only; the platform's default customizers are **enabled**, so every other feature is explicitly disabled in that class. | One package per commit, in that order: write a differential like `PrismioServerDifferentialTest` (same question to the Java and to the server over a corpus; the server may say more, never less or different) **before** deleting; delete the Java, its registration in `plugin.xml` and its tests; add the feature to `SERVED`. `documentation/` also holds the inline rendering of `/** */` comments (`PrismioInlineDocumentationProvider`, `PrismioDocRenderDefault`), which is an editor feature and stays. Replace the hand-written lexer tables with a test against `prismio dump-tokens` (the `token_tables` fixture already compares `PrismioWords.java`). Then bump the plugin version and README, and verify in the sandbox IDE. |
+| **VS Code** | Built and exercised by 9 end-to-end checks in the installed VS Code 1.143, **not** used by hand; the `.vsix` builds and is not published. No grammar for `build.ums` (language configuration, diagnostics and completion only). Windows untested. | Open `../vscode-prismio/test/fixtures/demo` in the Extension Development Host (F5) and use it for a session; publish after that. |
+| **Other editors** | Neovim, Helix, Zed: not tried. | A client needs only what `IDE_PROTOCOL.md` says; try one and record the config on the docs page. |
+| **Server speed** | 162-177 ms for ordinary programs (150 ms of it the debounce), 1.2 s for the compiler checking itself. No cache built. | Only if a large program becomes ordinary: a parse cache in a long-lived worker, then the body-independent item summary (Phase 5). |
+| **Workspaces** | Only `rootUri` is read; several workspace folders, `workspace/didChangeConfiguration` and per-folder settings are not handled. | Read `workspaceFolders`; the importer search's stop directory is the part that depends on it. |
+| **Manifest loader** | Leaks about 20 KB a call (`KNOWN_ISSUES.md`); the server never loads a manifest on a request path for that reason (child process; cache per file change). | Fixing the ownership of a `Vec` of structs that hold strings removes the workaround's reason, not its benefit. |
+
+### Found and fixed on the way (so they are not rediscovered)
+
+- `for line in readLines(p)` left by `return`/`break` leaks a descriptor and a 64 KiB buffer; `substring` of a large parameter pins it, `slice` does not (developer docs, *The language server*).
+- **`runtime/build_driver.c` freed three `command_quote_arg` results with libc `free`** when the curated-module cache entry was cold: the first project build of a `runtime = none` target in a TMPDIR that had never built one aborted (`pointer being freed was not allocated`, exit -6). It passed everywhere that had built anything, and failed in the suite's fresh TMPDIR (the `ums` fixture). The fixture's first build now always uses a fresh TMPDIR. If a slab/seam fault ever shows again: read the `.ips` crash report (`~/Library/Logs/DiagnosticReports`), symbolicate with `nm` + `otool -tvV`, and run the build under `benchmarks/allocator_proto/slab_free_shim.c`.
+- Test hygiene: a killed server leaves `prismio-lsp-*` directories in `TMPDIR` and the `lsp` fixture then reports them; use a private `TMPDIR`. macOS has no `timeout`; `git checkout` on a dirty file is never the way back.
+
 ## Why now
 
 The IntelliJ plugin (`../intellij-plugin`, ~15.7k lines of Java) re-implements the
