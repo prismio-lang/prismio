@@ -310,7 +310,15 @@ touches (`test_161` keeps its Vec alone in its file for that reason).
 
 ### UMS resolution releases nothing it allocates
 
-**Not re-run** (a `--verify` build of the whole compiler does not link outside the project
+**Re-run 2026-10-26 on the lexer alone**: `umsLex` over the repository's own `build.ums` (8 KB), 60
+times in one program built with `--verify`, ends with 1.2 MB live and nothing released of what the
+tokens held; a micro program (`struct Tok { kind: Int, value: String, offset: Int }`, a lexer struct
+whose `tokens: Vec<Tok>` is pushed through `self` and returned as `lexer.tokens`) leaks one 24-byte
+block per token, 13,140 over 60 calls. A process that loads a manifest once never notices; the language
+server, which lives for hours, therefore never loads one on a request path: `prismio check build.ums`
+runs in a child, and `lsp/projects.psm` reads each manifest once per change of the file.
+
+**Earlier note (2026-10-09, not re-run)** (a `--verify` build of the whole compiler does not link outside the project
 build, so the ledger could not be read on 2026-10-09). Not unsoundness (`violations` was 0 on
 either side when it was measured) but a regression in allocation hygiene. An earlier fix moved
 the ledger by zero; the real shape is about eight lines, and the clause to widen can
