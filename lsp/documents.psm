@@ -23,7 +23,7 @@ public struct Documents {
     public paths: Vec<String>,
     public versions: Vec<Int>,
     // The file holding each document's current text; "" for a document that is not Prismio
-    // source and so is never overlaid.
+    // source or a manifest and so is never read by anyone.
     public files: Vec<String>,
     directory: String,
     created: Int
@@ -69,7 +69,7 @@ impl Documents {
         }
         let path = uriToPath(uri)
         let mut file = "".clone()
-        if (path.endsWith(".psm")) {
+        if (path.endsWith(".psm") or path.endsWith(".ums")) {
             self.created = self.created + 1
             file = joinPath(self.directory, "doc-".concat(self.created.toString(), ".psm"))
             writeFile(file, text)

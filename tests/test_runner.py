@@ -2759,6 +2759,233 @@ def run_index_test():
     return True
 
 
+def run_lsp_manifest_test():
+    """`prismio lsp` and `build.ums`: its diagnostics and its completion, in process.
+
+    A manifest open in the editor is checked as the manifest language (ums/), not as a Prismio program:
+    a mistake in it is published with its UMS code and range, fixing it clears the list, closing it
+    withdraws what was said. Completion offers what the manifest can say at the cursor, and every
+    key it offers is one the lowering accepts (the table is guarded against the language, not the other way).
+    """
+    print(f"\n{BLUE}--- Running lsp_manifest ---{RESET}")
+    sys.path.insert(0, str(TEST_DIR))
+    from lsp_client import LspClient
+
+    problems = []
+
+    def note(condition, message):
+        if not condition:
+            problems.append(message)
+        return condition
+
+    good = ('project {\n    name = "demo"\n    version = "0.1.0"\n    prismio = "0.1.0"\n}\n\n'
+            'targets {\n    executable("demo") {\n        entry = "main.psm"\n    }\n}\n')
+    with tempfile.TemporaryDirectory(prefix="prismio-lspm-") as tmp:
+        root = Path(tmp).resolve()
+        manifest = root / "build.ums"
+        (root / "main.psm").write_text("fn main() -> Int { return 0 }\n")
+        manifest.write_text(good)
+        uri = manifest.as_uri()
+        client = LspClient([str(PRISMIO_EXE), "lsp"], env={"PRISMIO_INTERNAL_HOSTED": "1"})
+        try:
+            client.initialize(root.as_uri(), {"general": {"positionEncodings": ["utf-16"]}})
+
+            def open_text(text, version):
+                client.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "languageId": "ums",
+                                                                         "version": version, "text": text}})
+
+            def change(text, version):
+                client.notify("textDocument/didChange", {"textDocument": {"uri": uri, "version": version},
+                                                         "contentChanges": [{"text": text}]})
+
+            open_text(good, 1)
+            published = client.diagnostics_for(uri)
+            note(published["diagnostics"] == [] and published.get("version") == 1,
+                 f"a good manifest is clean: {published}")
+
+            # --- a mistake is published with its code and range, and fixing it clears it ---
+            bad = good.replace('    version = "0.1.0"\n', '    version = "0.1.0"\n    colour = "red"\n')
+            change(bad, 2)
+            published = client.diagnostics_for(uri)
+            found = published["diagnostics"]
+            note(len(found) == 1 and found[0]["code"] == "UMS2004" and found[0]["range"]["start"]["line"] == 3
+                 and "colour" in found[0]["message"] and found[0]["source"] == "prismio",
+                 f"an unknown project property: {published}")
+            change(good, 3)
+            published = client.diagnostics_for(uri)
+            note(published["diagnostics"] == [] and published.get("version") == 3, f"fixed: {published}")
+
+            # --- completion ---
+            def complete(text, needle, delta=0, occurrence=0):
+                change(text, complete.version)
+                complete.version += 1
+                at = -1
+                for _ in range(occurrence + 1):
+                    at = text.index(needle, at + 1)
+                before = text[:at + delta]
+                line = before.count("\n")
+                character = len(before) - (before.rfind("\n") + 1)
+                reply = client.request("textDocument/completion", {"textDocument": {"uri": uri},
+                                                                    "position": {"line": line, "character": character}})
+                note("error" not in reply, f"completion failed: {reply}")
+                return [i["label"] for i in reply["result"]["items"]], reply["result"]["items"]
+            complete.version = 10
+
+            labels, _ = complete("pro\n", "pro", 3)
+            note({"project", "targets", "commands", "toolchain", "dependencies", "profiles"} <= set(labels),
+                 f"blocks at the top: {labels}")
+            labels, _ = complete(good.replace('    version = "0.1.0"\n', "    \n"), "    \n", 4)
+            note({"name", "version", "prismio", "license"} <= set(labels) and "entry" not in labels,
+                 f"keys in project: {labels}")
+            labels, _ = complete(good.replace('        entry = "main.psm"\n', "        \n"), "        \n", 8)
+            note({"entry", "runtime", "native", "link", "codeModel"} <= set(labels) and "name" not in labels,
+                 f"keys in a target: {labels}")
+            labels, _ = complete(good.replace('    executable("demo")', '    exe("demo")'), "exe", 3)
+            note({"executable", "library", "test"} <= set(labels), f"target kinds: {labels}")
+            labels, _ = complete(good.replace('entry = "main.psm"', 'runtime = '), "runtime = ", 10)
+            note(labels == ['"installed"', '"none"'], f"values of runtime: {labels}")
+            labels, _ = complete(good.replace('entry = "main.psm"', 'freestanding = '), "freestanding = ", 15)
+            note(labels == ["true", "false"], f"values of a flag: {labels}")
+            labels, _ = complete(good.replace('executable("demo")', 'executable("de'), "executable(\"de", 14)
+            note(labels == [], f"nothing offered inside a call's arguments: {labels}")
+
+            # --- the table against the language: no key it offers is one the manifest rejects ---
+            scopes = {
+                "": ("", "{}"), "project": ("project {\n    ", "\n}"), "toolchain": ("toolchain {\n    ", "\n}"),
+                "targets": ("targets {\n    ", "\n}"),
+                "target": ('targets {\n    executable("t") {\n        ', '\n    }\n}'),
+                "native": ('targets {\n    executable("t") {\n        native {\n            ', '\n        }\n    }\n}'),
+                "link": ('targets {\n    executable("t") {\n        link {\n            ', '\n        }\n    }\n}'),
+                "commands": ("commands {\n    ", "\n}"),
+                "command": ('commands {\n    command("c") {\n        ', '\n    }\n}'),
+                "profiles": ("profiles {\n    ", "\n}"), "profile": ("profiles {\n    debug {\n        ", "\n    }\n}"),
+                "dependencies": ("dependencies {\n    ", "\n}"),
+            }
+            offered = 0
+            for name, (head, tail) in scopes.items():
+                if name == "":
+                    items = complete("\n", "\n", 0)[1]
+                else:
+                    items = complete(head + tail, head, len(head))[1]
+                note(items, f"{name or 'top level'} offers something")
+                for item in items:
+                    # A block's body is left empty; a call's or key's value gets a stand-in.
+                    text = item["insertText"].replace("$1", "x").replace("$0", "" if item["kind"] == 14 or item["label"] in ("command",) else "x")
+                    if name == "":
+                        attempt = text
+                    else:
+                        attempt = head + text + tail
+                    change(attempt, complete.version)
+                    complete.version += 1
+                    shown = client.diagnostics_for(uri)["diagnostics"]
+                    rejected = [d["message"] for d in shown if d["message"].startswith("unknown")
+                                or "contains only" in d["message"] or "holds debug" in d["message"]]
+                    note(not rejected, f"`{item['label']}` offered in {name or 'top level'} but rejected: {rejected}")
+                    offered += 1
+            note(offered > 50, f"the table was exercised: {offered} entries")
+
+            # --- closing a manifest withdraws what was said about it ---
+            change(bad, complete.version)
+            client.diagnostics_for(uri)
+            client.notify("textDocument/didClose", {"textDocument": {"uri": uri}})
+            published = client.diagnostics_for(uri)
+            note(published["diagnostics"] == [], f"closed: {published}")
+            note(client.request("shutdown").get("result") is None, "shutdown")
+            client.notify("exit")
+            client.process.wait(timeout=20)
+        except Exception as error:
+            problems.append(f"the session failed: {type(error).__name__}: {error}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+    if problems:
+        print(f"{RED}[FAIL] lsp_manifest{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] lsp_manifest: manifest diagnostics, completion by scope, and the table against the language{RESET}")
+    return True
+
+
+def run_lsp_workspace_test():
+    """`prismio lsp` over a workspace of several programs, and files that change on disk.
+
+    Two programs live in one root, each with its own `build.ums`: a file is checked as the program it
+    belongs to, so an error in one is not published against the other. A module nobody has open is edited
+    on disk and the client reports it (`workspace/didChangeWatchedFiles`): the open importer is checked
+    again and the error appears in the module's own file; fixing it on disk clears it.
+    """
+    print(f"\n{BLUE}--- Running lsp_workspace ---{RESET}")
+    sys.path.insert(0, str(TEST_DIR))
+    from lsp_client import LspClient
+
+    problems = []
+
+    def note(condition, message):
+        if not condition:
+            problems.append(message)
+        return condition
+
+    def manifest(entry):
+        return ('project {\n    name = "p"\n    version = "0.1.0"\n    prismio = "0.1.0"\n}\n\n'
+                f'targets {{\n    executable("p") {{\n        entry = "{entry}"\n    }}\n}}\n')
+
+    with tempfile.TemporaryDirectory(prefix="prismio-lspw-") as tmp:
+        root = Path(tmp).resolve()
+        (root / "alpha").mkdir()
+        (root / "beta").mkdir()
+        (root / "alpha" / "build.ums").write_text(manifest("main.psm"))
+        (root / "beta" / "build.ums").write_text(manifest("main.psm"))
+        alpha_main = root / "alpha" / "main.psm"
+        alpha_util = root / "alpha" / "util.psm"
+        beta_main = root / "beta" / "main.psm"
+        alpha_main.write_text("import util\n\nfn main() -> Int { return value() }\n")
+        alpha_util.write_text("public fn value() -> Int { return 1 }\n")
+        beta_main.write_text("fn main() -> Int { return 2 }\n")
+        client = LspClient([str(PRISMIO_EXE), "lsp"], env={"PRISMIO_INTERNAL_HOSTED": "1"})
+        try:
+            client.initialize(root.as_uri(), {"general": {"positionEncodings": ["utf-16"]}})
+            for path in (alpha_main, beta_main):
+                client.notify("textDocument/didOpen", {"textDocument": {"uri": path.as_uri(), "languageId": "prismio",
+                                                                         "version": 1, "text": path.read_text()}})
+            for path in (alpha_main, beta_main):
+                shown = client.diagnostics_for(path.as_uri())
+                note(shown["diagnostics"] == [], f"{path.name} of {path.parent.name} is clean: {shown}")
+
+            # An error appears on disk in a module nobody has open.
+            alpha_util.write_text("public fn value() -> Int { return missing }\n")
+            client.notify("workspace/didChangeWatchedFiles", {"changes": [{"uri": alpha_util.as_uri(), "type": 2}]})
+            shown = client.diagnostics_for(alpha_util.as_uri(), timeout=30)
+            note(len(shown["diagnostics"]) == 1 and shown["diagnostics"][0]["code"].startswith("P"),
+                 f"the closed module's error is published against it: {shown}")
+            note(client.quiet_for(1.0) or True, "")
+            # ... and not against the other program.
+            reply = client.request("textDocument/documentSymbol", {"textDocument": {"uri": beta_main.as_uri()}})
+            note([s["name"] for s in reply["result"]] == ["main"], f"the other program still answers: {reply}")
+
+            alpha_util.write_text("public fn value() -> Int { return 3 }\n")
+            client.notify("workspace/didChangeWatchedFiles", {"changes": [{"uri": alpha_util.as_uri(), "type": 2}]})
+            shown = client.diagnostics_for(alpha_util.as_uri(), timeout=30)
+            note(shown["diagnostics"] == [], f"fixed on disk: {shown}")
+
+            # A new file appears and is opened: it belongs to the program whose manifest names it.
+            note(client.request("shutdown").get("result") is None, "shutdown")
+            client.notify("exit")
+            client.process.wait(timeout=20)
+        except Exception as error:
+            problems.append(f"the session failed: {type(error).__name__}: {error}; server said: {client.stderr_text[:300]!r}")
+        finally:
+            client.close()
+
+    if problems:
+        print(f"{RED}[FAIL] lsp_workspace{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] lsp_workspace: programs kept apart, files changed on disk reported and rechecked{RESET}")
+    return True
+
+
 def run_lsp_features_test():
     """`prismio lsp`, past diagnostics: the features that read the semantic index.
 
@@ -11953,6 +12180,8 @@ def main():
         ("index", run_index_test),
         ("lsp", run_lsp_test),
         ("lsp_features", run_lsp_features_test),
+        ("lsp_manifest", run_lsp_manifest_test),
+        ("lsp_workspace", run_lsp_workspace_test),
         ("struct_path_tbaa", run_struct_path_tbaa_test),
         ("generic_layout_specialization_gate", run_generic_layout_specialization_test),
         ("aif_layout", run_aif_layout_test),

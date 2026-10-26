@@ -5,12 +5,12 @@ import std.io
 import std.string
 
 public struct UmsDiagnostic {
-    code: String,
-    path: String,
-    line: Int,
-    col: Int,
-    len: Int,
-    message: String
+    public code: String,
+    public path: String,
+    public line: Int,
+    public col: Int,
+    public len: Int,
+    public message: String
 }
 
 public fn umsDiagnostics() -> Vec<UmsDiagnostic> {

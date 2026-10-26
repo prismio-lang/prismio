@@ -81,7 +81,7 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
         arguments.push(program.module.clone())
     }
     for i in 0..<docs.count() {
-        if (docs.files[i].equals("")) { continue }
+        if (docs.files[i].equals("") or docs.paths[i].endsWith(".ums")) { continue }
         arguments.push("--overlay")
         arguments.push(docs.paths[i].clone())
         if (docs.paths[i].equals(docPath)) { arguments.push(buffer.clone()) } else { arguments.push(docs.files[i].clone()) }

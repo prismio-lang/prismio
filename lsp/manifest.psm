@@ -1,0 +1,210 @@
+// `build.ums`: what the server says about a manifest at the cursor.
+//
+// Its diagnostics are the compiler's (`prismio check build.ums`, in a child like every other check: the
+// manifest language is Prismio code, and loading it here, in a process that lives for hours, kept every
+// token of every edit). What the compiler cannot tell an editor is what a manifest *could* say at the
+// cursor; that is a table (`manifestEntries`), and `tests/test_runner.py` (`lsp_manifest`) holds it to what
+// the lowering accepts, so a key it offers is never one `ums` rejects.
+
+import lsp.positions
+import std.json
+import std.string
+import std.vec
+
+public fn manifestIsPath(path: String) -> Bool {
+    return path.endsWith(".ums")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Completion
+
+fn manifestIsWordByte(b: Int) -> Bool {
+    return (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or (b >= 48 and b <= 57)
+}
+
+// The kind of block a name opens, as the table below names it.
+fn manifestScope(name: String) -> String {
+    if (name.equals("executable") or name.equals("library") or name.equals("test")) { return "target".clone() }
+    if (name.equals("debug") or name.equals("release")) { return "profile".clone() }
+    return name.clone()
+}
+
+// The scope at `offset`: the innermost block, found by walking the text so far. Strings, comments and
+// the arguments of a call (`executable("name")`) are skipped, so what remains is the nesting.
+fn manifestScopeAt(text: String, offset: Int) -> String {
+    let mut stack: Vec<String> = []
+    let mut last = "".clone()
+    let mut parens = 0
+    let mut i = 0
+    while (i < offset and i < text.length) {
+        let b = text.byteAt(i)
+        if (b == 47 and i + 1 < text.length and text.byteAt(i + 1) == 47) {
+            while (i < offset and i < text.length and text.byteAt(i) != 10) { i = i + 1 }
+            continue
+        }
+        if (b == 34) {
+            i = i + 1
+            while (i < offset and i < text.length and text.byteAt(i) != 34 and text.byteAt(i) != 10) {
+                if (text.byteAt(i) == 92) { i = i + 1 }
+                i = i + 1
+            }
+            i = i + 1
+            continue
+        }
+        if (b == 40) { parens = parens + 1 }
+        if (b == 41 and parens > 0) { parens = parens - 1 }
+        if (parens == 0) {
+            if (manifestIsWordByte(b)) {
+                let from = i
+                while (i < text.length and manifestIsWordByte(text.byteAt(i))) { i = i + 1 }
+                last = text.slice(from, i).clone()
+                continue
+            }
+            if (b == 123) { stack.push(manifestScope(last)) }
+            if (b == 125 and stack.length > 0) { stack.pop() }
+        }
+        i = i + 1
+    }
+    if (parens > 0) { return "(".clone() }
+    if (stack.length == 0) { return "".clone() }
+    return stack[stack.length - 1].clone()
+}
+
+// What can be written in each scope: `label<TAB>kind<TAB>detail<TAB>text`. Kinds: block, call, key.
+// `text` is a snippet: `$0` is where the cursor ends up.
+fn manifestEntries(scope: String) -> Vec<String> {
+    let mut found: Vec<String> = []
+    if (scope.equals("")) {
+        found.push("project\tblock\tThe project's name, version and metadata\tproject {\n    $0\n}")
+        found.push("toolchain\tblock\tWhich compiler builds this project\ttoolchain {\n    $0\n}")
+        found.push("targets\tblock\tThe executables, libraries and tests\ttargets {\n    $0\n}")
+        found.push("commands\tblock\tProject commands: `prismio <name>`\tcommands {\n    $0\n}")
+        found.push("dependencies\tblock\tPackages this project uses\tdependencies {\n    $0\n}")
+        found.push("profiles\tblock\tDebug and release build settings\tprofiles {\n    $0\n}")
+    } else if (scope.equals("project")) {
+        found.push("name\tkey\tThe package name\tname = \"$0\"")
+        found.push("version\tkey\tThe package version\tversion = \"$0\"")
+        found.push("prismio\tkey\tThe Prismio version this project needs\tprismio = \"$0\"")
+        found.push("description\tkey\tOne line about the project\tdescription = \"$0\"")
+        found.push("license\tkey\tAn SPDX license expression\tlicense = \"$0\"")
+        found.push("licenseFile\tkey\tPath of the license text\tlicenseFile = \"$0\"")
+        found.push("authors\tkey\tThe authors\tauthors = [\"$0\"]")
+    } else if (scope.equals("toolchain")) {
+        found.push("host\tkey\tThe compiler this project builds with\thost = \"$0\"")
+    } else if (scope.equals("targets")) {
+        found.push("executable\tcall\tA program\texecutable(\"$1\") {\n        entry = \"$0\"\n    }")
+        found.push("library\tcall\tA library\tlibrary(\"$1\") {\n        entry = \"$0\"\n    }")
+        found.push("test\tcall\tA program that exits 0 when it passes\ttest(\"$1\") {\n        entry = \"$0\"\n    }")
+    } else if (scope.equals("target")) {
+        found.push("entry\tkey\tThe source file the target starts at\tentry = \"$0\"")
+        found.push("runtime\tkey\t\"installed\" or \"none\"\truntime = \"$0\"")
+        found.push("exportDynamic\tkey\tExport the program's symbols\texportDynamic = $0")
+        found.push("freestanding\tkey\tNo operating system\tfreestanding = $0")
+        found.push("triple\tkey\tThe target triple\ttriple = \"$0\"")
+        found.push("features\tkey\tTarget features\tfeatures = \"$0\"")
+        found.push("codeModel\tkey\tsmall, kernel, medium or large\tcodeModel = \"$0\"")
+        found.push("noRedZone\tkey\tDo not use the red zone\tnoRedZone = $0")
+        found.push("native\tblock\tC and C++ sources compiled with the target\tnative {\n        $0\n    }")
+        found.push("link\tblock\tLibraries and linker arguments\tlink {\n        $0\n    }")
+    } else if (scope.equals("native")) {
+        found.push("source\tcall\tA C or C++ source file\tsource(\"$0\")")
+        found.push("include\tcall\tAn include directory\tinclude(\"$0\")")
+        found.push("define\tcall\tA preprocessor definition\tdefine(\"$0\")")
+        found.push("flag\tcall\tA compiler flag\tflag(\"$0\")")
+        found.push("responseFile\tcall\tA response file\tresponseFile(\"$0\")")
+    } else if (scope.equals("link")) {
+        found.push("library\tcall\tA library to link\tlibrary(\"$0\")")
+        found.push("search\tcall\tA library search directory\tsearch(\"$0\")")
+        found.push("file\tcall\tAn object or archive\tfile(\"$0\")")
+        found.push("framework\tcall\tA macOS framework\tframework(\"$0\")")
+        found.push("responseFile\tcall\tA linker response file\tresponseFile(\"$0\")")
+        found.push("script\tcall\tA linker script\tscript(\"$0\")")
+        found.push("arg\tcall\tA raw linker argument\targ(\"$0\")")
+    } else if (scope.equals("commands")) {
+        found.push("command\tcall\tA command run as `prismio <name>`\tcommand(\"$1\") {\n        $0\n    }")
+    } else if (scope.equals("command")) {
+        found.push("description\tkey\tShown by `prismio --help`\tdescription = \"$0\"")
+        found.push("build\tcall\tBuild a target\tbuild(\"$0\")")
+        found.push("run\tcall\tRun a target\trun(\"$0\")")
+        found.push("shell\tcall\tRun a program\tshell(\"$0\")")
+    } else if (scope.equals("profiles")) {
+        found.push("debug\tblock\tThe default profile\tdebug {\n        $0\n    }")
+        found.push("release\tblock\tThe profile of `--release`\trelease {\n        $0\n    }")
+    } else if (scope.equals("profile")) {
+        found.push("debugInfo\tkey\tEmit debug information\tdebugInfo = $0")
+        found.push("overflowChecks\tkey\tTrap on integer overflow\toverflowChecks = $0")
+    } else if (scope.equals("dependencies")) {
+        found.push("implementation\tcall\tA package this project uses\timplementation(\"$1\", \"$0\")")
+        found.push("api\tcall\tA package this project's users also see\tapi(\"$1\", \"$0\")")
+        found.push("testImplementation\tcall\tA package only the tests use\ttestImplementation(\"$1\", \"$0\")")
+    }
+    return found
+}
+
+// The values a key takes, when it takes a fixed few.
+fn manifestValues(key: String) -> Vec<String> {
+    let mut found: Vec<String> = []
+    if (key.equals("runtime")) {
+        found.push("\"installed\"")
+        found.push("\"none\"")
+    } else if (key.equals("codeModel")) {
+        found.push("\"small\"")
+        found.push("\"kernel\"")
+        found.push("\"medium\"")
+        found.push("\"large\"")
+    } else if (key.equals("exportDynamic") or key.equals("freestanding") or key.equals("noRedZone")
+               or key.equals("debugInfo") or key.equals("overflowChecks")) {
+        found.push("true")
+        found.push("false")
+    }
+    return found
+}
+
+// The JSON `CompletionList` at byte `offset` of manifest `text`.
+public fn manifestCompletion(text: String, offset: Int) -> String {
+    let mut start = offset
+    while (start > 0 and manifestIsWordByte(text.byteAt(start - 1))) { start = start - 1 }
+    let mut before = start
+    while (before > 0 and (text.byteAt(before - 1) == 32 or text.byteAt(before - 1) == 9)) { before = before - 1 }
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("isIncomplete")
+    out.bool(false)
+    out.key("items")
+    out.beginArray()
+    let scope = manifestScopeAt(text, start)
+    if (before > 0 and text.byteAt(before - 1) == 61) {
+        // After `=`: the key is the word before it.
+        let mut keyEnd = before - 1
+        while (keyEnd > 0 and (text.byteAt(keyEnd - 1) == 32 or text.byteAt(keyEnd - 1) == 9)) { keyEnd = keyEnd - 1 }
+        let mut keyStart = keyEnd
+        while (keyStart > 0 and manifestIsWordByte(text.byteAt(keyStart - 1))) { keyStart = keyStart - 1 }
+        for value in manifestValues(text.slice(keyStart, keyEnd).clone()) {
+            out.beginObject()
+            out.key("label")
+            out.string(value)
+            out.key("kind")
+            out.int(12)
+            out.endObject()
+        }
+    } else if (scope.equals("(") == false) {
+        for entry in manifestEntries(scope) {
+            let parts = entry.split("\t")
+            out.beginObject()
+            out.key("label")
+            out.string(parts[0])
+            out.key("kind")
+            if (parts[1].equals("key")) { out.int(10) } else if (parts[1].equals("call")) { out.int(3) } else { out.int(14) }
+            out.key("detail")
+            out.string(parts[2])
+            out.key("insertText")
+            out.string(parts[3])
+            out.key("insertTextFormat")
+            out.int(2)
+            out.endObject()
+        }
+    }
+    out.endArray()
+    out.endObject()
+    return out.finish()
+}

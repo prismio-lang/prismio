@@ -21,10 +21,12 @@ import lsp.features
 import lsp.formatting
 import lsp.index
 import lsp.locator
+import lsp.manifest
 import lsp.positions
 import lsp.projects
 import lsp.protocol
 import lsp.report
+import lsp.runner
 import lsp.tokens
 import lsp.transport
 import lsp.uri
@@ -52,6 +54,8 @@ struct Server {
     exitCode: Int,
     utf16: Bool,
     docs: Documents,
+    // Which program a file belongs to, from the manifests read so far.
+    programs: ProgramCache,
     compiler: String,
     scratchDirectory: String,
     analysis: Analysis,
@@ -93,6 +97,7 @@ public fn lspServe(version: String, compiler: String) -> Int {
         exitCode: 1,
         utf16: true,
         docs: documents(serverScratchDirectoryPath()),
+        programs: programCache(),
         compiler: serverCompilerPath(compiler),
         scratchDirectory: serverScratchDirectoryPath(),
         analysis: idleAnalysis(),
@@ -348,14 +353,58 @@ impl Server {
         return readFile(path)
     }
 
+    // A manifest is checked in process, at once: no child, no index.
+    fn checkManifests(self) {
+        let mut at = 0
+        while (at < self.dirty.length) {
+            if (manifestIsPath(self.dirty[at])) {
+                let path = self.dirty[at].clone()
+                self.dirty.removeAt(at)
+                self.publishManifest(path)
+            } else {
+                at = at + 1
+            }
+        }
+    }
+
+    fn publishManifest(self, path: String) {
+        let uri = pathToUri(path)
+        let open = self.docs.indexOfPath(path)
+        if (open == none) {
+            // Closed: what it said is withdrawn.
+            self.send(self.diagnosticsMessage(uri, "[]"))
+            self.forget(uri, "manifest")
+            return
+        }
+        let file = self.docs.files[expect(open)]
+        let mut arguments: Vec<String> = []
+        arguments.push("check")
+        arguments.push(path.clone())
+        arguments.push("--diagnostic-format=json")
+        arguments.push("--overlay")
+        arguments.push(path.clone())
+        arguments.push(file.clone())
+        let ran = runCapturedErrors(self.compiler, arguments, 8000)
+        if (ran.ok == false) {
+            self.send(logMessage(2, "checking ".concat(path, " ended without a result")))
+            return
+        }
+        let report = parseReport(ran.output)
+        if (report.complete == false) { return }
+        self.send(self.diagnosticsMessage(uri, self.diagnosticsFor(path, path, report)))
+        self.remember(uri, "manifest")
+    }
+
     fn startAnalysis(self) {
+        self.checkManifests()
+        if (self.dirty.length == 0) { return }
         let path = self.dirty[0].clone()
-        let program = programFor(path, self.textOf(path))
+        let program = self.programs.programFor(path, self.textOf(path))
         // Every dirty file this run covers is done with it; the others wait for their own.
         // Edited in place: reassigning the Vec would leak the one it replaces.
         let mut at = 0
         while (at < self.dirty.length) {
-            if (programFor(self.dirty[at], self.textOf(self.dirty[at])).entry.equals(program.entry)) {
+            if (self.programs.programFor(self.dirty[at], self.textOf(self.dirty[at])).entry.equals(program.entry)) {
                 self.dirty.removeAt(at)
             } else {
                 at = at + 1
@@ -753,7 +802,7 @@ impl Server {
         out.endObject()
         out.beginObject()
         out.key("globPattern")
-        out.string("**/build.ums")
+        out.string("**/*.ums")
         out.endObject()
         out.endArray()
         out.endObject()
@@ -777,6 +826,10 @@ impl Server {
             self.send(rpcResult(idRaw, self.emptyResult(method)))
             return
         }
+        if (manifestIsPath(path) and method.equals("textDocument/completion") == false) {
+            self.send(rpcResult(idRaw, self.emptyResult(method)))
+            return
+        }
         let text = self.textOf(path)
         if (method.equals("textDocument/formatting") or method.equals("textDocument/rangeFormatting")) {
             self.format(message, method, idRaw, path, text)
@@ -788,7 +841,7 @@ impl Server {
         }
 
         // The rest read the index of the program the file belongs to, as of the text it has now.
-        let program = programFor(path, text)
+        let program = self.programs.programFor(path, text)
         let slot = self.entrySlot(program.entry)
         if (self.stale()) {
             self.deferRequest(message)
@@ -878,7 +931,11 @@ impl Server {
         let line0 = message.int(message.path(message.root, "params.position.line").unwrapOr(0 - 1))
         let character = message.int(message.path(message.root, "params.position.character").unwrapOr(0 - 1))
         let offset = lines.offset(line0, character, self.utf16)
-        let program = programFor(path, text)
+        if (manifestIsPath(path)) {
+            self.send(rpcResult(idRaw, manifestCompletion(text, offset)))
+            return
+        }
+        let program = self.programs.programFor(path, text)
         self.send(rpcResult(idRaw, completionItems(self.compiler, program, self.docs, path, text, offset,
                                                     self.scratchDirectory, self.keywords)))
     }

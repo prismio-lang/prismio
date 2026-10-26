@@ -345,6 +345,7 @@ private fn cliCheck() -> Int {
         checkArg = checkArg + 1
     }
 
+    if (process.args[2].endsWith(".ums")) { return checkUmsManifest(process.args[2], overlays) }
     return checkCommand(process.args[2], overlays, module, indexPath, cursorPath, cursorLine, cursorCol)
 }
 

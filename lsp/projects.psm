@@ -45,29 +45,85 @@ fn projectStandardModuleName(path: String) -> String {
     return "std.".concat(leaf.substring(0, leaf.length - 4))
 }
 
-// The entry of the nearest `build.ums` target whose directory holds `path`, or "".
-fn projectManifestEntry(path: String) -> String {
-    let workspace = umsLoadProject(directoryOf(path), "debug")
-    let mut best = "".clone()
-    let mut bestDirectory = "".clone()
-    for target in workspace.project.targets {
-        let entry = target.sourcePath
-        if (entry.equals("")) { continue }
-        if (entry.equals(path)) { return entry.clone() }
-        let directory = directoryOf(entry)
-        if (projectIsUnder(path, directory) and directory.length > bestDirectory.length) {
-            best = entry.clone()
-            bestDirectory = directory.clone()
-        }
-    }
-    return best
+// The manifests this server has read, and what each declares. A manifest is read by the manifest
+// language's own loader, in this process, which keeps what it lexes (the ownership analysis cannot
+// release a Vec of structs that hold strings), so it is read once per change of the file, not once
+// per request: a row is added when a manifest's size or time of change differs from the row's.
+public struct ProgramCache {
+    manifests: Vec<String>,
+    stamps: Vec<String>,
+    // The sources the manifest's targets start at, one per line.
+    entries: Vec<String>
 }
 
-public fn programFor(path: String, text: String) -> Program {
-    if (text.contains("fn main(")) { return Program { entry: path.clone(), module: "" } }
-    let module = projectStandardModuleName(path)
-    if (module.equals("") == false) { return Program { entry: path.clone(), module: module } }
-    let entry = projectManifestEntry(path)
-    if (entry.equals("") == false) { return Program { entry: entry, module: "" } }
-    return Program { entry: path.clone(), module: "" }
+public fn programCache() -> ProgramCache {
+    return ProgramCache { manifests: [], stamps: [], entries: [] }
+}
+
+// The nearest `build.ums` at or above `directory`, or "".
+fn projectFindManifest(directory: String) -> String {
+    let mut current = directory.clone()
+    loop {
+        let candidate = joinPath(current, "build.ums")
+        if (fileExists(candidate)) { return candidate }
+        let parent = directoryOf(current)
+        if (parent.equals(current) or parent.equals("")) { return "".clone() }
+        current = parent
+    }
+}
+
+fn projectStamp(path: String) -> String {
+    let found = metadata(path)
+    if (found == none) { return "".clone() }
+    let m = expect(found)
+    return m.size.toString().concat(":", m.modified.asMillis.toString())
+}
+
+impl ProgramCache {
+    // The entries `manifest` declares, as it is now.
+    fn entriesOf(self, manifest: String) -> String {
+        let stamp = projectStamp(manifest)
+        let mut at = self.manifests.length - 1
+        while (at >= 0) {
+            if (self.manifests[at].equals(manifest) and self.stamps[at].equals(stamp)) { return self.entries[at].clone() }
+            at = at - 1
+        }
+        let workspace = umsLoadText(readFile(manifest), manifest, directoryOf(manifest), "debug")
+        let mut declared = "".clone()
+        for target in workspace.project.targets {
+            if (target.sourcePath.equals("")) { continue }
+            declared = declared.concat(target.sourcePath, "\n")
+        }
+        self.manifests.push(manifest.clone())
+        self.stamps.push(stamp.clone())
+        self.entries.push(declared.clone())
+        return declared
+    }
+
+    // The entry of the nearest `build.ums` target whose directory holds `path`, or "".
+    fn manifestEntry(self, path: String) -> String {
+        let manifest = projectFindManifest(directoryOf(path))
+        if (manifest.equals("")) { return "".clone() }
+        let mut best = "".clone()
+        let mut bestDirectory = "".clone()
+        for entry in self.entriesOf(manifest).split("\n") {
+            if (entry.equals("")) { continue }
+            if (entry.equals(path)) { return entry.clone() }
+            let directory = directoryOf(entry)
+            if (projectIsUnder(path, directory) and directory.length > bestDirectory.length) {
+                best = entry.clone()
+                bestDirectory = directory.clone()
+            }
+        }
+        return best
+    }
+
+    public fn programFor(self, path: String, text: String) -> Program {
+        if (text.contains("fn main(")) { return Program { entry: path.clone(), module: "".clone() } }
+        let module = projectStandardModuleName(path)
+        if (module.equals("") == false) { return Program { entry: path.clone(), module: module } }
+        let entry = self.manifestEntry(path)
+        if (entry.equals("") == false) { return Program { entry: entry, module: "".clone() } }
+        return Program { entry: path.clone(), module: "".clone() }
+    }
 }

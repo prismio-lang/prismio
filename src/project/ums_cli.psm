@@ -7,6 +7,7 @@
 
 import std.io
 import common.diagnostics
+import common.source_files
 import common.terminal
 import std.string
 import std.option
@@ -60,6 +61,29 @@ public extern fn host_is_windows() -> Int
 // success, which is the C convention here and the opposite of `file_exists`;
 // std/fs.psm normalises that for applications, and this file cannot import it
 // because the two would declare the same symbols twice.
+
+// `prismio check build.ums`: the manifest, checked as the manifest language, with the diagnostics every other
+// `check` prints. `--overlay <manifest> <file>` supplies unsaved text, as it does for a source, so an editor
+// asks about a manifest the way it asks about a program.
+public fn checkUmsManifest(path: String, overlays: Vec<String>) -> Int {
+    let mut textPath = path.clone()
+    let mut at = 0
+    while (at + 1 < overlays.length) {
+        if (overlays[at].equals(path)) { textPath = overlays[at + 1].clone() }
+        at = at + 2
+    }
+    let text = readFile(textPath)
+    let file = diag_add_file(path, text)
+    let workspace = umsLoadText(text, path, directoryOf(path), "debug")
+    for found in workspace.diagnostics {
+        if (found.path.equals("") == false and found.path.equals(path) == false) { continue }
+        diag_error_at_code(found.code, file, found.line, found.col, found.len, found.message)
+    }
+    diag_finish()
+    if (diag_error_count() > 0) { return 1 }
+    diag_result("", "Checked", path, "no problems")
+    return 0
+}
 
 public fn pathLeaf(path: String) -> String {
     let mut cut = path.lastIndexOf('/')

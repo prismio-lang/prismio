@@ -50,6 +50,40 @@ public fn runCaptured(program: String, arguments: Vec<String>, limitMs: Int) -> 
     return Captured { ok: true, output: output }
 }
 
+// Runs `program` and returns what it wrote to standard *error*, whatever it exits with: the diagnostics of
+// a `check`, which exits 1 when it has found something. `ok` is false if it could not be started or
+// did not finish within `limitMs`.
+public fn runCapturedErrors(program: String, arguments: Vec<String>, limitMs: Int) -> Captured {
+    let process = Process()
+    process.program = program.clone()
+    process.arguments = arguments
+    process.stdin = StreamMode.Discard
+    process.stdout = StreamMode.Discard
+    process.stderr = StreamMode.Pipe
+    let child = process.spawn()
+    if (child.handle < 0) { return Captured { ok: false, output: "".clone() } }
+    let started = Instant.now()
+    let mut output = "".clone()
+    let mut finished = false
+    while (finished == false) {
+        let elapsed = started.elapsed().asMillis as Int
+        if (elapsed > limitMs) { break }
+        if (waitReadable(child.stderr.descriptor, 50)) {
+            let piece = child.stderr.readSome(65536)
+            if (piece.equals("")) {
+                finished = true
+            } else {
+                output = output.concat(piece)
+            }
+        }
+    }
+    if (finished == false) { child.kill() }
+    child.stderr.close()
+    child.wait()
+    if (finished == false) { return Captured { ok: false, output: "".clone() } }
+    return Captured { ok: true, output: output }
+}
+
 // Runs `program` and waits for it to finish within `limitMs`, whatever it exits with; false if it could
 // not be started or had to be killed. Its output is not read.
 public fn runCapturedAnyStatus(program: String, arguments: Vec<String>, limitMs: Int) -> Bool {

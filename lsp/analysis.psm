@@ -73,7 +73,7 @@ impl Analysis {
         }
 
         for i in 0..<docs.count() {
-            if (docs.files[i].equals("")) { continue }
+            if (docs.files[i].equals("") or docs.paths[i].endsWith(".ums")) { continue }
             arguments.push("--overlay")
             arguments.push(docs.paths[i].clone())
             arguments.push(docs.files[i].clone())
