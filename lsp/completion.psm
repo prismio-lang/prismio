@@ -65,9 +65,11 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
 
     let buffer = joinPath(scratch, "complete-buffer.psm")
     let output = joinPath(scratch, "complete.idx")
-    writeFile(buffer, text.substring(0, start))
+    // `slice`, not `substring`: a `substring` of the document made the whole program decide the document was
+    // never released (a copy of it per request); `slice` is the same cut by a different route.
+    writeFile(buffer, text.slice(0, start))
     appendFile(buffer, COMPLETION_PLACEHOLDER)
-    appendFile(buffer, text.substring(end, text.length - end))
+    appendFile(buffer, text.slice(end, text.length))
     deleteFile(output)
 
     let mut arguments: Vec<String> = []

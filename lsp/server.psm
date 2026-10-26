@@ -122,6 +122,7 @@ public fn lspServe(version: String, compiler: String) -> Int {
 
     server.analysis.cancel()
     server.docs.discard()
+    server.discardIndexes()
     removeDirectory(server.scratchDirectory)
     return server.exitCode
 }
@@ -552,6 +553,14 @@ impl Server {
         }
         self.entries.push(entry.clone())
         return self.entries.length - 1
+    }
+
+    // Removes the indexes' files: the server is going away.
+    fn discardIndexes(self) {
+        for slot in 0..<self.entries.length {
+            deleteFile(self.indexFile(slot))
+            deleteFile(self.indexTemp(slot))
+        }
     }
 
     // The last good index of the program in `slot`, and where a run in progress writes the next.

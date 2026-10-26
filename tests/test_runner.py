@@ -3147,7 +3147,7 @@ def run_lsp_test():
             note(caps["textDocumentSync"] == {"openClose": True, "change": 1, "save": {"includeText": False}},
                  f"full-text synchronisation: {caps}")
             note(reply["result"]["serverInfo"]["name"] == "prismio", "serverInfo")
-            unknown = client.request("textDocument/rename", {})
+            unknown = client.request("textDocument/linkedEditingRange", {})
             note(unknown.get("error", {}).get("code") == -32601, f"an unknown request is -32601: {unknown}")
             client.notify("$/somethingNew", {"x": 1})
             client.notify("workspace/didChangeConfiguration", {"settings": {}})
@@ -3315,7 +3315,7 @@ def run_lsp_test():
             note(bad["id"] is None, f"a parse error answers with a null id: {bad}")
             client.process.stdin.write(b"X-Unknown: 1\r\n\r\n")
             client.process.stdin.flush()
-            client.send({"jsonrpc": "2.0", "id": 77, "method": "textDocument/hover", "params": {}})
+            client.send({"jsonrpc": "2.0", "id": 77, "method": "textDocument/linkedEditingRange", "params": {}})
             after = client.wait_for(lambda m: m.get("id") == 77, timeout=10)
             note(after["error"]["code"] == -32601, f"the server survives a block without Content-Length: {after}")
             client.send({"jsonrpc": "2.0", "id": "string-id", "method": "nope"})

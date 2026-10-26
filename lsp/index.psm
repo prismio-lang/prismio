@@ -157,10 +157,14 @@ fn indexNormal(path: String) -> String {
 
 // The id the index gives `path`, or -1.
 public fn indexFileId(index: String, path: String) -> Int {
-    for line in readLines(index) {
+    let mut lines = readLines(index)
+    for line in lines {
         if (line.startsWith("{\"k\":\"file\"") == false) { continue }
         let doc = parseJson(line)
-        if (indexSamePath(indexText(doc, "path"), path)) { return indexInt(doc, "id", 0 - 1) }
+        if (indexSamePath(indexText(doc, "path"), path)) {
+            lines.close()
+            return indexInt(doc, "id", 0 - 1)
+        }
     }
     return 0 - 1
 }
@@ -175,10 +179,14 @@ public fn indexFilePath(files: Vec<IndexFile>, id: Int) -> String {
 // The reference whose span holds this position, if any. `col` is a 1-based byte column.
 public fn indexRefAt(index: String, file: Int, line: Int, col: Int) -> IndexRef {
     let prefix = "{\"k\":\"ref\",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",")
-    for text in readLines(index) {
+    let mut lines = readLines(index)
+    for text in lines {
         if (text.startsWith(prefix) == false) { continue }
         let found = indexParseRef(text)
-        if (col >= found.col and col <= found.col + found.len) { return found }
+        if (col >= found.col and col <= found.col + found.len) {
+            lines.close()
+            return found
+        }
     }
     return IndexRef { file: 0 - 1, line: 0, col: 0, len: 0, to: 0 - 2, role: "".clone(), type: "".clone(), builtin: "".clone() }
 }
@@ -186,8 +194,12 @@ public fn indexRefAt(index: String, file: Int, line: Int, col: Int) -> IndexRef 
 // The declaration with this id.
 public fn indexDecl(index: String, id: Int) -> IndexDecl {
     let prefix = "{\"k\":\"decl\",\"id\":".concat(id.toString(), ",")
-    for text in readLines(index) {
-        if (text.startsWith(prefix)) { return indexParseDecl(text) }
+    let mut lines = readLines(index)
+    for text in lines {
+        if (text.startsWith(prefix)) {
+            lines.close()
+            return indexParseDecl(text)
+        }
     }
     return indexNoDecl()
 }
@@ -195,10 +207,14 @@ public fn indexDecl(index: String, id: Int) -> IndexDecl {
 // The declaration whose name holds this position, if any.
 public fn indexDeclAt(index: String, file: Int, line: Int, col: Int) -> IndexDecl {
     let needle = ",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",")
-    for text in readLines(index) {
+    let mut lines = readLines(index)
+    for text in lines {
         if (text.startsWith("{\"k\":\"decl\"") == false or text.contains(needle) == false) { continue }
         let found = indexParseDecl(text)
-        if (found.line == line and found.file == file and col >= found.col and col <= found.col + found.len) { return found }
+        if (found.line == line and found.file == file and col >= found.col and col <= found.col + found.len) {
+            lines.close()
+            return found
+        }
     }
     return indexNoDecl()
 }
@@ -219,8 +235,12 @@ public fn indexDeclsOfFile(index: String, file: Int) -> Vec<IndexDecl> {
 public fn indexSearch(index: String, query: String, limit: Int) -> Vec<IndexDecl> {
     let mut found: Vec<IndexDecl> = []
     let wanted = query.toLower()
-    for text in readLines(index) {
-        if (found.length >= limit) { break }
+    let mut lines = readLines(index)
+    for text in lines {
+        if (found.length >= limit) {
+            lines.close()
+            break
+        }
         if (text.startsWith("{\"k\":\"decl\"") == false or text.contains(",\"user\":true") == false) { continue }
         let decl = indexParseDecl(text)
         if (decl.found == false or decl.kind.equals("param") or decl.kind.equals("let") or decl.kind.equals("typeparam")) {
