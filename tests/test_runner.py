@@ -1600,11 +1600,18 @@ def run_ums_test():
         launcher_env = os.environ.copy()
         launcher_env.pop("PRISMIO_INTERNAL_HOSTED", None)
 
-        with preserved_project_host() as (compiler_artifact, compiler_candidate):
+        with preserved_project_host() as (compiler_artifact, compiler_candidate), \
+                tempfile.TemporaryDirectory(prefix="prismio-cold-") as cold_tmp:
 
+            # **A cold cache, always.** The first project build is the one that compiles the runtime
+            # and writes the curated module and the native objects into the cache under TMPDIR. A warm
+            # cache skips all of that, which is how a bad `free` on that path (a block from
+            # command_quote_arg, a slab block, released with libc `free`) passed on every machine that had
+            # built anything and aborted only in a fresh one: this suite's, and CI's.
+            cold_env = dict(launcher_env, TMPDIR=cold_tmp)
             project_build = subprocess.run(
                 [str(launcher), "build", *HOST_FLAGS], capture_output=True, text=True, encoding="utf-8", errors="replace",
-                cwd=str(PROJECT_ROOT / "ums"), env=launcher_env,
+                cwd=str(PROJECT_ROOT / "ums"), env=cold_env,
             )
             if (project_build.returncode != 0 or not compiler_artifact.exists()
                     or "Using global toolchain" not in project_build.stderr):

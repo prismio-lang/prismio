@@ -1607,7 +1607,7 @@ static char* build_curated_module(const char* target_flags) {
     // A bypassed cache builds to the temporary and uses it in place; installing
     // it would repopulate the very entry the caller asked to skip.
     if (!failed && bypass) {
-        tmp_free(q_src); tmp_free(q_tmp); tmp_free(q_raw);
+        rt_free(q_src); rt_free(q_tmp); rt_free(q_raw);
         g_curated_raw_ir = tmp_raw;
         tmp_raw = NULL;
         rt_free(entry);
@@ -1617,14 +1617,14 @@ static char* build_curated_module(const char* target_flags) {
     if (!failed && fs_rename(tmp_ll, entry) != 0) {
         // A failed install is not a failed build: use the temporary this once
         // and pay for it again next time.
-        tmp_free(q_src); tmp_free(q_tmp); tmp_free(q_raw);
+        rt_free(q_src); rt_free(q_tmp); rt_free(q_raw);
         g_curated_raw_ir = tmp_raw;
         tmp_raw = NULL;
         rt_free(entry);
         return tmp_ll;
     }
 
-    tmp_free(q_src); tmp_free(q_tmp); tmp_free(q_raw);
+    rt_free(q_src); rt_free(q_tmp); rt_free(q_raw);
 
     if (failed) {
         if (tmp_raw) { delete_file(tmp_raw); tmp_free(tmp_raw); }
