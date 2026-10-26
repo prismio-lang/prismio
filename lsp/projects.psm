@@ -177,32 +177,71 @@ impl ProgramCache {
         return declared
     }
 
-    // The entry of the nearest `build.ums` target whose directory holds `path`, or "".
-    fn manifestEntry(self, path: String) -> String {
+    // The entries of the manifest above `path`, the nearest target whose directory holds the file first and the
+    // others in the order the manifest declares them, as `entry<TAB>` lines: a program that never reads the file
+    // says so (P1075), and the next is tried.
+    fn manifestCandidates(self, path: String) -> Vec<String> {
+        let mut found: Vec<String> = []
         let manifest = projectFindManifest(directoryOf(path))
-        if (manifest.equals("")) { return "".clone() }
+        if (manifest.equals("")) { return found }
         let mut best = "".clone()
         let mut bestDirectory = "".clone()
-        for entry in self.entriesOf(manifest).split("\n") {
+        let declared = self.entriesOf(manifest)
+        for entry in declared.split("\n") {
             if (entry.equals("")) { continue }
-            if (entry.equals(path)) { return entry.clone() }
+            if (entry.equals(path)) {
+                best = entry.clone()
+                break
+            }
             let directory = directoryOf(entry)
             if (projectIsUnder(path, directory) and directory.length > bestDirectory.length) {
                 best = entry.clone()
                 bestDirectory = directory.clone()
             }
         }
-        return best
+        if (best.equals("") == false) { found.push(best.concat("\t")) }
+        for entry in declared.split("\n") {
+            if (entry.equals("") or entry.equals(best)) { continue }
+            found.push(entry.concat("\t"))
+        }
+        return found
     }
 
-    public fn programFor(self, path: String, text: String) -> Program {
-        if (text.contains("fn main(")) { return Program { entry: path.clone(), module: "".clone() } }
+    // The programs to try for `path`, most likely first, as `entry<TAB>module` lines: the file itself if it declares
+    // `main`; a standard-library module alone under its name; the manifest's targets; a program that imports it; and the
+    // file alone, which is the last resort. The slow searches are made only when the faster ones have been tried.
+    fn candidates(self, path: String, text: String, attempt: Int) -> Vec<String> {
+        let mut found: Vec<String> = []
+        if (text.contains("fn main(")) {
+            found.push(path.concat("\t"))
+            return found
+        }
         let module = projectStandardModuleName(path)
-        if (module.equals("") == false) { return Program { entry: path.clone(), module: module } }
-        let entry = self.manifestEntry(path)
-        if (entry.equals("") == false) { return Program { entry: entry, module: "".clone() } }
-        let importer = self.importerOf(path)
-        if (importer.equals("") == false) { return Program { entry: importer, module: "".clone() } }
-        return Program { entry: path.clone(), module: "".clone() }
+        if (module.equals("") == false) {
+            found.push(path.concat("\t", module))
+            return found
+        }
+        for entry in self.manifestCandidates(path) { found.push(entry.clone()) }
+        if (attempt >= found.length) {
+            let importer = self.importerOf(path)
+            if (importer.equals("") == false) { found.push(importer.concat("\t")) }
+        }
+        found.push(path.concat("\t"))
+        return found
+    }
+
+    // The program to check `path` through on its `attempt`th try (0 is the most likely).
+    public fn programFor(self, path: String, text: String, attempt: Int) -> Program {
+        let list = self.candidates(path, text, attempt)
+        let mut at = attempt
+        if (at >= list.length) { at = list.length - 1 }
+        let parts = list[at].split("\t")
+        return Program { entry: parts[0].clone(), module: parts[1].clone() }
+    }
+
+    // How many programs there are to try for `path`: a document whose program does not read it moves on to
+    // the next until this many have been tried.
+    public fn programCount(self, path: String, text: String) -> Int {
+        return self.candidates(path, text, 1000000).length
     }
 }

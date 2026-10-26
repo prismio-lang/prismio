@@ -401,12 +401,12 @@ impl Server {
         self.checkManifests()
         if (self.dirty.length == 0) { return }
         let path = self.dirty[0].clone()
-        let program = self.programs.programFor(path, self.textOf(path))
+        let program = self.programs.programFor(path, self.textOf(path), self.docs.attemptFor(path))
         // Every dirty file this run covers is done with it; the others wait for their own.
         // Edited in place: reassigning the Vec would leak the one it replaces.
         let mut at = 0
         while (at < self.dirty.length) {
-            if (self.programs.programFor(self.dirty[at], self.textOf(self.dirty[at])).entry.equals(program.entry)) {
+            if (self.programs.programFor(self.dirty[at], self.textOf(self.dirty[at]), self.docs.attemptFor(self.dirty[at])).entry.equals(program.entry)) {
                 self.dirty.removeAt(at)
             } else {
                 at = at + 1
@@ -435,7 +435,31 @@ impl Server {
             rename(self.indexTemp(slot), self.indexFile(slot))
         }
         self.publish(entry, report)
+        self.nextPrograms(entry, report)
         self.flushPending()
+    }
+
+    // A document the program that was just checked never read (P1075) is tried through the next program it could
+    // belong to; a program that reads it is the one it keeps. The attempt is an integer in a Vec, which is replaced
+    // in place, and survives edits.
+    fn nextPrograms(self, entry: String, report: CheckReport) {
+        let mut outside: Vec<String> = []
+        for found in report.diagnostics {
+            if (found.code.equals("P1075")) { outside.push(found.message.clone()) }
+        }
+        if (outside.length == 0) { return }
+        for i in 0..<self.docs.count() {
+            let path = self.docs.paths[i]
+            if (path.endsWith(".psm") == false or self.mentionedAsOutside(outside, path) == false) { continue }
+            let text = self.textOf(path)
+            // Every open document is overlaid on every run, so a run reports the ones that belong to other programs
+            // too; only a document that was checked through this program and not read by it moves on.
+            if (self.programs.programFor(path, text, self.docs.attempts[i]).entry.equals(entry) == false) { continue }
+            if (self.docs.attempts[i] + 1 < self.programs.programCount(path, text)) {
+                self.docs.attempts[i] = self.docs.attempts[i] + 1
+                self.markDirty(path)
+            }
+        }
     }
 
     // --- diagnostics --------------------------------------------------------
@@ -843,7 +867,7 @@ impl Server {
         }
 
         // The rest read the index of the program the file belongs to, as of the text it has now.
-        let program = self.programs.programFor(path, text)
+        let program = self.programs.programFor(path, text, self.docs.attemptFor(path))
         let slot = self.entrySlot(program.entry)
         if (self.stale()) {
             self.deferRequest(message)
@@ -937,7 +961,7 @@ impl Server {
             self.send(rpcResult(idRaw, manifestCompletion(text, offset)))
             return
         }
-        let program = self.programs.programFor(path, text)
+        let program = self.programs.programFor(path, text, self.docs.attemptFor(path))
         self.send(rpcResult(idRaw, completionItems(self.compiler, program, self.docs, path, text, offset,
                                                     self.scratchDirectory, self.keywords)))
     }

@@ -2968,6 +2968,24 @@ def run_lsp_workspace_test():
             shown = client.diagnostics_for(alpha_util.as_uri(), timeout=30)
             note(shown["diagnostics"] == [], f"fixed on disk: {shown}")
 
+            # Two targets share a directory and the module belongs to the second: the first never reads it (P1075),
+            # so the next is tried, and the error in the module is shown.
+            (root / "multi").mkdir()
+            (root / "multi" / "build.ums").write_text(
+                'project {\n    name = "m"\n    version = "0.1.0"\n    prismio = "0.1.0"\n}\n\n'
+                'targets {\n    executable("a") {\n        entry = "a.psm"\n    }\n'
+                '    executable("b") {\n        entry = "b.psm"\n    }\n}\n')
+            (root / "multi" / "a.psm").write_text("fn main() -> Int { return 0 }\n")
+            (root / "multi" / "b.psm").write_text("import lib\n\nfn main() -> Int { return value() }\n")
+            multi_lib = root / "multi" / "lib.psm"
+            multi_lib.write_text("public fn value() -> Int { return missing }\n")
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": multi_lib.as_uri(), "languageId": "prismio",
+                                                                     "version": 1, "text": multi_lib.read_text()}})
+            shown = client.wait_for(lambda m: m.get("method") == "textDocument/publishDiagnostics"
+                                    and m["params"]["uri"] == multi_lib.as_uri() and m["params"]["diagnostics"], timeout=40)
+            note("missing" in shown["params"]["diagnostics"][0]["message"],
+                 f"the program that reads a module is found by trying the manifest's targets in turn: {shown}")
+
             # No manifest: a module is checked through a program that imports it, found from the file upward.
             (root / "loose" / "sub").mkdir(parents=True)
             loose_main = root / "loose" / "main.psm"

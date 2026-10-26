@@ -25,12 +25,15 @@ public struct Documents {
     // The file holding each document's current text; "" for a document that is not Prismio
     // source or a manifest and so is never read by anyone.
     public files: Vec<String>,
+    // Which of the programs a document could belong to has been found to read it: 0 until a program says it
+    // does not (the compiler's P1075), kept across edits so a document does not start the search over.
+    public attempts: Vec<Int>,
     directory: String,
     created: Int
 }
 
 public fn documents(directory: String) -> Documents {
-    return Documents { uris: [], paths: [], versions: [], files: [], directory: directory.clone(), created: 0 }
+    return Documents { uris: [], paths: [], versions: [], files: [], attempts: [], directory: directory.clone(), created: 0 }
 }
 
 impl Documents {
@@ -79,6 +82,14 @@ impl Documents {
         self.paths.push(path.clone())
         self.versions.push(version)
         self.files.push(file.clone())
+        self.attempts.push(0)
+    }
+
+    // The attempt of the document at `path`, or 0.
+    public fn attemptFor(self, path: String) -> Int {
+        let at = self.indexOfPath(path)
+        if (at == none) { return 0 }
+        return self.attempts[expect(at)]
     }
 
     // The full text of a change. A client that sends a change for a document it never opened has
@@ -96,6 +107,7 @@ impl Documents {
         self.paths.removeAt(i)
         self.versions.removeAt(i)
         self.files.removeAt(i)
+        self.attempts.removeAt(i)
     }
 
     // Removes every scratch file: the server is going away.
