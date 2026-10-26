@@ -45,6 +45,18 @@ fn uriPercentDecode(text: String) -> String {
     return out
 }
 
+// One spelling for a path the compiler, the editor and the manifest each write their own way on Windows:
+// forward slashes and an upper-case drive letter (`c:\\work\\a.psm`, `C:/work/a.psm` and the `c%3A` of
+// VS Code are one file). The server compares paths as text, so every path it takes in goes through here.
+// A path with no drive letter is returned as it is, which makes this the identity on every other system.
+public fn pathCanonical(path: String) -> String {
+    if (path.length < 3 or path.charAt(1) != ':') { return path.clone() }
+    let first = path.charAt(0)
+    if ((first >= 'a' and first <= 'z' or first >= 'A' and first <= 'Z') == false) { return path.clone() }
+    let rest = path.slice(1, path.length).replaceAll("\\", "/")
+    return first.toUpper().toString().concat(rest)
+}
+
 // The path a `file:` URI names: `file:///Users/me/a.psm` is `/Users/me/a.psm`, and
 // `file:///C:/work/a.psm` is `C:/work/a.psm`. "" for anything that is not one.
 public fn uriToPath(uri: String) -> String {
@@ -54,7 +66,7 @@ public fn uriToPath(uri: String) -> String {
     if (rest.startsWith("localhost/")) { rest = rest.substring(9, rest.length - 9) }
     let path = uriPercentDecode(rest)
     if (path.length > 2 and path.charAt(0) == '/' and path.charAt(2) == ':') {
-        return path.substring(1, path.length - 1)
+        return pathCanonical(path.slice(1, path.length))
     }
     return path
 }

@@ -13,6 +13,7 @@
 //      first (a module is found by its entry's directory);
 //   4. otherwise the file alone.
 
+import lsp.uri
 import std.fs
 import std.option
 import std.string
@@ -168,7 +169,7 @@ impl ProgramCache {
         let mut declared = "".clone()
         for target in workspace.project.targets {
             if (target.sourcePath.equals("")) { continue }
-            declared = declared.concat(target.sourcePath, "\n")
+            declared = declared.concat(pathCanonical(target.sourcePath), "\n")
         }
         self.manifests.push(manifest.clone())
         self.stamps.push(stamp.clone())

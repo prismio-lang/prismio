@@ -6,6 +6,7 @@
 // server keeps what it showed before rather than clearing it, which a missing summary would
 // otherwise look like.
 
+import lsp.uri
 import std.json
 import std.string
 import std.vec
@@ -72,7 +73,7 @@ public fn parseReport(stderr: String) -> CheckReport {
             continue
         }
         if (kind.equals("diagnostic") == false) { continue }
-        path = doc.text(doc.member(doc.root, "file").unwrapOr(0 - 1))
+        path = pathCanonical(doc.text(doc.member(doc.root, "file").unwrapOr(0 - 1)))
         line = doc.int(doc.member(doc.root, "line").unwrapOr(0 - 1))
         column = doc.int(doc.member(doc.root, "column").unwrapOr(0 - 1))
         length = doc.int(doc.member(doc.root, "length").unwrapOr(0 - 1))
