@@ -50,6 +50,8 @@ fn projectStandardModuleName(path: String) -> String {
 // release a Vec of structs that hold strings), so it is read once per change of the file, not once
 // per request: a row is added when a manifest's size or time of change differs from the row's.
 public struct ProgramCache {
+    // The workspace folder: where the search for a program that imports a file stops when no manifest does.
+    public root: String,
     manifests: Vec<String>,
     stamps: Vec<String>,
     // The sources the manifest's targets start at, one per line.
@@ -57,7 +59,7 @@ public struct ProgramCache {
 }
 
 public fn programCache() -> ProgramCache {
-    return ProgramCache { manifests: [], stamps: [], entries: [] }
+    return ProgramCache { root: "".clone(), manifests: [], stamps: [], entries: [] }
 }
 
 // The nearest `build.ums` at or above `directory`, or "".
@@ -79,7 +81,81 @@ fn projectStamp(path: String) -> String {
     return m.size.toString().concat(":", m.modified.asMillis.toString())
 }
 
+// `parse.stmt` for `<dir>/parse/stmt.psm`: the name `file` is imported by from `dir`.
+fn projectModuleName(dir: String, file: String) -> String {
+    let mut leaf = file.slice(dir.length + 1, file.length).replaceAll("\\", "/")
+    if (leaf.endsWith(".psm")) { leaf = leaf.slice(0, leaf.length - 4).clone() }
+    return leaf.replaceAll("/", ".")
+}
+
+// Whether `text` imports `module`: by name (`import parse.stmt`, with a selection or an alias after it), with its
+// package (`import parse.*`, `import * from parse`) or in a group (`import {stmt, expr} from parse`).
+fn projectImports(text: String, module: String) -> Bool {
+    let dot = module.lastIndexOf(".")
+    for raw in text.split("\n") {
+        let line = raw.trim()
+        if (line.startsWith("import") == false) { continue }
+        let rest = line.slice(6, line.length).trim()
+        if (rest.equals(module) or rest.startsWith(module.concat(" ")) or rest.startsWith(module.concat("."))) { return true }
+        if (dot < 0) { continue }
+        let pkg = module.slice(0, dot).clone()
+        let leaf = module.slice(dot + 1, module.length).clone()
+        if (rest.startsWith(pkg.concat(".*"))) { return true }
+        if (rest.startsWith("*")) {
+            let after = rest.slice(1, rest.length).trim()
+            if (after.startsWith("from ")) {
+                let named = after.slice(5, after.length).trim()
+                if (named.equals(pkg) or named.startsWith(pkg.concat(" "))) { return true }
+            }
+        }
+        if (rest.startsWith("{")) {
+            let close = rest.indexOf("}")
+            if (close < 0) { continue }
+            let tail = rest.slice(close + 1, rest.length).trim()
+            if (tail.startsWith("from ") == false) { continue }
+            let named = tail.slice(5, tail.length).trim()
+            if (named.equals(pkg) == false and named.startsWith(pkg.concat(" ")) == false) { continue }
+            for item in rest.slice(1, close).split(",") {
+                let words = item.trim().split(" ")
+                if (words.length > 0 and words[0].equals(leaf)) { return true }
+            }
+        }
+    }
+    return false
+}
+
 impl ProgramCache {
+    // The nearest program, at or above the file's directory, that imports the file by the name it has from there:
+    // the search ends at the manifest's directory, or at the workspace folder when there is no manifest, so a file
+    // outside any project is looked for in its own directory only, not through every folder up to the root.
+    // "" when none does. The first by name, so the answer does not depend on the order a directory lists in.
+    fn importerOf(self, path: String) -> String {
+        let manifest = projectFindManifest(directoryOf(path))
+        let mut manifestDirectory = "".clone()
+        if (manifest.equals("") == false) { manifestDirectory = directoryOf(manifest) }
+        let mut directory = directoryOf(path)
+        loop {
+            let module = projectModuleName(directory, path)
+            let mut best = "".clone()
+            for name in listDirectory(directory) {
+                if (name.endsWith(".psm") == false) { continue }
+                let candidate = joinPath(directory, name)
+                if (candidate.equals(path)) { continue }
+                if (best.equals("") == false and candidate.compare(best) > 0) { continue }
+                let candidateText = readFile(candidate)
+                if (candidateText.contains("fn main(") and projectImports(candidateText, module)) { best = candidate.clone() }
+            }
+            if (best.equals("") == false) { return best }
+            if (directory.equals(manifestDirectory)) { return "".clone() }
+            if (manifestDirectory.equals("")) {
+                if (self.root.equals("") or projectIsUnder(path, self.root) == false or directory.equals(self.root)) { return "".clone() }
+            }
+            let parent = directoryOf(directory)
+            if (parent.equals(directory) or parent.equals("")) { return "".clone() }
+            directory = parent
+        }
+    }
+
     // The entries `manifest` declares, as it is now.
     fn entriesOf(self, manifest: String) -> String {
         let stamp = projectStamp(manifest)
@@ -124,6 +200,8 @@ impl ProgramCache {
         if (module.equals("") == false) { return Program { entry: path.clone(), module: module } }
         let entry = self.manifestEntry(path)
         if (entry.equals("") == false) { return Program { entry: entry, module: "".clone() } }
+        let importer = self.importerOf(path)
+        if (importer.equals("") == false) { return Program { entry: importer, module: "".clone() } }
         return Program { entry: path.clone(), module: "".clone() }
     }
 }

@@ -2968,7 +2968,24 @@ def run_lsp_workspace_test():
             shown = client.diagnostics_for(alpha_util.as_uri(), timeout=30)
             note(shown["diagnostics"] == [], f"fixed on disk: {shown}")
 
-            # A new file appears and is opened: it belongs to the program whose manifest names it.
+            # No manifest: a module is checked through a program that imports it, found from the file upward.
+            (root / "loose" / "sub").mkdir(parents=True)
+            loose_main = root / "loose" / "main.psm"
+            loose_tool = root / "loose" / "sub" / "tool.psm"
+            loose_main.write_text("import sub.tool\n\nfn main() -> Int { return answer() }\n")
+            loose_tool.write_text("import sub.other\n\npublic fn answer() -> Int { return other() }\n")
+            (root / "loose" / "sub" / "other.psm").write_text("public fn other() -> Int { return 4 }\n")
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": loose_tool.as_uri(), "languageId": "prismio",
+                                                                     "version": 1, "text": loose_tool.read_text()}})
+            shown = client.diagnostics_for(loose_tool.as_uri(), timeout=30)
+            note(shown["diagnostics"] == [], f"a module is checked through the program that imports it: {shown}")
+            broken = "import sub.other\n\npublic fn answer() -> Int { return nothere() }\n"
+            client.notify("textDocument/didChange", {"textDocument": {"uri": loose_tool.as_uri(), "version": 2},
+                                                     "contentChanges": [{"text": broken}]})
+            shown = client.diagnostics_for(loose_tool.as_uri(), timeout=30)
+            note(len(shown["diagnostics"]) == 1 and "nothere" in shown["diagnostics"][0]["message"],
+                 f"and an error in it is shown: {shown}")
+
             note(client.request("shutdown").get("result") is None, "shutdown")
             client.notify("exit")
             client.process.wait(timeout=20)

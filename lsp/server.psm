@@ -267,6 +267,8 @@ impl Server {
             }
         }
         self.utf16 = clientUtf8 == false
+        let rootUri = message.path(message.root, "params.rootUri")
+        if (rootUri != none) { self.programs.root = uriToPath(message.text(expect(rootUri))) }
         self.initialized = true
 
         let out = JsonWriter()
