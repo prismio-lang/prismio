@@ -3,9 +3,16 @@
 The compiler exposes a file-based analysis boundary for editors and build tools:
 
 ```text
-prismio check <source.psm> [--diagnostic-format=json] [--partial]
-                           [--overlay <file.psm> <text-file>] [--module <name>]
+prismio check <source.psm|build.ums> [--diagnostic-format=json] [--partial]
+                           [--overlay <file> <text-file>]... [--module <name>]
+                           [--emit-index <file> [--complete <file.psm> <line> <column>]]
+prismio fmt <source.psm>... [--check] [--write] [--range <from>:<to>]
+prismio dump-tokens
+prismio lsp
 ```
+
+An editor should use `prismio lsp` (below), which runs the rest. The commands are documented
+here because the server is made of them, and because a client that cannot speak LSP can use them directly.
 
 `check` runs the same lexer, parser, import resolver and semantic analysis as
 `build`. It stops before allocation inference, LLVM IR generation and native
@@ -88,11 +95,12 @@ not import -- is checked alone under the name its importers use:
 `prismio check std/map.psm --module std.map`. The name is what gives the file
 its package's access to that package's internals.
 
-Which program a file belongs to is the editor's to find. The IntelliJ plugin
-tries, in order: the file itself when it declares `main`; `--module std.<leaf>`
-for a module of a standard library; each `entry` in the nearest `build.ums`; a
-program in the file's directory or an ancestor that imports it by the module
-name it has from there; and the file alone.
+Which program a file belongs to is the client's to find, or the server's (it does this for every
+client, in `lsp/projects.psm`). The order: the file itself when it declares `main`; `--module
+std.<leaf>` for a module of a standard library in a checkout; the `entry` of the nearest
+`build.ums` target whose directory holds the file; a program found from the file's directory
+upward (to the manifest's directory, or the workspace folder when there is none) that imports it by
+the module name it has from there, the first by name; and the file alone.
 
 ## Checking a file that does not parse
 
@@ -130,10 +138,23 @@ unsaved buffer, and keeps up with typing. The one-shot `check` above is what it 
 prismio lsp          # started by the editor, no arguments
 ```
 
-**What it provides (version 1):** `textDocumentSync` (open, close, full-text change, save) and
-`textDocument/publishDiagnostics`. Hover, definition, completion and the rest are not offered yet;
-the server answers any request it does not implement with `-32601`, and ignores notifications it
-does not know. Capabilities are only advertised for what works.
+**What it provides.** `textDocumentSync` (open, close, full-text change, save) and
+`textDocument/publishDiagnostics`; hover (signature, documentation, type), definition, type
+definition, references, document highlights, document and workspace symbols, signature help (with the
+active parameter), inlay hints (the type of a `let` that does not write one, parameter names at call
+sites), semantic tokens, folding ranges, `prepareRename` and `rename` (refused with a reason for a
+keyword, a clash with a name already declared, or something that is not a name), code actions (the
+"add import" quick fix, from the diagnostic's `data.addImport`), completion (members after a `.`, the
+names in scope, the language's keywords), and `textDocument/formatting` and `rangeFormatting`
+(`prismio fmt`). Capabilities are advertised only for what works; any other request answers `-32601`,
+and notifications it does not know are ignored. `workspace/didChangeWatchedFiles` (`**/*.psm`,
+`**/*.ums`, registered by the server after `initialized`) rechecks every open document, which is how
+an edit made on disk reaches a document that imports the changed file.
+
+**Requests wait for their analysis.** A feature reads the index of the program as of the text the
+document now has. A request that arrives while a check is pending or running is kept until it ends
+and then answered, and `$/cancelRequest` answers a waiting request with `-32800`. The answer to a
+request is never about text older than the request.
 
 **Diagnostics.** After the client has been quiet for 150 ms the server checks the program the
 changed file belongs to (the file itself if it declares `main`, else the nearest `build.ums` entry
@@ -160,10 +181,78 @@ file; `tests/test_runner.py` (`lsp`) holds it to that.
 **Writing a client.** The test client `tests/lsp_client.py` is a complete example of the wire
 format. A client needs: spawn `prismio lsp`, `initialize` / `initialized`, `didOpen` for each open
 `.psm` file, `didChange` with the whole text (`contentChanges[-1].text`), `didClose`, and
-`shutdown` / `exit`. `build.ums` is not analysed yet: opening it produces no diagnostics.
+`shutdown` / `exit`. A manifest (`build.ums`, language id `ums`) is a document like any other: its diagnostics
+(`UMS####` codes) are `prismio check build.ums` over its current text, and completion offers the
+blocks, keys and fixed values the manifest language accepts at the cursor.
+
+## The semantic index
+
+`check --emit-index <file>` writes JSON Lines about the program that was checked, after the run has
+finished (a run that is killed leaves nothing a reader would take). Consumers must ignore unknown
+kinds and fields; the index is internal to a toolchain (the server and the compiler ship together)
+and may change with it, so it carries no version and is not a wire contract for third parties. What a
+reader may rely on:
+
+```json
+{"k":"file","id":0,"path":"prog.psm","module":"","user":true}
+{"k":"decl","id":0,"kind":"fn","name":"add","container":-1,"f":0,"l":1,"c":4,"n":3,"sl":1,"sc":1,"el":1,"ec":47,"user":true,"vis":"private","sig":"fn add(a: Int, b: Int) -> Int","ty":"Int","recv":"Int"}
+{"k":"ref","f":0,"l":1,"c":40,"n":1,"to":1,"role":"read","ty":"Int"}
+{"k":"arg","f":0,"l":2,"c":31,"p":"a","i":0}
+{"k":"stats","decls":4,"resolved":3,"builtin":4,"unresolved":0}
+```
+
+- `file`: an id, the path as the compiler registered it, and whether it is the user's (`user`) or the
+  library's.
+- `decl`: every declaration (`fn`, `method`, `prop`, `struct`, `enum`, `variant`, `trait`, `field`,
+  `param`, `let`, `import`, ...). `l`/`c`/`n` are the **name's** line, column and length; `sl`..`ec` the
+  whole declaration. `sig` is the rendered signature, `ty` the type, `doc` the comment above it.
+  `container` is the id of what holds it, or -1.
+- `ref`: a use of a name. `to` is the declaration's id, -1 for a name the compiler provides
+  (`builtin` says which kind), -2 when the use **is** a declaration's own name. `role` is `read`,
+  `write`, `call`, `type` or `fieldwrite`, and `ty` the type of what it names.
+- `arg`: a call's argument position, `p` the parameter's name and `i` its index.
+- `unresolved`: a name that did not resolve (`name`, and `what` it was used as). The module that
+  exports a candidate is not here: it is the `fix.addImport` of the note after the diagnostic, which
+  is what the "add import" quick fix reads.
+- `completion`: with `--complete`, what could be written at the placeholder (see below).
+- Positions are 1-based lines and UTF-8 byte columns, as everywhere in the protocol. `stats` is last,
+  and its absence means the run did not finish.
+
+### Completion
+
+The buffer at the cursor rarely parses, so a client does what rust-analyzer does: write a placeholder
+identifier (`ixcursor__`) where the word being typed starts, check that buffer, and ask where the
+placeholder is:
+
+```text
+prismio check src/main.psm --partial --overlay src/main.psm /tmp/buffer.psm \
+    --emit-index /tmp/out.idx --complete src/main.psm 12 9
+```
+
+The `completion` records (`label`, `kind`, `detail`, `doc`, `rank`) are the members of the type before a
+`.`, the names in scope, or the contents of a module; no list of library names is kept anywhere else.
+The language's own keywords are not in the index: they come from `prismio dump-tokens`.
+
+## Token tables
+
+`prismio dump-tokens` prints the compiler's token tables as one JSON object (`schemaVersion` 1): the
+keywords, word operators, literals, contextual keywords (with the context each is a keyword in), the
+built-in types, the operators with their kinds, and the separators. Editors generate their lexers and
+grammars from it (the VS Code extension's TextMate grammar is generated, and a test fails if it goes
+stale) instead of copying the lists.
+
+## Formatting
+
+`prismio fmt <file>...` prints nothing and exits 0 when every file is formatted. `--check` exits 1 and
+prints `would reformat <file>` for each that is not; `--write` rewrites them; `--range <from>:<to>`
+(1-based lines) formats only those lines. Only whitespace moves; formatting a formatted file changes
+nothing; the program's IR is the same before and after. `tools/check_fmt.py` holds it to all three over
+every `.psm` in the repository and over damaged copies of them.
 
 ## Current boundary
 
-Each `check` invocation is one process over files: unsaved text arrives through
-`--overlay`, any number of files per run. Symbol queries, completion and hover are not
-part of it; they are the language server's to answer (docs/LSP_PLAN.md, Phase 2).
+Each `check` invocation is one process over files: unsaved text arrives through `--overlay`, any
+number of files per run. The language server (docs/LSP_PLAN.md) keeps no analysis between runs and no
+document text in memory, which is why its memory stays flat; the compiler runs per edit, in a child
+process, and the cost of that is measured in the plan (an ordinary program is inside the 150 ms
+debounce; the compiler checking itself takes 1.2 s).

@@ -43,6 +43,16 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   (`lsp/features.psm`, `tokens.psm`, `edits.psm`, `completion.psm`, `formatting.psm`). Requests read the last good index of the
   program from a file, wait for a pending check, and can be cancelled. Fixture `lsp_features`.
 
+- **The language server serves `build.ums`, and a workspace.** `prismio check build.ums` checks a manifest with the
+  diagnostics of any other check (`--overlay <manifest> <file>` for unsaved text); the server runs it in a child, because
+  the manifest loader keeps what it lexes (about 20 KB a call on this repository's own manifest) and a server lives for
+  hours. A manifest document gets its `UMS####` diagnostics and completion by scope (blocks, keys, fixed values, from a
+  table `lsp_manifest` holds to what the lowering accepts). Which program a file belongs to is read from each manifest once
+  per change of the file, and a module with no manifest is checked through a program that imports it (the search the IntelliJ
+  annotator did, now every client's). `lsp_manifest`, `lsp_workspace` (two programs in one root; a closed module changed on
+  disk and reported with `workspace/didChangeWatchedFiles`). Latency: 162-177 ms for ordinary programs (150 ms of it the
+  debounce), 1.2 s for the compiler checking itself; no cache is built because nothing else is slow.
+
 - **`prismio fmt`: the formatter, in the compiler.** `prismio fmt <file>...` prints formatted source; `--write`
   rewrites files that would change, `--check` writes nothing and exits 1 if any would (the CI form), `--stdin` formats
   piped text (an editor's unsaved buffer), `--range <from>:<to>` formats only the tokens that begin on those lines.
@@ -1072,6 +1082,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   of their functions' IR changed, which is code layout.
 
 ### Fixed
+
+- **The language server leaked 66 KiB a request, and the ledger could not see it.** A `for line in readLines(path)` left by
+  `return` or `break` keeps its descriptor and 64 KiB buffer until exit (`std.fs` says so: call `close`); every index lookup in
+  `lsp/index.psm` returned from inside one. And `completionItems` cut the document with `substring`, which made every request
+  path that held the document leak a copy (hover too, which never completes). `lsp_features` now holds 130 rounds of six
+  requests on a 99 KiB document to 6,000 KiB of growth and measures about 450; it read 70 MiB. The server also removes its
+  index files on exit. Method and rules: the developer docs' *The language server*.
 
 - **Assigning a variable to an `Int?` stored 0.** `found = i` into a scalar optional passed the type check and stored the
   bare value where a `{ present, value }` pair belongs, so a loop that remembers its last match read back as 0 or as

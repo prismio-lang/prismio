@@ -6,12 +6,33 @@ IntelliJ plugin and the Phase 3 VS Code extension both become thin clients of it
 This plan fixes **where each piece of language knowledge lives**, what the compiler must
 change before a server can exist, and the order to build it in.
 
-**Status (2026-10-25): Phase 0 and Phase 1 are built.** `prismio lsp` serves diagnostics for
-open files with unsaved buffers, debounced and cancelled, on one thread (`lsp/`); the contract a
-client needs is in `IDE_PROTOCOL.md` ("The language server"). Not built: the semantic index and
-every feature that needs it (Phase 2), `prismio fmt`, exported token tables, and both editors'
-use of the server (the IntelliJ migration and the VS Code extension are separate work, picked
-up from the section "Handing over to the clients" at the end).
+**Status (2026-10-26): Phases 0, 1, 2 and 2b are built, and both clients exist.** `prismio lsp` serves
+diagnostics with unsaved buffers, and from the semantic index (`check --emit-index`) hover, definition,
+type definition, references, highlights, outline, workspace symbols, signature help, inlay hints, semantic
+tokens, folding, rename and the import quick fix; completion by placeholder (`check --complete`);
+formatting through `prismio fmt`; and for `build.ums` its diagnostics (`prismio check build.ums`) and
+completion. `prismio dump-tokens` exports the token tables. The contract is `IDE_PROTOCOL.md`; the
+architecture and the memory rules are the developer docs' *The language server*. Phase 3 (VS Code,
+`../vscode-prismio`) is built and tested inside a real VS Code. Phase 4 (IntelliJ) has started: the platform
+client runs the server, diagnostics and code actions come from it, and the external annotator and
+`PrismioCheckTarget` are deleted; the rest of the plugin's Java is deleted one package per commit as the
+server's feature replaces it (the plugin's `PrismioLspFeatures.SERVED` says which are switched over). Phase 5
+(speed) is not built: see "Measured latency" below. Windows (`std.poll`'s `PeekNamedPipe`) is **unverified**.
+
+## Measured latency (2026-10-26)
+
+Edit to published diagnostics, 150 ms of it the debounce: 2 lines 162 ms; one 99 KiB function 177 ms; a test
+program 167 ms; one module of the compiler (136 files, 85,000 lines) **1,225 ms**. Ordinary programs sit
+inside the debounce, so the parse cache and the item summary of Phase 5 stay unbuilt until a program
+that size is the common case.
+
+## Memory (2026-10-26)
+
+`lsp_features`: 130 rounds of hover, outline, tokens, hints, references and completion on a 99 KiB document grow
+the server by about 450 KiB (limit 6,000). Two defects were found by bisecting it: a `readLines` loop left by
+`return` leaves its descriptor and 64 KiB buffer open (RSS grew 66 KiB a request), and `substring` of the
+document in `completionItems` made every request path that held the document leak a copy; `slice` is the same
+cut. A manifest is never loaded on a request path (its lexer leaks about 20 KB a call): see KNOWN_ISSUES.
 
 ## Why now
 
