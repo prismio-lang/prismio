@@ -9,7 +9,7 @@ project {
     description = "Prismio compiler"
     license = "Apache-2.0"
     authors = [
-    "Saksham Jaiswal"
+         "Saksham Jaiswal"
     ]
 }
 
