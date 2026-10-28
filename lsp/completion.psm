@@ -6,12 +6,12 @@
 // the members of the type before a `.`, the names in scope, the contents of a module. The server adds
 // the keywords of the language (from `dump-tokens`, never a list of its own) and the protocol's shape.
 
-import lsp.analysis
-import lsp.documents
-import lsp.index
-import lsp.positions
-import lsp.projects
-import lsp.runner
+import analysis
+import documents
+import index
+import positions
+import projects
+import runner
 import std.fs
 import std.json
 import std.string

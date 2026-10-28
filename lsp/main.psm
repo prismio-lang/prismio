@@ -12,7 +12,7 @@
 //
 // `--compiler` is the `prismio` that runs each check; without it, the one beside this program.
 
-import lsp.server
+import server
 import std.fs
 import std.platform
 import std.process

@@ -6,7 +6,7 @@
 // cursor; that is a table (`manifestEntries`), and `tests/test_runner.py` (`lsp_manifest`) holds it to what
 // the lowering accepts, so a key it offers is never one `ums` rejects.
 
-import lsp.positions
+import positions
 import std.json
 import std.string
 import std.vec

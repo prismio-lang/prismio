@@ -10,9 +10,9 @@
 // The run is not waited for. `descriptor` is the child's stderr, for the server to wait on
 // beside everything else; `pump` reads what has arrived; the run is over when it answers true.
 
-import lsp.documents
-import lsp.projects
-import lsp.report
+import documents
+import projects
+import report
 import std.fs
 import std.option
 import std.process

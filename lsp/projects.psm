@@ -13,7 +13,7 @@
 //      first (a module is found by its entry's directory);
 //   4. otherwise the file alone.
 
-import lsp.uri
+import uri
 import std.fs
 import std.option
 import std.string

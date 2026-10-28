@@ -1,9 +1,9 @@
 // The features that change the text: rename, and the quick fix for a missing import.
 
-import lsp.documents
-import lsp.features
-import lsp.index
-import lsp.locator
+import documents
+import features
+import index
+import locator
 import std.json
 import std.string
 import std.vec

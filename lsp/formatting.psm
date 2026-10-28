@@ -5,9 +5,9 @@
 // edit that replaces what changed: the text between the common head and the common tail, widened to
 // whole lines.
 
-import lsp.documents
-import lsp.positions
-import lsp.runner
+import documents
+import positions
+import runner
 import std.json
 import std.string
 import std.vec

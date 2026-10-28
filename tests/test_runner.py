@@ -3448,7 +3448,11 @@ def run_lsp_test():
     import subprocess as sp
 
     problems = []
-    env = {"PRISMIO_INTERNAL_HOSTED": "1"}
+    # The servers under test get a temporary directory of their own, so "no scratch files were left
+    # behind" is a claim about them. Looked for in the shared one, it failed whenever any other
+    # server was alive on the machine (an editor's) or had been killed there.
+    scratch_holder = tempfile.TemporaryDirectory(prefix="prismio-lspscratch-")
+    env = {"PRISMIO_INTERNAL_HOSTED": "1", "TMPDIR": scratch_holder.name}
 
     def note(condition, message):
         if not condition:
@@ -3720,8 +3724,9 @@ def run_lsp_test():
         note(refused.returncode != 0 and "P1099" in refused.stderr,
              f"a compiler with no server beside it should refuse with P1099: {refused.stderr[:300]}")
 
-    note(not [p for p in Path(tempfile.gettempdir()).glob("prismio-lsp-*") if p.is_dir() and any(p.iterdir())],
+    note(not [p for p in Path(scratch_holder.name).glob("prismio-lsp-*") if p.is_dir() and any(p.iterdir())],
          "scratch files were left behind")
+    scratch_holder.cleanup()
 
     if problems:
         print(f"{RED}[FAIL] lsp{RESET}")

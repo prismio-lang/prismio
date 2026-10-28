@@ -12,7 +12,7 @@
 // Parallel columns, as elsewhere: a handful of open documents makes a linear search the right
 // structure, and nothing here is a hot path.
 
-import lsp.uri
+import uri
 import std.fs
 import std.option
 import std.string

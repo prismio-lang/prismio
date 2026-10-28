@@ -13,23 +13,23 @@
 // the language: the server holds no knowledge of Prismio itself, so it cannot disagree with
 // `prismio build`. See docs/LSP_PLAN.md for where the rest of the features come from.
 
-import lsp.analysis
-import lsp.completion
-import lsp.documents
-import lsp.edits
-import lsp.features
-import lsp.formatting
-import lsp.index
-import lsp.locator
-import lsp.manifest
-import lsp.positions
-import lsp.projects
-import lsp.protocol
-import lsp.report
-import lsp.runner
-import lsp.tokens
-import lsp.transport
-import lsp.uri
+import analysis
+import completion
+import documents
+import edits
+import features
+import formatting
+import index
+import locator
+import manifest
+import positions
+import projects
+import protocol
+import report
+import runner
+import tokens
+import transport
+import uri
 import std.fs
 import std.input
 import std.io

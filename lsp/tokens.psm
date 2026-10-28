@@ -6,10 +6,10 @@
 // tokens are sorted into reading order, and each is written relative to the one before, as the protocol
 // asks.
 
-import lsp.documents
-import lsp.index
-import lsp.locator
-import lsp.positions
+import documents
+import index
+import locator
+import positions
 import std.json
 import std.string
 import std.vec

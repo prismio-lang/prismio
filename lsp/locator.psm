@@ -6,10 +6,10 @@
 // the open document if there is one and from disk if not. One locator lives for one request and
 // reads each file once.
 
-import lsp.documents
-import lsp.index
-import lsp.positions
-import lsp.uri
+import documents
+import index
+import positions
+import uri
 import std.fs
 import std.json
 import std.option

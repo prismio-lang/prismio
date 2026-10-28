@@ -4,10 +4,10 @@
 // the JSON of the LSP result. None of them holds anything between requests; each reads the index file
 // it is given and builds what it answers with.
 
-import lsp.documents
-import lsp.index
-import lsp.locator
-import lsp.positions
+import documents
+import index
+import locator
+import positions
 import std.fs
 import std.json
 import std.option
