@@ -63,22 +63,33 @@ internal fn typelistIndexOfName(list: ASTNode, name: String) -> Int {
 
 // What an entry is written as, for a message.
 internal fn typelistEntryText(entry: ASTNode) -> String {
-    return ptr_to_node(entry.child1).s1.clone()
+    let annotation = ptr_to_node(entry.child1)
+    if (annotation.i3 == 1) { return annotation.s1.concat("?") }
+    return annotation.s1.clone()
+}
+
+// `Int?` is a type like any other entry, and a different one from `Int`. A trait or another
+// list named with a `?` is not an entry at all (`typelistCheckEntry` says so), so the lookups
+// below skip it rather than read `Display?` as `Display`.
+internal fn typelistEntryIsOptional(entry: ASTNode) -> Bool {
+    return ptr_to_node(entry.child1).i3 == 1
 }
 
 // Whether one entry accepts a type.
 internal fn typelistEntryAccepts(module: ASTNode, entry: ASTNode, argT: TypeInfo, depth: Int) -> Bool {
     let annotation = ptr_to_node(entry.child1)
     let name = annotation.s1
-    let nested = typelistNamed(name)
-    if (nodeExists(node_to_ptr(nested)) and depth < TYPELIST_MAX_DEPTH) {
-        return typelistAccepts(module, nested, argT, depth + 1)
-    }
-    let traitDecl = monoFindTrait(module, name)
-    if (nodeExists(node_to_ptr(traitDecl))) {
-        let traitRef = createNode(NodeKind.TRAIT_REF)
-        traitRef.s1 = name.clone()
-        return monoImplements(module, argT, traitRef)
+    if (typelistEntryIsOptional(entry) == false) {
+        let nested = typelistNamed(name)
+        if (nodeExists(node_to_ptr(nested)) and depth < TYPELIST_MAX_DEPTH) {
+            return typelistAccepts(module, nested, argT, depth + 1)
+        }
+        let traitDecl = monoFindTrait(module, name)
+        if (nodeExists(node_to_ptr(traitDecl))) {
+            let traitRef = createNode(NodeKind.TRAIT_REF)
+            traitRef.s1 = name.clone()
+            return monoImplements(module, argT, traitRef)
+        }
     }
     let entryT = semaAnnotationType(module, annotation)
     return typeIsValid(entryT) and typeEquals(entryT, argT)
@@ -126,6 +137,12 @@ private fn typelistCheckEntry(module: ASTNode, list: ASTNode, entry: ASTNode, po
         return
     }
     let nested = typelistNamed(annotation.s1)
+    let namesTrait = nodeExists(node_to_ptr(monoFindTrait(module, annotation.s1)))
+    if (typelistEntryIsOptional(entry) and (nodeExists(node_to_ptr(nested)) or namesTrait)) {
+        typelistFail(list, entry, "an optional entry must be a type: ".concat(diagQuote(typelistEntryText(entry)),
+                                                                            " names a list or a trait"))
+        return
+    }
     if (nodeExists(node_to_ptr(nested))) {
         if (typelistReaches(entry, list.s1, 0)) {
             typelistFail(list, entry, "the typelist ".concat(diagQuote(list.s1), " contains itself"))
@@ -147,7 +164,8 @@ private fn typelistCheckDuplicates(list: ASTNode) {
         let mut q = list.child1
         for j in 0..<index {
             let earlier = ptr_to_node(q)
-            let sameType = ptr_to_node(earlier.child1).s1.equals(ptr_to_node(entry.child1).s1)
+            let sameBase = ptr_to_node(earlier.child1).s1.equals(ptr_to_node(entry.child1).s1)
+            let sameType = sameBase and typelistEntryIsOptional(earlier) == typelistEntryIsOptional(entry)
             let sameName = entry.s1.equals("") == false and earlier.s1.equals(entry.s1)
             if (sameName or (sameType and typelistIsSequence(list) == false)) {
                 typelistFail(list, entry, "the typelist ".concat(diagQuote(list.s1), " lists ",

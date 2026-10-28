@@ -1,0 +1,6 @@
+// expect-error: an optional entry must be a type: `Named?` names a list or a trait
+trait Named {
+    fn label(self) -> String
+}
+typelist Bad { Named?, Int }
+fn main() -> Int { return 0 }

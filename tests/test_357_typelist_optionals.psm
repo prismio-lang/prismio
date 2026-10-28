@@ -1,0 +1,75 @@
+// A `T?` is an entry of a typelist, a type distinct from `T`: a set accepts either or both, a
+// sequence takes one at its position, and a pack forwards them like any other argument.
+import std.io
+import std.string
+
+typelist Maybe { Int?, String? }
+typelist Mixed { Int, Int?, Bool }
+typelist Pair (Int?, Bool)
+
+fn present<Ts: Maybe>(...args: Ts) -> Int {
+    let mut count = 0
+    for arg in args {
+        if (arg != none) { count = count + 1 }
+    }
+    return count * 10 + args.length
+}
+
+fn forward<Ts: Maybe>(...args: Ts) -> Int {
+    return present(...args)
+}
+
+fn sum<Ts: Mixed>(...args: Ts) -> Int {
+    let mut total = 0
+    for arg in args {
+        total = total + weight(arg)
+    }
+    return total
+}
+
+fn weight(value: Int) -> Int { return value }
+fn weight(value: Int?) -> Int {
+    if (value == none) { return 100 }
+    return expect(value)
+}
+fn weight(value: Bool) -> Int {
+    if (value) { return 1000 }
+    return 0
+}
+
+fn pairs<Ts: Pair>(...args: Ts) -> Int {
+    let mut total = 0
+    for row in args {
+        if (row[1]) { total = total + 1 }
+        if (row[0] == none) { total = total + 10 }
+    }
+    return total
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let some: Int? = 4
+    let nothing: Int? = none
+    let word: String? = "x"
+    let noWord: String? = none
+
+    if (present(some, nothing) != 12) { return fail("optionals in a set") }
+    if (present(word, noWord, some) != 23) { return fail("two entries of one set") }
+    if (present() != 0) { return fail("an optional pack may take nothing") }
+    if (forward(some, nothing, word) != 23) { return fail("spread forwards optionals") }
+
+    if (sum(1, some, nothing, true) != 1 + 4 + 100 + 1000) { return fail("T and T? in one set") }
+    if (sum(nothing) != 100) { return fail("an optional alone") }
+
+    if (pairs() != 0) { return fail("a sequence may take no groups") }
+    if (pairs(some, true) != 1) { return fail("one group") }
+    if (pairs(nothing, true, some, false, nothing, false) != 21) { return fail("three groups") }
+
+    println("test_357 ok")
+    return 0
+}

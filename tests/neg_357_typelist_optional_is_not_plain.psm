@@ -1,0 +1,7 @@
+// expect-error: argument 1 has type `Int`, which is not in `OnlyMaybe`
+typelist OnlyMaybe { Int?, String }
+fn say<Ts: OnlyMaybe>(...args: Ts) { }
+fn main() -> Int {
+    say(1)
+    return 0
+}

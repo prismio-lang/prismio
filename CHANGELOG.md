@@ -9,6 +9,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **A `typelist` entry can be optional.** `typelist Maybe { Int?, String? }` lists `Int?` as a type of its own,
+  distinct from `Int`: a set accepts either or both, a sequence takes one at its position, `for` and `f(...args)`
+  work as for any entry, and `Int` and `Int?` in one list are not a duplicate. A trait or a list written with a
+  `?` (`Display?`) is an error at the declaration. Before, the `?` was dropped and `{ Int, Int? }` was refused as
+  listing `Int` twice. `sema/typelists.psm` only; `tests/test_357` and `neg_357`-`neg_359`. It is what lets `std.io`
+  take every printable scalar and its optional in one pack.
+
 - **`prismio lsp`: a language server.** LSP 3.17 over standard input and output: document synchronisation and
   `publishDiagnostics`, computed by the compiler itself. After the client is quiet for 150 ms it runs `prismio
   check --partial` over the program the edited file belongs to (the file if it declares `main`, else the nearest
