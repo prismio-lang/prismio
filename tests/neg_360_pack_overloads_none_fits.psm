@@ -1,0 +1,13 @@
+// expect-error: argument 1 has type `Float`, which is not in `Plain`
+trait Shown {
+    fn shown(self) -> String
+}
+impl Shown for Int { fn shown(self) -> String { return "int" } }
+typelist Plain { String, Int }
+typelist Anything { Shown }
+fn say<Ts: Plain>(...args: Ts) -> Int { return 1 }
+fn say<Ts: Anything>(...args: Ts) -> Int { return 2 }
+fn main() -> Int {
+    say(2.5)
+    return 0
+}

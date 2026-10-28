@@ -477,6 +477,9 @@ fn ixNoteArguments(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call: AS
         let parameter = ptr_to_node(param)
         arg = argument.next
         param = parameter.next
+        // A pack takes every argument from here on, and naming it for each says nothing: `println(n)`
+        // is not helped by `args: n`.
+        if (parameter.i1 == 1) { return }
         let name = parameter.s1
         let plain = argument.kind == NodeKind.IDENTIFIER_EXPR and argument.s1.equals(name)
         if (name.equals("self") == false and name.startsWith("$") == false and plain == false and argument.line > 0) {

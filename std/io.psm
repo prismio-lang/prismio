@@ -1,7 +1,7 @@
 // Console output lives in Prismio source. Text reaches the file descriptor
 // through libc's `write`: no stdio, so there is no buffer to flush, and no
-// question of a line on stdout overtaking one on stderr. The public surface is
-// the two exact-type overload sets declared here.
+// question of a line on stdout overtaking one on stderr. The public surface is the four
+// variadic functions at the end, `print`, `println`, `eprint` and `eprintln`.
 //
 // **The write is a builtin, not an `extern fn`, because its symbol is spelled
 // differently on the three platforms this ships for.** POSIX has
@@ -181,90 +181,29 @@ private fn prismioStdIoFloat(value: Float, terminator: Char) -> String {
     return out
 }
 
-public fn print(value: String) {
-    prismioStdIoOut(value)
+// What the console takes: every builtin that has a text, and the optional of each. A type of your
+// own prints through `Display` (std.display), whose functions take whatever these do not.
+//
+// **Optionals are entries, not a trait.** A list of types needs no `impl` and so no import: this
+// is the whole reason `import std.io` is enough to print a number, a `String?` or a mixed line.
+private typelist ConsoleText {
+    String, Int, I8, I16, I64, Isize, U8, U16, U32, U64, Usize, Float, Bool, Char,
+    String?, Int?, I8?, I16?, I64?, Isize?, U8?, U16?, U32?, U64?, Usize?, Float?, Bool?, Char?
 }
 
-public fn print(value: Int) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: I8) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: I16) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: I64) {
-    let text = prismioStdIoSignedInteger(value, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: Isize) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: U8) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: U16) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: U32) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: U64) {
-    let text = prismioStdIoUnsignedInteger(value, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: Usize) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: Float) {
-    let text = prismioStdIoFloat(value, '\0')
-    prismioStdIoOut(text)
-}
-
-public fn print(value: Bool) {
-    if (value) {
-        prismioStdIoOut("true")
-    } else {
-        prismioStdIoOut("false")
+// One value to one descriptor. `terminator` is `'\0'` for none or `'\n'` for the line's end, and
+// travels in the formatter's own allocation, so a `println` of one value is one `write`.
+//
+// The text is bound to a local and then written, as it always was: a String-returning wrapper
+// around the formatter would be an unowned pass-through under the ownership analysis.
+private fn prismioStdIoEmit(fd: Int, value: String, terminator: Char) {
+    if (terminator == '\0') {
+        prismioStdIoWriteAll(fd, value)
+        return
     }
-}
-
-public fn print(value: Char) {
-    let text = prismioStdIoChar(value, '\0')
-    prismioStdIoOut(text)
-}
-
-// Python's `print()` -- the line break on its own, and the obvious way to end a
-// line a `print` began. A literal rather than a formatter, so it is one write
-// that allocates nothing: no site to number, and none of the IDs below move.
-public fn println() {
-    prismioStdIoOut("\n")
-}
-
-// The one overload whose newline cannot share a formatter's allocation: the
-// argument is borrowed, so the line must be copied before it can carry one.
-// The copy is the cheap half. Over 300k lines to /dev/null, against the
-// `printf("%s\n")` this replaces: copy and one write 0.93x, two writes 1.80x.
-public fn println(value: String) {
+    // The argument is borrowed, so the line must be copied before it can carry a newline. The
+    // copy is the cheap half: over 300k lines to /dev/null, against the `printf("%s\n")` this
+    // replaced, a copy and one write was 0.93x and two writes 1.80x.
     let width = __builtin_string_len(value)
     let out = str_with_capacity(width + 1)
     let mut at = 0
@@ -272,403 +211,206 @@ public fn println(value: String) {
         __builtin_string_put_byte(out, at, __builtin_string_byte_at(value, at))
         at = at + 1
     }
-    __builtin_string_put_byte(out, width, '\n')
-    prismioStdIoOut(out)
+    __builtin_string_put_byte(out, width, terminator)
+    prismioStdIoWriteAll(fd, out)
 }
 
-// Status and progress text belongs here rather than on stdout, so that a
-// program whose stdout is a format -- a manifest, JSON diagnostics, a pipe into
-// another tool -- can still say something to the person watching without
-// corrupting it.
-//
-// **The set matches stdout's, type for type.** It did not: `String` and `Int`
-// were the whole of it, on the argument that the remaining widths could wait
-// until a caller needed one. Several values in one call is what made that a
-// hole rather than a gap -- `eprintln("count: ", n)` splits into `eprint` of the
-// text and `eprintln` of the value, so a missing stderr overload turned a
-// working stdout line into a diagnostic the moment it moved to stderr.
-public fn eprint(value: String) {
-    prismioStdIoErr(value)
+private fn prismioStdIoEmit(fd: Int, value: Int, terminator: Char) {
+    let text = prismioStdIoSignedInteger(value as I64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: Int) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: I8, terminator: Char) {
+    let text = prismioStdIoSignedInteger(value as I64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: I8) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: I16, terminator: Char) {
+    let text = prismioStdIoSignedInteger(value as I64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: I16) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: I64, terminator: Char) {
+    let text = prismioStdIoSignedInteger(value, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: I64) {
-    let text = prismioStdIoSignedInteger(value, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: Isize, terminator: Char) {
+    let text = prismioStdIoSignedInteger(value as I64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: Isize) {
-    let text = prismioStdIoSignedInteger(value as I64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: U8, terminator: Char) {
+    let text = prismioStdIoUnsignedInteger(value as U64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: U8) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: U16, terminator: Char) {
+    let text = prismioStdIoUnsignedInteger(value as U64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: U16) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: U32, terminator: Char) {
+    let text = prismioStdIoUnsignedInteger(value as U64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: U32) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: U64, terminator: Char) {
+    let text = prismioStdIoUnsignedInteger(value, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: U64) {
-    let text = prismioStdIoUnsignedInteger(value, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: Usize, terminator: Char) {
+    let text = prismioStdIoUnsignedInteger(value as U64, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: Usize) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: Float, terminator: Char) {
+    let text = prismioStdIoFloat(value, terminator)
+    prismioStdIoWriteAll(fd, text)
 }
 
-public fn eprint(value: Float) {
-    let text = prismioStdIoFloat(value, '\0')
-    prismioStdIoErr(text)
-}
-
-public fn eprint(value: Bool) {
-    if (value) {
-        prismioStdIoErr("true")
+private fn prismioStdIoEmit(fd: Int, value: Bool, terminator: Char) {
+    if (terminator == '\0') {
+        if (value) { prismioStdIoWriteAll(fd, "true") } else { prismioStdIoWriteAll(fd, "false") }
     } else {
-        prismioStdIoErr("false")
+        if (value) { prismioStdIoWriteAll(fd, "true\n") } else { prismioStdIoWriteAll(fd, "false\n") }
     }
 }
 
-public fn eprint(value: Char) {
-    let text = prismioStdIoChar(value, '\0')
-    prismioStdIoErr(text)
+private fn prismioStdIoEmit(fd: Int, value: Char, terminator: Char) {
+    let text = prismioStdIoChar(value, terminator)
+    prismioStdIoWriteAll(fd, text)
+}
+
+// A `T?` shows its value, or `none`.
+private fn prismioStdIoEmitNone(fd: Int, terminator: Char) {
+    if (terminator == '\0') {
+        prismioStdIoWriteAll(fd, "none")
+    } else {
+        prismioStdIoWriteAll(fd, "none\n")
+    }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: Int?, terminator: Char) {
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: I8?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: I16?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: I64?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: Isize?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: U8?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: U16?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: U32?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: U64?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: Usize?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: Float?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: Bool?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: Char?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+private fn prismioStdIoEmit(fd: Int, value: String?, terminator: Char) {
+    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+}
+
+// Python's `print()` -- the line break on its own, and the obvious way to end a line a `print`
+// began. A fixed overload, so it beats the variadic one: a literal and one write, with no
+// instantiation made for an empty argument list.
+public fn println() {
+    prismioStdIoOut("\n")
 }
 
 public fn eprintln() {
     prismioStdIoErr("\n")
 }
 
-public fn eprintln(value: String) {
-    let width = __builtin_string_len(value)
-    let out = str_with_capacity(width + 1)
-    let mut at = 0
-    while (at < width) {
-        __builtin_string_put_byte(out, at, __builtin_string_byte_at(value, at))
-        at = at + 1
-    }
-    __builtin_string_put_byte(out, width, '\n')
-    prismioStdIoErr(out)
-}
-
-public fn eprintln(value: Int) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: I8) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: I16) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: I64) {
-    let text = prismioStdIoSignedInteger(value, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: Isize) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: U8) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: U16) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: U32) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: U64) {
-    let text = prismioStdIoUnsignedInteger(value, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: Usize) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: Float) {
-    let text = prismioStdIoFloat(value, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn eprintln(value: Bool) {
-    if (value) {
-        prismioStdIoErr("true\n")
-    } else {
-        prismioStdIoErr("false\n")
+// **Any number of values, space separated.** The function is made once per call shape, `for` over
+// the arguments is unrolled, and `args.length` is a constant, so `println(n)` is the one formatter
+// and the one `write` it was when this was an overload per type. The last value carries the newline
+// in its own allocation, as it did.
+public fn print<Ts: ConsoleText>(...args: Ts) {
+    let mut first = true
+    for arg in args {
+        if (first == false) { prismioStdIoOut(" ") }
+        first = false
+        prismioStdIoEmit(1, arg, '\0')
     }
 }
 
-public fn eprintln(value: Char) {
-    let text = prismioStdIoChar(value, '\n')
-    prismioStdIoErr(text)
-}
-
-public fn println(value: Int) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: I8) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: I16) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: I64) {
-    let text = prismioStdIoSignedInteger(value, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: Isize) {
-    let text = prismioStdIoSignedInteger(value as I64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: U8) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: U16) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: U32) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: U64) {
-    let text = prismioStdIoUnsignedInteger(value, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: Usize) {
-    let text = prismioStdIoUnsignedInteger(value as U64, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: Float) {
-    let text = prismioStdIoFloat(value, '\n')
-    prismioStdIoOut(text)
-}
-
-public fn println(value: Bool) {
-    if (value) {
-        prismioStdIoOut("true\n")
-    } else {
-        prismioStdIoOut("false\n")
+public fn println<Ts: ConsoleText>(...args: Ts) {
+    let mut remaining = args.length
+    for arg in args {
+        remaining = remaining - 1
+        if (remaining == 0) {
+            prismioStdIoEmit(1, arg, '\n')
+        } else {
+            prismioStdIoEmit(1, arg, '\0')
+            prismioStdIoOut(" ")
+        }
     }
 }
 
-public fn println(value: Char) {
-    let text = prismioStdIoChar(value, '\n')
-    prismioStdIoOut(text)
+// Status and progress text belongs on stderr rather than stdout, so that a program whose stdout is a
+// format -- a manifest, JSON diagnostics, a pipe into another tool -- can still say something to the
+// person watching without corrupting it. The set matches stdout's, type for type, because it is the
+// same list.
+public fn eprint<Ts: ConsoleText>(...args: Ts) {
+    let mut first = true
+    for arg in args {
+        if (first == false) { prismioStdIoErr(" ") }
+        first = false
+        prismioStdIoEmit(2, arg, '\0')
+    }
 }
 
-// A scalar's `T?`: its value, or `none`.
-
-public fn print(value: Int?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: I8?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: I16?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: I64?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: Isize?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: U8?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: U16?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: U32?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: U64?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: Usize?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: Char?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: Float?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-public fn print(value: Bool?) {
-    if (value == none) { prismioStdIoOut("none") } else { print(expect(value)) }
-}
-
-public fn println(value: Int?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: I8?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: I16?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: I64?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: Isize?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: U8?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: U16?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: U32?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: U64?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: Usize?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: Char?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: Float?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-public fn println(value: Bool?) {
-    if (value == none) { prismioStdIoOut("none\n") } else { println(expect(value)) }
-}
-
-public fn eprint(value: Int?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: I8?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: I16?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: I64?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: Isize?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: U8?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: U16?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: U32?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: U64?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: Usize?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: Char?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: Float?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-public fn eprint(value: Bool?) {
-    if (value == none) { prismioStdIoErr("none") } else { eprint(expect(value)) }
-}
-
-public fn eprintln(value: Int?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: I8?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: I16?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: I64?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: Isize?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: U8?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: U16?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: U32?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: U64?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: Usize?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: Char?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: Float?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
-}
-public fn eprintln(value: Bool?) {
-    if (value == none) { prismioStdIoErr("none\n") } else { eprintln(expect(value)) }
+public fn eprintln<Ts: ConsoleText>(...args: Ts) {
+    let mut remaining = args.length
+    for arg in args {
+        remaining = remaining - 1
+        if (remaining == 0) {
+            prismioStdIoEmit(2, arg, '\n')
+        } else {
+            prismioStdIoEmit(2, arg, '\0')
+            prismioStdIoErr(" ")
+        }
+    }
 }

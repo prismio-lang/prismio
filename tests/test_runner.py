@@ -2762,7 +2762,7 @@ def run_index_test():
                          "fn main() -> Int {\n    let c = Counter.new()\n    println(c.n)\n    return 0\n}\n")
         done, records = indexed(target=calls)
         printlns = [r for r in records if r["k"] == "decl" and r["name"] == "println"]
-        if len(printlns) < 3:
+        if len(printlns) < 2:
             problems.append(f"overloads of a used library function should be written with it: {len(printlns)}")
         creates = [r for r in records if r["k"] == "ref" and r["l"] == 10 and r["c"] == 21]
         if not creates or creates[0]["to"] < 0:
@@ -3210,7 +3210,7 @@ def run_lsp_features_test():
             # --- inlay hints ---
             hints = ask("textDocument/inlayHint", range={"start": {"line": 0, "character": 0}, "end": {"line": 20, "character": 0}})
             texts = sorted(h["label"] for h in hints)
-            note(texts == [": Int", ": Int", ": Point", "a:", "b:", "value:"], f"inlay hints: {texts}")
+            note(texts == [": Int", ": Int", ": Point", "a:", "b:"], f"inlay hints (a pack parameter gets none): {texts}")
 
             # --- semantic tokens, folding ---
             tokens = ask("textDocument/semanticTokens/full")["data"]
@@ -3273,7 +3273,7 @@ def run_lsp_features_test():
             at = where(lib, "println(v.length)", 0, "println(v.length)")
             help_ = ask("textDocument/signatureHelp", position={"line": at["line"], "character": at["character"] + 8})
             labels = [sig["label"] for sig in (help_ or {}).get("signatures", [])]
-            note(len(labels) >= 8 and all("println" in label for label in labels), f"every overload of println is offered: {labels[:4]}")
+            note(len(labels) == 2 and all("println" in label for label in labels), f"every overload of println is offered: {labels}")
             first = (help_ or {}).get("signatures", [{}])[0]
             note(bool(first.get("parameters")), f"a library function's parameters are located in its label: {first}")
 

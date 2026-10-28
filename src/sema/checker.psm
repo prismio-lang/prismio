@@ -3027,7 +3027,10 @@ private fn semaSplitPrintStatement(module: ASTNode, stmt: ASTNode) {
     // Without std.io imported there is no `print` to split. Overload resolution
     // then reports "unknown function `print`" at the call, which is the mistake;
     // rewriting first would report it at an argument.
-    if (semaDeclaresFunction(name) == false) { return }
+    //
+    // `print` is a pack in std.io, and a generic is a template, not an entry of the declaration
+    // index (monoHasTemplate says so), so the template counts as the declaration.
+    if (semaDeclaresFunction(name) == false and monoHasTemplate(module, name, NodeKind.FUNCTION) == false) { return }
 
     // Take the separator off the end. It is looked for anywhere in the list so
     // that a misplaced one is reported as the misplacement it is, rather than

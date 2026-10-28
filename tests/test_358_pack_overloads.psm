@@ -1,0 +1,49 @@
+// Two functions of one name that each have a pack are overloads: a call goes to the one that accepts
+// its arguments, to the pack of concrete types when both do (the trait-bounded one is the general
+// case), and a fixed overload still beats either.
+import std.io
+import std.string
+
+trait Shown {
+    fn shown(self) -> String
+}
+impl Shown for Int { fn shown(self) -> String { return "int" } }
+impl Shown for String { fn shown(self) -> String { return "string" } }
+struct V { x: Int }
+impl Shown for V { fn shown(self) -> String { return "V" } }
+
+typelist Plain { String, Int, Int? }
+typelist Anything { Shown }
+
+fn say<Ts: Plain>(...args: Ts) -> Int { return 1 }
+fn say<Ts: Anything>(...args: Ts) -> Int { return 2 }
+
+// Declared the other way round: the order of the declarations does not decide.
+fn other<Ts: Anything>(...args: Ts) -> Int { return 20 }
+fn other<Ts: Plain>(...args: Ts) -> Int { return 10 }
+
+fn fixed(value: Int) -> Int { return 100 }
+fn fixed<Ts: Plain>(...args: Ts) -> Int { return 1 }
+fn fixed<Ts: Anything>(...args: Ts) -> Int { return 2 }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let maybe: Int? = 3
+    if (say(1, "a") != 1) { return fail("concrete types, both packs fit") }
+    if (say(maybe) != 1) { return fail("an optional entry") }
+    if (say() != 1) { return fail("no arguments: both fit, the concrete one wins") }
+    if (say(V { x: 1 }) != 2) { return fail("a user type falls to the trait pack") }
+    if (say(1, V { x: 1 }, "a") != 2) { return fail("one user type among builtins") }
+    if (other(1, "a") != 10) { return fail("declaration order does not decide") }
+    if (other(V { x: 1 }) != 20) { return fail("second declared, only one fits") }
+    if (fixed(7) != 100) { return fail("a fixed overload beats both packs") }
+    if (fixed(7, 8) != 1) { return fail("two arguments: no fixed overload") }
+    if (fixed(V { x: 1 }) != 2) { return fail("a fixed overload that does not fit") }
+    println("test_358 ok")
+    return 0
+}

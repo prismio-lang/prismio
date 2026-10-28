@@ -53,6 +53,25 @@ private fn packTemplateNamed(module: ASTNode, name: String) -> ASTNode {
     return ptr_to_node(ptr_null())
 }
 
+// Whether a function of this name has a pack: it is a definition of the name though no declaration
+// index entry says so, which is what retires an `extern fn` of the same name (symbols.psm).
+internal fn packHasTemplate(module: ASTNode, name: String) -> Bool {
+    return nodeExists(node_to_ptr(packTemplateNamed(module, name)))
+}
+
+private fn packTemplateCount(module: ASTNode, name: String) -> Int {
+    let mut count = 0
+    let mut p = module.child2
+    while (nodeExists(p)) {
+        let template = ptr_to_node(p)
+        if (template.kind == NodeKind.FUNCTION and template.s1.equals(name) and packHasPackParameter(template)) {
+            count = count + 1
+        }
+        p = template.next
+    }
+    return count
+}
+
 private fn packFixedCount(template: ASTNode) -> Int {
     let mut count = 0
     let mut p = template.child1
@@ -185,7 +204,7 @@ private fn packRejection(module: ASTNode, template: ASTNode, packParam: ASTNode,
 
 // How many arguments each pack takes, in declaration order, or false after reporting.
 private fn packBind(module: ASTNode, template: ASTNode, callExpr: ASTNode, fixed: Int,
-                    inout counts: Vec<Int>) -> Bool {
+                    inout counts: Vec<Int>, report: Bool) -> Bool {
     let argHead = callExpr.child2
     let total = packChainLength(argHead)
     let mut at = fixed
@@ -196,8 +215,10 @@ private fn packBind(module: ASTNode, template: ASTNode, callExpr: ASTNode, fixed
         let list = packListOf(module, template, packParam)
         let annotation = ptr_to_node(packParam.child1)
         if (nodeIsNull(node_to_ptr(list)) and packTypeParameterNamed(template, annotation.s1)) {
-            semaErrorAt(callExpr, "the pack type ".concat(diagQuote(annotation.s1), " needs a typelist bound, as in `<",
-                                                         annotation.s1, ": Printable>`"))
+            if (report) {
+                semaErrorAt(callExpr, "the pack type ".concat(diagQuote(annotation.s1), " needs a typelist bound, as in `<",
+                                                             annotation.s1, ": Printable>`"))
+            }
             return false
         }
         let mut concrete = typeInvalid()
@@ -216,7 +237,7 @@ private fn packBind(module: ASTNode, template: ASTNode, callExpr: ASTNode, fixed
         let sequence = nodeExists(node_to_ptr(list)) and typelistIsSequence(list)
         if (sequence) { width = typelistWidth(list) }
         if (width == 0) {
-            semaErrorAt(list, "the typelist ".concat(diagQuote(list.s1), " is empty and accepts nothing"))
+            if (report) { semaErrorAt(list, "the typelist ".concat(diagQuote(list.s1), " is empty and accepts nothing")) }
             return false
         }
         loop {
@@ -237,10 +258,60 @@ private fn packBind(module: ASTNode, template: ASTNode, callExpr: ASTNode, fixed
     }
 
     if (at < total) {
-        packReportLeftover(module, template, argHead, fixed, counts, at, total)
+        if (report) { packReportLeftover(module, template, argHead, fixed, counts, at, total) }
         return false
     }
     return true
+}
+
+// Whether any of a function's packs is bounded by a trait, however deep: such a pack takes whatever
+// implements the trait, so it is the less specific of two that both fit a call.
+private fn packIsTraitBound(module: ASTNode, template: ASTNode) -> Bool {
+    let first = packChainAt(template.child1, packFixedCount(template))
+    let mut ptr = node_to_ptr(first)
+    while (nodeExists(ptr)) {
+        let packParam = ptr_to_node(ptr)
+        let list = packListOf(module, template, packParam)
+        if (nodeExists(node_to_ptr(list)) and typelistHasTraitEntry(module, list, 0)) { return true }
+        ptr = packParam.next
+    }
+    return false
+}
+
+// Whether a call's arguments bind to a function's packs, without reporting why not.
+private fn packFits(module: ASTNode, template: ASTNode, callExpr: ASTNode) -> Bool {
+    let mut counts: Vec<Int> = []
+    return packBind(module, template, callExpr, packFixedCount(template), counts, false)
+}
+
+// Which of the functions named `name` that have a pack takes this call. One pack is the common case
+// and is answered without binding anything. With several, each is tried without reporting, and the
+// one that fits and is the most specific wins -- a pack of concrete types over a pack bounded by a
+// trait, then the one declared first. When none fits the first is returned, so the error a call
+// has always got is still the one it gets.
+private fn packChooseTemplate(module: ASTNode, name: String, callExpr: ASTNode) -> ASTNode {
+    let first = packTemplateNamed(module, name)
+    if (nodeIsNull(node_to_ptr(first)) or packTemplateCount(module, name) < 2) { return first }
+
+    let total = packChainLength(callExpr.child2)
+    let mut best = first
+    let mut found = false
+    let mut bestTraitBound = false
+    let mut p = module.child2
+    while (nodeExists(p)) {
+        let template = ptr_to_node(p)
+        p = template.next
+        if (template.kind == NodeKind.FUNCTION and template.s1.equals(name) and packHasPackParameter(template)
+                and total >= packFixedCount(template) and packFits(module, template, callExpr)) {
+            let traitBound = packIsTraitBound(module, template)
+            if (found == false or (bestTraitBound and traitBound == false)) {
+                best = template
+                bestTraitBound = traitBound
+                found = true
+            }
+        }
+    }
+    return best
 }
 
 // The first argument no pack took. A sequence that ran out of arguments mid-group says so by
@@ -679,15 +750,14 @@ private fn packInstantiate(module: ASTNode, template: ASTNode, callExpr: ASTNode
 // other call, which is nearly all of them, so it is one walk of the template chain.
 internal fn packResolveCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode) {
     if (callee.kind != NodeKind.IDENTIFIER_EXPR) { return }
-    let template = packTemplateNamed(module, callee.s1)
-    if (nodeIsNull(node_to_ptr(template))) { return }
+    let named = packTemplateNamed(module, callee.s1)
+    if (nodeIsNull(node_to_ptr(named))) { return }
     if (monoConcreteOverloadFits(module, callee.s1, callExpr.child2)) { return }
 
-    let fixed = packFixedCount(template)
     let total = packChainLength(callExpr.child2)
-    if (total < fixed) { return }
+    if (total < packFixedCount(named)) { return }
 
-    let mut p = packChainAt(callExpr.child2, fixed)
+    let mut p = packChainAt(callExpr.child2, packFixedCount(named))
     let mut argPtr = node_to_ptr(p)
     while (nodeExists(argPtr)) {
         let arg = ptr_to_node(argPtr)
@@ -700,6 +770,11 @@ internal fn packResolveCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode)
         argPtr = arg.next
     }
 
+    // The arguments have types now, which is what choosing among several packs reads.
+    let template = packChooseTemplate(module, callee.s1, callExpr)
+    let fixed = packFixedCount(template)
+    if (total < fixed) { return }
+
     if (total - fixed > PACK_MAX_ARGUMENTS) {
         semaErrorAt(callExpr, diagQuote(callee.s1).concat(" is called with ", (total - fixed).toString(),
                                                           " variadic arguments; the limit is ",
@@ -710,7 +785,7 @@ internal fn packResolveCall(module: ASTNode, callExpr: ASTNode, callee: ASTNode)
     }
 
     let mut counts: Vec<Int> = []
-    if (packBind(module, template, callExpr, fixed, counts) == false) {
+    if (packBind(module, template, callExpr, fixed, counts, true) == false) {
         callExpr.i1 = 1
         return
     }

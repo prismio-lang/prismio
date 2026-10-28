@@ -105,6 +105,25 @@ internal fn typelistAccepts(module: ASTNode, list: ASTNode, argT: TypeInfo, dept
     return false
 }
 
+// Whether a list has a trait among its entries, in a nested list too. A trait entry accepts anything
+// that implements it, so a list that has one is the less specific of two that both accept an argument.
+internal fn typelistHasTraitEntry(module: ASTNode, list: ASTNode, depth: Int) -> Bool {
+    let mut p = list.child1
+    while (nodeExists(p)) {
+        let entry = ptr_to_node(p)
+        p = entry.next
+        if (typelistEntryIsOptional(entry)) { continue }
+        let name = ptr_to_node(entry.child1).s1
+        let nested = typelistNamed(name)
+        if (nodeExists(node_to_ptr(nested))) {
+            if (depth < TYPELIST_MAX_DEPTH and typelistHasTraitEntry(module, nested, depth + 1)) { return true }
+        } else if (nodeExists(node_to_ptr(monoFindTrait(module, name)))) {
+            return true
+        }
+    }
+    return false
+}
+
 // ---------------------------------------------------------
 // Declarations
 // ---------------------------------------------------------

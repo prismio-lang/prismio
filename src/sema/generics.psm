@@ -1282,11 +1282,16 @@ private fn monoLiteralFits(expected: TypeInfo, arg: ASTNode) -> Bool {
 // `f(5)` beside `fn f(x: Int)` and `fn f<T>(x: T)` used to name `f<Int>`, so the
 // overload written for `Int` could never be called.
 internal fn monoConcreteOverloadFits(module: ASTNode, name: String, argPtr: Ptr) -> Bool {
+    // An `extern fn` is a candidate only while no `fn` of the name is defined (semaFindFunctionOverload):
+    // after that it is the forward declaration of the definition, and resolution never picks it. Counted
+    // here anyway, it would stop a generic or a pack from being tried for a call that nothing else takes --
+    // a program that re-declares `extern fn println(s: String)` beside std.io's `println`.
+    let definitionExists = semaHasFunctionDefinition(module, name)
     let count = ir_decl_count(name)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
-        if ((decl.kind == NodeKind.FUNCTION or decl.kind == NodeKind.EXTERN_FUNCTION)
-                and monoParamsTakeExactly(module, decl.child1, argPtr)) {
+        let usable = decl.kind == NodeKind.FUNCTION or (decl.kind == NodeKind.EXTERN_FUNCTION and definitionExists == false)
+        if (usable and monoParamsTakeExactly(module, decl.child1, argPtr)) {
             return true
         }
     }

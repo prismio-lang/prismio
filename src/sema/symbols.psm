@@ -376,7 +376,7 @@ private fn semaUnwrappedArgumentCount(module: ASTNode, fnNode: ASTNode, argPtr: 
 
 // True when the module contains a real `fn` body for `name`, as opposed to only an
 // `extern fn` declaration of it.
-private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
+internal fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
     let count = ir_decl_count(name)
     for i in 0..<count {
         let scan = ptr_to_node(ir_decl_at(name, i))
@@ -391,7 +391,10 @@ private fn semaHasFunctionDefinition(module: ASTNode, name: String) -> Bool {
             return true
         }
     }
-    return false
+    // A pack is a definition too, though it is a template and so not in the index: std.io's `print`
+    // has no other, and a program that declares `extern fn print(s: String)` as well must keep getting
+    // std's, as it did when `print(String)` was an ordinary function.
+    return packHasTemplate(module, name)
 }
 
 // `call` is only ever used to place the diagnostic; resolution itself depends
@@ -635,6 +638,17 @@ private fn semaNoteArgumentTypes(argPtr: Ptr) {
     }
 }
 
+// An instance made from a generic or a pack is named for its template and the types it was made
+// for (`println$pack$Int`), and a selective import names the template (`import std.io.println`).
+// A name written in source has no `$`, so what comes before the first one is the template's.
+private fn semaTemplateName(name: String) -> String {
+    let separator = monoSeparator().charAt(0)
+    for i in 0..<name.length {
+        if (name.charAt(i) == separator) { return name.substring(0, i) }
+    }
+    return name.clone()
+}
+
 internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
@@ -716,7 +730,7 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         if (isCandidate and selective) {
             let declModule = semaFileQualifier(stmt.file)
             if (ir_select_any(call.file, declModule) == 1
-                    and ir_select_has(call.file, declModule, name) == 0) {
+                    and ir_select_has(call.file, declModule, semaTemplateName(name)) == 0) {
                 isCandidate = false
             }
         }

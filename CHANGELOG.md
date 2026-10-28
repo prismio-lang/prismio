@@ -9,6 +9,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`std.io` is four variadic functions, and `std.display` is no longer needed to print.** `print`, `println`,
+  `eprint` and `eprintln` take any number of values of any builtin type or the optional of one (`String?`, `Int?`,
+  …), written once over a `typelist` instead of as about 100 overloads (`std/io.psm` 674 lines → 412). A
+  `println(n)` is still the one formatter and the one `write` it was: the same output, and 0.26 s user against
+  0.26-0.27 s for three million lines, 1.01 s against 1.01-1.02 s for a mixed four-value line. `std.display` is
+  for a type of your own (`impl Display`) and for `${}`; a call with only builtin values never reaches it.
+  `println()` and `eprintln()` stay fixed overloads.
+
+- **Functions of one name that each have a pack are overloads.** A call goes to the pack whose typelist accepts
+  every argument; the pack of concrete types wins over a trait-bounded one, then the first declared, and a fixed
+  overload beats any. When none fits the error is the first pack's, as before. It is what lets `std.io`'s
+  `println` and `std.display`'s share a name. `sema/packs.psm` (`packChooseTemplate`), `tests/test_358`, `neg_360`.
+
 - **A `typelist` entry can be optional.** `typelist Maybe { Int?, String? }` lists `Int?` as a type of its own,
   distinct from `Int`: a set accepts either or both, a sequence takes one at its position, `for` and `f(...args)`
   work as for any entry, and `Int` and `Int?` in one list are not a duplicate. A trait or a list written with a
@@ -1114,6 +1127,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   of their functions' IR changed, which is code layout.
 
 ### Fixed
+
+- **`import std.io.println` of a pack failed: `unknown function println$pack$Int`.** An instance made from a generic or a
+  pack is named for its template and its types, and the selective-import check looked that whole name up in the set the file
+  named. It reads what comes before the first `$` now (`tests/test_359`).
+
+- **An `extern fn print(s: String)` beside `import std.io` linked `_print`.** Resolution retires an `extern` once a `fn` of the
+  name is defined, and a pack was not counted as a definition, so a program that re-declared `print` or `println` as an extern
+  (several tests do) bound to a libc symbol that does not exist. A pack counts, and `monoConcreteOverloadFits` applies the same
+  rule, so the extern no longer stops a pack from being tried.
+
+- **The language server hinted `args:` on every value of a variadic call.** A pack parameter gets no inlay hint now, and the
+  `lsp` fixture no longer reads the shared temporary directory, so a language server running in an editor (or a killed one's
+  leftovers) cannot fail it.
 
 - **The first project build in a fresh `TMPDIR` aborted.** `merge_curated_into_program` released the results of `command_quote_arg`
   (`rt_base_alloc` blocks) with libc `free`, which aborts on a slab block ("pointer being freed was not allocated", exit -6)

@@ -1,0 +1,13 @@
+// A pack can be imported by name. The instance made for a call is named for its template and the
+// types it was made for (`println$pack$Int`), and a selective import names the template, so the
+// selection is read before the first `$`.
+import std.io.print
+import std.io.println
+
+fn main() -> Int {
+    print("test_359", "ok")
+    println()
+    println(1)
+    println("a", 2, true)
+    return 0
+}
