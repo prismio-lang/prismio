@@ -44,7 +44,7 @@ fn featureNoDecl() -> IndexDecl {
 // ---------------------------------------------------------------------------------------------
 // Hover
 
-fn featureHoverMarkdown(decl: IndexDecl, type: String, builtin: String, role: String) -> String {
+fn featureHoverMarkdown(decl: IndexDecl, type: String, builtin: String, role: String, memberSig: String, memberDoc: String) -> String {
     let mut text = "".clone()
     if (decl.found) {
         let mut signature = decl.sig.clone()
@@ -61,7 +61,13 @@ fn featureHoverMarkdown(decl: IndexDecl, type: String, builtin: String, role: St
     if (builtin.equals("") == false or role.equals("")) {
         text = "```prismio\n".concat(type, "\n```")
         if (builtin.equals("type")) { text = "```prismio\n".concat(type, "\n```\n\nA type the compiler provides.") }
-        if (builtin.equals("member")) { text = "A member the compiler provides." }
+        if (builtin.equals("member")) {
+            text = "A member the compiler provides."
+            if (memberSig.equals("") == false) {
+                text = "```prismio\n".concat(memberSig, "\n```")
+                if (memberDoc.equals("") == false) { text = text.concat("\n\n", memberDoc) }
+            }
+        }
         if (builtin.equals("intrinsic")) { text = "A function the compiler provides." }
     }
     return text
@@ -84,7 +90,7 @@ public fn featureHover(q: FeatureQuery, docs: Documents, loc: Locator) -> String
         type = decl.type.clone()
     }
     if (decl.found == false and ref.to != 0 - 1) { return "null".clone() }
-    let markdown = featureHoverMarkdown(decl, type, ref.builtin, ref.role)
+    let markdown = featureHoverMarkdown(decl, type, ref.builtin, ref.role, ref.sig, ref.doc)
     if (markdown.equals("")) { return "null".clone() }
     let out = JsonWriter()
     out.beginObject()
@@ -309,23 +315,48 @@ public fn featureWorkspaceSymbols(indexes: Vec<String>, query: String, docs: Doc
 // ---------------------------------------------------------------------------------------------
 // Signature help
 
-// The offset of the `(` that is open at `offset`, scanning back over balanced brackets, or -1.
+// The offset of the `(` that is open at `offset`, or -1: read forward from a line a little before it, keeping the
+// brackets still open, so that a parenthesis inside a string, a character or a comment opens nothing.
 fn featureOpenParen(text: String, offset: Int) -> Int {
-    let mut depth = 0
-    let mut i = offset - 1
-    let floor = offset - 4000
-    while (i >= 0 and i >= floor) {
-        let b = text.byteAt(i)
-        if (b == 41 or b == 93 or b == 125) { depth = depth + 1 }
-        if (b == 40 or b == 91 or b == 123) {
-            if (depth == 0) {
-                if (b == 40) { return i }
-                return 0 - 1
-            }
-            depth = depth - 1
-        }
-        i = i - 1
+    let mut from = offset - 8000
+    if (from < 0) {
+        from = 0
+    } else {
+        while (from < offset and text.byteAt(from - 1) != 10) { from = from + 1 }
     }
+    let mut open: Vec<Int> = []
+    let mut inString = false
+    let mut i = from
+    while (i < offset) {
+        let b = text.byteAt(i)
+        if (inString) {
+            if (b == 92) {
+                i = i + 2
+                continue
+            }
+            if (b == 34 or b == 10) { inString = false }
+            i = i + 1
+            continue
+        }
+        if (b == 34) {
+            inString = true
+        } else if (b == 47 and i + 1 < offset and text.byteAt(i + 1) == 47) {
+            while (i < offset and text.byteAt(i) != 10) { i = i + 1 }
+            continue
+        } else if (b == 39) {
+            // A character literal: `'('` and `'\n'`.
+            if (i + 1 < offset and text.byteAt(i + 1) == 92) { i = i + 4 } else { i = i + 3 }
+            continue
+        } else if (b == 40 or b == 91 or b == 123) {
+            open.push(i)
+        } else if ((b == 41 or b == 93 or b == 125) and open.length > 0) {
+            open.truncate(open.length - 1)
+        }
+        i = i + 1
+    }
+    if (open.length == 0) { return 0 - 1 }
+    let top = open[open.length - 1]
+    if (text.byteAt(top) == 40) { return top }
     return 0 - 1
 }
 
@@ -356,6 +387,85 @@ fn featureIsWordByte(b: Int) -> Bool {
     return (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b == 95 or (b >= 48 and b <= 57) or b >= 128
 }
 
+// One signature as the protocol has it: the label, its comment, and where each parameter sits in the label.
+// The parameters are read from the label itself (what stands between its parentheses, up to each top-level
+// comma), so a library function, which the index records no parameters for, has them too. Returns how many.
+fn featureSignatureEntry(out: JsonWriter, label: String, doc: String) -> Int {
+    out.beginObject()
+    out.key("label")
+    out.string(label)
+    if (doc.equals("") == false) {
+        out.key("documentation")
+        out.beginObject()
+        out.key("kind")
+        out.string("markdown")
+        out.key("value")
+        out.string(doc)
+        out.endObject()
+    }
+    out.key("parameters")
+    out.beginArray()
+    // The opening parenthesis of the parameter list: the first one outside any `<...>`.
+    let mut open = 0 - 1
+    let mut angle = 0
+    let mut at = 0
+    while (at < label.length) {
+        let b = label.byteAt(at)
+        if (b == 60) { angle = angle + 1 }
+        if (b == 62 and angle > 0) { angle = angle - 1 }
+        if (b == 40 and angle == 0) {
+            open = at
+            break
+        }
+        at = at + 1
+    }
+    let mut count = 0
+    if (open >= 0) {
+        let mut start = open + 1
+        let mut depth = 0
+        let mut i = open + 1
+        let mut done = false
+        while (i <= label.length and done == false) {
+            let mut edge = i == label.length
+            if (edge == false) {
+                let b = label.byteAt(i)
+                if (b == 40 or b == 91 or b == 60) { depth = depth + 1 }
+                if (b == 93 or (b == 62 and depth > 0)) { depth = depth - 1 }
+                if (b == 41) {
+                    if (depth == 0) {
+                        edge = true
+                        done = true
+                    } else {
+                        depth = depth - 1
+                    }
+                }
+                if (b == 44 and depth == 0) { edge = true }
+            }
+            if (edge) {
+                let mut from = start
+                let mut to = i
+                while (from < to and label.byteAt(from) == 32) { from = from + 1 }
+                while (to > from and label.byteAt(to - 1) == 32) { to = to - 1 }
+                if (to > from) {
+                    out.beginObject()
+                    out.key("label")
+                    out.beginArray()
+                    out.int(from)
+                    out.int(to)
+                    out.endArray()
+                    out.endObject()
+                    count = count + 1
+                }
+                start = i + 1
+            }
+            i = i + 1
+        }
+    }
+    out.endArray()
+    out.endObject()
+    return count
+}
+
 public fn featureSignatureHelp(q: FeatureQuery, docs: Documents, loc: Locator, offset: Int) -> String {
     let open = featureOpenParen(q.text, offset)
     if (open < 0) { return "null".clone() }
@@ -372,64 +482,48 @@ public fn featureSignatureHelp(q: FeatureQuery, docs: Documents, loc: Locator, o
     while (line0 + 1 < index.lineCount() and index.lineStart(line0 + 1) <= start) { line0 = line0 + 1 }
     let col1 = start - index.lineStart(line0) + 1
     let ref = indexRefAt(q.index, q.file, line0 + 1, col1)
-    if (ref.to < 0) { return "null".clone() }
-    let decl = indexDecl(q.index, ref.to)
-    if (decl.found == false or decl.sig.equals("") or (decl.kind.equals("fn") == false and decl.kind.equals("method") == false
-            and decl.kind.equals("extern") == false)) {
-        return "null".clone()
-    }
-    let parameters = indexParameters(q.index, decl.id)
-    let mut active = featureCommasBetween(q.text, open, offset)
-    if (calledAfterDot and parameters.length > 0) { active = active + 1 }
     let out = JsonWriter()
     out.beginObject()
     out.key("signatures")
     out.beginArray()
-    out.beginObject()
-    out.key("label")
-    out.string(decl.sig)
-    if (decl.doc.equals("") == false) {
-        out.key("documentation")
-        out.beginObject()
-        out.key("kind")
-        out.string("markdown")
-        out.key("value")
-        out.string(decl.doc)
-        out.endObject()
-    }
-    out.key("parameters")
-    out.beginArray()
-    let mut searchFrom = decl.sig.indexOf("(")
-    for parameter in parameters {
-        let found = decl.sig.indexOf(parameter.name, searchFrom)
-        out.beginObject()
-        out.key("label")
-        if (found >= 0) {
-            // Through the type, up to the next top-level comma or the closing parenthesis.
-            let mut stop = found + parameter.name.length
-            let mut depth = 0
-            while (stop < decl.sig.length) {
-                let b = decl.sig.byteAt(stop)
-                if (b == 40 or b == 91 or b == 60) { depth = depth + 1 }
-                if (b == 93 or b == 62) { depth = depth - 1 }
-                if (b == 41 and depth == 0) { break }
-                if (b == 41) { depth = depth - 1 }
-                if (b == 44 and depth == 0) { break }
-                stop = stop + 1
-            }
-            out.beginArray()
-            out.int(found)
-            out.int(stop)
-            out.endArray()
-            searchFrom = stop
-        } else {
-            out.string(parameter.name)
+    let mut parameters = 0
+    if (ref.to < 0) {
+        // Something the compiler provides and no source declares (`v.push(`): the reference carries its signature.
+        if (ref.sig.equals("")) { return "null".clone() }
+        parameters = featureSignatureEntry(out, ref.sig, ref.doc)
+    } else {
+        let decl = indexDecl(q.index, ref.to)
+        if (decl.found == false or decl.sig.equals("") or (decl.kind.equals("fn") == false and decl.kind.equals("method") == false
+                and decl.kind.equals("extern") == false)) {
+            return "null".clone()
         }
-        out.endObject()
+        parameters = featureSignatureEntry(out, decl.sig, decl.doc)
+        // The other overloads: what shares its name and container (a library function and a method are
+        // overloaded by their parameters), so the popup offers every way the call could be written.
+        for other in indexNamed(q.index, decl.name, "fn method extern") {
+            if (other.id == decl.id or other.container != decl.container or other.user != decl.user or other.sig.equals("")) { continue }
+            featureSignatureEntry(out, other.sig, other.doc)
+        }
     }
     out.endArray()
-    out.endObject()
-    out.endArray()
+    // `x.f(a)` fills `f`'s first parameter with `x`, so the argument the caret is in is one further along the
+    // label; `Type.f(a)` and `module.f(a)` are qualified by a name and fill nothing.
+    let mut methodCall = calledAfterDot
+    if (calledAfterDot) {
+        let mut wordEnd = start - 1
+        while (wordEnd > 0 and (q.text.byteAt(wordEnd - 1) == 32 or q.text.byteAt(wordEnd - 1) == 9)) { wordEnd = wordEnd - 1 }
+        if (wordEnd > 0 and q.text.byteAt(wordEnd - 1) == 62) { methodCall = false }
+        let mut wordStart = wordEnd
+        while (wordStart > 0 and featureIsWordByte(q.text.byteAt(wordStart - 1))) { wordStart = wordStart - 1 }
+        if (wordStart < wordEnd) {
+            let mut wordLine = 0
+            while (wordLine + 1 < index.lineCount() and index.lineStart(wordLine + 1) <= wordStart) { wordLine = wordLine + 1 }
+            let qualifier = indexRefAt(q.index, q.file, wordLine + 1, wordStart - index.lineStart(wordLine) + 1)
+            if (qualifier.role.equals("module") or qualifier.role.equals("type")) { methodCall = false }
+        }
+    }
+    let mut active = featureCommasBetween(q.text, open, offset)
+    if (methodCall and parameters > 0) { active = active + 1 }
     out.key("activeSignature")
     out.int(0)
     out.key("activeParameter")

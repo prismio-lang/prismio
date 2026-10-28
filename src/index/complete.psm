@@ -12,6 +12,7 @@
 
 import ast.nodes
 import index.collect
+import index.lowered
 import index.source
 import index.tables
 import index.write
@@ -55,13 +56,15 @@ fn ixCompleteDecl(inout ix: Ix, inout src: IxSources, id: Int, rank: Int) {
     ix.out.push(ixCompletionLine(ix.dName[id], kind, sig, doc, rank))
 }
 
-// A member the compiler builds for a type, which no source declares.
+// A member the compiler builds for a type, which no source declares (index/lowered.psm).
 fn ixCompleteBuiltinMembers(inout ix: Ix, head: String) {
-    if (head.equals("Vec") or head.equals("List")) {
-        let names = semaVecMemberNames()
-        for name in names {
-            ix.out.push(ixCompletionLine(name, "method", "", "", 1))
-        }
+    let mut lookup = head.clone()
+    if (lookup.equals("List")) { lookup = "Vec".clone() }
+    for name in ixLoweredNames(lookup) {
+        let sig = ixLoweredSignature(lookup, name)
+        let mut kind = "method"
+        if (sig.startsWith("prop ")) { kind = "prop" }
+        ix.out.push(ixCompletionLine(name, kind, sig, ixLoweredDoc(lookup, name), 1))
     }
 }
 

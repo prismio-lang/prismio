@@ -1,0 +1,484 @@
+// The members the compiler lowers itself instead of declaring in the standard library, with the
+// signatures no source states: a Vec's `push` and `length` become runtime calls (sema/vec.psm), a
+// Channel's, a scalar option's `unwrapOr` and a typed pointer's `load` likewise (sema/channel.psm,
+// sema/builtins.psm, sema/pointer.psm). The semantic index writes them as the signature of the
+// reference at the member's name and as the detail of a completion, so that an editor can say what
+// `v.push(` takes without keeping a table of its own.
+//
+// One row per member, in three parallel chains (signature, sentence, names): a member added to a
+// lowering in sema/ is added to all three. The `index` fixture asks the compiler about every row, so
+// a row for a member the compiler does not lower fails.
+
+import std.string
+import std.vec
+
+// The signature of a lowered member of the type `head` (`Vec`, `Ptr`, `Int` for `Int?`), or "".
+public fn ixLoweredSignature(head: String, name: String) -> String {
+    return ixLoweredSig(head, name)
+}
+
+private fn ixLoweredSig(head: String, name: String) -> String {
+    if (head.equals("Vec")) {
+        if (name.equals("push")) { return "fn push(self, value: T)".clone() }
+        if (name.equals("set")) { return "fn set(self, index: Int, value: T)".clone() }
+        if (name.equals("replace")) { return "fn replace(self, index: Int, value: T)".clone() }
+        if (name.equals("swap")) { return "fn swap(self, i: Int, j: Int)".clone() }
+        if (name.equals("insert")) { return "fn insert(self, index: Int, value: T)".clone() }
+        if (name.equals("reserve")) { return "fn reserve(self, count: Int)".clone() }
+        if (name.equals("truncate")) { return "fn truncate(self, length: Int)".clone() }
+        if (name.equals("clear")) { return "fn clear(self)".clone() }
+        if (name.equals("length")) { return "prop length(self) -> Int".clone() }
+        if (name.equals("capacity")) { return "prop capacity(self) -> Int".clone() }
+        if (name.equals("isEmpty")) { return "prop isEmpty(self) -> Bool".clone() }
+        if (name.equals("isNotEmpty")) { return "prop isNotEmpty(self) -> Bool".clone() }
+        if (name.equals("first")) { return "prop first(self) -> T".clone() }
+        if (name.equals("last")) { return "prop last(self) -> T".clone() }
+    }
+    if (head.equals("List")) {
+        if (name.equals("push")) { return "fn push(self, value: T)".clone() }
+        if (name.equals("set")) { return "fn set(self, index: Int, value: T)".clone() }
+        if (name.equals("replace")) { return "fn replace(self, index: Int, value: T)".clone() }
+        if (name.equals("swap")) { return "fn swap(self, i: Int, j: Int)".clone() }
+        if (name.equals("insert")) { return "fn insert(self, index: Int, value: T)".clone() }
+        if (name.equals("reserve")) { return "fn reserve(self, count: Int)".clone() }
+        if (name.equals("truncate")) { return "fn truncate(self, length: Int)".clone() }
+        if (name.equals("clear")) { return "fn clear(self)".clone() }
+        if (name.equals("length")) { return "prop length(self) -> Int".clone() }
+        if (name.equals("capacity")) { return "prop capacity(self) -> Int".clone() }
+        if (name.equals("isEmpty")) { return "prop isEmpty(self) -> Bool".clone() }
+        if (name.equals("isNotEmpty")) { return "prop isNotEmpty(self) -> Bool".clone() }
+        if (name.equals("first")) { return "prop first(self) -> T".clone() }
+        if (name.equals("last")) { return "prop last(self) -> T".clone() }
+    }
+    if (head.equals("Slice")) {
+        if (name.equals("length")) { return "prop length(self) -> Int".clone() }
+    }
+    if (head.equals("DataView")) {
+        if (name.equals("length")) { return "prop length(self) -> Int".clone() }
+    }
+    if (head.equals("Channel")) {
+        if (name.equals("send")) { return "fn send(self, value: T) -> Bool".clone() }
+        if (name.equals("receive")) { return "fn receive(self) -> T?".clone() }
+        if (name.equals("share")) { return "fn share(self) -> Channel<T>".clone() }
+        if (name.equals("close")) { return "fn close(self)".clone() }
+        if (name.equals("free")) { return "fn free(self)".clone() }
+        if (name.equals("length")) { return "prop length(self) -> Int".clone() }
+    }
+    if (head.equals("Chan")) {
+        if (name.equals("send")) { return "fn send(self, value: T) -> Bool".clone() }
+        if (name.equals("receive")) { return "fn receive(self) -> T?".clone() }
+        if (name.equals("share")) { return "fn share(self) -> Channel<T>".clone() }
+        if (name.equals("close")) { return "fn close(self)".clone() }
+        if (name.equals("free")) { return "fn free(self)".clone() }
+        if (name.equals("length")) { return "prop length(self) -> Int".clone() }
+    }
+    if (head.equals("Int")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Int) -> Int".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> Int".clone() }
+    }
+    if (head.equals("I8")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: I8) -> I8".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> I8".clone() }
+    }
+    if (head.equals("I16")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: I16) -> I16".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> I16".clone() }
+    }
+    if (head.equals("I64")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: I64) -> I64".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> I64".clone() }
+    }
+    if (head.equals("Isize")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Isize) -> Isize".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> Isize".clone() }
+    }
+    if (head.equals("U8")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U8) -> U8".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> U8".clone() }
+    }
+    if (head.equals("U16")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U16) -> U16".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> U16".clone() }
+    }
+    if (head.equals("U32")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U32) -> U32".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> U32".clone() }
+    }
+    if (head.equals("U64")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U64) -> U64".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> U64".clone() }
+    }
+    if (head.equals("Usize")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Usize) -> Usize".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> Usize".clone() }
+    }
+    if (head.equals("Float")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Float) -> Float".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> Float".clone() }
+    }
+    if (head.equals("F32")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: F32) -> F32".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> F32".clone() }
+    }
+    if (head.equals("F16")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: F16) -> F16".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> F16".clone() }
+    }
+    if (head.equals("BF16")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: BF16) -> BF16".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> BF16".clone() }
+    }
+    if (head.equals("F128")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: F128) -> F128".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> F128".clone() }
+    }
+    if (head.equals("Bool")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Bool) -> Bool".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> Bool".clone() }
+    }
+    if (head.equals("Char")) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Char) -> Char".clone() }
+        if (name.equals("expect")) { return "fn expect(self) -> Char".clone() }
+    }
+    if (head.equals("Ptr")) {
+        if (name.equals("load")) { return "fn load(self) -> T".clone() }
+        if (name.equals("store")) { return "fn store(self, value: T)".clone() }
+        if (name.equals("readVolatile")) { return "fn readVolatile(self) -> T".clone() }
+        if (name.equals("writeVolatile")) { return "fn writeVolatile(self, value: T)".clone() }
+        if (name.equals("addr")) { return "prop addr(self) -> Usize".clone() }
+        if (name.equals("offset")) { return "fn offset(self, count: Int) -> Self".clone() }
+        if (name.equals("byteOffset")) { return "fn byteOffset(self, count: Int) -> Self".clone() }
+        if (name.equals("wrappingOffset")) { return "fn wrappingOffset(self, count: Int) -> Self".clone() }
+        if (name.equals("offsetFrom")) { return "fn offsetFrom(self, other: Ptr<T>) -> Int".clone() }
+        if (name.equals("isAligned")) { return "fn isAligned(self, alignment: Usize) -> Bool".clone() }
+        if (name.equals("sameAs")) { return "fn sameAs(self, other: Ptr<T>) -> Bool".clone() }
+        if (name.equals("advance")) { return "fn advance(self, count: Int, limit: Ptr<T>) -> Self?".clone() }
+        if (name.equals("at")) { return "fn at(address: Usize) -> Self?".clone() }
+        if (name.equals("atUnchecked")) { return "fn atUnchecked(address: Usize) -> Self".clone() }
+        if (name.equals("cast")) { return "fn cast(from: Ptr) -> Self".clone() }
+        if (name.equals("castAligned")) { return "fn castAligned(from: Ptr) -> Self?".clone() }
+        if (name.equals("atomicLoad")) { return "fn atomicLoad(self, order: AtomicOrder) -> T".clone() }
+        if (name.equals("atomicStore")) { return "fn atomicStore(self, value: T, order: AtomicOrder)".clone() }
+        if (name.equals("atomicSwap")) { return "fn atomicSwap(self, value: T, order: AtomicOrder) -> T".clone() }
+        if (name.equals("atomicAdd")) { return "fn atomicAdd(self, value: T, order: AtomicOrder) -> T".clone() }
+        if (name.equals("atomicSub")) { return "fn atomicSub(self, value: T, order: AtomicOrder) -> T".clone() }
+        if (name.equals("atomicAnd")) { return "fn atomicAnd(self, value: T, order: AtomicOrder) -> T".clone() }
+        if (name.equals("atomicOr")) { return "fn atomicOr(self, value: T, order: AtomicOrder) -> T".clone() }
+        if (name.equals("atomicXor")) { return "fn atomicXor(self, value: T, order: AtomicOrder) -> T".clone() }
+        if (name.equals("atomicCompareExchange")) { return "fn atomicCompareExchange(self, expected: T, desired: T, order: AtomicOrder) -> T".clone() }
+    }
+    return "".clone()
+}
+
+// What a lowered member does, in a sentence, or "".
+public fn ixLoweredDoc(head: String, name: String) -> String {
+    return ixLoweredText(head, name)
+}
+
+private fn ixLoweredText(head: String, name: String) -> String {
+    if (head.equals("Vec")) {
+        if (name.equals("push")) { return "Appends `value` to the end of the vector.".clone() }
+        if (name.equals("set")) { return "Replaces the element at `index`; the index is checked.".clone() }
+        if (name.equals("replace")) { return "Replaces the element at `index` of a vector of boxed structs.".clone() }
+        if (name.equals("swap")) { return "Exchanges the elements at `i` and `j`.".clone() }
+        if (name.equals("insert")) { return "Inserts `value` before `index`, moving the elements after it.".clone() }
+        if (name.equals("reserve")) { return "Makes room for `count` more elements without reallocating.".clone() }
+        if (name.equals("truncate")) { return "Shortens the vector to `length` elements.".clone() }
+        if (name.equals("clear")) { return "Removes every element.".clone() }
+        if (name.equals("length")) { return "The number of elements.".clone() }
+        if (name.equals("capacity")) { return "The number of elements the vector can hold before it reallocates.".clone() }
+        if (name.equals("isEmpty")) { return "Whether the vector has no elements.".clone() }
+        if (name.equals("isNotEmpty")) { return "Whether the vector has at least one element.".clone() }
+        if (name.equals("first")) { return "The first element; checked.".clone() }
+        if (name.equals("last")) { return "The last element; checked.".clone() }
+    }
+    if (head.equals("List")) {
+        if (name.equals("push")) { return "Appends `value` to the end of the vector.".clone() }
+        if (name.equals("set")) { return "Replaces the element at `index`; the index is checked.".clone() }
+        if (name.equals("replace")) { return "Replaces the element at `index` of a vector of boxed structs.".clone() }
+        if (name.equals("swap")) { return "Exchanges the elements at `i` and `j`.".clone() }
+        if (name.equals("insert")) { return "Inserts `value` before `index`, moving the elements after it.".clone() }
+        if (name.equals("reserve")) { return "Makes room for `count` more elements without reallocating.".clone() }
+        if (name.equals("truncate")) { return "Shortens the vector to `length` elements.".clone() }
+        if (name.equals("clear")) { return "Removes every element.".clone() }
+        if (name.equals("length")) { return "The number of elements.".clone() }
+        if (name.equals("capacity")) { return "The number of elements the vector can hold before it reallocates.".clone() }
+        if (name.equals("isEmpty")) { return "Whether the vector has no elements.".clone() }
+        if (name.equals("isNotEmpty")) { return "Whether the vector has at least one element.".clone() }
+        if (name.equals("first")) { return "The first element; checked.".clone() }
+        if (name.equals("last")) { return "The last element; checked.".clone() }
+    }
+    if (head.equals("Slice")) {
+        if (name.equals("length")) { return "The number of elements.".clone() }
+    }
+    if (head.equals("DataView")) {
+        if (name.equals("length")) { return "The number of elements.".clone() }
+    }
+    if (head.equals("Channel")) {
+        if (name.equals("send")) { return "Sends `value`; false when the channel is closed.".clone() }
+        if (name.equals("receive")) { return "Waits for a value; none once the channel is closed and empty.".clone() }
+        if (name.equals("share")) { return "Another handle on the same channel.".clone() }
+        if (name.equals("close")) { return "Closes the channel: receivers drain what is queued, then see none.".clone() }
+        if (name.equals("free")) { return "Releases this handle.".clone() }
+        if (name.equals("length")) { return "The number of values waiting.".clone() }
+    }
+    if (head.equals("Chan")) {
+        if (name.equals("send")) { return "Sends `value`; false when the channel is closed.".clone() }
+        if (name.equals("receive")) { return "Waits for a value; none once the channel is closed and empty.".clone() }
+        if (name.equals("share")) { return "Another handle on the same channel.".clone() }
+        if (name.equals("close")) { return "Closes the channel: receivers drain what is queued, then see none.".clone() }
+        if (name.equals("free")) { return "Releases this handle.".clone() }
+        if (name.equals("length")) { return "The number of values waiting.".clone() }
+    }
+    if (head.equals("Int")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("I8")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("I16")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("I64")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("Isize")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("U8")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("U16")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("U32")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("U64")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("Usize")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("Float")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("F32")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("F16")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("BF16")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("F128")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("Bool")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("Char")) {
+        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
+        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
+    }
+    if (head.equals("Ptr")) {
+        if (name.equals("load")) { return "Reads the value the pointer points at.".clone() }
+        if (name.equals("store")) { return "Writes `value` through a `Ptr<mut T>`.".clone() }
+        if (name.equals("readVolatile")) { return "A volatile read, for a pointer whose type is not volatile.".clone() }
+        if (name.equals("writeVolatile")) { return "A volatile write, for a pointer whose type is not volatile.".clone() }
+        if (name.equals("addr")) { return "The address.".clone() }
+        if (name.equals("offset")) { return "The pointer `count` elements away, checked.".clone() }
+        if (name.equals("byteOffset")) { return "The pointer `count` bytes away, checked.".clone() }
+        if (name.equals("wrappingOffset")) { return "The pointer `count` elements away, wrapping on overflow.".clone() }
+        if (name.equals("offsetFrom")) { return "The distance from `other`, in elements.".clone() }
+        if (name.equals("isAligned")) { return "Whether the address is a multiple of `alignment`.".clone() }
+        if (name.equals("sameAs")) { return "Whether both point at the same address.".clone() }
+        if (name.equals("advance")) { return "`count` elements on, or none past `limit`.".clone() }
+        if (name.equals("at")) { return "The pointer at `address`, or none when it is not valid.".clone() }
+        if (name.equals("atUnchecked")) { return "The pointer at `address`, unchecked.".clone() }
+        if (name.equals("cast")) { return "The pointer reinterpreted as this type.".clone() }
+        if (name.equals("castAligned")) { return "The pointer reinterpreted as this type, or none when it is misaligned.".clone() }
+        if (name.equals("atomicLoad")) { return "An atomic read.".clone() }
+        if (name.equals("atomicStore")) { return "An atomic write.".clone() }
+        if (name.equals("atomicSwap")) { return "An atomic swap; the previous value.".clone() }
+        if (name.equals("atomicAdd")) { return "An atomic add; the previous value.".clone() }
+        if (name.equals("atomicSub")) { return "An atomic sub; the previous value.".clone() }
+        if (name.equals("atomicAnd")) { return "An atomic and; the previous value.".clone() }
+        if (name.equals("atomicOr")) { return "An atomic or; the previous value.".clone() }
+        if (name.equals("atomicXor")) { return "An atomic xor; the previous value.".clone() }
+        if (name.equals("atomicCompareExchange")) { return "Stores `desired` when the value is `expected`; the previous value.".clone() }
+    }
+    return "".clone()
+}
+
+// The names of the lowered members of the type `head`, for completion.
+public fn ixLoweredNames(head: String) -> Vec<String> {
+    let mut names: Vec<String> = []
+    if (head.equals("Vec")) {
+        names.push("push".clone())
+        names.push("set".clone())
+        names.push("replace".clone())
+        names.push("swap".clone())
+        names.push("insert".clone())
+        names.push("reserve".clone())
+        names.push("truncate".clone())
+        names.push("clear".clone())
+        names.push("length".clone())
+        names.push("capacity".clone())
+        names.push("isEmpty".clone())
+        names.push("isNotEmpty".clone())
+        names.push("first".clone())
+        names.push("last".clone())
+    }
+    if (head.equals("List")) {
+        names.push("push".clone())
+        names.push("set".clone())
+        names.push("replace".clone())
+        names.push("swap".clone())
+        names.push("insert".clone())
+        names.push("reserve".clone())
+        names.push("truncate".clone())
+        names.push("clear".clone())
+        names.push("length".clone())
+        names.push("capacity".clone())
+        names.push("isEmpty".clone())
+        names.push("isNotEmpty".clone())
+        names.push("first".clone())
+        names.push("last".clone())
+    }
+    if (head.equals("Slice")) {
+        names.push("length".clone())
+    }
+    if (head.equals("DataView")) {
+        names.push("length".clone())
+    }
+    if (head.equals("Channel")) {
+        names.push("send".clone())
+        names.push("receive".clone())
+        names.push("share".clone())
+        names.push("close".clone())
+        names.push("free".clone())
+        names.push("length".clone())
+    }
+    if (head.equals("Chan")) {
+        names.push("send".clone())
+        names.push("receive".clone())
+        names.push("share".clone())
+        names.push("close".clone())
+        names.push("free".clone())
+        names.push("length".clone())
+    }
+    if (head.equals("Int")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("I8")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("I16")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("I64")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("Isize")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("U8")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("U16")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("U32")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("U64")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("Usize")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("Float")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("F32")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("F16")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("BF16")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("F128")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("Bool")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("Char")) {
+        names.push("unwrapOr".clone())
+        names.push("expect".clone())
+    }
+    if (head.equals("Ptr")) {
+        names.push("load".clone())
+        names.push("store".clone())
+        names.push("readVolatile".clone())
+        names.push("writeVolatile".clone())
+        names.push("addr".clone())
+        names.push("offset".clone())
+        names.push("byteOffset".clone())
+        names.push("wrappingOffset".clone())
+        names.push("offsetFrom".clone())
+        names.push("isAligned".clone())
+        names.push("sameAs".clone())
+        names.push("advance".clone())
+        names.push("at".clone())
+        names.push("atUnchecked".clone())
+        names.push("cast".clone())
+        names.push("castAligned".clone())
+        names.push("atomicLoad".clone())
+        names.push("atomicStore".clone())
+        names.push("atomicSwap".clone())
+        names.push("atomicAdd".clone())
+        names.push("atomicSub".clone())
+        names.push("atomicAnd".clone())
+        names.push("atomicOr".clone())
+        names.push("atomicXor".clone())
+        names.push("atomicCompareExchange".clone())
+    }
+    return names
+}

@@ -16,9 +16,11 @@
 
 import ast.nodes
 import ast.types
+import common.source_files
 import fmt.scan
 import index.collect
 import index.complete
+import index.lowered
 import index.source
 import index.tables
 import index.write
@@ -121,10 +123,39 @@ fn ixEmitAt(inout ix: Ix, inout src: IxSources, inout w: IxWalk, file: Int, slot
     return true
 }
 
+// `v.push(x)`, `v.length`, `p.load()`: members the compiler lowers onto runtime calls, whose callee sits on the
+// member's own name. Written as a reference with the member's signature (index/lowered.psm), because there is no
+// declaration to point at. False when the callee is not one of these.
+fn ixEmitLoweredMember(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call: ASTNode, callee: ASTNode) -> Bool {
+    if (ixIsUserFile(ix, callee.file) == false or nodeExists(call.child2) == false) { return false }
+    let slot = ixView(src, callee.file)
+    let token = ixTokenAt(src, slot, callee.line, callee.col)
+    if (token < 1 or ixKindAt(src, slot, token - 1) != FmtKind.DOT) { return false }
+    let name = ixTokenText(src, slot, token)
+    let head = ixBaseHead(ix, w, ptr_to_node(call.child2))
+    let sig = ixLoweredSignature(head, name)
+    if (sig.equals("")) { return false }
+    let line = ixTokenLine(src, slot, token)
+    let col = ixTokenCol(src, slot, token)
+    if (ix.seen.putFirst(ixKey(callee.file, line, col), 1) == false) { return true }
+    w.builtin = w.builtin + 1
+    let mut role = "call"
+    if (sig.startsWith("prop ")) { role = "prop" }
+    ix.out.push(ixMemberRefLine(callee.file, line, col, ixTokenLen(src, slot, token), role, ixNodeType(call), sig,
+                                ixLoweredDoc(head, name)))
+    return true
+}
+
 fn ixEmitRef(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, name: String, to: Int, role: String,
              type: String, builtin: String) -> Bool {
     let slot = ixView(src, node.file)
-    let token = ixTokenIfNamed(src, slot, node, name)
+    let mut token = ixTokenIfNamed(src, slot, node, name)
+    if (token < 0 and slot >= 0 and name.contains(".")) {
+        // `StringBuilder.new`: the call is written at the function's own name, the word after the dot.
+        let mut dot = name.length - 1
+        while (dot >= 0 and name.byteAt(dot) != 46) { dot = dot - 1 }
+        token = ixTokenIfNamed(src, slot, node, name.substring(dot + 1, name.length - dot - 1))
+    }
     return ixEmitAt(ix, src, w, node.file, slot, token, to, role, type, builtin)
 }
 
@@ -487,13 +518,16 @@ fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
             if (target < 0) { target = ix.byGlobal.get(name) }
         }
         if (target >= 0) {
-            ixEmitRef(ix, src, w, callee, name, target, role, ixNodeType(node), "")
+            // By the declaration's own name: a nested function's calls read `outer$inner`, which `name` cuts at the `$`.
+            ixEmitRef(ix, src, w, callee, ix.dName[target], target, role, ixNodeType(node), "")
         } else if (node.s2.equals("") == false or local == 0 - 1) {
             // Sema resolved it to something this program has no declaration of: a builtin.
             ixEmitRef(ix, src, w, callee, name, 0 - 1, "call", ixNodeType(node), node.s2)
         } else if (local == 0 - 2) {
             // Sema accepted the call, so it is one the compiler provides (`drop`, `expect`).
-            if (ixNodeType(node).equals("") == false or ixIsIntrinsicName(name)) {
+            if (ixEmitLoweredMember(ix, src, w, node, callee)) {
+                // written, with its signature
+            } else if (ixNodeType(node).equals("") == false or ixIsIntrinsicName(name)) {
                 ixEmitRef(ix, src, w, callee, name, 0 - 1, "call", ixNodeType(node), "intrinsic")
             } else {
                 ixEmitUnresolved(ix, src, w, callee, name, "fn")
@@ -676,8 +710,25 @@ fn ixWalkExpr(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
         NodeKind.JOIN_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
         NodeKind.SPREAD_EXPR => { ixWalkChain(ix, src, w, node.child1, "read") }
         NodeKind.BLOCK => { ixWalkBlock(ix, src, w, node) }
+        NodeKind.DYN_MAKE => { ixWalkChain(ix, src, w, node.child1, "read") }
+        NodeKind.DYN_CALL => { ixWalkDynCall(ix, src, w, node) }
         _ => { }
     }
+}
+
+// A call through a trait object (`shape.area()`, `area(shape)`): the method it names is the trait's own.
+fn ixWalkDynCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    ixWalkChain(ix, src, w, node.child1, "read")
+    ixWalkChain(ix, src, w, node.child2, "read")
+    let mut target = 0 - 1
+    let mut at = ix.byFn.get(node.s1)
+    while (at >= 0 and target < 0) {
+        let container = ix.dContainer[at]
+        if (container >= 0 and ix.dKind[container].equals("trait")) { target = at }
+        at = ix.dOverload[at]
+    }
+    if (target < 0) { target = ixFunctionByName(ix, node.s1, "") }
+    if (target >= 0) { ixEmitRef(ix, src, w, node, node.s1, target, "call", "", "") }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -824,6 +875,35 @@ fn ixWalkFunction(inout ix: Ix, inout src: IxSources, inout w: IxWalk, fnNode: A
     w.fnDecl = saved
 }
 
+// The types written in a payload enum's variants (`Node(Tree, Int)`): the enum reaches the walk as the struct
+// it was desugared to, whose fields carry no annotation, so the names are read from the text of the braces.
+fn ixWalkPayloadTypes(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, name: Int) {
+    if (name < 0) { return }
+    let slot = ixView(src, node.file)
+    let count = ixTokenCount(src, slot)
+    let mut open = name
+    while (open < count and ixKindAt(src, slot, open) != FmtKind.LBRACE) { open = open + 1 }
+    if (open >= count) { return }
+    let close = ixMatching(src, slot, open)
+    let mut depth = 0
+    let mut at = open
+    while (at <= close) {
+        let kind = ixKindAt(src, slot, at)
+        if (kind == FmtKind.LBRACE or kind == FmtKind.LPAREN or kind == FmtKind.LBRACKET) { depth = depth + 1 }
+        if (kind == FmtKind.RBRACE or kind == FmtKind.RPAREN or kind == FmtKind.RBRACKET) { depth = depth - 1 }
+        if (depth >= 2 and kind == FmtKind.WORD) {
+            let word = ixTokenText(src, slot, at)
+            let typeId = ix.byType.get(word)
+            if (typeId >= 0) {
+                ixEmitAt(ix, src, w, node.file, slot, at, typeId, "type", "", "")
+            } else if (ixIsBuiltinType(word)) {
+                ixEmitAt(ix, src, w, node.file, slot, at, 0 - 1, "type", "", "type")
+            }
+        }
+        at = at + 1
+    }
+}
+
 fn ixWalkStruct(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
     if (node.line < 1) { return }
     let slot = ixView(src, node.file)
@@ -842,6 +922,7 @@ fn ixWalkStruct(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNo
             ixWalkAnnotation(ix, src, w, field.child1)
         }
     }
+    if (nodeStructIsFromEnum(node)) { ixWalkPayloadTypes(ix, src, w, node, token) }
     ixLeaveGenerics(w)
 }
 
@@ -918,7 +999,44 @@ fn ixWalkChainDecls(inout ix: Ix, inout src: IxSources, inout w: IxWalk, head: P
 // Every use of a name in the program. The concrete chain first, which sema checked and which knows
 // each call's symbol and each expression's type; then the templates, which fill in the positions
 // only they reach.
+// `println(a, b)` is split by sema into one statement per value, each at its value, so the name that was written
+// has no node. It is found in the text: a call of `print`, `println`, `eprint` or `eprintln` that nothing
+// else was written at is a reference to the variadic declaration (`fn println<Ts: Printable>(...args: Ts)`).
+fn ixNoteSplitPrints(inout ix: Ix, inout src: IxSources, inout w: IxWalk) {
+    let mut file = 0
+    while (file < ix.userFiles.length) {
+        if (ix.userFiles[file] == false) {
+            file = file + 1
+            continue
+        }
+        let slot = ixView(src, file)
+        let count = ixTokenCount(src, slot)
+        let mut at = 1
+        while (at + 1 < count) {
+            let word = ixTokenText(src, slot, at)
+            let isPrint = word.equals("print") or word.equals("println") or word.equals("eprint") or word.equals("eprintln")
+            if (isPrint and ixKindAt(src, slot, at + 1) == FmtKind.LPAREN and ixKindAt(src, slot, at - 1) != FmtKind.DOT
+                    and ixTokenText(src, slot, at - 1).equals("fn") == false
+                    and ix.seen.has(ixKey(file, ixTokenLine(src, slot, at), ixTokenCol(src, slot, at))) == false) {
+                let mut target = 0 - 1
+                let mut candidate = ix.byFn.get(word)
+                // The variadic declaration when the program loaded it, else the first overload: the editor lists the rest.
+                while (candidate >= 0) {
+                    if (ix.dUser[candidate] == false and (target < 0 or diag_file_module(ix.dFile[candidate]).equals("std.display"))) {
+                        target = candidate
+                    }
+                    candidate = ix.dOverload[candidate]
+                }
+                if (target >= 0) { ixEmitAt(ix, src, w, file, slot, at, target, "call", "", "") }
+            }
+            at = at + 1
+        }
+        file = file + 1
+    }
+}
+
 public fn ixWalk(inout ix: Ix, inout src: IxSources, inout w: IxWalk, merged: ASTNode) {
     ixWalkChainDecls(ix, src, w, merged.child1)
     ixWalkChainDecls(ix, src, w, merged.child2)
+    ixNoteSplitPrints(ix, src, w)
 }

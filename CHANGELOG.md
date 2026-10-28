@@ -43,6 +43,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   (`lsp/features.psm`, `tokens.psm`, `edits.psm`, `completion.psm`, `formatting.psm`). Requests read the last good index of the
   program from a file, wait for a pending check, and can be cancelled. Fixture `lsp_features`.
 
+- **The semantic index knows what an editor kept its own tables for.** What the compiler lowers instead of declaring (a `Vec`'s
+  `push` and `length`, a `Channel`'s `send`, a scalar option's `unwrapOr`, a typed pointer's `load`, its address methods and
+  atomics) is written with its signature and a sentence, as the reference at the member's name (`"builtin":"member"`, `sig`,
+  `doc`) and as a completion's `detail` (`src/index/lowered.psm`, which the `index` fixture holds to what `sema/vec.psm`
+  lowers). A used library function is written with all its overloads. `Type.f(` resolves to `f`; a nested function
+  (`outer$inner`) is declared and its calls resolve; the types in a payload enum's variants are references; a trait-object call
+  and its `dyn` argument are walked; `println(a, b)`, which sema splits into one statement per value, still has a reference at
+  the written name. Signature help lists every overload, reads each label's parameters from its text (a library function's
+  too), counts the receiver as `self` only for a value (not for `Type.f(` or `module.f(`), and no longer loses its place
+  when the caret is inside a string argument that holds a parenthesis. Hover on a lowered member shows its signature.
+  The IntelliJ plugin's own signature, hover and type-hint code was held to this: 1,910 call positions, 1,219 hover
+  names and 320 hints of the checkout's tests compared before it was deleted.
+
 - **The language server serves `build.ums`, and a workspace.** `prismio check build.ums` checks a manifest with the
   diagnostics of any other check (`--overlay <manifest> <file>` for unsaved text); the server runs it in a child, because
   the manifest loader keeps what it lexes (about 20 KB a call on this repository's own manifest) and a server lives for

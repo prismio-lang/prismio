@@ -31,7 +31,10 @@ public struct IndexRef {
     public to: Int,
     public role: String,
     public type: String,
-    public builtin: String
+    public builtin: String,
+    // For a member the compiler provides: its signature and what it does (the reference carries them).
+    public sig: String,
+    public doc: String
 }
 
 public struct IndexDecl {
@@ -126,7 +129,9 @@ fn indexParseRef(line: String) -> IndexRef {
         to: indexInt(doc, "to", 0 - 1),
         role: indexText(doc, "role"),
         type: indexText(doc, "ty"),
-        builtin: indexText(doc, "builtin")
+        builtin: indexText(doc, "builtin"),
+        sig: indexText(doc, "sig"),
+        doc: indexText(doc, "doc")
     }
 }
 
@@ -188,7 +193,7 @@ public fn indexRefAt(index: String, file: Int, line: Int, col: Int) -> IndexRef 
             return found
         }
     }
-    return IndexRef { file: 0 - 1, line: 0, col: 0, len: 0, to: 0 - 2, role: "".clone(), type: "".clone(), builtin: "".clone() }
+    return IndexRef { file: 0 - 1, line: 0, col: 0, len: 0, to: 0 - 2, role: "".clone(), type: "".clone(), builtin: "".clone(), sig: "".clone(), doc: "".clone() }
 }
 
 // The declaration with this id.

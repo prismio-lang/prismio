@@ -81,6 +81,16 @@ public fn ixRefLine(file: Int, line: Int, col: Int, len: Int, to: Int, role: Str
     return out.concat("}")
 }
 
+// A reference to a member the compiler provides, with the signature and the sentence that say what it is: it has no
+// declaration to point at, so the reference carries them (`sig`, `doc`).
+public fn ixMemberRefLine(file: Int, line: Int, col: Int, len: Int, role: String, type: String, sig: String,
+                          doc: String) -> String {
+    let mut out = ixRefLine(file, line, col, len, 0 - 1, role, type, "member")
+    out = out.substring(0, out.length - 1).concat(",\"sig\":", ixQuote(sig))
+    if (doc.equals("") == false) { out = out.concat(",\"doc\":", ixQuote(doc)) }
+    return out.concat("}")
+}
+
 public fn ixUnresolvedLine(file: Int, line: Int, col: Int, len: Int, name: String, what: String) -> String {
     return "{\"k\":\"unresolved\",\"f\":".concat(file.toString(), ",\"l\":", line.toString(), ",\"c\":", col.toString(),
                                                   ",\"n\":", len.toString(), ",\"name\":", ixQuote(name),

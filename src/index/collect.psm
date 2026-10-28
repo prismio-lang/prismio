@@ -67,12 +67,16 @@ public fn ixNameToken(src: IxSources, slot: Int, node: ASTNode) -> Int {
     let mut base = ixBaseName(node.s1)
     let dot = base.lastIndexOf(".")
     if (dot >= 0) { base = base.substring(dot + 1, base.length - dot - 1).clone() }
+    // A function written inside another is lifted as `outer$inner` (parse/decl.psm): the word in the source is `inner`.
+    let mut written = "".clone()
+    let dollar = node.s1.lastIndexOf("$")
+    if (dollar >= 0) { written = node.s1.substring(dollar + 1, node.s1.length - dollar - 1).clone() }
     let mut at = first
     let limit = first + 4
     while (at < limit and at < ixTokenCount(src, slot)) {
         if (ixTokenLine(src, slot, at) != node.line) { break }
         let text = ixTokenText(src, slot, at)
-        if (text.equals(base) or text.equals(node.s1)) { return at }
+        if (text.equals(base) or text.equals(node.s1) or (written.equals("") == false and text.equals(written))) { return at }
         // Only a keyword or a marker stands in front of a name.
         let kind = ixKindAt(src, slot, at)
         if (kind != FmtKind.KEYWORD and kind != FmtKind.CONTEXTUAL) { break }

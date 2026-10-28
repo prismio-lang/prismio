@@ -2744,6 +2744,29 @@ def run_index_test():
         lowered = sorted(set(re.findall(r'name\.equals\("(\w+)"\)', table)))
         if builtin != lowered:
             problems.append(f"a Vec's members {builtin} differ from what sema lowers {lowered}")
+        # What the compiler lowers carries its signature, in completion and on the reference at a use, so an
+        # editor needs no table of its own (index/lowered.psm).
+        details = {r["label"]: r.get("detail", "") for r in records if r["k"] == "completion"}
+        if details.get("push") != "fn push(self, value: T)" or details.get("length") != "prop length(self) -> Int":
+            problems.append(f"a Vec's lowered members should complete with their signatures: {details}")
+        used = root / "vecuse.psm"
+        used.write_text("fn main() -> Int {\n    let mut v: Vec<Int> = []\n    v.push(1)\n    v.clear()\n    return v.length\n}\n")
+        done, records = indexed(target=used)
+        members = {(r["l"], r["c"]): r for r in records if r["k"] == "ref" and r.get("builtin") == "member"}
+        for where, sig in (((3, 7), "fn push(self, value: T)"), ((4, 7), "fn clear(self)"), ((5, 14), "prop length(self) -> Int")):
+            if members.get(where, {}).get("sig") != sig:
+                problems.append(f"the use at {where} of a lowered member should carry {sig!r}: {members.get(where)}")
+        # An overload of a library function the program used is written with it, and `Type.f(` resolves.
+        calls = root / "calls.psm"
+        calls.write_text("import std.io\n\nstruct Counter { n: Int }\n\nimpl Counter {\n    public fn new() -> Counter { return Counter { n: 0 } }\n}\n\n"
+                         "fn main() -> Int {\n    let c = Counter.new()\n    println(c.n)\n    return 0\n}\n")
+        done, records = indexed(target=calls)
+        printlns = [r for r in records if r["k"] == "decl" and r["name"] == "println"]
+        if len(printlns) < 3:
+            problems.append(f"overloads of a used library function should be written with it: {len(printlns)}")
+        creates = [r for r in records if r["k"] == "ref" and r["l"] == 10 and r["c"] == 21]
+        if not creates or creates[0]["to"] < 0:
+            problems.append(f"`Counter.new()` should resolve to its function: {creates}")
 
         # A missing import is a diagnostic with a fix an editor can apply: `joinPath` is in a module the
         # program has (a helper imports it) and this file does not.
@@ -3233,6 +3256,26 @@ def run_lsp_features_test():
             items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 3})
             labels = {i["label"] for i in items["items"]}
             note({"println", "add", "main", "p", "n", "Point", "if", "return"} <= labels, f"names in scope: {sorted(labels)[:14]}")
+
+            # --- members the compiler provides, and overloads ---
+            lib = main_text + ("\nfn useVec() -> Int {\n    let mut v: Vec<Int> = []\n    v.push(3)\n"
+                              "    println(v.length)\n    return 0\n}\n")
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 40},
+                                                     "contentChanges": [{"text": lib}]})
+            at = where(lib, "push", 0, "v.push(3)")
+            hover = ask("textDocument/hover", position=at)
+            value = (hover or {}).get("contents", {}).get("value", "")
+            note("fn push(self, value: T)" in value and "Appends" in value, f"hover on a lowered member: {value!r}")
+            help_ = ask("textDocument/signatureHelp", position={"line": at["line"], "character": at["character"] + 5})
+            labels = [sig["label"] for sig in (help_ or {}).get("signatures", [])]
+            note(labels == ["fn push(self, value: T)"], f"signature help on a lowered member: {labels}")
+            note((help_ or {}).get("activeParameter") == 1, f"the receiver fills `self`, so the first argument is parameter 1: {help_}")
+            at = where(lib, "println(v.length)", 0, "println(v.length)")
+            help_ = ask("textDocument/signatureHelp", position={"line": at["line"], "character": at["character"] + 8})
+            labels = [sig["label"] for sig in (help_ or {}).get("signatures", [])]
+            note(len(labels) >= 8 and all("println" in label for label in labels), f"every overload of println is offered: {labels[:4]}")
+            first = (help_ or {}).get("signatures", [{}])[0]
+            note(bool(first.get("parameters")), f"a library function's parameters are located in its label: {first}")
 
             # --- a request made while a check is pending waits for it ---
             added = main_text + "\nfn fresh() -> Int { return 7 }\n"

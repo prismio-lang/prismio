@@ -118,6 +118,26 @@ fn ixDeclLine(inout ix: Ix, inout src: IxSources, id: Int) -> String {
     return out.concat("}")
 }
 
+// A library function that was used is written together with the overloads that share its name and its container:
+// an editor shows every way `print(` could be written, not only the one this call resolved to.
+fn ixMarkOverloadsUsed(inout ix: Ix) {
+    let mut id = 0
+    let count = ix.dKind.length
+    while (id < count) {
+        let kind = ix.dKind[id]
+        if (ix.dUsed[id] and ix.dUser[id] == false and (kind.equals("fn") or kind.equals("method") or kind.equals("extern"))) {
+            let mut at = ix.byFn.get(ix.dName[id])
+            while (at >= 0) {
+                if (ix.dContainer[at] == ix.dContainer[id] and ix.dKind[at].equals(kind) and ix.dUser[at] == false) {
+                    ix.dUsed[at] = true
+                }
+                at = ix.dOverload[at]
+            }
+        }
+        id = id + 1
+    }
+}
+
 // Writes the index to `path`: the files, then the declarations worth writing, then what the walk found.
 public fn ixWrite(inout ix: Ix, inout src: IxSources, path: String, resolved: Int, builtin: Int, unresolved: Int) -> Bool {
     let mut lines: Vec<String> = []
@@ -126,6 +146,7 @@ public fn ixWrite(inout ix: Ix, inout src: IxSources, path: String, resolved: In
         lines.push(ixFileLine(file, diag_file_path(file), diag_file_module(file), ix.userFiles[file]))
         file = file + 1
     }
+    ixMarkOverloadsUsed(ix)
     let mut id = 0
     let mut written = 0
     while (id < ix.dKind.length) {
