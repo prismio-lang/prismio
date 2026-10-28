@@ -8,7 +8,7 @@
 > package per commit with the server's feature switched on in `PrismioLspFeatures.SERVED`: `navigation/`, `symbols/`,
 > `imports/`, the formatter. Items below that concern those packages need no work once they are gone.
 
-The plugin (`../intellij-plugin`) has hand-written lexers and scope scanners, so each language change
+The plugin (`../jetbrains-plugin`) has hand-written lexers and scope scanners, so each language change
 needs a matching edit there. `NumericWidthTypesTest` and the corpus test are what catch drift. Items are
 in the order to do them; each names the file to change.
 

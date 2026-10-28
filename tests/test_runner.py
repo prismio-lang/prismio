@@ -2370,7 +2370,7 @@ def run_token_tables_test():
         problems.append(f"the parser compares identifiers with words the token table lacks: {missing}")
 
     # The IntelliJ plugin's copy, if it is checked out beside this repository.
-    words_java = PROJECT_ROOT.parent / "intellij-plugin" / "src/main/java/io/prismio/lang/PrismioWords.java"
+    words_java = PROJECT_ROOT.parent / "jetbrains-plugin" / "src/main/java/io/prismio/lang/PrismioWords.java"
     if words_java.exists():
         java = words_java.read_text()
 

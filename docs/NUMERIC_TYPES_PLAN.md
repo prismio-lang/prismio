@@ -21,7 +21,7 @@ it is done.
 | AIF sizes and alignment, and their Python twins | `src/aif/layout.psm`, `tools/aif_oracle/` |
 | Tests | `tests/test_324`-`326`, `tests/neg_314`-`317` |
 | Docs | `../website/apps/docs/content/language/types.md`, `stdlib/number-text.md`, `conversions.md`; developers `llvm/types-and-abi.md`, `compiler/semantic-analysis-and-types.md`, `compiler/frontend.md` |
-| IntelliJ plugin | `../intellij-plugin` (`PrismioWords.BUILTIN_TYPES`, `SignatureParser`, `PrismioBlock.isArrayLength`, `NumericWidthTypesTest`) |
+| IntelliJ plugin | `../jetbrains-plugin` (`PrismioWords.BUILTIN_TYPES`, `SignatureParser`, `PrismioBlock.isArrayLength`, `NumericWidthTypesTest`) |
 
 ## Not yet verified (do these first)
 
@@ -166,7 +166,7 @@ gets its own file, not another case in expr.psm / checker.psm):
 
 For every item: tests (positive and negative), both doc apps (verify-doc-examples.mjs and
 audit-content.mjs), CHANGELOG.md, docs/KNOWN_ISSUES.md (delete entries you fix, re-run reproducers
-first), the IntelliJ plugin (../intellij-plugin, run its tests with -Dprismio.checkout=...), the
+first), the IntelliJ plugin (../jetbrains-plugin, run its tests with -Dprismio.checkout=...), the
 Python AIF oracle twins, and `graphify update .`. Fix what you find rather than flagging it, unless it
 cannot be fixed soundly, and say why. Never commit unless I ask; commit by naming paths; never touch
 bootstrap/seed.ll.

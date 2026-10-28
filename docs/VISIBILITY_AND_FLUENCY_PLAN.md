@@ -52,7 +52,7 @@ the return value of `enumDefaultVisibility` in `src/parse/decl.psm`, so changing
 - Known gap, shared with structs: a generic *struct* named by annotation (`Box<Int>`) is not checked at the
   annotation, only through its literal and fields. A generic *enum* is.
 
-### 3. The IntelliJ plugin (`../intellij-plugin`)
+### 3. The IntelliJ plugin (`../jetbrains-plugin`)
 
 Hand-written lexers and a signature parser, with `PrismioLexerCorpusTest` as the drift detector.
 Update in this order, running `./gradlew test` after each:

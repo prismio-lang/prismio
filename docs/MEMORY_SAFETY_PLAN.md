@@ -202,7 +202,7 @@ all 19 sources). That edit's oracle half (`tools/aif_oracle`) is unwritten.
    §3.2 the debug-build trap.
 6. KNOWN_ISSUES: the module has no data layout while IR is built (`i64` align 4, U64 atomics become
    `___atomic_compare_exchange`).
-7. The original brief's items, untouched: commit the IntelliJ plugin follow-up (`../intellij-plugin`, branch
+7. The original brief's items, untouched: commit the IntelliJ plugin follow-up (`../jetbrains-plugin`, branch
    `ptr-typed-pointer`, review first), cut and pin a seed (`tools/refresh_seed.sh`; publishing is the user's
    call), `prismio gate`, compound assignment on fields (P3302), named arguments for `advance`, `nonnull` on
    `Ptr<T>` returns, the plugin's corpus test.
