@@ -3122,6 +3122,18 @@ def run_lsp_workspace_test():
     return True
 
 
+def process_rss_kib(pid):
+    """Resident size of a process in KiB, or None where it cannot be read for the process the test holds.
+
+    `ps` on POSIX, where `prismio lsp` replaces itself with the server and the pid is the server's. On Windows `exec`
+    is a launcher that waits for the server, so the pid is not the server's and the memory checks do not run there:
+    they report themselves as skipped, never as passed."""
+    if sys.platform == "win32":
+        return None
+    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True)
+    return int(out.stdout.strip() or 0) if out.returncode == 0 else 0
+
+
 def run_lsp_features_test():
     """`prismio lsp`, past diagnostics: the features that read the semantic index.
 
@@ -3465,8 +3477,7 @@ def run_lsp_features_test():
             client.diagnostics_for(big_uri, timeout=60)
 
             def rss():
-                out = sp.run(["ps", "-o", "rss=", "-p", str(client.process.pid)], capture_output=True, text=True)
-                return int(out.stdout.strip() or 0)
+                return process_rss_kib(client.process.pid)
 
             def round_(version):
                 client.notify("textDocument/didChange", {"textDocument": {"uri": big_uri, "version": version},
@@ -3487,8 +3498,11 @@ def run_lsp_features_test():
             before = rss()
             for version in range(22, 152):
                 round_(version)
-            growth = rss() - before
-            note(growth < 6000, f"130 rounds of requests on a {len(big) // 1024} KiB document grew the server by {growth} KiB (limit 6,000)")
+            if before is None:
+                print(f"  (the features' memory is not measured on Windows)")
+            else:
+                growth = rss() - before
+                note(growth < 6000, f"130 rounds of requests on a {len(big) // 1024} KiB document grew the server by {growth} KiB (limit 6,000)")
         except Exception as error:
             problems.append(f"the features' memory: {type(error).__name__}: {error}; server said: {client.stderr_text[:300]!r}")
         finally:
@@ -3563,8 +3577,7 @@ def run_lsp_test():
         return sorted(d["message"] for d in diagnostics["diagnostics"])
 
     def server_rss(client):
-        out = sp.run(["ps", "-o", "rss=", "-p", str(client.process.pid)], capture_output=True, text=True)
-        return int(out.stdout.strip() or 0) if out.returncode == 0 else 0
+        return process_rss_kib(client.process.pid)
 
     wrong = "fn main() -> Int {\n    let n: Int = \"x\"\n    return n\n}\n"
     right = "fn main() -> Int {\n    let n: Int = 1\n    return n\n}\n"
@@ -3723,25 +3736,29 @@ def run_lsp_test():
             client.close()
 
         # --- a check that dies leaves the last answer alone ---------------------------------------
-        crasher = root / "crasher.py"
-        crasher.write_text("#!/bin/sh\nkill -9 $$\n")
-        crasher.chmod(0o755)
-        client = start({"PRISMIO_LSP_CHECK": str(crasher)})
-        try:
-            client.initialize()
-            path = root / "crash.psm"
-            path.write_text(wrong)
-            opened(client, path, wrong)
-            logged = client.wait_for(lambda m: m.get("method") == "window/logMessage", timeout=15)
-            note("without a result" in logged["params"]["message"],
-                 f"a check that is killed is logged, not published: {logged}")
-            note(client.quiet_for(1.0), "nothing is published for a check that never finished")
-            note(client.request("shutdown").get("result") is None, "the server is still alive after a crashed check")
-            client.notify("exit")
-        except Exception as error:
-            problems.append(f"crashing check: {error!r}; server said: {client.stderr_text[:300]!r}")
-        finally:
-            client.close()
+        # The stand-in compiler is a shell script that kills itself, so it needs a POSIX shell: not run on Windows.
+        if sys.platform == "win32":
+            print("  (a check that is killed is not exercised on Windows)")
+        else:
+            crasher = root / "crasher.py"
+            crasher.write_text("#!/bin/sh\nkill -9 $$\n")
+            crasher.chmod(0o755)
+            client = start({"PRISMIO_LSP_CHECK": str(crasher)})
+            try:
+                client.initialize()
+                path = root / "crash.psm"
+                path.write_text(wrong)
+                opened(client, path, wrong)
+                logged = client.wait_for(lambda m: m.get("method") == "window/logMessage", timeout=15)
+                note("without a result" in logged["params"]["message"],
+                     f"a check that is killed is logged, not published: {logged}")
+                note(client.quiet_for(1.0), "nothing is published for a check that never finished")
+                note(client.request("shutdown").get("result") is None, "the server is still alive after a crashed check")
+                client.notify("exit")
+            except Exception as error:
+                problems.append(f"crashing check: {error!r}; server said: {client.stderr_text[:300]!r}")
+            finally:
+                client.close()
 
         # --- input that is not valid -------------------------------------------------------------
         client = start()
@@ -3788,8 +3805,11 @@ def run_lsp_test():
             for version in range(52, 652):
                 edited(client, uri, big + "\n" * (version % 4), version)
             client.diagnostics_for(uri, timeout=60)
-            growth = server_rss(client) - before
-            note(growth < 3000, f"600 edits of a {len(big) // 1024} KiB document grew the server by {growth} KiB (limit 3,000)")
+            if before is None:
+                print("  (the server's memory is not measured on Windows)")
+            else:
+                growth = server_rss(client) - before
+                note(growth < 3000, f"600 edits of a {len(big) // 1024} KiB document grew the server by {growth} KiB (limit 3,000)")
         except Exception as error:
             problems.append(f"size and memory: {error!r}; server said: {client.stderr_text[:300]!r}")
         finally:

@@ -25,6 +25,7 @@ import common.diagnostics
 import common.source_files
 import std.string
 import std.fs
+import std.platform
 
 // Declared here as well as in the modules that share them: the merge keeps the
 // first EXTERN_FUNCTION of a given name and drops the rest, which is what lets
@@ -76,6 +77,17 @@ private fn absolutePath(path: String) -> String {
     return joinPath(currentDirectory(), relative)
 }
 
+// The key an overlay is kept and found by. On Windows one file is spelled `C:\work\a.psm`, `c:/work/a.psm` and
+// `C:/work/a.psm` (the compiler's own joins, an editor's URI, a manifest), so the overlay of one is the text of the
+// others; elsewhere a backslash is a character of a name and the path is its own key.
+private fn overlayKey(path: String) -> String {
+    let absolute = absolutePath(path)
+    if (platform.isWindows == false) { return absolute }
+    let key = absolute.replaceAll("\\", "/")
+    if (key.length > 1 and key.charAt(1) == ':') { return key.charAt(0).toUpper().toString().concat(key.slice(1, key.length)) }
+    return key.clone()
+}
+
 // `check --module`: the name the entry file is known by when it is a module
 // checked on its own -- `std.map` for std/map.psm -- which is what gives it its
 // package's access to that package's internals. "" for a program.
@@ -93,7 +105,7 @@ public fn entryModule() -> String {
 // twice keeps the later text.
 public fn addSourceOverlay(path: String, textFile: String) {
     overlaysOpen()
-    let absolute = absolutePath(path)
+    let absolute = overlayKey(path)
     for i in 0..<overlayPaths.length {
         if (overlayPaths[i].equals(absolute)) {
             overlayFiles[i] = textFile.clone()
@@ -110,7 +122,7 @@ public fn addSourceOverlay(path: String, textFile: String) {
 // not checked, and the caller has to say so rather than report it clean.
 public fn sourceOverlayRead(path: String) -> Bool {
     overlaysOpen()
-    let absolute = absolutePath(path)
+    let absolute = overlayKey(path)
     for i in 0..<overlayPaths.length {
         if (overlayPaths[i].equals(absolute)) { return overlayReads[i] }
     }
@@ -120,7 +132,7 @@ public fn sourceOverlayRead(path: String) -> Bool {
 public fn readSource(path: String) -> String {
     overlaysOpen()
     if (overlayPaths.length > 0) {
-        let absolute = absolutePath(path)
+        let absolute = overlayKey(path)
         for i in 0..<overlayPaths.length {
             if (overlayPaths[i].equals(absolute)) {
                 overlayReads[i] = true

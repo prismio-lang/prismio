@@ -6,18 +6,17 @@ IntelliJ plugin and the Phase 3 VS Code extension both become thin clients of it
 This plan fixes **where each piece of language knowledge lives**, what the compiler must
 change before a server can exist, and the order to build it in.
 
-**Status (2026-10-26): Phases 0, 1, 2 and 2b are built, and both clients exist.** `prismio lsp` serves
-diagnostics with unsaved buffers, and from the semantic index (`check --emit-index`) hover, definition,
-type definition, references, highlights, outline, workspace symbols, signature help, inlay hints, semantic
-tokens, folding, rename and the import quick fix; completion by placeholder (`check --complete`);
-formatting through `prismio fmt`; and for `build.ums` its diagnostics (`prismio check build.ums`) and
-completion. `prismio dump-tokens` exports the token tables. The contract is `IDE_PROTOCOL.md`; the
-architecture and the memory rules are the developer docs' *The language server*. Phase 3 (VS Code,
-`../vscode-plugin`) is built and tested inside a real VS Code. Phase 4 (IntelliJ) has started: the platform
-client runs the server, diagnostics and code actions come from it, and the external annotator and
-`PrismioCheckTarget` are deleted; the rest of the plugin's Java is deleted one package per commit as the
-server's feature replaces it (the plugin's `PrismioLspFeatures.SERVED` says which are switched over). Phase 5
-(speed) is not built: see "Measured latency" below. Windows (`std.poll`'s `PeekNamedPipe`) is **unverified**.
+**Status (2026-10-29): Phases 0 to 4 are built, and both clients exist.** `prismio lsp` serves
+diagnostics with unsaved buffers, and from the semantic index (`check --emit-index`) hover, definition (into the
+library's source too, `prismio library-source`), type definition, references, highlights, outline, workspace symbols,
+signature help, inlay hints, semantic tokens, folding, rename and the import quick fix; completion by placeholder
+(`check --complete`); formatting through `prismio fmt`; and for `build.ums` its diagnostics (`prismio check build.ums`) and
+completion. `prismio dump-tokens` exports the token tables. The contract is `IDE_PROTOCOL.md`; the architecture and the
+memory rules are the developer docs' *The language server*. Phase 3 (VS Code, `../vscode-plugin`) is built and tested
+inside a real VS Code (11 checks). Phase 4 (IntelliJ) is done: the platform client runs the server and every feature in
+`PrismioLspFeatures.SERVED` is the server's; `navigation/`, `symbols/`, `imports/` and the formatter's spacing are deleted
+(the plugin is 8,100 lines of Java, from 15,700), and `docs/INTELLIJ_PLAN.md` says what is where. Phase 5 (speed) is not
+built: see "Measured latency" below. Windows has run the fixtures (below).
 
 ## Measured latency (2026-10-26)
 
@@ -34,22 +33,28 @@ the server by about 450 KiB (limit 6,000). Two defects were found by bisecting i
 document in `completionItems` made every request path that held the document leak a copy; `slice` is the same
 cut. A manifest is never loaded on a request path (its lexer leaks about 20 KB a call): see KNOWN_ISSUES.
 
-## Not verified, and how to continue (2026-10-26)
+## Not verified, and how to continue (updated 2026-10-29)
 
 What a later session must not assume. "Verified" means run for real on this Mac (Apple Silicon, macOS 27) this session.
 
 | Item | State | How to verify or finish it |
 |---|---|---|
-| **Windows** | **Nothing run.** `std.poll`'s `PeekNamedPipe` half, binary stdio, the scratch directory from `TEMP`, and `lsp/uri.psm`'s `pathCanonical` (forward slashes, upper-case drive letter; checked on sample strings on macOS only) are untested. Paths are compared as text, so a Windows path in any other spelling (lower-case beyond the drive, 8.3 names, a different casing of a directory) still will not match. | UTM VM `prismio-win` (memory `prismio-windows-vm-ci-replay`): sync the tree to `C:\work\prismio`, bootstrap, package, run `test_353_poll_and_framing`, `test_354_json` and the `lsp`, `lsp_features`, `lsp_manifest`, `lsp_workspace` fixtures. Expect to tune `lsp_features`' 6,000 KiB limit. Fix what breaks or list it. |
-| **IntelliJ in a real IDE** | **Verified 2026-10-28** in the `runIde` sandbox (IntelliJ IDEA 2026.2.1, driven by hand): the server starts as `prismio-lsp`, diagnostics and the "Add `import`" quick fix appear and apply, and the **Use the Prismio language server** setting starts and stops the server live (it did not, before: the provider only decided when a file opened; also fixed: `PRISMIO_INTERNAL_HOSTED` was not set, and `UmsAnnotator` kept a stale "not a name UMS recognises" warning beside UMS2004). Hover, hints, parameter info and completion are served but **not yet seen in the IDE** (only through the plugin's tests). | Re-run `./gradlew runIde` with `PRISMIO=<toolchain>/bin/prismio` and an init script that passes the project path (see the next-session prompt); the window is a `com.jetbrains.jbr.java` app and needs full-screen computer control. |
-| **Remaining plugin packages** | **Moved onto the server 2026-10-28:** `documentation/` (hover; the inline `/** */` rendering stays), `hints/`, parameter info, `completion/` (plus `UmsCompletionContributor`). Each was held to the server first: 1,219 hover names, 320 hints, 1,910 call positions, and the plugin's own 35 completion tests (24 failed at the start; all hold now). **Still Java:** `navigation/` (definition, usages, rename, structure view, go to symbol), `symbols/`, `imports/`, the formatter, the lexer tables. Navigation is half done: `PrismioServerNavigationTest` (7 tests) passes 4; failing are library definitions (`xs.contains(` into `vec.psm`: the server extracts a plib's source to its scratch directory, `lsp/locator.psm`, **unverified**), `import` paths to their module (`featureImportDefinition`, unverified) and "the current file shadows an import". | See the next-session prompt. One package per commit, differential first, then delete the Java, its `plugin.xml` registration and tests, add the feature to `PrismioLspFeatures.SERVED`. |
-| **VS Code** | Built and exercised by 9 end-to-end checks in the installed VS Code 1.143, **not** used by hand; the `.vsix` builds and is not published. No grammar for `build.ums` (language configuration, diagnostics and completion only). Windows untested. | Open `../vscode-plugin/test/fixtures/demo` in the Extension Development Host (F5) and use it for a session; publish after that. |
+| **Windows** | **Run 2026-10-29** in the UTM VM (Windows 11 ARM64): bootstrap from the seed, packaging, `test_353_poll_and_framing`, `test_354_json` and the `lsp`, `lsp_features`, `lsp_manifest` and `lsp_workspace` fixtures pass (see the list below for what it found). The fixtures skip two checks there and say so: a killed check (it needs a POSIX shell script) and memory growth (`ps`; the pid is the launcher's). **Not run:** the full suite on the VM, an editor on Windows, long runs; a path in a spelling other than the two the server canonicalises (8.3 names, a directory in other case) still will not match. | Full suite in the VM (`C:\work\suite.ps1`), then VS Code and IntelliJ against `prismio.exe lsp`. |
+| **IntelliJ in a real IDE** | **Used 2026-10-29** in the `runIde` sandbox (IntelliJ IDEA 2026.2.1, by computer control): server start and stop with the setting, diagnostics, the import quick fix, hover, parameter info, inlay hints, completion (the `std.vec` members after `xs.`), Go to Declaration into `vec.psm` (the source the server wrote out of the `.plib`), Find Usages, **Rename**, **Reformat Code** (a badly spaced line, by `prismio fmt`), the structure view and Go to Symbol. Using it found four things no test had: Rename, usage highlights and server formatting are off for any language but plain text unless the plugin says otherwise (`PrismioLspFeatures`), and two noisy hints. **Not seen:** Highlight Usages (enabled, not looked at), the breadcrumbs, folding from the server, WebStorm, CLion and the rest. | `./gradlew --offline -I init.gradle runIde` with `PRISMIO=<toolchain>/bin/prismio` and an init script that sets the project; the window needs full-screen computer control. |
+| **Remaining plugin packages** | **None.** `navigation/`, `symbols/`, `imports/` and the formatter's spacing rules are deleted (2026-10-29), each after a differential: 3,961 names (the server agreed on 3,941; the 20 others were the plugin's mistakes), 217 formatted files (19 changed by the Java formatter). The lexer's word tables stay and are held to `prismio dump-tokens` by a test. `docs/INTELLIJ_PLAN.md` says what is where. | - |
+| **VS Code** | Built and exercised by 11 end-to-end checks in the installed VS Code 1.143 (2026-10-29: the two new ones are a definition into the library and find references), **not** used by hand: this session's computer-use grant for an editor is click-only, so nothing could be typed. The `.vsix` builds and is **not published**: that needs the maintainer's Marketplace account and token. No grammar for `build.ums`. Windows untested. | Open `../vscode-plugin/test/fixtures/demo` in the Extension Development Host (F5) and use it for a session; publish after that. |
 | **Other editors** | Neovim, Helix, Zed: not tried. | A client needs only what `IDE_PROTOCOL.md` says; try one and record the config on the docs page. |
 | **Server speed** | 162-177 ms for ordinary programs (150 ms of it the debounce), 1.2 s for the compiler checking itself. No cache built. | Only if a large program becomes ordinary: a parse cache in a long-lived worker, then the body-independent item summary (Phase 5). |
 | **Workspaces** | Only `rootUri` is read; several workspace folders, `workspace/didChangeConfiguration` and per-folder settings are not handled. | Read `workspaceFolders`; the importer search's stop directory is the part that depends on it. |
 | **Manifest loader** | Leaks about 20 KB a call (`KNOWN_ISSUES.md`); the server never loads a manifest on a request path for that reason (child process; cache per file change). | Fixing the ownership of a `Vec` of structs that hold strings removes the workaround's reason, not its benefit. |
 
 ### Found and fixed on the way (so they are not rediscovered)
+
+- **`readFile` stops at the first NUL.** A `.plib` is binary, so the server read nine bytes of a 71 KB file and found "no source" for every library definition and every `import std.x`. `prismio library-source <file.plib> <module>` prints the interface; the server writes it into its scratch directory.
+- **Windows: one file, two spellings in one index** (`C:/work/a.psm` from an overlay, `C:\work\a.psm` from an import), and the compiler matched overlays as text, so a module open in the editor never belonged to the program that imports it and every reference from the other file was missing. The overlay key is one spelling now (`overlayKey`, `src/driver/imports.psm`).
+- **Windows: `_execvp` exits the launcher at once with status 0.** `prismio lsp` is a launcher, so an editor saw the server end the moment it started. `proc_exec` runs the program to completion and exits with its status.
+- **Windows: a poll of 30 ms lasted 470.** `std.poll` counted `Sleep(1)` calls, which last 15.6 ms, instead of reading the clock (`test_353` failed on it).
+- **The platform's LSP client enables rename, usage highlights and server-only formatting for plain text only.** Found by using the IDE: Rename was greyed out.
 
 - `for line in readLines(p)` left by `return`/`break` leaks a descriptor and a 64 KiB buffer; `substring` of a large parameter pins it, `slice` does not (developer docs, *The language server*).
 - **`runtime/build_driver.c` freed three `command_quote_arg` results with libc `free`** when the curated-module cache entry was cold: the first project build of a `runtime = none` target in a TMPDIR that had never built one aborted (`pointer being freed was not allocated`, exit -6). It passed everywhere that had built anything, and failed in the suite's fresh TMPDIR (the `ums` fixture). The fixture's first build now always uses a fresh TMPDIR. If a slab/seam fault ever shows again: read the `.ips` crash report (`~/Library/Logs/DiagnosticReports`), symbolicate with `nm` + `otool -tvV`, and run the build under `benchmarks/allocator_proto/slab_free_shim.c`.

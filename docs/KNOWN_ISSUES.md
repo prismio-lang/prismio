@@ -870,6 +870,10 @@ name behaved as written. The server now gives each attempt its own scratch name,
 ordinary diagnostics path, but the cause was not found: whether the compiler (or the object/parse cache under `TMPDIR`)
 keys a read on the overlay's path. **Observed 2026-10-28, not diagnosed.**
 
+### The language server on Windows has run the fixtures and nothing else
+
+The `lsp`, `lsp_features`, `lsp_manifest` and `lsp_workspace` fixtures and `test_353`/`test_354` pass in the Windows 11 ARM64 VM (2026-10-29), with two checks skipped there (a killed check; memory growth). The full suite has not been run on Windows since, no editor has been run on it, and paths are canonicalised only for separators and the drive letter (an 8.3 name or a directory in another case still names a different file to the server). **Observed 2026-10-29.**
+
 ---
 
 ## The allocator

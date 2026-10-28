@@ -1288,15 +1288,19 @@ char* proc_read_some(int fd, int max) {
     return out;
 }
 
-// **Windows has no `execvp`.** `_execvp` spawns a new process and exits this
-// one, so a parent waiting on the original sees it finish and the pid changes.
-// That difference is observable and is documented rather than papered over.
+// **Windows has no `execvp`.** `_execvp` starts the new process and exits this one at once with
+// status 0, so a parent waiting on the original (an editor holding `prismio lsp`) sees it end
+// while the program it asked for runs on unwatched. This runs the program to completion with
+// the same standard streams and exits with its status instead: the pid still changes, but
+// what a waiting parent sees is the program's own life and exit code.
 int proc_exec(void) {
     char** vector = spawn_vector();
     if (!vector) return -1;
-    _execvp(vector[0], (const char* const*)vector);
+    fflush(NULL);
+    intptr_t status = _spawnvp(_P_WAIT, vector[0], (const char* const*)vector);
     tmp_free(vector);
-    return -1;
+    if (status == -1) return -1;
+    exit((int)status);
 }
 
 int proc_write(int fd, const char* bytes, int length) {
@@ -1684,12 +1688,15 @@ static int descriptor_ready(int fd) {
     return available > 0;
 }
 
+// The wait follows the clock. `Sleep(1)` sleeps one timer tick, about 15.6 ms unless something has raised the
+// resolution, so counting the sleeps made a 30 ms wait last nearly half a second.
 static int poll_wait_on(const int* fds, int count, int ms) {
-    for (int waited = 0;; waited++) {
+    ULONGLONG deadline = GetTickCount64() + (ULONGLONG)ms;
+    for (;;) {
         for (int i = 0; i < count; i++) {
             if (fds[i] >= 0 && descriptor_ready(fds[i])) return i;
         }
-        if (waited >= ms) return -1;
+        if (GetTickCount64() >= deadline) return -1;
         Sleep(1);
     }
 }
