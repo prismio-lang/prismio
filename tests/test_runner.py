@@ -2571,6 +2571,37 @@ def run_fmt_test():
         run_command([str(PRISMIO_EXE), "fmt", "--write", str(messy)])
         if messy.read_text() != "fn f() {\n    let a = 1\n}\n":
             problems.append(f"--write left {messy.read_text()!r}")
+        # Folders: every `.psm` under them, any number, mixed with files; hidden folders and other
+        # extensions are left alone. A folder with nothing to format is formatted already.
+        messy_text = "fn f( ) {\nlet a=1\n}\n"
+        tree = Path(tmp) / "tree"
+        for relative in ("proj/a.psm", "proj/sub/deep/b.psm", "proj/.hidden/c.psm", "proj/notes.txt", "other/d.psm"):
+            target = tree / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(messy_text)
+        (tree / "empty").mkdir()
+        proj, other = str(tree / "proj"), str(tree / "other")
+        listed = run_command([str(PRISMIO_EXE), "fmt", "--check", proj, other])
+        names = {line.rsplit("/", 1)[-1] for line in listed.stdout.splitlines()}
+        if listed.returncode != 1 or names != {"a.psm", "b.psm", "d.psm"}:
+            problems.append(f"fmt --check over two folders should name a, b and d (not the hidden c or notes.txt): "
+                            f"{listed.returncode} {listed.stdout!r}")
+        mixed = run_command([str(PRISMIO_EXE), "fmt", "--check", str(tree / "proj" / "a.psm"), other])
+        if mixed.returncode != 1 or mixed.stdout.count("would reformat") != 2:
+            problems.append(f"fmt --check over a file and a folder should name both: {mixed.stdout!r}")
+        several = run_command([str(PRISMIO_EXE), "fmt", proj])
+        if several.returncode == 0 or "--write" not in several.stdout + several.stderr:
+            problems.append(f"fmt over a folder of several files needs --write or --check: {several.returncode}")
+        if run_command([str(PRISMIO_EXE), "fmt", "--check", str(tree / "empty")]).returncode != 0:
+            problems.append("fmt --check of a folder with no source failed")
+        run_command([str(PRISMIO_EXE), "fmt", "--write", proj, other])
+        tidy_text = "fn f() {\n    let a = 1\n}\n"
+        if [(tree / r).read_text() for r in ("proj/a.psm", "proj/sub/deep/b.psm", "other/d.psm")] != [tidy_text] * 3:
+            problems.append("fmt --write over folders did not rewrite every file")
+        if (tree / "proj/.hidden/c.psm").read_text() != messy_text or (tree / "proj/notes.txt").read_text() != messy_text:
+            problems.append("fmt --write over a folder touched a hidden folder or a file that is not .psm")
+        if run_command([str(PRISMIO_EXE), "fmt", "--check", proj, other]).returncode != 0:
+            problems.append("fmt --check over folders failed after --write")
         if run_command([str(PRISMIO_EXE), "fmt", str(Path(tmp) / "missing.psm")]).returncode == 0:
             problems.append("fmt of a missing file succeeded")
 

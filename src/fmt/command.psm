@@ -1,8 +1,10 @@
 // `prismio fmt`: the formatter as a command.
 //
-//   prismio fmt <file.psm>...  [--check] [--write] [--range <from>:<to>]
-//   prismio fmt --stdin        [--range <from>:<to>]
+//   prismio fmt <file.psm | folder>...  [--check] [--write] [--range <from>:<to>]
+//   prismio fmt --stdin                 [--range <from>:<to>]
 //
+// A folder stands for every `.psm` file under it, in order; a hidden folder (`.git`, `.prismio`) inside
+// it is not searched, and a folder named on the command line is searched even if it is hidden.
 // Without a flag the formatted text goes to standard output. `--write` rewrites the files whose
 // text would change; `--check` writes nothing and exits 1 if any would (the CI form). `--stdin`
 // formats what is piped in, which is how an editor formats an unsaved buffer. `--range` formats
@@ -33,7 +35,29 @@ public fn fmtSource(text: String, fromLine: Int, toLine: Int) -> String {
 }
 
 private fn fmtUsage() {
-    diag_note("usage: prismio fmt <file.psm>... [--check] [--write] [--range <from>:<to>], or prismio fmt --stdin")
+    diag_note("usage: prismio fmt <file.psm | folder>... [--check] [--write] [--range <from>:<to>], or prismio fmt --stdin")
+}
+
+// What the command line named, as the files to format: a file as given, a folder as every `.psm` file
+// under it. `depth` stops a symbolic link that loops back on its folder.
+private fn fmtCollect(path: String, inout files: Vec<String>, depth: Int) {
+    if (directoryExists(path) == false) {
+        files.push(path.clone())
+        return
+    }
+    if (depth > 64) { return }
+    // `src/` and `src` name the same folder, and the files under it should read the same way.
+    let mut base = path.clone()
+    while (base.length > 1 and base.endsWith("/")) { base = base.substring(0, base.length - 1).clone() }
+    let names = listDirectory(base)
+    for name in names {
+        let child = joinPath(base, name)
+        if (directoryExists(child)) {
+            if (name.startsWith(".") == false) { fmtCollect(child, files, depth + 1) }
+        } else if (name.endsWith(".psm")) {
+            files.push(child)
+        }
+    }
 }
 
 public fn fmtCommand() -> Int {
@@ -94,6 +118,15 @@ public fn fmtCommand() -> Int {
         fmtUsage()
         return 1
     }
+    let mut named = false
+    let mut expanded: Vec<String> = []
+    for path in files {
+        if (directoryExists(path)) { named = true }
+        fmtCollect(path, expanded, 0)
+    }
+    files = expanded
+    // A folder with no source in it is formatted already.
+    if (files.length == 0 and named) { return 0 }
     if (files.length > 1 and write == false and check == false) {
         diag_error_code("P1111", "several files need `--write` or `--check`")
         return 1

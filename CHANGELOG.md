@@ -9,6 +9,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`prismio fmt` takes folders, and any number of them.** `prismio fmt --check src std lsp` and `prismio fmt --write src
+  tests/test_1.psm` name files and folders together; a folder stands for every `.psm` file under it, searched recursively in
+  name order, with hidden folders (`.git`, `.prismio`) inside it skipped (one named on the command line is searched) and a
+  trailing slash normalised (`fmtCollect`). A folder used to be read as an empty file, which formats to itself, so
+  `prismio fmt src --check` exited 0 without looking at anything; in CI that passed whatever the code looked like. The `fmt`
+  fixture holds folders, files mixed with folders, hidden folders, other extensions and an empty folder. The CLI page said a
+  flag-less `fmt` prints nothing; it prints the formatted text, and says so now, with `--stdin`, which it had left out.
+
 - **`prismio fmt` writes an `if` that has an `else` over several lines.** The branches of `if (a) { b() } else { c() }`,
   and of an `else if` chain, each begin a line of their own with `} else {` kept together (`fmtBranchBreaks`, the one place
   the formatter splits a line; it still never joins one). An `if` with no `else` stays as written, an empty branch stays
