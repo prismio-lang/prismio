@@ -184,7 +184,7 @@ repetition suffixes (a sequence repeats, a set takes any count).
    misplaced; `println` of mixed types; `length` / `args[k]`; forwarding; zero arguments.
 3. Cut the seed, promote the host.
 4. Convert `concat`, then `print` / `println`, then interpolation, measuring each.
-5. Docs in both apps; `docs/INTELLIJ_PLAN.md` gains `typelist` and the parameter form.
+5. Docs in both apps; the editors need nothing (`docs/INTELLIJ_PLAN.md`).
 
 ## Built after the first cut (2026-10-22)
 

@@ -151,6 +151,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `mapNew<K, V>()` with the types written in the brackets, `Maybe<Int>.None` and `Shape<Int>.Rect { }` and the same in a
   pattern, `Ptr<mut Device>.cast(x)`, and the constants a folded `Array<Int, N * N>`, `grid.length` or `let N2 = N * N` named.
   `tools/check_index.py` holds 359 programs to it.
+- **Parameter-name hints say less.** Seen in an IDE: `println(value: items: xs.contains(needle: 3))`. The receiver of
+  `xs.contains(3)` is written before the dot and is no argument to name (`items:`), a call sema made up (`println(x)` split
+  into one write per value) has nothing written where its callee says, and a function of one parameter says what it takes in
+  its own name (`value:`). `a:` and `b:` in `add(a: p.x, b: p.sum())` stay.
 
 - **The language server serves `build.ums`, and a workspace.** `prismio check build.ums` checks a manifest with the
   diagnostics of any other check (`--overlay <manifest> <file>` for unsaved text); the server runs it in a child, because

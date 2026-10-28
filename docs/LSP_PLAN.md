@@ -61,7 +61,7 @@ The IntelliJ plugin (`../jetbrains-plugin`, ~15.7k lines of Java) re-implements 
 language: `symbols/` (3.5k lines: `TypeInference`, `SignatureParser`, `StdlibIndex`,
 `CompilerIntrinsics`), `navigation/` (1.4k: a scope resolver), `completion/` (1.3k), a
 formatter (0.7k) and two hand-written lexers. Every compiler feature then needs a second
-implementation, and `docs/INTELLIJ_PLAN.md` is the backlog of what the plugin has not
+implementation, and `docs/INTELLIJ_PLAN.md` was the backlog of what the plugin had not
 caught up with. A VS Code extension on the same model would be a *third* implementation
 (TypeScript). Two implementations that must agree is already a recurring cost; three is
 not sustainable for one maintainer.

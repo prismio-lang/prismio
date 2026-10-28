@@ -524,6 +524,25 @@ fn ixNoteArguments(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call: AS
     if (nodeIsNull(ix.dNode[target])) { return }
     let decl = ptr_to_node(ix.dNode[target])
     if (decl.kind != NodeKind.FUNCTION and decl.kind != NodeKind.EXTERN_FUNCTION) { return }
+    // A call sema made up (`println(x)` split into one write per value) has nothing written where its callee says it
+    // is, and no parameter name helps a reader of what they did not write.
+    let callee = ptr_to_node(call.child1)
+    let slot = ixView(src, call.file)
+    let calleeToken = ixTokenAt(src, slot, callee.line, callee.col)
+    if (slot < 0 or calleeToken < 0) { return }
+    let written = ixTokenText(src, slot, calleeToken)
+    if (written.equals("(") == false and written.equals(ix.dName[target]) == false
+            and written.equals(ixBaseName(callee.s1)) == false) { return }
+    // A function of one parameter (besides `self`) says what it takes in its own name: `println(value: n)` and
+    // `abs(value: x)` are only longer.
+    let mut named = 0
+    let mut counted = decl.child1
+    while (nodeExists(counted)) {
+        let each = ptr_to_node(counted)
+        counted = each.next
+        if (each.kind == NodeKind.FUNCTION_PARAMETER and each.s1.equals("self") == false) { named = named + 1 }
+    }
+    if (named <= 1) { return }
     let mut param = decl.child1
     let mut arg = call.child2
     let mut index = 0
@@ -537,7 +556,10 @@ fn ixNoteArguments(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call: AS
         if (parameter.i1 == 1) { return }
         let name = parameter.s1
         let plain = argument.kind == NodeKind.IDENTIFIER_EXPR and argument.s1.equals(name)
-        if (name.equals("self") == false and name.startsWith("$") == false and plain == false and argument.line > 0) {
+        // `xs.contains(3)` is `contains(xs, 3)`: the receiver is written before the dot, and is no argument to name.
+        let receiver = index == 0 and (argument.line < callee.line or (argument.line == callee.line and argument.col < callee.col))
+        if (name.equals("self") == false and name.startsWith("$") == false and plain == false and receiver == false
+                and argument.line > 0) {
             let mut best = IxPos { line: argument.line, col: argument.col }
             ixLeftmost(argument, best)
             ix.out.push(ixArgLine(call.file, best.line, best.col, name, index))
