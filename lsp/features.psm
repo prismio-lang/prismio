@@ -313,7 +313,7 @@ public fn featureWorkspaceSymbols(indexes: Vec<String>, query: String, docs: Doc
     let mut shown = 0
     for index in indexes {
         let files = indexFiles(index)
-        let loc = locator(files, utf16, "")
+        let loc = locator(files, utf16, "", "")
         for decl in indexSearch(index, query, 100) {
             if (shown >= 200 or decl.kind.equals("impl") or loc.openable(decl.file) == false) { continue }
             out.beginObject()

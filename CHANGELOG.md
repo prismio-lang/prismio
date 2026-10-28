@@ -134,6 +134,15 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   does). `dump-tokens`' contextual keywords (`export`, `async`, `prop`) are offered with the rest. The IntelliJ plugin's
   thirty-five completion tests are the acceptance: all of them hold of the server.
 
+- **Go to definition reaches the library, and an `import` its module.** A definition in a compiled module (`xs.contains(` into
+  `vec.psm`) is a position in the source the `.plib` carries, so the server shows that source. Reading it was the defect: a
+  `.plib` starts with NUL bytes and `readFile` stops at the first one (nine bytes of a 71 KB file), so the server found "no
+  source" for every library declaration and every `import std.x`. **`prismio library-source <file.plib> <module>`** prints
+  the interface (`P1119` for the wrong arguments, `P1120` when the file or the module name is wrong); the server runs it once
+  per module and writes the text into its scratch directory. The plugin's navigation tests are the acceptance: seven of
+  seven hold of the server. One of them taught the opposite of the plugin: a function of the same name and parameter types
+  in the file and in an import is `P4001`, not "the current file wins", and one of other parameter types is an overload.
+
 - **The language server serves `build.ums`, and a workspace.** `prismio check build.ums` checks a manifest with the
   diagnostics of any other check (`--overlay <manifest> <file>` for unsaved text); the server runs it in a child, because
   the manifest loader keeps what it lexes (about 20 KB a call on this repository's own manifest) and a server lives for

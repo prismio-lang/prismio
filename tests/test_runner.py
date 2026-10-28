@@ -3494,6 +3494,18 @@ def run_lsp_features_test():
         finally:
             client.close()
 
+    # The source a compiled library module carries, which the server shows for a definition in the library: a
+    # `.plib` begins with NUL bytes, so the compiler is the one that reads it. A compiler with no packaged
+    # library beside it (the suite's bare generations) has nothing to ask.
+    plib = Path(PRISMIO_EXE).resolve().parent.parent / "stdlib" / "vec.plib"
+    if plib.exists():
+        shown = run_command([str(PRISMIO_EXE), "library-source", str(plib), "std.vec"])
+        note(shown.returncode == 0 and "public fn contains<T: Eq>(items: Vec<T>, needle: T) -> Bool {" in shown.stdout,
+             f"library-source prints the module's source: {shown.returncode} {shown.stdout[:80]!r}")
+        refused = run_command([str(PRISMIO_EXE), "library-source", str(plib), "std.io"])
+        note(refused.returncode != 0 and "std.vec" in (refused.stdout + refused.stderr),
+             f"library-source refuses the wrong module name: {refused.returncode}")
+
     if problems:
         print(f"{RED}[FAIL] lsp_features{RESET}")
         for problem in problems:

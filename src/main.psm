@@ -5,7 +5,7 @@ import aif.*
 import ums.ums
 
 import {ums_cli, host, commands} from project
-import {compile, imports} from driver
+import {compile, imports, library_source} from driver
 import fmt.command
 import {scanner, token, dump_tokens} from lexer
 
@@ -516,6 +516,8 @@ fn main() -> Int {
     // generated from rather than copy.
     if (first.equals("dump-tokens")) { return dumpTokensCommand() }
     if (first.equals("fmt")) { return fmtCommand() }
+    // The source inside a compiled library module, for a language server to show a declaration of.
+    if (first.equals("library-source")) { return librarySourceCommand() }
     // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
     // touches no codegen, so it cannot affect what `build` generates. Exists for
     // the AIF memory-model work, which analyses the real AST out-of-process.

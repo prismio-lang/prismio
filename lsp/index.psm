@@ -177,6 +177,13 @@ public fn indexFileId(index: String, path: String) -> Int {
     return 0 - 1
 }
 
+public fn indexFileModule(files: Vec<IndexFile>, id: Int) -> String {
+    for known in files {
+        if (known.id == id) { return known.module.clone() }
+    }
+    return "".clone()
+}
+
 public fn indexFilePath(files: Vec<IndexFile>, id: Int) -> String {
     for known in files {
         if (known.id == id) { return known.path.clone() }

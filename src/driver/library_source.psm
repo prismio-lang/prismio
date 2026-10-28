@@ -1,0 +1,28 @@
+// `prismio library-source <file.plib> <module>`: the source a compiled library module carries.
+//
+// A `.plib` is binary (PRPLIB3, driver/imports.psm) and a Prismio `String` cannot hold its header,
+// which has NUL bytes in it, so a program that is not the compiler cannot read the interface out of
+// one. The index names a library declaration by line and column of that interface text; a language
+// server that wants to show the declaration asks for the text here and writes it where an editor can
+// open it. The text goes to standard output exactly as the module was packaged.
+
+import std.io
+import std.process
+import std.string
+import common.diagnostics
+import driver.imports
+
+public fn librarySourceCommand() -> Int {
+    if (process.args.count != 4) {
+        diag_error_code("P1119", "`library-source` takes the .plib file and the name of its module")
+        diag_note("usage: prismio library-source <file.plib> <module>")
+        return 1
+    }
+    let text = compiler_plib_interface(process.args[2], process.args[3])
+    if (text.equals("")) {
+        diag_error_code("P1120", "cannot read the interface of ".concat(process.args[2], ": ", compiler_plib_error()))
+        return 1
+    }
+    print(text)
+    return 0
+}
