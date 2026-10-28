@@ -235,6 +235,30 @@ fn ixWalkAnnotation(inout ix: Ix, inout src: IxSources, inout w: IxWalk, ptr: Pt
         second = extra.next
         ixWalkAnnotation(ix, src, w, node_to_ptr(extra))
     }
+    if (node.i1 == 1 and nodeExists(node.child2)) { ixWalkArrayLength(ix, src, w, node) }
+}
+
+// `Array<Int, N * N>`: sema folded the length to a number, so the constants it named are found in the text between
+// the angle brackets.
+fn ixWalkArrayLength(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    if (ixIsUserFile(ix, node.file) == false) { return }
+    let slot = ixView(src, node.file)
+    let head = ixTokenAt(src, slot, node.line, node.col)
+    if (slot < 0 or head < 0 or head + 2 >= ixTokenCount(src, slot)) { return }
+    if (ixTokenText(src, slot, head).equals("Array") == false or ixTokenText(src, slot, head + 1).equals("<") == false) { return }
+    let mut depth = 1
+    let mut at = head + 2
+    while (at < ixTokenCount(src, slot) and depth > 0) {
+        let text = ixTokenText(src, slot, at)
+        if (text.equals("<")) { depth = depth + 1 }
+        if (text.equals(">")) { depth = depth - 1 }
+        if (text.equals(">>")) { depth = depth - 2 }
+        if (ixKindAt(src, slot, at) == FmtKind.WORD) {
+            let global = ix.byGlobal.get(text)
+            if (global >= 0) { ixEmitAt(ix, src, w, node.file, slot, at, global, "read", "", "") }
+        }
+        at = at + 1
+    }
 }
 
 // Generic parameters in scope for the node that declares them: a type parameter is a declaration of
@@ -323,7 +347,15 @@ fn ixWalkQualified(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: AS
     }
     let typeId = ix.byType.get(base.s1)
     if (typeId < 0) { return false }
-    ixEmitRef(ix, src, w, base, base.s1, typeId, "type", "", "")
+    if (ixEmitRef(ix, src, w, base, base.s1, typeId, "type", "", "") == false) {
+        // A struct-variant pattern (`Shape.Rect { h, w }`) is a call whose receiver sits on the variant: the type is the
+        // word in front of the dot.
+        let slot = ixView(src, node.file)
+        let token = ixTokenAt(src, slot, node.line, node.col)
+        if (slot >= 0 and token >= 2 and ixKindAt(src, slot, token - 1) == FmtKind.DOT) {
+            ixEmitTypeHead(ix, src, w, node.file, slot, token - 2)
+        }
+    }
     let member = ix.byMember.get(base.s1.concat(".", node.s1))
     if (member >= 0) {
         ixEmitRef(ix, src, w, node, node.s1, member, "variant", ixNodeType(node), "")
@@ -376,6 +408,24 @@ fn ixBaseHead(ix: Ix, w: IxWalk, base: ASTNode) -> String {
     return written
 }
 
+// The type a pointer points to, for `p.field` on a `Ptr<mut T>`: `T`, or "" when the pointer's type is not known.
+fn ixPointee(ix: Ix, w: IxWalk, base: ASTNode) -> String {
+    let mut written = ixNodeType(base)
+    if (written.equals("") and base.kind == NodeKind.IDENTIFIER_EXPR) {
+        let id = ixLookupLocal(w, base.s1)
+        if (id >= 0) { written = ix.dType[id].clone() }
+    }
+    if (written.startsWith("Ptr<") == false) { return "".clone() }
+    let mut inner = written.substring(4, written.length - 4).clone()
+    if (inner.startsWith("mut ")) { inner = inner.substring(4, inner.length - 4).clone() }
+    if (inner.startsWith("volatile ")) { inner = inner.substring(9, inner.length - 9).clone() }
+    let mut end = 0
+    while (end < inner.length and inner.byteAt(end) != 60 and inner.byteAt(end) != 62 and inner.byteAt(end) != 44) {
+        end = end + 1
+    }
+    return inner.substring(0, end).clone()
+}
+
 fn ixWalkMember(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, role: String) {
     let base = ptr_to_node(node.child1)
     if (ixAtCursor(w, node)) {
@@ -384,7 +434,12 @@ fn ixWalkMember(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNo
     }
     if (ixWalkQualified(ix, src, w, node, base)) { return }
     ixWalkExpr(ix, src, w, base, "read")
-    let head = ixBaseHead(ix, w, base)
+    let mut head = ixBaseHead(ix, w, base)
+    // `p.magic` on a `Ptr<mut Header>` is the field of the pointee.
+    if (head.equals("Ptr")) {
+        let pointee = ixPointee(ix, w, base)
+        if (pointee.equals("") == false) { head = pointee }
+    }
     let mut field = 0 - 1
     if (head.equals("") == false) { field = ix.byMember.get(head.concat(".", node.s1)) }
     if (field < 0 and head.startsWith("Closure")) {
@@ -499,6 +554,12 @@ fn ixNoteQualifier(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call: AS
     if (name < 2) { return }
     if (ixKindAt(src, slot, name - 1) != FmtKind.DOT or ixKindAt(src, slot, name - 2) != FmtKind.WORD) { return }
     let text = ixTokenText(src, slot, name - 2)
+    // `Trait.method(x)`: sema rewrote it into a call of the implementation, and the word in front is a type.
+    let typeId = ix.byType.get(text)
+    if (typeId >= 0 and ix.byImport.get(text) < 0) {
+        ixEmitAt(ix, src, w, callee.file, slot, name - 2, typeId, "type", "", "")
+        return
+    }
     ixEmitAt(ix, src, w, callee.file, slot, name - 2, ix.byImport.get(text), "module", "", "module")
 }
 
@@ -552,7 +613,9 @@ fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
         }
         if (target >= 0) {
             // By the declaration's own name: a nested function's calls read `outer$inner`, which `name` cuts at the `$`.
-            ixEmitRef(ix, src, w, callee, ix.dName[target], target, role, ixNodeType(node), "")
+            if (ixEmitRef(ix, src, w, callee, ix.dName[target], target, role, ixNodeType(node), "") == false) {
+                ixEmitGenericCallee(ix, src, w, callee, target)
+            }
         } else if (node.s2.equals("") == false or local == 0 - 1) {
             // Sema resolved it to something this program has no declaration of: a builtin.
             ixEmitRef(ix, src, w, callee, name, 0 - 1, "call", ixNodeType(node), node.s2)
@@ -567,6 +630,16 @@ fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
             }
         }
         ixNoteQualifier(ix, src, w, node, callee)
+        // `Ptr<mut Device>.cast(x)`: sema lowered it to a builtin at the member's span; the types before the dot are
+        // still written.
+        let qslot = ixView(src, callee.file)
+        let qtoken = ixTokenAt(src, qslot, callee.line, callee.col)
+        if (qslot >= 0 and qtoken >= 2 and ixKindAt(src, qslot, qtoken - 1) == FmtKind.DOT) {
+            let qclose = ixKindAt(src, qslot, qtoken - 2)
+            if (qclose == FmtKind.RELATIONAL or qclose == FmtKind.SHIFT) {
+                ixEmitTypeHead(ix, src, w, callee.file, qslot, qtoken - 2)
+            }
+        }
     } else if (callee.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         // Not rewritten yet (a template's body): `x.f(a)`, `Type.f(a)`, `Enum.Variant(a)`.
         let base = ptr_to_node(callee.child1)
@@ -577,6 +650,12 @@ fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
         }
         if (ixWalkQualified(ix, src, w, callee, base) == false) {
             ixWalkExpr(ix, src, w, base, "read")
+            // `Ptr<mut Device>.cast(x)`: the types written before the dot.
+            let slot = ixView(src, callee.file)
+            let dotted = ixTokenAt(src, slot, callee.line, callee.col)
+            if (slot >= 0 and dotted >= 2 and ixKindAt(src, slot, dotted - 1) == FmtKind.DOT) {
+                ixEmitTypeHead(ix, src, w, callee.file, slot, dotted - 2)
+            }
             let method = ixFunctionByName(ix, callee.s1, "")
             if (method >= 0) {
                 target = method
@@ -593,6 +672,71 @@ fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
 }
 
 // `Point { x: 1 }`, `Box<Int> { value: 3 }`, and the literal an enum constructor `Shape.Circle(2)` became.
+// A word of a written type that names a type of the program.
+fn ixEmitTypeWord(inout ix: Ix, inout src: IxSources, inout w: IxWalk, file: Int, slot: Int, token: Int) {
+    if (token < 0 or ixKindAt(src, slot, token) != FmtKind.WORD) { return }
+    let id = ix.byType.get(ixTokenText(src, slot, token))
+    if (id >= 0) { ixEmitAt(ix, src, w, file, slot, token, id, "type", "", "") }
+}
+
+// The token of the `<` that matches the `>` or `>>` at `last`, or -1.
+fn ixMatchingAngle(inout src: IxSources, slot: Int, last: Int) -> Int {
+    let mut depth = 0
+    let mut at = last
+    while (at >= 0) {
+        let text = ixTokenText(src, slot, at)
+        if (text.equals(">")) { depth = depth + 1 }
+        if (text.equals(">>")) { depth = depth + 2 }
+        if (text.equals("<")) { depth = depth - 1 }
+        if (depth <= 0) { break }
+        at = at - 1
+    }
+    return at
+}
+
+// The type written before a `.` or a `{`, ending at the token `last`: `Maybe`, or `Maybe<Int>` with the named types
+// among its arguments.
+fn ixEmitTypeHead(inout ix: Ix, inout src: IxSources, inout w: IxWalk, file: Int, slot: Int, last: Int) {
+    if (last < 0) { return }
+    let closing = ixKindAt(src, slot, last)
+    if (closing != FmtKind.RELATIONAL and closing != FmtKind.SHIFT) {
+        ixEmitTypeWord(ix, src, w, file, slot, last)
+        return
+    }
+    let open = ixMatchingAngle(src, slot, last)
+    if (open < 1) { return }
+    let mut i = open + 1
+    while (i < last) {
+        ixEmitTypeWord(ix, src, w, file, slot, i)
+        i = i + 1
+    }
+    ixEmitTypeWord(ix, src, w, file, slot, open - 1)
+}
+
+// `made<Int>()`: sema instantiated the callee as `made$Int` and left its span on the `(`. The name is the word in
+// front of the `<...>`, and the types written between are references too. False when the call is not written so.
+fn ixEmitGenericCallee(inout ix: Ix, inout src: IxSources, inout w: IxWalk, callee: ASTNode, target: Int) -> Bool {
+    let slot = ixView(src, callee.file)
+    let paren = ixTokenAt(src, slot, callee.line, callee.col)
+    if (slot < 0 or paren < 2 or ixTokenText(src, slot, paren).equals("(") == false) { return false }
+    let closing = ixKindAt(src, slot, paren - 1)
+    if (closing != FmtKind.RELATIONAL and closing != FmtKind.SHIFT) { return false }
+    let open = ixMatchingAngle(src, slot, paren - 1)
+    if (open < 1 or ixKindAt(src, slot, open - 1) != FmtKind.WORD) { return false }
+    if (ixTokenText(src, slot, open - 1).equals(ix.dName[target])) {
+        ixEmitAt(ix, src, w, callee.file, slot, open - 1, target, "call", "", "")
+    } else {
+        // `Map<String, Int>()`: a type constructor, which sema lowered to a function of another name.
+        ixEmitTypeWord(ix, src, w, callee.file, slot, open - 1)
+    }
+    let mut i = open + 1
+    while (i < paren - 1) {
+        ixEmitTypeWord(ix, src, w, callee.file, slot, i)
+        i = i + 1
+    }
+    return true
+}
+
 fn ixWalkStructLiteral(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
     let slot = ixView(src, node.file)
     let name = ixBaseName(node.s1)
@@ -623,9 +767,8 @@ fn ixWalkStructLiteral(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node
             let variant = ix.byMember.get(name.concat(".", ixTokenText(src, slot, brace)))
             if (variant >= 0) {
                 ixEmitAt(ix, src, w, node.file, slot, brace, variant, "variant", ixNodeType(node), "")
-                if (brace >= 2 and ixKindAt(src, slot, brace - 1) == FmtKind.DOT
-                        and ixTokenText(src, slot, brace - 2).equals(name)) {
-                    ixEmitAt(ix, src, w, node.file, slot, brace - 2, typeId, "type", "", "")
+                if (brace >= 2 and ixKindAt(src, slot, brace - 1) == FmtKind.DOT) {
+                    ixEmitTypeHead(ix, src, w, node.file, slot, brace - 2)
                 }
             }
         }
@@ -710,6 +853,18 @@ fn ixWalkClosure(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTN
     ixPopScope(w)
 }
 
+// `grid.length` of an array whose length is a constant: sema replaced it with the number, at the span of `length`.
+// The receiver is the word in front of the dot.
+fn ixWalkFoldedLength(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    if (node.line < 1 or ixIsUserFile(ix, node.file) == false) { return }
+    let slot = ixView(src, node.file)
+    let token = ixTokenAt(src, slot, node.line, node.col)
+    if (slot < 0 or token < 2 or ixTokenText(src, slot, token).equals("length") == false) { return }
+    if (ixKindAt(src, slot, token - 1) != FmtKind.DOT or ixKindAt(src, slot, token - 2) != FmtKind.WORD) { return }
+    let id = ixLookupLocal(w, ixTokenText(src, slot, token - 2))
+    if (id >= 0) { ixEmitAt(ix, src, w, node.file, slot, token - 2, id, "read", "", "") }
+}
+
 fn ixWalkExpr(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, role: String) {
     match (node.kind) {
         NodeKind.IDENTIFIER_EXPR => { ixWalkIdentifier(ix, src, w, node, role) }
@@ -718,7 +873,7 @@ fn ixWalkExpr(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
         NodeKind.STRUCT_LITERAL_EXPR => { ixWalkStructLiteral(ix, src, w, node) }
         NodeKind.CLOSURE_EXPR => { ixWalkClosure(ix, src, w, node) }
         NodeKind.TYPE_ANNOTATION => { ixWalkAnnotation(ix, src, w, node_to_ptr(node)) }
-        NodeKind.LITERAL_EXPR => { }
+        NodeKind.LITERAL_EXPR => { ixWalkFoldedLength(ix, src, w, node) }
         NodeKind.NONE_LITERAL_EXPR => { }
         NodeKind.CAST_EXPR => {
             ixWalkChain(ix, src, w, node.child1, "read")
@@ -907,6 +1062,8 @@ fn ixWalkFunction(inout ix: Ix, inout src: IxSources, inout w: IxWalk, fnNode: A
     if (nodeExists(fnNode.child2)) {
         let body = ptr_to_node(fnNode.child2)
         if (body.kind == NodeKind.BLOCK) { ixWalkBlock(ix, src, w, body) }
+        // An `extern fn` has no body: what stands in that place is its result type.
+        if (fnNode.kind == NodeKind.EXTERN_FUNCTION) { ixWalkAnnotation(ix, src, w, fnNode.child2) }
     }
     ixPopScope(w)
     ixLeaveGenerics(w)
@@ -1011,7 +1168,31 @@ fn ixWalkImpl(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
 
 fn ixWalkGlobal(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
     ixWalkAnnotation(ix, src, w, node.child1)
-    if (nodeExists(node.child2)) { ixWalkExpr(ix, src, w, ptr_to_node(node.child2), "read") }
+    if (nodeExists(node.child2)) {
+        let initial = ptr_to_node(node.child2)
+        ixWalkExpr(ix, src, w, initial, "read")
+        if (initial.kind == NodeKind.LITERAL_EXPR) { ixWalkFoldedInitial(ix, src, w, node) }
+    }
+}
+
+// `let CELLS: Usize = N * N`: sema folded the initial value to a number, so the constants it named are the words
+// of the line after the `=`.
+fn ixWalkFoldedInitial(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
+    if (node.line < 1 or ixIsUserFile(ix, node.file) == false) { return }
+    let slot = ixView(src, node.file)
+    let name = ixTokenAt(src, slot, node.line, node.col)
+    if (slot < 0 or name < 0) { return }
+    let mut at = name + 1
+    let mut equals = false
+    while (at < ixTokenCount(src, slot) and ixTokenLine(src, slot, at) == node.line) {
+        let text = ixTokenText(src, slot, at)
+        if (equals == false and text.equals("=")) { equals = true }
+        if (equals and ixKindAt(src, slot, at) == FmtKind.WORD) {
+            let global = ix.byGlobal.get(text)
+            if (global >= 0) { ixEmitAt(ix, src, w, node.file, slot, at, global, "read", "", "") }
+        }
+        at = at + 1
+    }
 }
 
 fn ixWalkChainDecls(inout ix: Ix, inout src: IxSources, inout w: IxWalk, head: Ptr) {

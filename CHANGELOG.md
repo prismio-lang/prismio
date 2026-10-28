@@ -143,6 +143,15 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   seven hold of the server. One of them taught the opposite of the plugin: a function of the same name and parameter types
   in the file and in an import is `P4001`, not "the current file wins", and one of other parameter types is an overload.
 
+- **The semantic index names more of what a program says.** Held to the IntelliJ plugin's own go-to-declaration over the
+  checkout's tests (3,961 names the plugin resolves; the server agreed on 3,941, and the other 20 are the plugin's mistakes: a
+  field label taken for a variable, an `import` segment taken for a declaration, a bound `T: Eq` taken for an `impl`). The
+  server resolved nothing for sixty of them, and the index now has: `Trait.method(x)` (its head was written as a module),
+  `p.field` on a `Ptr<mut T>`, the result type of an `extern fn`, a pack's name (`...xs`) and its uses, `made<Int>()` and
+  `mapNew<K, V>()` with the types written in the brackets, `Maybe<Int>.None` and `Shape<Int>.Rect { }` and the same in a
+  pattern, `Ptr<mut Device>.cast(x)`, and the constants a folded `Array<Int, N * N>`, `grid.length` or `let N2 = N * N` named.
+  `tools/check_index.py` holds 359 programs to it.
+
 - **The language server serves `build.ums`, and a workspace.** `prismio check build.ums` checks a manifest with the
   diagnostics of any other check (`--overlay <manifest> <file>` for unsaved text); the server runs it in a child, because
   the manifest loader keeps what it lexes (about 20 KB a call on this repository's own manifest) and a server lives for

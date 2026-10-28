@@ -77,6 +77,11 @@ public fn ixNameToken(src: IxSources, slot: Int, node: ASTNode) -> Int {
         if (ixTokenLine(src, slot, at) != node.line) { break }
         let text = ixTokenText(src, slot, at)
         if (text.equals(base) or text.equals(node.s1) or (written.equals("") == false and text.equals(written))) { return at }
+        // A pack's `...` stands in front of its name (`...args: Ts`).
+        if (text.equals("...")) {
+            at = at + 1
+            continue
+        }
         // Only a keyword or a marker stands in front of a name.
         let kind = ixKindAt(src, slot, at)
         if (kind != FmtKind.KEYWORD and kind != FmtKind.CONTEXTUAL) { break }
