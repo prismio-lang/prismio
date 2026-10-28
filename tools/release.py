@@ -202,11 +202,21 @@ def build_release_compiler(host: Path) -> Path:
     The release profile, so the build writes `.prismio/build/release/` and never
     touches the debug-profile host that `prismio release` itself is running.
     """
+    compiler = REPO / ".prismio" / "build" / "release" / f"prismio{EXE}"
+    # A host that is the very binary this build replaces cannot overwrite itself while it runs: it
+    # stages the new compiler as `<host>.next` and the launcher renames it over the host after the
+    # build process exits (src/project/host.psm). Reading `prismio` right after the build therefore
+    # reads the compiler that did the building, whatever the checkout now says -- the release shipped
+    # the previous bootstrap, without a formatter rule the tree had, for exactly that reason. So a
+    # stale candidate is cleared first, and the fresh one, when there is one, is what ships.
+    staged = Path(str(compiler) + ".next")
+    staged.unlink(missing_ok=True)
     built = run([host, "build", "--release"])
     if built.returncode != 0:
         die("`build --release` failed:\n" + (built.stdout + built.stderr).strip(),
             "if src/ uses something this host cannot compile, run `prismio build` first")
-    compiler = REPO / ".prismio" / "build" / "release" / f"prismio{EXE}"
+    if staged.is_file():
+        return staged
     if not compiler.is_file():
         die(f"`build --release` produced no {compiler.relative_to(REPO)}")
     return compiler

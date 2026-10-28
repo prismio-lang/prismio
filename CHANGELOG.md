@@ -1136,6 +1136,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **`prismio release` shipped the previous host, not this checkout's compiler.** When the host is the binary `build --release`
+  replaces, it stages the new compiler as `prismio.next` and the launcher renames it over the host after the build process
+  exits, so `tools/release.py` read `prismio` right after the build and packaged the compiler that had done the building. With
+  an unchanged tree that is the same binary, so it went unseen; after a source change the archive had the last bootstrap's
+  compiler (no formatter rule it had just gained). It clears a stale `prismio.next` first and ships the fresh one.
+
 - **`import std.io.println` of a pack failed: `unknown function println$pack$Int`.** An instance made from a generic or a
   pack is named for its template and its types, and the selective-import check looked that whole name up in the set the file
   named. It reads what comes before the first `$` now (`tests/test_359`).
