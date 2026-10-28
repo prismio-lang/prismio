@@ -289,7 +289,11 @@ private fn listPartitionRight<T, F>(inout items: Vec<T>, begin: Int, end: Int, o
         let unknown = last - first
         let mut leftSplit = 0
         if (numL == 0) {
-            if (numR == 0) { leftSplit = unknown / 2 } else { leftSplit = unknown }
+            if (numR == 0) {
+                leftSplit = unknown / 2
+            } else {
+                leftSplit = unknown
+            }
         }
         let mut rightSplit = 0
         if (numR == 0) { rightSplit = unknown - leftSplit }

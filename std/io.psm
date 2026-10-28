@@ -272,9 +272,17 @@ private fn prismioStdIoEmit(fd: Int, value: Float, terminator: Char) {
 
 private fn prismioStdIoEmit(fd: Int, value: Bool, terminator: Char) {
     if (terminator == '\0') {
-        if (value) { prismioStdIoWriteAll(fd, "true") } else { prismioStdIoWriteAll(fd, "false") }
+        if (value) {
+            prismioStdIoWriteAll(fd, "true")
+        } else {
+            prismioStdIoWriteAll(fd, "false")
+        }
     } else {
-        if (value) { prismioStdIoWriteAll(fd, "true\n") } else { prismioStdIoWriteAll(fd, "false\n") }
+        if (value) {
+            prismioStdIoWriteAll(fd, "true\n")
+        } else {
+            prismioStdIoWriteAll(fd, "false\n")
+        }
     }
 }
 
@@ -301,55 +309,107 @@ private fn prismioStdIoEmit(fd: Int, value: Int?, terminator: Char) {
 }
 
 private fn prismioStdIoEmit(fd: Int, value: I8?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: I16?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: I64?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: Isize?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: U8?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: U16?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: U32?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: U64?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: Usize?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: Float?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: Bool?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: Char?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 private fn prismioStdIoEmit(fd: Int, value: String?, terminator: Char) {
-    if (value == none) { prismioStdIoEmitNone(fd, terminator) } else { prismioStdIoEmit(fd, expect(value), terminator) }
+    if (value == none) {
+        prismioStdIoEmitNone(fd, terminator)
+    } else {
+        prismioStdIoEmit(fd, expect(value), terminator)
+    }
 }
 
 // Python's `print()` -- the line break on its own, and the obvious way to end a line a `print`

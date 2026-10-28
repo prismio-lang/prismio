@@ -178,7 +178,11 @@ impl JsonParser {
         let start = self.at
         loop {
             let c = self.peek(doc)
-            if (c >= 48 and c <= 57) { self.at = self.at + 1 } else { break }
+            if (c >= 48 and c <= 57) {
+                self.at = self.at + 1
+            } else {
+                break
+            }
         }
         return self.at - start
     }
@@ -563,14 +567,30 @@ fn jsonDecodeScan(raw: String, out: String, write: Bool) -> Int {
         if (i + 1 < n) { e = raw.byteAt(i + 1) }
         i = i + 2
         let mut single = 0 - 1
-        if (e == 110) { single = 10 }
-        else if (e == 116) { single = 9 }
-        else if (e == 114) { single = 13 }
-        else if (e == 98) { single = 8 }
-        else if (e == 102) { single = 12 }
-        else if (e == 34) { single = 34 }
-        else if (e == 92) { single = 92 }
-        else if (e == 47) { single = 47 }
+        if (e == 110) {
+            single = 10
+        }
+        else if (e == 116) {
+            single = 9
+        }
+        else if (e == 114) {
+            single = 13
+        }
+        else if (e == 98) {
+            single = 8
+        }
+        else if (e == 102) {
+            single = 12
+        }
+        else if (e == 34) {
+            single = 34
+        }
+        else if (e == 92) {
+            single = 92
+        }
+        else if (e == 47) {
+            single = 47
+        }
         if (single >= 0) {
             if (write) { __builtin_string_put_byte(out, at, single as Char) }
             at = at + 1
@@ -665,13 +685,27 @@ fn jsonQuoteScan(text: String, out: String, write: Bool) -> Int {
             continue
         }
         let mut short = 0
-        if (c == 34) { short = 34 }
-        else if (c == 92) { short = 92 }
-        else if (c == 10) { short = 110 }
-        else if (c == 13) { short = 114 }
-        else if (c == 9) { short = 116 }
-        else if (c == 8) { short = 98 }
-        else if (c == 12) { short = 102 }
+        if (c == 34) {
+            short = 34
+        }
+        else if (c == 92) {
+            short = 92
+        }
+        else if (c == 10) {
+            short = 110
+        }
+        else if (c == 13) {
+            short = 114
+        }
+        else if (c == 9) {
+            short = 116
+        }
+        else if (c == 8) {
+            short = 98
+        }
+        else if (c == 12) {
+            short = 102
+        }
         if (short > 0) {
             if (write) {
                 __builtin_string_put_byte(out, at, '\\')
@@ -775,7 +809,11 @@ impl JsonWriter {
 
     public fn bool(self, value: Bool) {
         self.beforeValue()
-        if (value) { self.pieces.push("true") } else { self.pieces.push("false") }
+        if (value) {
+            self.pieces.push("true")
+        } else {
+            self.pieces.push("false")
+        }
     }
 
     public fn null(self) {

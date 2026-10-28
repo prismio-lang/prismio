@@ -400,8 +400,12 @@ private fn strPrefilteredTwoWayIndexOfFrom(s: String, needle: String, from: Int,
     }
     if (exactPeriod == false) {
         let rightLength = nlen - critical
-        if (critical > rightLength) { period = critical + 1 }
-        else { period = rightLength + 1 }
+        if (critical > rightLength) {
+            period = critical + 1
+        }
+        else {
+            period = rightLength + 1
+        }
     }
 
     let mut bytesetEnd = nlen
@@ -553,8 +557,12 @@ private fn strTwoWayIndexOfFrom(s: String, needle: String, from: Int,
     }
     if (exactPeriod == false) {
         let rightLength = nlen - critical
-        if (critical > rightLength) { period = critical + 1 }
-        else { period = rightLength + 1 }
+        if (critical > rightLength) {
+            period = critical + 1
+        }
+        else {
+            period = rightLength + 1
+        }
     }
 
     let mut bytesetEnd = nlen
@@ -1419,7 +1427,6 @@ internal fn strJoin(parts: Vec<String>, sep: String) -> String {
 // ---------------------------------------------------------------------------
 // Numbers
 // ---------------------------------------------------------------------------
-
 
 
 // `None` rather than a sentinel when the text is not an integer.

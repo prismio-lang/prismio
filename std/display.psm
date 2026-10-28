@@ -122,6 +122,7 @@ impl Display for Float? {
         return expect(self).show()
     }
 }
+
 impl Display for Bool? {
     fn show(self) -> String {
         if (self == none) { return strFromNone() }

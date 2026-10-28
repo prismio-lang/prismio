@@ -34,7 +34,11 @@ impl Duration {
     // 100 ms rather than a nanosecond short of it.
     public fn fromSecondsFloat(seconds: Float) -> Duration {
         let mut scaled = seconds * 1000000000.0
-        if (scaled < 0.0) { scaled = scaled - 0.5 } else { scaled = scaled + 0.5 }
+        if (scaled < 0.0) {
+            scaled = scaled - 0.5
+        } else {
+            scaled = scaled + 0.5
+        }
         return Duration { nanos: scaled as I64 }
     }
 
