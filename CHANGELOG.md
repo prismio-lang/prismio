@@ -56,6 +56,18 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   The IntelliJ plugin's own signature, hover and type-hint code was held to this: 1,910 call positions, 1,219 hover
   names and 320 hints of the checkout's tests compared before it was deleted.
 
+- **The language server completes the whole library, `import` lines, types, `Type.` and the compiler's own builtins.** Every
+  library module is imported in the completion's scratch copy, so every name is visible to the compiler, and a name from a
+  module the document does not import is offered with the edit that adds the import (sorted among the document's). `import
+  std.`, `import {a, b} from dir`, `from dir import {...}` and `import std.string.` complete modules, directories and what a
+  module declares; `let v: |` completes types; `Int.` its constants, `StringBuilder.` its associated functions (not its
+  methods), `Result<Int, String>.` its variants, a typed pointer its pointee's fields or `load`/`store`, an optional the
+  `T?` functions, `__builtin_mem_*`/`asm`/`port` the freestanding builtins (read from `common/mem_builtins.psm`'s own
+  predicates). Nothing is offered in a string, a comment or where a name is being declared, and a syntax error on another
+  line of the function no longer takes the completion with it (docs/KNOWN_ISSUES.md, *Editor tooling*, says what still
+  does). `dump-tokens`' contextual keywords (`export`, `async`, `prop`) are offered with the rest. The IntelliJ plugin's
+  thirty-five completion tests are the acceptance: all of them hold of the server.
+
 - **The language server serves `build.ums`, and a workspace.** `prismio check build.ums` checks a manifest with the
   diagnostics of any other check (`--overlay <manifest> <file>` for unsaved text); the server runs it in a child, because
   the manifest loader keeps what it lexes (about 20 KB a call on this repository's own manifest) and a server lives for

@@ -229,9 +229,22 @@ prismio check src/main.psm --partial --overlay src/main.psm /tmp/buffer.psm \
     --emit-index /tmp/out.idx --complete src/main.psm 12 9
 ```
 
-The `completion` records (`label`, `kind`, `detail`, `doc`, `rank`) are the members of the type before a
-`.`, the names in scope, or the contents of a module; no list of library names is kept anywhere else.
-The language's own keywords are not in the index: they come from `prismio dump-tokens`.
+The `completion` records (`label`, `kind`, `detail`, `doc`, `rank`, and `module` for a library name) are the
+members of the type before a `.`, the names in scope, the types for an annotation, or the contents of a module; no
+list of library names is kept anywhere else. A `context` record says which (`scope`, `member`, `type`, `module`),
+so that a client adds keywords to a scope and to nothing else. The language's own keywords are not in the index: they
+come from `prismio dump-tokens` (its `keywords`, `literals` and `contextualKeywords`).
+
+What the compiler provides and no source declares has a signature of its own: `v.push(`, `p.load()`, an optional's
+`unwrapOr`, the freestanding `__builtin_*` functions (`src/index/lowered.psm`, `builtins.psm`), written as the `sig`
+and `doc` of a reference with `"builtin":"member"` and as a completion's `detail`. A library function that was used is
+written with all its overloads.
+
+The language server completes **every** library name, not only the imported ones: it adds `import std.<m>` for each
+library module the document lacks to its scratch copy (`<toolchain>/stdlib/*.plib` names them), so the compiler sees
+them all, and attaches `additionalTextEdits` with the import, in sorted place, to each name whose `module` the
+document does not import. `import` and `from` lines, and a caret in a string, comment or declaring name, are answered
+without a check.
 
 ## Token tables
 

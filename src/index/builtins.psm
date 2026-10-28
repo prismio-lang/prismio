@@ -1,0 +1,90 @@
+// The compiler's own builtin functions, for completion: what a freestanding program uses to touch a device register,
+// take a lock and run an instruction the language has no syntax for (`__builtin_mem_*`, `__builtin_asm*`,
+// `__builtin_port_*`, `__builtin_ptr_addr`, `__builtin_float_bits`). No module declares them, so no index of
+// declarations holds them; common/mem_builtins.psm is their table, and a name is offered only when that table (or
+// int_builtins.psm) says the compiler knows it, so the list cannot name something the compiler would refuse.
+
+import common.int_builtins
+import common.mem_builtins
+import index.tables
+import index.write
+import std.string
+import std.vec
+
+private fn ixBuiltinLine(inout ix: Ix, name: String, params: String, result: String, help: String) {
+    if (ix.seen.putFirst("builtin ".concat(name), 1) == false) { return }
+    let mut sig = "fn ".concat(name, "(", params, ")")
+    if (result.equals("") == false) { sig = sig.concat(" -> ", result) }
+    ix.out.push(ixCompletionLine(name, "fn", sig, help, 2, ""))
+}
+
+private fn ixBuiltinWidth(inout ix: Ix, width: String) {
+    let t = width.toUpper()
+    let prefix = memBuiltinPrefix()
+    let plain = "address: Usize"
+    let valued = "address: Usize, value: ".concat(t)
+    let mut name = prefix.concat("load_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, plain, t, "plain load") }
+    name = prefix.concat("store_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, "", "plain store") }
+    name = prefix.concat("uload_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, plain, t, "load at any alignment, of byte storage") }
+    name = prefix.concat("ustore_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, "", "store at any alignment, of byte storage") }
+    name = prefix.concat("vload_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, plain, t, "volatile load: never dropped or reordered") }
+    name = prefix.concat("vstore_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, "", "volatile store: a device register") }
+    name = prefix.concat("aload_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, plain, t, "atomic load, sequentially consistent") }
+    name = prefix.concat("astore_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, "", "atomic store") }
+    name = prefix.concat("aswap_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, t, "atomic exchange; answers the old value") }
+    name = prefix.concat("aadd_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, t, "atomic add; answers the old value") }
+    name = prefix.concat("asub_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, t, "atomic subtract; answers the old value") }
+    name = prefix.concat("aand_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, t, "atomic and; answers the old value") }
+    name = prefix.concat("aor_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, t, "atomic or; answers the old value") }
+    name = prefix.concat("axor_", width)
+    if (memBuiltinAny(name)) { ixBuiltinLine(ix, name, valued, t, "atomic xor; answers the old value") }
+    name = prefix.concat("acas_", width)
+    if (memBuiltinAny(name)) {
+        ixBuiltinLine(ix, name, "address: Usize, expected: ".concat(t, ", desired: ", t), t,
+                      "compare-and-swap; answers the value that was there")
+    }
+}
+
+// Writes one completion line for each builtin the compiler knows.
+public fn ixCompleteCompilerBuiltins(inout ix: Ix) {
+    ixBuiltinWidth(ix, "u8")
+    ixBuiltinWidth(ix, "u16")
+    ixBuiltinWidth(ix, "u32")
+    ixBuiltinWidth(ix, "u64")
+    if (memBuiltinAny(memBuiltinPrefix().concat("fence"))) { ixBuiltinLine(ix, memBuiltinPrefix().concat("fence"), "", "", "a full memory barrier") }
+    if (intSwapBytesBuiltin("__builtin_swap_bytes")) {
+        ixBuiltinLine(ix, "__builtin_swap_bytes", "value", "the value's type", "byte order reversed; one rev or bswap")
+    }
+    if (floatBitsBuiltin("__builtin_float_bits") > 0) { ixBuiltinLine(ix, "__builtin_float_bits", "value: Float", "U64", "a Float's 64 bits") }
+    if (floatBitsBuiltin("__builtin_float_from_bits") > 0) {
+        ixBuiltinLine(ix, "__builtin_float_from_bits", "bits: U64", "Float", "the Float with these bits")
+    }
+    if (asmBuiltinKind("__builtin_asm") > 0) { ixBuiltinLine(ix, "__builtin_asm", "text: String", "", "run assembly; the text must be a string literal") }
+    if (asmBuiltinKind("__builtin_asm_read") > 0) { ixBuiltinLine(ix, "__builtin_asm_read", "text: String", "U64", "run assembly; $0 is the result") }
+    if (asmBuiltinKind("__builtin_asm_write") > 0) {
+        ixBuiltinLine(ix, "__builtin_asm_write", "text: String, value: U64", "", "run assembly; $0 is the operand")
+    }
+    if (addrBuiltinKind("__builtin_ptr_addr") > 0) { ixBuiltinLine(ix, "__builtin_ptr_addr", "pointer: Ptr", "Usize", "a Ptr's address") }
+    if (addrBuiltinKind("__builtin_addr_ptr") > 0) { ixBuiltinLine(ix, "__builtin_addr_ptr", "address: Usize", "Ptr", "a Ptr at an address") }
+    let widths: Vec<String> = ["u8", "u16", "u32"]
+    for width in widths {
+        let t = width.toUpper()
+        let incoming = "__builtin_port_in_".concat(width)
+        let outgoing = "__builtin_port_out_".concat(width)
+        if (portBuiltinDir(incoming) > 0) { ixBuiltinLine(ix, incoming, "port: U16", t, "x86 port input") }
+        if (portBuiltinDir(outgoing) > 0) { ixBuiltinLine(ix, outgoing, "port: U16, value: ".concat(t), "", "x86 port output") }
+    }
+}

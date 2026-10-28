@@ -14,10 +14,14 @@ import std.vec
 
 // The signature of a lowered member of the type `head` (`Vec`, `Ptr`, `Int` for `Int?`), or "".
 public fn ixLoweredSignature(head: String, name: String) -> String {
-    return ixLoweredSig(head, name)
+    let found = ixLoweredSig(head, name)
+    // A use through a pointer reaches either family; completion asks for them apart.
+    if (found.equals("") and head.equals("Ptr")) { return ixLoweredSig("PtrScalar", name) }
+    return found
 }
 
 private fn ixLoweredSig(head: String, name: String) -> String {
+    if (head.equals("Array") and name.equals("length")) { return "prop length(self) -> Int".clone() }
     if (head.equals("Vec")) {
         if (name.equals("push")) { return "fn push(self, value: T)".clone() }
         if (name.equals("set")) { return "fn set(self, index: Int, value: T)".clone() }
@@ -141,10 +145,6 @@ private fn ixLoweredSig(head: String, name: String) -> String {
         if (name.equals("expect")) { return "fn expect(self) -> Char".clone() }
     }
     if (head.equals("Ptr")) {
-        if (name.equals("load")) { return "fn load(self) -> T".clone() }
-        if (name.equals("store")) { return "fn store(self, value: T)".clone() }
-        if (name.equals("readVolatile")) { return "fn readVolatile(self) -> T".clone() }
-        if (name.equals("writeVolatile")) { return "fn writeVolatile(self, value: T)".clone() }
         if (name.equals("addr")) { return "prop addr(self) -> Usize".clone() }
         if (name.equals("offset")) { return "fn offset(self, count: Int) -> Self".clone() }
         if (name.equals("byteOffset")) { return "fn byteOffset(self, count: Int) -> Self".clone() }
@@ -157,6 +157,12 @@ private fn ixLoweredSig(head: String, name: String) -> String {
         if (name.equals("atUnchecked")) { return "fn atUnchecked(address: Usize) -> Self".clone() }
         if (name.equals("cast")) { return "fn cast(from: Ptr) -> Self".clone() }
         if (name.equals("castAligned")) { return "fn castAligned(from: Ptr) -> Self?".clone() }
+    }
+    if (head.equals("PtrScalar")) {
+        if (name.equals("load")) { return "fn load(self) -> T".clone() }
+        if (name.equals("store")) { return "fn store(self, value: T)".clone() }
+        if (name.equals("readVolatile")) { return "fn readVolatile(self) -> T".clone() }
+        if (name.equals("writeVolatile")) { return "fn writeVolatile(self, value: T)".clone() }
         if (name.equals("atomicLoad")) { return "fn atomicLoad(self, order: AtomicOrder) -> T".clone() }
         if (name.equals("atomicStore")) { return "fn atomicStore(self, value: T, order: AtomicOrder)".clone() }
         if (name.equals("atomicSwap")) { return "fn atomicSwap(self, value: T, order: AtomicOrder) -> T".clone() }
@@ -172,10 +178,13 @@ private fn ixLoweredSig(head: String, name: String) -> String {
 
 // What a lowered member does, in a sentence, or "".
 public fn ixLoweredDoc(head: String, name: String) -> String {
-    return ixLoweredText(head, name)
+    let found = ixLoweredText(head, name)
+    if (found.equals("") and head.equals("Ptr")) { return ixLoweredText("PtrScalar", name) }
+    return found
 }
 
 private fn ixLoweredText(head: String, name: String) -> String {
+    if (head.equals("Array") and name.equals("length")) { return "The number of elements, which the type fixes.".clone() }
     if (head.equals("Vec")) {
         if (name.equals("push")) { return "Appends `value` to the end of the vector.".clone() }
         if (name.equals("set")) { return "Replaces the element at `index`; the index is checked.".clone() }
@@ -299,10 +308,6 @@ private fn ixLoweredText(head: String, name: String) -> String {
         if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
     }
     if (head.equals("Ptr")) {
-        if (name.equals("load")) { return "Reads the value the pointer points at.".clone() }
-        if (name.equals("store")) { return "Writes `value` through a `Ptr<mut T>`.".clone() }
-        if (name.equals("readVolatile")) { return "A volatile read, for a pointer whose type is not volatile.".clone() }
-        if (name.equals("writeVolatile")) { return "A volatile write, for a pointer whose type is not volatile.".clone() }
         if (name.equals("addr")) { return "The address.".clone() }
         if (name.equals("offset")) { return "The pointer `count` elements away, checked.".clone() }
         if (name.equals("byteOffset")) { return "The pointer `count` bytes away, checked.".clone() }
@@ -315,6 +320,12 @@ private fn ixLoweredText(head: String, name: String) -> String {
         if (name.equals("atUnchecked")) { return "The pointer at `address`, unchecked.".clone() }
         if (name.equals("cast")) { return "The pointer reinterpreted as this type.".clone() }
         if (name.equals("castAligned")) { return "The pointer reinterpreted as this type, or none when it is misaligned.".clone() }
+    }
+    if (head.equals("PtrScalar")) {
+        if (name.equals("load")) { return "Reads the value the pointer points at.".clone() }
+        if (name.equals("store")) { return "Writes `value` through a `Ptr<mut T>`.".clone() }
+        if (name.equals("readVolatile")) { return "A volatile read, for a pointer whose type is not volatile.".clone() }
+        if (name.equals("writeVolatile")) { return "A volatile write, for a pointer whose type is not volatile.".clone() }
         if (name.equals("atomicLoad")) { return "An atomic read.".clone() }
         if (name.equals("atomicStore")) { return "An atomic write.".clone() }
         if (name.equals("atomicSwap")) { return "An atomic swap; the previous value.".clone() }
@@ -331,6 +342,7 @@ private fn ixLoweredText(head: String, name: String) -> String {
 // The names of the lowered members of the type `head`, for completion.
 public fn ixLoweredNames(head: String) -> Vec<String> {
     let mut names: Vec<String> = []
+    if (head.equals("Array")) { names.push("length".clone()) }
     if (head.equals("Vec")) {
         names.push("push".clone())
         names.push("set".clone())
@@ -454,10 +466,6 @@ public fn ixLoweredNames(head: String) -> Vec<String> {
         names.push("expect".clone())
     }
     if (head.equals("Ptr")) {
-        names.push("load".clone())
-        names.push("store".clone())
-        names.push("readVolatile".clone())
-        names.push("writeVolatile".clone())
         names.push("addr".clone())
         names.push("offset".clone())
         names.push("byteOffset".clone())
@@ -470,6 +478,12 @@ public fn ixLoweredNames(head: String) -> Vec<String> {
         names.push("atUnchecked".clone())
         names.push("cast".clone())
         names.push("castAligned".clone())
+    }
+    if (head.equals("PtrScalar")) {
+        names.push("load".clone())
+        names.push("store".clone())
+        names.push("readVolatile".clone())
+        names.push("writeVolatile".clone())
         names.push("atomicLoad".clone())
         names.push("atomicStore".clone())
         names.push("atomicSwap".clone())

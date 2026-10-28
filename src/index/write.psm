@@ -104,12 +104,21 @@ public fn ixArgLine(file: Int, line: Int, col: Int, name: String, index: Int) ->
                                            ",\"p\":", ixQuote(name), ",\"i\":", index.toString(), "}")
 }
 
+// What the cursor is in, so a client knows which kinds of thing to add to what the index lists: `scope` (names and keywords),
+// `member` (after a value's dot), `type` (a type annotation), `module` (after a module's name).
+public fn ixContextLine(kind: String) -> String {
+    return "{\"k\":\"context\",\"kind\":".concat(ixQuote(kind), "}")
+}
+
 // One thing that could be written at the cursor. `rank` orders them: 0 a name in scope, 1 a member,
 // 2 a declaration of the program.
-public fn ixCompletionLine(label: String, kind: String, detail: String, doc: String, rank: Int) -> String {
+// `module` names the library module a declaration comes from ("" for the program's own and for what the compiler
+// provides), so that an editor can add the import the name needs.
+public fn ixCompletionLine(label: String, kind: String, detail: String, doc: String, rank: Int, module: String) -> String {
     let mut out = "{\"k\":\"completion\",\"label\":".concat(ixQuote(label), ",\"kind\":", ixQuote(kind), ",\"rank\":",
                                                                rank.toString())
     if (detail.equals("") == false) { out = out.concat(",\"detail\":", ixQuote(detail)) }
     if (doc.equals("") == false) { out = out.concat(",\"doc\":", ixQuote(doc)) }
+    if (module.equals("") == false) { out = out.concat(",\"module\":", ixQuote(module)) }
     return out.concat("}")
 }

@@ -328,7 +328,17 @@ public struct IndexCompletion {
     public kind: String,
     public detail: String,
     public doc: String,
-    public rank: Int
+    public rank: Int,
+    // The library module the name comes from, or "".
+    public module: String
+}
+
+// What the cursor is in (`scope`, `member`, `type`, `module`), as the compiler said; "" when it did not get as far.
+public fn indexCompletionContext(index: String) -> String {
+    for text in readLines(index) {
+        if (text.startsWith("{\"k\":\"context\"")) { return indexText(parseJson(text), "kind") }
+    }
+    return "".clone()
 }
 
 // What the compiler offered at the cursor (`--complete`).
@@ -339,7 +349,7 @@ public fn indexCompletions(index: String) -> Vec<IndexCompletion> {
         let doc = parseJson(text)
         found.push(IndexCompletion { label: indexText(doc, "label"), kind: indexText(doc, "kind"),
                                      detail: indexText(doc, "detail"), doc: indexText(doc, "doc"),
-                                     rank: indexInt(doc, "rank", 2) })
+                                     rank: indexInt(doc, "rank", 2), module: indexText(doc, "module") })
     }
     return found
 }

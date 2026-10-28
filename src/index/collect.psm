@@ -150,12 +150,18 @@ public fn ixReceiverOf(ix: Ix, id: Int) -> String {
     if (first.kind != NodeKind.FUNCTION_PARAMETER) { return "".clone() }
     if (first.s1.equals("self") and ix.dOwner[id].equals("") == false) { return ix.dOwner[id].clone() }
     let mut typeText = ixAnnotationText(first)
-    // A generic parameter is not a type to look members up on.
+    // A generic parameter is not a type to look members up on; `T?` is the receiver of every optional's functions
+    // (the annotation records whether it was written with the `?`).
+    let mut optional = false
+    if (nodeExists(first.child1)) { optional = ptr_to_node(first.child1).i3 != 0 }
     let mut generic = node.genericInfo
     while (nodeExists(generic)) {
         let parameter = ptr_to_node(generic)
         generic = parameter.next
-        if (parameter.s1.equals(typeText)) { return "".clone() }
+        if (parameter.s1.equals(typeText)) {
+            if (optional) { return "?".clone() }
+            return "".clone()
+        }
     }
     let angle = typeText.indexOf("<")
     if (angle >= 0) { typeText = typeText.substring(0, angle).clone() }

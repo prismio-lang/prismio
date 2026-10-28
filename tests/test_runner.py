@@ -3277,6 +3277,44 @@ def run_lsp_features_test():
             first = (help_ or {}).get("signatures", [{}])[0]
             note(bool(first.get("parameters")), f"a library function's parameters are located in its label: {first}")
 
+            # --- completion: library names from modules the file does not import, with the import they need ---
+            bare = "fn main() -> Int {\n    let s = \"abc\"\n    s.tr\n    return 0\n}\n"
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 41},
+                                                     "contentChanges": [{"text": bare}]})
+            at = where(bare, "s.tr", 0, "s.tr")
+            items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 4})["items"]
+            trim = [i for i in items if i["label"] == "trim"]
+            edits = (trim[0].get("additionalTextEdits") if trim else None) or []
+            note(trim and edits and edits[0]["newText"] == "import std.string\n",
+                 f"a member of a module the file does not import carries the import: {trim[:1]}")
+            # An import already there is not added again, and a new one goes in sorted place.
+            sorted_text = "import std.io\nimport std.vec\n\nfn main() -> Int {\n    let s = \"abc\"\n    s.tr\n    return 0\n}\n"
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 42},
+                                                     "contentChanges": [{"text": sorted_text}]})
+            at = where(sorted_text, "s.tr", 0, "s.tr")
+            items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 4})["items"]
+            trim = [i for i in items if i["label"] == "trim"]
+            edits = (trim[0].get("additionalTextEdits") if trim else None) or []
+            note(trim and edits and edits[0]["range"]["start"]["line"] == 1,
+                 f"the new import goes before the first that sorts after it (std.io, std.string, std.vec): {edits}")
+            # Import lines, a type annotation, and a syntax error on another line of the same function.
+            version = 43
+            for text, probe, want, forbid in (
+                    ("import \n", "import ", ["std", "std.io", "std.string"], []),
+                    ("import std.\n", "import std.", ["io", "string", "vec"], []),
+                    ("import {io} \n", "import {io} ", ["from"], ["import", "return"]),
+                    ("fn main() {\n    let v: \n}\n", "let v: ", ["Int", "String", "Vec", "StringBuilder"], ["println", "return"]),
+                    ("import std.io\n\nfn main() -> Int {\n    println(1.)\n    pri\n    return 0\n}\n", "    pri", ["print", "println"], [])):
+                version += 1
+                client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": version},
+                                                         "contentChanges": [{"text": text}]})
+                lines = text.split("\n")
+                row = next(n for n, l in enumerate(lines) if l.endswith(probe))
+                items = ask("textDocument/completion", position={"line": row, "character": len(lines[row])})
+                labels = {i["label"] for i in (items or {}).get("items", [])}
+                note(all(w in labels for w in want) and not any(f in labels for f in forbid),
+                     f"completion at {probe!r}: wanted {want}, not {forbid}; got {sorted(labels)[:12]}")
+
             # --- a request made while a check is pending waits for it ---
             added = main_text + "\nfn fresh() -> Int { return 7 }\n"
             client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 4},

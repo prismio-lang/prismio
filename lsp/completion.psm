@@ -42,12 +42,304 @@ fn completionItemKind(kind: String) -> Int {
 }
 
 // The empty result, which a client reads as "nothing to offer".
+// The modules the document imports, as written after `import` (`std.string`): the lines that begin with the word.
+fn completionImports(text: String) -> Vec<String> {
+    let mut found: Vec<String> = []
+    let mut at = 0
+    while (at < text.length) {
+        let mut end = at
+        while (end < text.length and text.byteAt(end) != 10) { end = end + 1 }
+        if (end - at > 7 and text.slice(at, at + 7).equals("import ")) {
+            let mut from = at + 7
+            while (from < end and text.byteAt(from) == 32) { from = from + 1 }
+            let mut stop = from
+            while (stop < end and (completionIsWordByte(text.byteAt(stop)) or text.byteAt(stop) == 46)) { stop = stop + 1 }
+            if (stop > from) { found.push(text.slice(from, stop).clone()) }
+        }
+        at = end + 1
+    }
+    return found
+}
+
+// The 0-based line a new `import` goes on: among the document's imports in sorted order (before the first that sorts
+// after it, else after the last), or the first line when it has none.
+fn completionImportLine(text: String, module: String) -> Int {
+    let mut line = 0
+    let mut lastImport = 0 - 1
+    let mut before = 0 - 1
+    let mut at = 0
+    while (at < text.length) {
+        let mut end = at
+        while (end < text.length and text.byteAt(end) != 10) { end = end + 1 }
+        if (end - at > 7 and text.slice(at, at + 7).equals("import ")) {
+            lastImport = line
+            let mut from = at + 7
+            while (from < end and text.byteAt(from) == 32) { from = from + 1 }
+            let mut stop = from
+            while (stop < end and (completionIsWordByte(text.byteAt(stop)) or text.byteAt(stop) == 46)) { stop = stop + 1 }
+            if (before < 0 and stop > from and text.slice(from, stop).compare(module) > 0) { before = line }
+        }
+        line = line + 1
+        at = end + 1
+    }
+    if (before >= 0) { return before }
+    if (lastImport >= 0) { return lastImport + 1 }
+    return 0
+}
+
+// The library's modules, `std.<name>` for each `<name>.plib` beside the compiler (bin/, lib/ and stdlib/ are one
+// layout), so that a completion can see every library name and say which import each one needs.
+fn completionLibraryModules(compiler: String) -> Vec<String> {
+    let mut modules: Vec<String> = []
+    let mut real = compiler.clone()
+    let resolved = realPath(compiler)
+    if (resolved != none) { real = expect(resolved).clone() }
+    let stdlib = joinPath(directoryOf(directoryOf(real)), "stdlib")
+    if (directoryExists(stdlib) == false) { return modules }
+    for name in listDirectory(stdlib) {
+        if (name.endsWith(".plib")) { modules.push("std.".concat(name.slice(0, name.length - 5))) }
+    }
+    return modules
+}
+
+// Whether the caret is inside a string literal or a `//` comment of its line.
+fn completionInTextOrComment(text: String, offset: Int) -> Bool {
+    let mut from = offset
+    while (from > 0 and text.byteAt(from - 1) != 10) { from = from - 1 }
+    let mut inString = false
+    let mut i = from
+    while (i < offset) {
+        let b = text.byteAt(i)
+        if (inString) {
+            if (b == 92) {
+                i = i + 2
+                continue
+            }
+            if (b == 34) { inString = false }
+        } else {
+            if (b == 34) { inString = true }
+            if (b == 47 and i + 1 < offset and text.byteAt(i + 1) == 47) { return true }
+        }
+        i = i + 1
+    }
+    return inString
+}
+
+// `text` with the 1-based `line` emptied (its break kept, so the others stay where they are).
+fn completionBlankLine(text: String, line: Int) -> String {
+    let mut at = 0
+    let mut current = 1
+    while (current < line and at < text.length) {
+        if (text.byteAt(at) == 10) { current = current + 1 }
+        at = at + 1
+    }
+    let mut end = at
+    while (end < text.length and text.byteAt(end) != 10) { end = end + 1 }
+    return text.slice(0, at).concat(text.slice(end, text.length))
+}
+
+// The word before the one being typed, or "".
+fn completionPreviousWord(text: String, start: Int) -> String {
+    let mut stop = start
+    while (stop > 0 and (text.byteAt(stop - 1) == 32 or text.byteAt(stop - 1) == 9)) { stop = stop - 1 }
+    let mut first = stop
+    while (first > 0 and completionIsWordByte(text.byteAt(first - 1))) { first = first - 1 }
+    return text.slice(first, stop).clone()
+}
+
+// Whether the word being typed is the name of something being declared (`let |`, `fn |`, `struct |`): nothing to suggest.
+fn completionDeclaresName(text: String, start: Int) -> Bool {
+    let previous = completionPreviousWord(text, start)
+    if (previous.equals("let") or previous.equals("fn") or previous.equals("struct") or previous.equals("enum")
+            or previous.equals("trait") or previous.equals("typelist") or previous.equals("codeset") or previous.equals("var")) {
+        return true
+    }
+    if (previous.equals("mut")) {
+        let mut stop = start
+        while (stop > 0 and (text.byteAt(stop - 1) == 32 or text.byteAt(stop - 1) == 9)) { stop = stop - 1 }
+        let mut first = stop - 3
+        if (first >= 0) {
+            return completionPreviousWord(text, first).equals("let")
+        }
+    }
+    return false
+}
+
+// The language's keywords alone: what an editor still wants where the buffer does not parse well enough to analyse
+// (the top level of a file, an `import` line).
+fn completionKeywordsOnly(keywords: Vec<String>) -> String {
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("isIncomplete")
+    out.bool(false)
+    out.key("items")
+    out.beginArray()
+    for word in keywords {
+        out.beginObject()
+        out.key("label")
+        out.string(word)
+        out.key("kind")
+        out.int(14)
+        out.key("sortText")
+        out.string("9".concat(word))
+        out.endObject()
+    }
+    out.endArray()
+    out.endObject()
+    return out.finish()
+}
+
+// A completion list of plain names, `kind` as the protocol numbers it (9 module, 14 keyword).
+fn completionNames(labels: Vec<String>, kind: Int) -> String {
+    let out = JsonWriter()
+    out.beginObject()
+    out.key("isIncomplete")
+    out.bool(false)
+    out.key("items")
+    out.beginArray()
+    for label in labels {
+        out.beginObject()
+        out.key("label")
+        out.string(label)
+        out.key("kind")
+        out.int(kind)
+        out.endObject()
+    }
+    out.endArray()
+    out.endObject()
+    return out.finish()
+}
+
+// The modules a directory holds, for `from dir import {...}`: the library's for `std`, else the `.psm` files beside
+// the document (or in `dir` under it), without the extension. With `directories`, its subdirectories as well.
+fn completionDirectoryModules(compiler: String, docPath: String, directory: String, directories: Bool) -> Vec<String> {
+    let mut found: Vec<String> = []
+    if (directory.equals("std")) {
+        for module in completionLibraryModules(compiler) { found.push(module.slice(4, module.length).clone()) }
+        return found
+    }
+    let mut root = directoryOf(docPath).clone()
+    if (directory.equals("") == false) { root = joinPath(root, directory) }
+    if (directoryExists(root) == false) { return found }
+    for name in listDirectory(root) {
+        if (name.endsWith(".psm")) {
+            let module = name.slice(0, name.length - 4).clone()
+            if (joinPath(root, name).equals(docPath) == false) { found.push(module) }
+        } else if (directories and directoryExists(joinPath(root, name)) and name.startsWith(".") == false) {
+            found.push(name.clone())
+        }
+    }
+    return found
+}
+
+// The word at `from` in `text`, up to a space, `{`, `}` or the end.
+fn completionWordAt(text: String, from: Int) -> String {
+    let mut i = from
+    while (i < text.length and text.byteAt(i) == 32) { i = i + 1 }
+    let mut stop = i
+    while (stop < text.length and text.byteAt(stop) != 32 and text.byteAt(stop) != 123 and text.byteAt(stop) != 125 and text.byteAt(stop) != 10) {
+        stop = stop + 1
+    }
+    return text.slice(i, stop).clone()
+}
+
+// The library module an `import std.string.<caret>` line asks the members of, or "".
+fn completionImportedModule(text: String, offset: Int) -> String {
+    let mut lineStart = offset
+    while (lineStart > 0 and text.byteAt(lineStart - 1) != 10) { lineStart = lineStart - 1 }
+    let before = text.slice(lineStart, offset)
+    if (before.startsWith("import ") == false or before.contains("{") or before.contains("*")) { return "".clone() }
+    let mut from = 7
+    while (from < before.length and before.byteAt(from) == 32) { from = from + 1 }
+    let mut stop = from
+    while (stop < before.length and (completionIsWordByte(before.byteAt(stop)) or before.byteAt(stop) == 46)) { stop = stop + 1 }
+    let path = before.slice(from, stop).clone()
+    let dot = path.lastIndexOf(".")
+    if (dot <= 0) { return "".clone() }
+    let parent = path.slice(0, dot).clone()
+    if (parent.startsWith("std.") and parent.length > 4) { return parent }
+    return "".clone()
+}
+
+// What belongs at the caret of an `import` or `from` line, or "" when the caret is not on one: the module paths, the
+// modules of a directory inside a group, `from` after a group that is closed, the directories after `from`.
+fn completionImportItems(compiler: String, docPath: String, text: String, offset: Int) -> String {
+    let mut lineStart = offset
+    while (lineStart > 0 and text.byteAt(lineStart - 1) != 10) { lineStart = lineStart - 1 }
+    let mut lineEnd = offset
+    while (lineEnd < text.length and text.byteAt(lineEnd) != 10) { lineEnd = lineEnd + 1 }
+    let before = text.slice(lineStart, offset)
+    let after = text.slice(offset, lineEnd)
+    let mut names: Vec<String> = []
+    if (before.startsWith("from ")) {
+        if (before.contains(" import")) {
+            let directory = completionWordAt(before, 5)
+            return completionNames(completionDirectoryModules(compiler, docPath, directory, false), 9)
+        }
+        names.push("std".clone())
+        for entry in completionDirectoryModules(compiler, docPath, "", true) {
+            if (directoryExists(joinPath(directoryOf(docPath), entry))) { names.push(entry.clone()) }
+        }
+        return completionNames(names, 9)
+    }
+    if (before.startsWith("import ") == false) { return "".clone() }
+    let rest = before.slice(7, before.length)
+    if (rest.contains("{")) {
+        if (rest.contains("}")) {
+            if (rest.contains(" from") or rest.endsWith("}") == false and rest.contains("}") and rest.contains("from ")) { return completionNone() }
+            names.push("from".clone())
+            return completionNames(names, 14)
+        }
+        // Inside the group: the directory is written after the closing brace, or it is the library.
+        let mut directory = "std".clone()
+        let closing = after.indexOf("}")
+        if (closing >= 0) {
+            let tail = after.slice(closing + 1, after.length)
+            let from = tail.indexOf("from ")
+            if (from >= 0) { directory = completionWordAt(tail, from + 5) }
+        }
+        return completionNames(completionDirectoryModules(compiler, docPath, directory, false), 9)
+    }
+    if (rest.startsWith("*")) {
+        if (rest.contains("from")) { return completionNone() }
+        names.push("from".clone())
+        return completionNames(names, 14)
+    }
+    // A dotted path: `std.` lists the library's modules, a bare caret every module path.
+    let mut path = rest.clone()
+    let mut cut = path.length
+    while (cut > 0 and (completionIsWordByte(path.byteAt(cut - 1)) or path.byteAt(cut - 1) == 46)) { cut = cut - 1 }
+    path = path.slice(cut, path.length).clone()
+    let lastDot = path.lastIndexOf(".")
+    if (lastDot < 0) {
+        names.push("std".clone())
+        for module in completionLibraryModules(compiler) { names.push(module.clone()) }
+        for entry in completionDirectoryModules(compiler, docPath, "", true) { names.push(entry.clone()) }
+        return completionNames(names, 9)
+    }
+    let parent = path.slice(0, lastDot).clone()
+    if (parent.equals("std")) { return completionNames(completionDirectoryModules(compiler, docPath, "std", false), 9) }
+    if (parent.startsWith("std.")) { return completionNone() }
+    return completionNames(completionDirectoryModules(compiler, docPath, parent.replaceAll(".", "/"), true), 9)
+}
+
 fn completionNone() -> String {
     return "{\"isIncomplete\":false,\"items\":[]}".clone()
 }
 
-public fn completionItems(compiler: String, program: Program, docs: Documents, docPath: String, text: String, offset: Int,
-                          scratch: String, keywords: Vec<String>) -> String {
+public fn completionItems(compiler: String, program: Program, docs: Documents, docPath: String, documentText: String,
+                          documentOffset: Int, scratch: String, keywords: Vec<String>) -> String {
+    // `import std.string.|` asks for what the module declares: the compiler is asked through a program that imports it
+    // and names it (`string.|`), the question it already answers.
+    let mut text = documentText.clone()
+    let mut offset = documentOffset
+    let asked = completionImportedModule(documentText, documentOffset)
+    if (asked.equals("") == false) {
+        let name = asked.slice(asked.lastIndexOf(".") + 1, asked.length)
+        text = "import ".concat(asked, "\n\nfn main() -> Int {\n    ", name, ".")
+        offset = text.length
+        text = text.concat("\n    return 0\n}\n")
+    }
     // The word being typed: back from the cursor to its start, forward to its end.
     let mut start = offset
     while (start > 0 and completionIsWordByte(text.byteAt(start - 1))) { start = start - 1 }
@@ -56,6 +348,9 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
     let mut before = start
     while (before > 0 and (text.byteAt(before - 1) == 32 or text.byteAt(before - 1) == 9)) { before = before - 1 }
     let afterDot = before > 0 and text.byteAt(before - 1) == 46
+    if (completionInTextOrComment(text, offset) or completionDeclaresName(text, start)) { return completionNone() }
+    let importItems = completionImportItems(compiler, docPath, text, offset)
+    if (importItems.equals("") == false) { return importItems }
 
     // The placeholder's place, in the compiler's terms.
     let index = lineIndex(text)
@@ -63,40 +358,91 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
     while (line0 + 1 < index.lineCount() and index.lineStart(line0 + 1) <= start) { line0 = line0 + 1 }
     let col = start - index.lineStart(line0) + 1
 
-    let buffer = joinPath(scratch, "complete-buffer.psm")
     let output = joinPath(scratch, "complete.idx")
     // `slice`, not `substring`: a `substring` of the document made the whole program decide the document was
     // never released (a copy of it per request); `slice` is the same cut by a different route.
-    writeFile(buffer, text.slice(0, start))
-    appendFile(buffer, COMPLETION_PLACEHOLDER)
-    appendFile(buffer, text.slice(end, text.length))
-    deleteFile(output)
-
-    let mut arguments: Vec<String> = []
-    arguments.push("check")
-    arguments.push(program.entry.clone())
-    arguments.push("--partial")
-    if (program.module.equals("") == false) {
-        arguments.push("--module")
-        arguments.push(program.module.clone())
+    // Every library module the document does not import is imported in the scratch copy, so that every library name
+    // is visible to the compiler; the ones the document lacks are offered with the import they need.
+    let imports = completionImports(text)
+    let mut header = "".clone()
+    let mut added = 0
+    if (program.module.equals("")) {
+        for module in completionLibraryModules(compiler) {
+            let mut known = false
+            for earlier in imports {
+                if (earlier.equals(module)) { known = true }
+            }
+            if (known == false) {
+                header = header.concat("import ", module, "\n")
+                added = added + 1
+            }
+        }
     }
-    for i in 0..<docs.count() {
-        if (docs.files[i].equals("") or docs.paths[i].endsWith(".ums")) { continue }
-        arguments.push("--overlay")
-        arguments.push(docs.paths[i].clone())
-        if (docs.paths[i].equals(docPath)) { arguments.push(buffer.clone()) } else { arguments.push(docs.files[i].clone()) }
-    }
-    arguments.push("--emit-index")
-    arguments.push(output.clone())
-    arguments.push("--complete")
-    arguments.push(docPath.clone())
-    arguments.push((line0 + 1).toString())
-    arguments.push(col.toString())
-    // A check that finds errors exits non-zero, which is the normal case here: only the index counts.
-    let mut result = runCapturedAnyStatus(compiler, arguments, 8000)
-    deleteFile(buffer)
-    if (result == false or fileExists(output) == false) { return completionNone() }
+    let mut placeholder = COMPLETION_PLACEHOLDER.clone()
+    // A generic type before the dot (`Result<Int, String>.`) only parses as the callee of a call.
+    if (afterDot and before > 1 and text.byteAt(before - 2) == 62) { placeholder = COMPLETION_PLACEHOLDER.concat("()") }
+    let mut body = text.slice(0, start).concat(placeholder, text.slice(end, text.length))
 
+    let mut tries = 0
+    let mut ran = false
+    loop {
+        // A scratch copy of its own for each attempt: an attempt is a new file to the compiler.
+        let buffer = joinPath(scratch, "complete-buffer-".concat(tries.toString(), ".psm"))
+        writeFile(buffer, header)
+        appendFile(buffer, body)
+        deleteFile(output)
+        let mut arguments: Vec<String> = []
+        arguments.push("check")
+        arguments.push(program.entry.clone())
+        arguments.push("--partial")
+        if (program.module.equals("") == false) {
+            arguments.push("--module")
+            arguments.push(program.module.clone())
+        }
+        for i in 0..<docs.count() {
+            if (docs.files[i].equals("") or docs.paths[i].endsWith(".ums")) { continue }
+            arguments.push("--overlay")
+            arguments.push(docs.paths[i].clone())
+            if (docs.paths[i].equals(docPath)) { arguments.push(buffer.clone()) } else { arguments.push(docs.files[i].clone()) }
+        }
+        arguments.push("--emit-index")
+        arguments.push(output.clone())
+        arguments.push("--complete")
+        arguments.push(docPath.clone())
+        arguments.push((line0 + 1 + added).toString())
+        arguments.push(col.toString())
+        arguments.push("--diagnostic-format=json")
+        // A check that finds errors exits non-zero, which is the normal case here: only the index counts. The compiler
+        // drops a whole function for a line in it that does not parse, so when it did not reach the caret and says which
+        // other lines are the trouble, those lines are emptied in the scratch copy and it is asked again.
+        let run = runCapturedErrors(compiler, arguments, 8000)
+        deleteFile(buffer)
+        ran = run.ok
+        if (run.ok == false or tries >= 3) { break }
+        if (fileExists(output) and indexCompletionContext(output).equals("") == false) { break }
+        let mut blanked = false
+        for report in run.output.split("\n") {
+            if (report.startsWith("{") == false) { continue }
+            let diagnostic = parseJson(report)
+            if (diagnostic.ok == false) { continue }
+            let code = diagnostic.text(diagnostic.member(diagnostic.root, "code").unwrapOr(0 - 1))
+            let reported = diagnostic.int(diagnostic.member(diagnostic.root, "line").unwrapOr(0 - 1)) - added
+            if (code.startsWith("P32") and reported >= 1 and reported != line0 + 1) {
+                body = completionBlankLine(body, reported)
+                blanked = true
+            }
+        }
+        if (blanked == false) { break }
+        tries = tries + 1
+    }
+    if (ran == false or fileExists(output) == false) {
+        if (afterDot) { return completionNone() }
+        return completionKeywordsOnly(keywords)
+    }
+
+    // Keywords belong to a scope; after a dot, in a type or after a module's name they are not what is being written.
+    let context = indexCompletionContext(output)
+    let offerKeywords = afterDot == false and (context.equals("") or context.equals("scope"))
     let out = JsonWriter()
     out.beginObject()
     out.key("isIncomplete")
@@ -126,9 +472,34 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
         }
         out.key("sortText")
         out.string(item.rank.toString().concat(item.label))
+        if (item.module.equals("") == false) {
+            // From a module the document does not import: say which, and add the import when it is chosen.
+            let mut imported = false
+            for earlier in imports {
+                if (earlier.equals(item.module)) { imported = true }
+            }
+            out.key("labelDetails")
+            out.beginObject()
+            out.key("description")
+            out.string(item.module)
+            out.endObject()
+            if (imported == false) {
+                let importLine = completionImportLine(text, item.module)
+                out.key("additionalTextEdits")
+                out.beginArray()
+                out.beginObject()
+                out.key("range")
+                out.raw("{\"start\":{\"line\":".concat(importLine.toString(), ",\"character\":0},\"end\":{\"line\":",
+                                                       importLine.toString(), ",\"character\":0}}"))
+                out.key("newText")
+                out.string("import ".concat(item.module, "\n"))
+                out.endObject()
+                out.endArray()
+            }
+        }
         out.endObject()
     }
-    if (afterDot == false) {
+    if (offerKeywords) {
         for word in keywords {
             let mut taken = false
             for earlier in offered {

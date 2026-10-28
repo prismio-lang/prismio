@@ -198,6 +198,10 @@ fn ixWalkAnnotation(inout ix: Ix, inout src: IxSources, inout w: IxWalk, ptr: Pt
         ixWalkExpr(ix, src, w, node, "read")
         return
     }
+    if (ixAtCursor(w, node)) {
+        ixCompleteTypes(ix, src, node.file)
+        return
+    }
     if (node.s1.equals("") == false and node.line > 0 and node.s1.startsWith("$") == false) {
         let parameter = ixLookupTypeParameter(w, node.s1)
         if (parameter >= 0) {
@@ -338,18 +342,23 @@ fn ixWalkQualified(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: AS
 // declares), or a value (its fields, its methods and the functions that take it first).
 fn ixCompleteAfterDot(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, base: ASTNode) {
     if (base.kind == NodeKind.IDENTIFIER_EXPR and ixLookupLocal(w, base.s1) == 0 - 2) {
-        if (ix.byType.get(base.s1) >= 0) {
-            ixCompleteMembers(ix, src, base.s1, node.file, true)
+        if (ix.byType.get(base.s1) >= 0 or ixIsBuiltinType(base.s1)) {
+            ixCompleteMembers(ix, src, base.s1, node.file, true, false)
             return
         }
+        // A module-level value can carry its module's name (`process` in std.process): it is the value, not the module.
         let imported = ix.byImport.get(base.s1)
-        if (imported >= 0) {
+        if (imported >= 0 and ix.byGlobal.get(base.s1) < 0) {
             ixCompleteModule(ix, src, ix.dName[imported], node.file)
             return
         }
     }
     ixWalkExpr(ix, src, w, base, "read")
-    ixCompleteMembers(ix, src, ixBaseHead(ix, w, base), node.file, false)
+    let shown = ixNodeType(base)
+    let mut head = ixBaseHead(ix, w, base)
+    if (shown.startsWith("[")) { head = "Array".clone() }
+    ixCompleteMembers(ix, src, head, node.file, false, shown.endsWith("?"))
+    if (head.equals("Ptr")) { ixCompletePointee(ix, src, shown) }
 }
 
 // The head of the type of a base expression: sema's when it typed it, else what the variable it
@@ -498,6 +507,27 @@ fn ixIsIntrinsicName(name: String) -> Bool {
         or name.equals("drop") or name.equals("expect") or name.equals("unwrapOr")
 }
 
+// The members of the type written before the dot at the cursor, when it has type arguments: the word before the
+// matching `<` names it.
+fn ixCompleteAfterGenericType(inout ix: Ix, inout src: IxSources, inout w: IxWalk, callee: ASTNode) {
+    let slot = ixView(src, callee.file)
+    let at = ixTokenAt(src, slot, callee.line, callee.col)
+    if (slot < 0 or at < 3 or ixKindAt(src, slot, at - 1) != FmtKind.DOT) { return }
+    let mut i = at - 2
+    let mut depth = 0
+    while (i >= 0) {
+        let text = ixTokenText(src, slot, i)
+        if (text.equals(">")) { depth = depth + 1 }
+        if (text.equals(">>")) { depth = depth + 2 }
+        if (text.equals("<")) { depth = depth - 1 }
+        if (depth <= 0) { break }
+        i = i - 1
+    }
+    if (i < 1) { return }
+    let head = ixTokenText(src, slot, i - 1)
+    if (ix.byType.get(head) >= 0) { ixCompleteMembers(ix, src, head, callee.file, true, false) }
+}
+
 fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode) {
     let callee = ptr_to_node(node.child1)
     let mut target = 0 - 1
@@ -537,6 +567,11 @@ fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
     } else if (callee.kind == NodeKind.MEMBER_ACCESS_EXPR) {
         // Not rewritten yet (a template's body): `x.f(a)`, `Type.f(a)`, `Enum.Variant(a)`.
         let base = ptr_to_node(callee.child1)
+        if (ixAtCursor(w, callee)) {
+            // `Result<Int, String>.|`: a generic type only parses before a dot when a call follows, so the server writes one.
+            ixCompleteAfterGenericType(ix, src, w, callee)
+            return
+        }
         if (ixWalkQualified(ix, src, w, callee, base) == false) {
             ixWalkExpr(ix, src, w, base, "read")
             let method = ixFunctionByName(ix, callee.s1, "")

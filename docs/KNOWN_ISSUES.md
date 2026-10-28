@@ -29,6 +29,7 @@ AArch64 backend, a benchmark arm and docs, none of the analysis):
 | [Language surface](#language-surface) | What the language does not do yet, and decisions worth knowing |
 | [Traits](#traits) | What the trait system deliberately leaves out |
 | [Concurrency](#concurrency) | Task and channel limits |
+| [Editor tooling](#editor-tooling) | What the language server and the index cannot answer yet |
 | [The allocator](#the-allocator) | What the slab behind `rt_base_alloc` does not do yet, and where it is not built |
 | [Toolchain, packaging and tests](#toolchain-packaging-and-tests) | The `ums` fixture, linking, `.plib` coverage, cross builds |
 | [Platform](#platform) | Windows, WebAssembly and the VM-tested archives |
@@ -846,6 +847,30 @@ mention of the argument types that produced it. Identical errors are reported on
 and not the shape. A generic function has the same behaviour. A note carrying the instantiation's
 argument types would fix both: `packInstantiate` and `monoInstantiateFunction` know them, the checker
 that reports does not.
+
+## Editor tooling
+
+### One line that does not parse takes its whole function out of the analysis
+
+The parser recovers per declaration (`parse/parser.psm`, `abandon`/`recover`): a statement it cannot read drops the
+function that holds it, so `check --partial` and the semantic index have nothing for that function (no names in scope, no
+hover, no completion), for every line of it, not only the broken one. An editor sees this the moment a statement is half
+typed while another is. The language server works around it for completion only (`lsp/completion.psm`: when the compiler
+did not reach the caret and names syntax errors on other lines, those lines are blanked in the scratch copy and the
+check is run again, up to three times); hover, definition and diagnostics in such a function still lose it. Fixing it is a
+statement-level recovery in `parseBlock` that keeps the function and marks the statement, which changes what a broken
+file reports (`tools/check_truncation.py` is the gate that would have to stay at 0 failures). **Observed 2026-10-28, not
+fixed.**
+
+### A second check of an overlay at the same path may be answered from the first
+
+Observed building completion retries: running `check` twice with `--overlay F B` where `B` is the same path but its text
+changed (a line removed) gave the second run an empty diagnostic list and no index, and the same text in a file of another
+name behaved as written. The server now gives each attempt its own scratch name, which is why this has not bitten the
+ordinary diagnostics path, but the cause was not found: whether the compiler (or the object/parse cache under `TMPDIR`)
+keys a read on the overlay's path. **Observed 2026-10-28, not diagnosed.**
+
+---
 
 ## The allocator
 

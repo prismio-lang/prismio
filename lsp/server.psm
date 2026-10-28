@@ -793,6 +793,16 @@ impl Server {
         if (doc.ok == false) { return }
         let words = doc.member(doc.root, "keywords").unwrapOr(0 - 1)
         for node in doc.children(words) { self.keywords.push(doc.text(node).clone()) }
+        // The words that are keywords in one position (`export`, `async`, `prop`...): offered with the rest.
+        let contextual = doc.member(doc.root, "contextualKeywords").unwrapOr(0 - 1)
+        for node in doc.children(contextual) {
+            let word = doc.text(doc.member(node, "word").unwrapOr(0 - 1))
+            let mut known = false
+            for earlier in self.keywords {
+                if (earlier.equals(word)) { known = true }
+            }
+            if (known == false and word.equals("") == false) { self.keywords.push(word.clone()) }
+        }
         let literals = doc.member(doc.root, "literals").unwrapOr(0 - 1)
         for node in doc.children(literals) {
             let word = doc.text(node)

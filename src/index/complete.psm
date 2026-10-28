@@ -11,6 +11,7 @@
 // (sema/vec.psm): no list of library names is kept here.
 
 import ast.nodes
+import index.builtins
 import index.collect
 import index.lowered
 import index.source
@@ -53,7 +54,9 @@ fn ixCompleteDecl(inout ix: Ix, inout src: IxSources, id: Int, rank: Int) {
     }
     // Overloads and generic instances that read the same are one entry.
     if (ix.seen.putFirst("complete ".concat(ix.dName[id], "|", sig), 1) == false) { return }
-    ix.out.push(ixCompletionLine(ix.dName[id], kind, sig, doc, rank))
+    let mut module = "".clone()
+    if (ix.dUser[id] == false) { module = diag_file_module(ix.dFile[id]).clone() }
+    ix.out.push(ixCompletionLine(ix.dName[id], kind, sig, doc, rank, module))
 }
 
 // A member the compiler builds for a type, which no source declares (index/lowered.psm).
@@ -64,7 +67,7 @@ fn ixCompleteBuiltinMembers(inout ix: Ix, head: String) {
         let sig = ixLoweredSignature(lookup, name)
         let mut kind = "method"
         if (sig.startsWith("prop ")) { kind = "prop" }
-        ix.out.push(ixCompletionLine(name, kind, sig, ixLoweredDoc(lookup, name), 1))
+        ix.out.push(ixCompletionLine(name, kind, sig, ixLoweredDoc(lookup, name), 1, ""))
     }
 }
 
@@ -74,7 +77,10 @@ fn ixOwnerIs(ix: Ix, id: Int, head: String) -> Bool {
 
 // The members of the type `head`: its fields, the methods written for it and every function whose first
 // parameter is one (`x.f(a)` is `f(x, a)`), through the imports of the file being edited.
-public fn ixCompleteMembers(inout ix: Ix, inout src: IxSources, head: String, file: Int, asType: Bool) {
+public fn ixCompleteMembers(inout ix: Ix, inout src: IxSources, head: String, file: Int, asType: Bool, optional: Bool) {
+    ix.out.push(ixContextLine("member"))
+    // A value whose type is not known has no members to guess at.
+    if (head.equals("") and asType == false and optional == false) { return }
     let typeId = ix.byType.get(head)
     let mut id = 0
     while (id < ix.dKind.length) {
@@ -88,15 +94,69 @@ public fn ixCompleteMembers(inout ix: Ix, inout src: IxSources, head: String, fi
             ixCompleteDecl(ix, src, id, 1)
         } else if ((kind.equals("variant") or kind.equals("code")) and typeId >= 0 and ix.dContainer[id] == typeId and asType) {
             ixCompleteDecl(ix, src, id, 1)
+        } else if (kind.equals("assocconst") and asType and ix.dContainer[id] >= 0 and ix.dOwner[ix.dContainer[id]].equals(head)) {
+            // `Int.MAX`, `Float.PI`: an associated constant of the type.
+            ixCompleteDecl(ix, src, id, 1)
         } else if (kind.equals("fn") or kind.equals("method") or kind.equals("prop")) {
             let receiver = ixReceiverName(ix, id)
-            if (ixOwnerIs(ix, id, head) or (asType == false and receiver.equals(head))) {
+            // After a value, what takes it as its receiver (`self`, or a first parameter of its type); after a type, what
+            // the type owns, which includes its associated functions (`StringBuilder.new`).
+            let fits = ixMemberFits(asType, ixOwnerIs(ix, id, head), receiver.equals(head) or (optional and receiver.equals("?")))
+            if (fits) {
                 if (ix.dName[id].startsWith("$") == false) { ixCompleteDecl(ix, src, id, 1) }
             }
         }
         id = id + 1
     }
     if (asType == false) { ixCompleteBuiltinMembers(ix, head) }
+}
+
+fn ixMemberFits(asType: Bool, owned: Bool, receives: Bool) -> Bool {
+    // After a type: what it owns that needs no receiver (`StringBuilder.new`, not `countOnes`).
+    if (asType) { return owned and receives == false }
+    return receives
+}
+
+// The members of a pointer to a scalar (`load`, `store`, the volatile and atomic accesses), which a pointer to a struct
+// does not have: its fields are read as `p.field`.
+public fn ixCompleteScalarPointerMembers(inout ix: Ix) {
+    for name in ixLoweredNames("PtrScalar") {
+        let sig = ixLoweredSignature("PtrScalar", name)
+        ix.out.push(ixCompletionLine(name, "method", sig, ixLoweredDoc("PtrScalar", name), 1, ""))
+    }
+}
+
+// What a typed pointer reads through (`p.magic`): the fields of the struct it points at, named in its type
+// (`Ptr<mut Header>`, `Ptr<volatile Device>`).
+public fn ixCompletePointee(inout ix: Ix, inout src: IxSources, pointer: String) {
+    let open = pointer.indexOf("<")
+    if (open < 0) { return }
+    let mut inner = pointer.substring(open + 1, pointer.length - open - 1).clone()
+    let mut again = true
+    while (again) {
+        again = false
+        if (inner.startsWith("mut ")) {
+            inner = inner.substring(4, inner.length - 4).clone()
+            again = true
+        }
+        if (inner.startsWith("volatile ")) {
+            inner = inner.substring(9, inner.length - 9).clone()
+            again = true
+        }
+    }
+    let mut stop = 0
+    while (stop < inner.length and inner.byteAt(stop) != 62 and inner.byteAt(stop) != 60 and inner.byteAt(stop) != 44) { stop = stop + 1 }
+    let typeId = ix.byType.get(inner.substring(0, stop))
+    if (typeId < 0) {
+        // A scalar (or an opaque pointee): read and written through the pointer itself.
+        ixCompleteScalarPointerMembers(ix)
+        return
+    }
+    let mut id = 0
+    while (id < ix.dKind.length) {
+        if (ix.dKind[id].equals("field") and ix.dContainer[id] == typeId) { ixCompleteDecl(ix, src, id, 1) }
+        id = id + 1
+    }
 }
 
 // The type a function would be found on by method-call syntax; "" if none.
@@ -107,8 +167,9 @@ fn ixReceiverName(ix: Ix, id: Int) -> String {
 // Whether declaration `id` can be named from `file`: anything in the user's own files, and a library
 // declaration only from a module the file imports.
 public fn ixVisibleFrom(ix: Ix, id: Int, file: Int) -> Bool {
-    // `private` is the declaring file's own.
+    // `private` is the declaring file's own, and a library's `internal` is the library's.
     if (ix.dVis[id] == 1 and ix.dFile[id] != file) { return false }
+    if (ix.dVis[id] == 2 and ix.dUser[id] == false) { return false }
     if (ix.dUser[id]) { return true }
     let module = diag_file_module(ix.dFile[id])
     if (module.equals("")) { return true }
@@ -124,6 +185,8 @@ public fn ixVisibleFrom(ix: Ix, id: Int, file: Int) -> Bool {
 // Everything in scope at the cursor: the names the walk has seen (innermost first), then the
 // program's functions, types and globals.
 public fn ixCompleteScope(inout ix: Ix, inout src: IxSources, names: Vec<String>, ids: Vec<Int>, file: Int) {
+    ix.out.push(ixContextLine("scope"))
+    ixCompleteCompilerBuiltins(ix)
     let mut written = ixMap()
     let mut i = names.length - 1
     while (i >= 0) {
@@ -144,15 +207,40 @@ public fn ixCompleteScope(inout ix: Ix, inout src: IxSources, names: Vec<String>
     }
 }
 
+// The types that can be written after a `:` or `->`: what the program and the imported library declare, and the types
+// the compiler provides.
+public fn ixCompleteTypes(inout ix: Ix, inout src: IxSources, file: Int) {
+    ix.out.push(ixContextLine("type"))
+    let mut id = 0
+    while (id < ix.dKind.length) {
+        let kind = ix.dKind[id]
+        let nameable = kind.equals("struct") or kind.equals("enum") or kind.equals("trait") or kind.equals("typelist")
+            or kind.equals("codeset")
+        if (nameable and ix.dContainer[id] < 0 and ixVisibleFrom(ix, id, file) and ix.dName[id].startsWith("$") == false) {
+            ixCompleteDecl(ix, src, id, 1)
+        }
+        id = id + 1
+    }
+    let mut provided: Vec<String> = ["Int", "Float", "Bool", "Char", "String", "Vec", "Map", "Ptr", "Slice", "Channel", "Self"]
+    let sized: Vec<String> = ["I8", "I16", "I64", "Isize", "U8", "U16", "U32", "U64", "Usize", "F32", "F16", "BF16"]
+    for name in sized { provided.push(name.clone()) }
+    provided.push("F128".clone())
+    for name in provided {
+        if (ix.seen.putFirst("complete ".concat(name, "|builtin type"), 1)) { ix.out.push(ixCompletionLine(name, "struct", "", "", 2, "")) }
+    }
+}
+
 // What the module `path` declares that a program may name: `io.` offers the functions and types of std.io.
 public fn ixCompleteModule(inout ix: Ix, inout src: IxSources, path: String, file: Int) {
+    ix.out.push(ixContextLine("module"))
     let mut id = 0
     while (id < ix.dKind.length) {
         let kind = ix.dKind[id]
         let top = ix.dContainer[id] < 0
         let nameable = kind.equals("fn") or kind.equals("extern") or kind.equals("struct") or kind.equals("enum")
             or kind.equals("trait") or kind.equals("global") or kind.equals("const") or kind.equals("externvar")
-        if (top and nameable and diag_file_module(ix.dFile[id]).equals(path) and ix.dName[id].startsWith("$") == false) {
+        if (top and nameable and diag_file_module(ix.dFile[id]).equals(path) and ix.dName[id].startsWith("$") == false
+                and (ix.dUser[id] or (ix.dVis[id] != 1 and ix.dVis[id] != 2))) {
             ixCompleteDecl(ix, src, id, 1)
         }
         id = id + 1
