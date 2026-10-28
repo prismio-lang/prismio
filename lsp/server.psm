@@ -906,7 +906,7 @@ impl Server {
         let offset = lines.offset(line0, character, self.utf16)
         let query = FeatureQuery { index: index.clone(), file: file, path: path.clone(), text: text.clone(), line: line0 + 1,
                                    col: offset - lines.lineStart(line0) + 1, utf16: self.utf16 }
-        let loc = locator(indexFiles(index), self.utf16)
+        let loc = locator(indexFiles(index), self.utf16, joinPath(self.scratchDirectory, "stdlib"))
 
         if (method.equals("textDocument/hover")) {
             self.send(rpcResult(idRaw, featureHover(query, self.docs, loc)))

@@ -114,9 +114,32 @@ fn featureDeclLocation(decl: IndexDecl, docs: Documents, loc: Locator) -> String
     return loc.location(docs, decl.file, decl.line, decl.col, decl.line, decl.col + decl.len)
 }
 
+// `import std.io`: the file of the module the import names, from anywhere on its path.
+fn featureImportDefinition(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
+    let mut start = 0
+    let mut line = 1
+    while (line < q.line and start < q.text.length) {
+        if (q.text.byteAt(start) == 10) { line = line + 1 }
+        start = start + 1
+    }
+    let mut end = start
+    while (end < q.text.length and q.text.byteAt(end) != 10) { end = end + 1 }
+    let row = q.text.slice(start, end)
+    if (row.startsWith("import ") == false or row.contains("{") or row.contains("*")) { return "[]".clone() }
+    let mut from = 7
+    while (from < row.length and row.byteAt(from) == 32) { from = from + 1 }
+    let mut stop = from
+    while (stop < row.length and (featureIsWordByte(row.byteAt(stop)) or row.byteAt(stop) == 46)) { stop = stop + 1 }
+    if (q.col - 1 < from or q.col - 1 > stop) { return "[]".clone() }
+    let file = loc.fileOfModule(row.slice(from, stop))
+    if (file < 0 or loc.openable(file) == false) { return "[]".clone() }
+    return "[".concat(loc.location(docs, file, 1, 1, 1, 1), "]")
+}
+
 public fn featureDefinition(q: FeatureQuery, docs: Documents, loc: Locator) -> String {
     let decl = featureDeclAt(q)
-    if (decl.found == false or loc.openable(decl.file) == false) { return "[]".clone() }
+    if (decl.found == false or decl.kind.equals("import")) { return featureImportDefinition(q, docs, loc) }
+    if (loc.openable(decl.file) == false) { return "[]".clone() }
     return "[".concat(featureDeclLocation(decl, docs, loc), "]")
 }
 
@@ -290,7 +313,7 @@ public fn featureWorkspaceSymbols(indexes: Vec<String>, query: String, docs: Doc
     let mut shown = 0
     for index in indexes {
         let files = indexFiles(index)
-        let loc = locator(files, utf16)
+        let loc = locator(files, utf16, "")
         for decl in indexSearch(index, query, 100) {
             if (shown >= 200 or decl.kind.equals("impl") or loc.openable(decl.file) == false) { continue }
             out.beginObject()

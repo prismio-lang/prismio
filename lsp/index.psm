@@ -19,7 +19,9 @@ import std.vec
 public struct IndexFile {
     public id: Int,
     public path: String,
-    public user: Bool
+    public user: Bool,
+    // The name a library module is imported by (`std.io`), or "" for the program's own files.
+    public module: String
 }
 
 public struct IndexRef {
@@ -141,7 +143,8 @@ public fn indexFiles(path: String) -> Vec<IndexFile> {
     for line in readLines(path) {
         if (line.startsWith("{\"k\":\"file\"") == false) { continue }
         let doc = parseJson(line)
-        files.push(IndexFile { id: indexInt(doc, "id", 0 - 1), path: indexText(doc, "path"), user: indexFlag(doc, "user") })
+        files.push(IndexFile { id: indexInt(doc, "id", 0 - 1), path: indexText(doc, "path"), user: indexFlag(doc, "user"),
+                                 module: indexText(doc, "module") })
     }
     return files
 }

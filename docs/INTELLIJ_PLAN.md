@@ -2,10 +2,11 @@
 
 > **2026-10-26:** the plugin is moving onto the language server (`prismio lsp`, docs/LSP_PLAN.md), after which this
 > file stops being a backlog: a language change reaches the editor with the toolchain. Switched over so far:
-> diagnostics and the import quick fix (the external annotator, `PrismioCheckTarget` and `UmsValueChecks` are deleted).
-> Still the plugin's own Java, in the order they are to go, one package per commit with the server's feature switched on in
-> `PrismioLspFeatures.SERVED`: `documentation/`, `hints/`, the parameter-info handler, `completion/`, `navigation/`,
-> `symbols/`, `imports/`, the formatter. Items below that concern those packages need no work once they are gone.
+> diagnostics and the import quick fix (the external annotator, `PrismioCheckTarget` and `UmsValueChecks` are deleted), and
+> (2026-10-28) hover, inlay hints, parameter info and completion (`documentation/`'s provider, `hints/`,
+> `PrismioParameterInfoHandler` and `completion/` are deleted). Still the plugin's own Java, in the order they are to go, one
+> package per commit with the server's feature switched on in `PrismioLspFeatures.SERVED`: `navigation/`, `symbols/`,
+> `imports/`, the formatter. Items below that concern those packages need no work once they are gone.
 
 The plugin (`../intellij-plugin`) has hand-written lexers and scope scanners, so each language change
 needs a matching edit there. `NumericWidthTypesTest` and the corpus test are what catch drift. Items are

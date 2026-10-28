@@ -18,27 +18,74 @@ import std.vec
 
 public struct Locator {
     public utf16: Bool,
+    // Where a compiled library module's source is written so that an editor can open it ("" to leave it unreadable).
+    library: String,
     files: Vec<IndexFile>,
     // The files looked at so far, and what each looks like.
     paths: Vec<String>,
     lines: Vec<LineIndex>
 }
 
-public fn locator(files: Vec<IndexFile>, utf16: Bool) -> Locator {
-    return Locator { utf16: utf16, files: files, paths: [], lines: [] }
+public fn locator(files: Vec<IndexFile>, utf16: Bool, library: String) -> Locator {
+    return Locator { utf16: utf16, library: library.clone(), files: files, paths: [], lines: [] }
+}
+
+// The little-endian integer of `count` bytes at `at`.
+fn locatorLittleEndian(bytes: String, at: Int, count: Int) -> Int {
+    let mut value = 0
+    let mut i = count - 1
+    while (i >= 0) {
+        value = value * 256 + bytes.byteAt(at + i)
+        i = i - 1
+    }
+    return value
+}
+
+// The source a compiled library module carries (`<name>.plib`: "PRPLIB3\n", u32 module length, u64 interface length,
+// u32 section count, the module's name, the interface: tools/package.py), written once into `library` as `<name>.psm`.
+// The compiler's positions for a library declaration are in that text. Returns the file, or "" when the module has none.
+fn locatorExtract(plib: String, library: String) -> String {
+    let mut slash = plib.length - 1
+    while (slash >= 0 and plib.byteAt(slash) != 47 and plib.byteAt(slash) != 92) { slash = slash - 1 }
+    let name = plib.slice(slash + 1, plib.length - 5)
+    let target = joinPath(library, name.concat(".psm"))
+    if (fileExists(target)) { return target.clone() }
+    let bytes = readFile(plib)
+    if (bytes.length < 24 or bytes.slice(0, 8).equals("PRPLIB3\n") == false) { return "".clone() }
+    let moduleLength = locatorLittleEndian(bytes, 8, 4)
+    let interfaceLength = locatorLittleEndian(bytes, 12, 8)
+    if (24 + moduleLength + interfaceLength > bytes.length) { return "".clone() }
+    makeDirectory(library)
+    if (writeFile(target, bytes.slice(24 + moduleLength, 24 + moduleLength + interfaceLength)) == false) { return "".clone() }
+    return target.clone()
 }
 
 impl Locator {
     public fn pathOf(self, file: Int) -> String {
-        return indexFilePath(self.files, file)
+        let path = indexFilePath(self.files, file)
+        if (path.endsWith(".plib") and self.library.equals("") == false) {
+            let extracted = locatorExtract(path, self.library)
+            if (extracted.equals("") == false) { return extracted }
+        }
+        return path
     }
 
     public fn uriOf(self, file: Int) -> String {
         return pathToUri(self.pathOf(file))
     }
 
+    // The file a module path names (`std.io`, `ir.expr`): a library module by its name, a program's own by its place.
+    public fn fileOfModule(self, module: String) -> Int {
+        let tail = "/".concat(module.replaceAll(".", "/"), ".psm")
+        for file in self.files {
+            if (file.module.equals(module)) { return file.id }
+            if (file.user and file.path.endsWith(tail)) { return file.id }
+        }
+        return 0 - 1
+    }
+
     // Whether the file can be shown to the user: a source file that exists. The standard library of an
-    // installed toolchain is a compiled module with its source inside, which no editor can open.
+    // installed toolchain is a compiled module with its source inside, written out by `pathOf`.
     public fn openable(self, file: Int) -> Bool {
         let path = self.pathOf(file)
         return path.endsWith(".psm") and fileExists(path)
