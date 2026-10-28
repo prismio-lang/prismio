@@ -95,6 +95,8 @@ let USAGE =
       prismio fmt <source.psm>... [--check] [--write] [--range <from>:<to>]
                                    format source, or check that it is formatted
       prismio lsp                  the language server, over standard input and output
+      prismio library-source <file.plib> <module>
+                                   the source a compiled library module carries
 
       prismio --version            which compiler, LLVM and standard library
       prismio --help-all           every command and flag, the compiler-development ones too
