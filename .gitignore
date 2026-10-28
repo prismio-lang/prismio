@@ -73,18 +73,9 @@ package.tar.xz
 # to the release; reproducible from the tagged commit, so not committed.
 dist/
 
-# The graphify knowledge graph (`graphify update .`). Only the queryable products
-# are shared, as graphify's README recommends: a clone can query graph.json at
-# once, graph.html opens it in a browser, and `graphify update` re-anchors
-# manifest.json and rebuilds only what changed. The AST cache, cost.json, the
-# dated snapshots and the .graphify_* sidecars (absolute paths of this machine)
-# stay local.
-**/graphify-out/*
-# Tracked, but never committed on refresh until the maintainer says so: .githooks/pre-commit
-!**/graphify-out/graph.json
-!**/graphify-out/graph.html
-!**/graphify-out/GRAPH_REPORT.md
-!**/graphify-out/manifest.json
+# The graphify knowledge graph (`graphify update .`): a local index of this checkout, rebuilt
+# from the tree, holding absolute paths of this machine. Not tracked.
+**/graphify-out/
 
 # Python bytecode. Interpreter-written build output for tools/ and tests/, keyed
 # on the CPython version that wrote it -- `tools/__pycache__/*.cpython-313.pyc`

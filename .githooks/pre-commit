@@ -1,5 +1,5 @@
 #!/bin/sh
-# The bootstrap seed (bootstrap/seed.ll) and graphify-out/ are tracked, but a refreshed one is
+# The bootstrap seed (bootstrap/seed.ll) is tracked, but a refreshed one is
 # not committed until the maintainer says so: it is ~20 MB of IR, and a commit per
 # refresh would bloat the history. Staging it is refused; to commit one deliberately:
 #
@@ -16,19 +16,4 @@ if [ -n "$seed" ]; then
     echo "unstage it with: git restore --staged <file>" >&2
     echo "(to commit one on purpose: PRISMIO_ALLOW_SEED_COMMIT=1 git commit ...)" >&2
     exit 1
-fi
-
-# graphify-out/ is tracked too, and a refreshed one is likewise not committed until the
-# maintainer says so: graph.json and graph.html change on every `graphify update .`.
-#
-#     PRISMIO_ALLOW_GRAPH_COMMIT=1 git commit ...
-if [ "${PRISMIO_ALLOW_GRAPH_COMMIT:-}" != "1" ]; then
-    graph=$(git diff --cached --name-only --diff-filter=ACMRD | grep -E '(^|/)graphify-out/' || true)
-    if [ -n "$graph" ]; then
-        echo "error: graphify-out is staged, and a refreshed graph is not committed until the maintainer says so:" >&2
-        echo "$graph" | sed 's/^/    /' >&2
-        echo "unstage it with: git restore --staged <file>" >&2
-        echo "(to commit one on purpose: PRISMIO_ALLOW_GRAPH_COMMIT=1 git commit ...)" >&2
-        exit 1
-    fi
 fi

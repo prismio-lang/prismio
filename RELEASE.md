@@ -27,7 +27,6 @@ never after it. A refresh after the gate makes a new commit the gate has not see
 
 ```bash
 prismio build && prismio build       # twice: the host must be a fixpoint of this src/
-graphify update .                    # AST only, no API cost
 git status --short                   # only the intended files; no stray .prismio-* or build/
 ```
 
@@ -39,8 +38,7 @@ cut *after* a tag, from the compiler that was tagged (step 5), so there is nothi
 refresh before the gate, **provided `src/` still parses with it**. When it does not (0.2.0: `src/`
 uses visibility markers), the gate and CI cannot pass until a seed that parses `src/` is committed, and
 `tools/refresh_seed.py` followed by the maintainer's commit has to come first; see
-`docs/KNOWN_ISSUES.md` for how that was left. `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `manifest.json`,
-`graph.html`) is refreshed before the gate and committed only when the maintainer says so, like the seed.
+`docs/KNOWN_ISSUES.md` for how that was left.
 
 ```bash
 git log --oneline -1     # the commit CI will run on
