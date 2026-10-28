@@ -2506,6 +2506,35 @@ def run_fmt_test():
         # Aligned braces stay aligned; a lone gap is one space.
         ("impl Eq for Int    { }\nimpl Eq for Float  { }\n", "impl Eq for Int    { }\nimpl Eq for Float  { }\n"),
         ("struct P{ x: Int }\n", "struct P { x: Int }\n"),
+        # `Ptr<mut T>` is a type-argument list: the keyword inside it does not make `<` a comparison.
+        ("public fn allocOf<T>(count: Int) -> Ptr<mut T> { }\n", "public fn allocOf<T>(count: Int) -> Ptr<mut T> { }\n"),
+        ("let one = Ptr<mut T>.atUnchecked(4096)\n", "let one = Ptr<mut T>.atUnchecked(4096)\n"),
+        # An `if` that has an `else` is written over several lines, one branch to a block and
+        # `} else {` together; an `if` with no `else` stays as written.
+        ("fn f() {\n    if (a) { b() } else { c() }\n}\n",
+         "fn f() {\n    if (a) {\n        b()\n    } else {\n        c()\n    }\n}\n"),
+        ("fn f() {\n    if (a) { b() } else if (c) { d() } else { e() }\n}\n",
+         "fn f() {\n    if (a) {\n        b()\n    } else if (c) {\n        d()\n    } else {\n        e()\n    }\n}\n"),
+        ("fn f() {\n    if (a) { b() } else if (c) { d() }\n}\n",
+         "fn f() {\n    if (a) {\n        b()\n    } else if (c) {\n        d()\n    }\n}\n"),
+        ("fn f() {\n    if (a) { b() }\n}\n", "fn f() {\n    if (a) { b() }\n}\n"),
+        ("fn f() {\n    if (a) {\n        b()\n    }\n}\n", "fn f() {\n    if (a) {\n        b()\n    }\n}\n"),
+        ("fn f() {\n    if (a) { } else { }\n}\n", "fn f() {\n    if (a) { } else { }\n}\n"),
+        ("fn f() {\n    if (a) { b() } else { }\n}\n", "fn f() {\n    if (a) {\n        b()\n    } else { }\n}\n"),
+        ("fn f() {\n    for i in 0..3 {\n        if (a) { b() } else { c() }\n    }\n}\n",
+         "fn f() {\n    for i in 0..3 {\n        if (a) {\n            b()\n        } else {\n            c()\n        }\n    }\n}\n"),
+        ("fn f() {\n    if (a) { b() } else { if (c) { d() } else { e() } }\n}\n",
+         "fn f() {\n    if (a) {\n        b()\n    } else {\n        if (c) {\n            d()\n        } else {\n            e()\n        }\n    }\n}\n"),
+        ("fn f() {\n    if (a\n        or b) { c() } else { d() }\n}\n",
+         "fn f() {\n    if (a\n        or b) {\n        c()\n    } else {\n        d()\n    }\n}\n"),
+        ("let x = if (c) { f() } else { g() }\n", "let x = if (c) {\n    f()\n} else {\n    g()\n}\n"),
+        ("fn f() {\n    if (a) { b() /* note */ } else { c() }\n}\n",
+         "fn f() {\n    if (a) {\n        b() /* note */\n    } else {\n        c()\n    }\n}\n"),
+        # An `else` the author put on its own line stays there; a half-typed chain is left alone.
+        ("fn f() {\n    if (a) {\n        b()\n    }\n    else {\n        c()\n    }\n}\n",
+         "fn f() {\n    if (a) {\n        b()\n    }\n    else {\n        c()\n    }\n}\n"),
+        ("fn f() {\n    if (a) { b() } else\n}\n", "fn f() {\n    if (a) { b() } else\n}\n"),
+        ("fn f() {\n    if (a) { b() } else if (c\n}\n", "fn f() {\n    if (a) { b() } else if (c\n}\n"),
     ]
     for given, expected in cases:
         got = fmt(given)

@@ -5,8 +5,9 @@
 // back byte for byte, so the token stream of its output is the input's by construction; what it
 // decides is the gap in front of each token. (The one exception to "byte for byte" is the inside
 // of a multi-line block comment, whose lines are re-indented, and a line comment's trailing
-// blanks.) Line breaks are the author's: the formatter never joins or splits a line, it only
-// limits a run of blank lines to two.
+// blanks.) Line breaks are the author's: the formatter never joins a line, and splits one in a
+// single case -- the branches of an `if` that has an `else` each begin a line of their own
+// (`fmtBranchBreaks`). Otherwise it only limits a run of blank lines to two.
 //
 // Indentation is counted in braces, four spaces a level, except on a *continuation* line: one
 // inside an open `(` or `[`, one after a line that stopped mid-expression, one that opens with an
@@ -191,6 +192,124 @@ private fn fmtTypeAngles(text: String, tokens: FmtTokens) -> Vec<Bool> {
         a = a + 1
     }
     return angles
+}
+
+private fn fmtIsWord(text: String, tokens: FmtTokens, at: Int, word: String) -> Bool {
+    return tokens.kinds[at] == FmtKind.KEYWORD and fmtText(text, tokens, at).equals(word)
+}
+
+// The position in `code` of the `{` that follows the parenthesised condition beginning at `from`,
+// or -1 when what is there is not `( ... ) {`.
+private fn fmtBlockAfterCondition(tokens: FmtTokens, code: Vec<Int>, from: Int) -> Int {
+    if (from >= code.length or tokens.kinds[code[from]] != FmtKind.LPAREN) { return 0 - 1 }
+    let mut depth = 0
+    let mut i = from
+    while (i < code.length) {
+        let kind = tokens.kinds[code[i]]
+        if (kind == FmtKind.LPAREN) {
+            depth = depth + 1
+        } else if (kind == FmtKind.RPAREN) {
+            depth = depth - 1
+            if (depth == 0) {
+                if (i + 1 < code.length and tokens.kinds[code[i + 1]] == FmtKind.LBRACE) { return i + 1 }
+                return 0 - 1
+            }
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// The position in `code` of the `}` that closes the `{` at `open`, or -1.
+private fn fmtClosingBrace(tokens: FmtTokens, code: Vec<Int>, open: Int) -> Int {
+    let mut depth = 0
+    let mut i = open
+    while (i < code.length) {
+        let kind = tokens.kinds[code[i]]
+        if (kind == FmtKind.LBRACE) {
+            depth = depth + 1
+        } else if (kind == FmtKind.RBRACE) {
+            depth = depth - 1
+            if (depth == 0) { return i }
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+// The tokens that must begin a line: in an `if` that has an `else`, the first token inside each of
+// its branches and each branch's closing brace. `if (a) { b() } else { c() }` is written over several
+// lines, one branch to a block, with `} else {` kept together; an `if` with no `else` is not touched
+// and stays wherever its author put it, and an empty branch stays `{ }`.
+//
+// A chain is found the way the parser finds it: `if`, a parenthesised condition, a braced block, then
+// `else` followed by another `if` or by a block. Anything that does not fit that shape is left alone,
+// which is what keeps a file that is mid-edit from being rearranged.
+private fn fmtBranchBreaks(text: String, tokens: FmtTokens) -> Vec<Bool> {
+    let mut forced: Vec<Bool> = []
+    let mut code: Vec<Int> = []
+    let mut i = 0
+    while (i < tokens.kinds.length) {
+        forced.push(false)
+        if (fmtIsComment(tokens.kinds[i]) == false) { code.push(i) }
+        i = i + 1
+    }
+
+    let mut a = 0
+    while (a < code.length) {
+        if (fmtIsWord(text, tokens, code[a], "if") == false) {
+            a = a + 1
+            continue
+        }
+        // The blocks of the chain this `if` begins, as positions in `code`.
+        let mut opens: Vec<Int> = []
+        let mut closes: Vec<Int> = []
+        let mut hasElse = false
+        // Every `else` must be followed by what the parser expects, or the chain is half typed and
+        // is left exactly as it is.
+        let mut whole = true
+        let mut head = a
+        loop {
+            let open = fmtBlockAfterCondition(tokens, code, head + 1)
+            let mut close = 0 - 1
+            if (open >= 0) { close = fmtClosingBrace(tokens, code, open) }
+            if (close < 0) {
+                if (opens.length > 0) { whole = false }
+                break
+            }
+            opens.push(open)
+            closes.push(close)
+            let next = close + 1
+            if (next >= code.length or fmtIsWord(text, tokens, code[next], "else") == false) { break }
+            hasElse = true
+            if (next + 1 < code.length and fmtIsWord(text, tokens, code[next + 1], "if")) {
+                head = next + 1
+                continue
+            }
+            whole = false
+            if (next + 1 < code.length and tokens.kinds[code[next + 1]] == FmtKind.LBRACE) {
+                let elseClose = fmtClosingBrace(tokens, code, next + 1)
+                if (elseClose > 0) {
+                    opens.push(next + 1)
+                    closes.push(elseClose)
+                    whole = true
+                }
+            }
+            break
+        }
+        if (hasElse and whole) {
+            let mut b = 0
+            while (b < opens.length) {
+                if (closes[b] > opens[b] + 1) {
+                    forced[code[opens[b] + 1]] = true
+                    forced[code[closes[b]]] = true
+                }
+                b = b + 1
+            }
+        }
+        a = a + 1
+    }
+    return forced
 }
 
 // Whether the token at `at` is a keyword that can begin a declaration or a statement but not an
@@ -409,6 +528,7 @@ public fn fmtLayout(text: String, tokens: FmtTokens, fromLine: Int, toLine: Int,
     let whole = fromLine == 0
     let angles = fmtTypeAngles(text, tokens)
     let pipes = fmtClosurePipes(text, tokens)
+    let forced = fmtBranchBreaks(text, tokens)
 
     let mut open: Vec<FmtKind> = []
     let mut braceDepth = 0
@@ -477,8 +597,9 @@ public fn fmtLayout(text: String, tokens: FmtTokens, fromLine: Int, toLine: Int,
             lineIndent = fmtSpaces(target)
             if (whole == false) { lineIndent = fmtLineIndentOf(gap) }
             if (whole) { out.push(lineIndent.clone()) } else { out.push(gap.clone()) }
-        } else if (tokens.breaks[i] > 0) {
+        } else if (tokens.breaks[i] > 0 or forced[i]) {
             let mut breaks = tokens.breaks[i]
+            if (breaks < 1) { breaks = 1 }
             if (breaks > 3) { breaks = 3 }
             out.push(eol.repeat(breaks))
             lineIndent = fmtSpaces(target)

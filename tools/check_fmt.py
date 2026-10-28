@@ -10,7 +10,10 @@ while the user types) this holds `fmt` to:
 - **only whitespace moves**: deleting all whitespace gives the same text before and after,
 - **it settles**: formatting the result changes nothing,
 - **the program is the same**: a sample of the `tests/` programs is compiled before and
-  after, and the IR must be byte for byte the same.
+  after, and the IR must be byte for byte the same. The one exception is a formatter that
+  moves lines (it splits an `if` that has an `else`): a program quotes its own source
+  positions in a few places, and those are compared with the positions masked
+  (`mask_positions`) once some file has really moved.
 
 It also reports how many lines it would change in each top-level directory. The repository is
 written in the style the formatter encodes, so the share is small; `--max-changed-percent`
@@ -100,6 +103,21 @@ def check_damaged(compiler, files, count, seed):
     return problems
 
 
+# The places a program quotes its own source positions: a synthesized name carries the line and
+# column it came from (`$repeat_132_5`), and a `step` check reports its line. A formatter that moves
+# a line moves these and nothing else; any other difference in the IR is a changed program.
+POSITIONS = (
+    (re.compile(rb"(\$[A-Za-z]+)_\d+_\d+"), rb"\1_L_C"),
+    (re.compile(rb"(@prismio_step_check\([^\n]*, i32 )\d+\)"), rb"\1L)"),
+)
+
+
+def mask_positions(ir):
+    for pattern, replacement in POSITIONS:
+        ir = pattern.sub(replacement, ir)
+    return ir
+
+
 def ir_of(compiler, cwd, relative, out):
     """The IR of `relative`, built from `cwd` so the path the program carries into its IR
     (a panic names its file) is the same for both copies."""
@@ -121,8 +139,12 @@ def check_ir(compiler, count, seed):
         formatted_root = Path(tmp) / "formatted"
         for root in (plain_root, formatted_root):
             shutil.copytree(ROOT / "tests", root / "tests", ignore=shutil.ignore_patterns("*.py", "__pycache__"))
+        moved = False
         for source in (formatted_root / "tests").rglob("*.psm"):
             source.write_bytes(run_fmt(compiler, [str(source)]).stdout)
+            original = plain_root / source.relative_to(formatted_root)
+            if original.read_bytes().count(b"\n") != source.read_bytes().count(b"\n"):
+                moved = True
         for name in programs:
             if compared >= count:
                 break
@@ -134,7 +156,7 @@ def check_ir(compiler, count, seed):
             compared += 1
             if formatted is None:
                 problems.append(f"{relative}: the formatted program no longer builds")
-            elif plain != formatted:
+            elif plain != formatted and not (moved and mask_positions(plain) == mask_positions(formatted)):
                 problems.append(f"{relative}: formatting changed the generated IR")
     if compared == 0:
         problems.append("no program was compared: the IR check is vacuous")

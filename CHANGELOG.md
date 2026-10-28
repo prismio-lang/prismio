@@ -9,6 +9,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`prismio fmt` writes an `if` that has an `else` over several lines.** The branches of `if (a) { b() } else { c() }`,
+  and of an `else if` chain, each begin a line of their own with `} else {` kept together (`fmtBranchBreaks`, the one place
+  the formatter splits a line; it still never joins one). An `if` with no `else` stays as written, an empty branch stays
+  `{ }`, and a chain that is half typed (`else` with nothing after it) is left exactly as it is. `tools/check_fmt.py` keeps
+  its "the program is the same" rule byte for byte, and compares with source positions masked (`$repeat_132_5`, the line a
+  `step` check reports) only once some file has really moved. The language server's formatting is this command, so the
+  JetBrains plugin's Reformat Code now follows it. 9 ms for a 6,000-line file over the server.
+
 - **`std.io` is four variadic functions, and `std.display` is no longer needed to print.** `print`, `println`,
   `eprint` and `eprintln` take any number of values of any builtin type or the optional of one (`String?`, `Int?`,
   …), written once over a `typelist` instead of as about 100 overloads (`std/io.psm` 674 lines → 412). A
