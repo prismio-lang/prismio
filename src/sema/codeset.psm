@@ -2,6 +2,10 @@
 //
 //     codeset Status: U16 { Ok = 200, Success = 200, NotFound = 404 }
 //
+// The type after the name is optional: a codeset that writes none is given the smallest integer type
+// that holds all its values (`U8`, then `U16`...; a signed one when any is negative), by
+// enum_discriminants.psm, and from there it is as if it had been written.
+//
 // `Status.Ok` is rewritten in place into `200 as U16`, the way an associated
 // constant is, so nothing after sema knows a codeset exists. A cast is the context
 // that types a literal, which is why the rewrite is not a bare literal: that would

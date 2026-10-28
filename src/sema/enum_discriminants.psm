@@ -217,15 +217,86 @@ private fn discNext(previous: DiscValue) -> DiscValue {
     return discAdd(previous, discOf(false, 1 as U64))
 }
 
+private fn discLimit(text: String) -> U64 {
+    return expect(text.parseU64())
+}
+
+// The representation of a codeset that writes none: the smallest integer type that holds every one of
+// its values -- `U8`, then `U16`, `U32` and `U64` when all are zero or more, and `I8`, `I16`, `Int` and
+// `I64` when any is negative. Answers "" after reporting when a value cannot be worked out or none of
+// those fits. The values are numbered the way `discAssignVariant` numbers them, so this and the range
+// check that follows agree about what each entry is.
+private fn discInferredName(decl: ASTNode) -> String {
+    let mut previous = discOf(false, 0 as U64)
+    let mut first = true
+    let mut anyNegative = false
+    // The largest value that is zero or more, and the largest magnitude among the negative ones.
+    let mut largest = 0 as U64
+    let mut deepest = 0 as U64
+    let mut p = decl.child1
+    while (nodeExists(p)) {
+        let variant = ptr_to_node(p)
+        let mut value = discOf(false, 0 as U64)
+        if (nodeExists(variant.child2)) {
+            value = discEval(ptr_to_node(variant.child2))
+            if (value.valid == false) {
+                discNotConstant(variant)
+                return "".clone()
+            }
+        } else if (first == false) {
+            value = discNext(previous)
+            if (value.valid == false) {
+                discImplicitOverflow(variant, typeIntFromName("U64"))
+                return "".clone()
+            }
+        }
+        if (value.negative) {
+            anyNegative = true
+            if (value.magnitude > deepest) { deepest = value.magnitude }
+        } else if (value.magnitude > largest) {
+            largest = value.magnitude
+        }
+        previous = value
+        first = false
+        p = variant.next
+    }
+
+    if (anyNegative == false) {
+        if (largest <= discLimit("255")) { return "U8".clone() }
+        if (largest <= discLimit("65535")) { return "U16".clone() }
+        if (largest <= discLimit("4294967295")) { return "U32".clone() }
+        return "U64".clone()
+    }
+    if (deepest <= discLimit("128") and largest <= discLimit("127")) { return "I8".clone() }
+    if (deepest <= discLimit("32768") and largest <= discLimit("32767")) { return "I16".clone() }
+    if (deepest <= discLimit("2147483648") and largest <= discLimit("2147483647")) { return "Int".clone() }
+    if (deepest <= discLimit("9223372036854775808") and largest <= discLimit("9223372036854775807")) { return "I64".clone() }
+    semaErrorAt(decl, "the values of ".concat(diagQuote(decl.s1), " do not fit one integer type: the smallest is ",
+                                              discText(discOf(true, deepest)), " and the largest ", discText(discOf(false, largest))))
+    diag_note("a codeset with a negative entry is signed, so its values must fit `I64`")
+    return "".clone()
+}
+
+// Gives a codeset that wrote no representation the one `discInferredName` chose, as an annotation
+// on the declaration exactly as if it had been written, so everything after this reads it the same
+// way: `Status.Ok` becomes `200 as U16`, and the range check below holds every entry to it.
+private fn discInferRepr(decl: ASTNode) {
+    let name = discInferredName(decl)
+    if (name.equals("")) { return }
+    let annotation = createNode(NodeKind.TYPE_ANNOTATION)
+    annotation.s1 = name
+    nodeSpanFrom(annotation, decl)
+    decl.child2 = node_to_ptr(annotation)
+}
+
 // The representation annotation, checked: an integer type written plainly.
 // Answers `Invalid` after reporting, and the caller then leaves the variants
 // unnumbered -- the error already stops the build.
 private fn discReprOf(decl: ASTNode, isCodeset: Bool) -> TypeInfo {
     if (nodeIsNull(decl.child2)) {
-        if (isCodeset) {
-            semaErrorAt(decl, "a codeset needs a representation type, as in `codeset ".concat(decl.s1, ": U16 { ... }`"))
-            return typeInvalid()
-        }
+        // A codeset that wrote none was given one by discInferRepr; reaching here means it could not
+        // be, and that has been reported.
+        if (isCodeset) { return typeInvalid() }
         return typeInt()
     }
     let annotation = ptr_to_node(decl.child2)
@@ -296,6 +367,7 @@ private fn discCheckUnique(decl: ASTNode) {
 private fn discAssignDecl(decl: ASTNode) {
     let isCodeset = decl.kind == NodeKind.CODESET_DECL
     if (isCodeset == false and nodeIsNull(decl.child2) and discWritesAny(decl) == false) { return }
+    if (isCodeset and nodeIsNull(decl.child2)) { discInferRepr(decl) }
 
     let repr = discReprOf(decl, isCodeset)
     if (typeIsValid(repr) == false) { return }

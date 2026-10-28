@@ -16,7 +16,7 @@ in the order to do them; each names the file to change.
 
 Compiler side: `docs/ENUM_DISCRIMINANTS_PLAN.md`, `docs/language/enums` in the docs site.
 
-1. **`codeset` is a contextual keyword**, like `type` and `prop`: a declaration only when an identifier
+1. **`codeset` is a contextual keyword** (done in the plugin, with `typelist`, `workload`, `setup` and `measure`), like `type` and `prop`: a declaration only when an identifier
    follows. Highlight it as a keyword in that position and never otherwise.
    - `lang/PrismioWords.java` -- contextual-keyword set
    - `lexer/PrismioLexer.java` -- classification at declaration position

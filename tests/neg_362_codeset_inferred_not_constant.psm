@@ -1,0 +1,3 @@
+// expect-error: is not a compile-time integer constant
+codeset Bad { A = 1, B = unknown }
+fn main() -> Int { return 0 }

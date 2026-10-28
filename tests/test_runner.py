@@ -2381,9 +2381,10 @@ def run_token_tables_test():
 
         # Words the plugin's lexer reads as plain names on purpose, or does not know yet. Listed
         # so a new word cannot be left out by accident, and so the list shrinks when the plugin
-        # learns one: a word here that the plugin does highlight is itself reported.
+        # learns one: a word here that the plugin does highlight is itself reported. (`codeset`,
+        # `typelist`, `workload`, `setup` and `measure` were here until the plugin learned them.)
         plugin_plain = {"C", "Fn", "always", "never"}
-        plugin_gaps = {"codeset", "typelist", "workload", "setup", "measure"}
+        plugin_gaps = set()
         for name, expected in (
             ("KEYWORDS", keywords),
             ("CONTEXTUAL_KEYWORDS", contextual - plugin_plain - plugin_gaps),

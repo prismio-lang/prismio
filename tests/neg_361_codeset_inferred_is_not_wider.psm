@@ -1,0 +1,6 @@
+// expect-error: expected U16, found U8
+codeset Small { A = 1, B = 200 }
+fn main() -> Int {
+    let x: U16 = Small.B
+    return 0
+}

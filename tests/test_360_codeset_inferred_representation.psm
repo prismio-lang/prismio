@@ -1,0 +1,51 @@
+// A codeset that writes no representation type is given the smallest integer type that holds all
+// its values: `U8`, `U16`, `U32` or `U64` when none is negative, `I8`, `I16`, `Int` or `I64` when
+// one is. Each constant is typed as that type wherever it is written, which is what the annotations
+// below check: a wrong guess would not compile.
+
+import std.io
+import std.string
+
+codeset Small { A = 1, B = 200 }
+codeset Wide { A = 1, B = 256 }
+codeset Wider { A = 0, B = 65536 }
+codeset Huge { A = 1 << 40 }
+codeset Counted { First, Second, Third }
+codeset Signed { Back = -1, Stay, Forward }
+codeset SignedWide { Low = -200, High = 100 }
+codeset SignedWider { Low = -40000, High = 5 }
+codeset Written: U32 { A = 1 }
+codeset Status { Ok = 200, Success = 200, NotFound = 404, Teapot = 400 + 18 }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let a: U8 = Small.B
+    let b: U16 = Wide.B
+    let c: U32 = Wider.B
+    let d: U64 = Huge.A
+    let e: U8 = Counted.Third
+    let f: I8 = Signed.Back
+    let g: I16 = SignedWide.Low
+    let h: Int = SignedWider.Low
+    let i: U32 = Written.A
+    let j: U16 = Status.NotFound
+
+    if (a != 200) { return fail("U8 holds 200") }
+    if (b != 256) { return fail("U16 holds 256") }
+    if (c != 65536) { return fail("U32 holds 65536") }
+    if ((d as Int) != 0 or d != (1 as U64) << (40 as U64)) { return fail("U64 holds 1 << 40") }
+    if (e != 2) { return fail("implicit entries count from zero") }
+    if (f != -1 or Signed.Stay != 0 or Signed.Forward != 1) { return fail("a negative entry makes the codeset signed") }
+    if (g != -200) { return fail("I16 holds -200") }
+    if (h != -40000) { return fail("Int holds -40000") }
+    if (i != 1) { return fail("a written type is kept") }
+    if (j != 404 or Status.Teapot != 418) { return fail("aliases and computed entries") }
+
+    println("test_360 ok")
+    return 0
+}

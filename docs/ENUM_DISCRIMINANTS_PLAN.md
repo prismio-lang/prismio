@@ -43,7 +43,8 @@ struct-variant construction and patterns, docs in both apps, `CHANGELOG.md`. The
 left uncommitted.
 
 Open:
-- The IntelliJ plugin does not know `codeset` or `: Repr` on an enum: `docs/INTELLIJ_PLAN.md`.
+- The IntelliJ plugin knows `codeset` since 2026-10-29 (keyword, declaration kind, entries coloured like variants); `: Repr` on an enum and struct variants are still open: `docs/INTELLIJ_PLAN.md`.
+- A `codeset` may leave its representation type out: the smallest integer type that holds every entry is used.
 - A *payload* enum is still not a `Map` key without hand-written impls (derived `Copy`/`Eq`/`Key` are
   for fieldless enums, `driver/derived_impls.psm`).
 - `aif_verify` fails on `test_273`/`test_269`, as it did before this work (see `NUMERIC_TYPES_PLAN.md`).

@@ -9,6 +9,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **A `codeset` needs no written type: it gets the smallest integer type that holds all its entries.** `codeset Status { Ok = 200,
+  NotFound = 404 }` is a `U16` codeset: `U8` when every entry is 0 to 255, then `U16`, `U32`, `U64`, and `I8`, `I16`, `Int`, `I64`
+  when any entry is negative. It is chosen from the numbered values (`discInferredName`, so `400 + 18` and implicit entries count),
+  recorded on the declaration as if it had been written, and from there every constant, cast and range check is the same. A written
+  type is kept and still checked (`codeset Tight: U8 { B = 300 }` is still an error). It used to be an error to leave it out
+  ("a codeset needs a representation type"); `tests/test_360`, `neg_361`-`neg_363` replace `neg_324`.
+
 - **`prismio fmt` takes folders, and any number of them.** `prismio fmt --check src std lsp` and `prismio fmt --write src
   tests/test_1.psm` name files and folders together; a folder stands for every `.psm` file under it, searched recursively in
   name order, with hidden folders (`.git`, `.prismio`) inside it skipped (one named on the command line is searched) and a
