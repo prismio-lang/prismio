@@ -92,7 +92,10 @@ impl UmsLexer {
         let start = self.pos
         let line = self.line
         let col = self.col
-        while (umsIsAlnum(self.current()) or self.current() == '-') {
+        // A `.` joins `Channel.BETA` into one identifier: the name of an enum
+        // variant. It must be followed by a letter, so nothing else changes.
+        while (umsIsAlnum(self.current()) or self.current() == '-' or
+               (self.current() == '.' and umsIsAlpha(self.peek(1)))) {
             self.advance()
         }
         let value = self.slice(start, self.pos - start)

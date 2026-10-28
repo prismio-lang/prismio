@@ -10,6 +10,7 @@ import ums.model.manifest_writer
 import ums.targets.target
 import ums.model.validation
 import ums.model.project
+import ums.model.build_module
 import std.string
 import std.fs
 import std.vec
@@ -471,6 +472,68 @@ fn main() -> Int {
         "memory:empty-command", "ums/tests/fixtures/valid", "debug")
     if (emptyCommand.valid or emptyCommand.diagnostics.length != 1) {
         return umsTestFail("a command with no steps should be rejected once")
+    }
+
+    let constBase = "targets { executable(\"http\") { entry = \"src/main.psm\" } } "
+    let constants = umsLoadText(
+        "const MAJOR = 3 const VERSION = \"\${MAJOR}.4.5\" enum Channel { STABLE = \"stable\", BETA } const AUTHORS = [\"Ann\", \"Bo\"] project { name = \"http-\${Channel.BETA}-\${Channel.STABLE}\" version = VERSION prismio = \"1.0\" description = \"costs $$5 or $HOME\" authors = AUTHORS } ".concat(constBase),
+        "memory:constants", "ums/tests/fixtures/valid", "debug")
+    if (constants.valid == false) {
+        umsDiagnosticsPrint(constants.diagnostics)
+        return umsTestFail("constants, enums and interpolation should resolve")
+    }
+    let resolved = constants.project.metadata
+    if (resolved.version.equals("3.4.5") == false or
+        resolved.name.equals("http-BETA-stable") == false or
+        resolved.description.equals("costs $5 or $HOME") == false or
+        resolved.authors.length != 2 or resolved.authors[1].equals("Bo") == false) {
+        return umsTestFail("a constant should stand for its value wherever a value is written")
+    }
+
+    let constantCommand = umsLoadText(
+        "const TOOL = \"tools/thing.py\" const FLAG = \"--fast\" project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" } ".concat(
+            constBase, "commands { command(\"a\") { run(TOOL, FLAG, args) } }"),
+        "memory:constant-command", "ums/tests/fixtures/valid", "debug")
+    if (constantCommand.diagnostics.length != 1 or
+        constantCommand.diagnostics[0].message.contains("tools/thing.py") == false) {
+        umsDiagnosticsPrint(constantCommand.diagnostics)
+        return umsTestFail("a constant in a call argument should reach lowering as its value")
+    }
+
+    let constantMistakes = [
+        "project { name = \"\${NOPE}\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "const A = 1 const A = 2 project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "const args = 1 project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "enum E { X } const B = E.Y project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "const B = Q.Y project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "const L = [\"a\"] project { name = \"\${L}\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "project { name = \"\${open\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "project { const IN = 1 name = \"http\" version = \"1.0.0\" prismio = \"1.0\" } ",
+        "const H = \"x\" toolchain { host = H } project { name = \"http\" version = \"1.0.0\" prismio = \"1.0\" } "
+    ]
+    for i in 0..<constantMistakes.length {
+        let mistaken = umsLoadText(constantMistakes[i].concat(constBase),
+                                   "memory:constant-mistake", "ums/tests/fixtures/valid", "debug")
+        if (mistaken.valid) {
+            return umsTestFail("constant mistake ".concat(i.toString(), " should be rejected"))
+        }
+    }
+
+    let forward = umsLoadText(
+        "project { name = \"http\" version = LATE prismio = \"1.0\" } const LATE = \"2.0.0\" ".concat(constBase),
+        "memory:constant-forward", "ums/tests/fixtures/valid", "debug")
+    if (forward.valid == false or forward.project.metadata.version.equals("2.0.0") == false) {
+        return umsTestFail("a use may name a declaration that comes later in the file")
+    }
+
+    let buildSource = umsBuildModuleSource(constants.project)
+    if (buildSource.contains("public let BUILD_VERSION = \"3.4.5\"\n") == false or
+        buildSource.contains("public let BUILD_VERSION_MINOR = 4\n") == false or
+        buildSource.contains("public let BUILD_NAME = \"http-BETA-stable\"\n") == false or
+        buildSource.contains("return [\"Ann\", \"Bo\"]") == false or
+        buildSource.contains("public let BUILD_DESCRIPTION = \"costs $5 or $HOME\"\n") == false) {
+        println(buildSource)
+        return umsTestFail("the build module should carry the manifest's resolved values")
     }
 
     println("PASS: UMS parser, models, validation, planning, resolution, lockfile and writer")

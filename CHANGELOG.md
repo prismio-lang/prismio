@@ -9,6 +9,29 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **The compiler's version is `project.version` in build.ums, read through `import build`.** `PRISMIO_VERSION` in
+  `src/main.psm` is gone; `--version`, the AST and AIF dumps, the debug-info producer string, `prismio init`'s `prismio =` line
+  and the `prismio = "X"` requirement check read `BUILD_VERSION`, so a release is bumped in one place. The compiler therefore
+  reports `0.2.0` (the manifest's version) where it had reported a separately kept `0.1.0`; the test runner and
+  `tools/release.py` take the number from the manifest and the compiler rather than repeating it. Using `import build` in
+  `src/` is the first thing the committed seed cannot parse: `bootstrap/seed.ll` was refreshed (`prismio seed`, a fixpoint of
+  IR between two generations) and is left uncommitted as always, so a bootstrap from the *committed* seed fails until that
+  refresh is committed.
+
+- **`const` and `enum` in `build.ums`, and `import build` to read the manifest from code.** `const VERSION = "${MAJOR}.2.0"`
+  names a value (a string, integer, boolean or flat array) for use wherever a value is written -- an assignment, a call
+  argument, an array item -- and `${NAME}` inside a string interpolates one (`$$` is a literal `$`). `enum Channel { STABLE =
+  "stable", BETA }` fixes a set, and `Channel.BETA` is a variant's value or its name; a variant that is not declared is an
+  error. A declaration is resolved against those above it, a use sees all of them, and `toolchain` takes literals only
+  because the installed compiler reads it before any of this exists (`umsResolveConstants`, `UMS1201`-`UMS1209`). Both are
+  gone before lowering, so no later phase changed. `import build` gives a program `BUILD_NAME`, `BUILD_VERSION`,
+  `BUILD_VERSION_MAJOR`/`MINOR`/`PATCH`, `BUILD_PRISMIO`, `BUILD_DESCRIPTION`, `BUILD_LICENSE`, `BUILD_LICENSE_FILE` and
+  `buildAuthors()`, or `import build.BUILD_VERSION` for one: `build` is a reserved import root whose source the compiler
+  writes in memory from the manifest above the entry file (`mergeBuildModule`), so nothing is generated on disk and it cannot
+  be stale (`P1117` for a project module of that name, `P1118` for no usable manifest). The values are globals and not
+  `build.version` because a module name does not reach a global and a property may not return a `String`. `ums/test_ums.psm`
+  has the resolver's cases and its mistakes, `test_364` and `test_365` read this checkout's own manifest.
+
 - **A `codeset` needs no written type: it gets the smallest integer type that holds all its entries.** `codeset Status { Ok = 200,
   NotFound = 404 }` is a `U16` codeset: `U8` when every entry is 0 to 255, then `U16`, `U32`, `U64`, and `I8`, `I16`, `Int`, `I64`
   when any entry is negative. It is chosen from the numbered values (`discInferredName`, so `400 + 18` and implicit entries count),

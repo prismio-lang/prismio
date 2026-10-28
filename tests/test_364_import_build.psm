@@ -1,0 +1,29 @@
+// `import build`: build.ums's values, as globals of a module that is no file.
+//
+// The compiler synthesizes the module from the manifest above the entry file
+// (ums/model/build_module.psm), so this reads the repository's own build.ums. What
+// is pinned is the one thing the generator could get wrong silently: that the
+// parts of the version are the version.
+
+import std.io
+import std.string
+import std.vec
+import build
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    if (BUILD_NAME.equals("prismio") == false) { return fail("the project name") }
+    if (BUILD_VERSION.length == 0) { return fail("the project version") }
+    let rebuilt = BUILD_VERSION_MAJOR.toString().concat(".", BUILD_VERSION_MINOR.toString(),
+                                                         ".", BUILD_VERSION_PATCH.toString())
+    if (rebuilt.equals(BUILD_VERSION) == false) { return fail("the version parts") }
+    if (BUILD_PRISMIO.length == 0) { return fail("the required Prismio version") }
+    if (buildAuthors().length == 0) { return fail("the authors") }
+    println("PASS: import build")
+    return 0
+}

@@ -121,6 +121,71 @@ impl UmsParser {
         }
     }
 
+    // The token after the current one; the EOF token at the end keeps it in range
+    // for any current token that is not itself EOF.
+    private fn next(self) -> UmsToken {
+        return self.tokens[self.current + 1]
+    }
+
+    // `const NAME = value`, the keyword already taken. A flat array is a value
+    // here as it is in an assignment.
+    private fn parseConstant(self, document: UmsAstDocument, keyword: UmsToken) -> Int {
+        let name = self.advance()
+        self.advance()
+        let statement = umsAstStatement(UmsAstStatementKind.CONSTANT, name.value,
+                                        keyword.offset, keyword.line, keyword.col,
+                                        name.offset + name.len - keyword.offset)
+        if (self.at(UmsTokenKind.LEFT_BRACKET)) {
+            self.parseArray(statement)
+        } else {
+            statement.value = self.parseValue()
+        }
+        self.take(UmsTokenKind.SEMICOLON)
+        let index = document.statements.length
+        document.statements.push(statement)
+        return index
+    }
+
+    // `enum Name { A, B = "b" }`, the keyword already taken. A variant is a name,
+    // optionally `= value`; variants are separated by commas or newlines.
+    private fn parseEnum(self, document: UmsAstDocument, keyword: UmsToken) -> Int {
+        let name = self.advance()
+        let opening = self.advance()
+        let statement = umsAstStatement(UmsAstStatementKind.ENUM, name.value,
+                                        keyword.offset, keyword.line, keyword.col,
+                                        name.offset + name.len - keyword.offset)
+        statement.hasBlock = true
+        statement.blockOpen = opening.offset
+        while (self.at(UmsTokenKind.RIGHT_BRACE) == false and
+               self.at(UmsTokenKind.EOF) == false) {
+            if (self.take(UmsTokenKind.COMMA) or self.take(UmsTokenKind.SEMICOLON)) {
+                continue
+            }
+            if (self.at(UmsTokenKind.IDENTIFIER) == false) {
+                self.expected("an enum variant")
+                self.advance()
+                continue
+            }
+            let variant = self.advance()
+            let entry = umsAstStatement(UmsAstStatementKind.ASSIGNMENT, variant.value,
+                                        variant.offset, variant.line, variant.col, variant.len)
+            if (self.take(UmsTokenKind.EQUAL)) {
+                entry.value = self.parseValue()
+            }
+            statement.children.push(document.statements.length)
+            document.statements.push(entry)
+        }
+        if (self.at(UmsTokenKind.RIGHT_BRACE)) {
+            statement.blockClose = self.advance().offset
+        } else {
+            self.expected("'}'")
+        }
+        self.take(UmsTokenKind.SEMICOLON)
+        let index = document.statements.length
+        document.statements.push(statement)
+        return index
+    }
+
     private fn parseStatement(self, document: UmsAstDocument) -> Int {
         let token = self.current()
         if (token.kind != UmsTokenKind.IDENTIFIER) {
@@ -130,6 +195,14 @@ impl UmsParser {
         }
 
         let name = self.advance()
+        if (name.value.equals("const") and self.at(UmsTokenKind.IDENTIFIER) and
+            self.next().kind == UmsTokenKind.EQUAL) {
+            return self.parseConstant(document, name)
+        }
+        if (name.value.equals("enum") and self.at(UmsTokenKind.IDENTIFIER) and
+            self.next().kind == UmsTokenKind.LEFT_BRACE) {
+            return self.parseEnum(document, name)
+        }
         if (self.take(UmsTokenKind.EQUAL)) {
             let statement = umsAstStatement(UmsAstStatementKind.ASSIGNMENT, name.value,
                                             name.offset, name.line, name.col, name.len)

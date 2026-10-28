@@ -1292,6 +1292,16 @@ def project_host_lock():
             release()
 
 
+def project_version():
+    """`version` in the repository's build.ums: the version the compiler built from this tree
+    reports (`import build`), so a test names it by reading the manifest rather than by repeating it."""
+    manifest = (PROJECT_ROOT / "build.ums").read_text(encoding="utf-8")
+    match = re.search(r'project\s*\{[^}]*?\bversion\s*=\s*"([^"]+)"', manifest)
+    if not match:
+        raise RuntimeError("build.ums has no literal project version")
+    return match.group(1)
+
+
 def show_run(result):
     """Everything a failed ums step said: its exit status and both streams.
 
@@ -1996,7 +2006,7 @@ def run_ums_test():
                     or "Using global toolchain" not in repaired_output
                     or "promoted project compiler:" not in repaired.stdout
                     or "Using local toolchain" not in repaired.stderr
-                    or "prismio 0.1.0" not in repaired.stdout):
+                    or f"prismio {project_version()}" not in repaired.stdout):
                 print(f"{RED}[FAIL] ums: a stale project host was not rebuilt "
                       f"before the command it could not have served{RESET}")
                 print(repaired_output)
@@ -2015,7 +2025,7 @@ def run_ums_test():
                 return False
             if (forwarded_version.returncode != 0
                     or "Using local toolchain" not in forwarded_version.stderr
-                    or "prismio 0.1.0" not in forwarded_version.stdout):
+                    or f"prismio {project_version()}" not in forwarded_version.stdout):
                 print(f"{RED}[FAIL] ums: a non-build command was not forwarded to the host{RESET}")
                 show_run(forwarded_version)
                 return False

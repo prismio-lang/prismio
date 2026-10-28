@@ -12,10 +12,16 @@ public enum UmsAstValueKind {
 public enum UmsAstStatementKind {
     UNKNOWN,
     ASSIGNMENT,
-    CALL
+    CALL,
+    // `const NAME = value`: a top-level name for a value, resolved away before
+    // lowering (model/constants.psm), so no later phase sees one.
+    CONSTANT,
+    // `enum Name { A, B = "b" }`: a closed set of named values. Each variant is an
+    // ASSIGNMENT among the enum's `children`, whose value is empty for a bare name.
+    ENUM
 }
 
-struct UmsAstValue {
+public struct UmsAstValue {
     public kind: UmsAstValueKind,
     public text: String,
     public line: Int,

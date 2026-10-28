@@ -23,6 +23,7 @@ import common.target
 import project.host
 import project.commands
 import std.fs
+import build.BUILD_VERSION
 
 public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(rt_free)
 public extern fn compiler_is_current_executable(path: String borrow) -> Int
@@ -135,7 +136,7 @@ public fn initUmsProject(nameArg: String) -> Int {
 
     let manifest = "project {\n    name = \"".concat(name)
     let manifestBody = manifest.concat("\"\n    version = \"0.1.0\"\n    prismio = \"",
-                                       PRISMIO_VERSION,
+                                       BUILD_VERSION,
                                        "\"\n}\n\ntargets {\n    executable(\"",
                                        name)
     let manifestText = manifestBody.concat("\") {\n        entry = \"src/main.psm\"\n    }\n}\n")
@@ -383,7 +384,7 @@ public fn projectRequest(startIndex: Int, verb: String) -> ProjectRequest {
 // component by component; a missing patch reads as 0.
 private fn prismioRequirementMet(required: String) -> Bool {
     let wanted = required.split(".")
-    let have = PRISMIO_VERSION.split(".")
+    let have = BUILD_VERSION.split(".")
     for i in 0..<3 {
         let mut want = 0
         let mut got = 0
@@ -407,7 +408,7 @@ public fn umsProjectUsable(workspace: UmsWorkspace) -> Bool {
     let required = workspace.project.metadata.prismioVersion
     if (prismioRequirementMet(required) == false) {
         diag_error_code("P1078", "this project needs Prismio ".concat(required,
-                                 ", and this compiler is ", PRISMIO_VERSION))
+                                 ", and this compiler is ", BUILD_VERSION))
         diag_note("install a newer Prismio, or lower `prismio` in build.ums if the project does not need it")
         return false
     }

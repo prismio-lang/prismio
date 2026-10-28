@@ -1,0 +1,362 @@
+import ums.parser.ast
+import ums.model.diagnostic
+import std.string
+
+// `const` and `enum` in build.ums, resolved away between the parser and the
+// lowering. After this runs no statement of either kind is reachable from the
+// document's roots, and every use of one has been replaced by the value it names,
+// so lowering, validation and the build plan read a manifest that never had them.
+//
+//     const MAJOR = 0
+//     const VERSION = "${MAJOR}.2.0"
+//     enum Channel { STABLE = "stable", BETA = "beta" }
+//     const CHANNEL = Channel.BETA
+//
+//     project { version = VERSION }
+//
+// A name stands for a value wherever a value is written: an assignment, a call
+// argument, an array item. A string interpolates `${NAME}` and `${Enum.VARIANT}`,
+// and `$$` is a literal `$`; a `$` followed by anything else is left alone, so a
+// string that never meant to interpolate keeps its meaning.
+//
+// Declarations are resolved in order, so one may use only what is above it. A use
+// elsewhere sees every declaration, wherever it is.
+//
+// `toolchain` is the exception: the installed compiler reads it from the first
+// bytes of the file, before any of this exists (model/workspace.psm), so it takes
+// literals only.
+
+struct UmsConstants {
+    document: UmsAstDocument,
+    path: String,
+    diagnostics: Vec<UmsDiagnostic>,
+    // Statement indices of the constants and enums resolved so far, in order.
+    declared: Vec<Int>
+}
+
+private fn umsIsDeclaration(statement: UmsAstStatement) -> Bool {
+    return statement.kind == UmsAstStatementKind.CONSTANT or
+           statement.kind == UmsAstStatementKind.ENUM
+}
+
+private fn umsEmptyValue(at: UmsAstValue) -> UmsAstValue {
+    return UmsAstValue {
+        kind: UmsAstValueKind.UNKNOWN,
+        text: "".clone(),
+        line: at.line,
+        col: at.col,
+        len: at.len
+    }
+}
+
+// `value`, placed where `at` was written, so a diagnostic about the result points
+// at the use and not at the declaration.
+private fn umsValueAt(value: UmsAstValue, at: UmsAstValue) -> UmsAstValue {
+    return UmsAstValue {
+        kind: value.kind,
+        text: value.text.clone(),
+        line: at.line,
+        col: at.col,
+        len: at.len
+    }
+}
+
+impl UmsConstants {
+
+    private fn error(self, line: Int, col: Int, len: Int, code: String, message: String) {
+        umsDiagnosticAdd(self.diagnostics, code, self.path, line, col, len, message)
+    }
+
+    private fn errorAt(self, at: UmsAstValue, code: String, message: String) {
+        self.error(at.line, at.col, at.len, code, message)
+    }
+
+    private fn find(self, kind: UmsAstStatementKind, name: String) -> Int {
+        for i in 0..<self.declared.length {
+            let statement = self.document.statements[self.declared[i]]
+            if (statement.kind == kind and statement.name.equals(name)) {
+                return self.declared[i]
+            }
+        }
+        return -1
+    }
+
+    // The variant of the enum at `enumIndex` called `name`, as a statement index.
+    private fn findVariant(self, enumIndex: Int, name: String) -> Int {
+        let declaration = self.document.statements[enumIndex]
+        for i in 0..<declaration.children.length {
+            let variant = self.document.statements[declaration.children[i]]
+            if (variant.name.equals(name)) { return declaration.children[i] }
+        }
+        return -1
+    }
+
+    // What `name` stands for as one value, placed at `at`; UNKNOWN once it has said
+    // why it stands for none. `Enum.VARIANT` is a variant's value, which is its name
+    // when it was written without one.
+    private fn lookup(self, name: String, at: UmsAstValue) -> UmsAstValue {
+        let dot = name.indexOf('.')
+        if (dot >= 0) {
+            let enumName = name.substring(0, dot)
+            let variantName = name.substring(dot + 1, name.length - dot - 1)
+            let enumIndex = self.find(UmsAstStatementKind.ENUM, enumName)
+            if (enumIndex < 0) {
+                self.errorAt(at, "UMS1205", "unknown enum '".concat(enumName, "'"))
+                return umsEmptyValue(at)
+            }
+            let variantIndex = self.findVariant(enumIndex, variantName)
+            if (variantIndex < 0) {
+                self.errorAt(at, "UMS1206", "enum '".concat(enumName, "' has no variant '",
+                                                             variantName, "'"))
+                return umsEmptyValue(at)
+            }
+            let variant = self.document.statements[variantIndex]
+            if (variant.value.kind == UmsAstValueKind.UNKNOWN) {
+                return UmsAstValue {
+                    kind: UmsAstValueKind.STRING,
+                    text: variantName.clone(),
+                    line: at.line,
+                    col: at.col,
+                    len: at.len
+                }
+            }
+            return umsValueAt(variant.value, at)
+        }
+
+        let index = self.find(UmsAstStatementKind.CONSTANT, name)
+        if (index < 0) {
+            self.errorAt(at, "UMS1203", "unknown constant '".concat(name, "'"))
+            return umsEmptyValue(at)
+        }
+        let constant = self.document.statements[index]
+        if (constant.value.kind == UmsAstValueKind.ARRAY) {
+            self.errorAt(at, "UMS1207", "constant '".concat(name,
+                "' is a list, and this place takes one value"))
+            return umsEmptyValue(at)
+        }
+        return umsValueAt(constant.value, at)
+    }
+
+    // `text` with each `${name}` replaced and `$$` read as `$`.
+    private fn interpolate(self, text: String, at: UmsAstValue) -> String {
+        let length = text.length
+        let mut out = ""
+        let mut i = 0
+        while (i < length) {
+            let current = text.charAt(i)
+            if (current == '$' and i + 1 < length and text.charAt(i + 1) == '$') {
+                out = out.concat("$")
+                i = i + 2
+            } else if (current == '$' and i + 1 < length and text.charAt(i + 1) == '{') {
+                let mut end = i + 2
+                while (end < length and text.charAt(end) != '}') { end = end + 1 }
+                if (end >= length) {
+                    self.errorAt(at, "UMS1208", "'\${' is never closed with '}'; write '$$' for a literal '$'")
+                    return out
+                }
+                let found = self.lookup(text.substring(i + 2, end - i - 2), at)
+                if (found.kind != UmsAstValueKind.UNKNOWN) { out = out.concat(found.text) }
+                i = end + 1
+            } else {
+                out = out.concat(current.toString())
+                i = i + 1
+            }
+        }
+        return out
+    }
+
+    // A fresh value for `value`: a string interpolated, a name replaced by what it
+    // stands for. A bare identifier that is no declared name is left alone -- `args`
+    // is one, and lowering says what it thinks of any other.
+    private fn resolved(self, value: UmsAstValue) -> UmsAstValue {
+        if (value.kind == UmsAstValueKind.STRING and value.text.contains('$')) {
+            return UmsAstValue {
+                kind: UmsAstValueKind.STRING,
+                text: self.interpolate(value.text, value),
+                line: value.line,
+                col: value.col,
+                len: value.len
+            }
+        }
+        if (value.kind == UmsAstValueKind.IDENTIFIER) {
+            if (value.text.contains('.') or
+                self.find(UmsAstStatementKind.CONSTANT, value.text) >= 0) {
+                let found = self.lookup(value.text, value)
+                if (found.kind != UmsAstValueKind.UNKNOWN) { return found }
+            }
+        }
+        return UmsAstValue {
+            kind: value.kind,
+            text: value.text.clone(),
+            line: value.line,
+            col: value.col,
+            len: value.len
+        }
+    }
+
+    // Whether `value` names a declaration, for a place that may not.
+    private fn usesDeclaration(self, value: UmsAstValue) -> Bool {
+        if (value.kind == UmsAstValueKind.STRING) { return value.text.contains("\${") }
+        if (value.kind == UmsAstValueKind.IDENTIFIER) {
+            return value.text.contains('.') or
+                   self.find(UmsAstStatementKind.CONSTANT, value.text) >= 0
+        }
+        return false
+    }
+
+    private fn declareName(self, statement: UmsAstStatement, what: String) -> Bool {
+        let name = statement.name
+        if (name.contains('.') or name.contains('-')) {
+            self.error(statement.line, statement.col, statement.len, "UMS1202",
+                what.concat(" name '", name, "' must be letters, digits and '_'"))
+            return false
+        }
+        if (name.equals("args")) {
+            self.error(statement.line, statement.col, statement.len, "UMS1202",
+                "'args' is the command's own arguments and cannot be declared")
+            return false
+        }
+        if (self.find(UmsAstStatementKind.CONSTANT, name) >= 0 or
+            self.find(UmsAstStatementKind.ENUM, name) >= 0) {
+            self.error(statement.line, statement.col, statement.len, "UMS1204",
+                "'".concat(name, "' is declared more than once"))
+            return false
+        }
+        return true
+    }
+
+    private fn declareConstant(self, index: Int) {
+        let statement = self.document.statements[index]
+        if (self.declareName(statement, "constant") == false) { return }
+        if (statement.value.kind == UmsAstValueKind.ARRAY) {
+            for i in 0..<statement.arrayValues.length {
+                statement.arrayValues[i] = self.resolved(statement.arrayValues[i])
+            }
+        } else {
+            statement.value = self.resolved(statement.value)
+        }
+        self.declared.push(index)
+    }
+
+    private fn declareEnum(self, index: Int) {
+        let statement = self.document.statements[index]
+        if (self.declareName(statement, "enum") == false) { return }
+        for i in 0..<statement.children.length {
+            let variant = self.document.statements[statement.children[i]]
+            if (variant.name.contains('.')) {
+                self.error(variant.line, variant.col, variant.len, "UMS1202",
+                    "variant name '".concat(variant.name, "' must be letters, digits and '_'"))
+            }
+            for j in 0..<i {
+                if (self.document.statements[statement.children[j]].name.equals(variant.name)) {
+                    self.error(variant.line, variant.col, variant.len, "UMS1204",
+                        "variant '".concat(variant.name, "' is declared more than once in '",
+                                           statement.name, "'"))
+                }
+            }
+            if (variant.value.kind != UmsAstValueKind.UNKNOWN) {
+                variant.value = self.resolved(variant.value)
+            }
+        }
+        self.declared.push(index)
+    }
+
+    // An assignment's value, which may name a list constant.
+    private fn resolveAssignment(self, statement: UmsAstStatement) {
+        if (statement.value.kind == UmsAstValueKind.IDENTIFIER) {
+            let index = self.find(UmsAstStatementKind.CONSTANT, statement.value.text)
+            if (index >= 0) {
+                let constant = self.document.statements[index]
+                if (constant.value.kind == UmsAstValueKind.ARRAY) {
+                    statement.value = umsValueAt(constant.value, statement.value)
+                    for i in 0..<constant.arrayValues.length {
+                        statement.arrayValues.push(umsValueAt(constant.arrayValues[i],
+                                                              constant.arrayValues[i]))
+                    }
+                    return
+                }
+            }
+        }
+        if (statement.value.kind == UmsAstValueKind.ARRAY) {
+            for i in 0..<statement.arrayValues.length {
+                statement.arrayValues[i] = self.resolved(statement.arrayValues[i])
+            }
+        } else {
+            statement.value = self.resolved(statement.value)
+        }
+    }
+
+    // A statement of the `toolchain` block: literals only, and said so rather than
+    // read as the text it would be to the launcher.
+    private fn checkLiteral(self, statement: UmsAstStatement) {
+        if (self.usesDeclaration(statement.value)) {
+            self.errorAt(statement.value, "UMS1209",
+                "toolchain takes literals: the installed compiler reads it before constants exist")
+        }
+    }
+
+    private fn resolveStatement(self, index: Int, literal: Bool) {
+        let statement = self.document.statements[index]
+        if (literal) {
+            self.checkLiteral(statement)
+        } else if (statement.kind == UmsAstStatementKind.ASSIGNMENT) {
+            self.resolveAssignment(statement)
+        } else {
+            for i in 0..<statement.arguments.length {
+                statement.arguments[i] = self.resolved(statement.arguments[i])
+            }
+        }
+        for i in 0..<statement.children.length {
+            self.resolveStatement(statement.children[i], literal)
+        }
+    }
+}
+
+// Resolves the document's constants and enums in place. `diagnostics` receives
+// every problem; a statement whose name or value failed keeps its raw text, which
+// lowering then rejects too, so a mistake can produce two diagnostics but never a
+// silent wrong value.
+internal fn umsResolveConstants(document: UmsAstDocument, path: String,
+                               diagnostics: Vec<UmsDiagnostic>) {
+    let resolver = UmsConstants {
+        document: document,
+        path: path,
+        diagnostics: diagnostics,
+        declared: []
+    }
+
+    // A declaration inside a block is not a name a manifest can use from outside it.
+    let mut isRoot: Vec<Bool> = []
+    for i in 0..<document.statements.length { isRoot.push(false) }
+    for i in 0..<document.roots.length { isRoot[document.roots[i]] = true }
+    for i in 0..<document.statements.length {
+        let statement = document.statements[i]
+        if (umsIsDeclaration(statement) and isRoot[i] == false) {
+            resolver.error(statement.line, statement.col, statement.len, "UMS1201",
+                "const and enum are declared at the top level of build.ums")
+        }
+    }
+
+    // In order: a declaration sees only those above it.
+    let mut remaining: Vec<Int> = []
+    for i in 0..<document.roots.length {
+        let index = document.roots[i]
+        let statement = document.statements[index]
+        if (statement.kind == UmsAstStatementKind.CONSTANT) {
+            resolver.declareConstant(index)
+        } else if (statement.kind == UmsAstStatementKind.ENUM) {
+            resolver.declareEnum(index)
+        } else {
+            remaining.push(index)
+        }
+    }
+
+    // Every other root, with all of them visible.
+    for i in 0..<remaining.length {
+        let block = document.statements[remaining[i]]
+        let literal = block.kind == UmsAstStatementKind.CALL and
+                      block.name.equals("toolchain")
+        resolver.resolveStatement(remaining[i], literal)
+    }
+    document.roots = remaining
+}

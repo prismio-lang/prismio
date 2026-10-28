@@ -25,6 +25,7 @@ build.ums
    -> parser/lexer.psm
    -> parser/parser.psm
    -> UmsAstDocument
+   -> model/constants.psm      (const / enum resolved away)
    -> model/lowering.psm
    -> UmsProjectModel
    -> model/validation.psm
@@ -42,6 +43,21 @@ Tokens and AST block nodes retain byte offsets in addition to diagnostic line
 and column coordinates. `model/manifest_writer.psm` uses those offsets for
 minimal source edits. It does not serialize `UmsProjectModel`, because doing so
 would erase comments and formatting that have no semantic-model representation.
+
+### Constants are resolved away, and the manifest is a module
+
+`const` and `enum` are parsed into the same generic AST (two new statement kinds) and
+removed by `model/constants.psm` before lowering: every use is replaced by a value and the
+declarations leave the document's roots, so lowering, validation and the build plan are
+unchanged and a new place that takes a value needs no constants code. A declaration sees
+only those above it (no cycles to detect); a use sees all. `toolchain` takes literals,
+because the launcher's prefix reader runs before any of this.
+
+Code reads the manifest through `import build`. The compiler's import loader asks
+`umsLoadBuildModule` for the module's text and parses it as it would a file's, so the module
+is never on disk and never stale. The values are globals (`BUILD_VERSION`), spelled like
+`PRISMIO_VERSION`: a global cannot be reached through a module name, and a property may not
+return a `String`, so `build.version` is not expressible without a language change.
 
 ### The compiler executes; UMS orchestrates
 

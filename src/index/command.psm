@@ -29,12 +29,14 @@ import std.string
 import std.vec
 
 // A file belongs to the user unless it came from the standard library, which the merge names `std.*`
-// (the entry and the files an editor has open are the user's whatever they are called).
+// (the entry and the files an editor has open are the user's whatever they are called). `build` is not the
+// user's either: it is the manifest's values, written in memory by the import (driver/imports.psm), so it has
+// no file to open and nothing in it is theirs to rename.
 fn ixIsUserPath(path: String, module: String, userPaths: Vec<String>) -> Bool {
     for known in userPaths {
         if (known.equals(path)) { return true }
     }
-    return module.startsWith("std.") == false
+    return module.startsWith("std.") == false and module.equals("build") == false
 }
 
 // Writes the index of the program `merged` to `outPath`. False if the file could not be written. With a

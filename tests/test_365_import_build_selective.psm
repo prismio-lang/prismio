@@ -1,0 +1,15 @@
+// `import build.BUILD_VERSION`: the name wanted, by its own import -- the form
+// every selective import takes, over a module that is not a file.
+
+import std.io
+import build.BUILD_VERSION
+import build.BUILD_NAME
+
+fn main() -> Int {
+    if (BUILD_NAME.length == 0 or BUILD_VERSION.length == 0) {
+        println("FAIL: a selected build value is empty")
+        return 1
+    }
+    println("PASS: import build.NAME")
+    return 0
+}

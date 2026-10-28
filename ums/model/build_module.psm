@@ -1,0 +1,76 @@
+import ums.model.project
+import std.string
+
+// The source of the `build` module: what `import build` reads in place of a file.
+//
+// Nothing is written to disk. The compiler asks for this text when it meets the
+// import, so it cannot be stale, there is no step to forget, and a value is a
+// literal the optimiser sees through -- `if (BUILD_VERSION.length > 0)` costs
+// nothing at run time.
+//
+//     import build
+//     println(BUILD_VERSION)
+//
+//     import build.BUILD_VERSION          // or only the name wanted
+//
+// These are globals rather than members of a `build` namespace because a global
+// cannot be reached through a module name, and a property may not return a
+// string (it would allocate). They are spelled like `PRISMIO_VERSION` and
+// `DIAG_MAX_FILES`, the language's existing constants, and carry a `BUILD_`
+// prefix because every global lives in one namespace.
+
+// `text` as a Prismio string literal.
+private fn umsQuoted(text: String) -> String {
+    let mut out = "\""
+    for i in 0..<text.length {
+        let c = text.charAt(i)
+        if (c == '"') { out = out.concat("\\\"") }
+        else if (c == '\\') { out = out.concat("\\\\") }
+        else if (c == '\n') { out = out.concat("\\n") }
+        else if (c == '\r') { out = out.concat("\\r") }
+        else if (c == '\t') { out = out.concat("\\t") }
+        else { out = out.concat(c.toString()) }
+    }
+    return out.concat("\"")
+}
+
+// The `index`th dot-separated number of `version`: its leading digits, or 0 for a
+// part that has none (`rc1`, or a version shorter than three parts).
+private fn umsVersionPart(version: String, index: Int) -> Int {
+    let parts = version.split(".")
+    if (index >= parts.length) { return 0 }
+    let part = parts[index]
+    let mut digits = ""
+    for i in 0..<part.length {
+        let c = part.charAt(i)
+        if (c < '0' or c > '9') { break }
+        digits = digits.concat(c.toString())
+    }
+    return digits.parseInt().unwrapOr(0)
+}
+
+public fn umsBuildModuleSource(project: UmsProjectModel) -> String {
+    let metadata = project.metadata
+    let mut source = "// build.ums, as code. Generated when `import build` is read; not a file.\nimport std.vec\n\n"
+    source = source.concat("public let BUILD_NAME = ", umsQuoted(metadata.name), "\n")
+    source = source.concat("public let BUILD_VERSION = ", umsQuoted(metadata.version), "\n")
+    source = source.concat("public let BUILD_VERSION_MAJOR = ",
+                           umsVersionPart(metadata.version, 0).toString(), "\n")
+    source = source.concat("public let BUILD_VERSION_MINOR = ",
+                           umsVersionPart(metadata.version, 1).toString(), "\n")
+    source = source.concat("public let BUILD_VERSION_PATCH = ",
+                           umsVersionPart(metadata.version, 2).toString(), "\n")
+    source = source.concat("public let BUILD_PRISMIO = ", umsQuoted(metadata.prismioVersion), "\n")
+    source = source.concat("public let BUILD_DESCRIPTION = ", umsQuoted(metadata.description), "\n")
+    source = source.concat("public let BUILD_LICENSE = ", umsQuoted(metadata.license), "\n")
+    source = source.concat("public let BUILD_LICENSE_FILE = ", umsQuoted(metadata.licenseFile), "\n\n")
+
+    // A list is not a constant initializer, so the authors are a function.
+    let mut authors = ""
+    for i in 0..<metadata.authors.length {
+        if (i > 0) { authors = authors.concat(", ") }
+        authors = authors.concat(umsQuoted(metadata.authors[i]))
+    }
+    source = source.concat("public fn buildAuthors() -> Vec<String> {\n    return [", authors, "]\n}\n")
+    return source
+}

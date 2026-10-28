@@ -333,7 +333,7 @@ def main() -> int:
         version = reported_version(compiler)
         if args.version and args.version != version:
             die(f"--version {args.version} but the compiler reports {version}",
-                "PRISMIO_VERSION in src/main.psm is the source of truth.")
+                "`version` in build.ums is the source of truth.")
 
         work = Path(tempfile.mkdtemp(prefix="prismio-release-"))
 

@@ -1,6 +1,8 @@
 import ums.model.project
 import ums.commands.command
 import ums.model.diagnostic
+import ums.model.constants
+import ums.model.build_module
 import ums.model.lowering
 import ums.model.validation
 import ums.parser.lexer
@@ -34,6 +36,7 @@ public fn umsLoadText(source: String, manifestPath: String, root: String,
     let mut diagnostics = umsDiagnostics()
     let tokens = umsLex(source, manifestPath, diagnostics)
     let document = umsParse(tokens, manifestPath, diagnostics)
+    umsResolveConstants(document, manifestPath, diagnostics)
     let project = umsLowerDocument(document, root, manifestPath, profile, diagnostics)
     project.validate(diagnostics)
     let mut plan = UmsBuildPlan { stateRoot: "".clone(), artifactRoot: "".clone() }
@@ -55,6 +58,34 @@ public fn umsLoadProject(startDirectory: String, profile: String) -> UmsWorkspac
     if (manifestPath.length == 0) { return umsEmptyWorkspace(diagnostics) }
     let root = directoryOf(manifestPath)
     return umsLoadText(readFile(manifestPath), manifestPath, root, profile)
+}
+
+// What `import build` reads: the generated source, or what stopped it. A manifest
+// that does not load cleanly is a problem even though only its metadata is wanted,
+// because a project whose manifest is wrong has no values worth compiling in.
+public struct UmsBuildModule {
+    public manifestPath: String,
+    public source: String,
+    public problem: String
+}
+
+public fn umsLoadBuildModule(startDirectory: String) -> UmsBuildModule {
+    let workspace = umsLoadProject(startDirectory, "debug")
+    if (workspace.valid == false) {
+        let first = workspace.diagnostics[0]
+        let mut place = first.path
+        if (first.line > 0) { place = place.concat(":", first.line.toString()) }
+        return UmsBuildModule {
+            manifestPath: "".clone(),
+            source: "".clone(),
+            problem: place.concat(": ", first.message)
+        }
+    }
+    return UmsBuildModule {
+        manifestPath: workspace.project.manifestPath.clone(),
+        source: umsBuildModuleSource(workspace.project),
+        problem: "".clone()
+    }
 }
 
 private fn umsBootstrapPrefixLength(source: String) -> Int {

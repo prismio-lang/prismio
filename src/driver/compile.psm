@@ -21,6 +21,7 @@ import aifcore.solver
 
 from std import { fs, io, string, option, vec }
 import index.command
+import build.BUILD_VERSION
 from lexer import { scanner, token, identifier_security }
 from driver import { imports, workload, prune }
 
@@ -213,7 +214,7 @@ public fn dumpAstCommand(path: String) -> Int {
         return 1
     }
 
-    dumpAstJson(merged, path, PRISMIO_VERSION)
+    dumpAstJson(merged, path, BUILD_VERSION)
     return 0
 }
 
@@ -312,7 +313,7 @@ public fn aifCommand(path: String, summary: Bool, ownedCollections: Bool, thetaF
         return 1 - aifExplain(why, path, converged)
     }
 
-    aifAnalyzeProfiled(merged, path, PRISMIO_VERSION, ownedCollections, summary,
+    aifAnalyzeProfiled(merged, path, BUILD_VERSION, ownedCollections, summary,
                         thetaFields, budget, profilePath, layout, manifest)
     discardWorkloadProfile(profilePath)
     reportForcedLayouts()
@@ -514,7 +515,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     // Both settings are written for every build, on and off, rather than only
     // turned on: one process builds every target of a project, and the second
     // must not inherit the first's.
-    irSetDebugInfo(options.debugInfo, "prismio ".concat(PRISMIO_VERSION), path, options.optimized)
+    irSetDebugInfo(options.debugInfo, "prismio ".concat(BUILD_VERSION), path, options.optimized)
     if (options.debugInfo) {
         compiler_set_debug_info(1)
     } else {

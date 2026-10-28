@@ -78,6 +78,11 @@ def check_index(compiler, entry, tmp, strict_unresolved=True, extra=()):
     if stats is None:
         problems.append(f"{entry}: no stats line, the index was cut short")
     cache = {}
+    # `import build` is a module written in memory from build.ums, so its path names no file and there
+    # is no text to hold a span against.
+    virtual = {fid for fid, record in files.items() if record.get("module") == "build"}
+    refs = [r for r in refs if r["f"] not in virtual]
+    decls_checked = {i: d for i, d in decls.items() if d["f"] not in virtual}
     for ref in refs:
         path = files[ref["f"]]["path"]
         text = span_text(cache, path, ref["l"], ref["c"], ref["n"])
@@ -90,7 +95,7 @@ def check_index(compiler, entry, tmp, strict_unresolved=True, extra=()):
                 problems.append(f"{path}:{ref['l']}:{ref['c']}: `{text}` points at `{target['name']}` ({target['kind']})")
         elif text is None or not text:
             problems.append(f"{path}:{ref['l']}:{ref['c']}: a reference with no text under it")
-    for decl in decls.values():
+    for decl in decls_checked.values():
         path = files[decl["f"]]["path"]
         if decl["kind"] == "impl" or decl["kind"] == "import":
             continue

@@ -11,6 +11,7 @@ import {scanner, token, dump_tokens} from lexer
 
 import {text, diagnostics, terminal, target} from common
 import std.string
+import build.BUILD_VERSION
 import aifcore.layout_search
 
 from std import {io, string, option, process, fs, platform, vec}
@@ -61,9 +62,10 @@ public extern fn compiler_host_abi() -> String alias
 // A `static char buf[32]` the next call overwrites.
 public extern fn ir_llvm_version() -> String alias
 
-// Bumped per release. The LLVM major version is part of the identity: a given
-// Prismio targets one LLVM major, and the C API is not stable across them.
-let PRISMIO_VERSION = "0.1.0"
+// The compiler's version is `project.version` in build.ums, read through
+// `import build`: bumped there per release, and nowhere else. The LLVM major version
+// is part of the identity: a given Prismio targets one LLVM major, and the C API is
+// not stable across them.
 
 let USAGE =
     """
@@ -201,7 +203,7 @@ private fn parseForceLayout(flag: String) -> Bool {
 // version mismatch is visible without having to provoke it.
 private fn cliVersion() -> Int {
     print("prismio ")
-    println(PRISMIO_VERSION)
+    println(BUILD_VERSION)
     print("llvm ")
     println(ir_llvm_version())
 
@@ -278,7 +280,7 @@ private fn cliLsp() -> Int {
     }
     let launch = Process()
     launch.program = server
-    launch.arguments = ["--compiler", executablePath(), "--version", PRISMIO_VERSION]
+    launch.arguments = ["--compiler", executablePath(), "--version", BUILD_VERSION]
     return launch.exec()
 }
 
@@ -352,16 +354,12 @@ private fn cliCheck() -> Int {
 // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
 // touches no codegen, so it cannot affect what `build` generates. Exists for
 // the AIF memory-model work, which analyses the real AST out-of-process.
-
-let fun = "ni"
 private fn cliDumpAst() -> Int {
     if (process.args.count <= 2) {
         diag_error_code("P1027", "missing source file")
         pointAtUsage()
         return 1
     }
-
-
     return dumpAstCommand(process.args[2])
 }
 

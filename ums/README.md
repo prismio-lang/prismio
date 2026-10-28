@@ -17,7 +17,9 @@ The initial implementation provides:
 - token-preserving dependency edits for existing manifests;
 - build plans rooted at `.prismio/build/<profile>/`;
 - project-mode integration for `init`, `build`, `run`, `test`, and `clean`; and
-- project-defined commands composed of build, run, and shell steps.
+- project-defined commands composed of build, run, and shell steps;
+- `const` and `enum` declarations with `${NAME}` interpolation, resolved before lowering; and
+- `import build`, the manifest's `project` values as a module the compiler writes in memory.
 
 ## Manifest syntax
 
