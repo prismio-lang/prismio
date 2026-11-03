@@ -1391,6 +1391,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Repository
 
+- **Two harness mistakes the first full suite on Windows found.** `fmt`'s folder test split the listed paths on `/` only, and
+  `tools/check_index.py` (and `check_truncation.py`'s index judge) read a UTF-8 index with the console's code page. The Windows
+  suite is 726 of 727 now; the one failure is `test_298_ptr_atomics`, a link error for `__atomic_*` (the under-aligned
+  `Ptr<U64>` atomic in `docs/KNOWN_ISSUES.md`).
 - **`tools/package.py` ships the freestanding failure core in every package.** `runtime/freestanding/panic.c` was copied only
   with a `--freestanding-target`, while a project's own layout (`prismio build`) always has it; a package made without the flag
   therefore linked every failing `--freestanding` program against an undefined `prismio_panic`, and `freestanding_bench`

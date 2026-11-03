@@ -1,5 +1,7 @@
 # Editors beyond VS Code and IntelliJ: Neovim, Emacs, Helix, Zed
 
+> **Status 2026-11-03:** not pursued. The maintainer wants VS Code and the JetBrains IDEs only; this plan is kept as a record and none of it is started.
+
 Decided 2026-10-29. `prismio lsp` already serves every editor that speaks LSP (`docs/LSP_PLAN.md`), so none of these
 needs language knowledge of its own. What each needs is a way to start the server, a filetype, and colour before the
 server has answered. The one piece of real work is a **tree-sitter grammar**, which three of the four use.

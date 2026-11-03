@@ -404,7 +404,7 @@ fn main() -> Int {
 
 answers 4, correctly, but `atomicrmw add ... align 4` is under-aligned for an 8-byte atomic, so it
 compiles to a `___atomic_compare_exchange` libcall (`nm` shows it) where `ldaddal` was due -- and a
-freestanding build has no libcall to link. A `Ptr<U64>` parameter is also `align 4`, and
+freestanding build has no libcall to link. Windows has none either: `tests/test_298_ptr_atomics.psm` (a `Ptr<mut U64>` from `castUnchecked`) fails to link there with unresolved `__atomic_store`, `__atomic_load` and `__atomic_compare_exchange` (seen 2026-11-03, the one failure of the Windows suite). A `Ptr<U64>` parameter is also `align 4`, and
 `Ptr<U64>.at` accepts an address that is 4 mod 8. Plain `i64` loads and stores say `align 4`, which is
 legal and probably free on AArch64. The struct-path TBAA offsets (`LLVMOffsetOfElement`) are the
 default layout's too, consistently, so no miscompile has been traced to them.
@@ -850,17 +850,9 @@ that reports does not.
 
 ## Editor tooling
 
-### A second check of an overlay at the same path may be answered from the first
+### The language server on Windows has run the fixtures and the suite, and no editor
 
-Observed building completion retries: running `check` twice with `--overlay F B` where `B` is the same path but its text
-changed (a line removed) gave the second run an empty diagnostic list and no index, and the same text in a file of another
-name behaved as written. The server now gives each attempt its own scratch name, which is why this has not bitten the
-ordinary diagnostics path, but the cause was not found: whether the compiler (or the object/parse cache under `TMPDIR`)
-keys a read on the overlay's path. **Observed 2026-10-28, not diagnosed.**
-
-### The language server on Windows has run the fixtures and nothing else
-
-The `lsp`, `lsp_features`, `lsp_manifest` and `lsp_workspace` fixtures and `test_353`/`test_354` pass in the Windows 11 ARM64 VM (2026-10-29), with two checks skipped there (a killed check; memory growth). The full suite has not been run on Windows since, no editor has been run on it, and paths are canonicalised only for separators and the drive letter (an 8.3 name or a directory in another case still names a different file to the server). **Observed 2026-10-29.**
+The whole suite runs on the Windows 11 ARM64 VM (2026-11-03: 726 of 727; the one failure is `test_298_ptr_atomics`, under "The module has no data layout while its IR is built" above), the `lsp*` fixtures skip two checks there (a killed check; memory growth). No editor has been run on Windows, and paths are canonicalised only for separators and the drive letter (an 8.3 name or a directory in another case still names a different file to the server). **Observed 2026-11-03.**
 
 ---
 

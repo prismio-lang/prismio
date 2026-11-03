@@ -2618,7 +2618,7 @@ def run_fmt_test():
         (tree / "empty").mkdir()
         proj, other = str(tree / "proj"), str(tree / "other")
         listed = run_command([str(PRISMIO_EXE), "fmt", "--check", proj, other])
-        names = {line.rsplit("/", 1)[-1] for line in listed.stdout.splitlines()}
+        names = {re.split(r"[\\/]", line)[-1] for line in listed.stdout.splitlines()}
         if listed.returncode != 1 or names != {"a.psm", "b.psm", "d.psm"}:
             problems.append(f"fmt --check over two folders should name a, b and d (not the hidden c or notes.txt): "
                             f"{listed.returncode} {listed.stdout!r}")

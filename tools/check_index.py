@@ -58,7 +58,7 @@ def check_index(compiler, entry, tmp, strict_unresolved=True, extra=()):
     if not out.exists():
         return [f"{entry}: no index written"], 0, 0
     files, decls, refs, unresolved, stats = {}, {}, [], [], None
-    for text in out.read_text().splitlines():
+    for text in out.read_text(encoding="utf-8").splitlines():
         record = json.loads(text)
         kind = record["k"]
         if kind == "file":

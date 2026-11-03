@@ -125,7 +125,7 @@ def judge_index(target):
     """Why an index is not whole, or "". An editor reads it while the user is typing, so a
     damaged program must still get one: every line a JSON object, the last one the stats."""
     try:
-        lines = target.read_text().splitlines()
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return "no index written"
     if not lines:
