@@ -31,9 +31,10 @@ tests); `navigation/` (3,961 resolved names: the server agreed on 3,941, and the
 
 ## Open
 
-- Semantic tokens are not switched on in the IDE (`semanticTokens` is not in `SERVED`): colours of names are still the
-  lexer's and the annotator's. The server's tokens are exact where the lexer guesses (`STDLIB_TYPES` is the one word
-  table `dump-tokens` cannot check), and the cost is a flash of lexer colours before the first answer.
+- Semantic tokens are on (2026-11-03: `semanticTokens` is in `SERVED`, asked for a Prismio file, coloured by the plugin's own
+  keys). The lexer keeps its word tables, `STDLIB_TYPES` included, because they colour before the server has answered
+  and wherever it cannot (no compiler found, a file outside any program); the server's tokens replace them once they
+  arrive. `STDLIB_TYPES` stays the one table `dump-tokens` cannot check, and is now only a first guess.
 - Code lens, call hierarchy, type hierarchy, selection ranges: the server does not offer them.
 - Seen in a real IDE (`runIde`, 2026-10-28): the server starting and stopping with the setting, diagnostics and the import
   fix. The rest of what is above is held by tests and, 2026-10-29, by a session at `runIde` noted in `docs/LSP_PLAN.md`.
