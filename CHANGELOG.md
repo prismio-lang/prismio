@@ -1424,6 +1424,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Documentation
 
+- **The editor plans say what is, not what was done.** Prismio supports two editors, VS Code and the JetBrains IDEs, and
+  nothing else is planned: `docs/EDITORS_PLAN.md` (Neovim, Emacs, Helix, Zed, a tree-sitter grammar) is removed,
+  `docs/LSP_PLAN.md` drops its phase history, "found and fixed" lists and handover notes and keeps the design, the
+  measurements and what is still open, and `docs/INTELLIJ_PLAN.md` keeps what lives where. The user guide *Set up your
+  editor* loses its "any other editor" section (the protocol contract stays in the developer docs).
+- The VS Code extension has its logo and `.psm` and `build.ums` file icons (`../vscode-plugin`, its own changelog).
 - *Freestanding programs* (guide) and *Low-level programming* (language) describe the above, with the
   flags in the CLI and manifest references; the developer docs record how the backend, the parser and the
   packager implement it.

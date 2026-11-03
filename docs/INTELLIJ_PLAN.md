@@ -1,9 +1,7 @@
 # The IntelliJ plugin
 
 The plugin (`../jetbrains-plugin`, `prismio-lang/jetbrains-plugin`) is a client of `prismio lsp` (`docs/LSP_PLAN.md`).
-It used to be a second implementation of the language, and this file was the backlog of what that implementation had not
-caught up with. As of 2026-10-29 it is not: **a language change reaches the editor with the toolchain**, and the plugin is
-~8,000 lines of Java where it was 15,700.
+**A language change reaches the editor with the toolchain**: the plugin implements none of the language.
 
 ## What lives where
 
@@ -12,11 +10,6 @@ caught up with. As of 2026-10-29 it is not: **a language change reaches the edit
 | Errors, hover, completion, hints, parameter info, definitions (library included), usages, rename, highlights, outline, Go to Symbol, the import quick fix, Reformat Code | The server, from the compiler: `PrismioLspFeatures.SERVED` lists them |
 | Colours, brackets, comment toggling, folding, live templates, typing and Enter indentation | The plugin, because they must answer before a server can: `lexer/`, `formatter/` (an indenter: spacing is `prismio fmt`'s), `handler/`, `folding/`, `highlighter/` |
 | Run configurations, gutter run, New Project, the debugger's line breakpoints, `build.ums` colours | The plugin (`execution/`, `wizard/`, `debugger/`, `ums/`) |
-
-Deleted, each after a differential held the server to it (the tests are in the plugin's Git history): `documentation/`'s
-provider, `hints/`, parameter info and `completion/` (1,219 hover names, 320 hints, 1,910 call positions, 35 completion
-tests); `navigation/` (3,961 resolved names: the server agreed on 3,941, and the other 20 were the plugin's mistakes);
-`symbols/` and `imports/`; the spacing rules of the formatter (19 of 217 files that `prismio fmt` had formatted).
 
 ## What a language change costs the plugin now
 
@@ -31,10 +24,8 @@ tests); `navigation/` (3,961 resolved names: the server agreed on 3,941, and the
 
 ## Open
 
-- Semantic tokens are on (2026-11-03: `semanticTokens` is in `SERVED`, asked for a Prismio file, coloured by the plugin's own
-  keys). The lexer keeps its word tables, `STDLIB_TYPES` included, because they colour before the server has answered
-  and wherever it cannot (no compiler found, a file outside any program); the server's tokens replace them once they
-  arrive. `STDLIB_TYPES` stays the one table `dump-tokens` cannot check, and is now only a first guess.
+- The lexer keeps its word tables, `STDLIB_TYPES` included, because they colour before the server has answered and wherever
+  it cannot (no compiler found, a file outside any program); the server's semantic tokens replace them once they arrive.
+  `STDLIB_TYPES` is the one table `dump-tokens` cannot check, and only a first guess.
 - Code lens, call hierarchy, type hierarchy, selection ranges: the server does not offer them.
-- Seen in a real IDE (`runIde`, 2026-10-28): the server starting and stopping with the setting, diagnostics and the import
-  fix. The rest of what is above is held by tests and, 2026-10-29, by a session at `runIde` noted in `docs/LSP_PLAN.md`.
+- Not seen in a real IDE: WebStorm, CLion and the other JetBrains IDEs.
