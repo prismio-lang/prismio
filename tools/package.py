@@ -353,10 +353,17 @@ def main() -> int:
     # for the program's own triple and carries no libc dependency: the failure core,
     # the weak C library core, and the runtime, which is lang_runtime.c under
     # PRISMIO_FREESTANDING and so needs that file and its two headers beside it.
+    #
+    # The failure core ships in every package, as it does in a project's own layout
+    # (`prismio build` copies it beside the runtime bitcode): a freestanding program
+    # that fails links it whether or not the package named a --freestanding-target, and
+    # without it the link reports `prismio_panic` undefined. The rest is only for a
+    # package that was asked for the freestanding subset.
+    core_dir = runtime_bc / "freestanding"
+    core_dir.mkdir(exist_ok=True)
+    shutil.copyfile(REPO / "runtime" / "freestanding" / "panic.c", core_dir / "panic.c")
     if args.freestanding_target:
-        core_dir = runtime_bc / "freestanding"
-        core_dir.mkdir(exist_ok=True)
-        for name in ("panic.c", "libc.c", "runtime.c"):
+        for name in ("libc.c", "runtime.c"):
             shutil.copyfile(REPO / "runtime" / "freestanding" / name, core_dir / name)
         for name in ("lang_runtime.c", "prismio_runtime.h", "prismio_freestanding.h"):
             shutil.copyfile(REPO / "runtime" / name, core_dir / name)
