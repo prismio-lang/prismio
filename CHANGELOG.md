@@ -1211,6 +1211,15 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **Semantic tokens: a called member of the library is a method.** `items.push(x)` was coloured like `items.length`, a property,
+  because a reference to a member the compiler provides took its type from "member" alone; the role (`call` or `prop`) says
+  which (`lsp/tokens.psm`). Found by the IntelliJ plugin's first test of the tokens it asks the server for.
+- **Completion leaked its index reader.** `indexCompletionContext` returned from inside its `readLines` loop without closing the
+  reader, so each completion kept a 64 KiB buffer and a descriptor. Invisible while a syntax error dropped the whole function
+  (a small index, an untouched buffer); once the parser recovers per statement the index is large and the resident growth was
+  5.3 MB per 20 completions on a 4000-line function (`lsp_features` failed: 35 MB over 130 rounds, limit 6). It closes the
+  reader first, as every other early exit in `lsp/index.psm` does; 80 KiB per 20 completions now.
+
 - **`prismio release` shipped the previous host, not this checkout's compiler.** When the host is the binary `build --release`
   replaces, it stages the new compiler as `prismio.next` and the launcher renames it over the host after the build process
   exits, so `tools/release.py` read `prismio` right after the build and packaged the compiler that had done the building. With

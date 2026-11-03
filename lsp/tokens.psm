@@ -167,7 +167,11 @@ public fn tokensFull(index: String, file: Int, docs: Documents, loc: Locator) ->
             // Something the compiler provides: a type, a function or a member.
             let mut type = 0 - 1
             if (ref.builtin.equals("type")) { type = 1 }
-            if (ref.builtin.equals("member")) { type = 8 }
+            if (ref.builtin.equals("member")) {
+                // `items.push(x)` is a method and `items.length` a property: the reference's role says which.
+                type = 8
+                if (ref.role.equals("call")) { type = 11 }
+            }
             if (ref.builtin.equals("module")) { type = 0 }
             if (ref.role.equals("call") and type < 0) { type = 10 }
             if (type >= 0) { rows.push(TokenRow { line: ref.line, col: ref.col, len: ref.len, type: type, modifiers: 4 }) }
