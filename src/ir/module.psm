@@ -73,6 +73,8 @@ private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
 private fn functionAsksTarget(func: ASTNode) -> Bool {
     if (moduleTreeCallsName(func.child2, "__builtin_target_os")) { return true }
     if (moduleTreeCallsName(func.child2, "__builtin_target_arch")) { return true }
+    // A system call is a different instruction sequence per target.
+    if (moduleTreeCallsName(func.child2, "__builtin_syscall")) { return true }
     return moduleTreeCallsName(func.child2, "__builtin_target_env")
 }
 

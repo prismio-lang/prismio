@@ -72,6 +72,9 @@ public fn ixCompleteCompilerBuiltins(inout ix: Ix) {
     if (floatBitsBuiltin("__builtin_float_from_bits") > 0) {
         ixBuiltinLine(ix, "__builtin_float_from_bits", "bits: U64", "Float", "the Float with these bits")
     }
+    if (syscallBuiltin("__builtin_syscall")) {
+        ixBuiltinLine(ix, "__builtin_syscall", "number: U64, a0: U64, a1: U64, a2: U64, a3: U64, a4: U64, a5: U64", "I64", "a system call; -errno on failure")
+    }
     if (asmBuiltinKind("__builtin_asm") > 0) { ixBuiltinLine(ix, "__builtin_asm", "text: String", "", "run assembly; the text must be a string literal") }
     if (asmBuiltinKind("__builtin_asm_read") > 0) { ixBuiltinLine(ix, "__builtin_asm_read", "text: String", "U64", "run assembly; $0 is the result") }
     if (asmBuiltinKind("__builtin_asm_write") > 0) {

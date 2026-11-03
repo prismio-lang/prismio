@@ -544,14 +544,15 @@ private fn freestandingSafeModule(name: String) -> Bool {
         or name.equals("std.vec") or name.equals("std.map") or name.equals("std.float_text")
         or name.equals("std.number_text")
         or name.equals("std.port") or name.equals("std.asm") or name.equals("std.raw")
+        or name.equals("std.syscall")
 }
 
-// The seven that are pure Prismio link nothing; the rest call into lang_runtime.c.
+// The ones that are pure Prismio link nothing; the rest call into lang_runtime.c.
 private fn freestandingNeedsRuntime(name: String) -> Bool {
     return name.equals("std.option") == false and name.equals("std.platform") == false
         and name.equals("std.iter") == false and name.equals("std.float_text") == false
         and name.equals("std.port") == false and name.equals("std.asm") == false
-        and name.equals("std.raw") == false
+        and name.equals("std.raw") == false and name.equals("std.syscall") == false
 }
 
 // A `std` module is compiled against the C library and an operating system, and a

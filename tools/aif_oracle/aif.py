@@ -274,6 +274,7 @@ for _op, _arity in {'offset': 2, 'byte_offset': 2, 'wrapping_offset': 2, 'diff':
                     'cast_aligned': 1}.items():
     FFI_CONTRACTS['__builtin_ptr_' + _op] = {i: 'borrow' for i in range(_arity)}
 FFI_CONTRACTS['__builtin_addr_ptr'] = {0: 'borrow'}
+FFI_CONTRACTS['__builtin_syscall'] = {i: 'borrow' for i in range(7)}
 FFI_CONTRACTS['__builtin_asm'] = {0: 'borrow'}
 FFI_CONTRACTS['__builtin_asm_read'] = {0: 'borrow'}
 FFI_CONTRACTS['__builtin_asm_write'] = {0: 'borrow', 1: 'borrow'}

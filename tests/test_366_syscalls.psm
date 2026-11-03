@@ -1,0 +1,113 @@
+// std.syscall: the raw instruction, the by-name tables, and the platform blocks. What is
+// checked is what only a real kernel can answer -- a failure comes back as -errno on both
+// operating systems (macOS reports it in the carry flag), a mapping is usable, a write
+// reaches a descriptor -- on whichever of Linux or macOS runs this.
+
+import std.io
+import std.mem
+import std.platform
+import std.string
+import std.syscall
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+// A NUL-terminated copy of the path in a block from `alloc`.
+fn cstring(text: String) -> Usize {
+    let block = allocZeroed((text.length + 1) as Usize)
+    for i in 0..<text.length {
+        (block + i as Usize).storeU8(text.byteAt(i) as U8)
+    }
+    return block
+}
+
+fn main() -> Int {
+    // EBADF and ENOENT are 9 and 2 on both kernels; EINVAL is 22.
+    let missing = cstring("/definitely/not/a/path")
+    let mut onLinux = false
+    let mut onMacos = false
+    let mut pid: I64 = 0
+    let mut raw: I64 = 0
+
+    linux {
+        onLinux = true
+        pid = linux.syscall.getpid()
+        // The raw form with the target's own number: getpid is 39 on x86_64, 172 on arm64.
+        if (platform.architecture == Architecture.X86_64) { raw = syscall(39) } else { raw = syscall(172) }
+        if (linux.syscall.close(-1) != -9) { return fail("close(-1) is -EBADF") }
+        if (linux.syscall.open(missing, LINUX_O_RDONLY, 0) != -2) { return fail("open of a missing path is -ENOENT") }
+    }
+    macos {
+        onMacos = true
+        pid = macos.syscall.getpid()
+        raw = syscall(20)
+        if (macos.syscall.close(-1) != -9) { return fail("close(-1) is -EBADF") }
+        if (macos.syscall.open(missing, MACOS_O_RDONLY, 0) != -2) { return fail("open of a missing path is -ENOENT") }
+    }
+    // One of the two ran, and the other was never compiled.
+    if (onLinux == onMacos) { return fail("exactly one platform block runs") }
+    if (pid <= 0) { return fail("getpid answers a positive pid") }
+    if (raw != pid) { return fail("the raw call and the named one agree") }
+    if (syscallFailed(-9) == false or syscallErrno(-9) != 9) { return fail("syscallErrno") }
+    if (syscallFailed(5) or syscallErrno(5) != 0) { return fail("a success is not an error") }
+
+    // A mapping: 4096 bytes of anonymous memory, written, read back and released.
+    let mut address: I64 = 0
+    linux {
+        address = linux.syscall.mmap(0, 4096, LINUX_PROT_READ | LINUX_PROT_WRITE,
+                                     LINUX_MAP_PRIVATE | LINUX_MAP_ANONYMOUS, -1, 0)
+    }
+    macos {
+        address = macos.syscall.mmap(0, 4096, MACOS_PROT_READ | MACOS_PROT_WRITE,
+                                     MACOS_MAP_PRIVATE | MACOS_MAP_ANONYMOUS, -1, 0)
+    }
+    if (syscallFailed(address)) { return fail("mmap") }
+    let page = address as Usize
+    page.storeU64(0x1122334455667788)
+    (page + 4088).storeU64(42)
+    if (page.loadU64() != 0x1122334455667788 or (page + 4088).loadU64() != 42) { return fail("the mapping is memory") }
+    let mut unmapped: I64 = -1
+    linux { unmapped = linux.syscall.munmap(page, 4096) }
+    macos { unmapped = macos.syscall.munmap(page, 4096) }
+    if (unmapped != 0) { return fail("munmap") }
+
+    // A write to a descriptor: /dev/null takes every byte and answers the count.
+    let devnull = cstring("/dev/null")
+    let text = cstring("hello\n")
+    let mut fd: I64 = -1
+    let mut written: I64 = -1
+    let mut closed: I64 = -1
+    linux {
+        fd = linux.syscall.open(devnull, LINUX_O_WRONLY, 0)
+        written = linux.syscall.write(fd as Int, text, 6)
+        closed = linux.syscall.close(fd as Int)
+    }
+    macos {
+        fd = macos.syscall.open(devnull, MACOS_O_WRONLY, 0)
+        written = macos.syscall.write(fd as Int, text, 6)
+        closed = macos.syscall.close(fd as Int)
+    }
+    if (fd < 0) { return fail("open /dev/null") }
+    if (written != 6) { return fail("write answers the count") }
+    if (closed != 0) { return fail("close") }
+
+    // The bytes reach standard output, ahead of the final line.
+    let mut toStdout: I64 = 0
+    linux { toStdout = linux.syscall.write(1, text, 6) }
+    macos { toStdout = macos.syscall.write(1, text, 6) }
+    if (toStdout != 6) { return fail("write to standard output") }
+
+    // A block for another operating system is read and dropped, so it may name what only
+    // that system has. This one would not type-check here.
+    windows {
+        notAFunctionAnywhere(1, 2, 3)
+    }
+
+    free(missing)
+    free(devnull)
+    free(text)
+    println("ok")
+    return 0
+}

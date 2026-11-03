@@ -33,8 +33,15 @@
 //   __builtin_asm_write(text, v: U64)  `$0` is the operand
 //
 // The text is a string literal in LLVM's inline-assembly syntax, AT&T on x86.
+//
+//   __builtin_syscall(number, a0, a1, a2, a3, a4, a5: U64) -> I64
+//                     a system call of the target's operating system, all seven operands
+//                     always given; std.syscall pads the unused ones with 0. Answers the
+//                     kernel's result, **as -errno on failure on every supported target**
+//                     (see syscallAsmText for how macOS's carry flag becomes that).
 
 import std.string
+import common.target
 
 public fn memBuiltinPrefix() -> String {
     return "__builtin_mem_"
@@ -293,6 +300,7 @@ public fn memBuiltinAny(name: String) -> Bool {
     return memBuiltinArity(name) > 0 or memBuiltinIsFence(name) or asmBuiltinKind(name) > 0
         or addrBuiltinKind(name) > 0 or portBuiltinDir(name) > 0 or ptrLoadBuiltin(name)
         or ptrStoreBuiltin(name) or ptrOpKind(name) > 0 or ptrAtomicKind(name) > 0
+        or syscallBuiltin(name)
 }
 
 // 1 `__builtin_asm`, 2 `__builtin_asm_read`, 3 `__builtin_asm_write`; 0 otherwise.
@@ -310,4 +318,72 @@ public fn asmBuiltinConstraints(kind: Int) -> String {
     if (kind == 2) { return "=r,~{memory}" }
     if (kind == 3) { return "r,~{memory}" }
     return "~{memory}"
+}
+
+public fn syscallBuiltin(name: String) -> Bool {
+    return name.equals("__builtin_syscall")
+}
+
+// Operands of `__builtin_syscall`: the number and six arguments.
+public fn syscallOperands() -> Int {
+    return 7
+}
+
+// Whether the target has a system-call convention this compiler knows: Linux and macOS,
+// on x86_64 and arm64. Anything else is refused where a program calls the wrapper, and
+// emitted as an empty instruction inside std so the library still builds for it.
+public fn syscallTargetKnown() -> Bool {
+    let os = targetOsCode()
+    let arch = targetArchCode()
+    return (os == 2 or os == 3) and (arch == 1 or arch == 2)
+}
+
+// The inline assembly for the target, with the number first and the arguments after it.
+// The result is the kernel's, normalised so that **a failure is `-errno` everywhere**:
+// Linux already answers that way, and macOS reports failure with the carry flag and a
+// positive errno, which the tail of each macOS sequence negates.
+//
+//   Linux  x86_64   rax, rdi rsi rdx r10 r8 r9    `syscall`      clobbers rcx, r11
+//   Linux  arm64    x8,  x0..x5                   `svc #0`
+//   macOS  x86_64   rax = 0x2000000 | n, same     `syscall`      carry set on error
+//   macOS  arm64    x16, x0..x5                   `svc #0x80`    carry set on error
+//
+// macOS also writes a second result into rdx / x1 (`pipe`, `fork`), so that register is
+// clobbered, and the argument that belongs there is passed in a free register and moved
+// in by the sequence itself: LLVM refuses an input that is also a clobber. The operand
+// numbers in those two sequences are the positions in `syscallConstraints`: `$0` the
+// result, then number, a0, a1, a2... as `$1`..`$7`.
+public fn syscallAsmText() -> String {
+    let os = targetOsCode()
+    let arch = targetArchCode()
+    if (os == 2 and arch == 1) { return "syscall" }
+    if (os == 2 and arch == 2) { return "svc #0" }
+    if (os == 3 and arch == 1) {
+        return "movq $4, %rdx\norq $$0x2000000, %rax\nsyscall\njae 1f\nnegq %rax\n1:"
+    }
+    if (os == 3 and arch == 2) {
+        return "mov x1, $3\nsvc #0x80\nb.cc 1f\nneg x0, x0\n1:"
+    }
+    return ""
+}
+
+// LLVM's constraint string for the same. The result shares its register with the first
+// input (`0`), because the kernel answers in the register the number or first argument
+// went in. `~{memory}` for the reason asmBuiltinConstraints gives.
+public fn syscallConstraints() -> String {
+    let os = targetOsCode()
+    let arch = targetArchCode()
+    if (os == 2 and arch == 1) {
+        return "={rax},0,{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}"
+    }
+    if (os == 2 and arch == 2) {
+        return "={x0},{x8},0,{x1},{x2},{x3},{x4},{x5},~{memory}"
+    }
+    if (os == 3 and arch == 1) {
+        return "={rax},0,{rdi},{rsi},r,{r10},{r8},{r9},~{rdx},~{rcx},~{r11},~{cc},~{memory}"
+    }
+    if (os == 3 and arch == 2) {
+        return "={x0},{x16},0,r,{x2},{x3},{x4},{x5},~{x1},~{cc},~{memory}"
+    }
+    return "=r,r,r,r,r,r,r,r,~{memory}"
 }

@@ -9,6 +9,29 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **System calls: `std.syscall`, `linux.syscall.write(...)`, `macos.syscall.write(...)` and the raw `syscall(number, ...)`.**
+  One new builtin, `__builtin_syscall(number, a0..a5) -> I64`, lowered in place to the target's instruction sequence:
+  `syscall` (Linux and macOS x86_64, macOS adding the `0x2000000` class bit), `svc #0` (Linux arm64) and `svc #0x80`
+  (macOS arm64). **A failure is `-errno` on every target**: macOS reports it in the carry flag, and its sequence negates the
+  result (`b.cc`/`jae` then `neg`), so `syscallFailed` and `syscallErrno` mean one thing everywhere. macOS also clobbers
+  the second result register (`rdx`, `x1`), and an input that is also a clobber is an LLVM error, so that argument is passed in a free
+  register and moved in by the sequence. The named tables are **generated** by `tools/gen_syscalls.py` from the kernels' own
+  headers -- Linux uapi `unistd_64.h` for x86_64 and arm64 (an NDK sysroot), `sys/syscall.h` from the macOS SDK -- into the checked-in
+  `std/syscall.psm`; `--check` is run by `tools/check_source_lists.py` wherever the headers exist. Linux arm64 has no `open`,
+  `pipe`, `dup2`, `mkdir`, `unlink`, `rename`, `rmdir`, `readlink`, so the Linux wrappers use the `*at` forms on both. Addresses
+  are `Usize`. On a target that is neither Linux nor macOS a call answers `-ENOSYS`. A function that calls the builtin is
+  compiled into each program like one that asks `platform` (`functionAsksTarget`). The module is freestanding-safe and calls
+  nothing in the C runtime. `tests/test_366_syscalls.psm` runs on macOS arm64. **Linux arm64 and x86_64 were executed** as
+  static ELFs with no libc in a Linux VM (a probe that mmaps, writes, and checks `getpid`, `close(-1)` = `-EBADF` and
+  `open` of a missing path = `-ENOENT`, all passing); **macOS x86_64 was compiled, assembled and run only as far as reading
+  the code** (no Rosetta here). Windows has no stable syscall interface and gets none.
+
+- **Platform blocks: `linux { }`, `macos { }`, `windows { }`.** Contextual (a variable called `linux` still works), decided in
+  the parser from the target triple. A matching block in a function is `if (true) { ... }`, so it is a scope; around declarations
+  at the top of a file its braces vanish and the declarations join the module; a block for another system is parsed, so a
+  syntax error in it is an error everywhere, and then dropped, so it is never checked (`P3302` for one never closed).
+  `tests/test_367_platform_blocks.psm`, `neg_367`, `neg_368`. The committed seed is unaffected: `src/` does not use them yet.
+
 - **The compiler's version is `project.version` in build.ums, read through `import build`.** `PRISMIO_VERSION` in
   `src/main.psm` is gone; `--version`, the AST and AIF dumps, the debug-info producer string, `prismio init`'s `prismio =` line
   and the `prismio = "X"` requirement check read `BUILD_VERSION`, so a release is bumped in one place. The compiler therefore

@@ -3144,6 +3144,23 @@ private fn generateMemBuiltin(expr: ASTNode, funcName: String) -> String {
         return ir_get_temp_name(ir_int_to_ptr(addrKey, operand))
     }
 
+    if (syscallBuiltin(funcName)) {
+        // Every operand before the call opens, left to right, like the asm builtins.
+        let mut operands: Vec<String> = []
+        let mut operandPtr = expr.child2
+        while (nodeExists(operandPtr)) {
+            let operand = ptr_to_node(operandPtr)
+            operands.push(generateExpression(operand))
+            operandPtr = operand.next
+        }
+        // No convention known for this target: -ENOSYS, the answer a kernel gives for a
+        // call it does not have, and nothing is assembled.
+        if (syscallTargetKnown() == false) { return "-38" }
+        ir_call_begin()
+        for operand in operands { ir_call_arg("i64", operand) }
+        return ir_get_temp_name(ir_asm_call("i64", syscallAsmText(), syscallConstraints()))
+    }
+
     let asmKind = asmBuiltinKind(funcName)
     if (asmKind > 0) {
         let template = ptr_to_node(expr.child2)

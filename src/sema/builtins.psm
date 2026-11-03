@@ -62,6 +62,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
         if (memBuiltinIsStore(name)) { return typeVoid() }
         return semaMemValueType(memBuiltinWidth(name))
     }
+    if (syscallBuiltin(name)) { return typeI64() }
     let asmKind = asmBuiltinKind(name)
     if (asmKind == 2) { return typeU64() }
     if (asmKind > 0) { return typeVoid() }
@@ -504,6 +505,17 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
             }
         } else {
             semaCheckValue(module, ptr_to_node(argPtr), typeUsize(), "address")
+        }
+        return true
+    }
+
+    if (syscallBuiltin(name)) {
+        if (semaCheckArity(call, name, argPtr, syscallOperands()) == false) { return true }
+        let mut operandPtr = argPtr
+        while (nodeExists(operandPtr)) {
+            let operand = ptr_to_node(operandPtr)
+            semaCheckValue(module, operand, typeU64(), "system call operand")
+            operandPtr = operand.next
         }
         return true
     }

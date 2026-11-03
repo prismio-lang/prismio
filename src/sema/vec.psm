@@ -420,6 +420,7 @@ private fn semaBuiltinSpelling(name: String) -> String {
     if (name.equals("__builtin_ptr_addr")) { return "addressOf(pointer)` from `std.mem" }
     if (name.equals("__builtin_addr_ptr")) { return "pointerAt(address)` from `std.mem" }
     if (name.equals("__builtin_mem_fence")) { return "fence()` from `std.mem" }
+    if (name.equals("__builtin_syscall")) { return "syscall(number, a0, a1)` from `std.syscall" }
     if (name.equals("__builtin_asm")) { return "asm(text)` from `std.asm" }
     if (name.equals("__builtin_asm_read")) { return "asmRead(text)` from `std.asm" }
     if (name.equals("__builtin_asm_write")) { return "asmWrite(text, value)` from `std.asm" }

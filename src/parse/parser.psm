@@ -14,6 +14,7 @@ import lexer.token
 import common.text
 import ast.nodes
 import common.diagnostics
+import common.target
 import std.string
 
 // `allowStructLit` is off while reading the bounds of a `for`, so that
@@ -76,14 +77,21 @@ struct Parser {
     // Failures reported to a parser that was already dead. A loop that only ended
     // because `fatal` used to exit would count up here forever, so this is what turns
     // a missed `break` into a stop with a message instead of a hang.
-    internal silentFaults: Int
+    internal silentFaults: Int,
+    // Platform blocks at the top of a file (`linux { ... }`, parseModule): how many are
+    // open, and the depth of the outermost one this target skips, 0 when none is being
+    // skipped. A statement-level block is read whole by parsePlatformStatement and needs
+    // neither.
+    internal platformDepth: Int,
+    internal platformSkip: Int
 }
 
 public fn parserCreate(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null(),
                     implParams: ptr_null(), implParamSeq: 0, implPosition: 0, lastLine: tokens.line,
                     fnNode: ptr_null(), hoistHead: ptr_null(), hoistTail: ptr_null(), lengthDepth: 0,
-                    dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0 }
+                    dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0,
+                    platformDepth: 0, platformSkip: 0 }
 }
 impl Parser {
 
@@ -486,6 +494,27 @@ impl Parser {
         loop {
             if (self.check(TokenType.EOF)) { break }
 
+            // `linux {` ... `}` around declarations. The braces are consumed here and the
+            // declarations between them parse as if the block were not there, so a
+            // `fn` or `import` inside is the module's own; when the target is not the
+            // named one, they are parsed for their syntax and dropped below.
+            if (self.atPlatformBlock()) {
+                let name = self.current().value.clone()
+                self.advance()
+                self.advance()
+                self.platformDepth = self.platformDepth + 1
+                if (self.platformSkip == 0 and platformBlockMatches(name) == false) {
+                    self.platformSkip = self.platformDepth
+                }
+                continue
+            }
+            if (self.platformDepth > 0 and self.checkVal(TokenType.SEPARATOR, "}")) {
+                if (self.platformSkip == self.platformDepth) { self.platformSkip = 0 }
+                self.platformDepth = self.platformDepth - 1
+                self.advance()
+                continue
+            }
+
             let declarationStart = self.current
             let stmt = self.parseDeclaration()
 
@@ -493,6 +522,14 @@ impl Parser {
             // built of it, and parsing resumes at the next one.
             if (self.dead == 1) {
                 self.recover(declarationStart)
+                continue
+            }
+
+            // Inside a platform block this target does not name: read, so a syntax error
+            // is still one, and not part of the program.
+            if (self.platformSkip > 0) {
+                self.hoistHead = ptr_null()
+                self.hoistTail = ptr_null()
                 continue
             }
 
@@ -554,6 +591,11 @@ impl Parser {
             }
         }
 
+        if (self.platformDepth > 0 and self.dead == 0) {
+            let end = self.current()
+            diag_error_at_code("P3302", end.file, end.line, end.col, end.len,
+                          "a platform block is never closed; reached end of file looking for `}`")
+        }
         module.child1 = declarations.head
         return module
     }

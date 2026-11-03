@@ -5,6 +5,7 @@ import lexer.scanner
 import common.text
 import ast.nodes
 import common.diagnostics
+import common.target
 import std.string
 import std.option
 
@@ -42,6 +43,10 @@ impl Parser {
                 continue
             }
             let statement = self.parseStatement()
+            if (self.dead == 0 and statement.kind == NodeKind.ERROR_NODE) {
+                // A platform block for another target (parsePlatformStatement): no statement.
+                continue
+            }
             if (self.dead == 1) {
                 // The statement could not be read. Dropping it and going on from the
                 // next one is what keeps the function: every other statement of it is
@@ -604,6 +609,7 @@ impl Parser {
         if (self.atConstDecl()) { return self.parseVariableDecl() }
         if (self.atRepeatStatement()) { return self.parseRepeatStatement() }
         if (self.atScopeStatement()) { return self.parseScopeStatement() }
+        if (self.atPlatformBlock()) { return self.parsePlatformStatement() }
 
         // Held before anything is consumed: every node built below is built *after*
         // its own text has been parsed, so `parserCurrent` is by then the token that
@@ -653,5 +659,54 @@ impl Parser {
         let stmt = parserNodeFrom(NodeKind.EXPRESSION_STATEMENT, first)
         stmt.child1 = node_to_ptr(expr)
         return stmt
+    }
+}
+
+
+// `linux { ... }`, `macos { ... }` and `windows { ... }`: code that exists only when the
+// target operating system is the one named, decided here while the file is read, from the
+// same triple `platform.current` answers. A block for another target is parsed -- a syntax
+// error in it is an error everywhere -- and then dropped, so it is never type-checked and
+// may name things that only exist on its own platform. A block for this target is an
+// ordinary scope: `if (true) { ... }`, so a `let` inside it ends with it.
+//
+// Contextual, like `scope`: the word begins a block only when `{` follows, so a variable
+// called `linux` keeps compiling.
+
+// 1 Windows, 2 Linux, 3 macOS (targetOsCode's codes), or 0 for any other word.
+public fn platformBlockCode(word: String) -> Int {
+    if (word.equals("windows")) { return 1 }
+    if (word.equals("linux")) { return 2 }
+    if (word.equals("macos")) { return 3 }
+    return 0
+}
+
+public fn platformBlockMatches(word: String) -> Bool {
+    return platformBlockCode(word) == targetOsCode()
+}
+
+impl Parser {
+    internal fn atPlatformBlock(self) -> Bool {
+        let word = self.current()
+        if (word.type != TokenType.IDENTIFIER) { return false }
+        if (platformBlockCode(word.value) == 0) { return false }
+        let open = self.peek()
+        return open.type == TokenType.SEPARATOR and open.value.equals("{")
+    }
+
+    private fn parsePlatformStatement(self) -> ASTNode {
+        let word = self.current()
+        let name = word.value.clone()
+        let gate = self.node(NodeKind.IF_STATEMENT)
+        self.advance()
+        let literal = parserNodeFrom(NodeKind.LITERAL_EXPR, word)
+        literal.i1 = TokenType.BOOL_LITERAL as Int
+        literal.s1 = "true"
+        gate.child1 = node_to_ptr(literal)
+        gate.child2 = node_to_ptr(self.parseBlock())
+        if (platformBlockMatches(name) == false) {
+            return self.node(NodeKind.ERROR_NODE)
+        }
+        return gate
     }
 }

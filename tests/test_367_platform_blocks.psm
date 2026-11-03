@@ -1,0 +1,81 @@
+// `linux { }`, `macos { }` and `windows { }`: code for one operating system, chosen while the
+// file is read. A block for another target is parsed and dropped, so it may name what only
+// that system has; a block for this one is an ordinary scope; a block around declarations
+// puts them in the module.
+
+import std.io
+import std.platform
+import std.string
+
+linux {
+    fn code() -> Int { return 2 }
+}
+macos {
+    fn code() -> Int { return 3 }
+}
+windows {
+    fn code() -> Int { return 1 }
+}
+
+// Never true on any target, so nothing in it is checked anywhere.
+linux {
+    macos {
+        fn neverCompiled() -> Int { return thisFunctionExistsNowhere() }
+    }
+}
+
+fn fail(message: String) -> Int {
+    println("FAIL: ".concat(message))
+    return 1
+}
+
+fn expectedCode() -> Int {
+    if (platform.isLinux) { return 2 }
+    if (platform.isMacOS) { return 3 }
+    return 1
+}
+
+fn main() -> Int {
+    // The declaration for this target is the one that exists.
+    if (code() != expectedCode()) { return fail("the block around declarations") }
+
+    // A `let` in a block ends with it, and exactly one of the three blocks runs.
+    let mut ran = 0
+    linux {
+        let inside = 10
+        ran = ran + inside
+    }
+    macos {
+        let inside = 20
+        ran = ran + inside
+    }
+    windows {
+        let inside = 30
+        ran = ran + inside
+    }
+    if (expectedCode() == 2 and ran != 10) { return fail("linux block") }
+    if (expectedCode() == 3 and ran != 20) { return fail("macos block") }
+    if (expectedCode() == 1 and ran != 30) { return fail("windows block") }
+
+    // Blocks nest, and a block that does not match hides everything in it.
+    let mut nested = 0
+    linux {
+        macos { thisFunctionExistsNowhere() }
+        nested = nested + 1
+    }
+    macos {
+        linux { thisFunctionExistsNowhere() }
+        nested = nested + 1
+    }
+    windows {
+        linux { thisFunctionExistsNowhere() }
+        nested = nested + 1
+    }
+    if (nested != 1) { return fail("nested blocks") }
+
+    // A variable called `linux` is still a variable: the word is a block only before `{`.
+    let linux = 5
+    if (linux + 1 != 6) { return fail("a variable named linux") }
+    println("ok")
+    return 0
+}

@@ -145,6 +145,20 @@ def freestanding_std():
             sorted(re.findall(r'"(\w+)"', py.group(1))))
 
 
+def syscall_table_problems():
+    """std/syscall.psm is generated from the kernels' headers (tools/gen_syscalls.py). Checked
+    only where those headers are installed: a machine with no NDK or macOS SDK skips it."""
+    import subprocess
+    result = subprocess.run([sys.executable, str(TOOLS / "gen_syscalls.py"), "--check"],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        return []
+    message = (result.stderr or result.stdout).strip()
+    if message.startswith("gen_syscalls: no "):
+        return []
+    return ["std/syscall.psm vs tools/gen_syscalls.py\n     " + message]
+
+
 def main() -> int:
     problems = []
 
@@ -178,6 +192,7 @@ def main() -> int:
         missing = [name for name in runtime if name not in compiler]
         if missing:
             problems.append("runtime sources the compiler does not compile: " + " ".join(missing))
+        problems.extend(syscall_table_problems())
     except Failure as exc:
         print(f"FAILED: {exc}")
         return 1

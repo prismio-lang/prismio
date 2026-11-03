@@ -1,0 +1,8 @@
+// A platform block that is never closed is an error, whichever target the file is built for.
+
+linux {
+    fn only() -> Int { return 1 }
+
+fn main() -> Int {
+    return 0
+}

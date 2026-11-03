@@ -1,0 +1,6 @@
+// `__builtin_syscall` is std.syscall's, like every `__builtin_*`: a program makes a system
+// call through `syscall(...)` or a platform's table, and the builtin is refused outside std.
+
+fn main() -> Int {
+    return __builtin_syscall(1, 1, 0, 0, 0, 0, 0) as Int
+}

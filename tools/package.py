@@ -187,7 +187,7 @@ def build_plib_ir(clang: str, compiler: Path, source: Path, work: Path,
 # before it would look for the section.
 FREESTANDING_STD = ("option", "platform", "iter", "mem", "string", "unicode_case", "unicode",
                     "unicode_tables", "eq", "ord", "copy", "key", "default", "vec", "map", "float_text", "number_text",
-                    "port", "asm", "raw")
+                    "port", "asm", "raw", "syscall")
 
 
 def build_plib(clang: str, compiler: Path, source: Path, stdlib: Path, work: Path,
