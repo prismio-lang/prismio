@@ -2240,6 +2240,31 @@ def run_check_partial_test():
         if mentions(errors, "unknown function `broken`"):
             problems.append(f"--partial reported the dropped method as unknown: {errors}")
 
+        # A statement that does not parse drops itself, not the function around it: the lines before and after it
+        # are checked, a name only the dropped statement declared is not blamed, and a function whose last
+        # statement was the `return` is not reported as falling off its end.
+        statements = root / "statements.psm"
+        statements.write_text(
+            "import std.io\n\n"
+            "fn tail() -> Int {\n    let k = 4\n    return k +\n}\n\n"
+            "fn middle(v: Int) -> Int {\n    let bad = v +\n    let n: Int = \"text\"\n    println(bad)\n"
+            "    if (v > 1 {\n        println(v)\n    }\n    return missing(v)\n}\n\n"
+            "fn main() -> Int {\n    return tail() + middle(1)\n}\n")
+        code, errors = check(statements)
+        if len(errors) != 3 or not all(mentions([e], "expected") for e in errors):
+            problems.append(f"plain check should report all three syntax errors, `middle`'s two included, and stop: {errors}")
+        code, errors = check(statements, "--partial")
+        if sum(1 for e in errors if "expected an expression" in e or "parenthesized expression" in e) != 3:
+            problems.append(f"--partial lost a syntax error: {errors}")
+        if not mentions(errors, "expected Int, found String"):
+            problems.append(f"--partial did not check the statement after the broken one: {errors}")
+        if not mentions(errors, "unknown function `missing`"):
+            problems.append(f"--partial hid a real unknown name after a dropped statement: {errors}")
+        if mentions(errors, "unknown identifier `bad`"):
+            problems.append(f"--partial reported a name the dropped statement declared: {errors}")
+        if mentions(errors, "must return"):
+            problems.append(f"--partial blamed a function for the `return` it lost: {errors}")
+
         # An import that cannot be read: any name may have come from it, so no "unknown" is
         # trustworthy -- but a type error is still one.
         lost = root / "lost.psm"
@@ -3294,6 +3319,27 @@ def run_lsp_features_test():
             hints = ask("textDocument/inlayHint", range={"start": {"line": 0, "character": 0}, "end": {"line": 20, "character": 0}})
             texts = sorted(h["label"] for h in hints)
             note(texts == [": Int", ": Int", ": Point", "a:", "b:"], f"inlay hints (a pack parameter gets none): {texts}")
+
+            # A half-typed statement (`xs.` with the next line already written) takes that statement out of the analysis,
+            # not the function around it: the rest of `main` keeps its hints and its hover.
+            half_text = ("fn grow(k: Int, extra: Int) -> Int {\n    return k + extra\n}\n\n"
+                         "fn main() -> Int {\n    let mut xs: Vec<Int> = []\n    xs.push(1)\n"
+                         "    let unfinished = xs.\n    let n = grow(1, 2)\n    return n\n}\n")
+            half_path = root / "half.psm"
+            half_path.write_text(half_text)
+            half_uri = half_path.as_uri()
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": half_uri, "languageId": "prismio",
+                                                                     "version": 1, "text": half_text}})
+            half = client.diagnostics_for(half_uri)
+            note(len(half["diagnostics"]) == 1, f"one syntax error in the half-typed function: {half['diagnostics']}")
+            half_hints = sorted(h["label"] for h in
+                                ask("textDocument/inlayHint", uri=half_uri,
+                                    range={"start": {"line": 0, "character": 0}, "end": {"line": 20, "character": 0}}))
+            note(half_hints == [": Int", "extra:", "k:"], f"hints after a half-typed line in the same function: {half_hints}")
+            half_hover = ask("textDocument/hover", uri=half_uri, position=where(half_text, "grow", 0, "let n = grow"))
+            note("fn grow(k: Int, extra: Int) -> Int" in ((half_hover or {}).get("contents", {}).get("value", "")),
+                 f"hover after a half-typed line in the same function: {half_hover}")
+            client.notify("textDocument/didClose", {"textDocument": {"uri": half_uri}})
 
             # --- semantic tokens, folding ---
             tokens = ask("textDocument/semanticTokens/full")["data"]

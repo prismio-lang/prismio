@@ -413,8 +413,9 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
         arguments.push(col.toString())
         arguments.push("--diagnostic-format=json")
         // A check that finds errors exits non-zero, which is the normal case here: only the index counts. The compiler
-        // drops a whole function for a line in it that does not parse, so when it did not reach the caret and says which
-        // other lines are the trouble, those lines are emptied in the scratch copy and it is asked again.
+        // drops the statement that does not parse and keeps the function; only when the file ends inside one (nothing to
+        // resume at) is the whole function lost, so when it did not reach the caret and says which other lines are the
+        // trouble, those lines are emptied in the scratch copy and it is asked again.
         let run = runCapturedErrors(compiler, arguments, 8000)
         deleteFile(buffer)
         ran = run.ok

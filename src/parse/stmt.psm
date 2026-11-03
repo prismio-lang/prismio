@@ -28,12 +28,30 @@ impl Parser {
                 self.abandon()
                 break
             }
+            // What `fatal` can leave half-set, as it stood before this statement: the
+            // statement is dropped on its own (below) and the block carries on.
+            let mark = StatementMark { structLit: self.allowStructLit, implPosition: self.implPosition,
+                                       lengthDepth: self.lengthDepth, implParams: self.implParams,
+                                       implParamSeq: self.implParamSeq, fnNode: self.fnNode,
+                                       implType: self.implType, hoistTail: self.hoistTail,
+                                       start: self.current }
             if (self.atNestedFn()) {
                 self.parseNestedFn()
+                if (self.dead == 1 and self.recoverStatement(mark)) { continue }
                 declaredNested = true
                 continue
             }
-            nodeListPush(statements, self.parseStatement())
+            let statement = self.parseStatement()
+            if (self.dead == 1) {
+                // The statement could not be read. Dropping it and going on from the
+                // next one is what keeps the function: every other statement of it is
+                // still in the program, for the checker and for an editor's index.
+                // False when the file ended first; the declaration is dropped then, as
+                // it always was.
+                if (self.recoverStatement(mark)) { continue }
+                break
+            }
+            nodeListPush(statements, statement)
         }
         if (declaredNested) { self.renameNestedCalls(statements.head, hoistMark) }
 
@@ -89,6 +107,101 @@ impl Parser {
         compound.child1 = node_to_ptr(target)
         compound.child2 = node_to_ptr(combined)
         return compound
+    }
+}
+
+
+// The parser's state at the start of a statement, which is what a statement `fatal`
+// gave up on is put back to.
+struct StatementMark {
+    structLit: Int,
+    implPosition: Int,
+    lengthDepth: Int,
+    implParams: Ptr,
+    implParamSeq: Int,
+    fnNode: Ptr,
+    implType: Ptr,
+    hoistTail: Ptr,
+    start: Ptr
+}
+
+impl Parser {
+    // The recovery of `recover` and `recoverMember` one level further down: a statement
+    // `fatal` gave up on is dropped on its own, and the block keeps the rest. Without
+    // it one half-typed line took the whole function with it -- no names in scope, no
+    // hover, no completion for every line of it, well formed or not.
+    //
+    // Resumes at the first token that begins a line after the failure and is outside
+    // whatever the broken statement opened: at bracket depth zero from where the
+    // statement began, or in a column no deeper than its own (an opener that was never
+    // closed would otherwise swallow the rest of the block). A `}` in a column left of
+    // the statement's is the block's own and is left for the caller; a closer or an
+    // `else` is never a statement. The text skipped over is noted as dropped, so
+    // `check --partial` holds back "unknown ..." about names it declared.
+    //
+    // False when the file ended before any such token: nothing is recovered, the parser
+    // stays where `fatal` left it, and the declaration is dropped.
+    private fn recoverStatement(self, mark: StatementMark) -> Bool {
+        let start = ptr_to_token(mark.start)
+        self.noteDropped(start)
+        if (nodeExists(mark.fnNode)) { diag_note_dropped_in(ptr_to_node(mark.fnNode).s1) }
+        let mut at = start.tokNext
+        let mut depth = 0
+        let mut previousLine = start.line
+        loop {
+            let t = ptr_to_token(at)
+            if (t.type == TokenType.EOF) { return false }
+
+            let afterFault = t.line > self.faultLine
+                or (t.line == self.faultLine and t.col >= self.faultCol)
+            if (afterFault and t.line > previousLine) {
+                let mut resume = depth == 0 or t.col <= start.col
+                if (t.type == TokenType.SEPARATOR and t.value.equals("}")) {
+                    resume = depth == 0 or t.col < start.col
+                } else if (t.type == TokenType.SEPARATOR and (t.value.equals(")") or t.value.equals("]"))) {
+                    resume = false
+                } else if (t.type == TokenType.KEYWORD and t.value.equals("else")) {
+                    resume = false
+                }
+                if (resume) {
+                    self.putBack(mark)
+                    self.current = at
+                    self.lastLine = previousLine
+                    return true
+                }
+            }
+
+            if (t.type == TokenType.SEPARATOR) {
+                if (t.value.equals("{") or t.value.equals("(") or t.value.equals("[")) { depth = depth + 1 }
+                if ((t.value.equals("}") or t.value.equals(")") or t.value.equals("]")) and depth > 0) {
+                    depth = depth - 1
+                }
+            }
+            previousLine = t.line
+            self.noteDropped(t)
+            at = t.tokNext
+        }
+    }
+
+    // Puts the parser's other state back to what it was before the statement, and cuts
+    // off the nested functions the statement wrote.
+    private fn putBack(self, mark: StatementMark) {
+        self.dead = 0
+        self.silentFaults = 0
+        self.allowStructLit = mark.structLit
+        self.implPosition = mark.implPosition
+        self.lengthDepth = mark.lengthDepth
+        self.implParams = mark.implParams
+        self.implParamSeq = mark.implParamSeq
+        self.fnNode = mark.fnNode
+        self.implType = mark.implType
+        if (nodeExists(mark.hoistTail)) {
+            ptr_to_node(mark.hoistTail).next = ptr_null()
+            self.hoistTail = mark.hoistTail
+        } else {
+            self.hoistHead = ptr_null()
+            self.hoistTail = ptr_null()
+        }
     }
 }
 

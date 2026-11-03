@@ -1,0 +1,34 @@
+// expect-error: expected an expression, found `let`
+// expect-error: expected `)` in function call, found `3`
+// expect-error: expected `)` in parenthesized expression, found `{`
+// expect-error: expected an expression, found `}`
+// expect-error: aborting due to 4 previous errors
+//
+// A syntax error `fatal` gives up on drops the statement it is in, not the function around it. One
+// function with four broken statements reports each once: parsing resumed at the next line of the same
+// block, so none is a cascade of the one before. Before, the first broken statement dropped the whole
+// function and the other three were never read.
+//
+// The `if` drops its body with it (the braces it opened are counted, and its `}` is not mistaken for the
+// block's own); the last is the half-typed line at the end of a block, where the closing brace is the
+// block's own and the function after it still parses.
+
+import std.io
+
+fn broken(xs: Vec<Int>) -> Int {
+    let b = xs.length +
+    let c = 3
+    println(1,
+            2 3,
+            4)
+    println("still read")
+    if (c > 1 {
+        println(c)
+    }
+    let n = b + c
+    println(n +
+}
+
+fn main() -> Int {
+    return 0
+}

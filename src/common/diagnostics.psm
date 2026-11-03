@@ -46,6 +46,7 @@ private let mut seenOpened = false
 // `diag_hides`). A zero-filled global `Vec` is not an empty one, hence `droppedOpened`.
 private let mut partialMode = false
 private let mut droppedNames: Vec<String>
+private let mut droppedFns: Vec<String>
 private let mut droppedOpened = false
 private let mut droppedEverything = false
 
@@ -393,11 +394,23 @@ public fn diag_partial() -> Bool {
 // text's fault, not the program's.
 public fn diag_note_dropped(name: String) {
     if (partialMode == false) { return }
-    if (droppedOpened == false) {
-        droppedNames = []
-        droppedOpened = true
-    }
+    droppedOpen()
     if (droppedNames.length < 4096) { droppedNames.push(name.clone()) }
+}
+
+// The parser dropped a statement from the body of `name`: whatever the statement would have
+// done, the function no longer says, so "must return ... on every path" is held back for it.
+public fn diag_note_dropped_in(name: String) {
+    if (partialMode == false) { return }
+    droppedOpen()
+    if (droppedFns.length < 4096) { droppedFns.push(name.clone()) }
+}
+
+private fn droppedOpen() {
+    if (droppedOpened) { return }
+    droppedNames = []
+    droppedFns = []
+    droppedOpened = true
 }
 
 // An import could not be read, so any name may have come from it.
@@ -412,6 +425,12 @@ public fn diag_note_dropped_everything() {
 // A dropped method makes its `impl` look incomplete, so "does not implement" is held back
 // the same way when the method it says is missing was among the dropped text.
 fn diag_hides(message: String) -> Bool {
+    if (droppedOpened and message.startsWith("function `") and message.contains("` must return ")) {
+        for name in droppedFns {
+            if (message.startsWith("function `".concat(name, "` must return "))) { return true }
+        }
+        return droppedEverything
+    }
     if (message.startsWith("unknown ") == false and message.contains(" does not implement ") == false) {
         return false
     }

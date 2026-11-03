@@ -606,6 +606,20 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `-Os` and 81,532 at `-Oz` (the file from 242 KB to 177 KB and 152 KB). Not a default: the
   outliner alone cost 4.1% geomean time on the hosted benchmarks (`sort_strings` 43%).
 
+- **The parser drops the statement it cannot read, not the function around it.** `fatal` used to park the parser on the end
+  of the file and `parseModule` threw away the whole declaration, so a half-typed line took every name in its function
+  out of `check --partial` and the semantic index: no hover, no completion, no diagnostics for the lines that were fine.
+  `parseBlock` now recovers one level down, as `recoverMember` does for an `impl` (`recoverStatement`, `parse/stmt.psm`): it
+  restores the state the statement left half-set, resumes at the first token that begins a line after the failure outside
+  whatever the statement opened (brackets are counted; a `}` in a column left of the statement's is the block's own; a
+  closer or `else` is never a statement), and notes the dropped text so `--partial` holds back an `unknown ...` it could have
+  caused. A file that ends before the statement does has nothing to resume at, and the declaration is dropped as before. A function that lost a
+  statement is also exempt from `must return ... on every path` (the statement may have been the `return`;
+  `diag_note_dropped_in`). A plain `check` reports every syntax error of a function now, not the first
+  (`tests/neg_366_statement_recovery.psm`: four, where one was reported); `tools/check_truncation.py` stays at 0 failures in all
+  three modes (4,938 variants; 757 type-checked past a syntax error with `--partial`, 671 before), `tools/check_index.py`
+  359/359, and the IR of the 370 programs in `tests/` and `benchmarks/` is byte-identical.
+
 ### Changed
 
 - **The frontend no longer ends the run at the first lexical, syntax or import error.** A syntax error the parser could
@@ -1367,6 +1381,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   byte-identical (`tests/test_275_line_start_paren.psm`).
 
 ### Repository
+
+- **`tools/package.py` ships the freestanding failure core in every package.** `runtime/freestanding/panic.c` was copied only
+  with a `--freestanding-target`, while a project's own layout (`prismio build`) always has it; a package made without the flag
+  therefore linked every failing `--freestanding` program against an undefined `prismio_panic`, and `freestanding_bench`
+  failed from it (725/726). The rest of the freestanding sources (`libc.c`, `runtime.c`, `lang_runtime.c`, the two headers) stay
+  with the flag. The packaged `lib/` now differs from `.prismio/build/lib` only by `toolchain.stamp`, the project layout's own.
 
 - **`prismio verify` and `prismio gate` package the freestanding failure core.** Neither passed
   `--freestanding-target`, so the candidate they tested had no `lib/runtime/freestanding`, and any

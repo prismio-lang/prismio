@@ -79,7 +79,7 @@ impl Parser {
     // The text skipped over is gone from the program, so a name in it may be one the
     // rest of the program uses. `check --partial` holds back "unknown ..." errors about
     // these (diagnostics.psm, diag_hides).
-    private fn noteDropped(self, tok: Token) {
+    internal fn noteDropped(self, tok: Token) {
         if (tok.type == TokenType.IDENTIFIER) { diag_note_dropped(tok.value) }
     }
 

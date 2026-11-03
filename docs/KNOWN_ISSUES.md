@@ -850,18 +850,6 @@ that reports does not.
 
 ## Editor tooling
 
-### One line that does not parse takes its whole function out of the analysis
-
-The parser recovers per declaration (`parse/parser.psm`, `abandon`/`recover`): a statement it cannot read drops the
-function that holds it, so `check --partial` and the semantic index have nothing for that function (no names in scope, no
-hover, no completion), for every line of it, not only the broken one. An editor sees this the moment a statement is half
-typed while another is. The language server works around it for completion only (`lsp/completion.psm`: when the compiler
-did not reach the caret and names syntax errors on other lines, those lines are blanked in the scratch copy and the
-check is run again, up to three times); hover, definition and diagnostics in such a function still lose it. Fixing it is a
-statement-level recovery in `parseBlock` that keeps the function and marks the statement, which changes what a broken
-file reports (`tools/check_truncation.py` is the gate that would have to stay at 0 failures). **Observed 2026-10-28, not
-fixed.**
-
 ### A second check of an overlay at the same path may be answered from the first
 
 Observed building completion retries: running `check` twice with `--overlay F B` where `B` is the same path but its text

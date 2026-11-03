@@ -106,22 +106,28 @@ the module name it has from there, the first by name; and the file alone.
 
 A file open in an editor is syntactically broken most of the time it is being edited. Every
 lexical, syntax and import error in the program is reported in one run: the parser gives up on
-the one declaration it cannot read and resumes at the next that begins a line, a stray character
+the one declaration it cannot read and resumes at the next that begins a line (inside a function body, the one
+statement it cannot read, and resumes at the next line of that block), a stray character
 or bad escape does not end the scan, and an import that cannot be read is skipped.
 
 By default type checking then does not run, as before: a program with a declaration missing
-produces cascades, not information. `--partial` runs it anyway, over the declarations that did
+produces cascades, not information. `--partial` runs it anyway, over the declarations and statements that did
 parse:
 
 ```text
 prismio check src/main.psm --diagnostic-format=json --partial
 ```
 
-- A type error in a function that parsed is reported beside the syntax error in another.
+- A type error in a function that parsed is reported beside the syntax error in another. A statement that
+  did not parse is dropped on its own: the rest of its function is still checked, and still in the index
+  (a half-typed line no longer takes every name in its function out of hover and completion). Where the
+  file ends before the statement does, there is nothing to resume at and the whole declaration is dropped.
+- `function ... must return ... on every path` (`P4001`) is held back for a function that lost a statement
+  (the statement may have been the `return`).
 - An `unknown ...` error (`P4001`) is held back when it names an identifier that appeared in
   text the parser dropped, and **all** of them are held back once an import could not be read
   (any name may have come from it). Held back, never wrong: a real typo is shown again as soon
-  as the text parses or the import resolves. These are the only diagnostics `--partial`
+  as the text parses or the import resolves. These two are the only diagnostics `--partial`
   suppresses.
 - The exit status and the summary line mean what they always did.
 
