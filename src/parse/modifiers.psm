@@ -76,6 +76,75 @@ impl Parser {
     // Whether a visibility marker may be followed by this word (parseDeclaration).
     internal fn isFnModifierWord(self, word: String) -> Bool { return fnModifierWord(word) }
 
+    // `export`, `section("...")` and `align(n)` in front of a global `let`: where the data goes
+    // and whether the linker sees it. True only when the words end in `let`, so the same words in
+    // front of a `fn` are left to atFnModifiers.
+    internal fn atDataModifiers(self) -> Bool {
+        let mut tok = self.current()
+        let mut seen = 0
+        loop {
+            if (tok.type == TokenType.KEYWORD and tok.value.equals("let")) { return seen > 0 }
+            if (tok.type != TokenType.IDENTIFIER) { return false }
+            if (tok.value.equals("export") == false and tok.value.equals("section") == false
+                    and tok.value.equals("align") == false) { return false }
+            seen = seen + 1
+            let next = ptr_to_token(tok.tokNext)
+            if (tok.value.equals("export")) {
+                tok = next
+            } else {
+                if (next.type != TokenType.SEPARATOR or next.value.equals("(") == false) { return false }
+                let mut inner = ptr_to_token(next.tokNext)
+                while (inner.type != TokenType.EOF
+                       and (inner.type != TokenType.SEPARATOR or inner.value.equals(")") == false)) {
+                    inner = ptr_to_token(inner.tokNext)
+                }
+                if (inner.type == TokenType.EOF) { return false }
+                tok = ptr_to_token(inner.tokNext)
+            }
+        }
+    }
+
+    internal fn parseModifiedGlobal(self) -> ASTNode {
+        let mut section = ""
+        let mut align = 0
+        let mut exported = false
+        while (self.checkVal(TokenType.KEYWORD, "let") == false and self.check(TokenType.IDENTIFIER)) {
+            let word = self.current().value.clone()
+            if (word.equals("export")) {
+                exported = true
+                self.advance()
+            } else if (word.equals("align")) {
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, "(", "alignment")
+                let size = self.current()
+                let parsed = size.value.parseInt().unwrapOr(0)
+                if (size.type != TokenType.NUMBER_LITERAL or parsed < 1 or (parsed & (parsed - 1)) != 0) {
+                    self.error("`align` takes a power of two, such as `align(4096)`")
+                } else {
+                    align = parsed
+                }
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, ")", "alignment")
+            } else if (word.equals("section")) {
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, "(", "section name")
+                let name = self.current()
+                if (name.type != TokenType.STRING_LITERAL or name.value.equals("")) {
+                    self.error("`section` takes the section's name as a string literal, such as `section(\".data.table\")`")
+                } else {
+                    section = name.value.clone()
+                }
+                self.advance()
+                self.expectVal(TokenType.SEPARATOR, ")", "section name")
+            } else {
+                break
+            }
+        }
+        let varNode = self.parseVariableDecl()
+        nodeMarkDataPlacement(varNode, section, align, exported)
+        return varNode
+    }
+
     // True when the tokens ahead are a run of modifier words ending in `fn` (or in
     // `prop` and a name). Looking all the way to the `fn` is what keeps a global called
     // `const` or `hot` -- `const hot = 3` -- from being read as a function.

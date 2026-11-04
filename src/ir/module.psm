@@ -2613,7 +2613,9 @@ public fn generateModule(module: ASTNode) {
             // this global rather than a reference to ours, so two copies reach
             // the linker whenever a program takes a module from a `.plib` as
             // well as from source -- which is every build outside the checkout.
-            ir_global_set_internal(stmt.s1)
+            if (nodeDataIsExported(stmt)) { ir_global_set_external(stmt.s1) } else { ir_global_set_internal(stmt.s1) }
+            if (nodeDataSection(stmt).equals("") == false) { ir_global_section(stmt.s1, nodeDataSection(stmt)) }
+            if (nodeDataAlign(stmt) > 0) { ir_global_align(stmt.s1, nodeDataAlign(stmt)) }
             // `varType`, not `storageType(varType)`: the debug layer wants the
             // uncollapsed key, since `struct:T` is what tells it to describe a
             // T rather than an anonymous pointer.

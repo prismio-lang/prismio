@@ -7220,6 +7220,41 @@ def run_asm_ops_test():
     return True
 
 
+def run_data_placement_test():
+    """`export`, `section` and `align` before a global `let`, read as IR.
+
+    The compiler decides the linkage, the section and the alignment of each global; what a
+    linker makes of them is the linker's. Built for AArch64 Linux whatever the host.
+    """
+    print(f"\n{BLUE}--- Running data_placement ---{RESET}")
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-data-placement-") as tmp:
+        ll = Path(tmp) / "data_placement.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "data_placement_probe.psm"), "--freestanding",
+                             "--target", "aarch64-unknown-linux-gnu", "-o", str(ll)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] data placement probe did not build: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ll.read_text(encoding="utf-8", errors="replace")
+        wants = (
+            ('@license = dso_local constant [12 x i8] c"license=GPL\\00", section ".modinfo", align 1', "exported bytes in .modinfo"),
+            ('@counter = global i32 5, section ".data.counters", align 64', "a mutable scalar, placed and aligned"),
+            ('@table = internal constant [3 x i16] [i16 1, i16 2, i16 3], section ".rodata.table", align 16', "a private table, placed"),
+            ("@hidden = internal global i32 2", "a global is private unless exported"),
+            ("@visible = global i32 1", "export alone is only linkage"),
+        )
+        for text, why in wants:
+            if text not in ir:
+                problems.append(f"missing {text!r}: {why}")
+    if problems:
+        print(f"{RED}[FAIL] data placement{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] data placement: export, section and align on globals{RESET}")
+    return True
+
+
 def run_failure_builtins_test():
     """`panic`, `unreachable`, a failed `assert` and `exit`, run for real.
 
@@ -12592,6 +12627,7 @@ def main():
         ("failure_builtins", run_failure_builtins_test),
         ("std_input", run_std_input_test),
         ("asm_ops", run_asm_ops_test),
+        ("data_placement", run_data_placement_test),
         ("std_mem_failures", run_std_mem_failures_test),
         ("typed_pointer_ir", run_typed_pointer_ir_test),
         ("freestanding", run_freestanding_test),

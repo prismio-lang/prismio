@@ -382,6 +382,34 @@ public fn nodeStructIsPacked(structNode: ASTNode) -> Bool {
     return structNode.kind == NodeKind.STRUCT_DECL and (structNode.i1 & 2) == 2
 }
 
+// Where a global is placed: `export section(".data.x") align(64) let mut table ...`. The three
+// markers ride on a carrier node in the declaration's `child3` (a VARIABLE_DECL has no use for it),
+// so nothing that walks the declaration's other children sees them. `s1` is the section ("" for the
+// default), `i1` the alignment in bytes (0 for the type's own), `i2` 1 when exported.
+public fn nodeMarkDataPlacement(varNode: ASTNode, section: String, align: Int, exported: Bool) {
+    let carrier = createNode(NodeKind.MODULE)
+    nodeSpanFrom(carrier, varNode)
+    carrier.s1 = section.clone()
+    carrier.i1 = align
+    if (exported) { carrier.i2 = 1 }
+    varNode.child3 = node_to_ptr(carrier)
+}
+
+public fn nodeDataSection(varNode: ASTNode) -> String {
+    if (varNode.kind != NodeKind.VARIABLE_DECL or nodeIsNull(varNode.child3)) { return "" }
+    return ptr_to_node(varNode.child3).s1.clone()
+}
+
+public fn nodeDataAlign(varNode: ASTNode) -> Int {
+    if (varNode.kind != NodeKind.VARIABLE_DECL or nodeIsNull(varNode.child3)) { return 0 }
+    return ptr_to_node(varNode.child3).i1
+}
+
+public fn nodeDataIsExported(varNode: ASTNode) -> Bool {
+    if (varNode.kind != NodeKind.VARIABLE_DECL or nodeIsNull(varNode.child3)) { return false }
+    return ptr_to_node(varNode.child3).i2 == 1
+}
+
 // The position of the field called `name` in the order it was written, or -1. For a
 // `repr(C)` or `packed` struct that is also its position in memory order, which is why
 // `offsetOf` accepts only those.

@@ -5117,6 +5117,24 @@ void ir_global_var(const char *name, const char *type, const char *init_value,
 // program's module and std.process names them with `extern let`, from a `.plib`
 // as often as from source, so the definition has to be one a link can find;
 // those two are emitted through ir_global_var directly and stay external.
+void ir_global_set_external(const char *name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) backend_fail("cannot export an unknown global", name);
+    LLVMSetLinkage(g, LLVMExternalLinkage);
+}
+
+void ir_global_section(const char *name, const char *section) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) backend_fail("cannot place an unknown global", name);
+    LLVMSetSection(g, section);
+}
+
+void ir_global_align(const char *name, int bytes) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) backend_fail("cannot align an unknown global", name);
+    LLVMSetAlignment(g, (unsigned)bytes);
+}
+
 void ir_global_set_internal(const char *name) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
     if (!g) backend_fail("cannot privatise an unknown global", name);

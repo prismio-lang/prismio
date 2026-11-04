@@ -1,0 +1,20 @@
+// `export`, `section("...")` and `align(n)` before a global `let`, read as IR by
+// run_data_placement_test: where the data goes is the compiler's decision and the linker's job.
+// Built for AArch64 Linux and not run.
+
+// Scalar and byte-array globals, placed. `.modinfo` is the section a kernel module's description
+// lives in; each string there is its own NUL-terminated entry.
+section(".modinfo") align(1) export let license: [U8] = [108, 105, 99, 101, 110, 115, 101, 61, 71, 80, 76, 0]
+export section(".data.counters") align(64) let mut counter: Int = 5
+section(".rodata.table") align(16) let table: [U16] = [1, 2, 3]
+
+// Not exported: private to the module, as every global was.
+let hidden: Int = 2
+
+// Exported with no placement: the linker sees it, and nothing else changes.
+export let visible: Int = 1
+
+export fn bump() -> Int {
+    counter = counter + 1
+    return counter + hidden + table[0] as Int
+}

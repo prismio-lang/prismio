@@ -1,0 +1,5 @@
+// expect-error: `align` takes a power of two, such as `align(4096)`
+
+align(3) let mut counter: Int = 0
+
+fn main() -> Int { return counter }

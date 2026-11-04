@@ -175,6 +175,11 @@ public extern fn ir_global_var(name: String, type: String, initValue: String, is
 // module that imports it, so external linkage makes those copies collide at
 // link time; see the note in runtime/llvm-api-backend.c.
 public extern fn ir_global_set_internal(name: String)
+// The opposite, for a global written `export`: the linker sees it.
+public extern fn ir_global_set_external(name: String)
+// Where a global is placed and how it is aligned: `section("...")` and `align(n)` before a `let`.
+public extern fn ir_global_section(name: String, section: String)
+public extern fn ir_global_align(name: String, bytes: Int)
 
 // An `extern let`: a declaration of a global foreign code defines, or -- in a
 // workload driver, which W3 sandboxes -- a zero-valued private stand-in. Both

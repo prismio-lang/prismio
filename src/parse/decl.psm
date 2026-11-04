@@ -53,6 +53,7 @@ impl Parser {
         if (self.atFromImport()) { return parseFromImportStatement(self) }
         if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseVariableDecl() }
         if (self.atConstDecl()) { return self.parseVariableDecl() }
+        if (self.atDataModifiers()) { return self.parseModifiedGlobal() }
         if (self.checkVal(TokenType.KEYWORD, "extern")) { return self.parseExternDecl() }
         if (self.checkVal(TokenType.KEYWORD, "fn") or self.atPropDecl()) { return self.parseFunctionDecl() }
         if (self.atFnModifiers()) { return self.parseModifiedFunctionDecl() }
