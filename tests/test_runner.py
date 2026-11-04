@@ -7255,6 +7255,46 @@ def run_data_placement_test():
     return True
 
 
+def run_kmalloc_heap_test():
+    """A `Vec`, a `HashMap` and a `String` on a heap the program supplies over the kernel's allocator.
+
+    tests/kmalloc_heap_probe.psm defines `prismio_alloc`, `prismio_realloc` and `prismio_free` over
+    `__kmalloc`, `krealloc` and `kfree`, as a module would. Read as IR for AArch64 Linux: the three
+    are exported under their C names, the kernel's allocator is what they call, and nothing in the
+    object reaches the C library's.
+    """
+    print(f"\n{BLUE}--- Running kmalloc_heap ---{RESET}")
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-kmalloc-") as tmp:
+        ll = Path(tmp) / "kmalloc.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "kmalloc_heap_probe.psm"), "--freestanding",
+                             "--target", "aarch64-unknown-linux-gnu", "-o", str(ll)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] kmalloc heap probe did not build: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ll.read_text(encoding="utf-8", errors="replace")
+        for text, why in (
+            ("@prismio_alloc = alias ptr (i64), ptr @prismio_alloc__Usize", "prismio_alloc under its C name"),
+            ("@prismio_realloc = alias ptr (ptr, i64), ptr @prismio_realloc__Ptr_Usize", "prismio_realloc under its C name"),
+            ("@prismio_free = alias void (ptr), ptr @prismio_free__Ptr", "prismio_free under its C name"),
+            ("call ptr @__kmalloc(i64", "allocation goes to kmalloc"),
+            ("call ptr @krealloc(ptr", "growth goes to krealloc"),
+            ("call void @kfree(ptr", "release goes to kfree"),
+        ):
+            if text not in ir:
+                problems.append(f"missing {text!r}: {why}")
+        for libc in ("declare ptr @malloc(", "declare void @free(", "declare ptr @realloc("):
+            if libc in ir:
+                problems.append(f"{libc!r}: the heap reached the C library")
+    if problems:
+        print(f"{RED}[FAIL] kmalloc heap{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] kmalloc heap: Vec, HashMap and String over the kernel's allocator{RESET}")
+    return True
+
+
 def run_failure_builtins_test():
     """`panic`, `unreachable`, a failed `assert` and `exit`, run for real.
 
@@ -12628,6 +12668,7 @@ def main():
         ("std_input", run_std_input_test),
         ("asm_ops", run_asm_ops_test),
         ("data_placement", run_data_placement_test),
+        ("kmalloc_heap", run_kmalloc_heap_test),
         ("std_mem_failures", run_std_mem_failures_test),
         ("typed_pointer_ir", run_typed_pointer_ir_test),
         ("freestanding", run_freestanding_test),

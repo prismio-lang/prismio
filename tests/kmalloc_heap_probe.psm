@@ -1,0 +1,41 @@
+// A heap over the kernel's allocator: the three functions a freestanding program supplies to the runtime
+// (`prismio_alloc`, `prismio_realloc`, `prismio_free`) written over `__kmalloc`, `krealloc` and
+// `kfree`, and a `Vec`, a `String` and a `HashMap` living on it. Built for AArch64 Linux and read as IR
+// by run_kmalloc_heap_test: it names kernel symbols, so it is not run.
+
+import std.map
+import std.raw
+import std.string
+import std.vec
+
+// GFP_KERNEL on a recent kernel; a module passes whatever its context needs.
+let GFP_KERNEL: U32 = 0xcc0
+
+extern fn __kmalloc(size: Usize, flags: U32) -> Ptr
+extern fn krealloc(block: Ptr, size: Usize, flags: U32) -> Ptr
+extern fn kfree(block: Ptr)
+
+// The runtime never expects NULL: running out of memory is the kernel's decision, made once, here.
+export fn prismio_alloc(size: Usize) -> Ptr {
+    let block = __kmalloc(size, GFP_KERNEL)
+    if (addressOf(block) == 0) { panic("out of memory") }
+    return block
+}
+
+export fn prismio_realloc(block: Ptr, size: Usize) -> Ptr {
+    let grown = krealloc(block, size, GFP_KERNEL)
+    if (addressOf(grown) == 0) { panic("out of memory") }
+    return grown
+}
+
+export fn prismio_free(block: Ptr) { kfree(block) }
+
+export fn use_the_heap(n: Int) -> Int {
+    let mut numbers: Vec<Int> = []
+    for i in 0..<n { numbers.push(i) }
+    let names = HashMap<Int, Int>()
+    for i in 0..<n { names.set(i, i * 2) }
+    let mut total = 0
+    for i in 0..<n { total = total + numbers[i] + names[i] }
+    return total + "kernel".concat("!").length
+}

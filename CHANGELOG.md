@@ -9,6 +9,17 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **The Linux plan's language features, built.** Each has a test and `docs/LINUX_PLAN.md` says which are done:
+  overloaded `extern fn`s (kept when their parameters differ, called at their own signature); `functionAddress("name")`
+  in `std.raw` (a function's address, also for one defined below the call); `cString("literal")`; variadic externs
+  (`extern fn snprintf(buffer: Ptr, size: Usize, format: String borrow, ...) -> Int`, a variadic LLVM declaration with C's
+  default promotions on each extra argument, so a call is right on Apple's arm64 where varargs go on the stack);
+  `asmOps` / `asmOpsOut` in `std.asm` (any number of register operands and a declared clobber list, which is also how
+  a CPU instruction such as the Armv8 CRC32C step is reached); `export`, `section("...")` and `align(n)` before a global
+  `let` (a kernel module's `.modinfo`, a counter in its own section); and a `Vec`, a `HashMap` and a `String` on a heap
+  the program supplies over `kmalloc`. Still open: module-level assembly, tables initialised with addresses or structs,
+  mutable global arrays, and `align` on a struct. A pack on an `extern fn` (`...args: Int`) is still refused, with a
+  message that now says to write a bare `...`.
 - **`sizeOf<T>()`, `offsetOf<S>("field")` and `std.errno`, for code that shares memory with C.** Both are in `std.raw`.
   `sizeOf` is the array stride C's `sizeof` gives, read off the pointer type, so a padded `repr(C)` struct and a
   `packed` one are each their own, and it folds to a constant. `offsetOf` is a constant too, the backend's answer for

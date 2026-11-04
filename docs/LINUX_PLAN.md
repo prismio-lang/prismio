@@ -21,24 +21,38 @@ Done:
 - ~~Negative errno and `ERR_PTR` return convention~~: `std.errno` (`isErrno`, `errPointer`, `isErrPointer`,
   `isErrOrNull`, `errnoOf`), pure arithmetic, freestanding-safe (`tests/test_372_errno.psm`)
 
-Open, with what stops each (the order is the order they should be built in):
+Built on 2026-11-04, each with a test:
 
-- Function pointers, and the address of a function: a function's name is not a value (`unknown identifier`),
-  and `__builtin_fn_addr` is std-only and not implemented. A kernel ops table needs both
-- Static data: `section("...")` and `align(n)` exist on functions only (the parser refuses them before a `let`),
-  and a global array cannot be sized (`an array's length is written only on a local let`) or zero-filled, so a
-  page table or a descriptor table cannot be written
-- Statically initialised structs and tables: a global array's elements must be numbers, characters or string literals
-- `align` on a struct
-- Variadic extern functions: refused on purpose (`P3014`, "C varargs are not supported"). `printk` is the case that matters
-- Overloaded extern functions: a second `extern fn` of the same name is dropped, not resolved, so only the first
-  signature is callable
-- String to `Ptr` conversion: `addressOf` takes a `Ptr`, and a `String` is not one
-- Module-level assembly: `__builtin_module_asm` does not exist; the `.modinfo` section is the case that needs it
-- Multi-operand inline assembly with declared clobbers: `asm`, `asmRead` and `asmWrite` take one operand
-- Hardware CRC and other CPU-specific intrinsics: none exist
-- A heap over `kmalloc` (`Vec`, `String`, `HashMap` in a module): the freestanding heap exists
-  (FREESTANDING_MEMORY.md); pointing it at `kmalloc` is the open part
+- ~~Overloaded extern functions~~: two `extern fn`s of one name are kept when their parameters differ, resolved by
+  argument types, and called at their own signature (`tests/test_373_overloaded_externs.psm`)
+- ~~Function pointers, and the address of a function~~: `functionAddress("name")` in `std.raw`, a link-time constant,
+  also for a function defined later in the file (`test_374`)
+- ~~String to `Ptr` conversion~~: `cString("literal")`, a pointer to read-only NUL-terminated data (`test_375`). A
+  String built at run time is passed to C by an `extern fn` parameter declared `String borrow`
+- ~~Variadic extern functions~~: a bare `...` after the named parameters, a variadic declaration in LLVM, C's default
+  promotions on each extra, a String passed as a C string (`test_376`, against `snprintf`)
+- ~~Multi-operand inline assembly with declared clobbers~~: `asmOps` / `asmOpsOut` in `std.asm`
+  (`run_asm_ops_test`)
+- ~~Hardware CRC and other CPU-specific instruction intrinsics~~: reached through `asmOpsOut` with the instruction
+  and `.arch_extension` in the text; the Armv8 CRC32C step is the worked example. There is no portable intrinsic
+  function because which instruction exists is the target's, so a module built for one architecture holds it
+- ~~Module-level static data with a section and an alignment~~: `export section("...") align(n) let` for scalars and
+  for the byte and halfword arrays a `[U8]` / `[U16]` annotation gives, which covers a kernel module's `.modinfo`
+  (`run_data_placement_test`)
+- ~~A heap over `kmalloc`~~: `prismio_alloc`, `prismio_realloc` and `prismio_free` written in Prismio over
+  `__kmalloc`, `krealloc` and `kfree`, with a `Vec`, a `HashMap` and a `String` on it (`run_kmalloc_heap_test`)
+
+Still open, with what stops each:
+
+- Module-level assembly: there is no top-level form for it. `.modinfo` is covered by exported data above; a
+  `.pushsection` of instructions is covered by a `naked` function in a `section`
+- Statically initialised structs and tables: a global array is read-only data, every element a number, a
+  character or a string literal, because nothing runs before `main`. A table of function addresses or of structs
+  needs constant evaluation of `functionAddress` and struct literals in an initialiser
+- A mutable global array, so a page table or a descriptor table cannot be written. It needs the sized-array form
+  (`Array<U8, 4096>`) on a global, which sema refuses today, and the access paths for a written global aggregate
+- `align` on a struct: LLVM carries alignment on the storage, not the type, so `sizeOf` and an array's stride would
+  not follow it without padding the type itself
 
 ## Compiler and driver
 
