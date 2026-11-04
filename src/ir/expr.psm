@@ -4812,6 +4812,33 @@ internal fn irCallIsCoalesce(call: ASTNode) -> Bool {
     return name.equals("optionCoalesce") or name.startsWith("optionCoalesce$")
 }
 
+// `offsetOf<S>("field")` from std.raw, which sema has checked (semaCheckStdOffsetOf): the
+// byte offset of the field, a constant read from the layout the backend built for the
+// target. std's declaration only gives the name something to resolve against; by the time
+// a call is generated it names the instance, `offsetOf$Struct_Header`, and that
+// instance's body (`return 0`) is never called.
+private fn irCallIsStdOffsetOf(instance: String) -> Bool {
+    let count = ir_decl_count(instance)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(instance, i))
+        if (decl.kind == NodeKind.FUNCTION and diag_file_module(decl.file).equals("std.raw")) { return true }
+    }
+    return false
+}
+
+private fn generateOffsetOf(call: ASTNode, instance: String) -> String {
+    let typeName = instance.substring("offsetOf$Struct_".length, instance.length - "offsetOf$Struct_".length)
+    let field = ptr_to_node(call.child2)
+    let count = ir_decl_count(typeName)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(typeName, i))
+        if (decl.kind == NodeKind.STRUCT_DECL) {
+            return ir_struct_field_offset(typeName, nodeStructFieldIndex(decl, field.s1)).toString()
+        }
+    }
+    return "0"
+}
+
 private fn generateCall(expr: ASTNode) -> String {
     let callee = ptr_to_node(expr.child1)
     let funcName = callee.s1
@@ -4845,6 +4872,10 @@ private fn generateCall(expr: ASTNode) -> String {
 
     if (funcName.equals("chan_recv_copy") and nodeExists(expr.child2)) {
         return generateChannelRecvCopy(expr)
+    }
+
+    if (funcName.startsWith("offsetOf$Struct_") and irCallIsStdOffsetOf(funcName)) {
+        return generateOffsetOf(expr, funcName)
     }
 
     // M4.3a. Build real per-field storage from an ordinary AoS list. The

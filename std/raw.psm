@@ -25,6 +25,27 @@
 // turning an address back into something the language can pass on. Neither moves
 // or frees anything.
 public fn addressOf(pointer: Ptr) -> Usize { return __builtin_ptr_addr(pointer) }
+
+// How many bytes one `T` takes in an array or a field: its size rounded up to its
+// alignment, as `sizeof` is in C. It is read off the pointer type -- how far a pointer
+// to a `T` moves for one element -- so a padded `repr(C)` struct, a `packed` one and a
+// pointer are each their own, and it folds to a constant.
+//
+//     repr(C) struct Header { kind: U8, length: U32 }
+//     sizeOf<Header>()                     // 8
+public fn sizeOf<T>() -> Usize {
+    let one = Ptr<T>.atUnchecked(4096)
+    return one.offset(1).addr - one.addr
+}
+
+// Where the field called `field` begins inside a `T`, in bytes: `offsetOf<Header>("length")`
+// is 4 above. `T` is a struct written `repr(C)` or `packed`, because those are the layouts
+// that stay as written; the field name is one string literal, checked at compile time. A
+// constant, so it can size a table or check a header against the C structure it mirrors.
+//
+// This declaration only gives the call something to resolve against: the compiler replaces
+// the call with the number, from the layout it built for the target.
+public fn offsetOf<T>(field: String) -> Usize { return 0 }
 public fn pointerAt(address: Usize) -> Ptr { return __builtin_addr_ptr(address) }
 
 // How an atomic access on a typed pointer is ordered against the others around it, written

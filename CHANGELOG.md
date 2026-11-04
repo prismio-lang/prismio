@@ -9,6 +9,17 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`sizeOf<T>()`, `offsetOf<S>("field")` and `std.errno`, for code that shares memory with C.** Both are in `std.raw`.
+  `sizeOf` is the array stride C's `sizeof` gives, read off the pointer type, so a padded `repr(C)` struct and a
+  `packed` one are each their own, and it folds to a constant. `offsetOf` is a constant too, the backend's answer for
+  the target, for a struct written `repr(C)` or `packed`; a plain struct (its fields are the compiler's to order), an
+  unknown field and a non-struct are compile errors that say so. `std.errno` is the kernel's convention for an error
+  carried in a value: `isErrno(-12)` for an integer return, and `errPointer` / `isErrPointer` / `isErrOrNull` / `errnoOf`
+  for `ERR_PTR`, `IS_ERR`, `IS_ERR_OR_NULL` and `PTR_ERR`, as pure arithmetic over an address, so it links nothing
+  under `--freestanding`. `tests/test_371_size_and_offset.psm` pins the layouts (including a `Bool` as one byte in a
+  `repr(C)` struct), `test_372_errno.psm` round-trips all 4095 codes. `docs/LINUX_PLAN.md` is re-audited: what was
+  listed as missing and exists (`Ptr<T>`, field access through a pointer, atomic orderings, an unsafe marker, `Bool` in
+  `repr(C)`) is marked done, and each open item says what stops it.
 - **`std.input` is bytes, tokens and `Result` parsing over one cursor.** `readToken()` / `tokens()` /
   `readTokens()` read whitespace-separated values (space, tab, `\n`, `\r`, the set `trim` and `splitWhitespace` already
   mean; the byte after a token stays unread, as with `cin >> x`), `tokens()` lazily, so an input larger than memory can

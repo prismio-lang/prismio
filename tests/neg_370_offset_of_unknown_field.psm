@@ -1,0 +1,12 @@
+// expect-error: `Header` has no field `size`
+
+import std.raw
+
+repr(C) struct Header {
+    kind: U8,
+    length: U32
+}
+
+fn main() -> Int {
+    return offsetOf<Header>("size") as Int
+}

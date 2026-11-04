@@ -1,0 +1,74 @@
+// sizeOf<T>() and offsetOf<S>("field") from std.raw: layout facts as constants.
+//
+// `sizeOf` is read off the pointer type (how far a Ptr<T> moves for one element), so it
+// is the array stride C's sizeof gives: a repr(C) struct is padded to its alignment, a
+// packed one is not. `offsetOf` is the backend's own answer for the target, for a struct
+// whose fields stay in the order they were written.
+
+import std.io
+import std.raw
+import std.string
+
+repr(C) struct Header {
+    kind: U8,
+    length: U32,
+    flags: U16
+}
+
+packed struct Tight {
+    kind: U8,
+    length: U32,
+    flags: U16
+}
+
+repr(C) struct Wide {
+    id: U64,
+    tag: U8,
+    count: U32,
+    next: U64
+}
+
+// A Bool is the byte C's `_Bool` is, so a repr(C) struct holding one is laid out as the
+// C structure is.
+repr(C) struct Flags {
+    ok: Bool,
+    n: U32,
+    done: Bool
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    if (sizeOf<U8>() != 1 or sizeOf<U16>() != 2 or sizeOf<U32>() != 4 or sizeOf<U64>() != 8) {
+        bad = bad + fail("scalar sizes")
+    }
+    if (sizeOf<Header>() != 12) { bad = bad + fail("repr(C) Header is padded to 12: ".concat(sizeOf<Header>().toString())) }
+    if (sizeOf<Tight>() != 7) { bad = bad + fail("packed Tight is 7: ".concat(sizeOf<Tight>().toString())) }
+    if (sizeOf<Wide>() != 24) { bad = bad + fail("Wide is 24: ".concat(sizeOf<Wide>().toString())) }
+
+    if (offsetOf<Header>("kind") != 0 or offsetOf<Header>("length") != 4 or offsetOf<Header>("flags") != 8) {
+        bad = bad + fail("Header offsets 0, 4, 8")
+    }
+    if (offsetOf<Tight>("kind") != 0 or offsetOf<Tight>("length") != 1 or offsetOf<Tight>("flags") != 5) {
+        bad = bad + fail("Tight offsets 0, 1, 5")
+    }
+    if (offsetOf<Wide>("id") != 0 or offsetOf<Wide>("tag") != 8 or offsetOf<Wide>("count") != 12
+            or offsetOf<Wide>("next") != 16) {
+        bad = bad + fail("Wide offsets 0, 8, 12, 16")
+    }
+    if (sizeOf<Flags>() != 12 or offsetOf<Flags>("n") != 4 or offsetOf<Flags>("done") != 8) {
+        bad = bad + fail("a Bool is one byte in a repr(C) struct")
+    }
+    // A constant, so it can be used in arithmetic like one.
+    let end = offsetOf<Wide>("next") + sizeOf<U64>()
+    if (end != sizeOf<Wide>()) { bad = bad + fail("the last field ends the struct") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: sizeOf and offsetOf")
+    return 0
+}

@@ -1,0 +1,40 @@
+// std.errno: ERR_PTR, IS_ERR, PTR_ERR and the negative-errno integer convention.
+
+import std.errno
+import std.io
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // The integer convention.
+    if (isErrno(0 - 12) == false or isErrno(0 - 1) == false or isErrno(0 - 4095) == false) { bad = bad + fail("errnos") }
+    if (isErrno(0) or isErrno(7) or isErrno(0 - 4096)) { bad = bad + fail("not errnos") }
+
+    // ERR_PTR(-ENOMEM) reads back as itself, for every code the kernel reserves.
+    let nomem = errPointer(0 - 12)
+    if (isErrPointer(nomem) == false) { bad = bad + fail("an error pointer") }
+    if (errnoOf(nomem) != 0 - 12) { bad = bad + fail("PTR_ERR gives -12: ".concat(errnoOf(nomem).toString())) }
+    for code in 1..4095 {
+        let pointer = errPointer(0 - code)
+        if (isErrPointer(pointer) == false or errnoOf(pointer) != 0 - code) {
+            bad = bad + fail("round trip of -".concat(code.toString()))
+            break
+        }
+    }
+
+    // Real addresses are not errors, and the page just below the reserved one is not.
+    if (isErrPointer(0) or isErrPointer(4096) or isErrPointer(0x0000ffffffffffff)) { bad = bad + fail("real addresses") }
+    if (isErrPointer(errPointer(0 - 4095) - 1)) { bad = bad + fail("one below the last 4095 addresses") }
+    if (isErrOrNull(0) == false or isErrOrNull(4096) or isErrOrNull(nomem) == false) { bad = bad + fail("IS_ERR_OR_NULL") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: errno")
+    return 0
+}

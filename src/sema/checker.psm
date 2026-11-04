@@ -1965,6 +1965,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // `asm("nop")` from `import std.asm` is the compiler's own instruction, written
     // where the text is: see semaStdAsmBuiltin.
     semaCheckStdPortCall(callee)
+    semaCheckStdOffsetOf(module, expr, callee)
     let lowered = semaStdAsmBuiltin(callee.s1)
     if (lowered.equals("") == false) { callee.s1 = lowered }
 

@@ -1,0 +1,12 @@
+// expect-error: `Loose` lets the compiler order its fields, so a field has no fixed offset
+
+import std.raw
+
+struct Loose {
+    a: U8,
+    b: U32
+}
+
+fn main() -> Int {
+    return offsetOf<Loose>("b") as Int
+}

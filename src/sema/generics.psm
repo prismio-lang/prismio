@@ -87,7 +87,7 @@ internal fn monoFindTypeTemplate(module: ASTNode, name: String) -> ASTNode {
     return ptr_to_node(ptr_null())
 }
 
-private fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> ASTNode {
+internal fn monoFindTemplate(module: ASTNode, name: String, kind: NodeKind) -> ASTNode {
     let mut p = module.child2
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)

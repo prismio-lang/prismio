@@ -558,6 +558,53 @@ internal fn semaStdAsmBuiltin(name: String) -> String {
     return ""
 }
 
+// Whether `name` is a generic function std declares, as opposed to the program's own of
+// that name. A template is not in the declaration index, so it is found in the module.
+private fn semaNameIsStdTemplate(module: ASTNode, name: String) -> Bool {
+    let template = monoFindTemplate(module, name, NodeKind.FUNCTION)
+    return nodeExists(node_to_ptr(template)) and semaFileIsStandardLibrary(template.file)
+}
+
+// Checks `offsetOf<S>("field")`. The offset
+// is a constant the backend answers when the call is generated (ir/expr.psm,
+// generateOffsetOf), from the layout it built for the target, so this checks only what that
+// needs: a plain struct whose memory order is its written order, and a field it has.
+internal fn semaCheckStdOffsetOf(module: ASTNode, call: ASTNode, callee: ASTNode) {
+    // An explicit type argument has already turned the callee into its instance's name,
+    // `offsetOf$Struct_Header`; a struct is the only `T` with a `Struct_` in front of it.
+    if (callee.s1.startsWith("offsetOf$") == false or semaNameIsStdTemplate(module, "offsetOf") == false) { return }
+    let named = callee.s1.substring("offsetOf$".length, callee.s1.length - "offsetOf$".length)
+    if (named.startsWith("Struct_") == false) {
+        semaErrorAt(callee, diagQuote(named).concat(" is not a struct, so it has no field offsets"))
+        return
+    }
+    let typeName = named.substring("Struct_".length, named.length - "Struct_".length)
+    let mut structNode = ptr_to_node(ptr_null())
+    let count = ir_decl_count(typeName)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(typeName, i))
+        if (decl.kind == NodeKind.STRUCT_DECL) { structNode = decl }
+    }
+    if (structNode.kind != NodeKind.STRUCT_DECL) {
+        semaErrorAt(callee, diagQuote(typeName).concat(" is not a plain struct, so it has no field offsets"))
+        return
+    }
+    if (nodeStructIsReprC(structNode) == false and nodeStructIsPacked(structNode) == false) {
+        semaErrorAt(callee, diagQuote(typeName).concat(" lets the compiler order its fields, so a field has no fixed offset"))
+        diag_note("write `repr(C)` (C's padding) or `packed` (none) before `struct`")
+        return
+    }
+    if (nodeIsNull(call.child2) or ptr_to_node(call.child2).kind != NodeKind.LITERAL_EXPR
+            or nodeIsNull(ptr_to_node(call.child2).next) == false) {
+        semaErrorAt(callee, "`offsetOf` takes the field's name as one string literal")
+        return
+    }
+    let field = ptr_to_node(call.child2)
+    if (nodeStructFieldIndex(structNode, field.s1) < 0) {
+        semaErrorAt(field, diagQuote(typeName).concat(" has no field ", diagQuote(field.s1)))
+    }
+}
+
 internal fn semaTargetIsX86() -> Bool {
     let triple = ir_target_triple()
     return triple.startsWith("x86_64") or triple.startsWith("i386")

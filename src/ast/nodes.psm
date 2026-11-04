@@ -382,6 +382,23 @@ public fn nodeStructIsPacked(structNode: ASTNode) -> Bool {
     return structNode.kind == NodeKind.STRUCT_DECL and (structNode.i1 & 2) == 2
 }
 
+// The position of the field called `name` in the order it was written, or -1. For a
+// `repr(C)` or `packed` struct that is also its position in memory order, which is why
+// `offsetOf` accepts only those.
+public fn nodeStructFieldIndex(structNode: ASTNode, name: String) -> Int {
+    let mut index = 0
+    let mut p = structNode.child1
+    while (nodeExists(p)) {
+        let f = ptr_to_node(p)
+        if (f.kind == NodeKind.STRUCT_FIELD) {
+            if (f.s1.equals(name)) { return index }
+            index = index + 1
+        }
+        p = f.next
+    }
+    return 0 - 1
+}
+
 // A STRUCT_DECL that enumDesugarToStruct built from a payload enum, in the bit after
 // `repr(C)` and `packed`. It carries the enum's visibility, and this is what lets a
 // diagnostic about it say "enum" -- the declaration the author wrote -- rather than

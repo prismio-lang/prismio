@@ -1,0 +1,58 @@
+// The kernel's way of returning a failure through a value that is not a status: a negative
+// `errno` in an integer, and an error packed into a pointer. Linux code written in
+// Prismio hands these across the C boundary every time it calls or is called by a kernel
+// function that returns a pointer.
+//
+//     import std.errno
+//     import std.raw
+//
+//     let object = pointerAt(allocate())          // a C function returning `T *` or `ERR_PTR(-ENOMEM)`
+//     if (isErrPointer(addressOf(object))) {
+//         return errnoOf(addressOf(object))       // -12
+//     }
+//
+// **What the convention is.** The last page of the address space, `-4095` to `-1` read as
+// unsigned, is never a valid object: a pointer there carries the error `-address`. So a
+// function that returns a pointer can fail without a second channel, `ERR_PTR(-ENOMEM)`
+// writes the code into the pointer and `IS_ERR` / `PTR_ERR` read it back, and an integer
+// function returns `-ENOMEM` directly. `isErrno` is the integer test and `isErrPointer` the
+// pointer one; `errPointer` and `errnoOf` are `ERR_PTR` and `PTR_ERR`.
+//
+// An address is a `Usize`, as in std.raw, so nothing here needs a pointer type, the runtime
+// or an allocator: it is pure arithmetic and links nothing under `--freestanding`. The codes
+// themselves (`ENOMEM` is 12, `EINVAL` 22, `EIO` 5) belong to the kernel's headers and are
+// written there, as `-12`, by the code that means them.
+
+// The largest errno the kernel reserves an address for (`MAX_ERRNO`).
+public fn errnoMax() -> Int { return 4095 }
+
+// Whether an integer return is an error: `-MAX_ERRNO` through `-1`. Zero and the positive
+// values are results.
+public fn isErrno(value: Int) -> Bool {
+    return value < 0 and value >= 0 - errnoMax()
+}
+
+// `ERR_PTR(code)`: the pointer, as an address, that carries a negative errno. A code outside
+// `-4095` to `-1` is not one the kernel can read back, so it is refused rather than turned
+// into an address that might be a real object.
+public fn errPointer(code: Int) -> Usize {
+    if (isErrno(code) == false) { panic("errPointer takes a negative errno from -1 to -4095") }
+    return (0 as Usize) - ((0 - code) as Usize)
+}
+
+// `IS_ERR(address)`: whether the pointer is one of those. The comparison is unsigned,
+// which is what puts the last 4095 addresses together.
+public fn isErrPointer(address: Usize) -> Bool {
+    return address >= (0 as Usize) - (errnoMax() as Usize)
+}
+
+// `IS_ERR_OR_NULL(address)`.
+public fn isErrOrNull(address: Usize) -> Bool {
+    return address == 0 or isErrPointer(address)
+}
+
+// `PTR_ERR(address)`: the negative errno an error pointer carries. Only meaningful when
+// `isErrPointer` says so; any other address answers a number that is not an errno.
+public fn errnoOf(address: Usize) -> Int {
+    return 0 - (((0 as Usize) - address) as Int)
+}
