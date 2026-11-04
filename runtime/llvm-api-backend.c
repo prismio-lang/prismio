@@ -4812,6 +4812,21 @@ static void apply_borrow_attrs(LLVMValueRef call, const CallFrame *f) {
     }
 }
 
+// Whether the arguments pushed for a call, and the return type it expects, are the declared
+// function's own. A variadic declaration is matched on its fixed parameters only.
+static int call_matches_signature(LLVMTypeRef fnty, CallFrame *f, const char *ret_type, int is_void) {
+    unsigned declared = LLVMCountParamTypes(fnty);
+    if (LLVMIsFunctionVarArg(fnty) ? (unsigned)f->count < declared : declared != (unsigned)f->count) return 0;
+    LLVMTypeRef params[MAX_CALL_ARGS];
+    LLVMGetParamTypes(fnty, params);
+    for (unsigned i = 0; i < declared; i++) {
+        if (params[i] != LLVMTypeOf(f->args[i])) return 0;
+    }
+    LLVMTypeRef ret = LLVMGetReturnType(fnty);
+    if (is_void) return LLVMGetTypeKind(ret) == LLVMVoidTypeKind;
+    return ret == type_from_key(ret_type);
+}
+
 int ir_call_end(const char *ret_type, const char *func_name) {
     if (g_call_depth <= 0) backend_fail("call end without begin", func_name);
     CallFrame *f = &g_calls[--g_call_depth];
@@ -4847,6 +4862,16 @@ int ir_call_end(const char *ret_type, const char *func_name) {
     }
 
     LLVMTypeRef fnty = LLVMGlobalGetValueType(fn);
+    // An overloaded `extern fn` is one C symbol called at more than one signature: the module
+    // declares it once, at the first, and a call at another has to say its own type. Pointers
+    // are opaque, so a call may carry any function type for a callee that has no body here;
+    // a function the module defines is held to its definition.
+    if (LLVMCountBasicBlocks(fn) == 0 && !call_matches_signature(fnty, f, ret_type, is_void)) {
+        LLVMTypeRef param_types[MAX_CALL_ARGS];
+        for (int i = 0; i < f->count; i++) param_types[i] = LLVMTypeOf(f->args[i]);
+        LLVMTypeRef rty = is_void ? LLVMVoidTypeInContext(g_ctx) : type_from_key(ret_type);
+        fnty = LLVMFunctionType(rty, param_types, (unsigned)f->count, 0);
+    }
     LLVMValueRef call = LLVMBuildCall2(g_builder, fnty, fn, f->args, (unsigned)f->count, "");
     apply_borrow_attrs(call, f);
     if (sret_slot) mark_sret_call(call, sret_ty);

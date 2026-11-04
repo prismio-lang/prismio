@@ -1,0 +1,33 @@
+// One C symbol declared more than once, at different parameter types.
+//
+// A kernel header's `foo(int)` and `foo(const char *)` are both ways into the same function, and
+// a binding should be able to say so. The merge keeps one `extern fn` of a name only when its
+// parameters are written alike, sema resolves a call by its arguments like any overload, and
+// the backend gives each call the function type its arguments make, since the module declares
+// the symbol once. Here `strlen` is called with a String and with a pointer to a buffer. (An integer where C expects a pointer would work too, but LLVM knows `strlen`
+// and reads the integer as touching no memory, so the pointer is the honest spelling.)
+
+import std.io
+import std.mem
+import std.raw
+import std.string
+
+extern fn strlen(text: String borrow) -> Usize
+extern fn strlen(block: Ptr) -> Usize
+
+fn main() -> Int {
+    let fromString = strlen("abc")
+    let block = alloc(4)
+    storeU8(block, 100)
+    storeU8(block + 1, 101)
+    storeU8(block + 2, 102)
+    storeU8(block + 3, 0)
+    let fromAddress = strlen(pointerAt(block))
+    free(block)
+    if (fromString != 3 or fromAddress != 3) {
+        println("FAIL: ".concat(fromString.toString(), " ", fromAddress.toString()))
+        return 1
+    }
+    println("PASS: overloaded externs")
+    return 0
+}

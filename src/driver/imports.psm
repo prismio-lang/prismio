@@ -169,7 +169,33 @@ private fn sameTopLevelName(a: ASTNode, b: ASTNode) -> Bool {
     if (a.kind == NodeKind.FUNCTION or a.kind == NodeKind.EXTERN_VARIABLE) {
         return false
     }
+    // Two externs of one name are one declaration when their parameters are written alike
+    // (every module that uses `exit` declares it), and two overloads when they are not: C has
+    // one symbol, and a kernel header's `foo(int)` and `foo(const char *)` are both callable.
+    if (a.kind == NodeKind.EXTERN_FUNCTION) {
+        return externSignature(a).equals(externSignature(b))
+    }
     return true
+}
+
+// The parameters of an `extern fn` as written: each one's type name, its flags and its
+// ownership word, so `put(a: Int)` and `put(a: String borrow)` differ and two copies of
+// `exit(code: Int)` do not.
+private fn externSignature(fnNode: ASTNode) -> String {
+    let mut out = ""
+    let mut p = fnNode.child1
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        let mut written = ""
+        if (nodeExists(param.child1)) {
+            let annotation = ptr_to_node(param.child1)
+            written = annotation.s1.concat("/", annotation.i1.toString(), "/", annotation.i2.toString(),
+                                           "/", annotation.i3.toString())
+        }
+        out = out.concat(written, ":", param.s2, ",")
+        p = param.next
+    }
+    return out
 }
 
 // Asks the declaration index, which appendStatement() keeps current as it

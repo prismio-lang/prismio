@@ -248,6 +248,15 @@ internal fn semaCacheFunctionSymbols(module: ASTNode) {
     }
 }
 
+// Two `extern fn`s of one name share the C symbol, so the symbol cannot tell a duplicate from
+// an overload: `put(a: Int)` and `put(a: String borrow)` are both calls into C's `put`, with
+// different argument lists. Their parameter types do. Anything that is not a pair of externs
+// is told apart by its mangled symbol alone, which already includes them.
+private fn semaSameForeignSignature(module: ASTNode, a: ASTNode, b: ASTNode) -> Bool {
+    if (a.kind != NodeKind.EXTERN_FUNCTION or b.kind != NodeKind.EXTERN_FUNCTION) { return true }
+    return semaParamSignature(module, a.child1).equals(semaParamSignature(module, b.child1))
+}
+
 internal fn semaSamePosition(a: ASTNode, b: ASTNode) -> Bool {
     return a.file == b.file and a.line == b.line and a.col == b.col
 }
@@ -271,7 +280,7 @@ internal fn semaFirstFunctionWithSymbol(module: ASTNode, fnNode: ASTNode) -> AST
     for i in 0..<count {
         let stmt = ptr_to_node(ir_decl_at(name, i))
         if (stmt.kind == NodeKind.FUNCTION or stmt.kind == NodeKind.EXTERN_FUNCTION) {
-            if (stmt.s2.equals(symbol)) {
+            if (stmt.s2.equals(symbol) and semaSameForeignSignature(module, stmt, fnNode)) {
                 return stmt
             }
         }
