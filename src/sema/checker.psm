@@ -1967,6 +1967,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     semaCheckStdPortCall(callee)
     semaCheckStdOffsetOf(module, expr, callee)
     semaCheckStdFunctionAddress(module, expr, callee)
+    semaCheckStdCString(expr, callee)
     let lowered = semaStdAsmBuiltin(callee.s1)
     if (lowered.equals("") == false) { callee.s1 = lowered }
 

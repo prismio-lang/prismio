@@ -4899,6 +4899,10 @@ private fn generateCall(expr: ASTNode) -> String {
         return generateChannelRecvCopy(expr)
     }
 
+    if (funcName.equals("cString") and irCallIsStdFunction(funcName)) {
+        return ir_get_temp_name(ir_const_cstring(ptr_to_node(expr.child2).s1))
+    }
+
     if (funcName.equals("functionAddress") and irCallIsStdFunction(funcName)) {
         return generateFunctionAddress(expr)
     }

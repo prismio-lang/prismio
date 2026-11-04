@@ -26,6 +26,16 @@
 // or frees anything.
 public fn addressOf(pointer: Ptr) -> Usize { return __builtin_ptr_addr(pointer) }
 
+// A pointer to the NUL-terminated bytes of a string literal: `cString("prismio")` is the
+// `const char *` a C interface wants where it holds a name (a module's description, an entry
+// in a table). It points at read-only data that lives for the whole program, so it can be
+// stored anywhere. The argument must be a literal; for a String built at run time, an `extern fn`
+// parameter declared `String borrow` is handed a C string for the length of the call.
+//
+// This declaration only gives the call something to resolve against; the compiler replaces
+// the call.
+public fn cString(text: String) -> Ptr { return pointerAt(0) }
+
 // The address of the function called `name`, which is one string literal naming a function in
 // this program: `functionAddress("on_open")`. For the places a C interface wants a function
 // as a number or a pointer -- an operations table, a callback registered with the kernel.

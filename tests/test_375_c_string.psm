@@ -1,0 +1,35 @@
+// cString("literal") from std.raw: the `const char *` of a string literal.
+//
+// A pointer to read-only, NUL-terminated data that lives as long as the program, for a C interface
+// that holds a name. Checked here with C's own strlen and a byte read: the pointer's bytes are the
+// literal's, the NUL is there, and two spellings of one literal are one object.
+
+import std.io
+import std.mem
+import std.raw
+import std.string
+
+extern fn strlen(text: Ptr) -> Usize
+
+fn main() -> Int {
+    let name = cString("prismio")
+    if (strlen(name) != 7) {
+        println("FAIL: strlen ".concat(strlen(name).toString()))
+        return 1
+    }
+    let at = addressOf(name)
+    if (loadU8(at) != 112 or loadU8(at + 6) != 111 or loadU8(at + 7) != 0) {
+        println("FAIL: bytes")
+        return 1
+    }
+    if (addressOf(cString("prismio")) != at) {
+        println("FAIL: one literal, one object")
+        return 1
+    }
+    if (strlen(cString("")) != 0) {
+        println("FAIL: empty")
+        return 1
+    }
+    println("PASS: cString")
+    return 0
+}

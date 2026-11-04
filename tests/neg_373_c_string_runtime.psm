@@ -1,0 +1,10 @@
+// expect-error: `cString` takes one string literal; a String built at run time is not read-only data
+
+import std.raw
+import std.string
+
+fn main() -> Int {
+    let text = "abc".concat("def")
+    let p = cString(text)
+    return 0
+}

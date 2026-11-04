@@ -633,6 +633,14 @@ internal fn semaFunctionNamed(name: String) -> ASTNode {
     return found
 }
 
+internal fn semaCheckStdCString(call: ASTNode, callee: ASTNode) {
+    if (callee.s1.equals("cString") == false or semaNameIsStdFunction(callee.s1) == false) { return }
+    if (nodeIsNull(call.child2) or ptr_to_node(call.child2).kind != NodeKind.LITERAL_EXPR
+            or nodeIsNull(ptr_to_node(call.child2).next) == false) {
+        semaErrorAt(callee, "`cString` takes one string literal; a String built at run time is not read-only data")
+    }
+}
+
 internal fn semaCheckStdFunctionAddress(module: ASTNode, call: ASTNode, callee: ASTNode) {
     if (callee.s1.equals("functionAddress") == false or semaNameIsStdFunction(callee.s1) == false) { return }
     if (nodeIsNull(call.child2) or ptr_to_node(call.child2).kind != NodeKind.LITERAL_EXPR
