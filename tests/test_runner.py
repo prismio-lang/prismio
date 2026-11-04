@@ -7013,7 +7013,7 @@ def run_ownership_probes_test():
         # right side is evaluated lazily, so a fallback that never ran must not be
         # released and one that ran must be.
         ("coalesce_probe.psm", "PASS", True),
-        # Map removal swaps a String key to the end and truncates it: a key the
+        # HashMap removal swaps a String key to the end and truncates it: a key the
         # removal failed to release is a leak, so this one is held to 0.
         ("test_193_map_methods.psm", "PASS", True),
         # A child bound to a `let` and then stored into a recursive payload was
@@ -7031,12 +7031,15 @@ def run_ownership_probes_test():
         # live view: both leaked, and releasing at the store would free the view.
         ("vec_element_replace_probe.psm", "PASS", True),
         ("test_217_vec_filled.psm", "ok", True),
-        # `Map<K, V>()`, `Map()` from an annotation, and a bare `let` of a Map,
+        # `HashMap<K, V>()`, `HashMap()` from an annotation, and a bare `let` of a HashMap,
         # which was a zeroed struct until 2026-09-28.
         ("test_222_type_constructors.psm", "ok", True),
-        # Map literals: a computed String key is an argument temporary, and a
+        # HashMap literals: a computed String key is an argument temporary, and a
         # literal of plain keys is a producer, clean in a field and a return.
         ("test_223_map_literals.psm", "ok", True),
+        # HashSet holds its own columns: a set wrapping a HashMap in a field leaked
+        # its whole table (7 allocated, 1 released for a HashSet<Int>).
+        ("test_369_hash_set.psm", "PASS", True),
         # std.mem: Buffers and Arenas release their bytes like any Vec, and the
         # test frees every raw block it allocates, so a leak here is a wrong
         # release or a Buffer that kept its bytes.
@@ -8738,7 +8741,7 @@ def run_jit_test():
                         '    println(total(p))\n'
                         '    print("argc: ")\n'
                         '    println(process.args.count)\n'
-                        '    let m: Map<String, Int> = mapNew<String, Int>()\n'
+                        '    let m: HashMap<String, Int> = mapNew<String, Int>()\n'
                         '    m.set("k", 7)\n'
                         '    print("map: ")\n'
                         '    println(m.length)\n'
@@ -10467,7 +10470,7 @@ def run_aif_verify_test():
         # no longer being made, and the violations would follow.
         "test_186_view_pushed_directly": 0,
         # Copying a Vec<String>: take, skip, concat, reversed, sorted, toVec, clone,
-        # filter, extend and a Map's keys. 273 leaked until a fresh String stored in
+        # filter, extend and a HashMap's keys. 273 leaked until a fresh String stored in
         # two containers stopped counting as one value held twice (A-CONTAIN).
         "test_255_string_vec_copies": 0,
         # The shape that rule must not reach: an element read pushed into two

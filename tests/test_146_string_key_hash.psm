@@ -18,7 +18,7 @@ fn fail(message: String) -> Int {
 }
 
 fn main() -> Int {
-    let m: Map<String, Int> = mapNew<String, Int>()
+    let m: HashMap<String, Int> = mapNew<String, Int>()
     mapSet(m, "abc", 1)
     // `strToLower` and `strToUpper` allocate whatever the length, so these are
     // a long key and a short one on the heap.
@@ -39,7 +39,7 @@ fn main() -> Int {
     let source = "xxdefghijklmnopyy".concat("zz")
     if (mapGetOr(m, source.slice(2, 15), 0) != 2) { return fail("a key by a view") }
 
-    let many: Map<String, Int> = mapNew<String, Int>()
+    let many: HashMap<String, Int> = mapNew<String, Int>()
     let mut i = 0
     while (i < 2000) {
         let key = "k".repeat(i % 21).concat(i.toString())

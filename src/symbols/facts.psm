@@ -31,10 +31,10 @@ import symbols.names
 let FACT_GUARD_SAFE_SEEN = 1
 let FACT_GUARD_UNSAFE_SEEN = 2
 
-private let mut guardVerdicts: Map<Int, Int>
+private let mut guardVerdicts: HashMap<Int, Int>
 
 // Per node address: an index into the columns below.
-private let mut markSlots: Map<Usize, Int>
+private let mut markSlots: HashMap<Usize, Int>
 private let mut markProof: Vec<Int>
 // The receiver's element base, loaded once in the preheader (an interned name).
 private let mut markData: Vec<Int>
@@ -54,12 +54,12 @@ private let mut nowrapSwitch = 0
 private let mut proofSwitch = 0
 private let mut traceSwitch = 0
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 private fn factsOpen() {
     if (factsOpened) { return }
-    let verdicts: Map<Int, Int> = {}
+    let verdicts = HashMap<Int, Int>()
     guardVerdicts = verdicts
-    let slots: Map<Usize, Int> = {}
+    let slots = HashMap<Usize, Int>()
     markSlots = slots
     markProof = []
     markData = []

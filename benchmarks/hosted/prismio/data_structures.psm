@@ -4,7 +4,7 @@ import std.math
 
 public fn benchHashMap(scale: Int) -> Int {
     let n = 50000 * scale
-    let map: Map<Int, Int> = mapNew<Int, Int>()
+    let map: HashMap<Int, Int> = mapNew<Int, Int>()
 
     for i in 0..<n {
         mapSet(map, i, (i * 31) % 1000003)
@@ -48,7 +48,7 @@ public fn benchVectorIteration(scale: Int) -> Int {
 
 public fn benchKeyValueUpdate(scale: Int) -> Int {
     let n = 20000 * scale
-    let map: Map<Int, Int> = mapNew<Int, Int>()
+    let map: HashMap<Int, Int> = mapNew<Int, Int>()
     for i in 0..<n {
         mapSet(map, i, i % 101)
     }
@@ -68,7 +68,7 @@ public fn benchKeyValueUpdate(scale: Int) -> Int {
 // the first round probes past removed buckets.
 public fn benchMixedMapRemoval(scale: Int) -> Int {
     let n = 20000 * scale
-    let map: Map<Int, Int> = mapNew<Int, Int>()
+    let map: HashMap<Int, Int> = mapNew<Int, Int>()
     for i in 0..<n {
         mapSet(map, i, i % 101)
     }

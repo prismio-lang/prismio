@@ -44,7 +44,7 @@ internal let mut nominalNoSplitUnmodelled: Vec<Int>
 internal let mut nominalNoSplitListFullScan: Vec<Int>
 // The layout is an ABI: declaration order, never split, for a type some other compilation also lays out.
 internal let mut nominalLayoutFixed: Vec<Int>
-internal let mut nominalByName: Map<Int, Int>
+internal let mut nominalByName: HashMap<Int, Int>
 
 internal let mut fieldName: Vec<Vec<Int>>
 // The field's *declared* type, base-named. Struct-field ownership compares it against what the sites
@@ -69,7 +69,7 @@ private let mut profileRuns = 0
 
 private let mut nominalsOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 internal fn nominalsOpen() {
     if (nominalsOpened) { return }
     nominalsOpened = true
@@ -86,7 +86,7 @@ internal fn nominalsOpen() {
     nominalNoSplitUnmodelled = []
     nominalNoSplitListFullScan = []
     nominalLayoutFixed = []
-    let byName: Map<Int, Int> = {}
+    let byName = HashMap<Int, Int>()
     nominalByName = byName
     fieldName = []
     fieldType = []

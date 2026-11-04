@@ -1,0 +1,112 @@
+// HashSet: insert, contains, remove.
+//
+// 1. `insert` answers whether the key was new; `contains` answers membership;
+//    `remove` answers whether the key was there. `length` and `isEmpty` follow.
+// 2. Every spelling of an empty set: `HashSet<K>()`, an annotation with no
+//    initializer, `withCapacity`, and a set in a struct field.
+// 3. String keys, which the set copies in and must release on removal and at the
+//    end of the scope: the ownership probes run this under `--verify`.
+// 4. Removal across growth, across the in-place rebuild a quarter of tombstones
+//    triggers, and with every key in one bucket.
+
+import std.copy
+import std.io
+import std.key
+import std.map
+import std.string
+
+// Every key hashes to one bucket, so each key's probe passes every key inserted
+// before it -- the chain a removal must not cut.
+public struct Clash {
+    id: Int
+}
+
+impl Key for Clash {
+    fn hash(self) -> Int { return 7 }
+    fn eq(self, other: Clash) -> Bool { return self.id == other.id }
+}
+
+impl Copy for Clash {
+    fn copyOf(self) -> Clash { return Clash { id: self.id } }
+}
+
+struct Registry {
+    names: HashSet<String>
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn keyName(i: Int) -> String { return "member number ".concat(i.toString()) }
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let s = HashSet<String>()
+    if (s.isEmpty == false or s.length != 0) { bad = bad + fail("a new set is empty") }
+    if (s.contains("ada")) { bad = bad + fail("an empty set contains nothing") }
+    if (s.insert("ada") == false) { bad = bad + fail("insert of a new key answered false") }
+    if (s.insert("ada")) { bad = bad + fail("insert of an existing key answered true") }
+    if (s.insert("grace") == false or s.insert("alan") == false) { bad = bad + fail("insert of new keys") }
+    if (s.length != 3 or s.isEmpty) { bad = bad + fail("length after inserts") }
+    if (s.contains("ada") == false or s.contains("grace") == false or s.contains("nobody")) {
+        bad = bad + fail("contains")
+    }
+
+    if (s.remove("nobody")) { bad = bad + fail("removing an absent key answered true") }
+    if (s.remove("ada") == false) { bad = bad + fail("removing a present key answered false") }
+    if (s.remove("ada")) { bad = bad + fail("removing a key twice answered true") }
+    if (s.contains("ada") or s.length != 2) { bad = bad + fail("the removed key is gone") }
+    if (s.contains("grace") == false or s.contains("alan") == false) { bad = bad + fail("the others survive a removal") }
+    if (s.insert("ada") == false or s.contains("ada") == false) { bad = bad + fail("reinserting a removed key") }
+    s.clear()
+    if (s.isEmpty == false or s.contains("grace")) { bad = bad + fail("clear") }
+
+    // The other spellings of an empty set.
+    let bare: HashSet<Int>
+    if (bare.isEmpty == false or bare.contains(1)) { bad = bad + fail("a bare let is an empty set") }
+    if (bare.insert(1) == false or bare.contains(1) == false) { bad = bad + fail("using a bare set") }
+    let sized = HashSet<Int>.withCapacity(100)
+    for i in 0..<100 { sized.insert(i * 7) }
+    if (sized.length != 100 or sized.contains(693) == false or sized.contains(694)) { bad = bad + fail("withCapacity") }
+
+    let registry = Registry { names: HashSet<String>() }
+    registry.names.insert("x")
+    if (registry.names.contains("x") == false) { bad = bad + fail("a set in a field") }
+
+    // Growth and removal of String keys.
+    let big = HashSet<String>()
+    for i in 0..<500 { big.insert(keyName(i)) }
+    if (big.length != 500) { bad = bad + fail("length after 500 inserts") }
+    for i in 0..<500 {
+        if (big.insert(keyName(i))) { bad = bad + fail("a duplicate insert answered true: ".concat(i.toString())) }
+    }
+    for i in 0..<500 {
+        if (i % 3 != 0) {
+            if (big.remove(keyName(i)) == false) { bad = bad + fail("removal during churn: ".concat(i.toString())) }
+        }
+    }
+    if (big.length != 167) { bad = bad + fail("length after removing two thirds: ".concat(big.length.toString())) }
+    for i in 0..<500 {
+        if ((i % 3 == 0) != big.contains(keyName(i))) { bad = bad + fail("the wrong keys survived: ".concat(i.toString())) }
+    }
+
+    // Every key in one bucket.
+    let clash = HashSet<Clash>()
+    for i in 0..<40 { clash.insert(Clash { id: i }) }
+    for i in 0..<40 {
+        if (i % 2 == 0) {
+            if (clash.remove(Clash { id: i }) == false) { bad = bad + fail("removing from one bucket") }
+        }
+    }
+    for i in 0..<40 {
+        if ((i % 2 == 1) != clash.contains(Clash { id: i })) { bad = bad + fail("one bucket, membership") }
+    }
+
+    if (bad != 0) { return 1 }
+    println("PASS: hash set")
+    return 0
+}

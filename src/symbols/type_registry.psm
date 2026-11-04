@@ -48,11 +48,11 @@ private let mut variantValues: Vec<I64>
 // made every one permanent and made `find_binding`, which scans backwards, walk past one entry per
 // function in the module for every identifier in every body. A table of its own retires the prefix
 // and the concatenation that built one per call site.
-private let mut returnTypes: Map<Int, Int>
+private let mut returnTypes: HashMap<Int, Int>
 
 private let mut typeTablesOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 private fn typeTablesOpen() {
     if (typeTablesOpened) { return }
     structTypeNames = []
@@ -70,7 +70,7 @@ private fn typeTablesOpen() {
     variantEnums = []
     variantNames = []
     variantValues = []
-    let types: Map<Int, Int> = {}
+    let types = HashMap<Int, Int>()
     returnTypes = types
     typeTablesOpened = true
 }

@@ -92,7 +92,7 @@ fn main() -> Int {
     }
 
     // 3. And the map that all of this is for.
-    let m: Map<String, Int> = mapNew<String, Int>()
+    let m: HashMap<String, Int> = mapNew<String, Int>()
     let mut k = 0
     while (k <= 16) {
         mapSet(m, alphabet.slice(0, k).repeat(1), k)

@@ -58,8 +58,8 @@ internal fn semaMangleType(t: TypeInfo) -> String {
             }
             return "DataView_Invalid"
         }
-    // Without this every `T?` mangled to `Invalid`, so `Map<Int, Float?>` and
-    // `Map<Int, U8?>` named one instantiation and the second got the first's
+    // Without this every `T?` mangled to `Invalid`, so `HashMap<Int, Float?>` and
+    // `HashMap<Int, U8?>` named one instantiation and the second got the first's
     // methods -- `set` with the wrong value type, which read as no `set` at all.
         TypeKind.OPTIONAL => {
             if (nodeExists(t.child)) { return "Opt_".concat(semaMangleType(ptr_to_type(t.child))) }

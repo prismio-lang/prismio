@@ -4,6 +4,7 @@
 
 import ast.types
 import common.target
+import std.map
 
 // IR Generator
 // Traverses the AST and emits LLVM IR via bridge.psm
@@ -176,10 +177,11 @@ let IR_DROP_TASK = 4
 // names from the declared type exactly as IR_DROP_TYPED does.
 let IR_DROP_FIELDS = 5
 
-// The struct types a frame struct's drop has named, joined with `;`. Their
-// fields-only releases are defined after every function, for these and no
-// others, so a program with no such struct carries none.
-let mut irFrameReleaseTypes = ""
+// The struct types a frame struct's drop has named. Their fields-only releases are
+// defined after every function, for these and no others, so a program with no such
+// struct carries none. Open from irResetFrameSets on: a zero-filled global
+// `HashSet` is not an empty one.
+let mut irFrameReleaseTypes: HashSet<String>
 
 // The `scope { }` blocks open in the function being emitted, as `;level=slot;`: the
 // region depth each was entered at, and the slot holding its runtime scope. An exit
@@ -195,11 +197,28 @@ let mut irTaskScopeCounter = 0
 // link failure for any program that bound a recursive `Node?` it owned.
 let mut irOptionalDropTypes = ";"
 
-// Bindings initialised from a struct literal on the frame, as `;slot@floor;`:
-// the slot, and the scope's drop floor it was declared at. A field assignment
-// made at that same floor may give its new value the same scope-exit owner the
-// literal's fields got (ir/stmt.psm, generateAssignment).
-let mut irFrameStructSlots = ""
+// Bindings initialised from a struct literal on the frame, as `slot@floor`: the
+// slot, and the scope's drop floor it was declared at. A field assignment made at
+// that same floor may give its new value the same scope-exit owner the literal's
+// fields got (ir/stmt.psm, generateAssignment).
+let mut irFrameStructSlots: HashSet<String>
+
+let mut irFrameSetsOpen = false
+
+// Both sets empty, for the module about to be generated. They are built once and
+// cleared after that: assigning a new set over the old one would release nothing.
+internal fn irResetFrameSets() {
+    if (irFrameSetsOpen) {
+        irFrameReleaseTypes.clear()
+        irFrameStructSlots.clear()
+        return
+    }
+    irFrameSetsOpen = true
+    let releaseTypes = HashSet<String>()
+    irFrameReleaseTypes = releaseTypes
+    let structSlots = HashSet<String>()
+    irFrameStructSlots = structSlots
+}
 
 // AIF item 3. What a container does with its elements when it is released, and
 // what a known callee's return leaves the caller owning. One encoding for both,

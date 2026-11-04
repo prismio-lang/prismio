@@ -27,7 +27,7 @@
 // one that is called compiles.** LLVM never saw the dead ones -- a closed program
 // runs `globaldce` before `default<O3>` -- but three whole-module facts the
 // frontend computes did. Guard-safe verdicts were keyed by source name, so
-// `Buffer.eq` calling an extern took the flat guard from every `Map` probe in a
+// `Buffer.eq` calling an extern took the flat guard from every `HashMap` probe in a
 // program importing `std.mem`; `regionConfined` counted dead callers, so an
 // unused `eprintln` overload loosened the opaque-call obligation into placing an
 // arena; and call-site counts included dead callers. On a program that prints one

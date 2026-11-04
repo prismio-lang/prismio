@@ -29,9 +29,9 @@ import symbols.names
 // A name's declarations are `declNodes[(slot, ordinal)]`, one entry in a map keyed by both, and the
 // number it has so far is `declCounts[slot]`. Entries are never nested lists, so reading the n-th
 // declaration of a name is one probe however many overloads the name has.
-private let mut declSlots: Map<Int, Int>
+private let mut declSlots: HashMap<Int, Int>
 private let mut declCounts: Vec<Int>
-private let mut declNodes: Map<Usize, Ptr>
+private let mut declNodes: HashMap<Usize, Ptr>
 
 // `import std.string.strTrim` brings one name into scope, not the module.
 private let mut selectFiles: Vec<Int>
@@ -58,16 +58,16 @@ private let mut externNames: Vec<Int>
 private let mut externVisibility: Vec<Int>
 private let mut externModules: Vec<Int>
 
-private let mut packageOf: Map<Int, Int>
+private let mut packageOf: HashMap<Int, Int>
 private let mut declarationsOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 private fn declarationsOpen() {
     if (declarationsOpened) { return }
-    let slots: Map<Int, Int> = {}
+    let slots = HashMap<Int, Int>()
     declSlots = slots
     declCounts = []
-    let nodes: Map<Usize, Ptr> = {}
+    let nodes = HashMap<Usize, Ptr>()
     declNodes = nodes
     selectFiles = []
     selectModules = []
@@ -81,7 +81,7 @@ private fn declarationsOpen() {
     externNames = []
     externVisibility = []
     externModules = []
-    let packages: Map<Int, Int> = {}
+    let packages = HashMap<Int, Int>()
     packageOf = packages
     declarationsOpened = true
 }

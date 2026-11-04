@@ -439,7 +439,7 @@ private fn isFrameStructLiteral(init: Ptr) -> Bool {
 }
 
 private fn frameStructKey(slot: String, floor: Int) -> String {
-    return ";".concat(slot, "@", floor.toString(), ";")
+    return slot.concat("@", floor.toString())
 }
 
 // `s.field = value` where `s` is a frame struct declared in this very block, of
@@ -613,9 +613,7 @@ private fn generateVariableDecl(stmt: ASTNode) {
             and chainDropsName(irFunctionBody, varName) == false) {
             ir_mark_droppable(varName, IR_DROP_FIELDS)
             let typeName = structTypeName(getExprType(ptr_to_node(stmt.child2)))
-            if (irFrameReleaseTypes.contains(";".concat(typeName, ";")) == false) {
-                irFrameReleaseTypes = irFrameReleaseTypes.concat(";", typeName, ";")
-            }
+            irFrameReleaseTypes.insert(typeName)
         } else {
             // AIF item 3. The initialiser is not an allocation here -- it is a
             // call to a function that made one and handed it over. That is the
@@ -658,8 +656,7 @@ private fn generateVariableDecl(stmt: ASTNode) {
     // another object, which may outlive this block.
     if (hasInit and isFrameStructLiteral(stmt.child2)
             and chainAssignsName(irFunctionBody, varName) == false) {
-        irFrameStructSlots = irFrameStructSlots.concat(
-            frameStructKey(ir_get_var_slot(varName), ir_scope_drop_floor()))
+        irFrameStructSlots.insert(frameStructKey(ir_get_var_slot(varName), ir_scope_drop_floor()))
     }
 }
 

@@ -23,7 +23,7 @@ internal let mut keyCount = 0
 internal let mut keyKind: Vec<Int>
 internal let mut keyA: Vec<Int>
 internal let mut keyB: Vec<Int>
-private let mut keyIds: Map<U64, Int>
+private let mut keyIds: HashMap<U64, Int>
 
 // Bindings are keyed per declaration, not per name. A key used to be (function, name), so `let frag = ...`
 // in one block and a later `for frag in ...` were one variable: the `for` binder is a view of an element,
@@ -60,14 +60,14 @@ private let mut elemFull: Vec<Int>
 
 private let mut keysOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 internal fn keysOpen() {
     if (keysOpened) { return }
     keysOpened = true
     keyKind = []
     keyA = []
     keyB = []
-    let ids: Map<U64, Int> = {}
+    let ids = HashMap<U64, Int>()
     keyIds = ids
     envFn = []
     envName = []

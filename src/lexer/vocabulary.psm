@@ -10,6 +10,7 @@
 // Each word is followed by the position that gives it meaning, in the order the language
 // reference reads them. The two arrays are the same length and are read in step.
 
+import std.map
 import std.vec
 
 let vocabularyContextualWords = [
@@ -93,7 +94,20 @@ public fn vocabularyOtherType(index: Int) -> String {
     return vocabularyOtherTypes[index].clone()
 }
 
+// The same words as a set, built on first use: a zero-filled global `HashSet` is not
+// an empty one.
+private let mut contextualSet: HashSet<String>
+private let mut contextualSetBuilt = false
+
+private fn buildContextualSet() {
+    let words = HashSet<String>.withCapacity(vocabularyContextualWords.length)
+    for word in vocabularyContextualWords { words.insert(word) }
+    contextualSet = words
+    contextualSetBuilt = true
+}
+
 // Whether `word` is one the parser reads in one position only.
 public fn vocabularyIsContextual(word: String) -> Bool {
-    return vocabularyContextualWords.contains(word)
+    if (contextualSetBuilt == false) { buildContextualSet() }
+    return contextualSet.contains(word)
 }

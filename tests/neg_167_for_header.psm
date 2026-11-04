@@ -1,6 +1,6 @@
 // expect-error: a `step` must be positive
 // expect-error: a range gives one value per iteration, but this loop names two
-// expect-error: `for ... in` needs a String, Vec, Slice, array, Map, Channel, or a type implementing `Iterator`, found Int
+// expect-error: `for ... in` needs a String, Vec, Slice, array, HashMap, Channel, or a type implementing `Iterator`, found Int
 // A literal step of zero or less is refused -- a range counts up. `(a, b)` is for
 // a collection, and an Int is not one.
 fn main() -> Int {

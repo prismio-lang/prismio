@@ -1,4 +1,4 @@
-// `Map<K, V>` as a hash table, and the key types the association list could not
+// `HashMap<K, V>` as a hash table, and the key types the association list could not
 // take.
 //
 // The old `std/map.psm` header said String keys "do not instantiate, and that is
@@ -35,7 +35,7 @@ impl Key for Point {
     }
 }
 
-// `Map` requires `Key + Copy`, and this is where a user type supplies the second
+// `HashMap` requires `Key + Copy`, and this is where a user type supplies the second
 // capability. Each impl satisfies only its own trait.
 impl Copy for Point {
     fn copyOf(self) -> Self {

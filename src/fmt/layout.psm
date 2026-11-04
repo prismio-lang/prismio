@@ -129,7 +129,7 @@ private fn fmtIsArrayLength(text: String, tokens: FmtTokens, code: Vec<Int>, at:
 // operators, so the rule that puts air around a comparison would turn `List<Int>` into
 // `List < Int >`. Told apart the way the compiler's parser tells them apart: scan from the `<` to
 // its matching `>` and require everything between to be something a type is made of. `a < b` has no
-// closing `>`, `if (a < b)` hits a `)`, `x < 5` hits an integer, and `List<Map<String, Int>>`
+// closing `>`, `if (a < b)` hits a `)`, `x < 5` hits an integer, and `List<HashMap<String, Int>>`
 // closes cleanly with the `>>` counting for two. Only a name can introduce one: a `<` after `)` or
 // a literal is a comparison whatever follows it.
 private fn fmtTypeAngles(text: String, tokens: FmtTokens) -> Vec<Bool> {

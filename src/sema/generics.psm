@@ -625,8 +625,8 @@ private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: S
 //
 // **A bound failure cascades, and the cascade is structural rather than a
 // wording problem.** One `mapNew<Float, Int>()` instantiates `mapNew`, whose body
-// names `Map<K, V>`, which instantiates `Map`, whose every function names
-// `Map<K, V>` again -- so a single mistake in one user expression reported the
+// names `HashMap<K, V>`, which instantiates `HashMap`, whose every function names
+// `HashMap<K, V>` again -- so a single mistake in one user expression reported the
 // same fact 25 times, ran into the compiler's error cap, and the cap exits
 // without `diag_finish`'s "aborting due to N previous error(s)". A negative test
 // then cannot tell a rejection from a crash, which is how this was found.
@@ -979,8 +979,8 @@ internal fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
     // The arguments this was instantiated with, kept on the declaration.
     //
     // Without them a type parameter is unrecoverable the moment it is
-    // substituted: `Map<Int, Int>` becomes a struct named `Map$Int$Int`, and a
-    // later `fn mapLen<K, V>(m: Map<K, V>)` has nothing to match `K` against but
+    // substituted: `HashMap<Int, Int>` becomes a struct named `HashMap$Int$Int`, and a
+    // later `fn mapLen<K, V>(m: HashMap<K, V>)` has nothing to match `K` against but
     // the name. Reading them back out of the mangled name would work until a
     // type argument contained the separator.
     copy.child2 = monoCopyChain(tn.child1)
@@ -1101,7 +1101,7 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
         }
     }
 
-    // `Map<K, V>` against an argument of type `Map$Int$Int`. The instantiation
+    // `HashMap<K, V>` against an argument of type `HashMap$Int$Int`. The instantiation
     // recorded what it was made from, so the match is positional against that
     // rather than an attempt to read the mangled name back apart.
     if (tn.i2 == 1 and actual.kind == TypeKind.STRUCT and nodeExists(tn.child1)) {
@@ -1130,7 +1130,7 @@ internal fn monoMatchParam(module: ASTNode, tn: ASTNode, actual: TypeInfo, param
     return ptr_to_node(ptr_null())
 }
 
-// `let m: Map<String, Int> = Map()`, `= mapNew()`, `= Map.withCapacity(n)`: a
+// `let m: HashMap<String, Int> = HashMap()`, `= mapNew()`, `= HashMap.withCapacity(n)`: a
 // generic call whose arguments cannot solve a type parameter, in a context that
 // names the type it must produce. The parameter is solved from the template's
 // declared return type against `expected`, and the answer is written onto the
@@ -1144,8 +1144,8 @@ internal fn monoTypeArgsFromExpected(module: ASTNode, call: ASTNode, expected: T
     let callee = ptr_to_node(call.child1)
     let mut name = ""
     // Where the answer goes: the call's own arguments for `f()`, or the type's
-    // for `Map()` and `Map.new()`, which semaTypeCall and semaTypeFunctionCall
-    // read as `Map<String, Int>.new()`.
+    // for `HashMap()` and `HashMap.new()`, which semaTypeCall and semaTypeFunctionCall
+    // read as `HashMap<String, Int>.new()`.
     let mut typeName = ""
     if (callee.kind == NodeKind.IDENTIFIER_EXPR) {
         if (ir_has_var_type(callee.s1) == 1) { return }
@@ -1259,7 +1259,7 @@ private fn monoTemplateAcceptsCall(module: ASTNode, template: ASTNode,
 // An argument fits a parameter of its own type, or of its `T?`: a `T` is
 // accepted wherever a `T?` is expected, and the ordinary argument check converts
 // it once this template is chosen. Without the second case `m.set(1, 2.5)` on a
-// `Map<Int, Float?>` found no `set`, though a concrete `Float?` parameter took
+// `HashMap<Int, Float?>` found no `set`, though a concrete `Float?` parameter took
 // the same argument.
 private fn monoArgumentFits(expected: TypeInfo, actual: TypeInfo) -> Bool {
     if (typeEquals(expected, actual)) { return true }

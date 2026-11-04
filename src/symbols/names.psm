@@ -18,15 +18,15 @@ import std.raw
 import std.string
 import std.vec
 
-private let mut nameIds: Map<String, Int>
+private let mut nameIds: HashMap<String, Int>
 private let mut nameTexts: Vec<String>
 private let mut nameBlocks: Vec<Usize>
 private let mut namesOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 private fn namesOpen() {
     if (namesOpened) { return }
-    let ids: Map<String, Int> = {}
+    let ids = HashMap<String, Int>()
     nameIds = ids
     nameTexts = []
     nameBlocks = []

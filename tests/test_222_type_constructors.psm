@@ -1,7 +1,7 @@
-// Calling a type calls its `new`: `Map<String, Int>()` is `Map<String, Int>.new()`,
+// Calling a type calls its `new`: `HashMap<String, Int>()` is `HashMap<String, Int>.new()`,
 // `Point(3, 4)` is `Point.new(3, 4)`. An annotation supplies type arguments a
-// call cannot solve from its own (`let m: Map<String, Int> = Map()`), and a
-// `let` of a Map with no initializer is an empty Map, as one of a Vec is an
+// call cannot solve from its own (`let m: HashMap<String, Int> = HashMap()`), and a
+// `let` of a HashMap with no initializer is an empty HashMap, as one of a Vec is an
 // empty Vec -- it was a zeroed struct until 2026-09-28, and the first `set`
 // read a null bucket table.
 
@@ -24,37 +24,37 @@ fn fail(message: String) -> Int {
     return 1
 }
 
-fn size(m: Map<String, Int>) -> Int { return m.length }
+fn size(m: HashMap<String, Int>) -> Int { return m.length }
 
 fn main() -> Int {
-    let stock = Map<String, Int>()
+    let stock = HashMap<String, Int>()
     stock.set("apple", 3)
     stock.set("pear", 5)
-    if (stock["apple"] + stock["pear"] != 8) { return fail("Map<K, V>()") }
+    if (stock["apple"] + stock["pear"] != 8) { return fail("HashMap<K, V>()") }
 
-    let annotated: Map<String, Int> = Map()
+    let annotated: HashMap<String, Int> = HashMap()
     annotated.set("x", 1)
-    if (annotated.length != 1) { return fail("Map() from the annotation") }
+    if (annotated.length != 1) { return fail("HashMap() from the annotation") }
 
-    let spelled: Map<Int, Int> = mapNew()
+    let spelled: HashMap<Int, Int> = mapNew()
     spelled.set(1, 2)
     if (spelled[1] != 2) { return fail("mapNew() from the annotation") }
 
-    let qualified: Map<Int, Bool> = Map.new()
+    let qualified: HashMap<Int, Bool> = HashMap.new()
     qualified.set(7, true)
-    if (qualified[7] == false) { return fail("Map.new() from the annotation") }
+    if (qualified[7] == false) { return fail("HashMap.new() from the annotation") }
 
     // Past mapNew's eight buckets: the table is sized once and never rehashes.
-    let big = Map<Int, Int>.withCapacity(100)
+    let big = HashMap<Int, Int>.withCapacity(100)
     for i in 0..<100 { big.set(i, i * 2) }
     if (big.length != 100 or big[99] != 198 or big[0] != 0) { return fail("withCapacity") }
 
-    let bare: Map<String, Int>
+    let bare: HashMap<String, Int>
     bare.set("a key long enough to allocate its copy", 1)
     bare.set("b", 2)
-    if (bare.length != 2) { return fail("a bare `let` is an empty Map") }
+    if (bare.length != 2) { return fail("a bare `let` is an empty HashMap") }
 
-    if (size(Map<String, Int>()) != 0) { return fail("Map<K, V>() as an argument") }
+    if (size(HashMap<String, Int>()) != 0) { return fail("HashMap<K, V>() as an argument") }
 
     let mut ints = Vec<Int>()
     ints.push(4)

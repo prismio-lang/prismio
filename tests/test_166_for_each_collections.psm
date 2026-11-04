@@ -1,7 +1,7 @@
 // `for ... in` over every collection, with and without `(index, element)`.
 //
 //   String, Vec, Slice, Array    each element; `(i, x)` adds its index
-//   Map                          each key in insertion order; `(k, v)` adds its value
+//   HashMap                          each key in insertion order; `(k, v)` adds its value
 //   a type implementing Iterator each `next`
 //
 // A collection that is not a name -- `text.lines()`, `"a,b".split(',')`, a call
@@ -88,10 +88,10 @@ fn main() -> Int {
     mapSet(ages, "cyd", 27)
     let mut keys = ""
     for name in ages { keys = keys.concat(name) }
-    if (keys.equals("annbobcyd") == false) { return fail("Map keys in insertion order") }
+    if (keys.equals("annbobcyd") == false) { return fail("HashMap keys in insertion order") }
     let mut years = 0
     for (name, age) in ages { years += age + name.length }
-    if (years != 109) { return fail("Map (key, value)") }
+    if (years != 109) { return fail("HashMap (key, value)") }
 
     let text = "alpha\nbeta\ngamma"
     let mut lineCount = 0

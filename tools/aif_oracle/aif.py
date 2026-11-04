@@ -145,7 +145,7 @@ FFI_CONTRACTS = {
     # `String.compare` lowers to this, so every String sort reaches it -- the
     # same reach, and the same bracketing loss if it were missing, as `==` above.
     '__builtin_string_compare': {0: 'borrow', 1: 'borrow'},
-    # `Key for String`'s hash, which every `Map<String, V>` lookup reaches. Reads
+    # `Key for String`'s hash, which every `HashMap<String, V>` lookup reaches. Reads
     # its operand's bytes and keeps nothing.
     '__builtin_string_hash': {0: 'borrow'},
     # Copies twelve bytes of its operand into the pair it returns, so it borrows

@@ -5,7 +5,7 @@
 // spellings. Every other width is named `Int$24` or `UInt$24`. `$` cannot occur in
 // a source identifier, so the name cannot collide with a program's own type, and
 // typeDisplay already reads `Int$24` back as `Int<24>` -- the spelling a program
-// wrote -- by the rule that renders `Map$String$Int`.
+// wrote -- by the rule that renders `HashMap$String$Int`.
 //
 // This module answers what the *name* says. The type and its LLVM spelling are
 // built in ast/types.psm; the literal range check lives here because a literal

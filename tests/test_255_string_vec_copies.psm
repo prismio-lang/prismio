@@ -1,6 +1,6 @@
 // Copying the Strings of a Vec used to leak every copy, and now releases them.
 // `take`, `skip`, `concat`, `reversed`, `sorted`, `toVec`, `clone`, `filter` and
-// `extend` each push `copyOf(element)` into a new Vec, and so does a Map's
+// `extend` each push `copyOf(element)` into a new Vec, and so does a HashMap's
 // `keyAt(i).clone()` pushed into a Vec of keys. All of those copies come from the
 // one allocation inside `strClone`; two containers each holding a result of it read
 // to the analysis as one value held twice (A-CONTAIN), which sent the site to the
@@ -79,7 +79,7 @@ fn main() -> Int {
     q.push(x.clone())
     if (p[0] != x or q[0] != x) { return fail("two containers") }
 
-    let mut m: Map<String, Int> = Map()
+    let mut m: HashMap<String, Int> = HashMap()
     for k in 0..<5 { m.set(word(k + 40), k) }
     let mut keys: Vec<String> = []
     let mut again: Vec<String> = []

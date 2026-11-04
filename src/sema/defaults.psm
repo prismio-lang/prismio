@@ -7,7 +7,7 @@
 // lowers.
 //
 // **Source expressions rather than zeroed storage**, because a zero is not a
-// value for most of these types: a zeroed String is null, and a zeroed Map has
+// value for most of these types: a zeroed String is null, and a zeroed HashMap has
 // no buckets to probe. The one place zeroes are the answer is an array of
 // numbers in a `let`, which is exactly what that `let` does with no initializer.
 
@@ -35,7 +35,7 @@ internal fn semaResolveDefault(module: ASTNode, node: ASTNode, expected: TypeInf
     let reason = semaDefaultInto(module, node, expected, 0)
     if (reason.equals("")) { return true }
     semaErrorAt(node, reason)
-    diag_note("`default` is a value for numbers, `Bool`, `Char`, `String`, `Vec`, sized arrays, optionals, `Map`, and structs whose fields all have one; an enum's value is named, not defaulted")
+    diag_note("`default` is a value for numbers, `Bool`, `Char`, `String`, `Vec`, sized arrays, optionals, `HashMap`, and structs whose fields all have one; an enum's value is named, not defaulted")
     return false
 }
 
@@ -151,7 +151,7 @@ private fn semaDefaultStructDecl(name: String) -> ASTNode {
     return createNode(NodeKind.ERROR_NODE)
 }
 
-// The name a generic struct was instantiated from: `Map` for `Map$String$Int`.
+// The name a generic struct was instantiated from: `HashMap` for `HashMap$String$Int`.
 private fn semaDefaultTemplateName(name: String) -> String {
     let at = name.indexOf(monoSeparator())
     if (at < 0) { return name }
@@ -175,8 +175,9 @@ private fn semaDefaultStruct(module: ASTNode, target: ASTNode, t: TypeInfo, dept
     if (semaStructHasField(t.name, "$tag")) {
         return shown.concat(" is an enum, which has no default value")
     }
-    // A Map's buckets are an invariant its fields cannot be defaulted into.
-    if (fromStd and template.equals("Map")) { return semaDefaultMapNew(module, target, t) }
+    // A HashMap's buckets are an invariant its fields cannot be defaulted into.
+    if (fromStd and template.equals("HashMap")) { return semaDefaultMapNew(module, target, t) }
+    if (fromStd and template.equals("HashSet")) { return semaDefaultSetNew(module, target, t) }
     if (depth >= semaDefaultMaxDepth()) {
         return shown.concat(" contains itself, so it has no default value")
     }
@@ -211,6 +212,15 @@ private fn semaDefaultMapNew(module: ASTNode, target: ASTNode, t: TypeInfo) -> S
     semaDefaultReset(target, NodeKind.CALL_EXPR)
     target.child1 = node_to_ptr(semaDefaultCallee(target, "mapNew"))
     target.child3 = node_to_ptr(semaDefaultTypeArgs(target, "mapNew", keyT, valueT))
+    return ""
+}
+
+// `hashSetNew<K>()`, with `K` read back from the set's key column.
+private fn semaDefaultSetNew(module: ASTNode, target: ASTNode, t: TypeInfo) -> String {
+    let keyT = semaListElementType(semaCompilerFieldType(module, target, t.name, "entryKeys"))
+    semaDefaultReset(target, NodeKind.CALL_EXPR)
+    target.child1 = node_to_ptr(semaDefaultCallee(target, "hashSetNew"))
+    target.child3 = node_to_ptr(semaDefaultTypeArgs(target, "hashSetNew", keyT, typeInvalid()))
     return ""
 }
 

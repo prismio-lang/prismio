@@ -1,4 +1,4 @@
-// Map's methods, and removal.
+// HashMap's methods, and removal.
 //
 // 1. The methods answer what the `map*` functions do: `length`, `isEmpty`,
 //    `has`, `get`, `getOr`, `m[k]`, `set`, `keys`, `values`, `keyAt`/`valueAt`.

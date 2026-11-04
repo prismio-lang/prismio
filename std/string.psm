@@ -189,7 +189,7 @@ internal fn strEmpty() -> String {
 // Twelve bytes or fewer are copied into the pair itself, as `concat` and `slice`
 // do: no allocation, and two short Strings holding the same text are then
 // bit-identical, which is what `==`'s register fast path needs. A
-// `Map<String, V>` stores its keys through this (`copyOf`), and a heap copy of a
+// `HashMap<String, V>` stores its keys through this (`copyOf`), and a heap copy of a
 // short key made every successful probe a `memcmp` against the inline key it was
 // looked up with -- 47,992 of them in `word_frequency`.
 internal fn strClone(s: String) -> String {

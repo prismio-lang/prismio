@@ -49,7 +49,7 @@ missing_features:
   - binary heap / priority queue data structure and push/pop API
 
 reason:
-  Prismio's standard library provides List and Map but no heap. Implementing a
+  Prismio's standard library provides List and HashMap but no heap. Implementing a
   private heap in the benchmark would conceal the missing standard structure.
 
 cpp_status: available
@@ -67,7 +67,7 @@ missing_features:
   - JSON value/object/array representation
 
 reason:
-  Prismio has string scanning and Map/List primitives but no supported JSON
+  Prismio has string scanning and HashMap/List primitives but no supported JSON
   parser or JSON value model. A benchmark-local parser would be a workaround.
 
 cpp_status: available
@@ -214,7 +214,7 @@ status: unsupported
 
 missing_features:
   - custom allocator interface / trait for collections
-  - user-space arena or bump allocator parameters for List and Map
+  - user-space arena or bump allocator parameters for List and HashMap
 
 reason:
   Prismio's AIF (Adaptive Inference Framework) determines allocation tiers

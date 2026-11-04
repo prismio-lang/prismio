@@ -5629,7 +5629,7 @@ private fn generateCall(expr: ASTNode) -> String {
         }
     }
 
-    // `keyHashBytes`, which every `Map<String, V>` probe reaches. A short
+    // `keyHashBytes`, which every `HashMap<String, V>` probe reaches. A short
     // key's twelve bytes are mixed where they sit and nothing is called; see
     // `ir_str_hash`. An owned operand is dropped here for the reason the
     // `==` lowering above drops one.

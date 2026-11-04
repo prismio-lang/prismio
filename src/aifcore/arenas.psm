@@ -55,12 +55,12 @@ private let mut subRangesOk = -1
 // The slice `subtreeSites` last answered.
 private let mut subtreeBuffer: Vec<Int>
 
-private let mut scopeByNode: Map<Usize, Int>
+private let mut scopeByNode: HashMap<Usize, Int>
 private let mut scopeByNodeBuilt = -1
 
 private let mut arenasOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 internal fn arenasOpen() {
     if (arenasOpened) { return }
     arenasOpened = true
@@ -70,7 +70,7 @@ internal fn arenasOpen() {
     subSiteFirst = []
     subSiteList = []
     subtreeBuffer = []
-    let byNode: Map<Usize, Int> = {}
+    let byNode = HashMap<Usize, Int>()
     scopeByNode = byNode
 }
 
@@ -479,7 +479,7 @@ public fn aif_arena_unsized_sites() -> Int {
 private fn scopeOfNode(node: Ptr) -> Int {
     arenasOpen()
     if (scopeByNodeBuilt != scopeCount) {
-        let fresh: Map<Usize, Int> = {}
+        let fresh = HashMap<Usize, Int>()
         scopeByNode = fresh
         for s in 0..<scopeCount {
             if (scopeNode[s] == 0) { continue }

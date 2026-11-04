@@ -94,7 +94,7 @@ internal fn semaRegisterNamedTypes(module: ASTNode) {
 // with an empty type name that nothing defines, and the program fails to link
 // with `Undefined symbols: ___aif_release_`.
 //
-// It reproduces on `let m: Map<Int, Int> = mapNew<Int, Int>()`, which is how the
+// It reproduces on `let m: HashMap<Int, Int> = mapNew<Int, Int>()`, which is how the
 // documentation spells it, and it predates v0.1's channels -- `build/tbaa3` fails
 // the same way. `tests/test_65_map.psm` missed it by writing `let m = mapNew<...>`
 // with no annotation, which is the one form that works.
@@ -502,7 +502,7 @@ internal fn semaFindStructFieldType(module: ASTNode, at: ASTNode, structName: St
 }
 
 // The type of a field the compiler itself reads, not the program: a map literal and a
-// default `Map` build std's columns whatever their visibility, as std's own code does.
+// default `HashMap` build std's columns whatever their visibility, as std's own code does.
 internal fn semaCompilerFieldType(module: ASTNode, at: ASTNode, structName: String, fieldName: String) -> TypeInfo {
     return semaStructFieldType(module, at, structName, fieldName, false)
 }

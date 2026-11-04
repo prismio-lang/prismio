@@ -49,11 +49,11 @@ internal let mut fnFile: Vec<Int>
 internal let mut fnSealed: Vec<Int>
 // A running count, so each site gets a stable ordinal.
 internal let mut fnSiteCount: Vec<Int>
-internal let mut fnBySymbol: Map<Int, Int>
+internal let mut fnBySymbol: HashMap<Int, Int>
 
 private let mut structureOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 internal fn structureOpen() {
     if (structureOpened) { return }
     structureOpened = true
@@ -76,7 +76,7 @@ internal fn structureOpen() {
     fnFile = []
     fnSealed = []
     fnSiteCount = []
-    let bySymbol: Map<Int, Int> = {}
+    let bySymbol = HashMap<Int, Int>()
     fnBySymbol = bySymbol
 }
 

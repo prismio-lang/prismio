@@ -1,7 +1,7 @@
 // Standard-trait impls a fieldless enum gets without writing them.
 //
 // An enum's value is an integer, so `Copy`, `Eq` and `Key` have one possible
-// meaning and no reason to be hand-written -- and without them `Map<Color, V>` is
+// meaning and no reason to be hand-written -- and without them `HashMap<Color, V>` is
 // refused until the program writes three impls that each say "it is an integer".
 //
 // The impls are **source text parsed like any other**, so everything after the
@@ -9,7 +9,7 @@
 // Each is added only when its trait is in the program (the program imported it)
 // and the program has not written its own, so a hand-written impl always wins.
 //
-// **Only for an enum the program passes as a type argument** -- `Map<Color, V>`,
+// **Only for an enum the program passes as a type argument** -- `HashMap<Color, V>`,
 // `mapNew<Color, V>()`. That is where a bound is asked of an enum, and a derived
 // impl for every enum would put three unused functions into every program that
 // merely imports `std.key`: they are not pruned, and the output of programs that

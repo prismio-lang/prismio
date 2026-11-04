@@ -652,10 +652,10 @@ public fn typeDisplay(t: TypeInfo) -> String {
     return typeInstancesAsWritten(typeSpelling(t, "Vec"))
 }
 
-// A generic instance is named `Option$Struct_Point` or `Map$String$Int` inside the
+// A generic instance is named `Option$Struct_Point` or `HashMap$String$Int` inside the
 // compiler: the template, then each type argument after a `$`, with a `Struct_` or
 // `Enum_` prefix on a user's type. Prose writes it the way the program did --
-// `Option<Point>`, `Map<String, Int>`. Anything without a `$` is left alone, and so
+// `Option<Point>`, `HashMap<String, Int>`. Anything without a `$` is left alone, and so
 // is a key, which is why this is applied to the display spelling only.
 private fn typeInstancesAsWritten(spelled: String) -> String {
     if (spelled.contains("$") == false) { return spelled }

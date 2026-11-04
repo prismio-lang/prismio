@@ -221,7 +221,7 @@ public fn ixCompleteTypes(inout ix: Ix, inout src: IxSources, file: Int) {
         }
         id = id + 1
     }
-    let mut provided: Vec<String> = ["Int", "Float", "Bool", "Char", "String", "Vec", "Map", "Ptr", "Slice", "Channel", "Self"]
+    let mut provided: Vec<String> = ["Int", "Float", "Bool", "Char", "String", "Vec", "HashMap", "HashSet", "Ptr", "Slice", "Channel", "Self"]
     let sized: Vec<String> = ["I8", "I16", "I64", "Isize", "U8", "U16", "U32", "U64", "Usize", "F32", "F16", "BF16"]
     for name in sized { provided.push(name.clone()) }
     provided.push("F128".clone())

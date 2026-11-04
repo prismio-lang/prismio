@@ -28,7 +28,7 @@ import symbols.names
 
 // One call node's own result: its value set and the function it calls. The walk gives every call a fresh value set, so the
 // constraints that consume that set are this node's consumers and nobody else's.
-private let mut callNodes: Map<Usize, Int>
+private let mut callNodes: HashMap<Usize, Int>
 private let mut callVs: Vec<Int>
 private let mut callFn: Vec<Int>
 
@@ -36,7 +36,7 @@ private let mut callFn: Vec<Int>
 // `keep.push(optionOr(o, d))` stores the String inside `o`, so the scope drop of `o` and the container's teardown both free it. The
 // points-to flow cannot see that, so codegen asks it of the syntax and needs to know which arguments are kept: a contract for an
 // extern, and the flow graph's answer for a function this compilation can see.
-private let mut argNodes: Map<Usize, Int>
+private let mut argNodes: HashMap<Usize, Int>
 // The callee, or -1 for one only a contract describes.
 private let mut argFn: Vec<Int>
 // Contract-retained argument indices, one bit each; bit 31 is "31 or later".
@@ -65,7 +65,7 @@ private let mut paramKeysBuiltFns = -1
 private let mut fnHoldsView: Vec<Int>
 private let mut fnHoldsViewReady = false
 // Field keys by owner type: the head of each type's chain, and the next key of the chain, indexed by key.
-private let mut fieldKeyHead: Map<Int, Int>
+private let mut fieldKeyHead: HashMap<Int, Int>
 private let mut fieldKeyNext: Vec<Int>
 private let mut fieldKeysBuilt = false
 private let mut heldReached = -1
@@ -92,15 +92,15 @@ private let mut flowReady = false
 
 private let mut callResultsOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 internal fn callResultsOpen() {
     if (callResultsOpened) { return }
     callResultsOpened = true
-    let calls: Map<Usize, Int> = {}
+    let calls = HashMap<Usize, Int>()
     callNodes = calls
-    let args: Map<Usize, Int> = {}
+    let args = HashMap<Usize, Int>()
     argNodes = args
-    let heads: Map<Int, Int> = {}
+    let heads = HashMap<Int, Int>()
     fieldKeyHead = heads
     callVs = []
     callFn = []
@@ -339,10 +339,10 @@ private fn fieldKeysBuild() {
     callResultsOpen()
     if (fieldKeysBuilt) { return }
     fieldKeysBuilt = true
-    let heads: Map<Int, Int> = {}
+    let heads = HashMap<Int, Int>()
     fieldKeyHead = heads
     fieldKeyNext = Vec<Int>.filled(keyCount, -1)
-    let mut tails: Map<Int, Int> = {}
+    let mut tails = HashMap<Int, Int>()
     for k in 0..<keyCount {
         if (keyKind[k] != AIF_KEY_FIELD) { continue }
         let owner = keyA[k]

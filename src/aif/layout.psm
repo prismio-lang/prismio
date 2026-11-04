@@ -297,7 +297,7 @@ internal fn aifComputeSizes(module: ASTNode) {
 // checkout compiles `std/` from source and an installed toolchain reads a
 // `.plib`, and fixing only the second would leave every fixture under `tests/`
 // testing a layout no installed program gets. An instantiated generic carries its
-// template's file, so `Map<K, V>` is fixed at every argument.
+// template's file, so `HashMap<K, V>` is fixed at every argument.
 internal fn aifLayoutFixStandardLibrary(module: ASTNode) {
     let mut p = module.child1
     while (nodeExists(p)) {

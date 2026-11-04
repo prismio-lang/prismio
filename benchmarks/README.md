@@ -135,7 +135,7 @@ every other memory benchmark leaves to the compiler:
 The arena is hand-written in the C++ and Rust arms rather than taken from
 `std::pmr` or a crate, so all three run the same alignment arithmetic and the
 same capacity check. `custom_allocator_churn` stays unsupported: an `Arena` hands
-out addresses, and a `Vec` or `Map` still cannot be given one to allocate from.
+out addresses, and a `Vec` or `HashMap` still cannot be given one to allocate from.
 
 Numbers (Apple M-series, 9 runs): `binary_codec` 1.00× C++ and Rust,
 `manual_alloc_churn` 0.98–1.01×, `arena_bump` 1.00×. Two fixes got them there:

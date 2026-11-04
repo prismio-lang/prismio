@@ -51,7 +51,7 @@ impl Copy for PathKey {
 // key comparisons the table performed. With the switch this is a small multiple
 // of `n`; without it every key lands in one bucket and it is quadratic.
 fn pathProbeSteps(n: Int) -> Int {
-    let m: Map<PathKey, Int> = mapNew<PathKey, Int>()
+    let m: HashMap<PathKey, Int> = mapNew<PathKey, Int>()
     let mut i = 0
     while (i < n) {
         mapSet(m, PathKey { v: i, hits: 0 }, i)
@@ -74,7 +74,7 @@ fn pathProbeSteps(n: Int) -> Int {
 // Insert `n` keys `i * stride`, then read every one back. Returns the number of
 // lookups that did not answer with the value they were given.
 fn roundTrip(stride: Int, n: Int) -> Int {
-    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
         mapSet(m, i * stride, i * 7 + 1)
@@ -92,7 +92,7 @@ fn roundTrip(stride: Int, n: Int) -> Int {
 
 // Insertion order must survive a switch: mapKeyAt is the iteration contract.
 fn orderAfterSwitch(stride: Int, n: Int) -> Int {
-    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
         mapSet(m, i * stride, i)
@@ -111,7 +111,7 @@ fn orderAfterSwitch(stride: Int, n: Int) -> Int {
 // A map that switched must keep growing correctly, and must still answer for
 // keys inserted before the switch.
 fn growAfterSwitch(n: Int) -> Int {
-    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
         mapSet(m, i * 65537, i)
@@ -136,7 +136,7 @@ fn growAfterSwitch(n: Int) -> Int {
 
 // Overwrite, absence and negative keys still behave across the switch.
 fn semanticsAfterSwitch(n: Int) -> Int {
-    let m: Map<Int, Int> = mapNew<Int, Int>()
+    let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
         mapSet(m, i * 65537, i)
@@ -161,7 +161,7 @@ fn semanticsAfterSwitch(n: Int) -> Int {
 // String keys never go through keyMixInt at all; the switch must leave them
 // answering the same.
 fn stringKeys(n: Int) -> Int {
-    let m: Map<String, Int> = mapNew<String, Int>()
+    let m: HashMap<String, Int> = mapNew<String, Int>()
     let mut i = 0
     while (i < n) {
         mapSet(m, "k".concat(i.toString()), i)
@@ -205,10 +205,10 @@ fn main() -> Int {
     bad = bad + check("FAIL: string keys", stringKeys(500), 0)
 
     // A single entry, and an empty map, still work either way.
-    let one: Map<Int, Int> = mapNew<Int, Int>()
+    let one: HashMap<Int, Int> = mapNew<Int, Int>()
     mapSet(one, 65537, 1)
     bad = bad + check("FAIL: single entry", mapGetOr(one, 65537, 0), 1)
-    let empty: Map<Int, Int> = mapNew<Int, Int>()
+    let empty: HashMap<Int, Int> = mapNew<Int, Int>()
     bad = bad + check("FAIL: empty length", mapLen(empty), 0)
     bad = bad + check("FAIL: empty lookup", mapGetOr(empty, 65537, 0 - 5), 0 - 5)
 

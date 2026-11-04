@@ -5,6 +5,7 @@
 // reserved word, and the two answers belong beside the enum that names them.
 
 
+import std.map
 import std.string
 import std.vec
 
@@ -147,10 +148,21 @@ public fn reservedWordAt(index: Int) -> String {
     return reservedWords[index].clone()
 }
 
-// A list searched with `contains` rather than a lookup table: the set is small and
-// this runs once per identifier.
+// The same words as a set, which is what the scanner asks once per identifier. Built
+// on first use: a zero-filled global `HashSet` is not an empty one.
+private let mut keywordSet: HashSet<String>
+private let mut keywordSetBuilt = false
+
+private fn buildKeywordSet() {
+    let words = HashSet<String>.withCapacity(reservedWords.length)
+    for word in reservedWords { words.insert(word) }
+    keywordSet = words
+    keywordSetBuilt = true
+}
+
 public fn isKeyword(word: String) -> Bool {
-    return reservedWords.contains(word)
+    if (keywordSetBuilt == false) { buildKeywordSet() }
+    return keywordSet.contains(word)
 }
 
 internal fn isBoolean(word: String) -> Bool {

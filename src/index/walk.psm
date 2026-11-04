@@ -177,7 +177,7 @@ fn ixEmitUnresolved(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: A
 fn ixIsBuiltinType(name: String) -> Bool {
     if (name.equals("Int") or name.equals("UInt") or name.equals("Float") or name.equals("Bool")
             or name.equals("Char") or name.equals("String") or name.equals("Ptr") or name.equals("Void")
-            or name.equals("Vec") or name.equals("Array") or name.equals("Map") or name.equals("Self")
+            or name.equals("Vec") or name.equals("Array") or name.equals("HashMap") or name.equals("HashSet") or name.equals("Self")
             or name.equals("Fn") or name.equals("List") or name.equals("Task") or name.equals("Result")
             or name.equals("Slice") or name.equals("Channel") or name.equals("Chan") or name.equals("Future")
             or name.equals("DataView") or name.equals("Option")) {
@@ -748,7 +748,7 @@ fn ixEmitGenericCallee(inout ix: Ix, inout src: IxSources, inout w: IxWalk, call
     if (ixTokenText(src, slot, open - 1).equals(ix.dName[target])) {
         ixEmitAt(ix, src, w, callee.file, slot, open - 1, target, "call", "", "")
     } else {
-        // `Map<String, Int>()`: a type constructor, which sema lowered to a function of another name.
+        // `HashMap<String, Int>()`: a type constructor, which sema lowered to a function of another name.
         ixEmitTypeWord(ix, src, w, callee.file, slot, open - 1)
     }
     let mut i = open + 1

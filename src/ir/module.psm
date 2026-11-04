@@ -672,7 +672,7 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     // no resolved symbol has to go by. The name is safe only when every function
     // carrying it is, so one unsafe overload poisons the name rather than leaving
     // it silently safe -- and when the name was all a call had, it poisoned every
-    // call: `Buffer.eq` reaching an extern took the guard from every `Map` probe,
+    // call: `Buffer.eq` reaching an extern took the guard from every `HashMap` probe,
     // whose `eq` is an Int comparison.
     //
     // The builtins go in first and by the same door, which is what lets a library
@@ -718,15 +718,15 @@ private fn markSingleLoopCallsiteFunctions(module: ASTNode) {
     // guard entirely: `hash` for String reaches `__builtin_string_byte_at` and
     // `eq` for String reaches `__builtin_string_eq`, verdicts are marked by
     // source name so one unsafe overload poisons the name, and `mapProbe` calls
-    // `hash` and `eq`. Every `Map<Int, Int>` probe in the language paid a
-    // per-access `elem_size` load and test because `Map<String, V>` exists.
+    // `hash` and `eq`. Every `HashMap<Int, Int>` probe in the language paid a
+    // per-access `elem_size` load and test because `HashMap<String, V>` exists.
     ir_mark_guard_safe_fn("__builtin_string_len", 1)
     ir_mark_guard_safe_fn("__builtin_string_byte_at", 1)
     ir_mark_guard_safe_fn("__builtin_string_eq", 1)
     ir_mark_guard_safe_fn("__builtin_string_compare", 1)
     // `hash` for String, which `mapProbe` reaches: it reads its argument's bytes
     // and touches no list. Unmarked, that one call would take the guard from
-    // every map's probe, `Map<Int, Int>` included -- the trap the note above
+    // every map's probe, `HashMap<Int, Int>` included -- the trap the note above
     // describes for `__builtin_string_byte_at`. `str_hash` is the runtime half
     // the builtin falls back to, reached only from emitted IR and so never named
     // in a body this sweep walks; it is marked because the name is the key and a
@@ -1709,7 +1709,7 @@ private fn generateFrameReleaseFns(module: ASTNode) {
     while (nodeExists(p)) {
         let structNode = ptr_to_node(p)
         if (structNode.kind == NodeKind.STRUCT_DECL
-                and irFrameReleaseTypes.contains(";".concat(structNode.s1, ";"))) {
+                and irFrameReleaseTypes.contains(structNode.s1)) {
             let tname = structNode.s1
             ir_function_begin(frameReleaseFnName(tname), "void")
             ir_function_param("ptr", "p_obj")
@@ -1911,9 +1911,8 @@ private fn emitGlobalArray(decl: ASTNode) {
 }
 
 public fn generateModule(module: ASTNode) {
-    irFrameReleaseTypes = ""
+    irResetFrameSets()
     irOptionalDropTypes = ";"
-    irFrameStructSlots = ""
     ir_reset_globals()
     ir_reset_types()
     ir_clear_var_types()

@@ -1,4 +1,4 @@
-// Map<K, V> from std.map -- the first container written in Prismio rather than C.
+// HashMap<K, V> from std.map -- the first container written in Prismio rather than C.
 //
 // It is also the load test for generics: a generic struct whose fields are
 // themselves generic (`Vec<K>`), generic functions over two parameters, and a
@@ -41,8 +41,8 @@ fn main() -> Int {
     // the part that would collide if the mangled name ignored V.
     let flags = mapNew<Int, Bool>()
     mapSet(flags, 1, true)
-    if (mapGetOr(flags, 1, false) == false) { return fail("Map<Int, Bool>") }
-    if (mapGetOr(flags, 2, false)) { return fail("Map<Int, Bool> absent key") }
+    if (mapGetOr(flags, 1, false) == false) { return fail("HashMap<Int, Bool>") }
+    if (mapGetOr(flags, 2, false)) { return fail("HashMap<Int, Bool> absent key") }
 
     // mapGet answers with an Option, which is the lookup that can tell "absent"
     // apart from "present and equal to the fallback". mapGetOr cannot: a stored

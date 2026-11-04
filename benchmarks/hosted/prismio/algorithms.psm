@@ -603,7 +603,7 @@ public fn benchSExprParse(scale: Int) -> Int {
 public fn benchWordFrequency(scale: Int) -> Int {
     let text = "the quick brown fox jumps over the lazy dog while the fox naps ".repeat(400 * scale)
     let words = text.splitWhitespace()
-    let counts: Map<String, Int> = mapNew<String, Int>()
+    let counts: HashMap<String, Int> = mapNew<String, Int>()
 
     for word in words {
         mapSet(counts, word, mapGetOr(counts, word, 0) + 1)

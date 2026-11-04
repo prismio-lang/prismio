@@ -312,7 +312,7 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
         return nodeGetType(valNode)
     }
 
-    // `let m: Map<String, Int> = Map()`: type arguments only the context knows.
+    // `let m: HashMap<String, Int> = HashMap()`: type arguments only the context knows.
     if (valNode.kind == NodeKind.CALL_EXPR) { monoTypeArgsFromExpected(module, valNode, expected) }
 
     let mut actual = semaExpr(module, valNode)

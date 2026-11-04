@@ -39,7 +39,7 @@ import std.option
 // pass-through shape that leaks its argument, which is the reason the table is
 // twelve near-identical functions instead of a chain.
 //
-// **`T: Copy` and `copyOf`, for the reason `Map` needs them**: a parameter is a
+// **`T: Copy` and `copyOf`, for the reason `HashMap` needs them**: a parameter is a
 // borrow, so `list_push(xs, a)` on a parameter is *"cannot move out of borrowed
 // value `a`"*. std/copy.psm's header has the whole argument, including why
 // `sink` does not fix it. The cost is that a list literal is available for the

@@ -87,13 +87,13 @@ internal let mut keyLastStmt: Vec<Int>
 
 // The AST node each site came from, by address. One site per allocating expression, so a node that already has
 // one is a bug in the walk; recording the first keeps that deterministic.
-internal let mut siteOfNode: Map<Usize, Int>
+internal let mut siteOfNode: HashMap<Usize, Int>
 
 private let mut recSymbol: Vec<Int>
 private let mut recSite: Vec<Int>
 private let mut sitesOpened = false
 
-// A zero-filled global `Vec` or `Map` is not an empty one.
+// A zero-filled global `Vec` or `HashMap` is not an empty one.
 internal fn sitesOpen() {
     if (sitesOpened) { return }
     sitesOpened = true
@@ -128,7 +128,7 @@ internal fn sitesOpen() {
     sitePinRegionVerdict = []
     scopeStmt = []
     keyLastStmt = []
-    let byNode: Map<Usize, Int> = {}
+    let byNode = HashMap<Usize, Int>()
     siteOfNode = byNode
     recSymbol = []
     recSite = []

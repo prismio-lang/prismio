@@ -10,8 +10,8 @@
 //   * In a container. Up to 32 bits of payload an element is one integer twice
 //     the payload's width (optCarrierKey); `Float?` and `I64?` are 16-byte rows.
 //     `Vec<Int?>` did not pass LLVM's verifier until 2026-09-30.
-//   * As a Map value, and two Maps with different optional value types: every
-//     `T?` mangled to `Invalid`, so the second Map got the first one's methods.
+//   * As a HashMap value, and two Maps with different optional value types: every
+//     `T?` mangled to `Invalid`, so the second HashMap got the first one's methods.
 
 import std.io
 import std.map
@@ -132,18 +132,18 @@ fn main() -> Int {
     for v in ls { big = big + v.unwrapOr(0 as I64) }
     if (big != 3000000000000 as I64) { return fail("Vec<I64?>") }
 
-    // Map values
-    let mut counts: Map<Int, Int?> = { 1: 10, 2: none }
+    // HashMap values
+    let mut counts: HashMap<Int, Int?> = { 1: 10, 2: none }
     counts.set(3, 30)
     counts.set(4, none)
     if (counts.at(1).unwrapOr(0) != 10 or counts.at(2) != none or counts.at(3).unwrapOr(0) != 30
             or counts.getOr(4, 5) != none or counts.getOr(9, 5).unwrapOr(0) != 5) {
-        return fail("Map<Int, Int?>")
+        return fail("HashMap<Int, Int?>")
     }
-    let mut weights: Map<Int, Float?> = {}
+    let mut weights: HashMap<Int, Float?> = {}
     weights.set(1, 2.5)
     weights.set(2, none)
-    let mut bytes: Map<Int, U8?> = {}
+    let mut bytes: HashMap<Int, U8?> = {}
     bytes.set(1, 7 as U8)
     if (weights.at(1).unwrapOr(0.0) != 2.5 or weights.at(2) != none
             or bytes.at(1).unwrapOr(0 as U8) != 7 as U8) {

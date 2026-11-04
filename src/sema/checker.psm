@@ -210,7 +210,7 @@ private fn semaDeclaresFunction(name: String) -> Bool {
 // first parameter's written type. Unlike `at`'s global test, the store has to ask
 // the struct: without a `set` of its own, `x[i] = v` keeps its refusal, which
 // says what to write, rather than becoming a call to some other type's `set`. A
-// generic type's methods are templates and not in the index, so `Map` keeps
+// generic type's methods are templates and not in the index, so `HashMap` keeps
 // `m.set(k, v)`.
 private fn semaStructDeclaresMethod(typeName: String, name: String) -> Bool {
     let count = ir_decl_count(name)
@@ -454,7 +454,7 @@ private fn semaConcatSpineIsString(module: ASTNode, expr: ASTNode) -> Bool {
 // What can follow `in`, and what each iteration binds:
 //
 //     String, Vec<T>, Slice<T>, Array<T, N>    each element; `(i, x)` adds its index
-//     Map<K, V>                                 each key; `(k, v)` adds its value
+//     HashMap<K, V>                                 each key; `(k, v)` adds its value
 //     a type implementing `Iterator`            each `next`
 //     Channel<T>                                each message, until closed and drained
 //
@@ -523,7 +523,7 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
         diag_note("a `[T]` parameter takes arrays of any length; pass the length too and write `for i in 0..<n`")
         return false
     } else {
-        semaErrorAt(source, "`for ... in` needs a String, Vec, Slice, array, Map, Channel, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
+        semaErrorAt(source, "`for ... in` needs a String, Vec, Slice, array, HashMap, Channel, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
         diag_note("implement `Iterator` for it, or iterate by index -- `for i in 0..<n`")
         return false
     }
@@ -610,7 +610,7 @@ private fn semaForEachChannel(stmt: ASTNode, source: ASTNode) {
     stmt.child3 = ptr_null()
 }
 
-// `for k in m` and `for (k, v) in m` over a `Map<K, V>`: its iteration API,
+// `for k in m` and `for (k, v) in m` over a `HashMap<K, V>`: its iteration API,
 // `mapKeyAt`/`mapValueAt`, over positions `0..<mapLen(m)`. Positions are
 // insertion order, which is the order the loop visits.
 private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
@@ -635,12 +635,12 @@ private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
     return true
 }
 
-// Whether this is an instantiation of std.map's `Map`. An instantiated generic
-// struct is named after its template and its arguments, `Map$String$Int`, and
+// Whether this is an instantiation of std.map's `HashMap`. An instantiated generic
+// struct is named after its template and its arguments, `HashMap$String$Int`, and
 // the template is only there when `std.map` is imported.
 private fn semaForIsMap(module: ASTNode, t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.STRUCT) { return false }
-    if (t.name.startsWith("Map".concat(monoSeparator())) == false) { return false }
+    if (t.name.startsWith("HashMap".concat(monoSeparator())) == false) { return false }
     return monoHasTemplate(module, "mapKeyAt", NodeKind.FUNCTION)
 }
 
@@ -1611,11 +1611,11 @@ private fn semaTypeFunctionCall(module: ASTNode, expr: ASTNode, callee: ASTNode,
     return true
 }
 
-// `Map<String, Int>()` or `Parser(source)`: calling a type calls its `new`. The
-// callee becomes the `Map<String, Int>.new` the parser builds for the written
+// `HashMap<String, Int>()` or `Parser(source)`: calling a type calls its `new`. The
+// callee becomes the `HashMap<String, Int>.new` the parser builds for the written
 // spelling -- a MEMBER_ACCESS on the type, carrying the call's type arguments as
 // its qualifier -- so semaTypeFunctionCall, Vec's associated functions and
-// inference from an annotation (`let m: Map<K, V> = Map()`) all apply as they
+// inference from an annotation (`let m: HashMap<K, V> = HashMap()`) all apply as they
 // do there, and nothing downstream learns a second way to spell a constructor.
 //
 // Asked only of a name that is not a binding. Answers semaVecRewritten() or
@@ -1651,7 +1651,7 @@ private fn semaTypeCall(module: ASTNode, expr: ASTNode, callee: ASTNode) -> Int 
         return semaVecRejected()
     }
 
-    // `let m = Map()`: a generic type called with nothing to solve its
+    // `let m = HashMap()`: a generic type called with nothing to solve its
     // parameters from. An annotation would have supplied them already
     // (monoTypeArgsFromExpected), so this is the case with none.
     let generic = monoHasTemplate(module, name, NodeKind.STRUCT_DECL)
@@ -2635,7 +2635,7 @@ private fn semaCheckConstantIndex(index: ASTNode, length: Int) {
 
 private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     let collectionT = semaExpr(module, ptr_to_node(expr.child1))
-    // A struct's index is whatever its `at` takes -- a Map's is a key -- so
+    // A struct's index is whatever its `at` takes -- a HashMap's is a key -- so
     // overload resolution checks it below, and only the built-in collections
     // are indexed by an Int.
     let mut indexT = typeInvalid()
@@ -2670,7 +2670,7 @@ private fn semaIndexExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // the argument types and is the better message. Only a program with no
     // `at` anywhere reaches the note below.
     if (collectionT.kind == TypeKind.STRUCT) {
-        // A generic type's `at` (`impl<K, V> Map<K, V>`) is a template, which
+        // A generic type's `at` (`impl<K, V> HashMap<K, V>`) is a template, which
         // the declaration index does not hold.
         if (semaDeclaresFunction("at") or monoHasTemplate(module, "at", NodeKind.FUNCTION)) {
             semaBecomeCall(expr, "at",
@@ -3159,14 +3159,15 @@ private fn semaDefaultEmptyVec(stmt: ASTNode) {
     stmt.child2 = node_to_ptr(empty)
 }
 
-// `let stock: Map<String, Int>` is an empty Map, for the reason an unwritten Vec
+// `let stock: HashMap<String, Int>` is an empty HashMap, for the reason an unwritten Vec
 // is an empty Vec: until 2026-09-28 it compiled to a zeroed struct, whose first
 // `set` read a null bucket table. The initializer is `default`, which is
-// `mapNew<K, V>()` for a Map (semaDefaultMapNew). Not for `Map<K, V>?`.
+// `mapNew<K, V>()` for a HashMap (semaDefaultMapNew), and `hashSetNew<K>()` for a
+// HashSet (semaDefaultSetNew). Not for `HashMap<K, V>?`.
 private fn semaDefaultEmptyMap(stmt: ASTNode) {
     if (nodeExists(stmt.child1) == false or nodeExists(stmt.child2)) { return }
     let ann = ptr_to_node(stmt.child1)
-    if (ann.i2 != 1 or ann.i3 == 1 or ann.s1.equals("Map") == false) { return }
+    if (ann.i2 != 1 or ann.i3 == 1 or (ann.s1.equals("HashMap") or ann.s1.equals("HashSet")) == false) { return }
     let fresh = createNode(NodeKind.DEFAULT_EXPR)
     nodeSpanFrom(fresh, stmt)
     stmt.child2 = node_to_ptr(fresh)

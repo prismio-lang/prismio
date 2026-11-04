@@ -1041,7 +1041,7 @@ impl Parser {
             self.fatal("expected a type name, found ".concat(parserDescribe(name)))
         }
 
-        // A type constructor applied to arguments: `List<Int>`, `Map<String, Int>`.
+        // A type constructor applied to arguments: `List<Int>`, `HashMap<String, Int>`.
         //
         // `i2` used to mean `is_list` and now means "this name has type arguments",
         // with the constructor in `s1` and the arguments a `next`-chain under

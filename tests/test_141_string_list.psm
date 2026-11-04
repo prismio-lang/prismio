@@ -87,7 +87,7 @@ fn main() -> Int {
     if (fruit[4].equals("pear") == false) { return fail("sort: last") }
 
     // A map's keys are a Vec<String> too.
-    let counts: Map<String, Int> = mapNew<String, Int>()
+    let counts: HashMap<String, Int> = mapNew<String, Int>()
     let mut k = 0
     while (k < 50) {
         let key = words[k % 5]

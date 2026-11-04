@@ -111,7 +111,7 @@ public fn keyMixWide(value: U64) -> Int {
 // short case identically. See `ir_str_hash` in runtime/llvm-api-backend.c.
 //
 // **The call was the whole cost.** Against the FNV-1a byte loop this replaced, a
-// `Map<String, Int>` of 80,000 twelve-byte keys was 26% faster and a ten-word
+// `HashMap<String, Int>` of 80,000 twelve-byte keys was 26% faster and a ten-word
 // table of 3-5 byte keys 19% slower, even though FNV displaced five of the ten
 // words to `str_hash`'s one: the byte loop inlined into `mapProbe` whole and one
 // runtime call made `mapHashOf` too large to. Lowering it removes the call in
@@ -167,6 +167,6 @@ impl Key for String {
 
 // **`Float` deliberately has no impl, and that is a decision.** NaN is not equal
 // to itself, so a NaN key could be inserted and never found again -- a silently
-// wrong answer, which is the one failure mode v0.1's bar names. `Map<Float, V>`
+// wrong answer, which is the one failure mode v0.1's bar names. `HashMap<Float, V>`
 // therefore fails at the instantiation with "Float does not implement `Key`",
 // which is the diagnostic a user can act on.

@@ -54,7 +54,7 @@ fn main() -> Int {
     let opt: Int? = default
     if (opt != none) { return fail("option") }
 
-    let mut m: Map<String, Int> = default
+    let mut m: HashMap<String, Int> = default
     mapSet(m, "k", 3)
     if (mapLen(m) != 1 or mapGetOr(m, "k", 0) != 3) { return fail("map") }
 

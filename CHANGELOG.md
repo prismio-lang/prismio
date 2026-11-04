@@ -9,6 +9,21 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`HashSet<K>` (`std.map`): `insert`, `contains`, `remove`.** A set of distinct keys with the table `HashMap` has
+  minus the value column: `HashSet<K>()`, `HashSet<K>.withCapacity(n)` and a bare `let s: HashSet<K>` are empty sets;
+  `insert` answers whether the key was new, `remove` whether it was there; `length`, `isEmpty` and `clear` come with it.
+  `K: Key + Copy`, as for a map, so `String` and struct keys are copied in and released with the set
+  (`tests/test_369_hash_set.psm`, an ownership probe: 2420 allocated, 2420 released, 0 leaked). It holds its own columns
+  rather than wrapping a `HashMap<K, Bool>`: the wrapper read 7 allocated, 1 released for a `HashSet<Int>`, because a
+  struct holding another struct that owns columns does not release it through the field.
+- **The compiler uses it where it asked "is this word one of these?" against a list or a delimited string**: the
+  lexer's `isKeyword` (was `Vec<String>.contains` over 45 words per identifier), `vocabularyIsContextual`, and the IR
+  generator's `irFrameStructSlots` / `irFrameReleaseTypes` (were `;`-joined strings searched with `contains` and grown
+  with `concat`). A/B on one machine, A the previous commit and B this tree, both built from the same seed: 301 test programs
+  emit byte-identical IR; the keyword test alone is 208 ms -> 61 ms over 8.3 M lookups of the compiler's own
+  identifiers (3.4x); end to end `build x.psm -o x.ll` is 0.6-1.7% faster (median of 15 interleaved runs, four inputs),
+  which is what lexing's share of a compile predicts.
+
 - **System calls: `std.syscall`, `linux.syscall.write(...)`, `macos.syscall.write(...)` and the raw `syscall(number, ...)`.**
   One new builtin, `__builtin_syscall(number, a0..a5) -> I64`, lowered in place to the target's instruction sequence:
   `syscall` (Linux and macOS x86_64, macOS adding the `0x2000000` class bit), `svc #0` (Linux arm64) and `svc #0x80`
@@ -644,6 +659,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   359/359, and the IR of the 370 programs in `tests/` and `benchmarks/` is byte-identical.
 
 ### Changed
+
+- **`Map` is now `HashMap`.** The type, `HashMap<K, V>()`, `HashMap<K, V>.withCapacity(n)`, `let m: HashMap<K, V>` and
+  `{ k: v }` literals; the compiler's own recognition of it (`for` over a map, map literals, `default`, completion) is
+  renamed with it. The `map*` free functions (`mapNew`, `mapSet`, ...) keep their names. `Map` is no longer a type, so a
+  program that wrote it needs the one-word change; the committed seed is unaffected (`src/` builds `HashMap` values with
+  `HashMap<K, V>()` rather than `= {}`, which the seed's own map-literal check does not know).
 
 - **The frontend no longer ends the run at the first lexical, syntax or import error.** A syntax error the parser could
   not recover from locally (`Parser.fatal`, 38 call sites), a lexer error (`Lexer.fatal`, 24) and an unresolvable

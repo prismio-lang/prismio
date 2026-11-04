@@ -20,7 +20,7 @@
 // nesting limit of 64 also bounds how many computed keys one literal can hold.
 //
 // **`K` and `V` are decided here, not inferred by the calls.** Under an
-// annotation they are its types, so `let m: Map<String, U8> = { "a": 1 }`
+// annotation they are its types, so `let m: HashMap<String, U8> = { "a": 1 }`
 // re-types the `1`; without one they are the first entry's, as a Vec literal's
 // element type is its first element's. Every entry is checked against them in
 // the literal's own words, and every call is given `<K, V>` explicitly.
@@ -46,7 +46,7 @@ internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -
     if (nodeIsNull(node.child1)) {
         if (isMap == false) {
             semaErrorAt(node, "`{}` is an empty map, and nothing says what it maps")
-            diag_note("write the type: `let m: Map<String, Int> = {}`, or just `let m: Map<String, Int>`")
+            diag_note("write the type: `let m: HashMap<String, Int> = {}`, or just `let m: HashMap<String, Int>`")
             nodeSetType(node, typeInvalid())
             return false
         }
@@ -242,10 +242,10 @@ private fn semaMapEntryCount(chain: Ptr) -> Int {
     return count
 }
 
-// Whether `t` is an instantiation of std.map's `Map` -- `Map$String$Int`.
+// Whether `t` is an instantiation of std.map's `HashMap` -- `HashMap$String$Int`.
 private fn semaMapIsInstance(module: ASTNode, t: TypeInfo) -> Bool {
     if (typeIsValid(t) == false or t.kind != TypeKind.STRUCT) { return false }
-    return t.name.startsWith("Map".concat(monoSeparator()))
+    return t.name.startsWith("HashMap".concat(monoSeparator()))
 }
 
 // Two keys written as the same literal. The map would keep the second and drop

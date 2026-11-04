@@ -1,4 +1,4 @@
-// A fieldless enum is a `Map` key without writing `Copy`, `Eq` or `Key` for it, and a
+// A fieldless enum is a `HashMap` key without writing `Copy`, `Eq` or `Key` for it, and a
 // generic enum's struct variants build and match like any other, including with the
 // type arguments written.
 

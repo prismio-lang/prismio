@@ -1,9 +1,9 @@
-// expect-error: `Map()` needs its type arguments
+// expect-error: `HashMap()` needs its type arguments
 // Nothing solves K and V: no argument mentions them and no annotation names them.
 import std.io
 import std.map
 
 fn main() -> Int {
-    let m = Map()
+    let m = HashMap()
     return m.length
 }
