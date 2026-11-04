@@ -593,7 +593,7 @@ impl Parser {
 
         if (self.platformDepth > 0 and self.dead == 0) {
             let end = self.current()
-            diag_error_at_code("P3302", end.file, end.line, end.col, end.len,
+            diag_error_at_code("P3303", end.file, end.line, end.col, end.len,
                           "a platform block is never closed; reached end of file looking for `}`")
         }
         module.child1 = declarations.head

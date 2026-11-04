@@ -432,7 +432,7 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
 
     let file = diag_add_file(joinPath(directoryOf(loaded.manifestPath), "<build>"), loaded.source)
     if (file < 0) {
-        diag_error_at_code("P1098", site.file, site.line, site.col, site.len,
+        diag_error_at_code("P1121", site.file, site.line, site.col, site.len,
             "this program reads more than ".concat(DIAG_MAX_FILES.toString(),
                 " source files; `build` was not read"))
         diag_note_dropped_everything()

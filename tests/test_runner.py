@@ -7040,6 +7040,9 @@ def run_ownership_probes_test():
         # HashSet holds its own columns: a set wrapping a HashMap in a field leaked
         # its whole table (7 allocated, 1 released for a HashSet<Int>).
         ("test_369_hash_set.psm", "PASS", True),
+        # An owned call result compared with `none` has no binding to drop it: a
+        # `while (next() != none)` leaked one block per iteration.
+        ("test_370_compare_owned_temporary.psm", "ok", True),
         # std.mem: Buffers and Arenas release their bytes like any Vec, and the
         # test frees every raw block it allocates, so a leak here is a wrong
         # release or a Buffer that kept its bytes.

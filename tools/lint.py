@@ -110,6 +110,10 @@ def main():
         for match in CODE_CALL_PATTERN.finditer(text):
             line = text.count("\n", 0, match.start()) + 1
             argument = match.group(1).strip()
+            # A code forwarded from a value that already carries one (a manifest diagnostic's
+            # `found.code`) is not a literal to check or to count.
+            if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", argument):
+                continue
             if not re.fullmatch(r'"P\d{4}"', argument):
                 problems.append(
                     f"invalid diagnostic code argument {argument}: {relative}:{line}"

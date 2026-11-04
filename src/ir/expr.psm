@@ -4657,7 +4657,16 @@ private fn generateBinary(expr: ASTNode) -> String {
     // `and`/`or` never reach here -- generateShortCircuit handles them
     // above, before either operand has been evaluated.
 
-    return ir_get_temp_name(tempId)
+    // A comparison answers a Bool that cannot alias an operand, so an operand that
+    // is an owned call result -- `readLine() != none` -- is dead once it is made, and
+    // with no binding to drop it nothing else would release it. Every
+    // `while (readLine() != none)` leaked one block per line.
+    let result = ir_get_temp_name(tempId)
+    if (op.equals("==") or op.equals("!=")) {
+        generateDiscardedCallRelease(leftNode, leftVal)
+        generateDiscardedCallRelease(ptr_to_node(expr.child2), rightVal)
+    }
+    return result
 }
 
 // A `%` by the literal `m` whose dividend ir/residues.psm placed in one step of the

@@ -1,0 +1,49 @@
+// An owned call result compared with `none` and used for nothing else is released.
+//
+// `while (next() != none)` has no binding to drop the `String?` it makes, so every
+// iteration leaked one block (KNOWN_ISSUES had it as "an owned String? compared with
+// none in a loop condition"). A comparison answers a Bool that cannot alias an operand,
+// so the operand is dead once the comparison is made. Each shape below ran 3 allocated,
+// 0 released; the ownership probes hold this file to 0 leaked.
+
+import std.io
+import std.option
+import std.string
+
+// Longer than the 12 bytes a String keeps inline, so each call allocates.
+fn label(i: Int) -> String? {
+    if (i >= 3) { return none }
+    return "a label longer than twelve bytes ".concat(i.toString())
+}
+
+fn main() -> Int {
+    let mut seen = 0
+
+    // A loop condition, with `!=` and with `==`.
+    let mut i = 0
+    while (label(i) != none) { i = i + 1 }
+    seen = seen + i
+    let mut j = 0
+    while (label(j) == none) == false { j = j + 1 }
+    seen = seen + j
+
+    // An `if` condition, a `let` and an operand of `and`.
+    if (label(0) != none) { seen = seen + 1 }
+    let present = label(1) != none
+    if (present) { seen = seen + 1 }
+    if (label(2) != none and seen > 0) { seen = seen + 1 }
+
+    // Both sides calls.
+    if (label(0) != label(9)) { seen = seen + 1 }
+
+    // A value that is used afterwards is still its binding's, and is released once.
+    let kept = label(1)
+    if (kept != none) { seen = seen + 1 }
+
+    if (seen != 11) {
+        println("FAIL: ".concat(seen.toString()))
+        return 1
+    }
+    println("ok")
+    return 0
+}

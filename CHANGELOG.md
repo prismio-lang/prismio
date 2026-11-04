@@ -1278,6 +1278,16 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **An owned call result compared with `none` was never released.** `while (readLine() != none)` leaked a block per
+  line, and `if (label(0) != none)`, `let present = f() != none` and `f() == none` in a `loop` did the same: the
+  comparison answers a Bool that cannot alias an operand, but with no binding there was nothing to drop the `String?`.
+  A `==` or `!=` now releases an operand that is an owned call result (`generateBinary`), the way a discarded call
+  statement is. Each shape read 3 allocated, 0 released; `tests/test_370_compare_owned_temporary.psm` holds them at
+  0 leaked. Its `docs/KNOWN_ISSUES.md` entry is gone.
+- **`tools/lint.py` was red on three things that were not the code's fault.** Two diagnostics shared a code
+  (`P1098` for the file limit and for the `build` file, `P3302` for a compound assignment and an unclosed platform block):
+  the second of each is `P1121` and `P3303`. And `ums_cli.psm` forwards a manifest diagnostic's own code, which is not
+  a literal for lint to check or count, so lint skips a code that is a name.
 - **`readInt()` and `readFloat()` leaked the line they read.** `io_stdin_take_line().trim().parseInt()` left the owned
   line unreleased, one block per call (`--verify`: 1 leaked per call, so 3 million numbers kept 3 million blocks). The
   line is bound first now and released with the call. This is why `readInt` is 14% slower in the A/B above: it frees what
