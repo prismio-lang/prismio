@@ -1,0 +1,8 @@
+// A top-level `asm "text"`: assembly that belongs to the module and not to a function. Read as IR by
+// run_module_asm_test, built for AArch64 Linux and not run.
+
+// A symbol alias and a pushed section, the shape a kernel module's own assembly takes.
+asm ".globl legacy_entry\n.set legacy_entry, entry_point"
+asm ".pushsection .modinfo\n.asciz \"author=prismio\"\n.popsection"
+
+export fn entry_point() -> Int { return 7 }

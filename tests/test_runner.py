@@ -7295,6 +7295,40 @@ def run_kmalloc_heap_test():
     return True
 
 
+def run_module_asm_test():
+    """A top-level `asm "text"`: assembly for the module, outside any function, read as IR."""
+    print(f"\n{BLUE}--- Running module_asm ---{RESET}")
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-module-asm-") as tmp:
+        ll = Path(tmp) / "module_asm.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "module_asm_probe.psm"), "--freestanding",
+                             "--target", "aarch64-unknown-linux-gnu", "-o", str(ll)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] module asm probe did not build: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ll.read_text(encoding="utf-8", errors="replace")
+        # LLVM prints the module's assembly one quoted line per instruction line, under `module asm`.
+        block = re.search(r'^module asm\n((?:[ \t]+".*"\n)+)', ir, re.M)
+        text = block.group(1).replace('"', "") if block else ""
+        for needle, why in (
+            ("globl legacy_entry", "the first block"),
+            ("set legacy_entry, entry_point", "its second line"),
+            ("pushsection .modinfo", "the second block"),
+            ("author=prismio", "its string"),
+        ):
+            if needle not in text:
+                problems.append(f"module asm lacks {needle!r}: {why}")
+        if "moduleasm" in ir:
+            problems.append("the stand-in global reached the IR")
+    if problems:
+        print(f"{RED}[FAIL] module asm{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] module asm: top-level assembly, in order, with no global{RESET}")
+    return True
+
+
 def run_failure_builtins_test():
     """`panic`, `unreachable`, a failed `assert` and `exit`, run for real.
 
@@ -12669,6 +12703,7 @@ def main():
         ("asm_ops", run_asm_ops_test),
         ("data_placement", run_data_placement_test),
         ("kmalloc_heap", run_kmalloc_heap_test),
+        ("module_asm", run_module_asm_test),
         ("std_mem_failures", run_std_mem_failures_test),
         ("typed_pointer_ir", run_typed_pointer_ir_test),
         ("freestanding", run_freestanding_test),

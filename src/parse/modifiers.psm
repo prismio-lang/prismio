@@ -104,6 +104,33 @@ impl Parser {
         }
     }
 
+    // `asm "text"` at the top level of a file: assembly that belongs to the module and not to any
+    // function, the way a kernel module's `.pushsection` blocks and symbol aliases are written. An
+    // `asm` followed by a string literal is nothing else a declaration could start with.
+    internal fn atModuleAsm(self) -> Bool {
+        if (self.checkVal(TokenType.IDENTIFIER, "asm") == false) { return false }
+        return self.peek().type == TokenType.STRING_LITERAL
+    }
+
+    // Stood in for by a global that nothing reads, so every pass that walks declarations passes it
+    // by without learning a new kind: `$moduleasm.<line>_<column>` (a name no source can spell),
+    // holding the text where a placement's section would be. Code generation emits the text as
+    // module assembly and no global.
+    internal fn parseModuleAsm(self) -> ASTNode {
+        let varNode = self.node(NodeKind.VARIABLE_DECL)
+        self.advance()
+        let text = self.current()
+        varNode.s1 = "$moduleasm.".concat(text.line.toString(), "_", text.col.toString())
+        let zero = createNode(NodeKind.LITERAL_EXPR)
+        nodeSpanFrom(zero, varNode)
+        zero.s1 = "0"
+        zero.i1 = TokenType.NUMBER_LITERAL as Int
+        varNode.child2 = node_to_ptr(zero)
+        nodeMarkDataPlacement(varNode, text.value, 0, false)
+        self.advance()
+        return varNode
+    }
+
     internal fn parseModifiedGlobal(self) -> ASTNode {
         let mut section = ""
         let mut align = 0

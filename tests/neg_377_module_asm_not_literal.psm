@@ -1,0 +1,6 @@
+// expect-error: expected a declaration, found `asm`
+
+let text = "nop"
+asm text
+
+fn main() -> Int { return 0 }

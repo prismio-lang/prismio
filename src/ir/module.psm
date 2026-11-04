@@ -2554,7 +2554,10 @@ public fn generateModule(module: ASTNode) {
             }
         }
 
-        if (stmt.kind == NodeKind.VARIABLE_DECL) {
+        // `asm "text"` at the top level: module assembly, and no global.
+        if (nodeIsModuleAsm(stmt)) { ir_module_asm(nodeDataSection(stmt)) }
+
+        if (stmt.kind == NodeKind.VARIABLE_DECL and nodeIsModuleAsm(stmt) == false) {
             let mut initVal = "0"
             let mut globalStrName = ""
             let mut globalStrLen = 0

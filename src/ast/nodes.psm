@@ -395,6 +395,12 @@ public fn nodeMarkDataPlacement(varNode: ASTNode, section: String, align: Int, e
     varNode.child3 = node_to_ptr(carrier)
 }
 
+// A top-level `asm "text"`: parsed as a global of this name (see Parser.parseModuleAsm) whose
+// text is kept where a placement's section would be.
+public fn nodeIsModuleAsm(varNode: ASTNode) -> Bool {
+    return varNode.kind == NodeKind.VARIABLE_DECL and varNode.s1.startsWith("$moduleasm.")
+}
+
 public fn nodeDataSection(varNode: ASTNode) -> String {
     if (varNode.kind != NodeKind.VARIABLE_DECL or nodeIsNull(varNode.child3)) { return "" }
     return ptr_to_node(varNode.child3).s1.clone()

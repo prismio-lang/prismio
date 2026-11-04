@@ -5117,6 +5117,11 @@ void ir_global_var(const char *name, const char *type, const char *init_value,
 // program's module and std.process names them with `extern let`, from a `.plib`
 // as often as from source, so the definition has to be one a link can find;
 // those two are emitted through ir_global_var directly and stay external.
+void ir_module_asm(const char *text) {
+    LLVMAppendModuleInlineAsm(g_module, text, strlen(text));
+    LLVMAppendModuleInlineAsm(g_module, "\n", 1);
+}
+
 void ir_global_set_external(const char *name) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
     if (!g) backend_fail("cannot export an unknown global", name);
