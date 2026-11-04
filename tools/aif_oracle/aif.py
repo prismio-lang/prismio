@@ -278,6 +278,8 @@ FFI_CONTRACTS['__builtin_syscall'] = {i: 'borrow' for i in range(7)}
 FFI_CONTRACTS['__builtin_asm'] = {0: 'borrow'}
 FFI_CONTRACTS['__builtin_asm_read'] = {0: 'borrow'}
 FFI_CONTRACTS['__builtin_asm_write'] = {0: 'borrow', 1: 'borrow'}
+FFI_CONTRACTS['__builtin_asm_ops'] = {i: 'borrow' for i in range(16)}
+FFI_CONTRACTS['__builtin_asm_ops_out'] = {i: 'borrow' for i in range(16)}
 
 # The producers whose block the arena hint allocates: lang_runtime.c's `rt_alloc`
 # callers and the string builtins. Every other extern return -- `chan_recv`'s

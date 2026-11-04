@@ -1,0 +1,33 @@
+// asmOps / asmOpsOut, built for AArch64 and read as IR by run_asm_ops_test: the constraint
+// string and the operand conversions are what the compiler decides, and the instructions are
+// the assembler's. Not run: it names AArch64 registers.
+
+import std.asm
+import std.raw
+
+export fn add_two(a: U64, b: U64) -> U64 {
+    return asmOpsOut("add $0, $1, $2", "", a, b)
+}
+
+export fn call_with(number: U64, argument: U64) {
+    asmOps("mov x8, $0\nmov x0, $1\nsvc #0", "x0, x8", number, argument)
+}
+
+export fn narrow(small: U8, signed: I16) -> U64 {
+    return asmOpsOut("add $0, $1, $2", "cc", small, signed)
+}
+
+export fn through(p: Ptr) -> U64 {
+    return asmOpsOut("mov $0, $1", "", p)
+}
+
+export fn none_in() -> U64 {
+    return asmOpsOut("mov $0, #7", "")
+}
+
+// A CPU instruction the language has no word for: the Armv8 CRC32C step. `.arch_extension` lets the
+// assembler accept it whatever the target's baseline is, `${0:w}` names the 32-bit view of a register,
+// and `\$` keeps Prismio from reading `${` as an interpolation.
+export fn crc32c_word(crc: U32, value: U32) -> U32 {
+    return asmOpsOut(".arch_extension crc\ncrc32cw \${0:w}, \${1:w}, \${2:w}", "", crc, value) as U32
+}

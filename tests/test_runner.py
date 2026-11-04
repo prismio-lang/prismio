@@ -7181,6 +7181,45 @@ def run_std_input_test():
     return True
 
 
+def run_asm_ops_test():
+    """`asmOps` and `asmOpsOut` (std.asm): operands, results and clobbers, read as IR.
+
+    Built for AArch64 whatever the host, so the check is on what the compiler decides --
+    the constraint string, the operand count and how each operand reaches its register --
+    and not on what an assembler makes of the text.
+    """
+    print(f"\n{BLUE}--- Running asm_ops ---{RESET}")
+    problems = []
+    with tempfile.TemporaryDirectory(prefix="prismio-asm-ops-") as tmp:
+        ll = Path(tmp) / "asm_ops.ll"
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "asm_ops_probe.psm"), "--freestanding",
+                             "--target", "aarch64-unknown-linux-gnu", "-o", str(ll)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] asm ops probe did not build: {built.stdout} {built.stderr}{RESET}")
+            return False
+        ir = ll.read_text(encoding="utf-8", errors="replace")
+        wants = (
+            ('asm sideeffect "add $0, $1, $2", "=r,r,r,~{memory}"', "a result and two inputs"),
+            ('asm sideeffect "mov x8, $0\\0Amov x0, $1\\0Asvc #0", "r,r,~{memory},~{x0},~{x8}"', "two inputs and two clobbers, spaces trimmed"),
+            ('"=r,r,r,~{memory},~{cc}"', "a clobber with no operand of its own"),
+            ('asm sideeffect "mov $0, #7", "=r,~{memory}"', "a result and no inputs"),
+            ('crc32cw ${0:w}, ${1:w}, ${2:w}"', "a hardware CRC step, with operand modifiers"),
+            ("ptrtoint ptr", "a pointer travels as its address"),
+            ("zext i8", "an unsigned byte widens to the register"),
+            ("sext i16", "a signed halfword sign-extends"),
+        )
+        for text, why in wants:
+            if text not in ir:
+                problems.append(f"missing {text!r}: {why}")
+    if problems:
+        print(f"{RED}[FAIL] asm ops{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] asm ops: constraints, clobbers and operand widening{RESET}")
+    return True
+
+
 def run_failure_builtins_test():
     """`panic`, `unreachable`, a failed `assert` and `exit`, run for real.
 
@@ -12552,6 +12591,7 @@ def main():
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
         ("std_input", run_std_input_test),
+        ("asm_ops", run_asm_ops_test),
         ("std_mem_failures", run_std_mem_failures_test),
         ("typed_pointer_ir", run_typed_pointer_ir_test),
         ("freestanding", run_freestanding_test),

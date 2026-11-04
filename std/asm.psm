@@ -25,3 +25,33 @@ public fn asmRead(text: String) -> U64 { return 0 }
 
 // Runs them with `$0` set to `value`.
 public fn asmWrite(text: String, value: U64) { }
+
+// What a register operand can be, for the declarations below. The compiler checks the real
+// operands where it lowers the call, and also accepts a typed pointer.
+public typelist AsmOperand { U8, I8, U16, I16, U32, U64, I64, Int, Usize, Isize, Ptr }
+
+// Several operands, and the registers the text changes. This is also how a CPU instruction the
+// language has no word for is reached, a hardware CRC step for one:
+//
+//     fn crc32c(crc: U32, value: U32) -> U32 {
+//         return asmOpsOut(".arch_extension crc\ncrc32cw \${0:w}, \${1:w}, \${2:w}", "", crc, value) as U32
+//     }
+//
+// (`\$` keeps Prismio from reading `${` as an interpolation; `${0:w}` is LLVM's name for the
+// 32-bit view of the register, and `.arch_extension` lets the assembler accept the instruction
+// whatever the target's baseline is.) Which instruction is a matter of the target, so a function
+// like this belongs in a module built for that architecture alone.
+//
+//     asmOps("mov x8, $0\nmov x0, $1\nsvc #0", "x0,x8", number, argument)
+//     let sum = asmOpsOut("add $0, $1, $2", "", a, b)
+//
+// The operands follow the two string literals and are `$0`, `$1`.. in `asmOps`, and `$1`.. in
+// `asmOpsOut`, whose `$0` is the result it answers. Each is an integer of any width or a pointer,
+// held in a register of the compiler's choosing, so the text moves it where it needs it. The
+// second literal lists, comma-separated, the registers the text overwrites beyond its operands
+// ("x0,x8,cc"; "" for none), because LLVM must not keep a live value in one. Memory is always
+// clobbered. Neither is an ordinary function (see the header): the compiler lowers a call in place.
+public fn asmOps<Ts: AsmOperand>(text: String, clobbers: String, ...operands: Ts) { }
+
+// `asmOps` with a result in `$0`.
+public fn asmOpsOut<Ts: AsmOperand>(text: String, clobbers: String, ...operands: Ts) -> U64 { return 0 }

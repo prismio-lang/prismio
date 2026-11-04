@@ -308,7 +308,25 @@ public fn asmBuiltinKind(name: String) -> Int {
     if (name.equals("__builtin_asm")) { return 1 }
     if (name.equals("__builtin_asm_read")) { return 2 }
     if (name.equals("__builtin_asm_write")) { return 3 }
+    if (name.equals("__builtin_asm_ops")) { return 4 }
+    if (name.equals("__builtin_asm_ops_out")) { return 5 }
     return 0
+}
+
+// `asmOps` / `asmOpsOut` (std.asm): any number of register inputs `$1`.. (`$0` is the result of
+// the second), and a list of registers the text changes, written as a string: "x0,x1,cc". Memory
+// is always clobbered, for the reason asmBuiltinConstraints gives. The operand count and the
+// clobbers are known where the call is written, so the constraint string is built there.
+public fn asmOpsConstraints(hasResult: Bool, inputs: Int, clobbers: String) -> String {
+    let mut out = ""
+    if (hasResult) { out = "=r," }
+    for i in 0..<inputs { out = out.concat("r,") }
+    out = out.concat("~{memory}")
+    for name in clobbers.split(',') {
+        let register = name.trim()
+        if (register.equals("") == false) { out = out.concat(",~{", register, "}") }
+    }
+    return out
 }
 
 // LLVM's constraint string for each. `~{memory}` is what stops the optimiser

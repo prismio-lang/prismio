@@ -64,7 +64,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     }
     if (syscallBuiltin(name)) { return typeI64() }
     let asmKind = asmBuiltinKind(name)
-    if (asmKind == 2) { return typeU64() }
+    if (asmKind == 2 or asmKind == 5) { return typeU64() }
     if (asmKind > 0) { return typeVoid() }
     if (portBuiltinDir(name) == 2) { return semaMemValueType(portBuiltinWidth(name)) }
     if (portBuiltinDir(name) == 1) { return typeVoid() }
@@ -522,6 +522,7 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
 
     let asmKind = asmBuiltinKind(name)
     if (asmKind == 0) { return false }
+    if (asmKind >= 4) { return semaCheckAsmOps(module, call, name, argPtr) }
     let mut expected = 1
     if (asmKind == 3) { expected = 2 }
     if (semaCheckArity(call, name, argPtr, expected) == false) { return true }
@@ -537,6 +538,35 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
     return true
 }
 
+// `asmOps(text, clobbers, a, b, ...)` and `asmOpsOut(...)`: the text and the clobber list are
+// string literals (they are part of the instruction stream), and each operand is something that
+// fits a 64-bit register: an integer of any width, or a pointer.
+private fn semaCheckAsmOps(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
+    let text = ptr_to_node(argPtr)
+    if (nodeIsNull(argPtr) or nodeIsNull(text.next)) {
+        semaErrorAt(call, diagQuote(name).concat(" takes the assembly text, the clobbered registers and then the operands"))
+        return true
+    }
+    let clobbers = ptr_to_node(text.next)
+    if (text.kind != NodeKind.LITERAL_EXPR or text.i1 != TokenType.STRING_LITERAL as Int
+            or clobbers.kind != NodeKind.LITERAL_EXPR or clobbers.i1 != TokenType.STRING_LITERAL as Int) {
+        semaErrorAt(text, "the assembly text and the clobbered registers of ".concat(diagQuote(name), " must be string literals"))
+        return true
+    }
+    semaExpr(module, text)
+    semaExpr(module, clobbers)
+    let mut operandPtr = clobbers.next
+    while (nodeExists(operandPtr)) {
+        let operand = ptr_to_node(operandPtr)
+        let t = semaExpr(module, operand)
+        if (typeIsValid(t) and t.kind != TypeKind.INT and t.kind != TypeKind.PTR) {
+            semaErrorAt(operand, "an assembly operand is an integer or a pointer, and this is ".concat(typeDisplay(t)))
+        }
+        operandPtr = operand.next
+    }
+    return true
+}
+
 // The compiler's instruction a call to `std.asm`'s `asm`, `asmRead` or `asmWrite`
 // is, or "" for any other name. The assembly text has to be a string literal --
 // it is part of the instruction stream, not data a function could be handed -- so
@@ -544,11 +574,17 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
 // in std/asm.psm gives the name something to resolve against, and a call to it is
 // lowered here, in place. A function of the same name that is not std's is the
 // program's own and is left alone.
-internal fn semaStdAsmBuiltin(name: String) -> String {
+internal fn semaStdAsmBuiltin(module: ASTNode, name: String) -> String {
     let mut builtin = ""
     if (name.equals("asm")) { builtin = "__builtin_asm" }
     if (name.equals("asmRead")) { builtin = "__builtin_asm_read" }
     if (name.equals("asmWrite")) { builtin = "__builtin_asm_write" }
+    // These two are generic over their operands, so std's declaration is a template.
+    if (name.equals("asmOps") or name.equals("asmOpsOut")) {
+        if (semaNameIsStdTemplate(module, name) == false) { return "" }
+        if (name.equals("asmOps")) { return "__builtin_asm_ops" }
+        return "__builtin_asm_ops_out"
+    }
     if (builtin.equals("")) { return "" }
     let count = ir_decl_count(name)
     for i in 0..<count {

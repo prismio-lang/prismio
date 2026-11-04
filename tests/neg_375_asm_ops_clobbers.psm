@@ -1,0 +1,9 @@
+// expect-error: the assembly text and the clobbered registers of `__builtin_asm_ops` must be string literals
+
+import std.asm
+
+fn main() -> Int {
+    let registers = "x0"
+    asmOps("nop", registers)
+    return 0
+}

@@ -1,0 +1,8 @@
+// expect-error: an assembly operand is an integer or a pointer, and this is String
+
+import std.asm
+
+fn main() -> Int {
+    asmOps("nop", "", "text")
+    return 0
+}

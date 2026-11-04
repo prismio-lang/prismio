@@ -424,6 +424,8 @@ private fn semaBuiltinSpelling(name: String) -> String {
     if (name.equals("__builtin_asm")) { return "asm(text)` from `std.asm" }
     if (name.equals("__builtin_asm_read")) { return "asmRead(text)` from `std.asm" }
     if (name.equals("__builtin_asm_write")) { return "asmWrite(text, value)` from `std.asm" }
+    if (name.equals("__builtin_asm_ops")) { return "asmOps(text, clobbers, operands...)` from `std.asm" }
+    if (name.equals("__builtin_asm_ops_out")) { return "asmOpsOut(text, clobbers, operands...)` from `std.asm" }
     if (name.startsWith("__builtin_port_in_")) { return "portInU8(port)` from `std.port" }
     if (name.startsWith("__builtin_port_out_")) { return "portOutU8(port, value)` from `std.port" }
     if (name.startsWith("__builtin_mem_load_")) { return "loadU32(address)` from `std.mem" }

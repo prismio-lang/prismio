@@ -1946,6 +1946,13 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         }
     }
 
+    // `asmOps` and `asmOpsOut` take any number of operands, which is what a pack expands to, so
+    // they are lowered before the pack is: the operands are the builtin's own.
+    if (callee.s1.equals("asmOps") or callee.s1.equals("asmOpsOut")) {
+        let lowered = semaStdAsmBuiltin(module, callee.s1)
+        if (lowered.equals("") == false) { callee.s1 = lowered }
+    }
+
     if (semaIsScalarUnwrapOr(module, callee.s1, expr.child2) == false) {
         packResolveCall(module, expr, callee)
         monoResolveGenericCall(module, expr, callee)
@@ -1968,7 +1975,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     semaCheckStdOffsetOf(module, expr, callee)
     semaCheckStdFunctionAddress(module, expr, callee)
     semaCheckStdCString(expr, callee)
-    let lowered = semaStdAsmBuiltin(callee.s1)
+    let lowered = semaStdAsmBuiltin(module, callee.s1)
     if (lowered.equals("") == false) { callee.s1 = lowered }
 
     let name = callee.s1

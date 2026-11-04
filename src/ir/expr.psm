@@ -3162,6 +3162,7 @@ private fn generateMemBuiltin(expr: ASTNode, funcName: String) -> String {
     }
 
     let asmKind = asmBuiltinKind(funcName)
+    if (asmKind >= 4) { return generateAsmOps(expr, asmKind == 5) }
     if (asmKind > 0) {
         let template = ptr_to_node(expr.child2)
         // The operand before the call opens, as every other builtin does it: an
@@ -4905,6 +4906,32 @@ private fn generateVariadicArgument(argNode: ASTNode, store: String, value: Stri
         return
     }
     ir_call_arg(store, value)
+}
+
+// `asmOps` / `asmOpsOut`: the register inputs are generated before the instruction opens, left
+// to right, each widened to the 64-bit register it travels in (a pointer by its address).
+private fn generateAsmOps(expr: ASTNode, hasResult: Bool) -> String {
+    let text = ptr_to_node(expr.child2)
+    let clobbers = ptr_to_node(text.next)
+    let mut values: Vec<String> = []
+    let mut operandPtr = clobbers.next
+    while (nodeExists(operandPtr)) {
+        let operand = ptr_to_node(operandPtr)
+        let t = nodeGetType(operand)
+        let raw = generateExpression(operand)
+        if (t.kind == TypeKind.PTR) {
+            values.push(ir_get_temp_name(ir_ptr_to_int(raw, "i64")))
+        } else {
+            values.push(integerResize(raw, t, typeU64()))
+        }
+        operandPtr = operand.next
+    }
+    ir_call_begin()
+    for v in values { ir_call_arg("i64", v) }
+    let constraints = asmOpsConstraints(hasResult, values.length, clobbers.s1)
+    if (hasResult) { return ir_get_temp_name(ir_asm_call("i64", text.s1, constraints)) }
+    ir_asm_call("void", text.s1, constraints)
+    return ""
 }
 
 private fn generateCall(expr: ASTNode) -> String {
