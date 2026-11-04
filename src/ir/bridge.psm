@@ -178,6 +178,12 @@ public extern fn ir_global_set_internal(name: String)
 // A global array that is written (`let mut`), and one written with a length and no values.
 public extern fn ir_global_array_mutable(name: String)
 public extern fn ir_global_zero_array(name: String, elemType: String, count: Int)
+// A constant struct built field by field (text for a constant, `$$vN` for a nested one, `@fn:symbol`
+// for a function's address), and a global that holds one.
+public extern fn ir_const_struct_begin(name: String)
+public extern fn ir_const_struct_field(value: String)
+public extern fn ir_const_struct_end() -> Int
+public extern fn ir_global_struct_var(name: String, structName: String, value: String, isMutable: Int)
 // Assembly for the whole module, written outside any function: a top-level `asm "text"`.
 public extern fn ir_module_asm(text: String)
 // The opposite, for a global written `export`: the linker sees it.

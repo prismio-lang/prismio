@@ -1,4 +1,4 @@
-// expect-error: an element of global `xs` needs to be a number, a character or a string literal
+// expect-error: an element of global `xs` needs to be a number, a character, a string literal, `functionAddress("name")` or a struct of those
 // expect-error: global `flags` cannot hold a `Bool` element yet
 fn one() -> Int { return 1 }
 let xs = [1, one()]

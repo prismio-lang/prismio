@@ -1,0 +1,12 @@
+// expect-error: field `b` of global `table` needs to be a number, a character, `functionAddress("name")` or another such struct
+
+repr(C) struct Pair {
+    a: U32,
+    b: U32
+}
+
+fn compute() -> U32 { return 4 }
+
+let table = Pair { a: 1, b: compute() }
+
+fn main() -> Int { return 0 }

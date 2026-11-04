@@ -1,3 +1,5 @@
+import std.raw
+
 // `export`, `section("...")` and `align(n)` before a global `let`, read as IR by
 // run_data_placement_test: where the data goes is the compiler's decision and the linker's job.
 // Built for AArch64 Linux and not run.
@@ -10,6 +12,13 @@ section(".rodata.table") align(16) let table: [U16] = [1, 2, 3]
 
 // A table with a length and no values: zeroed storage in its own section, page aligned.
 export section(".bss.pagetable") align(4096) let mut pagetable: Array<U64, 512>
+
+// A static operations table: the struct's own storage, every field a constant, one of them a function.
+repr(C) struct Operations {
+    open: Usize,
+    flags: U32
+}
+export section(".data.rel.ro") align(8) let ops = Operations { open: functionAddress("bump"), flags: 3 }
 
 // Not exported: private to the module, as every global was.
 let hidden: Int = 2

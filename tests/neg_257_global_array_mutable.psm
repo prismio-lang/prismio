@@ -1,3 +1,0 @@
-// expect-error: global `words` is a mutable array
-let mut words = ["a", "b"]
-fn main() -> Int { return 0 }

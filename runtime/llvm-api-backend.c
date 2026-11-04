@@ -509,8 +509,17 @@ static LLVMValueRef lookup_named(NamedValue *table, int count, const char *name,
     return NULL;
 }
 
+static LLVMValueRef function_or_stand_in(const char *name);
+
 static LLVMValueRef const_from_text(const char *s, LLVMTypeRef ty) {
     if (!ty) backend_fail("constant with no type", s);
+    // `@fn:symbol`: a function's address as a constant, a pointer where the slot is one and
+    // the integer the address makes where it is not (`functionAddress` in a static table).
+    if (strncmp(s, "@fn:", 4) == 0) {
+        LLVMValueRef fn = function_or_stand_in(s + 4);
+        if (LLVMGetTypeKind(ty) == LLVMIntegerTypeKind) return LLVMConstPtrToInt(fn, ty);
+        return fn;
+    }
     // **An aggregate's zero is LLVMConstNull, and nothing else spells it.**
     // A struct literal's omitted `String` field gets `none` as its zero
     // (semaFillOmittedFields), which reached the integer path below with the
@@ -3253,6 +3262,58 @@ void ir_global_array_var(const char *name, const char *elem_type) {
     LLVMSetLinkage(g, LLVMInternalLinkage);
 }
 
+// A constant struct built field by field: `ir_const_struct_begin(name)`, one `ir_const_struct_field`
+// per declared field in order (text a constant can be read from, `$$vN` for a nested struct, or
+// `@fn:symbol` for a function's address), then `ir_const_struct_end`, which answers the value to
+// give a global or an array element. Fields past the ones given, such as the zero-length tail
+// `align` adds, are zero.
+static LLVMValueRef constant_for_field(const char *value, LLVMTypeRef field) {
+    if (value[0] == '$' && value[1] == '$' && value[2] == 'v') {
+        int idx = atoi(value + 3);
+        if (idx < 0 || idx >= g_value_count || !g_values[idx]) backend_fail("constant handle out of range", value);
+        return g_values[idx];
+    }
+    return const_from_text(value, field);
+}
+
+typedef struct { StructType *type; unsigned count; LLVMValueRef values[64]; } ConstStruct;
+static ConstStruct g_const_structs[8];
+static int g_const_struct_depth;
+
+void ir_const_struct_begin(const char *name) {
+    if (g_const_struct_depth >= 8) backend_fail("constant structs nested too deep", name);
+    ConstStruct *c = &g_const_structs[g_const_struct_depth++];
+    c->type = struct_entry(name);
+    c->count = 0;
+}
+
+void ir_const_struct_field(const char *value) {
+    ConstStruct *c = &g_const_structs[g_const_struct_depth - 1];
+    LLVMTypeRef field = LLVMStructGetTypeAtIndex(c->type->type, c->count);
+    if (c->count >= 64) backend_fail("too many fields in a constant struct", value);
+    c->values[c->count++] = constant_for_field(value, field);
+}
+
+int ir_const_struct_end(void) {
+    ConstStruct *c = &g_const_structs[--g_const_struct_depth];
+    unsigned total = LLVMCountStructElementTypes(c->type->type);
+    for (unsigned i = c->count; i < total; i++) {
+        c->values[i] = LLVMConstNull(LLVMStructGetTypeAtIndex(c->type->type, i));
+    }
+    return intern_value(LLVMConstNamedStruct(c->type->type, c->values, total));
+}
+
+// A global holding one struct, `value` from ir_const_struct_end: a table of operations or a
+// device description. The global is the struct itself, read by its address, as a global array is.
+void ir_global_struct_var(const char *name, const char *struct_name, const char *value, int mutable_global) {
+    StructType *s = struct_entry(struct_name);
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) g = LLVMAddGlobal(g_module, s->type, name);
+    LLVMSetInitializer(g, constant_for_field(value, s->type));
+    LLVMSetGlobalConstant(g, mutable_global ? 0 : 1);
+    LLVMSetLinkage(g, LLVMInternalLinkage);
+}
+
 // A global array that is written, not just read: `let mut`. The same storage as ir_global_array_var
 // makes, without the constant flag that would put it in read-only memory.
 void ir_global_array_mutable(const char *name) {
@@ -5058,11 +5119,11 @@ typedef struct { char *name; LLVMValueRef stand_in; } FunctionAddress;
 static FunctionAddress g_function_addresses[256];
 static int g_function_address_count;
 
-int ir_function_address(const char *name) {
+static LLVMValueRef function_or_stand_in(const char *name) {
     LLVMValueRef fn = LLVMGetNamedFunction(g_module, name);
-    if (fn) return intern_value(fn);
+    if (fn) return fn;
     for (int i = 0; i < g_function_address_count; i++) {
-        if (strcmp(g_function_addresses[i].name, name) == 0) return intern_value(g_function_addresses[i].stand_in);
+        if (strcmp(g_function_addresses[i].name, name) == 0) return g_function_addresses[i].stand_in;
     }
     if (g_function_address_count >= 256) backend_fail("too many function addresses", name);
     char label[512];
@@ -5071,8 +5132,10 @@ int ir_function_address(const char *name) {
     g_function_addresses[g_function_address_count].name = strdup(name);
     g_function_addresses[g_function_address_count].stand_in = stand_in;
     g_function_address_count++;
-    return intern_value(stand_in);
+    return stand_in;
 }
+
+int ir_function_address(const char *name) { return intern_value(function_or_stand_in(name)); }
 
 // Each stand-in becomes the function it stood for. A name nothing ever defined or declared
 // is an error the frontend should have caught, so it is reported rather than linked.

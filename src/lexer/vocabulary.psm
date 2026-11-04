@@ -24,7 +24,8 @@ let vocabularyContextualWords = [
     "export", "naked", "section", "align", "repr", "packed",
     "volatile",
     "codeset", "typelist", "workload", "setup", "measure",
-    "Fn", "always", "never", "C"
+    "Fn", "always", "never", "C",
+    "asm"
 ]
 
 let vocabularyContextualContexts = [
@@ -38,7 +39,8 @@ let vocabularyContextualContexts = [
     "function marker before fn", "function marker before fn", "function marker before fn", "function marker before fn", "type marker before struct", "type marker before struct",
     "qualifier inside Ptr<...>",
     "declaration of a set of codes", "declaration of a list of types", "declaration of a benchmark", "clause inside workload", "clause inside workload",
-    "the function type Fn(...)", "argument of inline(...)", "argument of inline(...)", "argument of repr(...)"
+    "the function type Fn(...)", "argument of inline(...)", "argument of inline(...)", "argument of repr(...)",
+    "module assembly: a top-level asm followed by a string literal"
 ]
 
 // Integer types by spelling. `I32` is another name for `Int` (the parser renames it), and

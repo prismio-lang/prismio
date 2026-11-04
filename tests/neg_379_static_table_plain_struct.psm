@@ -1,0 +1,10 @@
+// expect-error: global `table` holds `Loose`, which lets the compiler order its fields
+
+struct Loose {
+    a: U8,
+    b: U32
+}
+
+let table = Loose { a: 1, b: 2 }
+
+fn main() -> Int { return 0 }

@@ -3592,6 +3592,20 @@ private fn generateStructLiteral(expr: ASTNode) -> String {
     return memName
 }
 
+// Whether the global called `name` was written with a struct literal, which makes the global the
+// struct's own storage (ir_global_struct_var) rather than a pointer to one.
+private fn irGlobalIsInlineStruct(name: String) -> Bool {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.VARIABLE_DECL and nodeExists(decl.child2)
+                and ptr_to_node(decl.child2).kind == NodeKind.STRUCT_LITERAL_EXPR) {
+            return true
+        }
+    }
+    return false
+}
+
 private fn generateIdentifier(expr: ASTNode) -> String {
     let valType = ir_get_var_type(expr.s1)
     let loadType = storageType(valType)
@@ -3602,6 +3616,11 @@ private fn generateIdentifier(expr: ASTNode) -> String {
         // A global array is the storage itself, read by its address: there is no
         // pointer stored anywhere to load (see emitGlobalArray).
         if (nodeHasType(expr) and nodeGetType(expr).kind == TypeKind.ARRAY) {
+            return ir_get_temp_name(ir_string_ptr(expr.s1))
+        }
+        // So is a global struct written with a literal (a static table): its storage is the global.
+        // Any other struct global holds a pointer, loaded below.
+        if (nodeHasType(expr) and nodeGetType(expr).kind == TypeKind.STRUCT and irGlobalIsInlineStruct(expr.s1)) {
             return ir_get_temp_name(ir_string_ptr(expr.s1))
         }
         return ir_get_temp_name(ir_load_global(loadType, expr.s1))
@@ -3932,6 +3951,13 @@ private fn generateIndex(expr: ASTNode) -> String {
     let mut elemType = storageType(getExprType(expr))
     if (elemType.equals("")) {
         elemType = "i32"
+    }
+
+    // A global array of structs holds the structs themselves, laid out one after another (a static
+    // table), and not pointers to them: the element is its own address, at the struct's stride.
+    if (baseNode.kind == NodeKind.IDENTIFIER_EXPR and ir_var_is_global(baseNode.s1) == 1
+            and nodeHasType(expr) and nodeGetType(expr).kind == TypeKind.STRUCT) {
+        return ir_get_temp_name(ir_elem_ptr(typeIrKey(nodeGetType(expr)), arrayVal, indexVal))
     }
 
     let slot = ir_elem_ptr(elemType, arrayVal, indexVal)

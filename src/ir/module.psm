@@ -1892,18 +1892,68 @@ private fn collectStringsFunction(func: ASTNode) {
 
 // A module-level `let name = [..]`: its elements, which sema has checked are all
 // literals, as one constant array in read-only data.
+// A struct literal as a constant, for a global: the struct's declared fields in order, each the
+// literal's own value or zero. Answers the value handle `ir_const_struct_end` made.
+private fn irConstantStruct(literal: ASTNode) -> String {
+    let mut decl = createNode(NodeKind.ERROR_NODE)
+    let count = ir_decl_count(literal.s1)
+    for i in 0..<count {
+        let found = ptr_to_node(ir_decl_at(literal.s1, i))
+        if (found.kind == NodeKind.STRUCT_DECL) { decl = found }
+    }
+    ir_const_struct_begin(literal.s1)
+    let mut declared = decl.child1
+    while (nodeExists(declared)) {
+        let field = ptr_to_node(declared)
+        if (field.kind == NodeKind.STRUCT_FIELD) {
+            let mut value = "0"
+            let mut given = literal.child1
+            while (nodeExists(given)) {
+                let candidate = ptr_to_node(given)
+                if (candidate.s1.equals(field.s1) and nodeExists(candidate.child1)) {
+                    value = irConstantValue(ptr_to_node(candidate.child1))
+                }
+                given = candidate.next
+            }
+            ir_const_struct_field(value)
+        }
+        declared = field.next
+    }
+    return ir_get_temp_name(ir_const_struct_end())
+}
+
+// One constant: a literal's text, a function's address (`@fn:symbol`), or a nested struct.
+private fn irConstantValue(value: ASTNode) -> String {
+    if (value.kind == NodeKind.STRUCT_LITERAL_EXPR) { return irConstantStruct(value) }
+    if (value.kind == NodeKind.CALL_EXPR) {
+        let name = ptr_to_node(value.child2).s1
+        let count = ir_decl_count(name)
+        for i in 0..<count {
+            let decl = ptr_to_node(ir_decl_at(name, i))
+            if (decl.kind == NodeKind.FUNCTION or decl.kind == NodeKind.EXTERN_FUNCTION) { return "@fn:".concat(decl.s2) }
+        }
+        return "0"
+    }
+    return generateExpression(value)
+}
+
 private fn emitGlobalArray(decl: ASTNode) {
     let init = ptr_to_node(decl.child2)
     let arrayType = nodeGetType(init)
-    let elemType = storageType(typeIrKey(ptr_to_type(arrayType.child)))
+    // A struct element is the struct itself, laid out in the array, and not the pointer a struct
+    // variable holds.
+    let mut elemType = storageType(typeIrKey(ptr_to_type(arrayType.child)))
+    if (ptr_to_type(arrayType.child).kind == TypeKind.STRUCT) { elemType = typeIrKey(ptr_to_type(arrayType.child)) }
     ir_array_literal_begin()
     let mut elemPtr = init.child1
     while (nodeExists(elemPtr)) {
         let elem = ptr_to_node(elemPtr)
-        if (elem.i1 == TokenType.STRING_LITERAL as Int) {
+        if (elem.kind == NodeKind.LITERAL_EXPR and elem.i1 == TokenType.STRING_LITERAL as Int) {
             // The per-function string pass never reaches a global's initializer.
             collectStringsExpr(elem)
             ir_array_literal_str_elem(elem.s2, elem.s1.length)
+        } else if (elem.kind == NodeKind.STRUCT_LITERAL_EXPR or elem.kind == NodeKind.CALL_EXPR) {
+            ir_array_literal_elem(elemType, irConstantValue(elem))
         } else {
             ir_array_literal_elem(elemType, generateExpression(elem))
         }
@@ -2563,6 +2613,7 @@ public fn generateModule(module: ASTNode) {
             let mut globalStrName = ""
             let mut globalStrLen = 0
             let mut isArrayGlobal = false
+            let mut isStructGlobal = false
             let mut varType = "i32"
             let hasAnnotation = nodeExists(stmt.child1)
             if (hasAnnotation) {
@@ -2579,6 +2630,8 @@ public fn generateModule(module: ASTNode) {
                 }
                 if (initNode.kind == NodeKind.ARRAY_LITERAL_EXPR) {
                     isArrayGlobal = true
+                } else if (initNode.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+                    isStructGlobal = true
                 } else if (initNode.kind == NodeKind.LITERAL_EXPR) {
                     if (initNode.i1 == TokenType.STRING_LITERAL as Int) {
                         // A global initializer sits outside every function, so the
@@ -2610,8 +2663,12 @@ public fn generateModule(module: ASTNode) {
             if (isArrayGlobal) {
                 emitGlobalArray(stmt)
                 if (stmt.i1 == 1) { ir_global_array_mutable(stmt.s1) }
+            } else if (isStructGlobal) {
+                ir_global_struct_var(stmt.s1, ptr_to_node(stmt.child2).s1, irConstantStruct(ptr_to_node(stmt.child2)), stmt.i1)
             } else if (declaredType.kind == TypeKind.ARRAY and nodeIsNull(stmt.child2)) {
-                ir_global_zero_array(stmt.s1, storageType(typeIrKey(ptr_to_type(declaredType.child))), declaredType.length)
+                let mut zeroElem = storageType(typeIrKey(ptr_to_type(declaredType.child)))
+                if (ptr_to_type(declaredType.child).kind == TypeKind.STRUCT) { zeroElem = typeIrKey(ptr_to_type(declaredType.child)) }
+                ir_global_zero_array(stmt.s1, zeroElem, declaredType.length)
             } else if (storageType(varType).equals("struct:prismio.str")) {
                 ir_global_str_var(stmt.s1, globalStrName, globalStrLen)
             } else {

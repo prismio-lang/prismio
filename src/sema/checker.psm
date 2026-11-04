@@ -3802,12 +3802,61 @@ private fn semaCheckGlobalArray(varNode: ASTNode, init: ASTNode) {
         if (isLiteral and elem.i1 == TokenType.BOOL_LITERAL as Int) {
             semaErrorAt(elem, "global ".concat(diagQuote(varNode.s1), " cannot hold a `Bool` element yet"))
             diag_note("use an `Int` flag, or build the array in a function")
-        } else if (isLiteral == false) {
+        } else if (isLiteral == false and semaGlobalConstantOk(elem) == false) {
             semaErrorAt(elem, "an element of global ".concat(diagQuote(varNode.s1),
-                                                              " needs to be a number, a character or a string literal"))
+                                                              " needs to be a number, a character, a string literal, `functionAddress(\"name\")` or a struct of those"))
             diag_note("nothing runs before main, so a global array cannot hold a computed element")
         }
         elemPtr = elem.next
+    }
+}
+
+// A global holding a struct: a table of operations, a device description. The struct is plain C
+// data (`repr(C)` or `packed`, so its fields stay where they were written), and every field is a
+// constant the linker can lay out: a number, a character, a Bool, `functionAddress("name")`, or
+// another such struct. Nothing runs before `main`, so a computed field has nowhere to run.
+private fn semaGlobalConstantOk(value: ASTNode) -> Bool {
+    if (value.kind == NodeKind.LITERAL_EXPR) { return value.i1 != TokenType.STRING_LITERAL as Int }
+    if (value.kind == NodeKind.STRUCT_LITERAL_EXPR) { return semaGlobalStructOk(value) }
+    if (value.kind == NodeKind.CALL_EXPR and nodeExists(value.child1)) {
+        let callee = ptr_to_node(value.child1)
+        return callee.s1.equals("functionAddress") and nodeExists(value.child2)
+            and ptr_to_node(value.child2).kind == NodeKind.LITERAL_EXPR
+    }
+    return false
+}
+
+private fn semaGlobalStructOk(literal: ASTNode) -> Bool {
+    let mut field = literal.child1
+    while (nodeExists(field)) {
+        let f = ptr_to_node(field)
+        if (nodeExists(f.child1) == false or semaGlobalConstantOk(ptr_to_node(f.child1)) == false) { return false }
+        field = f.next
+    }
+    return true
+}
+
+private fn semaCheckGlobalStruct(varNode: ASTNode, init: ASTNode) {
+    let count = ir_decl_count(init.s1)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(init.s1, i))
+        if (decl.kind == NodeKind.STRUCT_DECL
+                and nodeStructIsReprC(decl) == false and nodeStructIsPacked(decl) == false) {
+            semaErrorAt(init, "global ".concat(diagQuote(varNode.s1), " holds ", diagQuote(init.s1),
+                                               ", which lets the compiler order its fields"))
+            diag_note("a static table is plain C data: write `repr(C)` before `struct`")
+            return
+        }
+    }
+    let mut field = init.child1
+    while (nodeExists(field)) {
+        let f = ptr_to_node(field)
+        if (nodeExists(f.child1) and semaGlobalConstantOk(ptr_to_node(f.child1)) == false) {
+            semaErrorAt(ptr_to_node(f.child1), "field ".concat(diagQuote(f.s1), " of global ", diagQuote(varNode.s1),
+                                                              " needs to be a number, a character, `functionAddress(\"name\")` or another such struct"))
+            diag_note("nothing runs before main, so a global struct cannot hold a computed field")
+        }
+        field = f.next
     }
 }
 
@@ -3833,6 +3882,8 @@ private fn semaPredeclareGlobal(module: ASTNode, varNode: ASTNode) {
         let init = ptr_to_node(varNode.child2)
         if (init.kind == NodeKind.ARRAY_LITERAL_EXPR) {
             semaCheckGlobalArray(varNode, init)
+        } else if (init.kind == NodeKind.STRUCT_LITERAL_EXPR) {
+            semaCheckGlobalStruct(varNode, init)
         } else if (init.kind != NodeKind.LITERAL_EXPR
                    and (varT.kind == TypeKind.INT and semaFoldConstantInitializer(module, init, varT)) == false) {
             semaErrorAt(init, "global ".concat(diagQuote(varNode.s1),

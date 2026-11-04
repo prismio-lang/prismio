@@ -7241,6 +7241,7 @@ def run_data_placement_test():
             ('@counter = global i32 5, section ".data.counters", align 64', "a mutable scalar, placed and aligned"),
             ('@table = internal constant [3 x i16] [i16 1, i16 2, i16 3], section ".rodata.table", align 16', "a private table, placed"),
             ('@pagetable = dso_local global [512 x i64] zeroinitializer, section ".bss.pagetable", align 4096', "a sized, zeroed, page-aligned table"),
+            ('@ops = dso_local constant %Operations { i64 ptrtoint (ptr @bump__Void to i64), i32 3 }, section ".data.rel.ro", align 8', "a static operations table holding a function's address"),
             ("@hidden = internal global i32 2", "a global is private unless exported"),
             ("@visible = global i32 1", "export alone is only linkage"),
         )

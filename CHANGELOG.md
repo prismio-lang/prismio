@@ -17,8 +17,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   `asmOps` / `asmOpsOut` in `std.asm` (any number of register operands and a declared clobber list, which is also how
   a CPU instruction such as the Armv8 CRC32C step is reached); `export`, `section("...")` and `align(n)` before a global
   `let` (a kernel module's `.modinfo`, a counter in its own section); and a `Vec`, a `HashMap` and a `String` on a heap
-  the program supplies over `kmalloc`. Still open: module-level assembly, tables initialised with addresses or structs,
-  mutable global arrays, and `align` on a struct. A pack on an `extern fn` (`...args: Int`) is still refused, with a
+  the program supplies over `kmalloc`; then module-level assembly (a top-level `asm "text"`), `align(n)` before a `repr(C)`
+  struct, mutable global arrays (`let mut table: Array<U64, 512>`, zeroed, writable, placeable with `section`/`align`), and
+  static tables: a global struct written with a literal whose fields are constants, `functionAddress("name")` included, and a
+  global array of them, laid out in place. A pack on an `extern fn` (`...args: Int`) is still refused, with a
   message that now says to write a bare `...`.
 - **`sizeOf<T>()`, `offsetOf<S>("field")` and `std.errno`, for code that shares memory with C.** Both are in `std.raw`.
   `sizeOf` is the array stride C's `sizeof` gives, read off the pointer type, so a padded `repr(C)` struct and a
@@ -699,6 +701,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **A global array may be written, and a global struct may be a table.** `let mut table: Array<U64, 512>` was an error ("an
+  array's length is written only on a local `let`") and a mutable global array another; now they are zeroed or seeded storage
+  that code writes, and `neg_257_global_array_mutable` is gone with the rule it pinned. The message for a computed element
+  names the new allowed forms.
 - **`std.input` loses what a better spelling already covers, and `readBytes` changes type.** `readLineOr(fallback)` is
   `readLine() ?? fallback`; `atEndOfInput()` is asking for the next item (`readLine()` is `none`, `for` ends on its
   own); `readWords()` is `readTokens()`. `readBytes(count)` returned a `String` and now returns `Vec<U8>`: the

@@ -1,0 +1,51 @@
+// A global array of structs: the structs themselves, laid out one after another, and not an array of
+// pointers to them. A static table of operations, or of device descriptions, is one: `[Entry { id: 1,
+// handler: functionAddress("a") }, ...]`. An element is read in place at the struct's stride, a field of
+// it is a field read, and a `let mut` table is written the same way. A table with a length and no values is
+// zeroed structs.
+
+import std.io
+import std.raw
+import std.string
+
+repr(C) struct Entry {
+    id: U32,
+    handler: Usize
+}
+
+fn entry_a(x: Int) -> Int { return x }
+fn entry_b(x: Int) -> Int { return x + 1 }
+
+let table: Array<Entry, 2> = [
+    Entry { id: 1, handler: functionAddress("entry_a") },
+    Entry { id: 2, handler: functionAddress("entry_b") }
+]
+
+let mut slots: Array<Entry, 4>
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn idOf(i: Int) -> U32 { return table[i].id }
+
+fn main() -> Int {
+    let mut bad = 0
+    if (table[0].id != 1 or table[1].id != 2) { bad = bad + fail("ids") }
+    if (idOf(1) != 2) { bad = bad + fail("through a function") }
+    if (table[0].handler != functionAddress("entry_a") or table[1].handler != functionAddress("entry_b")) {
+        bad = bad + fail("handlers")
+    }
+    if (slots[3].id != 0 or slots[0].handler != 0) { bad = bad + fail("zeroed structs") }
+    for i in 0..<4 {
+        slots[i].id = (i as U32) + 10
+        slots[i].handler = functionAddress("entry_a")
+    }
+    if (slots[2].id != 12 or slots[3].handler != functionAddress("entry_a")) { bad = bad + fail("a writable table") }
+    if (sizeOf<Entry>() != 16) { bad = bad + fail("the stride is the struct's") }
+    if (bad != 0) { return 1 }
+    println("PASS: static table array")
+    return 0
+}

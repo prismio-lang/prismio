@@ -42,17 +42,19 @@ Built on 2026-11-04, each with a test:
 - ~~A heap over `kmalloc`~~: `prismio_alloc`, `prismio_realloc` and `prismio_free` written in Prismio over
   `__kmalloc`, `krealloc` and `kfree`, with a `Vec`, a `HashMap` and a `String` on it (`run_kmalloc_heap_test`)
 
-Still open, with what stops each:
+Also built, in the second pass:
 
-- Module-level assembly: there is no top-level form for it. `.modinfo` is covered by exported data above; a
-  `.pushsection` of instructions is covered by a `naked` function in a `section`
-- Statically initialised structs and tables: a global array is read-only data, every element a number, a
-  character or a string literal, because nothing runs before `main`. A table of function addresses or of structs
-  needs constant evaluation of `functionAddress` and struct literals in an initialiser
-- A mutable global array, so a page table or a descriptor table cannot be written. It needs the sized-array form
-  (`Array<U8, 4096>`) on a global, which sema refuses today, and the access paths for a written global aggregate
-- `align` on a struct: LLVM carries alignment on the storage, not the type, so `sizeOf` and an array's stride would
-  not follow it without padding the type itself
+- ~~Module-level assembly~~: a top-level `asm "text"` (`run_module_asm_test`)
+- ~~`align` on a struct~~: `align(64) repr(C) struct`, the size and an array's stride rounded up as C's `aligned(n)`
+  does (`test_377`). It goes with `repr(C)` and not `packed`
+- ~~A mutable global array~~: `let mut table: Array<U64, 512>` is zeroed storage in the module, and `let mut`
+  makes a literal array writable (`test_378`); with `export section("...") align(4096)` it is a page table
+- ~~Statically initialised structs and tables~~: a global struct written with a literal, every field a constant
+  (a number, a character, `functionAddress("name")`, another such struct), and a global array of them, laid out in
+  place and indexed at the struct's stride (`test_379`, `test_380`). The struct is `repr(C)` or `packed`
+
+Nothing in this section is open. What a global struct cannot do yet: be assigned whole (`ops = other`), and hold a
+`String`, a `Vec` or any field that owns memory, because nothing runs before `main` to build one.
 
 ## Compiler and driver
 

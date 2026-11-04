@@ -1,0 +1,53 @@
+// A global struct written with a literal: a table of operations, a device description.
+//
+// The global is the struct's own storage, laid out by the linker with every field a constant: a number,
+// a character, `functionAddress("name")` for a callback, or another such struct. Nothing runs before
+// `main`, so a computed field is refused. `repr(C)` is required so the fields stay where they were
+// written, as a C file reads them. `let mut` makes the table writable.
+
+import std.io
+import std.raw
+import std.string
+
+repr(C) struct Limits {
+    low: U32,
+    high: U32
+}
+
+repr(C) struct Operations {
+    open: Usize,
+    close: Usize,
+    flags: U32,
+    limits: Limits
+}
+
+fn open_it(x: Int) -> Int { return x + 1 }
+fn close_it(x: Int) -> Int { return x - 1 }
+
+let ops = Operations {
+    open: functionAddress("open_it"),
+    close: functionAddress("close_it"),
+    flags: 7,
+    limits: Limits { low: 2, high: 9 }
+}
+
+let mut state = Operations { open: 0, close: 0, flags: 1, limits: Limits { low: 0, high: 0 } }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    if (ops.flags != 7 or ops.limits.low != 2 or ops.limits.high != 9) { bad = bad + fail("constant fields") }
+    if (ops.open != functionAddress("open_it") or ops.close != functionAddress("close_it")) { bad = bad + fail("callbacks") }
+    if (ops.open == ops.close or ops.open == 0) { bad = bad + fail("distinct addresses") }
+    state.flags = state.flags + 4
+    state.limits.high = 100
+    if (state.flags != 5 or state.limits.high != 100) { bad = bad + fail("a writable table: ".concat(state.flags.toString())) }
+    if (bad != 0) { return 1 }
+    println("PASS: static tables")
+    return 0
+}
