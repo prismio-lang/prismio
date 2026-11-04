@@ -3253,6 +3253,26 @@ void ir_global_array_var(const char *name, const char *elem_type) {
     LLVMSetLinkage(g, LLVMInternalLinkage);
 }
 
+// A global array that is written, not just read: `let mut`. The same storage as ir_global_array_var
+// makes, without the constant flag that would put it in read-only memory.
+void ir_global_array_mutable(const char *name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) backend_fail("cannot make an unknown global writable", name);
+    LLVMSetGlobalConstant(g, 0);
+}
+
+// `let mut table: Array<U64, 512>`: `count` zeroed elements in the module's own storage, which is
+// what indexing a global array reads and writes in place (the global is the array, not a pointer to
+// one).
+void ir_global_zero_array(const char *name, const char *elem_type, int count) {
+    LLVMTypeRef ety = type_from_key(elem_type);
+    LLVMTypeRef arr = LLVMArrayType2(ety, (uint64_t)count);
+    LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
+    if (!g) g = LLVMAddGlobal(g_module, arr, name);
+    LLVMSetInitializer(g, LLVMConstNull(arr));
+    LLVMSetLinkage(g, LLVMInternalLinkage);
+}
+
 int ir_array_literal_end(const char *elem_type) {
     LLVMTypeRef ety = type_from_key(elem_type);
     int count = g_array_literal_count;

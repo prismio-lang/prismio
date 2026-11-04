@@ -1,0 +1,43 @@
+// A global array that is written: `let mut table: Array<U64, 512>` is 512 zeroed slots in the
+// module's own storage, and `let mut seeded: Array<Int, 3> = [...]` starts from its values. Both are
+// the array itself, indexed in place, so a page table or a descriptor table can be a global. Reads
+// and writes are bounds-checked like a local array's.
+
+import std.io
+import std.string
+
+let mut table: Array<U64, 512>
+let mut seeded: Array<Int, 3> = [10, 20, 30]
+let fixed: Array<Int, 3> = [1, 2, 3]
+export align(64) let mut counts: Array<I32, 16>
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn bump(i: Int) {
+    counts[i] = counts[i] + 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    if (table[0] != 0 or table[511] != 0) { bad = bad + fail("zero-filled") }
+    for i in 0..<512 { table[i] = (i as U64) * 3 }
+    let mut sum: U64 = 0
+    for i in 0..<512 { sum = sum + table[i] }
+    let expected: U64 = 392448
+    if (sum != expected) { bad = bad + fail("sum of the table: ".concat(sum.toString())) }
+
+    seeded[1] = seeded[1] + 5
+    if (seeded[0] != 10 or seeded[1] != 25 or seeded[2] != 30) { bad = bad + fail("a seeded array is writable") }
+    if (fixed[2] != 3) { bad = bad + fail("a read-only table still reads") }
+
+    for i in 0..<16 { bump(i % 4) }
+    if (counts[0] != 4 or counts[3] != 4 or counts[4] != 0) { bad = bad + fail("counts through a function") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: global arrays")
+    return 0
+}

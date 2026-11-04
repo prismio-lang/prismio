@@ -175,6 +175,9 @@ public extern fn ir_global_var(name: String, type: String, initValue: String, is
 // module that imports it, so external linkage makes those copies collide at
 // link time; see the note in runtime/llvm-api-backend.c.
 public extern fn ir_global_set_internal(name: String)
+// A global array that is written (`let mut`), and one written with a length and no values.
+public extern fn ir_global_array_mutable(name: String)
+public extern fn ir_global_zero_array(name: String, elemType: String, count: Int)
 // Assembly for the whole module, written outside any function: a top-level `asm "text"`.
 public extern fn ir_module_asm(text: String)
 // The opposite, for a global written `export`: the linker sees it.

@@ -3795,10 +3795,6 @@ internal fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
 //
 // The array's type and length come from the literal, as for a local.
 private fn semaCheckGlobalArray(varNode: ASTNode, init: ASTNode) {
-    if (varNode.i1 == 1) {
-        semaErrorAt(varNode, "global ".concat(diagQuote(varNode.s1), " is a mutable array"))
-        diag_note("a global array is read-only data: write `let`, or build the array in a function")
-    }
     let mut elemPtr = init.child1
     while (nodeExists(elemPtr)) {
         let elem = ptr_to_node(elemPtr)
@@ -4550,6 +4546,13 @@ private fn semaArrayLengthsInDecls(module: ASTNode, head: Ptr) {
                 semaRefuseArrayLengths(decl.child2)
                 semaRefuseArrayLengths(decl.child3)
                 semaArrayLengthsInDecls(module, decl.child1)
+            }
+            NodeKind.VARIABLE_DECL => {
+                // A global may be an array of a written length, as a local `let` may: `export let mut
+                // table: Array<U64, 512>` is 512 zeroed slots in the module's own storage.
+                semaArrayLengthOnTop(decl.child1)
+                semaRefuseArrayLengths(decl.child2)
+                semaRefuseArrayLengths(decl.genericInfo)
             }
             _ => {
                 semaRefuseArrayLengthsBelow(decl)

@@ -7240,6 +7240,7 @@ def run_data_placement_test():
             ('@license = dso_local constant [12 x i8] c"license=GPL\\00", section ".modinfo", align 1', "exported bytes in .modinfo"),
             ('@counter = global i32 5, section ".data.counters", align 64', "a mutable scalar, placed and aligned"),
             ('@table = internal constant [3 x i16] [i16 1, i16 2, i16 3], section ".rodata.table", align 16', "a private table, placed"),
+            ('@pagetable = dso_local global [512 x i64] zeroinitializer, section ".bss.pagetable", align 4096', "a sized, zeroed, page-aligned table"),
             ("@hidden = internal global i32 2", "a global is private unless exported"),
             ("@visible = global i32 1", "export alone is only linkage"),
         )

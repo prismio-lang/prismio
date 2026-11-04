@@ -2606,8 +2606,12 @@ public fn generateModule(module: ASTNode) {
             // A String global is a constant *pair*, which cannot be spelled in
             // the text initialiser every other type uses -- so it goes to
             // ir_global_str_var, which builds the constant instead.
+            let declaredType = nodeGetType(stmt)
             if (isArrayGlobal) {
                 emitGlobalArray(stmt)
+                if (stmt.i1 == 1) { ir_global_array_mutable(stmt.s1) }
+            } else if (declaredType.kind == TypeKind.ARRAY and nodeIsNull(stmt.child2)) {
+                ir_global_zero_array(stmt.s1, storageType(typeIrKey(ptr_to_type(declaredType.child))), declaredType.length)
             } else if (storageType(varType).equals("struct:prismio.str")) {
                 ir_global_str_var(stmt.s1, globalStrName, globalStrLen)
             } else {

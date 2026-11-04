@@ -8,6 +8,9 @@ section(".modinfo") align(1) export let license: [U8] = [108, 105, 99, 101, 110,
 export section(".data.counters") align(64) let mut counter: Int = 5
 section(".rodata.table") align(16) let table: [U16] = [1, 2, 3]
 
+// A table with a length and no values: zeroed storage in its own section, page aligned.
+export section(".bss.pagetable") align(4096) let mut pagetable: Array<U64, 512>
+
 // Not exported: private to the module, as every global was.
 let hidden: Int = 2
 
@@ -16,5 +19,6 @@ export let visible: Int = 1
 
 export fn bump() -> Int {
     counter = counter + 1
+    pagetable[0] = 1
     return counter + hidden + table[0] as Int
 }
