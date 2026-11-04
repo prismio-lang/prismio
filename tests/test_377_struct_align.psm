@@ -1,0 +1,44 @@
+// align(n) before a repr(C) struct: the struct's size, and the stride of an array of them, round up to n.
+//
+// C's `aligned(n)`. LLVM carries alignment on storage and not on a type, so the compiler gives
+// the struct a trailing zero-length array of a vector n bytes wide: no field a name can reach, no
+// bytes, and an alignment of n. `sizeOf` (the stride `Ptr<T>` moves by) follows, and the fields keep
+// the offsets C gives them.
+
+import std.io
+import std.raw
+import std.string
+
+repr(C) struct Line {
+    tag: U8,
+    count: U32
+}
+
+align(64) repr(C) struct Cache {
+    tag: U8,
+    count: U32
+}
+
+repr(C) align(16) struct Wide {
+    low: U64,
+    high: U64,
+    flag: U8
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    if (sizeOf<Line>() != 8) { bad = bad + fail("Line is 8: ".concat(sizeOf<Line>().toString())) }
+    if (sizeOf<Cache>() != 64) { bad = bad + fail("Cache is a cache line: ".concat(sizeOf<Cache>().toString())) }
+    if (sizeOf<Wide>() != 32) { bad = bad + fail("Wide rounds 25 up to 32: ".concat(sizeOf<Wide>().toString())) }
+    if (offsetOf<Cache>("tag") != 0 or offsetOf<Cache>("count") != 4) { bad = bad + fail("Cache fields keep C's offsets") }
+    if (offsetOf<Wide>("high") != 8 or offsetOf<Wide>("flag") != 16) { bad = bad + fail("Wide fields keep C's offsets") }
+    if (bad != 0) { return 1 }
+    println("PASS: struct align")
+    return 0
+}

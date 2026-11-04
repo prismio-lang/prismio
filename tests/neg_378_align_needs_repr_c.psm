@@ -1,0 +1,7 @@
+// expect-error: `align` on a struct goes with `repr(C)` and not `packed`: only C's layout has a size to round up
+
+align(64) struct Plain {
+    a: U8
+}
+
+fn main() -> Int { return 0 }

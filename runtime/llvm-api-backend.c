@@ -439,13 +439,35 @@ void ir_struct_type_split(int hot_count) { g_struct_split = hot_count; }
 // the byte is the one thing that must not gain a field.
 void ir_struct_type_packed(int on) { g_struct_packed = on ? 1 : 0; }
 
+// `align(n)` on a struct. LLVM carries alignment on storage and not on a type, so the struct is
+// given a trailing zero-length array of a vector as wide as `n`: it adds no field a name can reach
+// and no bytes, and the type's alignment becomes the vector's, which is its size. The struct's size
+// and an array's stride then round up to `n` as C's `aligned(n)` does, and `sizeOf` follows.
+static int g_struct_align;
+void ir_struct_type_align(int bytes) { g_struct_align = bytes; }
+
 void ir_struct_type_end(void) {
     StructType *s = struct_entry(g_struct_building);
     int hc = g_struct_split;
     int packed = g_struct_packed;
+    int align = g_struct_align;
     g_struct_split = 0;
     g_struct_packed = 0;
+    g_struct_align = 0;
     if (packed) hc = 0;
+    if (align >= 16 && !packed && g_struct_field_count < 64) {
+        LLVMTypeRef wide = LLVMVectorType(LLVMInt64TypeInContext(g_ctx), (unsigned)(align / 8));
+        g_struct_fields[g_struct_field_count] = LLVMArrayType(wide, 0);
+        LLVMStructSetBody(s->type, g_struct_fields, (unsigned)g_struct_field_count + 1, 0);
+        s->field_count = g_struct_field_count;
+        for (int i = 0; i < g_struct_field_count; i++) {
+            strncpy(s->field_keys[i], g_struct_field_keys[i], NAME_LEN - 1);
+            s->field_keys[i][NAME_LEN - 1] = '\0';
+        }
+        s->hot_count = 0;
+        s->cold = NULL;
+        return;
+    }
     s->field_count = g_struct_field_count;
     for (int i = 0; i < g_struct_field_count; i++) {
         strncpy(s->field_keys[i], g_struct_field_keys[i], NAME_LEN - 1);

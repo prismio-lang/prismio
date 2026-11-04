@@ -374,6 +374,15 @@ public fn nodeIsProperty(fnNode: ASTNode) -> Bool {
 public fn nodeMarkReprC(structNode: ASTNode) { structNode.i1 = structNode.i1 | 1 }
 public fn nodeMarkPacked(structNode: ASTNode) { structNode.i1 = structNode.i1 | 2 }
 
+// `align(n)` on a `repr(C)` struct, kept above the flag bits of STRUCT_DECL.i1: the struct's
+// size and the stride of an array of them are rounded up to `n`, as C's `aligned(n)` does.
+public fn nodeMarkAligned(structNode: ASTNode, bytes: Int) { structNode.i1 = structNode.i1 | (bytes << 8) }
+
+public fn nodeStructAlign(structNode: ASTNode) -> Int {
+    if (structNode.kind != NodeKind.STRUCT_DECL) { return 0 }
+    return structNode.i1 >> 8
+}
+
 public fn nodeStructIsReprC(structNode: ASTNode) -> Bool {
     return structNode.kind == NodeKind.STRUCT_DECL and (structNode.i1 & 1) == 1
 }

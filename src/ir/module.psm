@@ -1483,6 +1483,7 @@ private fn generateStructDecl(structNode: ASTNode, module: ASTNode) {
         // apply, and applying one to a different order would put arbitrary fields
         // behind the cold pointer.
         if (nodeStructIsPacked(structNode)) { ir_struct_type_packed(1) }
+        if (nodeStructAlign(structNode) > 0) { ir_struct_type_align(nodeStructAlign(structNode)) }
         ir_struct_type_end()
         return
     }

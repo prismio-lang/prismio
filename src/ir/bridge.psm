@@ -215,6 +215,8 @@ public extern fn ir_struct_type_field(fieldType: String)
 // here, because ir_struct_field_ptr is the single choke point for field access.
 public extern fn ir_struct_type_split(hotCount: Int)
 public extern fn ir_struct_type_end()
+// The struct being built is over-aligned: `align(n)` before a `repr(C)` struct.
+public extern fn ir_struct_type_align(bytes: Int)
 public extern fn ir_enum_set_null_tag(name: String, tag: Int)
 public extern fn ir_enum_reserve_null(name: String)
 public extern fn ir_enum_null_tag(name: String) -> Int
