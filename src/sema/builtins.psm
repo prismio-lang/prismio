@@ -558,6 +558,17 @@ internal fn semaStdAsmBuiltin(name: String) -> String {
     return ""
 }
 
+// Whether `name` is a non-generic function std declares, as opposed to the program's own of
+// that name.
+private fn semaNameIsStdFunction(name: String) -> Bool {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) { return true }
+    }
+    return false
+}
+
 // Whether `name` is a generic function std declares, as opposed to the program's own of
 // that name. A template is not in the declaration index, so it is found in the module.
 private fn semaNameIsStdTemplate(module: ASTNode, name: String) -> Bool {
@@ -579,7 +590,7 @@ internal fn semaCheckStdOffsetOf(module: ASTNode, call: ASTNode, callee: ASTNode
         return
     }
     let typeName = named.substring("Struct_".length, named.length - "Struct_".length)
-    let mut structNode = ptr_to_node(ptr_null())
+    let mut structNode = createNode(NodeKind.ERROR_NODE)
     let count = ir_decl_count(typeName)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(typeName, i))
@@ -602,6 +613,45 @@ internal fn semaCheckStdOffsetOf(module: ASTNode, call: ASTNode, callee: ASTNode
     let field = ptr_to_node(call.child2)
     if (nodeStructFieldIndex(structNode, field.s1) < 0) {
         semaErrorAt(field, diagQuote(typeName).concat(" has no field ", diagQuote(field.s1)))
+    }
+}
+
+// The function `functionAddress("name")` names: exactly one non-generic function or extern of that
+// name, found in the declaration index. An ERROR_NODE when there is not one.
+internal fn semaFunctionNamed(name: String) -> ASTNode {
+    let mut found = createNode(NodeKind.ERROR_NODE)
+    let mut matches = 0
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION or decl.kind == NodeKind.EXTERN_FUNCTION) {
+            found = decl
+            matches = matches + 1
+        }
+    }
+    if (matches != 1) { return createNode(NodeKind.ERROR_NODE) }
+    return found
+}
+
+internal fn semaCheckStdFunctionAddress(module: ASTNode, call: ASTNode, callee: ASTNode) {
+    if (callee.s1.equals("functionAddress") == false or semaNameIsStdFunction(callee.s1) == false) { return }
+    if (nodeIsNull(call.child2) or ptr_to_node(call.child2).kind != NodeKind.LITERAL_EXPR
+            or nodeIsNull(ptr_to_node(call.child2).next) == false) {
+        semaErrorAt(callee, "`functionAddress` takes the function's name as one string literal")
+        return
+    }
+    let literal = ptr_to_node(call.child2)
+    if (monoHasTemplate(module, literal.s1, NodeKind.FUNCTION)) {
+        semaErrorAt(literal, diagQuote(literal.s1).concat(" is generic, so it has no address until it is instantiated"))
+        return
+    }
+    let target = semaFunctionNamed(literal.s1)
+    if (target.kind != NodeKind.FUNCTION and target.kind != NodeKind.EXTERN_FUNCTION) {
+        if (ir_decl_count(literal.s1) > 1) {
+            semaErrorAt(literal, diagQuote(literal.s1).concat(" names more than one function, so it has no single address"))
+        } else {
+            semaErrorAt(literal, "no function called ".concat(diagQuote(literal.s1)))
+        }
     }
 }
 

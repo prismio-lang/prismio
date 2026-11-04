@@ -4826,6 +4826,31 @@ private fn irCallIsStdOffsetOf(instance: String) -> Bool {
     return false
 }
 
+private fn irCallIsStdFunction(name: String) -> Bool {
+    let count = ir_decl_count(name)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (decl.kind == NodeKind.FUNCTION and diag_file_module(decl.file).equals("std.raw")) { return true }
+    }
+    return false
+}
+
+// `functionAddress("name")` from std.raw, checked by sema: the function's symbol as a pointer,
+// then as the target's address integer. The symbol is the mangled name for a Prismio function
+// and the C name for an extern, both of which sema cached on the declaration.
+private fn generateFunctionAddress(call: ASTNode) -> String {
+    let literal = ptr_to_node(call.child2)
+    let count = ir_decl_count(literal.s1)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(literal.s1, i))
+        if (decl.kind == NodeKind.FUNCTION or decl.kind == NodeKind.EXTERN_FUNCTION) {
+            let pointer = ir_get_temp_name(ir_function_address(decl.s2))
+            return ir_get_temp_name(ir_ptr_to_int(pointer, typeIrKey(typeUsize())))
+        }
+    }
+    return "0"
+}
+
 private fn generateOffsetOf(call: ASTNode, instance: String) -> String {
     let typeName = instance.substring("offsetOf$Struct_".length, instance.length - "offsetOf$Struct_".length)
     let field = ptr_to_node(call.child2)
@@ -4872,6 +4897,10 @@ private fn generateCall(expr: ASTNode) -> String {
 
     if (funcName.equals("chan_recv_copy") and nodeExists(expr.child2)) {
         return generateChannelRecvCopy(expr)
+    }
+
+    if (funcName.equals("functionAddress") and irCallIsStdFunction(funcName)) {
+        return generateFunctionAddress(expr)
     }
 
     if (funcName.startsWith("offsetOf$Struct_") and irCallIsStdOffsetOf(funcName)) {

@@ -1,0 +1,7 @@
+// expect-error: no function called `missing`
+
+import std.raw
+
+fn main() -> Int {
+    return functionAddress("missing") as Int
+}

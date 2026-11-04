@@ -4997,6 +4997,52 @@ void ir_vtable_end(const char *name) {
 }
 
 // The address of a vtable, as a value. The second half of a trait object.
+// The address of a function, as a pointer value: `functionAddress("handler")` in std.raw.
+//
+// The function may not exist yet. Bodies are emitted in a second pass, and a call can
+// precede its definition because the backend synthesises the declaration from the call's
+// arguments; an address has no arguments to build a type from, and a guessed type would
+// disagree with the definition that reuses the value. So a name not yet seen gets a stand-in
+// global, `__fnaddr.<name>`, which is replaced by the function itself when the module is
+// finished (resolve_function_addresses).
+typedef struct { char *name; LLVMValueRef stand_in; } FunctionAddress;
+static FunctionAddress g_function_addresses[256];
+static int g_function_address_count;
+
+int ir_function_address(const char *name) {
+    LLVMValueRef fn = LLVMGetNamedFunction(g_module, name);
+    if (fn) return intern_value(fn);
+    for (int i = 0; i < g_function_address_count; i++) {
+        if (strcmp(g_function_addresses[i].name, name) == 0) return intern_value(g_function_addresses[i].stand_in);
+    }
+    if (g_function_address_count >= 256) backend_fail("too many function addresses", name);
+    char label[512];
+    snprintf(label, sizeof label, "__fnaddr.%s", name);
+    LLVMValueRef stand_in = LLVMAddGlobal(g_module, LLVMInt8TypeInContext(g_ctx), label);
+    g_function_addresses[g_function_address_count].name = strdup(name);
+    g_function_addresses[g_function_address_count].stand_in = stand_in;
+    g_function_address_count++;
+    return intern_value(stand_in);
+}
+
+// Each stand-in becomes the function it stood for. A name nothing ever defined or declared
+// is an error the frontend should have caught, so it is reported rather than linked.
+static int resolve_function_addresses(void) {
+    for (int i = 0; i < g_function_address_count; i++) {
+        LLVMValueRef fn = LLVMGetNamedFunction(g_module, g_function_addresses[i].name);
+        if (!fn) {
+            fprintf(stderr, "error: the address of `%s` was taken, and no function of that name was generated\n",
+                    g_function_addresses[i].name);
+            return 1;
+        }
+        LLVMReplaceAllUsesWith(g_function_addresses[i].stand_in, fn);
+        LLVMDeleteGlobal(g_function_addresses[i].stand_in);
+        tmp_free(g_function_addresses[i].name);
+    }
+    g_function_address_count = 0;
+    return 0;
+}
+
 int ir_vtable_addr(const char *name) {
     LLVMValueRef g = LLVMGetNamedGlobal(g_module, name);
     if (!g) backend_fail("address of unknown vtable", name);
@@ -7427,6 +7473,8 @@ static void dump_bad_module(void) {
 int ir_write_file(const char *filename) {
     char *err = NULL;
 
+    if (resolve_function_addresses() != 0) return 1;
+
     if (LLVMVerifyModule(g_module, LLVMReturnStatusAction, &err)) {
         fprintf(stderr, "error: generated module failed verification\n");
         if (err) fprintf(stderr, "%s\n", err);
@@ -7469,6 +7517,7 @@ static void mark_functions_for_size(LLVMModuleRef m, int minimum) {
 // the target-independent passes. On the way to an object or the JIT the level
 // is applied later, once, to the merged module.
 int ir_write_output_file(const char *filename) {
+    if (resolve_function_addresses() != 0) return 1;
     if (g_opt_level > 0) {
         if (g_opt_level >= IR_OPT_SIZE) {
             mark_functions_for_size(g_module, g_opt_level == IR_OPT_MIN_SIZE);

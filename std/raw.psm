@@ -26,6 +26,17 @@
 // or frees anything.
 public fn addressOf(pointer: Ptr) -> Usize { return __builtin_ptr_addr(pointer) }
 
+// The address of the function called `name`, which is one string literal naming a function in
+// this program: `functionAddress("on_open")`. For the places a C interface wants a function
+// as a number or a pointer -- an operations table, a callback registered with the kernel.
+// Exactly one function of that name must exist, so an overloaded name is refused (and the
+// symbol of an `export fn` is the one a C file would see); an `extern fn` is the C symbol
+// itself. The name is checked at compile time and the address is a link-time constant.
+//
+// This declaration only gives the call something to resolve against; the compiler replaces
+// the call.
+public fn functionAddress(name: String) -> Usize { return 0 }
+
 // How many bytes one `T` takes in an array or a field: its size rounded up to its
 // alignment, as `sizeof` is in C. It is read off the pointer type -- how far a pointer
 // to a `T` moves for one element -- so a padded `repr(C)` struct, a `packed` one and a

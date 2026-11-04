@@ -295,6 +295,9 @@ public extern fn ir_vtable_begin()
 public extern fn ir_vtable_entry(fnName: String)
 public extern fn ir_vtable_end(name: String)
 public extern fn ir_vtable_addr(name: String) -> Int
+// A function's address as a pointer value; the function need not be generated yet. See
+// `functionAddress` in std.raw.
+public extern fn ir_function_address(name: String) -> Int
 public extern fn ir_ptr_slot(baseValue: String, index: Int) -> Int
 public extern fn ir_ptr_load_at(baseValue: String, indexValue: String) -> Int
 

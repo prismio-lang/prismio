@@ -1,0 +1,37 @@
+// functionAddress("name") from std.raw: a function's address, for the places C wants one.
+//
+// A kernel operations table and a registered callback hold function addresses. The call takes
+// the name as one string literal, so it is checked at compile time, and the address is a link-time
+// constant. A function defined after the call that names it still resolves (the backend
+// has not seen it yet when the address is taken), an `export fn` and a `fn` are both reachable, and
+// two names are two addresses.
+
+import std.io
+import std.raw
+import std.string
+
+export fn on_open(x: Int) -> Int { return x + 1 }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let open = functionAddress("on_open")
+    let close = functionAddress("on_close")
+    let again = functionAddress("on_open")
+    if (open == 0 or close == 0) { bad = bad + fail("a function has an address") }
+    if (open == close) { bad = bad + fail("two functions, two addresses") }
+    if (open != again) { bad = bad + fail("one function, one address") }
+    if (functionAddress("later") == 0) { bad = bad + fail("a function defined below") }
+    if (bad != 0) { return 1 }
+    println("PASS: function address")
+    return 0
+}
+
+fn on_close(x: Int) -> Int { return x - 1 }
+
+fn later(x: Int) -> Int { return x }
