@@ -11,6 +11,11 @@ Audited 2026-10-02 against `std/input.psm`, `std/fs.psm`, `std/process.psm`,
 `std/string.psm`, `std/option.psm` and the language pages for optionals. Every claim
 below was run against the current compiler, not read off the docs.
 
+> **Update 2026-11-04.** `readLineOr` and `atEndOfInput` are gone (`??` and "ask for the next item" cover them),
+> `readWords` is `readTokens`, and `std.input` gained tokens (`readToken`, `tokens`), bytes (`readByte`,
+> `readBytes`, `readAllBytes` as `Vec<U8>`, `readText` for the old `String` form) and `readIntResult` /
+> `readFloatResult`. Read section 3C's table with those substitutions. `readInts` is still not offered.
+
 ## 1 · The program that does not build
 
 ```prismio

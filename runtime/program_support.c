@@ -6,6 +6,7 @@
 
 #include "prismio_platform.h"
 #include "prismio_runtime.h"
+#include <limits.h>
 
 // Every libc `free`/`realloc` in this file is spelled `tmp_free`/`tmp_realloc` (prismio_runtime.h),
 // because a block from the allocator seam must reach `rt_free` instead. See docs/ALLOCATOR_PLAN.md.
@@ -1484,9 +1485,9 @@ char* proc_read_all(int fd) {
     return buffer;
 }
 
-// A buffered line reader over one descriptor: standard input's, which is
-// `stdin.readLine`, `stdin.lines` and `stdin.readAll` in std/input.psm, and a
-// file's, which is `readLines` in std/fs.psm.
+// A buffered reader over one descriptor: standard input's, which is std/input.psm
+// (lines, tokens, bytes and the rest), and a file's, which is `readLines` in std/fs.psm.
+// The buffer holds raw bytes; it is the callers that decide what a line or a token is.
 //
 // **One `read` per buffer, not per line.** A line reader that asked the kernel
 // for each line would make a filter slower than `cat`; this one finds the line
@@ -1513,6 +1514,14 @@ typedef struct {
     size_t next;
     int    pending;
     int    eof;
+    // Set when the descriptor reported an error rather than the end of input, so a
+    // caller that must tell the two apart can (`io_stdin_failed`). Reading stops
+    // either way.
+    int    failed;
+    // The size of the token `io_stdin_has_token` found at `start`, so the `take` that
+    // follows does not scan it a second time. Cleared by anything that moves `start`.
+    int    token_ready;
+    size_t token_length;
 } LineReader;
 
 // Moves the unread bytes to the front, makes room for at least one chunk, and
@@ -1541,7 +1550,11 @@ static size_t line_reader_fill(LineReader* r) {
         ssize_t n = read(r->fd, r->buffer + r->end, r->capacity - r->end);
         if (n < 0 && errno == EINTR) continue;
 #endif
-        if (n <= 0) { r->eof = 1; return 0; }
+        if (n <= 0) {
+            r->eof = 1;
+            if (n < 0) r->failed = 1;
+            return 0;
+        }
         r->end += (size_t)n;
         return (size_t)n;
     }
@@ -1590,38 +1603,245 @@ static char* line_reader_take_line(LineReader* r) {
     if (r && r->pending) {
         r->start = r->next;
         r->pending = 0;
+        r->token_ready = 0;
     }
     return out;
 }
 
 // This process's standard input, through one reader for the whole process.
 //
-// **One reader.** The state is process-global and unlocked, as C's `stdin` is
-// under `getc_unlocked`: two tasks reading lines concurrently is undefined.
-// Reading descriptor 0 directly (`Stream { descriptor: 0 }`) bypasses the buffer
-// and skips whatever it already holds.
+// **One reader, one cursor.** Lines, tokens, bytes and the rest of the input are all
+// taken from this one buffer, so the calls can be mixed and each begins exactly where
+// the one before stopped. Reading descriptor 0 directly (`Stream { descriptor: 0 }`)
+// bypasses the buffer and skips whatever it already holds.
+//
+// **Each call is atomic, and a pair of calls is not.** Every `io_stdin_*` entry point
+// takes the reader's lock for its whole duration, so two tasks reading at once never
+// tear or repeat an item: each line, token or byte goes to exactly one of them. The
+// iterator protocol is two calls, though (`has_line`, then `take_line`), so a second
+// reader can take the line the first one found; a program with two readers should
+// give the input to one task. A reader blocked in `read` holds the lock, and the
+// others sleep.
 static LineReader io_stdin_reader = { 0 };
+static volatile int io_stdin_lock_flag;
+// Set (by prismio_task_begin) before the first task's thread exists. Until then there
+// is one thread and nothing to exclude, so the lock costs nothing: a line read is
+// about 15 ns, and two atomic exchanges per call were a visible fraction of that.
+static int io_stdin_threaded;
+
+// The hot calls (a line, a token, a byte) test `io_stdin_threaded` once and run the plain
+// body when it is clear, so a single-threaded program pays one predictable branch and the
+// body still inlines into its caller.
+//
+// **The flag is not `volatile`, and that is measured.** Reading 3 million lines was 43.4 ms
+// with no lock at all and 56.6 ms with a `volatile` flag tested around each call: a volatile
+// load cannot be merged or moved, and it kept the scan for a line from being fused with the copy
+// that follows. A plain load is correct here because the flag changes once, in the thread that
+// is about to create another (`pthread_create` publishes it), and never changes back.
+// `name_locked` is the same call made while holding the lock, out of line so the plain body
+// is the only one left to inline into the fast path.
+#define IO_STDIN_GUARDED(type, name, call)                                  \
+    static __attribute__((noinline)) type name##_locked(void) {             \
+        io_stdin_lock();                                                    \
+        type guarded_result = call;                                         \
+        io_stdin_unlock();                                                  \
+        return guarded_result;                                              \
+    }
+
+static void io_stdin_lock(void) {
+    while (__atomic_exchange_n(&io_stdin_lock_flag, 1, __ATOMIC_ACQUIRE)) {
+#ifdef _WIN32
+        Sleep(1);
+#else
+        struct timespec pause = { 0, 100000 };
+        nanosleep(&pause, NULL);
+#endif
+    }
+}
+
+static void io_stdin_unlock(void) {
+    __atomic_store_n(&io_stdin_lock_flag, 0, __ATOMIC_RELEASE);
+}
+
+IO_STDIN_GUARDED(int, io_stdin_has_line, line_reader_has_line(&io_stdin_reader))
 
 int io_stdin_has_line(void) {
+    if (__builtin_expect(io_stdin_threaded, 0)) return io_stdin_has_line_locked();
     return line_reader_has_line(&io_stdin_reader);
 }
 
+IO_STDIN_GUARDED(char*, io_stdin_take_line, line_reader_take_line(&io_stdin_reader))
+
 char* io_stdin_take_line(void) {
+    if (__builtin_expect(io_stdin_threaded, 0)) return io_stdin_take_line_locked();
     return line_reader_take_line(&io_stdin_reader);
+}
+
+// 1 when the input ended because the descriptor failed, not because it was exhausted.
+int io_stdin_failed(void) {
+    io_stdin_lock();
+    int failed = io_stdin_reader.failed;
+    io_stdin_unlock();
+    return failed;
 }
 
 // Everything not yet handed out, to the end of input. A line found by
 // `io_stdin_has_line` and not yet taken is part of it.
 char* io_stdin_read_all(void) {
+    io_stdin_lock();
     LineReader* r = &io_stdin_reader;
     r->pending = 0;
+    r->token_ready = 0;
     while (line_reader_fill(r) > 0) {}
     size_t length = r->end - r->start;
     char* out = (char*)rt_base_alloc(length + 1);
-    if (!out) return NULL;
-    if (length > 0) memcpy(out, r->buffer + r->start, length);
-    out[length] = '\0';
-    r->start = r->end;
+    if (out) {
+        if (length > 0) memcpy(out, r->buffer + r->start, length);
+        out[length] = '\0';
+        r->start = r->end;
+    }
+    io_stdin_unlock();
+    return out;
+}
+
+// Tokens: runs of anything but space, tab, line feed and carriage return -- the whitespace
+// `trim` and `splitWhitespace` in std.string already mean. The byte that ends a token is not
+// consumed, so `readToken` then `readLine` gives the rest of that line, as C++'s
+// `cin >> x` then `getline` does. Looking for a token skips the whitespace before it,
+// including line ends, which is the one thing a probe consumes.
+static int is_token_space(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// 1 with `*length` the size of the next token, which starts at `r->start`; 0 when only
+// whitespace is left. Reads as much as it takes, so a token may span any number of
+// buffer fills.
+static int line_reader_find_token(LineReader* r, size_t* length) {
+    r->pending = 0;
+    if (r->token_ready) {
+        *length = r->token_length;
+        return 1;
+    }
+    for (;;) {
+        while (r->start < r->end && is_token_space((unsigned char)r->buffer[r->start])) r->start++;
+        if (r->start < r->end) break;
+        if (line_reader_fill(r) == 0) return 0;
+    }
+    size_t scanned = 0;
+    for (;;) {
+        while (r->start + scanned < r->end
+               && !is_token_space((unsigned char)r->buffer[r->start + scanned])) scanned++;
+        if (r->start + scanned < r->end) break;
+        if (line_reader_fill(r) == 0) break;
+    }
+    *length = scanned;
+    r->token_ready = 1;
+    r->token_length = scanned;
+    return 1;
+}
+
+static int io_stdin_find_token(void) {
+    size_t length = 0;
+    return line_reader_find_token(&io_stdin_reader, &length);
+}
+
+IO_STDIN_GUARDED(int, io_stdin_has_token, io_stdin_find_token())
+
+int io_stdin_has_token(void) {
+    if (__builtin_expect(io_stdin_threaded, 0)) return io_stdin_has_token_locked();
+    return io_stdin_find_token();
+}
+
+// The next token as a String the caller owns, "" when there is none (as
+// `io_stdin_take_line` answers at the end). A token with a NUL byte in it ends there as
+// a String; `readByte` and `readBytes` see all of it.
+static char* io_stdin_take_token_unlocked(void) {
+    LineReader* r = &io_stdin_reader;
+    size_t length = 0;
+    if (!line_reader_find_token(r, &length)) length = 0;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (out) {
+        if (length > 0) memcpy(out, r->buffer + r->start, length);
+        out[length] = '\0';
+        r->start += length;
+        r->token_ready = 0;
+    }
+    return out;
+}
+
+IO_STDIN_GUARDED(char*, io_stdin_take_token, io_stdin_take_token_unlocked())
+
+char* io_stdin_take_token(void) {
+    if (__builtin_expect(io_stdin_threaded, 0)) return io_stdin_take_token_locked();
+    return io_stdin_take_token_unlocked();
+}
+
+// The next byte, 0 to 255, or -1 at the end of input.
+static int io_stdin_read_byte_unlocked(void) {
+    LineReader* r = &io_stdin_reader;
+    r->pending = 0;
+    r->token_ready = 0;
+    if (r->start < r->end || line_reader_fill(r) > 0) return (unsigned char)r->buffer[r->start++];
+    return -1;
+}
+
+IO_STDIN_GUARDED(int, io_stdin_read_byte, io_stdin_read_byte_unlocked())
+
+int io_stdin_read_byte(void) {
+    if (__builtin_expect(io_stdin_threaded, 0)) return io_stdin_read_byte_locked();
+    return io_stdin_read_byte_unlocked();
+}
+
+extern void mem_bytes_resize(void* bytes, int length);
+extern uintptr_t mem_bytes_data(void* bytes);
+
+// Up to `count` bytes (all that remain when `count` is negative) appended to the empty
+// `Vec<U8>` `bytes`, which is resized to what was read; answers how many. Fewer than
+// asked means the input ended first. Bytes are copied as they are: no NUL or UTF-8
+// rule applies, and a line found by `io_stdin_has_line` and not yet taken is counted.
+// A single call hands out at most INT_MAX bytes.
+
+int io_stdin_read_into(void* bytes, int count) {
+    io_stdin_lock();
+    LineReader* r = &io_stdin_reader;
+    r->pending = 0;
+    r->token_ready = 0;
+    size_t want = count >= 0 ? (size_t)count : (size_t)INT_MAX;
+    while (r->end - r->start < want && line_reader_fill(r) > 0) {}
+    size_t length = r->end - r->start;
+    if (length > want) length = want;
+    if (length > (size_t)INT_MAX) length = (size_t)INT_MAX;
+    if (length > 0) {
+        mem_bytes_resize(bytes, (int)length);
+        memcpy((unsigned char*)mem_bytes_data(bytes), r->buffer + r->start, length);
+        r->start += length;
+    }
+    io_stdin_unlock();
+    return (int)length;
+}
+
+// Exactly `count` bytes of standard input as text, or fewer when it ends first: the
+// same bytes as `io_stdin_read_into`, as a String, so a header read with `readLine`
+// and a body of the length it announced can be read as the text it is. A String ends
+// at its first NUL, so a NUL among the bytes cuts the text there.
+char* io_stdin_take_text(int count) {
+    io_stdin_lock();
+    LineReader* r = &io_stdin_reader;
+    r->pending = 0;
+    r->token_ready = 0;
+    size_t want = count > 0 ? (size_t)count : 0;
+    while (r->end - r->start < want && line_reader_fill(r) > 0) {}
+    size_t length = r->end - r->start;
+    if (length > want) length = want;
+    char* out = (char*)rt_base_alloc(length + 1);
+    if (out) {
+        const unsigned char* zero = length ? (const unsigned char*)memchr(r->buffer + r->start, 0, length) : NULL;
+        size_t text = zero ? (size_t)(zero - (const unsigned char*)(r->buffer + r->start)) : length;
+        if (text > 0) memcpy(out, r->buffer + r->start, text);
+        out[text] = '\0';
+        r->start += length;
+    }
+    io_stdin_unlock();
     return out;
 }
 
@@ -1633,27 +1853,6 @@ void stdio_binary(void) {
     _setmode(0, _O_BINARY);
     _setmode(1, _O_BINARY);
 #endif
-}
-
-// Exactly `count` bytes of standard input, or fewer when it ends first, found
-// through the same reader as the lines so the calls can be mixed: a header read
-// with `readLine`, then a body of the length it announced. A line found by
-// `io_stdin_has_line` and not yet taken is part of what is counted.
-//
-// Bytes, not text: a NUL among them is copied, but a String ends at the first one.
-char* io_stdin_take_bytes(int count) {
-    LineReader* r = &io_stdin_reader;
-    r->pending = 0;
-    size_t want = count > 0 ? (size_t)count : 0;
-    while (r->end - r->start < want && line_reader_fill(r) > 0) {}
-    size_t length = r->end - r->start;
-    if (length > want) length = want;
-    char* out = (char*)rt_base_alloc(length + 1);
-    if (!out) return NULL;
-    if (length > 0) memcpy(out, r->buffer + r->start, length);
-    out[length] = '\0';
-    r->start += length;
-    return out;
 }
 
 // Waiting on several descriptors at once, with a timeout: the one primitive a program
@@ -2074,6 +2273,7 @@ static int prismio_task_begin(PrismioTask* t) {
     // Publish the switch before the OS can run the new thread. Programs that
     // never spawn retain the direct process-local arena fast path.
     prismio_memory_threads_enable();
+    io_stdin_threaded = 1;
 
 #ifdef _WIN32
     t->thread = CreateThread(NULL, 0, prismio_task_entry, t, 0, NULL);

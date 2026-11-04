@@ -7077,6 +7077,107 @@ def run_ownership_probes_test():
     return True
 
 
+def run_std_input_test():
+    """std.input over exact bytes: lines, tokens, bytes, `Result` parsing and one cursor.
+
+    Starts tests/stdin_input_probe.psm once per case with the stdin bytes the case names
+    -- including NULs, bytes that are not UTF-8, lines at and past the 64 KiB buffer, and
+    two tasks reading at once -- and compares what it prints. Binary input is why this is
+    not a Prismio fixture: a parent written in Prismio sends Strings, which end at a NUL.
+    """
+    print(f"\n{BLUE}--- Running std_input ---{RESET}")
+    problems = []
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    chunk = 65536
+    with tempfile.TemporaryDirectory(prefix="prismio-std-input-") as tmp:
+        probe = Path(tmp) / ("probe" + exe_suffix)
+        built = run_command([str(PRISMIO_EXE), "build", str(TEST_DIR / "stdin_input_probe.psm"),
+                             "--verify", "-o", str(probe)])
+        if built.returncode != 0:
+            print(f"{RED}[FAIL] std.input probe did not build: {built.stdout} {built.stderr}{RESET}")
+            return False
+        every_byte = bytes(range(256))
+        cases = (
+            # name, args, stdin, stdout
+            ("lines: none", ["lines"], b"", "end\n"),
+            ("lines: no terminator", ["lines"], b"hello", "[hello]\nend\n"),
+            ("lines: one line", ["lines"], b"hello\n", "[hello]\nend\n"),
+            ("lines: a blank second line", ["lines"], b"hello\n\n", "[hello]\n[]\nend\n"),
+            ("lines: CRLF", ["lines"], b"a\r\nb\r\nc", "[a]\n[b]\n[c]\nend\n"),
+            ("line: 64 KiB", ["linelen"], b"x" * chunk + b"\n", f"{chunk}\ntrue\n"),
+            ("line: 64 KiB + 1", ["linelen"], b"x" * (chunk + 1) + b"\n", f"{chunk + 1}\ntrue\n"),
+            ("line: 64 KiB - 1, no terminator", ["linelen"], b"x" * (chunk - 1), f"{chunk - 1}\ntrue\n"),
+            ("line: 200 KiB crossing three fills", ["linelen"], b"y" * 200000 + b"\r\n", "200000\ntrue\n"),
+            ("tokens: none", ["tokens"], b"", "end\n"),
+            ("tokens: only whitespace", ["tokens"], b" \n\t \r\n", "end\n"),
+            ("tokens: mixed whitespace", ["tokens"], b"5\n10 20  30\n40\t50",
+             "<5>\n<10>\n<20>\n<30>\n<40>\n<50>\nend\n"),
+            ("tokens: eager and lazy agree", ["tokenlist"], b"a b\nc\n", "3\nc\n"),
+            ("token then the rest of its line", ["token_then_line"], b"42 tail\nnext\n",
+             "42\n[ tail]\n[next]\n"),
+            ("line then tokens", ["line_then_token"], b"head\n  7 8\n", "head\n7\n8\n"),
+            ("token then readAll", ["token_then_all"], b"first  rest\nmore\n", "first\n[  rest\nmore\n]\n"),
+            ("tokens: count and size over many fills", ["tokencount"],
+             b"".join(b"token%d\n" % i for i in range(30000)),
+             "30000\n%d\n" % sum(len(b"token%d" % i) for i in range(30000))),
+            ("tokens: one token spanning a buffer boundary", ["tokencount"],
+             b"ab " + b"z" * (chunk - 4) + b" tail", "3\n%d\n" % (2 + chunk - 4 + 4)),
+            ("tokens: one token longer than the buffer", ["tokencount"], b"q" * (3 * chunk), "1\n%d\n" % (3 * chunk)),
+            ("bytes: NUL and every value are kept", ["allbytes"], every_byte + every_byte,
+             "512\n%d\n2\n2\n0\n" % (2 * sum(range(256)))),
+            ("bytes: invalid UTF-8 is kept", ["allbytes"], b"\xff\xfe\xc3\x28\x80",
+             "5\n%d\n0\n1\n0\n" % sum(b"\xff\xfe\xc3\x28\x80")),
+            ("bytes: empty input", ["allbytes"], b"", "0\n0\n0\n0\n0\n"),
+            ("bytes: large readAllBytes is not truncated", ["allbytes"], bytes(range(251)) * 40000,
+             "%d\n%d\n%d\n0\n0\n" % (251 * 40000, sum(range(251)) * 40000, 40000)),
+            ("bytes: a count, then the rest", ["bytes", "100"], bytes(range(200)),
+             "100\n%d\n100\n%d\n" % (sum(range(100)), sum(range(100, 200)))),
+            ("bytes: fewer than asked at the end", ["bytes", "100"], b"\x01\x02\x03", "3\n6\n0\n0\n"),
+            ("bytes: a count of zero", ["bytes", "0"], b"abc", "0\n0\n3\n%d\n" % sum(b"abc")),
+            ("byte: one at a time", ["byteloop"], b"\x00\x01\xff", "3\n256\ntrue\n"),
+            ("byte: across fills", ["byteloop"], b"\x01" * (chunk * 2 + 5), f"{chunk * 2 + 5}\n{chunk * 2 + 5}\ntrue\n"),
+            ("mixed: a line, then bytes from where it stopped", ["line_then_bytes"],
+             b"head\n\x00\x00body\x00", "head\n7\n3\n"),
+            ("mixed: line, readBytes, readText, readAll", ["line_bytes_text"],
+             b"Length: 8\nabcdefghij\n", "Length: 8\n5\nfgh\nij\n\n"),
+            ("text: a NUL cuts the text, the bytes stay consumed", ["text_nul"], b"ab\x00cdefgh", "2\n3\n"),
+            ("ints: values, bad lines and the end", ["ints"], b" 42 \nhello\n-7\n\n9",
+             "ok 42\nnot-a-number\nok -7\nnot-a-number\nok 9\neof\n"),
+            ("floats: values, bad lines and the end", ["floats"], b"2.5\nx\n3\n", "ok 2.5\nnot-a-number\nok 3\neof\n"),
+            ("readInt falls back with ??", ["int_fallback"], b"12\nnope\n", "12\n18\nstranger\n"),
+            ("two tasks share one cursor", ["race"],
+             b"".join(b"w%d " % i for i in range(50000)), "50000\n"),
+        )
+        for name, args, data, want in cases:
+            ran = subprocess.run([str(probe)] + args, input=data, capture_output=True, cwd=PROJECT_ROOT)
+            out = ran.stdout.decode("utf-8", errors="replace")
+            err = ran.stderr.decode("utf-8", errors="replace")
+            if ran.returncode != 0:
+                problems.append(f"{name}: exit {ran.returncode}: {err.strip()[:200]!r}")
+            elif out != want:
+                problems.append(f"{name}: got {out[:200]!r}, expected {want[:200]!r}")
+            elif " 0 violation(s)" not in err or " 0 leaked," not in err:
+                problems.append(f"{name}: no clean ledger: {err.strip()[-300:]!r}")
+        # A descriptor that fails is not the end of input: `readIntResult` says `io`, and the
+        # plain reads still just stop. A directory cannot be read, on every host but Windows.
+        if platform.system() != "Windows":
+            descriptor = os.open(str(PROJECT_ROOT), os.O_RDONLY)
+            try:
+                for args, want in ((["ints"], "io\n"), (["lines"], "end\n")):
+                    ran = subprocess.run([str(probe)] + args, stdin=descriptor, capture_output=True, cwd=PROJECT_ROOT)
+                    if ran.stdout.decode(errors="replace") != want:
+                        problems.append(f"unreadable stdin, {args[0]}: got {ran.stdout.decode(errors='replace')!r}, expected {want!r}")
+            finally:
+                os.close(descriptor)
+    if problems:
+        print(f"{RED}[FAIL] std.input{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] std.input: {len(cases)} cases, one cursor, bytes kept, clean ledger{RESET}")
+    return True
+
+
 def run_failure_builtins_test():
     """`panic`, `unreachable`, a failed `assert` and `exit`, run for real.
 
@@ -12447,6 +12548,7 @@ def main():
         ("proved_indices", run_proved_indices_test),
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
+        ("std_input", run_std_input_test),
         ("std_mem_failures", run_std_mem_failures_test),
         ("typed_pointer_ir", run_typed_pointer_ir_test),
         ("freestanding", run_freestanding_test),

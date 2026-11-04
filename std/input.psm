@@ -1,4 +1,4 @@
-// This process's standard input, read a line at a time or all at once.
+// This process's standard input: lines, tokens, bytes, or all of it at once.
 //
 //     import std.input
 //
@@ -6,8 +6,12 @@
 //         println(line.length)
 //     }
 //
-// Each is a plain function: `readLine()`, `readInt()`, `readAll()`. There is no
-// `stdin` to name first, since a process has one.
+//     let n = readInt() ?? 0                  // a line holding a number, or a fallback
+//     for token in tokens() { ... }           // whitespace-separated, read as it is consumed
+//
+// Each is a plain function. There is no `stdin` to name first, since a process has
+// one, and no fallback variant of any of them: `??` is the fallback
+// (`readLine() ?? "stranger"`).
 //
 // **Its own module rather than part of std.io**, because std.io is imported by
 // every program that prints, and a program carries what its imports declare:
@@ -15,32 +19,70 @@
 // ownership analysis). A program that reads its input asks for that; one that
 // only prints should not pay for it.
 //
-// **A line does not carry its terminator.** `\n` and `\r\n` both end one, and a
-// last line with neither is still a line, so `"a\nb"` and `"a\nb\n"` are the
-// same two lines and an empty input has none.
+// **Three views of one cursor.** The runtime keeps one 64 KiB buffer of raw bytes
+// for the process (`io_stdin_*`, runtime/program_support.c): a read is a scan and a
+// copy, not a system call, and the buffer grows to hold a line or token longer than
+// itself. Everything below takes from that one position, so the calls can be mixed
+// and each begins where the one before stopped:
 //
-// **Buffered once for the process, in the runtime** (`io_stdin_*`,
-// runtime/program_support.c). A line costs a scan and a copy, not a system call.
-// The calls share the buffer, so they can be mixed: `readLine` then
-// `readAll` gives the rest after that line. Reading descriptor 0 directly
-// (`Stream { descriptor: 0 }` in std.process) bypasses the buffer, and it is one
-// reader at a time -- the buffer is not locked.
+//     let header = readLine()            // "Length: 12"
+//     let body = readBytes(12)           // exactly the next 12 bytes
+//     let rest = readAll()               // whatever follows
 //
-// A line is a String from a C pointer, so text after a NUL byte in a line is not
-// part of it.
+// - **Lines** (`readLine`, `inputLines`, `readLines`, `readInt`, `readFloat`,
+//   `prompt`). A line does not carry its terminator: `\n` and `\r\n` both end one, and
+//   a last line with neither is still a line, so `"a\nb"` and `"a\nb\n"` are the same
+//   two lines and an empty input has none.
+// - **Tokens** (`readToken`, `tokens`, `readTokens`). A token is a run of anything but
+//   space, tab, `\n` and `\r`. The byte after a token is left unread, so `readToken()` then
+//   `readLine()` gives the rest of that line, as `cin >> x` then `getline` does.
+//   Looking for a token skips the whitespace before it, line ends included.
+// - **Bytes** (`readByte`, `readBytes`, `readAllBytes`). Exactly what arrived: a NUL
+//   or a byte that is not UTF-8 is kept. The text views build a `String`, which ends at
+//   its first NUL, so a line or token holding one is cut there; `readText(count)` is
+//   the counted read as text.
+//
+// **Absence is `none`; a failure is not absence.** `readInt()` answers `none` at the
+// end of input and also for a line that is not a number, as `parseInt` does. When a
+// program must tell them apart -- and tell either from the descriptor failing --
+// `readIntResult()` and `readFloatResult()` answer `Result<Int?, InputError>`.
+//
+// **One reader, and every call is atomic.** Two tasks reading at once never tear or
+// repeat an item (each line, token or byte goes to exactly one of them), but a pair of
+// calls is not atomic: `inputLines()` asks "is there another?" and then takes, and the
+// other task can take what the first one found. Give the input to one task. Reading
+// descriptor 0 directly (`Stream { descriptor: 0 }` in std.process) bypasses the buffer
+// and skips whatever it already holds.
+//
+// Nothing here buffers *output*: `print` writes straight to descriptor 1, so a prompt is
+// on the screen before the read that follows it blocks.
 
 import std.io
 import std.iter
 import std.option
 import std.string
+import std.vec
 
-// Every line and the rest-of-input String are allocated by the runtime for the
+// Every line, token and rest-of-input String is allocated by the runtime for the
 // caller, "" at the end of input rather than a literal.
 private extern fn io_stdin_has_line() -> Int
 private extern fn io_stdin_take_line() -> String produce(rt_free)
+private extern fn io_stdin_has_token() -> Int
+private extern fn io_stdin_take_token() -> String produce(rt_free)
 private extern fn io_stdin_read_all() -> String produce(rt_free)
-private extern fn io_stdin_take_bytes(count: Int) -> String produce(rt_free)
+private extern fn io_stdin_take_text(count: Int) -> String produce(rt_free)
+private extern fn io_stdin_read_byte() -> Int
+private extern fn io_stdin_read_into(bytes: Vec<U8> borrow, count: Int) -> Int
+private extern fn io_stdin_failed() -> Int
 private extern fn io_stdin_ready(ms: Int) -> Int
+
+// Why a read that was asked to be exact could not answer.
+public enum InputError {
+    // The line was read, and is not a number.
+    NotANumber,
+    // The descriptor failed: not the end of input, which is `Ok(none)`.
+    Io
+}
 
 // The next line, or `none` at the end of input.
 //
@@ -51,15 +93,8 @@ public fn readLine() -> String? {
     return io_stdin_take_line()
 }
 
-// The next line, or `fallback` at the end of input: what `readLine() ?? fallback`
-// says, without importing std.option.
-public fn readLineOr(fallback: String) -> String {
-    if (io_stdin_has_line() == 0) { return fallback.clone() }
-    return io_stdin_take_line()
-}
-
-// `text` written to standard output, then the next line. The prompt is not
-// followed by a newline, and standard output is flushed when the line is read.
+// `text` written to standard output, then the next line. The prompt is not followed by
+// a newline, and is already on the screen when the read blocks (see the header).
 public fn prompt(text: String) -> String? {
     print(text)
     return readLine()
@@ -67,14 +102,43 @@ public fn prompt(text: String) -> String? {
 
 // The next line as a number: `none` at the end of input, and also when the line
 // is not one (surrounding spaces are ignored). The line is consumed either way.
+// `readIntResult` is the form that says which.
 public fn readInt() -> Int? {
     if (io_stdin_has_line() == 0) { return none }
-    return io_stdin_take_line().trim().parseInt()
+    let line = io_stdin_take_line()
+    return line.trim().parseInt()
 }
 
 public fn readFloat() -> Float? {
     if (io_stdin_has_line() == 0) { return none }
-    return io_stdin_take_line().trim().parseFloat()
+    let line = io_stdin_take_line()
+    return line.trim().parseFloat()
+}
+
+// `readInt` with the three outcomes kept apart: `Ok(some)` a number, `Ok(none)` the end
+// of input, `Err(NotANumber)` a line that is not one (consumed, as `readInt` consumes
+// it) and `Err(Io)` the descriptor failing.
+public fn readIntResult() -> Result<Int?, InputError> {
+    if (io_stdin_has_line() == 0) {
+        if (io_stdin_failed() == 1) { return Result<Int?, InputError>.Err(InputError.Io) }
+        return Result<Int?, InputError>.Ok(none)
+    }
+    let line = io_stdin_take_line()
+    let parsed = line.trim().parseInt()
+    if (parsed == none) { return Result<Int?, InputError>.Err(InputError.NotANumber) }
+    return Result<Int?, InputError>.Ok(parsed)
+}
+
+// `readFloat`, kept apart as `readIntResult` is.
+public fn readFloatResult() -> Result<Float?, InputError> {
+    if (io_stdin_has_line() == 0) {
+        if (io_stdin_failed() == 1) { return Result<Float?, InputError>.Err(InputError.Io) }
+        return Result<Float?, InputError>.Ok(none)
+    }
+    let line = io_stdin_take_line()
+    let parsed = line.trim().parseFloat()
+    if (parsed == none) { return Result<Float?, InputError>.Err(InputError.NotANumber) }
+    return Result<Float?, InputError>.Ok(parsed)
 }
 
 // Every line not yet read.
@@ -86,9 +150,26 @@ public fn readLines() -> Vec<String> {
     return out
 }
 
-// The rest of the input split at spaces, tabs and line ends.
-public fn readWords() -> Vec<String> {
-    return io_stdin_read_all().splitWhitespace()
+// The next token, or `none` when only whitespace is left. Read one at a time it never
+// holds more than the buffer and the token, so a program can consume an input far larger
+// than memory:
+//
+//     let count = readToken() ?? "0"
+//
+// The byte after the token stays unread.
+public fn readToken() -> String? {
+    if (io_stdin_has_token() == 0) { return none }
+    return io_stdin_take_token()
+}
+
+// Every token not yet read. `tokens()` is the form that does not hold them all.
+//
+// This is `readAll().splitWhitespace()`: the rest of the input is taken in one piece and cut
+// into tokens in memory, which is 2.3x faster than asking the runtime for each. A NUL ends the
+// input here as it does for `readAll`; `readToken` and `tokens()` go on past one.
+public fn readTokens() -> Vec<String> {
+    let all = io_stdin_read_all()
+    return all.splitWhitespace()
 }
 
 // Everything not yet read, to the end of input, terminators included.
@@ -96,17 +177,38 @@ public fn readAll() -> String {
     return io_stdin_read_all()
 }
 
-// The next `count` bytes, or fewer when the input ends first, and "" at the end.
-// Read through the same buffer as the lines, so a header can be read with `readLine`
-// and the body it announced with this:
+// The next byte, or `none` at the end of input.
+public fn readByte() -> U8? {
+    let byte = io_stdin_read_byte()
+    if (byte < 0) { return none }
+    return byte as U8
+}
+
+// The next `count` bytes, or fewer when the input ends first (empty at the end). One
+// call hands out at most 2 GiB - 1. A line or token found and not yet taken is counted,
+// so a header read with `readLine` and the body it announced follow each other exactly.
+public fn readBytes(count: Int) -> Vec<U8> {
+    let out: Vec<U8> = Vec<U8>.withCapacity(0)
+    io_stdin_read_into(out, count)
+    return out
+}
+
+// Everything not yet read, byte for byte.
+public fn readAllBytes() -> Vec<U8> {
+    let out: Vec<U8> = Vec<U8>.withCapacity(0)
+    io_stdin_read_into(out, 0 - 1)
+    return out
+}
+
+// `readBytes(count)` as text, for a protocol that frames text by length:
 //
 //     let header = readLine()            // "Content-Length: 12"
-//     let body = readBytes(12)
+//     let body = readText(12)
 //
-// **Bytes, not text.** A String ends at its first NUL, so binary input is cut there;
-// a protocol that frames text by length is unaffected.
-public fn readBytes(count: Int) -> String {
-    return io_stdin_take_bytes(count)
+// A String ends at its first NUL, so a NUL among the bytes cuts the text there; `readBytes`
+// keeps it.
+public fn readText(count: Int) -> String {
+    return io_stdin_take_text(count)
 }
 
 // Whether a read of the input would return without waiting: something is buffered,
@@ -117,11 +219,6 @@ public fn readBytes(count: Int) -> String {
 // `waitReadable` in std.poll with descriptor 0.
 public fn waitForInput(milliseconds: Int) -> Bool {
     return io_stdin_ready(milliseconds) == 1
-}
-
-// Whether there is no line left to read. A `readLine()` now would be `none`.
-public fn atEndOfInput() -> Bool {
-    return io_stdin_has_line() == 0
 }
 
 // The remaining lines, for a `for` loop.
@@ -138,4 +235,19 @@ impl Iterator for StdinLines {
     type Item = String
     fn hasNext(self) -> Bool { return io_stdin_has_line() == 1 }
     fn next(inout self) -> Self.Item { return io_stdin_take_line() }
+}
+
+// The remaining tokens, for a `for` loop. Each is read when the loop reaches it.
+public fn tokens() -> StdinTokens {
+    return StdinTokens {}
+}
+
+// What `tokens()` returns; like `StdinLines`, it holds nothing.
+public struct StdinTokens {
+}
+
+impl Iterator for StdinTokens {
+    type Item = String
+    fn hasNext(self) -> Bool { return io_stdin_has_token() == 1 }
+    fn next(inout self) -> Self.Item { return io_stdin_take_token() }
 }

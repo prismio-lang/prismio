@@ -1,0 +1,175 @@
+// std.input, driven by tests/test_runner.py (run_std_input_test): the runner starts this
+// program with a mode and exactly the bytes it wants on standard input -- NULs and invalid
+// UTF-8 among them, which a parent written in Prismio could not send -- and compares what
+// it prints. Output is plain ASCII so a mismatch reads.
+
+import std.input
+import std.io
+import std.option
+import std.process
+import std.string
+import std.vec
+
+fn showResultInt(r: Result<Int?, InputError>) -> String {
+    match (r) {
+        Result.Ok(v) => {
+            if (v == none) { return "eof" }
+            return "ok ".concat(expect(v).toString())
+        }
+        Result.Err(e) => {
+            match (e) {
+                InputError.NotANumber => { return "not-a-number" }
+                InputError.Io => { return "io" }
+            }
+        }
+    }
+}
+
+fn showResultFloat(r: Result<Float?, InputError>) -> String {
+    match (r) {
+        Result.Ok(v) => {
+            if (v == none) { return "eof" }
+            return "ok ".concat(expect(v).toString())
+        }
+        Result.Err(e) => {
+            match (e) {
+                InputError.NotANumber => { return "not-a-number" }
+                InputError.Io => { return "io" }
+            }
+        }
+    }
+}
+
+fn sumBytes(bytes: Vec<U8>) -> Int {
+    let mut sum = 0
+    for i in 0..<bytes.length { sum = sum + (bytes[i] as Int) }
+    return sum
+}
+
+fn countOf(bytes: Vec<U8>, value: Int) -> Int {
+    let mut n = 0
+    for i in 0..<bytes.length { if ((bytes[i] as Int) == value) { n = n + 1 } }
+    return n
+}
+
+fn drainTokens() -> Int {
+    let mut n = 0
+    loop {
+        let token = readToken()
+        if (token == none) { break }
+        n = n + 1
+    }
+    return n
+}
+
+fn main() -> Int {
+    let mode = process.args.at(1)
+    if (mode.equals("lines")) {
+        for line in inputLines() { println("[".concat(line, "]")) }
+        println("end")
+    } else if (mode.equals("linelen")) {
+        let line = readLine() ?? "(none)"
+        println(line.length)
+        println(readLine() == none)
+    } else if (mode.equals("tokens")) {
+        for token in tokens() { println("<".concat(token, ">")) }
+        println("end")
+    } else if (mode.equals("tokenlist")) {
+        let all = readTokens()
+        println(all.length)
+        if (all.length > 0) { println(all[all.length - 1]) }
+    } else if (mode.equals("tokencount")) {
+        let mut n = 0
+        let mut total = 0
+        for token in tokens() {
+            n = n + 1
+            total = total + token.length
+        }
+        println(n)
+        println(total)
+    } else if (mode.equals("token_then_line")) {
+        println(readToken() ?? "(none)")
+        println("[".concat(readLine() ?? "(none)", "]"))
+        println("[".concat(readLine() ?? "(none)", "]"))
+    } else if (mode.equals("line_then_token")) {
+        println(readLine() ?? "(none)")
+        println(readToken() ?? "(none)")
+        println(readToken() ?? "(none)")
+    } else if (mode.equals("token_then_all")) {
+        println(readToken() ?? "(none)")
+        println("[".concat(readAll(), "]"))
+    } else if (mode.equals("allbytes")) {
+        let bytes = readAllBytes()
+        println(bytes.length)
+        println(sumBytes(bytes))
+        println(countOf(bytes, 0))
+        println(countOf(bytes, 255))
+        println(readAllBytes().length)
+    } else if (mode.equals("bytes")) {
+        // The count is the first argument.
+        let first = readBytes(process.args.at(2).parseInt().unwrapOr(0))
+        println(first.length)
+        println(sumBytes(first))
+        let rest = readAllBytes()
+        println(rest.length)
+        println(sumBytes(rest))
+    } else if (mode.equals("byteloop")) {
+        let mut n = 0
+        let mut sum = 0
+        loop {
+            let b = readByte()
+            if (b == none) { break }
+            n = n + 1
+            sum = sum + (expect(b) as Int)
+        }
+        println(n)
+        println(sum)
+        println(readByte() == none)
+    } else if (mode.equals("line_then_bytes")) {
+        println(readLine() ?? "(none)")
+        let rest = readAllBytes()
+        println(rest.length)
+        println(countOf(rest, 0))
+    } else if (mode.equals("line_bytes_text")) {
+        println(readLine() ?? "(none)")
+        let body = readBytes(5)
+        println(body.length)
+        println(readText(3))
+        println(readAll())
+    } else if (mode.equals("text_nul")) {
+        let text = readText(6)
+        println(text.length)
+        println(readAllBytes().length)
+    } else if (mode.equals("ints")) {
+        loop {
+            let r = readIntResult()
+            let shown = showResultInt(r)
+            println(shown)
+            if (shown.equals("eof")) { break }
+            if (shown.equals("io")) { break }
+        }
+    } else if (mode.equals("floats")) {
+        loop {
+            let r = readFloatResult()
+            let shown = showResultFloat(r)
+            println(shown)
+            if (shown.equals("eof")) { break }
+            if (shown.equals("io")) { break }
+        }
+    } else if (mode.equals("int_fallback")) {
+        println(readInt() ?? 18)
+        println(readInt() ?? 18)
+        println(readLine() ?? "stranger")
+    } else if (mode.equals("race")) {
+        // Two tasks take tokens from one input: between them, every token exactly once.
+        let a = spawn drainTokens()
+        let b = spawn drainTokens()
+        let total = (join a) + (join b)
+        println(total)
+    } else if (mode.equals("poll")) {
+        println(waitForInput(0))
+        println(readLine() ?? "(none)")
+        println(waitForInput(0))
+    }
+    return 0
+}

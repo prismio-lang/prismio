@@ -27,7 +27,7 @@ public fn readMessage() -> String {
             if (announced >= 0) { length = announced }
         }
         if (length < 0) { continue }
-        let body = readBytes(length)
+        let body = readText(length)
         if (body.length < length) { return "".clone() }
         return body
     }

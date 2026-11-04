@@ -9,6 +9,23 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Added
 
+- **`std.input` is bytes, tokens and `Result` parsing over one cursor.** `readToken()` / `tokens()` /
+  `readTokens()` read whitespace-separated values (space, tab, `\n`, `\r`, the set `trim` and `splitWhitespace` already
+  mean; the byte after a token stays unread, as with `cin >> x`), `tokens()` lazily, so an input larger than memory can
+  be consumed. `readByte()`, `readBytes(count)` and `readAllBytes()` return `U8?` / `Vec<U8>` with every byte kept:
+  NUL and invalid UTF-8 survive, which a `String` cannot hold. `readIntResult()` / `readFloatResult()` return
+  `Result<Int?, InputError>` / `Result<Float?, InputError>` and keep apart a number, the end of input, a line that is
+  not a number (`InputError.NotANumber`) and the descriptor failing (`InputError.Io`, new: a read error used to be
+  reported as the end of input). Everything draws on the runtime's one 64 KiB buffer, so `readLine()` then
+  `readAllBytes()`, or `readToken()` then `readAll()`, continue exactly where the last stopped
+  (`tests/stdin_input_probe.psm` driven by `run_std_input_test`: 35 cases over exact bytes, lines at 64 KiB and
+  64 KiB + 1, tokens across buffer fills, a 10 MB `readAllBytes`, two tasks sharing one cursor, all under a clean
+  `--verify` ledger). Every `io_stdin_*` call is now atomic under a lock that a single-threaded program never takes
+  (a `volatile` flag in its place cost 20%: 3 million lines went from 43 to 56 ms; the plain flag measures 44.1
+  against 43.9). A/B against the previous commit on 3 million lines / 300 000 lines of 10 tokens: `inputLines()` 43.9 ->
+  44.1 ms, `readTokens()` against `readWords()` 21.3 -> 20.8 ms, `tokens()` 29.9 ms (new), `readInt()` 82.2 -> 93.7 ms
+  (the old one leaked a block per call; see Fixed).
+
 - **`HashSet<K>` (`std.map`): `insert`, `contains`, `remove`.** A set of distinct keys with the table `HashMap` has
   minus the value column: `HashSet<K>()`, `HashSet<K>.withCapacity(n)` and a bare `let s: HashSet<K>` are empty sets;
   `insert` answers whether the key was new, `remove` whether it was there; `length`, `isEmpty` and `clear` come with it.
@@ -660,6 +677,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **`std.input` loses what a better spelling already covers, and `readBytes` changes type.** `readLineOr(fallback)` is
+  `readLine() ?? fallback`; `atEndOfInput()` is asking for the next item (`readLine()` is `none`, `for` ends on its
+  own); `readWords()` is `readTokens()`. `readBytes(count)` returned a `String` and now returns `Vec<U8>`: the
+  counted read as text, for a protocol that frames text by length (`lsp/transport.psm`), is `readText(count)`.
+  `inputLines()` keeps its name: a bare `lines()` collides with too much.
+
 - **`Map` is now `HashMap`.** The type, `HashMap<K, V>()`, `HashMap<K, V>.withCapacity(n)`, `let m: HashMap<K, V>` and
   `{ k: v }` literals; the compiler's own recognition of it (`for` over a map, map literals, `default`, completion) is
   renamed with it. The `map*` free functions (`mapNew`, `mapSet`, ...) keep their names. `Map` is no longer a type, so a
@@ -1255,6 +1278,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **`readInt()` and `readFloat()` leaked the line they read.** `io_stdin_take_line().trim().parseInt()` left the owned
+  line unreleased, one block per call (`--verify`: 1 leaked per call, so 3 million numbers kept 3 million blocks). The
+  line is bound first now and released with the call. This is why `readInt` is 14% slower in the A/B above: it frees what
+  it used to keep.
 - **Semantic tokens: a called member of the library is a method.** `items.push(x)` was coloured like `items.length`, a property,
   because a reference to a member the compiler provides took its type from "member" alone; the role (`call` or `prop`) says
   which (`lsp/tokens.psm`). Found by the IntelliJ plugin's first test of the tokens it asks the server for.

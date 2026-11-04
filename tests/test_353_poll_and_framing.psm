@@ -1,10 +1,10 @@
 // What a program that serves a client and supervises a child needs, and does not need a thread
-// for: `readBytes`, `waitForInput`, `waitReadable`, `Stream.readSome` and `Child.tryWait`.
+// for: `readText`, `waitForInput`, `waitReadable`, `Stream.readSome` and `Child.tryWait`.
 //
 // **The child is this program**, as in test_153, so no system command is involved.
 //
 // 1. `frame`: a length-prefixed message, as the Language Server Protocol frames them. A header
-//    read with `readLine`, then exactly the announced bytes with `readBytes`. The body holds a
+//    read with `readLine`, then exactly the announced bytes with `readText`. The body holds a
 //    newline and a CR LF, which a line-based read would have changed, and the next header
 //    follows without a gap, so the byte count is what finds it. A read past the end answers
 //    what is left, then "".
@@ -44,12 +44,12 @@ fn childFrame() -> Int {
         if (header == none) { break }
         let length = expect(header).replaceAll("Content-Length: ", "").parseInt().unwrapOr(0 - 1)
         let blank = readLine()
-        let body = readBytes(length)
+        let body = readText(length)
         println("message ".concat(messages.toString(), " length ", body.length.toString(),
                                   ": ", shown(body)))
         messages = messages + 1
     }
-    println("tail ".concat(readBytes(10).length.toString()))
+    println("tail ".concat(readText(10).length.toString()))
     return 0
 }
 

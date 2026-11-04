@@ -154,6 +154,20 @@ condition (sema turns every `Vec` index into `list_get`, which the finder did no
 scalar read off a temporary) and `match (parse(text)) { ... }` (the scrutinee itself was the
 owned temporary) both leaked; `../tests/test_272_temporary_hoists.psm` pins them.
 
+### An owned `String?` compared with `none` in a loop condition is never released
+
+```
+while (readLine() != none) { n = n + 1 }      // 3 lines read, 3 leaked
+while (readToken() != none) { n = n + 1 }     // the same
+```
+
+The `String?` is an owned temporary and the comparison is all that reads it, so nothing
+releases it. Bound first it is clean (`let line = readLine()` then `if (line == none)`; `loop` with
+the binding and a `break` reads `0 leaked`), and so is `??` (`readLine() ?? "x"`). A `while`
+condition is not a place `irHoistBorrowedTemporaries` binds into (the hoist would run once, not per
+iteration). `std.input`'s tests bind the optional for this reason; the fix is a release on the path
+that evaluated the condition, as for the `and`/`or` entry above.
+
 ### A frame array frees none of its elements
 
 ```

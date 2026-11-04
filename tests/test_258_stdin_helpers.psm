@@ -1,5 +1,5 @@
-// The reads built on `readLine`: `readLineOr`, `prompt`, `readInt`, `readFloat`,
-// `readLines`, `readWords` and `atEndOfInput`, all plain functions. Run as in
+// The reads built on `readLine`: `??` as the fallback, `prompt`, `readInt`, `readFloat`,
+// `readLines` and `readTokens`, all plain functions. Run as in
 // test_188: the binary starts itself with a mode and a pipe for stdin and reports
 // what the child printed.
 
@@ -17,9 +17,9 @@ fn fail(message: String) -> Int {
 }
 
 fn childOr() {
-    println(readLineOr("fallback"))
-    println(readLineOr("fallback"))
-    println(readLineOr("fallback"))
+    println(readLine() ?? "fallback")
+    println(readLine() ?? "fallback")
+    println(readLine() ?? "fallback")
 }
 
 fn childNumbers() {
@@ -31,19 +31,19 @@ fn childNumbers() {
     println(b.unwrapOr(-1))
     println(c.unwrapOr(-1.0))
     println(d.unwrapOr(-1))
-    println(atEndOfInput())
+    println(readLine() == none)
 }
 
 fn childLines() {
     let lines = readLines()
     println(lines.length)
-    println(atEndOfInput())
+    println(readLine() == none)
     for line in lines { println("[".concat(line, "]")) }
 }
 
 fn childWords() {
     let first = readLine().unwrapOr("")
-    let words = readWords()
+    let words = readTokens()
     println(first)
     println(words.length)
     println(words[words.length - 1])
