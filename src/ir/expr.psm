@@ -4864,6 +4864,49 @@ private fn generateOffsetOf(call: ASTNode, instance: String) -> String {
     return "0"
 }
 
+// How many arguments of this call a C function that ends in `...` names, or a number no call
+// reaches when the callee is not variadic. The variadic overload is the one whose named
+// parameters the arguments cover.
+private fn irVariadicFixedCount(funcName: String, args: Ptr) -> Int {
+    let mut total = 0
+    let mut a = args
+    while (nodeExists(a)) {
+        total = total + 1
+        a = ptr_to_node(a).next
+    }
+    let count = ir_decl_count(funcName)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(funcName, i))
+        if (decl.kind == NodeKind.EXTERN_FUNCTION and decl.i1 == 1) {
+            let mut fixed = 0
+            let mut p = decl.child1
+            while (nodeExists(p)) {
+                fixed = fixed + 1
+                p = ptr_to_node(p).next
+            }
+            if (fixed <= total) { return fixed }
+        }
+    }
+    return 1000000
+}
+
+// An argument in a variadic position gets C's default promotions: anything narrower than an
+// `int` (a Bool, a Char, an 8- or 16-bit integer) travels as a 32-bit one, signed or unsigned
+// by its own type; wider integers, doubles and pointers go as they are. A Float is already a
+// double.
+private fn generateVariadicArgument(argNode: ASTNode, store: String, value: String) {
+    let t = nodeGetType(argNode)
+    if (store.equals("i1") or store.equals("i8") or store.equals("i16")) {
+        if (t.kind == TypeKind.INT and typeIntIsUnsigned(t) == false) {
+            ir_call_arg("i32", ir_get_temp_name(ir_sext(store, value, "i32")))
+        } else {
+            ir_call_arg("i32", ir_get_temp_name(ir_zext(store, value, "i32")))
+        }
+        return
+    }
+    ir_call_arg(store, value)
+}
+
 private fn generateCall(expr: ASTNode) -> String {
     let callee = ptr_to_node(expr.child1)
     let funcName = callee.s1
@@ -5758,6 +5801,10 @@ private fn generateCall(expr: ASTNode) -> String {
     // one, so extracting the pointer half on the argument side handed a bare
     // pointer to `@print__String`, which wants the pair.
     let isForeign = callIsPrismioFn(funcName) == false
+    // Where this call's arguments stop being the named ones of a C function ending in `...`, or
+    // past the end when it is not one.
+    let mut variadicFrom = 1000000
+    if (isForeign) { variadicFrom = irVariadicFixedCount(funcName, expr.child2) }
     ir_call_begin()
     // REQUIREMENTS 20. `list_push` and `list_set` take the element as `ptr`,
     // so a scalar has to reach the slot as one -- without this the call
@@ -5959,7 +6006,11 @@ private fn generateCall(expr: ASTNode) -> String {
                 ir_call_arg_cstr(argVal, 1)
             } else {
                 if (irSendsOwnedMessage(funcName, argIndex)) { sentMessage = argVal.clone() }
-                ir_call_arg(argStore, argVal)
+                if (isForeign and argIndex >= variadicFrom) {
+                    generateVariadicArgument(argNode, argStore, argVal)
+                } else {
+                    ir_call_arg(argStore, argVal)
+                }
             }
         }
         argPtr = argNode.next

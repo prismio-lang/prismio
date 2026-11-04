@@ -330,7 +330,25 @@ private fn semaSignatureMatchesCall(module: ASTNode, fnNode: ASTNode, argPtr: Pt
         arg = argNode.next
         param = paramNode.next
     }
+    // A C function that ends in `...` takes any number of further arguments, so long as each is
+    // something C can be handed in a variadic position.
+    if (nodeIsNull(param) and nodeExists(arg) and fnNode.kind == NodeKind.EXTERN_FUNCTION and fnNode.i1 == 1) {
+        while (nodeExists(arg)) {
+            let argNode = ptr_to_node(arg)
+            if (semaPassableAsVararg(semaExpr(module, argNode)) == false) { return false }
+            arg = argNode.next
+        }
+        return true
+    }
     return nodeIsNull(arg) and nodeIsNull(param)
+}
+
+// What a variadic position accepts: a number, a character, a Bool, a pointer, or a String
+// (handed over as a C string for the length of the call, as a `String borrow` parameter is).
+private fn semaPassableAsVararg(t: TypeInfo) -> Bool {
+    if (typeIsValid(t) == false) { return false }
+    return t.kind == TypeKind.INT or t.kind == TypeKind.FLOAT or t.kind == TypeKind.BOOL
+        or t.kind == TypeKind.CHAR or t.kind == TypeKind.STRING or t.kind == TypeKind.PTR
 }
 
 // A bare integer literal has default type Int, but it is also allowed to flow

@@ -1304,12 +1304,19 @@ static void tag_free_fn(LLVMValueRef fn, const char *name) {
     }
 }
 
+// The declaration being built ends in `...`: a C function taking more arguments than it names.
+// `printk(fmt, ...)` is the case. Set by ir_declare_function_vararg, spent by materialize_function.
+static int g_pending_vararg;
+
+void ir_declare_function_vararg(void) { g_pending_vararg = 1; }
+
 static LLVMValueRef materialize_function(void) {
     LLVMTypeRef all[MAX_PENDING_PARAMS + 1];
     unsigned n = 0;
     if (g_pending_sret) all[n++] = LLVMPointerTypeInContext(g_ctx, 0);
     for (int i = 0; i < g_pending_param_count; i++) all[n++] = g_pending_params[i];
-    LLVMTypeRef fnty = LLVMFunctionType(g_pending_ret, all, n, 0);
+    LLVMTypeRef fnty = LLVMFunctionType(g_pending_ret, all, n, g_pending_vararg);
+    g_pending_vararg = 0;
     LLVMValueRef existing = LLVMGetNamedFunction(g_module, g_pending_fn_name);
     if (existing) {
         tag_alloc_fn(existing, g_pending_fn_name);

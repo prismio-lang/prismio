@@ -1,0 +1,55 @@
+// A bare `...` after an `extern fn`'s named parameters is C's varargs: `snprintf(buffer, size,
+// format, ...)`.
+//
+// The declaration is variadic in LLVM, so the target's calling convention passes the extra
+// arguments the way a C compiler would (on Apple's arm64 they go on the stack, not in registers, so
+// a call made as if the function were fixed reads the wrong words). Each extra gets C's default
+// promotions: a Bool, a Char and an 8- or 16-bit integer travel as an `int`, signed or unsigned by
+// its own type. A Float is a double already, and a String is handed over as a C string for the
+// length of the call, as a `String borrow` parameter is.
+
+import std.io
+import std.mem
+import std.raw
+import std.string
+
+extern fn snprintf(buffer: Ptr, size: Usize, format: String borrow, ...) -> Int
+
+fn format(text: String) -> String {
+    return text.clone()
+}
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let block = alloc(256)
+    let buffer = pointerAt(block)
+
+    let n = snprintf(buffer, 256, "%d %d %d", 7, 0 - 3, 100000)
+    if (n != 11 or stringFromCString(buffer) != "7 -3 100000") { bad = bad + fail("ints") }
+
+    // Narrow integers, a Bool and a Char are promoted to int, with the sign of their own type.
+    let small: U8 = 200
+    let narrow: I8 = -5
+    snprintf(buffer, 256, "%d %d %d %d", small, narrow, true, 'A')
+    if (stringFromCString(buffer) != "200 -5 1 65") { bad = bad + fail("promotions: ".concat(stringFromCString(buffer))) }
+
+    // A double, a 64-bit integer, a string and a pointer.
+    let big: I64 = 5000000000
+    snprintf(buffer, 256, "%.2f %lld %s", 2.5, big, "text")
+    if (stringFromCString(buffer) != "2.50 5000000000 text") { bad = bad + fail("wide: ".concat(stringFromCString(buffer))) }
+
+    // Mixed, enough of them that some are past the registers on every target.
+    snprintf(buffer, 256, "%d %d %d %d %d %d %d %d %d %d", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+    if (stringFromCString(buffer) != "1 2 3 4 5 6 7 8 9 10") { bad = bad + fail("many: ".concat(stringFromCString(buffer))) }
+
+    free(block)
+    if (bad != 0) { return 1 }
+    println("PASS: variadic externs")
+    return 0
+}

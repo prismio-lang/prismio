@@ -26,6 +26,8 @@ public extern fn ir_declare_function_param(paramType: String)
 // pointer *into* a block the caller already holds must not carry it.
 public extern fn ir_declare_function_fresh()
 public extern fn ir_declare_function_end()
+// The declaration just begun takes any further arguments after its named ones, as C's `...`.
+public extern fn ir_declare_function_vararg()
 
 public extern fn ir_function_begin(name: String, retType: String)
 public extern fn ir_function_param(paramType: String, paramName: String)

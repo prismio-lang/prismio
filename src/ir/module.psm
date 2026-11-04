@@ -1075,6 +1075,7 @@ private fn declareExternFunction(ext: ASTNode) {
         if (widen.equals("") == false) { ir_function_param_extend(widen) }
         paramPtr = paramNode.next
     }
+    if (ext.i1 == 1) { ir_declare_function_vararg() }
     ir_declare_function_end()
 }
 

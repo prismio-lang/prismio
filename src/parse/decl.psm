@@ -1352,7 +1352,7 @@ impl Parser {
             if (isExtern) {
                 let marker = self.current()
                 diag_error_at_code("P3014", marker.file, marker.line, marker.col, marker.len,
-                                   "an `extern fn` cannot be variadic: C varargs are not supported")
+                                   "an `extern fn` cannot take a pack: C's varargs are a bare `...` after the named parameters")
             }
             self.advance()
             param.i1 = 1
@@ -1407,8 +1407,16 @@ impl Parser {
         self.expectVal(TokenType.SEPARATOR, "(", "params")
 
         let params = nodeList()
+        self.externVarargs = 0
         if (self.checkVal(TokenType.SEPARATOR, ")") == false) {
             loop {
+                // A bare `...` closing an `extern fn`'s list is C's varargs, not a pack: no name, no type.
+                if (isExtern and self.check(TokenType.ELLIPSIS)
+                        and self.peek().type == TokenType.SEPARATOR and self.peek().value.equals(")")) {
+                    self.advance()
+                    self.externVarargs = 1
+                    break
+                }
                 nodeListPush(params, self.parseParameter(isExtern))
                 if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
             }
@@ -1463,6 +1471,8 @@ impl Parser {
         self.expectToken(TokenType.IDENTIFIER, "function name")
 
         extNode.child1 = self.parseParameterList(true)
+        // `i1` on an `extern fn` says it takes more arguments than it names.
+        extNode.i1 = self.externVarargs
 
         if (self.matchVal(TokenType.ARROW, "->")) {
             extNode.child2 = node_to_ptr(self.parseTypeAnnotation())

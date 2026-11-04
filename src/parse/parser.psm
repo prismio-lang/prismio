@@ -40,6 +40,8 @@ struct Parser {
     // A chain rather than one slot because `fn f(a: impl Show, b: impl Ord)`
     // synthesises two, and the sequence numbers them so they cannot collide.
     internal implParams: Ptr, // ASTNode (GENERIC_PARAM chain), or null
+    // Set by parseParameterList when an `extern fn`'s list ended in a bare `...`: C's varargs.
+    internal externVarargs: Int,
     internal implParamSeq: Int,
     // Where an `impl Trait` currently being parsed is allowed to mean something.
     // 0 nowhere, 1 argument position, 2 return position. The two positions are
@@ -90,7 +92,7 @@ public fn parserCreate(tokens: Token) -> Parser {
     return Parser { current: token_to_ptr(tokens), allowStructLit: 1, implType: ptr_null(),
                     implParams: ptr_null(), implParamSeq: 0, implPosition: 0, lastLine: tokens.line,
                     fnNode: ptr_null(), hoistHead: ptr_null(), hoistTail: ptr_null(), lengthDepth: 0,
-                    dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0,
+                    externVarargs: 0, dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0,
                     platformDepth: 0, platformSkip: 0 }
 }
 impl Parser {

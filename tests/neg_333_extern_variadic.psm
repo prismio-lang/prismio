@@ -1,3 +1,3 @@
-// expect-error: an `extern fn` cannot be variadic
+// expect-error: an `extern fn` cannot take a pack: C's varargs are a bare `...` after the named parameters
 extern fn printf(...args: Int) -> Int
 fn main() -> Int { return 0 }
