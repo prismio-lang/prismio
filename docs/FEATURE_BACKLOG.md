@@ -48,7 +48,7 @@ map usable through growth, rehash, iteration, and reinsertion.
 ### API to settle before implementation
 
 ```psm
-fn mapRemove<K: Key + Copy, V>(m: Map<K, V>, key: K) -> Bool
+fn mapRemove<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> Bool
 ```
 
 `true` means a live key was removed; `false` means it was already absent. Keep

@@ -1,0 +1,8 @@
+// expect-error: unknown type `Frobnicate`
+import std.io
+
+fn main() -> Int {
+    let m: Frobnicate<Int, Int> = 3
+    println(1)
+    return 0
+}

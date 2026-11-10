@@ -191,49 +191,7 @@ jobs:
       # repository root would let the tree supply what the package forgot.
       - name: Smoke-test the package outside the checkout
         shell: bash
-        run: |
-          set -e
-          EXT=""; [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
-          CLEAN="$(mktemp -d)"
-          cp -R dist/Prismio "$CLEAN/toolchain"
-          cat > "$CLEAN/smoke.psm" <<'PSM'
-          import std.io
-          import std.vec
-          import std.map
-          import std.option
-
-          struct Note { id: Int }
-
-          fn main() -> Int {
-              let mut ids: Vec<Int> = []
-              ids.push(3)
-              ids.push(1)
-              ids.push(2)
-              ids.sort()
-
-              let m: Map<Int, Int> = mapNew<Int, Int>()
-              mapSet(m, ids[0], 10)
-
-              let c = Channel<Note>(2)
-              c.send(Note { id: 7 })
-              c.close()
-              let taken = c.receive()
-              let mut got = 0
-              if (taken != none) {
-                  let note = expect(taken)
-                  got = note.id
-              }
-              c.free()
-
-              println(ids[0] + mapGetOr(m, 1, 0) + got)
-              return 0
-          }
-          PSM
-          cd "$CLEAN"
-          "./toolchain/bin/prismio$EXT" build smoke.psm -o smoke$EXT
-          OUT="$(./smoke$EXT)"
-          echo "smoke output: $OUT"
-          [ "$OUT" = "18" ] || { echo "expected 18"; exit 1; }
+        run: python tools/smoke_package.py --dist dist/Prismio
 
       # RELEASE.md section 3, on the runner's own architecture: `linux-x64` and
       # `windows-x64` can only be built on an x64 machine, and this is the only

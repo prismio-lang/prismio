@@ -1580,14 +1580,25 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   from the double itself, not through a float); they are the only functions `internalize_executable` leaves external,
   because instruction selection calls them after the pass that would drop them. Checked on this machine against the hardware
   conversions: all 65,536 half values widened, and 240 million narrowings of random, subnormal, near-tie and NaN inputs,
-  no difference. Not run on a Windows x86-64 machine until CI.
+  no difference. Two things keep them in a program, because nothing in its IR names them: `used` makes them roots of the
+  runtime merge (which links only what the program declares), and `internalize_executable` leaves them external. Not run on
+  a Windows x86-64 machine until CI.
 - **`check_source_lists.py` called a correct `std/syscall.psm` stale on any machine with other headers.** The table is read
   from an Android NDK and the macOS SDK, whose numbers move between releases, and the macOS CI runner has neither the
   maintainer's NDK nor SDK. The generated file now records which ones it was read from, and `--check` compares only when
   they are the same, saying so when it skips.
+- **An unknown generic type was not an error.** `let m: Map<Int, Int> = ...` after `Map` became `HashMap` passed the checker
+  (the annotation resolved to Invalid, which matches everything) and the backend died with `internal backend error: value
+  handle out of range`; a plain `let m: Frobnicate = 3` said `unknown type` all along. A name written with type arguments
+  that no generic declaration answers to now says it too (`tests/neg_381_unknown_generic_type.psm`). Found by the CI smoke
+  program, which still spelled `Map`.
 
 ### Repository
 
+- **The clean-environment smoke test is a script, and the gate runs it.** `tools/smoke_package.py --dist <toolchain>` copies the
+  packaged compiler away from the checkout, builds a small program there and runs it; CI's step and `prismio gate`'s packaging
+  step both call it. The program had been written into the workflow, named `Map` after the rename, and failed in CI on
+  macOS and Linux while the gate, which did not run it, passed.
 - **CI uploads the release files as one flat bundle.** The three jobs each keep their own artifact, and a new `bundle` job
   (after all three are green) merges them into `prismio-release`: the six files `release.py` names
   (`prismio-<version>-<os>-<arch>.tar.gz` or `.zip`, and the `.sha256` beside each), ready for `gh release create` with

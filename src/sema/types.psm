@@ -208,6 +208,14 @@ private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
             enumCheckTemplateVisible(module, tn)
             return typeStruct(instantiated)
         }
+        // monoInstantiateStruct reports its own failures (arity, bounds, depth); a name
+        // with no generic declaration at all it only answers "" for. Left at that, a
+        // `Map<Int, Int>` after the rename to `HashMap` was Invalid, which matches
+        // everything: the checker passed it and the backend died on "value handle out
+        // of range". A name without arguments has said "unknown type" all along.
+        if (nodeIsNull(node_to_ptr(monoFindTypeTemplate(module, tn.s1)))) {
+            semaErrorAt(tn, "unknown type ".concat(diagQuote(tn.s1)))
+        }
         return typeInvalid()
     }
 

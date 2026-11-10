@@ -360,8 +360,13 @@ def check_packaging(rc: Path, work: Path) -> None:
         return
     progress("verifying separation")
     separated = run([sys.executable, "tools/verify_separation.py", "--dist", dist])
-    ok(last_line(separated.stdout)) if separated.returncode == 0 \
-        else bad(last_line(separated.stdout + separated.stderr))
+    if separated.returncode != 0:
+        bad(last_line(separated.stdout + separated.stderr))
+        return
+    progress("building outside the checkout")
+    smoke = run([sys.executable, "tools/smoke_package.py", "--dist", dist])
+    ok(last_line(separated.stdout)) if smoke.returncode == 0 \
+        else bad(last_line(smoke.stdout + smoke.stderr))
 
 
 # **The hand-tuned arms are diffed too, and that is not padding.** This list

@@ -171,7 +171,7 @@ key is built by one `mapPut` per such key (`../src/sema/maps.psm`).
 ### A pass-through result in a struct field is never released
 
 ```
-fn through(m: Map<String, Int>) -> Map<String, Int> {
+fn through(m: HashMap<String, Int>) -> HashMap<String, Int> {
     m.set("a-key-longer-than-twelve-bytes", 4)
     return m
 }

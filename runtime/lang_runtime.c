@@ -4413,10 +4413,12 @@ long long rt_workload_stub(const char* name) {
 // hardware and LLVM lowers every conversion to a compiler-rt call. A Linux link finds
 // these in libgcc and a macOS or arm64 one needs none, but `link.exe` is given no
 // builtins library, so `toString` on an F16 failed with an unresolved `__extendhfsf2`
-// (test_326_number_text, CI 2026-11-10). They are ordinary functions here and
-// `internalize_executable` leaves them external, because the call that needs them is
-// made by instruction selection after the pass that would otherwise drop them as unused;
-// the linker's /OPT:REF removes them again from a program that converts nothing.
+// (test_326_number_text, CI 2026-11-10). Nothing in a program's IR names them -- the
+// call is made by instruction selection, after the runtime has been merged -- so two
+// things keep them: `used` makes them roots of the merge, which links only what the
+// program declares plus what `llvm.used` names, and `internalize_executable` leaves
+// them external. The linker's /OPT:REF can still drop them from a program that
+// converts nothing.
 //
 // Every conversion to a narrow type rounds to nearest, ties to even, from the exact
 // source value: a float widens to double without loss, so one routine serves both, and
@@ -4474,10 +4476,10 @@ static uint16_t half_bits(_Float16 value) { uint16_t bits; memcpy(&bits, &value,
 static _Float16 half_from_bits(uint16_t bits) { _Float16 value; memcpy(&value, &bits, 2); return value; }
 static __bf16 bfloat_from_bits(uint16_t bits) { __bf16 value; memcpy(&value, &bits, 2); return value; }
 
-float __extendhfsf2(_Float16 value) { return float_from_half(half_bits(value)); }
-double __extendhfdf2(_Float16 value) { return (double)float_from_half(half_bits(value)); }
-_Float16 __truncsfhf2(float value) { return half_from_bits(narrow_from_double(value, 10, 5)); }
-_Float16 __truncdfhf2(double value) { return half_from_bits(narrow_from_double(value, 10, 5)); }
-__bf16 __truncsfbf2(float value) { return bfloat_from_bits(narrow_from_double(value, 7, 8)); }
-__bf16 __truncdfbf2(double value) { return bfloat_from_bits(narrow_from_double(value, 7, 8)); }
+__attribute__((used)) float __extendhfsf2(_Float16 value) { return float_from_half(half_bits(value)); }
+__attribute__((used)) double __extendhfdf2(_Float16 value) { return (double)float_from_half(half_bits(value)); }
+__attribute__((used)) _Float16 __truncsfhf2(float value) { return half_from_bits(narrow_from_double(value, 10, 5)); }
+__attribute__((used)) _Float16 __truncdfhf2(double value) { return half_from_bits(narrow_from_double(value, 10, 5)); }
+__attribute__((used)) __bf16 __truncsfbf2(float value) { return bfloat_from_bits(narrow_from_double(value, 7, 8)); }
+__attribute__((used)) __bf16 __truncdfbf2(double value) { return bfloat_from_bits(narrow_from_double(value, 7, 8)); }
 #endif
