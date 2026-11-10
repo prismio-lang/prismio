@@ -1,0 +1,95 @@
+// Lookups of top-level declarations by name, for the type checker.
+//
+// The checker asks "is this name a trait?" and "which impl declares this constant?" for every annotation, every
+// `Type.NAME` and every bound it checks, and each answer was a walk of every statement of the program, string
+// compares and all. On the compiler's own source that was about 41% of a build (a profile, 2026-11-10: semaFindAssocConst,
+// monoFindTrait and semaIsTraitName), and it grows with the square of the program.
+//
+// The answers do not change while the checker runs. Traits come only from the parser, and impls from the parser,
+// `deriveEnumImpls` and `monoExpandDefaultMethods`, all of which finish inside `resolveImports`; after that the
+// module's chain only grows, and only through `monoAppendDeclaration`. So the index is off while the merge runs
+// (`declIndexDisable`, where a lookup is the walk it always was), switched on when it ends (`declIndexEnable`), built
+// from the chain on the first lookup after that, and kept in step by `declIndexNoteAppended`.
+//
+// It answers in chain order and with the same test the walk made, so a program means what it meant: the first trait of a
+// name, and the impls that declare an associated constant in the order the chain has them.
+
+import ast.nodes
+import std.string
+import std.vec
+
+let mut declIndexActive: Bool
+let mut declIndexBuilt: Bool
+let mut declTraitNames: Vec<String>
+let mut declTraitNodes: Vec<Ptr>
+// The impls with at least one associated constant: the only ones that can answer `Type.NAME`.
+let mut declConstImpls: Vec<Ptr>
+
+public fn declIndexDisable() {
+    declIndexActive = false
+    declIndexBuilt = false
+}
+
+public fn declIndexEnable() {
+    declIndexActive = true
+    declIndexBuilt = false
+}
+
+public fn declIndexOn() -> Bool {
+    return declIndexActive
+}
+
+fn declIndexHasConstant(header: ASTNode) -> Bool {
+    let mut p = header.child3
+    while (nodeExists(p)) {
+        let member = ptr_to_node(p)
+        if (member.kind == NodeKind.ASSOC_CONST) { return true }
+        p = member.next
+    }
+    return false
+}
+
+fn declIndexNote(stmt: ASTNode) {
+    if (stmt.kind == NodeKind.TRAIT_DECL) {
+        declTraitNames.push(stmt.s1.clone())
+        declTraitNodes.push(node_to_ptr(stmt))
+    } else if (stmt.kind == NodeKind.IMPL_DECL) {
+        if (declIndexHasConstant(ptr_to_node(stmt.child3))) { declConstImpls.push(node_to_ptr(stmt)) }
+    }
+}
+
+fn declIndexBuild(module: ASTNode) {
+    declTraitNames = []
+    declTraitNodes = []
+    declConstImpls = []
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        declIndexNote(stmt)
+        p = stmt.next
+    }
+    declIndexBuilt = true
+}
+
+// A statement `monoAppendDeclaration` has just added to the end of the chain.
+public fn declIndexNoteAppended(decl: ASTNode) {
+    if (declIndexActive and declIndexBuilt) { declIndexNote(decl) }
+}
+
+// The first trait named `name` in the chain, or the null node.
+public fn declIndexFindTrait(module: ASTNode, name: String) -> ASTNode {
+    if (declIndexBuilt == false) { declIndexBuild(module) }
+    for i in 0..<declTraitNames.length {
+        if (declTraitNames[i].equals(name)) { return ptr_to_node(declTraitNodes[i]) }
+    }
+    return ptr_to_node(ptr_null())
+}
+
+public fn declIndexConstImplCount(module: ASTNode) -> Int {
+    if (declIndexBuilt == false) { declIndexBuild(module) }
+    return declConstImpls.length
+}
+
+public fn declIndexConstImplAt(index: Int) -> Ptr {
+    return declConstImpls[index]
+}

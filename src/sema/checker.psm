@@ -5271,6 +5271,17 @@ private fn semaResolveAssocConst(module: ASTNode, expr: ASTNode, typeName: Strin
 // The ASSOC_CONST member `constName` of `typeName`'s impl: its type is
 // `child1` and its value `child2`.
 private fn semaFindAssocConst(module: ASTNode, typeName: String, constName: String) -> Ptr {
+    if (declIndexOn()) {
+        // Only an impl that declares a constant can answer, and there are a handful of them among the program's statements.
+        for i in 0..<declIndexConstImplCount(module) {
+            let header = ptr_to_node(ptr_to_node(declIndexConstImplAt(i)).child3)
+            if (semaAnnotationText(header.child1).equals(typeName)) {
+                let found = semaFindImplMember(header, constName, NodeKind.ASSOC_CONST)
+                if (nodeIsNull(found) == false) { return found }
+            }
+        }
+        return ptr_null()
+    }
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)

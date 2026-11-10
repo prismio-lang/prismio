@@ -1017,6 +1017,7 @@ internal fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: I
 }
 
 internal fn semaIsTraitName(module: ASTNode, name: String) -> Bool {
+    if (declIndexOn()) { return nodeExists(node_to_ptr(declIndexFindTrait(module, name))) }
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)

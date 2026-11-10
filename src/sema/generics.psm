@@ -153,6 +153,7 @@ internal fn monoHasTemplateOfArity(module: ASTNode, name: String, count: Int) ->
 // Measure before replacing it.
 internal fn monoAppendDeclaration(module: ASTNode, decl: ASTNode) {
     decl.next = ptr_null()
+    declIndexNoteAppended(decl)
     if (nodeIsNull(module.child1)) {
         module.child1 = node_to_ptr(decl)
         return
@@ -262,6 +263,7 @@ internal fn monoGenericParamAt(infoPtr: Ptr, index: Int) -> Ptr {
 // ---------------------------------------------------------
 
 internal fn monoFindTrait(module: ASTNode, traitName: String) -> ASTNode {
+    if (declIndexOn()) { return declIndexFindTrait(module, traitName) }
     let mut p = module.child1
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)

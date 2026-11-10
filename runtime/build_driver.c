@@ -1452,6 +1452,11 @@ static const char* const PRISMIO_CURATED_OPS[] = {
     "list_str_data", "list_str_word", "list_push_str", "list_set_str",
     "data_view_check_index", "data_view_column", "data_view_len",
     "mem_bytes_data", "mem_bytes_address",
+    // The compiler walks its syntax tree through these: a null test and identity casts, each a single instruction.
+    // Left out they are calls, and `semaFindAssocConst`, `monoFindTrait` and the other linear searches made two per
+    // node, about a third of a self-build.
+    "ptr_null", "ptr_is_null", "ptr_to_node", "node_to_ptr", "ptr_to_token", "token_to_ptr", "ptr_to_type",
+    "type_to_ptr",
 };
 #define PRISMIO_CURATED_OP_COUNT \
     ((int)(sizeof(PRISMIO_CURATED_OPS) / sizeof(PRISMIO_CURATED_OPS[0])))
@@ -1459,7 +1464,7 @@ static const char* const PRISMIO_CURATED_OPS[] = {
 // which are not bytes in lang_runtime.c. Bump this whenever that curation
 // policy changes; M4.3c added invariant ready-view loads and exposed that the
 // old key could otherwise reuse a semantically older curated module forever.
-#define PRISMIO_CURATED_SCHEMA "curated-v8-string-pairs"
+#define PRISMIO_CURATED_SCHEMA "curated-v9-pointer-casts"
 
 // On by default after the curated-module path became part of the ordinary
 // Windows/Linux/macOS suite. `0` remains the measurement and emergency opt-out:

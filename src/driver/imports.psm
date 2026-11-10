@@ -750,6 +750,8 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     // it. analyzeModule and generateModule rebuild the index from the finished
     // module; this fill is the merge's own, and it is the same one walk.
     ir_reset_decl_index()
+    // The checker's lookup index (sema/decl_index.psm) describes the finished chain, so it is off while this one is made.
+    declIndexDisable()
     // Selections are recorded by the merge below and read by sema, so this is
     // the one point where the previous run's are gone and this run's are not
     // yet made.
@@ -782,5 +784,6 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     // is desugared once per instantiation rather than once as a template whose
     // payload types are still type parameters.
     enumDesugarModule(merged)
+    declIndexEnable()
     return merged
 }
