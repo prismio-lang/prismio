@@ -1319,6 +1319,49 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **The compiler took 2.7 times as long to build itself in three weeks, from three lookups that walked the whole program.**
+  `src/main.psm` to IR took 1.10 s at 69,000 lines (2026-10-17) and 2.90 s at 90,000 (2026-10-29), and 3.0 s on the last
+  commit before this one: the same compiler is 27% slower on the old source, and the code added since 2026-10-22 cost 3.4
+  times as much per line. A profile put 41% of the time in `semaFindAssocConst`, `monoFindTrait` and `semaIsTraitName`,
+  each of which walked every top-level statement of the program for every annotation, `Type.NAME` and bound the checker
+  met, so the cost grew with the square of the program. They answer from an index now (`src/sema/decl_index.psm`): traits
+  by name, and the impls that declare a constant. Traits come only from the parser, and impls from the parser and the two
+  passes that finish inside `resolveImports`, so the index is off while that merge runs, switched on when it ends, built on
+  the first lookup, and kept in step by `monoAppendDeclaration`. Answers are in chain order and made by the test the walk
+  made. Measured with `tools/compile_ab.py` on the same source, A/A control 1.00: **2.51 s to 1.37 s (0.544x of the time),
+  and the IR byte-identical**. The pointer helpers the checker walks the syntax tree with (`ptr_is_null`, `ptr_to_node` and
+  the identity casts) are in the curated inline list now: they were calls, and curating them alone is another 4.4% (0.956x).
+- **`tools/install.py` left a `prismio-lsp` that macOS killed on start.** A file written over an earlier one keeps the earlier
+  file's code-signature verdict, so an upgrade made `prismio lsp` exit 137 while the same bytes ran anywhere else. Every file
+  is written beside its place and renamed into it now.
+- **`build.ums` asked for Prismio 0.1.0.** `prismio = "..."` is the least version a project runs on, and a 0.2.0 compiler
+  satisfies 0.1.0, so the tree built against a requirement it no longer met: a 0.1.0 toolchain would have failed on syntax
+  instead of saying P1078. It names 0.2.0, as `prismio init` writes for a new project.
+- **Completion offered what a program cannot use, in no useful order, and inserted only a name.** Measured against the language
+  server with 17 editing scenarios: `s.` on a `String` listed 187 items, among them `asmOps`, `asmOpsOut`, `offsetOf` and
+  `asm` (library functions that happen to take a `String` first), and `concat` five times; a `HashMap` offered `slots`,
+  `mask`, `tombstones` and the other private fields of `std/map.psm` beside its methods; an empty scope listed 618 items,
+  76 of them `__builtin_*` intrinsics that sort above every lowercase name; `Point { x: 1, | }` offered `if`, `match` and
+  `fn`; and a popup showed a source comment's design notes verbatim. Now: the index records a struct's and its fields'
+  visibility (`src/index/collect.psm` declared them with none, so `ixVisibleFrom` could never hide one), the `__builtin_*`
+  functions are offered only to a file of the library, and the machine-level modules (`std.raw`, `std.asm`, `std.port`,
+  `std.syscall`) only to a document that imports them. `rank` means something: a type's own members, then a free function that
+  takes the value first (written as a `method`, since that is how it is called); a local, then the program's names, then the
+  library's, then library names whose import is not yet there. A struct literal completes to the fields it has not set
+  (`Point { x: 1, | }` offers `y`, inserted as `y: `), and so does the name of a call whose parentheses are already written
+  (`pri|(x)`). The server sends one item for an overloaded name (the others in its documentation, `(+4 overloads)` beside
+  it), a snippet that fills in the parameters (`push(${1:value})`, `sort()` for a free function called as a method, nothing
+  added in front of parentheses already there), and the first paragraph of the documentation with a `-----` heading dropped.
+  The same String scenario now lists 154 items and an empty scope 366. `tests/test_runner.py` pins it at both layers
+  (`index`: ranks, builtins, the literal, a `HashMap`'s fields; `lsp_features`: overloads, snippets, ordering, the
+  machine-level names, a comma in an argument list) and fails against the compiler before the change.
+- **Most of the standard library's everyday methods had no documentation to show.** Of `std.string`'s 146 public functions
+  130 had none, so `trim`, `split`, `replace`, `toUpper` and `parseInt` completed and hovered as a bare signature. The `String`,
+  `Char` and numeric `toString` methods, `Vec`'s, `HashMap`'s and `HashSet`'s, `Result`'s, `println`, `print` and their `e`
+  forms, and the common `std.fs` functions now have a one-line summary; where a longer note about why the function is written
+  as it is stood first (`concat`, `equals`, `countIf`, `allChars`, `isAscii`, `print`), the summary now stands above it.
+  `std.math`, `std.mem`, `std.raw` and `std.term` are still largely undocumented.
+
 - **A 64-bit `Ptr` atomic linked on macOS only.** `p.atomicAdd(1, AtomicOrder.AcqRel)` on a `Ptr<mut U64>` was emitted
   `atomicrmw ... align 4`: the module has no data layout while its IR is built, so the ABI alignment asked for was LLVM's
   default, 4 for an `i64`. An under-aligned atomic is lowered to a `__atomic_*` library call, which macOS has in compiler-rt
