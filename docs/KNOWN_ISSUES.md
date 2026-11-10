@@ -934,10 +934,6 @@ program that references `prismio_panic` or `prismio_step_check` cannot link in t
 `--freestanding-target aarch64-unknown-none-elf` in `verify`, or keep benchmark code free of
 failure paths.
 
-**The IntelliJ plugin's lexers do not know `is`, `not`, nested `fn`, closure blocks or the
-visibility markers on fields.** It is a sibling repository with hand-written lexers; its corpus
-test is what catches drift. The plan is in `docs/VISIBILITY_AND_FLUENCY_PLAN.md`.
-
 **Windows still links `LLVM-C.dll` and runs the whole-module library merge.** Static LLVM there
 is feasible (the archive has native `LLVM*.lib` and `llvm-config.exe`) but built `/MT`, so the
 Windows compiler would change C runtime too; not started (`docs/LLVM_BRIDGE_PLAN.md`, step 2).
