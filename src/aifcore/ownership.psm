@@ -5,17 +5,20 @@
 // address the parser allocated is a name for the expression that costs nothing to carry and cannot collide.
 
 import aif.model
-import aifcore.arenas
-import aifcore.bits
-import aifcore.constants
-import aifcore.constraints
-import aifcore.dispositions
-import aifcore.keys
-import aifcore.nominals
-import aifcore.sites
-import aifcore.solver
-import aifcore.structure
-import aifcore.tiers
+
+from aifcore import {
+    arenas,
+    bits,
+    constants,
+    constraints,
+    dispositions,
+    keys,
+    nominals,
+    sites,
+    structure,
+    tiers
+}
+
 import ir.context
 import std.raw
 import std.string

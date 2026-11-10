@@ -37,14 +37,10 @@
 // `edit_distance` moved 10% with identical instructions at another address.
 
 import symbols.declarations
-import ast.nodes
-import ast.fn_attrs
-import ast.types
-import common.diagnostics
-import common.source_files
-import std.option
-import std.process
-import std.string
+
+from common import {diagnostics, source_files}
+from ast import {nodes, fn_attrs, types}
+from std import {option, process, string}
 
 let REACHED = 7
 

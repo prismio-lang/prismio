@@ -14,16 +14,19 @@
 // Each range function reports through its own pair of variables: `arenaLo`/`arenaHi`, `candLo`/`candHi`, `emitLo`/`emitHi`.
 // They call one another, so one shared pair would have the inner answer overwrite the outer one.
 
-import aifcore.arenas
-import aifcore.bits
-import aifcore.brackets
-import aifcore.call_graph
-import aifcore.constants
-import aifcore.keys
-import aifcore.sites
-import aifcore.solver
-import aifcore.structure
-import aifcore.tiers
+from aifcore import {
+    arenas,
+    bits,
+    brackets,
+    call_graph,
+    constants,
+    keys,
+    sites,
+    solver,
+    structure,
+    tiers
+}
+
 import std.raw
 import std.vec
 
