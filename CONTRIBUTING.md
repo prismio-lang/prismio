@@ -50,7 +50,7 @@ For a list of open issues, see the [GitHub Issues tracker](https://github.com/pr
 |---|---|---|
 | Python | 3.9+ | The one thing you install yourself: it runs setup, the test runner and the AIF differential |
 | A system C toolchain | — | The platform linker and C library: Xcode Command Line Tools on macOS, `build-essential` on Linux, Visual Studio's C++ tools on Windows. `python tools/setup.py` probes it by compiling and linking a program, and `--install-system-deps` installs it (asks first) |
-| LLVM | 23.1.1, pinned | Provisioned into `third_party/llvm` by `python tools/setup.py` (through `tools/setup_llvm.py`) — do not install one |
+| LLVM | 23.1.5, pinned | Provisioned into `third_party/llvm` by `python tools/setup.py` (through `tools/setup_llvm.py`) — do not install one |
 | Prismio | any | Optional. You do not need an installed compiler — the release seed (downloaded and checked for you) builds the first one |
 
 `python tools/setup_llvm.py` downloads the pinned LLVM release, checks its SHA-256,

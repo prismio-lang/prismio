@@ -56,7 +56,7 @@ C++** workload on Windows. Then:
 ```console
 $ prismio --version
 prismio 0.1.0
-llvm 23.1.1
+llvm 23.1.5
 compiler /home/you/.prismio/bin
 stdlib /home/you/.prismio/stdlib
 ```
@@ -207,7 +207,7 @@ is used.
 ```bash
 git clone https://github.com/prismio-lang/prismio.git
 cd prismio
-python3 tools/setup.py                                   # check this machine, then LLVM 23.1.1 into third_party/llvm
+python3 tools/setup.py                                   # check this machine, then LLVM 23.1.5 into third_party/llvm
 python3 tools/bootstrap.py --seed --out build/gen0               # first compiler, from the release seed (fetched)
 python3 tools/bootstrap.py --compiler build/gen0 --out build/gen1
 python3 tools/package.py --compiler build/gen1 --out build/dist

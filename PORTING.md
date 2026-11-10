@@ -14,7 +14,7 @@ with the tree; `python3 tools/bootstrap.py --seed` reads it.
 | Tool | Where it comes from | Notes |
 |---|---|---|
 | The macOS SDK and `ld` | Xcode Command Line Tools (`xcode-select --install`) | The linker and C library every program links against |
-| LLVM 23.1.1 | `python3 tools/setup_llvm.py` | Downloaded, checksummed and prepared in `third_party/llvm`; no Homebrew LLVM |
+| LLVM 23.1.5 | `python3 tools/setup_llvm.py` | Downloaded, checksummed and prepared in `third_party/llvm`; no Homebrew LLVM |
 | `python3` | Preinstalled | Setup and the test runner |
 
 The build takes `clang` from `third_party/llvm`, never from `PATH`, and that

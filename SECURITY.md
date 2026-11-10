@@ -42,7 +42,7 @@ Building a project is running code, and the policy is written with that in mind:
 - Release archives are published with a SHA-256 beside each one. **They are not
   signed**; the checksum proves the download is intact, not who made it. Take both
   from the same release page, over HTTPS.
-- The compiler links one pinned LLVM (23.1.1, verified by SHA-256 when it is
+- The compiler links one pinned LLVM (23.1.5, verified by SHA-256 when it is
   downloaded) statically. LLVM's own vulnerabilities are reported to LLVM, and the
   pin is moved when they require it.
 

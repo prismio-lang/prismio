@@ -75,7 +75,7 @@ DOWNLOADS = THIRD_PARTY / ".downloads"
 # Keep REQUIRED_MAJOR in step with PRISMIO_LLVM_EXPECTED_MAJOR in
 # runtime/prismio_llvm.h -- the backend re-checks it at runtime via
 # LLVMGetVersion().
-LLVM_VERSION = "23.1.1"
+LLVM_VERSION = "23.1.5"
 REQUIRED_MAJOR = 23
 
 RELEASE_URL = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{version}/{name}"
@@ -90,20 +90,20 @@ RELEASE_URL = "https://github.com/llvm/llvm-project/releases/download/llvmorg-{v
 # Darwin/x86_64 has no asset in 23.1.x at all.
 ASSETS = {
     ("Darwin", "arm64"): (
-        "LLVM-23.1.1-macOS-ARM64.tar.xz",
-        "64220f1c99132ef7e580447781b84f96fbba6862a43a8f6522b423052cd67502"),
+        "LLVM-23.1.5-macOS-ARM64.tar.xz",
+        "aba592b4a15e8f90c634c5367b51ec8418b8bcd2829865db331a17dc9418dcff"),
     ("Linux", "x86_64"): (
-        "LLVM-23.1.1-Linux-X64.tar.xz",
-        "832aeb58d105de1cabc7b982dd2c65de0610f7377df48ae8fc2dd8e97420a15c"),
+        "LLVM-23.1.5-Linux-X64.tar.xz",
+        "f72edb0b36580ece7f52e23858f00c18fad4e87395ea7ad05d7e55c39f8fc78a"),
     ("Linux", "aarch64"): (
-        "LLVM-23.1.1-Linux-ARM64.tar.xz",
-        "3fbaaa6a1f147557a4095b9911f8dc2d4c745a11863982f76ee20e248c190a80"),
+        "LLVM-23.1.5-Linux-ARM64.tar.xz",
+        "44f1e4b7a125b2763d56386a199928dd57ec32e151cc6042dce2f7b0da7bb651"),
     ("Windows", "AMD64"): (
-        "clang+llvm-23.1.1-x86_64-pc-windows-msvc.tar.xz",
-        "c54ac8146b420fe72e11e6fdd56498d6818011ad23267196b6ab37b5ac9264c3"),
+        "clang+llvm-23.1.5-x86_64-pc-windows-msvc.tar.xz",
+        "62fdada7f6fa2b73856486dfbbdba3d2c1882991621615bcb55c60207611c6d4"),
     ("Windows", "ARM64"): (
-        "clang+llvm-23.1.1-aarch64-pc-windows-msvc.tar.xz",
-        "c8cd61f6624accf0d0f9f4519ddcc97745c6a865205bb43f364b6aaf9c50a31e"),
+        "clang+llvm-23.1.5-aarch64-pc-windows-msvc.tar.xz",
+        "f06382f2c99c68a4e80f7044446df1fcf52bc3cc05158626bd0b966d51a5369a"),
 }
 
 # The one library the official build links that the archive does not carry.
