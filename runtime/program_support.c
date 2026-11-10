@@ -1752,13 +1752,16 @@ int io_stdin_has_token(void) {
     return io_stdin_find_token();
 }
 
-// The next token as a String the caller owns, "" when there is none (as
-// `io_stdin_take_line` answers at the end). A token with a NUL byte in it ends there as
-// a String; `readByte` and `readBytes` see all of it.
-static char* io_stdin_take_token_unlocked(void) {
+// The next token as a String the caller owns, NULL when there is none. Finding and taking
+// happen under one hold of the lock, which is what `readToken` needs: asked as
+// `io_stdin_has_token` then `io_stdin_take_token`, two tasks could both be told "one left"
+// and the second would take an empty String, so a count of the tokens came out one too
+// many (x86-64 Linux, CI 2026-11-10; the arm64 machines never interleaved the pair).
+// A token with a NUL byte in it ends there as a String; `readByte` and `readBytes` see all of it.
+static char* io_stdin_read_token_unlocked(void) {
     LineReader* r = &io_stdin_reader;
     size_t length = 0;
-    if (!line_reader_find_token(r, &length)) length = 0;
+    if (!line_reader_find_token(r, &length)) return NULL;
     char* out = (char*)rt_base_alloc(length + 1);
     if (out) {
         if (length > 0) memcpy(out, r->buffer + r->start, length);
@@ -1767,6 +1770,24 @@ static char* io_stdin_take_token_unlocked(void) {
         r->token_ready = 0;
     }
     return out;
+}
+
+IO_STDIN_GUARDED(char*, io_stdin_read_token, io_stdin_read_token_unlocked())
+
+char* io_stdin_read_token(void) {
+    if (__builtin_expect(io_stdin_threaded, 0)) return io_stdin_read_token_locked();
+    return io_stdin_read_token_unlocked();
+}
+
+// The next token as a String the caller owns, "" when there is none (as
+// `io_stdin_take_line` answers at the end). The second half of the `tokens()` iterator's
+// pair; a caller that wants one token or none uses `io_stdin_read_token`.
+static char* io_stdin_take_token_unlocked(void) {
+    char* token = io_stdin_read_token_unlocked();
+    if (token) return token;
+    char* empty = (char*)rt_base_alloc(1);
+    if (empty) empty[0] = '\0';
+    return empty;
 }
 
 IO_STDIN_GUARDED(char*, io_stdin_take_token, io_stdin_take_token_unlocked())

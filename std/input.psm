@@ -69,6 +69,7 @@ private extern fn io_stdin_has_line() -> Int
 private extern fn io_stdin_take_line() -> String produce(rt_free)
 private extern fn io_stdin_has_token() -> Int
 private extern fn io_stdin_take_token() -> String produce(rt_free)
+private extern fn io_stdin_read_token() -> String? produce(rt_free)
 private extern fn io_stdin_read_all() -> String produce(rt_free)
 private extern fn io_stdin_take_text(count: Int) -> String produce(rt_free)
 private extern fn io_stdin_read_byte() -> Int
@@ -158,8 +159,7 @@ public fn readLines() -> Vec<String> {
 //
 // The byte after the token stays unread.
 public fn readToken() -> String? {
-    if (io_stdin_has_token() == 0) { return none }
-    return io_stdin_take_token()
+    return io_stdin_read_token()
 }
 
 // Every token not yet read. `tokens()` is the form that does not hold them all.

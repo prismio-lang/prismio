@@ -251,3 +251,33 @@ jobs:
           name: release-${{ runner.os }}-${{ runner.arch }}
           path: dist/release/*
           if-no-files-found: error
+
+  # One download for the release. The three jobs above each keep their own artifact
+  # (`release-Linux-X64`, ...), which is the right shape for a failure -- a red job still
+  # has its own files -- and the wrong one for uploading: each would arrive as a folder
+  # inside a zip. This merges them flat, so what comes out is exactly the set
+  # RELEASE.md section 5 passes to `gh release create`, already named by release.py
+  # (`prismio-<version>-<os>-<arch>.tar.gz|.zip` and its `.sha256`), with nothing to
+  # rename. Only when all three platforms are green: a partial set is not a release.
+  # `gh run download <id> -n prismio-release` fetches it.
+  bundle:
+    needs: bootstrap
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist/release
+
+      - name: List the release files
+        run: |
+          set -e
+          ls -l dist/release
+          [ "$(ls dist/release/*.sha256 | wc -l)" -eq 3 ] || { echo "expected three platforms"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prismio-release
+          path: dist/release/*
+          if-no-files-found: error

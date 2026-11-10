@@ -4408,3 +4408,76 @@ long long rt_workload_stub(const char* name) {
             "it returned 0\n", name);
     return 0;
 }
+
+// F16 and BF16 conversions for Windows x86-64, where the target has no half-precision
+// hardware and LLVM lowers every conversion to a compiler-rt call. A Linux link finds
+// these in libgcc and a macOS or arm64 one needs none, but `link.exe` is given no
+// builtins library, so `toString` on an F16 failed with an unresolved `__extendhfsf2`
+// (test_326_number_text, CI 2026-11-10). They are ordinary functions here and
+// `internalize_executable` leaves them external, because the call that needs them is
+// made by instruction selection after the pass that would otherwise drop them as unused;
+// the linker's /OPT:REF removes them again from a program that converts nothing.
+//
+// Every conversion to a narrow type rounds to nearest, ties to even, from the exact
+// source value: a float widens to double without loss, so one routine serves both, and
+// BF16 is rounded from the double itself rather than through a float, which would round
+// twice. A NaN stays a NaN with its top payload bits and the quiet bit set.
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)) && !defined(PRISMIO_FREESTANDING)
+static uint16_t narrow_from_double(double value, int mantissa_bits, int exponent_bits) {
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof bits);
+    uint16_t sign = (uint16_t)((bits >> 48) & 0x8000u);
+    int exponent = (int)((bits >> 52) & 0x7ff);
+    uint64_t mantissa = bits & 0xfffffffffffffull;
+    int infinity = (1 << exponent_bits) - 1;
+    if (exponent == 0x7ff) {
+        uint16_t payload = mantissa ? (uint16_t)((1u << (mantissa_bits - 1)) | (mantissa >> (52 - mantissa_bits))) : 0;
+        return (uint16_t)(sign | (infinity << mantissa_bits) | payload);
+    }
+    int biased = exponent - 1023 + ((1 << (exponent_bits - 1)) - 1);
+    if (biased >= infinity) return (uint16_t)(sign | (infinity << mantissa_bits));
+    uint64_t full = mantissa | (exponent ? (1ull << 52) : 0);
+    int shift = 52 - mantissa_bits + (biased < 1 ? 1 - biased : 0);
+    if (shift > 53) return sign;
+    uint64_t kept = full >> shift;
+    uint64_t rest = full & ((1ull << shift) - 1);
+    uint64_t half = 1ull << (shift - 1);
+    if (rest > half || (rest == half && (kept & 1))) kept++;
+    // The exponent field of a normal number is added, not or-ed: rounding up out of the
+    // top of the mantissa carries into it, and out of the top exponent into infinity.
+    uint32_t base = biased < 1 ? 0 : (uint32_t)(biased - 1) << mantissa_bits;
+    return (uint16_t)(sign | (base + (uint32_t)kept));
+}
+
+static float float_from_half(uint16_t half) {
+    uint32_t sign = (uint32_t)(half & 0x8000u) << 16;
+    uint32_t exponent = (half >> 10) & 0x1f;
+    uint32_t mantissa = half & 0x3ff;
+    uint32_t bits;
+    if (exponent == 0x1f) {
+        bits = sign | 0x7f800000u | (mantissa << 13) | (mantissa ? 0x400000u : 0);
+    } else if (exponent) {
+        bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+    } else if (mantissa) {
+        int lead = 0;
+        while (!(mantissa & 0x400)) { mantissa <<= 1; lead++; }
+        bits = sign | ((uint32_t)(113 - lead) << 23) | ((mantissa & 0x3ff) << 13);
+    } else {
+        bits = sign;
+    }
+    float value;
+    memcpy(&value, &bits, sizeof value);
+    return value;
+}
+
+static uint16_t half_bits(_Float16 value) { uint16_t bits; memcpy(&bits, &value, 2); return bits; }
+static _Float16 half_from_bits(uint16_t bits) { _Float16 value; memcpy(&value, &bits, 2); return value; }
+static __bf16 bfloat_from_bits(uint16_t bits) { __bf16 value; memcpy(&value, &bits, 2); return value; }
+
+float __extendhfsf2(_Float16 value) { return float_from_half(half_bits(value)); }
+double __extendhfdf2(_Float16 value) { return (double)float_from_half(half_bits(value)); }
+_Float16 __truncsfhf2(float value) { return half_from_bits(narrow_from_double(value, 10, 5)); }
+_Float16 __truncdfhf2(double value) { return half_from_bits(narrow_from_double(value, 10, 5)); }
+__bf16 __truncsfbf2(float value) { return bfloat_from_bits(narrow_from_double(value, 7, 8)); }
+__bf16 __truncdfbf2(double value) { return bfloat_from_bits(narrow_from_double(value, 7, 8)); }
+#endif

@@ -9769,6 +9769,20 @@ static void emit_trace_stage(const char *stage, double t0) {
     fprintf(stderr, "[build trace]   %-22s %8.1f ms\n", stage, emit_trace_ms() - t0);
 }
 
+// **A function the code generator calls is a root the module does not show.** F16 and BF16
+// conversions on Windows x86-64 become `__extendhfsf2` and its kind in instruction
+// selection, which runs after globaldce; the runtime defines them there (lang_runtime.c)
+// and they must still be external when selection asks for them.
+static int is_codegen_libcall(const char *name, size_t len) {
+    static const char *const names[] = {
+        "__extendhfsf2", "__extendhfdf2", "__truncsfhf2", "__truncdfhf2",
+        "__truncsfbf2", "__truncdfbf2",
+    };
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (strlen(names[i]) == len && memcmp(names[i], name, len) == 0) return 1;
+    return 0;
+}
+
 // A closed executable's only root is `main`, so everything else it defines can
 // be internal -- what an LTO link's internalize step does. Before this, every
 // function the program module defined was external: the std functions compiled
@@ -9801,6 +9815,7 @@ static void internalize_executable(LLVMModuleRef m) {
         const char *name = LLVMGetValueName2(f, &len);
         if (len == 4 && memcmp(name, "main", 4) == 0) continue;
         if (len >= 5 && memcmp(name, "llvm.", 5) == 0) continue;
+        if (is_codegen_libcall(name, len)) continue;
         LLVMLinkage linkage = LLVMGetLinkage(f);
         if (linkage == LLVMInternalLinkage || linkage == LLVMPrivateLinkage
                 || linkage == LLVMAvailableExternallyLinkage) continue;

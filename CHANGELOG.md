@@ -1566,9 +1566,32 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   continues a method chain across lines, and a call's arguments still wrap. No program
   in `tests/`, `benchmarks/` or `src/` relied on the old reading: their IR is
   byte-identical (`tests/test_275_line_start_paren.psm`).
+- **Two tasks reading tokens could be handed one that did not exist.** `readToken()` asked the runtime whether a token was
+  left and then took it, as two calls; with one token left and two tasks, both were told yes, the second took an empty
+  String, and a count of the tokens came out one too many (`tests/test_runner.py` `std_input`, "two tasks share one cursor":
+  50,001 for 50,000, on x86-64 Linux in the first CI run on that architecture; the arm64 machines never interleaved the pair).
+  The runtime now finds and takes under one hold of the lock and answers no String when there is none
+  (`io_stdin_read_token`), which `readToken` returns as it is. The `tokens()` iterator keeps its two calls, as `readLine`
+  does, and a program with two readers should still give the input to one task.
+- **`F16` and `BF16` programs linked on Windows x86-64.** The target has no half-precision hardware, so LLVM lowers every
+  conversion to `__extendhfsf2`, `__truncdfhf2`, `__truncdfbf2` and their kind, which libgcc and compiler-rt supply on the
+  other platforms and `link.exe` was given nowhere to find (`test_326_number_text`: three unresolved externals, the first CI
+  run on that architecture). The runtime now defines the six, rounding to nearest even from the exact source value (BF16
+  from the double itself, not through a float); they are the only functions `internalize_executable` leaves external,
+  because instruction selection calls them after the pass that would drop them. Checked on this machine against the hardware
+  conversions: all 65,536 half values widened, and 240 million narrowings of random, subnormal, near-tie and NaN inputs,
+  no difference. Not run on a Windows x86-64 machine until CI.
+- **`check_source_lists.py` called a correct `std/syscall.psm` stale on any machine with other headers.** The table is read
+  from an Android NDK and the macOS SDK, whose numbers move between releases, and the macOS CI runner has neither the
+  maintainer's NDK nor SDK. The generated file now records which ones it was read from, and `--check` compares only when
+  they are the same, saying so when it skips.
 
 ### Repository
 
+- **CI uploads the release files as one flat bundle.** The three jobs each keep their own artifact, and a new `bundle` job
+  (after all three are green) merges them into `prismio-release`: the six files `release.py` names
+  (`prismio-<version>-<os>-<arch>.tar.gz` or `.zip`, and the `.sha256` beside each), ready for `gh release create` with
+  no renaming. `gh run download <run> -n prismio-release` fetches it.
 - **The benchmark harness samples by time, not by a fixed count.** `--runs` (5) was the same for a 160 us workload, where five
   samples are five draws from process-start jitter, and a 100 ms one. It is the *minimum* now: after one discarded warm-up
   round, a workload is sampled until each arm has spent 300 ms in the measured region (capped at 101 samples), and one whose arms
