@@ -24,6 +24,13 @@ fn cstring(text: String) -> Usize {
 }
 
 fn main() -> Int {
+    // Windows has no syscall instruction to reach: the linux and macos blocks below are dropped
+    // there, which is all this file can say of it.
+    windows {
+        println("ok")
+        return 0
+    }
+
     // EBADF and ENOENT are 9 and 2 on both kernels; EINVAL is 22.
     let missing = cstring("/definitely/not/a/path")
     let mut onLinux = false
@@ -100,10 +107,11 @@ fn main() -> Int {
     if (toStdout != 6) { return fail("write to standard output") }
 
     // A block for another operating system is read and dropped, so it may name what only
-    // that system has. This one would not type-check here.
-    windows {
-        notAFunctionAnywhere(1, 2, 3)
-    }
+    // that system has. Each of these would not type-check here, and each host keeps exactly
+    // one outer block, so each one drops its inner one.
+    linux { windows { notAFunctionAnywhere(1, 2, 3) } }
+    macos { windows { notAFunctionAnywhere(1, 2, 3) } }
+    windows { linux { notAFunctionAnywhere(1, 2, 3) } }
 
     free(missing)
     free(devnull)

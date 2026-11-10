@@ -1990,6 +1990,19 @@ static unsigned pointee_align(LLVMTypeRef ty) {
     return LLVMABIAlignmentOfType(LLVMGetModuleDataLayout(g_module), ty);
 }
 
+// An atomic access must be naturally aligned, whatever the target's ABI says of a plain one.
+// The module has no data layout while its IR is built, so `pointee_align` answers LLVM's
+// default (an `i64` at 4), and an 8-byte atomic stated `align 4` is under-aligned: LLVM then
+// lowers it to a `__atomic_*` libcall, which a Linux or Windows link does not resolve and a
+// freestanding build has nowhere to find. The access is only defined for an address that is
+// aligned to its size, so that is the alignment to state.
+static unsigned atomic_align(LLVMTypeRef ty) {
+    unsigned natural = pointee_align(ty);
+    unsigned long long size = LLVMStoreSizeOfType(LLVMGetModuleDataLayout(g_module), ty);
+    int power_of_two = size != 0 && (size & (size - 1)) == 0;
+    return power_of_two && size > natural && size <= 16 ? (unsigned)size : natural;
+}
+
 // The alignment an access of `ty` at `ptr` may claim: its type's, unless `ptr` is a field
 // of a `packed struct`. Such a field starts wherever the one before it ended, so its
 // address is aligned only as the struct is, to one byte; left to LLVM, a load takes its
@@ -2275,14 +2288,14 @@ int ir_ptr_atomic(int kind, const char *type, const char *ptr_value, const char 
     LLVMAtomicOrdering ord = atomic_order(order);
     if (kind == 1) {
         LLVMValueRef load = LLVMBuildLoad2(g_builder, ty, ptr, "");
-        LLVMSetAlignment(load, pointee_align(ty));
+        LLVMSetAlignment(load, atomic_align(ty));
         LLVMSetOrdering(load, ord);
         return intern_value(load);
     }
     if (kind == 2) {
         if (block_done()) return 0;
         LLVMValueRef store = LLVMBuildStore(g_builder, resolve_value(a, type), ptr);
-        LLVMSetAlignment(store, pointee_align(ty));
+        LLVMSetAlignment(store, atomic_align(ty));
         LLVMSetOrdering(store, ord);
         return 0;
     }
@@ -2291,7 +2304,7 @@ int ir_ptr_atomic(int kind, const char *type, const char *ptr_value, const char 
                                    : order == 3 ? LLVMAtomicOrderingAcquire : ord;
         LLVMValueRef cas = LLVMBuildAtomicCmpXchg(g_builder, ptr, resolve_value(a, type),
                                                   resolve_value(b, type), ord, failure, 0);
-        LLVMSetAlignment(cas, pointee_align(ty));
+        LLVMSetAlignment(cas, atomic_align(ty));
         return intern_value(LLVMBuildExtractValue(g_builder, cas, 0, ""));
     }
     static const LLVMAtomicRMWBinOp ops[] = {
@@ -2301,7 +2314,7 @@ int ir_ptr_atomic(int kind, const char *type, const char *ptr_value, const char 
     if (kind < 3 || kind > 8) backend_fail("unknown atomic operation", type);
     LLVMValueRef rmw = LLVMBuildAtomicRMW(g_builder, ops[kind - 3], ptr, resolve_value(a, type),
                                           ord, 0);
-    LLVMSetAlignment(rmw, pointee_align(ty));
+    LLVMSetAlignment(rmw, atomic_align(ty));
     return intern_value(rmw);
 }
 
