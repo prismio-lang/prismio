@@ -60,6 +60,7 @@ internal extern fn executable_directory() -> String produce(rt_free)
 internal extern fn executable_path() -> String produce(rt_free)
 internal extern fn list_modules(directory: String borrow) -> String produce(rt_free)
 
+// Whether `path` exists and can be opened as a file.
 public fn fileExists(path: String) -> Bool {
     return file_exists(path) == 1
 }
@@ -74,6 +75,7 @@ public fn readFile(path: String) -> String {
     return read_file(path)
 }
 
+// The contents of the file at `path`, or `none` when there is no such file.
 public fn tryReadFile(path: String) -> String? {
     if (file_exists(path) == 0) { return none }
     return read_file(path)
@@ -111,6 +113,7 @@ public fn directoryOf(path: String) -> String {
     return get_directory(path)
 }
 
+// `directory` and `filename` joined with one path separator.
 public fn joinPath(directory: String, filename: String) -> String {
     return join_path(directory, filename)
 }
@@ -230,15 +233,18 @@ public fn removeDirectory(path: String) -> Bool {
     return fs_remove_directory(path) == 0
 }
 
+// Creates a symbolic link at `linkPath` pointing to `target`; true on success.
 public fn createSymbolicLink(target: String, linkPath: String) -> Bool {
     return fs_symlink(target, linkPath) == 0
 }
 
+// Where the symbolic link at `path` points, or `none` when `path` is not a link.
 public fn readLink(path: String) -> String? {
     if (fs_readlink_exists(path) == 0) { return none }
     return fs_readlink(path)
 }
 
+// `path` with every symbolic link and `.` and `..` resolved, or `none` when it does not exist.
 public fn realPath(path: String) -> String? {
     if (fs_realpath_exists(path) == 0) { return none }
     return fs_realpath(path)

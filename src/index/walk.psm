@@ -390,7 +390,7 @@ fn ixCompleteAfterDot(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node:
     let mut head = ixBaseHead(ix, w, base)
     if (shown.startsWith("[")) { head = "Array".clone() }
     ixCompleteMembers(ix, src, head, node.file, false, shown.endsWith("?"))
-    if (head.equals("Ptr")) { ixCompletePointee(ix, src, shown) }
+    if (head.equals("Ptr")) { ixCompletePointee(ix, src, shown, node.file) }
 }
 
 // The head of the type of a base expression: sema's when it typed it, else what the variable it
@@ -618,6 +618,9 @@ fn ixWalkCall(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode
     let callee = ptr_to_node(node.child1)
     let mut target = 0 - 1
     if (callee.kind == NodeKind.IDENTIFIER_EXPR) {
+        // The word being typed is a call's name already followed by its parentheses (`pri|(x)`, or the pair an editor closed):
+        // what could be written there is the same as in any other expression.
+        if (ixAtCursor(w, callee)) { ixCompleteScope(ix, src, w.names, w.ids, node.file) }
         let name = ixBaseName(callee.s1)
         if (node.s2.equals("") == false) { target = ix.bySymbol.get(node.s2) }
         let local = ixLookupLocal(w, callee.s1)
@@ -802,6 +805,12 @@ fn ixWalkStructLiteral(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node
         ptr = field.next
         if (field.kind != NodeKind.STRUCT_FIELD) {
             ixWalkExpr(ix, src, w, field, "read")
+            continue
+        }
+        // The server wrote the placeholder where a field's name is being typed (`Point { x: 1, | }`): offer the fields of the
+        // type that the literal has not set.
+        if (ixAtCursor(w, field)) {
+            ixCompleteFieldNames(ix, src, typeId, node, node.file)
             continue
         }
         if (field.s1.startsWith("$") == false and closure == false) {

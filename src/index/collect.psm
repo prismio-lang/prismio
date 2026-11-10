@@ -226,7 +226,7 @@ fn ixCollectStruct(inout ix: Ix, inout src: IxSources, node: ASTNode) {
         ixCollectPayloadEnum(ix, src, node)
         return
     }
-    let id = ixDeclareNode(ix, src, "struct", node, 0 - 1, 0 - 1, "", "")
+    let id = ixDeclareNode(ix, src, "struct", node, 0 - 1, node.i2, "", "")
     if (id < 0) { return }
     ix.byType.putFirst(ix.dName[id], id)
     let mut ptr = node.child1
@@ -234,7 +234,7 @@ fn ixCollectStruct(inout ix: Ix, inout src: IxSources, node: ASTNode) {
         let field = ptr_to_node(ptr)
         ptr = field.next
         if (field.kind != NodeKind.STRUCT_FIELD or field.s1.startsWith("$") or field.line < 1) { continue }
-        let fid = ixDeclareNode(ix, src, "field", field, id, 0 - 1, ixWrittenType(src, field), "")
+        let fid = ixDeclareNode(ix, src, "field", field, id, field.i2, ixWrittenType(src, field), "")
         if (fid >= 0) { ix.byMember.putFirst(ix.dName[id].concat(".", ix.dName[fid]), fid) }
     }
 }

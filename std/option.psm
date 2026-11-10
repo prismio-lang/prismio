@@ -103,6 +103,7 @@ public fn resultErrOr<T, E>(r: Result<T, E>, fallback: E) -> E {
 }
 
 impl<T, E> Result<T, E> {
+    // Whether the result is `Ok`.
     public prop isOk(self) -> Bool {
         match (self) {
             Result.Ok(v) => { return true }
@@ -110,6 +111,7 @@ impl<T, E> Result<T, E> {
         }
     }
 
+    // Whether the result is `Err`.
     public prop isErr(self) -> Bool {
         match (self) {
             Result.Ok(v) => { return false }

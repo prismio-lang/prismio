@@ -2609,6 +2609,8 @@ internal fn strParseUsizeRadix(s: String, radix: Int) -> Usize? {
 }
 
 impl String {
+    // Joins `other` onto the end of the string; `a + b` is this call.
+    //
     // -----------------------------------------------------------------------
     // The five the operators lower to
     // -----------------------------------------------------------------------
@@ -2789,20 +2791,31 @@ impl String {
     // The rest, which delegate
     // -----------------------------------------------------------------------
     public prop length(self) -> Int { return strLength(self) }
+    // Whether the string has no bytes.
     public prop isEmpty(self) -> Bool { return strIsEmpty(self) }
+    // Whether the string has at least one byte.
     public prop isNotEmpty(self) -> Bool { return strIsEmpty(self) == false }
+    // Whether the string is empty or only whitespace.
     public prop isBlank(self) -> Bool { return strIsBlank(self) }
+    // A copy of the string that you own.
     public fn clone(self) -> String { return strClone(self) }
 
+    // The byte at byte index `index`, as an `Int` from 0 to 255.
     public fn byteAt(self, index: Int) -> Int { return strByteAt(self, index) }
+    // The byte at `index` as a `Char`, or `none` when `index` is out of range.
     public fn get(self, index: Int) -> Char? { return strGet(self, index) }
+    // The first byte, or NUL when the string is empty.
     public prop first(self) -> Char { return strFirst(self) }
+    // The last byte, or NUL when the string is empty.
     public prop last(self) -> Char { return strLast(self) }
 
+    // The `length` bytes that start at byte index `start`; `slice` takes an end index instead.
     public fn substring(self, start: Int, length: Int) -> String {
         return strSubstring(self, start, length)
     }
 
+    // Whether the two strings hold the same bytes; `a == b` is this call.
+    //
     // The body lives here rather than in a prefixed free function: `equals` is
     // the public spelling, and `==` reaches the same answer.
     //
@@ -2817,89 +2830,138 @@ impl String {
     public fn equals(self, other: String) -> Bool {
         return __builtin_string_eq(self, other)
     }
+    // Whether the strings are equal when letter case is ignored (Unicode case folding).
     public fn equalsIgnoreCase(self, other: String) -> Bool {
         return strEqualsIgnoreCase(self, other)
     }
 
+    // The string repeated `times` times; a `times` of zero or less gives the empty string.
     public fn repeat(self, times: Int) -> String { return strRepeat(self, times) }
 
+    // Whether `needle` occurs anywhere in the string.
     public fn contains(self, needle: String) -> Bool { return strContains(self, needle) }
+    // Whether the byte `needle` occurs anywhere in the string.
     public fn contains(self, needle: Char) -> Bool { return strContainsChar(self, needle) }
+    // Whether the string begins with `prefix`.
     public fn startsWith(self, prefix: String) -> Bool { return strStartsWith(self, prefix) }
+    // Whether the string begins with the byte `prefix`.
     public fn startsWith(self, prefix: Char) -> Bool { return strStartsWithChar(self, prefix) }
+    // Whether the string ends with `suffix`.
     public fn endsWith(self, suffix: String) -> Bool { return strEndsWith(self, suffix) }
+    // Whether the string ends with the byte `suffix`.
     public fn endsWith(self, suffix: Char) -> Bool { return strEndsWithChar(self, suffix) }
+    // Whether `needle` appears in the string starting at byte index `at`.
     public fn matchesAt(self, needle: String, at: Int) -> Bool {
         return strMatchesAt(self, needle, at)
     }
 
+    // The byte index of the first occurrence of `needle`, or -1 when there is none.
     public fn indexOf(self, needle: String) -> Int { return strIndexOf(self, needle) }
+    // The byte index of the first occurrence of the byte `needle`, or -1 when there is none.
     public fn indexOf(self, needle: Char) -> Int { return strIndexOfChar(self, needle) }
+    // The byte index of the first occurrence of `needle` at or after `from`, or -1.
     public fn indexOf(self, needle: String, from: Int) -> Int {
         return strIndexOfFrom(self, needle, from)
     }
+    // The byte index of the first occurrence of the byte `needle` at or after `from`, or -1.
     public fn indexOf(self, needle: Char, from: Int) -> Int {
         return strIndexOfCharFrom(self, needle, from)
     }
+    // The byte index of the last occurrence of `needle`, or -1 when there is none.
     public fn lastIndexOf(self, needle: String) -> Int { return strLastIndexOf(self, needle) }
+    // The byte index of the last occurrence of the byte `needle`, or -1 when there is none.
     public fn lastIndexOf(self, needle: Char) -> Int { return strLastIndexOfChar(self, needle) }
+    // Like `indexOf`, but answers `none` instead of -1 when `needle` is absent.
     public fn find(self, needle: String) -> Int? { return strFind(self, needle) }
     public fn find(self, needle: String, from: Int) -> Int? {
         return strFindFrom(self, needle, from)
     }
+    // How many times `needle` occurs, not counting overlaps; an empty `needle` counts 0.
     public fn count(self, needle: String) -> Int { return strCountOf(self, needle) }
+    // How many times the byte `needle` occurs.
     public fn count(self, needle: Char) -> Int { return strCountOfChar(self, needle) }
+    // How many times `needle` occurs, not counting overlaps; the same as `count`.
     public fn countOf(self, needle: String) -> Int { return strCountOf(self, needle) }
 
+    // The string without whitespace at either end.
     public fn trim(self) -> String { return strTrim(self) }
+    // The string without whitespace at the start.
     public fn trimStart(self) -> String { return strTrimStart(self) }
+    // The string without whitespace at the end.
     public fn trimEnd(self) -> String { return strTrimEnd(self) }
+    // The string without any bytes that appear in `set` at either end.
     public fn trimChars(self, set: String) -> String { return strTrimChars(self, set) }
+    // Pads the start with `pad` until the string is `width` characters wide, counted in Unicode scalars; a string already that wide is unchanged.
     public fn padStart(self, width: Int, pad: Char) -> String { return strPadStart(self, width, pad) }
+    // Pads the end with `pad` until the string is `width` characters wide, counted in Unicode scalars; a string already that wide is unchanged.
     public fn padEnd(self, width: Int, pad: Char) -> String { return strPadEnd(self, width, pad) }
+    // Pads both ends with `pad` until the string is `width` characters wide, counted in Unicode scalars.
     public fn padCenter(self, width: Int, pad: Char) -> String {
         return strPadCenter(self, width, pad)
     }
 
+    // The string in upper case, by Unicode default case mapping; the result can be longer than the original.
     public fn toUpper(self) -> String { return strToUpper(self) }
+    // The string in lower case, by Unicode default case mapping.
     public fn toLower(self) -> String { return strToLower(self) }
+    // The string with its first character in title case; the rest is unchanged.
     public fn capitalize(self) -> String { return strCapitalize(self) }
+    // The string reversed by Unicode scalar, so multi-byte characters stay whole.
     public fn reverse(self) -> String { return strReverse(self) }
 
+    // Replaces every occurrence of `old` with `new`; the same as `replaceAll`.
     public fn replace(self, old: String, new: String) -> String {
         return strReplaceAll(self, old, new)
     }
+    // Replaces the first occurrence of `old` with `new`.
     public fn replaceFirst(self, old: String, new: String) -> String {
         return strReplaceFirst(self, old, new)
     }
+    // Replaces every occurrence of `old` with `new`.
     public fn replaceAll(self, old: String, new: String) -> String {
         return strReplaceAll(self, old, new)
     }
+    // The string with `other` inserted at byte index `at`; an `at` past the end appends.
     public fn insert(self, at: Int, other: String) -> String { return strInsert(self, at, other) }
+    // The string without `length` bytes starting at byte index `start`.
     public fn removeRange(self, start: Int, length: Int) -> String {
         return strRemoveRange(self, start, length)
     }
+    // The string without `prefix`, or `none` when it does not start with it.
     public fn stripPrefix(self, prefix: String) -> String? {
         return strStripPrefix(self, prefix)
     }
+    // The string without `suffix`, or `none` when it does not end with it.
     public fn stripSuffix(self, suffix: String) -> String? {
         return strStripSuffix(self, suffix)
     }
 
+    // Splits at every occurrence of the byte `sep`.
     public fn split(self, sep: Char) -> Vec<String> { return strSplit(self, sep) }
+    // Splits at every occurrence of `sep`.
     public fn split(self, sep: String) -> Vec<String> { return strSplitOn(self, sep) }
+    // Splits at every occurrence of `sep`; the same as `split`.
     public fn splitOn(self, sep: String) -> Vec<String> { return strSplitOn(self, sep) }
+    // Splits on runs of whitespace and drops the empty pieces.
     public fn splitWhitespace(self) -> Vec<String> { return strSplitWhitespace(self) }
+    // The lines of the string: a trailing newline ends the last line instead of starting an empty one, and a `\r` before a `\n` is dropped.
     public fn lines(self) -> Vec<String> { return strLines(self) }
+    // The string's bytes as `Char`s; for Unicode characters use `scalars`.
     public fn chars(self) -> Vec<Char> { return strChars(self) }
+    // The string's bytes as `Int`s from 0 to 255.
     public fn bytes(self) -> Vec<Int> { return strBytes(self) }
 
+    // How many bytes satisfy `keep`, a closure that takes a `Char`.
+    //
     // Generic in the closure, exactly as the free functions above are. The
     // `impl` target may not be generic (src/parse/decl.psm rejects `impl Vec<T>`),
     // but a *method* may: it is a free function whose first parameter is the
     // receiver, and nothing about that stops it having type parameters.
     public fn countIf<F>(self, keep: F) -> Int { return strCountIf(self, keep) }
+    // The index of the first byte that satisfies `keep`, a closure that takes a `Char`, or -1.
     public fn indexWhere<F>(self, keep: F) -> Int { return strIndexWhere(self, keep) }
+    // Whether every byte satisfies `keep`, a closure that takes a `Char`.
+    //
     // `allChars` and `anyChars`, not `all` and `any`. The short names are
     // std/vec.psm's, over `Vec<T>`, and both sides are generic in the closure:
     // an overload set holding `all<T, F>(Vec<T>, F)` and `all<F>(String, F)`
@@ -2907,18 +2969,27 @@ impl String {
     // this file claimed the name. A method is a free function, so a method name
     // is a global name -- that is the cost the header of this block is about.
     public fn allChars<F>(self, keep: F) -> Bool { return strAllChars(self, keep) }
+    // Whether any byte satisfies `keep`, a closure that takes a `Char`.
     public fn anyChars<F>(self, keep: F) -> Bool { return strAnyChars(self, keep) }
 
+    // Whether every byte is below 128.
+    //
     // **The second reading of the same bytes.** `length`, `charAt` and
     // `substring` above are byte-indexed and stay that way; these count and cut
     // by character, which is what user text needs. See the UTF-8 section for why
     // both exist.
     public prop isAscii(self) -> Bool { return strIsAscii(self) }
+    // Whether the string is well-formed UTF-8.
     public prop isValidUtf8(self) -> Bool { return strIsValidUtf8(self) }
+    // The number of Unicode characters (scalar values); `length` counts bytes.
     public prop scalarCount(self) -> Int { return strScalarCount(self) }
+    // The Unicode scalar values of the string as a `Vec<Int>`.
     public fn scalars(self) -> Vec<Int> { return strScalars(self) }
+    // The Unicode scalar that starts at byte index `at`, or -1 when `at` is out of range or does not start one.
     public fn scalarAt(self, at: Int) -> Int { return strScalarAt(self, at) }
+    // The width in bytes of the character that starts at byte index `at`; 0 when none does.
     public fn scalarWidthAt(self, at: Int) -> Int { return strScalarWidthAt(self, at) }
+    // Whether byte index `at` falls between characters rather than inside one.
     public fn isCharBoundary(self, at: Int) -> Bool { return strIsCharBoundary(self, at) }
     public fn scalarSubstring(self, start: Int, count: Int) -> String {
         return strScalarSubstring(self, start, count)
@@ -2932,27 +3003,49 @@ impl String {
     // number, trailing text, or out of the type's range. A `T?` by value, so a
     // parse allocates nothing; `s as Int?` is `s.parseInt()`.
     public fn parseInt(self) -> Int? { return strParseInt(self) }
+    // Parses an integer written in base `radix`; `none` when the text is not one that fits.
     public fn parseInt(self, radix: Int) -> Int? { return strParseIntRadix(self, radix) }
+    // The integer the text writes, or `fallback` when it is not one.
     public fn parseIntOr(self, fallback: Int) -> Int { return strParseIntOr(self, fallback) }
+    // Parses a decimal `I8`; `none` when the text is not one that fits.
     public fn parseI8(self) -> I8? { return strParseI8Radix(self, 10) }
+    // Parses a `I8` written in base `radix`; `none` when the text is not one that fits.
     public fn parseI8(self, radix: Int) -> I8? { return strParseI8Radix(self, radix) }
+    // Parses a decimal `I16`; `none` when the text is not one that fits.
     public fn parseI16(self) -> I16? { return strParseI16Radix(self, 10) }
+    // Parses a `I16` written in base `radix`; `none` when the text is not one that fits.
     public fn parseI16(self, radix: Int) -> I16? { return strParseI16Radix(self, radix) }
+    // Parses a decimal `I64`; `none` when the text is not one that fits.
     public fn parseI64(self) -> I64? { return strParseI64(self) }
+    // Parses a `I64` written in base `radix`; `none` when the text is not one that fits.
     public fn parseI64(self, radix: Int) -> I64? { return strParseI64Radix(self, radix) }
+    // Parses a decimal `Isize`; `none` when the text is not one that fits.
     public fn parseIsize(self) -> Isize? { return strParseIsizeRadix(self, 10) }
+    // Parses a `Isize` written in base `radix`; `none` when the text is not one that fits.
     public fn parseIsize(self, radix: Int) -> Isize? { return strParseIsizeRadix(self, radix) }
+    // Parses a decimal `U8`; `none` when the text is not one that fits.
     public fn parseU8(self) -> U8? { return strParseU8Radix(self, 10) }
+    // Parses a `U8` written in base `radix`; `none` when the text is not one that fits.
     public fn parseU8(self, radix: Int) -> U8? { return strParseU8Radix(self, radix) }
+    // Parses a decimal `U16`; `none` when the text is not one that fits.
     public fn parseU16(self) -> U16? { return strParseU16Radix(self, 10) }
+    // Parses a `U16` written in base `radix`; `none` when the text is not one that fits.
     public fn parseU16(self, radix: Int) -> U16? { return strParseU16Radix(self, radix) }
+    // Parses a decimal `U32`; `none` when the text is not one that fits.
     public fn parseU32(self) -> U32? { return strParseU32Radix(self, 10) }
+    // Parses a `U32` written in base `radix`; `none` when the text is not one that fits.
     public fn parseU32(self, radix: Int) -> U32? { return strParseU32Radix(self, radix) }
+    // Parses a decimal `U64`; `none` when the text is not one that fits.
     public fn parseU64(self) -> U64? { return strParseU64(self) }
+    // Parses a `U64` written in base `radix`; `none` when the text is not one that fits.
     public fn parseU64(self, radix: Int) -> U64? { return strParseU64Radix(self, radix) }
+    // Parses a decimal `Usize`; `none` when the text is not one that fits.
     public fn parseUsize(self) -> Usize? { return strParseUsizeRadix(self, 10) }
+    // Parses a `Usize` written in base `radix`; `none` when the text is not one that fits.
     public fn parseUsize(self, radix: Int) -> Usize? { return strParseUsizeRadix(self, radix) }
+    // Parses a decimal floating-point number; `none` when the text is not one.
     public fn parseFloat(self) -> Float? { return strParseFloat(self) }
+    // Parses `true` or `false`, in any letter case; `none` otherwise.
     public fn parseBool(self) -> Bool? { return strParseBool(self) }
 }
 
@@ -2961,17 +3054,28 @@ impl String {
 // note over `charCode` in src/common/text.psm for why writing that conversion out
 // by hand was once a source of silent wrongness.
 impl Char {
+    // Whether the byte is an ASCII digit.
     public prop isDigit(self) -> Bool { return charIsDigit(self) }
+    // Whether the byte is an ASCII lower-case letter.
     public prop isLower(self) -> Bool { return charIsLower(self) }
+    // Whether the byte is an ASCII upper-case letter.
     public prop isUpper(self) -> Bool { return charIsUpper(self) }
+    // Whether the byte is an ASCII letter.
     public prop isAlpha(self) -> Bool { return charIsAlpha(self) }
+    // Whether the byte is an ASCII letter or digit.
     public prop isAlnum(self) -> Bool { return charIsAlnum(self) }
+    // Whether the byte is whitespace.
     public prop isSpace(self) -> Bool { return charIsSpace(self) }
 
+    // The byte as an upper-case ASCII letter when it is a lower-case one.
     public fn toUpper(self) -> Char { return charToUpper(self) }
+    // The byte as a lower-case ASCII letter when it is an upper-case one.
     public fn toLower(self) -> Char { return charToLower(self) }
+    // The byte minus `'0'`: 0 to 9 for a digit, and not meaningful for any other byte.
     public prop digitValue(self) -> Int { return charDigitValue(self) }
+    // The byte's numeric value.
     public prop code(self) -> Int { return self as Int }
+    // The byte as a one-character string.
     public fn toString(self) -> String { return strFromChar(self) }
 }
 
@@ -2980,65 +3084,91 @@ impl Char {
 // every overload set here is: there is no implicit numeric promotion, so
 // `count.toString()` picks the `Int` body and nothing else.
 impl Int {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromInt(self) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromIntRadix(self, radix) }
 }
 
 impl I64 {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromI64(self) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromI64Radix(self, radix) }
 }
 
 impl I8 {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromInt(self as Int) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromIntRadix(self as Int, radix) }
 }
 
 impl I16 {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromInt(self as Int) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromIntRadix(self as Int, radix) }
 }
 
 impl Isize {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromI64(self as I64) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromI64Radix(self as I64, radix) }
 }
 
 impl U8 {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromUnsigned(self as U64) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromU64Radix(self as U64, radix) }
 }
 
 impl U16 {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromUnsigned(self as U64) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromU64Radix(self as U64, radix) }
 }
 
 impl U32 {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromUnsigned(self as U64) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromU64Radix(self as U64, radix) }
 }
 
 impl Usize {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromUnsigned(self as U64) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromU64Radix(self as U64, radix) }
 }
 
 impl U64 {
+    // The number as decimal text.
     public fn toString(self) -> String { return strFromUnsigned(self) }
+    // The number as text in base `radix`.
     public fn toString(self, radix: Int) -> String { return strFromU64Radix(self, radix) }
+    // The number in hexadecimal.
     public fn toHex(self) -> String { return strHex(self) }
+    // The number in octal.
     public fn toOctal(self) -> String { return strOctal(self) }
+    // The number in binary.
     public fn toBinary(self) -> String { return strBinary(self) }
 }
 
 // The type that had no conversion at all until `strFromFloat`. `toString` is the
 // round-trip text; `toString(decimals)` is the fixed-point presentation form.
 impl Float {
+    // The number as text.
     public fn toString(self) -> String { return strFromFloat(self) }
+    // The number as text with exactly `decimals` digits after the point.
     public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self, decimals) }
 }
 
 impl Bool {
+    // `true` or `false`.
     public fn toString(self) -> String { return strFromBool(self) }
 }

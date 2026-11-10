@@ -327,6 +327,204 @@ fn completionNone() -> String {
     return "{\"isIncomplete\":false,\"items\":[]}".clone()
 }
 
+// Modules that are the library's way into the machine (`import std.raw` is the marker that a file means to). Their names are
+// offered, with the import they need, only to a document that already imports them: otherwise `s.` on a String lists
+// `asmOps` and `offsetOf` because they happen to take a String first.
+fn completionIsLowLevelModule(module: String) -> Bool {
+    return module.equals("std.raw") or module.equals("std.asm") or module.equals("std.port") or module.equals("std.syscall")
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Struct literals: `Point { x: 1, | }` asks for the fields the literal has not set.
+// ---------------------------------------------------------------------------------------------------------------------
+
+fn completionIsSpace(b: Int) -> Bool {
+    return b == 32 or b == 9 or b == 10 or b == 13
+}
+
+// The type whose literal the caret is inside, at the place a field's name goes, or "". `start` is where the word being
+// typed begins. The caret must be right after the literal's `{` or a `,` of it (with the nearest open bracket that `{`), and
+// the word in front of that brace a type's name: not a keyword (`if x {`, `struct P {`, `impl P {`, `-> Int {`).
+fn completionStructLiteralType(text: String, start: Int) -> String {
+    let mut at = start
+    while (at > 0 and completionIsSpace(text.byteAt(at - 1))) { at = at - 1 }
+    if (at == 0) { return "".clone() }
+    let last = text.byteAt(at - 1)
+    if (last != 123 and last != 44) { return "".clone() }
+    // The nearest bracket that is still open.
+    let mut open = at - 1
+    if (last == 44) {
+        let mut depth = 0
+        open = at - 2
+        while (open >= 0) {
+            let b = text.byteAt(open)
+            if (b == 41 or b == 93 or b == 125) { depth = depth + 1 }
+            if (b == 40 or b == 91 or b == 123) {
+                if (depth == 0) { break }
+                depth = depth - 1
+            }
+            open = open - 1
+        }
+        if (open < 0 or text.byteAt(open) != 123) { return "".clone() }
+    }
+    // The word in front of the brace, past a `<...>`.
+    let mut stop = open
+    while (stop > 0 and completionIsSpace(text.byteAt(stop - 1))) { stop = stop - 1 }
+    if (stop > 0 and text.byteAt(stop - 1) == 62 and (stop < 2 or text.byteAt(stop - 2) != 45)) {
+        let mut depth = 0
+        while (stop > 0) {
+            let b = text.byteAt(stop - 1)
+            if (b == 62) { depth = depth + 1 }
+            if (b == 60) { depth = depth - 1 }
+            stop = stop - 1
+            if (depth == 0) { break }
+        }
+        while (stop > 0 and completionIsSpace(text.byteAt(stop - 1))) { stop = stop - 1 }
+    }
+    let mut first = stop
+    while (first > 0 and completionIsWordByte(text.byteAt(first - 1))) { first = first - 1 }
+    if (first == stop) { return "".clone() }
+    let name = text.slice(first, stop).clone()
+    let initial = name.byteAt(0)
+    if (initial < 65 or initial > 90) { return "".clone() }
+    // A declaration's or a function's brace is not a literal's.
+    let before = completionPreviousWord(text, first)
+    if (before.equals("struct") or before.equals("enum") or before.equals("impl") or before.equals("trait")
+            or before.equals("for") or before.equals("where") or before.equals("is") or before.equals("typelist")
+            or before.equals("codeset")) {
+        return "".clone()
+    }
+    let mut back = first
+    while (back > 0 and completionIsSpace(text.byteAt(back - 1))) { back = back - 1 }
+    if (back > 0) {
+        let b = text.byteAt(back - 1)
+        // `-> Int {`, `x: Int {`, `T.Variant {` and `a & B {` are not a literal of `B`.
+        if (b == 62 or b == 58 or b == 46) { return "".clone() }
+    }
+    return name
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Call snippets: choosing `push` inserts `push(value)` with `value` selected.
+// ---------------------------------------------------------------------------------------------------------------------
+
+fn completionParameterName(parameter: String) -> String {
+    let colon = parameter.indexOf(":")
+    let mut head = parameter.trim().clone()
+    if (colon >= 0) { head = parameter.slice(0, colon).trim().clone() }
+    let space = head.lastIndexOf(" ")
+    if (space >= 0) { head = head.slice(space + 1, head.length).clone() }
+    while (head.startsWith(".")) { head = head.slice(1, head.length).clone() }
+    return head
+}
+
+// The parameter names a declaration's signature writes (`fn push(self, value: T)` -> `self`, `value`), or none when `label`
+// is not found in it as a function. Generics, nested brackets and the `->` of a function type are stepped over.
+fn completionParameterNames(detail: String, label: String) -> Vec<String> {
+    let mut names: Vec<String> = []
+    let needle = "fn ".concat(label)
+    let at = detail.indexOf(needle)
+    if (at < 0) { return names }
+    let mut i = at + needle.length
+    if (i < detail.length and detail.byteAt(i) == 60) {
+        let mut depth = 0
+        while (i < detail.length) {
+            let b = detail.byteAt(i)
+            if (b == 60) { depth = depth + 1 }
+            if (b == 62 and detail.byteAt(i - 1) != 45) { depth = depth - 1 }
+            i = i + 1
+            if (depth == 0) { break }
+        }
+    }
+    if (i >= detail.length or detail.byteAt(i) != 40) { return names }
+    i = i + 1
+    let mut depth = 0
+    let mut from = i
+    while (i < detail.length) {
+        let b = detail.byteAt(i)
+        if (b == 40 or b == 91 or b == 123 or b == 60) { depth = depth + 1 }
+        if (b == 41 or b == 93 or b == 125 or (b == 62 and detail.byteAt(i - 1) != 45)) {
+            if (depth == 0) {
+                if (i > from) { names.push(completionParameterName(detail.slice(from, i))) }
+                return names
+            }
+            depth = depth - 1
+        }
+        if (b == 44 and depth == 0) {
+            names.push(completionParameterName(detail.slice(from, i)))
+            from = i + 1
+        }
+        i = i + 1
+    }
+    return names
+}
+
+// `name(${1:a}, ${2:b})` for a function or a method, or "" when choosing it should insert the bare name. After a value a
+// method is called without its receiver (`self`, or the first parameter of a free function offered as a method).
+fn completionCallSnippet(label: String, kind: String, detail: String) -> String {
+    if (kind.equals("fn") == false and kind.equals("method") == false and kind.equals("extern") == false) { return "".clone() }
+    let names = completionParameterNames(detail, label)
+    if (detail.contains("fn ".concat(label)) == false) { return "".clone() }
+    let mut out = label.concat("(")
+    let mut number = 0
+    let mut index = 0
+    for name in names {
+        let receiver = index == 0 and kind.equals("method")
+        index = index + 1
+        if (receiver or name.equals("self") or name.equals("")) { continue }
+        number = number + 1
+        if (number > 1) { out = out.concat(", ") }
+        // `$` and `{` are two strings: together they would open an interpolation.
+        out = out.concat("$", "{", number.toString(), ":", name, "}")
+    }
+    return out.concat(")")
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Documentation: what the popup shows is the first paragraph, without the banners a source file draws around a section.
+// ---------------------------------------------------------------------------------------------------------------------
+
+fn completionIsBanner(line: String) -> Bool {
+    let t = line.trim()
+    if (t.length < 4) { return false }
+    for i in 0..<t.length {
+        let b = t.byteAt(i)
+        if (b != 45 and b != 61 and b != 95 and b != 42 and b != 35 and b != 126) { return false }
+    }
+    return true
+}
+
+fn completionTrimDoc(doc: String) -> String {
+    if (doc.equals("")) { return "".clone() }
+    let lines = doc.split("\n")
+    let mut at = 0
+    while (at < lines.length and lines[at].trim().equals("")) { at = at + 1 }
+    // `-----` / a title / `-----` is a heading for what follows it, not the documentation of the declaration.
+    if (at < lines.length and completionIsBanner(lines[at])) {
+        let mut close = at + 1
+        while (close < lines.length and completionIsBanner(lines[close]) == false) { close = close + 1 }
+        if (close < lines.length) { at = close + 1 } else { at = at + 1 }
+        while (at < lines.length and (lines[at].trim().equals("") or completionIsBanner(lines[at]))) { at = at + 1 }
+    }
+    let mut out = "".clone()
+    let mut fenced = false
+    while (at < lines.length) {
+        let line = lines[at]
+        if (line.trim().startsWith("```")) { fenced = fenced == false }
+        if (fenced == false and line.trim().equals("")) { break }
+        if (out.equals("") == false) { out = out.concat("\n") }
+        out = out.concat(line)
+        at = at + 1
+    }
+    if (fenced) { out = out.concat("\n```") }
+    if (out.length > 600) {
+        let mut cut = 600
+        while (cut > 400 and out.byteAt(cut) != 32 and out.byteAt(cut) != 10) { cut = cut - 1 }
+        out = out.slice(0, cut).concat("...")
+    }
+    return out
+}
+
 public fn completionItems(compiler: String, program: Program, docs: Documents, docPath: String, documentText: String,
                           documentOffset: Int, scratch: String, keywords: Vec<String>) -> String {
     // `import std.string.|` asks for what the module declares: the compiler is asked through a program that imports it
@@ -372,7 +570,7 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
             for earlier in imports {
                 if (earlier.equals(module)) { known = true }
             }
-            if (known == false) {
+            if (known == false and completionIsLowLevelModule(module) == false) {
                 header = header.concat("import ", module, "\n")
                 added = added + 1
             }
@@ -381,6 +579,15 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
     let mut placeholder = COMPLETION_PLACEHOLDER.clone()
     // A generic type before the dot (`Result<Int, String>.`) only parses as the callee of a call.
     if (afterDot and before > 1 and text.byteAt(before - 2) == 62) { placeholder = COMPLETION_PLACEHOLDER.concat("()") }
+    // In a struct literal's field-name position the placeholder is a field being set, which is the only shape that parses.
+    let literalType = completionStructLiteralType(text, start)
+    let mut atFieldName = false
+    if (afterDot == false and literalType.equals("") == false) {
+        let mut next = end
+        while (next < text.length and (text.byteAt(next) == 32 or text.byteAt(next) == 9)) { next = next + 1 }
+        if (next >= text.length or text.byteAt(next) != 58) { placeholder = placeholder.concat(": 0") }
+        atFieldName = true
+    }
     let mut body = text.slice(0, start).concat(placeholder, text.slice(end, text.length))
 
     let mut tries = 0
@@ -451,7 +658,41 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
     out.key("items")
     out.beginArray()
     let mut offered: Vec<String> = []
-    for item in indexCompletions(output) {
+    let found = indexCompletions(output)
+    // Overloads of one name are one entry: the first is shown, and the others are listed in its documentation.
+    let mut leader: Vec<Int> = []
+    for i in 0..<found.length {
+        let mut lead = i
+        for j in 0..<i {
+            if (leader[j] == j and found[j].label.equals(found[i].label) and found[j].kind.equals(found[i].kind)) {
+                lead = j
+                break
+            }
+        }
+        leader.push(lead)
+    }
+    // A call's parentheses are not inserted in front of ones that are already there.
+    let mut parenthesised = false
+    if (end < text.length and text.byteAt(end) == 40) { parenthesised = true }
+    for i in 0..<found.length {
+        if (leader[i] != i) { continue }
+        // The overload shown is the one with the fewest parameters: `concat(other)` before `concat(a, b, c, d, e, f, ...more)`.
+        let mut chosen = i
+        let mut fewest = completionParameterNames(found[i].detail, found[i].label).length
+        for j in (i + 1)..<found.length {
+            if (leader[j] == i) {
+                let count = completionParameterNames(found[j].detail, found[j].label).length
+                if (count < fewest) {
+                    fewest = count
+                    chosen = j
+                }
+            }
+        }
+        let item = found[chosen]
+        let mut overloads: Vec<String> = []
+        for j in i..<found.length {
+            if (leader[j] == i and j != chosen and found[j].detail.equals("") == false) { overloads.push(found[j].detail.clone()) }
+        }
         offered.push(item.label.clone())
         out.beginObject()
         out.key("label")
@@ -462,41 +703,82 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
             out.key("detail")
             out.string(item.detail)
         }
-        if (item.doc.equals("") == false) {
+        // An overload with no documentation of its own borrows the first that has some.
+        let mut written = item.doc.clone()
+        if (written.equals("")) {
+            for j in i..<found.length {
+                if (leader[j] == i and found[j].doc.equals("") == false and written.equals("")) { written = found[j].doc.clone() }
+            }
+        }
+        let mut doc = completionTrimDoc(written)
+        if (overloads.length > 0) {
+            if (doc.equals("") == false) { doc = doc.concat("\n\n") }
+            doc = doc.concat("**Also:**\n```\n")
+            for other in overloads { doc = doc.concat(other, "\n") }
+            doc = doc.concat("```")
+        }
+        if (doc.equals("") == false) {
             out.key("documentation")
             out.beginObject()
             out.key("kind")
             out.string("markdown")
             out.key("value")
-            out.string(item.doc)
+            out.string(doc)
             out.endObject()
         }
-        out.key("sortText")
-        out.string(item.rank.toString().concat(item.label))
+        // What is inserted: a call with its parameters to fill in, a field with its colon, else the name alone.
+        if (parenthesised == false) {
+            let snippet = completionCallSnippet(item.label, item.kind, item.detail)
+            if (snippet.equals("") == false) {
+                out.key("insertText")
+                out.string(snippet)
+                out.key("insertTextFormat")
+                out.int(2)
+            }
+        }
+        if (atFieldName and context.equals("field")) {
+            out.key("insertText")
+            out.string(item.label.concat(": "))
+        }
+        // A name from a module the document does not import goes after the ones it can already use.
+        let mut rank = item.rank
+        let mut imported = true
         if (item.module.equals("") == false) {
-            // From a module the document does not import: say which, and add the import when it is chosen.
-            let mut imported = false
+            imported = false
             for earlier in imports {
                 if (earlier.equals(item.module)) { imported = true }
             }
+            if (imported == false) { rank = rank + 3 }
+        }
+        out.key("sortText")
+        out.string(rank.toString().concat(item.label))
+        if (overloads.length > 0 or item.module.equals("") == false) {
             out.key("labelDetails")
             out.beginObject()
-            out.key("description")
-            out.string(item.module)
-            out.endObject()
-            if (imported == false) {
-                let importLine = completionImportLine(text, item.module)
-                out.key("additionalTextEdits")
-                out.beginArray()
-                out.beginObject()
-                out.key("range")
-                out.raw("{\"start\":{\"line\":".concat(importLine.toString(), ",\"character\":0},\"end\":{\"line\":",
-                                                       importLine.toString(), ",\"character\":0}}"))
-                out.key("newText")
-                out.string("import ".concat(item.module, "\n"))
-                out.endObject()
-                out.endArray()
+            if (overloads.length > 0) {
+                out.key("detail")
+                let mut plural = "s".clone()
+                if (overloads.length == 1) { plural = "".clone() }
+                out.string(" (+".concat(overloads.length.toString(), " overload", plural, ")"))
             }
+            if (item.module.equals("") == false) {
+                out.key("description")
+                out.string(item.module)
+            }
+            out.endObject()
+        }
+        if (item.module.equals("") == false and imported == false) {
+            let importLine = completionImportLine(text, item.module)
+            out.key("additionalTextEdits")
+            out.beginArray()
+            out.beginObject()
+            out.key("range")
+            out.raw("{\"start\":{\"line\":".concat(importLine.toString(), ",\"character\":0},\"end\":{\"line\":",
+                                                   importLine.toString(), ",\"character\":0}}"))
+            out.key("newText")
+            out.string("import ".concat(item.module, "\n"))
+            out.endObject()
+            out.endArray()
         }
         out.endObject()
     }

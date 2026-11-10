@@ -453,7 +453,7 @@ private fn listSortRange<T, F>(inout items: Vec<T>, low: Int, end: Int, order: F
     }
 }
 
-// v0.1's bar: `items.sort()`.
+// Sorts the vector in place, smallest first: `items.sort()`.
 //
 // In place, and **not stable** -- equal elements may be reordered. A stable sort
 // needs a scratch buffer and is a different function, not a flag on this one.
@@ -501,6 +501,7 @@ public fn sortBy<T, F>(inout items: Vec<T>, order: F) {
     listSortRange(items, 0, n, order, badAllowed, true, offL, offR)
 }
 
+// Whether the elements are in ascending order.
 public fn isSorted<T: Ord>(items: Vec<T>) -> Bool {
     let n = list_len(items)
     let mut i = 1
@@ -548,6 +549,7 @@ public fn get<T: Copy>(items: Vec<T>, index: Int) -> T? {
     return copyOf(list_get(items, index))
 }
 
+// Whether `needle` is one of the elements.
 public fn contains<T: Eq>(items: Vec<T>, needle: T) -> Bool {
     return indexOf(items, needle) >= 0
 }
@@ -727,6 +729,7 @@ public fn mapInto<T, U, F>(items: Vec<T>, inout out: Vec<U>, f: F) {
     }
 }
 
+// How many elements satisfy `keep`.
 public fn countWhere<T, F>(items: Vec<T>, keep: F) -> Int {
     let n = list_len(items)
     let mut found = 0
@@ -738,6 +741,7 @@ public fn countWhere<T, F>(items: Vec<T>, keep: F) -> Int {
     return found
 }
 
+// Whether any element satisfies `keep`.
 public fn any<T, F>(items: Vec<T>, keep: F) -> Bool {
     let n = list_len(items)
     let mut i = 0
@@ -748,6 +752,7 @@ public fn any<T, F>(items: Vec<T>, keep: F) -> Bool {
     return false
 }
 
+// Whether every element satisfies `keep`.
 public fn all<T, F>(items: Vec<T>, keep: F) -> Bool {
     let n = list_len(items)
     let mut i = 0
@@ -774,6 +779,7 @@ public fn min<T: Ord + Copy>(items: Vec<T>) -> T? {
     return copyOf(list_get(items, best))
 }
 
+// The largest element, or `none` when the vector is empty.
 public fn max<T: Ord + Copy>(items: Vec<T>) -> T? {
     let n = list_len(items)
     if (n == 0) { return none }
@@ -803,6 +809,7 @@ public fn indexWhere<T, F>(items: Vec<T>, keep: F) -> Int {
     return 0 - 1
 }
 
+// Calls `f` on each element, in order.
 public fn forEach<T, F>(items: Vec<T>, f: F) {
     let n = list_len(items)
     for i in 0..<n {
@@ -881,6 +888,7 @@ public fn sorted<T: Ord + Copy>(items: Vec<T>) -> Vec<T> {
     return out
 }
 
+// A new vector with the elements in reverse order; `reverse` does it in place.
 public fn reversed<T: Copy>(items: Vec<T>) -> Vec<T> {
     let mut out = clone(items)
     reverse(out)
@@ -902,6 +910,7 @@ public fn take<T: Copy>(items: Vec<T>, count: Int) -> Vec<T> {
     return out
 }
 
+// A new vector without the first `count` elements.
 public fn skip<T: Copy>(items: Vec<T>, count: Int) -> Vec<T> {
     let n = list_len(items)
     let mut start = count
@@ -932,6 +941,7 @@ public fn startsWith<T: Eq>(items: Vec<T>, other: Vec<T>) -> Bool {
     return true
 }
 
+// Whether the vector ends with the elements of `other`.
 public fn endsWith<T: Eq>(items: Vec<T>, other: Vec<T>) -> Bool {
     let m = list_len(other)
     let offset = list_len(items) - m

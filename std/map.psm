@@ -126,6 +126,7 @@ private fn mapInitialCapacity() -> Int { return 8 }
 private fn mapEmpty() -> Int { return -1 }
 private fn mapTombstone() -> Int { return -2 }
 
+// An empty map.
 public fn mapNew<K: Key + Copy, V>() -> HashMap<K, V> {
     let mut k: Vec<K> = list_new()
     let mut v: Vec<V> = list_new()
@@ -525,9 +526,12 @@ impl < K: Key + Copy, V > HashMap<K, V> {
     // Room for `count` entries before the table first grows.
     public fn withCapacity(count: Int) -> HashMap<K, V> { return mapWithCapacity<K, V>(count) }
 
+    // The number of entries.
     public prop length(self) -> Int { return list_len(self.entryKeys) }
+    // Whether there are no entries.
     public prop isEmpty(self) -> Bool { return list_len(self.entryKeys) == 0 }
 
+    // Whether the map has an entry for `key`.
     public fn has(self, key: K) -> Bool { return mapProbe(self, key, false) >= 0 }
 
     // The value for `key`, or `none`.
@@ -558,6 +562,7 @@ impl < K: Key + Copy, V > HashMap<K, V> {
     // True when the key was there to remove. Moves the last entry into its place.
     public fn remove(self, key: K) -> Bool { return mapRemove(self, key) }
 
+    // Removes every entry.
     public fn clear(self) { mapClear(self) }
 
     // The keys, in position order, as the `Vec` `values()` is for the values. The
@@ -579,6 +584,7 @@ impl < K: Key + Copy, V > HashMap<K, V> {
 
     // The key and value at a position in `[0, length)`, for iterating.
     public fn keyAt(self, index: Int) -> K { return list_get(self.entryKeys, index) }
+    // The value of the entry at position `index` in insertion order.
     public fn valueAt(self, index: Int) -> V { return list_get(self.entryValues, index) }
 }
 
@@ -766,7 +772,9 @@ impl < K: Key + Copy > HashSet<K> {
         return set
     }
 
+    // The number of entries.
     public prop length(self) -> Int { return list_len(self.entryKeys) }
+    // Whether there are no entries.
     public prop isEmpty(self) -> Bool { return list_len(self.entryKeys) == 0 }
 
     // Adds `key`; true when it was not there already.
@@ -777,6 +785,7 @@ impl < K: Key + Copy > HashSet<K> {
         return true
     }
 
+    // Whether `key` is in the set.
     public fn contains(self, key: K) -> Bool { return hashSetProbe(self, key, false) >= 0 }
 
     // True when the key was there to remove. Moves the last key into its place.
@@ -796,6 +805,7 @@ impl < K: Key + Copy > HashSet<K> {
         return true
     }
 
+    // Removes every key.
     public fn clear(self) {
         list_truncate(self.entryKeys, 0)
         hashSetPlaceAll(self)

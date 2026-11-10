@@ -2829,6 +2829,35 @@ def run_index_test():
         variants = complete("    total = Shape.ixcursor__", 24, 19)
         if ("Empty", "variant") not in variants or ("Circle", "variant") not in variants:
             problems.append(f"members of an enum: {variants}")
+        # What a program may not name is not offered, and what it may is ordered by how likely it is: the type's own members
+        # before a free function that merely takes one first, the program's names before the library's.
+        if any(label.startswith("__builtin") for label, _ in scope):
+            problems.append("a compiler builtin is the library's vocabulary and is not offered to a program")
+        buffer = root / "buffer.psm"
+        lines = source.split("\n")
+        lines[23] = "    total = p.ixcursor__"
+        buffer.write_text("\n".join(lines))
+        done, records = indexed("--complete", str(program), "24", "15", buffer=buffer)
+        ranks = {r["label"]: r["rank"] for r in records if r["k"] == "completion"}
+        if ranks.get("x") != 0 or ranks.get("sum") != 0:
+            problems.append(f"a type's own fields and methods rank first: {ranks}")
+        lines[23] = "    total = ixcursor__"
+        buffer.write_text("\n".join(lines))
+        done, records = indexed("--complete", str(program), "24", "13", buffer=buffer)
+        ranks = {r["label"]: r["rank"] for r in records if r["k"] == "completion"}
+        if not (ranks.get("p") == 0 and ranks.get("first") == 1 and ranks.get("println", 2) >= 2):
+            problems.append(f"a local ranks before the program's names, and those before the library's: {ranks.get('p')} {ranks.get('first')} {ranks.get('println')}")
+        # A struct literal's field name: the fields the literal has not written, and nothing else.
+        literal = complete("    let q = Point { x: 1, ixcursor__: 0 }", 24, 27)
+        if literal != [("y", "field")]:
+            problems.append(f"the fields a Point literal has not set: {literal}")
+        # A field no other module may touch, and a library's own machinery, are not members of a library type.
+        mapped = root / "mapped.psm"
+        mapped.write_text("import std.map\n\nfn main() -> Int {\n    let m = HashMap<String, Int>()\n    m.ixcursor__\n    return 0\n}\n")
+        done, records = indexed("--complete", str(mapped), "5", "7", target=mapped)
+        offered = {r["label"] for r in records if r["k"] == "completion"}
+        if offered & {"slots", "mask", "tombstones", "entryKeys"} or not {"set", "get", "has"} <= offered:
+            problems.append(f"a HashMap offers its methods and not its private fields: {sorted(offered)[:20]}")
         vec = root / "vec.psm"
         vec.write_text("fn main() -> Int {\n    let v: Vec<Int> = []\n    v.ixcursor__\n    return 0\n}\n")
         done, records = indexed("--complete", str(vec), "3", "7", target=vec)
@@ -3443,6 +3472,78 @@ def run_lsp_features_test():
                 labels = {i["label"] for i in (items or {}).get("items", [])}
                 note(all(w in labels for w in want) and not any(f in labels for f in forbid),
                      f"completion at {probe!r}: wanted {want}, not {forbid}; got {sorted(labels)[:12]}")
+
+            # --- completion: what is inserted, one row for an overloaded name, what is offered and in what order ---
+            richer = 200
+
+            def items_at(text, probe):
+                nonlocal richer
+                richer += 1
+                client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": richer},
+                                                         "contentChanges": [{"text": text}]})
+                lines = text.split("\n")
+                row = next(n for n, l in enumerate(lines) if l.endswith(probe))
+                reply = ask("textDocument/completion", position={"line": row, "character": len(lines[row])})
+                return (reply or {}).get("items", [])
+
+            string_members = items_at("import std.io\nimport std.string\n\nfn main() -> Int {\n    let s = \"abc\"\n    s.\n    return 0\n}\n", "    s.")
+            by_label = {}
+            for item in string_members:
+                by_label.setdefault(item["label"], []).append(item)
+            note(len(by_label.get("concat", [])) == 1, f"an overloaded name is one row: {len(by_label.get('concat', []))} concat rows")
+            concat = (by_label.get("concat") or [{}])[0]
+            note("overload" in concat.get("labelDetails", {}).get("detail", ""), f"the row says how many overloads it stands for: {concat.get('labelDetails')}")
+            note("Also:" in concat.get("documentation", {}).get("value", "") and "public fn concat(self, b: String" in concat["documentation"]["value"],
+                 "the other overloads are listed in its documentation")
+            note(concat.get("insertText") == "concat(${1:other})" and concat.get("insertTextFormat") == 2,
+                 f"the simplest overload is the one shown and inserted, receiver left out: {concat.get('insertText')!r}")
+            trim = (by_label.get("trim") or [{}])[0]
+            note(trim.get("insertText") == "trim()" and trim.get("insertTextFormat") == 2, f"a method without arguments inserts its parentheses: {trim.get('insertText')!r}")
+            length = (by_label.get("length") or [{}])[0]
+            note("insertText" not in length, f"a property is inserted bare: {length.get('insertText')!r}")
+            note(not ({"asmOps", "asmOpsOut", "offsetOf", "asm"} & set(by_label)),
+                 f"the library's machine-level names are not members of a String: {sorted({'asmOps', 'asmOpsOut', 'offsetOf', 'asm'} & set(by_label))}")
+            note(all("-----" not in i.get("documentation", {}).get("value", "") for i in string_members), "no section banner reaches a documentation popup")
+            note(all(len(i.get("documentation", {}).get("value", "")) < 1400 for i in string_members), "documentation is a paragraph, not a design note")
+
+            vec_members = items_at("import std.io\nimport std.vec\n\nfn main() -> Int {\n    let mut v: Vec<Int> = []\n    v.\n    return 0\n}\n", "    v.")
+            vec_by = {i["label"]: i for i in vec_members}
+            note(vec_by.get("push", {}).get("insertText") == "push(${1:value})", f"a lowered member inserts its parameter: {vec_by.get('push', {}).get('insertText')!r}")
+            note(vec_by.get("sort", {}).get("insertText") == "sort()" and vec_by["sort"].get("kind") == 2,
+                 f"a free function that takes the vector first is a method after the dot, its receiver not asked for again: {vec_by.get('sort')}")
+            note(vec_by.get("push", {}).get("sortText", "9")[0] < vec_by.get("sort", {}).get("sortText", "0")[0],
+                 "what the type provides comes before a free function that takes it")
+
+            scope_items = items_at("import std.io\n\nfn add(a: Int, b: Int) -> Int { return a + b }\n\nfn main() -> Int {\n    let counter = 3\n    \n    return 0\n}\n", "    ")
+            scope_by = {i["label"]: i for i in scope_items}
+            note(not any(label.startswith("__") for label in scope_by), "a program is not offered the compiler's builtins")
+            note(scope_by.get("counter", {}).get("sortText", "9").startswith("0") and scope_by.get("add", {}).get("sortText", "9").startswith("1")
+                 and scope_by.get("println", {}).get("sortText", "0").startswith("2"),
+                 "a local, then the program's names, then the library's: "
+                 f"{[scope_by.get(n, {}).get('sortText') for n in ('counter', 'add', 'println')]}")
+            note(scope_by.get("add", {}).get("insertText") == "add(${1:a}, ${2:b})", f"a call inserts a placeholder per parameter: {scope_by.get('add', {}).get('insertText')!r}")
+            parens = "import std.io\n\nfn add(a: Int, b: Int) -> Int { return a + b }\n\nfn main() -> Int {\n    ad(1, 2)\n    return 0\n}\n"
+            richer += 1
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": richer}, "contentChanges": [{"text": parens}]})
+            row = parens.split("\n").index("    ad(1, 2)")
+            reply = ask("textDocument/completion", position={"line": row, "character": len("    ad")})
+            called = {i["label"]: i for i in (reply or {}).get("items", [])}
+            note("add" in called and "insertText" not in called["add"], "a name in front of parentheses already written does not get a second pair")
+
+            lit = "import std.io\n\nstruct Pair { left: Int, right: Int }\n\nfn main() -> Int {\n    let q = Pair { left: 1, }\n    return 0\n}\n"
+            richer += 1
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": richer}, "contentChanges": [{"text": lit}]})
+            row = lit.split("\n").index("    let q = Pair { left: 1, }")
+            reply = ask("textDocument/completion", position={"line": row, "character": len("    let q = Pair { left: 1, ")})
+            literal_items = {i["label"]: i for i in (reply or {}).get("items", [])}
+            note(set(literal_items) == {"right"} and literal_items["right"].get("insertText") == "right: ",
+                 f"the fields a literal has not set, inserted with their colon: {sorted(literal_items)[:8]}")
+            richer += 1
+            call_arg = "import std.io\n\nfn add(a: Int, b: Int) -> Int { return a + b }\n\nfn main() -> Int {\n    let n = add(1, )\n    return 0\n}\n"
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": richer}, "contentChanges": [{"text": call_arg}]})
+            row = call_arg.split("\n").index("    let n = add(1, )")
+            reply = ask("textDocument/completion", position={"line": row, "character": len("    let n = add(1, ")})
+            note("add" in {i["label"] for i in (reply or {}).get("items", [])}, "a comma in an argument list is not a field position")
 
             # --- a request made while a check is pending waits for it ---
             added = main_text + "\nfn fresh() -> Int { return 7 }\n"

@@ -419,10 +419,13 @@ public fn println() {
     prismioStdIoOut("\n")
 }
 
+// Writes a line break to standard error.
 public fn eprintln() {
     prismioStdIoErr("\n")
 }
 
+// Prints each argument, separated by spaces, with no line break after.
+//
 // **Any number of values, space separated.** The function is made once per call shape, `for` over
 // the arguments is unrolled, and `args.length` is a constant, so `println(n)` is the one formatter
 // and the one `write` it was when this was an overload per type. The last value carries the newline
@@ -436,6 +439,7 @@ public fn print<Ts: ConsoleText>(...args: Ts) {
     }
 }
 
+// Prints each argument, separated by spaces, then a line break.
 public fn println<Ts: ConsoleText>(...args: Ts) {
     let mut remaining = args.length
     for arg in args {
@@ -449,6 +453,8 @@ public fn println<Ts: ConsoleText>(...args: Ts) {
     }
 }
 
+// Prints each argument to standard error, separated by spaces, with no line break after.
+//
 // Status and progress text belongs on stderr rather than stdout, so that a program whose stdout is a
 // format -- a manifest, JSON diagnostics, a pipe into another tool -- can still say something to the
 // person watching without corrupting it. The set matches stdout's, type for type, because it is the
@@ -462,6 +468,7 @@ public fn eprint<Ts: ConsoleText>(...args: Ts) {
     }
 }
 
+// Prints each argument to standard error, separated by spaces, then a line break.
 public fn eprintln<Ts: ConsoleText>(...args: Ts) {
     let mut remaining = args.length
     for arg in args {

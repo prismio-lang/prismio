@@ -252,6 +252,36 @@ them all, and attaches `additionalTextEdits` with the import, in sorted place, t
 document does not import. `import` and `from` lines, and a caret in a string, comment or declaring name, are answered
 without a check.
 
+**What is offered, and in what order.** `rank` orders the records of one `context`, smallest first:
+
+| context | 0 | 1 | 2 |
+|---|---|---|---|
+| `scope` | a local, parameter or pattern binding | the program's own functions, types and globals | the library's |
+| `member` | what the type declares for itself: fields, methods, properties, variants | a free function whose first parameter takes the value (`v.sort()` is `sort(v)`) | |
+| `type` | the program's types | the library's | what the compiler provides |
+
+A free function offered after a value is written with `kind` `method`, because that is how it is called; its first
+parameter is the receiver. A declaration is offered only where the language lets the file name it: a `private` field or
+function only in the file that declares it, an `internal` one only to the program that declares it, so a library type
+shows its methods and not its machinery. The `__builtin_*` functions are the library's own vocabulary and are offered
+only to a file of the library (`std.*`).
+
+A struct literal's field name is a `context` of its own, `field`. The server writes the placeholder as the field being set
+(`Point { x: 1, ixcursor__: 0 }`), which is the one shape that parses, and the records are the visible fields of the type
+that the literal has not written (sema adds a default for each missing field at the literal's own position, so a field
+whose position is the literal's is not written). The name of a call already followed by its parentheses (`pri|(x)`) is a
+`scope`.
+
+**The language server's part.** It sends one item for each name: the overloads of a function are listed in the item's
+documentation (`**Also:**`), the item shows the one with the fewest parameters, and `labelDetails.detail` says how many
+there are. A function or method is inserted as a snippet with a placeholder for each parameter (`insertTextFormat` 2),
+without the receiver, and bare when parentheses already follow the word; a field of a literal is inserted with its colon.
+The documentation is the comment's first paragraph (a heading drawn with `-----` lines is dropped and a long one is cut),
+the rest being what hover shows. Library names from a module the document does not import are ranked after the others (3 is
+added to `rank`) and carry the import. The machine-level modules (`std.raw`, `std.asm`, `std.port`, `std.syscall`) are offered
+only to a document that imports them: they take a `String` or an integer first and would otherwise be members of every
+value.
+
 ## Token tables
 
 `prismio dump-tokens` prints the compiler's token tables as one JSON object (`schemaVersion` 1): the
