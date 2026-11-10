@@ -30,9 +30,9 @@ for it: the stack, a bulk-freed region, a single owner with a deterministic free
 a reference count. It shows you each decision, and it can check them against a
 real run.
 
-> **Status: 0.1.0, the first release.** Read the
-> [release notes](https://docs.prismio.org/releases/0.1.0). The language and standard
-> library can still change in incompatible ways before 1.0.
+> **Status: 0.2.0.** Read the [release notes](https://docs.prismio.org/releases/0.2.0),
+> and the breaking changes in them before upgrading a program written for 0.1.0. The language
+> and standard library can still change in incompatible ways before 1.0.
 
 ## Install
 
@@ -45,7 +45,7 @@ curl -fsSL https://prismio.org/install.sh | sh
 Windows: download the archive for your machine from the
 [latest release](https://github.com/prismio-lang/prismio/releases/latest), unpack it, and
 put its `bin` directory on `PATH`. Archives are named `prismio-<version>-<os>-<arch>`
-(`macos-arm64`, `linux-x64`, `linux-arm64`, `windows-x64`, `windows-arm64`) and come with a `.sha256`; they are not signed. CI builds and tests macOS arm64, Linux x64 and Windows x64; the two ARM64 archives are built and tested on virtual machines.
+(`macos-arm64`, `linux-x64`, `linux-arm64`, `windows-x64`, `windows-arm64`) and come with a `.sha256`; they are not signed. CI builds and tests macOS arm64, Linux x64 and Windows x64; the two ARM64 archives are built and tested on virtual machines. The Linux compiler needs glibc 2.38 or later; the programs it builds need glibc 2.34.
 
 The compiler carries its own LLVM, but it links programs with the system's linker, so you
 also need the platform's C tools: the Xcode Command Line Tools on macOS
@@ -55,7 +55,7 @@ C++** workload on Windows. Then:
 
 ```console
 $ prismio --version
-prismio 0.1.0
+prismio 0.2.0
 llvm 23.1.5
 compiler /home/you/.prismio/bin
 stdlib /home/you/.prismio/stdlib
@@ -82,7 +82,7 @@ fn area(s: Shape) -> Float {
     }
 }
 
-fn main() -> Int {
+fn main() {
     let shapes = [Shape.Circle(1.0), Shape.Rect(2.0, 3.0), Shape.Circle(0.5)]
 
     let mut total = 0.0
@@ -91,12 +91,11 @@ fn main() -> Int {
     }
     println("total area: ${total}")
 
-    let mut counts = mapNew<String, Int>()
+    let mut counts = HashMap<String, Int>()
     for word in "a b a c b a".split(' ') {
         counts.set(word, counts.getOr(word, 0) + 1)
     }
     println("a appears ${counts.getOr("a", 0)} times")
-    return 0
 }
 ```
 
@@ -113,10 +112,10 @@ it decided:
 ```console
 $ prismio aif shapes.psm
 Storage plan
-  Stack                   9
+  Stack                   4
   Arena                   2
   Scoped heap             0
-  Unique heap             88
+  Unique heap             18
   Shared heap             0
   Cycle-managed heap      0
 ...
@@ -130,7 +129,7 @@ Then run it with the inference checked against every allocation and release:
 ```console
 $ prismio run shapes.psm --verify
 ...
-aif-verify: 13 allocated, 13 released, 0 leaked, 0 violation(s)
+aif-verify: 14 allocated, 14 released, 0 leaked, 0 violation(s)
 ```
 
 ## The memory model
@@ -157,18 +156,17 @@ each is listed with a reproducer in
 
 ## Performance
 
-On the maintained suite of 62 workloads, each written the same way in Prismio, C++
-and Rust, Prismio's geometric-mean time is **0.85× of C++ (`clang++ -O3 -flto`) and
-0.83× of Rust (`-C opt-level=3 -C lto=fat`)**; peak memory is level with C++ and about 5%
-below Rust. Measured on 2026-10-06 on an Apple M5 (arm64, macOS), 5 runs each
+On the maintained suite of 70 workloads, each written the same way in Prismio, C++
+and Rust, Prismio's geometric-mean time is **0.81× of C++ (`clang++ -O3 -flto`) and
+0.79× of Rust (`-C opt-level=3 -C lto=fat`)**; peak memory is about 4% above C++ and level
+with Rust. Measured on 2026-11-10 on an Apple M5 (arm64, macOS), 5 runs each
 ([report](benchmarks/results/report.html), [raw data](benchmarks/results/results.json)).
 
-Against C++ it is faster on 24 workloads, level on 33 (inside the suite's noise rule)
-and slower on 5: `prime_sieve`, `vector_growth`, `flat_bitset`, `large_buffer_copy` and
-`memcpy_mix`. Against Rust it is faster on 24, level on 32 and slower on 6:
-`vector_growth`, `vector_dot`, `convolution`, `channel_pipeline`, `large_buffer_copy` and
-`indirect_calls`. Fifteen more workloads are listed in the suite but
-not implemented yet, and are not counted. These are one machine's numbers, not a
+Against C++ it is faster on 29 workloads, level on 39 (inside the suite's noise rule)
+and slower on 2: `mergesort` and `flat_bitset`. Against Rust it is faster on 30, level on 34
+and slower on 6: `flat_bitset`, `channel_pipeline`, `graph_churn_transfer`,
+`graph_churn_full`, `base64_codec` and `indirect_calls`. Fifteen more workloads are listed in
+the suite but not implemented yet, and are not counted. These are one machine's numbers, not a
 promise about yours: [docs/PERFORMANCE_PLAN.md](docs/PERFORMANCE_PLAN.md) lists where
 Prismio is slower and why, and the suite, with the rules that keep its three versions
 of each workload the same program, is in [`benchmarks/`](benchmarks/README.md).
@@ -178,19 +176,27 @@ of each workload the same program, is in [`benchmarks/`](benchmarks/README.md).
 
 - `let` and `let mut`; structs, enums with payloads, and `match` over them.
 - Generics with trait bounds, `impl` blocks, traits with associated types,
-  borrowed `dyn Trait`, and closures with `Fn(A) -> R` bounds.
+  borrowed `dyn Trait`, and closures with `Fn(A) -> R` bounds; variadic parameters over a
+  `typelist`.
 - Optionals (`T?`, `none`, `??`, `unwrapOr`, `expect`) and `Result` with the usual
-  combinators; `Vec<T>`, fixed-length `Array<T, N>`, `Map<K, V>`; `for ... in` over any
-  type that implements `Iterator`.
+  combinators; `Vec<T>`, fixed-length `Array<T, N>`, `HashMap<K, V>`, `HashSet<K>`; `for ... in`
+  over any type that implements `Iterator`.
+- Integers of any width (`Int<N>`, `UInt<N>`), five float types, typed pointers (`Ptr<T>`) with
+  atomics, and `codeset` for numbered constants.
 - String interpolation (`"${value}"`); `panic`, `assert` and `exit`.
 - Tasks (`spawn`, `join`), `async fn` with lazy `Future<T>` and `await`, `scope { }` and
   `spawn { }` for tasks that cannot outlive the block that started them, and typed channels.
-- C interop through `extern fn`, with ownership stated at the boundary:
-  `produce(free)`, `borrow` and `alias`.
+- C interop through `extern fn` (overloaded and variadic ones included), with ownership stated
+  at the boundary: `produce(free)`, `borrow` and `alias`.
+- Systems programming: `--freestanding` builds that link no C library, system calls
+  (`std.syscall`), inline and module-level assembly, and `linux { }`, `macos { }` and
+  `windows { }` blocks that choose code per target.
 - Projects described in a `build.ums` manifest; `prismio init`, `build`, `run` and `test`.
+- Editor support from the compiler itself: `prismio lsp` is a language server and `prismio fmt`
+  a formatter.
 
 The standard library covers I/O and standard input, files and directories,
-processes and the environment, time, math, strings, and collections.
+processes and the environment, time, math, strings, JSON, and collections.
 [The runtime surface](https://developers.prismio.org/runtime/supported-surface) maps what a program can call.
 [Documentation](https://docs.prismio.org/) is the language reference.
 
@@ -233,7 +239,7 @@ Hello, Prismio!
 ```
 
 Or compile a single file with `prismio run file.psm` or `prismio build file.psm`.
-`prismio --help` lists every command, including `check` for editors (JSON
+`prismio --help` lists every command, including `lsp` and `fmt` for editors, `check` (JSON
 diagnostics, [IDE_PROTOCOL.md](IDE_PROTOCOL.md)) and `-g` for DWARF debug info
 ([docs/DEBUGGING.md](docs/DEBUGGING.md)).
 
