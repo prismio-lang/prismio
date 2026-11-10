@@ -59,6 +59,21 @@ fn main() -> Int {
 """
 
 
+
+def install_file(source: Path, dest: Path) -> None:
+    """Put a copy of `source` at `dest` as a new file, never over the old one.
+
+    macOS keeps a code-signature verdict for each file it has run, and a binary rewritten in place
+    keeps the verdict of the one it replaced: `prismio-lsp` installed over a running or earlier one was
+    killed (SIGKILL, exit 137) the moment it started, while the same bytes in any other place ran.
+    Writing beside it and renaming gives the file a new identity. The rename is atomic, so a program
+    started during an upgrade finds the old file or the new one, never half of either.
+    """
+    temporary = dest.with_name(dest.name + ".new")
+    shutil.copyfile(source, temporary)
+    shutil.copymode(source, temporary)
+    os.replace(temporary, dest)
+
 def writable(directory: Path) -> bool:
     """Whether this process could create the install. Walks up to the nearest
     existing ancestor, because the prefix itself may not exist yet."""
@@ -105,7 +120,7 @@ def main() -> int:
         shutil.copyfile(installed, backup)
         print(f"  backed up previous {EXE} -> {backup.name}")
 
-    shutil.copyfile(source, installed)
+    install_file(source, installed)
     if not WINDOWS:
         installed.chmod(0o755)
     print(f"  {EXE:<14} {installed.stat().st_size:>10} bytes")
@@ -114,7 +129,7 @@ def main() -> int:
     server_name = "prismio-lsp" + (".exe" if WINDOWS else "")
     server = dist / "bin" / server_name
     if server.is_file():
-        shutil.copyfile(server, bin_dir / server_name)
+        install_file(server, bin_dir / server_name)
         if not WINDOWS:
             (bin_dir / server_name).chmod(0o755)
         print(f"  {server_name:<14} {(bin_dir / server_name).stat().st_size:>10} bytes")
@@ -122,14 +137,14 @@ def main() -> int:
     for name in LIB_FILES:
         origin = dist / "lib" / name
         if origin.is_file():
-            shutil.copyfile(origin, lib_dir / name)
+            install_file(origin, lib_dir / name)
             print(f"  lib/{name:<14} {(lib_dir / name).stat().st_size:>10} bytes")
 
     # Windows only: the compiler links LLVM through an import library, and
     # loads the DLL from beside itself. Everywhere else LLVM is inside it.
     dll = source.parent / "LLVM-C.dll"
     if WINDOWS and dll.is_file():
-        shutil.copyfile(dll, bin_dir / dll.name)
+        install_file(dll, bin_dir / dll.name)
         print(f"  {dll.name:<14} {(bin_dir / dll.name).stat().st_size:>10} bytes")
 
     # An install made before LLVM was linked in recorded the build machine's
@@ -154,7 +169,7 @@ def main() -> int:
               f"{', '.join(missing_runtime)}{RESET}", file=sys.stderr)
         return 1
     for module in bitcode_modules:
-        shutil.copyfile(module, runtime_dest / module.name)
+        install_file(module, runtime_dest / module.name)
     print(f"  lib/runtime/   {len(bitcode_modules):>10} bitcode modules")
 
     # Each importable standard module ships as one PLIB containing its frontend
@@ -167,7 +182,7 @@ def main() -> int:
     for stale_source in stdlib_dir.glob("*.psm"):
         stale_source.unlink()
     for module in modules:
-        shutil.copyfile(module, stdlib_dir / module.name)
+        install_file(module, stdlib_dir / module.name)
     print(f"  stdlib/        {len(modules):>10} modules")
 
     # Verified from a directory with no repository nearby, so nothing resolves by
