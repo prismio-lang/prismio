@@ -6363,6 +6363,21 @@ def run_slice_gate_test():
             problems.append("the Slice bounds failure did not name the range and length")
     cleanup_files(bounds_exe)
 
+    # `v[0..2]` is inclusive in source; the failure must say `0..2`, not the
+    # half-open `0..<3` it is lowered to.
+    inclusive = TEST_DIR / "fixture_slice_bounds_inclusive.psm"
+    inclusive_exe = TEST_DIR / "fixture_slice_bounds_inclusive.exe"
+    result = run_command([str(PRISMIO_EXE), "build", str(inclusive), "-o", str(inclusive_exe)])
+    if result.returncode != 0:
+        problems.append(f"inclusive slice bounds fixture build exited {result.returncode}")
+    else:
+        ran = run_command([str(inclusive_exe)])
+        if ran.returncode == 0:
+            problems.append("an out-of-range inclusive Slice was accepted")
+        if "slice range [0..2] is outside collection length 1" not in ran.stderr:
+            problems.append("the inclusive Slice bounds failure did not echo the range as written")
+    cleanup_files(inclusive_exe)
+
     if problems:
         print(f"{RED}[FAIL] first-class Slice invariants are not all enforced{RESET}")
         for problem in problems:

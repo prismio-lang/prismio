@@ -510,7 +510,7 @@
 
       asideEl.innerHTML = `
         <div class="aside-stat-row"><dt>Generated</dt><dd>${dateStr}</dd></div>
-        <div class="aside-stat-row"><dt>Samples per arm</dt><dd>${report.runs || 5} runs</dd></div>
+        <div class="aside-stat-row"><dt>Samples per arm</dt><dd>${report.sampling && report.sampling.mode === "adaptive" ? `${report.runs}+ runs (adaptive)` : `${report.runs || 5} runs`}</dd></div>
         <div class="aside-stat-row"><dt>Total cataloged</dt><dd>${report.benchmarks.length} workloads</dd></div>
         <div class="aside-stat-row"><dt>Implemented</dt><dd style="color:var(--prismio);">${implemented.length + eliminations.length}</dd></div>
         <div class="aside-stat-row"><dt>Documented gaps</dt><dd style="color:var(--cpp);">${unsupported.length}</dd></div>
@@ -976,7 +976,7 @@
                         </div>
                       </div>
                       <div class="samples-plot-wrap">
-                        <div class="samples-plot-label">Run Samples (${report.runs} runs)</div>
+                        <div class="samples-plot-label">Run Samples (${item.runs || report.runs} runs)</div>
                         <div class="sample-dots-track">
                           ${(() => {
                             const samples = item.languages.prismio.elapsed_ns_samples || [];
@@ -1008,7 +1008,7 @@
                         </div>
                       </div>
                       <div class="samples-plot-wrap">
-                        <div class="samples-plot-label">Run Samples (${report.runs} runs)</div>
+                        <div class="samples-plot-label">Run Samples (${item.runs || report.runs} runs)</div>
                         <div class="sample-dots-track">
                           ${(() => {
                             const samples = item.languages.cpp.elapsed_ns_samples || [];
@@ -1040,7 +1040,7 @@
                         </div>
                       </div>
                       <div class="samples-plot-wrap">
-                        <div class="samples-plot-label">Run Samples (${report.runs} runs)</div>
+                        <div class="samples-plot-label">Run Samples (${item.runs || report.runs} runs)</div>
                         <div class="sample-dots-track">
                           ${(() => {
                             const samples = item.languages.rust.elapsed_ns_samples || [];
@@ -1190,7 +1190,7 @@
 - **Overall vs Rust (rustc opt-3)**: **${rustGeomean.toFixed(2)}×** (${rustSpeedupPct >= 0 ? '+' + rustSpeedupPct.toFixed(1) + '% faster' : Math.abs(rustSpeedupPct).toFixed(1) + '% slower'})
 - **Prismio Leads / Parity**: ${winsVsCpp + parityVsCpp}/${implemented.length} vs C++, ${winsVsRust + parityVsRust}/${implemented.length} vs Rust
 - **Coverage**: ${implemented.length} implemented canonical workloads across 5 categories (${unsupported.length} documented gaps).
-- **Integrity**: 100% checksum consistency across all languages over ${report.runs} runs.`;
+- **Integrity**: 100% checksum consistency across all languages over every sample taken.`;
       navigator.clipboard.writeText(summaryMd).then(() => showToast("Summary markdown copied to clipboard!"));
     });
 

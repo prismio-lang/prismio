@@ -1,0 +1,6 @@
+fn main() -> Int {
+    let mut values: Vec<Int> = []
+    values.push(1)
+    let invalid = values[0..2]
+    return invalid.length
+}

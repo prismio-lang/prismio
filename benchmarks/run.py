@@ -76,6 +76,21 @@ PARITY = 0.04
 # The rule below uses two things instead: the arms' own spread, and the best run.
 NOISE_FLOOR_NS = 25_000
 
+# How many samples a workload gets. A fixed count cannot be right for a 160 us
+# workload and a 100 ms one: five samples of the first are five draws from the
+# harness's jitter, and five of the second are a long wait for no extra
+# information. `--runs` is the *minimum*; past it a workload is sampled until each
+# arm has spent SAMPLE_BUDGET_NS in the measured region (so the quick ones get
+# many samples and the slow ones few), up to MAX_RUNS. A workload whose arms are
+# still spread wider than RETRY_SPREAD at that point is bimodal or noisy, and is
+# sampled further (doubling) while it stays inside four budgets. One round is
+# discarded first: the first run of a binary pays for page faults and a cold
+# cache that no later run does.
+SAMPLE_BUDGET_NS = 300_000_000
+MAX_RUNS = 101
+RETRY_SPREAD = 0.08
+WARMUP_ROUNDS = 1
+
 
 def spread(samples):
     """Interquartile range over the median: how much of the median is jitter. Two
@@ -121,6 +136,21 @@ def verdict(prismio, other):
             "tolerance": round(tol_median, 4), "noise": round(noise, 4)}
 
 
+def sample_target(samples, minimum):
+    """How many samples each arm should have, given those taken so far.
+
+    Never fewer than `minimum` or than already taken. Past `minimum` the budget
+    decides (see SAMPLE_BUDGET_NS); a workload that meets it while still noisy is
+    doubled, bounded by MAX_RUNS and by four budgets of time spent."""
+    taken = len(next(iter(samples.values())))
+    slowest = max(statistics.median(values) for values in samples.values())
+    target = max(minimum, min(MAX_RUNS, -(-SAMPLE_BUDGET_NS // max(int(slowest), 1))))
+    if taken >= target and taken < MAX_RUNS and taken * slowest < 4 * SAMPLE_BUDGET_NS \
+            and max(spread(values) for values in samples.values()) > RETRY_SPREAD:
+        target = min(MAX_RUNS, taken * 2)
+    return max(target, taken)
+
+
 def verdicts(item):
     """Both comparisons for one measured workload, from its recorded samples."""
     prismio = item["languages"]["prismio"]["elapsed_ns_samples"]
@@ -130,8 +160,10 @@ def verdicts(item):
 # Bumped when a field is added or its meaning changes. 2 added `parity`,
 # `environment`, repo-relative paths in `build_commands` and `artifacts`. 3 added
 # `verdict` per workload and `noise_model`, so every reader judges a result by the
-# rule above rather than by its own percentage.
-SCHEMA_VERSION = 3
+# rule above rather than by its own percentage. 4 added `sampling` and a per-workload
+# `runs`: `runs` became the minimum, and a workload takes as many samples as its
+# duration and noise call for.
+SCHEMA_VERSION = 4
 # The combined results file. 4 holds one report per suite under `suites`; each
 # suite's own report keeps the schema it was written with.
 RESULTS_SCHEMA_VERSION = 4
@@ -614,8 +646,11 @@ def print_summary(progress, report, elapsed_seconds):
     if not measured:
         return
     progress.line()
-    progress.line("{}Summary{}  {} workloads, {} runs each, {}".format(
-        STYLE.bold, STYLE.reset, len(measured), report["runs"], format_seconds(elapsed_seconds)))
+    counts = [item["runs"] for item in measured if "runs" in item]
+    runs_text = ("{} runs each".format(report["runs"]) if report["sampling"]["mode"] == "fixed" or not counts
+                 else "{}-{} runs each".format(min(counts), max(counts)))
+    progress.line("{}Summary{}  {} workloads, {}, {}".format(
+        STYLE.bold, STYLE.reset, len(measured), runs_text, format_seconds(elapsed_seconds)))
     for other in ("cpp", "rust"):
         ratios = [item["languages"]["prismio"]["elapsed_ns_median"]
                   / max(item["languages"][other]["elapsed_ns_median"], 1) for item in measured]
@@ -818,7 +853,7 @@ def elimination_row(progress, measured, name_width):
 
 
 def write_html_report(report, path, raw_data_name):
-    embedded = json.dumps(report, separators=(",", ":")).replace("</", "<\/")
+    embedded = json.dumps(report, separators=(",", ":")).replace("</", "<\\/")
     template_html = (TEMPLATES / "report.html").read_text()
     rendered = template_html.replace("__REPORT_DATA__", embedded).replace("__RAW_FILE__", escape(raw_data_name))
     path.write_text(rendered)
@@ -837,13 +872,16 @@ def run_hosted(args, only):
         sys.exit("--compiler is required (or set PRISMIO)")
 
     build_steps = 0 if args.skip_build else len(LANGUAGES)
-    workload_steps = sum(1 if item["status"] == "unsupported" else args.runs * len(LANGUAGES)
+    # A floor: an adaptive workload that needs more grows the total as it goes.
+    workload_steps = sum(1 if item["status"] == "unsupported"
+                         else ((0 if args.fixed else WARMUP_ROUNDS) + args.runs) * len(LANGUAGES)
                          for item in selected)
     progress = Progress(build_steps + workload_steps)
     implemented_count = sum(item["status"] != "unsupported" for item in selected)
-    progress.line("{}Hosted benchmarks{}  {} workload{} · {} run{} each · Prismio, C++ and Rust".format(
+    progress.line("{}Hosted benchmarks{}  {} workload{} · {} · Prismio, C++ and Rust".format(
         STYLE.bold, STYLE.reset, implemented_count, "" if implemented_count == 1 else "s",
-        args.runs, "" if args.runs == 1 else "s"))
+        ("{} run{} each".format(args.runs, "" if args.runs == 1 else "s")) if args.fixed
+        else "at least {} runs each, more for short or noisy ones".format(args.runs)))
     progress.line()
     progress.show("Preparing benchmark suite")
 
@@ -865,6 +903,15 @@ def run_hosted(args, only):
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "runs": args.runs,
+        # `runs` is the minimum; each workload records the count it actually took.
+        "sampling": {
+            "mode": "fixed" if args.fixed else "adaptive",
+            "min_runs": args.runs,
+            "max_runs": args.runs if args.fixed else MAX_RUNS,
+            "budget_ns": None if args.fixed else SAMPLE_BUDGET_NS,
+            "retry_spread": None if args.fixed else RETRY_SPREAD,
+            "warmup_rounds": 0 if args.fixed else WARMUP_ROUNDS,
+        },
         # Repo-relative, so the file carries no path from the machine that wrote it.
         "build_commands": {key: portable_command(value) for key, value in (build_commands or {}).items()},
         # Within this fraction of the other arm a result is parity, not a win or a
@@ -920,22 +967,35 @@ def run_hosted(args, only):
                 continue
             samples = {language: [] for language in LANGUAGES}
             expected = None
-            for run_index in range(args.runs):
+            warmup = 0 if args.fixed else WARMUP_ROUNDS
+            wanted = args.runs
+            round_index = 0
+            while round_index < warmup + wanted:
+                recording = round_index >= warmup
                 for language in LANGUAGES:
-                    progress.show("{} · run {}/{} · {}".format(
-                        item["name"], run_index + 1, args.runs, LANGUAGE_LABELS[language]))
-                    output_path = temp / "{}-{}-{}.txt".format(item["name"], language, run_index)
+                    label = "{} · {} {}/{} · {}".format(
+                        item["name"], "run" if recording else "warm-up",
+                        max(round_index - warmup + 1, 1), wanted, LANGUAGE_LABELS[language])
+                    progress.show(label)
+                    output_path = temp / "{}-{}-{}.txt".format(item["name"], language, round_index)
                     fields = execute(executables[language], item["name"], fixture, output_path)
                     if expected is None:
                         expected = fields["result"]
                     elif fields["result"] != expected:
                         raise RuntimeError("checksum mismatch for {}: expected {}, {} returned {}".format(
                             item["name"], expected, language, fields["result"]))
-                    samples[language].append(fields)
-                    progress.advance("{} · run {}/{} · {}".format(
-                        item["name"], run_index + 1, args.runs, LANGUAGE_LABELS[language]))
+                    if recording:
+                        samples[language].append(fields)
+                    progress.advance(label)
+                round_index += 1
+                if round_index == warmup + wanted and not args.fixed:
+                    target = sample_target({language: [f["elapsed_ns"] for f in samples[language]]
+                                            for language in LANGUAGES}, args.runs)
+                    progress.total += (target - wanted) * len(LANGUAGES)
+                    wanted = target
             measured = dict(item)
             measured["result"] = expected
+            measured["runs"] = len(samples["prismio"])
             measured["languages"] = {}
             for language in LANGUAGES:
                 measured["languages"][language] = {
@@ -959,7 +1019,13 @@ def run_hosted(args, only):
     implemented = len(measured_benchmarks(report))
     eliminations = len(elimination_benchmarks(report))
     unsupported = sum(item["status"] == "unsupported" for item in report["benchmarks"])
-    sample_text = "1 run" if args.runs == 1 else "{} runs".format(args.runs)
+    counts = [item["runs"] for item in measured_benchmarks(report) + elimination_benchmarks(report)
+              if "runs" in item]
+    if args.fixed or not counts:
+        sample_text = "1 run" if args.runs == 1 else "{} runs".format(args.runs)
+    else:
+        sample_text = "{}-{} runs per workload (median {})".format(
+            min(counts), max(counts), int(statistics.median(counts)))
     print()
     print("Completed {} hosted benchmarks and {} elimination check{} ({} unsupported) · {}".format(
         implemented, eliminations, "" if eliminations == 1 else "s", unsupported, sample_text))
@@ -1042,8 +1108,11 @@ def main():
     parser.add_argument("--compiler", default=os.environ.get("PRISMIO"), help="Prismio compiler executable (or set PRISMIO)")
     parser.add_argument("--llvm-bin", help="LLVM bin directory prepended to PATH for Prismio, C and C++ builds")
     parser.add_argument("--runs", type=int, default=5,
-                        help="samples per hosted arm; the freestanding suite is exact and boots each arm "
-                             "min(runs, 3) times")
+                        help="minimum samples per hosted arm (more for short or noisy workloads unless "
+                             "--fixed); the freestanding suite is exact and boots each arm min(runs, 3) times")
+    parser.add_argument("--fixed", action="store_true",
+                        help="hosted: take exactly --runs samples per arm and discard none, the old "
+                             "behaviour; for a quick loop, not for numbers that get quoted")
     parser.add_argument("--only", action="append", metavar="NAME", help="run one benchmark; repeat the option for more")
     parser.add_argument("--scale", type=int, default=1, metavar="N",
                         help="multiply every freestanding workload's size by N (default 1)")

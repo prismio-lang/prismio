@@ -4104,6 +4104,19 @@ void prismio_slice_check(int available, int start, int end) {
     }
 }
 
+// `v[a..b]`. The compiler lowers it to the half-open range [a, b+1), so `end` is
+// one past what the program wrote; the message names the range as written. A
+// separate symbol rather than a fourth argument: a compiler built from the seed
+// still emits three-argument calls to prismio_slice_check.
+void prismio_slice_check_inclusive(int available, int start, int end) {
+    if (available < 0 || start < 0 || end < start || end > available) {
+        fprintf(stderr,
+                "runtime error: slice range [%d..%lld] is outside collection length %d\n",
+                start, (long long)end - 1, available);
+        exit(1);
+    }
+}
+
 static int list_slice_index(void* lp, int offset, int length, int index) {
     if (!lp) {
         fprintf(stderr, "runtime error: slice refers to a null List handle\n");
@@ -4114,7 +4127,7 @@ static int list_slice_index(void* lp, int offset, int length, int index) {
     if (offset < 0 || length < 0 || index < 0 || index >= length
         || actual < 0 || actual >= l->len) {
         fprintf(stderr,
-                "runtime error: slice index %d is outside view [%d..%d] of collection length %d\n",
+                "runtime error: slice index %d is outside view [%d..<%d] of collection length %d\n",
                 index, offset, offset + length, l->len);
         exit(1);
     }

@@ -389,29 +389,18 @@ Found 2026-10-16 (the `Ptr<T>` soundness pass). `ir_module_start` creates the mo
 only a named target (`ir_module_set_target`) or a `-g` build (`pin_data_layout`) stamps one before
 codegen. Every alignment the backend computes in between -- `LLVMABIAlignmentOfType`, and the default
 LLVM gives a load or store with none -- is the *default* layout's, where `i64` is 4. Sizes are safe
-(they are `sizeof` constant expressions, resolved at codegen); explicit alignments are not:
+(they are `sizeof` constant expressions, resolved at codegen); explicit alignments are not.
 
-```prismio
-import std.raw
-extern fn malloc(size: Usize) -> Ptr<mut U64>
-fn bump(p: Ptr<mut U64>) -> U64 { return p.atomicAdd(1, AtomicOrder.AcqRel) }
-fn main() -> Int {
-    let m = malloc(8)
-    m.store(4)
-    return bump(m) as Int
-}
-```
+**Atomics are fixed (2026-11-10).** A `Ptr<mut U64>` atomic was emitted `align 4`, under-aligned for an 8-byte
+atomic, so it compiled to a `___atomic_compare_exchange` libcall where `ldaddal` was due; macOS resolves that in
+compiler-rt, and a Linux link, a Windows link (`test_298_ptr_atomics`) and a freestanding build do not. `ir_ptr_atomic`
+now states the access's own size as its alignment (`atomic_align`, `runtime/llvm-api-backend.c`), which is the only address an
+atomic is defined for. **Still open:** a plain `i64` load or store says `align 4`, which is legal and probably free on
+AArch64; a `Ptr<U64>` parameter is also `align 4`, and `Ptr<U64>.at` accepts an address that is 4 mod 8. The struct-path
+TBAA offsets (`LLVMOffsetOfElement`) are the default layout's too, consistently, so no miscompile has been traced to them.
 
-answers 4, correctly, but `atomicrmw add ... align 4` is under-aligned for an 8-byte atomic, so it
-compiles to a `___atomic_compare_exchange` libcall (`nm` shows it) where `ldaddal` was due -- and a
-freestanding build has no libcall to link. Windows has none either: `tests/test_298_ptr_atomics.psm` (a `Ptr<mut U64>` from `castUnchecked`) fails to link there with unresolved `__atomic_store`, `__atomic_load` and `__atomic_compare_exchange` (seen 2026-11-03, the one failure of the Windows suite). A `Ptr<U64>` parameter is also `align 4`, and
-`Ptr<U64>.at` accepts an address that is 4 mod 8. Plain `i64` loads and stores say `align 4`, which is
-legal and probably free on AArch64. The struct-path TBAA offsets (`LLVMOffsetOfElement`) are the
-default layout's too, consistently, so no miscompile has been traced to them.
-
-The fix is to stamp the selected target's layout in `ir_module_start` (`pin_data_layout` already
-knows how). It changes the IR of every program that touches an `i64`, so it needs
-the benchmark matrix run beside it, not just the suite.
+The full fix is to stamp the selected target's layout in `ir_module_start` (`pin_data_layout` already knows how). It
+changes the IR of every program that touches an `i64`, so it needs the benchmark matrix run beside it, not just the suite.
 
 ### A `Vec` literal heap-allocates and costs 4.3x the same literal left as an array
 
@@ -852,7 +841,7 @@ that reports does not.
 
 ### The language server on Windows has run the fixtures and the suite, and no editor
 
-The whole suite runs on the Windows 11 ARM64 VM (2026-11-03: 726 of 727; the one failure is `test_298_ptr_atomics`, under "The module has no data layout while its IR is built" above), the `lsp*` fixtures skip two checks there (a killed check; memory growth). No editor has been run on Windows, and paths are canonicalised only for separators and the drive letter (an 8.3 name or a directory in another case still names a different file to the server). **Observed 2026-11-03.**
+The whole suite runs on the Windows 11 ARM64 VM (2026-11-10: 759 of 759 once the atomic alignment and `test_366_syscalls` were fixed; the first run, on 2026-11-03, read 726 of 727), the `lsp*` fixtures skip two checks there (a killed check; memory growth). No editor has been run on Windows, and paths are canonicalised only for separators and the drive letter (an 8.3 name or a directory in another case still names a different file to the server). **Observed 2026-11-03.**
 
 ---
 
@@ -935,12 +924,9 @@ undelivered message back and counted endpoints are `CHANNELS_PLAN.md` Phases 0 a
 
 ## Toolchain, packaging and tests
 
-**The committed seed cannot parse `src/`.** `src/` uses visibility markers on structs and fields
-(`public struct`, `public x: T`), which the 0.1.0 seed and the old host cannot read, so a clean
-checkout cannot bootstrap and `prismio gate` / CI, which build from the seed, fail until a seed that
-parses it is committed. One was cut from this tree on 2026-10-17 (`bootstrap/seed.ll`, a compiler built from
-only that file reproduces its own IR) and is **in the working tree, uncommitted**: a refreshed seed is
-committed only when the maintainer says so (`.githooks/pre-commit` refuses it).
+**The committed seed parses `src/` (re-checked 2026-11-10).** `prismio gate`'s "seed agreement" builds the compiler from
+`bootstrap/seed.ll` and passes; the seed was refreshed on 2026-10-29. A feature `src/` starts to need still goes in two
+steps: teach the frontend, cut a seed (`prismio seed`), have the maintainer commit it, then use it in `src/`.
 
 **`prismio verify` packages `dist/` without a freestanding failure core**, so a freestanding
 program that references `prismio_panic` or `prismio_step_check` cannot link in the

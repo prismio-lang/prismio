@@ -3850,7 +3850,12 @@ private fn generateSlice(expr: ASTNode) -> String {
     ir_call_arg("i32", available)
     ir_call_arg("i32", start)
     ir_call_arg("i32", end)
-    ir_call_end("void", "prismio_slice_check")
+    // `v[a..b]` was parsed as `[a, b+1)`; its own check names the range as written.
+    if (expr.i1 == 1) {
+        ir_call_end("void", "prismio_slice_check_inclusive")
+    } else {
+        ir_call_end("void", "prismio_slice_check")
+    }
 
     let offset = ir_get_temp_name(ir_add("i32", origin, start))
     let length = ir_get_temp_name(ir_sub("i32", end, start))

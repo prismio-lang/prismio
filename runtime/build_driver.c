@@ -2131,7 +2131,8 @@ static int host_identity(const char* path, char* out, size_t size);
 // all of them still match. A miss or a mismatch asks the driver again.
 //
 // Only for a link the driver's line can describe completely: a Mach-O program with
-// no native objects, link arguments or exports of its own. Anything else, and any
+// no native objects, link arguments or exports of its own, or a freestanding one
+// whose arguments are all in the key (link_program_object). Anything else, and any
 // failure here, takes the driver path, which is also the one that reports errors.
 #define LINK_OBJECT_MARK "<prismio-link-object>"
 #define LINK_OUTPUT_MARK "<prismio-link-output>"
@@ -2455,9 +2456,18 @@ static int link_program_object(const char* program_obj, const char* exe_file) {
     int plain = !g_freestanding && target_is_mach_o() && g_native_source_count == 0
         && !g_native_link_args && !g_native_link_has_code && !g_export_dynamic
         && (g_link_extra[0] == '\0' || g_link_partitions > 0);
-    if (plain) {
+    // A freestanding link (an ELF through lld) is the same shape with a different
+    // key. `--link-arg` is the whole point of such a program, so its arguments and
+    // the runtime core objects stay *in* the key where a hosted link leaves them out;
+    // what keeps the key stable is that none of them is a path this build made up.
+    // The driver costs ~9 ms there (clang 16.1 ms, `ld.lld` alone 6.8) on a
+    // build whose frontend is ~24 ms, for the same bytes.
+    int plain_freestanding = g_freestanding && g_link_partitions == 0 && !g_export_dynamic
+        && !strstr(g_link_extra, ".prismio-")
+        && !(g_native_link_args && strstr(g_native_link_args, ".prismio-"));
+    if (plain || plain_freestanding) {
         const char* extra = g_link_extra;
-        g_link_extra = "";
+        if (!plain_freestanding) g_link_extra = "";
         char* keyed = driver_link_command(LINK_OBJECT_MARK, LINK_OUTPUT_MARK);
         g_link_extra = extra;
         int linked = keyed && link_with_cached_ld(keyed, command, program_obj, exe_file) == 0;

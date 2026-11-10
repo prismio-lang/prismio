@@ -529,6 +529,10 @@ impl Parser {
                     slice.child1 = node_to_ptr(expr)
                     slice.child2 = node_to_ptr(first)
                     slice.child3 = node_to_ptr(self.parseSliceEnd(rangeOp))
+                    // `i1` records that the end was written inclusive (`..`), because
+                    // parseSliceEnd has already turned it into `end + 1`. Only the
+                    // bounds-failure message reads it.
+                    if (rangeOp.value.equals("..<") == false) { slice.i1 = 1 }
                     self.expectVal(TokenType.SEPARATOR, "]", "slice range")
                     expr = slice
                 } else {

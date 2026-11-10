@@ -2242,6 +2242,12 @@ public fn generateModule(module: ASTNode) {
         ir_declare_function_param("i32")
         ir_declare_function_end()
 
+        ir_declare_function_begin("prismio_slice_check_inclusive", "void")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_param("i32")
+        ir_declare_function_end()
+
         ir_declare_function_begin("list_slice_get", "ptr")
         ir_declare_function_param("ptr")
         ir_declare_function_param("i32")

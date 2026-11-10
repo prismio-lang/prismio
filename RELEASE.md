@@ -33,12 +33,11 @@ git status --short                   # only the intended files; no stray .prismi
 The **seed** is what a new machine builds the compiler from. It is not part of the
 tree's own file, `bootstrap/seed.ll`, and a refreshed one is committed only when the
 maintainer says so (`.githooks/pre-commit` refuses it). The gate builds from it, so a
-commit is releasable only while the committed seed can still parse `src/`. A new seed is
-cut *after* a tag, from the compiler that was tagged (step 5), so there is nothing to
-refresh before the gate, **provided `src/` still parses with it**. When it does not (0.2.0: `src/`
-uses visibility markers), the gate and CI cannot pass until a seed that parses `src/` is committed, and
-`tools/refresh_seed.py` followed by the maintainer's commit has to come first; see
-`docs/KNOWN_ISSUES.md` for how that was left.
+commit is releasable only while the committed seed can still parse `src/`: the gate's "seed agreement" check
+builds the compiler from it. A new seed is cut *after* a tag, from the compiler that was tagged (step 5), so there is
+nothing to refresh before the gate, **provided `src/` still parses with it**. When it does not (a release that starts to
+use syntax the previous seed cannot read), the gate and CI cannot pass until a seed that parses `src/` is committed, and
+`tools/refresh_seed.py` followed by the maintainer's commit has to come first.
 
 ```bash
 git log --oneline -1     # the commit CI will run on

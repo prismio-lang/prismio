@@ -701,6 +701,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **LLVM is 23.1.5.** `tools/setup_llvm.py` pins the 23.1.5 release archives (checksummed per platform: macOS ARM64, Linux
+  x86_64 and ARM64, Windows x86_64 and ARM64) and `prismio --version` reports it. The pin and the docs that name it
+  (`README.md`, `CONTRIBUTING.md`, `PORTING.md`, `SECURITY.md`) moved together. Preparing LLVM on Linux unpacks every static
+  library before lowering it, so a machine needs roughly 18 GB free for the first `setup_llvm.py` run; the prepared tree is 2 GB.
+
+- **A freestanding program links with `ld.lld` directly.** A `--freestanding` build went through `clang -fuse-ld=lld`, a
+  driver process that then starts the linker: 16.1 ms for the benchmark suite's link, of which `ld.lld` alone is 6.8. The cached
+  `-###` link line a macOS build already used now serves a freestanding one too, its `--link-arg`s and the runtime core object
+  in the key, and only when no argument is a path this build made up (a temp object, a second codegen partition). The first
+  build of a link line asks the driver once (36 ms); every later one runs the linker alone. The freestanding benchmark
+  suite compiles in 96.9 ms instead of 109.2 (0.887x, 25 interleaved runs each) and the ELF is byte-identical. A hosted
+  Linux or Windows link still goes through the driver.
+
 - **A global array may be written, and a global struct may be a table.** `let mut table: Array<U64, 512>` was an error ("an
   array's length is written only on a local `let`") and a mutable global array another; now they are zeroed or seeded storage
   that code writes, and `neg_257_global_array_mutable` is gone with the rule it pinned. The message for a computed element
@@ -1306,6 +1319,19 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **A 64-bit `Ptr` atomic linked on macOS only.** `p.atomicAdd(1, AtomicOrder.AcqRel)` on a `Ptr<mut U64>` was emitted
+  `atomicrmw ... align 4`: the module has no data layout while its IR is built, so the ABI alignment asked for was LLVM's
+  default, 4 for an `i64`. An under-aligned atomic is lowered to a `__atomic_*` library call, which macOS has in compiler-rt
+  and neither a Linux link nor a Windows one (nor a freestanding build) resolves: `test_298_ptr_atomics` failed to link there
+  with unresolved `__atomic_store`, `__atomic_load` and `__atomic_compare_exchange`. An atomic access is defined only at an
+  address aligned to its size, so `ir_ptr_atomic` states that (`align 8`), and `ldaddal` and friends are emitted. Plain `i64`
+  loads and stores still say `align 4`; see `docs/KNOWN_ISSUES.md`.
+
+- **A failed `v[a..b]` named a range nobody wrote.** The parser lowers an inclusive slice to `[a, b+1)`, and the bounds check
+  printed that: `values[0..2]` on a one-element `Vec` said `slice range [0..<3]`. It calls `prismio_slice_check_inclusive` now
+  and says `[0..2]`; a `..<` slice is unchanged. The "slice index N is outside view" message spelled its exclusive end with `..`
+  and uses `..<`. `tests/fixture_slice_bounds_inclusive.psm` pins it.
+
 - **An owned call result compared with `none` was never released.** `while (readLine() != none)` leaked a block per
   line, and `if (label(0) != none)`, `let present = f() != none` and `f() == none` in a `loop` did the same: the
   comparison answers a Bool that cannot alias an operand, but with no binding there was nothing to drop the `String?`.
@@ -1500,10 +1526,26 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Repository
 
+- **The benchmark harness samples by time, not by a fixed count.** `--runs` (5) was the same for a 160 us workload, where five
+  samples are five draws from process-start jitter, and a 100 ms one. It is the *minimum* now: after one discarded warm-up
+  round, a workload is sampled until each arm has spent 300 ms in the measured region (capped at 101 samples), and one whose arms
+  are still spread wider than 8% is doubled while it stays inside four budgets. `tree_traversal` takes 101 samples,
+  `fibonacci` 26. The report records `sampling` and a per-workload `runs` (schema 4), and the HTML report shows each
+  workload's own count. `--fixed` keeps exactly `--runs` samples and discards none, for a quick loop.
+
 - **Two harness mistakes the first full suite on Windows found.** `fmt`'s folder test split the listed paths on `/` only, and
   `tools/check_index.py` (and `check_truncation.py`'s index judge) read a UTF-8 index with the console's code page. The Windows
-  suite is 726 of 727 now; the one failure is `test_298_ptr_atomics`, a link error for `__atomic_*` (the under-aligned
-  `Ptr<U64>` atomic in `docs/KNOWN_ISSUES.md`).
+  suite was 726 of 727 then; the one failure, `test_298_ptr_atomics`, was the under-aligned atomic fixed under Fixed above.
+
+- **The suite runs clean on Linux and Windows ARM64, replayed on the local virtual machines.** Both read 759 of 759 on the
+  release candidate: the three-generation bootstrap, the fixpoint, the package and its separation checks, the AIF differential,
+  and `release.py`, which writes `prismio-0.2.0-linux-arm64.tar.gz` and `prismio-0.2.0-windows-arm64.zip`. Linux also runs the
+  AddressSanitizer smoke. Replaying them found `test_366_syscalls` failing on Windows, and with it `index`, which compiles every
+  fixture: the file kept a `windows { ... }` block that names a function that does not exist, to prove another system's block
+  is dropped, and on Windows that block is the one kept. It returns early on Windows now and nests the check
+  (`linux { windows { ... } }`, `macos { windows { ... } }`, `windows { linux { ... } }`), so each host drops it.
+- **`benchmarks/run.py` no longer warns on Python 3.12 and later.** The HTML report escapes `</` for embedding, and the Python
+  string spelled the replacement with a single backslash, an invalid escape sequence that a later Python will reject.
 - **`tools/package.py` ships the freestanding failure core in every package.** `runtime/freestanding/panic.c` was copied only
   with a `--freestanding-target`, while a project's own layout (`prismio build`) always has it; a package made without the flag
   therefore linked every failing `--freestanding` program against an undefined `prismio_panic`, and `freestanding_bench`
