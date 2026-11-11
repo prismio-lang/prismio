@@ -1,0 +1,10 @@
+// expect-error: expected Point, found Other
+// A value that is not a variable is held under a hidden name annotated with the pattern's type, so a
+// pattern naming one struct cannot take another apart.
+struct Point { x: Int, y: Int }
+struct Other { a: Int }
+
+fn main() -> Int {
+    let Point { x } = Other { a: 1 }
+    return x
+}

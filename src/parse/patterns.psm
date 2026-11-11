@@ -1,0 +1,190 @@
+// Destructuring `let`: a value taken apart into the names its fields go to.
+//
+//     let Point { x, y } = p                      let x = p.x
+//                                                 let y = p.y
+//     let Window { size: Window.size { w, h } }   let w = win.size.w
+//         = win                                   let h = win.size.h
+//     let Point { x: left, .. } = make()          let $d0: Point = make()
+//                                                 let left = $d0.x
+//
+// A rewrite in the parser, in the shape the other sugar takes: what sema, ownership and
+// codegen see is `let` and a field read, which they have always handled. So a binding is
+// what `let x = p.x` is -- a copy of a number, a borrow of a `String` or `Vec` that lives
+// as long as the value it came from -- and `mut` makes the bindings assignable, not the
+// fields. A value that is a plain variable or a field path is read in place, so it is
+// still usable afterwards. Anything else (a call, a literal) is first bound to a hidden
+// `$dN`, annotated with the pattern's type, so the pattern's type is checked and the
+// value is owned for as long as its bindings are.
+//
+// The type named in the pattern is only checked against the value in that second case.
+// For a variable it is documentation: a field the variable's type lacks is an error at
+// the field in the pattern, and a variable of another type that happens to have the
+// fields would be taken apart without complaint.
+//
+// A field the pattern does not list is left alone; `..` says so, and `_` skips one that
+// is listed. Not in a global `let`, which has no statements to turn into.
+
+import lexer.token
+import lexer.scanner
+import ast.nodes
+import common.diagnostics
+import std.string
+
+impl Parser {
+    // `let [mut] Name {`, `Name.path {` or `Name<Args> {`: a capitalised type, then what
+    // can only be the start of a pattern. `let Name = 3` is still a variable called `Name`.
+    internal fn atDestructure(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        let first = self.current().value
+        if (first.length == 0) { return false }
+        let letter = first.byteAt(0)
+        if (letter < 65 or letter > 90) { return false }
+        let next = self.peek()
+        return next.value.equals("{") or next.value.equals(".") or next.value.equals("<")
+    }
+
+    // The cursor is on the type. `letNode` is the `let` already read: its `mut` is the
+    // bindings'. Returns the first statement and leaves the rest in the spill chain.
+    internal fn parseDestructure(self, letNode: ASTNode) -> ASTNode {
+        if (nodeExists(self.fnNode) == false) {
+            self.fatal("a pattern in a `let` is for a local variable; a global `let` binds one name")
+            return letNode
+        }
+        let typeNode = self.parseTypeAnnotation()
+        let fields = self.parsePatternFields()
+        self.expectVal(TokenType.ASSIGNMENT_OPERATOR, "=", "pattern")
+        let value = self.parseExpression(0)
+        if (self.dead == 1) { return letNode }
+
+        let mutable = letNode.i1
+        let mut root = patternPath(value)
+        let mut first = ptr_to_node(ptr_null())
+        if (root.length == 0) {
+            // Not a path: own it under a hidden name.
+            let temp = letNode
+            root = "$d".concat(self.destructureSeq.toString())
+            self.destructureSeq = self.destructureSeq + 1
+            temp.s1 = root.clone()
+            temp.i1 = 0
+            temp.child1 = node_to_ptr(typeNode)
+            temp.child2 = node_to_ptr(value)
+            first = temp
+        }
+
+        self.emitPatternBindings(mutable, letNode.s2, root, fields)
+        if (nodeIsNull(node_to_ptr(first))) {
+            // The first binding is the statement returned; the others are already spilled.
+            if (nodeIsNull(self.spillHead)) {
+                self.fatal("this pattern binds nothing; name a field, or use the value without a pattern")
+                return letNode
+            }
+            first = ptr_to_node(self.spillHead)
+            self.spillHead = first.next
+            if (nodeIsNull(self.spillHead)) { self.spillTail = ptr_null() }
+            first.next = ptr_null()
+        }
+        return first
+    }
+
+    // `{ a, b: name, c: Type { d }, _skip: _, .. }` -- a chain of STRUCT_FIELD: `s1` the
+    // field, `s2` the name it binds ("_" for none), and for a nested pattern `i1` = 1 with
+    // the type in `child2` and the inner chain in `child1`.
+    private fn parsePatternFields(self) -> Ptr {
+        self.expectVal(TokenType.SEPARATOR, "{", "pattern")
+        let fields = nodeList()
+        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
+            if (self.check(TokenType.RANGE) and self.current().value.equals("..")) {
+                self.advance()
+                break
+            }
+            let field = self.node(NodeKind.STRUCT_FIELD)
+            let name = self.current()
+            field.s1 = name.value
+            self.expectToken(TokenType.IDENTIFIER, "field name in a pattern")
+            field.s2 = name.value.clone()
+            if (self.matchVal(TokenType.SEPARATOR, ":")) {
+                if (self.atDestructure()) {
+                    field.i1 = 1
+                    field.child2 = node_to_ptr(self.parseTypeAnnotation())
+                    field.child1 = self.parsePatternFields()
+                } else {
+                    let binding = self.current()
+                    field.s2 = binding.value
+                    self.expectToken(TokenType.IDENTIFIER, "a name for the field, or `_`")
+                }
+            }
+            nodeListPush(fields, field)
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        self.expectVal(TokenType.SEPARATOR, "}", "pattern")
+        return fields.head
+    }
+
+    // One `let name = root.path.field` per bound field, spilled in order.
+    private fn emitPatternBindings(self, mutable: Int, annotations: String, path: String, fields: Ptr) {
+        let mut p = fields
+        while (nodeExists(p)) {
+            let field = ptr_to_node(p)
+            let next = field.next
+            let here = path.concat(".", field.s1)
+            if (field.i1 == 1) {
+                self.emitPatternBindings(mutable, annotations, here, field.child1)
+            } else if (field.s2.equals("_") == false) {
+                let rootName = path.split('.')[0]
+                if (field.s2.equals(rootName)) {
+                    diag_error_at_code("P3016", field.file, field.line, field.col, field.len,
+                                       "this binds the name of the value being taken apart, so the fields after it would read the new one; bind it as another name")
+                }
+                let decl = createNode(NodeKind.VARIABLE_DECL)
+                nodeSpanFrom(decl, field)
+                decl.s1 = field.s2.clone()
+                decl.i1 = mutable
+                decl.s2 = annotations.clone()
+                decl.child2 = node_to_ptr(patternAccess(field, here))
+                self.spill(decl)
+            }
+            p = next
+        }
+    }
+
+    private fn spill(self, node: ASTNode) {
+        node.next = ptr_null()
+        if (nodeExists(self.spillTail)) {
+            ptr_to_node(self.spillTail).next = node_to_ptr(node)
+        } else {
+            self.spillHead = node_to_ptr(node)
+        }
+        self.spillTail = node_to_ptr(node)
+    }
+}
+
+// `a`, `a.b.c` as a dotted string; "" for anything that is not a plain path.
+private fn patternPath(expr: ASTNode) -> String {
+    if (expr.kind == NodeKind.IDENTIFIER_EXPR) { return expr.s1.clone() }
+    if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(expr.child1)) {
+        let inner = patternPath(ptr_to_node(expr.child1))
+        if (inner.length == 0) { return "" }
+        return inner.concat(".", expr.s1)
+    }
+    return ""
+}
+
+// A fresh `root.a.b` for each binding: the nodes carry their types once checked, so one
+// tree cannot serve two reads. All of it is positioned at the field in the pattern, so
+// "no field `z`" points at the `z` the program wrote.
+private fn patternAccess(at: ASTNode, path: String) -> ASTNode {
+    let parts = path.split('.')
+    let root = createNode(NodeKind.IDENTIFIER_EXPR)
+    nodeSpanFrom(root, at)
+    root.s1 = parts[0].clone()
+    let mut expr = root
+    for i in 1..<parts.length {
+        let member = createNode(NodeKind.MEMBER_ACCESS_EXPR)
+        nodeSpanFrom(member, at)
+        member.s1 = parts[i].clone()
+        member.child1 = node_to_ptr(expr)
+        expr = member
+    }
+    return expr
+}

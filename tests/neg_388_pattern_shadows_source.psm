@@ -1,0 +1,9 @@
+// expect-error: this binds the name of the value being taken apart
+// `let Point { x: p } = p` would read the new `p` for every field after it.
+struct Point { x: Int, y: Int }
+
+fn main() -> Int {
+    let p = Point { x: 1, y: 2 }
+    let Point { x: p, y } = p
+    return y
+}

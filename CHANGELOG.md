@@ -15,6 +15,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   are untouched (`--verify`: 0 leaked). Reached as `Outer.field` / `Outer.Limits` in a type, a literal
   (`Outer.Limits { … }`) or an `impl`; bare `Limits` among the owner's field types. `{ w: 1, h: 2 }` is a
   struct literal wherever the expected type is a struct. Not yet inside a generic struct.
+- **Destructuring `let`.** `let Point { x, y: b, .. } = p` binds fields by name; patterns nest
+  (`origin: Point { x, y }`), `mut` makes the bindings assignable, `_` skips a field. Rewritten by the parser
+  to `let x = p.x`, so ownership is unchanged (a value that is not a variable is held under a hidden name,
+  which also checks the pattern's type). Not in `match` arms or parameters.
 
 ### Changed
 

@@ -57,6 +57,17 @@ impl Parser {
                 break
             }
             nodeListPush(statements, statement)
+            // What the statement turned into besides itself (parse/patterns.psm).
+            let mut spilled = self.spillHead
+            self.spillHead = ptr_null()
+            self.spillTail = ptr_null()
+            while (nodeExists(spilled)) {
+                let extra = ptr_to_node(spilled)
+                let following = extra.next
+                extra.next = ptr_null()
+                nodeListPush(statements, extra)
+                spilled = following
+            }
         }
         if (declaredNested) { self.renameNestedCalls(statements.head, hoistMark) }
 

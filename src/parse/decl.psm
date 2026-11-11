@@ -126,6 +126,8 @@ impl Parser {
         self.allowStructLit = 1
         self.hoistHead = ptr_null()
         self.hoistTail = ptr_null()
+        self.spillHead = ptr_null()
+        self.spillTail = ptr_null()
 
         let start = ptr_to_token(declarationStart)
         self.noteDropped(start)
@@ -1318,6 +1320,11 @@ impl Parser {
         }
 
         self.parseAifAnnotations(varNode)
+
+        // `let Point { x, y } = p` -- see parse/patterns.psm.
+        if (isConst == false and self.atDestructure()) {
+            return self.parseDestructure(varNode)
+        }
 
         let name = self.current()
         varNode.s1 = name.value

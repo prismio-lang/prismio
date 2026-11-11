@@ -85,7 +85,13 @@ struct Parser {
     // skipped. A statement-level block is read whole by parsePlatformStatement and needs
     // neither.
     internal platformDepth: Int,
-    internal platformSkip: Int
+    internal platformSkip: Int,
+    // Statements a single `let` turned into, after the first (`let P { x, y } = p` is
+    // two): parseBlock drains them behind the statement it just read. `destructureSeq`
+    // names the hidden temporaries, so two patterns in one scope cannot collide.
+    internal spillHead: Ptr, // ASTNode, or null
+    internal spillTail: Ptr, // ASTNode, or null
+    internal destructureSeq: Int
 }
 
 public fn parserCreate(tokens: Token) -> Parser {
@@ -93,7 +99,8 @@ public fn parserCreate(tokens: Token) -> Parser {
                     implParams: ptr_null(), implParamSeq: 0, implPosition: 0, lastLine: tokens.line,
                     fnNode: ptr_null(), hoistHead: ptr_null(), hoistTail: ptr_null(), lengthDepth: 0,
                     externVarargs: 0, dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0,
-                    platformDepth: 0, platformSkip: 0 }
+                    platformDepth: 0, platformSkip: 0, spillHead: ptr_null(), spillTail: ptr_null(),
+                    destructureSeq: 0 }
 }
 impl Parser {
 

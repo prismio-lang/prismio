@@ -36,7 +36,7 @@ other language has and users hit within a day, **P2** is real but can wait.
 |---|---|---|---|
 | A1 | ~~**Nested structs**~~ **done 2026-11-11** (not yet inside a generic struct): an inline field type `pos: struct { x: Int, y: Int }`, and a struct declared inside another (`Outer.Inner`) | `P3201 expected IDENTIFIER in field name, found struct` | P0 |
 | A2 | **Tuples**: `(1, 2)`, `-> (Int, Int)`, `let (a, b) = t`, `t.0` | `P3201 expected ) ... found ,` and `expected a type name, found (` | P0 |
-| A3 | **Struct patterns / destructuring** in `let` and `match`: `let P { x, y } = p` | `P3201 expected : in map literal entry, found ,` | P0 |
+| A3 | ~~**Struct patterns / destructuring**~~ **`let` form done 2026-11-11** (`match` arms and parameters not): `let P { x, y } = p` | `P3201 expected : in map literal entry, found ,` | P0 |
 | A4 | **Nested patterns**: `F.X(E.A(v))` | `P4001 a variant pattern binds names, not expressions` | P1 |
 | A5 | **Struct update**: `P { x: 5, ..p }` | `P3201 expected IDENTIFIER in struct literal field, found ..` | P1 |
 | A6 | **Field defaults**: `x: Int = 3` | `P3201 expected IDENTIFIER in field name, found =` | P1 |
@@ -432,3 +432,14 @@ something the design left open, or differed from it.
   say `A` has no nested struct `c`. Left because the same node kind is a trait's `T.Item`.
 - A seed refresh. Nothing in `src/` uses the new syntax, so none is needed yet; the first use of
   it inside the compiler needs the seed cut first.
+
+## A3: as built
+
+`let Point { x, y: b, c: Inner { d }, .. } = value`, rewritten by the parser (`src/parse/patterns.psm`) to
+`let x = value.x` and so on, spilled behind the first statement through a chain `parseBlock` drains. A
+variable or field path is read in place; anything else is held under a hidden `$dN` annotated with the
+pattern's type. Decisions: the bindings are what `let x = p.x` is (copy, or borrow for `String`/`Vec`);
+unlisted fields are allowed (`..` is accepted, not required); a binding named like the source is `P3016`;
+a global `let` takes no pattern. Not done: `match` arms (a struct scrutinee is not matchable at all today,
+so this only matters for nested patterns, A4), function parameters, the pattern's type is unchecked when
+the value is a variable. Tests: `test_383`, `neg_386`..`neg_389`; `--verify` 80/80, 0 leaked.

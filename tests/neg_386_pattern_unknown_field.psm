@@ -1,0 +1,9 @@
+// expect-error: struct `Point` has no field `z`
+// The error points at the field in the pattern, because that is where the program wrote it.
+struct Point { x: Int, y: Int }
+
+fn main() -> Int {
+    let p = Point { x: 1, y: 2 }
+    let Point { z } = p
+    return z
+}

@@ -1,0 +1,71 @@
+// `let Point { x, y } = p` -- a struct taken apart into the names its fields go to. The parser turns it
+// into the `let`s of field reads it stands for (parse/patterns.psm), so a binding is what `let x = p.x` is:
+// a copy of a number, a borrow of a `String` or `Vec` that lives as long as the value it came from.
+//
+// What is asserted:
+//
+//   shorthand        `{ x, y }`, a rename `{ x: left }`, `..` for the rest, `_` for a field not bound
+//   mut              `let mut P { y: top } = p` makes the binding assignable, and not the field
+//   in place         a variable read through a pattern is still whole afterwards
+//   nested           a pattern inside a pattern, to a nested struct's fields, by path (`Window.size`)
+//   owned values     a `String` and a `Vec` taken out of a value built in a loop, and out of a call's
+//                    result (held under a hidden name) -- under `--verify`, 0 leaked
+
+import std.io
+import std.vec
+import std.string
+
+struct Point { x: Int, y: Int }
+
+struct Window {
+    title: String,
+    size: struct { w: Int, h: Int },
+    origin: Point,
+    tags: Vec<String>
+}
+
+fn make(i: Int) -> Window {
+    return Window {
+        title: "w".concat(i.toString()),
+        size: { w: i, h: 2 },
+        origin: Point { x: 1, y: 2 },
+        tags: ["a"]
+    }
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let p = Point { x: 3, y: 4 }
+    let Point { x, y } = p
+    if (x != 3 or y != 4 or p.x != 3) { bad = bad + fail("shorthand, and the value still whole") }
+
+    let Point { x: left, .. } = Point { x: 10, y: 20 }
+    if (left != 10) { bad = bad + fail("a rename, and a value that is a call or a literal") }
+
+    let mut Point { y: top } = p
+    top = top + 1
+    if (top != 5 or p.y != 4) { bad = bad + fail("mut binds a copy") }
+
+    let Point { x: _, y: only } = p
+    if (only != 4) { bad = bad + fail("_ skips a field") }
+
+    let mut total = 0
+    for i in 0..<20 {
+        let win = make(i)
+        let Window { title, size: Window.size { w, h }, origin: Point { x: ox, y: _ }, tags } = win
+        total = total + title.length + w + h + ox + tags.length
+        let Window { title: t2, .. } = make(i)
+        total = total + t2.length
+    }
+    if (total != 370) { bad = bad + fail("nested patterns, owned fields") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: struct destructuring")
+    return 0
+}
