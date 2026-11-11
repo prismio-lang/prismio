@@ -549,6 +549,9 @@ impl Parser {
                     self.expectVal(TokenType.SEPARATOR, "]", "array index")
                     expr = index
                 }
+            } else if (adjoins and self.checkVal(TokenType.SEPARATOR, "?")) {
+                // `f()?`: hand the error on, or take the value (parse/try_exprs.psm).
+                expr = self.parseTry(expr)
             } else if (self.matchVal(TokenType.SEPARATOR, ".")) {
                 let member = self.node(NodeKind.MEMBER_ACCESS_EXPR)
                 // `Self.make()` inside an `impl` names the type being implemented.
@@ -664,6 +667,14 @@ private fn isLiteralToken(t: Token) -> Bool {
 
 impl Parser {
     private fn parsePrimary(self) -> ASTNode {
+        let outer = self.primaryCalls
+        self.primaryCalls = self.stmtCalls
+        let primary = self.parsePrimaryAt()
+        self.primaryCalls = outer
+        return primary
+    }
+
+    private fn parsePrimaryAt(self) -> ASTNode {
         let current = self.current()
 
         if (self.atClosure()) { return self.parseClosureExpr() }

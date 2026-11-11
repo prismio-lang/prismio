@@ -602,6 +602,14 @@ lost to the analysis; the gap is the library surface.
 
 ## Language surface
 
+**A payload matched out of a `Result` and assigned to a variable declared above the `match` is never released.**
+`let v: String`, then `match (q) { Result.Ok(a) => { v = a } ... }`, then `return v` (or `Result.Ok(v)`): 1 allocated,
+0 released under `--verify`. The same payload moved on inside the arm (`Result.Ok(a) => { return Result.Ok(a) }`) is balanced,
+and so is a match whose bindings are only read. The binding is a borrow of the scrutinee, and storing it into a variable that
+outlives the arm leaves neither the scrutinee nor `v` releasing it. `if`/`match` expressions (`let s = match (r) { Ok(v) => v ... }`)
+are exactly this shape, so an owned payload taken out that way and then handed on is affected; the `?` operator avoids it by
+nesting the rest of the block in the arm. Not fixed: it is the ownership of a pattern binding, which wants its own session.
+
 **`--verify` counts a struct literal inside a generic struct's literal and never releases it.**
 `Box<Point> { v: Point { x: 4, y: 5 }, n: 1 }` reports `2 allocated, 1 released, 1 leaked`, and so does
 `(Point { x: 4, y: 5 }, 1)`, which is `tuple2` of one. The AIF plan puts both sites on the stack

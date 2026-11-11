@@ -1,0 +1,12 @@
+// expect-error: `?` cannot follow a call in the same statement
+import std.option
+import std.string
+// The operand is run ahead of its statement, which is right only when nothing before it in the statement had run.
+fn parse(s: String) -> Result<Int, String> { return Result.Ok(1) }
+fn g() -> Int { return 1 }
+
+fn run() -> Result<Int, String> {
+    return Result.Ok(g() + parse("a")?)
+}
+
+fn main() -> Int { return 0 }

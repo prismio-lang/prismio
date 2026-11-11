@@ -1,0 +1,98 @@
+// The `?` operator, once the type of its operand is known (parse/try_exprs.psm).
+//
+// The parser leaves a marker statement holding the operand's temporary and two complete lowerings: a
+// `match` for a `Result`, and an `if` for an optional. Which one applies is a question about the
+// operand's type, so it is asked here, where `$qN` has just been declared: the marker becomes the chosen
+// statement, in place, and is checked as any other. The other lowering is dropped unread.
+//
+// The function has to be able to take what `?` hands back, and that is checked here too, in the words
+// of `?` rather than as a type error about a `return` the program never wrote.
+
+import ast.nodes
+import ast.types
+import common.diagnostics
+import std.string
+
+// Set when a `?` was refused, so the flow pass does not add that its value was never assigned.
+let mut tryFailures = 0
+
+internal fn semaTryFailed() -> Bool { return tryFailures > 0 }
+
+internal fn semaTryReset() { tryFailures = 0 }
+
+internal fn semaIsTry(stmt: ASTNode) -> Bool {
+    return stmt.kind == NodeKind.EXPRESSION_STATEMENT and stmt.s1.equals("$try")
+}
+
+// Answers false after reporting; the marker is then left as it is, and nothing reads it again.
+internal fn semaTryLower(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) -> Bool {
+    if (semaTryCheck(module, stmt, expectedReturn) == false) {
+        tryFailures = tryFailures + 1
+        return false
+    }
+    return true
+}
+
+private fn semaTryCheck(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) -> Bool {
+    let held = ptr_to_node(stmt.child1)
+    let heldT = semaExpr(module, held)
+    if (typeIsValid(heldT) == false) { return false }
+
+    let isResult = heldT.name.startsWith("Result".concat(monoSeparator()))
+    let isOptional = heldT.kind == TypeKind.OPTIONAL or typeIsValueOptional(heldT)
+    if (isResult == false and isOptional == false) {
+        semaErrorAt(stmt, "`?` needs a `Result` or an optional, found ".concat(typeDisplay(heldT)))
+        return false
+    }
+
+    let returnsResult = typeIsValid(expectedReturn) and expectedReturn.name.startsWith("Result".concat(monoSeparator()))
+    let returnsOptional = typeIsValid(expectedReturn)
+        and (expectedReturn.kind == TypeKind.OPTIONAL or typeIsValueOptional(expectedReturn))
+    if (isResult and returnsResult == false) {
+        semaErrorAt(stmt, "`?` on a `Result` returns its error from the function, so the function must return a `Result`")
+        diag_note("this one returns ".concat(typeDisplay(expectedReturn)))
+        return false
+    }
+    if (isOptional and returnsOptional == false) {
+        semaErrorAt(stmt, "`?` on an optional returns `none` from the function, so the function must return an optional")
+        diag_note("this one returns ".concat(typeDisplay(expectedReturn)))
+        return false
+    }
+
+    // The error goes out as it is, so it has to be what the function's own `Result` carries.
+    if (isResult) {
+        let heldError = semaCompilerFieldType(module, stmt, heldT.name, "Err$0")
+        let returnedError = semaCompilerFieldType(module, stmt, expectedReturn.name, "Err$0")
+        if (typeIsValid(heldError) and typeIsValid(returnedError)
+            and typeSemKey(heldError).equals(typeSemKey(returnedError)) == false) {
+            semaErrorAt(stmt, "`?` returns this error as it is, and it is a ".concat(typeDisplay(heldError),
+                                                                                      " where the function's is a ",
+                                                                                      typeDisplay(returnedError)))
+            diag_note("convert it first: match the `Result`, or build the error the function returns")
+            return false
+        }
+    }
+
+    let mut chosen = ptr_to_node(stmt.child2)
+    if (isResult == false) {
+        // The rest of the block was nested in the `Result` form's success arm (nestTries); the
+        // optional form's success branch takes it from there, after the value it binds.
+        let okArm = ptr_to_node(ptr_to_node(chosen.child2).next)
+        let okBlock = ptr_to_node(okArm.child2)
+        let rest = okBlock.child1
+        okBlock.child1 = ptr_null()
+        chosen = ptr_to_node(stmt.child3)
+        let successBlock = ptr_to_node(chosen.child3)
+        ptr_to_node(successBlock.child1).next = rest
+    }
+    stmt.kind = chosen.kind
+    stmt.s1 = chosen.s1
+    stmt.s2 = chosen.s2
+    stmt.i1 = chosen.i1
+    stmt.i2 = chosen.i2
+    stmt.i3 = chosen.i3
+    stmt.child1 = chosen.child1
+    stmt.child2 = chosen.child2
+    stmt.child3 = chosen.child3
+    return true
+}

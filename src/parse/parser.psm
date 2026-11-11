@@ -103,7 +103,10 @@ struct Parser {
     internal preTail: Ptr, // ASTNode, or null
     internal stmtCalls: Int,
     internal noHoist: Int,
-    internal valueHint: Ptr // TYPE_ANNOTATION, or null
+    internal valueHint: Ptr, // TYPE_ANNOTATION, or null
+    // `stmtCalls` as it stood when the primary expression being read began: a `?` moves that primary
+    // ahead of its statement, and the calls before it are what could be reordered (parse/try_exprs.psm).
+    internal primaryCalls: Int
 }
 
 public fn parserCreate(tokens: Token) -> Parser {
@@ -113,7 +116,7 @@ public fn parserCreate(tokens: Token) -> Parser {
                     externVarargs: 0, dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0,
                     platformDepth: 0, platformSkip: 0, spillHead: ptr_null(), spillTail: ptr_null(),
                     destructureSeq: 0, tupleImport: ptr_null(), preHead: ptr_null(), preTail: ptr_null(),
-                    stmtCalls: 0, noHoist: 0, valueHint: ptr_null() }
+                    stmtCalls: 0, noHoist: 0, valueHint: ptr_null(), primaryCalls: 0 }
 }
 impl Parser {
 

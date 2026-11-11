@@ -11,9 +11,18 @@ import std.option
 
 impl Parser {
     internal fn parseBlock(self) -> ASTNode {
+        return self.parseBlockOf(false)
+    }
+
+    // A block, or with `single` the one statement that stands in for it: `Shape.Circle => print()`
+    // in a `match`, where the braces are left out. The statement gets everything a block's statements
+    // do -- its own context for `if` expressions and `?`, and what it spills -- so it behaves as if
+    // the braces were there.
+    internal fn parseBlockOf(self, single: Bool) -> ASTNode {
         let open = self.current()
-        self.expectVal(TokenType.SEPARATOR, "{", "block")
+        if (single == false) { self.expectVal(TokenType.SEPARATOR, "{", "block") }
         let blockNode = self.node(NodeKind.BLOCK)
+        let mut statementsRead = 0
 
         let statements = nodeList()
         let hoistMark = self.hoistTail
@@ -27,7 +36,9 @@ impl Parser {
         self.preHead = ptr_null()
         self.preTail = ptr_null()
         self.noHoist = 0
-        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+        while ((single == false and self.checkVal(TokenType.SEPARATOR, "}") == false)
+               or (single and statementsRead == 0)) {
+            statementsRead = statementsRead + 1
             // Without this the loop spins at EOF until some inner parser happens to
             // fail, and blames whatever it was looking at instead of the brace that
             // was never closed.
@@ -104,8 +115,8 @@ impl Parser {
         // that statement's line. i1/i2 are otherwise unused on a BLOCK; i3 is not
         // taken here because the file cannot differ from the block's own.
         let close = self.current()
-        self.expectVal(TokenType.SEPARATOR, "}", "block")
-        blockNode.child1 = statements.head
+        if (single == false) { self.expectVal(TokenType.SEPARATOR, "}", "block") }
+        blockNode.child1 = self.nestTries(statements.head)
         blockNode.i1 = close.line
         blockNode.i2 = close.col
         return blockNode
@@ -595,8 +606,35 @@ impl Parser {
             arm.child1 = node_to_ptr(self.parseExpression(0))
         }
         self.expectVal(TokenType.FAT_ARROW, "=>", "match arm")
-        arm.child2 = node_to_ptr(self.parseBlock())
+        arm.child2 = node_to_ptr(self.parseArmBody())
         return arm
+    }
+
+    // What follows `=>`: a block, or without braces a single statement (`Shape.Circle => draw()`),
+    // or nothing at all when the arm ends there (`_ =>` before `}` or `,`).
+    internal fn parseArmBody(self) -> ASTNode {
+        if (self.checkVal(TokenType.SEPARATOR, "{")) { return self.parseBlock() }
+        if (self.checkVal(TokenType.SEPARATOR, "}") or self.checkVal(TokenType.SEPARATOR, ",")) {
+            let empty = self.node(NodeKind.BLOCK)
+            let here = self.current()
+            empty.i1 = here.line
+            empty.i2 = here.col
+            return empty
+        }
+        return self.parseBlockOf(true)
+    }
+
+    // The scrutinee: `match s {` and `match (s) {` both. Read as a condition is, so the `{` that opens
+    // the arms is not taken for a struct literal's; a literal there is parenthesised, as in an `if`.
+    internal fn parseScrutinee(self) -> ASTNode {
+        if (self.checkVal(TokenType.SEPARATOR, "{")) {
+            self.fatal("expected a value to match on after `match`, found `{`")
+        }
+        let saved = self.allowStructLit
+        self.allowStructLit = 0
+        let scrutinee = self.parseExpression(0)
+        self.allowStructLit = saved
+        return scrutinee
     }
 }
 
@@ -606,9 +644,7 @@ impl Parser {
         self.expectVal(TokenType.KEYWORD, "match", "match statement")
         let matchNode = self.node(NodeKind.MATCH_STATEMENT)
 
-        self.expectVal(TokenType.SEPARATOR, "(", "match scrutinee")
-        matchNode.child1 = node_to_ptr(self.parseExpression(0))
-        self.expectVal(TokenType.SEPARATOR, ")", "match scrutinee")
+        matchNode.child1 = node_to_ptr(self.parseScrutinee())
 
         self.expectVal(TokenType.SEPARATOR, "{", "match body")
         let arms = nodeList()

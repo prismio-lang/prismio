@@ -3711,6 +3711,10 @@ private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Ty
 // the tests below a match cannot also match. That was already true when the arms
 // were inline -- this only makes the shape of it visible.
 private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
+    // The `?` operator picks its lowering from the operand's type (sema/try_exprs.psm).
+    if (semaIsTry(stmt)) {
+        if (semaTryLower(module, stmt, expectedReturn) == false) { return }
+    }
     if (stmt.kind == NodeKind.VARIABLE_DECL) { semaVariableDecl(module, stmt, expectedReturn) }
     if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) { semaAssignment(module, stmt, expectedReturn) }
     if (stmt.kind == NodeKind.RETURN_STATEMENT) { semaReturn(module, stmt, expectedReturn) }
@@ -4069,7 +4073,8 @@ private fn semaFunction(module: ASTNode, fnNode: ASTNode) {
             if (semaBlockDiverges(body) == false and mainSaysNothing) {
                 // Reaching the end of a `main` with no return type is `return 0`.
                 semaStatement(module, semaAppendMainReturn(body, fnNode), expectedReturn)
-            } else if (semaBlockDiverges(body) == false) {
+            } else if (semaBlockDiverges(body) == false and semaTryFailed() == false) {
+                // (A refused `?` leaves the rest of its block unread, which is where the return was.)
                 semaErrorAt(fnNode, "function ".concat(diagQuote(fnNode.s1),
                                                        " must return ",
                                                        typeDisplay(expectedReturn),
@@ -6016,6 +6021,7 @@ public fn analyzeModule(module: ASTNode) {
     // `Window.Size` and `Window.size` name structs the parser hoisted out of `Window`.
     semaResolveNestedStructs(module)
     semaInferReset()
+    semaTryReset()
     // First, before any pass rewrites the bodies a `const fn` is run from.
     semaFoldConstants(module)
     ir_clear_var_types()

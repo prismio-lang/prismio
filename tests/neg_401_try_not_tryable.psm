@@ -1,0 +1,9 @@
+// expect-error: `?` needs a `Result` or an optional, found Int
+import std.option
+import std.string
+fn run() -> Result<Int, String> {
+    let n = 5?
+    return Result.Ok(n)
+}
+
+fn main() -> Int { return 0 }

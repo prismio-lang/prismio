@@ -1,0 +1,182 @@
+// The `?` operator: `let n = parse(s)?`.
+//
+// On a `Result<T, E>` it is the `Ok` payload, or an early `return Result.Err(e)` from the function. On an
+// optional `T?` it is the value, or an early `return none`. Either way the rest of the block runs only when
+// there is a value, so it is written as that: the operand is held in `$qN`, the statements that follow
+// (the one that used the `?` and everything after it in the block) move *inside* the success arm, and
+// `$vN`, the value, is the name that arm binds.
+//
+//     let n = parse(s)? + 1                       let $q0 = parse(s)
+//     use(n)                                      match ($q0) {
+//                                                     Result.Err($te) => { return Result.Err($te) }
+//                                                     Result.Ok($v0) => { let n = $v0 + 1
+//                                                                         use(n) }
+//                                                 }
+//
+// Nesting the rest, and not assigning the payload to a variable declared above, is what keeps an owned
+// payload owned: the compiler moves a pattern's binding on into what is built from it (a new `Result`, a
+// call), and does not for a value stored into a variable that outlives the arm.
+//
+// The parser cannot tell a `Result` from an optional, only sema can. So it builds both lowerings and
+// leaves a marker statement holding them (`parseTry`), and `parseBlock` moves the rest of the block into
+// the `Result` one (`nestTries`); sema/try_exprs.psm picks the lowering for `$qN`'s type, moving the rest
+// across for an optional, and drops the other.
+//
+// The same refusals as an `if` expression, for the same reason (the operand runs ahead of the statement
+// it was written in), except that the operand's own calls are fine: they move with it.
+
+import lexer.token
+import lexer.scanner
+import ast.nodes
+import common.diagnostics
+import std.string
+
+impl Parser {
+    // The cursor is on `?`. `operand` is what it applies to.
+    internal fn parseTry(self, operand: ASTNode) -> ASTNode {
+        let at = self.current()
+        self.advance()
+        if (nodeExists(self.fnNode) == false) {
+            self.fatal("`?` returns from a function, so it is for a function body")
+            return operand
+        }
+        if (self.noHoist > 0) {
+            self.fatal("`?` cannot be used here: it is read only sometimes, or more than once. Bind the value to a variable first")
+            return operand
+        }
+        if (self.primaryCalls > 0) {
+            self.fatal("`?` cannot follow a call in the same statement, since it is evaluated first. Bind the value to a variable first")
+            return operand
+        }
+
+        let seq = self.destructureSeq.toString()
+        self.destructureSeq = self.destructureSeq + 1
+        let held = "$q".concat(seq)
+        let value = "$v".concat(seq)
+
+        let holder = parserNodeFrom(NodeKind.VARIABLE_DECL, at)
+        holder.s1 = held.clone()
+        holder.child2 = node_to_ptr(operand)
+
+        let marker = parserNodeFrom(NodeKind.EXPRESSION_STATEMENT, at)
+        marker.s1 = "$try"
+        marker.child1 = node_to_ptr(tryName(at, held))
+        marker.child2 = node_to_ptr(tryResultForm(at, held, value))
+        marker.child3 = node_to_ptr(tryOptionalForm(at, held, value))
+
+        self.queueBefore(holder)
+        self.queueBefore(marker)
+        // The operand's calls ran in `holder`, ahead of anything after the `?`.
+        self.stmtCalls = self.primaryCalls
+        return tryName(at, value)
+    }
+}
+
+private fn tryName(at: Token, name: String) -> ASTNode {
+    let node = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, at)
+    node.s1 = name.clone()
+    return node
+}
+
+// `Result.Ok(arg)` / `Result.Err(arg)`, or the same as a pattern: the call is what a program writes.
+private fn tryVariant(at: Token, variant: String, arg: String) -> ASTNode {
+    let member = parserNodeFrom(NodeKind.MEMBER_ACCESS_EXPR, at)
+    member.child1 = node_to_ptr(tryName(at, "Result"))
+    member.s1 = variant.clone()
+    let call = parserNodeFrom(NodeKind.CALL_EXPR, at)
+    call.child1 = node_to_ptr(member)
+    call.child2 = node_to_ptr(tryName(at, arg))
+    return call
+}
+
+private fn tryAssign(at: Token, target: String, source: ASTNode) -> ASTNode {
+    let assignment = parserNodeFrom(NodeKind.ASSIGNMENT_STATEMENT, at)
+    assignment.child1 = node_to_ptr(tryName(at, target))
+    assignment.child2 = node_to_ptr(source)
+    return assignment
+}
+
+private fn tryBlock(at: Token, statement: ASTNode) -> ASTNode {
+    let block = parserNodeFrom(NodeKind.BLOCK, at)
+    block.child1 = node_to_ptr(statement)
+    block.i1 = at.line
+    block.i2 = at.col
+    return block
+}
+
+private fn tryReturn(at: Token, value: ASTNode) -> ASTNode {
+    let statement = parserNodeFrom(NodeKind.RETURN_STATEMENT, at)
+    statement.child1 = node_to_ptr(value)
+    return statement
+}
+
+private fn tryResultForm(at: Token, held: String, value: String) -> ASTNode {
+    let matched = parserNodeFrom(NodeKind.MATCH_STATEMENT, at)
+    matched.child1 = node_to_ptr(tryName(at, held))
+
+    // The rest of the block is put in the `Ok` arm's block (nestTries).
+    let ok = parserNodeFrom(NodeKind.MATCH_ARM, at)
+    ok.child1 = node_to_ptr(tryVariant(at, "Ok", value))
+    ok.child2 = node_to_ptr(tryEmptyBlock(at))
+
+    let failed = parserNodeFrom(NodeKind.MATCH_ARM, at)
+    failed.child1 = node_to_ptr(tryVariant(at, "Err", "$te"))
+    failed.child2 = node_to_ptr(tryBlock(at, tryReturn(at, tryVariant(at, "Err", "$te"))))
+
+    failed.next = node_to_ptr(ok)
+    matched.child2 = node_to_ptr(failed)
+    return matched
+}
+
+private fn tryOptionalForm(at: Token, held: String, value: String) -> ASTNode {
+    let branching = parserNodeFrom(NodeKind.IF_STATEMENT, at)
+    let test = parserNodeFrom(NodeKind.BINARY_EXPR, at)
+    test.s1 = "=="
+    test.child1 = node_to_ptr(tryName(at, held))
+    test.child2 = node_to_ptr(parserNodeFrom(NodeKind.NONE_LITERAL_EXPR, at))
+    branching.child1 = node_to_ptr(test)
+
+    branching.child2 = node_to_ptr(tryBlock(at, tryReturn(at, parserNodeFrom(NodeKind.NONE_LITERAL_EXPR, at))))
+
+    // `let $vN = expect($qN)`, then the rest of the block (moved here by sema when this one is chosen).
+    let expect = parserNodeFrom(NodeKind.CALL_EXPR, at)
+    expect.child1 = node_to_ptr(tryName(at, "expect"))
+    expect.child2 = node_to_ptr(tryName(at, held))
+    let bind = parserNodeFrom(NodeKind.VARIABLE_DECL, at)
+    bind.s1 = value.clone()
+    bind.child2 = node_to_ptr(expect)
+    branching.child3 = node_to_ptr(tryBlock(at, bind))
+    return branching
+}
+
+private fn tryEmptyBlock(at: Token) -> ASTNode {
+    let block = parserNodeFrom(NodeKind.BLOCK, at)
+    block.i1 = at.line
+    block.i2 = at.col
+    return block
+}
+
+impl Parser {
+    // The statements of a block, with each `?` marker's rest-of-block moved into its `Ok` arm.
+    // Innermost first: what follows a marker is nested before the marker takes it.
+    internal fn nestTries(self, head: Ptr) -> Ptr {
+        let mut previous = ptr_to_node(ptr_null())
+        let mut p = head
+        while (nodeExists(p)) {
+            let node = ptr_to_node(p)
+            if (node.kind == NodeKind.EXPRESSION_STATEMENT and node.s1.equals("$try")) {
+                let rest = self.nestTries(node.next)
+                node.next = ptr_null()
+                let matched = ptr_to_node(node.child2)
+                let okArm = ptr_to_node(ptr_to_node(matched.child2).next)
+                ptr_to_node(okArm.child2).child1 = rest
+                if (nodeIsNull(node_to_ptr(previous))) { return node_to_ptr(node) }
+                previous.next = node_to_ptr(node)
+                return head
+            }
+            p = node.next
+            previous = node
+        }
+        return head
+    }
+}

@@ -51,7 +51,7 @@ other language has and users hit within a day, **P2** is real but can wait.
 | # | Gap | Evidence | Pri |
 |---|---|---|---|
 | B1 | ~~**`if` / `match` as expressions**~~ **done 2026-11-11** (a branch is one expression); `break` with a value still open | `P3201 expected an expression, found if` (roadmap: Coming Soon) | P0 |
-| B2 | **`?` operator** for `Result` and `T?` | `P3201 expected an expression, found ?` (roadmap: Coming Soon) | P0 |
+| B2 | ~~**`?` operator**~~ **done 2026-11-11**: for `Result` and `T?` | `P3201 expected an expression, found ?` (roadmap: Coming Soon) | P0 |
 | B3 | **`if let`, `while let`, `let ... else`** (the `T?` forms are F3, which raises their priority) | `P3201 expected an expression, found let` | P1 |
 | B4 | **Match guards** `x if x > 2 =>` | `P3201 expected => in match arm, found if` | P1 |
 | B5 | **Range patterns** `1..5 =>` | `P3201 expected => in match arm, found ..` | P1 |
@@ -467,3 +467,16 @@ assignment is checked, because a `match` arm may use its pattern's bindings; `ir
 the temporary so literals adopt it. Limits: a branch is one expression (no statements before the value), a `match` arm
 has no braces, `return`/argument positions get the first branch's type (a literal is `Int`, not the parameter's type).
 Tests: `test_385`, `neg_393`..`neg_397`. `break` with a value is the other half of B1 and is not built.
+
+## B2: as built, and `match` syntax
+
+`?` (`src/parse/try_exprs.psm`, `src/sema/try_exprs.psm`): the operand is held in `$qN`; a marker statement keeps a `Result`
+lowering and an optional lowering; sema picks by type. **The rest of the block is nested inside the success arm** (`nestTries`)
+rather than assigning the payload to a temporary: the first version assigned `$vN = payload` and leaked an owned `String` payload
+on the way out (the same leak a hand-written `match ... { Ok(a) => { v = a } }` has; KNOWN_ISSUES), and the nesting keeps the
+shape the compiler already releases correctly. Not built: converting the error (`From`), `?` in a closure's expression body,
+`?` in a global.
+
+`match` syntax: parentheses around the scrutinee optional (`parseScrutinee`), an arm is a block, one statement, or empty
+(`parseArmBody`, using `parseBlockOf(single)` so the statement has a block's own context). Tests: `test_386`, `test_387`,
+`neg_398`..`neg_401`.

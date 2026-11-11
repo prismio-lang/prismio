@@ -175,8 +175,11 @@ private fn flowRead(state: FlowState, node: ASTNode) {
     // The temporary behind a `match` expression (an `if` without `else` is refused by the
     // parser): some value reaches no arm, so there is nothing to give it.
     if (node.s1.startsWith("$v")) {
-        semaErrorAt(node, "this `match` expression has no arm for every value")
-        diag_note("add a `_` arm, or an arm for each variant")
+        // A refused `?` leaves its value unassigned too, and has said why.
+        if (semaTryFailed() == false) {
+            semaErrorAt(node, "this `match` expression has no arm for every value")
+            diag_note("add a `_` arm, or an arm for each variant")
+        }
         flowForget(state, ptr_to_node(state.open[at]))
         return
     }

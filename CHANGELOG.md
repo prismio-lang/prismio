@@ -28,6 +28,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   first branch (or from the `let`'s type); a branch is one expression, an `if` needs its `else`, a `match` covers every value.
   Refused where it could not run first: after a call in the same statement, in a loop header, in the right side of
   `and`/`or`/`??`, in an `else if` condition, in a closure's expression body and in a global `let`.
+- **The `?` operator.** `let n = parse(s)?` is the `Ok` value of a `Result`, or an early `return Result.Err(e)`; on an optional
+  it is the value or an early `return none`. The rest of the block runs inside the success arm, so an owned payload stays
+  owned. The function must return a matching `Result` (same error type) or optional; refused where it could not run first
+  (after a call in the same statement, loop headers, right of `and`/`or`/`??`, `else if` conditions, closure expression bodies).
+- **`match` without the ceremony.** `match s { ... }` needs no parentheses around the value, an arm may be a single statement
+  without braces (`Shape.Circle => print("c"),`), and an arm may be empty (`_ =>`). The old spellings still read.
 
 ### Changed
 

@@ -1,0 +1,93 @@
+// The `?` operator. On a `Result<T, E>` it is the `Ok` value, or an early `return Result.Err(e)`; on an
+// optional it is the value, or an early `return none`. The parser holds the operand in a temporary and
+// leaves a marker with both lowerings (parse/try_exprs.psm); sema picks one by the operand's type
+// (sema/try_exprs.psm). So what is asserted is that it behaves as the hand-written match and `if` do:
+//
+//   Ok and Err      the value on success, the error handed on untouched on failure
+//   positions       a `let`, an operand inside arithmetic (`parse(a)? + parse(b)?`), a `return`, a method chain
+//   optionals       `x?` in a function that returns an optional, for a number and for a String
+//   owned payloads  a String that is the Ok value, a String error, in a loop, `--verify`: 0 leaked
+
+import std.io
+import std.string
+import std.option
+
+fn parse(s: String) -> Result<Int, String> {
+    if s.length == 0 { return Result.Err("empty") }
+    return Result.Ok(s.length)
+}
+
+fn twice(s: String) -> Result<Int, String> {
+    let n = parse(s)?
+    return Result.Ok(n * 2)
+}
+
+fn sum(a: String, b: String) -> Result<Int, String> {
+    return Result.Ok(parse(a)? + parse(b)?)
+}
+
+fn named(s: String) -> Result<String, String> {
+    let n = parse(s)?
+    return Result.Ok(s.concat("#", n.toString()))
+}
+
+fn greeting(s: String) -> Result<String, String> {
+    let shout = named(s)?.concat("!")
+    return Result.Ok(shout)
+}
+
+fn next(x: Int?) -> Int? {
+    let v = x?
+    return v + 1
+}
+
+fn upper(s: String?) -> String? {
+    let t = s?
+    return t.concat("?")
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let okValue = twice("abc").unwrapOr(-1)
+    let errValue = twice("").unwrapOr(-1)
+    if (okValue != 6) { bad = bad + fail("Ok through ?") }
+    if (errValue != -1) { bad = bad + fail("Err through ?") }
+    let both = sum("ab", "cde").unwrapOr(-1)
+    let oneBad = sum("ab", "").unwrapOr(-1)
+    if (both != 5 or oneBad != -1) { bad = bad + fail("two ? in one expression") }
+    let hi = greeting("hi").unwrapOr("")
+    let nothing = greeting("").unwrapOr("none")
+    if (hi != "hi#2!" or nothing != "none") { bad = bad + fail("a method on the value") }
+    let some = next(5).unwrapOr(0)
+    let absent = next(none).unwrapOr(-9)
+    if (some != 6 or absent != -9) { bad = bad + fail("an optional number") }
+    let marked = upper("a").unwrapOr("")
+    let unmarked = upper(none).unwrapOr("none")
+    if (marked != "a?" or unmarked != "none") { bad = bad + fail("an optional String") }
+
+    let failed = twice("")
+    let mut errorLength = 0
+    match (failed) {
+        Result.Ok(v) => { errorLength = -1 }
+        Result.Err(e) => { errorLength = e.length }
+    }
+    if (errorLength != 5) { bad = bad + fail("the error is handed on as it was") }
+
+    let mut total = 0
+    for i in 0..<20 {
+        let built = named("zz".concat(i.toString())).unwrapOr("")
+        let fallback = greeting("").unwrapOr("x")
+        total = total + built.length + fallback.length
+    }
+    if (total != 130) { bad = bad + fail("owned payloads in a loop") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: ? operator")
+    return 0
+}

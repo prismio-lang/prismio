@@ -80,9 +80,7 @@ impl Parser {
         let temp = self.valueTempName()
         let savedCalls = self.stmtCalls
         let matchNode = parserNodeFrom(NodeKind.MATCH_STATEMENT, at)
-        self.expectVal(TokenType.SEPARATOR, "(", "match scrutinee")
-        matchNode.child1 = node_to_ptr(self.parseExpression(0))
-        self.expectVal(TokenType.SEPARATOR, ")", "match scrutinee")
+        matchNode.child1 = node_to_ptr(self.parseScrutinee())
         self.valueHint = hint
 
         self.expectVal(TokenType.SEPARATOR, "{", "match body")
@@ -171,7 +169,7 @@ impl Parser {
         return block
     }
 
-    private fn queueBefore(self, node: ASTNode) {
+    internal fn queueBefore(self, node: ASTNode) {
         node.next = ptr_null()
         if (nodeExists(self.preTail)) {
             ptr_to_node(self.preTail).next = node_to_ptr(node)

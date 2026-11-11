@@ -1,0 +1,82 @@
+// The two parentheses and the two braces a `match` no longer needs:
+//
+//   match s { ... }                  the scrutinee without parentheses (`match (s) { ... }` still reads)
+//   Shape.Circle => print("c"),      an arm that is one statement, without braces (`=> { ... }` still reads)
+//   _ =>                             an arm that does nothing, before `}` or `,`
+//
+// A struct literal in the scrutinee is parenthesised, as it is in an `if`, because its `{` would
+// otherwise be taken for the one that opens the arms.
+
+import std.io
+import std.string
+
+enum Shape { Circle, Square, Tri(Int) }
+struct P { x: Int }
+
+fn show(s: Shape) -> Int {
+    let mut out = 0
+    match s {
+        Shape.Circle => out = 1,
+        Shape.Square => out = out + 100
+        Shape.Tri(n) => out = n * 2
+    }
+    return out
+}
+
+fn quiet(s: Shape) -> Int {
+    let mut seen = 0
+    match s {
+        Shape.Circle => seen = 1,
+        _ =>
+    }
+    return seen
+}
+
+fn braced(s: Shape) -> Int {
+    let mut out = 0
+    match (s) {
+        Shape.Circle => { out = 5 }
+        _ => { out = 6 }
+    }
+    return out
+}
+
+fn early(n: Int) -> Int {
+    match n {
+        1 => return 10,
+        2 => {
+            return 20
+        }
+        _ =>
+    }
+    return 0
+}
+
+fn value(s: Shape) -> Int {
+    return match s { Shape.Circle => 1, Shape.Square => 2, Shape.Tri(n) => n }
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    if (show(Shape.Circle) != 1 or show(Shape.Square) != 100 or show(Shape.Tri(4)) != 8) { bad = bad + fail("one statement per arm") }
+    if (quiet(Shape.Circle) != 1 or quiet(Shape.Square) != 0) { bad = bad + fail("an empty arm") }
+    if (braced(Shape.Circle) != 5 or braced(Shape.Square) != 6) { bad = bad + fail("parentheses and braces still read") }
+    if (early(1) != 10 or early(2) != 20 or early(3) != 0) { bad = bad + fail("return in an arm, with and without braces") }
+    if (value(Shape.Tri(7)) != 7 or value(Shape.Circle) != 1) { bad = bad + fail("a match expression without parentheses") }
+
+    let mut t = 0
+    match (P { x: 3 }).x {
+        3 => t = t + 1,
+        _ =>
+    }
+    if (t != 1) { bad = bad + fail("a struct literal in the scrutinee, parenthesised") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: match syntax")
+    return 0
+}
