@@ -602,6 +602,17 @@ lost to the analysis; the gap is the library surface.
 
 ## Language surface
 
+**`--verify` counts a struct literal inside a generic struct's literal and never releases it.**
+`Box<Point> { v: Point { x: 4, y: 5 }, n: 1 }` reports `2 allocated, 1 released, 1 leaked`, and so does
+`(Point { x: 4, y: 5 }, 1)`, which is `tuple2` of one. The AIF plan puts both sites on the stack
+(`prismio aif`: "small value does not escape"), the ordinary build allocates nothing, and the same
+shape returned from a function (both sites `unique heap`, 1,000 iterations) is balanced, 1001 and 1001.
+So this is the ledger's accounting of an embedded stack site, not memory lost; a non-generic struct
+holding a `Point` literal shows no allocation at all. Not fixed: the ledger and the placement plan
+disagree about whether the inner literal is a site, and that is the A-CONTAIN question again
+(`prismio-string-clone-a-contain`), which wants its own session. Rebind the inner value first
+(`let p = Point { .. }` then `Box<Point> { v: p }`) and the report is clean.
+
 **`Vec.length` is an `Int`, so `let n: Usize = v.length` needs `as`.** Ranges and indexes now
 take any integer type, but a length does not give one: the length is `Int` by the 32-bit `Int`
 decision. Whether `length` should answer `Usize`, or only convert where a `Usize` is expected, is

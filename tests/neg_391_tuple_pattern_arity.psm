@@ -1,0 +1,7 @@
+// expect-error: has no field `_2`
+// A pattern with more names than the tuple has elements: the third name reads an element that is not there.
+fn main() -> Int {
+    let t = (1, 2)
+    let (a, b, c) = t
+    return a
+}

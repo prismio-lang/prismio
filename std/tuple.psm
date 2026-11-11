@@ -1,0 +1,62 @@
+// What `(a, b)` is. A tuple is a struct whose fields are numbered, and nothing more:
+// `(Int, String)` is `Tuple2<Int, String>`, `(1, "a")` is `tuple2(1, "a")`, and `t.0` is
+// `t._0`. The parser writes those spellings (parse/tuples.psm), so a tuple has the layout,
+// the ownership and the move rules of the struct it stands for -- an element that owns
+// something is owned by the tuple, and a tuple passed to `sink` is moved whole.
+//
+// A program that writes a tuple gets this import without asking for it: it has named
+// nothing else that could supply the type. Two to four elements; past that, a struct with
+// names says more than a position does.
+
+import std.copy
+import std.eq
+
+public struct Tuple2<A, B> { public _0: A, public _1: B }
+public struct Tuple3<A, B, C> { public _0: A, public _1: B, public _2: C }
+public struct Tuple4<A, B, C, D> { public _0: A, public _1: B, public _2: C, public _3: D }
+
+public fn tuple2<A, B>(sink a: A, sink b: B) -> Tuple2<A, B> {
+    return Tuple2<A, B> { _0: a, _1: b }
+}
+
+public fn tuple3<A, B, C>(sink a: A, sink b: B, sink c: C) -> Tuple3<A, B, C> {
+    return Tuple3<A, B, C> { _0: a, _1: b, _2: c }
+}
+
+public fn tuple4<A, B, C, D>(sink a: A, sink b: B, sink c: C, sink d: D) -> Tuple4<A, B, C, D> {
+    return Tuple4<A, B, C, D> { _0: a, _1: b, _2: c, _3: d }
+}
+
+// A tuple of copyable elements is copyable, which is what puts one in a `Vec`, and a tuple
+// of comparable elements compares element by element.
+impl<A: Copy, B: Copy> Copy for Tuple2<A, B> {
+    fn copyOf(self) -> Self { return Tuple2<A, B> { _0: self._0.copyOf(), _1: self._1.copyOf() } }
+}
+
+impl<A: Copy, B: Copy, C: Copy> Copy for Tuple3<A, B, C> {
+    fn copyOf(self) -> Self {
+        return Tuple3<A, B, C> { _0: self._0.copyOf(), _1: self._1.copyOf(), _2: self._2.copyOf() }
+    }
+}
+
+impl<A: Copy, B: Copy, C: Copy, D: Copy> Copy for Tuple4<A, B, C, D> {
+    fn copyOf(self) -> Self {
+        return Tuple4<A, B, C, D> { _0: self._0.copyOf(), _1: self._1.copyOf(), _2: self._2.copyOf(), _3: self._3.copyOf() }
+    }
+}
+
+impl<A: Eq, B: Eq> Eq for Tuple2<A, B> {
+    fn eq(self, other: Self) -> Bool { return self._0.eq(other._0) and self._1.eq(other._1) }
+}
+
+impl<A: Eq, B: Eq, C: Eq> Eq for Tuple3<A, B, C> {
+    fn eq(self, other: Self) -> Bool {
+        return self._0.eq(other._0) and self._1.eq(other._1) and self._2.eq(other._2)
+    }
+}
+
+impl<A: Eq, B: Eq, C: Eq, D: Eq> Eq for Tuple4<A, B, C, D> {
+    fn eq(self, other: Self) -> Bool {
+        return self._0.eq(other._0) and self._1.eq(other._1) and self._2.eq(other._2) and self._3.eq(other._3)
+    }
+}

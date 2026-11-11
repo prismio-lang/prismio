@@ -50,8 +50,16 @@ impl Parser {
             self.fatal("a pattern in a `let` is for a local variable; a global `let` binds one name")
             return letNode
         }
-        let typeNode = self.parseTypeAnnotation()
-        let fields = self.parsePatternFields()
+        // `let (a, b) = t` takes a tuple apart; its fields are numbered, and no type is named.
+        let isTuple = self.checkVal(TokenType.SEPARATOR, "(")
+        let mut typeNode = ptr_to_node(ptr_null())
+        let mut fields = ptr_null()
+        if (isTuple) {
+            fields = self.parseTuplePattern()
+        } else {
+            typeNode = self.parseTypeAnnotation()
+            fields = self.parsePatternFields()
+        }
         self.expectVal(TokenType.ASSIGNMENT_OPERATOR, "=", "pattern")
         let value = self.parseExpression(0)
         if (self.dead == 1) { return letNode }
@@ -66,7 +74,7 @@ impl Parser {
             self.destructureSeq = self.destructureSeq + 1
             temp.s1 = root.clone()
             temp.i1 = 0
-            temp.child1 = node_to_ptr(typeNode)
+            if (isTuple == false) { temp.child1 = node_to_ptr(typeNode) }
             temp.child2 = node_to_ptr(value)
             first = temp
         }
@@ -89,7 +97,7 @@ impl Parser {
     // `{ a, b: name, c: Type { d }, _skip: _, .. }` -- a chain of STRUCT_FIELD: `s1` the
     // field, `s2` the name it binds ("_" for none), and for a nested pattern `i1` = 1 with
     // the type in `child2` and the inner chain in `child1`.
-    private fn parsePatternFields(self) -> Ptr {
+    internal fn parsePatternFields(self) -> Ptr {
         self.expectVal(TokenType.SEPARATOR, "{", "pattern")
         let fields = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
@@ -104,7 +112,10 @@ impl Parser {
             self.expectToken(TokenType.IDENTIFIER, "field name in a pattern")
             field.s2 = name.value.clone()
             if (self.matchVal(TokenType.SEPARATOR, ":")) {
-                if (self.atDestructure()) {
+                if (self.checkVal(TokenType.SEPARATOR, "(")) {
+                    field.i1 = 1
+                    field.child1 = self.parseTuplePattern()
+                } else if (self.atDestructure()) {
                     field.i1 = 1
                     field.child2 = node_to_ptr(self.parseTypeAnnotation())
                     field.child1 = self.parsePatternFields()

@@ -19,6 +19,10 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   (`origin: Point { x, y }`), `mut` makes the bindings assignable, `_` skips a field. Rewritten by the parser
   to `let x = p.x`, so ownership is unchanged (a value that is not a variable is held under a hidden name,
   which also checks the pattern's type). Not in `match` arms or parameters.
+- **Tuples.** `(Int, String)`, `(a, b)`, `t.0` (and `t.0.1`), `let (a, b) = t`, two to four elements. A tuple
+  is `Tuple2`..`Tuple4` from the new `std.tuple`, a generic struct with fields `_0`, `_1`, …; the parser writes
+  the spellings, and a file that writes a tuple imports `std.tuple` itself. `Copy` (so a `Vec<(Int, Int)>`)
+  and `Eq` (`==` on a tuple). `==` on any generic struct now finds an `impl<…> Eq for Template<…>`.
 
 ### Changed
 

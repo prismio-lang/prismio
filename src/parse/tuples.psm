@@ -1,0 +1,118 @@
+// Tuples: `(Int, String)`, `(1, "a")`, `t.0`, `let (a, b) = t`.
+//
+// A tuple is a generic struct with numbered fields (std/tuple.psm), and the parser writes
+// the spellings that mean it, so nothing past the parser is taught tuples:
+//
+//     (Int, String)      the type     Tuple2<Int, String>
+//     (1, "a")           the value    tuple2(1, "a")
+//     t.0                the field    t._0
+//     let (a, b) = t     the pattern  let a = t._0 / let b = t._1   (parse/patterns.psm)
+//
+// Two to four elements. A parenthesised single expression is still just that, `(x)` has
+// no one-element tuple, and `()` is not a value. The first tuple in a file brings in
+// `import std.tuple` at the end of the file's declarations, since the file has named
+// nothing else that could define the type.
+
+import lexer.token
+import lexer.scanner
+import ast.nodes
+import common.diagnostics
+import std.string
+
+impl Parser {
+    // Remembers the first tuple spelling, for the import. `at` is where the tuple is, so
+    // an error in the import points at it.
+    internal fn noteTuple(self, at: Token) {
+        if (nodeExists(self.tupleImport)) { return }
+        let needed = parserNodeFrom(NodeKind.IMPORT_STATEMENT, at)
+        needed.s1 = "std.tuple"
+        self.tupleImport = node_to_ptr(needed)
+    }
+
+    // The cursor is on the `(` of a type. Elements are types, separated by commas.
+    internal fn parseTupleType(self, typeNode: ASTNode) -> ASTNode {
+        let open = self.current()
+        self.expectVal(TokenType.SEPARATOR, "(", "tuple type")
+        let args = nodeList()
+        let mut count = 0
+        loop {
+            nodeListPush(args, self.parseTypeAnnotation())
+            count = count + 1
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        self.expectVal(TokenType.SEPARATOR, ")", "tuple type")
+        if (count < 2 or count > 4) {
+            diag_error_at_code("P3017", open.file, open.line, open.col, open.len,
+                               "a tuple type has two to four elements; write a struct for anything else")
+            return typeNode
+        }
+        self.noteTuple(open)
+        typeNode.s1 = "Tuple".concat(count.toString())
+        typeNode.i2 = 1
+        typeNode.child1 = args.head
+        if (self.matchVal(TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
+        return typeNode
+    }
+
+    // `first` was read inside `(` and a `,` follows. The rest of the elements, the `)`,
+    // and the call that builds the value.
+    internal fn parseTupleRest(self, first: ASTNode, open: Token) -> ASTNode {
+        let items = nodeList()
+        nodeListPush(items, first)
+        let mut count = 1
+        while (self.matchVal(TokenType.SEPARATOR, ",")) {
+            if (self.checkVal(TokenType.SEPARATOR, ")")) { break }
+            nodeListPush(items, self.parseBracketed())
+            count = count + 1
+        }
+        self.expectVal(TokenType.SEPARATOR, ")", "tuple")
+        if (count > 4) {
+            diag_error_at_code("P3017", open.file, open.line, open.col, open.len,
+                               "a tuple has two to four elements; write a struct for anything else")
+            return first
+        }
+        self.noteTuple(open)
+        let callee = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, open)
+        callee.s1 = "tuple".concat(count.toString())
+        let call = parserNodeFrom(NodeKind.CALL_EXPR, open)
+        call.child1 = node_to_ptr(callee)
+        call.child2 = items.head
+        return call
+    }
+
+    // `(a, b, Type { c }, (d, e))` after `let`: a chain of STRUCT_FIELD named `_0`, `_1`,
+    // in the shape parsePatternFields makes. The cursor is on the `(`.
+    internal fn parseTuplePattern(self) -> Ptr {
+        let open = self.current()
+        self.expectVal(TokenType.SEPARATOR, "(", "tuple pattern")
+        let fields = nodeList()
+        let mut index = 0
+        while (self.checkVal(TokenType.SEPARATOR, ")") == false) {
+            if (self.dead == 1) { break }
+            let field = self.node(NodeKind.STRUCT_FIELD)
+            field.s1 = "_".concat(index.toString())
+            if (self.checkVal(TokenType.SEPARATOR, "(")) {
+                field.i1 = 1
+                field.child1 = self.parseTuplePattern()
+            } else if (self.atDestructure()) {
+                field.i1 = 1
+                field.child2 = node_to_ptr(self.parseTypeAnnotation())
+                field.child1 = self.parsePatternFields()
+            } else {
+                let binding = self.current()
+                field.s2 = binding.value
+                self.expectToken(TokenType.IDENTIFIER, "a name for the element, or `_`")
+            }
+            nodeListPush(fields, field)
+            index = index + 1
+            if (self.matchVal(TokenType.SEPARATOR, ",") == false) { break }
+        }
+        self.expectVal(TokenType.SEPARATOR, ")", "tuple pattern")
+        if (index < 2 or index > 4) {
+            diag_error_at_code("P3017", open.file, open.line, open.col, open.len,
+                               "a tuple pattern has two to four elements")
+        }
+        self.noteTuple(open)
+        return fields.head
+    }
+}

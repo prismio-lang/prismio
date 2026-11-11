@@ -996,6 +996,9 @@ impl Parser {
             return typeNode
         }
 
+        // `(Int, String)` -- a tuple type, written as the generic struct it is (parse/tuples.psm).
+        if (self.checkVal(TokenType.SEPARATOR, "(")) { return self.parseTupleType(typeNode) }
+
         let name = self.current()
         if (name.type == TokenType.IDENTIFIER or name.type == TokenType.KEYWORD) {
             // `dyn Show` -- a trait object. **Contextual, not reserved**, for the
@@ -1322,7 +1325,7 @@ impl Parser {
         self.parseAifAnnotations(varNode)
 
         // `let Point { x, y } = p` -- see parse/patterns.psm.
-        if (isConst == false and self.atDestructure()) {
+        if (isConst == false and (self.atDestructure() or self.checkVal(TokenType.SEPARATOR, "("))) {
             return self.parseDestructure(varNode)
         }
 

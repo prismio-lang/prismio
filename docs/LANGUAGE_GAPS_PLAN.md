@@ -35,7 +35,7 @@ other language has and users hit within a day, **P2** is real but can wait.
 | # | Gap | Evidence | Pri |
 |---|---|---|---|
 | A1 | ~~**Nested structs**~~ **done 2026-11-11** (not yet inside a generic struct): an inline field type `pos: struct { x: Int, y: Int }`, and a struct declared inside another (`Outer.Inner`) | `P3201 expected IDENTIFIER in field name, found struct` | P0 |
-| A2 | **Tuples**: `(1, 2)`, `-> (Int, Int)`, `let (a, b) = t`, `t.0` | `P3201 expected ) ... found ,` and `expected a type name, found (` | P0 |
+| A2 | ~~**Tuples**~~ **done 2026-11-11** (two to four elements; no `Ord`/`Key`/`Display`): `(1, 2)`, `-> (Int, Int)`, `let (a, b) = t`, `t.0` | `P3201 expected ) ... found ,` and `expected a type name, found (` | P0 |
 | A3 | ~~**Struct patterns / destructuring**~~ **`let` form done 2026-11-11** (`match` arms and parameters not): `let P { x, y } = p` | `P3201 expected : in map literal entry, found ,` | P0 |
 | A4 | **Nested patterns**: `F.X(E.A(v))` | `P4001 a variant pattern binds names, not expressions` | P1 |
 | A5 | **Struct update**: `P { x: 5, ..p }` | `P3201 expected IDENTIFIER in struct literal field, found ..` | P1 |
@@ -443,3 +443,15 @@ unlisted fields are allowed (`..` is accepted, not required); a binding named li
 a global `let` takes no pattern. Not done: `match` arms (a struct scrutinee is not matchable at all today,
 so this only matters for nested patterns, A4), function parameters, the pattern's type is unchecked when
 the value is a variable. Tests: `test_383`, `neg_386`..`neg_389`; `--verify` 80/80, 0 leaked.
+
+## A2: as built
+
+A tuple is the generic struct `Tuple2`..`Tuple4` (`std/tuple.psm`) and `src/parse/tuples.psm` writes the
+spellings: `(A, B)` the type, `(a, b)` the call `tuple2(a, b)`, `t.0` and `t.0.1` the members `_0`, `_0._1`,
+`let (a, b) = t` a pattern over `_0`, `_1` (A3's machinery, with nested and struct patterns inside). The first
+tuple in a file parks an `import std.tuple`, appended by `parseModule` unless the file already has it. `Copy`
+and `Eq` are generic impls; `==` needed `semaStructImplements` so that a template's generic impl answers for an
+instance. Limits: two to four elements (`P3017`), no one-element tuple or `()`, no `Ord`/`Key`/`Display`.
+Found on the way and recorded in KNOWN_ISSUES: `--verify` reports a struct literal inside a generic struct's
+literal as leaked while the ordinary build allocates nothing.
+Tests: `test_384_tuples`, `neg_390`..`neg_392`.

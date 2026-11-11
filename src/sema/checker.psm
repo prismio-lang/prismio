@@ -4867,11 +4867,11 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
     let equality = op.equals("==") or op.equals("!=")
     let mut traitName = "Ord"
     let mut method = "cmp"
-    if (equality and semaTypeImplementsNamedTrait(module, leftT.name, "Eq")) {
+    if (equality and semaStructImplements(module, leftT.name, "Eq")) {
         traitName = "Eq"
         method = "eq"
     }
-    if (semaTypeImplementsNamedTrait(module, leftT.name, traitName) == false) { return false }
+    if (semaStructImplements(module, leftT.name, traitName) == false) { return false }
 
     let left = ptr_to_node(expr.child1)
     let right = ptr_to_node(expr.child2)
@@ -4906,6 +4906,18 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
     expr.child1 = node_to_ptr(call)
     expr.child2 = node_to_ptr(comparand)
     return true
+}
+
+// The same for an operator's routing, and a generic type's instance counts when its template
+// has a generic impl: `a == b` on `Tuple2<Int, String>` is `eq` from `impl<A: Eq, B: Eq> Eq for
+// Tuple2<A, B>`, whose bounds the call then checks. Not for a nested struct's name (`Owner$$name`),
+// which has no template, and not asked of bound checking (symbols.psm), where an instance's
+// own arguments decide.
+private fn semaStructImplements(module: ASTNode, typeName: String, traitName: String) -> Bool {
+    if (semaTypeImplementsNamedTrait(module, typeName, traitName)) { return true }
+    let at = typeName.indexOf("$")
+    if (at <= 0 or typeName.contains("$$")) { return false }
+    return semaTypeImplementsNamedTrait(module, typeName.substring(0, at), traitName)
 }
 
 internal fn semaTypeImplementsNamedTrait(module: ASTNode, typeName: String,

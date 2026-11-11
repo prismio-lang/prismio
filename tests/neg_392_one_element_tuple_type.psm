@@ -1,0 +1,5 @@
+// expect-error: a tuple type has two to four elements
+fn main() -> Int {
+    let t: (Int) = 1
+    return t
+}

@@ -555,6 +555,21 @@ impl Parser {
                 // `Config.default()`: a type's own default function (parseFunctionDecl).
                 if (name.type == TokenType.KEYWORD and name.value.equals("default")) {
                     self.advance()
+                } else if (name.type == TokenType.NUMBER_LITERAL and name.value.length == 1) {
+                    // `t.0`: an element of a tuple, whose fields are `_0`, `_1`, ...
+                    member.s1 = "_".concat(name.value)
+                    self.advance()
+                } else if (name.type == TokenType.FLOAT_LITERAL and name.value.length == 3
+                           and name.value.byteAt(1) == 46 and name.value.byteAt(0) >= 48
+                           and name.value.byteAt(0) <= 57 and name.value.byteAt(2) >= 48
+                           and name.value.byteAt(2) <= 57) {
+                    // `t.0.1`: the scanner reads `0.1` as one number; it is two elements.
+                    let inner = self.node(NodeKind.MEMBER_ACCESS_EXPR)
+                    inner.child1 = node_to_ptr(expr)
+                    inner.s1 = "_".concat(name.value.substring(0, 1))
+                    member.child1 = node_to_ptr(inner)
+                    member.s1 = "_".concat(name.value.substring(2, 1))
+                    self.advance()
                 } else {
                     self.expectToken(TokenType.IDENTIFIER, "member name")
                 }
@@ -824,8 +839,13 @@ impl Parser {
 
         // The same gap as the literal above, and closed the same way: `(a + b).x`
         // and `[1, 2].length()` are expressions whose suffixes nobody was offering.
+        let parenthesis = self.current()
         if (self.matchVal(TokenType.SEPARATOR, "(")) {
             let inner = self.parseBracketed()
+            // `(a, b)` is a tuple (parse/tuples.psm); `(a)` is still `a`.
+            if (self.checkVal(TokenType.SEPARATOR, ",")) {
+                return self.parseSuffixes(self.parseTupleRest(inner, parenthesis))
+            }
             self.expectVal(TokenType.SEPARATOR, ")", "parenthesized expression")
             return self.parseSuffixes(inner)
         }
