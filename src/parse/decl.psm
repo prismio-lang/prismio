@@ -128,6 +128,11 @@ impl Parser {
         self.hoistTail = ptr_null()
         self.spillHead = ptr_null()
         self.spillTail = ptr_null()
+        self.preHead = ptr_null()
+        self.preTail = ptr_null()
+        self.stmtCalls = 0
+        self.noHoist = 0
+        self.valueHint = ptr_null()
 
         let start = ptr_to_token(declarationStart)
         self.noteDropped(start)
@@ -905,7 +910,7 @@ private fn copyTypeAnnotationChain(ptr: Ptr) -> Ptr {
     return copies.head
 }
 
-private fn copyTypeAnnotationInto(target: ASTNode, sourcePtr: Ptr) {
+internal fn copyTypeAnnotationInto(target: ASTNode, sourcePtr: Ptr) {
     let source = ptr_to_node(sourcePtr)
     target.s1 = source.s1
     target.s2 = source.s2
@@ -1338,7 +1343,10 @@ impl Parser {
         }
 
         if (self.matchVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
+            // `let x: U8 = if c { 1 } else { 2 }`: the branches are read against `U8`.
+            self.valueHint = varNode.child1
             varNode.child2 = node_to_ptr(self.parseExpression(0))
+            self.valueHint = ptr_null()
         } else if (isConst) {
             self.error("a `const` needs a value: `const NAME = expression`")
         }

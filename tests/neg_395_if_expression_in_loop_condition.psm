@@ -1,0 +1,8 @@
+// expect-error: cannot be used here
+// A loop's condition runs every iteration; the statements an `if` expression becomes would run once.
+fn g() -> Int { return 1 }
+
+fn main() -> Int {
+    while (if g() > 0 { true } else { false }) { return 1 }
+    return 0
+}

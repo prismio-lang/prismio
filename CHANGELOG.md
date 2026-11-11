@@ -23,6 +23,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   is `Tuple2`..`Tuple4` from the new `std.tuple`, a generic struct with fields `_0`, `_1`, …; the parser writes
   the spellings, and a file that writes a tuple imports `std.tuple` itself. `Copy` (so a `Vec<(Int, Int)>`)
   and `Eq` (`==` on a tuple). `==` on any generic struct now finds an `impl<…> Eq for Template<…>`.
+- **`if` and `match` as values.** `let sign = if n < 0 { -1 } else { 1 }`, `return match (c) { Color.Red => "red", _ => "?" }`,
+  `println(if ok { "yes" } else { "no" })`. Rewritten by the parser to a temporary assigned in each branch, typed from the
+  first branch (or from the `let`'s type); a branch is one expression, an `if` needs its `else`, a `match` covers every value.
+  Refused where it could not run first: after a call in the same statement, in a loop header, in the right side of
+  `and`/`or`/`??`, in an `else if` condition, in a closure's expression body and in a global `let`.
 
 ### Changed
 

@@ -3190,7 +3190,12 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     let hasAnnotation = nodeExists(stmt.child1)
     let mut hasInit = nodeExists(stmt.child2)
 
-    if (hasAnnotation) {
+    // The temporary behind an `if` or `match` expression: its type is the first branch's, found
+    // when that assignment is checked (sema/value_exprs.psm).
+    let inferred = hasAnnotation and semaIsInferred(ptr_to_node(stmt.child1))
+    if (inferred) {
+        semaInferDeclare(stmt)
+    } else if (hasAnnotation) {
         varT = semaAnnotationType(module, ptr_to_node(stmt.child1))
     }
     if (hasInit and semaDefaultZeroesArray(ptr_to_node(stmt.child2), varT)) {
@@ -3247,7 +3252,7 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     // reported and the invalid type is that error's shadow -- saying "cannot
     // infer" as well blames the declaration for a mistake in its right-hand
     // side.
-    if (typeIsValid(varT) == false) {
+    if (typeIsValid(varT) == false and inferred == false) {
         if (hasAnnotation == false and hasInit == false) {
             semaErrorAt(stmt, "cannot infer a type for ".concat(diagQuote(stmt.s1),
                                                                 "; add a type annotation or an initializer"))
@@ -3285,7 +3290,7 @@ private fn semaVariableDecl(module: ASTNode, stmt: ASTNode, expectedReturn: Type
     // A local declared without a value is marked assignable whatever its `let` says:
     // its first assignment gives it the value, and sema/assign.psm is what refuses a
     // second one, and a read before the first.
-    if (stmt.i1 == 1 or (hasAnnotation and hasInit == false and varT.kind != TypeKind.ARRAY)) {
+    if (stmt.i1 == 1 or inferred or (hasAnnotation and hasInit == false and varT.kind != TypeKind.ARRAY)) {
         ir_mark_mutable(stmt.s1)
     }
     if (varT.kind == TypeKind.SLICE and hasInit) {
@@ -3373,6 +3378,7 @@ private fn semaCheckArrayCopy(value: ASTNode, targetT: TypeInfo, valueT: TypeInf
 
 private fn semaAssignment(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo) {
     let target = ptr_to_node(stmt.child1)
+    semaInferAssigned(module, target, ptr_to_node(stmt.child2))
     if (target.kind == NodeKind.INDEX_EXPR) {
         if (semaIndexAssignment(module, stmt, target)) { return }
     }
@@ -6009,6 +6015,7 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
 public fn analyzeModule(module: ASTNode) {
     // `Window.Size` and `Window.size` name structs the parser hoisted out of `Window`.
     semaResolveNestedStructs(module)
+    semaInferReset()
     // First, before any pass rewrites the bodies a `const fn` is run from.
     semaFoldConstants(module)
     ir_clear_var_types()

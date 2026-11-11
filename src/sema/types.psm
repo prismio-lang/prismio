@@ -122,6 +122,11 @@ private fn semaAnnotationTypeOf(module: ASTNode, tn: ASTNode) -> TypeInfo {
 }
 
 private fn semaAnnotationInner(module: ASTNode, tn: ASTNode) -> TypeInfo {
+    // The temporary behind an `if` or `match` expression: typed from its first branch (sema/value_exprs.psm).
+    if (tn.s1.equals("$infer")) {
+        if (nodeHasType(tn)) { return nodeGetType(tn) }
+        return typeInvalid()
+    }
     if (tn.i1 == 1) {
         // `Array<T, N>`. Where a length may be written was settled once, by
         // semaCheckArrayLengthPositions, so any path typing this meets it here.

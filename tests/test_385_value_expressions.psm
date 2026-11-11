@@ -1,0 +1,78 @@
+// `if` and `match` as values: `let sign = if n < 0 { -1 } else { 1 }`, `match (c) { Color.Red => "red", _ => "?" }`.
+// The parser turns each into the statements it has always been -- a temporary declared without a value
+// and assigned in every branch (parse/value_exprs.psm) -- and sema gives the temporary the type of the
+// first branch (sema/value_exprs.psm). So what is asserted is that it behaves as that hand-written code does:
+//
+//   positions       a `let`, a `return`, a call argument, the condition of another `if`
+//   else if         a chain, and an `if` inside a branch and inside a `match` arm
+//   typed `let`     `let small: U8 = if c { 200 } else { 7 }`: the literals adopt `U8`
+//   match           integers with `_`, a fieldless enum, a payload enum whose arm uses what it binds,
+//                   a `Result<String, String>` handing its payload on
+//   owned values    a `String` and a struct from a branch, in a loop, `--verify`: 0 leaked
+//   generic         an `if` in a generic function, solved per instance
+
+import std.io
+import std.string
+import std.option
+import std.copy
+
+struct P { x: Int, y: Int }
+enum Color { Red, Green, Blue }
+enum Shape { Dot, Rect(Int, Int), Named(String) }
+
+fn label(c: Color) -> String {
+    return match (c) { Color.Red => "red", Color.Green => "green", _ => "other" }
+}
+
+fn area(s: Shape) -> Int {
+    return match (s) { Shape.Dot => 0, Shape.Rect(w, h) => w * h, Shape.Named(n) => n.length }
+}
+
+fn sign(n: Int) -> Int { return if n < 0 { -1 } else if n == 0 { 0 } else { 1 } }
+
+fn pick<T>(flag: Bool, a: T, b: T) -> T where T: Copy { return if flag { a } else { b } }
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    if (sign(-5) != -1 or sign(0) != 0 or sign(9) != 1) { bad = bad + fail("else if chain") }
+    if (label(Color.Red) != "red" or label(Color.Blue) != "other") { bad = bad + fail("match on an enum") }
+    if (area(Shape.Rect(3, 4)) != 12 or area(Shape.Named("abc")) != 3 or area(Shape.Dot) != 0) {
+        bad = bad + fail("match arms using what they bind")
+    }
+
+    let n = 2
+    let word = match (n) { 1 => "one", 2 => "two", _ => "many" }
+    if (word != "two") { bad = bad + fail("match on an integer") }
+
+    let nested = if n > 0 { if n > 5 { 3 } else { 2 } } else { match (Color.Blue) { Color.Blue => 9, _ => 0 } }
+    if (nested != 2) { bad = bad + fail("an if inside a branch") }
+    let inCondition = if (if n > 0 { true } else { false }) { 1 } else { 2 }
+    if (inCondition != 1) { bad = bad + fail("an if in a condition") }
+
+    let small: U8 = if n > 5 { 200 } else { 7 }
+    if (small != 7) { bad = bad + fail("a typed let") }
+
+    let r: Result<String, String> = Result.Ok("ok")
+    let text = match (r) { Result.Ok(v) => v, Result.Err(e) => e }
+    if (text != "ok") { bad = bad + fail("a Result's payload") }
+
+    if (pick(true, 5, 6) != 5 or pick(false, 5, 6) != 6) { bad = bad + fail("generic") }
+
+    let mut total = 0
+    for i in 0..<20 {
+        let owned = if i % 2 == 0 { "ev".concat(i.toString()) } else { "od" }
+        let p = if i > 10 { P { x: i, y: 1 } } else { P { x: 0, y: 2 } }
+        total = total + owned.length + p.x + p.y
+    }
+    if (total != 221) { bad = bad + fail("owned values from branches") }
+    println(if bad == 0 { "PASS: value expressions" } else { "FAILED" })
+
+    if (bad != 0) { return 1 }
+    return 0
+}

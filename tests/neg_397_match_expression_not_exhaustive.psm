@@ -1,0 +1,7 @@
+// expect-error: this `match` expression has no arm for every value
+import std.string
+fn main() -> Int {
+    let n = 3
+    let word = match (n) { 1 => "one", 2 => "two" }
+    return word.length
+}

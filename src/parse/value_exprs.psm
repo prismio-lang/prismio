@@ -1,0 +1,212 @@
+// `if` and `match` as values.
+//
+//     let sign = if n < 0 { -1 } else { 1 }
+//     let name = match (c) { Color.Red => "red", Color.Blue => "blue", _ => "other" }
+//     println(if ok { "yes" } else { "no" })
+//
+// A rewrite in the parser, to the statements these have always been:
+//
+//     let $v0: <type of the first branch>          let sign: ...
+//     if n < 0 { $v0 = -1 } else { $v0 = 1 }       if n < 0 { sign = -1 } ...
+//     ... $v0 ...
+//
+// The statements go in front of the statement being read, and the expression becomes the
+// name of the temporary. So sema, ownership and AIF see a declaration without a value,
+// assigned once on every path -- the shape they check for a `let x: T` that is assigned
+// in both arms of an `if`, written out by hand -- and a branch that makes a `String`
+// hands it to the temporary like any assignment does.
+//
+// The temporary has no written type. Its type is the first branch's, found by sema when it
+// reaches that assignment (sema/value_exprs.psm), because a `match` arm's value may use the
+// names its pattern binds, which only exist there. Every other branch is then an assignment
+// to that type, and says so in the usual words when it disagrees. When the `let` has a type
+// (`let x: U8 = if c { 1 } else { 2 }`) the temporary is declared with it instead, so the
+// literals adopt it.
+//
+// Moving an expression ahead of the statement is right only when everything it skips would
+// have run anyway, in the same order. So an `if` or `match` is refused after a call in the
+// same statement, in a loop header, in the right side of `and`, `or` and `??`, in a closure's
+// expression body, in an `else if` condition, and outside a function. Each says to bind the
+// value to a variable first.
+//
+// A branch is one expression. A `match` arm is `Pattern => expression`.
+
+import lexer.token
+import lexer.scanner
+import ast.nodes
+import common.diagnostics
+import std.string
+
+impl Parser {
+    // The cursor is on `if`.
+    internal fn parseIfExpr(self) -> ASTNode {
+        let at = self.current()
+        self.advance()
+        if (self.valueExprAllowed(at, "an `if` expression") == false) { return self.valuePlaceholder(at) }
+
+        let hint = self.valueHint
+        self.valueHint = ptr_null()
+        let temp = self.valueTempName()
+        let savedCalls = self.stmtCalls
+        let cond = self.parseCondition("if condition")
+        self.valueHint = hint
+
+        let thenBlock = self.parseValueBranch(temp, at, true)
+        let mut elseBlock = ptr_to_node(ptr_null())
+        if (self.matchVal(TokenType.KEYWORD, "else")) {
+            // `else if` is an `if` expression of its own, as the value of this branch.
+            elseBlock = self.parseValueBranch(temp, at, self.checkVal(TokenType.KEYWORD, "if") == false)
+        } else {
+            diag_error_at_code("P3018", at.file, at.line, at.col, at.len,
+                               "an `if` expression needs an `else`: without one there is no value when the condition is false")
+        }
+        self.stmtCalls = savedCalls
+
+        let ifNode = parserNodeFrom(NodeKind.IF_STATEMENT, at)
+        ifNode.child1 = node_to_ptr(cond)
+        ifNode.child2 = node_to_ptr(thenBlock)
+        if (nodeIsNull(node_to_ptr(elseBlock)) == false) { ifNode.child3 = node_to_ptr(elseBlock) }
+        return self.finishValueExpr(temp, at, hint, ifNode)
+    }
+
+    // The cursor is on `match`.
+    internal fn parseMatchExpr(self) -> ASTNode {
+        let at = self.current()
+        self.advance()
+        if (self.valueExprAllowed(at, "a `match` expression") == false) { return self.valuePlaceholder(at) }
+
+        let hint = self.valueHint
+        self.valueHint = ptr_null()
+        let temp = self.valueTempName()
+        let savedCalls = self.stmtCalls
+        let matchNode = parserNodeFrom(NodeKind.MATCH_STATEMENT, at)
+        self.expectVal(TokenType.SEPARATOR, "(", "match scrutinee")
+        matchNode.child1 = node_to_ptr(self.parseExpression(0))
+        self.expectVal(TokenType.SEPARATOR, ")", "match scrutinee")
+        self.valueHint = hint
+
+        self.expectVal(TokenType.SEPARATOR, "{", "match body")
+        let arms = nodeList()
+        while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
+            if (self.dead == 1) { break }
+            let arm = self.node(NodeKind.MATCH_ARM)
+            if (self.matchVal(TokenType.IDENTIFIER, "_")) {
+                arm.s1 = "_"
+            } else {
+                arm.child1 = node_to_ptr(self.parseExpression(0))
+            }
+            self.expectVal(TokenType.FAT_ARROW, "=>", "match arm")
+            if (self.checkVal(TokenType.SEPARATOR, "{")) {
+                self.fatal("an arm of a `match` expression is an expression; a block of statements is an arm of a `match` statement")
+            }
+            arm.child2 = node_to_ptr(self.parseValueBranch(temp, at, false))
+            nodeListPush(arms, arm)
+            self.matchVal(TokenType.SEPARATOR, ",")
+        }
+        self.expectVal(TokenType.SEPARATOR, "}", "match body")
+        self.stmtCalls = savedCalls
+        matchNode.child2 = arms.head
+        return self.finishValueExpr(temp, at, hint, matchNode)
+    }
+
+    // Declares the temporary and queues it with its `if` or `match`; the expression is its name.
+    private fn finishValueExpr(self, temp: String, at: Token, hint: Ptr, branching: ASTNode) -> ASTNode {
+        let decl = parserNodeFrom(NodeKind.VARIABLE_DECL, at)
+        decl.s1 = temp.clone()
+        let annotation = parserNodeFrom(NodeKind.TYPE_ANNOTATION, at)
+        if (nodeExists(hint)) {
+            copyTypeAnnotationInto(annotation, hint)
+        } else {
+            annotation.s1 = "$infer"
+        }
+        decl.child1 = node_to_ptr(annotation)
+        self.queueBefore(decl)
+        self.queueBefore(branching)
+
+        let name = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, at)
+        name.s1 = temp.clone()
+        return name
+    }
+
+    // A branch's value as a block that assigns it to the temporary. Statements an `if` inside
+    // the value needed come first, inside this branch: they must run only when it is taken.
+    private fn parseValueBranch(self, temp: String, at: Token, braced: Bool) -> ASTNode {
+        let outerHead = self.preHead
+        let outerTail = self.preTail
+        let outerCalls = self.stmtCalls
+        let outerNoHoist = self.noHoist
+        self.preHead = ptr_null()
+        self.preTail = ptr_null()
+        self.stmtCalls = 0
+        self.noHoist = 0
+
+        if (braced) { self.expectVal(TokenType.SEPARATOR, "{", "branch of an `if` expression") }
+        let value = self.parseBracketed()
+        if (braced) { self.expectVal(TokenType.SEPARATOR, "}", "branch of an `if` expression: it is one expression") }
+
+        let block = parserNodeFrom(NodeKind.BLOCK, at)
+        let statements = nodeList()
+        let mut before = self.preHead
+        while (nodeExists(before)) {
+            let earlier = ptr_to_node(before)
+            let following = earlier.next
+            earlier.next = ptr_null()
+            nodeListPush(statements, earlier)
+            before = following
+        }
+        let target = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, at)
+        target.s1 = temp.clone()
+        let assignment = parserNodeFrom(NodeKind.ASSIGNMENT_STATEMENT, at)
+        assignment.child1 = node_to_ptr(target)
+        assignment.child2 = node_to_ptr(value)
+        nodeListPush(statements, assignment)
+        block.child1 = statements.head
+        block.i1 = at.line
+        block.i2 = at.col
+
+        self.preHead = outerHead
+        self.preTail = outerTail
+        self.stmtCalls = outerCalls
+        self.noHoist = outerNoHoist
+        return block
+    }
+
+    private fn queueBefore(self, node: ASTNode) {
+        node.next = ptr_null()
+        if (nodeExists(self.preTail)) {
+            ptr_to_node(self.preTail).next = node_to_ptr(node)
+        } else {
+            self.preHead = node_to_ptr(node)
+        }
+        self.preTail = node_to_ptr(node)
+    }
+
+    private fn valueTempName(self) -> String {
+        let name = "$v".concat(self.destructureSeq.toString())
+        self.destructureSeq = self.destructureSeq + 1
+        return name
+    }
+
+    private fn valueExprAllowed(self, at: Token, what: String) -> Bool {
+        if (nodeExists(self.fnNode) == false) {
+            self.fatal(what.concat(" is a value computed by statements, so it is for a function body; a global `let` takes an expression"))
+            return false
+        }
+        if (self.noHoist > 0) {
+            self.fatal(what.concat(" cannot be used here: it is read only sometimes, or more than once. Bind it to a variable first"))
+            return false
+        }
+        if (self.stmtCalls > 0) {
+            self.fatal(what.concat(" cannot follow a call in the same statement, since it is evaluated first. Bind it to a variable first"))
+            return false
+        }
+        return true
+    }
+
+    // What the expression is after a refusal; the declaration is dropped whole.
+    private fn valuePlaceholder(self, at: Token) -> ASTNode {
+        let name = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, at)
+        name.s1 = "$v"
+        return name
+    }
+}

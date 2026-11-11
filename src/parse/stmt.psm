@@ -18,6 +18,15 @@ impl Parser {
         let statements = nodeList()
         let hoistMark = self.hoistTail
         let mut declaredNested = false
+        // A block begins its own statements: what an `if` expression moves ahead of one
+        // stops at the block, and a loop's header does not reach into the loop's body.
+        let outerPreHead = self.preHead
+        let outerPreTail = self.preTail
+        let outerCalls = self.stmtCalls
+        let outerNoHoist = self.noHoist
+        self.preHead = ptr_null()
+        self.preTail = ptr_null()
+        self.noHoist = 0
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
             // Without this the loop spins at EOF until some inner parser happens to
             // fail, and blames whatever it was looking at instead of the brace that
@@ -42,6 +51,9 @@ impl Parser {
                 declaredNested = true
                 continue
             }
+            self.stmtCalls = 0
+            self.preHead = ptr_null()
+            self.preTail = ptr_null()
             let statement = self.parseStatement()
             if (self.dead == 0 and statement.kind == NodeKind.ERROR_NODE) {
                 // A platform block for another target (parsePlatformStatement): no statement.
@@ -55,6 +67,17 @@ impl Parser {
                 // it always was.
                 if (self.recoverStatement(mark)) { continue }
                 break
+            }
+            // What the statement's `if` and `match` expressions became, to run first.
+            let mut before = self.preHead
+            self.preHead = ptr_null()
+            self.preTail = ptr_null()
+            while (nodeExists(before)) {
+                let earlier = ptr_to_node(before)
+                let following = earlier.next
+                earlier.next = ptr_null()
+                nodeListPush(statements, earlier)
+                before = following
             }
             nodeListPush(statements, statement)
             // What the statement turned into besides itself (parse/patterns.psm).
@@ -70,6 +93,10 @@ impl Parser {
             }
         }
         if (declaredNested) { self.renameNestedCalls(statements.head, hoistMark) }
+        self.preHead = outerPreHead
+        self.preTail = outerPreTail
+        self.stmtCalls = outerCalls
+        self.noHoist = outerNoHoist
 
         // The closing brace, before it is consumed. A block's own span starts at `{`
         // and there was nothing recording where it ended, so every scope drop, arena
@@ -227,7 +254,7 @@ impl Parser {
     // parentheses, ended by the `{` of the body. `if (a) { }` is the parenthesised
     // expression `(a)`, and `if x == none { }` needs nothing around it. Struct
     // literals are off until a bracket opens, or `Foo {` would swallow the body.
-    private fn parseCondition(self, what: String) -> ASTNode {
+    internal fn parseCondition(self, what: String) -> ASTNode {
         if (self.checkVal(TokenType.SEPARATOR, "{")) {
             self.fatal("expected a condition in ".concat(what, ", found `{`"))
         }
@@ -251,7 +278,10 @@ impl Parser {
 
         if (self.matchVal(TokenType.KEYWORD, "else")) {
             if (self.checkVal(TokenType.KEYWORD, "if")) {
+                // Its condition runs only if this one failed: nothing may be moved ahead of the `if`.
+                self.noHoist = self.noHoist + 1
                 ifNode.child3 = node_to_ptr(self.parseIfStatement())
+                self.noHoist = self.noHoist - 1
             } else {
                 ifNode.child3 = node_to_ptr(self.parseBlock())
             }
@@ -611,14 +641,19 @@ impl Parser {
 impl Parser {
     private fn parseStatement(self) -> ASTNode {
         if (self.checkVal(TokenType.KEYWORD, "if")) { return self.parseIfStatement() }
-        if (self.checkVal(TokenType.KEYWORD, "while")) { return self.parseWhileStatement() }
+        // A loop's header runs once per iteration, so nothing in it may be moved ahead of the loop.
+        if (self.checkVal(TokenType.KEYWORD, "while") or self.checkVal(TokenType.KEYWORD, "for")
+            or self.atRepeatStatement()) {
+            self.noHoist = self.noHoist + 1
+            let looped = self.parseLoopKind()
+            self.noHoist = self.noHoist - 1
+            return looped
+        }
         if (self.checkVal(TokenType.KEYWORD, "loop")) { return self.parseLoopStatement() }
         if (self.checkVal(TokenType.KEYWORD, "match")) { return self.parseMatchStatement() }
-        if (self.checkVal(TokenType.KEYWORD, "for")) { return self.parseForStatement() }
         if (self.checkVal(TokenType.KEYWORD, "region")) { return self.parseRegionStatement() }
         if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseVariableDecl() }
         if (self.atConstDecl()) { return self.parseVariableDecl() }
-        if (self.atRepeatStatement()) { return self.parseRepeatStatement() }
         if (self.atScopeStatement()) { return self.parseScopeStatement() }
         if (self.atPlatformBlock()) { return self.parsePlatformStatement() }
 
@@ -630,7 +665,10 @@ impl Parser {
         if (first.type == TokenType.IDENTIFIER) {
             let after = self.peek()
             if (after.type == TokenType.SEPARATOR and after.value.equals("@")) {
-                return self.parseLabeledLoop()
+                self.noHoist = self.noHoist + 1
+                let labeled = self.parseLabeledLoop()
+                self.noHoist = self.noHoist - 1
+                return labeled
             }
         }
 

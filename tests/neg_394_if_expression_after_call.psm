@@ -1,0 +1,8 @@
+// expect-error: cannot follow a call in the same statement
+// The `if` is moved ahead of its statement, which is right only when nothing before it in the statement had run.
+fn g() -> Int { return 1 }
+fn f(a: Int, b: Int) -> Int { return a + b }
+
+fn main() -> Int {
+    return f(g(), if g() > 0 { 1 } else { 2 })
+}

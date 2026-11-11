@@ -478,6 +478,14 @@ public fn ir_set_var_type(name: String, varType: String) {
     bindingAdd(name, varType, false)
 }
 
+// A binding already made gets its type: the temporary behind an `if` or `match` expression is
+// declared before its type is known, and learns it from an assignment in a branch, a scope
+// below where it was bound. A second `ir_set_var_type` there would shadow it.
+public fn ir_retype_var(name: String, varType: String) {
+    let at = bindingFind(name)
+    if (at >= 0) { bindType[at] = irNameId(varType) }
+}
+
 public fn ir_set_global_var_type(name: String, varType: String) {
     bindingAdd(name, varType, true)
 }

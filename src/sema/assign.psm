@@ -172,6 +172,14 @@ private fn flowAssign(state: FlowState, from: FlowState) {
 private fn flowRead(state: FlowState, node: ASTNode) {
     let at = flowFind(state.open, node.s1)
     if (at < 0) { return }
+    // The temporary behind a `match` expression (an `if` without `else` is refused by the
+    // parser): some value reaches no arm, so there is nothing to give it.
+    if (node.s1.startsWith("$v")) {
+        semaErrorAt(node, "this `match` expression has no arm for every value")
+        diag_note("add a `_` arm, or an arm for each variant")
+        flowForget(state, ptr_to_node(state.open[at]))
+        return
+    }
     semaErrorAt(node, diagQuote(node.s1).concat(" may be used before it is assigned"))
     diag_note("assign it on every path before this read, or write `let ".concat(node.s1, ": T = default`"))
     // Once, so one missing assignment is not reported at every later read.

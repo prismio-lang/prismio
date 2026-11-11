@@ -85,7 +85,12 @@ impl Parser {
             // `a ?? b ?? c` tries `a`, then `b`, then `c`.
             let mut rightPrecedence = operatorPrecedence + 1
             if (op.equals("??")) { rightPrecedence = operatorPrecedence }
+            // The right side of `and`, `or` and `??` runs only sometimes, so an `if` or `match`
+            // there could not be run ahead of the statement (parse/value_exprs.psm).
+            let conditional = op.equals("and") or op.equals("or") or op.equals("??")
+            if (conditional) { self.noHoist = self.noHoist + 1 }
             let right = self.parseExpression(rightPrecedence)
+            if (conditional) { self.noHoist = self.noHoist - 1 }
 
             // From the operator token, not from where the parser is now. The right
             // operand has been consumed by this point, so `parserCurrent` is the
@@ -473,6 +478,7 @@ impl Parser {
 
         self.expectVal(TokenType.SEPARATOR, ")", "function call")
         call.child2 = arguments.head
+        self.stmtCalls = self.stmtCalls + 1
         return call
     }
 }
@@ -626,7 +632,10 @@ impl Parser {
         if (self.checkVal(TokenType.SEPARATOR, "{")) {
             node.child2 = node_to_ptr(self.parseBlock())
         } else {
+            // Run when the closure is called, not where it is written.
+            self.noHoist = self.noHoist + 1
             node.child2 = node_to_ptr(self.parseExpression(0))
+            self.noHoist = self.noHoist - 1
         }
         return node
     }
@@ -839,6 +848,10 @@ impl Parser {
 
         // The same gap as the literal above, and closed the same way: `(a + b).x`
         // and `[1, 2].length()` are expressions whose suffixes nobody was offering.
+        // `if c { a } else { b }` and `match (x) { P => a }` as values (parse/value_exprs.psm).
+        if (self.checkVal(TokenType.KEYWORD, "if")) { return self.parseSuffixes(self.parseIfExpr()) }
+        if (self.checkVal(TokenType.KEYWORD, "match")) { return self.parseSuffixes(self.parseMatchExpr()) }
+
         let parenthesis = self.current()
         if (self.matchVal(TokenType.SEPARATOR, "(")) {
             let inner = self.parseBracketed()

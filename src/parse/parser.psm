@@ -94,7 +94,16 @@ struct Parser {
     internal destructureSeq: Int,
     // The `import std.tuple` a tuple spelling needs, built at the first one and added to
     // the module's declarations when the file has been read (parse/tuples.psm).
-    internal tupleImport: Ptr // ASTNode, or null
+    internal tupleImport: Ptr, // ASTNode, or null
+    // `if` and `match` as expressions (parse/value_exprs.psm): the statements one needs
+    // before the statement being read, calls finished so far in that statement, how many
+    // enclosing contexts forbid moving an expression earlier, and the declared type of the
+    // `let` whose value is being read.
+    internal preHead: Ptr, // ASTNode, or null
+    internal preTail: Ptr, // ASTNode, or null
+    internal stmtCalls: Int,
+    internal noHoist: Int,
+    internal valueHint: Ptr // TYPE_ANNOTATION, or null
 }
 
 public fn parserCreate(tokens: Token) -> Parser {
@@ -103,7 +112,8 @@ public fn parserCreate(tokens: Token) -> Parser {
                     fnNode: ptr_null(), hoistHead: ptr_null(), hoistTail: ptr_null(), lengthDepth: 0,
                     externVarargs: 0, dead: 0, faultLine: 0, faultCol: 0, silentFaults: 0,
                     platformDepth: 0, platformSkip: 0, spillHead: ptr_null(), spillTail: ptr_null(),
-                    destructureSeq: 0, tupleImport: ptr_null() }
+                    destructureSeq: 0, tupleImport: ptr_null(), preHead: ptr_null(), preTail: ptr_null(),
+                    stmtCalls: 0, noHoist: 0, valueHint: ptr_null() }
 }
 impl Parser {
 

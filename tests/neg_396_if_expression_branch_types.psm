@@ -1,0 +1,6 @@
+// expect-error: expected Int, found String
+// The first branch gives the value its type and the others are assignments to it.
+fn main() -> Int {
+    let x = if 1 > 0 { 1 } else { "one" }
+    return 0
+}

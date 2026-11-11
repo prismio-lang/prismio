@@ -1,0 +1,60 @@
+// The type of the temporary behind an `if` or `match` expression (parse/value_exprs.psm).
+//
+// The parser declares `let $v0: $infer` and assigns it in each branch. Its type is the first
+// assignment's value, and that assignment is where sema can type it: a `match` arm's value may
+// use the names its pattern binds, which are in scope there and nowhere earlier.
+//
+//     declaration   semaInferDeclare   registers the temporary, type still unknown
+//     first branch  semaInferAssigned  types the value, gives the temporary that type
+//
+// Every later assignment is checked against it by the ordinary assignment check.
+
+import ast.nodes
+import ast.types
+import symbols.bindings
+import std.string
+import std.vec
+
+let mut inferNames: Vec<String>
+let mut inferDecls: Vec<Ptr>
+// 1 while the temporary at the same index is waiting for its type.
+let mut inferOpen: Vec<Int>
+
+internal fn semaInferReset() {
+    inferNames = []
+    inferDecls = []
+    inferOpen = []
+}
+
+internal fn semaIsInferred(annotation: ASTNode) -> Bool {
+    return annotation.s1.equals("$infer")
+}
+
+internal fn semaInferDeclare(decl: ASTNode) {
+    inferNames.push(decl.s1.clone())
+    inferDecls.push(node_to_ptr(decl))
+    inferOpen.push(1)
+}
+
+// An assignment to a name that may be a temporary still waiting for its type. Answers false
+// when it is not one, and the assignment goes on as any other.
+internal fn semaInferAssigned(module: ASTNode, target: ASTNode, value: ASTNode) -> Bool {
+    if (inferNames.length == 0 or target.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let mut at = inferNames.length - 1
+    while (at >= 0) {
+        if (inferOpen[at] == 1 and inferNames[at].equals(target.s1)) { break }
+        at = at - 1
+    }
+    if (at < 0) { return false }
+
+    let decl = ptr_to_node(inferDecls[at])
+    let valueT = semaExpr(module, value)
+    inferOpen[at] = 0
+    if (typeIsValid(valueT) == false) { return true }
+
+    let annotation = ptr_to_node(decl.child1)
+    nodeSetType(annotation, valueT)
+    nodeSetType(decl, valueT)
+    ir_retype_var(decl.s1, typeSemKey(valueT))
+    return true
+}

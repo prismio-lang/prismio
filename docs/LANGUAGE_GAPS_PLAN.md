@@ -50,7 +50,7 @@ other language has and users hit within a day, **P2** is real but can wait.
 
 | # | Gap | Evidence | Pri |
 |---|---|---|---|
-| B1 | **`if` / `match` as expressions**; `break` with a value | `P3201 expected an expression, found if` (roadmap: Coming Soon) | P0 |
+| B1 | ~~**`if` / `match` as expressions**~~ **done 2026-11-11** (a branch is one expression); `break` with a value still open | `P3201 expected an expression, found if` (roadmap: Coming Soon) | P0 |
 | B2 | **`?` operator** for `Result` and `T?` | `P3201 expected an expression, found ?` (roadmap: Coming Soon) | P0 |
 | B3 | **`if let`, `while let`, `let ... else`** (the `T?` forms are F3, which raises their priority) | `P3201 expected an expression, found let` | P1 |
 | B4 | **Match guards** `x if x > 2 =>` | `P3201 expected => in match arm, found if` | P1 |
@@ -455,3 +455,15 @@ instance. Limits: two to four elements (`P3017`), no one-element tuple or `()`, 
 Found on the way and recorded in KNOWN_ISSUES: `--verify` reports a struct literal inside a generic struct's
 literal as leaked while the ordinary build allocates nothing.
 Tests: `test_384_tuples`, `neg_390`..`neg_392`.
+
+## B1: as built
+
+`src/parse/value_exprs.psm` rewrites an `if` or `match` in expression position to `let $vN: $infer`, the statement, and
+the name `$vN`; `parseBlock` places the queued statements in front of the statement being read. Refused where moving it
+ahead is not equivalent (after a call in the statement, loop headers, right of `and`/`or`/`??`, `else if` conditions,
+closure expression bodies, globals). `src/sema/value_exprs.psm` gives the temporary its type when the first branch's
+assignment is checked, because a `match` arm may use its pattern's bindings; `ir_retype_var` updates the existing binding
+(a second `ir_set_var_type` in the branch scope shadowed it, and read as not `mut`). A typed `let` passes its type to
+the temporary so literals adopt it. Limits: a branch is one expression (no statements before the value), a `match` arm
+has no braces, `return`/argument positions get the first branch's type (a literal is `Int`, not the parameter's type).
+Tests: `test_385`, `neg_393`..`neg_397`. `break` with a value is the other half of B1 and is not built.
