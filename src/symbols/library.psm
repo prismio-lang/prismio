@@ -1,0 +1,189 @@
+// Which standard-library module declares a free function, for a program that names one without
+// importing anything that brings it in.
+//
+// The merge reads only what a program imports, so a call to `println` in a file with no `import
+// std.io` meets an empty overload set, and the honest answer used to be "unknown function". The
+// import to add is the one thing an editor's quick fix needs (`fix.addImport`), and the library is
+// on disk beside the compiler. So on that error path -- never on a program that resolves -- each
+// library module's text is read once and its top-level `public fn` lines are kept by name.
+//
+// **Text, not a parse.** A module's free functions are its column-0 `public fn` lines (a method
+// is written inside an `impl`, indented), and parsing every module of the library would put its
+// declarations into the compile that is reporting the error. A top-level function whose first
+// parameter is `self` is a method all the same, and is not kept: a method comes with its receiver,
+// so no import makes a bare call to one legal.
+
+import std.fs
+import std.string
+import std.vec
+
+// The `.plib` beside an installed compiler is binary; its interface section is the module's source.
+extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(rt_free)
+
+// The directory the library's modules are read from, `std/` of a checkout or `stdlib/` of a
+// toolchain; "" when there is none to offer (a `--freestanding` program, or no library found).
+let mut libraryDirectory = ""
+// Filled on the first question, from `libraryDirectory`. Parallel columns: function `i` is
+// `libraryNames[i]` in module `libraryModules[libraryOwners[i]]`, and a module's own `std` imports
+// are `libraryImports[m]` as `;std.io;std.string;`.
+let mut libraryModules: Vec<String>
+let mut libraryImports: Vec<String>
+let mut libraryNames: Vec<String>
+let mut libraryOwners: Vec<Int>
+let mut libraryScanned = false
+
+// Where the library is, for the compile about to run. The scan is redone for each directory, so
+// that a process that compiles twice never answers from the first one's library.
+public fn libraryUseDirectory(directory: String) {
+    libraryDirectory = directory.clone()
+    libraryScanned = false
+}
+
+// The library modules that declare a public free function `name`, in module order; empty when
+// none does or no library is known. The modules a program reaches into the machine through
+// (`std.raw` and its kind) are never offered: importing one is a decision, not a fix.
+public fn libraryModulesDeclaring(name: String) -> Vec<String> {
+    libraryScan()
+    let mut found: Vec<String> = []
+    for i in 0..<libraryNames.length {
+        if (libraryNames[i].equals(name) == false) { continue }
+        let owner = libraryOwners[i]
+        let mut seen = false
+        for earlier in found {
+            if (earlier.equals(libraryModules[owner])) { seen = true }
+        }
+        if (seen == false) { found.push(libraryModules[owner].clone()) }
+    }
+    return found
+}
+
+// The one module of `candidates` that each of the others imports, or "". `print` is declared in
+// `std.io` and again, for more types, in `std.display` and `std.number_text`; both import `std.io`,
+// which is the one a program that prints needs. Two modules that know nothing of each other
+// (`std.math` and `std.vec` both have a `min`) have no such answer.
+public fn libraryBaseModule(candidates: Vec<String>) -> String {
+    if (candidates.length == 1) { return candidates[0].clone() }
+    let mut base = "".clone()
+    for candidate in candidates {
+        let mut importedByAll = true
+        for other in candidates {
+            if (other.equals(candidate)) { continue }
+            if (libraryModuleImports(other, candidate) == false) { importedByAll = false }
+        }
+        if (importedByAll) {
+            if (base.equals("") == false) { return "".clone() }
+            base = candidate.clone()
+        }
+    }
+    return base
+}
+
+private fn libraryModuleImports(module: String, imported: String) -> Bool {
+    for m in 0..<libraryModules.length {
+        if (libraryModules[m].equals(module)) {
+            return libraryImports[m].contains(";".concat(imported, ";"))
+        }
+    }
+    return false
+}
+
+private fn libraryIsLowLevel(module: String) -> Bool {
+    return module.equals("std.raw") or module.equals("std.asm") or module.equals("std.port")
+        or module.equals("std.syscall")
+}
+
+private fn libraryScan() {
+    if (libraryScanned) { return }
+    libraryScanned = true
+    libraryModules = []
+    libraryImports = []
+    libraryNames = []
+    libraryOwners = []
+    if (libraryDirectory.equals("")) { return }
+    for file in listDirectory(libraryDirectory) {
+        let mut leaf = "".clone()
+        if (file.endsWith(".psm")) { leaf = file.slice(0, file.length - 4).clone() }
+        if (file.endsWith(".plib")) { leaf = file.slice(0, file.length - 5).clone() }
+        if (leaf.equals("")) { continue }
+        let module = "std.".concat(leaf)
+        if (libraryIsLowLevel(module)) { continue }
+        let path = joinPath(libraryDirectory, file)
+        let mut text = "".clone()
+        if (file.endsWith(".plib")) {
+            text = compiler_plib_interface(path, module)
+        } else {
+            text = readFile(path)
+        }
+        libraryScanModule(module, text)
+    }
+}
+
+// One module's free functions and its `std` imports, from its column-0 lines.
+private fn libraryScanModule(module: String, text: String) {
+    let owner = libraryModules.length
+    libraryModules.push(module.clone())
+    let mut imports = ";".clone()
+    for line in text.split("\n") {
+        if (line.startsWith("import std.")) {
+            let mut stop = 7
+            while (stop < line.length and (libraryIsNameByte(line.byteAt(stop)) or line.byteAt(stop) == 46)) {
+                stop = stop + 1
+            }
+            imports = imports.concat(line.slice(7, stop), ";")
+            continue
+        }
+        if (line.startsWith("public fn ") == false) { continue }
+        let name = libraryFreeFunctionName(line)
+        if (name.equals("") == false) {
+            libraryNames.push(name.clone())
+            libraryOwners.push(owner)
+        }
+    }
+    libraryImports.push(imports.clone())
+}
+
+// The name a `public fn` line declares, or "" when it declares a method (first parameter `self`)
+// or is not a declaration this scan understands.
+private fn libraryFreeFunctionName(line: String) -> String {
+    let start = 10
+    let mut at = start
+    while (at < line.length and libraryIsNameByte(line.byteAt(at))) { at = at + 1 }
+    if (at == start or at >= line.length) { return "".clone() }
+    let name = line.slice(start, at).clone()
+    // Past a generic parameter list, whose bounds may nest angle brackets of their own.
+    if (line.byteAt(at) == 60) {
+        let mut depth = 0
+        while (at < line.length) {
+            let b = line.byteAt(at)
+            if (b == 60) { depth = depth + 1 }
+            if (b == 62) {
+                depth = depth - 1
+                if (depth == 0) {
+                    at = at + 1
+                    break
+                }
+            }
+            at = at + 1
+        }
+    }
+    if (at >= line.length or line.byteAt(at) != 40) { return "".clone() }
+    at = at + 1
+    // The first parameter's name, past the passing-mode words that can come before it.
+    loop {
+        while (at < line.length and line.byteAt(at) == 32) { at = at + 1 }
+        let mut stop = at
+        while (stop < line.length and libraryIsNameByte(line.byteAt(stop))) { stop = stop + 1 }
+        let word = line.slice(at, stop)
+        if (word.equals("inout") or word.equals("mut") or word.equals("sink") or word.equals("borrow")) {
+            at = stop
+            continue
+        }
+        if (word.equals("self")) { return "".clone() }
+        break
+    }
+    return name
+}
+
+private fn libraryIsNameByte(b: Int) -> Bool {
+    return (b >= 97 and b <= 122) or (b >= 65 and b <= 90) or (b >= 48 and b <= 57) or b == 95
+}

@@ -1,6 +1,7 @@
 // Name mangling, the function symbol table, and overload resolution.
 
 import symbols.declarations
+import symbols.library
 import ast.nodes
 import lexer.token
 import ast.types
@@ -676,6 +677,41 @@ private fn semaTemplateName(name: String) -> String {
     return name.clone()
 }
 
+// A bare call to a name no module of the program declares, which a library module does: the
+// module was never imported, so the merge never read it. Reported as the import it needs, with the
+// fix an editor offers, rather than as an unknown function. A module this file imports at all is
+// not offered -- it was read and the name is not a free function of it, or a selection left it out.
+// Answers whether it reported.
+private fn semaReportLibraryFunction(call: ASTNode, written: String) -> Bool {
+    let mut candidates: Vec<String> = []
+    for module in libraryModulesDeclaring(written) {
+        if (ir_file_imports_module(call.file, module) == 0 and ir_select_any(call.file, module) == 0) {
+            candidates.push(module.clone())
+        }
+    }
+    if (candidates.length == 0) { return false }
+    let base = libraryBaseModule(candidates)
+    if (base.equals("")) {
+        let mut listed = "".clone()
+        for i in 0..<candidates.length {
+            if (i > 0 and i == candidates.length - 1) {
+                listed = listed.concat(" and ")
+            } else if (i > 0) {
+                listed = listed.concat(", ")
+            }
+            listed = listed.concat(diagQuote(candidates[i]))
+        }
+        let mut quantifier = "none"
+        if (candidates.length == 2) { quantifier = "neither" }
+        semaErrorAt(call, diagQuote(written).concat(" is declared in ", listed, ", ", quantifier, " of which this file imports"))
+        diag_note("import the module whose ".concat(diagQuote(written), " you mean"))
+        return true
+    }
+    semaErrorAt(call, diagQuote(written).concat(" is declared in ", diagQuote(base), ", which this file does not import"))
+    diag_note_add_import(base, "add `import ".concat(base, "`"))
+    return true
+}
+
 internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> ASTNode {
     // Track the winner as a pointer, not an ASTNode binding: `best = stmt` would
     // move the move-only struct out of `stmt`, and the loop still needs `stmt.next`.
@@ -864,8 +900,10 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     if (semaAnyArgumentInvalid(argPtr)) {
         return createNode(NodeKind.MODULE)
     }
+    // An instance is named for its types (`println$pack$Int`); the reader wrote the template's name.
+    let written = semaTemplateName(name)
     if (nameSeen) {
-        semaErrorAt(call, "no overload of ".concat(diagQuote(name),
+        semaErrorAt(call, "no overload of ".concat(diagQuote(written),
                                                    " accepts these argument types"))
         semaNoteArgumentTypes(argPtr)
         if (semaArrayAskedVecMethod(module, name, argPtr)) {
@@ -875,12 +913,12 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         return createNode(NodeKind.MODULE)
     }
     if (hiddenLevel == 1) {
-        semaErrorAt(call, diagQuote(name).concat(" is private to the file that declares it"))
+        semaErrorAt(call, diagQuote(written).concat(" is private to the file that declares it"))
         diag_note("mark it `public` to make it part of its module's surface, or `internal` to share it within its package")
         return createNode(NodeKind.MODULE)
     }
     if (hiddenLevel == 2) {
-        semaErrorAt(call, diagQuote(name).concat(" is internal to the package that declares it"))
+        semaErrorAt(call, diagQuote(written).concat(" is internal to the package that declares it"))
         diag_note("mark it `public` to make it part of that package's surface")
         return createNode(NodeKind.MODULE)
     }
@@ -889,13 +927,13 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         // reader to check their imports for a name that is a trait's.
         let mut kind = "module "
         if (traitQualified) { kind = "trait " }
-        semaErrorAt(call, kind.concat(diagQuote(qualifier), " declares no ", diagQuote(name)))
+        semaErrorAt(call, kind.concat(diagQuote(qualifier), " declares no ", diagQuote(written)))
         return createNode(NodeKind.MODULE)
     }
     if (unimportedModule.equals("") == false) {
-        semaErrorAt(call, diagQuote(name).concat(" is declared in ",
-                                                 diagQuote(unimportedModule),
-                                                 ", which this file does not import"))
+        semaErrorAt(call, diagQuote(written).concat(" is declared in ",
+                                                    diagQuote(unimportedModule),
+                                                    ", which this file does not import"))
         diag_note_add_import(unimportedModule, "add `import ".concat(unimportedModule,
                                         "`; an import is not transitive, so importing a module that imports it is not enough"))
         return createNode(NodeKind.MODULE)
@@ -904,10 +942,14 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
         semaReportArrayAskedVecMethod(call, name, argPtr)
         return createNode(NodeKind.MODULE)
     }
-    semaErrorAt(call, "unknown function ".concat(diagQuote(name)))
     // A function with no `self` written in an `impl` is named for its type
-    // (parseImplDecl), so a bare call to one misses it by design.
+    // (parseImplDecl), so a bare call to one misses it by design. The program's
+    // own type is the likelier meaning than a library module it never imported.
     let owner = semaTypeFunctionOwner(module, name)
+    if (owner.equals("") and semaReportLibraryFunction(call, written)) {
+        return createNode(NodeKind.MODULE)
+    }
+    semaErrorAt(call, "unknown function ".concat(diagQuote(written)))
     if (owner.equals("") == false) {
         diag_note(diagQuote(name).concat(" belongs to a type: call it `", owner, ".", name, "(...)`"))
     }

@@ -219,7 +219,11 @@ reader may rely on:
 - `arg`: a call's argument position, `p` the parameter's name and `i` its index.
 - `unresolved`: a name that did not resolve (`name`, and `what` it was used as). The module that
   exports a candidate is not here: it is the `fix.addImport` of the note after the diagnostic, which
-  is what the "add import" quick fix reads.
+  is what the "add import" quick fix reads. A free function is given one whether its module is in the
+  program and this file does not import it, or no file imports it at all: then the compiler reads the
+  standard library's modules (the `std/` or `stdlib/` it imports from) and names the one that declares
+  it. When several do and none is imported by all the others (`min` in `std.math` and `std.vec`), the
+  diagnostic lists them and carries no fix.
 - `completion`: with `--complete`, what could be written at the placeholder (see below).
 - Positions are 1-based lines and UTF-8 byte columns, as everywhere in the protocol. `stats` is last,
   and its absence means the run did not finish.

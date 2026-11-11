@@ -1,0 +1,10 @@
+// expect-error: `println` is declared in `std.io`, which this file does not import
+// expect-error: an import is not transitive
+// `println` is a generic: the call is resolved against its instance, `println$pack$Int`, and the
+// diagnostic named that instance -- a name nobody wrote. It names the template.
+import visibility.printing
+
+fn main() -> Int {
+    println(visibilityPrinted())
+    return 0
+}

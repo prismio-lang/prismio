@@ -3580,6 +3580,35 @@ def run_lsp_features_test():
                 note(actions and actions[0]["title"] == "Add `import std.fs`" and edit["newText"] == "import std.fs\n"
                      and edit["range"]["start"] == {"line": 2, "character": 0}, f"the quick fix: {actions}")
 
+            # A library function no import brings in: the compiler names the module from the library, so the fix is
+            # offered though nothing in the program reads std.io.
+            unimported = root / "unimported.psm"
+            unimported_text = "fn main() -> Int {\n    println(1)\n    return 0\n}\n"
+            unimported.write_text(unimported_text)
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": unimported.as_uri(), "languageId": "prismio",
+                                                                     "version": 1, "text": unimported_text}})
+            published = client.diagnostics_for(unimported.as_uri())["diagnostics"]
+            fixable = [d for d in published if d.get("data", {}).get("addImport") == "std.io"]
+            note(len(fixable) == 1 and fixable[0]["message"].startswith("`println` is declared in `std.io`, which this file does not import"),
+                 f"a library name nothing imports carries the fix: {published}")
+            if fixable:
+                actions = ask("textDocument/codeAction", uri=unimported.as_uri(), range=fixable[0]["range"],
+                              context={"diagnostics": fixable})
+                edit = actions[0]["edit"]["changes"][unimported.as_uri()][0] if actions else None
+                note(actions and actions[0]["title"] == "Add `import std.io`" and edit["newText"] == "import std.io\n"
+                     and edit["range"]["start"] == {"line": 0, "character": 0}, f"the library quick fix: {actions}")
+            # Reached through a module that imports it, a generic is named as written, not as its instance.
+            (root / "printer.psm").write_text("import std.io\n\npublic fn printed() -> Int {\n    println(1)\n    return 1\n}\n")
+            through = root / "through.psm"
+            through_text = "import printer\n\nfn main() -> Int {\n    println(printed())\n    return 0\n}\n"
+            through.write_text(through_text)
+            client.notify("textDocument/didOpen", {"textDocument": {"uri": through.as_uri(), "languageId": "prismio",
+                                                                     "version": 1, "text": through_text}})
+            published = client.diagnostics_for(through.as_uri())["diagnostics"]
+            note(len(published) == 1 and published[0]["message"].startswith("`println` is declared in `std.io`")
+                 and published[0].get("data", {}).get("addImport") == "std.io",
+                 f"the diagnostic names the function written, not its instance: {published}")
+
             messy = "fn  f( ) {\nlet a=1\n   return  a\n}\n"
             ugly = root / "ugly.psm"
             ugly.write_text(messy)

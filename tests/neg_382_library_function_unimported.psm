@@ -1,0 +1,21 @@
+// expect-error: `println` is declared in `std.io`, which this file does not import
+// expect-error: note: add `import std.io`
+// expect-error: `min` is declared in `std.math` and `std.vec`, neither of which this file imports
+// expect-error: unknown function `strFromScalar`
+// A library function named in a file that imports nothing which declares it. The merge never read
+// its module, so the overload set is empty, and "unknown function `println`" was all there was to
+// say -- with no import for an editor's quick fix to add, though the library is beside the
+// compiler. The library is read on this path only (symbols/library.psm).
+//
+// `print` and `println` are also declared in std.display and std.number_text; both import std.io,
+// which is the one offered. `min` is std.math's and std.vec's, neither of which imports the other,
+// so no single import is offered. A module the file selected from is not offered again: the fix
+// there is the selection, not a second import.
+import std.string.join
+
+fn main() -> Int {
+    println(1)
+    let low = min(1, 2)
+    let s = strFromScalar(65)
+    return 0
+}

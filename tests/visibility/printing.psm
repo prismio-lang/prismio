@@ -1,0 +1,8 @@
+// Imports `std.io` and calls `println`, so a file importing this one has std.io's generic `println`
+// in the merged program without importing std.io itself (neg_383).
+import std.io
+
+public fn visibilityPrinted() -> Int {
+    println(1)
+    return 1
+}

@@ -10,6 +10,7 @@
 // functions and the merge-tail cache are private to this file.
 
 import symbols.declarations
+import symbols.library
 import std.io
 import lexer.scanner
 import lexer.token
@@ -760,6 +761,14 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     ir_reset_import_aliases()
     ir_reset_extern_decls()
     mergeTailPtr = ptr_null()
+    // Read only if a name turns out to be unknown (sema/symbols.psm). A `--freestanding` program is
+    // offered nothing: most of the library is refused to it at the import.
+    let mut library = "".clone()
+    if (compiler_is_freestanding() != 1) {
+        let anchor = standardModulePath(baseDir, "string.psm")
+        if (anchor.equals("") == false) { library = directoryOf(anchor) }
+    }
+    libraryUseDirectory(library)
     // No prelude. `std.io` is an ordinary import, so a program that names no I/O
     // carries none -- which is what lets a target with no stdout link at all.
     mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
