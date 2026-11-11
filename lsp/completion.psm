@@ -405,6 +405,72 @@ fn completionStructLiteralType(text: String, start: Int) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Unfinished declarations: `fn helper(first: In` is a type position, but the parser drops a signature it cannot close.
+// ---------------------------------------------------------------------------------------------------------------------
+
+// The end of the line holding `at`: its line break, or the end of `text`.
+fn completionLineEnd(text: String, at: Int) -> Int {
+    let mut to = at
+    while (to < text.length and text.byteAt(to) != 10) { to = to + 1 }
+    return to
+}
+
+// What closes the declaration on the line holding `at`, to be written at the end of that line, or "" when the line is not
+// an `fn` or `struct` declaration with brackets left open. The brackets are closed innermost first; an `fn` whose line opens
+// no body gets an empty one. A function's open `{` means its body is on the lines below, so the line is not what failed,
+// and it is left alone. Only the closing text is returned: a copy of the document per request is a copy the server keeps.
+fn completionDeclarationClosers(text: String, at: Int) -> String {
+    let mut from = at
+    while (from > 0 and text.byteAt(from - 1) != 10) { from = from - 1 }
+    let to = completionLineEnd(text, at)
+    let mut head = from
+    while (head < to and completionIsSpace(text.byteAt(head))) { head = head + 1 }
+    let mut word = completionWordAt(text, head)
+    if (word.equals("public") or word.equals("internal") or word.equals("private")) {
+        head = head + word.length
+        while (head < to and completionIsSpace(text.byteAt(head))) { head = head + 1 }
+        word = completionWordAt(text, head)
+    }
+    let isFunction = word.equals("fn")
+    if (isFunction == false and word.equals("struct") == false) { return "".clone() }
+    // The brackets still open at the end of the line, outside string literals.
+    let mut open: Vec<Int> = []
+    let mut openedBody = false
+    let mut inString = false
+    let mut i = head
+    while (i < to) {
+        let b = text.byteAt(i)
+        if (inString) {
+            if (b == 92) { i = i + 1 }
+            if (b == 34) { inString = false }
+        } else if (b == 34) {
+            inString = true
+        } else if (b == 40 or b == 91 or b == 123) {
+            open.push(b)
+            if (b == 123) { openedBody = true }
+        } else if ((b == 41 or b == 93 or b == 125) and open.length > 0) {
+            open.pop()
+        }
+        i = i + 1
+    }
+    let mut closers = "".clone()
+    let mut k = open.length - 1
+    while (k >= 0) {
+        let b = open[k]
+        if (b == 40) { closers = closers.concat(")") }
+        if (b == 91) { closers = closers.concat("]") }
+        if (b == 123) {
+            if (isFunction) { return "".clone() }
+            closers = closers.concat("}")
+        }
+        k = k - 1
+    }
+    if (closers.equals("")) { return closers }
+    if (isFunction and openedBody == false) { closers = closers.concat(" {}") }
+    return closers
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Call snippets: choosing `push` inserts `push(value)` with `value` selected.
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -592,6 +658,7 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
 
     let mut tries = 0
     let mut ran = false
+    let mut closed = false
     loop {
         // A scratch copy of its own for each attempt: an attempt is a new file to the compiler.
         let buffer = joinPath(scratch, "complete-buffer-".concat(tries.toString(), ".psm"))
@@ -628,6 +695,18 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
         ran = run.ok
         if (run.ok == false or tries >= 3) { break }
         if (fileExists(output) and indexCompletionContext(output).equals("") == false) { break }
+        // A declaration being written has not been closed yet (`fn helper(first: In`, `struct S { f: In`), and the
+        // parser drops what it cannot finish: close the caret's line and ask again before emptying any other.
+        if (closed == false) {
+            closed = true
+            let closers = completionDeclarationClosers(body, start)
+            if (closers.equals("") == false) {
+                let lineEnd = completionLineEnd(body, start)
+                body = body.slice(0, lineEnd).concat(closers, body.slice(lineEnd, body.length))
+                tries = tries + 1
+                continue
+            }
+        }
         let mut blanked = false
         for report in run.output.split("\n") {
             if (report.startsWith("{") == false) { continue }

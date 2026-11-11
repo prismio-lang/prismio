@@ -3462,7 +3462,15 @@ def run_lsp_features_test():
                     ("import std.\n", "import std.", ["io", "string", "vec"], []),
                     ("import {io} \n", "import {io} ", ["from"], ["import", "return"]),
                     ("fn main() {\n    let v: \n}\n", "let v: ", ["Int", "String", "Vec", "StringBuilder"], ["println", "return"]),
-                    ("import std.io\n\nfn main() -> Int {\n    println(1.)\n    pri\n    return 0\n}\n", "    pri", ["print", "println"], [])):
+                    ("import std.io\n\nfn main() -> Int {\n    println(1.)\n    pri\n    return 0\n}\n", "    pri", ["print", "println"], []),
+                    # A declaration still being written: the parser drops a signature or a struct it cannot close,
+                    # so the server closes the caret's line in its scratch copy before giving up on the type position.
+                    ("struct Point { x: Int }\n\nfn helper(first: In\n\nfn main() -> Int {\n    return 0\n}\n",
+                     "fn helper(first: In", ["Int", "String", "Point"], ["return", "main"]),
+                    ("struct Point { x: Int }\n\nfn helper(first: Int, second: Po\n\nfn main() -> Int {\n    return 0\n}\n",
+                     "second: Po", ["Int", "Point"], ["return", "main"]),
+                    ("struct Point { x: Int }\n\nfn main() -> Int {\n    return 0\n}\n\nstruct Pair { left: In\n",
+                     "struct Pair { left: In", ["Int", "String", "Point"], ["return", "main"])):
                 version += 1
                 client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": version},
                                                          "contentChanges": [{"text": text}]})

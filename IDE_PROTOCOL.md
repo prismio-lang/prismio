@@ -256,6 +256,11 @@ them all, and attaches `additionalTextEdits` with the import, in sorted place, t
 document does not import. `import` and `from` lines, and a caret in a string, comment or declaring name, are answered
 without a check.
 
+When a check does not reach the placeholder, the parser has dropped the declaration around it. If the caret's line is an
+`fn` or `struct` declaration with brackets still open (`fn helper(first: In`, `struct S { f: In`), the server closes
+them at the end of that line in its scratch copy (an `fn` with no body on the line gets `{}`) and asks again; only then
+does it empty the other lines a `P32xx` error names.
+
 **What is offered, and in what order.** `rank` orders the records of one `context`, smallest first:
 
 | context | 0 | 1 | 2 |
