@@ -244,7 +244,13 @@ internal fn semaCheckValue(module: ASTNode, valNode: ASTNode, expected: TypeInfo
     // `{ k: v }` becomes a call, or `{}` a `default`, before either is checked --
     // so the `default` below sees `{}` as it sees one that was written.
     if (valNode.kind == NodeKind.MAP_LITERAL_EXPR) {
-        if (semaMapLiteral(module, valNode, expected) == false) { return typeInvalid() }
+        // `{ w: 1, h: 2 }` where a struct is expected is that struct's literal
+        // (sema/nested_structs.psm); a `HashMap` is a struct too, and it is the exception.
+        if (typeIsValid(expected) and expected.kind == TypeKind.STRUCT and semaMapIsInstance(module, expected) == false) {
+            if (semaBraceStructLiteral(module, valNode, expected) == false) { return typeInvalid() }
+        } else if (semaMapLiteral(module, valNode, expected) == false) {
+            return typeInvalid()
+        }
     }
     // `default` becomes the expected type's value here, and is then checked as
     // the literal it became -- so `0` still adopts `U8` below.

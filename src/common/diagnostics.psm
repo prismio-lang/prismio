@@ -63,6 +63,9 @@ private fn seenOpen() {
 // Quotes a name the way every message in the compiler quotes one, so the style cannot drift
 // between call sites.
 public fn diagQuote(name: String) -> String {
+    // A struct written inside another is `Owner$$name` inside the compiler and
+    // `Owner.name` in the program.
+    if (name.contains("$$")) { return "`".concat(name.replaceAll("$$", "."), "`") }
     return "`".concat(name, "`")
 }
 

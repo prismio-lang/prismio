@@ -20,6 +20,7 @@
 //                                a struct variant
 
 import lexer.token
+import lexer.scanner
 import common.text
 import ast.nodes
 import common.diagnostics
@@ -200,7 +201,23 @@ impl Parser {
         if (self.checkVal(TokenType.SEPARATOR, "{") == false) { return false }
         let owner = ptr_to_node(member.child1)
         if (owner.kind != NodeKind.IDENTIFIER_EXPR and owner.kind != NodeKind.TYPE_ANNOTATION) { return false }
-        return startsUppercase(owner.s1) and startsUppercase(member.s1)
+        if (startsUppercase(owner.s1) == false) { return false }
+        if (startsUppercase(member.s1)) { return true }
+        return self.atFieldInitShape()
+    }
+
+    // `Window.size { w: 1 }` -- a struct nested as a field is named with the field's
+    // lower-case name, so the member alone cannot say this is a literal. The body can:
+    // an identifier and then `:`, `,` or `}` is a field initialiser, which no block that
+    // follows an expression begins with. The cursor is on the `{`.
+    private fn atFieldInitShape(self) -> Bool {
+        let open = self.current()
+        if (nodeIsNull(open.tokNext)) { return false }
+        let first = ptr_to_token(open.tokNext)
+        if (first.type != TokenType.IDENTIFIER) { return false }
+        if (nodeIsNull(first.tokNext)) { return false }
+        let second = ptr_to_token(first.tokNext)
+        return second.value.equals(":") or second.value.equals(",") or second.value.equals("}")
     }
 }
 

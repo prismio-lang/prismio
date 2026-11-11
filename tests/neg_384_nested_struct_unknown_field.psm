@@ -1,0 +1,8 @@
+// expect-error: struct `A.b` has no field `y`
+// A nested struct is checked like any struct, and its messages call it by the path the program wrote.
+struct A { b: struct { x: Int } }
+
+fn main() -> Int {
+    let a = A { b: A.b { x: 1, y: 2 } }
+    return a.b.x
+}

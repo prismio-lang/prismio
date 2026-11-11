@@ -1,0 +1,201 @@
+// Nested structs: `size: struct { w: Int, h: Int }` and `struct Size { ... }` written
+// inside another struct.
+//
+// The parser hoists each one to a top-level struct named `Owner$$name` (parse/decl.psm,
+// parseStructDeclIn): `Window.size` is `Window$$size`, and `Window.Size` is
+// `Window$$Size`. `$` cannot occur in a source identifier, so the name cannot collide,
+// and every pass after this one sees an ordinary struct stored inline in its parent --
+// layout, ownership, AIF and codegen are not taught anything.
+//
+// What is left for sema is the spelling a program uses to reach one:
+//
+//     size: Window.size          a type          ASSOC_TYPE_REF  ->  TYPE_ANNOTATION
+//     Window.Size { w: 1 }       a literal       dotted s1       ->  `Window$$Size`
+//     size: { w: 1, h: 2 }       a literal whose type the context names
+//
+// The first two are rewritten once, before the type registry is filled, and only in a
+// module that declares a nested struct. The third is rewritten where the expected type
+// is known (semaCheckValue), and works for any struct.
+
+import ast.nodes
+import ast.types
+import common.diagnostics
+import std.string
+
+internal fn semaResolveNestedStructs(module: ASTNode) {
+    if (nestedModuleHasNested(module) == false) { return }
+    nestedInheritVisibility(module)
+    nestedResolveScopedNames(module)
+    nestedResolveNames(module, module.child1)
+}
+
+// One shallow scan, as monoModuleHasAssocType does: a module that writes no nested
+// struct pays this and nothing else. Only the parser makes a `$` name before sema runs.
+private fn nestedModuleHasNested(module: ASTNode) -> Bool {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.STRUCT_DECL and stmt.s1.contains("$$")) { return true }
+        p = stmt.next
+    }
+    return false
+}
+
+private fn nestedStructNamed(module: ASTNode, name: String) -> ASTNode {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.STRUCT_DECL and stmt.s1.equals(name)) { return stmt }
+        p = stmt.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+// A nested struct is as visible as the struct it is written in: it has no marker of
+// its own, and a type a caller can reach but not name would make `w.size` unusable.
+private fn nestedInheritVisibility(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.STRUCT_DECL and stmt.s1.contains("$$")) {
+            stmt.i2 = nestedVisibilityOf(module, stmt)
+        }
+        p = stmt.next
+    }
+}
+
+private fn nestedVisibilityOf(module: ASTNode, decl: ASTNode) -> Int {
+    let at = decl.s1.lastIndexOf("$$")
+    if (at < 0) { return decl.i2 }
+    let owner = nestedStructNamed(module, decl.s1.substring(0, at))
+    if (nodeIsNull(node_to_ptr(owner))) { return decl.i2 }
+    return nestedVisibilityOf(module, owner)
+}
+
+// Inside a struct, a struct declared in it (or in a struct around it) is named bare:
+// `limits: Limits` in `Config` means `Config.Limits`. The nearest scope wins, so a
+// nested `Limits` shadows a top-level one for the fields written beside it, as a local
+// does. Only field types are scoped; elsewhere the path is written (`Config.Limits`).
+private fn nestedResolveScopedNames(module: ASTNode) {
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.STRUCT_DECL) {
+            let mut fieldPtr = stmt.child1
+            while (nodeExists(fieldPtr)) {
+                let field = ptr_to_node(fieldPtr)
+                nestedScopeAnnotation(module, stmt.s1, field.child1)
+                fieldPtr = field.next
+            }
+        }
+        p = stmt.next
+    }
+}
+
+private fn nestedScopeAnnotation(module: ASTNode, scope: String, ptr: Ptr) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.kind == NodeKind.TYPE_ANNOTATION and node.i1 == 0 and node.i2 == 0
+            and node.s1.length > 0) {
+            let found = nestedScopedName(module, scope, node.s1)
+            if (found.length > 0) { node.s1 = found }
+        }
+        nestedScopeAnnotation(module, scope, node.child1)
+        p = node.next
+    }
+}
+
+// The nearest enclosing `scope$$name` that is a declared struct, or "".
+private fn nestedScopedName(module: ASTNode, scope: String, name: String) -> String {
+    let mut s = scope.clone()
+    loop {
+        let candidate = s.concat("$$", name)
+        if (nodeIsNull(node_to_ptr(nestedStructNamed(module, candidate))) == false) { return candidate }
+        let at = s.lastIndexOf("$$")
+        if (at < 0) { return "" }
+        s = s.substring(0, at)
+    }
+}
+
+// Children first, so `Window.a.b` -- a projection whose base is a projection -- has
+// a named base by the time the outer one is looked at.
+private fn nestedResolveNames(module: ASTNode, ptr: Ptr) {
+    let mut p = ptr
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        nestedResolveNames(module, node.child1)
+        nestedResolveNames(module, node.child2)
+        nestedResolveNames(module, node.child3)
+        if (node.kind == NodeKind.ASSOC_TYPE_REF) {
+            nestedResolveTypePath(module, node)
+        } else if (node.kind == NodeKind.STRUCT_LITERAL_EXPR and node.s1.contains(".")) {
+            nestedResolveLiteralPath(module, node)
+        }
+        p = node.next
+    }
+}
+
+// `Window.Size` in type position parsed as a projection through a trait's associated
+// type. When `Window$$Size` is a declared struct that is what it names. A projection
+// whose base is not such a struct is left alone: it is still a trait's `T.Item`.
+private fn nestedResolveTypePath(module: ASTNode, node: ASTNode) {
+    if (nodeIsNull(node.child1)) { return }
+    let base = ptr_to_node(node.child1)
+    if (base.kind != NodeKind.TYPE_ANNOTATION) { return }
+    if (base.i1 != 0 or base.i2 != 0 or base.i3 != 0) { return }
+    let candidate = base.s1.concat("$$", node.s1)
+    if (nodeIsNull(node_to_ptr(nestedStructNamed(module, candidate)))) { return }
+
+    node.kind = NodeKind.TYPE_ANNOTATION
+    node.s1 = candidate
+    node.child1 = ptr_null()
+}
+
+// `Window.Size { w: 1, h: 2 }` parsed as an enum's struct-variant literal. If the
+// owner is a struct with a nested `Size`, it is a literal of that struct.
+private fn nestedResolveLiteralPath(module: ASTNode, node: ASTNode) {
+    let at = node.s1.indexOf(".")
+    let candidate = node.s1.substring(0, at).concat("$$", node.s1.substring(at + 1, node.s1.length - at - 1))
+    if (nodeIsNull(node_to_ptr(nestedStructNamed(module, candidate)))) { return }
+    node.s1 = candidate
+    node.child3 = ptr_null()
+}
+
+// `{ w: 1, h: 2 }` where the context expects a struct. The parser reads braces with a
+// colon as a map literal; here the expected type says which it is, so the entries
+// become the struct literal's fields in place. Answers false after reporting.
+internal fn semaBraceStructLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -> Bool {
+    let fields = nodeList()
+    let mut keyPtr = node.child1
+    let mut valuePtr = node.child2
+    while (nodeExists(keyPtr) and nodeExists(valuePtr)) {
+        let key = ptr_to_node(keyPtr)
+        let value = ptr_to_node(valuePtr)
+        keyPtr = key.next
+        valuePtr = value.next
+        if (key.kind != NodeKind.IDENTIFIER_EXPR) {
+            semaErrorAt(key, "a field name is expected before `:` in a ".concat(diagQuote(expected.name),
+                                                                              " literal"))
+            nodeSetType(node, typeInvalid())
+            return false
+        }
+        let field = createNode(NodeKind.STRUCT_FIELD)
+        nodeSpanFrom(field, key)
+        field.s1 = key.s1.clone()
+        value.next = ptr_null()
+        field.child1 = node_to_ptr(value)
+        nodeListPush(fields, field)
+    }
+
+    node.kind = NodeKind.STRUCT_LITERAL_EXPR
+    node.s1 = expected.name.clone()
+    node.s2 = ""
+    node.i1 = 0
+    node.i2 = 0
+    node.i3 = 0
+    node.child1 = fields.head
+    node.child2 = ptr_null()
+    node.child3 = ptr_null()
+    return true
+}

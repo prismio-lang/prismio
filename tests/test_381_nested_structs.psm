@@ -1,0 +1,89 @@
+// A struct written inside another: `size: struct { w: Int, h: Int }` as a field's type, and
+// `struct Size { ... }` between the fields. The parser lifts each out as a struct named
+// `Owner$$name` (parse/decl.psm), sema/nested_structs.psm resolves the path a program writes
+// (`Window.size`, `Window.Size`), and from there it is an ordinary struct stored inline in its owner.
+//
+// What is asserted:
+//
+//   inline field     read, write, pass to a function, name as a type (`Window.size`)
+//   scoped struct    `Config.Limits`, and the bare `Limits` inside `Config`'s own fields
+//   literals         `Window.size { ... }`, `Config.Limits { ... }`, and `{ ... }` where the
+//                    field's type says which struct it is
+//   depth            a nested struct inside a nested struct, `Config.Server.tls`
+//   everything else  an `impl` on a nested struct, `T?` of one, and a plain struct taking
+//                    the `{ ... }` form too
+
+import std.io
+import std.string
+
+struct Window {
+    title: String,
+    size: struct { w: Int, h: Int },
+    origin: struct { x: Int, y: Int }
+}
+
+struct Config {
+    struct Limits { max: Int, min: Int }
+    struct Server {
+        host: String,
+        port: Int,
+        tls: struct { cert: String, on: Bool }
+    }
+    name: String,
+    limits: Limits,
+    server: Server,
+    fallback: Limits?
+}
+
+struct Plain { id: Int }
+struct Holder { plain: Plain }
+
+impl Config.Limits {
+    fn span(self: Config.Limits) -> Int { return self.max - self.min }
+}
+
+fn area(s: Window.size) -> Int { return s.w * s.h }
+
+fn endpoint(s: Config.Server) -> String { return s.host.concat(":", s.port.toString()) }
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let win = Window {
+        title: "main",
+        size: { w: 4, h: 5 },
+        origin: Window.origin { x: 1, y: 2 }
+    }
+    if (area(win.size) != 20) { bad = bad + fail("inline field passed on") }
+    win.size.w = 6
+    if (win.size.w * win.size.h != 30) { bad = bad + fail("inline field written") }
+    if (win.origin.x + win.origin.y != 3) { bad = bad + fail("written literal") }
+
+    let cfg = Config {
+        name: "c",
+        limits: Config.Limits { max: 9, min: 1 },
+        server: Config.Server { host: "h", port: 80, tls: { cert: "x.pem", on: true } },
+        fallback: none
+    }
+    if (cfg.limits.span() != 8) { bad = bad + fail("impl on a nested struct") }
+    if (endpoint(cfg.server) != "h:80") { bad = bad + fail("scoped struct passed on") }
+    if (cfg.server.tls.cert != "x.pem" or cfg.server.tls.on == false) { bad = bad + fail("two levels deep") }
+
+    let tls: Config.Server.tls = cfg.server.tls
+    if (tls.cert != "x.pem") { bad = bad + fail("a two-level path as a type") }
+
+    let limits: Config.Limits = { max: 3, min: 2 }
+    if (limits.max != 3) { bad = bad + fail("brace literal from an annotation") }
+
+    let holder = Holder { plain: { id: 7 } }
+    if (holder.plain.id != 7) { bad = bad + fail("brace literal for a plain struct") }
+
+    if (bad != 0) { return 1 }
+    println("PASS: nested structs")
+    return 0
+}

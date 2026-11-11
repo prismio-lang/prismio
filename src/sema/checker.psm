@@ -5995,6 +5995,8 @@ private fn semaLowerClosure(module: ASTNode, expr: ASTNode) -> TypeInfo {
 }
 
 public fn analyzeModule(module: ASTNode) {
+    // `Window.Size` and `Window.size` name structs the parser hoisted out of `Window`.
+    semaResolveNestedStructs(module)
     // First, before any pass rewrites the bodies a `const fn` is run from.
     semaFoldConstants(module)
     ir_clear_var_types()

@@ -1,0 +1,7 @@
+// expect-error: a struct inside a generic struct is not supported yet
+struct Box<T> {
+    inner: struct { v: Int },
+    t: T
+}
+
+fn main() -> Int { return 0 }

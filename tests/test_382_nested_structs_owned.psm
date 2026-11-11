@@ -1,0 +1,43 @@
+// A nested struct that owns a `String` and a `Vec`, two levels down, built and dropped in a loop
+// and moved by `sink`. The hoist claims nothing downstream is taught about nesting; this is the
+// test that would show it wrong, because a field of a stored struct that ownership lost track of
+// is a leak or a double free and not a wrong answer. Run with `--verify`: 0 leaked, 0 violations.
+
+import std.io
+import std.vec
+import std.string
+
+struct Doc {
+    title: String,
+    meta: struct {
+        author: String,
+        tags: Vec<String>,
+        rev: struct { n: Int, note: String }
+    }
+}
+
+fn make(i: Int) -> Doc {
+    return Doc {
+        title: "t".concat(i.toString()),
+        meta: { author: "a", tags: ["x", "y"], rev: { n: i, note: "n" } }
+    }
+}
+
+fn take(sink d: Doc) -> Int { return d.meta.rev.n }
+
+fn main() -> Int {
+    let mut total = 0
+    for i in 0..<50 {
+        let d = make(i)
+        d.meta.author = "bob"
+        d.meta.rev.note = "z"
+        total = total + d.meta.tags.length
+        total = total + take(d)
+    }
+    if (total != 1325) {
+        println("FAIL: total is wrong")
+        return 1
+    }
+    println("PASS: nested structs, owned")
+    return 0
+}

@@ -243,7 +243,7 @@ private fn semaMapEntryCount(chain: Ptr) -> Int {
 }
 
 // Whether `t` is an instantiation of std.map's `HashMap` -- `HashMap$String$Int`.
-private fn semaMapIsInstance(module: ASTNode, t: TypeInfo) -> Bool {
+internal fn semaMapIsInstance(module: ASTNode, t: TypeInfo) -> Bool {
     if (typeIsValid(t) == false or t.kind != TypeKind.STRUCT) { return false }
     return t.name.startsWith("HashMap".concat(monoSeparator()))
 }

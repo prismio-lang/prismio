@@ -676,11 +676,22 @@ private fn typeInstancesAsWritten(spelled: String) -> String {
 
 private fn typeInstanceWord(word: String) -> String {
     if (word.contains("$") == false) { return word }
-    let parts = word.split('$')
-    let mut out = parts[0].concat("<")
+    // `Window$$size` is a struct written inside `Window`: a path, not an instance
+    // (sema/nested_structs.psm). Set aside before the split so it does not read as an
+    // empty type argument, and written back with the dot the program used.
+    if (word.contains("$$")) {
+        let marked = word.replaceAll("$$", "\x01")
+        if (marked.contains("$") == false) { return word.replaceAll("$$", ".") }
+        return typeInstanceParts(marked.split('$'))
+    }
+    return typeInstanceParts(word.split('$'))
+}
+
+private fn typeInstanceParts(parts: Vec<String>) -> String {
+    let mut out = parts[0].replaceAll("\x01", ".").concat("<")
     for i in 1..<parts.length {
         if (i > 1) { out = out.concat(", ") }
-        let arg = parts[i]
+        let arg = parts[i].replaceAll("\x01", ".")
         if (arg.startsWith("Struct_")) { out = out.concat(arg.substring(7, arg.length - 7)) }
         else if (arg.startsWith("Enum_")) { out = out.concat(arg.substring(5, arg.length - 5)) }
         else { out = out.concat(arg) }

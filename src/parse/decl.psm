@@ -1110,15 +1110,21 @@ impl Parser {
         // rather than a name containing a dot: substitution has to resolve it to the
         // implementing type's choice, and encoding structure as text is what the
         // trait-argument work already had to undo once.
+        // `Window.size.w` is the same walk again: each `.name` wraps what came before,
+        // and sema/nested_structs.psm reads the chain from the inside out.
         if (self.checkVal(TokenType.SEPARATOR, ".")) {
-            self.advance()
-            let projection = self.node(NodeKind.ASSOC_TYPE_REF)
-            let member = self.current()
-            projection.s1 = member.value
-            self.expectToken(TokenType.IDENTIFIER, "associated type name after `.`")
-            projection.child1 = node_to_ptr(typeNode)
-            if (self.matchVal(TokenType.SEPARATOR, "?")) { projection.i3 = 1 }
-            return projection
+            let mut path = typeNode
+            while (self.checkVal(TokenType.SEPARATOR, ".")) {
+                self.advance()
+                let projection = self.node(NodeKind.ASSOC_TYPE_REF)
+                let member = self.current()
+                projection.s1 = member.value
+                self.expectToken(TokenType.IDENTIFIER, "associated type name after `.`")
+                projection.child1 = node_to_ptr(path)
+                path = projection
+            }
+            if (self.matchVal(TokenType.SEPARATOR, "?")) { path.i3 = 1 }
+            return path
         }
 
         // REQUIREMENTS 4. `T?` -- a reference that may be absent. Postfix, and after
@@ -2322,22 +2328,52 @@ impl Parser {
 
 impl Parser {
     private fn parseStructDecl(self) -> ASTNode {
+        return self.parseStructDeclIn("")
+    }
+
+    // `prefix` is `Owner$$` for a struct written inside another struct's body and empty
+    // otherwise. The declaration is named with it, so a nested struct is an ordinary
+    // top-level struct whose name no source identifier can spell (`$` cannot occur in
+    // one): `Window.Size` is `Window$$Size`, and sema/nested_structs.psm turns the
+    // written path into that name. Everything after the parser sees a plain struct.
+    // `$$` and not `$`, because a single `$` already means "instance of a template" to
+    // every message that prints a type (typeInstancesAsWritten).
+    private fn parseStructDeclIn(self, prefix: String) -> ASTNode {
         self.expectVal(TokenType.KEYWORD, "struct", "struct")
 
         let structNode = self.node(NodeKind.STRUCT_DECL)
         // The package, unless a marker says otherwise (parseDeclaration).
         structNode.i2 = 2
         let name = self.current()
-        structNode.s1 = name.value
+        structNode.s1 = prefix.concat(name.value)
         self.expectToken(TokenType.IDENTIFIER, "struct name")
 
         structNode.s2 = self.parseGenericParams(structNode)
         self.parseWhereClause(structNode)
+        self.parseStructBody(structNode)
+        return structNode
+    }
+
+    // `{ field: Type, ... }`, with `struct Name { ... }` declarations between the fields
+    // and `struct { ... }` as a field's type. Both are lifted out whole (hoistStruct) and
+    // join the module's chain after the declaration they were written in.
+    private fn parseStructBody(self, structNode: ASTNode) {
         self.expectVal(TokenType.SEPARATOR, "{", "struct body")
 
         let fields = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
             if (self.dead == 1) { break }
+
+            // `struct Size { ... }` between the fields: a type that belongs to this one,
+            // named `Owner.Size` from outside.
+            if (self.checkVal(TokenType.KEYWORD, "struct") and self.peek().type == TokenType.IDENTIFIER) {
+                self.refuseNestedInGeneric(structNode)
+                let scoped = self.parseStructDeclIn(structNode.s1.concat("$$"))
+                self.hoistStruct(scoped)
+                self.matchVal(TokenType.SEPARATOR, ",")
+                continue
+            }
+
             let field = self.node(NodeKind.STRUCT_FIELD)
             // The declaring file, unless a marker says otherwise.
             field.i2 = 1
@@ -2351,7 +2387,11 @@ impl Parser {
             field.s1 = fieldName.value
             self.expectToken(TokenType.IDENTIFIER, "field name")
             self.expectVal(TokenType.SEPARATOR, ":", "field type")
-            field.child1 = node_to_ptr(self.parseTypeAnnotation())
+            if (self.checkVal(TokenType.KEYWORD, "struct") and self.peek().value.equals("{")) {
+                field.child1 = node_to_ptr(self.parseInlineStruct(structNode, fieldName))
+            } else {
+                field.child1 = node_to_ptr(self.parseTypeAnnotation())
+            }
             nodeListPush(fields, field)
 
             self.matchVal(TokenType.SEPARATOR, ",")
@@ -2359,7 +2399,43 @@ impl Parser {
 
         self.expectVal(TokenType.SEPARATOR, "}", "struct body")
         structNode.child1 = fields.head
-        return structNode
+    }
+
+    // `size: struct { w: Int, h: Int }` -- the field's type is a new struct named after
+    // the field, `Owner$$size`. The annotation that replaces the written body names it.
+    private fn parseInlineStruct(self, owner: ASTNode, fieldName: Token) -> ASTNode {
+        self.refuseNestedInGeneric(owner)
+        self.expectVal(TokenType.KEYWORD, "struct", "inline struct")
+        let inner = self.node(NodeKind.STRUCT_DECL)
+        inner.i2 = 2
+        inner.s1 = owner.s1.concat("$$", fieldName.value)
+        self.parseStructBody(inner)
+        self.hoistStruct(inner)
+
+        let annotation = self.node(NodeKind.TYPE_ANNOTATION)
+        annotation.s1 = inner.s1.clone()
+        if (self.matchVal(TokenType.SEPARATOR, "?")) { annotation.i3 = 1 }
+        return annotation
+    }
+
+    // A nested struct would have to carry its owner's type parameters, and the name
+    // that reaches it (`Box<T>.Inner`) has no spelling yet.
+    private fn refuseNestedInGeneric(self, owner: ASTNode) {
+        if (nodeExists(owner.genericInfo)) {
+            self.fatal("a struct inside a generic struct is not supported yet; declare it beside ".concat(
+                       diagQuote(owner.s1), " and give it the type parameters it uses"))
+        }
+    }
+
+    // Joins the chain parseModule drains after the declaration being read.
+    private fn hoistStruct(self, node: ASTNode) {
+        node.next = ptr_null()
+        if (nodeExists(self.hoistTail)) {
+            ptr_to_node(self.hoistTail).next = node_to_ptr(node)
+        } else {
+            self.hoistHead = node_to_ptr(node)
+        }
+        self.hoistTail = node_to_ptr(node)
     }
 }
 
