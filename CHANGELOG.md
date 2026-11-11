@@ -34,10 +34,16 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   (after a call in the same statement, loop headers, right of `and`/`or`/`??`, `else if` conditions, closure expression bodies).
 - **`match` without the ceremony.** `match s { ... }` needs no parentheses around the value, an arm may be a single statement
   without braces (`Shape.Circle => print("c"),`), and an arm may be empty (`_ =>`). The old spellings still read.
+- **Editor support for the new syntax.** The semantic index nests a struct written inside another under its owner and finds
+  its fields by path (`win.size.w`), indexes a pattern's new name (`y: why`), prints a tuple as `(Int, String)` (in hover,
+  hints and the compiler's messages), and completes the structs inside `Window.`. The VS Code grammar and the JetBrains lexer
+  needed no change; both have tests for the new spellings.
 
 ### Changed
 
 ### Fixed
+
+- `prismio fmt` joined `, ..}` in a destructuring pattern into `,..}`.
 
 ### Repository
 

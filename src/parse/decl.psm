@@ -2423,14 +2423,17 @@ impl Parser {
     // the field, `Owner$$size`. The annotation that replaces the written body names it.
     private fn parseInlineStruct(self, owner: ASTNode, fieldName: Token) -> ASTNode {
         self.refuseNestedInGeneric(owner)
+        let keyword = self.current()
         self.expectVal(TokenType.KEYWORD, "struct", "inline struct")
-        let inner = self.node(NodeKind.STRUCT_DECL)
+        // Positioned at the field's name, where the program says what the type is called, so the
+        // editor's index finds it there; the annotation that replaces the body sits at `struct`.
+        let inner = parserNodeFrom(NodeKind.STRUCT_DECL, fieldName)
         inner.i2 = 2
         inner.s1 = owner.s1.concat("$$", fieldName.value)
         self.parseStructBody(inner)
         self.hoistStruct(inner)
 
-        let annotation = self.node(NodeKind.TYPE_ANNOTATION)
+        let annotation = parserNodeFrom(NodeKind.TYPE_ANNOTATION, keyword)
         annotation.s1 = inner.s1.clone()
         if (self.matchVal(TokenType.SEPARATOR, "?")) { annotation.i3 = 1 }
         return annotation

@@ -688,6 +688,18 @@ private fn typeInstanceWord(word: String) -> String {
 }
 
 private fn typeInstanceParts(parts: Vec<String>) -> String {
+    // A tuple is written the way it was: `Tuple2$Int$String` is `(Int, String)` (std/tuple.psm).
+    if (parts[0].length == 6 and parts[0].startsWith("Tuple") and parts[0].byteAt(5) >= 50 and parts[0].byteAt(5) <= 52) {
+        let mut elements = "("
+        for i in 1..<parts.length {
+            if (i > 1) { elements = elements.concat(", ") }
+            let element = parts[i].replaceAll("\x01", ".")
+            if (element.startsWith("Struct_")) { elements = elements.concat(element.substring(7, element.length - 7)) }
+            else if (element.startsWith("Enum_")) { elements = elements.concat(element.substring(5, element.length - 5)) }
+            else { elements = elements.concat(element) }
+        }
+        return elements.concat(")")
+    }
     let mut out = parts[0].replaceAll("\x01", ".").concat("<")
     for i in 1..<parts.length {
         if (i > 1) { out = out.concat(", ") }

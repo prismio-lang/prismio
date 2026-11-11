@@ -226,16 +226,37 @@ fn ixCollectStruct(inout ix: Ix, inout src: IxSources, node: ASTNode) {
         ixCollectPayloadEnum(ix, src, node)
         return
     }
-    let id = ixDeclareNode(ix, src, "struct", node, 0 - 1, node.i2, "", "")
+    // A struct written inside another (`Window$$size`, `Window$$Limits`: parse/decl.psm) belongs to its owner
+    // in the outline and in completion after `Window.`, and is found by the path a program writes.
+    let nestedAt = node.s1.lastIndexOf("$$")
+    let mut owner = 0 - 1
+    if (nestedAt > 0) { owner = ix.byType.get(node.s1.substring(0, nestedAt)) }
+    let id = ixDeclareNode(ix, src, "struct", node, owner, node.i2, "", "")
     if (id < 0) { return }
-    ix.byType.putFirst(ix.dName[id], id)
+    if (nestedAt > 0) {
+        ix.byType.putFirst(node.s1, id)
+        let path = node.s1.replaceAll("$$", ".")
+        ix.byType.putFirst(path, id)
+        ix.byMember.putFirst(path, id)
+    } else {
+        ix.byType.putFirst(ix.dName[id], id)
+    }
     let mut ptr = node.child1
     while (nodeExists(ptr)) {
         let field = ptr_to_node(ptr)
         ptr = field.next
         if (field.kind != NodeKind.STRUCT_FIELD or field.s1.startsWith("$") or field.line < 1) { continue }
-        let fid = ixDeclareNode(ix, src, "field", field, id, field.i2, ixWrittenType(src, field), "")
-        if (fid >= 0) { ix.byMember.putFirst(ix.dName[id].concat(".", ix.dName[fid]), fid) }
+        // The type of a field whose type is nested is its path (`Window.size`), not the word `struct`.
+        let mut fieldType = ixWrittenType(src, field)
+        if (nodeExists(field.child1) and ptr_to_node(field.child1).s1.contains("$$")) {
+            fieldType = ptr_to_node(field.child1).s1.replaceAll("$$", ".")
+        }
+        let fid = ixDeclareNode(ix, src, "field", field, id, field.i2, fieldType, "")
+        if (fid >= 0) {
+            ix.byMember.putFirst(ix.dName[id].concat(".", ix.dName[fid]), fid)
+            // A nested struct's fields are also found under its path: `win.size.w` reads a field of `Window.size`.
+            if (nestedAt > 0) { ix.byMember.putFirst(node.s1.replaceAll("$$", ".").concat(".", ix.dName[fid]), fid) }
+        }
     }
 }
 

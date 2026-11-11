@@ -2571,6 +2571,19 @@ def run_fmt_test():
          "fn f() {\n    if (a) {\n        b()\n    }\n    else {\n        c()\n    }\n}\n"),
         ("fn f() {\n    if (a) { b() } else\n}\n", "fn f() {\n    if (a) { b() } else\n}\n"),
         ("fn f() {\n    if (a) { b() } else if (c\n}\n", "fn f() {\n    if (a) { b() } else if (c\n}\n"),
+        # Destructuring, tuples, `?`, a nested struct, and a `match` without parentheses or braces: `..` in a
+        # pattern is a word of the list, not a range, so it keeps the air a range does not.
+        ("fn f() {\n    let Point { x, y: b,.. } = p\n    let (a,b)=t\n    let n=parse(s) ?\n}\n",
+         "fn f() {\n    let Point { x, y: b, .. } = p\n    let (a, b) = t\n    let n = parse(s)?\n}\n"),
+        ("fn f() {\n    let Point { x, .. } = p\n}\n", "fn f() {\n    let Point { x, .. } = p\n}\n"),
+        ("fn f() {\n    for i in 0..n { g(i) }\n    let s = v[1..3]\n}\n", "fn f() {\n    for i in 0..n { g(i) }\n    let s = v[1..3]\n}\n"),
+        ("struct W{ size: struct{ w: Int,h: Int }, p: (Int,Int) }\n", "struct W { size: struct { w: Int, h: Int }, p: (Int, Int) }\n"),
+        ("struct Config {\n    struct Limits { max: Int }\n    limits: Limits\n}\n",
+         "struct Config {\n    struct Limits { max: Int }\n    limits: Limits\n}\n"),
+        ("fn f() {\n    match s{\n    Shape.Circle=>print(),\n    _=>\n    }\n}\n",
+         "fn f() {\n    match s {\n        Shape.Circle => print(),\n        _ =>\n    }\n}\n"),
+        ("fn f() {\n    let a = match s { A => 1, _ => 2 }\n    let b = (1,2)\n    let c = t.0.1\n}\n",
+         "fn f() {\n    let a = match s { A => 1, _ => 2 }\n    let b = (1, 2)\n    let c = t.0.1\n}\n"),
     ]
     for given, expected in cases:
         got = fmt(given)
@@ -2785,6 +2798,47 @@ def run_index_test():
         points_at(26, 15, "Empty", "variant")         # a variant with no payload
         points_at(27, 15, "Circle", "variant")
         points_at(27, source.split("\n")[26].rindex("r") + 1, "r", "let")
+
+        # A struct written inside another, a pattern's new name, and a tuple's type: the index reads the program the
+        # parser lifted them out of, so each has to land where the program wrote it.
+        nested_source = (
+            "struct Window {\n"                                         # 1
+            "    size: struct { w: Int, h: Int }\n"                     # 2
+            "    struct Limits { max: Int }\n"                          # 3
+            "}\n"
+            "struct Point { x: Int, y: Int }\n"                         # 5
+            "fn pair() -> (Int, Int) { return (1, 2) }\n"               # 6
+            "fn main() -> Int {\n"
+            "    let win = Window { size: { w: 4, h: 5 } }\n"           # 8
+            "    let Point { x, y: why } = Point { x: 1, y: 2 }\n"      # 9
+            "    let t = pair()\n"                                      # 10
+            "    return win.size.w + x + why + t.0\n"                   # 11
+            "}\n")
+        nested = root / "n.psm"
+        nested.write_text(nested_source)
+        sample_state = (done, records, decls, refs, by_id)
+        done, records = indexed(target=nested)
+        if done.returncode != 0:
+            problems.append(f"the nested-struct program should check clean: {done.stderr[:300]}")
+        decls = {(d["name"], d["kind"]): d for d in records if d["k"] == "decl" and d["user"]}
+        refs = [r for r in records if r["k"] == "ref"]
+        by_id = {d["id"]: d for d in records if d["k"] == "decl"}
+        window = named("Window", "struct")
+        limits = named("Limits", "struct")
+        if window and limits and limits["container"] != window["id"]:
+            problems.append("a struct written inside `Window` is not inside it in the outline")
+        size = named("size", "field")
+        if size and size.get("ty") != "Window.size":
+            problems.append(f"the type of the field `size` reads {size.get('ty')!r}, want 'Window.size'")
+        w = named("w", "field")
+        if w and size and w["container"] != size["id"]:
+            problems.append("the fields of an inline struct are not inside the field that declares it")
+        named("why", "let")
+        t = named("t", "let")
+        if t and t.get("ty") != "(Int, Int)":
+            problems.append(f"the type of a tuple reads {t.get('ty')!r}, want '(Int, Int)'")
+        points_at(11, nested_source.split("\n")[10].index(".w") + 2, "w", "field")   # win.size.w
+        done, records, decls, refs, by_id = sample_state   # the checks below are about the first program
         points_at(29, source.split("\n")[28].index("total") + 1, "total", "let")
         hints = [r for r in records if r["k"] == "arg" and r["l"] == 24]
         if sorted((h["p"], h["i"]) for h in hints) != [("a", 0), ("b", 1)]:

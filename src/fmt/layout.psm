@@ -388,6 +388,9 @@ private fn fmtSpacing(text: String, tokens: FmtTokens, angles: Vec<Bool>, pipes:
 
     // Tightest first: these bind harder than anything they sit between.
     if (l == FmtKind.DOT or r == FmtKind.DOT) { return 0 }
+    // A `..` that is a word of a pattern (`{ x, .. }`) and not a range keeps its air.
+    if (r == FmtKind.RANGE and l == FmtKind.COMMA) { return 1 }
+    if (l == FmtKind.RANGE and r == FmtKind.RBRACE) { return 1 }
     if (l == FmtKind.RANGE or r == FmtKind.RANGE) { return 0 }
     if (r == FmtKind.OPTIONAL) { return 0 }
     // A label: `outer@ for`, `break@outer`. The mark hugs the name on both sides; only the loop

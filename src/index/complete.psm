@@ -102,6 +102,9 @@ public fn ixCompleteMembers(inout ix: Ix, inout src: IxSources, head: String, fi
             ixCompleteDecl(ix, src, id, 0)
         } else if ((kind.equals("variant") or kind.equals("code")) and typeId >= 0 and ix.dContainer[id] == typeId and asType) {
             ixCompleteDecl(ix, src, id, 0)
+        } else if (kind.equals("struct") and typeId >= 0 and ix.dContainer[id] == typeId and asType) {
+            // `Window.`: the structs written inside `Window`.
+            ixCompleteDecl(ix, src, id, 0)
         } else if (kind.equals("assocconst") and asType and ix.dContainer[id] >= 0 and ix.dOwner[ix.dContainer[id]].equals(head)) {
             // `Int.MAX`, `Float.PI`: an associated constant of the type.
             ixCompleteDecl(ix, src, id, 0)

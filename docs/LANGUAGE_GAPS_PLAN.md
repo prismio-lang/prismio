@@ -480,3 +480,36 @@ shape the compiler already releases correctly. Not built: converting the error (
 `match` syntax: parentheses around the scrutinee optional (`parseScrutinee`), an arm is a block, one statement, or empty
 (`parseArmBody`, using `parseBlockOf(single)` so the statement has a block's own context). Tests: `test_386`, `test_387`,
 `neg_398`..`neg_401`.
+
+## Editor support for A1, A2, A3, B1, B2 and the match syntax
+
+Done 2026-11-11 (the second half of the session). None of the new syntax added a token, so the VS Code grammar and the
+JetBrains lexer needed no change, and both gained tests for it (`grammar.test.mjs`, `PrismioLexerTest`, 29/29). The work was in
+what the parser lowers, because the semantic index (`src/index/`) is the editor's only view of the program:
+
+- nested structs are indexed under their owner and found by path (`Window.Limits`, `win.size.w`); an inline struct's fields sit
+  inside the field that declares it, typed `Window.size`; `Window.` completes the structs written inside `Window`;
+- a pattern's new name (`y: why`) is a local at the name written (the lowered `let` is positioned there);
+- a tuple prints as `(Int, String)` everywhere a type is printed, including the compiler's own messages;
+- `prismio fmt` keeps `, .. }` apart (a pattern's `..` is not a range).
+
+Left, in order of what a user would notice:
+
+1. An inline struct has no declaration of its own (it shares the position of its field), so go-to-definition on `Window.size`
+   used as a type lands on the field. A real fix gives it a distinct position or lets the index key on the node.
+2. `t.0.1` colours `0.1` as one float in TextMate; the server's semantic tokens do not correct it.
+3. The snippets (`match`, `let`) still write the old spellings. They are valid, only longer than needed.
+4. Hover and rename on hidden temporaries were not exercised; they carry `$` and are filtered, but no test looks.
+5. `Window.size` has no outline entry of its own, only its fields do.
+
+## Where the next session starts
+
+Built so far and committed (not pushed): A1 nested structs, A3 destructuring `let`, A2 tuples, B1 `if`/`match` as values, B2 `?`,
+the `match` syntax, and editor support for all of them. Next in the plan, in the order to build: **B3** `if let`, `while let`,
+`let ... else` (the same hoisting and marker machinery as `?`: an optional/enum test with a binding), **B4/B5/B6** match guards,
+range patterns and string patterns, **A4** nested patterns inside a variant (`F.X(E.A(v))`), **C1** operator overloading
+(`Add`, `Neg`, `Eq` hooks), **C2** closures that can be stored or returned plus a function type, **C4** `#[derive]`/`#[test]`,
+**A5/A6** struct update `..p` and field defaults, **D1** iterator adapters. `break` with a value is the other half of B1.
+Open from this session: nested structs in generic structs, bare nested names in `impl` blocks and signatures, `From`-style
+error conversion for `?`, a branch with several statements in an `if`/`match` expression, and the pattern-binding ownership
+leak in KNOWN_ISSUES.

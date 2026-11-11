@@ -122,6 +122,9 @@ impl Parser {
                 } else {
                     let binding = self.current()
                     field.s2 = binding.value
+                    // Where the new name is written, for the editor: the field node stays at the field.
+                    field.i2 = binding.line
+                    field.i3 = binding.col
                     self.expectToken(TokenType.IDENTIFIER, "a name for the field, or `_`")
                 }
             }
@@ -150,6 +153,11 @@ impl Parser {
                 let decl = createNode(NodeKind.VARIABLE_DECL)
                 nodeSpanFrom(decl, field)
                 decl.s1 = field.s2.clone()
+                if (field.i2 > 0) {
+                    decl.line = field.i2
+                    decl.col = field.i3
+                    decl.len = field.s2.length
+                }
                 decl.i1 = mutable
                 decl.s2 = annotations.clone()
                 decl.child2 = node_to_ptr(patternAccess(field, here))
