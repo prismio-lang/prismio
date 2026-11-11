@@ -6795,7 +6795,7 @@ def run_float_reductions_test():
 
     test_386 checks the answers, but a flag in the wrong place changes them only in the
     last bits, which a tolerance forgives. So the IR is read, by function: every
-    row of docs/FLOAT_REDUCTIONS_PLAN.md section 3 that is a reduction carries the flag
+    row of the developer docs' Float loop reductions table that is a reduction carries the flag
     (on the `llvm.fmuladd` of a dot product too), and every row that is not carries
     none. `--strict-float` removes every mark. The trace names the same sites, and
     std.float_text, whose correct rounding depends on the order of its arithmetic,

@@ -136,6 +136,49 @@ int numerical_integration(int scale)
     return static_cast<int>(sum * width * 100'000'000.0);
 }
 
+// Values are multiples of 1/8 below 127, so the sum is exact in any order and the
+// three arms agree to the bit (see the Prismio arm).
+int float_sum(int scale)
+{
+    const int n = 250'000 * scale;
+    std::vector<double> values;
+    values.reserve(n);
+    for (int i = 0; i < n; ++i)
+        values.push_back(((i * 17) % 1009) * 0.125);
+    long long checksum = 0;
+    for (int round = 0; round < 20; ++round)
+    {
+        double sum = 0.0;
+        for (double value : values)
+            sum += value;
+        checksum = (checksum + static_cast<long long>(sum)) % 1'000'000'007;
+    }
+    return static_cast<int>(checksum);
+}
+
+int float_dot(int scale)
+{
+    const int n = 250'000 * scale;
+    std::vector<double> a;
+    std::vector<double> b;
+    a.reserve(n);
+    b.reserve(n);
+    for (int i = 0; i < n; ++i)
+    {
+        a.push_back(((i * 17) % 1009) * 0.125);
+        b.push_back(((i * 31) % 1013) * 0.0625);
+    }
+    long long checksum = 0;
+    for (int round = 0; round < 20; ++round)
+    {
+        double sum = 0.0;
+        for (int i = 0; i < n; ++i)
+            sum += a[i] * b[i];
+        checksum = (checksum + static_cast<long long>(sum)) % 1'000'000'007;
+    }
+    return static_cast<int>(checksum);
+}
+
 int vector_dot(int scale)
 {
     const int n = 1'000'000 * scale;

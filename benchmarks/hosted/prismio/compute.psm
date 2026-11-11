@@ -134,6 +134,48 @@ public fn benchNumericalIntegration(scale: Int) -> Int {
     return (sum * width * 100000000.0) as Int
 }
 
+// A plain float sum, 20 passes over 1M values. Every value is a multiple of 1/8 below 127,
+// so every partial sum is exact and any order of addition gives the same bits: the three
+// arms agree whether or not their compiler splits the sum into SIMD lanes.
+public fn benchFloatSum(scale: Int) -> Int {
+    let n = 250000 * scale
+    let mut values: Vec<Float> = Vec<Float>.withCapacity(n)
+    for i in 0..<n {
+        values.push((((i * 17) % 1009) as Float) * 0.125)
+    }
+    let mut checksum: I64 = 0
+    for _ in 0..<20 {
+        let mut sum = 0.0
+        for value in values {
+            sum += value
+        }
+        checksum = (checksum + (sum as I64)) % 1000000007
+    }
+    return checksum as Int
+}
+
+// A float dot product, 20 passes over two 1M-value vectors. Each product is a multiple of
+// 1/128 below 8000 and each partial sum stays far inside 2^53 of those units, so the sum is
+// exact in any order, fused or not.
+public fn benchFloatDot(scale: Int) -> Int {
+    let n = 250000 * scale
+    let mut a: Vec<Float> = Vec<Float>.withCapacity(n)
+    let mut b: Vec<Float> = Vec<Float>.withCapacity(n)
+    for i in 0..<n {
+        a.push((((i * 17) % 1009) as Float) * 0.125)
+        b.push((((i * 31) % 1013) as Float) * 0.0625)
+    }
+    let mut checksum: I64 = 0
+    for _ in 0..<20 {
+        let mut sum = 0.0
+        for i in 0..<n {
+            sum += a[i] * b[i]
+        }
+        checksum = (checksum + (sum as I64)) % 1000000007
+    }
+    return checksum as Int
+}
+
 public fn benchVectorDot(scale: Int) -> Int {
     let n = 1000000 * scale
     let mut a: Vec<Int> = Vec<Int>.withCapacity(n)

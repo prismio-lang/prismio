@@ -32,6 +32,8 @@ public fn benchRun(name: String, scale: Int, inputPath: String, outputPath: Stri
     if (name.equals("mandelbrot")) { return benchMandelbrot(scale) }
     if (name.equals("fft")) { return benchFft(scale) }
     if (name.equals("numerical_integration")) { return benchNumericalIntegration(scale) }
+    if (name.equals("float_sum")) { return benchFloatSum(scale) }
+    if (name.equals("float_dot")) { return benchFloatDot(scale) }
     if (name.equals("vector_dot")) { return benchVectorDot(scale) }
     if (name.equals("convolution")) { return benchConvolution(scale) }
     if (name.equals("monte_carlo")) { return benchMonteCarlo(scale) }

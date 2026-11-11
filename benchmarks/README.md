@@ -323,8 +323,8 @@ status, and workload profile.
   `key_value_update`, `mixed_map_removal`, `flat_bitset`, `trie_search`;
   unsupported: `linked_list`, `binary_search_tree`, `priority_queue`,
   `lock_free_queue`.
-- Compute (15 implemented, 4 unsupported): `matrix_multiply`, `mandelbrot`, `fft`,
-  `numerical_integration`, `vector_dot`, `convolution`, `monte_carlo`,
+- Compute (17 implemented, 4 unsupported): `matrix_multiply`, `mandelbrot`, `fft`,
+  `numerical_integration`, `float_sum`, `float_dot`, `vector_dot`, `convolution`, `monte_carlo`,
   `polynomial_evaluation`, `ecs_component_update`, `parallel_reduction`,
   `sha256`, `blake3_chunk`, `raytracer_sphere`, `channel_pipeline`,
   `bytecode_interpreter`; unsupported: `async_event_loop`, `mutex_contention`, `work_stealing_pool`,
@@ -406,6 +406,12 @@ No numeric `gN` names are used by the maintained suite.
 - `numerical_integration`, `mandelbrot`, and `ecs_component_update` use IEEE-754
   floating point. Checksums are validated, but cross-target reassociation or
   fused operations can affect boundary cases.
+- `float_sum` and `float_dot` measure float loop reductions: Prismio may add an
+  accumulator's terms in any grouping (its specification's loop reduction rule), so
+  it splits them into SIMD lanes, while C++ and Rust keep IEEE sequential order and
+  cannot without `-ffast-math` or hand-split accumulators. Their values are small
+  multiples of 1/8 and 1/16, so every grouping is exact and the arms agree to the bit.
+  All three arms are written plainly: a range-`for`, `iter().sum()`, `sum += x`.
 
 ## Currently Unsupported by Prismio
  

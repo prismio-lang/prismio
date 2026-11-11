@@ -46,6 +46,31 @@ pub fn numerical_integration(scale: i32) -> i32 {
     (sum * width * 100_000_000.0) as i32
 }
 
+// Values are multiples of 1/8 below 127, so the sum is exact in any order and the
+// three arms agree to the bit (see the Prismio arm).
+pub fn float_sum(scale: i32) -> i32 {
+    let n = 250_000 * scale;
+    let values: Vec<f64> = (0..n).map(|i| ((i * 17) % 1009) as f64 * 0.125).collect();
+    let mut checksum: i64 = 0;
+    for _ in 0..20 {
+        let sum: f64 = values.iter().sum();
+        checksum = (checksum + sum as i64) % 1_000_000_007;
+    }
+    checksum as i32
+}
+
+pub fn float_dot(scale: i32) -> i32 {
+    let n = 250_000 * scale;
+    let a: Vec<f64> = (0..n).map(|i| ((i * 17) % 1009) as f64 * 0.125).collect();
+    let b: Vec<f64> = (0..n).map(|i| ((i * 31) % 1013) as f64 * 0.0625).collect();
+    let mut checksum: i64 = 0;
+    for _ in 0..20 {
+        let sum: f64 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        checksum = (checksum + sum as i64) % 1_000_000_007;
+    }
+    checksum as i32
+}
+
 pub fn vector_dot(scale: i32) -> i32 {
     let n = 1_000_000 * scale; let a: Vec<i32> = (0..n).map(|i| i % 101).collect(); let b: Vec<i32> = (0..n).map(|i| (i*3) % 103).collect();
     let mut sum = 0; for i in 0..n as usize { sum = (sum + a[i] * b[i]) % BENCH_MOD; } sum

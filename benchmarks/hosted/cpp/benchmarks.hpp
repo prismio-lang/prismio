@@ -34,6 +34,8 @@ int matrix_multiply(int scale);
 int mandelbrot(int scale);
 int fft(int scale);
 int numerical_integration(int scale);
+int float_sum(int scale);
+int float_dot(int scale);
 int vector_dot(int scale);
 int convolution(int scale);
 int monte_carlo(int scale);

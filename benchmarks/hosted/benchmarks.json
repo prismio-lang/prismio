@@ -199,6 +199,18 @@
       "profile": "cpu"
     },
     {
+      "name": "float_sum",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu"
+    },
+    {
+      "name": "float_dot",
+      "category": "compute",
+      "status": "implemented",
+      "profile": "cpu"
+    },
+    {
       "name": "vector_dot",
       "category": "compute",
       "status": "implemented",

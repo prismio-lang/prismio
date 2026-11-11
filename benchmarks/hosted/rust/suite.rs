@@ -31,6 +31,8 @@ fn run(name: &str, scale: i32, input: &str, output: &str) -> i32 {
         "mandelbrot" => compute::mandelbrot(scale),
         "fft" => compute::fft(scale),
         "numerical_integration" => compute::numerical_integration(scale),
+        "float_sum" => compute::float_sum(scale),
+        "float_dot" => compute::float_dot(scale),
         "vector_dot" => compute::vector_dot(scale),
         "convolution" => compute::convolution(scale),
         "monte_carlo" => compute::monte_carlo(scale),

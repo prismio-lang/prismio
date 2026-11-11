@@ -23,6 +23,8 @@ int run(const std::string& name, int scale, const std::string& input, const std:
     if (name == "mandelbrot") return mandelbrot(scale);
     if (name == "fft") return fft(scale);
     if (name == "numerical_integration") return numerical_integration(scale);
+    if (name == "float_sum") return float_sum(scale);
+    if (name == "float_dot") return float_dot(scale);
     if (name == "vector_dot") return vector_dot(scale);
     if (name == "convolution") return convolution(scale);
     if (name == "monte_carlo") return monte_carlo(scale);

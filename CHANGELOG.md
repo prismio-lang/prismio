@@ -47,18 +47,23 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   are not set, so NaN, infinities and signed zeros are untouched). The `fmuladd` of `sum += a[i] * b[i]` takes it
   too. Anything that reads the accumulator for another purpose keeps sequential order: Kahan summation,
   time-stepping, `sum = sum * 0.5 + x`, a global, a field, a name the loop rebinds. Products are not reductions.
-  `numerical_integration` 2.2 ms → 1.2 ms (0.51× of C++ and of Rust in the same run, which both promise
-  sequential order); a plain 1M-element sum 0.20–0.25× and a dot product 0.36–0.37× of the sequential build, on a
-  loaded machine (0.16× and 0.28× idle, from the plan's hand-marked IR). The vectorizer's eight partial sums are
-  as accurate or better than one chain (harmonic sum −52 against −414 ulp). The same source gives the same bits on one target; different targets
-  can differ in the last bits, as they already did through `contract`. `--strict-float` (and `strictFloat` in a
-  manifest's `profiles` block) keeps every float add in source order; `PRISMIO_REDUCTION_TRACE=1` prints each marked
-  site. `src/` and `std/` take no mark. Plan: `docs/FLOAT_REDUCTIONS_PLAN.md`.
+  C++ and Rust both promise sequential order, so the same plain loop stays scalar there. In the hosted suite:
+  `numerical_integration` 1.1 ms (0.51× of C++, 0.52× of Rust), the new `float_sum` 2.2 ms (0.20×, 0.21×) and
+  `float_dot` 4.2 ms (0.33×, 0.37×); built with `--strict-float` the three land on C++ (1.00×, 0.94×, 0.91×). The
+  vectorizer's eight partial sums are as accurate or better than one chain (harmonic sum −52 against −414 ulp). The
+  same source gives the same bits on one target; different targets can differ in the last bits, as they already
+  did through `contract`. `--strict-float` (and `strictFloat` in a manifest's `profiles` block) keeps every float
+  add in source order; `PRISMIO_REDUCTION_TRACE=1` prints each marked site. `src/` and `std/` take no mark.
+  Developer docs: [Float loop reductions](https://developers.prismio.org/compiler/float-reductions).
 
 ### Fixed
 
 - `prismio fmt` joined `, ..}` in a destructuring pattern into `,..}`.
 
 ### Repository
+
+- **`float_sum` and `float_dot` hosted benchmarks** (Prismio, C++, Rust), each 20 passes over 1M doubles, written
+  plainly in all three languages. Their values are small multiples of 1/8 and 1/16, so every grouping of the sum is
+  exact and the arms agree to the bit whether or not a compiler splits it into SIMD lanes.
 
 ### Documentation

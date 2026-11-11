@@ -6,8 +6,8 @@
 // grouping, so the adds are marked `reassoc` (ir_fp_mark_reassoc), the one flag the
 // vectorizer needs to split the sum into SIMD lanes. Nothing else changes: a loop
 // that reads the accumulator for another purpose -- Kahan summation, time-stepping,
-// `sum = sum * 0.5 + x` -- keeps sequential order. docs/FLOAT_REDUCTIONS_PLAN.md has
-// the rule, the measurements and the reasons.
+// `sum = sum * 0.5 + x` -- keeps sequential order. The developer docs' *Float loop
+// reductions* page has the rule, the measurements and the reasons.
 //
 // **The declaration is the key, not the spelling.** A loop is read with the scope
 // at its entry: a name is a candidate only if its innermost binding there is a float
