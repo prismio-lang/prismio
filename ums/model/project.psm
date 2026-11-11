@@ -55,7 +55,10 @@ struct UmsBuildConfiguration {
     public stateDirectory: String,
     public buildDirectory: String,
     public debugInfo: Bool,
-    public overflowChecks: Bool
+    public overflowChecks: Bool,
+    // Off in every profile; a `profiles` block turns on --strict-float, which keeps float
+    // adds in source order.
+    public strictFloat: Bool
 }
 
 // Read by the installed compiler before it lowers the complete manifest. The
@@ -138,7 +141,8 @@ internal fn umsProjectModel(root: String, manifestPath: String, profile: String)
             stateDirectory: ".prismio".clone(),
             buildDirectory: "build".clone(),
             debugInfo: profile.equals("debug"),
-            overflowChecks: profile.equals("debug")
+            overflowChecks: profile.equals("debug"),
+            strictFloat: false
         },
         toolchain: UmsToolchainConfiguration { host: "".clone() },
         targets: [],

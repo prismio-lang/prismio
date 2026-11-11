@@ -179,14 +179,16 @@ fn main() -> Int {
 
     // Profiles: debug starts with -g and overflow checks, release with neither,
     // and only the block for the profile being built changes anything.
-    let profileSource = "project { name = \"p\" version = \"0.1.0\" prismio = \"0.1\" } profiles { debug { debugInfo = false } release { overflowChecks = true } } targets { executable(\"p\") { entry = \"src/main.psm\" } }"
+    let profileSource = "project { name = \"p\" version = \"0.1.0\" prismio = \"0.1\" } profiles { debug { debugInfo = false } release { overflowChecks = true strictFloat = true } } targets { executable(\"p\") { entry = \"src/main.psm\" } }"
     let debugProfile = umsLoadText(profileSource, "memory:profile-debug", ".", "debug")
     let releaseProfile = umsLoadText(profileSource, "memory:profile-release", ".", "release")
     if (debugProfile.valid == false or releaseProfile.valid == false or
         debugProfile.project.build.debugInfo or
         debugProfile.project.build.overflowChecks == false or
         releaseProfile.project.build.debugInfo or
-        releaseProfile.project.build.overflowChecks == false) {
+        releaseProfile.project.build.overflowChecks == false or
+        debugProfile.project.build.strictFloat or
+        releaseProfile.project.build.strictFloat == false) {
         return umsTestFail("a profiles block should override the selected profile's defaults only")
     }
 

@@ -6736,6 +6736,94 @@ def run_proved_index_nsw_test():
     return True
 
 
+def run_float_reductions_test():
+    """`reassoc` is on the update of a loop reduction, and on nothing else.
+
+    test_386 checks the answers, but a flag in the wrong place changes them only in the
+    last bits, which a tolerance forgives. So the IR is read, by function: every
+    row of docs/FLOAT_REDUCTIONS_PLAN.md section 3 that is a reduction carries the flag
+    (on the `llvm.fmuladd` of a dot product too), and every row that is not carries
+    none. `--strict-float` removes every mark. The trace names the same sites, and
+    std.float_text, whose correct rounding depends on the order of its arithmetic,
+    takes none.
+    """
+    print(f"\n{BLUE}--- Running float_reductions ---{RESET}")
+    source = TEST_DIR / "test_386_float_reductions.psm"
+    reductions = {"sumPlus", "sumSpelled", "sumCall", "dotProduct", "sumMinus", "sumMinusSpelled",
+                  "sumGuarded", "sumTwice", "sumInner", "sumSingle", "readAfter", "scaledInto",
+                  "logged"}
+    sequential = {"kahan", "timeStep", "decay", "reversed", "selfTerm", "product", "countInt",
+                  "condition", "fieldSum", "globalSum", "rebound"}
+    problems = []
+    env = os.environ.copy()
+    env["PRISMIO_REDUCTION_TRACE"] = "1"
+
+    def build(args, extra_env=None, target=source):
+        with tempfile.TemporaryDirectory(prefix="prismio-float-reductions-") as tmp:
+            ir_path = Path(tmp) / "reductions.ll"
+            built = subprocess.run([str(PRISMIO_EXE), "build", str(target), *args, "-o", str(ir_path)],
+                                   cwd=PROJECT_ROOT, env=extra_env or env, capture_output=True,
+                                   text=True, encoding="utf-8", errors="replace")
+            ir = ir_path.read_text() if built.returncode == 0 else ""
+            return built, ir
+
+    built, ir = build([])
+    if built.returncode != 0:
+        print(f"{RED}[FAIL] float reductions IR: {built.stdout} {built.stderr}{RESET}")
+        return False
+
+    def body(text, name):
+        match = re.search(rf'^define [^\n]*@{name}__[^\n]*\n(.*?)^}}', text, re.MULTILINE | re.DOTALL)
+        if not match:
+            problems.append(f"missing function {name}")
+            return ""
+        return match.group(1)
+
+    for name in sorted(reductions):
+        if "reassoc" not in body(ir, name):
+            problems.append(f"{name}: a loop reduction's update is not reassoc")
+    for name in sorted(sequential):
+        if "reassoc" in body(ir, name):
+            problems.append(f"{name}: an order-sensitive update is reassoc")
+    if not re.search(r"call reassoc double @llvm\.fmuladd", body(ir, "dotProduct")):
+        problems.append("dotProduct: the fused multiply-add is not reassoc")
+    if not re.search(r"fsub reassoc contract double", body(ir, "sumMinus")):
+        problems.append("sumMinus: the subtract is not reassoc")
+    if not re.search(r"fadd reassoc contract float", body(ir, "sumSingle")):
+        problems.append("sumSingle: the F32 add is not reassoc")
+    if re.search(r"= (fmul|fdiv|frem) (\w+ )*reassoc", ir):
+        problems.append("a multiply, divide or remainder is reassoc")
+
+    traced = {int(n) for n in re.findall(r"float reduction: \S*test_386_float_reductions\.psm:(\d+)",
+                                         built.stderr)}
+    if not traced:
+        problems.append("PRISMIO_REDUCTION_TRACE named no site")
+
+    strict, strict_ir = build(["--strict-float"], extra_env=env)
+    if strict.returncode != 0:
+        problems.append(f"--strict-float build failed: {strict.stderr}")
+    elif "reassoc" in strict_ir or "float reduction" in strict.stderr:
+        problems.append("--strict-float left a reassoc mark")
+
+    library = os.environ.copy()
+    library["PRISMIO_REDUCTION_TRACE"] = "1"
+    library["PRISMIO_LIBRARY_MODULE"] = "std.float_text"
+    text, text_ir = build([], extra_env=library, target=PROJECT_ROOT / "std" / "float_text.psm")
+    if text.returncode != 0:
+        problems.append(f"std.float_text did not build: {text.stderr}")
+    elif "float reduction" in text.stderr or "reassoc" in text_ir:
+        problems.append("std.float_text takes a reduction mark")
+
+    if problems:
+        print(f"{RED}[FAIL] float reductions{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] reassoc on {len(reductions)} reduction functions, none on "
+          f"{len(sequential)} sequential ones; --strict-float and std.float_text take none{RESET}")
+    return True
+
+
 def run_param_ranges_test():
     """A private function's integer parameters carry the join of what every call passes
     (src/ir/param_ranges.psm), as LLVM `range` attributes, and only where every call is
@@ -12846,6 +12934,7 @@ def main():
         ("loop_range_proofs", run_loop_range_proofs_test),
         ("stride_tiling", run_stride_tiling_test),
         ("proved_index_nsw", run_proved_index_nsw_test),
+        ("float_reductions", run_float_reductions_test),
         ("array_nowrap", run_array_nowrap_test),
         ("array_contents", run_array_contents_test),
         ("param_ranges", run_param_ranges_test),

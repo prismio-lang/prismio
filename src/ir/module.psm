@@ -419,8 +419,13 @@ private fn generateFunction(func: ASTNode) {
             irNowrapPass = nowrapAnalyse(func, paramRangesEntry(func))
         }
 
+        if (irFunctionHasLoop) {
+            irReductionPass = reductionsAnalyse(func)
+        }
+
         generateBlock(ptr_to_node(func.child2))
         irNowrapPass = 0
+        irReductionPass = 0
         irFunctionBody = ptr_null()
         irFunctionDecl = ptr_null()
     }

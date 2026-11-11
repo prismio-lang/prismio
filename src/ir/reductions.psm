@@ -1,0 +1,320 @@
+// Float loop reductions: the one update shape whose terms may be added in any order.
+//
+// A float local declared outside a loop, which the loop body references only as
+// `x = x + e`, `x = x - e`, `x += e` or `x -= e` with `e` not reading `x`, is a
+// *loop reduction*. Within one execution of that loop its terms may be added in any
+// grouping, so the adds are marked `reassoc` (ir_fp_mark_reassoc), the one flag the
+// vectorizer needs to split the sum into SIMD lanes. Nothing else changes: a loop
+// that reads the accumulator for another purpose -- Kahan summation, time-stepping,
+// `sum = sum * 0.5 + x` -- keeps sequential order. docs/FLOAT_REDUCTIONS_PLAN.md has
+// the rule, the measurements and the reasons.
+//
+// **The declaration is the key, not the spelling.** A loop is read with the scope
+// at its entry: a name is a candidate only if its innermost binding there is a float
+// `let` of this function, and a loop that binds the name again anywhere in its body
+// (a `let`, a `for` variable, a `match` pattern) disqualifies it, because from there
+// the spelling no longer names one variable. A global, a parameter and a pattern
+// binding are never candidates.
+//
+// A reference is every identifier that names the candidate in the loop's subtree,
+// its condition and its range included. The loop reduces `x` only when each one is
+// the target or the left operand of an update of the shape above.
+//
+// **`--strict-float` turns this off**, and `PRISMIO_REDUCTION_TRACE=1` prints each
+// marked site, which is how a fixture asserts that a mark fired rather than only
+// that the sum came out right.
+
+import symbols.facts
+import symbols.names
+import ast.nodes
+import ast.types
+import ast.float_width
+import common.source_files
+import std.io
+import std.process
+import std.string
+import std.vec
+
+let mut reductionsStrict = false
+// 0 until asked, then 1 for off and 2 for on.
+let mut reductionsTraceSwitch = 0
+
+// A name bound again inside the loop outweighs any number of updates.
+let REDUCTION_REBOUND = 1000000
+
+public fn reductionsSetStrict(on: Bool) {
+    reductionsStrict = on
+}
+
+struct ReductionWalk {
+    pass: Int,
+    // Every name in scope at the walk's point, innermost last, and for each whether it
+    // is a float `let` of this function.
+    scope: Vec<Int>,
+    floats: Vec<Int>,
+    // The loop being read: the candidates (float locals its entry sees, one per name),
+    // for each how many references are not an update of it, and the updates found.
+    names: Vec<Int>,
+    others: Vec<Int>,
+    sites: Vec<Ptr>,
+    siteNames: Vec<Int>
+}
+
+// Marks the reduction updates of `func` and answers the pass that marked them, or 0
+// under `--strict-float`.
+internal fn reductionsAnalyse(func: ASTNode) -> Int {
+    if (reductionsStrict) { return 0 }
+    let w = ReductionWalk {
+        pass: ir_range_proof_new(), scope: [], floats: [], names: [], others: [],
+        sites: [], siteNames: []
+    }
+    let mut p = func.child1
+    while (nodeExists(p)) {
+        let param = ptr_to_node(p)
+        w.bind(param.s1, false)
+        p = param.next
+    }
+    w.visitChain(func.child2)
+    return w.pass
+}
+
+// Whether `pass` found this `+` or `-` to update a loop reduction.
+internal fn reductionMarked(expr: ASTNode) -> Bool {
+    if (irReductionPass == 0) { return false }
+    return ir_reassoc_of(node_to_ptr(expr)) == irReductionPass
+}
+
+private fn reductionsTracing() -> Bool {
+    if (reductionsTraceSwitch == 0) {
+        reductionsTraceSwitch = 1
+        if (process.env("PRISMIO_REDUCTION_TRACE") != none) { reductionsTraceSwitch = 2 }
+    }
+    return reductionsTraceSwitch == 2
+}
+
+private fn reductionHasName(list: Vec<Int>, id: Int) -> Bool {
+    for i in 0..<list.length {
+        if (list[i] == id) { return true }
+    }
+    return false
+}
+
+// Whether the subtree names `id`, as a use or as a declaration.
+private fn reductionSubtreeNames(head: Ptr, id: Int) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        let named = n.kind == NodeKind.IDENTIFIER_EXPR or n.kind == NodeKind.VARIABLE_DECL
+        if (named and irNameId(n.s1) == id) { return true }
+        if (reductionSubtreeNames(n.child1, id) or reductionSubtreeNames(n.child2, id) or reductionSubtreeNames(n.child3, id)) {
+            return true
+        }
+        p = n.next
+    }
+    return false
+}
+
+impl ReductionWalk {
+    private fn bind(self, name: String, isFloat: Bool) {
+        self.scope.push(irNameId(name))
+        if (isFloat) {
+            self.floats.push(1)
+        } else {
+            self.floats.push(0)
+        }
+    }
+
+    private fn unwind(self, depth: Int) {
+        while (self.scope.length > depth) {
+            self.scope.pop()
+            self.floats.pop()
+        }
+    }
+
+    // Every identifier in a pattern, any of which it may bind.
+    private fn bindPattern(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            if (n.kind == NodeKind.IDENTIFIER_EXPR) { self.bind(n.s1, false) }
+            self.bindPattern(n.child1)
+            self.bindPattern(n.child2)
+            self.bindPattern(n.child3)
+            p = n.next
+        }
+    }
+}
+
+impl ReductionWalk {
+    private fn visitChain(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            self.visit(n)
+            p = n.next
+        }
+    }
+
+    private fn visitChildren(self, n: ASTNode) {
+        self.visitChain(n.child1)
+        self.visitChain(n.child2)
+        self.visitChain(n.child3)
+    }
+
+    // The walk of the function in order, keeping the scope the loops are read with.
+    private fn visit(self, n: ASTNode) {
+        match (n.kind) {
+            NodeKind.BLOCK => {
+                let depth = self.scope.length
+                self.visitChain(n.child1)
+                self.unwind(depth)
+                return
+            }
+            NodeKind.VARIABLE_DECL => {
+                self.visitChain(n.child2)
+                let mut isFloat = false
+                if (nodeHasType(n)) { isFloat = floatKeyValid(typeIrKey(nodeGetType(n))) }
+                self.bind(n.s1, isFloat)
+                return
+            }
+            NodeKind.FOR_STATEMENT => {
+                self.visitChain(n.child1)
+                self.visitChain(n.child2)
+                self.readLoop(n)
+                let depth = self.scope.length
+                self.bind(n.s1, false)
+                if (n.s2.length > 0) { self.bind(n.s2, false) }
+                self.visitChain(n.child3)
+                self.unwind(depth)
+                return
+            }
+            NodeKind.WHILE_STATEMENT => {
+                self.readLoop(n)
+                self.visitChildren(n)
+                return
+            }
+            NodeKind.LOOP_STATEMENT => {
+                self.readLoop(n)
+                self.visitChildren(n)
+                return
+            }
+            NodeKind.MATCH_ARM => {
+                let depth = self.scope.length
+                self.bindPattern(n.child1)
+                self.visitChain(n.child2)
+                self.visitChain(n.child3)
+                self.unwind(depth)
+                return
+            }
+        }
+        self.visitChildren(n)
+    }
+}
+
+impl ReductionWalk {
+    // The candidates of a loop entered at the walk's point: the innermost binding of
+    // each name, when that is a float local.
+    private fn takeCandidates(self) {
+        self.names = []
+        self.others = []
+        self.sites = []
+        self.siteNames = []
+        let mut seen: Vec<Int> = []
+        let mut i = self.scope.length - 1
+        while (i >= 0) {
+            let id = self.scope[i]
+            if (reductionHasName(seen, id) == false) {
+                seen.push(id)
+                if (self.floats[i] == 1) {
+                    self.names.push(id)
+                    self.others.push(0)
+                }
+            }
+            i = i - 1
+        }
+    }
+
+    private fn candidate(self, name: String) -> Int {
+        if (name.length == 0) { return 0 - 1 }
+        let id = irNameId(name)
+        for i in 0..<self.names.length {
+            if (self.names[i] == id) { return i }
+        }
+        return 0 - 1
+    }
+
+    private fn count(self, name: String, by: Int) {
+        let at = self.candidate(name)
+        if (at >= 0) { self.others[at] = self.others[at] + by }
+    }
+
+    private fn readLoop(self, loopNode: ASTNode) {
+        self.takeCandidates()
+        if (self.names.length == 0) { return }
+        self.collect(loopNode)
+        for i in 0..<self.sites.length {
+            if (self.others[self.siteNames[i]] == 0) { self.mark(self.sites[i]) }
+        }
+    }
+
+    private fn mark(self, site: Ptr) {
+        if (ir_reassoc_of(site) == self.pass) { return }
+        ir_reassoc_mark(site, self.pass)
+        if (reductionsTracing()) {
+            let n = ptr_to_node(site)
+            eprint("float reduction: ".concat(diag_file_path(n.file), ":", n.line.toString(), "\n"))
+        }
+    }
+}
+
+impl ReductionWalk {
+    private fn collectChain(self, head: Ptr) {
+        let mut p = head
+        while (nodeExists(p)) {
+            let n = ptr_to_node(p)
+            self.collect(n)
+            p = n.next
+        }
+    }
+
+    // Counts what the loop's subtree does with each candidate. An update of the
+    // recognised shape is recorded and its left side skipped; everything else that
+    // names a candidate is a reference that disqualifies it.
+    private fn collect(self, n: ASTNode) {
+        if (n.kind == NodeKind.IDENTIFIER_EXPR) { self.count(n.s1, 1) }
+        if (n.kind == NodeKind.VARIABLE_DECL) { self.count(n.s1, REDUCTION_REBOUND) }
+        if (n.kind == NodeKind.FOR_STATEMENT) {
+            self.count(n.s1, REDUCTION_REBOUND)
+            self.count(n.s2, REDUCTION_REBOUND)
+        }
+        if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and self.collectUpdate(n)) { return }
+        self.collectChain(n.child1)
+        self.collectChain(n.child2)
+        self.collectChain(n.child3)
+    }
+
+    // `x = x + e` and `x = x - e`; `x += e` and `x -= e` are the same node, the parser
+    // having written the target into both places. Records the update unless `e` names
+    // `x`, and reads `e` for references to the other candidates.
+    private fn collectUpdate(self, assign: ASTNode) -> Bool {
+        if (nodeIsNull(assign.child1) or nodeIsNull(assign.child2)) { return false }
+        let target = ptr_to_node(assign.child1)
+        let value = ptr_to_node(assign.child2)
+        if (target.kind != NodeKind.IDENTIFIER_EXPR or value.kind != NodeKind.BINARY_EXPR) { return false }
+        if (value.s1.equals("+") == false and value.s1.equals("-") == false) { return false }
+        if (nodeIsNull(value.child1) or nodeIsNull(value.child2)) { return false }
+        let left = ptr_to_node(value.child1)
+        if (left.kind != NodeKind.IDENTIFIER_EXPR or left.s1.equals(target.s1) == false) { return false }
+        let at = self.candidate(target.s1)
+        if (at < 0) { return false }
+        if (nodeHasType(value) == false or floatKeyValid(typeIrKey(nodeGetType(value))) == false) {
+            return false
+        }
+        if (reductionSubtreeNames(value.child2, self.names[at])) { return false }
+
+        self.sites.push(assign.child2)
+        self.siteNames.push(at)
+        self.collectChain(value.child2)
+        return true
+    }
+}

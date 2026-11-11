@@ -4600,6 +4600,11 @@ private fn generateBinary(expr: ASTNode) -> String {
         if (op.equals("*")) { tempId = ir_fmul(opType, leftVal, rightVal) }
         if (op.equals("/")) { tempId = ir_fdiv(opType, leftVal, rightVal) }
         if (op.equals("%")) { tempId = ir_frem(opType, leftVal, rightVal) }
+        // The update of a loop reduction: its terms may be added in any grouping
+        // (ir/reductions.psm).
+        if ((op.equals("+") or op.equals("-")) and reductionMarked(expr)) {
+            ir_fp_mark_reassoc(ir_get_temp_name(tempId))
+        }
         if (op.equals("==")) { tempId = ir_fcmp_oeq(opType, leftVal, rightVal) }
         // Unordered: `NaN != x` is true, as IEEE 754 and every C-family
         // language have it. The ordered `one` made `x != x` false for a NaN.

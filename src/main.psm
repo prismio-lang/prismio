@@ -83,6 +83,7 @@ let USAGE =
 
     Single-file commands -- these name a source and need no manifest:
       prismio build <source.psm> [-o output] [-g] [-O0..-O3|-Os|-Oz] [--overflow-checks]
+                    [--strict-float]
                     [--target <triple>] [--sysroot <sdk>]
                     [--freestanding [--native <file>]... [--native-flag <flag>]...
                      [--link-arg <arg>]...
@@ -729,6 +730,12 @@ fn main() -> Int {
             // per operation defeats vectorization, so a single-file build leaves
             // it off unless asked. A project's debug profile turns it on.
             options.overflowChecks = true
+            argIndex = argIndex + 1
+        } else if (arg.equals("--strict-float")) {
+            // Float adds keep their sequential order: no loop reduction is reassociated
+            // (ir/reductions.psm). A summation loop then runs scalar, as it does in C
+            // and Rust.
+            options.strictFloat = true
             argIndex = argIndex + 1
         } else if (arg.equals("--jit")) {
             // `run` without the clang compile and the link. Off by default and

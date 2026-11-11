@@ -1,0 +1,292 @@
+// Float loop reductions (src/ir/reductions.psm, docs/FLOAT_REDUCTIONS_PLAN.md section 3).
+//
+// A float local declared outside a loop that the loop only ever updates as `x = x + e`, `x += e`,
+// `x = x - e` or `x -= e`, with `e` not reading `x`, may have its terms added in any grouping, so
+// those adds are marked `reassoc` and the vectorizer may split the sum. Every function below is one
+// row of the plan's table. The answers are compared by tolerance, since a reduction's grouping is
+// free; which adds carry the flag is asserted from the IR by run_float_reductions_test, which reads
+// the functions by name:
+//
+//   reduction      sumPlus sumSpelled sumCall dotProduct sumMinus sumMinusSpelled sumGuarded
+//                  sumTwice sumInner sumSingle readAfter, and the accumulators that are only updated
+//                  in scaledInto (`sum`) and logged (`seen`) even though they read another one
+//   not reduction  kahan timeStep decay reversed selfTerm product countInt condition fieldSum
+//                  globalSum rebound
+//
+// An accumulator read after its loop is still a reduction; the rule is about the loop's body.
+
+import std.io
+import std.math
+import std.string
+import std.vec
+
+struct Account { total: Float }
+
+let mut globalTotal: Float = 0.0
+
+fn near(got: Float, want: Float) -> Bool {
+    let scale = want.abs() + 1.0
+    return (got - want).abs() <= 1e-9 * scale
+}
+
+fn series(n: Int) -> Vec<Float> {
+    let mut xs: Vec<Float> = Vec<Float>.withCapacity(n)
+    for i in 0..<n { xs.push((i as Float) * 0.5) }
+    return xs
+}
+
+fn sumPlus(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum += a[i] }
+    return sum
+}
+
+fn scale(x: Float) -> Float { return x * 2.0 }
+
+fn sumSpelled(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum = sum + a[i] }
+    return sum
+}
+
+fn sumCall(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum = sum + scale(a[i]) }
+    return sum
+}
+
+fn dotProduct(a: Vec<Float>, b: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum += a[i] * b[i] }
+    return sum
+}
+
+fn sumMinus(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum -= a[i] }
+    return sum
+}
+
+fn sumMinusSpelled(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum = sum - a[i] }
+    return sum
+}
+
+fn sumGuarded(a: Vec<Float>, floor: Float) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length {
+        if (a[i] > floor) { sum += a[i] }
+    }
+    return sum
+}
+
+// Two updates in one body are terms of the same sum.
+fn sumTwice(a: Vec<Float>) -> Float {
+    let mut s = 0.0
+    for i in 0..<a.length {
+        s += a[i]
+        s += a[i] * 0.5
+    }
+    return s
+}
+
+// `s` is read in the outer loop, so the outer loop does not reduce it; the inner loop, which only
+// updates it, does.
+fn sumInner(a: Vec<Float>, rows: Int) -> Vec<Float> {
+    let mut out: Vec<Float> = Vec<Float>.withCapacity(rows)
+    for r in 0..<rows {
+        let mut s = 0.0
+        for j in 0..<a.length { s += a[j] }
+        out.push(s)
+    }
+    return out
+}
+
+// F32 takes the same mark.
+fn sumSingle(a: Vec<Float>) -> F32 {
+    let mut sum: F32 = 0.0
+    for i in 0..<a.length { sum += a[i] as F32 }
+    return sum
+}
+
+// Read after the loop, not inside it.
+fn readAfter(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum += a[i] }
+    return sum + 1.0
+}
+
+// `sum` is read to form `t` and `c`, so the order of its updates is the algorithm.
+fn kahan(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    let mut c = 0.0
+    for i in 0..<a.length {
+        let y = a[i] - c
+        let t = sum + y
+        c = (t - sum) - y
+        sum = t
+    }
+    return sum
+}
+
+// `t` is read by the next statement.
+fn timeStep(n: Int, dt: Float) -> Float {
+    let mut t = 0.0
+    let mut x = 0.0
+    for i in 0..<n {
+        t += dt
+        x = t * t
+    }
+    return x
+}
+
+fn decay(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum = sum * 0.5 + a[i] }
+    return sum
+}
+
+fn reversed(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    for i in 0..<a.length { sum = a[i] - sum }
+    return sum
+}
+
+// `e` reads the accumulator.
+fn selfTerm(n: Int) -> Float {
+    let mut sum = 1.0
+    for i in 0..<n { sum = sum + sum * 0.001 }
+    return sum
+}
+
+// Another accumulator is read to form the term; that one is not a reduction, the one it feeds is.
+fn scaledInto(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    let mut scaleBy = 1.0
+    for i in 0..<a.length {
+        scaleBy += 0.001
+        sum += a[i] * scaleBy
+    }
+    return sum
+}
+
+// Products are not reductions in this version.
+fn product(a: Vec<Float>) -> Float {
+    let mut prod = 1.0
+    for i in 0..<a.length { prod *= 1.0 + a[i] * 0.00001 }
+    return prod
+}
+
+fn countInt(a: Vec<Float>) -> Int {
+    let mut count = 0
+    for i in 0..<a.length { count += 1 }
+    return count
+}
+
+// Read by the loop's own condition.
+fn condition(limit: Float) -> Int {
+    let mut sum = 0.0
+    let mut steps = 0
+    while (sum < limit) {
+        sum += 1.5
+        steps += 1
+    }
+    return steps
+}
+
+fn show(x: Float) -> Float { return x }
+
+// Read by a call in the body.
+fn logged(a: Vec<Float>) -> Float {
+    let mut sum = 0.0
+    let mut seen = 0.0
+    for i in 0..<a.length {
+        sum += a[i]
+        seen = seen + show(sum)
+    }
+    return seen
+}
+
+// A field is not a local.
+fn fieldSum(a: Vec<Float>) -> Float {
+    let mut account = Account { total: 0.0 }
+    for i in 0..<a.length { account.total = account.total + a[i] }
+    return account.total
+}
+
+fn globalSum(a: Vec<Float>) -> Float {
+    globalTotal = 0.0
+    for i in 0..<a.length { globalTotal += a[i] }
+    return globalTotal
+}
+
+// The `sum` the loop updates is its own, declared in the body, and not the one outside.
+fn rebound(a: Vec<Float>) -> Float {
+    let mut sum = 100.0
+    for i in 0..<a.length {
+        let mut sum = 0.0
+        sum += a[i]
+    }
+    return sum
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let n = 1000
+    let a = series(n)
+    let mut b: Vec<Float> = Vec<Float>.withCapacity(n)
+    let mut centered: Vec<Float> = Vec<Float>.withCapacity(n)
+    for i in 0..<n {
+        b.push(2.0)
+        centered.push((i as Float) - 500.0)
+    }
+
+    // 0.5 * (0 + 1 + ... + 999)
+    let total = 249750.0
+    let mut bad = 0
+
+    if (near(sumPlus(a), total) == false) { bad = bad + fail("sumPlus") }
+    if (near(sumSpelled(a), total) == false) { bad = bad + fail("sumSpelled") }
+    if (near(sumCall(a), 2.0 * total) == false) { bad = bad + fail("sumCall") }
+    if (near(dotProduct(a, b), 2.0 * total) == false) { bad = bad + fail("dotProduct") }
+    if (near(sumMinus(a), 0.0 - total) == false) { bad = bad + fail("sumMinus") }
+    if (near(sumMinusSpelled(a), 0.0 - total) == false) { bad = bad + fail("sumMinusSpelled") }
+    // 1 + 2 + ... + 499
+    if (near(sumGuarded(centered, 0.0), 124750.0) == false) { bad = bad + fail("sumGuarded") }
+    if (near(sumTwice(a), 1.5 * total) == false) { bad = bad + fail("sumTwice") }
+
+    let rows = sumInner(a, 3)
+    if (rows.length != 3 or near(rows[0], total) == false or near(rows[2], total) == false) {
+        bad = bad + fail("sumInner")
+    }
+    if (near(sumSingle(a) as Float, total) == false) { bad = bad + fail("sumSingle") }
+    if (near(readAfter(a), total + 1.0) == false) { bad = bad + fail("readAfter") }
+
+    // Sequential results, which nothing here may reassociate: the same numbers a plain loop gives.
+    // Kahan's compensated sum is the exact total for these terms.
+    if (near(kahan(a), total) == false) { bad = bad + fail("kahan") }
+    if (near(timeStep(4, 0.5), 4.0) == false) { bad = bad + fail("timeStep") }
+    // sum_k a[k] * 0.5^(n-1-k): the last terms dominate.
+    if (near(decay(series(4)), 0.0 * 0.125 + 0.5 * 0.25 + 1.0 * 0.5 + 1.5) == false) { bad = bad + fail("decay") }
+    // 1.5 - (1.0 - (0.5 - 0.0))
+    if (near(reversed(series(4)), 1.0) == false) { bad = bad + fail("reversed") }
+    if (near(selfTerm(3), 1.001 * 1.001 * 1.001) == false) { bad = bad + fail("selfTerm") }
+    if (scaledInto(series(3)) < 0.0 or near(scaledInto(series(1)), 0.0) == false) {
+        bad = bad + fail("scaledInto")
+    }
+    if (product(series(3)) < 1.0) { bad = bad + fail("product") }
+    if (countInt(a) != n) { bad = bad + fail("countInt") }
+    if (condition(10.0) != 7) { bad = bad + fail("condition") }
+    if (near(logged(series(3)), 0.0 + 0.5 + 1.5) == false) { bad = bad + fail("logged") }
+    if (near(fieldSum(a), total) == false) { bad = bad + fail("fieldSum") }
+    if (near(globalSum(a), total) == false) { bad = bad + fail("globalSum") }
+    if (near(rebound(a), 100.0) == false) { bad = bad + fail("rebound") }
+
+    if (bad == 0) { println("ok") }
+    return bad
+}

@@ -60,6 +60,10 @@ let mut irLoopRangeProofComplete = false
 // `+`/`-` node carrying it cannot wrap in any copy of any loop it is in.
 let mut irNowrapPass = 0
 
+// The reductions pass of the function being generated, or 0 (ir/reductions.psm). A `+`/`-`
+// node carrying it updates a loop reduction and is emitted `reassoc`.
+let mut irReductionPass = 0
+
 // A narrower bounds fact for a growing-container loop:
 // `while (iv < list_len(xs))`. The condition proves only `xs[iv]`, and only
 // until the body assigns `iv`; unlike a range proof it says nothing about

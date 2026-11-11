@@ -189,7 +189,7 @@ belong in the parser or project metadata.
   lockfile, but resolved sources are not added to import search or linked.
   Registry dependencies still have no fetch implementation.
 - Profiles are `debug` and `release` only, and a `profiles` block sets two
-  things for each: `debugInfo` and `overflowChecks`.
+  things for each: `debugInfo`, `overflowChecks` and `strictFloat`.
 - Native sources are C only; a C++ source would need its runtime library
   linked, which nothing declares yet.
 - Manifest edits exist as a tested source transformation, but no dependency CLI
