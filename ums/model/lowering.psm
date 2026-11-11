@@ -587,10 +587,11 @@ impl UmsProjectModel {
             for j in 0..<profile.children.length {
                 let setting = document.statements[profile.children[j]]
                 let known = setting.name.equals("debugInfo") or setting.name.equals("overflowChecks")
+                            or setting.name.equals("strictFloat")
                 if (setting.kind != UmsAstStatementKind.ASSIGNMENT or known == false) {
                     self.lowerError(diagnostics, setting, "UMS2703",
                         "unknown profile setting '".concat(setting.name,
-                                                           "'; expected debugInfo or overflowChecks"))
+                                                           "'; expected debugInfo, overflowChecks or strictFloat"))
                 } else if (setting.value.kind != UmsAstValueKind.BOOLEAN) {
                     self.lowerError(diagnostics, setting, "UMS2704",
                         "profile setting '".concat(setting.name, "' must be true or false"))
@@ -598,8 +599,10 @@ impl UmsProjectModel {
                     let on = setting.value.text.equals("true")
                     if (setting.name.equals("debugInfo")) {
                         self.build.debugInfo = on
-                    } else {
+                    } else if (setting.name.equals("overflowChecks")) {
                         self.build.overflowChecks = on
+                    } else {
+                        self.build.strictFloat = on
                     }
                 }
             }

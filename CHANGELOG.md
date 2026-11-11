@@ -41,6 +41,20 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Changed
 
+- **A float loop reduction may be summed in any order.** A `Float` or `F32` local declared outside a loop that the
+  loop only updates as `x += e`, `x -= e`, `x = x + e` or `x = x - e`, with `e` not reading `x`, has those adds
+  emitted `reassoc` (the one flag the vectorizer needs to split a sum into SIMD lanes; `nsz`, `nnan` and `ninf`
+  are not set, so NaN, infinities and signed zeros are untouched). The `fmuladd` of `sum += a[i] * b[i]` takes it
+  too. Anything that reads the accumulator for another purpose keeps sequential order: Kahan summation,
+  time-stepping, `sum = sum * 0.5 + x`, a global, a field, a name the loop rebinds. Products are not reductions.
+  `numerical_integration` 2.2 ms → 1.2 ms (0.51× of C++ and of Rust in the same run, which both promise
+  sequential order); a plain 1M-element sum 0.20–0.25× and a dot product 0.36–0.37× of the sequential build, on a
+  loaded machine (0.16× and 0.28× idle, from the plan's hand-marked IR). The vectorizer's eight partial sums are
+  as accurate or better than one chain (harmonic sum −52 against −414 ulp). The same source gives the same bits on one target; different targets
+  can differ in the last bits, as they already did through `contract`. `--strict-float` (and `strictFloat` in a
+  manifest's `profiles` block) keeps every float add in source order; `PRISMIO_REDUCTION_TRACE=1` prints each marked
+  site. `src/` and `std/` take no mark. Plan: `docs/FLOAT_REDUCTIONS_PLAN.md`.
+
 ### Fixed
 
 - `prismio fmt` joined `, ..}` in a destructuring pattern into `,..}`.

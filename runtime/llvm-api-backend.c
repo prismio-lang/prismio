@@ -4504,6 +4504,24 @@ static void set_fp_contract(LLVMValueRef v) {
     if (LLVMIsAInstruction(v)) LLVMSetFastMathFlags(v, (1 << 5));
 }
 
+// `reassoc` on the float add or subtract that updates a loop reduction
+// (src/ir/reductions.psm), which is the one flag the vectorizer needs to split the
+// sum into SIMD lanes. (1 << 0) is LLVMFastMathAllowReassoc; `nsz`, `nnan` and
+// `ninf` are not needed, so a NaN, an infinity and a signed zero are untouched.
+//
+// Reaches an `llvm.fmuladd` call too: `fuse_multiply` turns `sum + a * b` into one,
+// and a dot product is the case that matters. A folded constant has no flags to carry
+// (see set_fp_contract), and only an add, a subtract or that fused call is marked, so
+// a caller cannot put the flag on anything else.
+void ir_fp_mark_reassoc(const char *value) {
+    if (block_done()) return;
+    LLVMValueRef v = resolve_value(value, NULL);
+    if (!LLVMIsAInstruction(v)) return;
+    LLVMOpcode op = LLVMGetInstructionOpcode(v);
+    if (op != LLVMFAdd && op != LLVMFSub && op != LLVMCall) return;
+    LLVMSetFastMathFlags(v, LLVMGetFastMathFlags(v) | (1 << 0));
+}
+
 // A multiply that is a *direct operand* of an add or subtract -- the source
 // expression `a * b + c` -- becomes one `llvm.fmuladd`, decided here as clang's
 // front end decides it, and not left to the backend's fusion.

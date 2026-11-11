@@ -97,7 +97,8 @@ Supported top-level blocks and declarations are:
   tool wrote, as `pkg-config` or `tools/setup_llvm.py` would)
 - `profiles { debug { debugInfo = false } release { overflowChecks = true } }`
   (the `debug` profile builds with `-g` and overflow checks, `release` with
-  neither; a block changes that for its profile)
+  neither; a block changes that for its profile; `strictFloat = true` keeps float
+  adds in source order, as `--strict-float` does)
 - `dependencies { implementation("name", "constraint") }`
 - `dependencies { implementation("name", "constraint", "../local-path") }`
 - `dependencies { api("name", "constraint") }`

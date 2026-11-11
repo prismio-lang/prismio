@@ -70,6 +70,7 @@ public struct CompileOptions {
     public optimized: Bool,
     public jit: Bool,
     public overflowChecks: Bool,
+    public strictFloat: Bool,
     public installedRuntime: Bool,
     runDirectory: String
 }
@@ -83,6 +84,7 @@ public fn compileOptions() -> CompileOptions {
         optimized: false,
         jit: false,
         overflowChecks: false,
+        strictFloat: false,
         installedRuntime: true,
         runDirectory: "".clone()
     }
@@ -526,6 +528,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     } else {
         ir_set_overflow_checks(0)
     }
+    reductionsSetStrict(options.strictFloat)
 
     diag_progress("generating IR")
     generateModule(mergedAst)

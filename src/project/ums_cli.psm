@@ -301,6 +301,7 @@ public fn umsProfileOptions(workspace: UmsWorkspace) -> CompileOptions {
     let options = compileOptions()
     options.debugInfo = workspace.project.build.debugInfo
     options.overflowChecks = workspace.project.build.overflowChecks
+    options.strictFloat = workspace.project.build.strictFloat
     return options
 }
 

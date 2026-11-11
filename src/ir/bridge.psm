@@ -97,6 +97,8 @@ public extern fn ir_fdiv(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_frem(type: String, lhs: String, rhs: String) -> Int
 public extern fn ir_neg(type: String, value: String) -> Int
 public extern fn ir_fneg(type: String, value: String) -> Int
+// Lets the vectorizer split the sum this float add or subtract updates (ir/reductions.psm).
+public extern fn ir_fp_mark_reassoc(value: String)
 
 // Width conversions
 public extern fn ir_zext(fromType: String, value: String, toType: String) -> Int

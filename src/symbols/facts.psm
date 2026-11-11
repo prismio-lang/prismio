@@ -46,6 +46,8 @@ private let mut markNowrap: Vec<Int>
 // remainder (REM_* in src/ir/residues.psm), and the pass that gave it.
 private let mut markRemPass: Vec<Int>
 private let mut markRemForm: Vec<Int>
+// The reductions pass (ir/reductions.psm) that found this `+`/`-` to update a loop reduction, or 0.
+private let mut markReassoc: Vec<Int>
 private let mut lastProof = 0
 private let mut factsOpened = false
 
@@ -66,6 +68,7 @@ private fn factsOpen() {
     markNowrap = []
     markRemPass = []
     markRemForm = []
+    markReassoc = []
     factsOpened = true
 }
 
@@ -117,6 +120,7 @@ private fn markIndexOrNew(node: Ptr) -> Int {
     markNowrap.push(0)
     markRemPass.push(0)
     markRemForm.push(0)
+    markReassoc.push(0)
     return slot
 }
 
@@ -154,6 +158,19 @@ public fn ir_nowrap_of(node: Ptr) -> Int {
     }
     if (nowrapSwitch == 1) { return 0 }
     return ir_nowrap_marked(node)
+}
+
+public fn ir_reassoc_mark(node: Ptr, pass: Int) {
+    let slot = markIndexOrNew(node)
+    markReassoc[slot] = pass
+}
+
+// The pass that marked `node`, or 0. A pass is a number nothing reuses, so a mark on a node freed
+// and reallocated at the same address matches no later pass.
+public fn ir_reassoc_of(node: Ptr) -> Int {
+    let slot = markIndex(node)
+    if (slot < 0) { return 0 }
+    return markReassoc[slot]
 }
 
 public fn ir_rem_form_mark(node: Ptr, pass: Int, form: Int) {
