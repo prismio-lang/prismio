@@ -612,11 +612,18 @@ nesting the rest of the block in the arm. Not fixed: it is the ownership of a pa
 
 **A payload enum built both as a literal in an argument and by a function leaks the function's inner payload.**
 `name(Outer.Wrap(Inner.None))` (a stack literal) followed by `name(make(2))`, where `make` returns
-`Outer.Wrap(Inner.B("name".concat(...)))`, is `3 allocated, 2 released`: with one `Outer` site on the stack, the release after the
-second call is `rt_free(%outer)` alone, so the `Inner` box inside it (and its String) is left. Either call alone is balanced. The
-analysis cannot tell a stack payload from a heap one when it chooses the release, so it picks the shallow one. A fix is a release that
-checks, per payload, whether the box is the heap's (a tag bit, as a borrowed `String` has), or placing the literal on the heap when
-its enum type is also built there. Found writing `test_392_nested_patterns`, which builds its values in functions to stay clear of it.
+`Outer.Wrap(Inner.B("name".concat(...)))`, is `3 allocated, 2 released`: the release after the second call is `rt_free(%outer)`
+alone, so the `Inner` box inside it (and its String) is left. Either call alone is balanced, and a hand-written nested `match`
+leaks the same way, so it is not the pattern syntax. Cause: a field's sites are collected per type, `main`'s frame `Inner` is in
+the set of every `Outer`'s payload, and `fieldReleaseOf` declines when any site in the set has no release (a frame site has none),
+so `Outer` releases nothing and the heap one is freed shallowly. **Skipping frame sites in that agreement is not sound, and was tried
+2026-11-15**: a frame struct whose type owns fields gets a fields-only release at scope exit (`frameStructOwnsFields`, `__aif_release_fields_T`),
+which then frees the frame value stored in it (`release of a pointer that is not live` under `--verify`; `struct Holder { inner: Inner }`
+built as `Holder { inner: Inner.None, tag: 1 }` shows it). A sound fix has to make the two kinds of site agree: raise the escape of
+a frame site stored into a field that heap sites also fill, so it is placed on the heap (the engine is in `runtime/aif_support.c` and
+`tools/aif_oracle/aif.py` mirrors it, and every program with such a field changes placement), or release per instance (the frame
+container's fields-only release told which of its fields hold frame values). Neither is small. Avoid it by building values in functions
+that return them, as `test_392_nested_patterns` does.
 
 **`--verify` counts a struct literal inside a generic struct's literal and never releases it.**
 `Box<Point> { v: Point { x: 4, y: 5 }, n: 1 }` reports `2 allocated, 1 released, 1 leaked`, and so does

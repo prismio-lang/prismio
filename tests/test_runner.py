@@ -7368,6 +7368,11 @@ def run_ownership_probes_test():
     if problems:
         print(f"{RED}[FAIL] ownership probes{RESET}")
         for problem in problems:
+        # The language-gaps forms: an owned String payload through `if let`, `let ... else`, guards and
+        # nested patterns is released once.
+        ("test_390_let_forms.psm", "PASS", True),
+        ("test_391_match_tests.psm", "PASS", True),
+        ("test_392_nested_patterns.psm", "PASS", True),
             print(f"  {problem}")
         return False
     print(f"{GREEN}[PASS] ownership probes: {len(probes)} shapes, right text and "

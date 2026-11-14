@@ -93,6 +93,11 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Repository
 
+- **The language-gaps tests are held to 0 leaked.** `test_390_let_forms`, `test_391_match_tests` and
+  `test_392_nested_patterns` are in `ownership_probes` (`tests/test_runner.py`), so a pattern form that stops releasing an
+  owned String payload fails the suite instead of passing quietly. `docs/KNOWN_ISSUES.md` records what the work found and did
+  not fix: a payload enum built both as a stack literal in an argument and by a function leaks the function's inner payload, and
+  why skipping frame sites in the field's release is not sound.
 - **`float_sum` and `float_dot` hosted benchmarks** (Prismio, C++, Rust), each 20 passes over 1M doubles, written
   plainly in all three languages. Their values are small multiples of 1/8 and 1/16, so every grouping of the sum is
   exact and the arms agree to the bit whether or not a compiler splits it into SIMD lanes.
