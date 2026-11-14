@@ -161,6 +161,8 @@ fn ixEmitRef(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode,
 
 fn ixEmitUnresolved(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: ASTNode, name: String, what: String) {
     if (ixIsUserFile(ix, node.file) == false) { return }
+    // `_` in a variant's pattern (`Outer.Two(_, n)`) names nothing, and is not a name that failed to resolve.
+    if (name.equals("_")) { return }
     let slot = ixView(src, node.file)
     let token = ixTokenIfNamed(src, slot, node, name)
     if (token < 0) { return }

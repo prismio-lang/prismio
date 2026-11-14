@@ -51,6 +51,12 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   A `match` that has any of these ends in an unguarded `_`; a bare name before `if` is a binding. The value is evaluated once.
   A `match` without them is read as before (the IR of the 361 programs of `tests/` and `benchmarks/hosted/prismio/` is
   unchanged). `test_391_match_tests` (`--verify`: 0 leaked), `neg_408`..`neg_411`.
+- **Patterns inside a variant's pattern.** `Outer.Wrap(Inner.A(v)) =>`, `Outer.Two(Inner.A(v), 0) =>`, `Outer.Plain(7) =>`, `_` to
+  skip a value, any depth, with a guard that sees every name, in `match` (statements and values), `if let`, `while let` and
+  `let ... else`. The pattern is matched to find out and again to run the arm, so a failing inner pattern falls to the next arm and
+  nothing runs twice; a `match` that has one ends in an unguarded `_`. `_` in a variant's pattern is no longer an unresolved name in the
+  editor index. `test_392_nested_patterns` (`--verify`: 0 leaked), `neg_412`..`neg_415`; the IR of the 361 existing programs is
+  unchanged.
 - **Editor support for the new syntax.** The semantic index nests a struct written inside another under its owner and finds
   its fields by path (`win.size.w`), indexes a pattern's new name (`y: why`), prints a tuple as `(Int, String)` (in hover,
   hints and the compiler's messages), and completes the structs inside `Window.`. The VS Code grammar and the JetBrains lexer

@@ -1,0 +1,143 @@
+// Patterns inside a variant's pattern: `Outer.Wrap(Inner.A(v))`, a number or text in place of a name
+// (`Outer.Plain(7)`), `_`, and any depth of them, in `match` (statement and value), `if let`, `while let`
+// and `let ... else` (parse/arm_tests.psm: the pattern is matched once to find out and once to run the arm,
+// the inner patterns bound to hidden names and matched in turn).
+//
+// What is asserted: each case takes the arm a hand-written nest of `match`es takes, a guard sees the
+// inner bindings, a failing inner pattern falls to the arms after it, owned String payloads are released
+// once (`--verify`: 0 leaked), and every arm returning still ends the function.
+
+import std.io
+import std.string
+
+enum Inner { A(Int), B(String), None }
+
+enum Outer { Wrap(Inner), Two(Inner, Int), Plain(Int), Empty }
+
+enum Deep { Layer(Outer), Bottom }
+
+fn describe(o: Outer) -> String {
+    match o {
+        Outer.Wrap(Inner.A(v)) => { return "wrapped A ".concat(v.toString()) }
+        Outer.Wrap(Inner.B(s)) => { return "wrapped B ".concat(s) }
+        Outer.Wrap(Inner.None) => { return "wrapped none" }
+        Outer.Two(Inner.A(v), 0) => { return "two A zero ".concat(v.toString()) }
+        Outer.Two(Inner.A(v), n) if n > 5 => { return "two A big" }
+        Outer.Two(_, n) => { return "two other ".concat(n.toString()) }
+        Outer.Plain(7) => { return "seven" }
+        _ => { return "else" }
+    }
+}
+
+fn value(o: Outer) -> Int {
+    return match o {
+        Outer.Wrap(Inner.A(v)) => v,
+        Outer.Plain(n) => n * 2,
+        _ => -1
+    }
+}
+
+fn depth(d: Deep) -> Int {
+    match d {
+        Deep.Layer(Outer.Wrap(Inner.A(v))) => { return v }
+        Deep.Layer(Outer.Plain(n)) if n > 10 => { return n }
+        Deep.Layer(_) => { return -1 }
+        _ => { return -2 }
+    }
+}
+
+// Values are built in functions that return them: a literal written in an argument is a stack value, and a
+// program that has both kinds of `Outer` leaks the heap ones' inner payload (KNOWN_ISSUES), which is not what
+// is under test here.
+fn wrapA(v: Int) -> Outer { return Outer.Wrap(Inner.A(v)) }
+fn wrapNone() -> Outer { return Outer.Wrap(Inner.None) }
+fn twoA(v: Int, n: Int) -> Outer { return Outer.Two(Inner.A(v), n) }
+fn twoB(s: String, n: Int) -> Outer { return Outer.Two(Inner.B(s.concat("")), n) }
+fn plain(n: Int) -> Outer { return Outer.Plain(n) }
+fn layer(o: Outer) -> Deep { return Deep.Layer(o) }
+fn bottom() -> Deep { return Deep.Bottom }
+
+fn make(k: Int) -> Outer {
+    if k == 0 { return Outer.Empty }
+    if k == 1 { return Outer.Wrap(Inner.A(10)) }
+    if k == 2 { return Outer.Wrap(Inner.B("name".concat(k.toString()))) }
+    if k == 3 { return Outer.Two(Inner.B("t".concat(k.toString())), 0) }
+    return Outer.Plain(k)
+}
+
+fn viaIfLet(k: Int) -> String {
+    if let Outer.Wrap(Inner.B(s)) = make(k) {
+        return s.concat("!")
+    } else if let Outer.Two(Inner.B(s), 0) = make(k) {
+        return "two ".concat(s)
+    }
+    return "no"
+}
+
+fn viaLetElse(k: Int) -> String {
+    let Outer.Wrap(Inner.B(s)) = make(k) else { return "not wrapped B" }
+    let n = s.length
+    return s.concat("#", n.toString())
+}
+
+fn source(i: Int) -> Outer {
+    if i < 3 { return Outer.Wrap(Inner.A(i + 1)) }
+    return Outer.Empty
+}
+
+fn countA() -> Int {
+    let mut total = 0
+    let mut i = 0
+    while let Outer.Wrap(Inner.A(v)) = source(i) {
+        total = total + v
+        i = i + 1
+    }
+    return total
+}
+
+fn same(what: String, got: String, want: String) -> Int {
+    if got == want { return 0 }
+    println("FAIL: ".concat(what, ": got ", got, ", wanted ", want))
+    return 1
+}
+
+fn sameInt(what: String, got: Int, want: Int) -> Int {
+    if got == want { return 0 }
+    println("FAIL: ".concat(what, ": got ", got.toString(), ", wanted ", want.toString()))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    bad = bad + same("a variant inside a variant", describe(wrapA(3)), "wrapped A 3")
+    bad = bad + same("a unit variant inside", describe(wrapNone()), "wrapped none")
+    bad = bad + same("an owned String two levels down", describe(make(2)), "wrapped B name2")
+    bad = bad + same("a number inside a pattern", describe(twoA(4, 0)), "two A zero 4")
+    bad = bad + same("a guard over an inner binding", describe(twoA(4, 9)), "two A big")
+    bad = bad + same("a failing inner pattern falls on", describe(twoA(4, 2)), "two other 2")
+    bad = bad + same("another inner pattern failing", describe(twoB("x", 1)), "two other 1")
+    bad = bad + same("a number in place of a name", describe(plain(7)), "seven")
+    bad = bad + same("the number differs", describe(plain(8)), "else")
+    bad = bad + same("no variant matches", describe(make(0)), "else")
+
+    bad = bad + sameInt("a value match: nested", value(wrapA(5)), 5)
+    bad = bad + sameInt("a value match: plain", value(plain(5)), 10)
+    bad = bad + sameInt("a value match: the rest", value(wrapNone()), -1)
+    bad = bad + sameInt("three levels", depth(layer(wrapA(3))), 3)
+    bad = bad + sameInt("three levels, a guard", depth(layer(plain(20))), 20)
+    bad = bad + sameInt("three levels, falling to a wider arm", depth(layer(plain(2))), -1)
+    bad = bad + sameInt("three levels, the other variant", depth(bottom()), -2)
+
+    bad = bad + same("if let: the first pattern", viaIfLet(2), "name2!")
+    bad = bad + same("else if let: the second pattern", viaIfLet(3), "two t3")
+    bad = bad + same("if let: neither", viaIfLet(1), "no")
+    bad = bad + same("let else: it matched", viaLetElse(2), "name2#5")
+    bad = bad + same("let else: the inner pattern failed", viaLetElse(1), "not wrapped B")
+    bad = bad + same("let else: another variant", viaLetElse(3), "not wrapped B")
+    bad = bad + sameInt("while let over a nested pattern", countA(), 6)
+
+    if bad != 0 { return 1 }
+    println("PASS: nested patterns")
+    return 0
+}

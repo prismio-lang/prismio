@@ -1,0 +1,13 @@
+// expect-error: has no variant `Z`
+import std.io
+enum Inner { A(Int), None }
+enum Outer { Wrap(Inner), Plain(Int) }
+
+fn f(o: Outer) -> Int {
+    match o {
+        Outer.Wrap(Inner.Z(v)) => { return v }
+        _ => { return 0 }
+    }
+}
+
+fn main() -> Int { return f(Outer.Plain(1)) }

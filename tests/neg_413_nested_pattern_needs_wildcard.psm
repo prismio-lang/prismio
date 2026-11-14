@@ -1,0 +1,14 @@
+// expect-error: pattern inside a pattern has to end in `_`
+import std.io
+enum Inner { A(Int), None }
+enum Outer { Wrap(Inner), Plain(Int) }
+
+// Which values `Outer.Wrap(Inner.A(v))` leaves over is not worked out: the chain ends in what `_` does.
+fn f(o: Outer) -> Int {
+    match o {
+        Outer.Wrap(Inner.A(v)) => { return v }
+    }
+    return 0
+}
+
+fn main() -> Int { return f(Outer.Plain(1)) }

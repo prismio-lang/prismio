@@ -37,9 +37,10 @@ import ast.nodes
 import common.diagnostics
 import std.string
 
-// i1: 0 a plain pattern, 1 `lo..hi`, 2 `lo..<hi`, 3 a string, 4 a name that binds (it has a guard).
+// i1: 0 a plain pattern, 1 `lo..hi`, 2 `lo..<hi`, 3 a string, 4 a name that binds (it has a guard),
+// 5 a pattern with a pattern inside it (`F.X(E.A(v))`, `F.X(0)`).
 private fn armIsTest(arm: ASTNode) -> Bool {
-    if (arm.i1 != 0) { return true }
+    if (arm.i1 >= 1 and arm.i1 <= 4) { return true }
     return arm.s1.equals("_") and arm.i2 == 1
 }
 
@@ -47,12 +48,24 @@ private fn armIsFinalWildcard(arm: ASTNode) -> Bool {
     return arm.s1.equals("_") and arm.i1 == 0 and arm.i2 == 0
 }
 
-private fn armIsGuardedPattern(arm: ASTNode) -> Bool {
-    return arm.s1.equals("_") == false and arm.i1 == 0 and arm.i2 == 1
-}
-
 private fn armIsPlain(arm: ASTNode) -> Bool {
     return arm.s1.equals("_") == false and arm.i1 == 0 and arm.i2 == 0
+}
+
+// A name, `_`, or a number or text to compare with is one of a variant's values; a variant pattern in its place is
+// a pattern of its own to match, and so is a literal.
+private fn armArgIsRefutable(arg: ASTNode) -> Bool {
+    return arg.kind == NodeKind.CALL_EXPR or arg.kind == NodeKind.MEMBER_ACCESS_EXPR or arg.kind == NodeKind.LITERAL_EXPR
+}
+
+internal fn armHasNested(pattern: ASTNode) -> Bool {
+    if (pattern.kind != NodeKind.CALL_EXPR) { return false }
+    let mut a = pattern.child2
+    while (nodeExists(a)) {
+        if (armArgIsRefutable(ptr_to_node(a))) { return true }
+        a = ptr_to_node(a).next
+    }
+    return false
 }
 
 private fn armBinary(from: ASTNode, op: String, left: Ptr, right: Ptr) -> ASTNode {
@@ -132,6 +145,28 @@ private fn armCloneChain(head: Ptr) -> Ptr {
     return first
 }
 
+// A copy of the node alone: its children are the caller's to give.
+private fn armCloneNodeOnly(source: Ptr) -> ASTNode {
+    let from = ptr_to_node(source)
+    let copy = createNode(from.kind)
+    nodeSpanFrom(copy, from)
+    copy.s1 = from.s1.clone()
+    copy.s2 = from.s2.clone()
+    copy.i1 = from.i1
+    copy.i2 = from.i2
+    copy.i3 = from.i3
+    return copy
+}
+
+// `{ unreachable() }`: a branch that cannot be taken, which says so to flow analysis.
+private fn armUnreachable(from: ASTNode) -> ASTNode {
+    let call = letNode(NodeKind.CALL_EXPR, from)
+    call.child1 = node_to_ptr(letName(from, "unreachable"))
+    let statement = letNode(NodeKind.EXPRESSION_STATEMENT, from)
+    statement.child1 = node_to_ptr(call)
+    return armBlockOf(from, node_to_ptr(statement))
+}
+
 impl Parser {
     // What comes after `=>` is read by the caller. This reads the pattern, and a guard: the cursor is on
     // the first token of the arm.
@@ -156,6 +191,8 @@ impl Parser {
                 arm.i1 = 4
                 let carrier = self.armCarrier(arm)
                 carrier.s1 = pattern.s1.clone()
+            } else if (armHasNested(pattern)) {
+                arm.i1 = 5
             }
             arm.child1 = node_to_ptr(pattern)
         }
@@ -206,7 +243,7 @@ impl Parser {
         }
         if (armIsFinalWildcard(ptr_to_node(lastPtr)) == false) {
             diag_error_at_code("P3201", matchNode.file, matchNode.line, matchNode.col, matchNode.len,
-                               "a `match` with a guard, a range or a string pattern has to end in `_`, for the values none of them takes")
+                               "a `match` with a guard, a range, a string or a pattern inside a pattern has to end in `_`, for the values none of them takes")
             self.abandon()
             return ptr_null()
         }
@@ -321,32 +358,16 @@ impl Parser {
         self.destructureSeq = self.destructureSeq + 1
         let guarded = stop
         let after = guarded.next
-        let carrier = ptr_to_node(guarded.child3)
-        let guardPtr = carrier.child2
         let patternPtr = guarded.child1
 
-        // The test: the same pattern again, setting the flag to what the guard says.
-        let testArm = letNode(NodeKind.MATCH_ARM, guarded)
-        testArm.child1 = armCloneChain(patternPtr)
-        let set = armAssign(guarded, flag, ptr_to_node(guardPtr))
-        testArm.child2 = node_to_ptr(armBlockOf(guarded, node_to_ptr(set)))
-        testArm.next = node_to_ptr(armWildcard(guarded, letEmptyBlock(guarded)))
-        let testMatch = letNode(NodeKind.MATCH_STATEMENT, at)
-        testMatch.child1 = node_to_ptr(patternAccess(at, root))
-        testMatch.child2 = node_to_ptr(testArm)
+        // The test: the pattern, setting the flag to what the guard says (true when there is none).
+        let mut verdict = armBool(guarded, "true")
+        if (guarded.i2 == 1) { verdict = ptr_to_node(ptr_to_node(guarded.child3).child2) }
+        let set = armAssign(guarded, flag, verdict)
+        let testMatch = self.armNestedMatch(at, root, patternPtr, armBlockOf(guarded, node_to_ptr(set)), false)
 
         // The arm, which is only reached when the pattern matched.
-        guarded.i2 = 0
-        guarded.child3 = ptr_null()
-        guarded.next = ptr_null()
-        let reach = letNode(NodeKind.EXPRESSION_STATEMENT, guarded)
-        let call = letNode(NodeKind.CALL_EXPR, guarded)
-        call.child1 = node_to_ptr(letName(guarded, "unreachable"))
-        reach.child1 = node_to_ptr(call)
-        guarded.next = node_to_ptr(armWildcard(guarded, armBlockOf(guarded, node_to_ptr(reach))))
-        let runMatch = letNode(NodeKind.MATCH_STATEMENT, at)
-        runMatch.child1 = node_to_ptr(patternAccess(at, root))
-        runMatch.child2 = node_to_ptr(guarded)
+        let runMatch = self.armNestedMatch(at, root, patternPtr, ptr_to_node(guarded.child2), true)
 
         let rest = self.armChain(at, root, after)
         let decided = letNode(NodeKind.IF_STATEMENT, guarded)
@@ -369,6 +390,114 @@ impl Parser {
         whole.child1 = node_to_ptr(patternAccess(at, root))
         whole.child2 = p
         return node_to_ptr(whole)
+    }
+
+    // `match root { Pattern => { <what the pattern's own patterns need> <inner> }, _ => { fallback } }`. A value in the
+    // pattern that is itself a pattern is bound to a hidden name, and matched in turn inside: so `F.X(E.A(v), 0)` is
+    // `match root { F.X($p0, $p1) => match $p0 { E.A(v) => if $p1 == 0 { inner } } }`. Each level that fails falls to
+    // its `_`: nothing in the fallback when finding out (`run` false), and `unreachable()` when running the arm, which
+    // is only reached once the finding out succeeded -- an `if` with both sides, as flow analysis wants.
+    // The pattern is copied, never consumed, since it is written out twice.
+    private fn armNestedMatch(self, at: ASTNode, root: String, pattern: Ptr, inner: ASTNode, run: Bool) -> ASTNode {
+        let original = ptr_to_node(pattern)
+
+        // The pattern with a hidden name where a pattern was.
+        let shell = armCloneNodeOnly(pattern)
+        let mut names = Vec<String>()
+        let mut subs = Vec<Ptr>()
+        let mut tail = ptr_to_node(ptr_null())
+        let mut a = original.child2
+        while (nodeExists(a)) {
+            let arg = ptr_to_node(a)
+            let mut copied = ptr_null()
+            if (armArgIsRefutable(arg)) {
+                let name = "$p".concat(self.destructureSeq.toString())
+                self.destructureSeq = self.destructureSeq + 1
+                names.push(name.clone())
+                subs.push(a)
+                let hidden = letName(arg, name)
+                copied = node_to_ptr(hidden)
+            } else {
+                copied = armCloneNode(a)
+            }
+            if (nodeIsNull(shell.child2)) {
+                shell.child2 = copied
+            } else {
+                tail.next = copied
+            }
+            tail = ptr_to_node(copied)
+            a = arg.next
+        }
+
+        // What each of them needs, innermost last.
+        let mut block = inner
+        let mut k = names.length
+        while (k > 0) {
+            k = k - 1
+            let sub = ptr_to_node(subs[k])
+            let mut each = ptr_to_node(ptr_null())
+            if (sub.kind == NodeKind.LITERAL_EXPR) {
+                let test = letNode(NodeKind.IF_STATEMENT, sub)
+                test.child1 = node_to_ptr(armBinary(sub, "==", node_to_ptr(letName(sub, names[k])), armCloneNode(subs[k])))
+                test.child2 = node_to_ptr(block)
+                if (run) { test.child3 = node_to_ptr(armUnreachable(sub)) }
+                each = test
+            } else {
+                each = self.armNestedMatch(at, names[k], subs[k], block, run)
+            }
+            block = armBlockOf(sub, node_to_ptr(each))
+        }
+
+        shell.child1 = armCloneChain(original.child1)
+        let hit = letNode(NodeKind.MATCH_ARM, original)
+        hit.child1 = node_to_ptr(shell)
+        hit.child2 = node_to_ptr(block)
+        let mut other = letEmptyBlock(original)
+        if (run) { other = armUnreachable(original) }
+        hit.next = node_to_ptr(armWildcard(original, other))
+        let statement = letNode(NodeKind.MATCH_STATEMENT, at)
+        statement.child1 = node_to_ptr(patternAccess(at, root))
+        statement.child2 = node_to_ptr(hit)
+        return statement
+    }
+
+    // `if let`, `while let` and `let ... else` over a pattern with a pattern inside it: the two arms are the pattern's
+    // and a `_`, and the chain they lower to is what takes the place of the statement. The head of the chain, or null
+    // after reporting.
+    internal fn lowerNestedLet(self, from: ASTNode, value: ASTNode, pattern: ASTNode, matched: ASTNode,
+                               other: ASTNode) -> Ptr {
+        let statement = letNode(NodeKind.MATCH_STATEMENT, from)
+        statement.child1 = node_to_ptr(value)
+        let hit = letNode(NodeKind.MATCH_ARM, pattern)
+        hit.i1 = 5
+        hit.child1 = node_to_ptr(pattern)
+        hit.child2 = node_to_ptr(matched)
+        let miss = letNode(NodeKind.MATCH_ARM, from)
+        miss.s1 = "_"
+        miss.child2 = node_to_ptr(other)
+        hit.next = node_to_ptr(miss)
+        statement.child2 = node_to_ptr(hit)
+        return self.lowerTestedMatch(statement)
+    }
+
+    // The block the rest of a nested `let ... else` goes in: the innermost one of what the pattern lowered to,
+    // which is the only empty block on the way down.
+    internal fn armInnermost(self, chainHead: Ptr) -> ASTNode {
+        let mut p = chainHead
+        while (nodeExists(ptr_to_node(p).next)) { p = ptr_to_node(p).next }
+        let decided = ptr_to_node(p)
+        let mut block = ptr_to_node(decided.child2)
+        loop {
+            if (nodeIsNull(block.child1)) { return block }
+            let first = ptr_to_node(block.child1)
+            if (first.kind == NodeKind.MATCH_STATEMENT) {
+                block = ptr_to_node(ptr_to_node(first.child2).child2)
+            } else if (first.kind == NodeKind.IF_STATEMENT) {
+                block = ptr_to_node(first.child2)
+            } else {
+                return block
+            }
+        }
     }
 
     // The chain's statements go ahead of the statement being read, and the last stands in for the `match`.

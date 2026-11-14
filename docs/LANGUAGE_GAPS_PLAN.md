@@ -37,7 +37,7 @@ other language has and users hit within a day, **P2** is real but can wait.
 | A1 | ~~**Nested structs**~~ **done 2026-11-11** (not yet inside a generic struct): an inline field type `pos: struct { x: Int, y: Int }`, and a struct declared inside another (`Outer.Inner`) | `P3201 expected IDENTIFIER in field name, found struct` | P0 |
 | A2 | ~~**Tuples**~~ **done 2026-11-11** (two to four elements; no `Ord`/`Key`/`Display`): `(1, 2)`, `-> (Int, Int)`, `let (a, b) = t`, `t.0` | `P3201 expected ) ... found ,` and `expected a type name, found (` | P0 |
 | A3 | ~~**Struct patterns / destructuring**~~ **`let` form done 2026-11-11** (`match` arms and parameters not): `let P { x, y } = p` | `P3201 expected : in map literal entry, found ,` | P0 |
-| A4 | **Nested patterns**: `F.X(E.A(v))` | `P4001 a variant pattern binds names, not expressions` | P1 |
+| A4 | ~~**Nested patterns**: `F.X(E.A(v))`~~ **done 2026-11-15** | `P4001 a variant pattern binds names, not expressions` | P1 |
 | A5 | **Struct update**: `P { x: 5, ..p }` | `P3201 expected IDENTIFIER in struct literal field, found ..` | P1 |
 | A6 | **Field defaults**: `x: Int = 3` | `P3201 expected IDENTIFIER in field name, found =` | P1 |
 | A7 | **Tuple structs** `struct P(Int, Int)` and **unit structs** `struct Marker` | `P3201 expected { in struct body` | P2 |
@@ -513,6 +513,20 @@ the arm is tried. A match on a `String` or a `Char` works because it never reach
 Not built: `|` between patterns, `lo..` and `..hi` open ranges, a range or guard on a nested pattern (A4), a guard that sees the whole value
 under another name (`n @ 1..5`). Tests: `test_391_match_tests`, `neg_408`..`neg_411`.
 
+## A4: as built
+
+`src/parse/arm_tests.psm`, on the machinery of B4-B6. An arm whose variant pattern has a call, a member access or a literal where a name
+goes (`Outer.Wrap(Inner.A(v))`, `Outer.Plain(7)`) is marked `i1 == 5` and lowers as a guarded pattern with the guard `true`: the pattern is
+matched once to set `$bN`, and once more to run the arm, with the arms after it the `else` of the `if $bN`. `armNestedMatch` writes the
+pattern out (a copy each time, `armCloneNode`) with a hidden `$pN` where a pattern was, and matches `$pN` inside against the inner pattern, to
+any depth; a literal is `if $pN == lit`; every level's failure goes to its `_`, empty in the first phase and `unreachable()` in the second.
+`if let`, `while let` and `let ... else` over such a pattern build their two-arm `match` and use the same lowering (`lowerNestedLet`); a
+nested `let ... else` puts the rest of the block in the innermost body (`$letelsedeep`, `armInnermost`). Same rule as B4-B6: a `match` with
+a pattern inside a pattern ends in an unguarded `_`. Also fixed: `_` in a variant pattern was reported as an unresolved name by the
+editor index. Found, not fixed (KNOWN_ISSUES): a payload enum built both as a stack literal in an argument and by a function leaks the
+function's inner payload (it reproduces with hand-written nested `match`es). Not built: `|`, a struct or tuple pattern inside a variant's.
+Tests: `test_392_nested_patterns`, `neg_412`..`neg_415`.
+
 ## Editor support for A1, A2, A3, B1, B2 and the match syntax
 
 Done 2026-11-11 (the second half of the session). None of the new syntax added a token, so the VS Code grammar and the
@@ -537,8 +551,8 @@ Left, in order of what a user would notice:
 ## Where the next session starts
 
 Built so far and committed (not pushed): A1 nested structs, A3 destructuring `let`, A2 tuples, B1 `if`/`match` as values, B2 `?`,
-the `match` syntax, B3 `if let` / `while let` / `let ... else`, B4-B6 guards, ranges and string patterns, and editor support for all of them except B3's (the index needed
-nothing: checked with `check --emit-index` and `tools/check_index.py`). Next in the plan, in the order to build: **A4** nested patterns inside a variant (`F.X(E.A(v))`), **C1** operator overloading
+the `match` syntax, B3 `if let` / `while let` / `let ... else`, B4-B6 guards, ranges and string patterns, A4 nested patterns, and editor support for all of them except B3's (the index needed
+nothing: checked with `check --emit-index` and `tools/check_index.py`). Next in the plan, in the order to build: **C1** operator overloading
 (`Add`, `Neg`, `Eq` hooks), **C2** closures that can be stored or returned plus a function type, **C4** `#[derive]`/`#[test]`,
 **A5/A6** struct update `..p` and field defaults, **D1** iterator adapters. `break` with a value is the other half of B1.
 Open: nested structs in generic structs, bare nested names in `impl` blocks and signatures, `From`-style error conversion for `?`,

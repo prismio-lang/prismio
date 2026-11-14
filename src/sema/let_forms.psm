@@ -15,11 +15,21 @@ import std.string
 // An optional `if let` (`$iflet`), or either form of `let ... else` (`$letelse`).
 internal fn semaIsLetForm(stmt: ASTNode) -> Bool {
     if (stmt.kind != NodeKind.IF_STATEMENT and stmt.kind != NodeKind.MATCH_STATEMENT) { return false }
-    return stmt.s1.equals("$iflet") or stmt.s1.equals("$letelse")
+    return stmt.s1.equals("$iflet") or stmt.s1.equals("$letelse") or stmt.s1.equals("$letelsedeep")
 }
 
 // Answers false after reporting; the statement is then not checked further.
 internal fn semaLetFormCheck(module: ASTNode, stmt: ASTNode) -> Bool {
+    // A `let ... else` over a pattern with a pattern inside it ends in the `if` on whether it matched, and
+    // the `else` is the statement's own (parse/arm_tests.psm).
+    if (stmt.s1.equals("$letelsedeep")) {
+        if (semaBlockDiverges(ptr_to_node(stmt.child3)) == false) {
+            semaLetElseFalls(ptr_to_node(stmt.child3))
+            semaTryNoteFailure()
+            return false
+        }
+        return true
+    }
     let isElse = stmt.s1.equals("$letelse")
     if (stmt.kind == NodeKind.IF_STATEMENT) {
         // `held != none` or `held == none`: the left side is what the pattern is read from.

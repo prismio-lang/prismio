@@ -1,0 +1,13 @@
+// expect-error: carries fewer values than this pattern binds
+import std.io
+enum Inner { A(Int), None }
+enum Outer { Wrap(Inner), Plain(Int) }
+
+fn f(o: Outer) -> Int {
+    match o {
+        Outer.Wrap(Inner.A(a, b)) => { return a }
+        _ => { return 0 }
+    }
+}
+
+fn main() -> Int { return f(Outer.Plain(1)) }

@@ -196,6 +196,11 @@ impl Parser {
         let elseChild = self.parseElse()
 
         if (kind == 2) {
+            if (armHasNested(pattern)) {
+                let lowered = self.lowerNestedLet(ifNode, value, pattern, thenBlock, letElseBlock(ifNode, elseChild))
+                if (self.dead == 1 or nodeIsNull(lowered)) { return ifNode }
+                return self.spliceLowered(lowered)
+            }
             return letMatch(ifNode, value, pattern, thenBlock, letElseBlock(ifNode, elseChild))
         }
 
@@ -234,9 +239,20 @@ impl Parser {
         let looped = letNode(NodeKind.LOOP_STATEMENT, whileNode)
 
         if (kind == 2) {
-            let inner = letBlock(whileNode, letMatch(whileNode, value, pattern, body, exit))
+            let inner = letBlock(whileNode, ptr_to_node(ptr_null()))
             inner.i1 = body.i1
             inner.i2 = body.i2
+            if (armHasNested(pattern)) {
+                let bodyLine = body.i1
+                let bodyCol = body.i2
+                let lowered = self.lowerNestedLet(whileNode, value, pattern, body, exit)
+                if (self.dead == 1 or nodeIsNull(lowered)) { return whileNode }
+                inner.child1 = lowered
+                inner.i1 = bodyLine
+                inner.i2 = bodyCol
+            } else {
+                inner.child1 = node_to_ptr(letMatch(whileNode, value, pattern, body, exit))
+            }
             looped.child1 = node_to_ptr(inner)
             return looped
         }
@@ -300,6 +316,16 @@ impl Parser {
         }
         self.advance()
         let elseBlock = self.parseBlock()
+        if (armHasNested(pattern)) {
+            // A pattern with a pattern inside it is a chain of statements; the rest of the block goes in the
+            // innermost block of the last of them (nestTries), which says so by its tag.
+            let lowered = self.lowerNestedLet(varNode, value, pattern, letEmptyBlock(varNode), elseBlock)
+            if (self.dead == 1 or nodeIsNull(lowered)) { return varNode }
+            let mut last = lowered
+            while (nodeExists(ptr_to_node(last).next)) { last = ptr_to_node(last).next }
+            ptr_to_node(last).s1 = "$letelsedeep"
+            return self.spliceLowered(lowered)
+        }
         // The rest of the block goes in the pattern's arm, the first (nestTries).
         let statement = letMatch(varNode, value, pattern, letEmptyBlock(varNode), elseBlock)
         statement.s1 = "$letelse"

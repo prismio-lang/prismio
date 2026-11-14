@@ -610,6 +610,14 @@ outlives the arm leaves neither the scrutinee nor `v` releasing it. `if`/`match`
 are exactly this shape, so an owned payload taken out that way and then handed on is affected; the `?` operator avoids it by
 nesting the rest of the block in the arm. Not fixed: it is the ownership of a pattern binding, which wants its own session.
 
+**A payload enum built both as a literal in an argument and by a function leaks the function's inner payload.**
+`name(Outer.Wrap(Inner.None))` (a stack literal) followed by `name(make(2))`, where `make` returns
+`Outer.Wrap(Inner.B("name".concat(...)))`, is `3 allocated, 2 released`: with one `Outer` site on the stack, the release after the
+second call is `rt_free(%outer)` alone, so the `Inner` box inside it (and its String) is left. Either call alone is balanced. The
+analysis cannot tell a stack payload from a heap one when it chooses the release, so it picks the shallow one. A fix is a release that
+checks, per payload, whether the box is the heap's (a tag bit, as a borrowed `String` has), or placing the literal on the heap when
+its enum type is also built there. Found writing `test_392_nested_patterns`, which builds its values in functions to stay clear of it.
+
 **`--verify` counts a struct literal inside a generic struct's literal and never releases it.**
 `Box<Point> { v: Point { x: 4, y: 5 }, n: 1 }` reports `2 allocated, 1 released, 1 leaked`, and so does
 `(Point { x: 4, y: 5 }, 1)`, which is `tuple2` of one. The AIF plan puts both sites on the stack

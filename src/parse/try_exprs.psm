@@ -164,6 +164,15 @@ impl Parser {
         let mut p = head
         while (nodeExists(p)) {
             let node = ptr_to_node(p)
+            if (node.s1.equals("$letelsedeep")) {
+                // `let ... else` over a pattern with a pattern inside it (parse/arm_tests.psm).
+                let rest = self.nestTries(node.next)
+                node.next = ptr_null()
+                self.armInnermost(node_to_ptr(node)).child1 = rest
+                if (nodeIsNull(node_to_ptr(previous))) { return node_to_ptr(node) }
+                previous.next = node_to_ptr(node)
+                return head
+            }
             if (node.s1.equals("$letelse")) {
                 // `let ... else` (parse/let_forms.psm): the rest of the block is the success branch's.
                 let rest = self.nestTries(node.next)

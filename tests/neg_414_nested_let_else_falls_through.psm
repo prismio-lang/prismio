@@ -1,0 +1,11 @@
+// expect-error: has to leave the block
+import std.io
+enum Inner { A(Int), None }
+enum Outer { Wrap(Inner), Plain(Int) }
+
+fn f(o: Outer) -> Int {
+    let Outer.Wrap(Inner.A(v)) = o else { println("no") }
+    return v
+}
+
+fn main() -> Int { return f(Outer.Plain(1)) }
