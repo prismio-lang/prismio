@@ -1,0 +1,385 @@
+// Match arms that test: a guard, a range, a string.
+//
+//     match n {                                  n is held once, as `$m0` (or read in place when it is a variable)
+//         1..5 => small(),                       if $m0 >= 1 and $m0 <= 5 { small() } else {
+//         x if x > 100 => big(x),                    let x = $m0
+//         _ => other(),                              if x > 100 { big(x) } else { other() } }
+//     }
+//
+// An integer `match` compares its scrutinee with each arm's value, an enum's picks a variant, and
+// neither can say "between" or "equal to this text" or "when this holds". So an arm that needs one of
+// those is not an arm of a `match` at all: it is a test, and the arms after it are what the test's
+// `else` does. Arms that are plain patterns (`Shape.Circle(r) =>`, `7 =>`) stay together as one
+// `match`, whose `_` arm is the rest of the chain; a plain `match` with none of these is not touched.
+//
+//     arm                         becomes
+//     `lo..hi`, `lo..<hi`         `m >= lo and m <= hi`, `m >= lo and m < hi`
+//     `"text"`                    `m == "text"`
+//     `name if guard`             `let name = m` then `if guard`: a bare name is a binding only with a guard
+//     `_ if guard`                `if guard`
+//     `Pattern if guard`          see below
+//
+// A guard on a variant or a number (`Shape.Circle(r) if r > 3 =>`) cannot be a test of its own: the
+// pattern has to bind `r` first, and when the guard fails the arms after it must still be tried, which a
+// `match` cannot do. So the pattern is matched twice: once to set a flag (`$bN`) to what the guard says, and
+// once, when it holds, to run the arm; the arms after it are the `else` of the `if` on the flag. The pattern
+// is copied for the first match, and nothing is run twice.
+//
+// Because the chain ends in what `_` does, a `match` with any of these ends in an unguarded `_`; the
+// compiler would otherwise have to know which values the tests cover.
+//
+// An arm is marked by the parser (parseArmHead) with `i1` its kind and `i2` whether it has a guard; what
+// does not fit in the arm (the range's end, the guard, the binding's name) is in a carrier node, `child3`.
+
+import lexer.token
+import lexer.scanner
+import ast.nodes
+import common.diagnostics
+import std.string
+
+// i1: 0 a plain pattern, 1 `lo..hi`, 2 `lo..<hi`, 3 a string, 4 a name that binds (it has a guard).
+private fn armIsTest(arm: ASTNode) -> Bool {
+    if (arm.i1 != 0) { return true }
+    return arm.s1.equals("_") and arm.i2 == 1
+}
+
+private fn armIsFinalWildcard(arm: ASTNode) -> Bool {
+    return arm.s1.equals("_") and arm.i1 == 0 and arm.i2 == 0
+}
+
+private fn armIsGuardedPattern(arm: ASTNode) -> Bool {
+    return arm.s1.equals("_") == false and arm.i1 == 0 and arm.i2 == 1
+}
+
+private fn armIsPlain(arm: ASTNode) -> Bool {
+    return arm.s1.equals("_") == false and arm.i1 == 0 and arm.i2 == 0
+}
+
+private fn armBinary(from: ASTNode, op: String, left: Ptr, right: Ptr) -> ASTNode {
+    let node = letNode(NodeKind.BINARY_EXPR, from)
+    node.s1 = op.clone()
+    node.child1 = left
+    node.child2 = right
+    return node
+}
+
+private fn armBool(from: ASTNode, value: String) -> ASTNode {
+    let node = letNode(NodeKind.LITERAL_EXPR, from)
+    node.i1 = TokenType.BOOL_LITERAL as Int
+    node.s1 = value.clone()
+    return node
+}
+
+private fn armAssign(from: ASTNode, name: String, value: ASTNode) -> ASTNode {
+    let node = letNode(NodeKind.ASSIGNMENT_STATEMENT, from)
+    node.child1 = node_to_ptr(letName(from, name))
+    node.child2 = node_to_ptr(value)
+    return node
+}
+
+// `statement` first in `block`.
+private fn armPrepend(block: ASTNode, statement: ASTNode) {
+    statement.next = block.child1
+    block.child1 = node_to_ptr(statement)
+}
+
+// An arm written `_ =>` with a block, to end a chain of arms.
+private fn armWildcard(from: ASTNode, body: ASTNode) -> ASTNode {
+    let arm = letNode(NodeKind.MATCH_ARM, from)
+    arm.s1 = "_"
+    arm.child2 = node_to_ptr(body)
+    return arm
+}
+
+private fn armBlockOf(from: ASTNode, first: Ptr) -> ASTNode {
+    let block = letNode(NodeKind.BLOCK, from)
+    block.child1 = first
+    block.i1 = from.line
+    block.i2 = from.col
+    return block
+}
+
+// A pattern is used twice, so it is copied: a node carries its type once checked, and no two uses can share one.
+private fn armCloneNode(source: Ptr) -> Ptr {
+    let from = ptr_to_node(source)
+    let copy = createNode(from.kind)
+    nodeSpanFrom(copy, from)
+    copy.s1 = from.s1.clone()
+    copy.s2 = from.s2.clone()
+    copy.i1 = from.i1
+    copy.i2 = from.i2
+    copy.i3 = from.i3
+    copy.child1 = armCloneChain(from.child1)
+    copy.child2 = armCloneChain(from.child2)
+    copy.child3 = armCloneChain(from.child3)
+    return node_to_ptr(copy)
+}
+
+private fn armCloneChain(head: Ptr) -> Ptr {
+    let mut first = ptr_null()
+    let mut last = ptr_to_node(ptr_null())
+    let mut p = head
+    while (nodeExists(p)) {
+        let copy = armCloneNode(p)
+        if (nodeIsNull(first)) {
+            first = copy
+        } else {
+            last.next = copy
+        }
+        last = ptr_to_node(copy)
+        p = ptr_to_node(p).next
+    }
+    return first
+}
+
+impl Parser {
+    // What comes after `=>` is read by the caller. This reads the pattern, and a guard: the cursor is on
+    // the first token of the arm.
+    internal fn parseArmHead(self, arm: ASTNode) {
+        if (self.matchVal(TokenType.IDENTIFIER, "_")) {
+            arm.s1 = "_"
+        } else {
+            let pattern = self.parseExpression(0)
+            if (self.check(TokenType.RANGE)) {
+                let op = self.current()
+                if (op.value.equals("..")) { arm.i1 = 1 } else { arm.i1 = 2 }
+                self.advance()
+                // The end runs only when the arm is tried: nothing in it may be moved ahead.
+                self.noHoist = self.noHoist + 1
+                let end = self.parseExpression(0)
+                self.noHoist = self.noHoist - 1
+                let carrier = self.armCarrier(arm)
+                carrier.child1 = node_to_ptr(end)
+            } else if (pattern.kind == NodeKind.LITERAL_EXPR and pattern.i1 == (TokenType.STRING_LITERAL as Int)) {
+                arm.i1 = 3
+            } else if (pattern.kind == NodeKind.IDENTIFIER_EXPR and self.checkVal(TokenType.KEYWORD, "if")) {
+                arm.i1 = 4
+                let carrier = self.armCarrier(arm)
+                carrier.s1 = pattern.s1.clone()
+            }
+            arm.child1 = node_to_ptr(pattern)
+        }
+        if (self.matchVal(TokenType.KEYWORD, "if")) {
+            arm.i2 = 1
+            self.noHoist = self.noHoist + 1
+            let guard = self.parseExpression(0)
+            self.noHoist = self.noHoist - 1
+            let carrier = self.armCarrier(arm)
+            carrier.child2 = node_to_ptr(guard)
+        }
+    }
+
+    private fn armCarrier(self, arm: ASTNode) -> ASTNode {
+        if (nodeExists(arm.child3)) { return ptr_to_node(arm.child3) }
+        let carrier = letNode(NodeKind.BLOCK, arm)
+        arm.child3 = node_to_ptr(carrier)
+        return carrier
+    }
+
+    // Whether any arm of the `match` needs the lowering.
+    internal fn matchHasTests(self, matchNode: ASTNode) -> Bool {
+        let mut p = matchNode.child2
+        while (nodeExists(p)) {
+            let arm = ptr_to_node(p)
+            if (arm.i1 != 0 or arm.i2 == 1) { return true }
+            p = arm.next
+        }
+        return false
+    }
+
+    // The statements the `match` becomes: the head of a chain, the last of which is the one that decides.
+    // Null after reporting.
+    internal fn lowerTestedMatch(self, matchNode: ASTNode) -> Ptr {
+        // The chain ends in what `_` does, and `_` ends the arms.
+        let mut p = matchNode.child2
+        let mut lastPtr = p
+        while (nodeExists(p)) {
+            let arm = ptr_to_node(p)
+            if (arm.s1.equals("_") and arm.i2 == 0 and nodeExists(arm.next)) {
+                diag_error_at_code("P3201", arm.file, arm.line, arm.col, arm.len,
+                                   "this `_` matches everything, so the arms after it can never run")
+                self.abandon()
+                return ptr_null()
+            }
+            lastPtr = p
+            p = arm.next
+        }
+        if (armIsFinalWildcard(ptr_to_node(lastPtr)) == false) {
+            diag_error_at_code("P3201", matchNode.file, matchNode.line, matchNode.col, matchNode.len,
+                               "a `match` with a guard, a range or a string pattern has to end in `_`, for the values none of them takes")
+            self.abandon()
+            return ptr_null()
+        }
+
+        let scrutinee = ptr_to_node(matchNode.child1)
+        let mut root = patternPath(scrutinee)
+        if (root.length == 0) {
+            root = "$m".concat(self.destructureSeq.toString())
+            self.destructureSeq = self.destructureSeq + 1
+            let holder = letHolder(scrutinee, root)
+            holder.next = self.armChain(matchNode, root, matchNode.child2)
+            return node_to_ptr(holder)
+        }
+        return self.armChain(matchNode, root, matchNode.child2)
+    }
+
+    // The statements for the arms from `p` on.
+    private fn armChain(self, at: ASTNode, root: String, p: Ptr) -> Ptr {
+        if (nodeIsNull(p)) { return ptr_null() }
+        let arm = ptr_to_node(p)
+
+        if (armIsFinalWildcard(arm)) { return ptr_to_node(arm.child2).child1 }
+
+        if (armIsTest(arm)) {
+            let rest = self.armChain(at, root, arm.next)
+            let carrier = ptr_to_node(arm.child3)
+            let mut binding = ptr_null()
+            let mut test = ptr_null()
+            let patternPtr = arm.child1
+            if (arm.i1 == 1 or arm.i1 == 2) {
+                let pattern = ptr_to_node(patternPtr)
+                let end = ptr_to_node(carrier.child1)
+                let lower = armBinary(pattern, ">=", node_to_ptr(patternAccess(pattern, root)), patternPtr)
+                let mut upper = "<="
+                if (arm.i1 == 2) { upper = "<" }
+                let high = armBinary(end, upper, node_to_ptr(patternAccess(end, root)), carrier.child1)
+                test = node_to_ptr(armBinary(pattern, "and", node_to_ptr(lower), node_to_ptr(high)))
+            } else if (arm.i1 == 3) {
+                let pattern = ptr_to_node(patternPtr)
+                test = node_to_ptr(armBinary(pattern, "==", node_to_ptr(patternAccess(pattern, root)), patternPtr))
+            } else if (arm.i1 == 4) {
+                let pattern = ptr_to_node(patternPtr)
+                let decl = letNode(NodeKind.VARIABLE_DECL, pattern)
+                decl.s1 = carrier.s1.clone()
+                decl.child2 = node_to_ptr(patternAccess(pattern, root))
+                binding = node_to_ptr(decl)
+            }
+            if (arm.i2 == 1) {
+                let guard = ptr_to_node(carrier.child2)
+                if (nodeExists(test)) {
+                    test = node_to_ptr(armBinary(guard, "and", test, carrier.child2))
+                } else {
+                    test = carrier.child2
+                }
+            }
+            let branching = letNode(NodeKind.IF_STATEMENT, arm)
+            branching.child1 = test
+            branching.child2 = arm.child2
+            branching.child3 = node_to_ptr(armBlockOf(arm, rest))
+            if (nodeExists(binding)) {
+                ptr_to_node(binding).next = node_to_ptr(branching)
+                return binding
+            }
+            return node_to_ptr(branching)
+        }
+
+        // Plain patterns, up to whatever ends the run.
+        let mut stopPtr = p
+        let mut previous = ptr_to_node(ptr_null())
+        let mut runLength = 0
+        while (nodeExists(stopPtr) and armIsPlain(ptr_to_node(stopPtr))) {
+            previous = ptr_to_node(stopPtr)
+            stopPtr = previous.next
+            runLength = runLength + 1
+        }
+        let hasRun = runLength > 0
+        if (nodeIsNull(stopPtr)) { return ptr_null() }
+        let stop = ptr_to_node(stopPtr)
+
+        if (armIsFinalWildcard(stop)) {
+            // `match root { run..., _ => ... }` as it stands.
+            let whole = letNode(NodeKind.MATCH_STATEMENT, at)
+            whole.child1 = node_to_ptr(patternAccess(at, root))
+            whole.child2 = p
+            return node_to_ptr(whole)
+        }
+
+        if (armIsTest(stop)) {
+            // `_ => { the tests that follow }` ends the run.
+            let rest = self.armChain(at, root, stopPtr)
+            let tail = armWildcard(stop, armBlockOf(stop, rest))
+            let whole = letNode(NodeKind.MATCH_STATEMENT, at)
+            whole.child1 = node_to_ptr(patternAccess(at, root))
+            whole.child2 = node_to_ptr(tail)
+            if (hasRun) {
+                previous.next = node_to_ptr(tail)
+                whole.child2 = p
+            }
+            return node_to_ptr(whole)
+        }
+
+        // A guard on a pattern: the pattern is matched once to find out whether the guard holds (its
+        // names are bound for the guard to read), and again to run the arm, so that nothing is run twice
+        // and the arms after it are the `else` of an ordinary `if`.
+        //
+        //     match root { run..., _ => {
+        //         let mut $bN = false
+        //         match root { Pattern => { $bN = guard }, _ => {} }
+        //         if $bN { match root { Pattern => body, _ => { unreachable() } } } else { the rest }
+        //     } }
+        let flag = "$b".concat(self.destructureSeq.toString())
+        self.destructureSeq = self.destructureSeq + 1
+        let guarded = stop
+        let after = guarded.next
+        let carrier = ptr_to_node(guarded.child3)
+        let guardPtr = carrier.child2
+        let patternPtr = guarded.child1
+
+        // The test: the same pattern again, setting the flag to what the guard says.
+        let testArm = letNode(NodeKind.MATCH_ARM, guarded)
+        testArm.child1 = armCloneChain(patternPtr)
+        let set = armAssign(guarded, flag, ptr_to_node(guardPtr))
+        testArm.child2 = node_to_ptr(armBlockOf(guarded, node_to_ptr(set)))
+        testArm.next = node_to_ptr(armWildcard(guarded, letEmptyBlock(guarded)))
+        let testMatch = letNode(NodeKind.MATCH_STATEMENT, at)
+        testMatch.child1 = node_to_ptr(patternAccess(at, root))
+        testMatch.child2 = node_to_ptr(testArm)
+
+        // The arm, which is only reached when the pattern matched.
+        guarded.i2 = 0
+        guarded.child3 = ptr_null()
+        guarded.next = ptr_null()
+        let reach = letNode(NodeKind.EXPRESSION_STATEMENT, guarded)
+        let call = letNode(NodeKind.CALL_EXPR, guarded)
+        call.child1 = node_to_ptr(letName(guarded, "unreachable"))
+        reach.child1 = node_to_ptr(call)
+        guarded.next = node_to_ptr(armWildcard(guarded, armBlockOf(guarded, node_to_ptr(reach))))
+        let runMatch = letNode(NodeKind.MATCH_STATEMENT, at)
+        runMatch.child1 = node_to_ptr(patternAccess(at, root))
+        runMatch.child2 = node_to_ptr(guarded)
+
+        let rest = self.armChain(at, root, after)
+        let decided = letNode(NodeKind.IF_STATEMENT, guarded)
+        decided.child1 = node_to_ptr(letName(guarded, flag))
+        decided.child2 = node_to_ptr(armBlockOf(guarded, node_to_ptr(runMatch)))
+        decided.child3 = node_to_ptr(armBlockOf(guarded, rest))
+
+        let declared = letNode(NodeKind.VARIABLE_DECL, guarded)
+        declared.s1 = flag.clone()
+        declared.i1 = 1
+        declared.child2 = node_to_ptr(armBool(guarded, "false"))
+        declared.next = node_to_ptr(testMatch)
+        testMatch.next = node_to_ptr(decided)
+
+        if (hasRun == false) { return node_to_ptr(declared) }
+        // After the plain arms before it: in the `_` arm that ends them.
+        let tail = armWildcard(guarded, armBlockOf(guarded, node_to_ptr(declared)))
+        previous.next = node_to_ptr(tail)
+        let whole = letNode(NodeKind.MATCH_STATEMENT, at)
+        whole.child1 = node_to_ptr(patternAccess(at, root))
+        whole.child2 = p
+        return node_to_ptr(whole)
+    }
+
+    // The chain's statements go ahead of the statement being read, and the last stands in for the `match`.
+    internal fn spliceLowered(self, head: Ptr) -> ASTNode {
+        let mut p = head
+        while (nodeExists(ptr_to_node(p).next)) {
+            let node = ptr_to_node(p)
+            let following = node.next
+            self.queueBefore(node)
+            p = following
+        }
+        return ptr_to_node(p)
+    }
+}

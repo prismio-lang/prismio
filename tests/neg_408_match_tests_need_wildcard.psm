@@ -1,0 +1,12 @@
+// expect-error: has to end in `_`
+import std.io
+// A range or a guard may leave values over, and the chain ends in what `_` does.
+fn f(n: Int) -> Int {
+    match n {
+        1..5 => { return 1 }
+        7 => { return 2 }
+    }
+    return 0
+}
+
+fn main() -> Int { return f(1) }

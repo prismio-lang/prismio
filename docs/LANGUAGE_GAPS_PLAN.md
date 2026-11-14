@@ -53,9 +53,9 @@ other language has and users hit within a day, **P2** is real but can wait.
 | B1 | ~~**`if` / `match` as expressions**~~ **done 2026-11-11** (a branch is one expression); `break` with a value still open | `P3201 expected an expression, found if` (roadmap: Coming Soon) | P0 |
 | B2 | ~~**`?` operator**~~ **done 2026-11-11**: for `Result` and `T?` | `P3201 expected an expression, found ?` (roadmap: Coming Soon) | P0 |
 | B3 | ~~**`if let`, `while let`, `let ... else`**~~ **done 2026-11-15** (a name for an optional, a variant for an enum; the `T?` forms are F3) | `P3201 expected an expression, found let` | P1 |
-| B4 | **Match guards** `x if x > 2 =>` | `P3201 expected => in match arm, found if` | P1 |
-| B5 | **Range patterns** `1..5 =>` | `P3201 expected => in match arm, found ..` | P1 |
-| B6 | **String patterns** | `P4001 match scrutinee must be an integer or enum value, found String` | P1 |
+| B4 | ~~**Match guards** `x if x > 2 =>`~~ **done 2026-11-15** | `P3201 expected => in match arm, found if` | P1 |
+| B5 | ~~**Range patterns** `1..5 =>`~~ **done 2026-11-15** (`1..5` includes 5, `1..<5` does not) | `P3201 expected => in match arm, found ..` | P1 |
+| B6 | ~~**String patterns**~~ **done 2026-11-15** | `P4001 match scrutinee must be an integer or enum value, found String` | P1 |
 | B7 | **Optional chaining** `p?.x` | `P3201 expected an expression, found ?` | P2 |
 | B8 | **`defer`** | `P4001 unknown identifier defer` | P2 |
 | B9 | **`Never` return type**; divergence decided by name today (`semaCallNeverReturns`) | KNOWN_ISSUES; roadmap | P2 |
@@ -500,6 +500,19 @@ Not built: `mut` on a variant pattern (refused), a pattern that is a struct (`le
 annotation on a `let ... else`, `if let ... and cond` chains, a binding with `_`, and `while let` on a value with `?` in the header
 (headers are refused for hoisting). Tests: `test_390_let_forms`, `neg_402`..`neg_407`.
 
+## B4-B6: as built
+
+`src/parse/arm_tests.psm`. One mechanism for all three: an arm that tests (a range, a string, a guard) is not an arm of a `match`, it is an
+`if` over the scrutinee, and what follows it is the `else`. `parseArmHead` marks the arm, `lowerTestedMatch` rewrites the whole `match`
+(statement or value) when any arm is marked, and a `match` with none is untouched, so the IR of every existing program is identical. The scrutinee
+is read in place when it is a path, else held in `$mN`. Plain pattern arms between tests stay one `match` whose `_` arm is the rest of the chain.
+A guard on a variant pattern is the exception: it needs the pattern's bindings and must fall through to the arms after it, which a `match` cannot do, so its pattern is matched twice (copied by `armCloneChain`): once to set `$bN` to what the guard says, once, when it holds, to run the arm (`_ => { unreachable() }` in the second), with the rest as the `else` of the `if $bN`. A first version used a taken-flag with the rest under `if $dN == false`; definite assignment of a value `match` could not see through it. Decisions: the last arm must be an unguarded `_` (no exhaustiveness proof
+over tests); a bare name before `if` is a binding even if a variable of that name exists; `lo..hi` includes `hi`, as a `for` range does;
+a string pattern is a literal (an interpolated string is not one); guards and range ends are read with `noHoist`, since they run only when
+the arm is tried. A match on a `String` or a `Char` works because it never reaches the `match` statement's integer/enum check.
+Not built: `|` between patterns, `lo..` and `..hi` open ranges, a range or guard on a nested pattern (A4), a guard that sees the whole value
+under another name (`n @ 1..5`). Tests: `test_391_match_tests`, `neg_408`..`neg_411`.
+
 ## Editor support for A1, A2, A3, B1, B2 and the match syntax
 
 Done 2026-11-11 (the second half of the session). None of the new syntax added a token, so the VS Code grammar and the
@@ -524,9 +537,8 @@ Left, in order of what a user would notice:
 ## Where the next session starts
 
 Built so far and committed (not pushed): A1 nested structs, A3 destructuring `let`, A2 tuples, B1 `if`/`match` as values, B2 `?`,
-the `match` syntax, B3 `if let` / `while let` / `let ... else`, and editor support for all of them except B3's (the index needed
-nothing: checked with `check --emit-index` and `tools/check_index.py`). Next in the plan, in the order to build: **B4/B5/B6** match
-guards, range patterns and string patterns, **A4** nested patterns inside a variant (`F.X(E.A(v))`), **C1** operator overloading
+the `match` syntax, B3 `if let` / `while let` / `let ... else`, B4-B6 guards, ranges and string patterns, and editor support for all of them except B3's (the index needed
+nothing: checked with `check --emit-index` and `tools/check_index.py`). Next in the plan, in the order to build: **A4** nested patterns inside a variant (`F.X(E.A(v))`), **C1** operator overloading
 (`Add`, `Neg`, `Eq` hooks), **C2** closures that can be stored or returned plus a function type, **C4** `#[derive]`/`#[test]`,
 **A5/A6** struct update `..p` and field defaults, **D1** iterator adapters. `break` with a value is the other half of B1.
 Open: nested structs in generic structs, bare nested names in `impl` blocks and signatures, `From`-style error conversion for `?`,

@@ -596,11 +596,8 @@ impl Parser {
 impl Parser {
     private fn parseMatchArm(self) -> ASTNode {
         let arm = self.node(NodeKind.MATCH_ARM)
-        if (self.matchVal(TokenType.IDENTIFIER, "_")) {
-            arm.s1 = "_"
-        } else {
-            arm.child1 = node_to_ptr(self.parseExpression(0))
-        }
+        // A pattern, `_`, a range, a string, and a guard -- see parse/arm_tests.psm.
+        self.parseArmHead(arm)
         self.expectVal(TokenType.FAT_ARROW, "=>", "match arm")
         arm.child2 = node_to_ptr(self.parseArmBody())
         return arm
@@ -652,6 +649,11 @@ impl Parser {
         self.expectVal(TokenType.SEPARATOR, "}", "match body")
 
         matchNode.child2 = arms.head
+        if (self.dead == 0 and self.matchHasTests(matchNode)) {
+            let lowered = self.lowerTestedMatch(matchNode)
+            if (self.dead == 1 or nodeIsNull(lowered)) { return matchNode }
+            return self.spliceLowered(lowered)
+        }
         return matchNode
     }
 }

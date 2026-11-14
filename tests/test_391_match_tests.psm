@@ -1,0 +1,177 @@
+// Match arms that test: a guard (`x if x > 2`, `Shape.Circle(r) if r > 3`), a range (`1..5`, `1..<5`) and a
+// string (`"start"`), in statements and as values (parse/arm_tests.psm).
+//
+//   ranges, strings, `name if`, `_ if`   an `if`/`else` chain over the scrutinee, held once when it is not a variable
+//   a guard on a variant pattern         a `match` that sets a flag, the arms after it running when none was taken
+//   what is asserted                     the same answers a hand-written chain gives, `return` and `continue` and
+//                                        `break` from an arm, a call as the scrutinee (evaluated once), an owned
+//                                        String payload released once (`--verify`: 0 leaked), and a function whose
+//                                        arms all return still returns on every path
+
+import std.io
+import std.string
+
+enum Shape { Circle(Int), Rect(Int, Int), Empty }
+
+enum Reply { Text(String), Number(Int), Pair(Int, Int), Nothing }
+
+fn bucket(n: Int) -> String {
+    match n {
+        0 => { return "zero" }
+        1..9 => { return "small" }
+        10..<100 => { return "medium" }
+        x if x < 0 => { return "negative" }
+        _ => { return "large" }
+    }
+}
+
+fn command(s: String) -> Int {
+    match s {
+        "start" => { return 1 }
+        "stop" => { return 2 }
+        _ => { return 0 }
+    }
+}
+
+fn size(s: Shape) -> String {
+    match s {
+        Shape.Circle(r) if r > 10 => { return "big circle" }
+        Shape.Circle(r) => { return "circle" }
+        Shape.Rect(w, h) if w == h => { return "square" }
+        _ => { return "other" }
+    }
+}
+
+fn value(n: Int) -> String {
+    return match n { 1..5 => "low", x if x > 100 => "huge", _ => "mid" }
+}
+
+fn reply(k: Int) -> Reply {
+    if k == 0 { return Reply.Nothing }
+    if k == 1 { return Reply.Number(41) }
+    if k == 2 { return Reply.Pair(3, 3) }
+    if k == 3 { return Reply.Pair(3, 4) }
+    return Reply.Text("hello".concat(k.toString()))
+}
+
+let mut calls = 0
+
+fn counted(k: Int) -> Reply {
+    calls = calls + 1
+    return reply(k)
+}
+
+fn classify(k: Int) -> String {
+    let mut out = "?"
+    match counted(k) {
+        Reply.Nothing => { out = "nothing" }
+        Reply.Number(n) if n > 40 => { out = "big".concat(n.toString()) }
+        Reply.Pair(a, b) if a == b => { out = "twin" }
+        Reply.Text(t) if t.length > 6 => { out = "long ".concat(t) }
+        Reply.Pair(a, b) => { out = "pair" }
+        _ => { out = "else" }
+    }
+    return out
+}
+
+fn route(s: String) -> Int {
+    match s.concat("") {
+        "a" => { return 1 }
+        "bb" => { return 2 }
+        x if x.length > 3 => { return 3 }
+        _ => { return 0 }
+    }
+}
+
+fn loopy() -> Int {
+    let mut total = 0
+    for i in 0..<10 {
+        match i {
+            0..2 => { continue }
+            5 => { total = total + 100 }
+            n if n % 2 == 0 => { total = total + n }
+            9 => { break }
+            _ => { total = total + 1000 }
+        }
+    }
+    return total
+}
+
+fn price(code: String, qty: Int) -> Int {
+    let base = match code {
+        "gold" => 10,
+        "silver" => 5,
+        _ => 1
+    }
+    let discount = match qty { 0..9 => 0, 10..99 => 5, _ => 20 }
+    return base * qty - discount
+}
+
+fn label(s: Shape) -> String {
+    return match s {
+        Shape.Circle(r) if r > 10 => "big",
+        Shape.Circle(r) => "circle",
+        Shape.Rect(w, h) if w == h => "square",
+        _ => "other"
+    }
+}
+
+let mut guardRuns = 0
+
+fn heavy(r: Int) -> Bool {
+    guardRuns = guardRuns + 1
+    return r > 10
+}
+
+fn once(s: Shape) -> Int {
+    match s {
+        Shape.Circle(r) if heavy(r) => { return 1 }
+        _ => { return 0 }
+    }
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    if bucket(0) != "zero" or bucket(5) != "small" or bucket(9) != "small" { bad = bad + fail("an inclusive range") }
+    if bucket(10) != "medium" or bucket(99) != "medium" or bucket(100) != "large" { bad = bad + fail("an exclusive range") }
+    if bucket(-4) != "negative" { bad = bad + fail("a name with a guard") }
+    if command("start") != 1 or command("stop") != 2 or command("x") != 0 { bad = bad + fail("string patterns") }
+    if size(Shape.Circle(20)) != "big circle" or size(Shape.Circle(2)) != "circle" { bad = bad + fail("a guard that falls to the next arm") }
+    if size(Shape.Rect(3, 3)) != "square" or size(Shape.Rect(3, 4)) != "other" or size(Shape.Empty) != "other" {
+        bad = bad + fail("a guard on a pattern with two bindings")
+    }
+    if value(3) != "low" or value(500) != "huge" or value(50) != "mid" { bad = bad + fail("tests in a match expression") }
+
+    if classify(0) != "nothing" or classify(1) != "big41" or classify(2) != "twin" or classify(3) != "pair" {
+        bad = bad + fail("guarded arms mixed with plain ones")
+    }
+    if classify(4) != "else" { bad = bad + fail("a guard that fails on an owned payload, falling to _") }
+    if classify(9) != "else" { bad = bad + fail("a String payload under a guard") }
+    if calls != 6 { bad = bad + fail("the scrutinee is evaluated once") }
+
+    if route("a") != 1 or route("bb") != 2 or route("long word") != 3 or route("x") != 0 {
+        bad = bad + fail("a held String scrutinee")
+    }
+    if loopy() != 2118 { bad = bad + fail("continue and break from tested arms") }
+    if price("gold", 12) != 115 or price("none", 3) != 3 or price("silver", 200) != 980 {
+        bad = bad + fail("match expressions with strings and ranges")
+    }
+
+    if label(Shape.Circle(20)) != "big" or label(Shape.Circle(1)) != "circle" or label(Shape.Rect(2, 2)) != "square"
+        or label(Shape.Rect(2, 3)) != "other" {
+        bad = bad + fail("a guard on a pattern in a match expression")
+    }
+    if once(Shape.Circle(20)) != 1 or once(Shape.Circle(2)) != 0 or once(Shape.Empty) != 0 or guardRuns != 2 {
+        bad = bad + fail("a guard is evaluated once, and only when the pattern matched")
+    }
+
+    if bad != 0 { return 1 }
+    println("PASS: match guards, ranges and strings")
+    return 0
+}

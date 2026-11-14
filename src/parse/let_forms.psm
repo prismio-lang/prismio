@@ -59,19 +59,19 @@ private fn letPatternKind(pattern: ASTNode) -> Int {
     return 0
 }
 
-private fn letNode(kind: NodeKind, from: ASTNode) -> ASTNode {
+internal fn letNode(kind: NodeKind, from: ASTNode) -> ASTNode {
     let node = createNode(kind)
     nodeSpanFrom(node, from)
     return node
 }
 
-private fn letName(from: ASTNode, name: String) -> ASTNode {
+internal fn letName(from: ASTNode, name: String) -> ASTNode {
     let node = letNode(NodeKind.IDENTIFIER_EXPR, from)
     node.s1 = name.clone()
     return node
 }
 
-private fn letBlock(from: ASTNode, first: ASTNode) -> ASTNode {
+internal fn letBlock(from: ASTNode, first: ASTNode) -> ASTNode {
     let block = letNode(NodeKind.BLOCK, from)
     block.child1 = node_to_ptr(first)
     block.i1 = from.line
@@ -101,14 +101,14 @@ private fn letBinding(pattern: ASTNode, root: String, mutable: Int) -> ASTNode {
     return decl
 }
 
-private fn letHolder(scrutinee: ASTNode, root: String) -> ASTNode {
+internal fn letHolder(scrutinee: ASTNode, root: String) -> ASTNode {
     let holder = letNode(NodeKind.VARIABLE_DECL, scrutinee)
     holder.s1 = root.clone()
     holder.child2 = node_to_ptr(scrutinee)
     return holder
 }
 
-private fn letEmptyBlock(from: ASTNode) -> ASTNode {
+internal fn letEmptyBlock(from: ASTNode) -> ASTNode {
     return letBlock(from, ptr_to_node(ptr_null()))
 }
 

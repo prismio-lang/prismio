@@ -88,11 +88,7 @@ impl Parser {
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {
             if (self.dead == 1) { break }
             let arm = self.node(NodeKind.MATCH_ARM)
-            if (self.matchVal(TokenType.IDENTIFIER, "_")) {
-                arm.s1 = "_"
-            } else {
-                arm.child1 = node_to_ptr(self.parseExpression(0))
-            }
+            self.parseArmHead(arm)
             self.expectVal(TokenType.FAT_ARROW, "=>", "match arm")
             if (self.checkVal(TokenType.SEPARATOR, "{")) {
                 self.fatal("an arm of a `match` expression is an expression; a block of statements is an arm of a `match` statement")
@@ -104,7 +100,36 @@ impl Parser {
         self.expectVal(TokenType.SEPARATOR, "}", "match body")
         self.stmtCalls = savedCalls
         matchNode.child2 = arms.head
+        if (self.dead == 0 and self.matchHasTests(matchNode)) {
+            let lowered = self.lowerTestedMatch(matchNode)
+            if (self.dead == 1 or nodeIsNull(lowered)) { return self.valuePlaceholder(at) }
+            return self.finishValueChain(temp, at, hint, lowered)
+        }
         return self.finishValueExpr(temp, at, hint, matchNode)
+    }
+
+    // The same, for a `match` that became a chain of statements (parse/arm_tests.psm).
+    private fn finishValueChain(self, temp: String, at: Token, hint: Ptr, chain: Ptr) -> ASTNode {
+        let decl = parserNodeFrom(NodeKind.VARIABLE_DECL, at)
+        decl.s1 = temp.clone()
+        let annotation = parserNodeFrom(NodeKind.TYPE_ANNOTATION, at)
+        if (nodeExists(hint)) {
+            copyTypeAnnotationInto(annotation, hint)
+        } else {
+            annotation.s1 = "$infer"
+        }
+        decl.child1 = node_to_ptr(annotation)
+        self.queueBefore(decl)
+        let mut p = chain
+        while (nodeExists(p)) {
+            let node = ptr_to_node(p)
+            let following = node.next
+            self.queueBefore(node)
+            p = following
+        }
+        let name = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, at)
+        name.s1 = temp.clone()
+        return name
     }
 
     // Declares the temporary and queues it with its `if` or `match`; the expression is its name.

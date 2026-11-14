@@ -1,0 +1,10 @@
+// expect-error: the arms after it can never run
+import std.io
+fn f(n: Int) -> Int {
+    match n {
+        _ => { return 1 }
+        1..5 => { return 2 }
+    }
+}
+
+fn main() -> Int { return f(1) }

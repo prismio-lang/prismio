@@ -1,0 +1,10 @@
+// expect-error: expected Bool, found Int
+import std.io
+fn f(n: Int) -> Int {
+    match n {
+        x if x + 1 => { return 1 }
+        _ => { return 0 }
+    }
+}
+
+fn main() -> Int { return f(1) }

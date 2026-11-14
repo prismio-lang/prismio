@@ -44,6 +44,13 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   enum). `if let mut h = ...` makes the binding assignable; `_` as a pattern, and a type annotation on a `let ... else`,
   are refused. `test_390_let_forms` (`--verify`: 0 leaked, 0 violations); compiler IR unchanged for the 361 programs of
   `tests/` and `benchmarks/hosted/prismio/`.
+- **Match guards, range patterns and string patterns.** `Shape.Circle(r) if r > 10 =>`, `x if x < 0 =>`, `_ if cond =>`,
+  `1..9 =>` (end included) and `10..<100 =>`, and `"stop" =>` (a `match` on a `String`), in statements and in `match`
+  expressions. An arm that tests is an `if` over the value and the arms after it are its `else`; a guard on a variant pattern
+  is matched twice (once for the guard, once to run the arm), so the guard runs once and a function whose every arm returns still returns on every path.
+  A `match` that has any of these ends in an unguarded `_`; a bare name before `if` is a binding. The value is evaluated once.
+  A `match` without them is read as before (the IR of the 361 programs of `tests/` and `benchmarks/hosted/prismio/` is
+  unchanged). `test_391_match_tests` (`--verify`: 0 leaked), `neg_408`..`neg_411`.
 - **Editor support for the new syntax.** The semantic index nests a struct written inside another under its owner and finds
   its fields by path (`win.size.w`), indexes a pattern's new name (`y: why`), prints a tuple as `(Int, String)` (in hover,
   hints and the compiler's messages), and completes the structs inside `Window.`. The VS Code grammar and the JetBrains lexer

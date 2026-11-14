@@ -1,0 +1,10 @@
+// expect-error: cannot compare a String with Int
+import std.io
+fn f(n: Int) -> Int {
+    match n {
+        "a" => { return 1 }
+        _ => { return 0 }
+    }
+}
+
+fn main() -> Int { return f(1) }
