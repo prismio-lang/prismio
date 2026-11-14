@@ -1,0 +1,8 @@
+// expect-error: takes the value out of an optional
+import std.io
+// A name in `if let` is an optional's value; an `Int` has none to take out.
+fn main() -> Int {
+    let n = 5
+    if let h = n { println("x") }
+    return 0
+}

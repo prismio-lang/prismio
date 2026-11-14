@@ -310,13 +310,53 @@ private fn nodeReturnsAliasBeyondBare(nodePtr: Ptr, name: String) -> Bool {
 
     if (n.kind == NodeKind.RETURN_STATEMENT and nodeExists(n.child1)) {
         let value = ptr_to_node(n.child1)
-        let bare = value.kind == NodeKind.IDENTIFIER_EXPR and value.s1.equals(name)
+        let mut bare = value.kind == NodeKind.IDENTIFIER_EXPR and value.s1.equals(name)
+        // `return s` where `s` is `expect(name)` and nothing else hands `name` out as well: the
+        // return that carries it, which generateReturn keeps (irUnwrapSource).
+        if (bare == false and value.kind == NodeKind.IDENTIFIER_EXPR
+                and irUnwrapSource(value.s1).equals(name)) {
+            bare = true
+        }
         if (bare == false and irValueAliasesName(n.child1, name, 0)) { return true }
     }
 
     if (chainReturnsAliasBeyondBare(n.child1, name)) { return true }
     if (chainReturnsAliasBeyondBare(n.child2, name)) { return true }
     return chainReturnsAliasBeyondBare(n.child3, name)
+}
+
+// The binding `bound` unwraps, when the function's one `let bound = expect(source)` names a binding that is
+// itself only ever bound once; else "". `return bound` hands out `source`'s payload.
+internal fn irUnwrapSource(bound: String) -> String {
+    if (chainBindingCount(irFunctionBody, bound) != 1) { return "" }
+    let source = chainUnwrapSource(irFunctionBody, bound)
+    if (source.equals("")) { return "" }
+    if (chainBindingCount(irFunctionBody, source) != 1) { return "" }
+    return source
+}
+
+private fn chainUnwrapSource(head: Ptr, bound: String) -> String {
+    let mut p = head
+    while (nodeExists(p)) {
+        let n = ptr_to_node(p)
+        if (n.kind == NodeKind.VARIABLE_DECL and n.s1.equals(bound) and nodeExists(n.child2)) {
+            let init = ptr_to_node(n.child2)
+            if (init.kind == NodeKind.CALL_EXPR and nodeExists(init.child1) and nodeExists(init.child2)
+                    and ptr_to_node(init.child1).s1.equals("expect") and callTakesOneArgument(init)) {
+                let arg = ptr_to_node(init.child2)
+                if (arg.kind == NodeKind.IDENTIFIER_EXPR) { return arg.s1.clone() }
+            }
+            return ""
+        }
+        let inner = chainUnwrapSource(n.child1, bound)
+        if (inner.equals("") == false) { return inner }
+        let second = chainUnwrapSource(n.child2, bound)
+        if (second.equals("") == false) { return second }
+        let third = chainUnwrapSource(n.child3, bound)
+        if (third.equals("") == false) { return third }
+        p = n.next
+    }
+    return ""
 }
 
 // How many bindings of `name` the tree introduces: `let`s, loop variables, and
@@ -497,6 +537,12 @@ private fn irValueAliasesName(exprPtr: Ptr, name: String, hops: Int) -> Bool {
     }
 
     if (e.kind == NodeKind.CALL_EXPR) {
+        // `expect(o)` is its argument, checked: `let s = expect(q); return s` hands out `q`'s
+        // payload, so `q` may not be released at that exit. It is a builtin, with no symbol
+        // for the summaries below to know it by.
+        if (nodeExists(e.child1) and ptr_to_node(e.child1).s1.equals("expect") and callTakesOneArgument(e)) {
+            return irValueAliasesName(e.child2, name, hops + 1)
+        }
         // s2 is the mangled symbol sema resolved the call to, which is the
         // identity aif_fn_lookup is keyed on. An extern is not one of those and
         // the predicate answers no for it -- see the comment on

@@ -3703,6 +3703,13 @@ private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Ty
     }
     semaMovedBranchesEnd(stmt.i3 != 1)
 }
+// The arms after a `_` are never tried, and the code for them was invalid IR.
+internal fn semaMatchWildcardLast(arm: ASTNode) {
+    if (nodeIsNull(arm.next)) { return }
+    semaErrorAt(ptr_to_node(arm.next), "this arm comes after `_`, which matches everything, so it can never run")
+    diag_note("put `_` last")
+}
+
 
 // One statement kind per line. Each checker is the function named beside it,
 // defined directly above in this order.
@@ -3732,6 +3739,8 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
 // of the block rather than overwriting it.
 internal fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo) {
     ir_scope_push()
+        } else {
+            semaMatchWildcardLast(arm)
 
     let mut stmtPtr = block.child1
     while (nodeExists(stmtPtr)) {
@@ -3751,6 +3760,10 @@ internal fn semaBlock(module: ASTNode, block: ASTNode, expectedReturn: TypeInfo)
 
     ir_scope_pop()
 }
+    // `if let` on an optional and `let ... else` (sema/let_forms.psm).
+    if (semaIsLetForm(stmt)) {
+        if (semaLetFormCheck(module, stmt) == false) { return }
+    }
 
 internal fn semaPredeclareFunction(module: ASTNode, fnNode: ASTNode) {
     // Builtins have compiler-owned identity and signatures. Allowing source to

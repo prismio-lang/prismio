@@ -1,0 +1,236 @@
+// `if let`, `while let` and `let ... else` (parse/let_forms.psm; sema/let_forms.psm checks them).
+//
+//   if let h = x          a name is an optional's value, when there is one; `x` is read in place when it is
+//                         a variable or a field path, and held once in a hidden variable when it is a call
+//   if let E.V(p) = e     a variant pattern is a `match` with one arm and a `_`
+//   else if let           chains, mixing both kinds with plain `else if`
+//   while let             tests again on every pass; `continue` goes back to the test, `break` leaves
+//   let h = x else { .. } the rest of the block runs only when there is a value; the `else` has to leave
+//
+// What is asserted is what the hand-written `if`/`match` do, including that an owned String payload is
+// released once (`--verify`: 0 leaked, 0 violations) and that returning the unwrapped value hands out the
+// payload without releasing it first (the optional's drop used to run before the return).
+
+import std.io
+import std.string
+import std.option
+import std.vec
+
+struct Item { name: String, next: Item? }
+
+enum Reply { Text(String), Number(Int), Nothing }
+
+fn reply(k: Int) -> Reply {
+    if k == 0 { return Reply.Nothing }
+    if k == 1 { return Reply.Number(41) }
+    return Reply.Text("hello".concat(k.toString()))
+}
+
+fn maybe(k: Int) -> String? {
+    if k > 0 { return "m".concat(k.toString()) }
+    return none
+}
+
+fn find(k: Int) -> Int? {
+    if k > 0 { return k * 10 }
+    return none
+}
+
+fn parse(s: String) -> Result<String, String> {
+    if s.length == 0 { return Result.Err("empty") }
+    return Result.Ok(s.concat("#"))
+}
+
+fn pick(a: Int, b: Int) -> String {
+    if let s = maybe(a) { return s }
+    else if let t = maybe(b) { return t.concat("!") }
+    else { return "neither" }
+}
+
+fn describe(k: Int) -> String {
+    let r = reply(k)
+    if let Reply.Text(t) = r {
+        return t.concat("?")
+    } else if let Reply.Number(n) = r {
+        return "num".concat(n.toString())
+    }
+    return "nothing"
+}
+
+fn orElse(x: Int?) -> Int {
+    if let v = x { return v + 1 }
+    return -1
+}
+
+fn shadow(x: Int?) -> Int {
+    if let x = x { return x * 2 }
+    return 0
+}
+
+fn stored(k: Int) -> Int {
+    let held = maybe(k)
+    let mut seen = 0
+    if let h = held { seen = seen + h.length }
+    if let h = held { seen = seen + h.length }
+    return seen
+}
+
+fn mutBinding() -> Int {
+    if let mut z = maybe(2) {
+        z = z.concat("+")
+        return z.length
+    }
+    return 0
+}
+
+fn chain(a: Int, b: Int) -> Int {
+    let x = maybe(a) else { return 0 }
+    let y = maybe(b) else { return x.length }
+    let mut total = x.length + y.length
+    total = total + 100
+    return total
+}
+
+fn firstWord(k: Int) -> String {
+    let n = maybe(k) else { return "none" }
+    return n
+}
+
+fn viaResult(s: String) -> Int {
+    let Result.Ok(v) = parse(s) else { return -1 }
+    return v.length
+}
+
+fn skipping() -> Int {
+    let mut hits = 0
+    for i in 0..<6 {
+        let Reply.Number(n) = reply(i % 3) else { continue }
+        hits = hits + n
+        if i > 3 { break }
+    }
+    return hits
+}
+
+fn countDown() -> Int {
+    let mut total = 0
+    let mut i = 3
+    while let v = find(i) {
+        total = total + v
+        i = i - 1
+    }
+    return total
+}
+
+fn okRun(words: Vec<String>) -> Int {
+    let mut total = 0
+    let mut i = 0
+    while i < words.length {
+        let Result.Ok(w) = parse(words[i]) else {
+            i = i + 1
+            continue
+        }
+        total = total + w.length
+        i = i + 1
+    }
+    return total
+}
+
+fn parsed() -> Int {
+    let mut total = 0
+    let mut n = 0
+    while let Result.Ok(s) = parse("ab".substring(0, 2 - n)) {
+        total = total + s.length
+        n = n + 1
+        if n > 5 { break }
+    }
+    return total
+}
+
+fn nested() -> Int {
+    let mut seen = 0
+    let mut n = 0
+    outer@ while let s = maybe(3 - n) {
+        n = n + 1
+        let mut m = 0
+        while let t = maybe(2 - m) {
+            m = m + 1
+            if m == 2 { continue@outer }
+            seen = seen + s.length + t.length
+        }
+    }
+    return seen * 10 + n
+}
+
+fn walk(first: Item?) -> Int {
+    let mut count = 0
+    let mut cur = first
+    while let it = cur {
+        count = count + it.name.length
+        cur = it.next
+    }
+    return count
+}
+
+struct Box { tag: String? }
+
+// The payload is returned on one path and not on the others: the optional is released on the others only.
+fn partial(a: Int) -> String {
+    let q = maybe(a)
+    if let s = q {
+        if s.length > 2 { return s }
+    }
+    return "x"
+}
+
+fn viaField(b: Box) -> Int {
+    if let t = b.tag { return t.length }
+    return 0
+}
+
+fn fail(what: String) -> Int {
+    println("FAIL: ".concat(what))
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    if pick(1, 0) != "m1" or pick(0, 2) != "m2!" or pick(0, 0) != "neither" {
+        bad = bad + fail("an if let chain, returning the payload")
+    }
+    if describe(0) != "nothing" or describe(1) != "num41" or describe(3) != "hello3?" {
+        bad = bad + fail("variant patterns in an if / else if")
+    }
+    if orElse(4) != 5 or orElse(none) != -1 { bad = bad + fail("an optional number") }
+    if shadow(4) != 8 or shadow(none) != 0 { bad = bad + fail("if let x = x shadows") }
+    if stored(2) != 4 or stored(0) != 0 { bad = bad + fail("an optional read in place twice") }
+    if mutBinding() != 3 { bad = bad + fail("a mut binding") }
+
+    if chain(0, 1) != 0 or chain(1, 0) != 2 or chain(1, 2) != 104 {
+        bad = bad + fail("let else with the rest of the block")
+    }
+    if firstWord(2) != "m2" or firstWord(0) != "none" { bad = bad + fail("let else returning the payload") }
+    if viaResult("abc") != 4 or viaResult("") != -1 { bad = bad + fail("let else on a Result variant") }
+    if skipping() != 82 { bad = bad + fail("let else with continue in a loop") }
+
+    if countDown() != 60 { bad = bad + fail("while let on an optional") }
+    let mut words: Vec<String> = []
+    words.push("a")
+    words.push("")
+    words.push("bcd")
+    if okRun(words) != 6 { bad = bad + fail("let else on an owned String payload, in a loop") }
+    if parsed() != 5 { bad = bad + fail("while let on a variant") }
+    if nested() != 123 { bad = bad + fail("labelled continue out of a while let") }
+
+    let c = Item { name: "ccc", next: none }
+    let b = Item { name: "bb", next: c }
+    let a = Item { name: "a", next: b }
+    if walk(a) != 6 or walk(none) != 0 { bad = bad + fail("a while let over a linked list") }
+
+    if partial(5) != "x" or partial(12) != "m12" or partial(0) != "x" { bad = bad + fail("a payload returned on one path") }
+    if viaField(Box { tag: maybe(33) }) != 3 or viaField(Box { tag: none }) != 0 { bad = bad + fail("an optional field read in place") }
+
+    if bad != 0 { return 1 }
+    println("PASS: if let, while let, let else")
+    return 0
+}

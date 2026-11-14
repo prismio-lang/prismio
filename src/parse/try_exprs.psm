@@ -164,6 +164,22 @@ impl Parser {
         let mut p = head
         while (nodeExists(p)) {
             let node = ptr_to_node(p)
+            if (node.s1.equals("$letelse")) {
+                // `let ... else` (parse/let_forms.psm): the rest of the block is the success branch's.
+                let rest = self.nestTries(node.next)
+                node.next = ptr_null()
+                if (node.kind == NodeKind.IF_STATEMENT) {
+                    // `if x == none { else } else { let h = expect(x) <rest> }`
+                    ptr_to_node(ptr_to_node(node.child3).child1).next = rest
+                } else {
+                    // `match v { Pattern => { <rest> }, _ => else }`
+                    let arm = ptr_to_node(node.child2)
+                    ptr_to_node(arm.child2).child1 = rest
+                }
+                if (nodeIsNull(node_to_ptr(previous))) { return node_to_ptr(node) }
+                previous.next = node_to_ptr(node)
+                return head
+            }
             if (node.kind == NodeKind.EXPRESSION_STATEMENT and node.s1.equals("$try")) {
                 let rest = self.nestTries(node.next)
                 node.next = ptr_null()

@@ -1,0 +1,334 @@
+// `if let`, `while let` and `let ... else`: a value tested and taken apart in one step.
+//
+// Two kinds of pattern, told apart by their shape, because the parser knows no types:
+//
+//   a name         `if let h = x`                   the value of an optional `x`, when there is one
+//   a variant      `if let Result.Ok(v) = r`        the payload of an enum value, when it is that variant
+//
+// A variant pattern is a `match` with one arm, and the other arm is `_`; the same lowering as `?` uses for
+// a `Result`. A name is an optional, and is written as the test and the unwrap a program would write:
+//
+//     if let h = find(k) { use(h) }               let $q0 = find(k)
+//     else { missing() }                          if $q0 != none { let h = expect($q0)
+//                                                                  use(h) } else { missing() }
+//
+// An operand that is a variable or a field path is read in place (`x != none`, `expect(x)`), so it is still
+// usable after and `if let h = h` shadows the way a program expects. Anything else is held in a hidden `$qN`
+// first, once, in front of the statement.
+//
+//     while let v = next() { use(v) }             loop { let $q0 = next()
+//                                                       if $q0 == none { break }
+//                                                       let v = expect($q0)
+//                                                       use(v) }
+//
+// A `loop` and not a `while`, so each pass reads the operand again, and `continue` goes back to it.
+//
+//     let h = find(k) else { return }             if find(k) == none { return }    (through `$qN`)
+//     use(h)                                      else { let h = expect($qN)
+//                                                        use(h) }
+//
+// `let ... else` nests the rest of its block in the success arm, as `?` does (nestTries), so the binding is
+// in scope for what follows and an owned payload stays owned. Its `else` must leave the block: sema checks
+// that (sema/let_forms.psm), since falling out of it would skip the rest of the block without saying so.
+//
+// The statements are tagged in `s1` so that sema can find them: `$iflet` for an optional `if let`, and
+// `$letelse` for either form of `let ... else`.
+
+import lexer.token
+import lexer.scanner
+import ast.nodes
+import common.diagnostics
+import std.string
+
+struct LetHead {
+    pattern: Ptr,
+    value: Ptr,
+    mutable: Int
+}
+
+// How a pattern is read: 1 a name, 2 a variant, 0 neither.
+private fn letPatternKind(pattern: ASTNode) -> Int {
+    if (pattern.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (pattern.s1.equals("_")) { return 0 }
+        return 1
+    }
+    if (pattern.kind == NodeKind.MEMBER_ACCESS_EXPR) { return 2 }
+    if (pattern.kind == NodeKind.CALL_EXPR and nodeExists(pattern.child1)) {
+        if (ptr_to_node(pattern.child1).kind == NodeKind.MEMBER_ACCESS_EXPR) { return 2 }
+    }
+    return 0
+}
+
+private fn letNode(kind: NodeKind, from: ASTNode) -> ASTNode {
+    let node = createNode(kind)
+    nodeSpanFrom(node, from)
+    return node
+}
+
+private fn letName(from: ASTNode, name: String) -> ASTNode {
+    let node = letNode(NodeKind.IDENTIFIER_EXPR, from)
+    node.s1 = name.clone()
+    return node
+}
+
+private fn letBlock(from: ASTNode, first: ASTNode) -> ASTNode {
+    let block = letNode(NodeKind.BLOCK, from)
+    block.child1 = node_to_ptr(first)
+    block.i1 = from.line
+    block.i2 = from.col
+    return block
+}
+
+// `held != none` or `held == none`, with the held value read afresh: a node carries its type once
+// checked, so no two uses can share one.
+private fn letTest(from: ASTNode, root: String, op: String) -> ASTNode {
+    let test = letNode(NodeKind.BINARY_EXPR, from)
+    test.s1 = op.clone()
+    test.child1 = node_to_ptr(patternAccess(from, root))
+    test.child2 = node_to_ptr(letNode(NodeKind.NONE_LITERAL_EXPR, from))
+    return test
+}
+
+// `let name = expect(held)`: the binding of an optional pattern. It is written where the name is, for the editor.
+private fn letBinding(pattern: ASTNode, root: String, mutable: Int) -> ASTNode {
+    let call = letNode(NodeKind.CALL_EXPR, pattern)
+    call.child1 = node_to_ptr(letName(pattern, "expect"))
+    call.child2 = node_to_ptr(patternAccess(pattern, root))
+    let decl = letNode(NodeKind.VARIABLE_DECL, pattern)
+    decl.s1 = pattern.s1.clone()
+    decl.i1 = mutable
+    decl.child2 = node_to_ptr(call)
+    return decl
+}
+
+private fn letHolder(scrutinee: ASTNode, root: String) -> ASTNode {
+    let holder = letNode(NodeKind.VARIABLE_DECL, scrutinee)
+    holder.s1 = root.clone()
+    holder.child2 = node_to_ptr(scrutinee)
+    return holder
+}
+
+private fn letEmptyBlock(from: ASTNode) -> ASTNode {
+    return letBlock(from, ptr_to_node(ptr_null()))
+}
+
+// The `else` of an `if let` as the block a `match`'s `_` arm takes: none, a block, or an `else if`.
+private fn letElseBlock(from: ASTNode, elseChild: Ptr) -> ASTNode {
+    if (nodeIsNull(elseChild)) { return letEmptyBlock(from) }
+    let child = ptr_to_node(elseChild)
+    if (child.kind == NodeKind.BLOCK) { return child }
+    return letBlock(from, child)
+}
+
+private fn letMatch(from: ASTNode, scrutinee: ASTNode, pattern: ASTNode, matched: ASTNode,
+                    other: ASTNode) -> ASTNode {
+    let statement = letNode(NodeKind.MATCH_STATEMENT, from)
+    statement.child1 = node_to_ptr(scrutinee)
+    let hit = letNode(NodeKind.MATCH_ARM, pattern)
+    hit.child1 = node_to_ptr(pattern)
+    hit.child2 = node_to_ptr(matched)
+    let miss = letNode(NodeKind.MATCH_ARM, from)
+    miss.s1 = "_"
+    miss.child2 = node_to_ptr(other)
+    hit.next = node_to_ptr(miss)
+    statement.child2 = node_to_ptr(hit)
+    return statement
+}
+
+impl Parser {
+    // The operand's name for the test and the unwrap: its own path when it has one, else a hidden
+    // variable that is declared (in front of the statement being read, or in `into` when given).
+    private fn letRoot(self, scrutinee: ASTNode) -> String {
+        let path = patternPath(scrutinee)
+        if (path.length > 0) { return path }
+        let held = "$q".concat(self.destructureSeq.toString())
+        self.destructureSeq = self.destructureSeq + 1
+        return held
+    }
+
+    // What follows an `if`'s block: nothing, a block, or an `else if`. An `else if let` is a block of its own
+    // holding that one statement, so what it holds ahead of itself runs only when this branch is taken.
+    internal fn parseElse(self) -> Ptr {
+        if (self.matchVal(TokenType.KEYWORD, "else") == false) { return ptr_null() }
+        if (self.checkVal(TokenType.KEYWORD, "if")) {
+            let after = self.peek()
+            if (after.type == TokenType.KEYWORD and after.value.equals("let")) {
+                return node_to_ptr(self.parseBlockOf(true))
+            }
+            // Its condition runs only if this one failed: nothing may be moved ahead of the `if`.
+            self.noHoist = self.noHoist + 1
+            let chained = self.parseIfStatement()
+            self.noHoist = self.noHoist - 1
+            return node_to_ptr(chained)
+        }
+        return node_to_ptr(self.parseBlock())
+    }
+
+    // `let [mut] pattern = value` as `if let` and `while let` read it; the cursor is on `let`.
+    // Answers the pattern, and the value after the `=`.
+    private fn parseLetHead(self, what: String) -> LetHead {
+        self.advance()
+        let mut mutable = 0
+        if (self.matchVal(TokenType.KEYWORD, "mut")) { mutable = 1 }
+        let pattern = self.parseExpression(0)
+        if (self.dead == 1) { return LetHead { pattern: node_to_ptr(pattern), value: ptr_null(), mutable: mutable } }
+        self.expectVal(TokenType.ASSIGNMENT_OPERATOR, "=", what)
+        let value = self.parseScrutinee()
+        return LetHead { pattern: node_to_ptr(pattern), value: node_to_ptr(value), mutable: mutable }
+    }
+
+    // The cursor is on `let`, after `if`; `ifNode` is the `if` already read.
+    internal fn parseIfLet(self, ifNode: ASTNode) -> ASTNode {
+        let head = self.parseLetHead("`if let`")
+        if (self.dead == 1) { return ifNode }
+        let pattern = ptr_to_node(head.pattern)
+        let value = ptr_to_node(head.value)
+        let kind = letPatternKind(pattern)
+        if (kind == 0) {
+            self.fatal("`if let` takes a name for an optional's value, or a variant such as `Result.Ok(v)`")
+            return ifNode
+        }
+        if (kind == 2 and head.mutable == 1) {
+            self.fatal("a variant pattern binds without `mut`")
+            return ifNode
+        }
+        let thenBlock = self.parseBlock()
+        let elseChild = self.parseElse()
+
+        if (kind == 2) {
+            return letMatch(ifNode, value, pattern, thenBlock, letElseBlock(ifNode, elseChild))
+        }
+
+        let root = self.letRoot(value)
+        if (patternPath(value).length == 0) { self.queueBefore(letHolder(value, root)) }
+        let binding = letBinding(pattern, root, head.mutable)
+        binding.next = thenBlock.child1
+        thenBlock.child1 = node_to_ptr(binding)
+
+        let branching = letNode(NodeKind.IF_STATEMENT, ifNode)
+        branching.s1 = "$iflet"
+        branching.child1 = node_to_ptr(letTest(value, root, "!="))
+        branching.child2 = node_to_ptr(thenBlock)
+        branching.child3 = elseChild
+        return branching
+    }
+
+    // The cursor is on `let`, after `while`; `whileNode` is the `while` already read. The loop's header is
+    // read every pass, so nothing in it was moved ahead (the caller counts `noHoist`).
+    internal fn parseWhileLet(self, whileNode: ASTNode) -> ASTNode {
+        let head = self.parseLetHead("`while let`")
+        if (self.dead == 1) { return whileNode }
+        let pattern = ptr_to_node(head.pattern)
+        let value = ptr_to_node(head.value)
+        let kind = letPatternKind(pattern)
+        if (kind == 0) {
+            self.fatal("`while let` takes a name for an optional's value, or a variant such as `Result.Ok(v)`")
+            return whileNode
+        }
+        if (kind == 2 and head.mutable == 1) {
+            self.fatal("a variant pattern binds without `mut`")
+            return whileNode
+        }
+        let body = self.parseBlock()
+        let exit = letBlock(whileNode, letNode(NodeKind.BREAK_STATEMENT, whileNode))
+        let looped = letNode(NodeKind.LOOP_STATEMENT, whileNode)
+
+        if (kind == 2) {
+            let inner = letBlock(whileNode, letMatch(whileNode, value, pattern, body, exit))
+            inner.i1 = body.i1
+            inner.i2 = body.i2
+            looped.child1 = node_to_ptr(inner)
+            return looped
+        }
+
+        let root = self.letRoot(value)
+        let binding = letBinding(pattern, root, head.mutable)
+        binding.next = body.child1
+        let leave = letNode(NodeKind.IF_STATEMENT, whileNode)
+        leave.child1 = node_to_ptr(letTest(value, root, "=="))
+        leave.child2 = node_to_ptr(exit)
+        leave.next = node_to_ptr(binding)
+        if (patternPath(value).length == 0) {
+            let holder = letHolder(value, root)
+            holder.next = node_to_ptr(leave)
+            body.child1 = node_to_ptr(holder)
+        } else {
+            body.child1 = node_to_ptr(leave)
+        }
+        looped.child1 = node_to_ptr(body)
+        return looped
+    }
+
+    // `let Name.Variant(`, `let Name.Variant =`: a variant pattern (a struct pattern's path is followed by `{`).
+    internal fn atVariantPattern(self) -> Bool {
+        if (self.check(TokenType.IDENTIFIER) == false) { return false }
+        let first = self.current().value
+        if (first.length == 0) { return false }
+        let letter = first.byteAt(0)
+        if (letter < 65 or letter > 90) { return false }
+        let mut at = self.current()
+        let mut dots = 0
+        loop {
+            let after = ptr_to_token(at.tokNext)
+            if (after.type == TokenType.SEPARATOR and after.value.equals(".")) {
+                let name = ptr_to_token(after.tokNext)
+                if (name.type != TokenType.IDENTIFIER) { return false }
+                at = name
+                dots = dots + 1
+            } else {
+                if (dots == 0) { return false }
+                return after.value.equals("(") or after.value.equals("=")
+            }
+        }
+    }
+
+    // `let Name.Variant(v) = value else { ... }`: the cursor is on the pattern, `letNode` is the `let` read.
+    internal fn parseLetVariantElse(self, varNode: ASTNode) -> ASTNode {
+        if (varNode.i1 == 1) {
+            self.fatal("a variant pattern binds without `mut`")
+            return varNode
+        }
+        let pattern = self.parseExpression(0)
+        self.expectVal(TokenType.ASSIGNMENT_OPERATOR, "=", "pattern")
+        let value = self.parseExpression(0)
+        if (self.dead == 1) { return varNode }
+        if (self.checkVal(TokenType.KEYWORD, "else") == false) {
+            diag_error_at_code("P3201", pattern.file, pattern.line, pattern.col, pattern.len,
+                               "a `let` with a variant pattern needs an `else { ... }` for when the value is another variant, and it must leave the block")
+            self.abandon()
+            return varNode
+        }
+        self.advance()
+        let elseBlock = self.parseBlock()
+        // The rest of the block goes in the pattern's arm, the first (nestTries).
+        let statement = letMatch(varNode, value, pattern, letEmptyBlock(varNode), elseBlock)
+        statement.s1 = "$letelse"
+        return statement
+    }
+
+    // `let [mut] name = value else { ... }`, the initializer read and the cursor on `else`.
+    internal fn finishLetElse(self, varNode: ASTNode) -> ASTNode {
+        if (nodeExists(varNode.child1)) {
+            self.fatal("a `let ... else` takes its type from the optional; leave the annotation off")
+            return varNode
+        }
+        self.advance()
+        let elseBlock = self.parseBlock()
+        let value = ptr_to_node(varNode.child2)
+        let root = self.letRoot(value)
+        if (patternPath(value).length == 0) { self.queueBefore(letHolder(value, root)) }
+
+        // The binding is the `let` itself, now reading the unwrapped value.
+        let name = letNode(NodeKind.IDENTIFIER_EXPR, varNode)
+        name.s1 = varNode.s1.clone()
+        let binding = letBinding(name, root, varNode.i1)
+        let success = letBlock(varNode, binding)
+
+        let branching = letNode(NodeKind.IF_STATEMENT, varNode)
+        branching.s1 = "$letelse"
+        branching.child1 = node_to_ptr(letTest(value, root, "=="))
+        branching.child2 = node_to_ptr(elseBlock)
+        branching.child3 = node_to_ptr(success)
+        return branching
+    }
+}

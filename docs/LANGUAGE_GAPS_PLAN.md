@@ -52,7 +52,7 @@ other language has and users hit within a day, **P2** is real but can wait.
 |---|---|---|---|
 | B1 | ~~**`if` / `match` as expressions**~~ **done 2026-11-11** (a branch is one expression); `break` with a value still open | `P3201 expected an expression, found if` (roadmap: Coming Soon) | P0 |
 | B2 | ~~**`?` operator**~~ **done 2026-11-11**: for `Result` and `T?` | `P3201 expected an expression, found ?` (roadmap: Coming Soon) | P0 |
-| B3 | **`if let`, `while let`, `let ... else`** (the `T?` forms are F3, which raises their priority) | `P3201 expected an expression, found let` | P1 |
+| B3 | ~~**`if let`, `while let`, `let ... else`**~~ **done 2026-11-15** (a name for an optional, a variant for an enum; the `T?` forms are F3) | `P3201 expected an expression, found let` | P1 |
 | B4 | **Match guards** `x if x > 2 =>` | `P3201 expected => in match arm, found if` | P1 |
 | B5 | **Range patterns** `1..5 =>` | `P3201 expected => in match arm, found ..` | P1 |
 | B6 | **String patterns** | `P4001 match scrutinee must be an integer or enum value, found String` | P1 |
@@ -105,7 +105,7 @@ The design is in [Absence handling (F): design](#absence-handling-f-design).
 |---|---|---|---|
 | F1 | **`T? == T?` is the easy path and says nothing.** Two optionals compare equal when both are `none`; the safe spelling needs a hand-written `and x != none`. No diagnostic fires | `src/sema/checker.psm:1516-1527` accepts it, rejects only `T? == T`; probe: `stored == attempt` with both `none` prints `Logged in` | P0 |
 | F2 | **No absence-never-equal comparison.** There is no way to say "equal only when both are present and equal" | none in `std/option.psm` | P0 |
-| F3 | **No safe way to ignore absence.** `if let h = x { … } else { deny }` and `let h = x else { return }`, where absence falls to the other branch. Today the options are `expect` (a panic), `== none` then `expect` (two steps), and `??` (a sentinel). This is B3 with a reason to be first | `P3201 expected an expression, found let`; `optionals.md` "Not in 0.2" | P0 |
+| F3 | ~~**No safe way to ignore absence.**~~ **done 2026-11-15 (B3)**. `if let h = x { … } else { deny }` and `let h = x else { return }`, where absence falls to the other branch. Today the options are `expect` (a panic), `== none` then `expect` (two steps), and `??` (a sentinel). This is B3 with a reason to be first | `P3201 expected an expression, found let`; `optionals.md` "Not in 0.2" | P0 |
 | F4 | **Flow narrowing** after `x != none` (and through `and`, `else`, `let mut` invalidation) | `optionals.md`: "Comparing with `none` does not narrow the type" | P2 |
 | F5 | **`match` on `T?`** | `optionals.md` "Not in 0.2"; `P4001 match scrutinee must be an integer or enum value` | P1 |
 | F6 | **`??` recreates the bug.** `a ?? 0 == b ?? 0` is `true` when both are absent, which is musl's change. The docs present `??` as the safe form | `optionals.md` "None-coalescing" | P1 |
@@ -481,6 +481,25 @@ shape the compiler already releases correctly. Not built: converting the error (
 (`parseArmBody`, using `parseBlockOf(single)` so the statement has a block's own context). Tests: `test_386`, `test_387`,
 `neg_398`..`neg_401`.
 
+## B3: as built
+
+`src/parse/let_forms.psm` (the lowering) and `src/sema/let_forms.psm` (the two checks). The parser knows no types, so the pattern's
+shape picks the lowering: a bare name is an optional's value (`if $x != none { let h = expect($x) ... }`), `Name.Variant` or
+`Name.Variant(p)` is an enum's payload (a `match` with the arm and a `_`). The operand is its own path when it is a variable or a
+field path (read in place, so it is still usable and `if let x = x` shadows) and a hidden `$qN` queued ahead of the statement
+otherwise. `while let` is a `loop` that tests and binds first, so `continue` goes back to the test; `let ... else` tags the lowered
+statement `$letelse` and `nestTries` nests the rest of the block in the success branch, so the names are in scope for it and an
+owned payload stays owned. `parseElse` serves every `if`: an `else if let` is a one-statement block (`parseBlockOf(true)`).
+Sema: a name pattern on a non-optional is "takes the value out of an optional" (with a note for an enum or a `Result`), and a
+`let ... else`'s `else` must satisfy `semaBlockDiverges`, since it would otherwise skip the rest of the block without saying so.
+
+Two bugs it found, both fixed: `let s = expect(q); return s` released `q` at the `return` (a double free, also reachable through `?`
+on an optional); `irUnwrapSource` makes `return s` count as returning `q` (kept on that path, released on the others). And an arm after `_` was invalid IR; it is an error now.
+
+Not built: `mut` on a variant pattern (refused), a pattern that is a struct (`let P { x } = p else`, irrefutable anyway), a type
+annotation on a `let ... else`, `if let ... and cond` chains, a binding with `_`, and `while let` on a value with `?` in the header
+(headers are refused for hoisting). Tests: `test_390_let_forms`, `neg_402`..`neg_407`.
+
 ## Editor support for A1, A2, A3, B1, B2 and the match syntax
 
 Done 2026-11-11 (the second half of the session). None of the new syntax added a token, so the VS Code grammar and the
@@ -505,11 +524,10 @@ Left, in order of what a user would notice:
 ## Where the next session starts
 
 Built so far and committed (not pushed): A1 nested structs, A3 destructuring `let`, A2 tuples, B1 `if`/`match` as values, B2 `?`,
-the `match` syntax, and editor support for all of them. Next in the plan, in the order to build: **B3** `if let`, `while let`,
-`let ... else` (the same hoisting and marker machinery as `?`: an optional/enum test with a binding), **B4/B5/B6** match guards,
-range patterns and string patterns, **A4** nested patterns inside a variant (`F.X(E.A(v))`), **C1** operator overloading
+the `match` syntax, B3 `if let` / `while let` / `let ... else`, and editor support for all of them except B3's (the index needed
+nothing: checked with `check --emit-index` and `tools/check_index.py`). Next in the plan, in the order to build: **B4/B5/B6** match
+guards, range patterns and string patterns, **A4** nested patterns inside a variant (`F.X(E.A(v))`), **C1** operator overloading
 (`Add`, `Neg`, `Eq` hooks), **C2** closures that can be stored or returned plus a function type, **C4** `#[derive]`/`#[test]`,
 **A5/A6** struct update `..p` and field defaults, **D1** iterator adapters. `break` with a value is the other half of B1.
-Open from this session: nested structs in generic structs, bare nested names in `impl` blocks and signatures, `From`-style
-error conversion for `?`, a branch with several statements in an `if`/`match` expression, and the pattern-binding ownership
-leak in KNOWN_ISSUES.
+Open: nested structs in generic structs, bare nested names in `impl` blocks and signatures, `From`-style error conversion for `?`,
+a branch with several statements in an `if`/`match` expression, and the pattern-binding ownership leak in KNOWN_ISSUES.

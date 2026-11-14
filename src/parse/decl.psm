@@ -1329,6 +1329,9 @@ impl Parser {
 
         self.parseAifAnnotations(varNode)
 
+        // `let Shape.Circle(r) = s else { ... }` -- see parse/let_forms.psm.
+        if (isConst == false and self.atVariantPattern()) { return self.parseLetVariantElse(varNode) }
+
         // `let Point { x, y } = p` -- see parse/patterns.psm.
         if (isConst == false and (self.atDestructure() or self.checkVal(TokenType.SEPARATOR, "("))) {
             return self.parseDestructure(varNode)
@@ -1347,6 +1350,10 @@ impl Parser {
             self.valueHint = varNode.child1
             varNode.child2 = node_to_ptr(self.parseExpression(0))
             self.valueHint = ptr_null()
+            // `let h = find(k) else { return }` -- see parse/let_forms.psm.
+            if (isConst == false and self.dead == 0 and self.checkVal(TokenType.KEYWORD, "else")) {
+                return self.finishLetElse(varNode)
+            }
         } else if (isConst) {
             self.error("a `const` needs a value: `const NAME = expression`")
         }

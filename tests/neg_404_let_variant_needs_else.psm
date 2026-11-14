@@ -1,0 +1,9 @@
+// expect-error: needs an `else
+import std.io
+// A variant pattern may not match, and `else` is what happens then.
+fn parse(s: String) -> Result<Int, String> { return Result.Ok(1) }
+
+fn main() -> Int {
+    let Result.Ok(v) = parse("a")
+    return v
+}

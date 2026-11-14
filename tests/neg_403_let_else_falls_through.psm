@@ -1,0 +1,9 @@
+// expect-error: has to leave the block
+import std.io
+// The rest of the block runs only when there is a value, so the `else` may not fall out of the bottom.
+fn find(k: Int) -> Int? { return none }
+
+fn main() -> Int {
+    let h = find(1) else { println("none") }
+    return h
+}

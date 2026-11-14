@@ -1,0 +1,9 @@
+// expect-error: takes a name for an optional's value
+import std.io
+// `_` binds nothing, so there is no value to take out.
+fn find(k: Int) -> Int? { return none }
+
+fn main() -> Int {
+    if let _ = find(1) { return 1 }
+    return 0
+}

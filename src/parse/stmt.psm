@@ -279,24 +279,18 @@ impl Parser {
 
 
 impl Parser {
-    private fn parseIfStatement(self) -> ASTNode {
+    internal fn parseIfStatement(self) -> ASTNode {
         self.expectVal(TokenType.KEYWORD, "if", "if statement")
         let ifNode = self.node(NodeKind.IF_STATEMENT)
+
+        // `if let` -- see parse/let_forms.psm.
+        if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseIfLet(ifNode) }
 
         ifNode.child1 = node_to_ptr(self.parseCondition("if condition"))
 
         ifNode.child2 = node_to_ptr(self.parseBlock())
 
-        if (self.matchVal(TokenType.KEYWORD, "else")) {
-            if (self.checkVal(TokenType.KEYWORD, "if")) {
-                // Its condition runs only if this one failed: nothing may be moved ahead of the `if`.
-                self.noHoist = self.noHoist + 1
-                ifNode.child3 = node_to_ptr(self.parseIfStatement())
-                self.noHoist = self.noHoist - 1
-            } else {
-                ifNode.child3 = node_to_ptr(self.parseBlock())
-            }
-        }
+        ifNode.child3 = self.parseElse()
 
         return ifNode
     }
@@ -307,6 +301,8 @@ impl Parser {
     private fn parseWhileStatement(self) -> ASTNode {
         self.expectVal(TokenType.KEYWORD, "while", "while statement")
         let whileNode = self.node(NodeKind.WHILE_STATEMENT)
+
+        if (self.checkVal(TokenType.KEYWORD, "let")) { return self.parseWhileLet(whileNode) }
 
         whileNode.child1 = node_to_ptr(self.parseCondition("while condition"))
 

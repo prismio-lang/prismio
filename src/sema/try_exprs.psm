@@ -20,6 +20,9 @@ internal fn semaTryFailed() -> Bool { return tryFailures > 0 }
 
 internal fn semaTryReset() { tryFailures = 0 }
 
+// A lowered statement of another kind (sema/let_forms.psm) that was refused: the same cascade follows.
+internal fn semaTryNoteFailure() { tryFailures = tryFailures + 1 }
+
 internal fn semaIsTry(stmt: ASTNode) -> Bool {
     return stmt.kind == NodeKind.EXPRESSION_STATEMENT and stmt.s1.equals("$try")
 }

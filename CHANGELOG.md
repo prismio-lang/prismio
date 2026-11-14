@@ -34,6 +34,16 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
   (after a call in the same statement, loop headers, right of `and`/`or`/`??`, `else if` conditions, closure expression bodies).
 - **`match` without the ceremony.** `match s { ... }` needs no parentheses around the value, an arm may be a single statement
   without braces (`Shape.Circle => print("c"),`), and an arm may be empty (`_ =>`). The old spellings still read.
+- **`if let`, `while let` and `let ... else`.** A name is an optional's value (`if let h = find(k) { use(h) } else { ... }`,
+  `while let v = next() { ... }`, `let h = find(k) else { return }`), and a variant pattern is an enum's payload
+  (`if let Shape.Circle(r) = s`, `let Result.Ok(v) = parse(s) else { return -1 }`); `else if let` chains with plain `else if`.
+  A variable or a field path is read in place (`if let x = x` shadows), anything else is held once in a hidden variable;
+  `while let` is a `loop` that tests again on every pass, so `continue` goes back to the test. `let ... else` nests the rest
+  of the block in the success branch (as `?` does), and its `else` must leave the block (`return`, `break`, `continue`,
+  `panic`), which sema checks. A name pattern on a value that is not an optional says so (with the variant spelling for an
+  enum). `if let mut h = ...` makes the binding assignable; `_` as a pattern, and a type annotation on a `let ... else`,
+  are refused. `test_390_let_forms` (`--verify`: 0 leaked, 0 violations); compiler IR unchanged for the 361 programs of
+  `tests/` and `benchmarks/hosted/prismio/`.
 - **Editor support for the new syntax.** The semantic index nests a struct written inside another under its owner and finds
   its fields by path (`win.size.w`), indexes a pattern's new name (`y: why`), prints a tuple as `(Int, String)` (in hover,
   hints and the compiler's messages), and completes the structs inside `Window.`. The VS Code grammar and the JetBrains lexer
@@ -58,6 +68,14 @@ releases: those are on the [release notes page](https://docs.prismio.org/release
 
 ### Fixed
 
+- **Returning a value unwrapped with `expect` freed it first.** `let s = expect(q); return s` released `q` at the
+  `return` (the analysis did not see `expect` as handing its argument back), so the caller got freed memory and
+  `--verify` reported a release of a pointer that is not live. It was reachable through `?` on an optional followed by
+  `return s`. That `return` counts as returning `q` now (`irUnwrapSource`): `q` is kept on that path and released on
+  the others (0 leaked where the payload is returned on one path only).
+- **A `match` arm after `_` was invalid IR.** `_` matches everything, so the arms after it can never run, and
+  codegen put a terminator in the middle of a block. It is an error now ("comes after `_`"), for an integer, enum
+  or payload `match`.
 - `prismio fmt` joined `, ..}` in a destructuring pattern into `,..}`.
 
 ### Repository

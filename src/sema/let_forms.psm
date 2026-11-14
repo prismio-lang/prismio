@@ -1,0 +1,66 @@
+// `if let`, `while let` and `let ... else`, once the type of what they test is known
+// (parse/let_forms.psm has the lowering).
+//
+// Two questions the lowered code cannot answer in the words the program used. A name pattern is an
+// optional's value, and what is tested is `held != none`, which would otherwise be a type error about
+// a variable the program never wrote. And the `else` of a `let ... else` has to leave the block: the
+// rest of the block sits in the other branch, so an `else` that fell out of the bottom would skip it
+// without saying so.
+
+import ast.nodes
+import ast.types
+import common.diagnostics
+import std.string
+
+// An optional `if let` (`$iflet`), or either form of `let ... else` (`$letelse`).
+internal fn semaIsLetForm(stmt: ASTNode) -> Bool {
+    if (stmt.kind != NodeKind.IF_STATEMENT and stmt.kind != NodeKind.MATCH_STATEMENT) { return false }
+    return stmt.s1.equals("$iflet") or stmt.s1.equals("$letelse")
+}
+
+// Answers false after reporting; the statement is then not checked further.
+internal fn semaLetFormCheck(module: ASTNode, stmt: ASTNode) -> Bool {
+    let isElse = stmt.s1.equals("$letelse")
+    if (stmt.kind == NodeKind.IF_STATEMENT) {
+        // `held != none` or `held == none`: the left side is what the pattern is read from.
+        let test = ptr_to_node(stmt.child1)
+        let held = ptr_to_node(test.child1)
+        let heldT = semaExpr(module, held)
+        if (typeIsValid(heldT) == false) {
+            semaTryNoteFailure()
+            return false
+        }
+        let isOptional = heldT.kind == TypeKind.OPTIONAL or typeIsValueOptional(heldT)
+        if (isOptional == false) {
+            let mut form = "`if let`"
+            if (isElse) { form = "`let ... else`" }
+            semaErrorAt(held, form.concat(" with a name takes the value out of an optional, and this is ", diagQuote(typeDisplay(heldT))))
+            if (heldT.name.startsWith("Result".concat(monoSeparator()))) {
+                diag_note("a `Result` is taken apart by its variants: `Result.Ok(v)` or `Result.Err(e)`")
+            } else if (heldT.kind == TypeKind.ENUM) {
+                diag_note("an enum value is tested by its variant: `Shape.Circle(r)`")
+            }
+            semaTryNoteFailure()
+            return false
+        }
+        if (isElse and semaBlockDiverges(ptr_to_node(stmt.child2)) == false) {
+            semaLetElseFalls(ptr_to_node(stmt.child2))
+            semaTryNoteFailure()
+            return false
+        }
+        return true
+    }
+    // `match v { Pattern => ..., _ => else }`
+    let miss = ptr_to_node(ptr_to_node(stmt.child2).next)
+    if (semaBlockDiverges(ptr_to_node(miss.child2)) == false) {
+        semaLetElseFalls(ptr_to_node(miss.child2))
+        semaTryNoteFailure()
+        return false
+    }
+    return true
+}
+
+private fn semaLetElseFalls(block: ASTNode) {
+    semaErrorAt(block, "the `else` of a `let` has to leave the block, and this one can fall out of it")
+    diag_note("end it with `return`, `break`, `continue`, or a call that does not return, such as `panic`")
+}

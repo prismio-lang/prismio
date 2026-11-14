@@ -875,7 +875,12 @@ private fn generateReturn(stmt: ASTNode) {
     let mut keep = ""
     if (nodeExists(stmt.child1)) {
         let value = ptr_to_node(stmt.child1)
-        if (value.kind == NodeKind.IDENTIFIER_EXPR) { keep = ir_get_var_slot(value.s1) }
+        if (value.kind == NodeKind.IDENTIFIER_EXPR) {
+            keep = ir_get_var_slot(value.s1)
+            // `let s = expect(q); return s`: `q` is what holds the payload, and it is the slot kept.
+            let source = irUnwrapSource(value.s1)
+            if (source.equals("") == false) { keep = ir_get_var_slot(source) }
+        }
     }
     if (nodeExists(stmt.child1)) {
         let mut retVal = generateExpression(ptr_to_node(stmt.child1))

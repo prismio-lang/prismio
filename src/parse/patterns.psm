@@ -179,7 +179,7 @@ impl Parser {
 }
 
 // `a`, `a.b.c` as a dotted string; "" for anything that is not a plain path.
-private fn patternPath(expr: ASTNode) -> String {
+internal fn patternPath(expr: ASTNode) -> String {
     if (expr.kind == NodeKind.IDENTIFIER_EXPR) { return expr.s1.clone() }
     if (expr.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(expr.child1)) {
         let inner = patternPath(ptr_to_node(expr.child1))
@@ -192,7 +192,7 @@ private fn patternPath(expr: ASTNode) -> String {
 // A fresh `root.a.b` for each binding: the nodes carry their types once checked, so one
 // tree cannot serve two reads. All of it is positioned at the field in the pattern, so
 // "no field `z`" points at the `z` the program wrote.
-private fn patternAccess(at: ASTNode, path: String) -> ASTNode {
+internal fn patternAccess(at: ASTNode, path: String) -> ASTNode {
     let parts = path.split('.')
     let root = createNode(NodeKind.IDENTIFIER_EXPR)
     nodeSpanFrom(root, at)

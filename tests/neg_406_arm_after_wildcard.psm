@@ -1,0 +1,16 @@
+// expect-error: comes after `_`
+import std.io
+// `_` matches everything, so an arm after it can never run (and used to be invalid IR).
+enum E { A(Int), B }
+
+fn f(e: E) -> Int {
+    match e {
+        _ => { return -1 }
+        E.A(v) => { return v }
+    }
+}
+
+fn main() -> Int {
+    println(f(E.B).toString())
+    return 0
+}

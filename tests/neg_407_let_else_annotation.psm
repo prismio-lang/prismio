@@ -1,0 +1,8 @@
+// expect-error: takes its type from the optional
+import std.io
+fn find(k: Int) -> Int? { return none }
+
+fn main() -> Int {
+    let h: Int = find(1) else { return 0 }
+    return h
+}
