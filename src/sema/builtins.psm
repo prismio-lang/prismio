@@ -14,6 +14,7 @@ import common.target
 import sema.flow
 import std.string
 import common.source_files
+import common.lang_items
 
 internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("drop")) { return typeVoid() }
@@ -361,10 +362,10 @@ private fn semaCheckPtrAtomic(module: ASTNode, call: ASTNode, name: String, kind
     let order = ptr_to_node(operandAt)
     let written = order.kind == NodeKind.MEMBER_ACCESS_EXPR and nodeExists(order.child1)
         and ptr_to_node(order.child1).kind == NodeKind.IDENTIFIER_EXPR
-        and ptr_to_node(order.child1).s1.equals("AtomicOrder")
+        and langNameIs(ptr_to_node(order.child1).s1, LangItem.ATOMIC_ORDER)
         and ptrAtomicOrderCode(order.s1) >= 0
     if (written == false) {
-        semaErrorAt(order, "the ordering is written as a variant of `AtomicOrder`: `Relaxed`, `Acquire`, `Release`, `AcqRel` or `SeqCst`")
+        semaErrorAt(order, "the ordering is written as a variant of `".concat(langName(LangItem.ATOMIC_ORDER), "`: `Relaxed`, `Acquire`, `Release`, `AcqRel` or `SeqCst`"))
         return
     }
     semaExpr(module, order)
@@ -581,13 +582,13 @@ private fn semaCheckAsmOps(module: ASTNode, call: ASTNode, name: String, argPtr:
 // program's own and is left alone.
 internal fn semaStdAsmBuiltin(module: ASTNode, name: String) -> String {
     let mut builtin = ""
-    if (name.equals("asm")) { builtin = "__builtin_asm" }
-    if (name.equals("asmRead")) { builtin = "__builtin_asm_read" }
-    if (name.equals("asmWrite")) { builtin = "__builtin_asm_write" }
+    if (langNameIs(name, LangItem.ASM)) { builtin = "__builtin_asm" }
+    if (langNameIs(name, LangItem.ASM_READ)) { builtin = "__builtin_asm_read" }
+    if (langNameIs(name, LangItem.ASM_WRITE)) { builtin = "__builtin_asm_write" }
     // These two are generic over their operands, so std's declaration is a template.
-    if (name.equals("asmOps") or name.equals("asmOpsOut")) {
+    if (langNameIs(name, LangItem.ASM_OPS) or langNameIs(name, LangItem.ASM_OPS_OUT)) {
         if (semaNameIsStdTemplate(module, name) == false) { return "" }
-        if (name.equals("asmOps")) { return "__builtin_asm_ops" }
+        if (langNameIs(name, LangItem.ASM_OPS)) { return "__builtin_asm_ops" }
         return "__builtin_asm_ops_out"
     }
     if (builtin.equals("")) { return "" }
@@ -624,8 +625,11 @@ private fn semaNameIsStdTemplate(module: ASTNode, name: String) -> Bool {
 internal fn semaCheckStdOffsetOf(module: ASTNode, call: ASTNode, callee: ASTNode) {
     // An explicit type argument has already turned the callee into its instance's name,
     // `offsetOf$Struct_Header`; a struct is the only `T` with a `Struct_` in front of it.
-    if (callee.s1.startsWith("offsetOf$") == false or semaNameIsStdTemplate(module, "offsetOf") == false) { return }
-    let named = callee.s1.substring("offsetOf$".length, callee.s1.length - "offsetOf$".length)
+    let template = langName(LangItem.OFFSET_OF)
+    if (langDeclared(LangItem.OFFSET_OF) == false or callee.s1.startsWith(template.concat("$")) == false
+        or semaNameIsStdTemplate(module, template) == false) { return }
+    let prefix = template.concat("$")
+    let named = callee.s1.substring(prefix.length, callee.s1.length - prefix.length)
     if (named.startsWith("Struct_") == false) {
         semaErrorAt(callee, diagQuote(named).concat(" is not a struct, so it has no field offsets"))
         return
@@ -648,7 +652,7 @@ internal fn semaCheckStdOffsetOf(module: ASTNode, call: ASTNode, callee: ASTNode
     }
     if (nodeIsNull(call.child2) or ptr_to_node(call.child2).kind != NodeKind.LITERAL_EXPR
             or nodeIsNull(ptr_to_node(call.child2).next) == false) {
-        semaErrorAt(callee, "`offsetOf` takes the field's name as one string literal")
+        semaErrorAt(callee, "`".concat(template, "` takes the field's name as one string literal"))
         return
     }
     let field = ptr_to_node(call.child2)
@@ -675,18 +679,18 @@ internal fn semaFunctionNamed(name: String) -> ASTNode {
 }
 
 internal fn semaCheckStdCString(call: ASTNode, callee: ASTNode) {
-    if (callee.s1.equals("cString") == false or semaNameIsStdFunction(callee.s1) == false) { return }
+    if (langNameIs(callee.s1, LangItem.C_STRING) == false or semaNameIsStdFunction(callee.s1) == false) { return }
     if (nodeIsNull(call.child2) or ptr_to_node(call.child2).kind != NodeKind.LITERAL_EXPR
             or nodeIsNull(ptr_to_node(call.child2).next) == false) {
-        semaErrorAt(callee, "`cString` takes one string literal; a String built at run time is not read-only data")
+        semaErrorAt(callee, "`".concat(callee.s1, "` takes one string literal; a String built at run time is not read-only data"))
     }
 }
 
 internal fn semaCheckStdFunctionAddress(module: ASTNode, call: ASTNode, callee: ASTNode) {
-    if (callee.s1.equals("functionAddress") == false or semaNameIsStdFunction(callee.s1) == false) { return }
+    if (langNameIs(callee.s1, LangItem.FUNCTION_ADDRESS) == false or semaNameIsStdFunction(callee.s1) == false) { return }
     if (nodeIsNull(call.child2) or ptr_to_node(call.child2).kind != NodeKind.LITERAL_EXPR
             or nodeIsNull(ptr_to_node(call.child2).next) == false) {
-        semaErrorAt(callee, "`functionAddress` takes the function's name as one string literal")
+        semaErrorAt(callee, "`".concat(callee.s1, "` takes the function's name as one string literal"))
         return
     }
     let literal = ptr_to_node(call.child2)
@@ -715,7 +719,7 @@ internal fn semaTargetIsX86() -> Bool {
 // builtin underneath it. A function of the same name that is not std's is the
 // program's own.
 internal fn semaCheckStdPortCall(callee: ASTNode) {
-    if (callee.s1.startsWith("portIn") == false and callee.s1.startsWith("portOut") == false) { return }
+    if (langNameIs(callee.s1, LangItem.PORT_ACCESS) == false) { return }
     if (semaTargetIsX86()) { return }
     let count = ir_decl_count(callee.s1)
     for i in 0..<count {

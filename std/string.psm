@@ -2637,7 +2637,7 @@ impl String {
     // to one call rather than a nested join, so there is no intermediate to
     // allocate and release at all. Six is where it stops because `strJoin` is
     // the right answer past that.
-    public fn concat(self, other: String) -> String {
+    lang("string_concat") public fn concat(self, other: String) -> String {
         let alen = __builtin_string_len(self)
         let blen = __builtin_string_len(other)
         let total = alen + blen

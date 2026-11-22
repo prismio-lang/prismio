@@ -29,6 +29,8 @@ import std.fs
 import std.platform
 import common.native
 import common.diag_codes
+import common.lang_items
+import ast.lang_marks
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -692,6 +694,22 @@ private fn moduleIsUnder(module: String, parent: String) -> Bool {
     return module.equals(parent) or module.startsWith(parent.concat("."))
 }
 
+// An import the parser wrote for a library item (a tuple brings in the module that declares the tuple
+// types) names `$lang.<id>`; the library says which module that is. False after reporting that it says none.
+private fn resolveLangImport(stmt: ASTNode) -> Bool {
+    if (stmt.s1.startsWith("$lang.") == false) { return true }
+    let id = stmt.s1.substring(6, stmt.s1.length - 6)
+    let module = libraryLangModule(id)
+    if (module.equals("")) {
+        diag_error_at_code(DIAG_DRIVER_LANG_IMPORT_MISSING, stmt.file, stmt.line, stmt.col, stmt.len,
+            "the standard library declares no `lang(\"".concat(id, "\")` item, which this needs"))
+        diag_note_dropped_everything()
+        return false
+    }
+    stmt.s1 = module
+    return true
+}
+
 private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
     let mut seen = visited
 
@@ -701,7 +719,9 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
         let nextStmt = stmt.next
         stmt.next = ptr_null()
 
-        if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
+        if (stmt.kind == NodeKind.IMPORT_STATEMENT and resolveLangImport(stmt) == false) {
+            // Reported; nothing to merge.
+        } else if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
             if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
             } else if (refuseHostedImport(stmt) == false and refuseGroupDeclaration(stmt, baseDir) == false) {
@@ -864,6 +884,21 @@ private fn resolvedFromLibrary(baseDir: String, moduleName: String, importPath: 
     return absolutePath(library).equals(absolutePath(importPath))
 }
 
+// A name the parser wrote for a library item that the merged library does not declare: `?` needs the
+// result type, a tuple needs its struct.
+private fn reportMissingLangReference(missing: Ptr) {
+    if (nodeIsNull(missing)) { return }
+    let node = ptr_to_node(missing)
+    let id = node.s1.substring(6, node.s1.length - 6)
+    let module = libraryLangModule(id)
+    let mut needs = "a standard library module that this program has not imported".clone()
+    if (module.equals("") == false) { needs = "`import ".concat(module, "`") }
+    diag_error_at_code(DIAG_DRIVER_LANG_REFERENCE_MISSING, node.file, node.line, node.col, node.len,
+        "this syntax needs ".concat(needs))
+    if (module.equals("") == false) { diag_note_add_import(module, "add `import ".concat(module, "`")) }
+    diag_note_dropped_everything()
+}
+
 // The entry file is marked resolved before the walk begins, so that a package
 // import naming the package it lives in cannot pull it in a second time and
 // duplicate every function it defines.
@@ -894,6 +929,7 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     // No prelude. `std.io` is an ordinary import, so a program that names no I/O
     // carries none -- which is what lets a target with no stdout link at all.
     mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
+    reportMissingLangReference(langResolveReferences())
 
     // Before the templates are collected, and after the merge: a default may be
     // inherited from a trait declared in another module, and a default expanded

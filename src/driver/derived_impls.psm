@@ -25,17 +25,19 @@ import driver.imports
 import std.string
 import sema.decl_index
 import sema.checker
+import common.lang_items
 
-private fn derivedSource(name: String, traitName: String) -> String {
-    if (traitName.equals("Copy")) {
-        return "impl Copy for ".concat(name, " { fn copyOf(self) -> Self { return self } }\n")
+private fn derivedSource(name: String, item: LangItem) -> String {
+    let traitName = langName(item)
+    if (item == LangItem.COPY) {
+        return "impl ".concat(traitName, " for ", name, " { fn ", langName(LangItem.COPY_METHOD), "(self) -> Self { return self } }\n")
     }
-    if (traitName.equals("Eq")) {
-        return "impl Eq for ".concat(name, " { fn eq(self, other: Self) -> Bool { return self == other } }\n")
+    if (item == LangItem.EQ) {
+        return "impl ".concat(traitName, " for ", name, " { fn ", langName(LangItem.EQ_METHOD), "(self, other: Self) -> Bool { return self == other } }\n")
     }
-    return "impl Key for ".concat(name, " {\n",
-                                  "    fn hash(self) -> Int { return (self as Int) & 2147483647 }\n",
-                                  "    fn eq(self, other: Self) -> Bool { return self == other }\n}\n")
+    return "impl ".concat(traitName, " for ", name, " {\n",
+                          "    fn ", langName(LangItem.KEY_HASH), "(self) -> Int { return (self as Int) & 2147483647 }\n",
+                          "    fn ", langName(LangItem.KEY_EQ), "(self, other: Self) -> Bool { return self == other }\n}\n")
 }
 
 // `|Name|` for every type written as an argument of another type or a call.
@@ -68,10 +70,12 @@ private fn derivable(decl: ASTNode) -> Bool {
     return typeArguments.contains("|".concat(decl.s1, "|"))
 }
 
-private fn deriveFor(module: ASTNode, decl: ASTNode, traitName: String) {
+private fn deriveFor(module: ASTNode, decl: ASTNode, item: LangItem) {
+    if (langDeclared(item) == false) { return }
+    let traitName = langName(item)
     if (nodeExists(node_to_ptr(declFindTrait(module, traitName))) == false) { return }
     if (semaTypeImplementsNamedTrait(module, decl.s1, traitName)) { return }
-    let parsed = parseSource(derivedSource(decl.s1, traitName), decl.file)
+    let parsed = parseSource(derivedSource(decl.s1, item), decl.file)
     let mut p = parsed.child1
     while (nodeExists(p)) {
         let implNode = ptr_to_node(p)
@@ -91,9 +95,9 @@ public fn deriveEnumImpls(module: ASTNode) {
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
         if (derivable(stmt)) {
-            deriveFor(module, stmt, "Copy")
-            deriveFor(module, stmt, "Eq")
-            deriveFor(module, stmt, "Key")
+            deriveFor(module, stmt, LangItem.COPY)
+            deriveFor(module, stmt, LangItem.EQ)
+            deriveFor(module, stmt, LangItem.KEY)
         }
         p = stmt.next
     }

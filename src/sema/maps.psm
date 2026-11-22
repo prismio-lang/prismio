@@ -38,13 +38,15 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 import std.string
+import common.lang_items
 
 // Rewrites `node`, a MAP_LITERAL_EXPR, for a context expecting `expected`
 // (Invalid when there is none). Answers false after reporting; the node is then
 // typed Invalid.
 internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -> Bool {
-    if (monoHasTemplate(module, "mapMerge", NodeKind.FUNCTION) == false) {
-        semaErrorAt(node, "a map literal needs `import std.map`")
+    if (langDeclared(LangItem.MAP_MERGE) == false
+        or monoHasTemplate(module, langName(LangItem.MAP_MERGE), NodeKind.FUNCTION) == false) {
+        semaErrorAt(node, "a map literal needs ".concat(langImportHint(LangItem.MAP_MERGE)))
         nodeSetType(node, typeInvalid())
         return false
     }
@@ -115,7 +117,7 @@ internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -
         let count = semaMapCount(node, total)
         count.next = node_to_ptr(keys)
         keys.next = node_to_ptr(values)
-        let fromEntries = semaMapCall(node, "mapFromEntries", keyT, valueT)
+        let fromEntries = semaMapCall(node, langName(LangItem.MAP_FROM_ENTRIES), keyT, valueT)
         fromEntries.child2 = node_to_ptr(count)
         semaDefaultReset(node, NodeKind.CALL_EXPR)
         node.child1 = fromEntries.child1
@@ -152,7 +154,7 @@ internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -
         if (nodeIsNull(built)) {
             built = node_to_ptr(entries)
         } else {
-            let merge = semaMapCall(node, "mapMerge", keyT, valueT)
+            let merge = semaMapCall(node, langName(LangItem.MAP_MERGE), keyT, valueT)
             ptr_to_node(built).next = node_to_ptr(entries)
             merge.child2 = built
             built = node_to_ptr(merge)
@@ -236,7 +238,7 @@ private fn semaMapCall(at: ASTNode, name: String, keyT: TypeInfo, valueT: TypeIn
 // Whether `t` is an instantiation of std.map's `HashMap` -- `HashMap$String$Int`.
 internal fn semaMapIsInstance(module: ASTNode, t: TypeInfo) -> Bool {
     if (typeIsValid(t) == false or t.kind != TypeKind.STRUCT) { return false }
-    return t.name.startsWith("HashMap".concat(monoSeparator()))
+    return langDeclared(LangItem.HASH_MAP) and t.name.startsWith(langName(LangItem.HASH_MAP).concat(monoSeparator()))
 }
 
 // Two keys written as the same literal. The map would keep the second and drop

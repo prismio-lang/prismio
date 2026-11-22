@@ -21,6 +21,7 @@ import sema.vec
 import std.string
 import std.vec
 import common.source_files
+import common.lang_items
 
 // The identifier the server writes where the word being completed starts.
 public fn ixPlaceholder() -> String {
@@ -238,7 +239,9 @@ public fn ixCompleteTypes(inout ix: Ix, inout src: IxSources, file: Int) {
         }
         id = id + 1
     }
-    let mut provided: Vec<String> = ["Int", "Float", "Bool", "Char", "String", "Vec", "HashMap", "HashSet", "Ptr", "Slice", "Channel", "Self"]
+    let mut provided: Vec<String> = ["Int", "Float", "Bool", "Char", "String", "Vec", "Ptr", "Slice", "Channel", "Self"]
+    if (langDeclared(LangItem.HASH_MAP)) { provided.push(langName(LangItem.HASH_MAP)) }
+    if (langDeclared(LangItem.HASH_SET)) { provided.push(langName(LangItem.HASH_SET)) }
     let sized: Vec<String> = ["I8", "I16", "I64", "Isize", "U8", "U16", "U32", "U64", "Usize", "F32", "F16", "BF16"]
     for name in sized { provided.push(name.clone()) }
     provided.push("F128".clone())

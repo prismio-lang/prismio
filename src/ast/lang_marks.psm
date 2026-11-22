@@ -79,3 +79,48 @@ public fn nodeLangMark(node: ASTNode) -> String {
 public fn langMarksExist() -> Bool {
     return langMarkTable.equals("") == false
 }
+
+// References the parser writes before any library is read. The parser cannot name `Result` or `Tuple2`:
+// it runs before the merge, and a library declaration says what it is by its marker, not by a name the
+// parser could know. It writes `$lang.<id>` (`langReferenceName`) and records the node here; the driver
+// replaces each with the declared name once the merge has read the library (`langResolveReferences`).
+// "$" is in no source identifier, so a placeholder cannot be written by hand.
+let mut langRefIds: Vec<String>
+let mut langRefNodes: Vec<Ptr>
+let mut langRefOpened = false
+
+private fn langRefOpen() {
+    if (langRefOpened) { return }
+    langRefIds = []
+    langRefNodes = []
+    langRefOpened = true
+}
+
+public fn langReferenceName(id: String) -> String {
+    return "$lang.".concat(id)
+}
+
+// Makes `node` a reference to the declaration that carries `id`: its name is the placeholder until resolved.
+public fn nodeSetLangReference(node: ASTNode, id: String) {
+    langRefOpen()
+    node.s1 = langReferenceName(id)
+    langRefIds.push(id.clone())
+    langRefNodes.push(node_to_ptr(node))
+}
+
+// Gives every recorded reference the name of its declaration. Answers the first reference whose item no
+// merged module declares, or a null pointer when all resolved; that reference keeps its placeholder, and
+// the driver reports it.
+public fn langResolveReferences() -> Ptr {
+    langRefOpen()
+    let mut missing: Ptr = ptr_null()
+    for i in 0..<langRefIds.length {
+        let id = langRefIds[i]
+        if (langDeclarationCount(id) == 0) {
+            if (nodeIsNull(missing)) { missing = langRefNodes[i] }
+            continue
+        }
+        ptr_to_node(langRefNodes[i]).s1 = langDeclarationAt(id, 0).s1.clone()
+    }
+    return missing
+}

@@ -7635,6 +7635,51 @@ def run_std_layout_test():
         refused("suggest_sealed", ["unknown"], absent=["std._hidden"])
         # A file and a directory of one name: the import means the file alone.
         refused("inner", ["bothInner"])
+    # The compiler asks for a library item by its marker, never by its name: a library that calls the
+    # equality trait `Same` and the pair type `Pair` is the library, and `==` and `(a, b)` still work.
+    renamed = {
+        "runtime/lang_runtime.c": "",
+        "std/string.psm": "public fn strMark() -> Int { return 1 }\n",
+        "std/core/cmp.psm": ("lang(\"eq\") trait Same {\n"
+                             "    lang(\"eq.eq\") fn same(self, other: Self) -> Bool\n"
+                             "}\n"),
+        "std/core/pair.psm": ("lang(\"tuple2\") public struct Pair<A, B> { public _0: A, public _1: B }\n"
+                              "lang(\"tuple2_new\") public fn pair<A, B>(sink a: A, sink b: B) -> Pair<A, B> {\n"
+                              "    return Pair<A, B> { _0: a, _1: b }\n"
+                              "}\n"),
+        "app/renamed.psm": ("import std.core.cmp\n\n"
+                            "struct Point { x: Int }\n"
+                            "impl Same for Point { fn same(self, other: Self) -> Bool { return self.x == other.x } }\n\n"
+                            "fn main() -> Int {\n"
+                            "    let t = (1, 2)\n"
+                            "    let a = Point { x: 3 }\n"
+                            "    let b = Point { x: 3 }\n"
+                            "    if (a == b and t.0 + t.1 == 3) { return 0 }\n"
+                            "    return 1\n"
+                            "}\n"),
+    }
+    missing = {
+        "runtime/lang_runtime.c": "",
+        "std/string.psm": "public fn strMark() -> Int { return 1 }\n",
+        "app/missing.psm": "fn main() -> Int {\n    let t = (1, 2)\n    return t.0 - 1\n}\n",
+    }
+    for label, tree, program, want in (("renamed items", renamed, "renamed", None),
+                                       ("missing item", missing, "missing", "the standard library declares no")):
+        with tempfile.TemporaryDirectory(prefix="prismio-lang-items-") as tmp2:
+            for name, text in tree.items():
+                target = Path(tmp2) / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+            exe = Path(tmp2) / "app" / (program + exe_suffix)
+            result = run_command([str(PRISMIO_EXE), "build", str(Path(tmp2) / "app" / (program + ".psm")), "-o", str(exe)])
+            output = result.stdout + result.stderr
+            if want is None:
+                if result.returncode != 0:
+                    problems.append(f"{label}: did not build: {output.strip()[:400]}")
+                elif run_command([str(exe)]).returncode != 0:
+                    problems.append(f"{label}: ran and answered wrongly")
+            elif result.returncode == 0 or want not in output:
+                problems.append(f"{label}: expected `{want}`, got: {output.strip()[:400]}")
     if problems:
         print(f"{RED}[FAIL] std_layout{RESET}")
         for problem in problems:

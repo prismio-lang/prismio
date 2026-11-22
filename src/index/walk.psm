@@ -26,6 +26,7 @@ import index.tables
 import index.write
 import std.string
 import std.vec
+import common.lang_items
 
 public struct IxWalk {
     // Lexical scopes: names and what they declare, with the start of each scope in `marks`.
@@ -183,10 +184,13 @@ fn ixEmitUnresolved(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: A
 fn ixIsBuiltinType(name: String) -> Bool {
     if (name.equals("Int") or name.equals("UInt") or name.equals("Float") or name.equals("Bool")
             or name.equals("Char") or name.equals("String") or name.equals("Ptr") or name.equals("Void")
-            or name.equals("Vec") or name.equals("Array") or name.equals("HashMap") or name.equals("HashSet") or name.equals("Self")
-            or name.equals("Fn") or name.equals("List") or name.equals("Task") or name.equals("Result")
+            or name.equals("Vec") or name.equals("Array") or name.equals("Self")
+            or name.equals("Fn") or name.equals("List") or name.equals("Task")
             or name.equals("Slice") or name.equals("Channel") or name.equals("Chan") or name.equals("Future")
-            or name.equals("DataView") or name.equals("Option")) {
+            or name.equals("DataView")) {
+        return true
+    }
+    if (langNameIs(name, LangItem.HASH_MAP) or langNameIs(name, LangItem.HASH_SET) or langNameIs(name, LangItem.RESULT)) {
         return true
     }
     return typeIsValid(typeIntFromName(name)) or typeIsValid(typeFloatFromName(name))
@@ -1265,7 +1269,8 @@ fn ixNoteSplitPrints(inout ix: Ix, inout src: IxSources, inout w: IxWalk) {
         let mut at = 1
         while (at + 1 < count) {
             let word = ixTokenText(src, slot, at)
-            let isPrint = word.equals("print") or word.equals("println") or word.equals("eprint") or word.equals("eprintln")
+            let isPrint = langNameIs(word, LangItem.PRINT) or langNameIs(word, LangItem.PRINTLN)
+                or langNameIs(word, LangItem.EPRINT) or langNameIs(word, LangItem.EPRINTLN)
             if (isPrint and ixKindAt(src, slot, at + 1) == FmtKind.LPAREN and ixKindAt(src, slot, at - 1) != FmtKind.DOT
                     and ixTokenText(src, slot, at - 1).equals("fn") == false
                     and ix.seen.has(ixKey(file, ixTokenLine(src, slot, at), ixTokenCol(src, slot, at))) == false) {
@@ -1273,7 +1278,7 @@ fn ixNoteSplitPrints(inout ix: Ix, inout src: IxSources, inout w: IxWalk) {
                 let mut candidate = ix.byFn.get(word)
                 // The variadic declaration when the program loaded it, else the first overload: the editor lists the rest.
                 while (candidate >= 0) {
-                    if (ix.dUser[candidate] == false and (target < 0 or diag_file_module(ix.dFile[candidate]).equals("std.display"))) {
+                    if (ix.dUser[candidate] == false and (target < 0 or diag_file_module(ix.dFile[candidate]).equals(langModule(LangItem.SHOW)))) {
                         target = candidate
                     }
                     candidate = ix.dOverload[candidate]

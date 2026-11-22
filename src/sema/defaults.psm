@@ -19,6 +19,7 @@ import ir.bridge
 import common.diagnostics
 import std.string
 import common.source_files
+import common.lang_items
 
 // How deep a struct's fields are followed. A struct that holds itself by value
 // has no default at any depth, and this is where that is noticed.
@@ -178,8 +179,8 @@ private fn semaDefaultStruct(module: ASTNode, target: ASTNode, t: TypeInfo, dept
         return shown.concat(" is an enum, which has no default value")
     }
     // A HashMap's buckets are an invariant its fields cannot be defaulted into.
-    if (fromStd and template.equals("HashMap")) { return semaDefaultMapNew(module, target, t) }
-    if (fromStd and template.equals("HashSet")) { return semaDefaultSetNew(module, target, t) }
+    if (fromStd and langNameIs(template, LangItem.HASH_MAP)) { return semaDefaultMapNew(module, target, t) }
+    if (fromStd and langNameIs(template, LangItem.HASH_SET)) { return semaDefaultSetNew(module, target, t) }
     if (depth >= semaDefaultMaxDepth()) {
         return shown.concat(" contains itself, so it has no default value")
     }
@@ -212,8 +213,8 @@ private fn semaDefaultMapNew(module: ASTNode, target: ASTNode, t: TypeInfo) -> S
     let keyT = semaListElementType(semaCompilerFieldType(module, target, t.name, "entryKeys"))
     let valueT = semaListElementType(semaCompilerFieldType(module, target, t.name, "entryValues"))
     semaDefaultReset(target, NodeKind.CALL_EXPR)
-    target.child1 = node_to_ptr(semaDefaultCallee(target, "mapNew"))
-    target.child3 = node_to_ptr(semaDefaultTypeArgs(target, "mapNew", keyT, valueT))
+    target.child1 = node_to_ptr(semaDefaultCallee(target, langName(LangItem.MAP_NEW)))
+    target.child3 = node_to_ptr(semaDefaultTypeArgs(target, langName(LangItem.MAP_NEW), keyT, valueT))
     return ""
 }
 
@@ -221,8 +222,8 @@ private fn semaDefaultMapNew(module: ASTNode, target: ASTNode, t: TypeInfo) -> S
 private fn semaDefaultSetNew(module: ASTNode, target: ASTNode, t: TypeInfo) -> String {
     let keyT = semaListElementType(semaCompilerFieldType(module, target, t.name, "entryKeys"))
     semaDefaultReset(target, NodeKind.CALL_EXPR)
-    target.child1 = node_to_ptr(semaDefaultCallee(target, "hashSetNew"))
-    target.child3 = node_to_ptr(semaDefaultTypeArgs(target, "hashSetNew", keyT, typeInvalid()))
+    target.child1 = node_to_ptr(semaDefaultCallee(target, langName(LangItem.HASH_SET_NEW)))
+    target.child3 = node_to_ptr(semaDefaultTypeArgs(target, langName(LangItem.HASH_SET_NEW), keyT, typeInvalid()))
     return ""
 }
 

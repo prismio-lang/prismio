@@ -24,12 +24,13 @@ import ast.types
 import ast.int_width
 import common.diagnostics
 import std.string
+import common.lang_items
 
 // Whether `expr`, a call to `name`, was rewritten (semaVecRewritten: check it again),
 // refused after reporting (semaVecRejected), or is none of this module's business (0).
 internal fn semaNumberTextLower(module: ASTNode, expr: ASTNode, name: String) -> Int {
-    if (name.equals("print") == false and name.equals("println") == false
-            and name.equals("toString") == false and name.equals("show") == false) {
+    if (langNameIs(name, LangItem.PRINT) == false and langNameIs(name, LangItem.PRINTLN) == false
+            and langNameIs(name, LangItem.TO_STRING) == false and langNameIs(name, LangItem.SHOW) == false) {
         return 0
     }
     if (nodeExists(expr.child2) == false) { return 0 }
@@ -51,7 +52,7 @@ private fn semaIntTextLower(module: ASTNode, expr: ASTNode, name: String, first:
         return semaVecRewritten()
     }
 
-    if (textHelperAvailable(module, expr, t, "intText") == false) { return semaVecRejected() }
+    if (textHelperAvailable(module, expr, t, langName(LangItem.INT_TEXT)) == false) { return semaVecRejected() }
     // `toString(radix)` is the one form with a second argument, and a radix over a
     // width past 64 bits is not built.
     if (nodeExists(first.next)) {
@@ -64,13 +65,13 @@ private fn semaIntTextLower(module: ASTNode, expr: ASTNode, name: String, first:
     nodeListPush(args, first)
     nodeListPush(args, textLiteral(first, TokenType.NUMBER_LITERAL as Int, bits.toString()))
     nodeListPush(args, textLiteral(first, TokenType.BOOL_LITERAL as Int, signed))
-    return textRewrite(expr, name, first, "intText", args)
+    return textRewrite(expr, name, first, langName(LangItem.INT_TEXT), args)
 }
 
 // `helper` is generic, so it is a template and not in the declaration index.
 private fn textHelperAvailable(module: ASTNode, at: ASTNode, t: TypeInfo, helper: String) -> Bool {
     if (monoHasTemplate(module, helper, NodeKind.FUNCTION)) { return true }
-    semaErrorAt(at, "printing ".concat(typeDisplay(t), " needs `import std.number_text`"))
+    semaErrorAt(at, "printing ".concat(typeDisplay(t), " needs ", langImportHint(LangItem.INT_TEXT)))
     return false
 }
 
@@ -79,7 +80,7 @@ private fn textHelperAvailable(module: ASTNode, at: ASTNode, t: TypeInfo, helper
 // `args` is the value followed by what the helper also takes, and `value` is its head.
 private fn textRewrite(expr: ASTNode, name: String, value: ASTNode, helper: String,
                        args: NodeList) -> Int {
-    if (name.equals("toString") or name.equals("show")) {
+    if (langNameIs(name, LangItem.TO_STRING) or langNameIs(name, LangItem.SHOW)) {
         semaBecomeCall(expr, helper, args.head)
         return semaVecRewritten()
     }

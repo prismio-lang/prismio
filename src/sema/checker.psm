@@ -15,6 +15,7 @@ import std.option
 import sema.decl_index
 import common.diag_codes
 import common.source_files
+import common.lang_items
 
 // Sema reports and keeps going. Stopping at the first type error meant one
 // diagnostic per run, so fixing a file was a sequence of edit-rebuild rounds --
@@ -233,7 +234,7 @@ private fn semaStructDeclaresMethod(typeName: String, name: String) -> Bool {
 // sets it too. Overload resolution already filters on it, so this needs nothing
 // new: it is the module-qualified call the author would have had to write.
 private fn semaBindToStandardString(expr: ASTNode) {
-    expr.s1 = "std.string"
+    expr.s1 = langModule(LangItem.STRING_CONCAT)
 }
 
 // Turn `expr` into a call to `name` over `args`, in place.
@@ -358,7 +359,9 @@ internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInf
 // The overload table a vector literal lowers to, std.vec's `vecOf`, or empty
 // when that module is not imported.
 private fn semaVecLiteralTable(module: ASTNode) -> String {
-    if (monoHasTemplate(module, "vecOf", NodeKind.FUNCTION)) { return "vecOf" }
+    if (langDeclared(LangItem.VEC_OF) and monoHasTemplate(module, langName(LangItem.VEC_OF), NodeKind.FUNCTION)) {
+        return langName(LangItem.VEC_OF)
+    }
     return ""
 }
 
@@ -477,7 +480,7 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
     if (typeIsValid(sourceT) == false) { return false }
 
     let isIterator = sourceT.kind == TypeKind.STRUCT
-        and semaTypeImplementsNamedTrait(module, sourceT.name, "Iterator")
+        and semaTypeImplementsNamedTrait(module, sourceT.name, langName(LangItem.ITERATOR))
     if (semaForSourceIsPlace(source) == false) {
         semaForHoistSource(stmt, isIterator)
         return true
@@ -493,7 +496,7 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
     if (semaForIsMap(module, sourceT)) { return semaForEachMap(stmt, source) }
     if (semaForIsSet(module, sourceT)) {
         if (stmt.s2.equals("") == false) {
-            semaErrorAt(stmt, "a HashSet gives one key per iteration, but this loop names two")
+            semaErrorAt(stmt, "a ".concat(langName(LangItem.HASH_SET), " gives one key per iteration, but this loop names two"))
             return false
         }
         return semaForEachSet(stmt, source)
@@ -529,7 +532,7 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
         diag_note("a `[T]` parameter takes arrays of any length; pass the length too and write `for i in 0..<n`")
         return false
     } else {
-        semaErrorAt(source, "`for ... in` needs a String, Vec, Slice, array, HashMap, Channel, or a type implementing `Iterator`, found ".concat(typeDisplay(sourceT)))
+        semaErrorAt(source, "`for ... in` needs a String, Vec, Slice, array, ".concat(langName(LangItem.HASH_MAP), ", Channel, or a type implementing `", langName(LangItem.ITERATOR), "`, found ", typeDisplay(sourceT)))
         diag_note("implement `Iterator` for it, or iterate by index -- `for i in 0..<n`")
         return false
     }
@@ -626,17 +629,17 @@ private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
     if (stmt.s2.equals("") == false) {
         let value = createNode(NodeKind.CALL_EXPR)
         nodeSpanFrom(value, source)
-        semaBecomeCall(value, "valueAt", semaForSourceAndIndex(source, indexName))
+        semaBecomeCall(value, langName(LangItem.MAP_VALUE_AT), semaForSourceAndIndex(source, indexName))
         semaForPrependLet(stmt, stmt.s2, value)
     }
     let key = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(key, source)
-    semaBecomeCall(key, "keyAt", semaForSourceAndIndex(source, indexName))
+    semaBecomeCall(key, langName(LangItem.MAP_KEY_AT), semaForSourceAndIndex(source, indexName))
     semaForPrependLet(stmt, stmt.s1, key)
 
     let length = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(length, source)
-    semaBecomeCall(length, "count", semaForSourceArgs(source))
+    semaBecomeCall(length, langName(LangItem.MAP_COUNT), semaForSourceArgs(source))
     semaForBecomeRange(stmt, indexName, length)
     return true
 }
@@ -650,12 +653,12 @@ private fn semaForEachSet(stmt: ASTNode, source: ASTNode) -> Bool {
 
     let key = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(key, source)
-    semaBecomeCall(key, "hashSetKeyAt", semaForSourceAndIndex(source, indexName))
+    semaBecomeCall(key, langName(LangItem.HASH_SET_KEY_AT), semaForSourceAndIndex(source, indexName))
     semaForPrependLet(stmt, stmt.s1, key)
 
     let length = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(length, source)
-    semaBecomeCall(length, "count", semaForSourceArgs(source))
+    semaBecomeCall(length, langName(LangItem.MAP_COUNT), semaForSourceArgs(source))
     semaForBecomeRange(stmt, indexName, length)
     return true
 }
@@ -663,8 +666,9 @@ private fn semaForEachSet(stmt: ASTNode, source: ASTNode) -> Bool {
 // Whether this is an instantiation of std.map's `HashSet`, as semaForIsMap asks of `HashMap`.
 private fn semaForIsSet(module: ASTNode, t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.STRUCT) { return false }
-    if (t.name.startsWith("HashSet".concat(monoSeparator())) == false) { return false }
-    return monoHasTemplate(module, "hashSetKeyAt", NodeKind.FUNCTION)
+    if (langDeclared(LangItem.HASH_SET) == false) { return false }
+    if (t.name.startsWith(langName(LangItem.HASH_SET).concat(monoSeparator())) == false) { return false }
+    return monoHasTemplate(module, langName(LangItem.HASH_SET_KEY_AT), NodeKind.FUNCTION)
 }
 
 // Whether this is an instantiation of std.map's `HashMap`. An instantiated generic
@@ -672,8 +676,9 @@ private fn semaForIsSet(module: ASTNode, t: TypeInfo) -> Bool {
 // the template is only there when `std.map` is imported.
 private fn semaForIsMap(module: ASTNode, t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.STRUCT) { return false }
-    if (t.name.startsWith("HashMap".concat(monoSeparator())) == false) { return false }
-    return monoHasTemplate(module, "keyAt", NodeKind.FUNCTION)
+    if (langDeclared(LangItem.HASH_MAP) == false) { return false }
+    if (t.name.startsWith(langName(LangItem.HASH_MAP).concat(monoSeparator())) == false) { return false }
+    return monoHasTemplate(module, langName(LangItem.MAP_KEY_AT), NodeKind.FUNCTION)
 }
 
 // A name, or a field of one: something the loop can read twice without
@@ -782,13 +787,13 @@ private fn semaForSourceAndIndex(source: ASTNode, indexName: String) -> Ptr {
 private fn semaForEachIterator(module: ASTNode, stmt: ASTNode, source: ASTNode) -> Bool {
     let condition = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(condition, source)
-    semaBecomeCall(condition, "hasNext", semaForSourceArgs(source))
-    condition.s1 = "Iterator".clone()
+    semaBecomeCall(condition, langName(LangItem.ITERATOR_HAS_NEXT), semaForSourceArgs(source))
+    condition.s1 = langName(LangItem.ITERATOR)
 
     let advance = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(advance, source)
-    semaBecomeCall(advance, "next", semaForSourceArgs(source))
-    advance.s1 = "Iterator".clone()
+    semaBecomeCall(advance, langName(LangItem.ITERATOR_NEXT), semaForSourceArgs(source))
+    advance.s1 = langName(LangItem.ITERATOR)
 
     // `let <var> = next(it)`, prepended to the body the user wrote, exactly as
     // the indexed desugar prepends its element binding.
@@ -1397,14 +1402,15 @@ private fn semaCoalesceExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
     // import std.option itself: the template is in the program whenever anything imported it --
     // std.process and std.string both do -- but the call is bound to the module by name, which
     // a file that did not import it cannot reach ("declares no `optionCoalesce$Int`").
-    if (monoHasTemplate(module, "optionCoalesce", NodeKind.FUNCTION) == false
-        or (fileHasIntrinsics(expr.file) == false and ir_file_imports_module(expr.file, "std.option") == 0)) {
-        semaErrorAt(expr, "`??` needs `import std.option`")
+    if (langDeclared(LangItem.OPTION_COALESCE) == false
+        or monoHasTemplate(module, langName(LangItem.OPTION_COALESCE), NodeKind.FUNCTION) == false
+        or (fileHasIntrinsics(expr.file) == false and langModuleImportedBy(LangItem.OPTION_COALESCE, expr.file) == false)) {
+        semaErrorAt(expr, "`??` needs ".concat(langImportHint(LangItem.OPTION_COALESCE)))
         nodeSetType(expr, typeInvalid())
         return typeInvalid()
     }
-    semaBecomeCall(expr, "optionCoalesce", semaCallArgs2(leftNode, rightNode))
-    expr.s1 = "std.option"
+    semaBecomeCall(expr, langName(LangItem.OPTION_COALESCE), semaCallArgs2(leftNode, rightNode))
+    expr.s1 = langModule(LangItem.OPTION_COALESCE)
     return semaExpr(module, expr)
 }
 
@@ -1974,7 +1980,7 @@ private fn semaCallExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 
     // `asmOps` and `asmOpsOut` take any number of operands, which is what a pack expands to, so
     // they are lowered before the pack is: the operands are the builtin's own.
-    if (callee.s1.equals("asmOps") or callee.s1.equals("asmOpsOut")) {
+    if (langNameIs(callee.s1, LangItem.ASM_OPS) or langNameIs(callee.s1, LangItem.ASM_OPS_OUT)) {
         let lowered = semaStdAsmBuiltin(module, callee.s1)
         if (lowered.equals("") == false) { callee.s1 = lowered }
     }
@@ -2915,20 +2921,16 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
 // writes its newline into the last formatter's own allocation rather than
 // costing a second write.
 private fn semaIsPrintName(name: String) -> Bool {
-    if (name.equals("print")) { return true }
-    if (name.equals("println")) { return true }
-    if (name.equals("eprint")) { return true }
-    if (name.equals("eprintln")) { return true }
-    return false
+    return langNameIs(name, LangItem.PRINT) or langNameIs(name, LangItem.PRINTLN)
+        or langNameIs(name, LangItem.EPRINT) or langNameIs(name, LangItem.EPRINTLN)
 }
 
 // Every piece but the last is written without a newline, and to the descriptor
 // the call named: splitting `eprintln` onto stdout would put half a status line
 // in the output a program's stdout is a format for.
 private fn semaPrintPieceName(name: String) -> String {
-    if (name.equals("eprint")) { return "eprint" }
-    if (name.equals("eprintln")) { return "eprint" }
-    return "print"
+    if (langNameIs(name, LangItem.EPRINT) or langNameIs(name, LangItem.EPRINTLN)) { return langName(LangItem.EPRINT) }
+    return langName(LangItem.PRINT)
 }
 
 // Whether some declaration of this name takes exactly this many arguments.
@@ -3204,7 +3206,7 @@ private fn semaDefaultEmptyVec(stmt: ASTNode) {
 private fn semaDefaultEmptyMap(stmt: ASTNode) {
     if (nodeExists(stmt.child1) == false or nodeExists(stmt.child2)) { return }
     let ann = ptr_to_node(stmt.child1)
-    if (ann.i2 != 1 or ann.i3 == 1 or (ann.s1.equals("HashMap") or ann.s1.equals("HashSet")) == false) { return }
+    if (ann.i2 != 1 or ann.i3 == 1 or (langNameIs(ann.s1, LangItem.HASH_MAP) or langNameIs(ann.s1, LangItem.HASH_SET)) == false) { return }
     let fresh = createNode(NodeKind.DEFAULT_EXPR)
     nodeSpanFrom(fresh, stmt)
     stmt.child2 = node_to_ptr(fresh)
@@ -3885,7 +3887,7 @@ private fn semaGlobalConstantOk(value: ASTNode) -> Bool {
     if (value.kind == NodeKind.STRUCT_LITERAL_EXPR) { return semaGlobalStructOk(value) }
     if (value.kind == NodeKind.CALL_EXPR and nodeExists(value.child1)) {
         let callee = ptr_to_node(value.child1)
-        return callee.s1.equals("functionAddress") and nodeExists(value.child2)
+        return langNameIs(callee.s1, LangItem.FUNCTION_ADDRESS) and nodeExists(value.child2)
             and ptr_to_node(value.child2).kind == NodeKind.LITERAL_EXPR
     }
     return false
@@ -4931,11 +4933,11 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
     // away from every type that had it through `Ord` alone -- a feature removal
     // dressed up as a refinement.
     let equality = op.equals("==") or op.equals("!=")
-    let mut traitName = "Ord"
-    let mut method = "cmp"
-    if (equality and semaStructImplements(module, leftT.name, "Eq")) {
-        traitName = "Eq"
-        method = "eq"
+    let mut traitName = langName(LangItem.ORD)
+    let mut method = langName(LangItem.ORD_METHOD)
+    if (equality and semaStructImplements(module, leftT.name, langName(LangItem.EQ))) {
+        traitName = langName(LangItem.EQ)
+        method = langName(LangItem.EQ_METHOD)
     }
     if (semaStructImplements(module, leftT.name, traitName) == false) { return false }
 
@@ -4956,7 +4958,7 @@ private fn semaRouteStructComparison(module: ASTNode, expr: ASTNode, op: String,
 
     let comparand = createNode(NodeKind.LITERAL_EXPR)
     nodeSpanFrom(comparand, expr)
-    if (traitName.equals("Eq")) {
+    if (traitName.equals(langName(LangItem.EQ))) {
         // Both compare against `true`, and **the operator is left alone**:
         // `eq(a,b) == true` is equality and `eq(a,b) != true` is its negation, so
         // one comparand serves both without a negation node and without

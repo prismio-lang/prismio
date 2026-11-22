@@ -663,6 +663,9 @@ lost to the analysis; the gap is the library surface.
 
 ## Language surface
 
+**The compiler still spells some of the library's vocabulary** (found 2026-11-22, after the lang items of `docs/STD_LAYOUT_PLAN.md` step 2). The items the language needs (`Result`, `??`, tuples, `Eq`/`Ord`/`Iterator`/`Copy`/`Key`, `HashMap`/`HashSet`, `vecOf`, the print family, the asm/raw/port wrappers) are found by marker. Four tables of names are not: the method names of arrays and `Vec` that `src/sema/array.psm` and `src/sema/vec.psm` lower to library functions (`sort`, `contains`, `fold`, ...); the `__builtin_*` to wrapper hint text in `semaBuiltinSpelling` (`src/sema/vec.psm`), which names `std.math`, `std.mem`, `std.asm` and `std.port`; the `String` method names the compiler writes for `+`, `==` and `as String` (`concat`, `compare`, `equals`, `toString`, `slice`, `charAt`, `parseFloat`, `parseBool`); and the freestanding module lists in `src/driver/imports.psm` and `src/symbols/library.psm` and the `std.` prefix of `lsp/completion.psm`, which steps 5 and 6 replace. Reproducer: `grep -rnE 'std\.[a-z_]+"' src lsp`. Moving or renaming one of these library functions breaks the compiler, which a lang item would not.
+
+
 **A payload matched out of a `Result` and assigned to a variable declared above the `match` is never released.**
 `let v: String`, then `match (q) { Result.Ok(a) => { v = a } ... }`, then `return v` (or `Result.Ok(v)`): 1 allocated,
 0 released under `--verify`. The same payload moved on inside the arm (`Result.Ok(a) => { return Result.Ok(a) }`) is balanced,

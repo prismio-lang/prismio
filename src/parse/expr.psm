@@ -11,6 +11,8 @@ import ast.nodes
 import common.diagnostics
 import std.string
 import common.diag_codes
+import common.lang_items
+import ast.lang_marks
 
 // Bitwise operators bind *tighter* than comparison, unlike C.
 //
@@ -331,7 +333,7 @@ impl Parser {
 private fn interpolationShow(value: ASTNode) -> ASTNode {
     value.next = ptr_null()
     let callee = createNode(NodeKind.IDENTIFIER_EXPR)
-    callee.s1 = "show"
+    nodeSetLangReference(callee, langItemId(LangItem.SHOW))
     nodeSpanFrom(callee, value)
 
     let call = createNode(NodeKind.CALL_EXPR)

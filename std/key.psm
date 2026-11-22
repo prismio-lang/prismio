@@ -20,8 +20,8 @@
 import std.string
 
 lang("key") trait Key {
-    fn hash(self) -> Int
-    fn eq(self, other: Self) -> Bool
+    lang("key.hash") fn hash(self) -> Int
+    lang("key.eq") fn eq(self, other: Self) -> Bool
 }
 
 // One fold of the high half into the low half, which is `java.util.HashMap`'s

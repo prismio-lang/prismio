@@ -125,6 +125,8 @@ public const DIAG_DRIVER_LIBRARY_SOURCE_USAGE = "P1119"
 public const DIAG_DRIVER_LIBRARY_INTERFACE_UNREADABLE = "P1120"
 public const DIAG_DRIVER_BUILD_MODULE_TOO_MANY_FILES = "P1121"
 public const DIAG_DRIVER_MODULE_SEALED = "P1122"
+public const DIAG_DRIVER_LANG_IMPORT_MISSING = "P1124"
+public const DIAG_DRIVER_LANG_REFERENCE_MISSING = "P1125"
 // --- P2xxx: the lexer ------------------------------------------------------
 
 public const DIAG_LEX_FATAL = "P2001"

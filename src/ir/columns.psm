@@ -45,6 +45,7 @@ import std.string
 import std.vec
 import symbols.declarations
 import aifcore.call_results
+import common.lang_items
 
 // One line per closed column: `\nType.field\n`. Rebuilt by columnsMark before each
 // emission of the module.
@@ -485,7 +486,8 @@ private fn columnScalar(n: ASTNode) -> Bool {
 // result is a new value that owns itself.
 private fn columnIsCopy(call: ASTNode) -> Bool {
     let name = columnCallName(call)
-    return name.equals("copyOf") or name.startsWith("copyOf$") or columnCallSymbol(call).startsWith("Copy_copyOf")
+    return langNameIsInstance(name, LangItem.COPY_METHOD)
+        or columnCallSymbol(call).startsWith(langName(LangItem.COPY).concat("_", langName(LangItem.COPY_METHOD)))
 }
 
 // A call whose result keeps nothing of its arguments: a scalar, or nothing.
@@ -689,8 +691,7 @@ private fn columnInitKindIsFresh(initPtr: Ptr) -> Bool {
 }
 
 private fn columnIsFreshConstructor(name: String) -> Bool {
-    return name.equals("list_new") or name.equals("list_new_with_capacity") or name.equals("vecOf")
-        or name.startsWith("vecOf$")
+    return name.equals("list_new") or name.equals("list_new_with_capacity") or langNameIsInstance(name, LangItem.VEC_OF)
 }
 
 private fn columnLocalChain(local: ColumnLocal, head: Ptr, name: String, role: Int) {

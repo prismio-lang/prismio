@@ -14,6 +14,8 @@ import std.string
 import ast.nodes
 import ast.lang_marks
 import common.source_files
+import symbols.declarations
+import symbols.library
 
 public enum LangItem {
     RESULT,
@@ -34,6 +36,8 @@ public enum LangItem {
     COPY,
     COPY_METHOD,
     KEY,
+    KEY_HASH,
+    KEY_EQ,
     HASH_MAP,
     HASH_SET,
     MAP_NEW,
@@ -63,6 +67,7 @@ public enum LangItem {
     C_STRING,
     FUNCTION_ADDRESS,
     PORT_ACCESS,
+    ATOMIC_ORDER,
     MATH_FUNCTION
 }
 
@@ -87,6 +92,8 @@ public fn langItemId(item: LangItem) -> String {
         LangItem.COPY => { return "copy" }
         LangItem.COPY_METHOD => { return "copy.copy_of" }
         LangItem.KEY => { return "key" }
+        LangItem.KEY_HASH => { return "key.hash" }
+        LangItem.KEY_EQ => { return "key.eq" }
         LangItem.HASH_MAP => { return "hash_map" }
         LangItem.HASH_SET => { return "hash_set" }
         LangItem.MAP_NEW => { return "map_new" }
@@ -116,23 +123,27 @@ public fn langItemId(item: LangItem) -> String {
         LangItem.C_STRING => { return "c_string" }
         LangItem.FUNCTION_ADDRESS => { return "function_address" }
         LangItem.PORT_ACCESS => { return "port_access" }
+        LangItem.ATOMIC_ORDER => { return "atomic_order" }
         LangItem.MATH_FUNCTION => { return "math_function" }
     }
 }
 
-// The declared name of the first declaration that carries the item, or "" when the library the program
+// The declared name of the first declaration that carries the item (read from the library text when the
+// program has not merged it, so a message can name what is missing), or "" when the library the program
 // reached declares none. An item may be carried by several declarations of one name (overloads), so one
 // answer serves them all.
 public fn langName(item: LangItem) -> String {
     let id = langItemId(item)
-    if (langDeclarationCount(id) == 0) { return "".clone() }
+    if (langDeclarationCount(id) == 0) { return libraryLangName(id) }
     return langDeclarationAt(id, 0).s1.clone()
 }
 
-// The module the declaration was read from, as a program names it in an `import`.
+// The module that declares the item, as a program names it in an `import`: the one the program has
+// merged, else the one the library says declares it (so an error can name the import that is missing),
+// else "".
 public fn langModule(item: LangItem) -> String {
     let id = langItemId(item)
-    if (langDeclarationCount(id) == 0) { return "".clone() }
+    if (langDeclarationCount(id) == 0) { return libraryLangModule(id) }
     return diag_file_module(langDeclarationAt(id, 0).file)
 }
 
@@ -165,4 +176,19 @@ public fn langNameIsInstance(name: String, item: LangItem) -> Bool {
 // Whether `decl` is a declaration that carries the item.
 public fn langIsDeclaration(decl: ASTNode, item: LangItem) -> Bool {
     return nodeLangMark(decl).equals(langItemId(item))
+}
+
+// Whether `file` imports the module that declares the item. False when no module does.
+public fn langModuleImportedBy(item: LangItem, file: Int) -> Bool {
+    let module = langModule(item)
+    if (module.equals("")) { return false }
+    return ir_file_imports_module(file, module) != 0
+}
+
+// "`import <module>`" for an error that tells a program what to add, or a plain description when the
+// library names no module for the item (a freestanding program is offered no library).
+public fn langImportHint(item: LangItem) -> String {
+    let module = langModule(item)
+    if (module.equals("")) { return "the standard library module that declares it".clone() }
+    return "`import ".concat(module, "`")
 }

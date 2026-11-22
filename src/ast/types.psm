@@ -9,6 +9,7 @@ import common.target
 import std.string
 import std.option
 import aifcore.ownership
+import common.lang_items
 
 // As with NodeKind (ast.psm), **nothing may take ordinal 0**: a TypeInfo is
 // punned as a String and `kind` is its first field, so a zero-valued kind makes
@@ -685,8 +686,8 @@ private fn typeInstanceWord(word: String) -> String {
 }
 
 private fn typeInstanceParts(parts: Vec<String>) -> String {
-    // A tuple is written the way it was: `Tuple2$Int$String` is `(Int, String)` (std/tuple.psm).
-    if (parts[0].length == 6 and parts[0].startsWith("Tuple") and parts[0].byteAt(5) >= 50 and parts[0].byteAt(5) <= 52) {
+    // A tuple is written the way it was: `Tuple2$Int$String` is `(Int, String)`.
+    if (langNameIs(parts[0], LangItem.TUPLE2) or langNameIs(parts[0], LangItem.TUPLE3) or langNameIs(parts[0], LangItem.TUPLE4)) {
         let mut elements = "("
         for i in 1..<parts.length {
             if (i > 1) { elements = elements.concat(", ") }

@@ -28,8 +28,10 @@
 import lexer.token
 import lexer.scanner
 import ast.nodes
+import ast.lang_marks
 import common.diagnostics
 import std.string
+import common.lang_items
 
 impl Parser {
     // The cursor is on `?`. `operand` is what it applies to.
@@ -81,7 +83,9 @@ private fn tryName(at: Token, name: String) -> ASTNode {
 // `Result.Ok(arg)` / `Result.Err(arg)`, or the same as a pattern: the call is what a program writes.
 private fn tryVariant(at: Token, variant: String, arg: String) -> ASTNode {
     let member = parserNodeFrom(NodeKind.MEMBER_ACCESS_EXPR, at)
-    member.child1 = node_to_ptr(tryName(at, "Result"))
+    let type = tryName(at, "")
+    nodeSetLangReference(type, langItemId(LangItem.RESULT))
+    member.child1 = node_to_ptr(type)
     member.s1 = variant.clone()
     let call = parserNodeFrom(NodeKind.CALL_EXPR, at)
     call.child1 = node_to_ptr(member)

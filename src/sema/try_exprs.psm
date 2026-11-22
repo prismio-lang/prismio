@@ -12,6 +12,7 @@ import ast.nodes
 import ast.types
 import common.diagnostics
 import std.string
+import common.lang_items
 
 // Set when a `?` was refused, so the flow pass does not add that its value was never assigned.
 let mut tryFailures = 0
@@ -41,14 +42,14 @@ private fn semaTryCheck(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo
     let heldT = semaExpr(module, held)
     if (typeIsValid(heldT) == false) { return false }
 
-    let isResult = heldT.name.startsWith("Result".concat(monoSeparator()))
+    let isResult = semaIsResultType(heldT)
     let isOptional = heldT.kind == TypeKind.OPTIONAL or typeIsValueOptional(heldT)
     if (isResult == false and isOptional == false) {
         semaErrorAt(stmt, "`?` needs a `Result` or an optional, found ".concat(typeDisplay(heldT)))
         return false
     }
 
-    let returnsResult = typeIsValid(expectedReturn) and expectedReturn.name.startsWith("Result".concat(monoSeparator()))
+    let returnsResult = typeIsValid(expectedReturn) and semaIsResultType(expectedReturn)
     let returnsOptional = typeIsValid(expectedReturn)
         and (expectedReturn.kind == TypeKind.OPTIONAL or typeIsValueOptional(expectedReturn))
     if (isResult and returnsResult == false) {
@@ -98,4 +99,9 @@ private fn semaTryCheck(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInfo
     stmt.child2 = chosen.child2
     stmt.child3 = chosen.child3
     return true
+}
+
+// Whether `t` is an instantiation of the library's `Result` -- `Result$Int$String`.
+internal fn semaIsResultType(t: TypeInfo) -> Bool {
+    return langDeclared(LangItem.RESULT) and t.name.startsWith(langName(LangItem.RESULT).concat(monoSeparator()))
 }

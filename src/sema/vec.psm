@@ -22,6 +22,7 @@ import common.diagnostics
 import std.string
 import std.vec
 import common.source_files
+import common.lang_items
 
 // The runtime entry point a method becomes by prepending the receiver, or "" when
 // the name is not a plain one. The shaped ones -- `clear`, `first`, `last`,
@@ -345,9 +346,11 @@ private fn semaVecFilledCallee(module: ASTNode, expr: ASTNode, elem: TypeInfo) -
             return "list_new_filled"
         }
     }
-    if (monoHasTemplate(module, "vecFilled", NodeKind.FUNCTION)) { return "vecFilled" }
-    semaErrorAt(expr, "`Vec<".concat(typeDisplay(elem), ">.filled` needs `import std.vec`"))
-    diag_note("an integer up to 64 bits, a `Float`, a Bool or a Char needs no import; any other is copied per element by std.vec")
+    if (langDeclared(LangItem.VEC_FILLED) and monoHasTemplate(module, langName(LangItem.VEC_FILLED), NodeKind.FUNCTION)) {
+        return langName(LangItem.VEC_FILLED)
+    }
+    semaErrorAt(expr, "`Vec<".concat(typeDisplay(elem), ">.filled` needs ", langImportHint(LangItem.VEC_FILLED)))
+    diag_note("an integer up to 64 bits, a `Float`, a Bool or a Char needs no import; any other is copied per element by ".concat(langModule(LangItem.VEC_FILLED)))
     return ""
 }
 

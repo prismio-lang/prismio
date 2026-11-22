@@ -9,6 +9,7 @@ import ir.bridge
 import common.diagnostics
 import common.source_files
 import std.string
+import common.lang_items
 
 internal fn semaMangleType(t: TypeInfo) -> String {
     match (t.kind) {
@@ -954,13 +955,13 @@ internal fn semaFindFunctionOverload(module: ASTNode, call: ASTNode, name: Strin
     // by the print split in the checker and is a function nowhere, so reaching
     // resolution at all means it was written outside a print's argument list.
     if (name.equals("separator")) {
-        diag_note("`separator(...)` is a marker, not a function: write it as the last argument of `print` or `println`")
+        diag_note("`separator(...)` is a marker, not a function: write it as the last argument of `".concat(langName(LangItem.PRINT), "` or `", langName(LangItem.PRINTLN), "`"))
     }
     // The other name a program can reach without writing it. `"${x}"` lowers to
     // `show(x)`, so a missing `std.display` reports a function the author never
     // typed -- with nothing to connect it to the string they did type.
-    if (name.equals("show")) {
-        diag_note("string interpolation lowers to `show(...)`: add `import std.display`")
+    if (langNameIs(name, LangItem.SHOW)) {
+        diag_note("string interpolation lowers to `".concat(name, "(...)`: add ", langImportHint(LangItem.SHOW)))
     }
     return createNode(NodeKind.MODULE)
 }

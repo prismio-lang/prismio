@@ -25,6 +25,7 @@ import common.target
 import ir.bridge
 import std.string
 import common.source_files
+import common.lang_items
 
 // A new node holding what `n` holds, for the one case an in-place rewrite needs both:
 // the node becomes the call, and the call's argument is what the node was. Children
@@ -204,8 +205,8 @@ internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiv
     let op = semaPtrMethodOp(method)
     if (op > 0) {
         if (semaPtrStepIsRaw(op) and fileHasIntrinsics(call.file) == false
-            and ir_file_imports_module(call.file, "std.raw") == 0) {
-            semaErrorAt(call, "`".concat(method, "` steps a pointer somewhere the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`"))
+            and langModuleImportedBy(LangItem.OFFSET_OF, call.file) == false) {
+            semaErrorAt(call, "`".concat(method, "` steps a pointer somewhere the compiler cannot vouch for, which is `", langModule(LangItem.OFFSET_OF), "`'s: add ", langImportHint(LangItem.OFFSET_OF)))
             diag_note("`advance(n, limit)` steps within a bound you give it, and needs no import")
             nodeSetType(call, typeInvalid())
             return typeInvalid()
@@ -303,8 +304,8 @@ private fn semaPtrAtomicOp(method: String) -> Int {
 // where the builtin is (semaCheckPtrAtomic), with the rest of its operands.
 private fn semaPtrAtomicMethod(module: ASTNode, call: ASTNode, method: String, kind: Int,
                                receiver: ASTNode) -> TypeInfo {
-    if (fileHasIntrinsics(call.file) == false and ir_file_imports_module(call.file, "std.raw") == 0) {
-        semaErrorAt(call, "`".concat(method, "` is `std.raw`'s, with the `AtomicOrder` it takes: add `import std.raw`"))
+    if (fileHasIntrinsics(call.file) == false and langModuleImportedBy(LangItem.OFFSET_OF, call.file) == false) {
+        semaErrorAt(call, "`".concat(method, "` is `", langModule(LangItem.OFFSET_OF), "`'s, with the `", langName(LangItem.ATOMIC_ORDER), "` it takes: add ", langImportHint(LangItem.OFFSET_OF)))
         nodeSetType(call, typeInvalid())
         return typeInvalid()
     }
@@ -347,8 +348,8 @@ internal fn semaPtrAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
         nodeSetType(expr, typeInvalid())
         return 2
     }
-    if (fileHasIntrinsics(expr.file) == false and ir_file_imports_module(expr.file, "std.raw") == 0) {
-        semaErrorAt(expr, "`Ptr<T>.".concat(name, "` makes a pointer the compiler cannot vouch for, which is `std.raw`'s: add `import std.raw`"))
+    if (fileHasIntrinsics(expr.file) == false and langModuleImportedBy(LangItem.OFFSET_OF, expr.file) == false) {
+        semaErrorAt(expr, "`Ptr<T>.".concat(name, "` makes a pointer the compiler cannot vouch for, which is `", langModule(LangItem.OFFSET_OF), "`'s: add ", langImportHint(LangItem.OFFSET_OF)))
         nodeSetType(expr, typeInvalid())
         return 2
     }

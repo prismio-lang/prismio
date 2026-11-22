@@ -639,7 +639,7 @@ impl < K: Key + Copy, V: Copy > HashMap<K, V> {
     public fn withCapacity(count: Int) -> HashMap<K, V> { return mapWithCapacity<K, V>(count) }
 
     // The number of entries.
-    public prop count(self) -> Int { return list_len(self.entryKeys) }
+    lang("map_count") public prop count(self) -> Int { return list_len(self.entryKeys) }
     // Whether there are no entries.
     public prop isEmpty(self) -> Bool { return list_len(self.entryKeys) == 0 }
     // How many entries the map holds before the table next grows: what `withCapacity`
@@ -868,9 +868,9 @@ impl < K: Key + Copy, V: Copy > HashMap<K, V> {
 
     // The key and value at a position in `[0, count)`, for iterating. Positions are
     // insertion order, and stay valid until the next insert or removal.
-    public fn keyAt(self, index: Int) -> K { return copyOf(list_get(self.entryKeys, index)) }
+    lang("map_key_at") public fn keyAt(self, index: Int) -> K { return copyOf(list_get(self.entryKeys, index)) }
     // The value of the entry at position `index` in insertion order.
-    public fn valueAt(self, index: Int) -> V { return copyOf(list_get(self.entryValues, index)) }
+    lang("map_value_at") public fn valueAt(self, index: Int) -> V { return copyOf(list_get(self.entryValues, index)) }
 }
 
 // HashSet<K> -- a collection of distinct keys.

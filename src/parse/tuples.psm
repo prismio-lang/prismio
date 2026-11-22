@@ -16,9 +16,24 @@
 import lexer.token
 import lexer.scanner
 import ast.nodes
+import ast.lang_marks
 import common.diagnostics
 import std.string
 import common.diag_codes
+import common.lang_items
+
+// The library's tuple struct and constructor for `count` elements (two to four).
+private fn tupleStructItem(count: Int) -> LangItem {
+    if (count == 3) { return LangItem.TUPLE3 }
+    if (count == 4) { return LangItem.TUPLE4 }
+    return LangItem.TUPLE2
+}
+
+private fn tupleNewItem(count: Int) -> LangItem {
+    if (count == 3) { return LangItem.TUPLE3_NEW }
+    if (count == 4) { return LangItem.TUPLE4_NEW }
+    return LangItem.TUPLE2_NEW
+}
 
 impl Parser {
     // Remembers the first tuple spelling, for the import. `at` is where the tuple is, so
@@ -26,7 +41,7 @@ impl Parser {
     internal fn noteTuple(self, at: Token) {
         if (nodeExists(self.tupleImport)) { return }
         let needed = parserNodeFrom(NodeKind.IMPORT_STATEMENT, at)
-        needed.s1 = "std.tuple"
+        needed.s1 = "$lang.".concat(langItemId(LangItem.TUPLE2))
         self.tupleImport = node_to_ptr(needed)
     }
 
@@ -48,7 +63,7 @@ impl Parser {
             return typeNode
         }
         self.noteTuple(open)
-        typeNode.s1 = "Tuple".concat(count.toString())
+        nodeSetLangReference(typeNode, langItemId(tupleStructItem(count)))
         typeNode.i2 = 1
         typeNode.child1 = args.head
         if (self.matchVal(TokenType.SEPARATOR, "?")) { typeNode.i3 = 1 }
@@ -74,7 +89,7 @@ impl Parser {
         }
         self.noteTuple(open)
         let callee = parserNodeFrom(NodeKind.IDENTIFIER_EXPR, open)
-        callee.s1 = "tuple".concat(count.toString())
+        nodeSetLangReference(callee, langItemId(tupleNewItem(count)))
         let call = parserNodeFrom(NodeKind.CALL_EXPR, open)
         call.child1 = node_to_ptr(callee)
         call.child2 = items.head

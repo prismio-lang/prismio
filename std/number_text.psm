@@ -142,7 +142,7 @@ public fn println(value: F128) { println(floatText(value, 17)) }
 // `toString()` is the digits that read back; `toString(decimals)` is a fixed-point
 // column, formatted as the `Float` it widens to.
 impl F32 {
-    public fn toString(self) -> String { return floatText(self, 9) }
+    lang("to_string") public fn toString(self) -> String { return floatText(self, 9) }
     public fn toString(self, decimals: Int) -> String { return strFromFloatFixed(self as Float, decimals) }
 }
 impl F16 {

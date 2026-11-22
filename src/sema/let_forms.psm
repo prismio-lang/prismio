@@ -11,6 +11,7 @@ import ast.nodes
 import ast.types
 import common.diagnostics
 import std.string
+import common.lang_items
 
 // An optional `if let` (`$iflet`), or either form of `let ... else` (`$letelse`).
 internal fn semaIsLetForm(stmt: ASTNode) -> Bool {
@@ -45,7 +46,7 @@ internal fn semaLetFormCheck(module: ASTNode, stmt: ASTNode) -> Bool {
             let mut form = "`if let`"
             if (isElse) { form = "`let ... else`" }
             semaErrorAt(held, form.concat(" with a name takes the value out of an optional, and this is ", diagQuote(typeDisplay(heldT))))
-            if (heldT.name.startsWith("Result".concat(monoSeparator()))) {
+            if (semaIsResultType(heldT)) {
                 diag_note("a `Result` is taken apart by its variants: `Result.Ok(v)` or `Result.Err(e)`")
             } else if (heldT.kind == TypeKind.ENUM) {
                 diag_note("an enum value is tested by its variant: `Shape.Circle(r)`")

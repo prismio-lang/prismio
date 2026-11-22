@@ -43,6 +43,7 @@ import common.text
 import common.diagnostics
 import common.source_files
 import std.string
+import common.lang_items
 
 const NOWRAP_RECORD = 0
 const NOWRAP_MARK = 1
@@ -1668,12 +1669,13 @@ private fn nowrapIsPair(p: String, q: String, a: String, b: String) -> Bool {
 
 // Whether every function of this name is std.math's.
 private fn nowrapIsStdMath(name: String) -> Bool {
+    if (langDeclared(LangItem.MATH_FUNCTION) == false) { return false }
     let count = ir_decl_count(name)
     if (count == 0) { return false }
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
         if (decl.kind != NodeKind.FUNCTION) { return false }
-        if (diag_file_module(decl.file).equals("std.math") == false) { return false }
+        if (diag_file_module(decl.file).equals(langModule(LangItem.MATH_FUNCTION)) == false) { return false }
     }
     return true
 }
