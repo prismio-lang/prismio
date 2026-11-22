@@ -47,6 +47,7 @@ internal fn umsTokenKindName(kind: UmsTokenKind) -> String {
         UmsTokenKind.INTEGER => { return "integer" }
         UmsTokenKind.BOOLEAN => { return "boolean" }
         UmsTokenKind.EQUAL => { return "'='" }
+        _ => { }
     }
     if (kind == UmsTokenKind.LEFT_BRACE) { return "'{'" }
     match (kind) {
@@ -58,6 +59,7 @@ internal fn umsTokenKindName(kind: UmsTokenKind) -> String {
         UmsTokenKind.COMMA => { return "','" }
         UmsTokenKind.SEMICOLON => { return "';'" }
         UmsTokenKind.EOF => { return "end of file" }
+        _ => { }
     }
     return "token"
 }

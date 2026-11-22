@@ -23,28 +23,8 @@ import ir.bridge
 import sema.enums
 import driver.imports
 import std.string
-
-private fn implExists(module: ASTNode, traitName: String, typeName: String) -> Bool {
-    let mut p = module.child1
-    while (nodeExists(p)) {
-        let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.IMPL_DECL and stmt.s2.equals(traitName) and stmt.s1.equals(typeName)) {
-            return true
-        }
-        p = stmt.next
-    }
-    return false
-}
-
-private fn traitDeclared(module: ASTNode, traitName: String) -> Bool {
-    let mut p = module.child1
-    while (nodeExists(p)) {
-        let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(traitName)) { return true }
-        p = stmt.next
-    }
-    return false
-}
+import sema.decl_index
+import sema.checker
 
 private fn derivedSource(name: String, traitName: String) -> String {
     if (traitName.equals("Copy")) {
@@ -89,8 +69,8 @@ private fn derivable(decl: ASTNode) -> Bool {
 }
 
 private fn deriveFor(module: ASTNode, decl: ASTNode, traitName: String) {
-    if (traitDeclared(module, traitName) == false) { return }
-    if (implExists(module, traitName, decl.s1)) { return }
+    if (nodeExists(node_to_ptr(declFindTrait(module, traitName))) == false) { return }
+    if (semaTypeImplementsNamedTrait(module, decl.s1, traitName)) { return }
     let parsed = parseSource(derivedSource(decl.s1, traitName), decl.file)
     let mut p = parsed.child1
     while (nodeExists(p)) {

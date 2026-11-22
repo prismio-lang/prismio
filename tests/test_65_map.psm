@@ -17,40 +17,40 @@ fn fail(message: String) -> Int {
 
 fn main() -> Int {
     let m = mapNew<Int, Int>()
-    if (mapLen(m) != 0) { return fail("a new map is not empty") }
-    if (mapHas(m, 3)) { return fail("a new map claims to hold a key") }
+    if (m.count != 0) { return fail("a new map is not empty") }
+    if (m.contains(3)) { return fail("a new map claims to hold a key") }
 
-    if (mapSet(m, 3, 30)) { return fail("first insert reported an overwrite") }
-    if (mapSet(m, 4, 40)) { return fail("second insert reported an overwrite") }
-    if (mapLen(m) != 2) { return fail("two inserts did not give length two") }
+    if (m.set(3, 30) != none) { return fail("first insert reported an overwrite") }
+    if (m.set(4, 40) != none) { return fail("second insert reported an overwrite") }
+    if (m.count != 2) { return fail("two inserts did not give length two") }
 
-    if (mapGetOr(m, 3, 0) != 30) { return fail("lookup of 3") }
-    if (mapGetOr(m, 4, 0) != 40) { return fail("lookup of 4") }
-    if (mapGetOr(m, 99, 7) != 7) { return fail("absent key did not fall back") }
+    if (m.getOr(3, 0) != 30) { return fail("lookup of 3") }
+    if (m.getOr(4, 0) != 40) { return fail("lookup of 4") }
+    if (m.getOr(99, 7) != 7) { return fail("absent key did not fall back") }
 
     // Overwrite: reports true, replaces the value, does not grow the map.
-    if (mapSet(m, 3, 33) == false) { return fail("overwrite not reported") }
-    if (mapGetOr(m, 3, 0) != 33) { return fail("overwrite did not take") }
-    if (mapLen(m) != 2) { return fail("overwrite grew the map") }
+    if (m.set(3, 33) == none) { return fail("overwrite not reported") }
+    if (m.getOr(3, 0) != 33) { return fail("overwrite did not take") }
+    if (m.count != 2) { return fail("overwrite grew the map") }
 
     // Iteration in insertion order.
-    if (mapKeyAt(m, 0) != 3) { return fail("first key") }
-    if (mapValueAt(m, 1) != 40) { return fail("second value") }
+    if (m.keyAt(0) != 3) { return fail("first key") }
+    if (m.valueAt(1) != 40) { return fail("second value") }
 
     // A second instantiation of the same template, with a different V. This is
     // the part that would collide if the mangled name ignored V.
     let flags = mapNew<Int, Bool>()
-    mapSet(flags, 1, true)
-    if (mapGetOr(flags, 1, false) == false) { return fail("HashMap<Int, Bool>") }
-    if (mapGetOr(flags, 2, false)) { return fail("HashMap<Int, Bool> absent key") }
+    flags.set(1, true)
+    if (flags.getOr(1, false) == false) { return fail("HashMap<Int, Bool>") }
+    if (flags.getOr(2, false)) { return fail("HashMap<Int, Bool> absent key") }
 
     // mapGet answers with an Option, which is the lookup that can tell "absent"
     // apart from "present and equal to the fallback". mapGetOr cannot: a stored
     // 0 and a missing key give it the same answer.
-    mapSet(m, 9, 0)
-    if ((mapGet(m, 9) == none)) { return fail("a stored zero read as absent") }
-    if ((mapGet(m, 12345) != none)) { return fail("a missing key read as present") }
-    if (unwrapOr(mapGet(m, 3), 0) != 33) { return fail("mapGet value") }
+    m.set(9, 0)
+    if ((m.get(9) == none)) { return fail("a stored zero read as absent") }
+    if ((m.get(12345) != none)) { return fail("a missing key read as present") }
+    if (unwrapOr(m.get(3), 0) != 33) { return fail("mapGet value") }
 
     println("PASS: map")
     return 0

@@ -1,0 +1,138 @@
+// HashSet beyond insert/contains/remove: iteration, `get`/`take`, `toggle`, `retain`,
+// `reserve`/`capacity`, the set algebra, and the bulk operations. String keys, so the
+// `--verify` ledger (tests/test_runner.py, the ownership probes) shows that the copies
+// `get`, `take` and the algebra make are all released.
+
+import std.io
+import std.map
+import std.option
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn words1(a: String) -> Vec<String> {
+    let mut v: Vec<String> = []
+    v.push(a.clone())
+    return v
+}
+fn words2(a: String, b: String) -> Vec<String> {
+    let mut v = words1(a)
+    v.push(b.clone())
+    return v
+}
+fn words3(a: String, b: String, c: String) -> Vec<String> {
+    let mut v = words2(a, b)
+    v.push(c.clone())
+    return v
+}
+fn words4(a: String, b: String, c: String, d: String) -> Vec<String> {
+    let mut v = words3(a, b, c)
+    v.push(d.clone())
+    return v
+}
+
+fn fromWords(words: Vec<String>) -> HashSet<String> {
+    let s: HashSet<String> = HashSet()
+    s.insertAll(words)
+    return s
+}
+
+fn sameKeys(s: HashSet<String>, expected: Vec<String>) -> Bool {
+    if (s.count != expected.length) { return false }
+    for word in expected { if (s.contains(word) == false) { return false } }
+    return true
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // Iteration visits every key once.
+    let letters = fromWords(words3("a".concat("x"), "b".concat("x"), "c".concat("x")))
+    let mut seen = 0
+    let mut joined = ""
+    for key in letters {
+        seen = seen + 1
+        joined = joined.concat(key)
+    }
+    if (seen != 3 or joined.length != 6) { bad = bad + fail("for over a set") }
+
+    // get and take answer the stored key.
+    if ((letters.get("ax") ?? "").equals("ax") == false or letters.get("zz") != none) { bad = bad + fail("get") }
+    let taken = letters.take("bx")
+    if ((taken ?? "").equals("bx") == false or letters.contains("bx") or letters.count != 2) { bad = bad + fail("take") }
+    if (letters.take("bx") != none) { bad = bad + fail("take of an absent key") }
+
+    // toggle answers the new membership.
+    let sel: HashSet<String> = HashSet()
+    if (sel.toggle("item") == false or sel.contains("item") == false) { bad = bad + fail("toggle on") }
+    if (sel.toggle("item") or sel.contains("item") or sel.count != 0) { bad = bad + fail("toggle off") }
+
+    // retain keeps the survivors in order.
+    let nums: HashSet<Int> = HashSet()
+    for i in 0..<20 { nums.insert(i) }
+    nums.retain(|n: Int| n % 3 == 0)
+    if (nums.count != 7 or nums.contains(3) == false or nums.contains(4) or nums.contains(18) == false) {
+        bad = bad + fail("retain")
+    }
+    let mut expect = 0
+    for n in nums {
+        if (n != expect) { bad = bad + fail("retain changed the order") }
+        expect = expect + 3
+    }
+
+    // reserve is relative; clear keeps the capacity.
+    let big: HashSet<Int> = HashSet()
+    big.insert(1)
+    big.reserve(500)
+    let cap = big.capacity
+    if (cap < 501) { bad = bad + fail("reserve") }
+    for i in 0..<500 { big.insert(i + 2) }
+    if (big.capacity != cap) { bad = bad + fail("grew inside the reservation") }
+    big.clear()
+    if (big.count != 0 or big.capacity != cap) { bad = bad + fail("clear dropped the capacity") }
+
+    // Set algebra.
+    let a = fromWords(words3("p".concat("1"), "p".concat("2"), "p".concat("3")))
+    let b = fromWords(words2("p".concat("3"), "p".concat("4")))
+    if (sameKeys(a.union(b), words4("p1", "p2", "p3", "p4")) == false) { bad = bad + fail("union") }
+    if (sameKeys(a.intersection(b), words1("p3")) == false) { bad = bad + fail("intersection") }
+    if (sameKeys(a.difference(b), words2("p1", "p2")) == false) { bad = bad + fail("difference") }
+    if (sameKeys(a.symmetricDifference(b), words3("p1", "p2", "p4")) == false) { bad = bad + fail("symmetricDifference") }
+    if (a.count != 3 or b.count != 2) { bad = bad + fail("an operand changed") }
+
+    let small = fromWords(words2("p".concat("1"), "p".concat("2")))
+    let other = fromWords(words1("q".concat("9")))
+    if (small.isSubsetOf(a) == false or a.isSubsetOf(small) or a.isSupersetOf(small) == false) { bad = bad + fail("subset, superset") }
+    if (a.isDisjoint(other) == false or a.isDisjoint(b)) { bad = bad + fail("isDisjoint") }
+    if (a.isSubsetOf(a) == false) { bad = bad + fail("a set is a subset of itself") }
+
+    // Bulk mutation, from a set and from a Vec.
+    let target = fromWords(words1("t".concat("1")))
+    target.insertAll(fromWords(words2("t".concat("2"), "t".concat("3"))))
+    target.insertAll(words2("t".concat("3"), "t".concat("4")))
+    if (target.count != 4) { bad = bad + fail("insertAll") }
+    target.removeAll(fromWords(words2("t".concat("1"), "t".concat("9"))))
+    target.removeAll(words1("t".concat("2")))
+    if (sameKeys(target, words2("t3", "t4")) == false) { bad = bad + fail("removeAll") }
+    target.insertAll(words2("t".concat("5"), "t".concat("6")))
+    target.retainAll(fromWords(words3("t".concat("4"), "t".concat("6"), "t".concat("7"))))
+    if (sameKeys(target, words2("t4", "t6")) == false) { bad = bad + fail("retainAll with a set") }
+    target.retainAll(words1("t".concat("6")))
+    if (sameKeys(target, words1("t6")) == false) { bad = bad + fail("retainAll with a Vec") }
+
+    // Aliasing: a set with itself.
+    let me = fromWords(words3("m".concat("1"), "m".concat("2"), "m".concat("3")))
+    me.retainAll(me)
+    me.insertAll(me)
+    if (me.count != 3) { bad = bad + fail("a set with itself") }
+    me.removeAll(me)
+    if (me.count != 0) { bad = bad + fail("removeAll(self)") }
+
+    if (bad == 0) { println("ok") }
+    return bad
+}

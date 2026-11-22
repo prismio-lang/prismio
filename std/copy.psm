@@ -38,6 +38,8 @@ impl Copy for Usize  { fn copyOf(self) -> Self { return self } }
 impl Copy for Char   { fn copyOf(self) -> Self { return self } }
 impl Copy for Float  { fn copyOf(self) -> Self { return self } }
 impl Copy for Bool   { fn copyOf(self) -> Self { return self } }
+// A raw address owns nothing; copying it is the identity, as for an integer.
+impl Copy for Ptr    { fn copyOf(self) -> Self { return self } }
 
 // A scalar's `T?` is a flag and a value, owning nothing, so it copies itself too.
 impl Copy for Int?   { fn copyOf(self) -> Self { return self } }
@@ -58,5 +60,22 @@ impl Copy for Bool?  { fn copyOf(self) -> Self { return self } }
 impl Copy for String {
     fn copyOf(self) -> Self {
         return strClone(self)
+    }
+}
+
+// A Vec of copyable elements is copyable: a new Vec holding a copy of each. This is what
+// lets one be the value of a `HashMap`, which hands every value out as a copy, or an
+// element of another Vec. It lives here, not in std.vec, because an impl must be written
+// in the module that declares the trait or the type; std.vec's `clone` is this loop.
+impl<T: Copy> Copy for Vec<T> {
+    fn copyOf(self) -> Self {
+        let n = list_len(self)
+        let mut out: Vec<T> = list_new_with_capacity(n)
+        let mut i = 0
+        while (i < n) {
+            list_push(out, copyOf(list_get(self, i)))
+            i = i + 1
+        }
+        return out
     }
 }

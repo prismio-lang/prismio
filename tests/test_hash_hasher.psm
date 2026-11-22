@@ -1,0 +1,94 @@
+// `Hash` and `Hasher`: a composite key feeds its fields to a hasher and does not fold them by
+// hand. Used as a key of a HashMap and a HashSet through `Key.hash`, nested, with a String
+// field, and with the locality guarantee a single `Int` keeps. The suite runs this under
+// `--verify` through the ownership probes; it must read 0 leaked.
+//
+// Strings are longer than twelve bytes: a shorter one is stored inline and never reaches the
+// ledger.
+
+import std.copy
+import std.io
+import std.key
+import std.map
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+public struct Point { x: Int, y: Int }
+
+impl Hash for Point {
+    fn hashInto(self, inout state: Hasher) {
+        state.writeInt(self.x)
+        state.writeInt(self.y)
+    }
+}
+
+impl Key for Point {
+    fn hash(self) -> Int { return hashOf(self) }
+    fn eq(self, other: Self) -> Bool { return self.x == other.x and self.y == other.y }
+}
+
+impl Copy for Point {
+    fn copyOf(self) -> Self { return Point { x: self.x, y: self.y } }
+}
+
+// A key whose fields have their own `Hash`: a Point and a String.
+public struct Place { at: Point, name: String }
+
+impl Hash for Place {
+    fn hashInto(self, inout state: Hasher) {
+        self.at.hashInto(state)
+        state.writeString(self.name)
+    }
+}
+
+impl Key for Place {
+    fn hash(self) -> Int { return hashOf(self) }
+    fn eq(self, other: Self) -> Bool { return self.at.eq(other.at) and self.name.equals(other.name) }
+}
+
+impl Copy for Place {
+    fn copyOf(self) -> Self { return Place { at: self.at.copyOf(), name: self.name.clone() } }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // One word hashes as it always did, and two do not collide trivially.
+    if (hashOf(7) != keyMixInt(7)) { bad = bad + fail("a single Int is unchanged") }
+    if (hashOf(40000) != keyMixInt(40000)) { bad = bad + fail("a larger Int is unchanged") }
+    if (hashOf("a-long-string-over-twelve-bytes-1") != keyHashBytes("a-long-string-over-twelve-bytes-1")) {
+        bad = bad + fail("a String hashes as Key for String does")
+    }
+    if (hashOf(Point { x: 1, y: 2 }) == hashOf(Point { x: 2, y: 1 })) { bad = bad + fail("field order matters") }
+    if (hashOf(Point { x: 1, y: 2 }) != hashOf(Point { x: 1, y: 2 })) { bad = bad + fail("equal keys hash equal") }
+    if (hashOf(Point { x: 1, y: 2 }) < 0) { bad = bad + fail("a hash is a bucket index") }
+
+    // As the key of a map and a set.
+    let grid: HashMap<Point, String> = {}
+    for x in 0..<50 {
+        for y in 0..<50 { grid[Point { x: x, y: y }] = word(x * 50 + y) }
+    }
+    if (grid.count != 2500 or grid[Point { x: 7, y: 9 }] != word(7 * 50 + 9)) { bad = bad + fail("point map") }
+    if (grid.contains(Point { x: 50, y: 0 })) { bad = bad + fail("absent point") }
+
+    let seen: HashSet<Place> = HashSet<Place>()
+    for i in 0..<300 { seen.insert(Place { at: Point { x: i % 10, y: i % 7 }, name: word(i % 30) }) }
+    if (seen.count != 210) {
+        // Distinct (x, y, name) triples: x and y repeat every 70, the name every 30; the pairs
+        // repeat every lcm(70, 30) = 210 values of i.
+        bad = bad + fail("place set size ".concat(seen.count.toString()))
+    }
+    if (seen.contains(Place { at: Point { x: 3, y: 3 }, name: word(3) }) == false) { bad = bad + fail("place lookup") }
+    if (seen.contains(Place { at: Point { x: 3, y: 3 }, name: word(4) })) { bad = bad + fail("place with another name") }
+
+    if (bad != 0) { return 1 }
+    println("PASS")
+    return 0
+}

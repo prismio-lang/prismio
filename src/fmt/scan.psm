@@ -66,10 +66,6 @@ public struct FmtTokens {
     public lines: Vec<Int>
 }
 
-public fn fmtTokenCount(tokens: FmtTokens) -> Int {
-    return tokens.kinds.length
-}
-
 private fn fmtByte(text: String, at: Int) -> Int {
     if (at < 0 or at >= text.length) { return 0 }
     return text.byteAt(at)

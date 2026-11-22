@@ -46,12 +46,12 @@ fn main() -> Int {
     let mut bad = 0
 
     let s = HashSet<String>()
-    if (s.isEmpty == false or s.length != 0) { bad = bad + fail("a new set is empty") }
+    if (s.isEmpty == false or s.count != 0) { bad = bad + fail("a new set is empty") }
     if (s.contains("ada")) { bad = bad + fail("an empty set contains nothing") }
     if (s.insert("ada") == false) { bad = bad + fail("insert of a new key answered false") }
     if (s.insert("ada")) { bad = bad + fail("insert of an existing key answered true") }
     if (s.insert("grace") == false or s.insert("alan") == false) { bad = bad + fail("insert of new keys") }
-    if (s.length != 3 or s.isEmpty) { bad = bad + fail("length after inserts") }
+    if (s.count != 3 or s.isEmpty) { bad = bad + fail("length after inserts") }
     if (s.contains("ada") == false or s.contains("grace") == false or s.contains("nobody")) {
         bad = bad + fail("contains")
     }
@@ -59,7 +59,7 @@ fn main() -> Int {
     if (s.remove("nobody")) { bad = bad + fail("removing an absent key answered true") }
     if (s.remove("ada") == false) { bad = bad + fail("removing a present key answered false") }
     if (s.remove("ada")) { bad = bad + fail("removing a key twice answered true") }
-    if (s.contains("ada") or s.length != 2) { bad = bad + fail("the removed key is gone") }
+    if (s.contains("ada") or s.count != 2) { bad = bad + fail("the removed key is gone") }
     if (s.contains("grace") == false or s.contains("alan") == false) { bad = bad + fail("the others survive a removal") }
     if (s.insert("ada") == false or s.contains("ada") == false) { bad = bad + fail("reinserting a removed key") }
     s.clear()
@@ -71,7 +71,7 @@ fn main() -> Int {
     if (bare.insert(1) == false or bare.contains(1) == false) { bad = bad + fail("using a bare set") }
     let sized = HashSet<Int>.withCapacity(100)
     for i in 0..<100 { sized.insert(i * 7) }
-    if (sized.length != 100 or sized.contains(693) == false or sized.contains(694)) { bad = bad + fail("withCapacity") }
+    if (sized.count != 100 or sized.contains(693) == false or sized.contains(694)) { bad = bad + fail("withCapacity") }
 
     let registry = Registry { names: HashSet<String>() }
     registry.names.insert("x")
@@ -80,7 +80,7 @@ fn main() -> Int {
     // Growth and removal of String keys.
     let big = HashSet<String>()
     for i in 0..<500 { big.insert(keyName(i)) }
-    if (big.length != 500) { bad = bad + fail("length after 500 inserts") }
+    if (big.count != 500) { bad = bad + fail("length after 500 inserts") }
     for i in 0..<500 {
         if (big.insert(keyName(i))) { bad = bad + fail("a duplicate insert answered true: ".concat(i.toString())) }
     }
@@ -89,7 +89,7 @@ fn main() -> Int {
             if (big.remove(keyName(i)) == false) { bad = bad + fail("removal during churn: ".concat(i.toString())) }
         }
     }
-    if (big.length != 167) { bad = bad + fail("length after removing two thirds: ".concat(big.length.toString())) }
+    if (big.count != 167) { bad = bad + fail("length after removing two thirds: ".concat(big.count.toString())) }
     for i in 0..<500 {
         if ((i % 3 == 0) != big.contains(keyName(i))) { bad = bad + fail("the wrong keys survived: ".concat(i.toString())) }
     }

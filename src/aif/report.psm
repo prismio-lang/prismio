@@ -24,6 +24,8 @@ import aifcore.sites
 import aifcore.solver
 import aifcore.structure
 import aifcore.tiers
+import ir.bridge
+import common.diag_codes
 
 // ---------------------------------------------------------------------------
 // Reporting
@@ -1080,7 +1082,7 @@ public fn aifRunProfiled(module: ASTNode, ownedCollections: Bool, thetaFields: B
             // against a rename, most likely (LAYOUT 10.3). W2's fallback, and it
             // warns for the same reason the other three failures do -- a silent
             // fallback is how a workload comes to be believed in and never run.
-            diag_warning_code("P5001", "the workload profile matched no type in this module; using the static estimate")
+            diag_warning_code(DIAG_AIF_PROFILE_MATCHED_NOTHING, "the workload profile matched no type in this module; using the static estimate")
         }
     }
 
@@ -1539,7 +1541,7 @@ public fn aifReportPins() -> Int {
         if (verdict == AIF_PIN_REFUTED) {
             let want = aifTierName(aif_site_pin_tier(i))
             let got = aifTierName(aif_site_derived_tier(i))
-            diag_error_at_code("P5002", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+            diag_error_at_code(DIAG_AIF_PIN_CANNOT_HOLD, aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
                           "pin(".concat(want, ") cannot hold: this value is ", got))
             diag_note("inference converged, so this is a proven-false assertion rather than a limit of the analysis")
             errors = errors + 1
@@ -1547,7 +1549,7 @@ public fn aifReportPins() -> Int {
 
         if (verdict == AIF_PIN_UNPROVEN) {
             let want = aifTierName(aif_site_pin_tier(i))
-            diag_warning_at_code("P5003", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+            diag_warning_at_code(DIAG_AIF_PIN_UNPROVEN, aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
                             "pin(".concat(want, ") is unproven: the analysis budget ran out"))
             diag_note("raising --budget may settle it; the derived tier is used meanwhile")
         }
@@ -1593,13 +1595,13 @@ private fn aifReportPlacementPin(i: Int) -> Int {
         // analysis widens every unproven site to its top tier, which takes the
         // arena away from sites a converged run keeps it for. Refusing the build
         // on that would fail a program for the budget it was given.
-        diag_warning_at_code("P5004", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+        diag_warning_at_code(DIAG_AIF_PLACEMENT_PIN_UNPROVEN, aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
                         "pin(".concat(want, ") is unproven: the analysis budget ran out"))
         diag_note("raising --budget may settle it; placement is unchanged meanwhile")
         return 0
     }
 
-    diag_error_at_code("P5005", aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
+    diag_error_at_code(DIAG_AIF_PLACEMENT_PIN_UNSERVED, aif_site_file(i), aif_site_line(i), aif_site_col(i), 0,
                   "pin(".concat(want, ") cannot hold: this value is not served by that arena"))
 
     if (aifRegionExists(want) == false) {
@@ -1664,7 +1666,7 @@ public fn aifReportBudgets(converged: Bool) -> Int {
             let served = aif_scope_served(s)
             if (served > cap) {
                 let asserted = cap.toString().concat(" asserted")
-                diag_error_at_code("P5006", aif_scope_budget_file(s), aif_scope_budget_line(s),
+                diag_error_at_code(DIAG_AIF_REGION_OVER_BUDGET, aif_scope_budget_file(s), aif_scope_budget_line(s),
                               aif_scope_budget_col(s), 0,
                               "region ".concat(aif_scope_region(s), " exceeds its budget: ",
                                                served.toString(), " bytes estimated, ",
@@ -1680,7 +1682,7 @@ public fn aifReportBudgets(converged: Bool) -> Int {
 // SPEC 5.2. A `region` that serves no allocation is a pessimisation the compiler
 // used to perform in silence: the block still pushes and pops an arena at every
 // entry, and nothing is bump-allocated from it. Measured on
-// `aif/evidence/xlang/prismio/g2_region.psm` -- 20 000 regions entered, 0 of
+// `docs/aif/evidence/xlang/prismio/g2_region.psm` (Git history) -- 20 000 regions entered, 0 of
 // 10 201 215 allocations served, and the frame loop 1.67x slower than the same
 // program without the annotation.
 //
@@ -1702,7 +1704,7 @@ public fn aifReportInertRegions() {
     for s in 0..<n {
         let name = aif_scope_region(s)
         if (name.equals("") == false and aif_region_serves(s) == 0) {
-            diag_warning_at_code("P5007", aif_scope_region_file(s), aif_scope_region_line(s),
+            diag_warning_at_code(DIAG_AIF_REGION_INERT, aif_scope_region_file(s), aif_scope_region_line(s),
                             aif_scope_region_col(s), 0,
                             "region ".concat(name,
                                              " serves no allocation; it costs an arena push and pop per entry and reclaims nothing"))
@@ -1797,13 +1799,6 @@ private fn aifEmitLayout(module: ASTNode, sourcePath: String) {
         }
         p = d.next
     }
-}
-
-private fn aifAnalyze(module: ASTNode, sourcePath: String, version: String,
-               ownedCollections: Bool, summary: Bool, thetaFields: Bool,
-               budget: Int) {
-    aifAnalyzeProfiled(module, sourcePath, version, ownedCollections, summary,
-                        thetaFields, budget, "", false, false)
 }
 
 public fn aifAnalyzeProfiled(module: ASTNode, sourcePath: String, version: String,

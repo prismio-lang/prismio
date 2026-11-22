@@ -148,10 +148,6 @@ public fn aif_scope_note_node(scope: Int, node: Ptr) {
     scopeNode[scope] = addressOf(node)
 }
 
-public fn aif_scope_count() -> Int {
-    return scopeCount
-}
-
 internal fn scopeLca(a0: Int, b0: Int) -> Int {
     let mut a = a0
     let mut b = b0
@@ -208,17 +204,6 @@ public fn aif_fn_symbol(f: Int) -> String {
 public fn aif_fn_name(f: Int) -> String {
     if (f < 0 or f >= fnCount) { return "" }
     return irNameText(fnName[f])
-}
-
-public fn aif_fn_file(f: Int) -> Int {
-    if (f < 0 or f >= fnCount) { return 0 }
-    return fnFile[f]
-}
-
-public fn aif_fn_seal(f: Int) {
-    if (f < 0 or f >= fnCount) { return }
-    fnSealed[f] = 1
-    bracketBlockersForget()
 }
 
 public fn aif_fn_is_sealed(f: Int) -> Int {

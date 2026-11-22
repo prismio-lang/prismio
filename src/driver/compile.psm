@@ -24,34 +24,8 @@ import index.command
 import build.BUILD_VERSION
 from lexer import { scanner, token, identifier_security }
 from driver import { imports, workload, prune }
-
-public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
-public extern fn compiler_installed_runtime_hash() -> String produce(rt_free)
-// Starts a program with the arguments queued by compiler_spawn_arg, as an
-// argument vector -- never a shell line -- in `directory` ("" keeps this
-// process's), and answers its exit status, or -1 when it could not be started.
-public extern fn compiler_spawn_arg(argument: String borrow)
-public extern fn compiler_spawn_wait(program: String borrow, directory: String borrow) -> Int
-public extern fn compiler_library_emission_module() -> String produce(rt_free)
-// Every path through both mallocs, including the failure paths, which allocate a
-// one-byte empty string rather than returning a literal. That is the same
-// invariant Level 4 had to give str_substring and str_trim -- anything declared
-// to return String returns something a release can take -- and it is what makes
-// `produce` true here rather than nearly true.
-public extern fn compiler_runtime_source_hash() -> String produce(rt_free)
-// `-g`. Two things the driver does differently once the module carries debug
-// info: the object step drops to -O0, and on Darwin a .dSYM is written before
-// the object -- which is where Mach-O keeps the DWARF -- is deleted.
-public extern fn compiler_set_debug_info(on: Int)
-// SPEC 7.3. Tells the build to compile the runtime with its own allocator
-// pointed at the verify shims, so the strings and lists it allocates are in the
-// same accounting as everything ir_alloc_object handed out.
-public extern fn compiler_set_verify_mode(on: Int)
-extern fn compiler_is_freestanding() -> Int
-public extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(rt_free)
-// `run --jit`: merges the imported standard-library bitcode into `irFile`, as a
-// build does, and runs `main` in this process.
-public extern fn compiler_jit_run(irFile: String borrow, programName: String borrow) -> Int
+import common.native
+import common.diag_codes
 
 // How one build is done. Every command that compiles -- a single file, a UMS
 // target, a project command's `.psm` tool -- fills one of these, and
@@ -102,7 +76,7 @@ private fn reportForcedLayouts() {
     let mut i = 0
     while (i < aif_layout_forced_count()) {
         if (aif_layout_force_applied(i) == 0) {
-            diag_warning_code("P1003", "--force-layout did not apply: no candidate of ".concat(diagQuote(aif_layout_forced_type(i)),
+            diag_warning_code(DIAG_DRIVER_FORCED_LAYOUT_NOT_APPLIED, "--force-layout did not apply: no candidate of ".concat(diagQuote(aif_layout_forced_type(i)),
                                                                                                " keeps ",
                                                                                                aif_layout_forced_hot(i).toString(),
                                                                                                " fields hot (see `aif --layout` for the candidates)"))
@@ -131,7 +105,7 @@ private fn checkRuntimeFreshness() {
         return
     }
 
-    diag_error_code("P1004", "the installed Prismio runtime library is stale")
+    diag_error_code(DIAG_DRIVER_RUNTIME_LIBRARY_STALE, "the installed Prismio runtime library is stale")
     print("  runtime library was built from sources hashing ")
     println(installed)
     print("  the runtime sources on disk now hash ")
@@ -162,7 +136,7 @@ private fn checkRuntimeFreshness() {
 private fn analyzedModule(path: String, prune: Bool) -> ASTNode {
     let content = readSource(path)
     if (content.equals("") and fileExists(path) == false) {
-        diag_error_code("P1005", "cannot read ".concat(path))
+        diag_error_code(DIAG_DRIVER_MODULE_UNREADABLE, "cannot read ".concat(path))
         return createNode(NodeKind.MODULE)
     }
 
@@ -250,13 +224,13 @@ public fn checkCommand(path: String, overlays: Vec<String>, module: String, inde
             at = at + 2
         }
         if (indexProgram(merged, userPaths, indexPath, cursorPath, cursorLine, cursorCol) == false) {
-            diag_error_code("P1114", "cannot write the index ".concat(diagQuote(indexPath)))
+            diag_error_code(DIAG_DRIVER_INDEX_UNWRITABLE, "cannot write the index ".concat(diagQuote(indexPath)))
         }
     }
     at = 0
     while (at + 1 < overlays.length) {
         if (sourceOverlayRead(overlays[at]) == false) {
-            diag_warning_code("P1075", diagQuote(overlays[at]).concat(" is not part of the program ",
+            diag_warning_code(DIAG_DRIVER_OVERLAY_NOT_IN_PROGRAM, diagQuote(overlays[at]).concat(" is not part of the program ",
                 diagQuote(path), ", so it was not checked"))
         }
         at = at + 2
@@ -366,7 +340,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
 
     let content = readFile(path)
     if (content.equals("") and fileExists(path) == false) {
-        diag_error_code("P1008", "cannot read ".concat(path))
+        diag_error_code(DIAG_DRIVER_SOURCE_UNREADABLE, "cannot read ".concat(path))
         return 1
     }
 
@@ -543,7 +517,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
         written = ir_write_file(outFile)
     }
     if (written != 0) {
-        diag_error_code("P1010", "cannot write LLVM IR to ".concat(outFile))
+        diag_error_code(DIAG_DRIVER_LLVM_IR_UNWRITABLE, "cannot write LLVM IR to ".concat(outFile))
         return 1
     }
 
@@ -570,7 +544,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
 
     if (compiler_build_executable(outFile, outputFile) != 0) {
         deleteFile(outFile)
-        diag_error_code("P1011", "the native build step failed (llc/clang); see the output above")
+        diag_error_code(DIAG_DRIVER_NATIVE_BUILD_FAILED, "the native build step failed (llc/clang); see the output above")
         // A compiler is the one Prismio program that needs more than its own
         // manifest-free build, and a link failure is how building it the wrong way
         // shows up. Only then is the way to build it worth mentioning: printed
@@ -590,7 +564,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
         diag_status("Running", outputFile)
         let status = compiler_spawn_wait(runnablePath(outputFile), options.runDirectory)
         if (status < 0) {
-            diag_error_code("P1012", "could not start ".concat(outputFile))
+            diag_error_code(DIAG_DRIVER_PROGRAM_NOT_STARTED, "could not start ".concat(outputFile))
             return 1
         }
         return status

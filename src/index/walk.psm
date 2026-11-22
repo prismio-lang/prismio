@@ -176,6 +176,10 @@ fn ixEmitUnresolved(inout ix: Ix, inout src: IxSources, inout w: IxWalk, node: A
 // ---------------------------------------------------------------------------------------------
 // Types
 
+// A type the language spells itself, as opposed to one the program declares. The numeric names come from the
+// same two functions sema resolves them with, so a name is built in exactly when `I8`, `U16`, `F32`, `Isize`
+// or `BF16` is: the first-letter-and-width guess this used to make read an unresolved `Item`, `Frame` or `Index`
+// as a built-in type, and the editor never marked it.
 fn ixIsBuiltinType(name: String) -> Bool {
     if (name.equals("Int") or name.equals("UInt") or name.equals("Float") or name.equals("Bool")
             or name.equals("Char") or name.equals("String") or name.equals("Ptr") or name.equals("Void")
@@ -185,12 +189,7 @@ fn ixIsBuiltinType(name: String) -> Bool {
             or name.equals("DataView") or name.equals("Option")) {
         return true
     }
-    // I8, U16, F32, Isize, Usize, BF16: a letter and a width.
-    if (name.length >= 2 and name.length <= 5) {
-        let first = name.byteAt(0)
-        if (first == 73 or first == 85 or first == 70 or first == 66) { return true }
-    }
-    return false
+    return typeIsValid(typeIntFromName(name)) or typeIsValid(typeFloatFromName(name))
 }
 
 fn ixWalkAnnotation(inout ix: Ix, inout src: IxSources, inout w: IxWalk, ptr: Ptr) {

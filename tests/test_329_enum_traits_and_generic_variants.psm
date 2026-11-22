@@ -36,19 +36,19 @@ fn fail(message: String) -> Int {
 
 fn main() -> Int {
     let levels = mapNew<Level, Int>()
-    mapSet(levels, Level.High, 3)
-    mapSet(levels, Level.Low, 1)
-    if (mapGetOr(levels, Level.High, 0) != 3) { return fail("fieldless enum key") }
-    if (mapGetOr(levels, Level.Mid, -1) != -1) { return fail("absent enum key") }
+    levels.set(Level.High, 3)
+    levels.set(Level.Low, 1)
+    if (levels.getOr(Level.High, 0) != 3) { return fail("fieldless enum key") }
+    if (levels.getOr(Level.Mid, -1) != -1) { return fail("absent enum key") }
 
     let codes = mapNew<Http, Int>()
-    mapSet(codes, Http.NotFound, 404)
-    if (mapGetOr(codes, Http.NotFound, 0) != 404) { return fail("numbered enum key") }
-    if (mapHas(codes, Http.Ok)) { return fail("numbered enum absent key") }
+    codes.set(Http.NotFound, 404)
+    if (codes.getOr(Http.NotFound, 0) != 404) { return fail("numbered enum key") }
+    if (codes.contains(Http.Ok)) { return fail("numbered enum absent key") }
 
     let modes = mapNew<Mode, Int>()
-    mapSet(modes, Mode.Slow, 2)
-    if (mapGetOr(modes, Mode.Slow, 0) != 2) { return fail("hand-written impl") }
+    modes.set(Mode.Slow, 2)
+    if (modes.getOr(Mode.Slow, 0) != 2) { return fail("hand-written impl") }
 
     let a: Shape<Int> = Shape.Rect { w: 3, h: 4 }
     if (area(a) != 12) { return fail("generic struct variant, inferred") }

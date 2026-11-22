@@ -46,12 +46,12 @@ fn main() -> Int {
     let mut bad = 0
 
     let m = mapNew<String, Int>()
-    if (m.isEmpty == false or m.length != 0) { bad = bad + fail("a new map is empty") }
-    if (m.set("ada", 36)) { bad = bad + fail("set of a new key answered true") }
-    if (m.set("grace", 85) or m.set("alan", 41)) { bad = bad + fail("set of new keys") }
-    if (m.set("ada", 37) == false) { bad = bad + fail("set of an existing key answered false") }
-    if (m.length != 3 or m.isEmpty) { bad = bad + fail("length after sets") }
-    if (m.has("grace") == false or m.has("nobody")) { bad = bad + fail("has") }
+    if (m.isEmpty == false or m.count != 0) { bad = bad + fail("a new map is empty") }
+    if (m.set("ada", 36) != none) { bad = bad + fail("set of a new key answered true") }
+    if (m.set("grace", 85) != none or m.set("alan", 41) != none) { bad = bad + fail("set of new keys") }
+    if (m.set("ada", 37) == none) { bad = bad + fail("set of an existing key answered false") }
+    if (m.count != 3 or m.isEmpty) { bad = bad + fail("length after sets") }
+    if (m.contains("grace") == false or m.contains("nobody")) { bad = bad + fail("contains") }
     if (m["ada"] != 37) { bad = bad + fail("m[k]") }
     if (m.getOr("nobody", -1) != -1 or m.getOr("alan", -1) != 41) { bad = bad + fail("getOr") }
     let found = m.get("grace")
@@ -72,14 +72,14 @@ fn main() -> Int {
     // Removal.
     if (m.remove("nobody")) { bad = bad + fail("removing an absent key answered true") }
     if (m.remove("ada") == false) { bad = bad + fail("removing the first entry") }
-    if (m.has("ada") or m.length != 2) { bad = bad + fail("the removed key is gone") }
+    if (m.contains("ada") or m.count != 2) { bad = bad + fail("the removed key is gone") }
     // The last entry, alan, moved into the first position.
     if (m.keyAt(0).equals("alan") == false) { bad = bad + fail("the last entry moves into the gap") }
     if (m["grace"] != 85 or m["alan"] != 41) { bad = bad + fail("the others survive a removal") }
     if (m.remove("alan") == false or m.remove("grace") == false) { bad = bad + fail("removing the rest") }
     if (m.isEmpty == false) { bad = bad + fail("empty after removing every key") }
     m.set("ada", 1)
-    if (m["ada"] != 1 or m.length != 1) { bad = bad + fail("reinsertion after removal") }
+    if (m["ada"] != 1 or m.count != 1) { bad = bad + fail("reinsertion after removal") }
 
     // Every key in one bucket: each removal leaves a tombstone some later key's
     // probe must pass.
@@ -88,7 +88,7 @@ fn main() -> Int {
     c.remove(Clash { id: 0 })
     c.remove(Clash { id: 3 })
     for i in 0..<6 {
-        let there = c.has(Clash { id: i })
+        let there = c.contains(Clash { id: i })
         if (i == 0 or i == 3) {
             if (there) { bad = bad + fail("a removed colliding key is still found") }
         } else if (there == false or c[Clash { id: i }] != i * 10) {
@@ -96,7 +96,7 @@ fn main() -> Int {
         }
     }
     c.set(Clash { id: 3 }, 333)
-    if (c[Clash { id: 3 }] != 333 or c.length != 5) { bad = bad + fail("reinsertion over a tombstone") }
+    if (c[Clash { id: 3 }] != 333 or c.count != 5) { bad = bad + fail("reinsertion over a tombstone") }
 
     // Across growth, and across the rebuild a quarter of tombstones triggers.
     let big = mapNew<String, Int>()
@@ -104,18 +104,18 @@ fn main() -> Int {
     for i in 0..<500 {
         if (i % 3 != 0) { big.remove(keyName(i)) }
     }
-    if (big.length != 167) { bad = bad + fail("length after removing two thirds: ".concat(big.length.toString())) }
+    if (big.count != 167) { bad = bad + fail("length after removing two thirds: ".concat(big.count.toString())) }
     for i in 0..<500 {
-        let there = big.has(keyName(i))
+        let there = big.contains(keyName(i))
         if ((i % 3 == 0) != there) { bad = bad + fail("the wrong keys survived: ".concat(i.toString())) }
     }
     for i in 0..<500 { big.set(keyName(i), i + 1) }
-    if (big.length != 500 or big[keyName(499)] != 500 or big[keyName(3)] != 4) {
+    if (big.count != 500 or big[keyName(499)] != 500 or big[keyName(3)] != 4) {
         bad = bad + fail("reinserting everything")
     }
 
     big.clear()
-    if (big.isEmpty == false or big.has(keyName(3))) { bad = bad + fail("clear") }
+    if (big.isEmpty == false or big.contains(keyName(3))) { bad = bad + fail("clear") }
     big.set("after", 1)
     if (big["after"] != 1) { bad = bad + fail("using a cleared map") }
 

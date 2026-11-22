@@ -16,7 +16,7 @@
 // > changing.
 //
 // That is exactly what happened. `K: Key + Copy` uses `Key` (std/key.psm) for
-// `hash`/`eq` and `Copy` (std/copy.psm) for storage; `mapIndexOf` went from a
+// `hash`/`eq` and `Copy` (std/copy.psm) for storage; `indexOf` went from a
 // linear scan to a probe, and **no caller
 // changed** -- `tests/test_65_map.psm` is untouched and still passes.
 //
@@ -29,27 +29,52 @@
 //
 // **The representation**: two dense parallel arrays in insertion order, plus an
 // open-addressed `slots` table of indices into them. Insertion order is not an
-// accident to be preserved -- `mapKeyAt`/`mapValueAt` are the iteration API and
+// accident to be preserved -- `keyAt`/`valueAt` are the iteration API and
 // their contract says insertion order, so the entries have to live somewhere
 // that is not the probe table.
 //
-// **Keys may be owned; values may not, and that is a measured limit rather than
-// an oversight.** `K: Key + Copy` duplicates a `String` or a struct key into
-// the table and `HashMap<String, Int>` is `--verify` clean at
-// 9 allocated / 9 released / 0 leaked. `V` has no bound, so an owned `V` is
-// rejected at compile time with "cannot move out of borrowed value `value`" --
-// the same honest error the association list gave, and not a silent one.
+// **Keys and values may both be owned.** `K: Key + Copy` and `V: Copy` duplicate a
+// `String`, a `Vec` or a struct that implements `Copy` into the table, and the table
+// releases them: `HashMap<String, String>` and `HashMap<Int, Vec<Int>>` read
+// 0 leaked, 0 violations under `--verify` (tests/test_map_owned.psm).
 //
-// Bounding `V: Copy` as well was tried and reverted on 2026-08-29: it compiles
-// and computes the right answers, and `HashMap<String, String>` then **leaks every
-// value it holds** -- 4 of 14 allocations, rising to 8 of 18 when the lookups
-// also answer with copies. The values list is returned from by `mapGetOr`,
-// `mapGet` and `mapValueAt`, the analysis sees it escape, and it declines to
-// release the container. That is the pass-through escape KNOWN_ISSUES.md tracks, not
-// something this file can fix, and a standard-library container that leaks its
-// contents is worse than one that says it cannot hold them.
+// **The rule that makes it hold: a stored value never leaves the table, only copies
+// of it do.** `get`, `getOr`, `m[k]`, `take`, `set`'s answer, `getOrInsert*`,
+// `valueAt` and `values()` all return `copyOf(list_get(...))`, as `Vec.get<T: Copy>`
+// does, and `getOr` copies its `fallback` too (returning the borrowed parameter was a
+// leak and a failed `--verify` fact). Until 2026-11-12 this file said the opposite:
+// bounding `V: Copy` had been tried on 2026-08-29 and leaked every value, because the
+// readers returned `list_get(m.entryValues, at)` itself, the analysis saw the values
+// list escape through the return, and it declined to release the container. Returning
+// copies is what removes the escape; the ownership rewrite since then (producers own
+// their result, `param_returns`) is what lets the copies be released at the call site.
+// For a scalar `copyOf` is the identity and costs nothing: the update and removal
+// loops time the same as before the bound.
 //
-// **Triangular probing, with tombstones for removal.** `mapRemove` cannot empty
+// **What it costs.** A read of an owned value allocates a copy, so a mutation in place
+// (`m[k].push(x)`) is not expressible: read, change the copy, store it back.
+//
+// **What it buys, and what proves it.** A value displaced by `set` and a key or value
+// removed by `remove`, `take`, `retain` or `clear` is released at the store, not parked
+// until the map dies. The compiler releases a displaced element at once only when it can
+// show no view of an element is live. It could for a fresh local `Vec`; for a field it
+// proves it per program (src/ir/columns.psm): a private `Vec` field is a *closed column*
+// when every use of it in the module is a list builtin, every `list_get` of it is
+// consumed where it stands, and nothing a view is live across can store into it. This
+// file is written to pass that proof and does not promise it: **an element is only ever
+// viewed as an argument of the call consuming it (a probe's `eq`, a `hashSetProbe`), or
+// copied with `copyOf` before anything else happens to it**, so `keyAt`, `valueAt`,
+// `keys()`, `values()`, `for key in set`, and the closures `update` and `retain` take
+// copies. A method that bound a view across a store, returned one, or pushed one into
+// another container would not be wrong at run time -- it would leave its column parked,
+// which `PRISMIO_COLUMN_TRACE=1` names at compile time, and `tests/test_map_owned.psm`'s
+// churn holds to a peak. (Until 2026-11-14 the checker trusted these two columns by their
+// name, and the proof found the promise broken: `values()` of a `HashMap<String, Vec<Int>>`
+// pushed each stored `Vec` itself into its result -- 5 leaks and a failed `--verify` fact
+// -- and `HashSet`'s `retain`, `insertAll`, `removeAll`, the set algebra and `for key in
+// set` handed views to callees that may mutate the set.)
+//
+// **Triangular probing, with tombstones for removal.** `remove` cannot empty
 // a bucket -- a later key's probe may pass through it -- so it marks the bucket
 // with the tombstone value: a lookup probes past one, an insertion reuses the
 // first it passes. Tombstones count against the load that triggers growth, and a
@@ -81,19 +106,20 @@
 
 import std.key
 import std.copy
+import std.default
 import std.option
 
 // `slots` holds an index into `keys`/`values`, or -1 for empty. Its length is
 // always a power of two, so `hash & mask` is the bucket.
 //
 // **Two invariants this file keeps and promises to LLVM** (`__builtin_assume`, in
-// mapProbe, mapSet and mapGetOr): `slots` has `mask + 1` elements, so a bucket is
+// mapProbe, `set` and `getOr`): `slots` has `mask + 1` elements, so a bucket is
 // always inside it; and an entry index a bucket holds is below `entryKeys`'s and
 // `entryValues`'s length, which are always equal. The bounds checks they make
 // redundant cost key_value_update 13% and mixed_map_removal 10%: they grew mapProbe
 // past what LLVM would inline. Every column is private, so nothing outside this file
 // can break either one; a false promise would be undefined behaviour.
-public struct HashMap<K: Key + Copy, V> {
+public struct HashMap<K: Key + Copy, V: Copy> {
     entryKeys: Vec<K>,
     entryValues: Vec<V>,
     slots: Vec<Int>,
@@ -108,7 +134,7 @@ public struct HashMap<K: Key + Copy, V> {
     // How far past its home the bucket the last `findSlot` probe answered is,
     // so mapInsert need not walk the sequence again to update `longest`. A
     // field rather than work inside mapProbe: anything more in the probe's body
-    // stops it inlining into mapSet's overwrite path, and key_value_update went
+    // stops it inlining into `set`'s overwrite path, and key_value_update went
     // from 10.7 to 14.8 ms when it did.
     placed: Int,
     // Whether this map has measured its own probe displacement and found the
@@ -127,7 +153,7 @@ private fn mapEmpty() -> Int { return -1 }
 private fn mapTombstone() -> Int { return -2 }
 
 // An empty map.
-public fn mapNew<K: Key + Copy, V>() -> HashMap<K, V> {
+public fn mapNew<K: Key + Copy, V: Copy>() -> HashMap<K, V> {
     let mut k: Vec<K> = list_new()
     let mut v: Vec<V> = list_new()
     let mut s: Vec<Int> = list_new_with_capacity(mapInitialCapacity())
@@ -140,6 +166,14 @@ public fn mapNew<K: Key + Copy, V>() -> HashMap<K, V> {
                        tombstones: 0, longest: 0, placed: 0, strong: false }
 }
 
+// The value under `key`, stored first as `V`'s own default when the key is absent:
+// `groups.getOrInsertDefault(name)` for a `Vec` value starts the list the way
+// `m.entry(k).or_default()` does. One lookup on a hit; the default is built on a miss
+// only. A copy, as every reader answers: to add to the stored value, `modify` it.
+public fn getOrInsertDefault<K: Key + Copy, V: Copy + Default>(m: HashMap<K, V>, key: K) -> V {
+    return m.getOrInsertWith(key, || V.default())
+}
+
 // Room for `count` entries before the first rehash: the smallest power of two
 // that keeps `count` at or under half full (mapInsert's growth rule), and never
 // fewer buckets than mapNew's.
@@ -150,7 +184,7 @@ public fn mapNew<K: Key + Copy, V>() -> HashMap<K, V> {
 // land in either: tier T3, no element release, and every String key leaked
 // (KNOWN_ISSUES, "A struct built by two constructors"). One construction site
 // keeps one container per column.
-public fn mapWithCapacity<K: Key + Copy, V>(count: Int) -> HashMap<K, V> {
+public fn mapWithCapacity<K: Key + Copy, V: Copy>(count: Int) -> HashMap<K, V> {
     let m: HashMap<K, V> = mapNew<K, V>()
     let mut buckets = m.mask + 1
     if (buckets / 2 >= count) { return m }
@@ -169,43 +203,189 @@ public fn mapWithCapacity<K: Key + Copy, V>(count: Int) -> HashMap<K, V> {
 // building it never rehashes.
 //
 // **A producer, and that is the point of it.** It builds the map it returns, so
-// the literal's result is owned wherever it lands. `mapPutAll` below returns the
+// the literal's result is owned wherever it lands. A chain of `mapPut`s, which this replaced, returned the
 // map it was given, and a pass-through's result stored in a struct field is
 // never released (KNOWN_ISSUES, "A pass-through result in a struct field"), so a
 // literal is built this way whenever it can be. The frame arrays hold nothing
 // they would have to release, and a `[K]` parameter does not carry its length,
 // so sema passes the count it wrote.
-public fn mapFromEntries<K: Key + Copy, V>(n: Int, keys: [K], values: [V]) -> HashMap<K, V> {
+public fn mapFromEntries<K: Key + Copy, V: Copy>(n: Int, keys: [K], values: [V]) -> HashMap<K, V> {
     let m: HashMap<K, V> = mapWithCapacity(n)
-    for i in 0..<n { mapSet(m, keys[i], values[i]) }
+    for i in 0..<n { m.set(keys[i], values[i]) }
     return m
 }
 
-// One entry of a map literal whose key the literal owns: `{ s.concat("!"): 7 }`
-// reaches codegen as `mapPut(mapWithCapacity(1), s.concat("!"), 7)`, where the
-// key is an argument temporary and released after the call. Handed over inside
-// a frame array it leaked -- an array frees none of its elements (KNOWN_ISSUES,
-// "A frame array frees none of its elements"). Keys the literal does not own go
-// through `mapPutAll` below; src/sema/maps.psm chooses. A key written twice keeps
-// its last value, as `set` would -- sema refuses the case it can see, two equal
-// literal keys.
-public fn mapPut<K: Key + Copy, V>(m: HashMap<K, V>, key: K, value: V) -> HashMap<K, V> {
-    mapSet(m, key, value)
+// A map literal that holds a computed owned key or value -- `{ word(1): word(2) }` -- in one
+// call, the way `vecOf` builds a Vec literal: each key and value is an argument, so the
+// temporaries are released after the call, and the function builds the map it returns, so
+// the result is owned wherever it lands (a `let`, a struct field, a `return`). One overload
+// per count, because there are no varargs; src/sema/maps.psm picks `mapEntriesN` for
+// 1..12 entries and merges runs of twelve (`mapMerge`) past that. A key written twice keeps
+// its last value, as `set` would.
+//
+// **Not a chain of `mapPut`s** (a function that no longer exists). A wrapper that takes the map and hands it back is the
+// pass-through shape whose result in a struct field or a `return` is never released
+// (KNOWN_ISSUES), and it was measured: the chain leaked the whole table in a field.
+private fn mapStore<K: Key + Copy, V: Copy>(m: HashMap<K, V>, key: K, value: V) {
+    let found = mapProbe(m, key, true)
+    if (found >= 0) {
+        list_set(m.entryValues, found, copyOf(value))
+        return
+    }
+    mapInsert(m, key, value, 0 - found - 2)
+}
+
+public fn mapEntries1<K: Key + Copy, V: Copy>(k0: K, v0: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(1)
+    mapStore(m, k0, v0)
     return m
 }
 
-// A run of entries whose keys the literal does not own -- literals, names, and
-// keys of a type that owns nothing -- in one call, so a table of three hundred
-// entries is one call deep rather than three hundred (the backend nests at most
-// 64). The frame arrays hold nothing they would have to release. A `[K]`
-// parameter does not carry its length, so sema passes the count it wrote.
-public fn mapPutAll<K: Key + Copy, V>(m: HashMap<K, V>, n: Int, keys: [K], values: [V]) -> HashMap<K, V> {
-    for i in 0..<n { mapSet(m, keys[i], values[i]) }
+public fn mapEntries2<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(2)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
     return m
 }
 
-public fn mapLen<K: Key + Copy, V>(m: HashMap<K, V>) -> Int {
-    return list_len(m.entryKeys)
+public fn mapEntries3<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(3)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    return m
+}
+
+public fn mapEntries4<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(4)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    return m
+}
+
+public fn mapEntries5<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(5)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    return m
+}
+
+public fn mapEntries6<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V, k5: K, v5: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(6)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    mapStore(m, k5, v5)
+    return m
+}
+
+public fn mapEntries7<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V, k5: K, v5: V, k6: K, v6: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(7)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    mapStore(m, k5, v5)
+    mapStore(m, k6, v6)
+    return m
+}
+
+public fn mapEntries8<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V, k5: K, v5: V, k6: K, v6: V, k7: K, v7: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(8)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    mapStore(m, k5, v5)
+    mapStore(m, k6, v6)
+    mapStore(m, k7, v7)
+    return m
+}
+
+public fn mapEntries9<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V, k5: K, v5: V, k6: K, v6: V, k7: K, v7: V, k8: K, v8: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(9)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    mapStore(m, k5, v5)
+    mapStore(m, k6, v6)
+    mapStore(m, k7, v7)
+    mapStore(m, k8, v8)
+    return m
+}
+
+public fn mapEntries10<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V, k5: K, v5: V, k6: K, v6: V, k7: K, v7: V, k8: K, v8: V, k9: K, v9: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(10)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    mapStore(m, k5, v5)
+    mapStore(m, k6, v6)
+    mapStore(m, k7, v7)
+    mapStore(m, k8, v8)
+    mapStore(m, k9, v9)
+    return m
+}
+
+public fn mapEntries11<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V, k5: K, v5: V, k6: K, v6: V, k7: K, v7: V, k8: K, v8: V, k9: K, v9: V, k10: K, v10: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(11)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    mapStore(m, k5, v5)
+    mapStore(m, k6, v6)
+    mapStore(m, k7, v7)
+    mapStore(m, k8, v8)
+    mapStore(m, k9, v9)
+    mapStore(m, k10, v10)
+    return m
+}
+
+public fn mapEntries12<K: Key + Copy, V: Copy>(k0: K, v0: V, k1: K, v1: V, k2: K, v2: V, k3: K, v3: V, k4: K, v4: V, k5: K, v5: V, k6: K, v6: V, k7: K, v7: V, k8: K, v8: V, k9: K, v9: V, k10: K, v10: V, k11: K, v11: V) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(12)
+    mapStore(m, k0, v0)
+    mapStore(m, k1, v1)
+    mapStore(m, k2, v2)
+    mapStore(m, k3, v3)
+    mapStore(m, k4, v4)
+    mapStore(m, k5, v5)
+    mapStore(m, k6, v6)
+    mapStore(m, k7, v7)
+    mapStore(m, k8, v8)
+    mapStore(m, k9, v9)
+    mapStore(m, k10, v10)
+    mapStore(m, k11, v11)
+    return m
+}
+
+// A map literal of more than twelve entries with a computed owned key or value: sema builds one
+// `mapEntriesN` per run of twelve and merges the runs, so every key and value is still an
+// argument of a call that releases it (src/sema/maps.psm). A producer: it builds the map it
+// returns, and its two arguments are temporaries released after the call. An entry of
+// `second` replaces one of `first` with the same key, as the chain of `set`s this stands for
+// would. Copies go through `keyAt` and `valueAt`, so no view of a column element is live
+// while the new map is stored into (a view across a store is what keeps a column from
+// releasing at once, src/ir/columns.psm).
+public fn mapMerge<K: Key + Copy, V: Copy>(first: HashMap<K, V>, second: HashMap<K, V>) -> HashMap<K, V> {
+    let m: HashMap<K, V> = mapWithCapacity(list_len(first.entryKeys) + list_len(second.entryKeys))
+    for i in 0..<list_len(first.entryKeys) { mapStore(m, first.keyAt(i), first.valueAt(i)) }
+    for i in 0..<list_len(second.entryKeys) { mapStore(m, second.keyAt(i), second.valueAt(i)) }
+    return m
 }
 
 // **Both modes answer a hit with the dense entry index.** They differ only in
@@ -213,7 +393,7 @@ public fn mapLen<K: Key + Copy, V>(m: HashMap<K, V>) -> Int {
 // `-bucket - 2`, and a lookup reports -1.
 //
 // Encoding the bucket rather than returning it plainly is what removes the last
-// redundant load from `mapSet`. It used to ask for the bucket, get one whether
+// redundant load from `set`. It used to ask for the bucket, get one whether
 // the key was there or not, and then re-read `slots[at]` to find out which --
 // a load, a bounds check and a representation test for an answer the probe had
 // already computed and thrown away. A bucket is in `[0, mask]`, so `-bucket - 2`
@@ -233,7 +413,7 @@ public fn mapLen<K: Key + Copy, V>(m: HashMap<K, V>) -> Int {
 // unconditional avalanche mix — and against the locality that mix destroys,
 // which is the larger number: `key_value_update`'s update phase is 7.25 ms with
 // the mix applied to every key and 3.64 ms without it.
-private fn mapHashOf<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> Int {
+private fn mapHashOf<K: Key + Copy, V: Copy>(m: HashMap<K, V>, key: K) -> Int {
     let h = hash(key)
     if (m.strong) { return keyStrengthen(h) }
     return h
@@ -241,7 +421,7 @@ private fn mapHashOf<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> Int {
 
 // `inline(always)`: every lookup and update is this loop, and its callers' loops want it in
 // their own bodies (the comment on HashMap says why it needs telling).
-private inline(always) fn mapProbe<K: Key + Copy, V>(m: HashMap<K, V>, key: K, findSlot: Bool) -> Int {
+private inline(always) fn mapProbe<K: Key + Copy, V: Copy>(m: HashMap<K, V>, key: K, findSlot: Bool) -> Int {
     let mut at = mapHashOf(m, key) & m.mask
     let mut step = 1
     let mut reusable = -1
@@ -295,7 +475,7 @@ private inline(always) fn mapProbe<K: Key + Copy, V>(m: HashMap<K, V>, key: K, f
 
 // The bucket holding entry `entry`, found along its key's probe chain. The
 // entry exists, so the chain reaches it.
-private fn mapBucketOfEntry<K: Key + Copy, V>(m: HashMap<K, V>, entry: Int) -> Int {
+private fn mapBucketOfEntry<K: Key + Copy, V: Copy>(m: HashMap<K, V>, entry: Int) -> Int {
     let mut at = mapHashOf(m, list_get(m.entryKeys, entry)) & m.mask
     let mut step = 1
     while (list_get(m.slots, at) != entry) {
@@ -305,18 +485,13 @@ private fn mapBucketOfEntry<K: Key + Copy, V>(m: HashMap<K, V>, entry: Int) -> I
     return at
 }
 
-// The insertion-order entry index of `key`, or -1.
-public fn mapIndexOf<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> Int {
-    return mapProbe(m, key, false)
-}
-
 // Doubles the table and re-places every entry.
 //
 // **The slot list is grown in place rather than replaced**, and that is not a
 // micro-optimisation: assigning a new `List` over `m.slots` releases nothing, so
 // every rehash would leak the old table. Pushing the new half and then clearing
 // the old half reuses the one allocation the map has ever had for this.
-private fn mapRehash<K: Key + Copy, V>(m: HashMap<K, V>) {
+private fn mapRehash<K: Key + Copy, V: Copy>(m: HashMap<K, V>) {
     let old = m.mask + 1
     let capacity = old * 2
 
@@ -351,7 +526,7 @@ private fn mapRehash<K: Key + Copy, V>(m: HashMap<K, V>) {
 //
 // Existing entries are unique, so this needs an empty bucket and never a key
 // comparison; that is work insertion already did.
-private fn mapPlaceAll<K: Key + Copy, V>(m: HashMap<K, V>) -> Int {
+private fn mapPlaceAll<K: Key + Copy, V: Copy>(m: HashMap<K, V>) -> Int {
     let capacity = m.mask + 1
     let mut j = 0
     while (j < capacity) {
@@ -380,77 +555,27 @@ private fn mapPlaceAll<K: Key + Copy, V>(m: HashMap<K, V>) -> Int {
     return displacement
 }
 
-public fn mapHas<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> Bool {
-    return mapIndexOf(m, key) >= 0
-}
-
-// The value for `key`, or `none`.
-//
-// This is the lookup that can distinguish "absent" from "present and equal to
-// the fallback", which mapGetOr cannot. It is what the earlier version of this
-// file said would arrive with REQUIREMENTS 14, and it did.
-public fn mapGet<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> V? {
-    let at = mapIndexOf(m, key)
-    if (at < 0) { return none }
-    return list_get(m.entryValues, at)
-}
-
-// Absence answered with a caller-supplied value. Kept alongside mapGet for the
-// many callers that have a sensible default and do not want to match on one.
-public fn mapGetOr<K: Key + Copy, V>(m: HashMap<K, V>, key: K, fallback: V) -> V {
-    let at = mapIndexOf(m, key)
-    if (at < 0) { return fallback }
-    __builtin_assume((at as U32) < (list_len(m.entryValues) as U32))
-    return list_get(m.entryValues, at)
-}
-
-// Update an existing value with one key lookup. The callback receives the old
-// value and returns its replacement; it runs exactly once on a hit and never
-// on a miss. Returns whether the key existed. The update itself does not insert
-// or reorder entries. Example: mapUpdate(counts, key, |value: Int| value + 1).
-public fn mapUpdate<K: Key + Copy, V, F>(m: HashMap<K, V>, key: K, update: F) -> Bool {
-    let at = mapIndexOf(m, key)
-    if (at < 0) { return false }
-    let value = update.call(list_get(m.entryValues, at))
-    list_set(m.entryValues, at, value)
-    return true
-}
-
-// Insert or overwrite. Answers whether the key was already present, which is the
-// one bit a caller cannot recover afterwards without a second lookup.
-//
+// The half of `set` that runs when the key is new, kept in its own function
+// so that the half that runs when it is not can be inlined into a caller's loop.
 // Grows above 1/2 load after insertion. A spare index bucket costs four bytes;
 // keeping probe chains short is worth that space on lookup/update workloads.
 // Keys and values remain dense, so lowering occupancy only grows the index.
 // Comparing with capacity / 2 also avoids overflowing count * 4 at large sizes.
-public fn mapSet<K: Key + Copy, V>(m: HashMap<K, V>, key: K, value: V) -> Bool {
-    let found = mapProbe(m, key, true)
-    if (found >= 0) {
-        __builtin_assume((found as U32) < (list_len(m.entryValues) as U32))
-        list_set(m.entryValues, found, value)
-        return true
-    }
-    mapInsert(m, key, value, 0 - found - 2)
-    return false
-}
-
-// The half of `mapSet` that runs when the key is new, kept in its own function
-// so that the half that runs when it is not can be inlined into a caller's loop.
 //
 // **This is a codegen shape, not a refactor, and it is worth 1.5x on an update
-// loop.** `mapSet` overwriting an existing key is a probe and one store; the
+// loop.** `set` overwriting an existing key is a probe and one store; the
 // insert path is two pushes, a copy, a slot write and a possible rehash. Inlined
 // together they are one body far over any inliner's threshold, so
-// `mapSet(m, k, mapGetOr(m, k, 0) + 1)` compiled to two out-of-line calls that
+// `m.set(k, m.getOr(k, 0) + 1)` compiled to two out-of-line calls that
 // hash the same key twice and probe the same bucket twice, with nothing able to
 // see that they were the same key. Split, the hot half inlines and both probes
 // land in the caller where the optimiser can look at them together.
 //
 // **`cold`, because the split is not enough on its own.** An executable
 // internalises its functions, and LLVM inlines an internal function's only call
-// however large it is: `mapInsert` went straight back into `mapSet`, which then
+// however large it is: `mapInsert` went straight back into `set`, which then
 // inlined nowhere, and key_value_update measured 1.28x until this was marked.
-private cold fn mapInsert<K: Key + Copy, V>(m: HashMap<K, V>, key: K, value: V, at: Int) {
+private cold fn mapInsert<K: Key + Copy, V: Copy>(m: HashMap<K, V>, key: K, value: V, at: Int) {
     // The key is **copied in**, not moved: a parameter is a borrow, so
     // `list_push(m.entryKeys, key)` is "cannot move out of borrowed value", which is
     // exactly why an owned key needs the separate `Copy` bound. A
@@ -461,7 +586,7 @@ private cold fn mapInsert<K: Key + Copy, V>(m: HashMap<K, V>, key: K, value: V, 
     // The **value** is not copied, and that is the limitation below.
     let index = list_len(m.entryKeys)
     list_push(m.entryKeys, copyOf(key))
-    list_push(m.entryValues, value)
+    list_push(m.entryValues, copyOf(value))
     if (list_get(m.slots, at) == mapTombstone()) { m.tombstones = m.tombstones - 1 }
     list_set(m.slots, at, index)
     if (m.placed > m.longest) { m.longest = m.placed }
@@ -469,15 +594,11 @@ private cold fn mapInsert<K: Key + Copy, V>(m: HashMap<K, V>, key: K, value: V, 
     if ((index + 1 + m.tombstones) > (m.mask + 1) / 2) { mapRehash(m) }
 }
 
-// Removes `key`, answering whether it was there. The value goes with it.
-//
-// The last entry moves into the removed one's position, so positions from
-// `mapKeyAt` are insertion order only until the first removal; see the header.
-// The removed key is released by the truncate, having been swapped to the end:
-// overwriting it with `list_set` would not release it.
-public fn mapRemove<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> Bool {
-    let entry = mapProbe(m, key, false)
-    if (entry < 0) { return false }
+// Removes the entry at dense position `entry`. The last entry moves into its
+// position, so positions from `keyAt` are insertion order only until the first
+// removal; see the header. The removed key is released by the truncate, having
+// been swapped to the end: overwriting it with `list_set` would not release it.
+private fn mapRemoveEntry<K: Key + Copy, V: Copy>(m: HashMap<K, V>, entry: Int) {
     let bucket = mapBucketOfEntry(m, entry)
     let last = list_len(m.entryKeys) - 1
     if (entry != last) {
@@ -490,36 +611,27 @@ public fn mapRemove<K: Key + Copy, V>(m: HashMap<K, V>, key: K) -> Bool {
     list_truncate(m.entryValues, last)
     m.tombstones = m.tombstones + 1
     if (m.tombstones > (m.mask + 1) / 4) { mapPlaceAll(m) }
-    return true
 }
 
-// Removes every entry and keeps the table's capacity.
-public fn mapClear<K: Key + Copy, V>(m: HashMap<K, V>) {
-    list_truncate(m.entryKeys, 0)
-    list_truncate(m.entryValues, 0)
-    mapPlaceAll(m)
-}
-
-// The key at a position, for iterating a map. Positions are insertion order and
-// stay valid until the next mapSet that inserts.
-public fn mapKeyAt<K: Key + Copy, V>(m: HashMap<K, V>, index: Int) -> K {
-    return list_get(m.entryKeys, index)
-}
-
-public fn mapValueAt<K: Key + Copy, V>(m: HashMap<K, V>, index: Int) -> V {
-    return list_get(m.entryValues, index)
-}
-
-// The methods are the API; the `map*` functions above are what they call.
+// The methods are the API; the `map*` functions above are what the compiler's
+// literal and `for` lowerings call.
 //
 //     let ages = HashMap<String, Int>()      // or `let ages: HashMap<String, Int>()`
-//     ages.set("ada", 36)
-//     if (ages.has("ada")) { println(ages["ada"]) }
+//     ages["ada"] = 36                        // insert or replace
+//     ages.set("grace", 45)                   // the same, answering the previous value
+//     if (ages.contains("ada")) { println(ages["ada"]) }
 //     ages.remove("ada")
 //
 //     let stock: HashMap<String, Int> = { "apple": 3, "pear": 5 }
 //     let empty: HashMap<String, Int>        // an empty HashMap, as `= {}` is
-impl < K: Key + Copy, V > HashMap<K, V> {
+//
+// **Reading and writing have different failure semantics, on purpose.** `m[key]`
+// reads and panics when the key is absent; `m[key] = value` inserts or replaces;
+// `m.get(key)` answers an optional. `insert` and `set` are the two ways to store
+// with an answer: `insert` stores only a new key and says whether it was new (as
+// `HashSet.insert` does), `set` stores unconditionally and hands back the value it
+// displaced.
+impl < K: Key + Copy, V: Copy > HashMap<K, V> {
     // `HashMap<K, V>()` is this (src/sema/checker.psm, semaTypeCall).
     public fn new() -> HashMap<K, V> { return mapNew<K, V>() }
 
@@ -527,25 +639,33 @@ impl < K: Key + Copy, V > HashMap<K, V> {
     public fn withCapacity(count: Int) -> HashMap<K, V> { return mapWithCapacity<K, V>(count) }
 
     // The number of entries.
-    public prop length(self) -> Int { return list_len(self.entryKeys) }
+    public prop count(self) -> Int { return list_len(self.entryKeys) }
     // Whether there are no entries.
     public prop isEmpty(self) -> Bool { return list_len(self.entryKeys) == 0 }
+    // How many entries the map holds before the table next grows: what `withCapacity`
+    // and `reserve` set, and what `clear` keeps.
+    public prop capacity(self) -> Int { return (self.mask + 1) / 2 }
 
     // Whether the map has an entry for `key`.
-    public fn has(self, key: K) -> Bool { return mapProbe(self, key, false) >= 0 }
+    public fn contains(self, key: K) -> Bool { return mapProbe(self, key, false) >= 0 }
 
     // The value for `key`, or `none`.
+    //
+    // This is the lookup that can distinguish "absent" from "present and equal to
+    // the fallback", which getOr cannot.
     public fn get(self, key: K) -> V? {
         let at = mapProbe(self, key, false)
         if (at < 0) { return none }
-        return list_get(self.entryValues, at)
+        return copyOf(list_get(self.entryValues, at))
     }
 
-    // The value for `key`, or `fallback`.
+    // The value for `key`, or `fallback`. For the many callers that have a
+    // sensible default and do not want to match on an optional.
     public fn getOr(self, key: K, fallback: V) -> V {
         let at = mapProbe(self, key, false)
-        if (at < 0) { return fallback }
-        return list_get(self.entryValues, at)
+        if (at < 0) { return copyOf(fallback) }
+        __builtin_assume((at as U32) < (list_len(self.entryValues) as U32))
+        return copyOf(list_get(self.entryValues, at))
     }
 
     // `m[key]`: the value, or a panic when there is none. `get` is the spelling
@@ -553,24 +673,188 @@ impl < K: Key + Copy, V > HashMap<K, V> {
     public fn at(self, key: K) -> V {
         let found = mapProbe(self, key, false)
         if (found < 0) { panic("key not in map") }
-        return list_get(self.entryValues, found)
+        return copyOf(list_get(self.entryValues, found))
     }
 
-    // Insert or overwrite; true when the key was already there.
-    public fn set(self, key: K, value: V) -> Bool { return mapSet(self, key, value) }
+    // Stores `value` under `key` unless the key is already there, with one
+    // lookup; true when it was new. An existing value is left alone.
+    public fn insert(self, key: K, value: V) -> Bool {
+        let found = mapProbe(self, key, true)
+        if (found >= 0) { return false }
+        mapInsert(self, key, value, 0 - found - 2)
+        return true
+    }
 
-    // True when the key was there to remove. Moves the last entry into its place.
-    public fn remove(self, key: K) -> Bool { return mapRemove(self, key) }
+    // Stores `value` under `key`, replacing what was there, and answers the value
+    // it replaced -- `none` when the key is new. `m[key] = value` is this with the
+    // answer dropped.
+    public inline(always) fn set(self, key: K, value: V) -> V? {
+        let found = mapProbe(self, key, true)
+        if (found >= 0) {
+            __builtin_assume((found as U32) < (list_len(self.entryValues) as U32))
+            let previous = copyOf(list_get(self.entryValues, found))
+            list_set(self.entryValues, found, copyOf(value))
+            return previous
+        }
+        mapInsert(self, key, value, 0 - found - 2)
+        return none
+    }
 
-    // Removes every entry.
-    public fn clear(self) { mapClear(self) }
+    // The value for `key`, storing `value` first when the key is absent: one
+    // lookup where `if not m.contains(k) { m.set(k, v) }` then a read is three.
+    public fn getOrInsert(self, key: K, value: V) -> V {
+        let found = mapProbe(self, key, true)
+        if (found >= 0) { return copyOf(list_get(self.entryValues, found)) }
+        mapInsert(self, key, value, 0 - found - 2)
+        return copyOf(value)
+    }
+
+    // `getOrInsert` with the value built only when the key is absent:
+    // `m.getOrInsertWith(k, || expensive())`. **`make` runs at most once and must
+    // not touch this map.** The key is probed again after it returns, so a `make`
+    // that did store this key is not overwritten -- that value is the answer.
+    public fn getOrInsertWith<F>(self, key: K, make: F) -> V {
+        let found = mapProbe(self, key, true)
+        if (found >= 0) { return copyOf(list_get(self.entryValues, found)) }
+        let value = make.call()
+        let again = mapProbe(self, key, true)
+        if (again >= 0) { return copyOf(list_get(self.entryValues, again)) }
+        mapInsert(self, key, value, 0 - again - 2)
+        return copyOf(value)
+    }
+
+    // Replaces an existing value with one key lookup. The callback receives the old
+    // value and returns its replacement; it runs exactly once on a hit and never
+    // on a miss. Returns whether the key existed. Does not insert or reorder.
+    // Example: counts.update(key, |value: Int| value + 1).
+    public fn update<F>(self, key: K, update: F) -> Bool {
+        let at = mapProbe(self, key, false)
+        if (at < 0) { return false }
+        let value = update.call(copyOf(list_get(self.entryValues, at)))
+        list_set(self.entryValues, at, copyOf(value))
+        return true
+    }
+
+    // `update` that also stores: replaces the value under `key` with `change(old)`, or
+    // inserts `initial` when the key is absent, with one lookup. The counting idiom:
+    // `counts.upsert(word, 1, |n: Int| n + 1)`. Like `update`, `change` runs once, on a
+    // hit only, and must not touch this map.
+    public fn upsert<F>(self, key: K, initial: V, change: F) {
+        let found = mapProbe(self, key, true)
+        if (found >= 0) {
+            let value = change.call(copyOf(list_get(self.entryValues, found)))
+            list_set(self.entryValues, found, copyOf(value))
+            return
+        }
+        mapInsert(self, key, initial, 0 - found - 2)
+    }
+
+    // Changes the value under `key` where it is stored, and answers whether the key was
+    // there. `change` is lent the stored value itself, so a `Vec` or a struct value is
+    // changed with no copy and no store back: `m.modify(key, |inout v: Vec<Int>| { v.push(x) })`
+    // where `m[key].push(x)` would read a copy, change it and store it, copying the `Vec`
+    // twice. The parameter is `inout`, which a `Vec`, a struct, an array or a slice can
+    // be; for an `Int` or a `String` value, `update` is the spelling. `change` runs once, on
+    // a hit only, and must not touch this map: a closure cannot capture the map it is
+    // lent from (a capture is a move or a copy), and one that reaches it through a
+    // global only keeps the column from releasing at the store (src/ir/columns.psm).
+    public fn modify<F>(self, key: K, change: F) -> Bool {
+        let at = mapProbe(self, key, false)
+        if (at < 0) { return false }
+        change.call(self.entryValues[at])
+        return true
+    }
+
+    // Removes `key`, answering whether it was there. The value goes with it, and
+    // the last entry moves into its place.
+    public fn remove(self, key: K) -> Bool {
+        let entry = mapProbe(self, key, false)
+        if (entry < 0) { return false }
+        mapRemoveEntry(self, entry)
+        return true
+    }
+
+    // Removes `key` and answers the value it held, or `none`. `remove` is this
+    // for a caller that does not want the value.
+    public fn take(self, key: K) -> V? {
+        let entry = mapProbe(self, key, false)
+        if (entry < 0) { return none }
+        let value = copyOf(list_get(self.entryValues, entry))
+        mapRemoveEntry(self, entry)
+        return value
+    }
+
+    // Keeps the entries `keep(key, value)` accepts and removes the rest, in one
+    // pass. **The kept entries keep their relative order** (unlike `remove`): they
+    // are swapped forward and the rest truncated off the end, as Vec.retain does,
+    // and the probe table is rebuilt once.
+    // Example: m.retain(|key: String, value: Int| value > 10).
+    public fn retain<F>(self, keep: F) {
+        let n = list_len(self.entryKeys)
+        let mut write = 0
+        for read in 0..<n {
+            if (keep.call(copyOf(list_get(self.entryKeys, read)), copyOf(list_get(self.entryValues, read)))) {
+                if (read != write) {
+                    list_swap(self.entryKeys, write, read)
+                    list_swap(self.entryValues, write, read)
+                }
+                write = write + 1
+            }
+        }
+        if (write == n) { return }
+        list_truncate(self.entryKeys, write)
+        list_truncate(self.entryValues, write)
+        mapPlaceAll(self)
+    }
+
+    // Room for `additional` more entries on top of what the map holds, so the
+    // inserts that follow do not grow the table. (`withCapacity(n)` is the
+    // initial size of an empty map; this is relative, as Rust's `reserve` is.)
+    public fn reserve(self, additional: Int) {
+        let want = list_len(self.entryKeys) + additional
+        let mut buckets = self.mask + 1
+        if (buckets / 2 >= want) { return }
+        while (buckets / 2 < want) { buckets = buckets * 2 }
+        list_reserve(self.entryKeys, want)
+        list_reserve(self.entryValues, want)
+        list_reserve(self.slots, buckets)
+        for i in (self.mask + 1)..<buckets { list_push(self.slots, -1) }
+        self.mask = buckets - 1
+        mapPlaceAll(self)
+    }
+
+    // Gives back the room past what the map holds: the columns shrink to their length and the
+    // probe table to the smallest power of two that keeps the entries at or under half full
+    // (never fewer buckets than a new map's), which also clears the tombstones. `capacity`
+    // reads what is left. The next insert past it grows again.
+    public fn shrinkToFit(self) {
+        let want = list_len(self.entryKeys)
+        let mut buckets = mapInitialCapacity()
+        while (buckets / 2 < want) { buckets = buckets * 2 }
+        list_shrink_to_fit(self.entryKeys)
+        list_shrink_to_fit(self.entryValues)
+        if (buckets < self.mask + 1) {
+            list_truncate(self.slots, buckets)
+            list_shrink_to_fit(self.slots)
+            self.mask = buckets - 1
+        }
+        mapPlaceAll(self)
+    }
+
+    // Removes every entry, releasing the keys and values, and **keeps the table's
+    // capacity**: a map cleared and refilled to its old size does not grow again.
+    public fn clear(self) {
+        list_truncate(self.entryKeys, 0)
+        list_truncate(self.entryValues, 0)
+        mapPlaceAll(self)
+    }
 
     // The keys, in position order, as the `Vec` `values()` is for the values. The
     // `Vec` owns its own copy of each key and releases it with the rest; the map
     // keeps its own. `keyAt` reads one in place when no copy is wanted.
     public fn keys(self) -> Vec<K> {
         let mut out: Vec<K> = []
-        for i in 0..<list_len(self.entryKeys) { out.push(list_get(self.entryKeys, i)) }
+        for i in 0..<list_len(self.entryKeys) { out.push(copyOf(list_get(self.entryKeys, i))) }
         return out
     }
 
@@ -578,14 +862,15 @@ impl < K: Key + Copy, V > HashMap<K, V> {
     // so this copies nothing that needs releasing.
     public fn values(self) -> Vec<V> {
         let mut out: Vec<V> = []
-        for i in 0..<list_len(self.entryValues) { out.push(list_get(self.entryValues, i)) }
+        for i in 0..<list_len(self.entryValues) { out.push(copyOf(list_get(self.entryValues, i))) }
         return out
     }
 
-    // The key and value at a position in `[0, length)`, for iterating.
-    public fn keyAt(self, index: Int) -> K { return list_get(self.entryKeys, index) }
+    // The key and value at a position in `[0, count)`, for iterating. Positions are
+    // insertion order, and stay valid until the next insert or removal.
+    public fn keyAt(self, index: Int) -> K { return copyOf(list_get(self.entryKeys, index)) }
     // The value of the entry at position `index` in insertion order.
-    public fn valueAt(self, index: Int) -> V { return list_get(self.entryValues, index) }
+    public fn valueAt(self, index: Int) -> V { return copyOf(list_get(self.entryValues, index)) }
 }
 
 // HashSet<K> -- a collection of distinct keys.
@@ -772,10 +1057,13 @@ impl < K: Key + Copy > HashSet<K> {
         return set
     }
 
-    // The number of entries.
-    public prop length(self) -> Int { return list_len(self.entryKeys) }
-    // Whether there are no entries.
+    // The number of keys.
+    public prop count(self) -> Int { return list_len(self.entryKeys) }
+    // Whether there are no keys.
     public prop isEmpty(self) -> Bool { return list_len(self.entryKeys) == 0 }
+    // How many keys the set holds before the table next grows: what `withCapacity`
+    // sets and `clear` keeps.
+    public prop capacity(self) -> Int { return (self.mask + 1) / 2 }
 
     // Adds `key`; true when it was not there already.
     public fn insert(self, key: K) -> Bool {
@@ -788,26 +1076,234 @@ impl < K: Key + Copy > HashSet<K> {
     // Whether `key` is in the set.
     public fn contains(self, key: K) -> Bool { return hashSetProbe(self, key, false) >= 0 }
 
-    // True when the key was there to remove. Moves the last key into its place.
+    // Removes `key`, answering whether it was there. The last key moves into its place.
     public fn remove(self, key: K) -> Bool {
         let entry = hashSetProbe(self, key, false)
         if (entry < 0) { return false }
-        let bucket = hashSetBucketOfEntry(self, entry)
-        let last = list_len(self.entryKeys) - 1
-        if (entry != last) {
-            list_set(self.slots, hashSetBucketOfEntry(self, last), entry)
-            list_swap(self.entryKeys, entry, last)
-        }
-        list_set(self.slots, bucket, mapTombstone())
-        list_truncate(self.entryKeys, last)
-        self.tombstones = self.tombstones + 1
-        if (self.tombstones > (self.mask + 1) / 4) { hashSetPlaceAll(self) }
+        hashSetRemoveEntry(self, entry)
         return true
     }
 
-    // Removes every key.
+    // The key the set stores that equals `key`, or `none`. **A copy**: the set keeps its
+    // own, and a `Key + Copy` set cannot hand out the stored one. That is still the
+    // answer `contains` cannot give when equal keys differ in what `eq` ignores -- a
+    // struct keyed on `id` with a name beside it -- and it is how a canonical value is
+    // recovered. Sharing one object between holders (interning) is not
+    // something a set can offer: it is shared ownership, which the language does not have
+    // (developer docs, performance decisions: "A `Hasher` costs nothing").
+    public fn get(self, key: K) -> K? {
+        let entry = hashSetProbe(self, key, false)
+        if (entry < 0) { return none }
+        return copyOf(list_get(self.entryKeys, entry))
+    }
+
+    // Removes `key` and answers the key that was stored, or `none`. `remove` for a
+    // caller that wants the key back; like `get`, what comes back is a copy, and the
+    // stored one is released.
+    public fn take(self, key: K) -> K? {
+        let entry = hashSetProbe(self, key, false)
+        if (entry < 0) { return none }
+        let taken = copyOf(list_get(self.entryKeys, entry))
+        hashSetRemoveEntry(self, entry)
+        return taken
+    }
+
+    // Flips membership with one lookup: adds an absent key, removes a present one.
+    // Answers whether `key` is in the set afterwards.
+    public fn toggle(self, key: K) -> Bool {
+        let found = hashSetProbe(self, key, true)
+        if (found >= 0) {
+            hashSetRemoveEntry(self, found)
+            return false
+        }
+        hashSetInsert(self, key, 0 - found - 2)
+        return true
+    }
+
+    // Keeps the keys `keep` accepts and removes the rest. **The kept keys keep their
+    // relative order.** `keep` is asked about every key before anything is removed, so
+    // it may read this set but its answer never depends on the removals.
+    // Example: s.retain(|k: Int| k % 2 == 0).
+    public fn retain<F>(self, keep: F) {
+        let mut flags: Vec<Bool> = []
+        for i in 0..<list_len(self.entryKeys) { flags.push(keep.call(copyOf(list_get(self.entryKeys, i)))) }
+        hashSetKeepFlagged(self, flags)
+    }
+
+    // Room for `additional` more keys on top of what the set holds, so the inserts
+    // after it do not grow the table. Relative, as `HashMap.reserve` is.
+    public fn reserve(self, additional: Int) {
+        let want = list_len(self.entryKeys) + additional
+        let mut buckets = self.mask + 1
+        if (buckets / 2 >= want) { return }
+        while (buckets / 2 < want) { buckets = buckets * 2 }
+        list_reserve(self.entryKeys, want)
+        list_reserve(self.slots, buckets)
+        for i in (self.mask + 1)..<buckets { list_push(self.slots, -1) }
+        self.mask = buckets - 1
+        hashSetPlaceAll(self)
+    }
+
+    // Gives back the room past what the set holds, as `HashMap.shrinkToFit` does.
+    public fn shrinkToFit(self) {
+        let want = list_len(self.entryKeys)
+        let mut buckets = mapInitialCapacity()
+        while (buckets / 2 < want) { buckets = buckets * 2 }
+        list_shrink_to_fit(self.entryKeys)
+        if (buckets < self.mask + 1) {
+            list_truncate(self.slots, buckets)
+            list_shrink_to_fit(self.slots)
+            self.mask = buckets - 1
+        }
+        hashSetPlaceAll(self)
+    }
+
+    // Removes every key, releasing them, and **keeps the table's capacity**.
     public fn clear(self) {
         list_truncate(self.entryKeys, 0)
         hashSetPlaceAll(self)
     }
+
+    // ---- Set algebra. Each answers a new set and leaves both operands alone; the
+    // keys of the result are copies. The order of the result is this set's keys, then
+    // the other's new ones, and is not a promise.
+
+    // The keys in either set: A ∪ B.
+    public fn union(self, other: HashSet<K>) -> HashSet<K> {
+        let out: HashSet<K> = hashSetNew<K>()
+        out.insertAll(self)
+        out.insertAll(other)
+        return out
+    }
+
+    // The keys in both sets: A ∩ B.
+    public fn intersection(self, other: HashSet<K>) -> HashSet<K> {
+        let out: HashSet<K> = hashSetNew<K>()
+        for i in 0..<list_len(self.entryKeys) {
+            let key = copyOf(list_get(self.entryKeys, i))
+            if (hashSetProbe(other, key, false) >= 0) { out.insert(key) }
+        }
+        return out
+    }
+
+    // The keys in this set and not in `other`: A − B.
+    public fn difference(self, other: HashSet<K>) -> HashSet<K> {
+        let out: HashSet<K> = hashSetNew<K>()
+        for i in 0..<list_len(self.entryKeys) {
+            let key = copyOf(list_get(self.entryKeys, i))
+            if (hashSetProbe(other, key, false) < 0) { out.insert(key) }
+        }
+        return out
+    }
+
+    // The keys in exactly one of the two sets: A △ B.
+    public fn symmetricDifference(self, other: HashSet<K>) -> HashSet<K> {
+        let out: HashSet<K> = hashSetNew<K>()
+        for i in 0..<list_len(self.entryKeys) {
+            let key = copyOf(list_get(self.entryKeys, i))
+            if (hashSetProbe(other, key, false) < 0) { out.insert(key) }
+        }
+        for i in 0..<list_len(other.entryKeys) {
+            let key = copyOf(list_get(other.entryKeys, i))
+            if (hashSetProbe(self, key, false) < 0) { out.insert(key) }
+        }
+        return out
+    }
+
+    // Whether every key of this set is in `other`: A ⊆ B.
+    public fn isSubsetOf(self, other: HashSet<K>) -> Bool {
+        if (list_len(self.entryKeys) > list_len(other.entryKeys)) { return false }
+        for i in 0..<list_len(self.entryKeys) {
+            if (hashSetProbe(other, list_get(self.entryKeys, i), false) < 0) { return false }
+        }
+        return true
+    }
+
+    // Whether every key of `other` is in this set: A ⊇ B.
+    public fn isSupersetOf(self, other: HashSet<K>) -> Bool { return other.isSubsetOf(self) }
+
+    // Whether the two sets share no key.
+    public fn isDisjoint(self, other: HashSet<K>) -> Bool {
+        for i in 0..<list_len(self.entryKeys) {
+            if (hashSetProbe(other, list_get(self.entryKeys, i), false) >= 0) { return false }
+        }
+        return true
+    }
+
+    // ---- Bulk mutation. `other` is a set or a `Vec` of keys.
+
+    // Adds every key of `other`.
+    public fn insertAll(self, other: HashSet<K>) {
+        for i in 0..<list_len(other.entryKeys) { self.insert(copyOf(list_get(other.entryKeys, i))) }
+    }
+    public fn insertAll(self, other: Vec<K>) {
+        for i in 0..<list_len(other) { self.insert(list_get(other, i)) }
+    }
+
+    // Removes every key found in `other`. Walks `other` from the back, so that
+    // `s.removeAll(s)` is the removal it reads as: a removal moves the last key into
+    // the gap, and the back is the part already done.
+    public fn removeAll(self, other: HashSet<K>) {
+        let mut i = list_len(other.entryKeys)
+        while (i > 0) {
+            i = i - 1
+            self.remove(copyOf(list_get(other.entryKeys, i)))
+        }
+    }
+    public fn removeAll(self, other: Vec<K>) {
+        for i in 0..<list_len(other) { self.remove(list_get(other, i)) }
+    }
+
+    // Keeps only the keys found in `other`, in their order. Every key is asked about
+    // before any is removed, so `s.retainAll(s)` changes nothing.
+    public fn retainAll(self, other: HashSet<K>) {
+        let mut flags: Vec<Bool> = []
+        for i in 0..<list_len(self.entryKeys) {
+            flags.push(hashSetProbe(other, list_get(self.entryKeys, i), false) >= 0)
+        }
+        hashSetKeepFlagged(self, flags)
+    }
+    public fn retainAll(self, other: Vec<K>) {
+        let lookup: HashSet<K> = hashSetNew<K>()
+        lookup.insertAll(other)
+        self.retainAll(lookup)
+    }
+}
+
+// Removes the key at dense position `entry`, moving the last key into it. The
+// removed key is released by the truncate, having been swapped to the end.
+private fn hashSetRemoveEntry<K: Key + Copy>(set: HashSet<K>, entry: Int) {
+    let bucket = hashSetBucketOfEntry(set, entry)
+    let last = list_len(set.entryKeys) - 1
+    if (entry != last) {
+        list_set(set.slots, hashSetBucketOfEntry(set, last), entry)
+        list_swap(set.entryKeys, entry, last)
+    }
+    list_set(set.slots, bucket, mapTombstone())
+    list_truncate(set.entryKeys, last)
+    set.tombstones = set.tombstones + 1
+    if (set.tombstones > (set.mask + 1) / 4) { hashSetPlaceAll(set) }
+}
+
+// Keeps the keys whose flag is true, in their order: they are swapped forward and
+// the rest truncated off the end, as Vec.retain does, and the probe table is
+// rebuilt once.
+private fn hashSetKeepFlagged<K: Key + Copy>(set: HashSet<K>, keep: Vec<Bool>) {
+    let n = list_len(set.entryKeys)
+    let mut write = 0
+    for read in 0..<n {
+        if (list_get(keep, read)) {
+            if (read != write) { list_swap(set.entryKeys, write, read) }
+            write = write + 1
+        }
+    }
+    if (write == n) { return }
+    list_truncate(set.entryKeys, write)
+    hashSetPlaceAll(set)
+}
+
+// Not API: the target of `for key in set` (src/sema/checker.psm, semaForEachSet).
+// A set has no positional contract, so there is no method for it.
+public fn hashSetKeyAt<K: Key + Copy>(set: HashSet<K>, index: Int) -> K {
+    return copyOf(list_get(set.entryKeys, index))
 }

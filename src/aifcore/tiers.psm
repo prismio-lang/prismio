@@ -216,15 +216,6 @@ public fn aif_cause_build(id: Int, domain: Int) -> Int {
     return causeLen
 }
 
-public fn aif_cause_len() -> Int {
-    return causeLen
-}
-
-public fn aif_cause_site(i: Int) -> Int {
-    if (i < 0 or i >= causeLen) { return -1 }
-    return causeSite[i]
-}
-
 public fn aif_cause_rule(i: Int) -> Int {
     if (i < 0 or i >= causeLen) { return -1 }
     return causeRule[i]

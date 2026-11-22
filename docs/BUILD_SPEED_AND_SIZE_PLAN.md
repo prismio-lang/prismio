@@ -103,9 +103,40 @@ runs on one thread. On the compiler, the pipeline splits like this (opt `-time-t
       also `minsize`) and the O2 pipeline runs; `-Oz` leaves the loop vectorizer off, as clang
       does. On suite.psm `__text` 181,320 → 115,368 (`-Os`) and 81,532 (`-Oz`). The outliner,
       which `minsize` turns on, is never on in a speed build: forced on, it cost 4.1% geomean.
+- [x] **3c. No thread-local setup in a program that never spawns** (built 2026-11-12). 3a's
+      hello had grown back to 51,160 bytes: the slab allocator's thread key (`pthread_once_t`,
+      two thread-locals) and, in 149 of 337 test programs, the cycle collector's `pthread_once_t`
+      with the worker thread-locals, all initialised data and so a page of `__DATA`. Neither was
+      reachable without a second thread. LLVM kept them for two reasons: it does not fold a
+      thread-local's address against a global's (`slab_cache() == &slab_tls`), and it never folds
+      a `volatile` read (`prismio_memory_threads_enabled`). Now `slab_on_worker()` and a
+      non-volatile flag off Windows: hello 34,120, the 337 programs 19.90 MB → 14.06 MB, run time
+      0.994 geomean against a 1.0005 control. **How to check a new runtime global:**
+      `size -m hello` must show `__DATA` with `__bss` only.
+- [ ] **3d (measured 2026-11-12, not built). The compiler's own download.** 11.6 MB of the
+      62.75 MB compiler is local symbol names (`strip -x`: 51.15 MB; builds and `run --jit`
+      unchanged, at the cost of names in a compiler crash backtrace). The binary is 22.9 MB as
+      gzip and 14.7 MB as xz (13.5 MB stripped).
 
 ## 4 · Rejected, with the measurement
 
+- **Marking the generic copy of a guarded loop cold** (`llvm.loop.unroll.disable`,
+  `vectorize.enable false`, and 2000:1 weights on the flat guard; 2026-11-12). suite.psm
+  `__text` 191,488 → 181,796 with the loop marks, 175,876 with the weights too, and the build
+  6% faster (768 → 722 ms). Run time is at parity on the geomean (0.9999), but `switch_dispatch`
+  is 9% slower every time: its hot loop goes from 31 to 37 instructions, constants
+  rematerialised inside it by a register allocator that now sees a different function.
+  `-hot-cold-split` restores that loop and gives the size back (it runs after the unroller).
+  The copies are the reason Prismio's `__text` is 1.75x the C++ arm's (109,092), so this is
+  the lever; it needs a form that does not move the hot copy.
+- **Dropping the descending copy of `0..<n`** (2026-11-12, measurement only: it changes what a
+  negative `n` does). The frontend's IR halves, 98,189 → 51,843 lines, and the build is 5–7%
+  faster, but `__text` falls only 1.5%: LLVM already deletes most of those copies. A real
+  version is a direction proof from the range facts, and it is a compile-time item.
+- **`-Wl,-x` on programs.** 1.9% over the 337 test programs, 3.3% on suite.psm, paid for in
+  symbol names in a crash report or a profile.
+- **`-Wl,-no_data_const`.** Saves the same page as 3c by putting `__got` in `__DATA`, which
+  gives up the read-only GOT. 3c gets the page without that.
 - **Skip LLVM passes where AIF proves them unnecessary** (`optnone` or a micro-pipeline
   for "pure stack" functions, TBAA and MemorySSA off for non-aliased code; claimed
   40–55% of backend time). Per-function `-time-trace` attribution: on suite.psm, loop-free
@@ -149,6 +180,7 @@ runs on one thread. On the compiler, the pipeline splits like this (opt `-time-t
 
 ## Resuming
 
-1, 2a-2c, 3a and 3b were built and verified on 2026-10-14 (see the CHANGELOG). What is left is 2d,
-which starts from the inventory above. The Windows build has no bridge, so 2a and the lazy
+1, 2a-2c, 3a and 3b were built and verified on 2026-10-14, 3c on 2026-11-12 (see the CHANGELOG).
+What is left is 2d, which starts from the inventory above, and 3d. Linux and Windows program
+sizes have not been measured at all. The Windows build has no bridge, so 2a and the lazy
 partitions do nothing there until docs/LLVM_BRIDGE_PLAN.md step 2 lands.

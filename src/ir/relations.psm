@@ -37,23 +37,23 @@ import ast.types
 import common.text
 import std.string
 
-let REL_ZERO = 0
-let REL_LOOP = 1
-let REL_FROZEN = 2
-let REL_LOCAL = 3
-let REL_ANCHOR = 4
-let REL_LEN = 5
+const REL_ZERO = 0
+const REL_LOOP = 1
+const REL_FROZEN = 2
+const REL_LOCAL = 3
+const REL_ANCHOR = 4
+const REL_LEN = 5
 
-let REL_MAX_VARS = 24
-let REL_JOIN_ROUNDS = 2
-let REL_MAX_ROUNDS = 12
-let REL_LITERAL_DIGITS = 6
+const REL_MAX_VARS = 24
+const REL_JOIN_ROUNDS = 2
+const REL_MAX_ROUNDS = 12
+const REL_LITERAL_DIGITS = 6
 
-let REL_INT_MAX = "2147483647"
-let REL_INT_MIN = "-2147483648"
+const REL_INT_MAX = "2147483647"
+const REL_INT_MIN = "-2147483648"
 
-let REL_FIX = 0
-let REL_EMIT = 1
+const REL_FIX = 0
+const REL_EMIT = 1
 
 struct RelLoop {
     // The variables, indexed alike. `names` holds the local's name, the assigned
@@ -486,6 +486,7 @@ impl RelLoop {
                 dbmSetBottom(self.count, self.cur)
                 return
             }
+            _ => { }
         }
         if (rangeIsLoop(s)) {
             self.walkNested(rl, p)

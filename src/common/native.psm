@@ -1,0 +1,137 @@
+// The native compiler interface: every `compiler_*` function the driver, the project commands and the
+// backend reach in C. It is one module because each declaration is FFI surface with an ownership contract
+// (`produce(rt_free)` against `alias`), and a contract written in several places is one that can drift
+// (CLAUDE.md, "An allocation returned to Prismio goes through `rt_base_alloc`"). It sits in `common` so that
+// `ir`, `symbols` and `aif` can use it without importing upward.
+//
+// Do not declare a `compiler_*` function anywhere else: import this module.
+
+// Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
+// a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
+// does the same. The caller owns them.
+public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(rt_free)
+/**
+   Every path through both mallocs, including the failure paths, which allocate a
+   one-byte empty string rather than returning a literal. That is the same
+   invariant Level 4 had to give str_substring and str_trim -- anything declared
+   to return String returns something a release can take -- and it is what makes
+   `produce` true here rather than nearly true.
+*/
+public extern fn compiler_runtime_source_hash() -> String produce(rt_free)
+/**
+   `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
+   property of the triple, which is why it is not in the target record: two hosts
+   building the same target legitimately pass different paths, and an SDK the
+   compiler picked for itself is the kind of helpful guess that ends in a link
+   error someone spends an afternoon on.
+*/
+public extern fn compiler_set_sysroot(path: String borrow)
+/**
+   The freestanding build (`--freestanding`): a program with no operating system
+   under it. The first two are the driver's, the rest the backend's; each takes
+   effect when the object is written and the program is linked, not here.
+   `compiler_native_source` is the manifest's `native { source(...) }` for a
+   single-file build, because a kernel's boot stub is a source file and a
+   single-file build has no manifest to name it in.
+*/
+public extern fn compiler_set_freestanding(on: Int)
+public extern fn compiler_link_flag(flag: String borrow) -> Int
+public extern fn compiler_native_source(path: String borrow) -> Int
+public extern fn compiler_native_flag(flag: String borrow) -> Int
+// A `static const char*` in C, so the caller borrows it. See PRISMIO_HOST_ABI in
+// runtime/prismio_runtime.h for what the token means and when it moves.
+public extern fn compiler_host_abi() -> String alias
+public extern fn compiler_build_executable(irFile: String, exeFile: String) -> Int
+public extern fn compiler_installed_runtime_hash() -> String produce(rt_free)
+// Starts a program with the arguments queued by compiler_spawn_arg, as an
+// argument vector -- never a shell line -- in `directory` ("" keeps this
+// process's), and answers its exit status, or -1 when it could not be started.
+public extern fn compiler_spawn_arg(argument: String borrow)
+public extern fn compiler_spawn_wait(program: String borrow, directory: String borrow) -> Int
+public extern fn compiler_library_emission_module() -> String produce(rt_free)
+// `-g`. Two things the driver does differently once the module carries debug
+// info: the object step drops to -O0, and on Darwin a .dSYM is written before
+// the object -- which is where Mach-O keeps the DWARF -- is deleted.
+public extern fn compiler_set_debug_info(on: Int)
+// SPEC 7.3. Tells the build to compile the runtime with its own allocator
+// pointed at the verify shims, so the strings and lists it allocates are in the
+// same accounting as everything ir_alloc_object handed out.
+public extern fn compiler_set_verify_mode(on: Int)
+// `--freestanding`: no C library under the program, and only the `std` modules
+// freestandingSafeModule names over it.
+public extern fn compiler_is_freestanding() -> Int
+public extern fn compiler_temp_ir_path(sourcePath: String) -> String produce(rt_free)
+// `run --jit`: merges the imported standard-library bitcode into `irFile`, as a
+// build does, and runs `main` in this process.
+public extern fn compiler_jit_run(irFile: String borrow, programName: String borrow) -> Int
+// Declared here as well as in the modules that share them: the merge keeps the
+// first EXTERN_FUNCTION of a given name and drops the rest, which is what lets
+// each module name the externs it actually uses.
+public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(rt_free)
+public extern fn compiler_plib_error() -> String produce(rt_free)
+public extern fn compiler_use_freestanding_runtime()
+public extern fn compiler_publish_file(fromPath: String, toPath: String) -> Int
+// LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
+// "times out" is a case that can actually occur rather than a clause nothing
+// implements.
+public extern fn compiler_run_workload(exeFile: String, timeoutSeconds: Int) -> Int
+// Forces the driver's link to compile the runtime rather than take an installed
+// runtime.lib, which may predate rt_profile_*. See the note at g_workload_mode.
+public extern fn compiler_set_workload_mode(on: Int)
+// Same ".prismio-<stem>-<suffix>" convention as compiler_temp_ir_path, and the
+// same malloc'd result.
+public extern fn compiler_temp_path_for(sourcePath: String, suffix: String) -> String produce(rt_free)
+// The same, with the pid in the name. For a temporary that must not be shared
+// between two compiles of one source -- RESULTS-layout 7, where sharing three of
+// them made the IR differential report a false difference under any concurrent
+// load. `compiler_publish_file` is how the one artifact that *is* supposed to
+// have a predictable name gets there afterwards.
+public extern fn compiler_temp_private_path(sourcePath: String, suffix: String) -> String produce(rt_free)
+public extern fn compiler_plib_module_registered(module: String borrow) -> Int
+// Whether a program is on PATH; see runtime/build_driver.c.
+public extern fn compiler_program_on_path(name: String borrow) -> Int
+// Project-host executables are built beside their active local generation. The
+// candidate has to start before it can replace that generation, and promotion
+// is a binary rename rather than compiler_publish_file's text copy.
+public extern fn compiler_check_executable(exeFile: String borrow) -> Int
+// Asks `exeFile --internal-host-abi` with this compiler's own token.
+public extern fn compiler_check_host_abi(exeFile: String borrow) -> Int
+// Builds `<root>/lib/runtime/*.bc` and `<root>/stdlib/*.plib` with `compiler`,
+// from the Prismio checkout that compiler was found in. Returns how many
+// standard-library modules the toolchain now has -- rebuilt here or reused from
+// `<root>/lib/toolchain.stamp`, which records what each artifact was built from
+// so an unchanged input is not built twice -- 0 when there is no checkout to
+// build them from, and -1 on failure. Reads both paths and keeps neither.
+public extern fn compiler_emit_local_toolchain(root: String borrow,
+                                        compiler: String borrow) -> Int
+// The command line, forwarded as an argument vector; answers the host's status.
+public extern fn compiler_forward_cli(host: String borrow) -> Int
+// `<host>.trusted`, written when this machine promotes a host, and whether the
+// file at `host` is still the one it was written for. See runtime/build_driver.c.
+public extern fn compiler_host_stamp_matches(host: String borrow) -> Int
+public extern fn compiler_host_stamp_write(host: String borrow) -> Int
+public extern fn compiler_promote_executable(candidateFile: String borrow,
+                                      activeFile: String borrow) -> Int
+// The checkout a toolchain host's runtime and standard library are built from:
+// the project's own root, before any search relative to the working directory.
+public extern fn compiler_set_toolchain_root(root: String borrow)
+public extern fn compiler_is_current_executable(path: String borrow) -> Int
+public extern fn compiler_is_hosted() -> Int
+// A target's linker and native-compile inputs, recorded one at a time and
+// cleared by compiler_link_reset. Paths reach this boundary already resolved
+// against the manifest root; the C driver quotes every argument before it builds
+// a command.
+public extern fn compiler_link_file(path: String borrow) -> Int
+public extern fn compiler_link_framework(name: String borrow) -> Int
+public extern fn compiler_link_library(name: String borrow) -> Int
+public extern fn compiler_link_reset()
+public extern fn compiler_link_response_file(path: String borrow) -> Int
+public extern fn compiler_link_search(path: String borrow) -> Int
+public extern fn compiler_native_define(definition: String borrow) -> Int
+public extern fn compiler_native_include(directory: String borrow) -> Int
+public extern fn compiler_native_response_file(path: String borrow) -> Int
+public extern fn compiler_set_export_dynamic(on: Int)
+public extern fn compiler_set_installed_runtime(on: Int)
+// Everything under a directory except the running executable; see
+// runtime/build_driver.c.
+public extern fn compiler_remove_tree(path: String borrow) -> Int

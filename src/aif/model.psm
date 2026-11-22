@@ -68,10 +68,6 @@ import common.diagnostics
 //
 // The engine itself -- the containers, the solver and the queries codegen asks -- is the `aifcore` package.
 
-import ast.nodes
-import ast.types
-import common.text
-import common.diagnostics
 import std.string
 import aifcore.call_graph
 import aifcore.constraints
@@ -81,33 +77,28 @@ import aifcore.sites
 
 // A mask, not an enum: the gate reports every clause that rejected, because the
 // first one is reliably the wrong thing to act on. See src/aifcore/.
-let AIF_ARENA_B_NOT_T1 = 1
-let AIF_ARENA_B_NO_STACK = 2
-let AIF_ARENA_B_IN_CONTAINER = 4
-let AIF_ARENA_B_IS_LIST = 8
-let AIF_ARENA_B_NO_REGION = 16
-let AIF_ARENA_B_ESCAPES = 32
-let AIF_ARENA_B_OUTLIVES = 64
+const AIF_ARENA_B_NOT_T1 = 1
+const AIF_ARENA_B_NO_STACK = 2
+const AIF_ARENA_B_IN_CONTAINER = 4
+const AIF_ARENA_B_IS_LIST = 8
+const AIF_ARENA_B_NO_REGION = 16
+const AIF_ARENA_B_ESCAPES = 32
+const AIF_ARENA_B_OUTLIVES = 64
 
 // The obligations `aif_fn_bracket_blockers` reports, as a mask. Every failing
 // one is reported, not the first -- the same decision as AIF_ARENA_B_*, for the
 // same reason: three sessions acted on a gate's first clause and each time the
 // site was rejected by two more.
-let AIF_BR_B_GLOBAL = 1
-let AIF_BR_B_PARAM_STORE = 2
-let AIF_BR_B_OPAQUE = 4
-let AIF_BR_B_DROP = 8
-let AIF_BR_B_SHARED_BODY = 16
+const AIF_BR_B_GLOBAL = 1
+const AIF_BR_B_PARAM_STORE = 2
+const AIF_BR_B_OPAQUE = 4
+const AIF_BR_B_DROP = 8
+const AIF_BR_B_SHARED_BODY = 16
 // Regime (a)'s call-site half, split out from SHARED_BODY 2026-08-28. Reported
 // separately because the repair is different: SHARED_BODY needs specialisation
 // (regime (b)), while this one needs only that the callers agree on a region,
 // which `bracketRegimeOk` asks and often finds they already do.
-let AIF_BR_B_MULTI_CALL = 32
-
-// The string surface comes from utils.psm; only what it does not declare is
-// declared here. Redeclaring one with a different signature would be merged
-// away silently by resolveImports -- whichever module was reached first wins.
-public extern fn ir_llvm_version() -> String alias
+const AIF_BR_B_MULTI_CALL = 32
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -116,32 +107,32 @@ public extern fn ir_llvm_version() -> String alias
 // Site kinds, mirroring src/aifcore/. Only "struct" is load-bearing --
 // the T0 clause and the copy rule test it -- but the manifest reports the split
 // because it is where the residue turns out to live.
-let AIF_KIND_STRUCT = 0
-let AIF_KIND_STRING = 1
-let AIF_KIND_ARRAY = 2
-let AIF_KIND_LIST = 3
-let AIF_KIND_OPAQUE = 4
+const AIF_KIND_STRUCT = 0
+const AIF_KIND_STRING = 1
+const AIF_KIND_ARRAY = 2
+const AIF_KIND_LIST = 3
+const AIF_KIND_OPAQUE = 4
 
 // Default round budget. INFERENCE 5.7 makes the budget the only difference
 // between optimisation levels; 200 is far past what any observed program needs
 // (the compiler's own source converges in single digits), so exhausting it is a
 // signal rather than a routine outcome.
-let AIF_DEFAULT_ROUNDS = 200
+const AIF_DEFAULT_ROUNDS = 200
 
 // FFI contract codes. 0 and 1 are FFI 5.1's `borrow` and `retain`; anything >= 2
 // is `retain_in(k)` with k = code - 2, which says the callee stores this
 // argument into argument k, so it escapes exactly as far as that container does
 // and no further.
-let AIF_FFI_BORROW = 0
-let AIF_FFI_RETAIN = 1
+const AIF_FFI_BORROW = 0
+const AIF_FFI_RETAIN = 1
 // The callee takes ownership and frees it. Nothing on a stack or in an arena can
 // be handed to a free, so this bars T0 the way an explicit `drop` does, and the
 // value leaves this frame's control so its escape rises with it.
-let AIF_FFI_CONSUME = 2
+const AIF_FFI_CONSUME = 2
 // The callee writes through the pointer and does not read what was there. No
 // ownership consequence at all, so it behaves as `borrow`.
-let AIF_FFI_OUT = 3
-let AIF_FFI_RETAIN_IN_BASE = 100
+const AIF_FFI_OUT = 3
+const AIF_FFI_RETAIN_IN_BASE = 100
 // Not a contract: "the runtime table has never heard of this name". It has to be
 // distinguishable from a declared `borrow`, because FFI 5.1's default *is*
 // `borrow` and a bracketing decision must not read a guess as a description.
@@ -150,7 +141,7 @@ let AIF_FFI_RETAIN_IN_BASE = 100
 // 99 rather than -1: a global initializer must be a literal (nothing runs before
 // main), and the language has no negative literal. It sits in the gap between
 // the four contract codes and RETAIN_IN_BASE, so it collides with nothing.
-let AIF_FFI_UNKNOWN = 99
+const AIF_FFI_UNKNOWN = 99
 
 // Counters the manifest reports. They exist so that what the model *excludes*
 // is visible rather than silent -- an exclusion nobody can see is indistinguish-
@@ -176,14 +167,14 @@ let mut aifLoopDepth = 0
 let mut aifStmtCursor = 0
 
 // SPEC 5.4's verdicts, mirroring AIF_PIN_* in src/aifcore/.
-let AIF_PIN_NONE = 0
-let AIF_PIN_HONOURED = 1
-let AIF_PIN_REFUTED = 2
-let AIF_PIN_UNPROVEN = 3
+const AIF_PIN_NONE = 0
+const AIF_PIN_HONOURED = 1
+const AIF_PIN_REFUTED = 2
+const AIF_PIN_UNPROVEN = 3
 
 // The derivation's root, mirroring AIF_RULE_ALLOC in src/aifcore/: the
 // fact was never raised and is still where the allocation put it.
-let AIF_RULE_ALLOC = 14
+const AIF_RULE_ALLOC = 14
 
 // FFI 5.4: the default contract for an extern nobody declared one for. `borrow`
 // is optimistic, `retain` costs 33 points of tier distribution on this

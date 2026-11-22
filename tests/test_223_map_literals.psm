@@ -30,7 +30,7 @@ fn prices(currency: String) -> HashMap<String, Int> {
 
 fn total(m: HashMap<String, Int>) -> Int {
     let mut sum = 0
-    for i in 0..<m.length { sum = sum + m.valueAt(i) }
+    for i in 0..<m.count { sum = sum + m.valueAt(i) }
     return sum
 }
 
@@ -39,17 +39,17 @@ fn main() -> Int {
         "Alice": 20,
         "Bob": 25,
     }
-    if (ages.length != 2 or ages["Alice"] + ages["Bob"] != 45) { return fail("annotated") }
+    if (ages.count != 2 or ages["Alice"] + ages["Bob"] != 45) { return fail("annotated") }
 
     let inferred = { "a": 1, "b": 2, "c": 3 }
-    if (inferred.length != 3 or inferred["c"] != 3) { return fail("inferred") }
+    if (inferred.count != 3 or inferred["c"] != 3) { return fail("inferred") }
 
     let bytes: HashMap<Int, U8> = { 1: 255, 2: 0 }
     if (bytes[1] != 255) { return fail("values take the annotation's type") }
 
     let empty: HashMap<String, Int> = {}
     empty.set("late", 9)
-    if (empty.length != 1) { return fail("{} under an annotation") }
+    if (empty.count != 1) { return fail("{} under an annotation") }
 
     let name = "a key built at run time, long enough to allocate"
     let owned = { name.concat("!"): 7, "lit": 8 }
@@ -62,7 +62,7 @@ fn main() -> Int {
         1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, 10: 10,
         11: 11, 12: 12, 13: 13, 14: 14, 15: 15, 16: 16, 17: 17, 18: 18, 19: 19, 20: 20
     }
-    if (many.length != 20 or many[20] != 20 or many[1] != 1) { return fail("twenty entries") }
+    if (many.count != 20 or many[20] != 20 or many[1] != 1) { return fail("twenty entries") }
 
     // Past the backend's 64 nested calls: plain keys are one call however many.
     let table: HashMap<Int, Int> = {
@@ -74,12 +74,12 @@ fn main() -> Int {
         50: 150, 51: 153, 52: 156, 53: 159, 54: 162, 55: 165, 56: 168, 57: 171, 58: 174, 59: 177,
         60: 180, 61: 183, 62: 186, 63: 189, 64: 192, 65: 195, 66: 198, 67: 201, 68: 204, 69: 207
     }
-    if (table.length != 70 or table[69] != 207) { return fail("seventy entries") }
+    if (table.count != 70 or table[69] != 207) { return fail("seventy entries") }
 
     let usd = prices("USD")
-    if (usd["USD"] != 100 or usd.length != 2) { return fail("returned") }
+    if (usd["USD"] != 100 or usd.count != 2) { return fail("returned") }
     let stock = Inventory { counts: { "apples, more apples than fit inline": 4 } }
-    if (stock.counts.length != 1) { return fail("a struct field") }
+    if (stock.counts.count != 1) { return fail("a struct field") }
 
     let k = 5
     let computed = { k * 2: k + 1, k: 0 }

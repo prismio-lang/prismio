@@ -33,7 +33,7 @@ fn main() -> Int {
     ids.sort()
 
     let m: HashMap<Int, Int> = mapNew<Int, Int>()
-    mapSet(m, ids[0], 10)
+    m.set(ids[0], 10)
 
     let c = Channel<Note>(2)
     c.send(Note { id: 7 })
@@ -46,7 +46,7 @@ fn main() -> Int {
     }
     c.free()
 
-    println(ids[0] + mapGetOr(m, 1, 0) + got)
+    println(ids[0] + m.getOr(1, 0) + got)
     return 0
 }
 """

@@ -36,6 +36,7 @@ import lexer.scanner
 import ast.nodes
 import common.diagnostics
 import std.string
+import common.diag_codes
 
 impl Parser {
     // The cursor is on `if`.
@@ -57,7 +58,7 @@ impl Parser {
             // `else if` is an `if` expression of its own, as the value of this branch.
             elseBlock = self.parseValueBranch(temp, at, self.checkVal(TokenType.KEYWORD, "if") == false)
         } else {
-            diag_error_at_code("P3018", at.file, at.line, at.col, at.len,
+            diag_error_at_code(DIAG_PARSE_IF_EXPRESSION_NEEDS_ELSE, at.file, at.line, at.col, at.len,
                                "an `if` expression needs an `else`: without one there is no value when the condition is false")
         }
         self.stmtCalls = savedCalls

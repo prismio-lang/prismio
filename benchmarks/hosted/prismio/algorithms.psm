@@ -606,18 +606,18 @@ public fn benchWordFrequency(scale: Int) -> Int {
     let counts: HashMap<String, Int> = mapNew<String, Int>()
 
     for word in words {
-        mapSet(counts, word, mapGetOr(counts, word, 0) + 1)
+        counts.set(word, counts.getOr(word, 0) + 1)
     }
 
     let vocabulary = "the quick brown fox jumps over lazy dog while naps".splitWhitespace()
     let mut tally: Vec<Int> = Vec<Int>.withCapacity(vocabulary.length)
     for word in vocabulary {
-        tally.push(mapGetOr(counts, word, 0))
+        tally.push(counts.getOr(word, 0))
     }
 
     sort(tally)
 
-    let mut checksum = mapLen(counts)
+    let mut checksum = counts.count
     for t in 0..<tally.length {
         checksum = (checksum + (t + 1) * tally[t]) % 1000000007
     }

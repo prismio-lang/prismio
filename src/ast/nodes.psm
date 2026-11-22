@@ -311,6 +311,87 @@ public fn nodeIsNull(ptr: Ptr) -> Bool {
     return ptr_is_null(ptr) == 1
 }
 
+// The chain helpers. A list of nodes (arguments, parameters, fields, statements) is a `next` chain, and these are the
+// three questions every pass asks of one. They were written out once per pass, 20 times, with the head slot as the only
+// difference; a caller that wants a count or a member by name passes the slot it already holds.
+
+// How many nodes the chain starting at `head` holds; 0 for the absent chain.
+public fn chainLength(head: Ptr) -> Int {
+    let mut count = 0
+    let mut p = head
+    while (nodeExists(p)) {
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    return count
+}
+
+// The `index`-th node of the chain starting at `head`, or the null pointer when it is shorter.
+public fn chainAt(head: Ptr, index: Int) -> Ptr {
+    let mut p = head
+    let mut i = 0
+    while (nodeExists(p)) {
+        if (i == index) { return p }
+        i = i + 1
+        p = ptr_to_node(p).next
+    }
+    return ptr_null()
+}
+
+// The first node of the chain starting at `head` whose name (`s1`) is `name`, or the null node.
+public fn chainNamed(head: Ptr, name: String) -> ASTNode {
+    let mut p = head
+    while (nodeExists(p)) {
+        let node = ptr_to_node(p)
+        if (node.s1.equals(name)) { return node }
+        p = node.next
+    }
+    return ptr_to_node(ptr_null())
+}
+
+// Walks. A pass that asks "does anything under here ...?" tested one node and then descended into `child1`, `child2`
+// and `child3` and along each `next`, in a copy of the descent per question. `astAnyChain` is that descent once, with the
+// test the closure; `astSumChain` is the same for a count. Both visit a node before its children and a chain in order,
+// so the answer and the order of the closure's calls are what the hand-written walks gave.
+
+// Whether `pred` holds of `root` or of any node below it. The absent node holds nothing.
+public fn astAny<F: Fn(ASTNode) -> Bool>(root: Ptr, pred: F) -> Bool {
+    if (nodeIsNull(root)) { return false }
+    let n = ptr_to_node(root)
+    if (pred(n)) { return true }
+    if (astAnyChain(n.child1, pred)) { return true }
+    if (astAnyChain(n.child2, pred)) { return true }
+    return astAnyChain(n.child3, pred)
+}
+
+// `astAny` over every node of the chain starting at `head`, and everything below each.
+public fn astAnyChain<F: Fn(ASTNode) -> Bool>(head: Ptr, pred: F) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (astAny(p, pred)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+// The sum of `count` over `root` and every node below it.
+public fn astSum<F: Fn(ASTNode) -> Int>(root: Ptr, count: F) -> Int {
+    if (nodeIsNull(root)) { return 0 }
+    let n = ptr_to_node(root)
+    return count(n) + astSumChain(n.child1, count) + astSumChain(n.child2, count) + astSumChain(n.child3, count)
+}
+
+// `astSum` over every node of the chain starting at `head`.
+public fn astSumChain<F: Fn(ASTNode) -> Int>(head: Ptr, count: F) -> Int {
+    let mut total = 0
+    let mut p = head
+    while (nodeExists(p)) {
+        total = total + astSum(p, count)
+        p = ptr_to_node(p).next
+    }
+    return total
+}
+
 // The body block of a `while`, `for` or `loop`. A loop's label is kept on it, in
 // the BLOCK's otherwise unused `s1`.
 public fn loopBodyOf(loopNode: ASTNode) -> Ptr {

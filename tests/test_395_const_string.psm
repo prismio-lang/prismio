@@ -1,0 +1,36 @@
+// `const` holds a `String`: a literal, or the name of another `String` constant. The compiler
+// works the value out and the rest of the program sees an ordinary string literal, so a constant
+// can be used anywhere a string can, and written in any order.
+//
+// A String is a constant as a whole. It does not enter the expression interpreter, where an
+// operand read as an integer would be quietly wrong, so `"a" == "b"` is not one
+// (tests/neg_417_const_string_expression.psm).
+import std.io
+import std.string
+
+const GREETING = "hello"
+const ALIAS = GREETING
+const LATER_ALIAS = DEFINED_AFTER
+const DEFINED_AFTER = "defined after its use"
+const EMPTY = ""
+const PUNCTUATED = "a \"quoted\" tab\there"
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    if (GREETING.equals("hello") == false) { bad = bad + fail("a literal") }
+    if (ALIAS.equals("hello") == false) { bad = bad + fail("the name of a constant") }
+    if (LATER_ALIAS.equals("defined after its use") == false) { bad = bad + fail("a constant written later") }
+    if (EMPTY.length != 0) { bad = bad + fail("the empty string") }
+    if (PUNCTUATED.equals("a \"quoted\" tab\there") == false) { bad = bad + fail("escapes survive") }
+    let joined = GREETING.concat(" ", ALIAS)
+    if (joined.equals("hello hello") == false) { bad = bad + fail("used as a value") }
+    if (bad != 0) { return 1 }
+    println("PASS: const String")
+    return 0
+}

@@ -28,6 +28,7 @@ import common.text
 import common.diagnostics
 import ir.bridge
 import std.string
+import sema.decl_index
 
 // The separator in an instantiated name. `$` rather than `_` because a mangled
 // name has to be one no user declaration can collide with, and `_` is a legal
@@ -136,7 +137,7 @@ internal fn monoHasTemplateOfArity(module: ASTNode, name: String, count: Int) ->
     while (nodeExists(p)) {
         let stmt = ptr_to_node(p)
         if (stmt.kind == NodeKind.FUNCTION and stmt.s1.equals(name)
-            and monoChainLength(stmt.child1) == count) {
+            and chainLength(stmt.child1) == count) {
             return true
         }
         p = stmt.next
@@ -255,23 +256,12 @@ internal fn monoParamIndex(params: String, name: String) -> Int {
 }
 
 internal fn monoGenericParamAt(infoPtr: Ptr, index: Int) -> Ptr {
-    return monoChainAt(infoPtr, index)
+    return chainAt(infoPtr, index)
 }
 
 // ---------------------------------------------------------
 // Bounds
 // ---------------------------------------------------------
-
-internal fn monoFindTrait(module: ASTNode, traitName: String) -> ASTNode {
-    if (declIndexOn()) { return declIndexFindTrait(module, traitName) }
-    let mut p = module.child1
-    while (nodeExists(p)) {
-        let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(traitName)) { return stmt }
-        p = stmt.next
-    }
-    return ptr_to_node(ptr_null())
-}
 
 private fn monoAnnotationText(annotationPtr: Ptr) -> String {
     if (nodeIsNull(annotationPtr)) { return "" }
@@ -460,9 +450,9 @@ private fn monoSolveFromCallables(module: ASTNode, template: ASTNode, holders: P
 }
 
 private fn monoTraitRefHasValidArity(module: ASTNode, traitRef: ASTNode) -> Bool {
-    let traitDecl = monoFindTrait(module, traitRef.s1)
+    let traitDecl = declFindTrait(module, traitRef.s1)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return false }
-    return monoChainLength(traitRef.child1) == monoParamCount(traitDecl.s2)
+    return chainLength(traitRef.child1) == monoParamCount(traitDecl.s2)
 }
 
 private fn monoTraitRefsEqual(module: ASTNode, a: ASTNode, b: ASTNode) -> Bool {
@@ -490,7 +480,7 @@ private fn monoImplBoundsHold(module: ASTNode, params: String,
                               genericInfo: Ptr, argsPtr: Ptr) -> Bool {
     let count = monoParamCount(params)
     for i in 0..<count {
-        let argPtr = monoChainAt(argsPtr, i)
+        let argPtr = chainAt(argsPtr, i)
         if (nodeIsNull(argPtr)) { return false }
         let argT = semaAnnotationType(module, ptr_to_node(argPtr))
         let genericParamPtr = monoGenericParamAt(genericInfo, i)
@@ -601,7 +591,7 @@ private fn monoCheckBounds(module: ASTNode, at: ASTNode, name: String, params: S
     let count = monoParamCount(params)
     let mut satisfied = true
     for i in 0..<count {
-        let argPtr = monoChainAt(argsPtr, i)
+        let argPtr = chainAt(argsPtr, i)
         if (nodeExists(argPtr)) {
             let argT = semaAnnotationType(module, ptr_to_node(argPtr))
             let genericParamPtr = monoGenericParamAt(genericInfo, i)
@@ -649,7 +639,7 @@ let mut monoReportedBounds = ""
 // **There is no call stack to bound.** What grows is the type, so that is what
 // is bounded. 32 is far past anything written by hand, and a runaway reaches it
 // in 32 steps, so the diagnostic arrives at once instead of after a hang.
-let MONO_MAX_TYPE_DEPTH = 32
+const MONO_MAX_TYPE_DEPTH = 32
 
 private fn monoFirstReportOfBound(typeName: String, bound: String) -> Bool {
     let marker = "|".concat(typeName, ":", bound, "|")
@@ -668,7 +658,7 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
         return monoCheckCallableBound(module, at, name, param, bound, argT)
     }
 
-    let traitDecl = monoFindTrait(module, bound.s1)
+    let traitDecl = declFindTrait(module, bound.s1)
     let boundText = monoTraitRefText(node_to_ptr(bound))
     if (nodeIsNull(node_to_ptr(traitDecl))) {
         if (monoFirstReportOfBound(argT.name, boundText)) {
@@ -681,7 +671,7 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
         return false
     }
 
-    if (monoChainLength(bound.child1) != monoParamCount(traitDecl.s2)) {
+    if (chainLength(bound.child1) != monoParamCount(traitDecl.s2)) {
         if (monoFirstReportOfBound(argT.name, boundText)) {
             semaErrorAt(at, diagQuote(bound.s1).concat(" takes trait arguments <",
                                                        traitDecl.s2,
@@ -718,27 +708,6 @@ internal fn monoCheckOneBound(module: ASTNode, at: ASTNode, name: String, param:
     }
     diag_note("write `impl ".concat(boundText, " for ", typeDisplay(argT), " { ... }`"))
     return false
-}
-
-private fn monoChainLength(ptr: Ptr) -> Int {
-    let mut count = 0
-    let mut p = ptr
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
-}
-
-internal fn monoChainAt(ptr: Ptr, index: Int) -> Ptr {
-    let mut p = ptr
-    let mut i = 0
-    while (nodeExists(p)) {
-        if (i == index) { return p }
-        i = i + 1
-        p = ptr_to_node(p).next
-    }
-    return ptr_null()
 }
 
 // ---------------------------------------------------------
@@ -780,7 +749,7 @@ internal fn monoSubstituteChain(ptr: Ptr, params: String, argsPtr: Ptr) {
             if (qualifier.kind == NodeKind.IDENTIFIER_EXPR) {
                 let index = monoParamIndex(params, qualifier.s1)
                 if (index >= 0) {
-                    let argPtr = monoChainAt(argsPtr, index)
+                    let argPtr = chainAt(argsPtr, index)
                     if (nodeExists(argPtr)) {
                         qualifier.kind = NodeKind.TYPE_ANNOTATION
                         monoSubstituteInto(qualifier, argPtr)
@@ -791,7 +760,7 @@ internal fn monoSubstituteChain(ptr: Ptr, params: String, argsPtr: Ptr) {
         if (node.kind == NodeKind.TYPE_ANNOTATION and node.i1 == 0 and node.i2 == 0) {
             let index = monoParamIndex(params, node.s1)
             if (index >= 0) {
-                let argPtr = monoChainAt(argsPtr, index)
+                let argPtr = chainAt(argsPtr, index)
                 if (nodeExists(argPtr)) { monoSubstituteInto(node, argPtr) }
             }
         }
@@ -861,6 +830,7 @@ internal fn monoAnnotationFromType(t: TypeInfo) -> ASTNode {
             if (nodeExists(t.child)) { tn.child1 = node_to_ptr(monoAnnotationFromType(ptr_to_type(t.child))) }
             return tn
         }
+        _ => { }
     }
     // A typed pointer is the same shape, and its name -- `Ptr<mut U8>` -- is no identifier either:
     // without this a generic function over `Ptr<mut T>` instantiated with a concrete `T` named a
@@ -917,7 +887,7 @@ internal fn monoInstantiateStruct(module: ASTNode, tn: ASTNode) -> String {
     if (nodeIsNull(node_to_ptr(template))) { return "" }
 
     let params = template.s2
-    let given = monoChainLength(tn.child1)
+    let given = chainLength(tn.child1)
     if (given != monoParamCount(params)) {
         monoArityError(tn, tn.s1, params)
         return ""
@@ -1176,7 +1146,7 @@ internal fn monoTypeArgsFromExpected(module: ASTNode, call: ASTNode, expected: T
         // function, instead of the builtin.
         if (template.kind == NodeKind.FUNCTION and template.s1.equals(name)
                 and nodeExists(template.child3)
-                and monoChainLength(template.child1) == monoChainLength(call.child2)) {
+                and chainLength(template.child1) == chainLength(call.child2)) {
             let params = template.s2
             let solved = nodeList()
             let mut fromArgs = true
@@ -1337,7 +1307,7 @@ internal fn monoResolveGenericCall(module: ASTNode, callExpr: ASTNode, callee: A
     if (nodeExists(callExpr.child3)) {
         let explicit = ptr_to_node(callExpr.child3)
         callExpr.child3 = ptr_null()
-        if (monoChainLength(explicit.child1) != monoParamCount(firstTemplate.s2)) {
+        if (chainLength(explicit.child1) != monoParamCount(firstTemplate.s2)) {
             monoArityError(callExpr, firstTemplate.s1, firstTemplate.s2)
             return
         }
@@ -1433,13 +1403,13 @@ private fn monoExpandOneImpl(module: ASTNode, implNode: ASTNode) {
     let header = ptr_to_node(implNode.child3)
     if (nodeIsNull(header.child2)) { return }
     let traitRef = ptr_to_node(header.child2)
-    let traitDecl = monoFindTrait(module, traitRef.s1)
+    let traitDecl = declFindTrait(module, traitRef.s1)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return }
 
     // An unknown trait and a wrong argument count are conformance's diagnostics.
     // Substituting against a mismatched argument list would report the failure
     // as a type error inside a body the program never wrote.
-    if (monoChainLength(traitRef.child1) != monoParamCount(traitDecl.s2)) { return }
+    if (chainLength(traitRef.child1) != monoParamCount(traitDecl.s2)) { return }
 
     let mut signaturePtr = traitDecl.child1
     while (nodeExists(signaturePtr)) {

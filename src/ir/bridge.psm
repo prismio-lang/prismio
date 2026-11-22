@@ -673,3 +673,13 @@ public extern fn ir_debug_struct(name: String, fileId: Int, line: Int)
 // map ir_register_enum_variant already holds. Nothing else is needed: the
 // variants are the type.
 public extern fn ir_debug_enum(name: String, fileId: Int, line: Int)
+
+// Backend settings and facts that the driver sets or asks for once per build.
+public extern fn ir_set_freestanding(on: Int)
+public extern fn ir_set_no_red_zone(on: Int)
+public extern fn ir_set_target_features(features: String borrow) -> Int
+public extern fn ir_set_code_model(name: String borrow) -> Int
+// The string surface comes from utils.psm; only what it does not declare is
+// declared here. Redeclaring one with a different signature would be merged
+// away silently by resolveImports -- whichever module was reached first wins.
+public extern fn ir_llvm_version() -> String alias

@@ -83,11 +83,12 @@ private fn semaDefaultInto(module: ASTNode, target: ASTNode, t: TypeInfo, depth:
         TypeKind.ENUM => {
             return diagQuote(typeDisplay(t)).concat(" is an enum, which has no default value")
         }
+        _ => { }
     }
     return diagQuote(typeDisplay(t)).concat(" has no default value")
 }
 
-private fn semaDefaultReset(target: ASTNode, kind: NodeKind) {
+internal fn semaDefaultReset(target: ASTNode, kind: NodeKind) {
     target.kind = kind
     target.s1 = ""
     target.s2 = ""

@@ -44,23 +44,23 @@ import common.diagnostics
 import common.source_files
 import std.string
 
-let NOWRAP_RECORD = 0
-let NOWRAP_MARK = 1
+const NOWRAP_RECORD = 0
+const NOWRAP_MARK = 1
 // A walk of a loop body under a guessed invariant (nowrapInvariants): it marks
 // nothing and records nothing, so a guess that fails leaves no trace.
-let NOWRAP_PROBE = 2
+const NOWRAP_PROBE = 2
 
 // Probes one function may spend on loop invariants. A nest multiplies them, and past
 // this a loop keeps only what it kept before.
-let NOWRAP_PROBE_BUDGET = 400
+const NOWRAP_PROBE_BUDGET = 400
 // Rounds before an invariant is given up. Widening starts at the third; from the sixth a
 // guess that still moves is dropped, so the others are not held up by it.
-let NOWRAP_INVARIANT_ROUNDS = 10
-let NOWRAP_WIDEN_ROUND = 2
-let NOWRAP_DROP_ROUND = 5
+const NOWRAP_INVARIANT_ROUNDS = 10
+const NOWRAP_WIDEN_ROUND = 2
+const NOWRAP_DROP_ROUND = 5
 
 // Literals this reads stay far from the edge of the i64 intervals are computed in.
-let NOWRAP_LITERAL_DIGITS = 9
+const NOWRAP_LITERAL_DIGITS = 9
 
 struct NowrapFacts {
     // `names[i]` lies in [los[i], his[i]] at the walk's point. A dropped fact keeps
@@ -455,6 +455,7 @@ private fn nowrapStmt(w: NowrapWalk, f: NowrapFacts, stmtPtr: Ptr) {
             f.live = false
             return
         }
+        _ => { }
     }
     // A statement this does not model: its arithmetic is still read, from a copy,
     // nothing it may assign keeps a fact, and no array it stores into keeps a bound.
@@ -1195,6 +1196,7 @@ private fn nowrapExpr(w: NowrapWalk, f: NowrapFacts, exprPtr: Ptr) {
             nowrapExpr(w, f, e.child1)
             return
         }
+        _ => { }
     }
     let inside = f.copy()
     nowrapExprChain(w, inside, e.child1)

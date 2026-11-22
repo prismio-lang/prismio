@@ -18,11 +18,107 @@ CODE_CALL_PATTERN = re.compile(
 LEGACY_DIAGNOSTIC_PATTERN = re.compile(r"\bdiag_(?:error|warning)(?:_at)?\(")
 CODE_AREAS = {
     "src/main.psm": "1",
+    "src/project/": "1",
+    "src/driver/": "1",
+    "src/fmt/": "1",
     "src/lexer/": "2",
     "src/parse/": "3",
     "src/sema/": "4",
     "src/aif/": "5",
 }
+
+
+# The registry of diagnostic codes, src/common/diag_codes.psm: `public const DIAG_<AREA>_<NAME> = "Pnnnn"`.
+REGISTRY_PATH = Path("src/common/diag_codes.psm")
+REGISTRY_ENTRY = re.compile(r'^public const (DIAG_[A-Z0-9_]+) = "(P\d{4})"\s*$', re.M)
+CODE_LITERAL = re.compile(r'"P\d{4}"')
+# The area digit a name's prefix promises, and the digit of the code behind it.
+NAME_AREAS = {
+    "DIAG_CLI_": "1", "DIAG_PROJECT_": "1", "DIAG_DRIVER_": "1", "DIAG_FMT_": "1",
+    "DIAG_LEX_": "2", "DIAG_PARSE_": "3", "DIAG_SEMA_": "4", "DIAG_AIF_": "5", "DIAG_COMMON_": "0",
+}
+DIAGNOSTIC_REGISTRY_CODES = {}
+
+
+def check_diagnostic_codes():
+    """Hold the diagnostic-code registry to what it promises.
+
+    Every code is written once, in the registry; every name is used by exactly one call site; the
+    code behind a name is in the area its prefix and the reporting file say; and no `"Pnnnn"` literal
+    is left in src/ outside the registry, so the checks cannot go blind by someone typing one."""
+    problems = []
+    registry_file = REPO / REGISTRY_PATH
+    if not registry_file.exists():
+        return [f"diagnostic code registry missing: {REGISTRY_PATH}"]
+    registry_text = registry_file.read_text(encoding="utf-8")
+    entries = REGISTRY_ENTRY.findall(registry_text)
+    if not entries:
+        return [f"no diagnostic codes parsed from {REGISTRY_PATH}: the registry check has gone blind"]
+    by_name, by_code = {}, {}
+    for name, code in entries:
+        if name in by_name:
+            problems.append(f"duplicate diagnostic name {name} in {REGISTRY_PATH}")
+        if code in by_code:
+            problems.append(f"duplicate diagnostic code {code}: {by_code[code]} and {name}")
+        by_name[name] = code
+        by_code[code] = name
+        prefix_area = next((area for prefix, area in NAME_AREAS.items() if name.startswith(prefix)), None)
+        if prefix_area is None:
+            problems.append(f"diagnostic name {name} has no known area prefix ({', '.join(NAME_AREAS)})")
+        elif code[1] != prefix_area:
+            problems.append(f"diagnostic code {code} is outside {name}'s P{prefix_area}xxx area")
+    DIAGNOSTIC_REGISTRY_CODES.update(by_code)
+
+    uses = {name: [] for name in by_name}
+    texts = {}
+    for path in sorted((REPO / "src").rglob("*.psm")):
+        relative = path.relative_to(REPO)
+        text = path.read_text(encoding="utf-8")
+        texts[relative] = text
+        if relative == REGISTRY_PATH:
+            continue
+        for match in CODE_LITERAL.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            problems.append(f"diagnostic code written as a literal, name it in {REGISTRY_PATH}: {relative}:{line}")
+        if relative == Path("src/common/diagnostics.psm"):
+            # The reporting functions themselves take the code as a parameter.
+            pass
+        else:
+            for match in LEGACY_DIAGNOSTIC_PATTERN.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                problems.append(f"uncoded diagnostic: {relative}:{line}")
+        for name in by_name:
+            for hit in re.finditer(r"\b" + name + r"\b", text):
+                uses[name].append((relative, text.count("\n", 0, hit.start()) + 1))
+        if relative == Path("src/common/diagnostics.psm"):
+            continue
+        for match in CODE_CALL_PATTERN.finditer(text):
+            line = text.count("\n", 0, match.start()) + 1
+            argument = match.group(1).strip()
+            if argument in by_name:
+                expected_area = next(
+                    (area for prefix, area in CODE_AREAS.items() if relative.as_posix().startswith(prefix)), None)
+                if expected_area and by_name[argument][1] != expected_area:
+                    problems.append(
+                        f"diagnostic {argument} ({by_name[argument]}) is outside {relative}'s P{expected_area}xxx area: {relative}:{line}")
+                continue
+            # A code forwarded from a value that already carries one (a manifest diagnostic's
+            # `found.code`) is not a name to look up.
+            if re.fullmatch(r"[a-z_]\w*(?:\.[a-z_]\w*)*", argument):
+                continue
+            problems.append(f"diagnostic code argument {argument} is not a name in {REGISTRY_PATH}: {relative}:{line}")
+    for name, places in sorted(uses.items()):
+        if not places:
+            problems.append(f"diagnostic {name} ({by_name[name]}) is never used: remove it from {REGISTRY_PATH}")
+        elif len(places) > 1 and not name.startswith("DIAG_COMMON_") and name not in SHARED_NAMES:
+            where = ", ".join(f"{p}:{l}" for p, l in places)
+            problems.append(f"diagnostic {name} ({by_name[name]}) is used at {len(places)} places, one code per place: {where}")
+    return problems
+
+
+# Names that are used at more than one place by design: the checker's own entry points, which every
+# semantic diagnostic goes through, and the comparison in the reporting module.
+SHARED_NAMES = {"DIAG_SEMA_ERROR", "DIAG_SEMA_WARNING", "DIAG_PARSE_SYNTAX"}
 
 
 def run_check(command, label):
@@ -98,43 +194,8 @@ def main():
         )
     )
 
-    seen_codes = {}
-    for path in sorted((REPO / "src").rglob("*.psm")):
-        relative = path.relative_to(REPO)
-        text = path.read_text(encoding="utf-8")
-        if relative == Path("src/common/diagnostics.psm"):
-            continue
-        for match in LEGACY_DIAGNOSTIC_PATTERN.finditer(text):
-            line = text.count("\n", 0, match.start()) + 1
-            problems.append(f"uncoded diagnostic: {relative}:{line}")
-        for match in CODE_CALL_PATTERN.finditer(text):
-            line = text.count("\n", 0, match.start()) + 1
-            argument = match.group(1).strip()
-            # A code forwarded from a value that already carries one (a manifest diagnostic's
-            # `found.code`) is not a literal to check or to count.
-            if re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", argument):
-                continue
-            if not re.fullmatch(r'"P\d{4}"', argument):
-                problems.append(
-                    f"invalid diagnostic code argument {argument}: {relative}:{line}"
-                )
-                continue
-            code = argument[1:-1]
-            relative_text = relative.as_posix()
-            expected_area = next(
-                (area for prefix, area in CODE_AREAS.items() if relative_text.startswith(prefix)),
-                None,
-            )
-            if expected_area and code[1] != expected_area:
-                problems.append(
-                    f"diagnostic code {code} is outside {relative}'s P{expected_area}xxx area"
-                )
-            if code in seen_codes:
-                problems.append(
-                    f"duplicate diagnostic code {code}: {seen_codes[code]} and {relative}:{line}"
-                )
-            else:
-                seen_codes[code] = f"{relative}:{line}"
+    problems.extend(check_diagnostic_codes())
+    seen_codes = DIAGNOSTIC_REGISTRY_CODES
 
     if not seen_codes:
         problems.append("no coded compiler diagnostics found")

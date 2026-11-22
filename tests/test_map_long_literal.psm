@@ -1,0 +1,145 @@
+// A map literal of more than twelve entries with a computed owned key or value. Past twelve it
+// was a chain of `mapPut`, which passes the map through, so every owned argument but the map was
+// withheld from release and 12 of 13 values leaked in a `let`. It is `mapEntriesN` for each run of
+// twelve now, merged by `mapMerge`, so each temporary is an argument of a producer. The suite runs
+// this under `--verify` through the ownership probes and it must read 0 leaked.
+//
+// Every string is longer than twelve bytes: a shorter one is stored inline and never reaches
+// the ledger.
+
+import std.io
+import std.map
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+public struct Holder { table: HashMap<String, String> }
+
+// Thirty computed values: three runs (12, 12, 6).
+fn values() -> HashMap<Int, String> {
+    return {
+        1: word(1),
+        2: word(2),
+        3: word(3),
+        4: word(4),
+        5: word(5),
+        6: word(6),
+        7: word(7),
+        8: word(8),
+        9: word(9),
+        10: word(10),
+        11: word(11),
+        12: word(12),
+        13: word(13),
+        14: word(14),
+        15: word(15),
+        16: word(16),
+        17: word(17),
+        18: word(18),
+        19: word(19),
+        20: word(20),
+        21: word(21),
+        22: word(22),
+        23: word(23),
+        24: word(24),
+        25: word(25),
+        26: word(26),
+        27: word(27),
+        28: word(28),
+        29: word(29),
+        30: word(30)
+    }
+}
+
+// A key written again in a later run replaces the earlier one, as a chain of `set`s would.
+fn shadowed(n: Int) -> HashMap<Int, String> {
+    return {
+        1: word(1), 2: word(2), 3: word(3), 4: word(4), 5: word(5), 6: word(6),
+        7: word(7), 8: word(8), 9: word(9), 10: word(10), 11: word(11), 12: word(12),
+        n + 0: word(100), 13: word(13), 14: word(14)
+    }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let m = values()
+    if (m.count != 30 or m[1] != word(1) or m[13] != word(13) or m[30] != word(30)) { bad = bad + fail("thirty values") }
+    let local: HashMap<Int, String> = {
+        1: word(1),
+        2: word(2),
+        3: word(3),
+        4: word(4),
+        5: word(5),
+        6: word(6),
+        7: word(7),
+        8: word(8),
+        9: word(9),
+        10: word(10),
+        11: word(11),
+        12: word(12),
+        13: word(13),
+        14: word(14),
+        15: word(15),
+        16: word(16),
+        17: word(17),
+        18: word(18),
+        19: word(19),
+        20: word(20),
+        21: word(21),
+        22: word(22),
+        23: word(23),
+        24: word(24),
+        25: word(25),
+        26: word(26),
+        27: word(27),
+        28: word(28),
+        29: word(29),
+        30: word(30)
+    }
+    if (local.count != 30 or local[24] != word(24) or local[25] != word(25)) { bad = bad + fail("a let") }
+    // Twenty-seven computed keys and values, in a struct literal's field.
+    let h = Holder { table: {
+            word(1): word(10),
+            word(2): word(20),
+            word(3): word(30),
+            word(4): word(40),
+            word(5): word(50),
+            word(6): word(60),
+            word(7): word(70),
+            word(8): word(80),
+            word(9): word(90),
+            word(10): word(100),
+            word(11): word(110),
+            word(12): word(120),
+            word(13): word(130),
+            word(14): word(140),
+            word(15): word(150),
+            word(16): word(160),
+            word(17): word(170),
+            word(18): word(180),
+            word(19): word(190),
+            word(20): word(200),
+            word(21): word(210),
+            word(22): word(220),
+            word(23): word(230),
+            word(24): word(240),
+            word(25): word(250),
+            word(26): word(260),
+            word(27): word(270)
+    } }
+    if (h.table.count != 27 or h.table[word(27)] != word(270) or h.table[word(1)] != word(10)) {
+        bad = bad + fail("a struct field")
+    }
+    let s = shadowed(3)
+    if (s.count != 14 or s[3] != word(100) or s[14] != word(14) or s[2] != word(2)) { bad = bad + fail("later runs replace earlier ones") }
+    if (bad != 0) { return 1 }
+    println("PASS")
+    return 0
+}

@@ -12,6 +12,7 @@ import common.diagnostics
 import std.string
 import std.unicode
 import ast.nodes
+import common.diag_codes
 
 // `length` is the input's size, measured once. Every character read used to go
 // through str_char_at, which calls strlen -- so scanning a file cost O(n) per
@@ -106,7 +107,7 @@ impl Lexer {
     // lets the parser still run and report its own errors in the rest of the file
     // instead of this one ending the compile.
     private fn fatal(self, line: Int, col: Int, message: String) {
-        diag_error_at_code("P2001", self.file, line, col, 1, message)
+        diag_error_at_code(DIAG_LEX_FATAL, self.file, line, col, 1, message)
     }
 
     // `unterminated string literal` and its variants, once per run of lines.
@@ -157,7 +158,7 @@ impl Lexer {
         let notation = lexerScalarNotation(scalar)
         let mut advice = "write it as `\\u{".concat(notation.substring(2, 4), "}` so it is visible")
         if (place.equals("a comment")) { advice = "remove it" }
-        diag_error_at_code("P2002", self.file, self.line, self.col, 3,
+        diag_error_at_code(DIAG_LEX_BIDI_CONTROL, self.file, self.line, self.col, 3,
             "unescaped bidirectional control ".concat(notation, " in ", place,
                 ": it reorders how the line is displayed, so what a reader sees is not what compiles; ",
                 advice))

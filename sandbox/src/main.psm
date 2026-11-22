@@ -1,3 +1,24 @@
+import std.map
+import std.io
+import std.input
+import std.option
+import std.display
+
+fn towerOfHanoi(n: Int, from: Int, to: Int, tmp: Int) -> Int {
+    let mut moves = 0
+
+    if n >= 1 {
+        moves += towerOfHanoi(n - 1, from, tmp, to)
+        moves += 1
+        moves += towerOfHanoi(n - 1, tmp, to, from)
+    }
+
+    return moves
+}
+
 fn main() {
-    
+    let n = readInt().unwrapOr(0)
+    let moves = towerOfHanoi(n, 1,3,2)
+
+    print("Moves: ${moves}")
 }

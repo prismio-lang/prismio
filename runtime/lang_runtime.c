@@ -114,7 +114,19 @@ int arena_current_slot(void);
 // path until `spawn` is used, then route runtime-created workers to isolated TLS
 // state. The parent continues to own the process-local state, so spawning inside
 // an active region does not abandon that region.
+//
+// Not `volatile` off Windows, and that is a size decision. A closed program that
+// never spawns has no store to this flag once `prismio_memory_threads_enable` is
+// dead-stripped, and LLVM then folds every read to 0: the worker thread-locals,
+// the cycle collector's `pthread_once` and the slab's thread key all go, which
+// leaves `__DATA` zero-fill only and saves its 16 KiB page (hello 51,160 ->
+// 34,120 bytes). A volatile read is never folded. The accesses are `__atomic`
+// builtins either way; `Interlocked*` wants the qualifier, so Windows keeps it.
+#ifdef _WIN32
 static volatile long prismio_memory_threads_enabled;
+#else
+static long prismio_memory_threads_enabled;
+#endif
 static PRISMIO_THREAD_LOCAL int prismio_memory_worker;
 static int rt_arena_hint;
 static PRISMIO_THREAD_LOCAL int rt_worker_arena_hint;
@@ -266,9 +278,15 @@ static void slab_init(void) {
 
 // Which cache this thread owns. The main thread keeps the process-local one, as it does
 // for the arena, so a program that never spawns never reads a thread-local.
+//
+// Ask `slab_on_worker()`, never `slab_cache() == &slab_tls`: LLVM does not fold a
+// thread-local's address against a global's, so that comparison kept the thread key,
+// its `pthread_once` and both thread-locals alive in programs with no second thread.
+static inline int slab_on_worker(void) {
+    return __builtin_expect(prismio_memory_threads_are_enabled(), 0) && prismio_memory_worker;
+}
 static inline SlabCache* slab_cache(void) {
-    if (__builtin_expect(prismio_memory_threads_are_enabled(), 0) && prismio_memory_worker)
-        return &slab_tls;
+    if (slab_on_worker()) return &slab_tls;
     return &slab_main;
 }
 
@@ -280,7 +298,7 @@ static PRISMIO_NOINLINE void* slab_refill(SlabBin* bin, unsigned c) {
     if (slab_state == 0) slab_init();
     size_t sz = (size_t)(c + 1) * SLAB_GRAIN;
     if (slab_state < 0) return malloc(sz);
-    if (slab_cache() == &slab_tls && !slab_tls_used) { slab_tls_used = 1; slab_thread_key_init(); }
+    if (slab_on_worker() && !slab_tls_used) { slab_tls_used = 1; slab_thread_key_init(); }
     if (bin->cur != bin->end) {
         void* fresh = bin->cur;
         bin->cur += sz;
@@ -3386,6 +3404,27 @@ void list_reserve(void* lp, int n) {
     l->fused = 0;
     l->data = (void**)nd;
     l->cap = n;
+}
+
+// `shrinkToFit()`: gives back the capacity past the length. A list whose elements share its
+// header's block (a small one) and a list an arena serves keep what they have: neither block
+// is the list's to return. An empty list lets go of its storage; the next push allocates.
+void list_shrink_to_fit(void* lp) {
+    RtList* l = (RtList*)lp;
+    if (l->cap <= l->len || l->fused || l->arena) return;
+    if (l->len == 0) {
+        list_free_data(l);
+        l->data = NULL;
+        l->cap = 0;
+        return;
+    }
+    size_t stride = list_stride(l);
+    size_t bytes = (size_t)l->len * stride;
+    unsigned char* nd = (unsigned char*)rt_alloc(bytes);
+    memcpy(nd, l->data, bytes);
+    list_free_data(l);
+    l->data = (void**)nd;
+    l->cap = l->len;
 }
 
 // `truncate(n)`, and `clear()` as `truncate(0)`. A length at or past the current

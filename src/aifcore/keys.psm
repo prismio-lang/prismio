@@ -115,10 +115,6 @@ internal fn keyFind(kind: Int, a: Int, b: Int) -> Int {
     return keyIds.getOr(keyPack(kind, a, b), -1)
 }
 
-public fn aif_key_count() -> Int {
-    return keyCount
-}
-
 // A new function starts with nothing in scope.
 public fn aif_env_reset() {
     envLen = 0

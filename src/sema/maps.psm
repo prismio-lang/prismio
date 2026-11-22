@@ -4,20 +4,27 @@
 // expression every later pass already lowers, as `default` is:
 //
 //   { "a": 1, "b": 2 }       ->  mapFromEntries(2, ["a", "b"], [1, 2])
-//   { s.concat("!"): 1 }     ->  mapPut(mapWithCapacity(1), s.concat("!"), 1)
+//   { s.concat("!"): 1 }     ->  mapEntries1(s.concat("!"), 1)
 //   {}                       ->  default -> mapNew<K, V>()
 //
-// A key is *plain* when the literal does not own it: a literal, a name, or any
-// key of a type that owns nothing. A literal of plain keys -- nearly all of them
-// -- is one `mapFromEntries` over two frame arrays: a producer, sized once, one
-// call deep however many entries it has. Any other key has to be a call
-// argument, because a frame array frees none of its elements and an owned
-// temporary such as `s.concat("!")` is released only as an argument; so a
-// literal holding one is built on `mapWithCapacity`, each such key by its own
-// `mapPut` and each run of plain keys between them by one `mapPutAll`, in source
-// order. That shape passes the map through, and a pass-through's result in a
-// struct field or a `return` is not released (KNOWN_ISSUES); the backend's call
-// nesting limit of 64 also bounds how many computed keys one literal can hold.
+// A key or a value is *plain* when the literal does not own it: a literal, a
+// name, or anything of a type that owns nothing. A literal of plain entries --
+// nearly all of them -- is one `mapFromEntries` over two frame arrays: a
+// producer, sized once, one call deep however many entries it has. Any other key
+// or value has to be a call argument, because a frame array frees none of its
+// elements and an owned temporary such as `s.concat("!")` is released only as an
+// argument. (A map's value is copied in, as its key is, so a computed `String` or
+// `Vec` value is the same case as a computed key.)
+//
+// **So the entries of such a literal are arguments: `mapEntriesN(k0, v0, k1, v1, ...)`**
+// (std/map.psm), as a Vec literal is one `vecOf`, for each run of up to twelve, and the runs
+// are merged with `mapMerge`. Each temporary is released after the call it is an argument
+// of, and every function builds the map it returns, so the result is owned wherever it
+// lands. A chain of `mapPut`s, which this replaced, passes the map through, and a
+// pass-through's result in a struct field or a `return` is never released: it leaked the
+// whole table there, and past twelve entries it was the fallback and kept the leak. The
+// backend nests calls at most 64 deep, one `mapMerge` per run of twelve, so a literal holds
+// 768 such entries.
 //
 // **`K` and `V` are decided here, not inferred by the calls.** Under an
 // annotation they are its types, so `let m: HashMap<String, U8> = { "a": 1 }`
@@ -36,7 +43,7 @@ import std.string
 // (Invalid when there is none). Answers false after reporting; the node is then
 // typed Invalid.
 internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -> Bool {
-    if (monoHasTemplate(module, "mapPut", NodeKind.FUNCTION) == false) {
+    if (monoHasTemplate(module, "mapMerge", NodeKind.FUNCTION) == false) {
         semaErrorAt(node, "a map literal needs `import std.map`")
         nodeSetType(node, typeInvalid())
         return false
@@ -50,7 +57,7 @@ internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -
             nodeSetType(node, typeInvalid())
             return false
         }
-        semaMapReset(node, NodeKind.DEFAULT_EXPR)
+        semaDefaultReset(node, NodeKind.DEFAULT_EXPR)
         return true
     }
 
@@ -90,12 +97,13 @@ internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -
     // `name.concat("!")` -- as its own `mapPut<K, V>(map, key, value)`, where it
     // is an argument temporary and released after the call.
     let keyOwnsNothing = typeOwnsNothing(keyT)
-    let total = semaMapEntryCount(node.child1)
+    let valueOwnsNothing = typeOwnsNothing(valueT)
+    let total = chainLength(node.child1)
 
     // Every key plain: one `mapFromEntries<K, V>(n, [keys], [values])`, a
     // producer, so the literal's map is owned wherever it lands -- a struct
     // field or a `return` included, where a pass-through's is not.
-    if (keyOwnsNothing or semaMapAllPlain(node.child1)) {
+    if (semaMapAllPlain(node.child1, node.child2, keyOwnsNothing, valueOwnsNothing)) {
         let keys = createNode(NodeKind.ARRAY_LITERAL_EXPR)
         nodeSpanFrom(keys, ptr_to_node(node.child1))
         keys.child1 = node.child1
@@ -109,72 +117,55 @@ internal fn semaMapLiteral(module: ASTNode, node: ASTNode, expected: TypeInfo) -
         keys.next = node_to_ptr(values)
         let fromEntries = semaMapCall(node, "mapFromEntries", keyT, valueT)
         fromEntries.child2 = node_to_ptr(count)
-        semaMapReset(node, NodeKind.CALL_EXPR)
+        semaDefaultReset(node, NodeKind.CALL_EXPR)
         node.child1 = fromEntries.child1
         node.child2 = fromEntries.child2
         node.child3 = fromEntries.child3
         return true
     }
 
-    let mut built = semaMapCall(node, "mapWithCapacity", keyT, valueT)
-    built.child2 = node_to_ptr(semaMapCount(node, total))
+    // Otherwise `mapEntriesN(k0, v0, k1, v1, ...)` for each run of up to twelve entries, and the
+    // runs merged: `mapMerge(mapMerge(mapEntries12(...), mapEntries12(...)), mapEntries3(...))`.
+    // Every key and value is an argument of a producer, so each temporary is released after
+    // its call (the header says why not a chain), and a later run's entry replaces an earlier
+    // one with the same key, as a chain of `set`s would. The merge nests one call per run, and
+    // the backend nests at most 64: a literal holds 768 entries this way.
     let mut keyPtr = node.child1
     let mut valuePtr = node.child2
+    let mut built = ptr_null()
     while (nodeExists(keyPtr)) {
-        let key = ptr_to_node(keyPtr)
-        let value = ptr_to_node(valuePtr)
-        if (keyOwnsNothing or semaMapKeyIsPlain(key)) {
-            // The longest run of plain keys starting here.
-            let runKeys = keyPtr
-            let runValues = valuePtr
-            let mut lastKey = ptr_to_node(runKeys)
-            let mut lastValue = ptr_to_node(runValues)
-            let mut run = 1
-            while (nodeExists(lastKey.next)
-                    and (keyOwnsNothing or semaMapKeyIsPlain(ptr_to_node(lastKey.next)))) {
-                lastKey = ptr_to_node(lastKey.next)
-                lastValue = ptr_to_node(lastValue.next)
-                run = run + 1
-            }
-            keyPtr = lastKey.next
-            valuePtr = lastValue.next
-            lastKey.next = ptr_null()
-            lastValue.next = ptr_null()
-
-            let keys = createNode(NodeKind.ARRAY_LITERAL_EXPR)
-            nodeSpanFrom(keys, key)
-            keys.child1 = runKeys
-            nodeSetType(keys, typeArraySized(keyT, run))
-            let values = createNode(NodeKind.ARRAY_LITERAL_EXPR)
-            nodeSpanFrom(values, value)
-            values.child1 = runValues
-            nodeSetType(values, typeArraySized(valueT, run))
-
-            let putAll = semaMapCall(key, "mapPutAll", keyT, valueT)
-            let count = semaMapCount(key, run)
-            built.next = node_to_ptr(count)
-            count.next = node_to_ptr(keys)
-            keys.next = node_to_ptr(values)
-            putAll.child2 = node_to_ptr(built)
-            built = putAll
-        } else {
+        let args = nodeList()
+        let mut run = 0
+        while (nodeExists(keyPtr) and run < 12) {
+            let key = ptr_to_node(keyPtr)
+            let value = ptr_to_node(valuePtr)
             keyPtr = key.next
             valuePtr = value.next
-            let put = semaMapCall(key, "mapPut", keyT, valueT)
-            built.next = node_to_ptr(key)
-            key.next = node_to_ptr(value)
+            key.next = ptr_null()
             value.next = ptr_null()
-            put.child2 = node_to_ptr(built)
-            built = put
+            nodeListPush(args, key)
+            nodeListPush(args, value)
+            run = run + 1
+        }
+        let entries = semaMapCall(node, "mapEntries".concat(run.toString()), keyT, valueT)
+        entries.child2 = args.head
+        if (nodeIsNull(built)) {
+            built = node_to_ptr(entries)
+        } else {
+            let merge = semaMapCall(node, "mapMerge", keyT, valueT)
+            ptr_to_node(built).next = node_to_ptr(entries)
+            merge.child2 = built
+            built = node_to_ptr(merge)
         }
     }
 
     // The outermost call becomes the literal's own node, so whatever holds the
     // node -- a `let`, an argument chain -- holds the map.
-    semaMapReset(node, NodeKind.CALL_EXPR)
-    node.child1 = built.child1
-    node.child2 = built.child2
-    node.child3 = built.child3
+    let outer = ptr_to_node(built)
+    semaDefaultReset(node, NodeKind.CALL_EXPR)
+    node.child1 = outer.child1
+    node.child2 = outer.child2
+    node.child3 = outer.child3
     return true
 }
 
@@ -194,12 +185,22 @@ private fn semaMapKeyIsPlain(key: ASTNode) -> Bool {
     return key.kind == NodeKind.LITERAL_EXPR or key.kind == NodeKind.IDENTIFIER_EXPR
 }
 
-private fn semaMapAllPlain(chain: Ptr) -> Bool {
-    let mut p = chain
-    while (nodeExists(p)) {
-        let key = ptr_to_node(p)
-        if (semaMapKeyIsPlain(key) == false) { return false }
-        p = key.next
+// A value the map literal does not own, by the same rule as a key.
+private fn semaMapEntryIsPlain(key: ASTNode, value: ASTNode, keyOwnsNothing: Bool, valueOwnsNothing: Bool) -> Bool {
+    if (keyOwnsNothing == false and semaMapKeyIsPlain(key) == false) { return false }
+    if (valueOwnsNothing == false and semaMapKeyIsPlain(value) == false) { return false }
+    return true
+}
+
+private fn semaMapAllPlain(keys: Ptr, values: Ptr, keyOwnsNothing: Bool, valueOwnsNothing: Bool) -> Bool {
+    let mut k = keys
+    let mut v = values
+    while (nodeExists(k)) {
+        let key = ptr_to_node(k)
+        let value = ptr_to_node(v)
+        if (semaMapEntryIsPlain(key, value, keyOwnsNothing, valueOwnsNothing) == false) { return false }
+        k = key.next
+        v = value.next
     }
     return true
 }
@@ -232,16 +233,6 @@ private fn semaMapCall(at: ASTNode, name: String, keyT: TypeInfo, valueT: TypeIn
     return call
 }
 
-private fn semaMapEntryCount(chain: Ptr) -> Int {
-    let mut count = 0
-    let mut p = chain
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
-}
-
 // Whether `t` is an instantiation of std.map's `HashMap` -- `HashMap$String$Int`.
 internal fn semaMapIsInstance(module: ASTNode, t: TypeInfo) -> Bool {
     if (typeIsValid(t) == false or t.kind != TypeKind.STRUCT) { return false }
@@ -272,16 +263,4 @@ private fn semaMapDuplicateKey(node: ASTNode) -> Bool {
         outer = first.next
     }
     return false
-}
-
-private fn semaMapReset(target: ASTNode, kind: NodeKind) {
-    target.kind = kind
-    target.s1 = ""
-    target.s2 = ""
-    target.i1 = 0
-    target.i2 = 0
-    target.i3 = 0
-    target.child1 = ptr_null()
-    target.child2 = ptr_null()
-    target.child3 = ptr_null()
 }

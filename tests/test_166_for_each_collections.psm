@@ -83,9 +83,9 @@ fn main() -> Int {
     if (exclusiveSum != 30) { return fail("a slice with ..<") }
 
     let ages = mapNew<String, Int>()
-    mapSet(ages, "ann", 31)
-    mapSet(ages, "bob", 42)
-    mapSet(ages, "cyd", 27)
+    ages.set("ann", 31)
+    ages.set("bob", 42)
+    ages.set("cyd", 27)
     let mut keys = ""
     for name in ages { keys = keys.concat(name) }
     if (keys.equals("annbobcyd") == false) { return fail("HashMap keys in insertion order") }

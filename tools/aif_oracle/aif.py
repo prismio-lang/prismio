@@ -109,6 +109,7 @@ FFI_CONTRACTS = {
     'list_insert':    {0: 'borrow', 1: 'borrow', 2: ('retain_in', 0)},
     'list_capacity':  {0: 'borrow'},
     'list_reserve':   {0: 'borrow'},
+    'list_shrink_to_fit': {0: 'borrow'},
     'list_truncate':  {0: 'borrow'},
     'list_remove_at': {0: 'borrow'},
     'list_new':       {},                     # produces a fresh container

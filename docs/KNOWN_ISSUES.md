@@ -184,6 +184,67 @@ Bound to a `let`, the same call is clean, and a map literal with only plain keys
 `mapPut` and inherits both leaks: `return { p.concat("-long-suffix"): 1 }` reads 9 allocated, 8
 released, and the same literal held in a struct field reads 9 allocated, 0 released.
 
+### A container field parks what it displaces, unless it is proved closed
+
+```
+struct Cache { items: Vec<String> }
+fn refill(c: Cache) { for i in 0..<20000 { c.items[0] = word(i) } }    // 552 bytes live at the peak
+public struct Open { public items: Vec<String> }                       // 749 KB: a public field parks
+```
+
+An overwrite or a removal releases the element it displaces at once for a Vec that is a fresh local of
+one function whose elements nothing can view (`../src/ir/overwrites.psm`, `semaRemovalVerdict`), and, since
+2026-11-14, for a **closed column** (`../src/ir/columns.psm`): a private `Vec` field of owning elements
+(a `HashMap`'s two columns, a `HashSet`'s, any struct's) that the module's own code uses only as the
+first argument of a list builtin, whose every `list_get` is consumed where it stands (a `copyOf`, a call
+that answers a scalar or a new value and does not keep it, a scalar operator or field read, or a `let`
+whose scope holds no store into the column), and that nothing a view is live across can store into (a
+call graph over the module, exact because a closure is a struct and a `call` function). Every other
+store and removal parks the element until its Vec dies, because `let n = v[i]` is a view and `v[i] = x`
+may run while `n` is read. The ledger ends balanced, which is why `--verify` reads 0 leaked, but a loop
+that keeps replacing holds everything it ever stored.
+
+`PRISMIO_COLUMN_TRACE=1 prismio build x.psm` prints each column's verdict and the first use that kept it
+open. What keeps one open: a `public` or `internal` field; the column passed to a function, bound, sliced
+or returned (so `pop`, `removeAt`, `sorted`, `retain` and the other `std.vec` functions over a field keep
+it parked: they are Prismio functions taking the Vec); a bound view still read after a store; a view
+passed to a function that stores into the column; a Vec that did not come from a literal, `list_new` or
+an owning call (a column built from a parameter). Field stores *through* an element (`c.items[0].name =
+x`) are a different store and still park. The unproved case is never unsafe, only parked.
+
+### A field or element read off an owned temporary leaks only when the ownership proof is lost
+
+`make().name`, `make().inner`, `makeVec()[1]`, `makeVec()[0].name` and `makeVec()[0] == "x"` used to leak the
+temporary, and are released now. In a statement head a String, `Vec` or struct field or element is bound ahead of
+the statement like a hand-written `let` (`irFindBorrowedTemporary`); a String comparison, a scalar field and a
+scalar element release the temporary themselves once they have read it, which is what reaches the right of `and`/`or`
+and a loop condition, where nothing can be bound ahead (`__builtin_string_eq`, `generateMemberAccess`, `list_get`).
+What is left is never unsafe, only a leak:
+
+- The hoist needs `aif_owns_call_result_at_node` to prove the call's result owned, and that is a whole-program
+  fact. Adding an unrelated function that builds a `Vec<Int>` to a program loses it for `let n = make(i).name`
+  (100 of 151 allocations leaked in the probe), where the hand-written `let p = make(i); let n = p.name` stays
+  clean. `test_owned_temporary_scalars` is a file of its own for that reason.
+- A view of a temporary read in a place that is neither a statement head nor a comparison, a scalar field or a scalar
+  element on the right of `and`/`or` -- a String passed on from there, say, or an enum payload -- is still a leaked
+  temporary.
+
+### A struct literal argument is bound ahead of the call, for a Prismio callee
+
+```
+public struct Person { name: String, age: Int }
+let d = dup(Person { name: word(1), age: 1 })       // was 4 allocated, 3 released
+people["ada"] = Person { name: word(23), age: 37 }  // was 1 leaked per store; also [Person { ... }]
+```
+
+Per-type field keys left the literal's `name` with no owner whenever a callee cloned a `Person.name` into
+another `Person` ([A struct on the frame](#a-struct-on-the-frame-three-field-shapes-still-leak), second
+bullet), and the cause is still there: the program reads clean because the literal is now bound first
+(`irStructLiteralArgIsHoistable`), the shape that always was. A callee that is not a Prismio function (a
+builtin or an extern) is left alone: `list_push(v, Person { ... })` builds the struct in the list's slot,
+and a binding would put the allocation back. The fix for the key itself, per-site rather than per-type
+fields, is the engine work `thetaFields` gestures at.
+
 ### Assigning a struct field releases the value it replaces only where no view can be live
 
 ```

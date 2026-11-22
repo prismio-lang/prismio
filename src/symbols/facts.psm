@@ -28,8 +28,8 @@ import symbols.names
 // **Keyed by the source name, which is why both verdicts are kept.** The guard sees the spelling at
 // the call site, and overloading means one spelling can name several functions. A name is safe only
 // when *every* function carrying it is, so one unsafe overload poisons the name for all of them.
-let FACT_GUARD_SAFE_SEEN = 1
-let FACT_GUARD_UNSAFE_SEEN = 2
+const FACT_GUARD_SAFE_SEEN = 1
+const FACT_GUARD_UNSAFE_SEEN = 2
 
 private let mut guardVerdicts: HashMap<Int, Int>
 

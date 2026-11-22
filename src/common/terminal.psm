@@ -18,18 +18,18 @@ import std.string
 import std.term
 import std.time
 
-let SGR_RESET = "\x1b[0m"
-let SGR_BOLD = "\x1b[1m"
-let SGR_DIM = "\x1b[2m"
-let SGR_RED = "\x1b[1;31m"
-let SGR_GREEN = "\x1b[1;32m"
-let SGR_YELLOW = "\x1b[1;33m"
-let SGR_BLUE = "\x1b[1;34m"
-let SGR_MAGENTA = "\x1b[1;35m"
-let SGR_CYAN = "\x1b[1;36m"
+const SGR_RESET = "\x1b[0m"
+const SGR_BOLD = "\x1b[1m"
+const SGR_DIM = "\x1b[2m"
+const SGR_RED = "\x1b[1;31m"
+const SGR_GREEN = "\x1b[1;32m"
+const SGR_YELLOW = "\x1b[1;33m"
+const SGR_BLUE = "\x1b[1;34m"
+const SGR_MAGENTA = "\x1b[1;35m"
+const SGR_CYAN = "\x1b[1;36m"
 
 // The longest subject the progress line keeps. Longer is cut at this many bytes.
-let PROGRESS_SUBJECT_LIMIT = 255
+const PROGRESS_SUBJECT_LIMIT = 255
 
 private let mut jsonMode = false
 // Per stream, 0 until first asked, then 1 for plain and 2 for styled.

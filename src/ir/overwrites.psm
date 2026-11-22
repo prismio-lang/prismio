@@ -237,7 +237,7 @@ private fn overwriteWalkChain(w: OverwriteWalk, head: Ptr, path: String) {
     // it whatever chains the statements nest.
     let base = w.stmtMentions.length
     w.chainBase.push(base)
-    let length = overwriteChainLength(head)
+    let length = chainLength(head)
     for _ in 0..<length { w.stmtMentions.push("") }
     let scopeMark = w.envNames.length
     let mut p = head
@@ -583,20 +583,10 @@ private fn overwriteLiveAt(w: OverwriteWalk, i: Int, storePath: String) -> Bool 
     if (storePosition < w.positions[i]) { return false }
     let needle = ",".concat(i.toString(), ",")
     let base = w.chainBase[chain]
-    let length = overwriteChainLength(w.heads[chain])
+    let length = chainLength(w.heads[chain])
     for position in storePosition..<length {
         let seen: String = w.stmtMentions[base + position]
         if (seen.contains(needle)) { return true }
     }
     return false
-}
-
-private fn overwriteChainLength(head: Ptr) -> Int {
-    let mut count = 0
-    let mut p = head
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
 }

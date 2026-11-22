@@ -1,0 +1,105 @@
+// A HashMap, a HashSet or another generic struct stored in a field of a struct a function returns.
+// Two things went wrong. A `let` of one moved into the literal (`let flat = ...; return Holder
+// { table: flat }`) was released at the scope exit as well as by the Holder, so the struct came
+// back holding a freed table and the first read crashed; and a map literal written inline in the
+// field (`Holder { table: { word(1): word(2) } }`) was never released, 10 of 16 allocations
+// leaked. A generic struct's field was recorded as a `List` (aifFieldTypeName), which no instance
+// matches, so such a field was never a release point. The suite runs this under `--verify`
+// through the ownership probes and it must read 0 leaked, 0 violations.
+//
+// Every string is longer than twelve bytes: a shorter one is stored inline and never reaches
+// the ledger.
+
+import std.io
+import std.map
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+public struct Holder { table: HashMap<String, String> }
+public struct Counts { seen: HashSet<Int>, hits: HashMap<Int, Int> }
+public struct Box2<T> { items: Vec<T> }
+public struct Wrapper { inner: Box2<String> }
+public struct Nested { holder: Holder, tag: String }
+
+// A `let` moved into the field.
+fn boundMap() -> Holder {
+    let flat: HashMap<String, String> = {}
+    flat[word(1)] = word(2)
+    flat[word(3)] = word(4)
+    return Holder { table: flat }
+}
+
+// The literal written in the field, few entries and many.
+fn inlineMap() -> Holder {
+    return Holder { table: { word(1): word(2), word(3): word(4) } }
+}
+
+fn inlineLong() -> Holder {
+    return Holder { table: {
+        word(1): word(1), word(2): word(2), word(3): word(3), word(4): word(4), word(5): word(5),
+        word(6): word(6), word(7): word(7), word(8): word(8), word(9): word(9), word(10): word(10),
+        word(11): word(11), word(12): word(12), word(13): word(13), word(14): word(14)
+    } }
+}
+
+// A set and a map of scalars, built and bound.
+fn counts() -> Counts {
+    let seen: HashSet<Int> = HashSet<Int>()
+    seen.insert(5)
+    let hits: HashMap<Int, Int> = {}
+    hits[1] = 2
+    return Counts { seen: seen, hits: hits }
+}
+
+// A user generic struct in a field.
+fn wrapped() -> Wrapper {
+    let items: Vec<String> = [word(1), word(2)]
+    let inner = Box2<String> { items: items }
+    return Wrapper { inner: inner }
+}
+
+// A struct holding a struct holding a map.
+fn nested() -> Nested {
+    let holder = boundMap()
+    return Nested { holder: holder, tag: word(9) }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let a = boundMap()
+    if (a.table.count != 2 or a.table[word(1)] != word(2)) { bad = bad + fail("bound map") }
+    let b = inlineMap()
+    if (b.table.count != 2 or b.table[word(3)] != word(4)) { bad = bad + fail("inline map") }
+    let c = inlineLong()
+    if (c.table.count != 14 or c.table[word(14)] != word(14)) { bad = bad + fail("inline long map") }
+    let d = counts()
+    if (d.seen.count != 1 or d.seen.contains(5) == false or d.hits[1] != 2) { bad = bad + fail("set and map of scalars") }
+    let e = wrapped()
+    if (e.inner.items.length != 2 or e.inner.items[1] != word(2)) { bad = bad + fail("generic struct") }
+    let f = nested()
+    if (f.holder.table.count != 2 or f.tag != word(9)) { bad = bad + fail("nested") }
+
+    // Read in place off a temporary, the shapes that crashed.
+    if (boundMap().table.count != 2) { bad = bad + fail("count off a temporary") }
+    if (inlineMap().table.contains(word(1)) == false) { bad = bad + fail("contains off a temporary") }
+    if (counts().seen.count != 1) { bad = bad + fail("set count off a temporary") }
+
+    // Churn: the table must be released once per struct, not once per binding.
+    for i in 0..<200 {
+        let h = boundMap()
+        if (h.table.count != 2) { bad = bad + 1 }
+    }
+
+    if (bad != 0) { return 1 }
+    println("PASS")
+    return 0
+}

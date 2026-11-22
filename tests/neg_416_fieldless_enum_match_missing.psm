@@ -1,0 +1,19 @@
+// expect-error: this match does not cover South, West of `Dir`
+//
+// A match on a fieldless enum names every variant, or ends in `_`, as a match on a payload
+// enum does. A partial one used to run no arm for the variants it left out, which is
+// the input the author forgot; a new variant added later was left out the same way.
+
+enum Dir { North, East, South, West }
+
+fn label(d: Dir) -> Int {
+    match (d) {
+        Dir.North => { return 1 }
+        Dir.East => { return 2 }
+    }
+    return 0
+}
+
+fn main() -> Int {
+    return label(Dir.South)
+}

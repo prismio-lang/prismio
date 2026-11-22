@@ -83,7 +83,7 @@ fn main() -> Int {
     for k in 0..<5 { m.set(word(k + 40), k) }
     let mut keys: Vec<String> = []
     let mut again: Vec<String> = []
-    for k in 0..<m.length {
+    for k in 0..<m.count {
         keys.push(m.keyAt(k).clone())
         again.push(m.keyAt(k).clone())
     }

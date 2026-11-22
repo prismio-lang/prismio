@@ -216,11 +216,6 @@ public fn aif_site_fn(id: Int) -> Int {
     return siteFn[id]
 }
 
-public fn aif_site_scope(id: Int) -> Int {
-    if (id < 0 or id >= siteCount) { return -1 }
-    return siteScope[id]
-}
-
 public fn aif_site_file(id: Int) -> Int {
     if (id < 0 or id >= siteCount) { return 0 }
     return siteFile[id]
@@ -236,29 +231,9 @@ public fn aif_site_col(id: Int) -> Int {
     return siteCol[id]
 }
 
-public fn aif_site_nfields(id: Int) -> Int {
-    if (id < 0 or id >= siteCount) { return 0 }
-    return siteNFields[id]
-}
-
 public fn aif_site_ordinal(id: Int) -> Int {
     if (id < 0 or id >= siteCount) { return 0 }
     return siteOrdinal[id]
-}
-
-public fn aif_site_escape(id: Int) -> Int {
-    if (id < 0 or id >= siteCount) { return AIF_E_GLOBAL }
-    return siteE[id]
-}
-
-public fn aif_site_alias(id: Int) -> Int {
-    if (id < 0 or id >= siteCount) { return AIF_A_SHARED }
-    return siteA[id]
-}
-
-public fn aif_site_cyc(id: Int) -> Int {
-    if (id < 0 or id >= siteCount) { return AIF_C_MAYBE }
-    return siteC[id]
 }
 
 public fn aif_key_last_stmt(key: Int) -> Int {
@@ -270,7 +245,7 @@ public fn aif_site_note_node(site: Int, node: Ptr) {
     sitesOpen()
     if (site < 0 or site >= siteCount or addressOf(node) == 0) { return }
     let at = addressOf(node)
-    if (siteOfNode.has(at)) { return }
+    if (siteOfNode.contains(at)) { return }
     siteOfNode.set(at, site)
 }
 
@@ -278,11 +253,6 @@ public fn aif_site_note_node(site: Int, node: Ptr) {
 internal fn siteAtNode(node: Ptr) -> Int {
     sitesOpen()
     return siteOfNode.getOr(addressOf(node), -1)
-}
-
-public fn aif_site_in_container(id: Int) -> Int {
-    if (id < 0 or id >= siteCount) { return 0 }
-    return siteInContainer[id]
 }
 
 // SPEC 6.2 makes the record order normative -- byte-wise ascending by symbol -- because an unstable order

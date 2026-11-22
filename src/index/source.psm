@@ -53,20 +53,6 @@ public fn ixLineOffset(src: IxSources, slot: Int, line: Int) -> Int {
     return src.lineStarts[slot][line]
 }
 
-public fn ixLineCount(src: IxSources, slot: Int) -> Int {
-    if (slot < 0) { return 0 }
-    return src.lineStarts[slot].length - 1
-}
-
-// The text at a span, or "" when the span is outside the file.
-public fn ixTextAt(src: IxSources, slot: Int, line: Int, col: Int, len: Int) -> String {
-    let start = ixLineOffset(src, slot, line)
-    if (start < 0 or col < 1 or len < 1) { return "".clone() }
-    let at = start + col - 1
-    if (at + len > src.texts[slot].length) { return "".clone() }
-    return src.texts[slot].substring(at, len).clone()
-}
-
 // The token that begins at this 1-based line and byte column, or -1.
 public fn ixTokenAt(src: IxSources, slot: Int, line: Int, col: Int) -> Int {
     let start = ixLineOffset(src, slot, line)

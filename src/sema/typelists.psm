@@ -13,8 +13,9 @@ import ast.nodes
 import ast.types
 import common.diagnostics
 import std.string
+import sema.decl_index
 
-let TYPELIST_MAX_DEPTH = 8
+const TYPELIST_MAX_DEPTH = 8
 
 internal fn typelistNamed(name: String) -> ASTNode {
     let count = ir_decl_count(name)
@@ -30,13 +31,7 @@ internal fn typelistIsSequence(list: ASTNode) -> Bool {
 }
 
 internal fn typelistWidth(list: ASTNode) -> Int {
-    let mut width = 0
-    let mut p = list.child1
-    while (nodeExists(p)) {
-        width = width + 1
-        p = ptr_to_node(p).next
-    }
-    return width
+    return chainLength(list.child1)
 }
 
 internal fn typelistEntryAt(list: ASTNode, index: Int) -> ASTNode {
@@ -84,7 +79,7 @@ internal fn typelistEntryAccepts(module: ASTNode, entry: ASTNode, argT: TypeInfo
         if (nodeExists(node_to_ptr(nested)) and depth < TYPELIST_MAX_DEPTH) {
             return typelistAccepts(module, nested, argT, depth + 1)
         }
-        let traitDecl = monoFindTrait(module, name)
+        let traitDecl = declFindTrait(module, name)
         if (nodeExists(node_to_ptr(traitDecl))) {
             let traitRef = createNode(NodeKind.TRAIT_REF)
             traitRef.s1 = name.clone()
@@ -117,7 +112,7 @@ internal fn typelistHasTraitEntry(module: ASTNode, list: ASTNode, depth: Int) ->
         let nested = typelistNamed(name)
         if (nodeExists(node_to_ptr(nested))) {
             if (depth < TYPELIST_MAX_DEPTH and typelistHasTraitEntry(module, nested, depth + 1)) { return true }
-        } else if (nodeExists(node_to_ptr(monoFindTrait(module, name)))) {
+        } else if (nodeExists(node_to_ptr(declFindTrait(module, name)))) {
             return true
         }
     }
@@ -156,7 +151,7 @@ private fn typelistCheckEntry(module: ASTNode, list: ASTNode, entry: ASTNode, po
         return
     }
     let nested = typelistNamed(annotation.s1)
-    let namesTrait = nodeExists(node_to_ptr(monoFindTrait(module, annotation.s1)))
+    let namesTrait = nodeExists(node_to_ptr(declFindTrait(module, annotation.s1)))
     if (typelistEntryIsOptional(entry) and (nodeExists(node_to_ptr(nested)) or namesTrait)) {
         typelistFail(list, entry, "an optional entry must be a type: ".concat(diagQuote(typelistEntryText(entry)),
                                                                             " names a list or a trait"))
@@ -171,7 +166,7 @@ private fn typelistCheckEntry(module: ASTNode, list: ASTNode, entry: ASTNode, po
         }
         return
     }
-    if (nodeExists(node_to_ptr(monoFindTrait(module, annotation.s1)))) { return }
+    if (nodeExists(node_to_ptr(declFindTrait(module, annotation.s1)))) { return }
     if (typeIsValid(semaAnnotationType(module, annotation)) == false) { list.i3 = 1 }
 }
 

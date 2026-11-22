@@ -20,6 +20,7 @@ import std.vec
 import common.diagnostics
 import fmt.scan
 import fmt.layout
+import common.diag_codes
 
 // A file with CRLF line ends keeps them; any other gets LF.
 private fn fmtLineEnding(text: String) -> String {
@@ -78,25 +79,25 @@ public fn fmtCommand() -> Int {
             fromStdin = true
         } else if (argument.equals("--range")) {
             if (argIndex + 1 >= process.args.count) {
-                diag_error_code("P1105", "`--range` needs `<from>:<to>`")
+                diag_error_code(DIAG_FMT_RANGE_NEEDS_BOUNDS, "`--range` needs `<from>:<to>`")
                 fmtUsage()
                 return 1
             }
             let parts = process.args[argIndex + 1].split(":")
             if (parts.length != 2) {
-                diag_error_code("P1106", "`--range` needs `<from>:<to>`, two line numbers")
+                diag_error_code(DIAG_FMT_RANGE_NEEDS_NUMBERS, "`--range` needs `<from>:<to>`, two line numbers")
                 fmtUsage()
                 return 1
             }
             fromLine = parts[0].parseIntOr(0)
             toLine = parts[1].parseIntOr(0)
             if (fromLine < 1 or toLine < fromLine) {
-                diag_error_code("P1107", "`--range` needs line numbers counted from 1, `from` not after `to`")
+                diag_error_code(DIAG_FMT_RANGE_OUT_OF_ORDER, "`--range` needs line numbers counted from 1, `from` not after `to`")
                 return 1
             }
             argIndex = argIndex + 1
         } else if (argument.startsWith("--")) {
-            diag_error_code("P1108", "unknown argument ".concat(diagQuote(argument)))
+            diag_error_code(DIAG_FMT_UNKNOWN_ARGUMENT, "unknown argument ".concat(diagQuote(argument)))
             fmtUsage()
             return 1
         } else {
@@ -107,14 +108,14 @@ public fn fmtCommand() -> Int {
 
     if (fromStdin) {
         if (files.length > 0 or write or check) {
-            diag_error_code("P1109", "`--stdin` takes no file and no `--write` or `--check`")
+            diag_error_code(DIAG_FMT_STDIN_TAKES_NO_FILE, "`--stdin` takes no file and no `--write` or `--check`")
             return 1
         }
         print(fmtSource(readAll(), fromLine, toLine))
         return 0
     }
     if (files.length == 0) {
-        diag_error_code("P1110", "missing source file")
+        diag_error_code(DIAG_FMT_MISSING_SOURCE, "missing source file")
         fmtUsage()
         return 1
     }
@@ -128,7 +129,7 @@ public fn fmtCommand() -> Int {
     // A folder with no source in it is formatted already.
     if (files.length == 0 and named) { return 0 }
     if (files.length > 1 and write == false and check == false) {
-        diag_error_code("P1111", "several files need `--write` or `--check`")
+        diag_error_code(DIAG_FMT_SEVERAL_FILES_NEED_MODE, "several files need `--write` or `--check`")
         return 1
     }
 
@@ -136,7 +137,7 @@ public fn fmtCommand() -> Int {
     for path in files {
         let text = tryReadFile(path)
         if (text == none) {
-            diag_error_code("P1112", "cannot read ".concat(diagQuote(path)))
+            diag_error_code(DIAG_FMT_SOURCE_UNREADABLE, "cannot read ".concat(diagQuote(path)))
             return 1
         }
         let original = expect(text)
@@ -150,7 +151,7 @@ public fn fmtCommand() -> Int {
         if (check) {
             println("would reformat ".concat(path))
         } else if (writeFile(path, formatted) == false) {
-            diag_error_code("P1113", "cannot write ".concat(diagQuote(path)))
+            diag_error_code(DIAG_FMT_SOURCE_UNWRITABLE, "cannot write ".concat(diagQuote(path)))
             return 1
         }
     }

@@ -31,7 +31,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // `llvm.abs.i32`, which LLVM lists as *trivially vectorisable*. Written as
     // an ordinary function instead, the loop that calls one keeps a call at the
     // point the flat-List guard is decided, and `benchKnapsack` measured **1.79x
-    // slower** than the branch it replaced. See aif/evidence/RESULTS-min-max.md.
+    // slower** than the branch it replaced. See docs/aif/evidence/RESULTS-min-max.md (Git history).
     if (name.equals("__builtin_max")) { return typeInt() }
     if (name.equals("__builtin_min")) { return typeInt() }
     if (name.equals("__builtin_abs")) { return typeInt() }
@@ -204,6 +204,7 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     // (src/sema/vec.psm) rather than written.
     if (name.equals("list_capacity")) { return typeInt() }
     if (name.equals("list_reserve")) { return typeVoid() }
+    if (name.equals("list_shrink_to_fit")) { return typeVoid() }
     if (name.equals("list_truncate")) { return typeVoid() }
     if (name.equals("list_remove_at")) { return typeVoid() }
     if (name.equals("list_insert")) { return typeVoid() }
@@ -253,12 +254,15 @@ internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
 //      predates -- a view taken after this call cannot reach back to it;
 //   2  release if codegen finds no view escaping an iteration: the same, but in
 //      a loop the Vec predates, where a view taken later in the body is live
-//      at the next iteration's removal if something outlives the iteration.
+//      at the next iteration's removal if something outlives the iteration;
+//   3  a field: release if it is a closed column (src/ir/columns.psm), which
+//      needs every function of the module and is decided where codegen has them.
 //
 // The exclusive mark is per binding (a shadowing `let` or a parameter starts
 // without it) and is set only for a `list_new` initializer, which `[]` and an
 // uninitialised `let v: Vec<T>` both are.
 private fn semaRemovalVerdict(list: ASTNode) -> Int {
+    if (list.kind == NodeKind.MEMBER_ACCESS_EXPR) { return 3 }
     if (list.kind != NodeKind.IDENTIFIER_EXPR) { return 0 }
     if (ir_is_list_exclusive(list.s1) == 0) { return 0 }
     if (ir_binding_predates_loop(list.s1) == 1) { return 2 }
@@ -722,9 +726,8 @@ internal fn semaCheckStdPortCall(callee: ASTNode) {
     }
 }
 
-internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
-    if (semaCheckFailureBuiltin(module, call, name, argPtr)) { return true }
-
+// The part of `semaCheckBuiltinCall` for `drop`, `expect` and `unwrapOr`: true when `name` is one of them and the call has been checked.
+private fn semaCheckBuiltinCore(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     // drop(x): deterministic, safe free. Consumes (moves) an owned value, so
     // use-after-drop and double-drop are caught by move tracking.
     if (name.equals("drop")) {
@@ -771,6 +774,11 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    return false
+}
+
+// The part of `semaCheckBuiltinCall` for integer and float arithmetic, memory and atomics, the console write, errno and `assume`: true when `name` is one of them and the call has been checked.
+private fn semaCheckBuiltinNumeric(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     if (name.equals("__builtin_max") or name.equals("__builtin_min")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let m0 = ptr_to_node(argPtr)
@@ -887,6 +895,11 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    return false
+}
+
+// The part of `semaCheckBuiltinCall` for the string builtins and `cstring`: true when `name` is one of them and the call has been checked.
+private fn semaCheckBuiltinString(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     if (name.equals("__builtin_string_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         semaCheckValue(module, ptr_to_node(argPtr), typeString(), "string length operand")
@@ -1011,6 +1024,11 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    return false
+}
+
+// The part of `semaCheckBuiltinCall` for `list_new`, `list_len`, `soa`, `aos`, `data_len` and `list_get`: true when `name` is one of them and the call has been checked.
+private fn semaCheckBuiltinContainer(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     if (name.equals("list_new")) {
         semaCheckArity(call, name, argPtr, 0)
         return true
@@ -1116,6 +1134,12 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         }
         return true
     }
+
+    return false
+}
+
+// The part of `semaCheckBuiltinCall` for the channel builtins: true when `name` is one of them and the call has been checked.
+private fn semaCheckBuiltinChannel(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     // v0.1 concurrency -- the four rules this surface has to state, and where
     // each one is enforced.
     //
@@ -1190,6 +1214,11 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    return false
+}
+
+// The part of `semaCheckBuiltinCall` for the `Vec` mutators: `list_push`, `list_set`, `list_swap`, `list_insert` and the integer-argument ones: true when `name` is one of them and the call has been checked.
+private fn semaCheckBuiltinVecOps(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     if (name.equals("list_push")) {
         if (semaCheckArity(call, name, argPtr, 2) == false) { return true }
         let a0 = ptr_to_node(argPtr)
@@ -1339,11 +1368,12 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
     let mut vecIntOp = ""
     if (name.equals("list_capacity")) { vecIntOp = "capacity" }
     if (name.equals("list_reserve")) { vecIntOp = "reserve" }
+    if (name.equals("list_shrink_to_fit")) { vecIntOp = "shrinkToFit" }
     if (name.equals("list_truncate")) { vecIntOp = "truncate" }
     if (name.equals("list_remove_at")) { vecIntOp = "removeAt" }
     if (vecIntOp.equals("") == false) {
         let mut arity = 2
-        if (name.equals("list_capacity")) { arity = 1 }
+        if (name.equals("list_capacity") or name.equals("list_shrink_to_fit")) { arity = 1 }
         if (semaCheckArity(call, name, argPtr, arity) == false) { return true }
         let v0 = ptr_to_node(argPtr)
         let vt = semaExpr(module, v0)
@@ -1351,8 +1381,8 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
             semaErrorAt(v0, vecIntOp.concat(" expects a Vec, found ", typeDisplay(vt)))
             return true
         }
+        if (arity == 2 or name.equals("list_shrink_to_fit")) { semaCheckMutablePlace(v0) }
         if (arity == 2) {
-            semaCheckMutablePlace(v0)
             semaCheckValue(module, ptr_to_node(v0.next), typeInt(), vecIntOp.concat(" argument"))
         }
         if (name.equals("list_truncate") or name.equals("list_remove_at")) {
@@ -1361,6 +1391,11 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         return true
     }
 
+    return false
+}
+
+// The part of `semaCheckBuiltinCall` for `slice_len` and `slice_set`: true when `name` is one of them and the call has been checked.
+private fn semaCheckBuiltinSlice(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
     if (name.equals("slice_len")) {
         if (semaCheckArity(call, name, argPtr, 1) == false) { return true }
         let slice = ptr_to_node(argPtr)
@@ -1394,6 +1429,25 @@ internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, a
         semaConsumeOperand(value)
         return true
     }
+
+    return false
+}
+
+internal fn semaCheckBuiltinCall(module: ASTNode, call: ASTNode, name: String, argPtr: Ptr) -> Bool {
+    if (semaCheckFailureBuiltin(module, call, name, argPtr)) { return true }
+
+    if (semaCheckBuiltinCore(module, call, name, argPtr)) { return true }
+
+    if (semaCheckBuiltinNumeric(module, call, name, argPtr)) { return true }
+
+    if (semaCheckBuiltinString(module, call, name, argPtr)) { return true }
+
+    if (semaCheckBuiltinContainer(module, call, name, argPtr)) { return true }
+    if (semaCheckBuiltinChannel(module, call, name, argPtr)) { return true }
+
+    if (semaCheckBuiltinVecOps(module, call, name, argPtr)) { return true }
+
+    if (semaCheckBuiltinSlice(module, call, name, argPtr)) { return true }
 
     return false
 }

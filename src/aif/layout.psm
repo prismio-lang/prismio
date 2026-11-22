@@ -52,7 +52,13 @@ import aifcore.nominals
 internal fn aifFieldTypeName(field: ASTNode) -> String {
     if (nodeExists(field.child1) == false) { return "" }
     let ann = ptr_to_node(field.child1)
-    if (ann.i2 == 1) { return "List" }
+    // `i2` is "has type arguments", whatever the constructor: `List<T>`, `Array<T, N>`, and since
+    // generalisation `HashMap<K, V>` and every generic struct. Only the first two are the
+    // collections; a generic struct is named by its constructor, and fieldReleaseOf matches an
+    // instance (`HashMap$Int$Int`) against it. It used to say "List" for all of them, which no
+    // instance's site matched, so a field of a std container or a generic struct was never a
+    // release point and a value stored into one kept its owner's scope release as well.
+    if (ann.i2 == 1 and (ann.s1.equals("List") or ann.s1.equals("Array"))) { return "List" }
     if (ann.i1 == 1) { return "Array" }
     return aifBaseType(ann.s1)
 }
@@ -445,7 +451,7 @@ internal fn aifLayoutVetoInline(module: ASTNode) {
 // proven sequential element traversal that consumes every field of the row.
 // A narrow hot scan such as g4_tuned keeps its profitable split. An all-field
 // mutation such as BenchMemoryParticle stays flat and avoids a cold allocation
-// for every List element. See aif/evidence/RESULTS-list-element-split-veto.md.
+// for every List element. See docs/aif/evidence/RESULTS-list-element-split-veto.md (Git history).
 //
 // Only a type that would otherwise be inline is considered: one with a pointer
 // inside is boxed whatever its layout, so splitting it costs the container

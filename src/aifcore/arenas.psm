@@ -483,7 +483,7 @@ private fn scopeOfNode(node: Ptr) -> Int {
         scopeByNode = fresh
         for s in 0..<scopeCount {
             if (scopeNode[s] == 0) { continue }
-            if (scopeByNode.has(scopeNode[s]) == false) { scopeByNode.set(scopeNode[s], s) }
+            if (scopeByNode.contains(scopeNode[s]) == false) { scopeByNode.set(scopeNode[s], s) }
         }
         scopeByNodeBuilt = scopeCount
     }

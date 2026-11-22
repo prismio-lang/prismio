@@ -18,9 +18,8 @@ import ums.targets.target
 import project.ums_cli
 import project.host
 import std.fs
-
-// Whether a program is on PATH; see runtime/build_driver.c.
-public extern fn compiler_program_on_path(name: String borrow) -> Int
+import common.native
+import common.diag_codes
 
 // The verbs `main` dispatches before it looks for a project command, and so the
 // names a manifest cannot take. `main.psm`'s dispatch is the other half of this
@@ -72,7 +71,7 @@ public fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
     while (index < workspace.commandCount()) {
         let declared = workspace.command(index)
         if (umsReservedCommandName(declared.name)) {
-            diag_error_code("P1062",
+            diag_error_code(DIAG_PROJECT_RESERVED_COMMAND_NAME,
                 "a project command cannot be named ".concat(diagQuote(declared.name)))
             diag_note("that name is a built-in command and built-ins win; rename it in build.ums")
             rejected = 1
@@ -83,7 +82,7 @@ public fn rejectReservedCommandNames(workspace: UmsWorkspace) -> Int {
 }
 
 // `--release` picks the profile a command's build steps use and is forwarded as
-// well, so one flag reaches both halves of `prismio dist --release`: the targets
+// well, so one flag reaches both halves of `prismio release`: the targets
 // it builds and the script it runs.
 private fn umsCommandProfile(startIndex: Int) -> String {
     for i in startIndex..<process.args.count {
@@ -162,7 +161,7 @@ private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
     let toolDirectory = joinPath(joinPath(workspace.plan.artifactRoot,
                                             workspace.project.build.profile), "tools")
     if (makeDirectory(toolDirectory) == false) {
-        diag_error_code("P1089", "could not create ".concat(toolDirectory))
+        diag_error_code(DIAG_PROJECT_SCRIPT_DIRECTORY_NOT_CREATED, "could not create ".concat(toolDirectory))
         return 1
     }
     let toolPath = joinPath(toolDirectory, compiler_default_exe_path(pathLeaf(step.subject)))
@@ -201,7 +200,7 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
     // process exits, so every later step in the command would still run the
     // previous compiler while reading as though it ran the new one.
     if (isUmsHostTarget(workspace, target)) {
-        diag_error_code("P1061",
+        diag_error_code(DIAG_PROJECT_STEP_BUILDS_HOST,
             "a command step cannot build the toolchain.host target: ".concat(diagQuote(step.subject)))
         diag_note("run `prismio build` first; the rebuilt compiler is promoted only after that process exits")
         return 1
@@ -237,7 +236,7 @@ public fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
             if (status < 0) { status = 127 }
             let stepNumber = index + 1
             let failedStep = " failed at step ".concat(stepNumber.toString(), " (", diagQuote(step.subject), ")")
-            diag_error_code("P1059",
+            diag_error_code(DIAG_PROJECT_COMMAND_FAILED,
                 "project command ".concat(diagQuote(declared.name), failedStep,
                                           ", exit status ", status.toString()))
             return status

@@ -138,6 +138,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
             aif_vs_view_of(view, collection)
             return view
         }
+        _ => { }
     }
 
     // `List[i]` and `Slice[i]` both read the List element field. References are
@@ -263,6 +264,7 @@ private fn aifSitesOf(nodePtr: Ptr, fnId: Int, scope: Int) -> Int {
         NodeKind.JOIN_EXPR => {
             return aifVsEmpty()
         }
+        _ => { }
     }
 
     // Everything else contributes whatever its children do.
@@ -605,6 +607,7 @@ private fn aifIsStatementKind(k: NodeKind) -> Bool {
         NodeKind.MATCH_ARM => { return true }
         NodeKind.EXPRESSION_STATEMENT => { return true }
         NodeKind.REGION_STATEMENT => { return true }
+        _ => { }
     }
     return false
 }
@@ -909,6 +912,7 @@ private fn aifWalk(nodePtr: Ptr, fnId: Int, scope: Int) {
             aifWalkChildren(n.child3, fnId, scope)
             return
         }
+        _ => { }
     }
 
     aifWalkChildren(n.child1, fnId, scope)
@@ -1068,6 +1072,7 @@ private fn aifStmtDirectJoin(n: ASTNode, name: String) -> Bool {
         NodeKind.EXPRESSION_STATEMENT => { return aifExprHasJoinOf(n.child1, name) }
         NodeKind.RETURN_STATEMENT => { return aifExprHasJoinOf(n.child1, name) }
         NodeKind.ASSIGNMENT_STATEMENT => { return aifExprHasJoinOf(n.child2, name) }
+        _ => { }
     }
     return false
 }
@@ -1134,6 +1139,7 @@ private fn aifStmtEscapesUnjoined(n: ASTNode, name: String, inLoop: Bool) -> Boo
             }
             return false
         }
+        _ => { }
     }
     return false
 }
@@ -1160,6 +1166,7 @@ private fn aifStmtAlwaysJoins(n: ASTNode, name: String, inLoop: Bool) -> Bool {
         NodeKind.REGION_STATEMENT => {
             return aifChainJoins(aifBlockChain(n.child1), name, inLoop)
         }
+        _ => { }
     }
 
     // Deliberately **not** MATCH, even though exhaustiveness is checked and

@@ -288,11 +288,6 @@ public fn aif_con_count() -> Int {
     return conCount
 }
 
-public fn aif_program_has_tasks() -> Int {
-    if (programHasTasks) { return 1 }
-    return 0
-}
-
 public fn aif_set_owned_collections(on: Int) {
     ownedCollections = on != 0
 }

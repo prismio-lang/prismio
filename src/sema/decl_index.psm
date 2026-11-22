@@ -3,7 +3,7 @@
 // The checker asks "is this name a trait?" and "which impl declares this constant?" for every annotation, every
 // `Type.NAME` and every bound it checks, and each answer was a walk of every statement of the program, string
 // compares and all. On the compiler's own source that was about 41% of a build (a profile, 2026-11-10: semaFindAssocConst,
-// monoFindTrait and semaIsTraitName), and it grows with the square of the program.
+// declFindTrait and semaIsTraitName), and it grows with the square of the program.
 //
 // The answers do not change while the checker runs. Traits come only from the parser, and impls from the parser,
 // `deriveEnumImpls` and `monoExpandDefaultMethods`, all of which finish inside `resolveImports`; after that the
@@ -92,4 +92,17 @@ public fn declIndexConstImplCount(module: ASTNode) -> Int {
 
 public fn declIndexConstImplAt(index: Int) -> Ptr {
     return declConstImpls[index]
+}
+
+// The first trait named `name`, or the null node. The one place a trait is found by name: through the index when
+// it is on, and by the walk it replaced while the merge is still making the chain.
+public fn declFindTrait(module: ASTNode, name: String) -> ASTNode {
+    if (declIndexActive) { return declIndexFindTrait(module, name) }
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let stmt = ptr_to_node(p)
+        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(name)) { return stmt }
+        p = stmt.next
+    }
+    return ptr_to_node(ptr_null())
 }

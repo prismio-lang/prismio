@@ -181,16 +181,6 @@ private fn semaPtrStepIsRaw(op: Int) -> Bool {
     return op == 1 or op == 2 or op == 3
 }
 
-private fn semaPtrArgumentCount(args: Ptr) -> Int {
-    let mut count = 0
-    let mut p = args
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
-}
-
 // The receiver first, then what was written in the parentheses, as one operand list.
 private fn semaPtrOperands(receiver: ASTNode, written: Ptr) -> Ptr {
     let operands = nodeList()
@@ -219,7 +209,7 @@ internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiv
             nodeSetType(call, typeInvalid())
             return typeInvalid()
         }
-        let given = semaPtrArgumentCount(call.child2)
+        let given = chainLength(call.child2)
         if (given != ptrOpArity(op) - 1) {
             let wanted = ptrOpArity(op) - 1
             let head = "`".concat(method, "` takes ", wanted.toString())
@@ -273,7 +263,7 @@ internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiv
     }
     call.typeInfo = ptr_null()
     if (reads) {
-        if (semaPtrArgumentCount(call.child2) != 0) {
+        if (chainLength(call.child2) != 0) {
             semaErrorAt(call, "`".concat(method, "` takes no arguments"))
             nodeSetType(call, typeInvalid())
             return typeInvalid()
@@ -318,7 +308,7 @@ private fn semaPtrAtomicMethod(module: ASTNode, call: ASTNode, method: String, k
         return typeInvalid()
     }
     let wanted = ptrAtomicArity(kind) - 1
-    let given = semaPtrArgumentCount(call.child2)
+    let given = chainLength(call.child2)
     if (given != wanted) {
         let head = "`".concat(method, "` takes ", wanted.toString())
         semaErrorAt(call, head.concat(" argument", semaPtrPlural(wanted), ", found ", given.toString()))
@@ -366,9 +356,9 @@ internal fn semaPtrAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
         nodeSetType(expr, typeInvalid())
         return 2
     }
-    if (semaPtrArgumentCount(expr.child2) != 1) {
+    if (chainLength(expr.child2) != 1) {
         semaErrorAt(expr, "`Ptr<T>.".concat(name, "` takes 1 argument, found ",
-                                            semaPtrArgumentCount(expr.child2).toString()))
+                                            chainLength(expr.child2).toString()))
         nodeSetType(expr, typeInvalid())
         return 2
     }

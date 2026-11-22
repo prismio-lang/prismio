@@ -33,6 +33,7 @@ import common.diagnostics
 import common.source_files
 import std.string
 import std.unicode
+import common.diag_codes
 
 public fn lexCheckIdentifierSecurity() {
     if (lexerSawNonAsciiIdentifier() == false) { return }
@@ -131,7 +132,7 @@ private fn identifierSkeleton(name: String) -> String {
 private fn identifierWarnRestricted(token: Token) {
     for scalar in token.value.scalars() {
         if (scalar >= 128 and isIdentifierAllowed(scalar) == false) {
-            diag_warning_at_code("P2003", token.file, token.line, token.col, token.len,
+            diag_warning_at_code(DIAG_LEX_IDENTIFIER_RESTRICTED, token.file, token.line, token.col, token.len,
                 "identifier ".concat(diagQuote(token.value), " contains ",
                     lexerScalarNotation(scalar),
                     ", which UTS #39 restricts in identifiers: it is uncommon, obsolete or easily mistaken"))
@@ -142,7 +143,7 @@ private fn identifierWarnRestricted(token: Token) {
 
 private fn identifierWarnConfusable(name: String, other: String, file: Int, line: Int,
                                     col: Int, width: Int) {
-    diag_warning_at_code("P2004", file, line, col, width,
+    diag_warning_at_code(DIAG_LEX_IDENTIFIER_CONFUSABLE, file, line, col, width,
         "identifier ".concat(diagQuote(name), " looks like ", diagQuote(other),
             " (UTS #39 confusables); a reader cannot tell which one is meant"))
 }

@@ -21,9 +21,8 @@ import std.string
 import std.io
 import aifcore.dispositions
 import aifcore.layout_search
-
-extern fn compiler_library_emission_module() -> String produce(rt_free)
-extern fn compiler_plib_module_registered(module: String borrow) -> Int
+import common.native
+import sema.decl_index
 
 // A PLIB contributes the original non-generic definitions for its module as
 // bitcode. Generic instantiations remain program-specific and are emitted from
@@ -119,6 +118,7 @@ private fn isVecEntryPoint(name: String) -> Bool {
     if (name.equals("list_insert")) { return true }
     if (name.equals("list_capacity")) { return true }
     if (name.equals("list_reserve")) { return true }
+    if (name.equals("list_shrink_to_fit")) { return true }
     if (name.equals("list_truncate")) { return true }
     if (name.equals("list_remove_at")) { return true }
     return false
@@ -174,6 +174,10 @@ private fn declareVecEntryPoints() {
     ir_declare_function_begin("list_reserve", "void")
     ir_declare_function_param("ptr")
     ir_declare_function_param("i32")
+    ir_declare_function_end()
+
+    ir_declare_function_begin("list_shrink_to_fit", "void")
+    ir_declare_function_param("ptr")
     ir_declare_function_end()
 
     // The trailing i32 is `now`: whether codegen proved that no view of an
@@ -804,6 +808,7 @@ private fn irPrimitiveMovesBlock(name: String) -> Bool {
     if (name.equals("list_insert_inline_scalar")) { return true }
     if (name.equals("list_insert_str")) { return true }
     if (name.equals("list_reserve")) { return true }
+    if (name.equals("list_shrink_to_fit")) { return true }
     if (name.equals("list_truncate")) { return true }
     if (name.equals("list_remove_at")) { return true }
     if (name.equals("list_push_inline")) { return true }
@@ -859,6 +864,7 @@ private fn irBodyMovesNoBlock(nodePtr: Ptr) -> Bool {
                 if (irCallIsGuardSafe(n, callee) == false) { return false }
             }
         }
+        _ => { }
     }
 
     if (irChainMovesNoBlock(n.child1) == false) { return false }
@@ -1565,7 +1571,11 @@ private fn generateOwnedFieldRelease(tname: String, field: ASTNode, current: Str
     let value = ir_get_temp_name(loaded)
     if (disp == AIF_ELEM_TYPED and tailSelf) { return value }
     let ftype = ptr_to_node(field.child1)
-    generateReleaseByDisposition(value, disp, ftype.s1)
+    // A generic struct's field is written `HashMap<Int, Int>` and its annotation's name is the constructor;
+    // the release function is the instance's, which sema left on the annotation.
+    let mut releasedType = ftype.s1.clone()
+    if (nodeHasType(ftype) and nodeGetType(ftype).kind == TypeKind.STRUCT) { releasedType = nodeGetType(ftype).name.clone() }
+    generateReleaseByDisposition(value, disp, releasedType)
     return ""
 }
 
@@ -1822,61 +1832,54 @@ private fn collectStringsChildBlock(child: Ptr) {
 }
 
 private fn collectStringsStmt(stmt: ASTNode) {
-    if (stmt.kind == NodeKind.VARIABLE_DECL) {
-        collectStringsChildExpr(stmt.child2)
-    }
-    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) {
-        collectStringsChildExpr(stmt.child1)
-    }
-    if (stmt.kind == NodeKind.RETURN_STATEMENT) {
-        collectStringsChildExpr(stmt.child1)
-    }
-    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) {
-        // child1 is the assignment target, which can itself hold literals in an
-        // index expression such as `table[key_for("a")] = 1`.
-        collectStringsChildExpr(stmt.child1)
-        collectStringsChildExpr(stmt.child2)
-    }
-    if (stmt.kind == NodeKind.IF_STATEMENT) {
-        collectStringsChildExpr(stmt.child1)
-        collectStringsChildBlock(stmt.child2)
-        if (nodeExists(stmt.child3)) {
-            let elseNode = ptr_to_node(stmt.child3)
-            if (elseNode.kind == NodeKind.IF_STATEMENT) {
-                collectStringsStmt(elseNode)
-            } else {
-                collectStringsBlock(elseNode)
+    match (stmt.kind) {
+        NodeKind.VARIABLE_DECL => { collectStringsChildExpr(stmt.child2) }
+        NodeKind.EXPRESSION_STATEMENT => { collectStringsChildExpr(stmt.child1) }
+        NodeKind.RETURN_STATEMENT => { collectStringsChildExpr(stmt.child1) }
+        NodeKind.ASSIGNMENT_STATEMENT => {
+            // child1 is the assignment target, which can itself hold literals in an
+            // index expression such as `table[key_for("a")] = 1`.
+            collectStringsChildExpr(stmt.child1)
+            collectStringsChildExpr(stmt.child2)
+        }
+        NodeKind.IF_STATEMENT => {
+            collectStringsChildExpr(stmt.child1)
+            collectStringsChildBlock(stmt.child2)
+            if (nodeExists(stmt.child3)) {
+                let elseNode = ptr_to_node(stmt.child3)
+                if (elseNode.kind == NodeKind.IF_STATEMENT) {
+                    collectStringsStmt(elseNode)
+                } else {
+                    collectStringsBlock(elseNode)
+                }
             }
         }
-    }
-    if (stmt.kind == NodeKind.WHILE_STATEMENT) {
-        collectStringsChildExpr(stmt.child1)
-        collectStringsChildBlock(stmt.child2)
-    }
-    if (stmt.kind == NodeKind.LOOP_STATEMENT) {
-        collectStringsChildBlock(stmt.child1)
-    }
-    if (stmt.kind == NodeKind.REGION_STATEMENT) {
-        collectStringsChildBlock(stmt.child1)
-    }
-    if (stmt.kind == NodeKind.FOR_STATEMENT) {
-        // child1/child2 are the range bounds, child3 the body. A step rides on
-        // the end's `next`.
-        collectStringsChildExpr(stmt.child1)
-        collectStringsChildExpr(stmt.child2)
-        if (nodeExists(stmt.child2)) { collectStringsChildExpr(ptr_to_node(stmt.child2).next) }
-        collectStringsChildBlock(stmt.child3)
-    }
-    if (stmt.kind == NodeKind.MATCH_STATEMENT) {
-        collectStringsChildExpr(stmt.child1)
-        let mut armPtr = stmt.child2
-        while (nodeExists(armPtr)) {
-            let arm = ptr_to_node(armPtr)
-            // A non-wildcard arm's pattern is an ordinary expression.
-            collectStringsChildExpr(arm.child1)
-            collectStringsChildBlock(arm.child2)
-            armPtr = arm.next
+        NodeKind.WHILE_STATEMENT => {
+            collectStringsChildExpr(stmt.child1)
+            collectStringsChildBlock(stmt.child2)
         }
+        NodeKind.LOOP_STATEMENT => { collectStringsChildBlock(stmt.child1) }
+        NodeKind.REGION_STATEMENT => { collectStringsChildBlock(stmt.child1) }
+        NodeKind.FOR_STATEMENT => {
+            // child1/child2 are the range bounds, child3 the body. A step rides on
+            // the end's `next`.
+            collectStringsChildExpr(stmt.child1)
+            collectStringsChildExpr(stmt.child2)
+            if (nodeExists(stmt.child2)) { collectStringsChildExpr(ptr_to_node(stmt.child2).next) }
+            collectStringsChildBlock(stmt.child3)
+        }
+        NodeKind.MATCH_STATEMENT => {
+            collectStringsChildExpr(stmt.child1)
+            let mut armPtr = stmt.child2
+            while (nodeExists(armPtr)) {
+                let arm = ptr_to_node(armPtr)
+                // A non-wildcard arm's pattern is an ordinary expression.
+                collectStringsChildExpr(arm.child1)
+                collectStringsChildBlock(arm.child2)
+                armPtr = arm.next
+            }
+        }
+        _ => { }
     }
 }
 
@@ -1981,6 +1984,9 @@ public fn generateModule(module: ASTNode) {
     // Before the runtime is declared: list_set_now is declared only where a store
     // was proved to release at once (ir/overwrites.psm).
     overwritesMark(module)
+    // A private Vec field no view of an element outlives releases a displaced element
+    // at the store too (ir/columns.psm), so it needs the same entry points.
+    columnsMark(module)
     // `i3` is otherwise unused on FUNCTION nodes. Clear the per-emission thunk
     // mark because this AST may be compiled once as a workload and again as the
     // real program in the same process.
@@ -2466,7 +2472,7 @@ public fn generateModule(module: ASTNode) {
 
     // Only where a store releases at once (ir/overwrites.psm): declared everywhere,
     // these would change the IR of every program and the behaviour of none.
-    if (overwritesAny()) {
+    if (overwritesAny() or columnsAny()) {
         ir_declare_function_begin("list_set_now", "void")
         ir_declare_function_param("ptr")
         ir_declare_function_param("i32")
@@ -2816,7 +2822,7 @@ private fn generateVtableDeclarationsFrom(module: ASTNode, ptr: Ptr) {
             if (irEmittedVtables.contains(marker) == false) {
                 irEmittedVtables = irEmittedVtables.concat(marker)
                 let traitName = node.s1.substring(4, node.s1.length - 4)
-                let traitDecl = irFindTrait(module, traitName)
+                let traitDecl = declFindTrait(module, traitName)
                 if (nodeIsNull(node_to_ptr(traitDecl)) == false) {
                     ir_vtable_declare(node.s2, irTraitMethodCount(traitDecl))
                 }
@@ -2830,13 +2836,7 @@ private fn generateVtableDeclarationsFrom(module: ASTNode, ptr: Ptr) {
 }
 
 private fn irTraitMethodCount(traitDecl: ASTNode) -> Int {
-    let mut count = 0
-    let mut p = traitDecl.child1
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
+    return chainLength(traitDecl.child1)
 }
 
 private fn generateVtablesFrom(module: ASTNode, ptr: Ptr) {
@@ -2858,7 +2858,7 @@ private fn generateOneVtable(module: ASTNode, make: ASTNode) {
     irEmittedVtables = irEmittedVtables.concat(marker)
 
     let traitName = make.s1.substring(4, make.s1.length - 4)
-    let traitDecl = irFindTrait(module, traitName)
+    let traitDecl = declFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return }
 
     // Matched by the name the object was built with rather than by taking the
@@ -2875,16 +2875,6 @@ private fn generateOneVtable(module: ASTNode, make: ASTNode) {
         sigPtr = signature.next
     }
     ir_vtable_end(name)
-}
-
-private fn irFindTrait(module: ASTNode, name: String) -> ASTNode {
-    let mut p = module.child1
-    while (nodeExists(p)) {
-        let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(name)) { return stmt }
-        p = stmt.next
-    }
-    return ptr_to_node(ptr_null())
 }
 
 private fn irFindImplForVtable(module: ASTNode, traitName: String, vtableName: String) -> ASTNode {

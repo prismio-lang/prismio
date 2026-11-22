@@ -18,6 +18,7 @@ import lexer.scanner
 import ast.nodes
 import common.diagnostics
 import std.string
+import common.diag_codes
 
 impl Parser {
     // Remembers the first tuple spelling, for the import. `at` is where the tuple is, so
@@ -42,7 +43,7 @@ impl Parser {
         }
         self.expectVal(TokenType.SEPARATOR, ")", "tuple type")
         if (count < 2 or count > 4) {
-            diag_error_at_code("P3017", open.file, open.line, open.col, open.len,
+            diag_error_at_code(DIAG_PARSE_TUPLE_TYPE_SIZE, open.file, open.line, open.col, open.len,
                                "a tuple type has two to four elements; write a struct for anything else")
             return typeNode
         }
@@ -67,7 +68,7 @@ impl Parser {
         }
         self.expectVal(TokenType.SEPARATOR, ")", "tuple")
         if (count > 4) {
-            diag_error_at_code("P3017", open.file, open.line, open.col, open.len,
+            diag_error_at_code(DIAG_PARSE_TUPLE_SIZE, open.file, open.line, open.col, open.len,
                                "a tuple has two to four elements; write a struct for anything else")
             return first
         }
@@ -109,7 +110,7 @@ impl Parser {
         }
         self.expectVal(TokenType.SEPARATOR, ")", "tuple pattern")
         if (index < 2 or index > 4) {
-            diag_error_at_code("P3017", open.file, open.line, open.col, open.len,
+            diag_error_at_code(DIAG_PARSE_TUPLE_PATTERN_SIZE, open.file, open.line, open.col, open.len,
                                "a tuple pattern has two to four elements")
         }
         self.noteTuple(open)

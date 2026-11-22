@@ -91,11 +91,11 @@ fn main() -> Int {
     let mut k = 0
     while (k < 50) {
         let key = words[k % 5]
-        mapSet(counts, key, mapGetOr(counts, key, 0) + 1)
+        counts.set(key, counts.getOr(key, 0) + 1)
         k = k + 1
     }
-    if (mapLen(counts) != 5) { return fail("five distinct keys") }
-    if (mapGetOr(counts, "short", 0) != 10) { return fail("a counted key") }
+    if (counts.count != 5) { return fail("five distinct keys") }
+    if (counts.getOr("short", 0) != 10) { return fail("a counted key") }
 
     // A slice reads and writes the list's own pairs.
     let mut middle = words[2..<6]

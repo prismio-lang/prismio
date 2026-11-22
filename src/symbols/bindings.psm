@@ -19,33 +19,33 @@ import std.string
 import std.vec
 import symbols.names
 
-let BINDING_MAX_SCOPES = 1024
-let BINDING_MAX_LOOP_DEPTH = 256
+const BINDING_MAX_SCOPES = 1024
+const BINDING_MAX_LOOP_DEPTH = 256
 
 // A module-level binding, which codegen addresses as @name rather than %slot. A separate registry
 // asking "is this name a global?" was wrong under shadowing: a local named like a global had its
 // writes go to the local slot and its reads come from the global.
-let BINDING_GLOBAL = 1
-let BINDING_MUTABLE = 2
+const BINDING_GLOBAL = 1
+const BINDING_MUTABLE = 2
 // An `inout` parameter. Its contents may change but the binding is never rebound, because `inout`
 // is a borrow and not a reference to the caller's slot.
-let BINDING_INOUT = 4
+const BINDING_INOUT = 4
 // A Slice that views something this scope may not change: a slice of a non-`mut` Vec, of another
 // such view, or one returned by a function with no `inout` parameter. A store through it is
 // refused even when the binding itself is `mut`, which only lets the view be rebound.
-let BINDING_READONLY_VIEW = 8
+const BINDING_READONLY_VIEW = 8
 // A boxed list may release an overwritten element only while the compiler still has exclusive
 // knowledge of the handle. Set on a local `list_new` binding and cleared for good when an element
 // is borrowed, a Slice is made, or the handle crosses an arbitrary call. Kept on the scoped binding
 // so shadowing and block exit preserve the conservative direction.
-let BINDING_LIST_EXCLUSIVE = 16
+const BINDING_LIST_EXCLUSIVE = 16
 // AIF Level 2: this binding's initialiser allocated a value whose escape bottoms at the scope
 // holding the binding, so the scope's exits are where it is freed.
-let BINDING_DROPPABLE = 32
+const BINDING_DROPPABLE = 32
 // AIF Level 4, the reassignment half. Distinct from droppable and it has to be: a returned
 // accumulator hands its *last* value to the caller, so the scope must not drop it, but every value
 // an assignment displaced before that one is still this scope's to release.
-let BINDING_OWNS_SLOT = 64
+const BINDING_OWNS_SLOT = 64
 
 private let mut bindName: Vec<Int>
 private let mut bindType: Vec<Int>
@@ -159,13 +159,6 @@ private fn truncateInts(inout list: Vec<Int>, length: Int) {
     while (list.length > length) { list.pop() }
 }
 
-private fn listHas(list: Vec<Int>, id: Int) -> Bool {
-    for i in 0..<list.length {
-        if (list[i] == id) { return true }
-    }
-    return false
-}
-
 private fn listRemove(inout list: Vec<Int>, id: Int) {
     for i in 0..<list.length {
         if (list[i] == id) {
@@ -183,13 +176,7 @@ private fn overflow(what: String, limit: Int) {
 public fn ir_register_global_name(name: String) {
     bindingsOpen()
     let id = irNameId(name)
-    if (listHas(globalNames, id) == false) { globalNames.push(id) }
-}
-
-public fn ir_is_global_name(name: String) -> Int {
-    bindingsOpen()
-    if (listHas(globalNames, irNameId(name))) { return 1 }
-    return 0
+    if (globalNames.contains(id) == false) { globalNames.push(id) }
 }
 
 public fn ir_reset_globals() {
@@ -606,14 +593,14 @@ public fn ir_clear_moved() {
 
 public fn ir_is_moved(name: String) -> Int {
     bindingsOpen()
-    if (listHas(movedNames, irNameId(name))) { return 1 }
+    if (movedNames.contains(irNameId(name))) { return 1 }
     return 0
 }
 
 public fn ir_mark_moved(name: String) {
     bindingsOpen()
     let id = irNameId(name)
-    if (listHas(movedNames, id) == false) { movedNames.push(id) }
+    if (movedNames.contains(id) == false) { movedNames.push(id) }
 }
 
 // Moved-from state is tracked per name, but a `let` binds a *fresh* value to that name, so whatever
@@ -709,14 +696,14 @@ public fn ir_clear_borrowed() {
 
 public fn ir_is_borrowed(name: String) -> Int {
     bindingsOpen()
-    if (listHas(borrowedNames, irNameId(name))) { return 1 }
+    if (borrowedNames.contains(irNameId(name))) { return 1 }
     return 0
 }
 
 public fn ir_mark_borrowed(name: String) {
     bindingsOpen()
     let id = irNameId(name)
-    if (listHas(borrowedNames, id) == false) { borrowedNames.push(id) }
+    if (borrowedNames.contains(id) == false) { borrowedNames.push(id) }
 }
 
 // Same reason `ir_unmark_moved` exists. A `let` binds a fresh value, and AIF Level 4 made borrowing

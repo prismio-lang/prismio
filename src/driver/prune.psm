@@ -41,10 +41,9 @@ import symbols.declarations
 from common import {diagnostics, source_files}
 from ast import {nodes, fn_attrs, types}
 from std import {option, process, string}
+import common.native
 
-let REACHED = 7
-
-extern fn compiler_library_emission_module() -> String produce(rt_free)
+const REACHED = 7
 
 // Pruning runs unless PRISMIO_PRUNE=0, the A/B switch for measuring what the standard library a
 // program does not call still costs.

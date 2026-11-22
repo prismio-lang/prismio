@@ -30,15 +30,15 @@ import ast.types
 import std.string
 
 // What a `%` by `m` is, given the range of its dividend.
-let REM_KEEP = 0
+const REM_KEEP = 0
 // The dividend is in (-m, m): it is its own remainder.
-let REM_IDENTITY = 1
+const REM_IDENTITY = 1
 // In (-m, 2m): subtract `m` from one at or above it.
-let REM_SUBTRACT = 2
+const REM_SUBTRACT = 2
 // In (-2m, m): add `m` to one at or below -m.
-let REM_ADD = 3
+const REM_ADD = 3
 // In (-2m, 2m): both.
-let REM_BOTH = 4
+const REM_BOTH = 4
 
 // The form a remainder by `m` takes on a dividend in [lo, hi].
 internal fn remainderForm(lo: I64, hi: I64, m: Int) -> Int {

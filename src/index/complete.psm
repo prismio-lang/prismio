@@ -27,15 +27,6 @@ public fn ixPlaceholder() -> String {
     return "ixcursor__"
 }
 
-fn ixCompletionKind(kind: String) -> String {
-    return kind.clone()
-}
-
-fn ixDetail(ix: Ix, id: Int) -> String {
-    let sig = ix.dType[id]
-    return sig.clone()
-}
-
 // One completion line for declaration `id`.
 fn ixCompleteDecl(inout ix: Ix, inout src: IxSources, id: Int, rank: Int) {
     ixCompleteDeclAs(ix, src, id, rank, "")

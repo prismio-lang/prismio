@@ -2855,6 +2855,26 @@ def run_index_test():
         if not unresolved or unresolved[0]["name"] != "nothing" or (unresolved[0]["l"], unresolved[0]["c"]) != (2, 12):
             problems.append(f"an unknown function should be unresolved at 2:12: {unresolved}")
 
+        # A type the program never declared is unresolved, even when its name looks like a numeric one:
+        # `Item`, `Frame` and `Index` are two to five letters starting with I, F or B-and-friends, which is
+        # all the old built-in test looked at. The real numeric names must stay resolved.
+        broken_types = root / "broken_types.psm"
+        broken_types.write_text(
+            "fn main() -> Int {\n"
+            "    let a: Item = 1\n"
+            "    let b: Frame = 2\n"
+            "    let c: I32 = 3\n"
+            "    let d: F32 = 1.0\n"
+            "    let e: Usize = 4\n"
+            "    let f: UInt = 5\n"
+            "    let g: Index = 6\n"
+            "    return 0\n"
+            "}\n")
+        done, records = indexed(target=broken_types)
+        names = sorted((r["l"], r["name"]) for r in records if r["k"] == "unresolved" and r["what"] == "type")
+        if names != [(2, "Item"), (3, "Frame"), (8, "Index")]:
+            problems.append(f"only the undeclared types should be unresolved, got {names}")
+
         # Completion: the placeholder is where the word being typed starts.
         def complete(replacement, line, col):
             buffer = root / "buffer.psm"
@@ -2910,7 +2930,7 @@ def run_index_test():
         mapped.write_text("import std.map\n\nfn main() -> Int {\n    let m = HashMap<String, Int>()\n    m.ixcursor__\n    return 0\n}\n")
         done, records = indexed("--complete", str(mapped), "5", "7", target=mapped)
         offered = {r["label"] for r in records if r["k"] == "completion"}
-        if offered & {"slots", "mask", "tombstones", "entryKeys"} or not {"set", "get", "has"} <= offered:
+        if offered & {"slots", "mask", "tombstones", "entryKeys"} or not {"set", "get", "contains"} <= offered:
             problems.append(f"a HashMap offers its methods and not its private fields: {sorted(offered)[:20]}")
         vec = root / "vec.psm"
         vec.write_text("fn main() -> Int {\n    let v: Vec<Int> = []\n    v.ixcursor__\n    return 0\n}\n")
@@ -4802,7 +4822,7 @@ def run_elem_mode_agreement_test():
     print(f"\n{BLUE}--- Running elem_mode_agreement ---{RESET}")
 
     sources = {
-        "src/ir/context.psm":        r"let\s+AIF_ELEM_([A-Z_]+)\s*=\s*(\d+)",
+        "src/ir/context.psm":        r"(?:let|const)\s+AIF_ELEM_([A-Z_]+)\s*=\s*(\d+)",
         "runtime/lang_runtime.c":    r"#define\s+AIF_ELEM_([A-Z_]+)\s+(\d+)",
     }
 
@@ -7311,6 +7331,23 @@ def run_ownership_probes_test():
         # HashMap removal swaps a String key to the end and truncates it: a key the
         # removal failed to release is a leak, so this one is held to 0.
         ("test_193_map_methods.psm", "PASS", True),
+        # HashSet get/take/algebra/bulk operations hand out copies of String keys; all must be released.
+        ("test_set_api.psm", "ok", True),
+        ("test_map_api.psm", "ok", True),
+        # `upsert`, `modify` (a stored Vec or struct changed in place through an `inout` closure
+        # parameter) and `getOrInsertDefault`: the copies they hand around are all released.
+        ("test_map_entry.psm", "PASS", True),
+        # `shrinkToFit` on a Vec, a HashMap and a HashSet (the new `list_shrink_to_fit`).
+        ("test_map_shrink.psm", "PASS", True),
+        # A HashMap, a HashSet or a generic struct moved or written into the field of a struct a function
+        # returns: released once by the owner, not by the binding as well (it crashed) and not left
+        # unreleased (it leaked). aifFieldTypeName called every generic struct field a `List`.
+        ("test_map_in_struct.psm", "PASS", True),
+        # A composite key hashed through `Hash` and `Hasher`, nested and with a String field.
+        ("test_hash_hasher.psm", "PASS", True),
+        # A map literal of more than twelve computed entries: one `mapEntriesN` per run of twelve,
+        # merged; it was a `mapPut` chain that leaked 12 of 13 values.
+        ("test_map_long_literal.psm", "PASS", True),
         # A child bound to a `let` and then stored into a recursive payload was
         # freed by the binding and by the tree: a double free, and a leak if the
         # fix declines the tree's release instead.
@@ -7335,6 +7372,15 @@ def run_ownership_probes_test():
         # HashSet holds its own columns: a set wrapping a HashMap in a field leaked
         # its whole table (7 allocated, 1 released for a HashSet<Int>).
         ("test_369_hash_set.psm", "PASS", True),
+        # A HashMap that owns its values (`V: Copy`): every reader hands out a copy, so
+        # no view of a stored value leaves the table and the container is released.
+        # It read "leaks every value" when the readers returned the stored element.
+        ("test_map_owned.psm", "PASS", True),
+        # An owned temporary's String field or element compared in place (also on the right of
+        # `or`), bound off a statement head, and a struct literal argument that a callee copies.
+        ("test_owned_temporary_reads.psm", "PASS", True),
+        # A scalar element of an owned temporary Vec on the right of `or`, in a `while`, a `let`.
+        ("test_owned_temporary_scalars.psm", "PASS", True),
         # An owned call result compared with `none` has no binding to drop it: a
         # `while (next() != none)` leaked one block per iteration.
         ("test_370_compare_owned_temporary.psm", "ok", True),
@@ -7350,6 +7396,11 @@ def run_ownership_probes_test():
     )
     problems = []
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    # A ledger that balances at exit says nothing about a loop that holds everything it ever
+    # replaced until the end. test_map_owned replaces a value and removes a key 20,000 times,
+    # and the map releases both at the store: the peak is ~54 KB, against ~750 KB when a
+    # displaced element is parked with its container.
+    peak_limits = {"test_map_owned.psm": 262144}
     with tempfile.TemporaryDirectory(prefix="prismio-ownership-probes-") as tmp:
         for name, want, no_leaks in probes:
             exe = Path(tmp) / ("probe" + exe_suffix)
@@ -7370,6 +7421,11 @@ def run_ownership_probes_test():
                 problems.append(f"{name} released something not live: {elide_middle(output)}")
             elif no_leaks and " 0 leaked," not in output:
                 problems.append(f"{name} leaked: {elide_middle(output)}")
+            elif name in peak_limits:
+                peak = re.search(r"(\d+) peak live bytes", output)
+                if peak is None or int(peak.group(1)) > peak_limits[name]:
+                    problems.append(f"{name} peaked at {peak.group(1) if peak else '?'} live bytes, over "
+                                    f"{peak_limits[name]}: a displaced or removed element is parked, not released")
     if problems:
         print(f"{RED}[FAIL] ownership probes{RESET}")
         for problem in problems:
@@ -9298,7 +9354,7 @@ def run_jit_test():
                         '    let m: HashMap<String, Int> = mapNew<String, Int>()\n'
                         '    m.set("k", 7)\n'
                         '    print("map: ")\n'
-                        '    println(m.length)\n'
+                        '    println(m.count)\n'
                         '    return 0\n'
                         '}\n')
 
@@ -11055,6 +11111,14 @@ def run_aif_verify_test():
         # later `for` binder of the same name (a view) used to share one analysis key,
         # which sent every site of the type to the counted tier and leaked all of it.
         "test_322_binding_keys": 0,
+        # A private Vec field that no view of an element outlives is a closed column
+        # (src/ir/columns.psm): 200,000 replacements of one element peak at 551 bytes where
+        # they parked 8.4 MB. test_389 is the other half, the uses that must keep parking
+        # (a bound view read after the store, the column passed on, iterated while stored
+        # into, a view handed to a function that stores); 0 violations is the guard that no
+        # release reached a view still read.
+        "test_388_closed_columns": 0,
+        "test_389_open_columns": 0,
         # A small Vec of known capacity is one block, header and elements; every way it
         # stops being one (growth, reserve, a field replaced) must free each block once.
         "test_323_fused_list": 0,
@@ -11084,6 +11148,7 @@ def run_aif_verify_test():
         # peak is a few hundred bytes, leaked it is the sum of every list.
         "test_320_field_store_release": 4096,
         "test_322_binding_keys": 4096,
+        "test_388_closed_columns": 4096,
     }
 
     # Objects served by an arena. test_164 builds 100,000 structs with an array
@@ -12322,6 +12387,50 @@ def run_runtime_object_from_ir_test():
     return True
 
 
+def run_single_thread_state_test():
+    """A program that never spawns carries none of the runtime's thread state.
+
+    The slab allocator's thread key, the cycle collector's lock and the worker
+    thread-locals are reachable only from a second thread. Each is initialised
+    data, so one of them left in a program is a 16 KiB page of `__DATA` on macOS:
+    hello was 51,160 bytes instead of 34,120 for a `volatile` flag and a
+    thread-local's address compared against a global's, neither of which LLVM
+    folds. Nothing else in the suite looks at what a build leaves behind.
+    """
+    print(f"\n{BLUE}--- Running single_thread_state ---{RESET}")
+    nm = shutil.which("llvm-nm") or (None if os.name == "nt" else shutil.which("nm"))
+    if nm is None:
+        print(f"{GREEN}[PASS] single_thread_state: skipped -- no nm or llvm-nm on PATH{RESET}")
+        return True
+    banned = ("slab_tls", "slab_key", "cyc_lock_once", "prismio_memory_worker",
+              "arena_worker_state", "rt_worker_arena_hint")
+    # test_100 builds a cyclic structure, so it reaches the collector's lock.
+    fixtures = ("test_28_list.psm", "test_100_reuse_token.psm")
+    with tempfile.TemporaryDirectory(prefix="prismio-single-thread-") as td:
+        for name in fixtures:
+            exe = Path(td) / (name[:-4] + ".exe")
+            built = subprocess.run(
+                [str(PRISMIO_EXE), "build", str(TEST_DIR / name), "-o", str(exe)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if built.returncode != 0 or not exe.is_file():
+                print(f"{RED}[FAIL] single_thread_state: {name} did not build{RESET}")
+                print(f"{built.stdout}\n{built.stderr}"[:1200])
+                return False
+            listed = subprocess.run([nm, str(exe)], capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace")
+            if listed.returncode != 0 or "main" not in listed.stdout:
+                print(f"{RED}[FAIL] single_thread_state: could not list {name}'s symbols{RESET}")
+                print(listed.stderr[:600])
+                return False
+            kept = sorted({word for word in banned if word in listed.stdout})
+            if kept:
+                print(f"{RED}[FAIL] single_thread_state: {name} never spawns and keeps "
+                      f"{', '.join(kept)}{RESET}")
+                return False
+    print(f"{GREEN}[PASS] {len(fixtures)} programs that never spawn keep no thread state{RESET}")
+    return True
+
+
 def run_curated_emits_test():
     """Every op codegen *emits* for a flat element type must be curated.
 
@@ -13036,6 +13145,7 @@ def main():
         ("debug_info", run_debug_info_test),
         ("inline_runtime_default", run_inline_runtime_default_test),
         ("runtime_object_from_ir", run_runtime_object_from_ir_test),
+        ("single_thread_state", run_single_thread_state_test),
         ("single_loop_inline", run_single_loop_inline_test),
         ("string_dispatch_codegen", run_string_dispatch_codegen_test),
         ("task_release", run_task_release_test),

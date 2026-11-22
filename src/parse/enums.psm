@@ -25,6 +25,7 @@ import common.text
 import ast.nodes
 import common.diagnostics
 import std.string
+import common.diag_codes
 
 // What an enum or codeset with no marker is. The one place the default is chosen:
 // it is `internal`, as a struct's is, and a different default is a change to this
@@ -106,7 +107,7 @@ impl Parser {
             self.parseStructPayload(variant)
         }
         if (isCodeset and nodeExists(variant.child1)) {
-            diag_error_at_code("P3013", payloadAt.file, payloadAt.line, payloadAt.col, payloadAt.len,
+            diag_error_at_code(DIAG_PARSE_CODESET_PAYLOAD, payloadAt.file, payloadAt.line, payloadAt.col, payloadAt.len,
                                "a `codeset` entry names a number and carries no payload")
             diag_note("use an `enum` for variants that carry values")
         }

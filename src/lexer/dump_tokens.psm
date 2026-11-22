@@ -22,6 +22,7 @@ import ast.float_width
 import std.string
 import std.io
 import std.vec
+import common.diag_codes
 
 private fn dumpQuoted(text: String) -> String {
     return "\"".concat(text, "\"")
@@ -37,6 +38,7 @@ private fn dumpKindName(t: TokenType) -> String {
         TokenType.FAT_ARROW => { return "FAT_ARROW" }
         TokenType.RANGE => { return "RANGE" }
         TokenType.ELLIPSIS => { return "ELLIPSIS" }
+        _ => { }
     }
     return "TOKEN"
 }
@@ -135,7 +137,7 @@ private fn dumpIntTypes() -> String {
         let name = vocabularyIntType(i)
         if (name.equals("UInt") == false and name.equals("I32") == false
                 and typeIntFromName(name).kind != TypeKind.INT) {
-            diag_error_code("P2005", "the token table names an integer type the compiler does not know: ".concat(diagQuote(name)))
+            diag_error_code(DIAG_LEX_TOKEN_TABLE_INT_TYPE, "the token table names an integer type the compiler does not know: ".concat(diagQuote(name)))
             return ""
         }
         if (i > 0) { out = out.concat(",") }
@@ -151,7 +153,7 @@ private fn dumpFloatTypes() -> String {
     while (i < vocabularyFloatTypeCount()) {
         let name = vocabularyFloatType(i)
         if (floatKeyOfName(name).equals("")) {
-            diag_error_code("P2006", "the token table names a float type the compiler does not know: ".concat(diagQuote(name)))
+            diag_error_code(DIAG_LEX_TOKEN_TABLE_FLOAT_TYPE, "the token table names a float type the compiler does not know: ".concat(diagQuote(name)))
             return ""
         }
         if (i > 0) { out = out.concat(",") }

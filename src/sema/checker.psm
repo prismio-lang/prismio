@@ -12,6 +12,8 @@ import ir.bridge
 import common.diagnostics
 import std.string
 import std.option
+import sema.decl_index
+import common.diag_codes
 
 // Sema reports and keeps going. Stopping at the first type error meant one
 // diagnostic per run, so fixing a file was a sequence of edit-rebuild rounds --
@@ -23,12 +25,7 @@ import std.option
 // invalid type as "already reported" (see semaExpectAssignable) and because
 // the sites that would otherwise walk a null child return early instead.
 internal fn semaErrorAt(node: ASTNode, message: String) {
-    diag_error_at_code("P4001", node.file, node.line, node.col, node.len, message)
-}
-
-// For the few errors that belong to no particular node.
-private fn semaError(message: String) {
-    diag_error_code("P4002", message)
+    diag_error_at_code(DIAG_SEMA_ERROR, node.file, node.line, node.col, node.len, message)
 }
 
 // SPEC 5: being wrong about an annotation is a diagnostic of severity *warning*
@@ -36,7 +33,7 @@ private fn semaError(message: String) {
 // inferred normally. The one exception is a pin a converged analysis refutes
 // (SPEC 5.4.1), which is a program error and goes through semaErrorAt.
 internal fn semaWarningAt(node: ASTNode, message: String) {
-    diag_warning_at_code("P4003", node.file, node.line, node.col, node.len, message)
+    diag_warning_at_code(DIAG_SEMA_WARNING, node.file, node.line, node.col, node.len, message)
 }
 
 // REQUIREMENTS 15. What may cross a task boundary, as an argument or as the result.
@@ -61,6 +58,7 @@ private fn semaTaskSlotAllowed(t: TypeInfo) -> Bool {
         TypeKind.FUNCTION => { return false }
         TypeKind.VOID => { return false }
         TypeKind.INVALID => { return false }
+        _ => { }
     }
     let key = typeIrKey(t)
     if (key.equals("ptr") or key.equals("struct:prismio.str") or key.equals("double")) { return true }
@@ -492,6 +490,13 @@ private fn semaForEachDesugar(module: ASTNode, stmt: ASTNode) -> Bool {
         return semaForEachIterator(module, stmt, source)
     }
     if (semaForIsMap(module, sourceT)) { return semaForEachMap(stmt, source) }
+    if (semaForIsSet(module, sourceT)) {
+        if (stmt.s2.equals("") == false) {
+            semaErrorAt(stmt, "a HashSet gives one key per iteration, but this loop names two")
+            return false
+        }
+        return semaForEachSet(stmt, source)
+    }
     if (typeIsChannel(sourceT)) {
         if (stmt.s2.equals("") == false) {
             semaErrorAt(stmt, "a Channel gives one message per iteration, but this loop names two")
@@ -611,8 +616,8 @@ private fn semaForEachChannel(stmt: ASTNode, source: ASTNode) {
 }
 
 // `for k in m` and `for (k, v) in m` over a `HashMap<K, V>`: its iteration API,
-// `mapKeyAt`/`mapValueAt`, over positions `0..<mapLen(m)`. Positions are
-// insertion order, which is the order the loop visits.
+// `keyAt`/`valueAt`, over positions `0..<count(m)`. Positions are insertion
+// order, which is the order the loop visits.
 private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
     let indexName = "$".concat(stmt.s1)
 
@@ -620,19 +625,45 @@ private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
     if (stmt.s2.equals("") == false) {
         let value = createNode(NodeKind.CALL_EXPR)
         nodeSpanFrom(value, source)
-        semaBecomeCall(value, "mapValueAt", semaForSourceAndIndex(source, indexName))
+        semaBecomeCall(value, "valueAt", semaForSourceAndIndex(source, indexName))
         semaForPrependLet(stmt, stmt.s2, value)
     }
     let key = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(key, source)
-    semaBecomeCall(key, "mapKeyAt", semaForSourceAndIndex(source, indexName))
+    semaBecomeCall(key, "keyAt", semaForSourceAndIndex(source, indexName))
     semaForPrependLet(stmt, stmt.s1, key)
 
     let length = createNode(NodeKind.CALL_EXPR)
     nodeSpanFrom(length, source)
-    semaBecomeCall(length, "mapLen", semaForSourceArgs(source))
+    semaBecomeCall(length, "count", semaForSourceArgs(source))
     semaForBecomeRange(stmt, indexName, length)
     return true
+}
+
+// `for k in set` over a `HashSet<K>`: `hashSetKeyAt` over positions `0..<count(set)`.
+// A set promises no order, so there is no `keyAt` method to write by hand -- the
+// loop is the way to walk one -- and `hashSetKeyAt` is std.map's lowering target,
+// not API. Positions are insertion order until the first removal, as a map's are.
+private fn semaForEachSet(stmt: ASTNode, source: ASTNode) -> Bool {
+    let indexName = "$".concat(stmt.s1)
+
+    let key = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(key, source)
+    semaBecomeCall(key, "hashSetKeyAt", semaForSourceAndIndex(source, indexName))
+    semaForPrependLet(stmt, stmt.s1, key)
+
+    let length = createNode(NodeKind.CALL_EXPR)
+    nodeSpanFrom(length, source)
+    semaBecomeCall(length, "count", semaForSourceArgs(source))
+    semaForBecomeRange(stmt, indexName, length)
+    return true
+}
+
+// Whether this is an instantiation of std.map's `HashSet`, as semaForIsMap asks of `HashMap`.
+private fn semaForIsSet(module: ASTNode, t: TypeInfo) -> Bool {
+    if (t.kind != TypeKind.STRUCT) { return false }
+    if (t.name.startsWith("HashSet".concat(monoSeparator())) == false) { return false }
+    return monoHasTemplate(module, "hashSetKeyAt", NodeKind.FUNCTION)
 }
 
 // Whether this is an instantiation of std.map's `HashMap`. An instantiated generic
@@ -641,7 +672,7 @@ private fn semaForEachMap(stmt: ASTNode, source: ASTNode) -> Bool {
 private fn semaForIsMap(module: ASTNode, t: TypeInfo) -> Bool {
     if (t.kind != TypeKind.STRUCT) { return false }
     if (t.name.startsWith("HashMap".concat(monoSeparator())) == false) { return false }
-    return monoHasTemplate(module, "mapKeyAt", NodeKind.FUNCTION)
+    return monoHasTemplate(module, "keyAt", NodeKind.FUNCTION)
 }
 
 // A name, or a field of one: something the loop can read twice without
@@ -939,13 +970,7 @@ private fn semaCheckPropertyDecl(module: ASTNode, fnNode: ASTNode) {
 }
 
 private fn semaParamCount(decl: ASTNode) -> Int {
-    let mut n = 0
-    let mut paramPtr = decl.child1
-    while (nodeExists(paramPtr)) {
-        n = n + 1
-        paramPtr = ptr_to_node(paramPtr).next
-    }
-    return n
+    return chainLength(decl.child1)
 }
 
 // **A literal's range is checked where its type stops changing, not where it is
@@ -2858,6 +2883,7 @@ internal fn semaExpr(module: ASTNode, expr: ASTNode) -> TypeInfo {
         NodeKind.INDEX_EXPR => { return semaIndexExpr(module, expr) }
         NodeKind.SLICE_EXPR => { return semaSliceExpr(module, expr) }
         NodeKind.STRUCT_LITERAL_EXPR => { return semaStructLiteralExpr(module, expr) }
+        _ => { }
     }
 
     return semaUnsupportedExpr(expr)
@@ -3346,7 +3372,10 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
             return true
         }
         TypeKind.STRUCT => {
-            if (semaStructDeclaresMethod(collectionT.name, "set")) {
+            // A generic type's `set` (`impl<K, V> HashMap<K, V>`) is a template, which
+            // the declaration index does not hold: `at` above is tested the same way.
+            if (semaStructDeclaresMethod(collectionT.name, "set")
+                or monoHasTemplate(module, "set", NodeKind.FUNCTION)) {
                 let call = semaVecLowerIndexStore(stmt, target, "set")
                 semaExpr(module, call)
                 return true
@@ -3356,6 +3385,7 @@ private fn semaIndexAssignment(module: ASTNode, stmt: ASTNode, target: ASTNode) 
             diag_note("`x[i] = v` is `set(x, i, v)` -- write `fn set(inout self, index: Int, value: T)` in its impl")
             return true
         }
+        _ => { }
     }
     // Not indexable at all; the ordinary path reports that.
     return false
@@ -3692,9 +3722,17 @@ private fn semaMatchStatement(module: ASTNode, stmt: ASTNode, expectedReturn: Ty
     }
     // Only a `_` arm makes an integer match exhaustive: the scrutinee is not
     // confined to the values the arms name (see semaCheckExhaustive). An enum's
-    // is, so naming every variant is exhaustive too.
+    // is, so naming every variant is exhaustive too, and naming fewer is an error.
     if (semaMatchHasWildcard(stmt)) { stmt.i3 = 1 }
-    if (scrutT.kind == TypeKind.ENUM and semaMatchCoversEnum(stmt, scrutT.name)) { stmt.i3 = 1 }
+    if (scrutT.kind == TypeKind.ENUM and stmt.i3 != 1) {
+        let missing = semaMatchMissingVariants(stmt, scrutT.name)
+        if (missing.equals("")) {
+            if (semaMatchCoversEnum(stmt, scrutT.name)) { stmt.i3 = 1 }
+        } else {
+            semaErrorAt(stmt, "this match does not cover ".concat(missing, " of ", diagQuote(scrutT.name),
+                                                                  "; add the missing arms or a `_` arm"))
+        }
+    }
     let mut patExpected = typeCopy(scrutT)
 
     ir_moved_branches_begin()
@@ -3728,16 +3766,19 @@ private fn semaStatement(module: ASTNode, stmt: ASTNode, expectedReturn: TypeInf
     if (semaIsLetForm(stmt)) {
         if (semaLetFormCheck(module, stmt) == false) { return }
     }
-    if (stmt.kind == NodeKind.VARIABLE_DECL) { semaVariableDecl(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) { semaAssignment(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.RETURN_STATEMENT) { semaReturn(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) { semaExpressionStatement(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.IF_STATEMENT) { semaIfStatement(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.WHILE_STATEMENT) { semaWhileStatement(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.LOOP_STATEMENT) { semaLoopStatement(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.REGION_STATEMENT) { semaRegionStatement(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.FOR_STATEMENT) { semaForStatement(module, stmt, expectedReturn) }
-    if (stmt.kind == NodeKind.MATCH_STATEMENT) { semaMatchStatement(module, stmt, expectedReturn) }
+    match (stmt.kind) {
+        NodeKind.VARIABLE_DECL => { semaVariableDecl(module, stmt, expectedReturn) }
+        NodeKind.ASSIGNMENT_STATEMENT => { semaAssignment(module, stmt, expectedReturn) }
+        NodeKind.RETURN_STATEMENT => { semaReturn(module, stmt, expectedReturn) }
+        NodeKind.EXPRESSION_STATEMENT => { semaExpressionStatement(module, stmt, expectedReturn) }
+        NodeKind.IF_STATEMENT => { semaIfStatement(module, stmt, expectedReturn) }
+        NodeKind.WHILE_STATEMENT => { semaWhileStatement(module, stmt, expectedReturn) }
+        NodeKind.LOOP_STATEMENT => { semaLoopStatement(module, stmt, expectedReturn) }
+        NodeKind.REGION_STATEMENT => { semaRegionStatement(module, stmt, expectedReturn) }
+        NodeKind.FOR_STATEMENT => { semaForStatement(module, stmt, expectedReturn) }
+        NodeKind.MATCH_STATEMENT => { semaMatchStatement(module, stmt, expectedReturn) }
+        _ => { }
+    }
 }
 
 // A block is a scope: anything declared inside it stops being visible at the
@@ -4389,7 +4430,7 @@ private fn semaEnsureDynStruct(module: ASTNode, annotation: ASTNode) {
 
     // `strSubstring` takes a length, not an end. "dyn$" is four characters.
     let traitName = name.substring(4, name.length - 4)
-    let traitDecl = semaFindTrait(module, traitName)
+    let traitDecl = declFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
         semaErrorAt(annotation, "`dyn ".concat(traitName, "` names no trait"))
         return
@@ -4520,7 +4561,7 @@ private fn semaIsDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Bo
     if (receiverT.name.startsWith("dyn$") == false) { return false }
 
     let traitName = receiverT.name.substring(4, receiverT.name.length - 4)
-    let traitDecl = semaFindTrait(module, traitName)
+    let traitDecl = declFindTrait(module, traitName)
     if (nodeIsNull(node_to_ptr(traitDecl))) { return false }
     return semaTraitMethodIndex(traitDecl, name) >= 0
 }
@@ -4544,10 +4585,10 @@ private fn semaDynDispatch(module: ASTNode, expr: ASTNode, name: String) -> Type
     let receiver = ptr_to_node(expr.child2)
     let receiverT = nodeGetType(receiver)
     let traitName = receiverT.name.substring(4, receiverT.name.length - 4)
-    let traitDecl = semaFindTrait(module, traitName)
+    let traitDecl = declFindTrait(module, traitName)
     let index = semaTraitMethodIndex(traitDecl, name)
 
-    let signature = ptr_to_node(semaAnnotationChainAt(traitDecl.child1, index))
+    let signature = ptr_to_node(chainAt(traitDecl.child1, index))
     let retT = semaDeclaredReturnType(module, signature.child3)
 
     // The remaining arguments are checked against the trait's own signature,
@@ -4814,7 +4855,7 @@ private fn semaCheckOrphan(module: ASTNode, implNode: ASTNode) {
     let here = semaFileQualifier(implNode.file)
     let traitRef = ptr_to_node(header.child2)
 
-    let traitDecl = semaFindTrait(module, traitRef.s1)
+    let traitDecl = declFindTrait(module, traitRef.s1)
     if (nodeIsNull(node_to_ptr(traitDecl)) == false
         and semaFileQualifier(traitDecl.file).equals(here)) { return }
 
@@ -4944,7 +4985,7 @@ private fn semaStructImplements(module: ASTNode, typeName: String, traitName: St
     return semaTypeImplementsNamedTrait(module, typeName.substring(0, at), traitName)
 }
 
-internal fn semaTypeImplementsNamedTrait(module: ASTNode, typeName: String,
+public fn semaTypeImplementsNamedTrait(module: ASTNode, typeName: String,
                                         traitName: String) -> Bool {
     let mut p = module.child1
     while (nodeExists(p)) {
@@ -5133,27 +5174,17 @@ private fn semaFirstOverlappingTraitImpl(module: ASTNode, current: ASTNode) -> A
     return ptr_to_node(ptr_null())
 }
 
-private fn semaFindTrait(module: ASTNode, name: String) -> ASTNode {
-    let mut p = module.child1
-    while (nodeExists(p)) {
-        let stmt = ptr_to_node(p)
-        if (stmt.kind == NodeKind.TRAIT_DECL and stmt.s1.equals(name)) { return stmt }
-        p = stmt.next
-    }
-    return ptr_to_node(ptr_null())
-}
-
 private fn semaCheckConformance(module: ASTNode, implNode: ASTNode) {
     let header = ptr_to_node(implNode.child3)
     let traitRef = ptr_to_node(header.child2)
-    let traitDecl = semaFindTrait(module, traitRef.s1)
+    let traitDecl = declFindTrait(module, traitRef.s1)
     if (nodeIsNull(node_to_ptr(traitDecl))) {
         semaErrorAt(implNode, "unknown trait ".concat(diagQuote(traitRef.s1)))
         diag_note("a trait has to be declared with `trait Name { fn ... }` before a type can implement it")
         return
     }
 
-    if (semaAnnotationChainLength(traitRef.child1) != monoParamCount(traitDecl.s2)) {
+    if (chainLength(traitRef.child1) != monoParamCount(traitDecl.s2)) {
         semaErrorAt(implNode, diagQuote(traitDecl.s1).concat(" takes trait parameters <",
                                                              traitDecl.s2,
                                                              ">, and the arguments in ",
@@ -5356,7 +5387,7 @@ private fn semaCheckSupertraits(module: ASTNode, implNode: ASTNode, traitDecl: A
             diag_note_at(traitDecl.file, traitDecl.line, traitDecl.col, traitDecl.len,
                          "the supertrait is required here")
         }
-        let parent = semaFindTrait(module, superRef.s1)
+        let parent = declFindTrait(module, superRef.s1)
         if (nodeIsNull(node_to_ptr(parent)) == false) {
             semaCheckSupertraits(module, implNode, parent, targetText, depth + 1)
         }
@@ -5405,7 +5436,7 @@ private fn semaTraitReaches(module: ASTNode, superPtr: Ptr, targetName: String,
     while (nodeExists(p)) {
         let superRef = ptr_to_node(p)
         if (superRef.s1.equals(targetName)) { return true }
-        let parent = semaFindTrait(module, superRef.s1)
+        let parent = declFindTrait(module, superRef.s1)
         if (nodeIsNull(node_to_ptr(parent)) == false) {
             if (semaTraitReaches(module, parent.child2, targetName, depth + 1)) { return true }
         }
@@ -5460,15 +5491,6 @@ private fn semaConventionText(convention: String) -> String {
     if (convention.equals("sink")) { return "`sink`" }
     if (convention.equals("inout")) { return "`inout`" }
     return "a borrow"
-}
-
-// Only a method written in this exact impl satisfies its trait. The functions
-// remain in the global overload set for ordinary calls, but parseImplDecl also
-// retained IMPL_METHOD records under child2 so conformance does not accidentally
-// accept an inherent method, a free function, or another trait's implementation.
-private fn semaHasConformingMethod(module: ASTNode, implNode: ASTNode,
-                                   traitDecl: ASTNode, signature: ASTNode) -> Bool {
-    return nodeExists(semaFindConformingMethod(module, implNode, traitDecl, signature))
 }
 
 private fn semaFindConformingMethod(module: ASTNode, implNode: ASTNode,
@@ -5561,29 +5583,6 @@ private fn semaSignaturesAgree(targetPtr: Ptr, traitParams: String, traitArgs: P
     }
 }
 
-// `Self` in the trait's half stands for the implementing type. An absent
-// annotation on both sides is a void return and agrees with itself.
-private fn semaAnnotationChainAt(ptr: Ptr, index: Int) -> Ptr {
-    let mut p = ptr
-    let mut i = 0
-    while (nodeExists(p)) {
-        if (i == index) { return p }
-        i = i + 1
-        p = ptr_to_node(p).next
-    }
-    return ptr_null()
-}
-
-private fn semaAnnotationChainLength(ptr: Ptr) -> Int {
-    let mut count = 0
-    let mut p = ptr
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
-}
-
 private fn semaAppliedAnnotationAgrees(suffixOptional: Bool,
                                        appliedPtr: Ptr, havePtr: Ptr) -> Bool {
     if (nodeIsNull(appliedPtr) or nodeIsNull(havePtr)) { return false }
@@ -5611,7 +5610,7 @@ private fn semaAnnotationsAgree(targetPtr: Ptr, traitParams: String, traitArgs: 
         let traitParam = monoParamIndex(traitParams, want.s1)
         if (traitParam >= 0) {
             return semaAppliedAnnotationAgrees(want.i3 == 1,
-                                               semaAnnotationChainAt(traitArgs, traitParam),
+                                               chainAt(traitArgs, traitParam),
                                                havePtr)
         }
     }
@@ -5859,6 +5858,9 @@ private fn semaClosureBodyType(module: ASTNode, expr: ASTNode) -> TypeInfo {
         let paramT = semaAnnotationType(module, ptr_to_node(param.child1))
         ir_set_var_type(param.s1, typeSemKey(paramT))
         ir_mark_borrowed(param.s1)
+        // An `inout` closure parameter is changed in the body as it is in `call`, which this
+        // check stands in for: without the mark `x.push(1)` was refused as a change to a `let`.
+        if (param.s2.equals("inout")) { ir_mark_inout(param.s1) }
         nodeSetType(param, paramT)
         paramPtr = param.next
     }

@@ -29,6 +29,7 @@ import lexer.scanner
 import ast.nodes
 import common.diagnostics
 import std.string
+import common.diag_codes
 
 impl Parser {
     // `let [mut] Name {`, `Name.path {` or `Name<Args> {`: a capitalised type, then what
@@ -147,7 +148,7 @@ impl Parser {
             } else if (field.s2.equals("_") == false) {
                 let rootName = path.split('.')[0]
                 if (field.s2.equals(rootName)) {
-                    diag_error_at_code("P3016", field.file, field.line, field.col, field.len,
+                    diag_error_at_code(DIAG_PARSE_PATTERN_BINDS_SUBJECT, field.file, field.line, field.col, field.len,
                                        "this binds the name of the value being taken apart, so the fields after it would read the new one; bind it as another name")
                 }
                 let decl = createNode(NodeKind.VARIABLE_DECL)

@@ -10,8 +10,6 @@ import std.map
 // Traverses the AST and emits LLVM IR via bridge.psm
 // Uses C-side global registry to avoid Prismio string globals
 
-import ast.types
-
 let mut irStringCounter = 0
 let mut irShortCircuitCounter = 0
 
@@ -102,13 +100,18 @@ let mut irElemSpillCounter = 0
 // same reason.
 let mut irBorrowedTempCounter = 0
 
-// Where irFindBorrowedTemporary found one: the node it hangs from, itself, and
-// the argument before it -- null when it is the first, and then irHoistSlot
-// says which child it is (1 a member access's object, 2 a call's arguments).
-let mut irHoistCall: Ptr
-let mut irHoistArg: Ptr
-let mut irHoistPrev: Ptr
-let mut irHoistSlot = 0
+// What irFindBorrowedTemporary found. `status` is 1 when it found one, 0 when there is
+// nothing yet and nothing with an effect, and -1 when an effect comes first; the rest is
+// meaningful only for 1: the node the temporary hangs from (`call`), the temporary itself
+// (`arg`), the argument before it (`prev`, null when it is the first) and which child of
+// `call` it is (`slot`: 1 a member access's object, 2 a call's arguments).
+struct IrHoist {
+    internal status: Int,
+    internal call: Ptr,
+    internal arg: Ptr,
+    internal prev: Ptr,
+    internal slot: Int
+}
 
 // The bindings one irValueAliasesName query has already chased, `;`-separated.
 let mut irAliasChased = ""
@@ -155,31 +158,31 @@ let mut irReuseValue = ""
 // the allocator hook it always used. Kept as a named constant here rather than
 // imported so that ir.psm depends on the memory model's *answer* and not on its
 // implementation; aif.psm owns the encoding.
-let AIF_TIER_T0 = 0
+const AIF_TIER_T0 = 0
 
 // AIF Level 4. Which deallocator reclaims a droppable binding. Everything the
 // allocator seam handed out is IR_DROP_OBJECT; a List is two allocations and
 // needs the runtime's own release, so the drop list has to carry the answer --
 // by the time it is read, a String and a List are both `ptr`.
-let IR_DROP_OBJECT = 0
-let IR_DROP_LIST = 1
+const IR_DROP_OBJECT = 0
+const IR_DROP_LIST = 1
 // Struct-field ownership. The release is the type's own generated function, and
 // the drop list already carries the declared type -- so this needs no extra
 // storage, only a third case at every site that reads the kind.
-let IR_DROP_TYPED = 2
+const IR_DROP_TYPED = 2
 // M4.3. A DataView is a header plus one allocation per column, so neither the
 // object seam nor List's release is sufficient.
-let IR_DROP_DATAVIEW = 3
+const IR_DROP_DATAVIEW = 3
 // A task handle is the runtime's own struct, not an allocator-seam object, so
 // only the runtime can free it -- `prismio_task_release` is what does. It is a
 // separate kind rather than IR_DROP_OBJECT because freeing it through the seam
 // would report a release of a pointer the verify ledger never handed out.
-let IR_DROP_TASK = 4
+const IR_DROP_TASK = 4
 // A struct AIF placed on the frame, of a type whose fields own what they hold.
 // The slot is the frame's, so only the fields are released -- through the
 // type's fields-only release, `__aif_release_fields_T`, which the drop list
 // names from the declared type exactly as IR_DROP_TYPED does.
-let IR_DROP_FIELDS = 5
+const IR_DROP_FIELDS = 5
 
 // The struct types a frame struct's drop has named. Their fields-only releases are
 // defined after every function, for these and no others, so a program with no such
@@ -228,13 +231,13 @@ internal fn irResetFrameSets() {
 // what a known callee's return leaves the caller owning. One encoding for both,
 // because both answer "which release does this pointer need" and both are
 // decided by the same per-site disposition in src/aifcore/.
-let AIF_ELEM_NONE = 0
-let AIF_ELEM_OBJECT = 1
-let AIF_ELEM_LIST = 2
-let AIF_ELEM_RC = 3
+const AIF_ELEM_NONE = 0
+const AIF_ELEM_OBJECT = 1
+const AIF_ELEM_LIST = 2
+const AIF_ELEM_RC = 3
 // Struct-field ownership. Not a mode the runtime can act on by itself: it names
 // a release that differs per type, which is why the generated function exists.
-let AIF_ELEM_TYPED = 4
+const AIF_ELEM_TYPED = 4
 // REQUIREMENTS 15. AIF_ELEM_RC and its cyclic sibling one tier up, where the
 // count is one two threads can touch and the decrement has to be atomic.
 //
@@ -243,13 +246,13 @@ let AIF_ELEM_TYPED = 4
 // owner's type and fieldClosesCycle vetoed every one of them. **M2.1a removed
 // that veto and generateReleaseFn switches on it now** -- it had been falling
 // into the plain-object branch, which frees a collected object a second time.
-let AIF_ELEM_CYCLE = 5
-let AIF_ELEM_RC_ATOMIC = 6
-let AIF_ELEM_CYCLE_ATOMIC = 7
+const AIF_ELEM_CYCLE = 5
+const AIF_ELEM_RC_ATOMIC = 6
+const AIF_ELEM_CYCLE_ATOMIC = 7
 // Not an analysis answer: codegen stamps it in place of OBJECT on a
 // `List<String>`, whose elements are pairs rather than pointers, so teardown
 // frees an owned long form and skips an inline one.
-let AIF_ELEM_STRING = 8
+const AIF_ELEM_STRING = 8
 
 // The integer the backend sizes an allocation and indexes an array GEP with:
 // pointer width, in LLVM spelling. A target property, read from the target

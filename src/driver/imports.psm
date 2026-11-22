@@ -27,16 +27,8 @@ import common.source_files
 import std.string
 import std.fs
 import std.platform
-
-// Declared here as well as in the modules that share them: the merge keeps the
-// first EXTERN_FUNCTION of a given name and drops the rest, which is what lets
-// each module name the externs it actually uses.
-public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(rt_free)
-public extern fn compiler_plib_error() -> String produce(rt_free)
-// `--freestanding`: no C library under the program, and only the `std` modules
-// freestandingSafeModule names over it.
-extern fn compiler_is_freestanding() -> Int
-extern fn compiler_use_freestanding_runtime()
+import common.native
+import common.diag_codes
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -385,7 +377,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
             // have, which the programmer fixes in their own tree. One code for
             // both sent every "reinstall Prismio" reader looking for a typo in
             // an import they wrote correctly.
-            diag_error_at_code("P1068", site.file, site.line, site.col, site.len,
+            diag_error_at_code(DIAG_DRIVER_STANDARD_LIBRARY_MODULE_INVALID, site.file, site.line, site.col, site.len,
                 "compiled standard-library module ".concat(diagQuote(moduleName),
                     " is missing, incompatible, or corrupted: ", compiler_plib_error()))
             diag_note("reinstall Prismio and try again")
@@ -396,7 +388,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
         content = readSource(importPath)
     }
     if (content.equals("") and fileExists(importPath) == false) {
-        diag_error_at_code("P1001", site.file, site.line, site.col, site.len,
+        diag_error_at_code(DIAG_DRIVER_IMPORT_UNREADABLE, site.file, site.line, site.col, site.len,
             "cannot read imported module ".concat(diagQuote(moduleName),
                                                   ": no such file ",
                                                   importPath))
@@ -409,7 +401,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // declaration came from.
     let file = diag_add_file(importPath, content)
     if (file < 0) {
-        diag_error_at_code("P1098", site.file, site.line, site.col, site.len,
+        diag_error_at_code(DIAG_DRIVER_TOO_MANY_SOURCE_FILES, site.file, site.line, site.col, site.len,
             "this program reads more than ".concat(DIAG_MAX_FILES.toString(),
                 " source files; ", diagQuote(moduleName), " was not read"))
         diag_note_dropped_everything()
@@ -442,7 +434,7 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
 
     if (fileExists(joinImportPath(baseDir, "build")) or
         listModules(joinImportDir(baseDir, "build")).length > 0) {
-        diag_error_at_code("P1117", site.file, site.line, site.col, site.len,
+        diag_error_at_code(DIAG_DRIVER_BUILD_MODULE_RESERVED, site.file, site.line, site.col, site.len,
             "`build` is reserved for the values in build.ums, and this project has a module of that name")
         diag_note("rename that module: `import build` always means the manifest")
         diag_note_dropped_everything()
@@ -451,7 +443,7 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
 
     let loaded = umsLoadBuildModule(absolutePath(baseDir))
     if (loaded.problem.length > 0) {
-        diag_error_at_code("P1118", site.file, site.line, site.col, site.len,
+        diag_error_at_code(DIAG_DRIVER_BUILD_MODULE_INVALID, site.file, site.line, site.col, site.len,
             "`import build` needs a valid build.ums: ".concat(loaded.problem))
         diag_note_dropped_everything()
         return seen
@@ -459,7 +451,7 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
 
     let file = diag_add_file(joinPath(directoryOf(loaded.manifestPath), "<build>"), loaded.source)
     if (file < 0) {
-        diag_error_at_code("P1121", site.file, site.line, site.col, site.len,
+        diag_error_at_code(DIAG_DRIVER_BUILD_MODULE_TOO_MANY_FILES, site.file, site.line, site.col, site.len,
             "this program reads more than ".concat(DIAG_MAX_FILES.toString(),
                 " source files; `build` was not read"))
         diag_note_dropped_everything()
@@ -482,7 +474,7 @@ private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
     let modules = listModules(dirPath)
 
     if (modules.length == 0) {
-        diag_error_at_code("P1002", site.file, site.line, site.col, site.len,
+        diag_error_at_code(DIAG_DRIVER_PACKAGE_HAS_NO_MODULES, site.file, site.line, site.col, site.len,
             "package ".concat(diagQuote(site.s1), " contains no modules: ", dirPath))
         diag_note_dropped_everything()
         return visited
@@ -516,7 +508,7 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
 
     let existing = ir_import_alias_target(stmt.file, stmt.s2)
     if (existing.equals("") == false) {
-        diag_error_at_code("P1069", stmt.file, stmt.line, stmt.col, stmt.len,
+        diag_error_at_code(DIAG_DRIVER_IMPORT_ALIAS_TAKEN, stmt.file, stmt.line, stmt.col, stmt.len,
             "the name ".concat(diagQuote(stmt.s2), " is already bound to ",
                                diagQuote(existing), " in this file"))
         diag_note("one `as` name per file: give this import a different one")
@@ -525,7 +517,7 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
 
     if (stmt.s1.equals("build") == false and
         fileExists(resolveImportPath(baseDir, stmt.s1)) == false) {
-        diag_error_at_code("P1070", stmt.file, stmt.line, stmt.col, stmt.len,
+        diag_error_at_code(DIAG_DRIVER_IMPORT_ALIAS_NOT_A_MODULE, stmt.file, stmt.line, stmt.col, stmt.len,
             "`as` names a module, and ".concat(diagQuote(stmt.s1), " is not one"))
         diag_note("a selective import names one declaration inside a module; drop the `as`, or alias the module it comes from")
         return
@@ -541,7 +533,7 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
     // name the file could have imported and did not is the conservative half of
     // that trade, and the fix is to pick another name.
     if (fileExists(resolveImportPath(baseDir, stmt.s2))) {
-        diag_error_at_code("P1071", stmt.file, stmt.line, stmt.col, stmt.len,
+        diag_error_at_code(DIAG_DRIVER_IMPORT_ALIAS_IS_A_MODULE, stmt.file, stmt.line, stmt.col, stmt.len,
             diagQuote(stmt.s2).concat(" is already the name of a module, so it cannot also be an alias"))
         diag_note("`".concat(stmt.s2, ".f(x)` would have two meanings here; choose a name no module in this project has"))
         return
@@ -599,7 +591,7 @@ private fn refuseHostedImport(stmt: ASTNode) -> Bool {
         if (freestandingNeedsRuntime(stmt.s1)) { compiler_use_freestanding_runtime() }
         return false
     }
-    diag_error_at_code("P1094", stmt.file, stmt.line, stmt.col, stmt.len,
+    diag_error_at_code(DIAG_DRIVER_FREESTANDING_IMPORT_REFUSED, stmt.file, stmt.line, stmt.col, stmt.len,
         diagQuote(stmt.s1).concat(" cannot be imported by a `--freestanding` program"))
     diag_note("std.io, std.display, std.input, std.fs, std.process, std.time, std.term and std.math need an operating system or a C library")
     diag_note_dropped_everything()
@@ -618,7 +610,7 @@ private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
     let cut = stmt.s1.lastIndexOf(".")
     let directory = stmt.s1.substring(0, cut)
     if (fileExists(resolveImportPath(baseDir, directory)) == false) { return false }
-    diag_error_at_code("P1072", stmt.file, stmt.line, stmt.col, stmt.len,
+    diag_error_at_code(DIAG_DRIVER_IMPORT_GROUP_NAMES_DECLARATION, stmt.file, stmt.line, stmt.col, stmt.len,
         "an import group names modules, and ".concat(diagQuote(stmt.s1), " is a declaration inside ",
                                                      diagQuote(directory)))
     diag_note("select a declaration with its own import: `import ".concat(stmt.s1, "`"))

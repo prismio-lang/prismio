@@ -24,6 +24,7 @@ import aifcore.dispositions
 import aifcore.keys
 import aifcore.ownership
 import aifcore.structure
+import common.builtin_names
 
 // `and` / `or` with the right-hand side evaluated only when it can change the
 // answer. Previously both operands were generated unconditionally and combined
@@ -89,10 +90,7 @@ private fn generateShortCircuit(expr: ASTNode) -> String {
 // droppable even when every value it receives is owned -- that case leaks today
 // regardless, since there is no drop on reassignment, so the strictness costs
 // nothing that is not already lost.
-private fn nodeAssignsName(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeAssignsName(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
         if (nodeExists(n.child1)) {
             let target = ptr_to_node(n.child1)
@@ -101,20 +99,11 @@ private fn nodeAssignsName(nodePtr: Ptr, name: String) -> Bool {
             }
         }
     }
-
-    if (chainAssignsName(n.child1, name)) { return true }
-    if (chainAssignsName(n.child2, name)) { return true }
-    return chainAssignsName(n.child3, name)
+    return false
 }
 
 internal fn chainAssignsName(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeAssignsName(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeAssignsName(n, name))
 }
 
 // Whether this expression hands the enclosing scope a value it owns.
@@ -181,10 +170,7 @@ internal fn nodeIsStringLiteralExpr(exprPtr: Ptr) -> Bool {
 // A binding reassigned only with owned values can be dropped and can release what
 // it displaces; one that ever receives a borrow -- `s = node.name` -- cannot do
 // either, and the difference is a free of a value the AST still holds.
-private fn nodeAssignsUnowned(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeAssignsUnowned(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
         if (nodeExists(n.child1)) {
             let target = ptr_to_node(n.child1)
@@ -193,20 +179,11 @@ private fn nodeAssignsUnowned(nodePtr: Ptr, name: String) -> Bool {
             }
         }
     }
-
-    if (chainAssignsUnowned(n.child1, name)) { return true }
-    if (chainAssignsUnowned(n.child2, name)) { return true }
-    return chainAssignsUnowned(n.child3, name)
+    return false
 }
 
 private fn chainAssignsUnowned(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeAssignsUnowned(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeAssignsUnowned(n, name))
 }
 
 // Whether `name` is a binding whose slot holds memory it owns at every point.
@@ -240,10 +217,7 @@ internal fn irOwningAccumulator(name: String) -> Bool {
 // Syntactic and blunt for the same reason nodeAssignsName is -- codegen is a
 // forward walk, and a `return` written above the binding's last use still runs
 // after it.
-private fn nodeReturnsName(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeReturnsName(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.RETURN_STATEMENT) {
         if (nodeExists(n.child1)) {
             let value = ptr_to_node(n.child1)
@@ -252,20 +226,11 @@ private fn nodeReturnsName(nodePtr: Ptr, name: String) -> Bool {
             }
         }
     }
-
-    if (chainReturnsName(n.child1, name)) { return true }
-    if (chainReturnsName(n.child2, name)) { return true }
-    return chainReturnsName(n.child3, name)
+    return false
 }
 
 internal fn chainReturnsName(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeReturnsName(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeReturnsName(n, name))
 }
 
 // Whether some `return` may carry `name`'s allocation in any form other than
@@ -304,10 +269,7 @@ internal fn chainReturnsName(head: Ptr, name: String) -> Bool {
 // `let same = identity(items)` in test_47_aif_containers, where the alias never
 // leaves the frame and `items` is this scope's to drop. Asking which values
 // reach a `return` keeps that drop and still refuses the one above.
-private fn nodeReturnsAliasBeyondBare(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeReturnsAliasBeyondBare(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.RETURN_STATEMENT and nodeExists(n.child1)) {
         let value = ptr_to_node(n.child1)
         let mut bare = value.kind == NodeKind.IDENTIFIER_EXPR and value.s1.equals(name)
@@ -319,10 +281,7 @@ private fn nodeReturnsAliasBeyondBare(nodePtr: Ptr, name: String) -> Bool {
         }
         if (bare == false and irValueAliasesName(n.child1, name, 0)) { return true }
     }
-
-    if (chainReturnsAliasBeyondBare(n.child1, name)) { return true }
-    if (chainReturnsAliasBeyondBare(n.child2, name)) { return true }
-    return chainReturnsAliasBeyondBare(n.child3, name)
+    return false
 }
 
 // The binding `bound` unwraps, when the function's one `let bound = expect(source)` names a binding that is
@@ -362,9 +321,7 @@ private fn chainUnwrapSource(head: Ptr, bound: String) -> String {
 // How many bindings of `name` the tree introduces: `let`s, loop variables, and
 // match-arm binders. Parameters are not counted; a parameter's value set holds
 // none of this function's own allocations.
-private fn nodeBindingCount(nodePtr: Ptr, name: String) -> Int {
-    if (nodeIsNull(nodePtr)) { return 0 }
-    let n = ptr_to_node(nodePtr)
+private fn nodeBindingCount(n: ASTNode, name: String) -> Int {
     let mut count = 0
     if ((n.kind == NodeKind.VARIABLE_DECL or n.kind == NodeKind.FOR_STATEMENT)
             and n.s1.equals(name)) {
@@ -377,28 +334,15 @@ private fn nodeBindingCount(nodePtr: Ptr, name: String) -> Int {
             binder = ptr_to_node(binder).next
         }
     }
-    return count + chainBindingCount(n.child1, name) + chainBindingCount(n.child2, name)
-        + chainBindingCount(n.child3, name)
-}
-
-internal fn chainBindingCount(head: Ptr, name: String) -> Int {
-    let mut count = 0
-    let mut p = head
-    while (nodeExists(p)) {
-        count = count + nodeBindingCount(p, name)
-        p = ptr_to_node(p).next
-    }
     return count
 }
 
+internal fn chainBindingCount(head: Ptr, name: String) -> Int {
+    return astSumChain(head, |n: ASTNode| nodeBindingCount(n, name))
+}
+
 internal fn chainReturnsAliasBeyondBare(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeReturnsAliasBeyondBare(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeReturnsAliasBeyondBare(n, name))
 }
 
 // Whether `name`'s allocation, or a view of it, is handed to a call that keeps it.
@@ -412,35 +356,23 @@ internal fn chainReturnsAliasBeyondBare(head: Ptr, name: String) -> Bool {
 //     keep.push(optionOr(o, "fallback"))     // the String inside o, kept
 //
 // That freed every payload twice -- 29 violations in 29 iterations.
-private fn nodeRetainsAliasOf(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeRetainsAliasOf(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.CALL_EXPR) {
         let mut a = n.child2
         let mut index = 0
         while (nodeExists(a)) {
-            if (irValueAliasesName(a, name, 0) and aif_call_arg_retained(nodePtr, index) == 1) {
+            if (irValueAliasesName(a, name, 0) and aif_call_arg_retained(node_to_ptr(n), index) == 1) {
                 return true
             }
             a = ptr_to_node(a).next
             index = index + 1
         }
     }
-
-    if (chainRetainsAliasOf(n.child1, name)) { return true }
-    if (chainRetainsAliasOf(n.child2, name)) { return true }
-    return chainRetainsAliasOf(n.child3, name)
+    return false
 }
 
 internal fn chainRetainsAliasOf(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeRetainsAliasOf(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeRetainsAliasOf(n, name))
 }
 
 // Whether `name`'s allocation is assigned into some other binding.
@@ -459,29 +391,17 @@ internal fn chainRetainsAliasOf(head: Ptr, name: String) -> Bool {
 // releases are ledger-legal. The binding assigned to may be declared anywhere;
 // telling an inner one from an outer one needs scopes this walk does not have,
 // so any other binding counts, which fails towards the leak.
-private fn nodeAssignsAliasOf(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeAssignsAliasOf(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.ASSIGNMENT_STATEMENT and nodeExists(n.child1)) {
         let target = ptr_to_node(n.child1)
         let other = target.kind != NodeKind.IDENTIFIER_EXPR or target.s1.equals(name) == false
         if (other and irValueAliasesName(n.child2, name, 0)) { return true }
     }
-
-    if (chainAssignsAliasOf(n.child1, name)) { return true }
-    if (chainAssignsAliasOf(n.child2, name)) { return true }
-    return chainAssignsAliasOf(n.child3, name)
+    return false
 }
 
 internal fn chainAssignsAliasOf(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeAssignsAliasOf(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeAssignsAliasOf(n, name))
 }
 
 // Whether the value `exprPtr` denotes may be the allocation `name` holds.
@@ -905,7 +825,8 @@ private fn irHoistOne(stmt: ASTNode) -> Ptr {
     }
     if (stmt.kind == NodeKind.MATCH_STATEMENT) { root = stmt.child1 }
     if (nodeIsNull(root)) { return ptr_null() }
-    if (irFindBorrowedTemporary(ptr_to_node(root)) != 1) {
+    let mut found = irFindBorrowedTemporary(ptr_to_node(root))
+    if (found.status != 1) {
         // `match (parse(text)) { ... }`: the scrutinee is itself the owned
         // temporary. It is evaluated before anything else in the statement, so
         // binding it first reorders nothing, and the binding is dropped at the
@@ -913,13 +834,10 @@ private fn irHoistOne(stmt: ASTNode) -> Ptr {
         // written -- which is the shape that was already clean.
         if (stmt.kind != NodeKind.MATCH_STATEMENT) { return ptr_null() }
         if (irArgumentIsOwnedTemporary(ptr_to_node(root)) == false) { return ptr_null() }
-        irHoistCall = node_to_ptr(stmt)
-        irHoistPrev = ptr_null()
-        irHoistArg = root
-        irHoistSlot = 1
+        found = irHoistAt(node_to_ptr(stmt), root, ptr_null(), 1)
     }
 
-    let arg = ptr_to_node(irHoistArg)
+    let arg = ptr_to_node(found.arg)
     let name = "bt.".concat(irBorrowedTempCounter.toString())
     irBorrowedTempCounter = irBorrowedTempCounter + 1
 
@@ -928,12 +846,12 @@ private fn irHoistOne(stmt: ASTNode) -> Ptr {
     use.s1 = name.clone()
     use.typeInfo = arg.typeInfo
     use.next = arg.next
-    if (nodeExists(irHoistPrev)) {
-        ptr_to_node(irHoistPrev).next = node_to_ptr(use)
-    } else if (irHoistSlot == 1) {
-        ptr_to_node(irHoistCall).child1 = node_to_ptr(use)
+    if (nodeExists(found.prev)) {
+        ptr_to_node(found.prev).next = node_to_ptr(use)
+    } else if (found.slot == 1) {
+        ptr_to_node(found.call).child1 = node_to_ptr(use)
     } else {
-        ptr_to_node(irHoistCall).child2 = node_to_ptr(use)
+        ptr_to_node(found.call).child2 = node_to_ptr(use)
     }
 
     // The call node itself moves, not a copy: every AIF fact about it is keyed
@@ -942,9 +860,32 @@ private fn irHoistOne(stmt: ASTNode) -> Ptr {
     let decl = createNode(NodeKind.VARIABLE_DECL)
     nodeSpanFrom(decl, arg)
     decl.s1 = name
-    decl.child2 = irHoistArg
+    decl.child2 = found.arg
     decl.typeInfo = arg.typeInfo
     return node_to_ptr(decl)
+}
+
+// Whether this `list_set` stores into a closed column (ir/columns.psm): a private Vec
+// field no view of an element outlives, whose displaced element is released at the store.
+private fn irStoreIntoMapColumn(call: ASTNode) -> Bool {
+    if (nodeIsNull(call.child2)) { return false }
+    return columnIsClosed(ptr_to_node(call.child2))
+}
+
+// `make().names.length` and `make().name.length`: a Vec or a String field of a struct a call
+// handed over, measured and named by nothing. The field is a view into the struct and the length
+// an Int that keeps nothing of it, so the struct is released once the length is read -- the
+// release the general path gives an argument, which these two early returns skipped. The call
+// that made the struct, or none (`ptr_null`) when the argument is anything else; asked before
+// generateExpression, which consumes the call's name (irArgumentIsOwnedTemporary), and the
+// struct's value is then `irMemberRootValue`, which generateMemberAccess leaves for a call root.
+private fn irFieldHolderTemporary(arg: ASTNode) -> ASTNode {
+    if (arg.kind != NodeKind.MEMBER_ACCESS_EXPR or nodeIsNull(arg.child1)) { return ptr_to_node(ptr_null()) }
+    let holder = ptr_to_node(arg.child1)
+    if (holder.kind != NodeKind.CALL_EXPR or irArgumentIsOwnedTemporary(holder) == false) {
+        return ptr_to_node(ptr_null())
+    }
+    return holder
 }
 
 // A scalar element read off a Vec: `v.sorted()[0]` is sema's `list_get(sorted(v), 0)`,
@@ -956,42 +897,58 @@ private fn irHoistOne(stmt: ASTNode) -> Ptr {
 private fn irCallIsScalarElementRead(call: ASTNode) -> Bool {
     if (nodeIsNull(call.child1) or nodeIsNull(call.child2)) { return false }
     if (ptr_to_node(call.child1).s1.equals("list_get") == false) { return false }
-    return scalarInlineBytes(storageType(typeIrKey(nodeGetType(call)))) > 0
+    let t = nodeGetType(call)
+    return scalarInlineBytes(storageType(typeIrKey(t))) > 0 or irIsStringOrListType(t)
+}
+
+// A `String`, a `Vec` or a struct: what a field or an element read off an owned temporary can
+// be without being a scalar, and what the hoisted binding keeps alive.
+private fn irIsStringOrListType(t: TypeInfo) -> Bool {
+    return t.kind == TypeKind.STRING or t.kind == TypeKind.LIST or t.kind == TypeKind.STRUCT
 }
 
 // 1 found, 0 nothing yet and nothing with an effect, -1 an effect comes first.
 // Evaluation order: a call's arguments left to right, then the call; a binary
 // operator's left operand, then its right -- except that `and`/`or` evaluate the
 // right one only sometimes, and a hoisted temporary would run always.
-private fn irFindBorrowedTemporary(e: ASTNode) -> Int {
-    if (e.kind == NodeKind.LITERAL_EXPR or e.kind == NodeKind.IDENTIFIER_EXPR) { return 0 }
+private fn irHoistNone(status: Int) -> IrHoist {
+    return IrHoist { status: status, call: ptr_null(), arg: ptr_null(), prev: ptr_null(), slot: 0 }
+}
+
+private fn irHoistAt(call: Ptr, arg: Ptr, prev: Ptr, slot: Int) -> IrHoist {
+    return IrHoist { status: 1, call: call, arg: arg, prev: prev, slot: slot }
+}
+
+private fn irFindBorrowedTemporary(e: ASTNode) -> IrHoist {
+    if (e.kind == NodeKind.LITERAL_EXPR or e.kind == NodeKind.IDENTIFIER_EXPR) { return irHoistNone(0) }
     if (e.kind == NodeKind.MEMBER_ACCESS_EXPR or e.kind == NodeKind.UNARY_EXPR) {
-        if (nodeIsNull(e.child1)) { return 0 }
+        if (nodeIsNull(e.child1)) { return irHoistNone(0) }
         let object = ptr_to_node(e.child1)
         let inner = irFindBorrowedTemporary(object)
-        if (inner == 1) { return 1 }
+        if (inner.status == 1) { return inner }
         // A scalar read straight off an owned temporary -- `text.split(',')
         // .length` -- is an inline load, not a call, so nothing released the
         // Vec. A scalar cannot alias what it was read from, so the temporary
         // may die at the scope exit like any binding.
+        //
+        // A String or Vec field is a view into the temporary, and a binding holds the
+        // temporary to the scope exit, which is how `let p = make(); p.name` is
+        // already released: the drop guards ask the same questions of the hoisted
+        // binding as of a written one (`let n = make().name` leaked both).
         if (e.kind == NodeKind.MEMBER_ACCESS_EXPR and irArgumentIsOwnedTemporary(object)
-                and scalarInlineBytes(storageType(getExprType(e))) > 0) {
-            irHoistCall = node_to_ptr(e)
-            irHoistPrev = ptr_null()
-            irHoistArg = e.child1
-            irHoistSlot = 1
-            return 1
+                and (scalarInlineBytes(storageType(getExprType(e))) > 0 or irIsStringOrListType(nodeGetType(e)))) {
+            return irHoistAt(node_to_ptr(e), e.child1, ptr_null(), 1)
         }
         return inner
     }
     if (e.kind == NodeKind.BINARY_EXPR) {
-        if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return 0 - 1 }
+        if (nodeIsNull(e.child1) or nodeIsNull(e.child2)) { return irHoistNone(0 - 1) }
         let left = irFindBorrowedTemporary(ptr_to_node(e.child1))
-        if (left != 0) { return left }
-        if (e.s1.equals("and") or e.s1.equals("or")) { return 0 - 1 }
+        if (left.status != 0) { return left }
+        if (e.s1.equals("and") or e.s1.equals("or")) { return irHoistNone(0 - 1) }
         return irFindBorrowedTemporary(ptr_to_node(e.child2))
     }
-    if (e.kind != NodeKind.CALL_EXPR) { return 0 - 1 }
+    if (e.kind != NodeKind.CALL_EXPR) { return irHoistNone(0 - 1) }
 
     let withholds = irCallWithholdsTemporaries(e)
     let coalesces = irCallIsCoalesce(e)
@@ -1002,21 +959,40 @@ private fn irFindBorrowedTemporary(e: ASTNode) -> Int {
         let arg = ptr_to_node(a)
         // `a ?? b` evaluates `b` only sometimes, as `and`/`or` do their right
         // side, and a hoisted temporary would run always.
-        if (coalesces and nodeExists(prev)) { return 0 - 1 }
-        let inner = irFindBorrowedTemporary(arg)
-        if (inner == 1) { return 1 }
-        if ((withholds or (scalarRead and nodeIsNull(prev))) and irArgumentIsOwnedTemporary(arg)) {
-            irHoistCall = node_to_ptr(e)
-            irHoistPrev = prev
-            irHoistArg = a
-            irHoistSlot = 2
-            return 1
+        if (coalesces and nodeExists(prev)) { return irHoistNone(0 - 1) }
+        if (irStructLiteralArgIsHoistable(e, arg)) {
+            return irHoistAt(node_to_ptr(e), a, prev, 2)
         }
-        if (inner != 0) { return inner }
+        let inner = irFindBorrowedTemporary(arg)
+        if (inner.status == 1) { return inner }
+        if ((withholds or (scalarRead and nodeIsNull(prev))) and irArgumentIsOwnedTemporary(arg)) {
+            return irHoistAt(node_to_ptr(e), a, prev, 2)
+        }
+        if (inner.status != 0) { return inner }
         prev = a
         a = arg.next
     }
-    return 0 - 1
+    return irHoistNone(0 - 1)
+}
+
+// A struct literal written as an argument of a Prismio function, whose type owns
+// something: `put(m, k, Person { name: word(1), age: 2 })`. Nothing owns the literal's
+// `name`: per-type field keys let the clone the callee makes of it raise the escape of
+// every `Person.name`, and the literal's own temporary is left with no owner (KNOWN_ISSUES,
+// the field keys). Bound first -- `let p = Person { ... }; put(m, k, p)` -- the same
+// program is clean, so the literal is given that binding, the way an owned call result
+// is. Not a builtin's argument: `list_push(v, Person { ... })` builds the struct in the
+// list's slot, and a binding would put an allocation back where that was avoided.
+private fn irStructLiteralArgIsHoistable(call: ASTNode, arg: ASTNode) -> Bool {
+    if (arg.kind != NodeKind.STRUCT_LITERAL_EXPR) { return false }
+    if (nodeHasType(arg) == false or typeOwnsNothing(nodeGetType(arg))) { return false }
+    if (nodeGetType(arg).kind != TypeKind.STRUCT) { return false }
+    // An enum variant is a struct literal whose first field is its `$tag`, and an enum
+    // value handed to a `sink` parameter is moved: a binding made for it would be dropped
+    // by the caller as well.
+    if (nodeExists(arg.child1) and ptr_to_node(arg.child1).s1.equals("$tag")) { return false }
+    if (nodeIsNull(call.child1)) { return false }
+    return callIsPrismioFn(ptr_to_node(call.child1).s1)
 }
 
 // The declared type an owned temporary is released as. Only a typed release
@@ -1213,30 +1189,18 @@ private fn generateStringReinitConcatChain(firstSuffix: Ptr, old: String) -> Str
 // droppable because of the *spawn*, not because of a site, so that reasoning does
 // not reach it and the copy has to be excluded by name. `test_69`'s
 // `result_type_survives_a_binding` is the shape, and it is in the suite.
-private fn nodeCopiesName(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeCopiesName(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.VARIABLE_DECL and nodeExists(n.child2)) {
         let init = ptr_to_node(n.child2)
         if (init.kind == NodeKind.IDENTIFIER_EXPR and init.s1.equals(name)) {
             return true
         }
     }
-
-    if (chainCopiesName(n.child1, name)) { return true }
-    if (chainCopiesName(n.child2, name)) { return true }
-    return chainCopiesName(n.child3, name)
+    return false
 }
 
 internal fn chainCopiesName(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeCopiesName(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeCopiesName(n, name))
 }
 
 // Whether this function body explicitly frees `name` with `drop(name)`.
@@ -1253,10 +1217,7 @@ internal fn chainCopiesName(head: Ptr, name: String) -> Bool {
 // another name keeps its scope release, which is the conservative direction:
 // a missed suppression is a double free and a missed drop is a leak, so this
 // fails towards the leak the way irValueAliasesName's hop cap does.
-private fn nodeDropsName(nodePtr: Ptr, name: String) -> Bool {
-    if (nodeIsNull(nodePtr)) { return false }
-    let n = ptr_to_node(nodePtr)
-
+private fn nodeDropsName(n: ASTNode, name: String) -> Bool {
     if (n.kind == NodeKind.CALL_EXPR) {
         let callee = ptr_to_node(n.child1)
         if (callee.kind == NodeKind.IDENTIFIER_EXPR and callee.s1.equals("drop")) {
@@ -1270,20 +1231,11 @@ private fn nodeDropsName(nodePtr: Ptr, name: String) -> Bool {
             }
         }
     }
-
-    if (chainDropsName(n.child1, name)) { return true }
-    if (chainDropsName(n.child2, name)) { return true }
-    return chainDropsName(n.child3, name)
+    return false
 }
 
 internal fn chainDropsName(head: Ptr, name: String) -> Bool {
-    let mut p = head
-    while (nodeExists(p)) {
-        let n = ptr_to_node(p)
-        if (nodeDropsName(p, name)) { return true }
-        p = n.next
-    }
-    return false
+    return astAnyChain(head, |n: ASTNode| nodeDropsName(n, name))
 }
 
 // The initialisers of a struct literal, written into an object that already
@@ -1409,7 +1361,7 @@ private fn inlineElemSizeOfList(listExpr: ASTNode) -> Int {
     // not declined, unreached -- so both spent a pointer slot per element.
     // Measured at 4,000,000 elements: 64.0 MB against 9.2 MB for the same data
     // as a one-field struct, which passed the predicate only because it was one.
-    // See aif/evidence/RESULTS-scalar-list-storage.md.
+    // See docs/aif/evidence/RESULTS-scalar-list-storage.md (Git history).
     if (optIsWide(ekey)) { return optWideBytes() }
     if (isStructTypeKey(ekey) == false) { return scalarInlineBytes(ekey) }
     return inlineElemSize(structTypeName(ekey))
@@ -1618,15 +1570,6 @@ private fn calleeParamStorage(call: ASTNode, funcName: String, index: Int) -> St
     return ""
 }
 
-private fn callIsExtern(funcName: String) -> Bool {
-    let n = ir_decl_count(funcName)
-    for i in 0..<n {
-        let decl = ptr_to_node(ir_decl_at(funcName, i))
-        if (decl.kind == NodeKind.EXTERN_FUNCTION) { return true }
-    }
-    return false
-}
-
 private fn inlineElemSizeOfCall(expr: ASTNode) -> Int {
     if (nodeIsNull(expr.child2)) { return 0 }
     return inlineElemSizeOfList(ptr_to_node(expr.child2))
@@ -1669,10 +1612,7 @@ private fn irFlatGuardCount(nodePtr: Ptr, bodyPtr: Ptr) -> Int {
             if (nodeIsNull(n.child2)) { return 0 }
             return irFlatGuardCount(n.child2, bodyPtr)
         }
-        if (fname.equals("__builtin_panic") or fname.equals("__builtin_unreachable")
-            or fname.equals("__builtin_exit")) {
-            return 0
-        }
+        if (builtinNeverReturns(fname)) { return 0 }
         let stride = flatGetStride(n, fname)
         if (stride > 0) {
             // The receiver is evaluated a second time in the preheader, so it has
@@ -2624,7 +2564,7 @@ private fn irScalarFillValue(nodePtr: Ptr) -> Bool {
 // range check.
 //
 // **The check is not emitted at the push, and that is the whole difference.**
-// `aif/evidence/RESULTS-inline-push-rejected.md` records emitting
+// `docs/aif/evidence/RESULTS-inline-push-rejected.md` (Git history) records emitting
 // `elem_size == S && len < cap` inline at each site: 0.97x on g2 and **1.275x on
 // g6**, whose `plan_orders` builds a fresh short-lived list per squad so almost
 // every push grows and the check is paid without ever winning. It concluded that
@@ -2936,7 +2876,7 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
     // builds a fresh short-lived list per squad per frame: almost every push is a
     // growth, so the check is paid and never wins. Gating on loop depth does not
     // separate the two -- both pushes are in loops. See
-    // aif/evidence/RESULTS-inline-push-rejected.md.
+    // docs/aif/evidence/RESULTS-inline-push-rejected.md (Git history).
     // E1: with the loop's capacity guard the slot is address arithmetic and a
     // length bump, and `list_push_slot` stays on the arm the guard did not take.
     if (irLoopPushGuard.equals("") == false) {
@@ -2960,6 +2900,11 @@ private fn generatePushInPlace(expr: ASTNode, funcName: String) -> Bool {
 // here because it depends on statements sema has not reached yet.
 private fn vecRemovalReleasesNow(expr: ASTNode) -> String {
     if (expr.i2 == 1) { return "1" }
+    // A field: released at once when it is a closed column (ir/columns.psm).
+    if (expr.i2 == 3 and nodeExists(expr.child2)) {
+        if (columnIsClosed(ptr_to_node(expr.child2))) { return "1" }
+        return "0"
+    }
     if (expr.i2 == 2 and nodeExists(expr.child2)) {
         let list = ptr_to_node(expr.child2)
         if (irViewMayOutliveIteration(irFunctionBody, list.s1) == false) { return "1" }
@@ -3460,7 +3405,7 @@ private fn generateStructLiteralFields(expr: ASTNode, structName: String, destPt
             // a container is written into a slot handed back by `list_push_slot`,
             // whose next call reloads the same `RtList` header, and the widened
             // store costs ~6 cycles per element against that reload.
-            // `aif/evidence/RESULTS-M6-struct-path-tbaa.md` isolates it to that
+            // `docs/aif/evidence/RESULTS-M6-struct-path-tbaa.md` (Git history) isolates it to that
             // one interaction -- the same merge measures **0.76x** when the slot
             // is computed inline -- and names curating `list_push_slot` as the
             // fix. Until that seam closes, an initialiser keeps slice 1's scalar
@@ -3704,6 +3649,30 @@ private fn memberChainRootOfArgument(arg: ASTNode) -> ASTNode {
     return memberChainRoot(ptr_to_node(arg.child1))
 }
 
+// `make()[1]` as a comparison operand: the owned call whose element the operand reads,
+// or null. The element is a view into it, which the comparison finishes with.
+private fn listGetTempRoot(operand: ASTNode) -> ASTNode {
+    if (operand.kind != NodeKind.CALL_EXPR or nodeIsNull(operand.child1) or nodeIsNull(operand.child2)) {
+        return ptr_to_node(ptr_null())
+    }
+    if (ptr_to_node(operand.child1).s1.equals("list_get") == false) { return ptr_to_node(ptr_null()) }
+    let list = ptr_to_node(operand.child2)
+    if (irArgumentIsOwnedTemporary(list) == false) { return ptr_to_node(ptr_null()) }
+    return list
+}
+
+// The owned temporary a comparison operand is a view into, or null: the call under a field
+// chain (`make().name`), the Vec under an element (`make()[1]`), or the Vec under a field of
+// an element (`make()[0].name`).
+private fn irComparisonRoot(operand: ASTNode) -> ASTNode {
+    let root = memberChainRootOfArgument(operand)
+    if (nodeExists(node_to_ptr(root))) {
+        if (irArgumentIsOwnedTemporary(root)) { return root }
+        return listGetTempRoot(root)
+    }
+    return listGetTempRoot(operand)
+}
+
 // Whether a call's result can hold no pointer, so it cannot be a view of any
 // argument it was given.
 private fn irCallResultIsScalar(call: ASTNode) -> Bool {
@@ -3762,10 +3731,24 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
         ownedTempKind = irOwnedTemporaryKind(root)
         ownedTempType = irOwnedTemporaryDeclType(root)
     }
+    // `makeVec()[0].age`: a scalar field of an element of an owned Vec. The element is a
+    // view into the Vec, so the Vec is released after the load, asked now and its value
+    // taken straight after the object (listGetTempRoot).
+    let elementRoot = listGetTempRoot(objectNode)
+    let elementRootOwned = nodeExists(node_to_ptr(elementRoot))
+    let mut elementRootKind = 0
+    let mut elementRootType = ""
+    if (elementRootOwned) {
+        elementRootKind = irOwnedTemporaryKind(elementRoot)
+        elementRootType = irOwnedTemporaryDeclType(elementRoot)
+    }
     let objectVal = generateExpression(objectNode)
+    let elementRootVal = irMemberRootValue.clone()
     // The root's value, for an argument list that has to release it after its
     // call instead (irMemberRootValue).
-    if (objectNode.kind == NodeKind.CALL_EXPR) { irMemberRootValue = objectVal.clone() }
+    if (objectNode.kind == NodeKind.CALL_EXPR) {
+        if (elementRootOwned) { irMemberRootValue = elementRootVal.clone() } else { irMemberRootValue = objectVal.clone() }
+    }
     let structName = memberObjectStructName(objectNode)
     let fieldIndex = ir_get_struct_field_index(structName, expr.s1)
     let fieldType = fieldStorageType(ir_get_struct_field_type(structName, expr.s1))
@@ -3804,6 +3787,9 @@ private fn generateMemberAccess(expr: ASTNode) -> String {
     // release would have to wait for the view's last use.
     if (ownedTemp and scalarInlineBytes(fieldType) > 0) {
         generateOwnedTemporaryRelease(irMemberRootValue.clone(), ownedTempKind, ownedTempType)
+    }
+    if (elementRootOwned and scalarInlineBytes(fieldType) > 0) {
+        generateOwnedTemporaryRelease(elementRootVal, elementRootKind, elementRootType)
     }
     return loaded
 }
@@ -3990,6 +3976,7 @@ private fn generateIndex(expr: ASTNode) -> String {
             return ir_get_temp_name(ir_insert_value("struct:prismio.data_element",
                                                     withView, index, "i32", 1))
         }
+        _ => { }
     }
 
     let arrayVal = generateExpression(baseNode)
@@ -5015,11 +5002,15 @@ private fn generateAsmOps(expr: ASTNode, hasResult: Bool) -> String {
     ir_asm_call("void", text.s1, constraints)
     return ""
 }
+// What a call-family function of `generateCall` answers when the call is not its own: the call goes on to the
+// next family, and in the end to the ordinary call. A distinct string rather than "", because "" is what a
+// builtin that emits no value answers.
+private fn callNotHandled() -> String { return "$$not-handled" }
 
-private fn generateCall(expr: ASTNode) -> String {
-    let callee = ptr_to_node(expr.child1)
-    let funcName = callee.s1
-
+// The compiler's own operations on values and containers, answered before any call is built: `drop`, the
+// channel, `cString`, `functionAddress` and `offsetOf` forms, `soa`/`aos`, `data_len` and the slice accessors.
+// "Not handled" when `funcName` is none of them.
+private fn generateCallCoreBuiltin(expr: ASTNode, funcName: String) -> String {
     // drop(x): release the owned heap value. Ownership/move checking in sema
     // guarantees this runs at most once per value.
     //
@@ -5201,151 +5192,13 @@ private fn generateCall(expr: ASTNode) -> String {
         }
     }
 
-    // M4.2, destination passing. `list_push(l, Thing { ... })` where the
-    // element type is stored inline builds the element **in the list**: the
-    // runtime reserves the slot and the literal's field stores are emitted
-    // against that address, so the push allocates nothing and copies
-    // nothing.
-    //
-    // The whole of inline storage's cost on the frame-loop programs was
-    // here -- a temporary object per push, memcpy'd in and freed -- and this
-    // is the shape five of the six corpus programs push in.
-    if (generatePushInPlace(expr, funcName)) { return "" }
-    if (generateGuardedScalarPush(expr, funcName)) { return "" }
+    return callNotHandled()
+}
 
-    // M4.2, the read end. `list_get` on a flat element type is address
-    // arithmetic from a stride this compiler already knows, so it is emitted
-    // here rather than called for -- see ir_list_flat_elem in
-    // runtime/llvm-api-backend.c for why the guard is `== stride` and why
-    // the boxed arm is still the runtime's.
-    //
-    // The `ptr` test is not belt and braces: a flat, uncounted element type
-    // is a value struct, whose storage type is `ptr`, and every other
-    // element reaches the slot-to-scalar conversion below instead. Making
-    // that a condition rather than an assumption is what keeps a future
-    // flat-but-scalar element from silently taking an address where it
-    // wants a value.
-    // Only inside a loop whose guard was proved, which is what makes this
-    // pay. A single `list_get` outside one is left on `list_get_inline`: the
-    // three blocks this expands into are worth their code only when a loop
-    // amortises them, and emitting them everywhere cost g2 and g6 +58%
-    // compile time and +34% binary for 4.9% and 2.0%.
-    // A `List<String>` element is a pair in the list's own block, which no
-    // boxed or flat read below knows how to take.
-    if (isTypedListGet(expr, funcName) and listHoldsStrings(ptr_to_node(expr.child2))) {
-        let stringList = ptr_to_node(expr.child2)
-        let stringListVal = generateExpression(stringList)
-        let stringIndexVal = generateExpression(ptr_to_node(stringList.next))
-        return generateStringListElement(stringListVal, stringIndexVal)
-    }
-    let flatStride = flatGetStride(expr, funcName)
-    if (flatStride == 0 and isStaticBoxedListGet(expr, funcName)
-            and irLoopDepth > 0) {
-        let listNode = ptr_to_node(expr.child2)
-        let listVal = generateExpression(listNode)
-        let indexVal = generateExpression(ptr_to_node(listNode.next))
-        let raw = ir_get_temp_name(ir_list_boxed_elem(listVal, indexVal))
-        let retType = storageType(getExprType(expr))
-        if (isFatStringKey(retType)) { return fatFromPtr(raw) }
-        if (retType.equals("ptr") == false) {
-            return slotToScalar(retType, raw)
-        }
-        return raw
-    }
-    // **A scalar element belongs here too, and leaving it out was a real
-    // regression.** Putting scalars inline takes them out of
-    // `isStaticBoxedListGet` above; falling through to the curated
-    // `list_get_inline_scalar` call measured 2.31x slower on a 20M-read loop
-    // because the old ir_list_boxed_elem body was visible and vectorised.
-    //
-    // The pointer and scalar intrinsics stay separate because their result
-    // conventions differ. ir_list_flat_elem joins two addresses: the flat
-    // row address and list_get_inline's result. Its scalar twin joins two
-    // values: a typed load from the flat row and list_get_inline_scalar's
-    // i64 carrier converted back to the element type. Merging first and
-    // loading afterwards would load through a boxed scalar value as though
-    // it were an address whenever inline storage is disabled.
-    //
-    // The fat String stays out, and not by accident: it is a `struct:` key
-    // that is a pair in a register rather than storage reached by GEP, so it
-    // has neither a scalar load type nor an address to load from here.
-    let flatRet = storageType(getExprType(expr))
-    if (flatStride > 0 and irLoopFlatGuard.equals("") == false) {
-        let listNode = ptr_to_node(expr.child2)
-        let listVal = generateExpression(listNode)
-        let indexVal = generateExpression(ptr_to_node(listNode.next))
-        let mut guard = "1"
-        if (irLoopFlatGuard.equals("1") == false) {
-            guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
-        }
-        let mut checkBounds = 1
-        if (irAccessProved(expr)) {
-            checkBounds = 0
-        } else if (irLoopHeaderBoundActive
-                and listNode.kind == NodeKind.IDENTIFIER_EXPR
-                and ptr_to_node(listNode.next).kind == NodeKind.IDENTIFIER_EXPR
-                and listNode.s1.equals(irLoopHeaderBoundList)
-                and ptr_to_node(listNode.next).s1.equals(irLoopHeaderBoundIndex)) {
-            checkBounds = 0
-        }
-        if (flatRet.equals("ptr")) {
-            return ir_get_temp_name(ir_list_flat_elem(
-                listVal, indexVal, flatStride, guard, checkBounds))
-        }
-        if (scalarInlineBytes(flatRet) > 0) {
-            let mut hoistedBound = ""
-            let mut hoistedData = ""
-            if (checkBounds == 0 and irAccessProved(expr)) {
-                hoistedData = ir_range_proof_data(node_to_ptr(expr)).clone()
-            } else if (listNode.kind == NodeKind.IDENTIFIER_EXPR
-                    and listNode.s1.equals(irLoopHoistedBoundList)) {
-                hoistedBound = irLoopHoistedBoundValue.clone()
-                hoistedData = irLoopHoistedDataValue.clone()
-            }
-            let flatVal = ir_get_temp_name(ir_list_flat_scalar_elem(
-                listVal, indexVal, flatScalarKey(flatRet), flatStride, guard, checkBounds,
-                hoistedBound, hoistedData))
-            return fromFlatScalar(flatRet, flatVal)
-        }
-    }
-
-    // The write half, and only once the range is proved. Unlike the read,
-    // there is nothing to win here from the guard alone: `list_set_inline_scalar`
-    // is curated and inlines, so a merely representation-guarded store is the
-    // same code by another route. What pays is dropping the bounds branch,
-    // which is the last one left in a copy loop.
-    let flatSetStride = flatSetScalarStride(expr, funcName)
-    if (flatSetStride > 0 and irLoopFlatGuard.equals("") == false) {
-        let setList = ptr_to_node(expr.child2)
-        let setIndex = ptr_to_node(setList.next)
-        let setValue = ptr_to_node(setIndex.next)
-        let setType = nodeGetType(setList)
-        let elemKey = typeIrKey(ptr_to_type(setType.child))
-        let listVal2 = generateExpression(setList)
-        let indexVal2 = generateExpression(setIndex)
-        let valueVal2 = generateExpression(setValue)
-        let mut guard2 = "1"
-        if (irLoopFlatGuard.equals("1") == false) {
-            guard2 = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
-        }
-        let mut checkBounds2 = 1
-        if (irAccessProved(expr)) { checkBounds2 = 0 }
-        let mut hoistedBound2 = ""
-        let mut hoistedData2 = ""
-        if (checkBounds2 == 0) {
-            hoistedData2 = ir_range_proof_data(node_to_ptr(expr)).clone()
-        } else if (setList.kind == NodeKind.IDENTIFIER_EXPR
-                and setList.s1.equals(irLoopHoistedBoundList)) {
-            hoistedBound2 = irLoopHoistedBoundValue.clone()
-            hoistedData2 = irLoopHoistedDataValue.clone()
-        }
-        ir_list_flat_scalar_set(listVal2, indexVal2, toFlatScalar(elemKey, valueVal2),
-                                flatScalarKey(elemKey),
-                                flatSetStride, guard2, checkBounds2,
-                                hoistedBound2, hoistedData2)
-        return ""
-    }
-
+// The builtins that lower to an instruction or a constant: integer and float arithmetic, the failure builtins,
+// memory, atomics and assembly, the console write, errno and the target codes. "Not handled" otherwise.
+private fn generateCallNumericBuiltin(expr: ASTNode, funcName: String) -> String {
+    let callee = ptr_to_node(expr.child1)
     // Integer min/max/abs, straight onto LLVM's intrinsics. No runtime symbol
     // and no branch: `llvm.smax.i32` becomes one `smax` on this target, and
     // it is one of the intrinsics LLVM will widen into a vector loop.
@@ -5558,6 +5411,11 @@ private fn generateCall(expr: ASTNode) -> String {
     if (funcName.equals("__builtin_target_arch")) { return targetArchCode().toString() }
     if (funcName.equals("__builtin_target_env")) { return targetEnvCode().toString() }
 
+    return callNotHandled()
+}
+
+// The string builtins, `list_len` and `str_with_capacity`: emitted inline, with no call. "Not handled" otherwise.
+private fn generateCallStringBuiltin(expr: ASTNode, funcName: String) -> String {
     // Byte length is the pair's second field. This is a reserved compiler
     // builtin, not an extern: its source spelling carries no declaration,
     // LLVM symbol or link requirement.
@@ -5571,9 +5429,18 @@ private fn generateCall(expr: ASTNode) -> String {
             let ownedTemp = irArgumentIsOwnedTemporary(a0)
             let ownedTempKind = irOwnedTemporaryKind(a0)
             let ownedTempType = irOwnedTemporaryDeclType(a0)
+            let holder = irFieldHolderTemporary(a0)
+            let mut holderKind = 0
+            let mut holderType = ""
+            if (nodeExists(node_to_ptr(holder))) {
+                holderKind = irOwnedTemporaryKind(holder)
+                holderType = irOwnedTemporaryDeclType(holder)
+            }
             let value = generateExpression(a0)
+            let holderVal = irMemberRootValue.clone()
             let wide = ir_get_temp_name(ir_extract_value("struct:prismio.str", value.clone(), 1))
             if (ownedTemp) { generateOwnedTemporaryRelease(value, ownedTempKind, ownedTempType) }
+            if (nodeExists(node_to_ptr(holder))) { generateOwnedTemporaryRelease(holderVal, holderKind, holderType) }
             let narrow = ir_get_temp_name(ir_trunc("i64", wide, "i32"))
             // Bit 31 is the inline tag, not part of the length. This `and` is
             // the entire per-read cost of the German-string representation --
@@ -5597,9 +5464,18 @@ private fn generateCall(expr: ASTNode) -> String {
             let owned = irArgumentIsOwnedTemporary(a0)
             let kind = irOwnedTemporaryKind(a0)
             let declType = irOwnedTemporaryDeclType(a0)
+            let holder = irFieldHolderTemporary(a0)
+            let mut holderKind = 0
+            let mut holderType = ""
+            if (nodeExists(node_to_ptr(holder))) {
+                holderKind = irOwnedTemporaryKind(holder)
+                holderType = irOwnedTemporaryDeclType(holder)
+            }
             let listVal = generateExpression(a0)
+            let holderVal = irMemberRootValue.clone()
             let len = ir_get_temp_name(ir_list_len(listVal.clone()))
             if (owned) { generateOwnedTemporaryRelease(listVal, kind, declType) }
+            if (nodeExists(node_to_ptr(holder))) { generateOwnedTemporaryRelease(holderVal, holderKind, holderType) }
             return len
         }
     }
@@ -5800,8 +5676,31 @@ private fn generateCall(expr: ASTNode) -> String {
         let e0 = ptr_to_node(expr.child2)
         if (nodeExists(e0.next)) {
             let rhs = ptr_to_node(e0.next)
+            // `make().name == "x"`: an operand that reads a String field of an owned
+            // temporary. The comparison reads the bytes and retains nothing, so the
+            // temporary is released once the answer is in hand; asked before the
+            // operand is generated, and its root value taken straight after, because
+            // generating the other operand reuses `irMemberRootValue`.
+            let lhsRoot = irComparisonRoot(e0)
+            let lhsRootOwned = nodeExists(node_to_ptr(lhsRoot)) and irArgumentIsOwnedTemporary(lhsRoot)
+            let mut lhsRootKind = 0
+            let mut lhsRootType = ""
+            if (lhsRootOwned) {
+                lhsRootKind = irOwnedTemporaryKind(lhsRoot)
+                lhsRootType = irOwnedTemporaryDeclType(lhsRoot)
+            }
             let lhsVal = generateExpression(e0)
+            let lhsRootVal = irMemberRootValue.clone()
+            let rhsRoot = irComparisonRoot(rhs)
+            let rhsRootOwned = nodeExists(node_to_ptr(rhsRoot)) and irArgumentIsOwnedTemporary(rhsRoot)
+            let mut rhsRootKind = 0
+            let mut rhsRootType = ""
+            if (rhsRootOwned) {
+                rhsRootKind = irOwnedTemporaryKind(rhsRoot)
+                rhsRootType = irOwnedTemporaryDeclType(rhsRoot)
+            }
             let rhsVal = generateExpression(rhs)
+            let rhsRootVal = irMemberRootValue.clone()
             // The backend compares the pairs first. Two short strings are
             // equal exactly when their sixteen bytes match, which the layout
             // guarantees and which costs two register compares; `str_equals`
@@ -5826,6 +5725,8 @@ private fn generateCall(expr: ASTNode) -> String {
                 generateOwnedTemporaryRelease(rhsVal, irOwnedTemporaryKind(rhs),
                                               irOwnedTemporaryDeclType(rhs))
             }
+            if (lhsRootOwned) { generateOwnedTemporaryRelease(lhsRootVal, lhsRootKind, lhsRootType) }
+            if (rhsRootOwned) { generateOwnedTemporaryRelease(rhsRootVal, rhsRootKind, rhsRootType) }
             return answer
         }
     }
@@ -5894,6 +5795,172 @@ private fn generateCall(expr: ASTNode) -> String {
             }
         }
     }
+
+    return callNotHandled()
+}
+
+
+private fn generateCall(expr: ASTNode) -> String {
+    let callee = ptr_to_node(expr.child1)
+    let funcName = callee.s1
+
+    let coreResult = generateCallCoreBuiltin(expr, funcName)
+    if (coreResult.equals(callNotHandled()) == false) { return coreResult }
+
+    // M4.2, destination passing. `list_push(l, Thing { ... })` where the
+    // element type is stored inline builds the element **in the list**: the
+    // runtime reserves the slot and the literal's field stores are emitted
+    // against that address, so the push allocates nothing and copies
+    // nothing.
+    //
+    // The whole of inline storage's cost on the frame-loop programs was
+    // here -- a temporary object per push, memcpy'd in and freed -- and this
+    // is the shape five of the six corpus programs push in.
+    if (generatePushInPlace(expr, funcName)) { return "" }
+    if (generateGuardedScalarPush(expr, funcName)) { return "" }
+
+    // M4.2, the read end. `list_get` on a flat element type is address
+    // arithmetic from a stride this compiler already knows, so it is emitted
+    // here rather than called for -- see ir_list_flat_elem in
+    // runtime/llvm-api-backend.c for why the guard is `== stride` and why
+    // the boxed arm is still the runtime's.
+    //
+    // The `ptr` test is not belt and braces: a flat, uncounted element type
+    // is a value struct, whose storage type is `ptr`, and every other
+    // element reaches the slot-to-scalar conversion below instead. Making
+    // that a condition rather than an assumption is what keeps a future
+    // flat-but-scalar element from silently taking an address where it
+    // wants a value.
+    // Only inside a loop whose guard was proved, which is what makes this
+    // pay. A single `list_get` outside one is left on `list_get_inline`: the
+    // three blocks this expands into are worth their code only when a loop
+    // amortises them, and emitting them everywhere cost g2 and g6 +58%
+    // compile time and +34% binary for 4.9% and 2.0%.
+    // A `List<String>` element is a pair in the list's own block, which no
+    // boxed or flat read below knows how to take.
+    if (isTypedListGet(expr, funcName) and listHoldsStrings(ptr_to_node(expr.child2))) {
+        let stringList = ptr_to_node(expr.child2)
+        let stringListVal = generateExpression(stringList)
+        // For a comparison that releases an owned `make()[1]`'s Vec (listGetTempRoot).
+        irMemberRootValue = stringListVal.clone()
+        let stringIndexVal = generateExpression(ptr_to_node(stringList.next))
+        return generateStringListElement(stringListVal, stringIndexVal)
+    }
+    let flatStride = flatGetStride(expr, funcName)
+    if (flatStride == 0 and isStaticBoxedListGet(expr, funcName)
+            and irLoopDepth > 0) {
+        let listNode = ptr_to_node(expr.child2)
+        let listVal = generateExpression(listNode)
+        irMemberRootValue = listVal.clone()
+        let indexVal = generateExpression(ptr_to_node(listNode.next))
+        let raw = ir_get_temp_name(ir_list_boxed_elem(listVal, indexVal))
+        let retType = storageType(getExprType(expr))
+        if (isFatStringKey(retType)) { return fatFromPtr(raw) }
+        if (retType.equals("ptr") == false) {
+            return slotToScalar(retType, raw)
+        }
+        return raw
+    }
+    // **A scalar element belongs here too, and leaving it out was a real
+    // regression.** Putting scalars inline takes them out of
+    // `isStaticBoxedListGet` above; falling through to the curated
+    // `list_get_inline_scalar` call measured 2.31x slower on a 20M-read loop
+    // because the old ir_list_boxed_elem body was visible and vectorised.
+    //
+    // The pointer and scalar intrinsics stay separate because their result
+    // conventions differ. ir_list_flat_elem joins two addresses: the flat
+    // row address and list_get_inline's result. Its scalar twin joins two
+    // values: a typed load from the flat row and list_get_inline_scalar's
+    // i64 carrier converted back to the element type. Merging first and
+    // loading afterwards would load through a boxed scalar value as though
+    // it were an address whenever inline storage is disabled.
+    //
+    // The fat String stays out, and not by accident: it is a `struct:` key
+    // that is a pair in a register rather than storage reached by GEP, so it
+    // has neither a scalar load type nor an address to load from here.
+    let flatRet = storageType(getExprType(expr))
+    if (flatStride > 0 and irLoopFlatGuard.equals("") == false) {
+        let listNode = ptr_to_node(expr.child2)
+        let listVal = generateExpression(listNode)
+        irMemberRootValue = listVal.clone()
+        let indexVal = generateExpression(ptr_to_node(listNode.next))
+        let mut guard = "1"
+        if (irLoopFlatGuard.equals("1") == false) {
+            guard = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
+        }
+        let mut checkBounds = 1
+        if (irAccessProved(expr)) {
+            checkBounds = 0
+        } else if (irLoopHeaderBoundActive
+                and listNode.kind == NodeKind.IDENTIFIER_EXPR
+                and ptr_to_node(listNode.next).kind == NodeKind.IDENTIFIER_EXPR
+                and listNode.s1.equals(irLoopHeaderBoundList)
+                and ptr_to_node(listNode.next).s1.equals(irLoopHeaderBoundIndex)) {
+            checkBounds = 0
+        }
+        if (flatRet.equals("ptr")) {
+            return ir_get_temp_name(ir_list_flat_elem(
+                listVal, indexVal, flatStride, guard, checkBounds))
+        }
+        if (scalarInlineBytes(flatRet) > 0) {
+            let mut hoistedBound = ""
+            let mut hoistedData = ""
+            if (checkBounds == 0 and irAccessProved(expr)) {
+                hoistedData = ir_range_proof_data(node_to_ptr(expr)).clone()
+            } else if (listNode.kind == NodeKind.IDENTIFIER_EXPR
+                    and listNode.s1.equals(irLoopHoistedBoundList)) {
+                hoistedBound = irLoopHoistedBoundValue.clone()
+                hoistedData = irLoopHoistedDataValue.clone()
+            }
+            let flatVal = ir_get_temp_name(ir_list_flat_scalar_elem(
+                listVal, indexVal, flatScalarKey(flatRet), flatStride, guard, checkBounds,
+                hoistedBound, hoistedData))
+            return fromFlatScalar(flatRet, flatVal)
+        }
+    }
+
+    // The write half, and only once the range is proved. Unlike the read,
+    // there is nothing to win here from the guard alone: `list_set_inline_scalar`
+    // is curated and inlines, so a merely representation-guarded store is the
+    // same code by another route. What pays is dropping the bounds branch,
+    // which is the last one left in a copy loop.
+    let flatSetStride = flatSetScalarStride(expr, funcName)
+    if (flatSetStride > 0 and irLoopFlatGuard.equals("") == false) {
+        let setList = ptr_to_node(expr.child2)
+        let setIndex = ptr_to_node(setList.next)
+        let setValue = ptr_to_node(setIndex.next)
+        let setType = nodeGetType(setList)
+        let elemKey = typeIrKey(ptr_to_type(setType.child))
+        let listVal2 = generateExpression(setList)
+        let indexVal2 = generateExpression(setIndex)
+        let valueVal2 = generateExpression(setValue)
+        let mut guard2 = "1"
+        if (irLoopFlatGuard.equals("1") == false) {
+            guard2 = ir_get_temp_name(ir_load("i1", irLoopFlatGuard))
+        }
+        let mut checkBounds2 = 1
+        if (irAccessProved(expr)) { checkBounds2 = 0 }
+        let mut hoistedBound2 = ""
+        let mut hoistedData2 = ""
+        if (checkBounds2 == 0) {
+            hoistedData2 = ir_range_proof_data(node_to_ptr(expr)).clone()
+        } else if (setList.kind == NodeKind.IDENTIFIER_EXPR
+                and setList.s1.equals(irLoopHoistedBoundList)) {
+            hoistedBound2 = irLoopHoistedBoundValue.clone()
+            hoistedData2 = irLoopHoistedDataValue.clone()
+        }
+        ir_list_flat_scalar_set(listVal2, indexVal2, toFlatScalar(elemKey, valueVal2),
+                                flatScalarKey(elemKey),
+                                flatSetStride, guard2, checkBounds2,
+                                hoistedBound2, hoistedData2)
+        return ""
+    }
+
+    let numericResult = generateCallNumericBuiltin(expr, funcName)
+    if (numericResult.equals(callNotHandled()) == false) { return numericResult }
+
+    let stringResult = generateCallStringBuiltin(expr, funcName)
+    if (stringResult.equals(callNotHandled()) == false) { return stringResult }
 
     // Regular function call
     let mut inlineSize = inlineElemSizeOfCall(expr)
@@ -5976,6 +6043,9 @@ private fn generateCall(expr: ASTNode) -> String {
             ownedTempTypes.push(ownedTempType.clone())
             ownedTempArgs.push(argIndex)
         } else if (releaseOwnedTemp) {
+            // `make()[1]`: the Vec an element is read from, for a comparison that
+            // releases it once it has read the element (listGetTempRoot).
+            if (argIndex == 0 and funcName.equals("list_get")) { irMemberRootValue = argVal.clone() }
             ownedTempVals.push(argVal.clone())
             ownedTempKinds.push(ownedTempKind)
             ownedTempTypes.push(ownedTempType)
@@ -6170,7 +6240,7 @@ private fn generateCall(expr: ASTNode) -> String {
     // An overwrite no view of the displaced element can outlive releases it at once
     // instead of parking it (ir/overwrites.psm). Inline elements own nothing and
     // keep their setter.
-    if (funcName.equals("list_set") and overwriteReleasesNow(expr)) {
+    if (funcName.equals("list_set") and (overwriteReleasesNow(expr) or irStoreIntoMapColumn(expr))) {
         if (callName.equals("list_set")) { callName = "list_set_now" }
         if (callName.equals("list_set_str")) { callName = "list_set_str_now" }
     }
@@ -6241,7 +6311,7 @@ private fn generateCall(expr: ASTNode) -> String {
     // own path in this function, which emits its arguments itself and never
     // reaches here. That matters -- a spawned task may still be running, so
     // this release point would be wrong for it, and
-    // aif/evidence/xlang/prismio/g9_helper_leak.psm is exactly that shape.
+    // docs/aif/evidence/xlang/prismio/g9_helper_leak.psm (Git history) is exactly that shape.
     // **The third clause used to be the return's kind, and it was far too
     // wide.** "Any pointer or struct result may alias an argument" withheld
     // the release from every call that returns anything reference-shaped:
@@ -6266,7 +6336,12 @@ private fn generateCall(expr: ASTNode) -> String {
         let mut kinds: Vec<Int> = []
         let mut types: Vec<String> = []
         for i in 0..<ownedTempArgs.length {
-            if (aif_call_arg_outlives_call(node_to_ptr(expr), ownedTempArgs[i]) == 0) {
+            // A scalar `list_get` of an owned Vec is a copy of the element: the Vec is
+            // not outlived by anything the call returns.
+            let scalarElementOfTemp = funcName.equals("list_get") and ownedTempArgs[i] == 0
+                and retType.equals("ptr") == false and retType.equals("struct:prismio.str") == false
+                and scalarInlineBytes(retType) > 0
+            if (scalarElementOfTemp or aif_call_arg_outlives_call(node_to_ptr(expr), ownedTempArgs[i]) == 0) {
                 vals.push(ownedTempVals[i].clone())
                 kinds.push(ownedTempKinds[i])
                 types.push(ownedTempTypes[i].clone())
@@ -6336,13 +6411,26 @@ private fn generateCall(expr: ASTNode) -> String {
         // Resolved by value, for the reason list_get_inline_scalar gives:
         // the inline entry point returns an address and the boxed one the
         // slot's contents, and only a scalar can tell them apart.
+        //
+        // A scalar read off an owned temporary -- `mki(1)[0]` where nothing hoisted the
+        // Vec into a binding, as on the right of an `or` -- is a copy: nothing points
+        // into the Vec once it is loaded, so the Vec is released here, after the load
+        // and before the value is used. Member access does the same.
         if (inlineSize > 0 and scalarInlineBytes(retType) > 0) {
             ir_call_arg("i32", inlineSize.toString())
             let bits = ir_get_temp_name(ir_call_end("i64", "list_get_inline_scalar"))
-            return scalarFromInlineBits(retType, bits)
+            let element = scalarFromInlineBits(retType, bits)
+            if (releaseTemps) {
+                generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
+            }
+            return element
         }
         let slot = ir_get_temp_name(ir_call_end("ptr", callName))
-        return slotToScalar(retType, slot)
+        let element = slotToScalar(retType, slot)
+        if (releaseTemps) {
+            generateOwnedTemporaryReleases(ownedTempVals, ownedTempKinds, ownedTempTypes)
+        }
+        return element
     }
 
     if (arenaPlaced) { ir_arena_hint_begin() }
@@ -6436,6 +6524,7 @@ internal fn generateExpression(expr: ASTNode) -> String {
         NodeKind.JOIN_EXPR => { return generateJoin(expr) }
         NodeKind.BINARY_EXPR => { return generateBinary(expr) }
         NodeKind.CALL_EXPR => { return generateCall(expr) }
+        _ => { }
     }
 
     return "0"

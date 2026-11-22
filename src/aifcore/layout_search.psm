@@ -418,11 +418,6 @@ public fn aif_layout_rank(type: String) -> Int {
     return candHotCount.length
 }
 
-public fn aif_layout_candidates() -> Int {
-    layoutOpen()
-    return candHotCount.length
-}
-
 public fn aif_layout_best() -> Int {
     return candBest
 }
@@ -430,30 +425,6 @@ public fn aif_layout_best() -> Int {
 public fn aif_layout_cand_hot(i: Int) -> Int {
     if (i >= 0 and i < candHotCount.length) { return candHotCount[i] }
     return 0
-}
-
-// LAYOUT 8 compiles "the top-k candidates, ranked by modelled cost". The candidates stay in cut order,
-// because every other accessor here is indexed by it, so the ranking is computed rather than stored:
-// k = 0 is the argmin, k = 1 the next cheapest. Ties break on the candidate index, LAYOUT 9.1's total order.
-public fn aif_layout_cand_at_rank(k: Int) -> Int {
-    layoutOpen()
-    if (k < 0 or k >= candHotCount.length) { return -1 }
-    // Selection rather than a sort: the candidates must stay in cut order.
-    let mut prev = -1
-    for rank in 0..(k) {
-        let mut pick = -1
-        for i in 0..<candHotCount.length {
-            // Skip everything at or before `prev` in the (cost, index) order.
-            if (prev >= 0 and (candCost[i] < candCost[prev] or (candCost[i] == candCost[prev] and i <= prev))) {
-                continue
-            }
-            // `i` ascends, so a strict `<` leaves ties on the lower index.
-            if (pick < 0 or candCost[i] < candCost[pick]) { pick = i }
-        }
-        if (pick < 0) { return -1 }
-        prev = pick
-    }
-    return prev
 }
 
 // LAYOUT 8 selects a layout by *measuring* the top candidates instead of trusting the model's argmin, and
@@ -522,15 +493,6 @@ public fn aif_layout_cand_ratio(i: Int) -> Int {
     let base = candCost[0]
     if (base <= 0) { return 100 }
     return (candCost[i] * 100 / base) as Int
-}
-
-// Whether field `f` (declaration index) is hot in candidate `i`. The report needs it to name the cold
-// fields, which is the part a reader can act on.
-public fn aif_layout_cand_field_hot(i: Int, f: Int) -> Int {
-    layoutOpen()
-    if (i < 0 or i >= candHotCount.length) { return 1 }
-    if (bitsTest(candHot[i], f)) { return 1 }
-    return 0
 }
 
 public fn aif_layout_cand_bytes(i: Int, cold: Int) -> Int {

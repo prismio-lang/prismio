@@ -10,6 +10,7 @@ import common.text
 import ast.nodes
 import common.diagnostics
 import std.string
+import common.diag_codes
 
 // Bitwise operators bind *tighter* than comparison, unlike C.
 //
@@ -126,7 +127,7 @@ impl Parser {
         let after = self.current()
         if (after.type != TokenType.SEPARATOR or after.value.equals("(") == false) { return }
         if (after.line != line or after.col != endCol) { return }
-        diag_error_at_code("P3010", after.file, after.line, after.col, after.len,
+        diag_error_at_code(DIAG_PARSE_WORD_OPERATOR_NOT_CALL, after.file, after.line, after.col, after.len,
                            diagQuote(text).concat(" is an operator between two operands, not a call"))
         diag_note("write `x is 3` or `x is not none`; a grouped operand takes a space: `x is (a + b)`")
     }
@@ -393,7 +394,7 @@ impl Parser {
                 // The lexer only ever emits these three together, so reaching here
                 // means the expression consumed the closing token -- report against
                 // the expression rather than leaving the parser adrift.
-                diag_error_at_code("P3102", edge.file, edge.line, edge.col, edge.len,
+                diag_error_at_code(DIAG_PARSE_INTERPOLATION_NOT_CLOSED, edge.file, edge.line, edge.col, edge.len,
                     "expected the end of `\${...}` in an interpolated string")
                 break
             }
@@ -661,6 +662,7 @@ private fn isLiteralToken(t: Token) -> Bool {
         TokenType.STRING_LITERAL => { return true }
         TokenType.BOOL_LITERAL => { return true }
         TokenType.CHAR_LITERAL => { return true }
+        _ => { }
     }
     return false
 }

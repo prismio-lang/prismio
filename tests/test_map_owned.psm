@@ -1,0 +1,182 @@
+// A HashMap that owns its values: `HashMap<String, String>`, `HashMap<Int, Vec<Int>>`,
+// and a map of structs that own a String.
+//
+// `V: Copy`, as `K` is. The map stores a copy of what it is given and hands every value
+// back as a copy (`get`, `getOr`, `m[k]`, `take`, `values()`, `valueAt`, a `for` loop),
+// so no view of a stored value ever leaves the table. That is what lets the analysis keep
+// releasing the container: it used to see a value escape through `getOr`'s return and
+// decline to release anything the map held. The suite runs this under `--verify` through
+// the ownership_probes check, and it must read 0 leaked.
+//
+// Every string is longer than twelve bytes: a shorter one is stored inline and never
+// reaches the ledger.
+
+import std.copy
+import std.io
+import std.map
+import std.option
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+public struct Person { name: String, age: Int }
+impl Copy for Person {
+    fn copyOf(self) -> Self { return Person { name: self.name.clone(), age: self.age } }
+}
+
+fn person(i: Int, age: Int) -> Person { return Person { name: word(i), age: age } }
+
+public struct Boxed { m: HashMap<String, String> }
+
+fn literal(i: Int) -> HashMap<String, String> { return { "a": word(i), word(i + 1): "x-literal-value-over-twelve-bytes" } }
+
+public struct Registry { names: HashMap<Int, String>, count: Int }
+
+// A map built and returned: the producer owns what it holds.
+fn build(n: Int) -> HashMap<String, String> {
+    let m: HashMap<String, String> = {}
+    for i in 0..<n { m[word(i)] = word(i * 10) }
+    return m
+}
+
+// A map passed straight through, as KNOWN_ISSUES' pass-through shape does.
+fn through(m: HashMap<String, String>) -> HashMap<String, String> {
+    m["through-key-longer-than-twelve-bytes"] = word(777)
+    return m
+}
+
+fn lookup(m: HashMap<String, String>, key: String) -> String {
+    return m.getOr(key, "no-such-entry-in-this-map-at-all")
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // Stores, replacement, and every reader.
+    let m: HashMap<String, String> = {}
+    m["alpha"] = word(1)
+    m["beta"] = word(2)
+    m["alpha"] = word(3)
+    if (m["alpha"] != word(3) or m["beta"] != word(2)) { bad = bad + fail("store and read") }
+    if ((m.get("beta") ?? "") != word(2) or m.get("nobody") != none) { bad = bad + fail("get") }
+    if (m.getOr("nobody", word(9)) != word(9) or m.getOr("alpha", word(9)) != word(3)) { bad = bad + fail("getOr") }
+    if ((m.set("alpha", word(4)) ?? "") != word(3) or m.set("gamma", word(5)) != none) { bad = bad + fail("set answers the replaced value") }
+    if (m.insert("alpha", word(6)) or m["alpha"] != word(4)) { bad = bad + fail("insert leaves an existing value") }
+    if (m.insert("delta", word(7)) == false or m.count != 4) { bad = bad + fail("insert of a new key") }
+    if (m.getOrInsert("eps", word(8)) != word(8) or m.getOrInsert("eps", word(9)) != word(8)) { bad = bad + fail("getOrInsert") }
+    if (m.getOrInsertWith("zeta", || word(10)) != word(10)) { bad = bad + fail("getOrInsertWith") }
+    if (m.update("zeta", |v: String| v.concat("!")) == false or m["zeta"] != word(10).concat("!")) { bad = bad + fail("update") }
+    if (m.update("nobody", |v: String| v.concat("!"))) { bad = bad + fail("update of an absent key") }
+
+    // Removal in every form releases the value with the entry.
+    if ((m.take("beta") ?? "") != word(2) or m.contains("beta") or m.take("beta") != none) { bad = bad + fail("take") }
+    if (m.remove("gamma") == false or m.remove("gamma")) { bad = bad + fail("remove") }
+    m.retain(|k: String, v: String| v.length > 34)
+    if (m.count != 1 or m["zeta"] != word(10).concat("!")) { bad = bad + fail("retain") }
+
+    // The walks.
+    let w = build(40)
+    if (w.count != 40) { bad = bad + fail("build") }
+    let mut total = 0
+    for (k, v) in w { total = total + k.length + v.length }
+    for i in 0..<w.count { total = total + w.keyAt(i).length + w.valueAt(i).length }
+    let vs = w.values()
+    let ks = w.keys()
+    if (vs.length != 40 or ks.length != 40 or total <= 0) { bad = bad + fail("walking an owned map") }
+    if (lookup(w, word(5)) != word(50) or lookup(w, "missing") != "no-such-entry-in-this-map-at-all") { bad = bad + fail("lookup through a helper") }
+
+    // Pass-through, reserve and clear.
+    let t = through(build(3))
+    if (t.count != 4 or t["through-key-longer-than-twelve-bytes"] != word(777)) { bad = bad + fail("pass-through") }
+    t.reserve(500)
+    for i in 0..<300 { t[word(1000 + i)] = word(i) }
+    if (t.count != 304) { bad = bad + fail("reserve and fill") }
+    t.clear()
+    if (t.count != 0 or t.contains(word(1000))) { bad = bad + fail("clear") }
+    t[word(1)] = word(2)
+    if (t[word(1)] != word(2)) { bad = bad + fail("a cleared map still stores") }
+
+    // A map in a struct field, built in place and from a producer.
+    let reg = Registry { names: HashMap<Int, String>(), count: 0 }
+    reg.names[1] = word(11)
+    reg.names[2] = word(12)
+    reg.names[1] = word(13)
+    if (reg.names[1] != word(13) or reg.names.count != 2) { bad = bad + fail("a map in a struct field") }
+
+    // Container values: a Vec, a Vec of Strings, a struct that owns a String.
+    let lists: HashMap<Int, Vec<Int>> = {}
+    let mut a: Vec<Int> = []
+    a.push(1)
+    a.push(2)
+    lists[1] = a
+    a.push(3)
+    lists[2] = a
+    if (lists[1].length != 2 or lists[2].length != 3) { bad = bad + fail("a stored Vec is its own copy") }
+    let mut grown = lists[1]
+    grown.push(99)
+    if (lists[1].length != 2) { bad = bad + fail("changing a returned Vec changes the map") }
+
+    let names: HashMap<String, Vec<String>> = {}
+    let mut parts: Vec<String> = []
+    parts.push(word(1))
+    parts.push(word(2))
+    names["one"] = parts
+    // Indexed in place and read on the right of `or`: copies nothing binds, released after the read.
+    if (names["one"].length != 2 or names["one"][1] != word(2)) { bad = bad + fail("a Vec of Strings as a value") }
+    if (names["one"][0] != word(1) or names["one"][1] != word(2)) { bad = bad + fail("a Vec of Strings, read in place twice") }
+    if ((names.take("one") ?? parts).length != 2 or names.count != 0) { bad = bad + fail("take of a Vec") }
+
+    let people: HashMap<String, Person> = {}
+    // A struct written inline as the argument, owned fields and all.
+    people["ada"] = Person { name: word(21), age: 36 }
+    people["alan"] = Person { name: word(22), age: 41 }
+    people["ada"] = Person { name: word(23), age: 37 }
+    people.set("cy", Person { name: word(24), age: 50 })
+    people["cy"] = person(25, 51)
+    // An owned value read on the right of `and`/`or`, a String field off a copy compared in place.
+    if (people["ada"].name != word(23) or people["ada"].age != 37) { bad = bad + fail("struct values") }
+    if (people["cy"].name != person(25, 0).name) { bad = bad + fail("struct values: cy") }
+    let ada = people["ada"]
+    if (ada.name != word(23) or ada.age != 37) { bad = bad + fail("struct values: bound") }
+    let tagged = people["ada"].name
+    if (tagged.length < 30) { bad = bad + fail("a field bound off a copy") }
+    if ((people.get("alan") ?? people["ada"]).age != 41) { bad = bad + fail("get of a struct value") }
+    if (people.remove("alan") == false or people.count != 2) { bad = bad + fail("remove of a struct value") }
+
+    // Map literals with computed owned keys and values: in a `let`, a field and a return.
+    let lit: HashMap<String, String> = { word(1): word(2), "plain": word(3), word(4): "literal-value-over-twelve-bytes" }
+    if (lit.count != 3 or lit[word(1)] != word(2) or lit["plain"] != word(3)) { bad = bad + fail("computed literal") }
+    let boxed = Boxed { m: { "k": word(7), word(8): word(9) } }
+    if (boxed.m.count != 2 or boxed.m[word(8)] != word(9)) { bad = bad + fail("computed literal in a field") }
+    if (literal(5).count != 2 or literal(5)["a"] != word(5)) { bad = bad + fail("computed literal returned") }
+    // Past the twelve-entry overload table, entries that own nothing are still one producer call.
+    let wide: HashMap<Int, String> = { 1: "w-one-over-twelve-bytes", 2: "w-two-over-twelve-bytes", 3: "w-three-over-twelve-bytes",
+        4: "w-four-over-twelve-bytes", 5: "w-five-over-twelve-bytes", 6: "w-six-over-twelve-bytes", 7: "w-seven-over-twelve-bytes",
+        8: "w-eight-over-twelve-bytes", 9: "w-nine-over-twelve-bytes", 10: "w-ten-over-twelve-bytes", 11: "w-eleven-over-twelve-bytes",
+        12: "w-twelve-over-twelve-bytes", 13: "w-thirteen-over-twelve-bytes" }
+    if (wide.count != 13 or wide[13] != "w-thirteen-over-twelve-bytes") { bad = bad + fail("a wide plain literal") }
+
+    // Churn: a value replaced and a key removed twenty thousand times is released at the store, and a
+    // copy taken before the removal outlives it.
+    let churn: HashMap<String, String> = {}
+    churn["x"] = word(0)
+    let before = churn["x"]
+    for i in 1..<20000 {
+        churn["x"] = word(i)
+        churn.set(word(i), word(i))
+        churn.remove(word(i))
+    }
+    if (before != word(0) or churn["x"] != word(19999) or churn.count != 1) { bad = bad + fail("churn") }
+    let taken = churn.take("x") ?? "-"
+    if (taken != word(19999) or churn.count != 0) { bad = bad + fail("take after churn") }
+
+    if (bad == 0) { println("PASS") }
+    return bad
+}

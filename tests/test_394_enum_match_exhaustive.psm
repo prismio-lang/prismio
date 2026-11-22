@@ -1,0 +1,56 @@
+// A match on a fieldless enum must name every variant or end in `_`, and the two forms
+// that satisfy it keep their meaning:
+//
+//   - every variant named, no `_`: exhaustive, so a function whose arms all return does
+//     not fall off its end;
+//   - a `_` arm after some variants: runs for the rest, even an empty one;
+//   - a match on an integer is not an enum match, and stays free to name a few values.
+import std.io
+
+enum Dir { North, East, South, West }
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn every(d: Dir) -> Int {
+    match (d) {
+        Dir.North => { return 1 }
+        Dir.East => { return 2 }
+        Dir.South => { return 3 }
+        Dir.West => { return 4 }
+    }
+}
+
+fn rest(d: Dir) -> Int {
+    let mut hit = 0
+    match (d) {
+        Dir.North => { hit = 10 }
+        Dir.East => { hit = 20 }
+        _ => { }
+    }
+    return hit
+}
+
+fn few(n: Int) -> Int {
+    let mut hit = 0
+    match (n) {
+        1 => { hit = 5 }
+        2 => { hit = 6 }
+    }
+    return hit
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    if (every(Dir.West) != 4) { bad = bad + fail("every variant named") }
+    if (rest(Dir.East) != 20) { bad = bad + fail("a named variant before `_`") }
+    if (rest(Dir.South) != 0) { bad = bad + fail("the empty `_` arm") }
+    if (few(2) != 6) { bad = bad + fail("an integer match naming some values") }
+    if (few(9) != 0) { bad = bad + fail("an integer match naming none of them") }
+    if (bad != 0) { return 1 }
+    println("PASS: enum match exhaustive")
+    return 0
+}

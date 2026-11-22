@@ -16,51 +16,8 @@ import aifcore.layout_search
 
 from std import {io, string, option, process, fs, platform, vec}
 from ast import {nodes, dump}
-
-// Both malloc and hand the buffer over: compiler_default_exe_path sprintfs into
-// a fresh block, compiler_temp_ir_path goes through compiler_temp_path which
-// does the same. The caller owns them.
-public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(rt_free)
-
-/**
-   Every path through both mallocs, including the failure paths, which allocate a
-   one-byte empty string rather than returning a literal. That is the same
-   invariant Level 4 had to give str_substring and str_trim -- anything declared
-   to return String returns something a release can take -- and it is what makes
-   `produce` true here rather than nearly true.
-*/
-public extern fn compiler_runtime_source_hash() -> String produce(rt_free)
-
-/**
-   `--sysroot`. Where *this machine* keeps the SDK for the target -- not a
-   property of the triple, which is why it is not in the target record: two hosts
-   building the same target legitimately pass different paths, and an SDK the
-   compiler picked for itself is the kind of helpful guess that ends in a link
-   error someone spends an afternoon on.
-*/
-extern fn compiler_set_sysroot(path: String borrow)
-
-/**
-   The freestanding build (`--freestanding`): a program with no operating system
-   under it. The first two are the driver's, the rest the backend's; each takes
-   effect when the object is written and the program is linked, not here.
-   `compiler_native_source` is the manifest's `native { source(...) }` for a
-   single-file build, because a kernel's boot stub is a source file and a
-   single-file build has no manifest to name it in.
-*/
-extern fn compiler_set_freestanding(on: Int)
-extern fn compiler_link_flag(flag: String borrow) -> Int
-extern fn compiler_native_source(path: String borrow) -> Int
-extern fn compiler_native_flag(flag: String borrow) -> Int
-extern fn ir_set_freestanding(on: Int)
-extern fn ir_set_no_red_zone(on: Int)
-extern fn ir_set_target_features(features: String borrow) -> Int
-extern fn ir_set_code_model(name: String borrow) -> Int
-// A `static const char*` in C, so the caller borrows it. See PRISMIO_HOST_ABI in
-// runtime/prismio_runtime.h for what the token means and when it moves.
-public extern fn compiler_host_abi() -> String alias
-// A `static char buf[32]` the next call overwrites.
-public extern fn ir_llvm_version() -> String alias
+import common.native
+import common.diag_codes
 
 // The compiler's version is `project.version` in build.ums, read through
 // `import build`: bumped there per release, and nowhere else. The LLVM major version
@@ -261,7 +218,7 @@ private fn cliHostAbi() -> Int {
 private fn cliRuntimeHash() -> Int {
     let sourceHash = compiler_runtime_source_hash()
     if (sourceHash.equals("")) {
-        diag_error_code("P1024", "cannot find the Prismio runtime sources to hash")
+        diag_error_code(DIAG_CLI_RUNTIME_SOURCES_NOT_FOUND, "cannot find the Prismio runtime sources to hash")
         return 1
     }
     println(sourceHash)
@@ -277,7 +234,7 @@ private fn cliLsp() -> Int {
     if (platform.isWindows) { name = "prismio-lsp.exe" }
     let server = joinPath(executableDirectory(), name)
     if (fileExists(server) == false) {
-        diag_error_code("P1099", "the language server is not installed: no ".concat(server))
+        diag_error_code(DIAG_CLI_LSP_NOT_INSTALLED, "the language server is not installed: no ".concat(server))
         diag_note("`prismio build` in a checkout, or an installed toolchain, provides it")
         return 1
     }
@@ -289,7 +246,7 @@ private fn cliLsp() -> Int {
 
 private fn cliCheck() -> Int {
     if (process.args.count <= 2) {
-        diag_error_code("P1025", "missing source file")
+        diag_error_code(DIAG_CLI_CHECK_MISSING_SOURCE, "missing source file")
         pointAtUsage()
         return 1
     }
@@ -309,7 +266,7 @@ private fn cliCheck() -> Int {
             diag_set_partial(true)
         } else if (option.equals("--overlay")) {
             if (checkArg + 2 >= process.args.count) {
-                diag_error_code("P1073", "`--overlay` needs the file and the file holding its text")
+                diag_error_code(DIAG_CLI_CHECK_OVERLAY_NEEDS_FILES, "`--overlay` needs the file and the file holding its text")
                 pointAtUsage()
                 return 1
             }
@@ -318,7 +275,7 @@ private fn cliCheck() -> Int {
             checkArg = checkArg + 2
         } else if (option.equals("--emit-index")) {
             if (checkArg + 1 >= process.args.count) {
-                diag_error_code("P1115", "`--emit-index` needs the file to write the index to")
+                diag_error_code(DIAG_CLI_CHECK_EMIT_INDEX_NEEDS_FILE, "`--emit-index` needs the file to write the index to")
                 pointAtUsage()
                 return 1
             }
@@ -326,7 +283,7 @@ private fn cliCheck() -> Int {
             checkArg = checkArg + 1
         } else if (option.equals("--complete")) {
             if (checkArg + 3 >= process.args.count) {
-                diag_error_code("P1116", "`--complete` needs the file, the line and the column of the placeholder")
+                diag_error_code(DIAG_CLI_CHECK_COMPLETE_NEEDS_POSITION, "`--complete` needs the file, the line and the column of the placeholder")
                 pointAtUsage()
                 return 1
             }
@@ -336,14 +293,14 @@ private fn cliCheck() -> Int {
             checkArg = checkArg + 3
         } else if (option.equals("--module")) {
             if (checkArg + 1 >= process.args.count) {
-                diag_error_code("P1076", "`--module` needs the name the file is imported by")
+                diag_error_code(DIAG_CLI_CHECK_MODULE_NEEDS_NAME, "`--module` needs the name the file is imported by")
                 pointAtUsage()
                 return 1
             }
             module = process.args[checkArg + 1].clone()
             checkArg = checkArg + 1
         } else {
-            diag_error_code("P1026", "unknown argument ".concat(diagQuote(option)))
+            diag_error_code(DIAG_CLI_CHECK_UNKNOWN_ARGUMENT, "unknown argument ".concat(diagQuote(option)))
             pointAtUsage()
             return 1
         }
@@ -359,7 +316,7 @@ private fn cliCheck() -> Int {
 // the AIF memory-model work, which analyses the real AST out-of-process.
 private fn cliDumpAst() -> Int {
     if (process.args.count <= 2) {
-        diag_error_code("P1027", "missing source file")
+        diag_error_code(DIAG_CLI_DUMP_AST_MISSING_SOURCE, "missing source file")
         pointAtUsage()
         return 1
     }
@@ -372,7 +329,7 @@ private fn cliDumpAst() -> Int {
 // subtly wrong and yields a silently wrong tier rather than a crash.
 private fn cliAif() -> Int {
     if (process.args.count <= 2) {
-        diag_error_code("P1028", "missing source file")
+        diag_error_code(DIAG_CLI_AIF_MISSING_SOURCE, "missing source file")
         pointAtUsage()
         return 1
     }
@@ -410,7 +367,7 @@ private fn cliAif() -> Int {
             aifLayout = true
         } else if (flag.startsWith("--force-layout=")) {
             if (parseForceLayout(flag) == false) {
-                diag_error_code("P1029", "--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
+                diag_error_code(DIAG_CLI_AIF_FORCE_LAYOUT_SYNTAX, "--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
                 return 1
             }
         } else if (flag.startsWith("--why=")) {
@@ -425,7 +382,7 @@ private fn cliAif() -> Int {
             // tests/test_43 uses to check that widening only ever raises.
             aifBudgetArg = flag.substring(9, flag.length - 9).parseInt().unwrapOr(0)
             if (aifBudgetArg < 1) {
-                diag_error_code("P1030", "--budget= must be at least 1 round")
+                diag_error_code(DIAG_CLI_AIF_BUDGET_TOO_SMALL, "--budget= must be at least 1 round")
                 return 1
             }
         } else if (flag.equals("--theta-fields")) {
@@ -453,16 +410,16 @@ private fn cliAif() -> Int {
             // the model could only ever be inspected for the host, while
             // `prismio build --target` compiled against a different one.
             if (aifArg + 1 >= process.args.count) {
-                diag_error_code("P1031", "`--target` requires an LLVM target triple (e.g. wasm32-unknown-unknown)")
+                diag_error_code(DIAG_CLI_AIF_TARGET_NEEDS_TRIPLE, "`--target` requires an LLVM target triple (e.g. wasm32-unknown-unknown)")
                 return 1
             }
             if (targetSelect(process.args[aifArg + 1]) == false) {
-                diag_error_code("P1032", "unknown target triple ".concat(diagQuote(process.args[aifArg + 1])))
+                diag_error_code(DIAG_CLI_AIF_UNKNOWN_TARGET, "unknown target triple ".concat(diagQuote(process.args[aifArg + 1])))
                 return 1
             }
             aifArg = aifArg + 1
         } else {
-            diag_error_code("P1033", "unknown argument ".concat(diagQuote(flag)))
+            diag_error_code(DIAG_CLI_AIF_UNKNOWN_ARGUMENT, "unknown argument ".concat(diagQuote(flag)))
             pointAtUsage()
             return 1
         }
@@ -532,7 +489,7 @@ fn main() -> Int {
     if (first.equals("aif")) { return cliAif() }
     if (first.equals("init")) {
         if (process.args.count > 3) {
-            diag_error_code("P1036", "`init` takes at most one name")
+            diag_error_code(DIAG_CLI_INIT_TAKES_ONE_NAME, "`init` takes at most one name")
             return 1
         }
         if (process.args.count == 3) { return initUmsProject(process.args[2]) }
@@ -554,7 +511,7 @@ fn main() -> Int {
 
     if (first.equals("clean")) {
         if (projectMode == false) {
-            diag_error_code("P1037", "`clean` acts on the project and takes no source file")
+            diag_error_code(DIAG_CLI_CLEAN_TAKES_NO_SOURCE, "`clean` acts on the project and takes no source file")
             return 1
         }
         let request = projectRequest(2, "clean")
@@ -589,7 +546,7 @@ fn main() -> Int {
 
         // `first` is moved into `path` by the branch above, so the name is read
         // again from argv rather than reused here.
-        diag_error_code("P1039", "unknown command ".concat(diagQuote(process.args[1])))
+        diag_error_code(DIAG_CLI_UNKNOWN_COMMAND, "unknown command ".concat(diagQuote(process.args[1])))
         diag_note("commands: ".concat(prismioBuiltinCommandList()))
         listUmsProjectCommands()
         return 1
@@ -604,7 +561,7 @@ fn main() -> Int {
             // Everything after it belongs to the program `run` starts, verbatim --
             // a `-o` there is the program's flag, not this command's.
             if (command.equals("run") == false) {
-                diag_error_code("P1079", "`--` passes arguments to the program `run` starts, and `build` starts none")
+                diag_error_code(DIAG_CLI_BUILD_REFUSES_PROGRAM_ARGUMENTS, "`--` passes arguments to the program `run` starts, and `build` starts none")
                 return 1
             }
             for i in (argIndex + 1)..<process.args.count {
@@ -613,7 +570,7 @@ fn main() -> Int {
             argIndex = process.args.count
         } else if (arg.equals("-o")) {
             if (argIndex + 1 >= process.args.count) {
-                diag_error_code("P1040", "`-o` requires an output path")
+                diag_error_code(DIAG_CLI_OUTPUT_NEEDS_PATH, "`-o` requires an output path")
                 return 1
             }
             outputFile = process.args[argIndex + 1]
@@ -635,7 +592,7 @@ fn main() -> Int {
                 }
             }
             if (level < 0) {
-                diag_error_code("P1041", "unknown optimization level ".concat(diagQuote(arg)))
+                diag_error_code(DIAG_CLI_UNKNOWN_OPT_LEVEL, "unknown optimization level ".concat(diagQuote(arg)))
                 return 1
             }
             ir_set_opt_level(level)
@@ -643,14 +600,14 @@ fn main() -> Int {
             argIndex = argIndex + 1
         } else if (arg.equals("--target")) {
             if (argIndex + 1 >= process.args.count) {
-                diag_error_code("P1042", "`--target` requires an LLVM target triple (e.g. x86_64-apple-macos)")
+                diag_error_code(DIAG_CLI_TARGET_NEEDS_TRIPLE, "`--target` requires an LLVM target triple (e.g. x86_64-apple-macos)")
                 return 1
             }
             // The triple is validated by LLVM rather than checked against a list
             // here: a list would be a second copy of what LLVM knows, and the
             // failure mode of a stale entry is a miscompile.
             if (targetSelect(process.args[argIndex + 1]) == false) {
-                diag_error_code("P1043", "unknown target triple ".concat(diagQuote(process.args[argIndex + 1])))
+                diag_error_code(DIAG_CLI_UNKNOWN_TARGET, "unknown target triple ".concat(diagQuote(process.args[argIndex + 1])))
                 return 1
             }
             // A contradiction rather than a combination: the JIT emits code for
@@ -658,14 +615,14 @@ fn main() -> Int {
             // Silently running host code for someone who asked for wasm32 is the
             // worst of the three available behaviours.
             if (options.jit) {
-                diag_error_code("P1044", "`--jit` and `--target` cannot be combined")
+                diag_error_code(DIAG_CLI_JIT_WITH_TARGET, "`--jit` and `--target` cannot be combined")
                 diag_note("the JIT runs the module in this process, so it can only ever target the host")
                 return 1
             }
             argIndex = argIndex + 2
         } else if (arg.equals("--sysroot")) {
             if (argIndex + 1 >= process.args.count) {
-                diag_error_code("P1045", "`--sysroot` requires a path to the target's SDK")
+                diag_error_code(DIAG_CLI_SYSROOT_NEEDS_PATH, "`--sysroot` requires a path to the target's SDK")
                 return 1
             }
             compiler_set_sysroot(process.args[argIndex + 1])
@@ -684,34 +641,34 @@ fn main() -> Int {
                    or arg.equals("--native-flag")
                    or arg.equals("--target-features") or arg.equals("--code-model")) {
             if (argIndex + 1 >= process.args.count) {
-                diag_error_code("P1090", "`".concat(arg).concat("` requires a value"))
+                diag_error_code(DIAG_CLI_OPTION_NEEDS_VALUE, "`".concat(arg).concat("` requires a value"))
                 return 1
             }
             let value = process.args[argIndex + 1]
             let name = process.args[argIndex]
             if (name.equals("--link-arg")) {
                 if (compiler_link_flag(value) != 0) {
-                    diag_error_code("P1091", "could not record the linker argument ".concat(diagQuote(value)))
+                    diag_error_code(DIAG_CLI_LINK_ARGUMENT_NOT_RECORDED, "could not record the linker argument ".concat(diagQuote(value)))
                     return 1
                 }
             } else if (name.equals("--native")) {
                 if (compiler_native_source(value) != 0) {
-                    diag_error_code("P1095", "could not record the native source ".concat(diagQuote(value)))
+                    diag_error_code(DIAG_CLI_NATIVE_SOURCE_NOT_RECORDED, "could not record the native source ".concat(diagQuote(value)))
                     return 1
                 }
             } else if (name.equals("--native-flag")) {
                 if (compiler_native_flag(value) != 0) {
-                    diag_error_code("P1096", "could not record the native flag ".concat(diagQuote(value)))
+                    diag_error_code(DIAG_CLI_NATIVE_FLAG_NOT_RECORDED, "could not record the native flag ".concat(diagQuote(value)))
                     return 1
                 }
             } else if (name.equals("--target-features")) {
                 if (ir_set_target_features(value) != 0) {
-                    diag_error_code("P1092", "the target feature string is too long, or this compiler has no code generation")
+                    diag_error_code(DIAG_CLI_TARGET_FEATURES_TOO_LONG, "the target feature string is too long, or this compiler has no code generation")
                     return 1
                 }
             } else {
                 if (ir_set_code_model(value) != 0) {
-                    diag_error_code("P1093", "unknown code model ".concat(diagQuote(value)))
+                    diag_error_code(DIAG_CLI_UNKNOWN_CODE_MODEL, "unknown code model ".concat(diagQuote(value)))
                     diag_note("the models are small, kernel, medium and large")
                     return 1
                 }
@@ -743,12 +700,12 @@ fn main() -> Int {
             // this adds a way of executing the module, not a way of producing
             // one. See ir_jit_run_file in runtime/llvm-api-backend.c.
             if (command.equals("run") == false) {
-                diag_error_code("P1046", "`--jit` is only meaningful with `prismio run`")
+                diag_error_code(DIAG_CLI_JIT_NEEDS_RUN, "`--jit` is only meaningful with `prismio run`")
                 diag_note("`build` produces an object; there is nothing to run in this process")
                 return 1
             }
             if (ir_target_is_explicit() == 1) {
-                diag_error_code("P1047", "`--jit` and `--target` cannot be combined")
+                diag_error_code(DIAG_CLI_JIT_WITH_TARGET_RUN, "`--jit` and `--target` cannot be combined")
                 diag_note("the JIT runs the module in this process, so it can only ever target the host")
                 return 1
             }
@@ -775,13 +732,13 @@ fn main() -> Int {
             // LAYOUT 8 selects the measured winner, so the flag has to reach the
             // path that produces something to measure.
             if (parseForceLayout(arg) == false) {
-                diag_error_code("P1048", "--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
+                diag_error_code(DIAG_CLI_FORCE_LAYOUT_SYNTAX, "--force-layout= takes <Type>:<hot-field-count>, e.g. Particle:8")
                 return 1
             }
             argIndex = argIndex + 1
         } else {
             if (arg.equals("build") or arg.equals("run")) {
-                diag_error_code("P1049", "use either `build` or `run`, not both")
+                diag_error_code(DIAG_CLI_BUILD_AND_RUN, "use either `build` or `run`, not both")
                 return 1
             }
             // `prismio foo.psm out` -- the shorthand's second word is the output.
@@ -793,7 +750,7 @@ fn main() -> Int {
                 argIndex = argIndex + 1
                 continue
             }
-            diag_error_code("P1050", "unknown argument ".concat(diagQuote(arg)))
+            diag_error_code(DIAG_CLI_UNKNOWN_BUILD_ARGUMENT, "unknown argument ".concat(diagQuote(arg)))
             if (command.equals("run")) {
                 diag_note("arguments for the program go after `--`: `prismio run file.psm -- ".concat(arg, "`"))
             }

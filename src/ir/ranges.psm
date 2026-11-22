@@ -47,31 +47,31 @@ import common.diagnostics
 import common.source_files
 import std.string
 
-let RANGE_OPAQUE = 0
-let RANGE_UP = 1
-let RANGE_DOWN = 2
-let RANGE_PENDING = 3
+const RANGE_OPAQUE = 0
+const RANGE_UP = 1
+const RANGE_DOWN = 2
+const RANGE_PENDING = 3
 
-let RANGE_INT_MAX = "2147483647"
-let RANGE_INT_MIN = "-2147483648"
+const RANGE_INT_MAX = "2147483647"
+const RANGE_INT_MIN = "-2147483648"
 
 // The largest magnitude whose square fits `Int`: 46340^2 = 2147395600.
-let RANGE_SQUARE_EDGE = "46340"
-let RANGE_SQUARE_EDGE_LOW = "-46340"
+const RANGE_SQUARE_EDGE = "46340"
+const RANGE_SQUARE_EDGE_LOW = "-46340"
 
 // Every literal this reads -- a step, a shift, a multiplier -- is at most six
 // digits, so no product or sum of them with 32-bit values can approach the edge of
 // the i64 the guard computes in.
-let RANGE_LITERAL_DIGITS = 6
+const RANGE_LITERAL_DIGITS = 6
 
 // A relation is `y - y0 = sum of (x - x0)` over at most this many variables.
-let RANGE_RELATION_MEMBERS = 3
+const RANGE_RELATION_MEMBERS = 3
 
 // Walk modes. Enumeration sizes the per-access tables; measurement fills one
 // column of them; emission computes each access's interval and folds its facts.
-let RANGE_WALK_ENUMERATE = 0
-let RANGE_WALK_MEASURE = 1
-let RANGE_WALK_EMIT = 2
+const RANGE_WALK_ENUMERATE = 0
+const RANGE_WALK_MEASURE = 1
+const RANGE_WALK_EMIT = 2
 
 struct RangeLoop {
     internal condPtr: Ptr,
@@ -727,6 +727,7 @@ private fn rangeWalkStmt(stmtPtr: Ptr, rl: RangeLoop) {
             }
             return
         }
+        _ => { }
     }
     if (rangeIsLoop(s)) {
         rangeWalkNested(stmtPtr, rl)

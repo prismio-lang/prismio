@@ -1,0 +1,4 @@
+// expect-error: expected Int, found String
+const COUNT: Int = "three"
+
+fn main() -> Int { return COUNT }

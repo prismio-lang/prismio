@@ -35,10 +35,9 @@ import common.target
 import std.io
 import std.process
 import std.string
+import common.native
 
-extern fn compiler_is_freestanding() -> Int
-
-let TILE_RECORDS = 4096
+const TILE_RECORDS = 4096
 let mut irTileCounter = 0
 
 struct StrideNest {

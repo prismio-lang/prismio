@@ -16,6 +16,7 @@ import ast.nodes
 import common.diagnostics
 import common.target
 import std.string
+import common.diag_codes
 
 // `allowStructLit` is off while reading the bounds of a `for`, so that
 // `for i in 0..n { ... }` reads the body as a block rather than `n { ... }` as a
@@ -183,7 +184,7 @@ impl Parser {
         // still unwinding, not a second mistake in the source.
         if (self.dead == 1) { return }
         let tok = self.current()
-        diag_error_at_code("P3201", tok.file, tok.line, tok.col, tok.len, message)
+        diag_error_at_code(DIAG_PARSE_SYNTAX, tok.file, tok.line, tok.col, tok.len, message)
     }
 
     // A parse error the parser cannot recover from locally. Reports it, then gives up
@@ -231,7 +232,7 @@ impl Parser {
     private fn stall(self) {
         self.silentFaults = self.silentFaults + 1
         if (self.silentFaults > 100000) {
-            diag_error_code("P3299", "internal error: the parser did not stop after a syntax error")
+            diag_error_code(DIAG_PARSE_PARSER_STALLED, "internal error: the parser did not stop after a syntax error")
             diag_finish()
             exit(1)
         }
@@ -618,7 +619,7 @@ impl Parser {
 
         if (self.platformDepth > 0 and self.dead == 0) {
             let end = self.current()
-            diag_error_at_code("P3303", end.file, end.line, end.col, end.len,
+            diag_error_at_code(DIAG_PARSE_PLATFORM_BLOCK_NOT_CLOSED, end.file, end.line, end.col, end.len,
                           "a platform block is never closed; reached end of file looking for `}`")
         }
         // A tuple was written: the file imports what defines it, unless it said so already.

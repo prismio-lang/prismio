@@ -1,0 +1,97 @@
+// A private `Vec` field no view of an element outlives is a closed column
+// (src/ir/columns.psm), and a store or a removal through it releases what it displaces at
+// once, instead of parking it until the Vec dies. Before 2026-11-14 only a HashMap's two
+// columns did, on a promise its file made; now the compiler proves it for any struct.
+//
+// 200,000 replacements of one element: parked they hold every string ever stored (14 MB),
+// released at the store the peak is a few hundred bytes. `--verify` (run_aif_verify_test)
+// reads the ledger and the peak (max_peak_bytes) the memory; the answers are checked here.
+// test_389 is the other half: the uses that must keep parking.
+
+import std.copy
+import std.io
+import std.string
+import std.vec
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+struct Log {
+    lines: Vec<String>,
+    marks: Vec<Mark>
+}
+
+struct Mark {
+    label: String,
+    at: Int
+}
+
+impl Copy for Mark {
+    fn copyOf(self) -> Self { return Mark { label: self.label.clone(), at: self.at } }
+}
+
+fn newLog() -> Log {
+    let lines: Vec<String> = [word(0), word(1), word(2)]
+    let marks: Vec<Mark> = [Mark { label: word(100), at: 0 }]
+    return Log { lines: lines, marks: marks }
+}
+
+impl Log {
+    // A store through the field.
+    fn put(self, at: Int, text: String) { self.lines[at] = text.clone() }
+
+    // Views read and consumed where they stand: a scalar, a comparison, a copy, a call
+    // that answers a scalar.
+    fn width(self, at: Int) -> Int { return self.lines[at].length }
+    fn holds(self, at: Int, text: String) -> Bool { return self.lines[at] == text }
+    fn copyAt(self, at: Int) -> String { return copyOfLine(self.lines[at]) }
+    fn cloneAt(self, at: Int) -> String { return self.lines[at].clone() }
+
+    // A view bound to a name and only consumed, with no store in its scope.
+    fn total(self) -> Int {
+        let mut t = 0
+        for i in 0..<self.lines.length {
+            let line = self.lines[i]
+            t = t + line.length
+        }
+        return t
+    }
+
+    // A scalar read of a field of an element, and a whole element stored.
+    fn position(self, at: Int) -> Int { return self.marks[at].at }
+    fn replaceMark(self, at: Int, label: String, pos: Int) { self.marks[at] = Mark { label: label.clone(), at: pos } }
+
+    // A removal.
+    fn trim(self, keep: Int) { self.lines.truncate(keep) }
+    fn add(self, text: String) { self.lines.push(text.clone()) }
+}
+
+fn copyOfLine(line: String) -> String { return line.clone() }
+
+fn main() -> Int {
+    let log = newLog()
+    let mut bad = 0
+    for i in 0..<200000 {
+        log.put(i % 3, word(i))
+    }
+    if (log.holds(0, word(199998)) == false or log.holds(1, word(199999)) == false) { bad = bad + 1 }
+    if (log.holds(2, word(199997)) == false) { bad = bad + 1 }
+    if (log.width(0) != word(199998).length) { bad = bad + 1 }
+    if (log.copyAt(1) != word(199999) or log.cloneAt(1) != word(199999)) { bad = bad + 1 }
+    if (log.total() != word(199998).length + word(199999).length + word(199997).length) { bad = bad + 1 }
+
+    for i in 0..<20000 { log.replaceMark(0, word(i), i) }
+    if (log.position(0) != 19999) { bad = bad + 1 }
+
+    for i in 0..<20000 {
+        log.add(word(i))
+        log.trim(3)
+    }
+    if (log.lines.length != 3 or log.holds(0, word(199998)) == false) { bad = bad + 1 }
+
+    if (bad != 0) {
+        println("FAIL ", bad)
+        return 1
+    }
+    println("PASS")
+    return 0
+}

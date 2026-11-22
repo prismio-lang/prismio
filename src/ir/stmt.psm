@@ -1738,18 +1738,21 @@ internal fn generateStatement(stmt: ASTNode) {
     // as line, because a `for` header and its body start on the same line and a
     // breakpoint on one should not stop on the other.
     debugAt(stmt)
-    if (stmt.kind == NodeKind.VARIABLE_DECL) { generateVariableDecl(stmt) }
-    if (stmt.kind == NodeKind.ASSIGNMENT_STATEMENT) { generateAssignment(stmt) }
-    if (stmt.kind == NodeKind.RETURN_STATEMENT) { generateReturn(stmt) }
-    if (stmt.kind == NodeKind.EXPRESSION_STATEMENT) { generateExpressionStatement(stmt) }
-    if (stmt.kind == NodeKind.IF_STATEMENT) { generateIf(stmt) }
-    if (stmt.kind == NodeKind.WHILE_STATEMENT) { generateWhile(stmt) }
-    if (stmt.kind == NodeKind.LOOP_STATEMENT) { generateLoop(stmt) }
-    if (stmt.kind == NodeKind.FOR_STATEMENT) { generateFor(stmt) }
-    if (stmt.kind == NodeKind.REGION_STATEMENT) { generateRegion(stmt) }
-    if (stmt.kind == NodeKind.BREAK_STATEMENT) { generateBreak(stmt) }
-    if (stmt.kind == NodeKind.CONTINUE_STATEMENT) { generateContinue(stmt) }
-    if (stmt.kind == NodeKind.MATCH_STATEMENT) { generateMatch(stmt) }
+    match (stmt.kind) {
+        NodeKind.VARIABLE_DECL => { generateVariableDecl(stmt) }
+        NodeKind.ASSIGNMENT_STATEMENT => { generateAssignment(stmt) }
+        NodeKind.RETURN_STATEMENT => { generateReturn(stmt) }
+        NodeKind.EXPRESSION_STATEMENT => { generateExpressionStatement(stmt) }
+        NodeKind.IF_STATEMENT => { generateIf(stmt) }
+        NodeKind.WHILE_STATEMENT => { generateWhile(stmt) }
+        NodeKind.LOOP_STATEMENT => { generateLoop(stmt) }
+        NodeKind.FOR_STATEMENT => { generateFor(stmt) }
+        NodeKind.REGION_STATEMENT => { generateRegion(stmt) }
+        NodeKind.BREAK_STATEMENT => { generateBreak(stmt) }
+        NodeKind.CONTINUE_STATEMENT => { generateContinue(stmt) }
+        NodeKind.MATCH_STATEMENT => { generateMatch(stmt) }
+        _ => { }
+    }
 }
 
 // AIF Level 2. Frees every droppable binding at or above `floor`, newest first.

@@ -10,6 +10,7 @@ import ast.int_width
 import common.diagnostics
 import std.string
 import std.option
+import common.diag_codes
 
 impl Parser {
     internal fn parseDeclaration(self) -> ASTNode {
@@ -42,7 +43,7 @@ impl Parser {
                 // default body is: the check lives in overload resolution, so a
                 // marker on a type or a global would be a promise the compiler does
                 // not keep -- which is worse than an error.
-                diag_error_at_code("P3001", marker.file, marker.line, marker.col, marker.len,
+                diag_error_at_code(DIAG_PARSE_MARKER_NOT_ALLOWED, marker.file, marker.line, marker.col, marker.len,
                               "`".concat(markerText, "` is only accepted on a function, a struct, an enum, a global `let` or an `extern` declaration"))
                 diag_note("a trait and an impl block have no visibility of their own; mark the functions inside them")
             }
@@ -419,7 +420,7 @@ impl Parser {
         if (packed) { nodeMarkPacked(structNode) }
         if (align > 0) {
             if (reprC == false or packed) {
-                diag_error_at_code("P3304", structNode.file, structNode.line, structNode.col, structNode.len,
+                diag_error_at_code(DIAG_PARSE_ALIGN_NEEDS_REPR_C, structNode.file, structNode.line, structNode.col, structNode.len,
                                    "`align` on a struct goes with `repr(C)` and not `packed`: only C's layout has a size to round up")
             } else {
                 nodeMarkAligned(structNode, align)
@@ -745,7 +746,7 @@ impl Parser {
                     nodeListPush(args, length)
                 } else {
                     let tok = self.current()
-                    diag_error_at_code("P3006", tok.file, tok.line, tok.col, tok.len,
+                    diag_error_at_code(DIAG_PARSE_TYPE_TAKES_NO_LENGTH, tok.file, tok.line, tok.col, tok.len,
                                        diagQuote(node.s1).concat(" takes types, not a number"))
                     diag_note("a length is written only on an array: `Array<T, N>`")
                 }
@@ -779,7 +780,7 @@ impl Parser {
             }
             if (qualifier.equals("")) { return }
             if ((qualifier.equals("$mut") and seenMut) or (qualifier.equals("$volatile") and seenVolatile)) {
-                diag_error_at_code("P3009", word.file, word.line, word.col, word.len,
+                diag_error_at_code(DIAG_PARSE_QUALIFIER_TWICE, word.file, word.line, word.col, word.len,
                                    diagQuote(word.value).concat(" is written twice"))
             }
             if (qualifier.equals("$mut")) { seenMut = true } else { seenVolatile = true }
@@ -829,7 +830,7 @@ impl Parser {
     }
 
     private fn reportIntWidth(self, tok: Token, message: String) {
-        diag_error_at_code("P3011", tok.file, tok.line, tok.col, tok.len, message)
+        diag_error_at_code(DIAG_PARSE_INT_WIDTH, tok.file, tok.line, tok.col, tok.len, message)
     }
 
     // `F<24>` and `Float<32>`. A float has the five widths IEEE 754 and bfloat16
@@ -838,7 +839,7 @@ impl Parser {
     // Recovered as `Float`, and the arguments are consumed so the `>` that ends them
     // does not surface as a second error.
     private fn rejectFloatWidth(self, typeNode: ASTNode, name: Token) {
-        diag_error_at_code("P3012", name.file, name.line, name.col, name.len,
+        diag_error_at_code(DIAG_PARSE_FLOAT_TAKES_NO_WIDTH, name.file, name.line, name.col, name.len,
                            diagQuote(name.value).concat(" does not take a width"))
         diag_note("the float types are F16, F32, F64, F128 and BF16; `Float` is F64")
         loop {
@@ -871,7 +872,7 @@ impl Parser {
         typeNode.i1 = 1
         typeNode.i2 = 0
         if (ok == false) {
-            diag_error_at_code("P3007", name.file, name.line, name.col, name.len,
+            diag_error_at_code(DIAG_PARSE_ARRAY_ARGUMENTS, name.file, name.line, name.col, name.len,
                                "`Array` takes an element type, then optionally a length")
             diag_note("write `Array<T, N>`, or `Array<T>` when an initializer gives the length")
             // `[Invalid]`, so nothing after this reads a number as a type.
@@ -1104,7 +1105,7 @@ impl Parser {
             // Which is also why a written `List` is refused here rather than later:
             // this is the last place that can tell the two spellings apart.
             if (typeNode.s1.equals("List")) {
-                diag_error_at_code("P3005", name.file, name.line, name.col, name.len,
+                diag_error_at_code(DIAG_PARSE_LIST_RENAMED, name.file, name.line, name.col, name.len,
                                    "`List` was renamed to `Vec`")
                 diag_note("write `Vec<...>`; the type and its operations are unchanged")
             }
@@ -1283,7 +1284,7 @@ impl Parser {
         }
 
         if (self.checkVal(TokenType.SEPARATOR, "(")) {
-            diag_error_at_code("P3002", current.file, current.line, current.col, name.length,
+            diag_error_at_code(DIAG_PARSE_CONTRACT_TAKES_NO_ARGUMENT, current.file, current.line, current.col, name.length,
                 "the ".concat(diagQuote(name), " contract takes no argument"))
             diag_note("only `retain_in(k)` and `produce(free_fn)` are parameterised")
         }
@@ -1405,7 +1406,7 @@ impl Parser {
         if (self.check(TokenType.ELLIPSIS)) {
             if (isExtern) {
                 let marker = self.current()
-                diag_error_at_code("P3014", marker.file, marker.line, marker.col, marker.len,
+                diag_error_at_code(DIAG_PARSE_EXTERN_PACK, marker.file, marker.line, marker.col, marker.len,
                                    "an `extern fn` cannot take a pack: C's varargs are a bare `...` after the named parameters")
             }
             self.advance()
@@ -1491,7 +1492,7 @@ impl Parser {
         while (nodeExists(p)) {
             let param = ptr_to_node(p)
             if (seenPack and param.i1 != 1) {
-                diag_error_at_code("P3015", param.file, param.line, param.col, param.len,
+                diag_error_at_code(DIAG_PARSE_VARIADIC_NOT_LAST, param.file, param.line, param.col, param.len,
                                    "a variadic parameter must come last: ".concat(diagQuote(param.s1), " follows one"))
                 return
             }
@@ -1564,7 +1565,7 @@ impl Parser {
         self.expectToken(TokenType.IDENTIFIER, "variable name")
 
         if (self.matchVal(TokenType.SEPARATOR, ":") == false) {
-            diag_error_at_code("P3008", name.file, name.line, name.col, name.len,
+            diag_error_at_code(DIAG_PARSE_EXTERN_GLOBAL_NEEDS_TYPE, name.file, name.line, name.col, name.len,
                 "extern global ".concat(diagQuote(extNode.s1), " needs a type annotation"))
             diag_note("the definition is in foreign code, so there is no initializer to infer a type from")
             return extNode
@@ -1573,7 +1574,7 @@ impl Parser {
 
         if (self.checkVal(TokenType.ASSIGNMENT_OPERATOR, "=")) {
             let equals = self.current()
-            diag_error_at_code("P3004", equals.file, equals.line, equals.col, equals.len,
+            diag_error_at_code(DIAG_PARSE_EXTERN_GLOBAL_INITIALIZER, equals.file, equals.line, equals.col, equals.len,
                 "extern global ".concat(diagQuote(extNode.s1), " cannot have an initializer"))
             diag_note("foreign code defines it and gives it its value; drop `extern` to define it in Prismio instead")
             self.advance()
@@ -2038,7 +2039,7 @@ impl Parser {
         while (nodeExists(paramPtr)) {
             let param = ptr_to_node(paramPtr)
             if (param.i3 == 1 and index > 0) {
-                diag_error_at_code("P3003", param.file, param.line, param.col, param.len,
+                diag_error_at_code(DIAG_PARSE_SELF_NOT_FIRST, param.file, param.line, param.col, param.len,
                               "`self` has to be the first parameter of a method")
                 diag_note("`x.f(a)` is `f(x, a)`, so the receiver is argument zero")
             }

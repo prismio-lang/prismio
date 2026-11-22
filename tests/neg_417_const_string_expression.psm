@@ -1,0 +1,7 @@
+// expect-error: a String is a constant only as a whole
+//
+// A `String` constant is a literal, or the name of one. A string used inside an expression is not
+// worked out at compile time, and the error says what is allowed instead of guessing.
+const SAME = "ab" == "ab"
+
+fn main() -> Int { return 0 }

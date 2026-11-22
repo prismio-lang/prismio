@@ -40,7 +40,7 @@ let mut reductionsStrict = false
 let mut reductionsTraceSwitch = 0
 
 // A name bound again inside the loop outweighs any number of updates.
-let REDUCTION_REBOUND = 1000000
+const REDUCTION_REBOUND = 1000000
 
 public fn reductionsSetStrict(on: Bool) {
     reductionsStrict = on
@@ -90,13 +90,6 @@ private fn reductionsTracing() -> Bool {
         if (process.env("PRISMIO_REDUCTION_TRACE") != none) { reductionsTraceSwitch = 2 }
     }
     return reductionsTraceSwitch == 2
-}
-
-private fn reductionHasName(list: Vec<Int>, id: Int) -> Bool {
-    for i in 0..<list.length {
-        if (list[i] == id) { return true }
-    }
-    return false
 }
 
 // Whether the subtree names `id`, as a use or as a declaration.
@@ -206,6 +199,7 @@ impl ReductionWalk {
                 self.unwind(depth)
                 return
             }
+            _ => { }
         }
         self.visitChildren(n)
     }
@@ -223,7 +217,7 @@ impl ReductionWalk {
         let mut i = self.scope.length - 1
         while (i >= 0) {
             let id = self.scope[i]
-            if (reductionHasName(seen, id) == false) {
+            if (seen.contains(id) == false) {
                 seen.push(id)
                 if (self.floats[i] == 1) {
                     self.names.push(id)

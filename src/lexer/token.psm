@@ -93,6 +93,7 @@ public fn typeToString(t: TokenType) -> String {
         TokenType.ASSIGNMENT_OPERATOR => { return "ASSIGN_OP" }
         TokenType.ARROW => { return "ARROW" }
         TokenType.EOF => { return "EOF" }
+        _ => { }
     }
     return "TOKEN"
 }

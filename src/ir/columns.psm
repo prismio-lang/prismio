@@ -1,0 +1,756 @@
+// Which private `Vec` fields no view of an element ever outlives, so a store or a removal
+// through one may release what it displaces at once.
+//
+// src/ir/overwrites.psm answers that for a Vec that is a fresh local of one function: no
+// other function can hold a view of its elements, so the function's own bindings are all
+// that has to be checked. A field is the other half. `c.items[0] = x` displaces an element,
+// and `let n = c.items[0]` somewhere up the stack may still be reading it; until now every
+// such store parked the element until the Vec died (a `HashMap`'s two columns were exempt
+// on a promise std/map.psm kept, which the checker trusted by name).
+//
+// A field is a **closed column** when this holds for every function of the module, and the
+// holding is proved here, not promised:
+//
+//   1. The field is private (the default) and its elements own something. A private field is
+//      touched only by the file that declares it, so the module's functions are every use.
+//   2. Every use of the column is `list_len`, `list_get`, or one of the mutating list
+//      builtins, with the column as the first argument; or the column is assigned a fresh Vec.
+//      Passed to a function, bound, iterated, sliced, returned or captured, it could be
+//      viewed anywhere, and the column is not closed.
+//   3. Every `list_get` of it (a *view* of the element) is consumed where it stands: as the
+//      argument of `copyOf` (a copy owns itself), as an argument of a call that does not
+//      keep it, does not return it, answers a scalar, and cannot reach a store into the
+//      column; as the operand of a scalar operator or the base of a scalar field read; or
+//      as the initialiser of a `let` whose uses are all of those and whose scope holds no
+//      such store.
+//   4. The column is created fresh: an array literal, `list_new`, or a local that is nothing
+//      else but the one field it is moved into, so no outside binding holds a view.
+//
+// "Cannot reach a store" is the call graph: a function that stores into a column, directly
+// or through what it calls, may not run while a view of that column is live. Closures are
+// structs and `call` functions here, so every call is to a named function and the graph is
+// exact; a callee outside the module cannot name the column's struct unless it is handed
+// one, so a view passed to it together with a struct argument is refused.
+//
+// Anything short of that leaves the store parking, as before. The answer is per concrete
+// type (`HashMap$String$Int.entryKeys`), so `HashMap<Int, Int>`'s scalar columns, which
+// need no release, never enter it.
+
+import ast.nodes
+import ast.types
+import common.source_files
+import std.io
+import std.process
+import std.string
+import std.vec
+import symbols.declarations
+import aifcore.call_results
+
+// One line per closed column: `\nType.field\n`. Rebuilt by columnsMark before each
+// emission of the module.
+let mut columnTable = ""
+
+// What one walk of the module learns. The walk runs twice: once to find the columns, their
+// stores and the call graph (`verify` false), once to check every view against them.
+struct ColumnScan {
+    // The columns found, `Type.field`, and whether a use disqualified each.
+    internal keys: Vec<String>,
+    internal bad: Vec<Bool>,
+    // Why and where the first use disqualified each, for PRISMIO_COLUMN_TRACE.
+    internal why: Vec<String>,
+    // The module's functions by symbol, with a chained hash over them for the call graph.
+    internal symbols: Vec<String>,
+    internal decls: Vec<Ptr>,
+    internal buckets: Vec<Int>,
+    internal chain: Vec<Int>,
+    // The columns each function stores into directly, `;3;7;`, and the calls it makes to
+    // other functions of the module, as edges.
+    internal events: Vec<String>,
+    internal edgeFrom: Vec<Int>,
+    internal edgeTo: Vec<Int>,
+    // `reach[key * functions + function]`: the function stores into the column, directly or
+    // through a call.
+    internal reach: Vec<Bool>,
+    internal verify: Bool,
+    // What the last freshness check of a local found, for PRISMIO_COLUMN_TRACE.
+    internal detail: String
+}
+
+// What a walk of one function learns about a local that is moved into a column.
+struct ColumnLocal {
+    internal declared: Int,
+    internal fresh: Bool,
+    internal moves: Int,
+    internal other: Bool,
+    internal initKind: Int
+}
+
+internal fn columnsMark(module: ASTNode) {
+    columnTable = ""
+    let scan = ColumnScan {
+        keys: [], bad: [], why: [], symbols: [], decls: [], buckets: [], chain: [],
+        events: [], edgeFrom: [], edgeTo: [], reach: [], verify: false, detail: ""
+    }
+    columnRegisterFunctions(scan, module)
+    for f in 0..<scan.decls.length {
+        let decl = ptr_to_node(scan.decls[f])
+        columnWalkChain(scan, f, ptr_to_node(decl.child2).child1, 0)
+    }
+    if (scan.keys.length == 0) { return }
+    columnComputeReach(scan)
+    scan.verify = true
+    for f in 0..<scan.decls.length {
+        let decl = ptr_to_node(scan.decls[f])
+        columnWalkChain(scan, f, ptr_to_node(decl.child2).child1, 0)
+    }
+    let tracing = process.env("PRISMIO_COLUMN_TRACE") != none
+    for k in 0..<scan.keys.length {
+        if (scan.bad[k] == false) { columnTable = columnTable.concat("\n", scan.keys[k], "\n") }
+        if (tracing) {
+            if (scan.bad[k]) {
+                eprint("column ".concat(scan.keys[k], ": parks -- ", scan.why[k], "\n"))
+            } else {
+                eprint("column ".concat(scan.keys[k], ": closed\n"))
+            }
+        }
+    }
+}
+
+// Whether any column was proved closed: the entry points a release at the store calls are
+// declared only then, so no other program's IR changes.
+internal fn columnsAny() -> Bool {
+    return columnTable.equals("") == false
+}
+
+// Whether `list` -- the first argument of a `list_set`, `list_truncate` or `list_remove_at` --
+// is a closed column.
+internal fn columnIsClosed(list: ASTNode) -> Bool {
+    if (columnTable.equals("")) { return false }
+    let key = columnKeyOf(list)
+    if (key.equals("")) { return false }
+    return columnTable.indexOf("\n".concat(key, "\n")) >= 0
+}
+
+// --- the module's functions -----------------------------------------------------
+
+private fn columnRegisterFunctions(scan: ColumnScan, module: ASTNode) {
+    let mut count = 0
+    let mut p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (decl.kind == NodeKind.FUNCTION and nodeExists(decl.child2)) { count = count + 1 }
+        p = decl.next
+    }
+    let mut size = 16
+    while (size < count * 2) { size = size * 2 }
+    for _ in 0..<size { scan.buckets.push(0 - 1) }
+    p = module.child1
+    while (nodeExists(p)) {
+        let decl = ptr_to_node(p)
+        if (decl.kind == NodeKind.FUNCTION and nodeExists(decl.child2)) {
+            let id = scan.symbols.length
+            let symbol = functionSymbolName(decl)
+            let bucket = columnHash(symbol) & (size - 1)
+            scan.symbols.push(symbol.clone())
+            scan.decls.push(p)
+            scan.chain.push(scan.buckets[bucket])
+            scan.buckets[bucket] = id
+            scan.events.push("")
+        }
+        p = decl.next
+    }
+}
+
+private fn columnHash(name: String) -> Int {
+    let mut h = 5381
+    for i in 0..<name.length {
+        h = (h * 33 + (name.byteAt(i) as Int)) & 1048575
+    }
+    return h
+}
+
+// The function with this symbol, or -1: a builtin, a foreign function, a library function
+// that is not part of this module.
+private fn columnSymbolIndex(scan: ColumnScan, name: String) -> Int {
+    if (scan.buckets.length == 0) { return 0 - 1 }
+    let mut i = scan.buckets[columnHash(name) & (scan.buckets.length - 1)]
+    while (i >= 0) {
+        if (scan.symbols[i].equals(name)) { return i }
+        i = scan.chain[i]
+    }
+    return 0 - 1
+}
+
+// The symbol a call resolves to: the overload sema picked, else the name written.
+private fn columnCallSymbol(call: ASTNode) -> String {
+    if (call.s2.equals("") == false) { return call.s2.clone() }
+    return ptr_to_node(call.child1).s1.clone()
+}
+
+private fn columnCallName(call: ASTNode) -> String {
+    if (nodeIsNull(call.child1)) { return "" }
+    return ptr_to_node(call.child1).s1.clone()
+}
+
+// --- the columns -------------------------------------------------------------------
+
+// `Type.field` when `n` is a private field of a struct that is a `Vec` whose elements own
+// something, else "".
+private fn columnKeyOf(n: ASTNode) -> String {
+    if (n.kind != NodeKind.MEMBER_ACCESS_EXPR or nodeIsNull(n.child1) or nodeHasType(n) == false) { return "" }
+    let t = nodeGetType(n)
+    if (t.kind != TypeKind.LIST or nodeIsNull(t.child)) { return "" }
+    if (typeOwnsNothing(ptr_to_type(t.child))) { return "" }
+    let base = ptr_to_node(n.child1)
+    if (nodeHasType(base) == false) { return "" }
+    let owner = nodeGetType(base)
+    if (owner.kind != TypeKind.STRUCT) { return "" }
+    if (columnFieldIsPrivate(owner.name, n.s1) == false) { return "" }
+    return owner.name.concat(".", n.s1)
+}
+
+private fn columnFieldIsPrivate(structName: String, field: String) -> Bool {
+    let count = ir_decl_count(structName)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(structName, i))
+        if (decl.kind != NodeKind.STRUCT_DECL) { continue }
+        let mut p = decl.child1
+        while (nodeExists(p)) {
+            let f = ptr_to_node(p)
+            if (f.s1.equals(field)) { return f.i2 == 1 }
+            p = f.next
+        }
+    }
+    return false
+}
+
+// The index of a column already found, or -1.
+private fn columnKeyLookup(scan: ColumnScan, key: String) -> Int {
+    for k in 0..<scan.keys.length {
+        if (scan.keys[k].equals(key)) { return k }
+    }
+    return 0 - 1
+}
+
+// The index of a column, found now if it is new.
+private fn columnKeyIndex(scan: ColumnScan, key: String) -> Int {
+    let at = columnKeyLookup(scan, key)
+    if (at >= 0) { return at }
+    scan.keys.push(key.clone())
+    scan.bad.push(false)
+    scan.why.push("")
+    return scan.keys.length - 1
+}
+
+// Column `k` is not closed: a use this proof does not allow, at the node `at`.
+private fn columnDisqualify(scan: ColumnScan, k: Int, reason: String, at: Ptr) {
+    if (scan.bad[k]) { return }
+    scan.bad[k] = true
+    let n = ptr_to_node(at)
+    scan.why[k] = reason.concat(" (", diag_file_path(n.file), ":", n.line.toString(), ")")
+}
+
+// The list builtins that change a column's elements or its storage. Each can free an
+// element a view points at, or move it.
+private fn columnIsEventName(name: String) -> Bool {
+    return name.equals("list_set") or name.equals("list_push") or name.equals("list_insert")
+        or name.equals("list_truncate") or name.equals("list_remove_at") or name.equals("list_swap")
+        or name.equals("list_reserve") or name.equals("list_shrink_to_fit") or name.equals("list_clear") or name.equals("list_pop")
+}
+
+private fn columnNoteEvent(scan: ColumnScan, f: Int, k: Int) {
+    scan.events[f] = scan.events[f].concat(";", k.toString(), ";")
+}
+
+// Which functions store into which column, directly or through what they call.
+private fn columnComputeReach(scan: ColumnScan) {
+    let nf = scan.symbols.length
+    let nk = scan.keys.length
+    for _ in 0..<(nf * nk) { scan.reach.push(false) }
+    for f in 0..<nf {
+        let seen: String = scan.events[f]
+        if (seen.equals("")) { continue }
+        for k in 0..<nk {
+            if (seen.contains(";".concat(k.toString(), ";"))) { scan.reach[k * nf + f] = true }
+        }
+    }
+    loop {
+        let mut changed = false
+        for e in 0..<scan.edgeFrom.length {
+            let from = scan.edgeFrom[e]
+            let to = scan.edgeTo[e]
+            for k in 0..<nk {
+                if (scan.bad[k]) { continue }
+                if (scan.reach[k * nf + to] and scan.reach[k * nf + from] == false) {
+                    scan.reach[k * nf + from] = true
+                    changed = true
+                }
+            }
+        }
+        if (changed == false) { break }
+    }
+}
+
+// --- the walk ------------------------------------------------------------------------
+//
+// `role` is what the parent has already accounted for: 1 for a column or a view the
+// parent checked, 2 for the target of an assignment, 0 for a position the parent does not
+// vouch for. A column or a view reached with role 0 is a use this proof does not allow.
+
+private fn columnWalkChain(scan: ColumnScan, f: Int, head: Ptr, role: Int) {
+    let mut p = head
+    while (nodeExists(p)) {
+        columnWalkNode(scan, f, p, role)
+        p = ptr_to_node(p).next
+    }
+}
+
+private fn columnWalkNode(scan: ColumnScan, f: Int, nodePtr: Ptr, role: Int) {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.CALL_EXPR) {
+        columnWalkCall(scan, f, nodePtr, role)
+        return
+    }
+    if (n.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        columnWalkMember(scan, f, nodePtr, role)
+        return
+    }
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        columnWalkAssignment(scan, f, nodePtr)
+        return
+    }
+    if (n.kind == NodeKind.VARIABLE_DECL) {
+        columnWalkDecl(scan, f, nodePtr)
+        return
+    }
+    if (n.kind == NodeKind.BINARY_EXPR or n.kind == NodeKind.UNARY_EXPR) {
+        let mut operand = 0
+        if (scan.verify and columnScalar(n)) { operand = 3 }
+        columnWalkOperand(scan, f, n.child1, operand)
+        columnWalkOperand(scan, f, n.child2, operand)
+        columnWalkChain(scan, f, n.child3, 0)
+        return
+    }
+    if (n.kind == NodeKind.STRUCT_LITERAL_EXPR) { columnCheckLiteral(scan, f, n) }
+    columnWalkChain(scan, f, n.child1, 0)
+    columnWalkChain(scan, f, n.child2, 0)
+    columnWalkChain(scan, f, n.child3, 0)
+}
+
+// An operand of a scalar operator reads a view and is done with it. `mode` 3 says the
+// operator is scalar.
+private fn columnWalkOperand(scan: ColumnScan, f: Int, operandPtr: Ptr, mode: Int) {
+    if (nodeIsNull(operandPtr)) { return }
+    let mut role = 0
+    if (mode == 3 and columnViewKey(scan, ptr_to_node(operandPtr)) >= 0) { role = 1 }
+    columnWalkChain(scan, f, operandPtr, role)
+}
+
+private fn columnWalkCall(scan: ColumnScan, f: Int, callPtr: Ptr, role: Int) {
+    let call = ptr_to_node(callPtr)
+    let name = columnCallName(call)
+    if (scan.verify == false) {
+        let at = columnSymbolIndex(scan, columnCallSymbol(call))
+        if (at >= 0) {
+            scan.edgeFrom.push(f)
+            scan.edgeTo.push(at)
+        }
+    } else {
+        let own = columnViewKey(scan, call)
+        if (own >= 0 and role != 1) { columnDisqualify(scan, own, "a view that is kept", callPtr) }
+    }
+    columnWalkChain(scan, f, call.child1, 0)
+    let mut a = call.child2
+    let mut index = 0
+    while (nodeExists(a)) {
+        let arg = ptr_to_node(a)
+        let mut argRole = 0
+        if (scan.verify == false) {
+            let key = columnKeyOf(arg)
+            if (index == 0 and key.equals("") == false) {
+                let k = columnKeyIndex(scan, key)
+                if (columnIsEventName(name)) {
+                    columnNoteEvent(scan, f, k)
+                    argRole = 1
+                } else if (name.equals("list_len") or name.equals("list_get")) {
+                    argRole = 1
+                }
+            }
+        } else {
+            let k = columnViewKey(scan, arg)
+            if (k >= 0) {
+                if (scan.bad[k] == false and columnViewCallOk(scan, callPtr, index, k)) {
+                    argRole = 1
+                } else {
+                    columnDisqualify(scan, k, "a view passed to ".concat(columnCallSymbol(call), ", which may keep it or store"), callPtr)
+                }
+            }
+        }
+        columnWalkNode(scan, f, a, argRole)
+        a = arg.next
+        index = index + 1
+    }
+}
+
+private fn columnWalkMember(scan: ColumnScan, f: Int, memberPtr: Ptr, role: Int) {
+    let n = ptr_to_node(memberPtr)
+    let key = columnKeyOf(n)
+    if (key.equals("") == false) {
+        if (scan.verify == false) {
+            let k = columnKeyIndex(scan, key)
+            if (role != 1) { columnDisqualify(scan, k, "the column is used other than by a list builtin", memberPtr) }
+        }
+        columnWalkChain(scan, f, n.child1, 0)
+        return
+    }
+    // A field read off a view of an element: `list_get(items, i).age`. Reading a scalar,
+    // or storing into the field, does not keep the view.
+    let mut baseRole = 0
+    if (scan.verify and nodeExists(n.child1) and columnViewKey(scan, ptr_to_node(n.child1)) >= 0) {
+        if (role == 2 or columnScalar(n)) { baseRole = 1 }
+    }
+    columnWalkChain(scan, f, n.child1, baseRole)
+}
+
+private fn columnWalkAssignment(scan: ColumnScan, f: Int, assignPtr: Ptr) {
+    let n = ptr_to_node(assignPtr)
+    let mut targetRole = 2
+    if (nodeExists(n.child1)) {
+        let key = columnKeyOf(ptr_to_node(n.child1))
+        if (key.equals("") == false) {
+            targetRole = 1
+            let k = columnKeyIndex(scan, key)
+            if (scan.verify == false) {
+                columnNoteEvent(scan, f, k)
+            } else if (columnInitIsFresh(scan, f, n.child2) == false) {
+                columnDisqualify(scan, k, "assigned a Vec that is not fresh".concat(scan.detail), assignPtr)
+            }
+        }
+    }
+    columnWalkChain(scan, f, n.child1, targetRole)
+    columnWalkChain(scan, f, n.child2, 0)
+    columnWalkChain(scan, f, n.child3, 0)
+}
+
+private fn columnWalkDecl(scan: ColumnScan, f: Int, declPtr: Ptr) {
+    let n = ptr_to_node(declPtr)
+    let mut initRole = 0
+    if (scan.verify and nodeExists(n.child2)) {
+        let k = columnViewKey(scan, ptr_to_node(n.child2))
+        if (k >= 0) {
+            if (scan.bad[k] == false and columnScopeOk(scan, declPtr, k)) {
+                initRole = 1
+            } else {
+                columnDisqualify(scan, k, "a bound view that outlives a store or a use", declPtr)
+            }
+        }
+    }
+    columnWalkChain(scan, f, n.child1, 0)
+    columnWalkChain(scan, f, n.child2, initRole)
+    columnWalkChain(scan, f, n.child3, 0)
+}
+
+// `Type { items: x }` creates the column: `x` must be a fresh Vec.
+private fn columnCheckLiteral(scan: ColumnScan, f: Int, n: ASTNode) {
+    if (scan.verify == false or nodeHasType(n) == false) { return }
+    let t = nodeGetType(n)
+    if (t.kind != TypeKind.STRUCT) { return }
+    let mut p = n.child1
+    while (nodeExists(p)) {
+        let field = ptr_to_node(p)
+        let k = columnKeyLookup(scan, t.name.concat(".", field.s1))
+        if (k >= 0 and nodeExists(field.child1) and columnInitIsFresh(scan, f, field.child1) == false) {
+            columnDisqualify(scan, k, "created from a Vec that is not fresh".concat(scan.detail), ptr_to_node(p).child1)
+        }
+        p = field.next
+    }
+}
+
+// --- views ------------------------------------------------------------------------------
+
+// The column `n` is a view of an element of -- `n` is `list_get(items, i)` -- or -1.
+private fn columnViewKey(scan: ColumnScan, n: ASTNode) -> Int {
+    if (n.kind != NodeKind.CALL_EXPR or nodeIsNull(n.child2)) { return 0 - 1 }
+    if (columnCallName(n).equals("list_get") == false) { return 0 - 1 }
+    let key = columnKeyOf(ptr_to_node(n.child2))
+    if (key.equals("")) { return 0 - 1 }
+    return columnKeyLookup(scan, key)
+}
+
+private fn columnScalar(n: ASTNode) -> Bool {
+    return nodeHasType(n) and typeOwnsNothing(nodeGetType(n))
+}
+
+// `copyOf(x)`, which an instantiation spells `copyOf$T`, or the impl it forwards to: its
+// result is a new value that owns itself.
+private fn columnIsCopy(call: ASTNode) -> Bool {
+    let name = columnCallName(call)
+    return name.equals("copyOf") or name.startsWith("copyOf$") or columnCallSymbol(call).startsWith("Copy_copyOf")
+}
+
+// A call whose result keeps nothing of its arguments: a scalar, or nothing.
+private fn columnResultInert(call: ASTNode) -> Bool {
+    if (nodeHasType(call) == false) { return false }
+    let t = nodeGetType(call)
+    return typeOwnsNothing(t) or t.kind == TypeKind.VOID
+}
+
+// Whether a call to one of this module's functions answers a value that is not any of its
+// arguments, nor a view of one: a clone, a string built from the view. The caller owns it.
+private fn columnResultIsNew(scan: ColumnScan, call: ASTNode) -> Bool {
+    let symbol = columnCallSymbol(call)
+    if (columnSymbolIndex(scan, symbol) < 0) { return false }
+    return aif_fn_may_return_param(symbol) == 0 and aif_fn_may_return_view_of_param(symbol) == 0
+}
+
+// Whether the view that is argument `index` of the call may be consumed by it: a copy is
+// its own; any other call must not keep or return the view, and nothing it runs, nor any
+// other argument it waits for, may store into the column.
+private fn columnViewCallOk(scan: ColumnScan, callPtr: Ptr, index: Int, k: Int) -> Bool {
+    let call = ptr_to_node(callPtr)
+    if (columnIsCopy(call)) { return true }
+    if (aif_call_arg_retained(callPtr, index) != 0) { return false }
+    if (columnResultInert(call) == false and columnResultIsNew(scan, call) == false) { return false }
+    if (columnCallSafe(scan, k, callPtr) == false) { return false }
+    let mut a = call.child2
+    let mut i = 0
+    while (nodeExists(a)) {
+        if (i != index and columnExprRunsStore(scan, k, a)) { return false }
+        a = ptr_to_node(a).next
+        i = i + 1
+    }
+    return true
+}
+
+// Whether running this call cannot store into column `k`.
+private fn columnCallSafe(scan: ColumnScan, k: Int, callPtr: Ptr) -> Bool {
+    let call = ptr_to_node(callPtr)
+    let name = columnCallName(call)
+    if (columnIsEventName(name)) {
+        if (nodeIsNull(call.child2)) { return true }
+        let key: String = scan.keys[k]
+        return columnKeyOf(ptr_to_node(call.child2)).equals(key) == false
+    }
+    if (name.equals("list_get") or name.equals("list_len")) { return true }
+    let at = columnSymbolIndex(scan, columnCallSymbol(call))
+    if (at >= 0) { return scan.reach[k * scan.symbols.length + at] == false }
+    // Not a function of this module: it cannot name the column's struct unless handed one.
+    let mut a = call.child2
+    while (nodeExists(a)) {
+        let arg = ptr_to_node(a)
+        if (nodeHasType(arg) and nodeGetType(arg).kind == TypeKind.STRUCT) { return false }
+        a = arg.next
+    }
+    return true
+}
+
+// Whether evaluating the expression at `nodePtr` may run a store into column `k`.
+private fn columnExprRunsStore(scan: ColumnScan, k: Int, nodePtr: Ptr) -> Bool {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.CALL_EXPR and columnCallSafe(scan, k, nodePtr) == false) { return true }
+    return columnChainRunsStore(scan, k, n.child1) or columnChainRunsStore(scan, k, n.child2)
+        or columnChainRunsStore(scan, k, n.child3)
+}
+
+private fn columnChainRunsStore(scan: ColumnScan, k: Int, head: Ptr) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (columnExprRunsStore(scan, k, p)) { return true }
+        p = ptr_to_node(p).next
+    }
+    return false
+}
+
+// --- a view bound to a name ---------------------------------------------------------------
+
+// Whether `let x = list_get(items, i)` is safe: from the `let` to the last statement that
+// mentions `x`, `x` is only consumed as a view may be, and nothing stores into the column.
+private fn columnScopeOk(scan: ColumnScan, declPtr: Ptr, k: Int) -> Bool {
+    let decl = ptr_to_node(declPtr)
+    let mut last = 0 - 1
+    let mut count = 0
+    let mut p = decl.next
+    while (nodeExists(p)) {
+        if (columnMentions(p, decl.s1)) { last = count }
+        count = count + 1
+        p = ptr_to_node(p).next
+    }
+    p = decl.next
+    let mut i = 0
+    while (i <= last) {
+        if (columnScopeNode(scan, k, p, decl.s1, 0) == false) { return false }
+        p = ptr_to_node(p).next
+        i = i + 1
+    }
+    return true
+}
+
+// Whether the statement or expression at `nodePtr`, or anything under it, names `name`.
+private fn columnMentions(nodePtr: Ptr, name: String) -> Bool {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR and n.s1.equals(name)) { return true }
+    for part in 0..<3 {
+        let mut p = n.child1
+        if (part == 1) { p = n.child2 }
+        if (part == 2) { p = n.child3 }
+        while (nodeExists(p)) {
+            if (columnMentions(p, name)) { return true }
+            p = ptr_to_node(p).next
+        }
+    }
+    return false
+}
+
+private fn columnScopeChain(scan: ColumnScan, k: Int, head: Ptr, name: String, role: Int) -> Bool {
+    let mut p = head
+    while (nodeExists(p)) {
+        if (columnScopeNode(scan, k, p, name, role) == false) { return false }
+        p = ptr_to_node(p).next
+    }
+    return true
+}
+
+private fn columnScopeNode(scan: ColumnScan, k: Int, nodePtr: Ptr, name: String, role: Int) -> Bool {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR) { return n.s1.equals(name) == false or role == 1 }
+    if (n.kind == NodeKind.CALL_EXPR) { return columnScopeCall(scan, k, nodePtr, name) }
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        if (nodeExists(n.child1)) {
+            let key: String = scan.keys[k]
+            if (columnKeyOf(ptr_to_node(n.child1)).equals(key)) { return false }
+        }
+        return columnScopeChain(scan, k, n.child1, name, 2)
+            and columnScopeChain(scan, k, n.child2, name, 0)
+            and columnScopeChain(scan, k, n.child3, name, 0)
+    }
+    if (n.kind == NodeKind.MEMBER_ACCESS_EXPR) {
+        let mut baseRole = 0
+        if (role == 2 or columnScalar(n)) { baseRole = 1 }
+        return columnScopeChain(scan, k, n.child1, name, baseRole)
+    }
+    if (n.kind == NodeKind.BINARY_EXPR or n.kind == NodeKind.UNARY_EXPR) {
+        let mut operand = 0
+        if (columnScalar(n)) { operand = 1 }
+        return columnScopeChain(scan, k, n.child1, name, operand)
+            and columnScopeChain(scan, k, n.child2, name, operand)
+            and columnScopeChain(scan, k, n.child3, name, 0)
+    }
+    return columnScopeChain(scan, k, n.child1, name, 0)
+        and columnScopeChain(scan, k, n.child2, name, 0)
+        and columnScopeChain(scan, k, n.child3, name, 0)
+}
+
+private fn columnScopeCall(scan: ColumnScan, k: Int, callPtr: Ptr, name: String) -> Bool {
+    if (columnCallSafe(scan, k, callPtr) == false) { return false }
+    let call = ptr_to_node(callPtr)
+    if (columnScopeChain(scan, k, call.child1, name, 0) == false) { return false }
+    let copies = columnIsCopy(call)
+    let inert = columnResultInert(call)
+    let mut a = call.child2
+    let mut index = 0
+    while (nodeExists(a)) {
+        let arg = ptr_to_node(a)
+        let mut role = 0
+        if (arg.kind == NodeKind.IDENTIFIER_EXPR and arg.s1.equals(name)) {
+            if (copies or ((inert or columnResultIsNew(scan, call)) and aif_call_arg_retained(callPtr, index) == 0)) {
+                role = 1
+            }
+        }
+        if (columnScopeNode(scan, k, a, name, role) == false) { return false }
+        a = arg.next
+        index = index + 1
+    }
+    return true
+}
+
+// --- a fresh column ------------------------------------------------------------------------
+
+// Whether the value stored as a column is a Vec nothing else holds: an array literal, a
+// `list_new`, or a local that is only ever that and moved here.
+private fn columnInitIsFresh(scan: ColumnScan, f: Int, initPtr: Ptr) -> Bool {
+    if (nodeIsNull(initPtr)) { return false }
+    if (columnInitKindIsFresh(initPtr)) { return true }
+    let init = ptr_to_node(initPtr)
+    if (init.kind != NodeKind.IDENTIFIER_EXPR) { return false }
+    let local = ColumnLocal { declared: 0, fresh: false, moves: 0, other: false, initKind: 0 }
+    columnLocalChain(local, ptr_to_node(ptr_to_node(scan.decls[f]).child2).child1, init.s1, 0)
+    scan.detail = " [".concat(init.s1, ": declared ", local.declared.toString(), ", fresh ", local.fresh.toString(),
+                              ", moved ", local.moves.toString(), ", other uses ", local.other.toString(), ", init kind ", local.initKind.toString(), "]")
+    return local.declared == 1 and local.fresh and local.moves == 1 and local.other == false
+}
+
+// An array literal, or a call whose result its caller alone owns: `list_new`, a `vecOf`
+// literal, a function that builds the Vec.
+private fn columnInitKindIsFresh(initPtr: Ptr) -> Bool {
+    let init = ptr_to_node(initPtr)
+    if (init.kind == NodeKind.ARRAY_LITERAL_EXPR) { return true }
+    if (init.kind != NodeKind.CALL_EXPR) { return false }
+    return columnIsFreshConstructor(columnCallName(init)) or aif_owns_call_result_at_node(initPtr) != AIF_ELEM_NONE
+}
+
+private fn columnIsFreshConstructor(name: String) -> Bool {
+    return name.equals("list_new") or name.equals("list_new_with_capacity") or name.equals("vecOf")
+        or name.startsWith("vecOf$")
+}
+
+private fn columnLocalChain(local: ColumnLocal, head: Ptr, name: String, role: Int) {
+    let mut p = head
+    while (nodeExists(p)) {
+        columnLocalNode(local, p, name, role)
+        p = ptr_to_node(p).next
+    }
+}
+
+// `role` 1: the first argument of a list builtin that cannot take a view of an element;
+// 2: moved into a field or a column.
+private fn columnLocalNode(local: ColumnLocal, nodePtr: Ptr, name: String, role: Int) {
+    let n = ptr_to_node(nodePtr)
+    if (n.kind == NodeKind.IDENTIFIER_EXPR) {
+        if (n.s1.equals(name) == false) { return }
+        if (role == 2) {
+            local.moves = local.moves + 1
+        } else if (role != 1) {
+            local.other = true
+        }
+        return
+    }
+    if (n.kind == NodeKind.VARIABLE_DECL and n.s1.equals(name)) {
+        local.declared = local.declared + 1
+        if (nodeIsNull(n.child2)) {
+            local.fresh = true
+        } else {
+            local.fresh = columnInitKindIsFresh(n.child2)
+            local.initKind = ptr_to_node(n.child2).kind as Int
+        }
+        columnLocalChain(local, n.child2, name, 0)
+        return
+    }
+    if (n.kind == NodeKind.CALL_EXPR) {
+        let callee = columnCallName(n)
+        let pushes = callee.equals("list_push") or callee.equals("list_len") or callee.equals("list_reserve")
+        columnLocalChain(local, n.child1, name, 0)
+        let mut a = n.child2
+        let mut index = 0
+        while (nodeExists(a)) {
+            let mut argRole = 0
+            if (index == 0 and pushes) { argRole = 1 }
+            columnLocalNode(local, a, name, argRole)
+            a = ptr_to_node(a).next
+            index = index + 1
+        }
+        return
+    }
+    if (n.kind == NodeKind.STRUCT_FIELD) {
+        columnLocalChain(local, n.child1, name, 2)
+        return
+    }
+    if (n.kind == NodeKind.ASSIGNMENT_STATEMENT) {
+        columnLocalChain(local, n.child1, name, 0)
+        columnLocalChain(local, n.child2, name, 2)
+        columnLocalChain(local, n.child3, name, 0)
+        return
+    }
+    columnLocalChain(local, n.child1, name, 0)
+    columnLocalChain(local, n.child2, name, 0)
+    columnLocalChain(local, n.child3, name, 0)
+}

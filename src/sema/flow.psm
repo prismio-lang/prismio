@@ -11,12 +11,8 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 
-import ast.nodes
-import lexer.token
-import ast.types
-import ir.bridge
-import common.diagnostics
 import std.string
+import common.builtin_names
 
 // --- structured control-flow analysis ---------------------------------------
 //
@@ -128,10 +124,7 @@ internal fn semaFailureBuiltinApplies(name: String) -> Bool {
 // The calls control never comes back from. `assert` is not one: it returns
 // whenever its condition holds.
 internal fn semaCallNeverReturns(name: String) -> Bool {
-    if (name.equals("__builtin_panic") or name.equals("__builtin_unreachable")
-        or name.equals("__builtin_exit")) {
-        return true
-    }
+    if (builtinNeverReturns(name)) { return true }
     // Before sema has rewritten the callee.
     if (name.equals("assert")) { return false }
     return semaFailureBuiltinApplies(name) or semaUserCallNeverReturns(name)
@@ -232,6 +225,7 @@ internal fn semaStmtDiverges(stmt: ASTNode) -> Bool {
         NodeKind.LOOP_STATEMENT => {
             return semaBlockBreaksOut(ptr_to_node(stmt.child1), "") == false
         }
+        _ => { }
     }
 
     return false

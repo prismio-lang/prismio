@@ -99,13 +99,6 @@ internal fn structTypeName(t: String) -> String {
     return t.substring(7, t.length - 7)
 }
 
-private fn llvmTypeName(t: String) -> String {
-    if (isStructTypeKey(t)) {
-        return "%".concat(structTypeName(t))
-    }
-    return t
-}
-
 internal fn mapTypeNode(tn: ASTNode) -> String {
     // Sema resolved this annotation and left the answer on the node, so use it
     // rather than re-deriving one from the syntax. The two disagree on a generic
@@ -339,6 +332,7 @@ internal fn getExprType(expr: ASTNode) -> String {
         NodeKind.STRUCT_LITERAL_EXPR => {
             return structTypeKey(expr.s1)
         }
+        _ => { }
     }
 
     return "i32"

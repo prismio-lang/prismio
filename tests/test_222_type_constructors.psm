@@ -24,7 +24,7 @@ fn fail(message: String) -> Int {
     return 1
 }
 
-fn size(m: HashMap<String, Int>) -> Int { return m.length }
+fn size(m: HashMap<String, Int>) -> Int { return m.count }
 
 fn main() -> Int {
     let stock = HashMap<String, Int>()
@@ -34,7 +34,7 @@ fn main() -> Int {
 
     let annotated: HashMap<String, Int> = HashMap()
     annotated.set("x", 1)
-    if (annotated.length != 1) { return fail("HashMap() from the annotation") }
+    if (annotated.count != 1) { return fail("HashMap() from the annotation") }
 
     let spelled: HashMap<Int, Int> = mapNew()
     spelled.set(1, 2)
@@ -47,12 +47,12 @@ fn main() -> Int {
     // Past mapNew's eight buckets: the table is sized once and never rehashes.
     let big = HashMap<Int, Int>.withCapacity(100)
     for i in 0..<100 { big.set(i, i * 2) }
-    if (big.length != 100 or big[99] != 198 or big[0] != 0) { return fail("withCapacity") }
+    if (big.count != 100 or big[99] != 198 or big[0] != 0) { return fail("withCapacity") }
 
     let bare: HashMap<String, Int>
     bare.set("a key long enough to allocate its copy", 1)
     bare.set("b", 2)
-    if (bare.length != 2) { return fail("a bare `let` is an empty HashMap") }
+    if (bare.count != 2) { return fail("a bare `let` is an empty HashMap") }
 
     if (size(HashMap<String, Int>()) != 0) { return fail("HashMap<K, V>() as an argument") }
 

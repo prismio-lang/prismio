@@ -54,18 +54,18 @@ fn pathProbeSteps(n: Int) -> Int {
     let m: HashMap<PathKey, Int> = mapNew<PathKey, Int>()
     let mut i = 0
     while (i < n) {
-        mapSet(m, PathKey { v: i, hits: 0 }, i)
+        m.set(PathKey { v: i, hits: 0 }, i)
         i = i + 1
     }
     let mut k = 0
     while (k < n) {
-        if (mapGetOr(m, PathKey { v: k, hits: 0 }, 0 - 1) != k) { return 0 - 1 }
+        if (m.getOr(PathKey { v: k, hits: 0 }, 0 - 1) != k) { return 0 - 1 }
         k = k + 1
     }
     let mut total = 0
     let mut e = 0
     while (e < n) {
-        total = total + mapKeyAt(m, e).hits
+        total = total + m.keyAt(e).hits
         e = e + 1
     }
     return total
@@ -77,16 +77,16 @@ fn roundTrip(stride: Int, n: Int) -> Int {
     let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
-        mapSet(m, i * stride, i * 7 + 1)
+        m.set(i * stride, i * 7 + 1)
         i = i + 1
     }
     let mut wrong = 0
     let mut k = 0
     while (k < n) {
-        if (mapGetOr(m, k * stride, 0 - 1) != k * 7 + 1) { wrong = wrong + 1 }
+        if (m.getOr(k * stride, 0 - 1) != k * 7 + 1) { wrong = wrong + 1 }
         k = k + 1
     }
-    if (mapLen(m) != n) { wrong = wrong + 1000 }
+    if (m.count != n) { wrong = wrong + 1000 }
     return wrong
 }
 
@@ -95,14 +95,14 @@ fn orderAfterSwitch(stride: Int, n: Int) -> Int {
     let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
-        mapSet(m, i * stride, i)
+        m.set(i * stride, i)
         i = i + 1
     }
     let mut wrong = 0
     let mut k = 0
     while (k < n) {
-        if (mapKeyAt(m, k) != k * stride) { wrong = wrong + 1 }
-        if (mapValueAt(m, k) != k) { wrong = wrong + 1 }
+        if (m.keyAt(k) != k * stride) { wrong = wrong + 1 }
+        if (m.valueAt(k) != k) { wrong = wrong + 1 }
         k = k + 1
     }
     return wrong
@@ -114,23 +114,23 @@ fn growAfterSwitch(n: Int) -> Int {
     let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
-        mapSet(m, i * 65537, i)
+        m.set(i * 65537, i)
         i = i + 1
     }
     // Ordinary keys into the same, now-strengthened table.
     let mut j = 0
     while (j < n) {
-        mapSet(m, 0 - (j + 1), j + 100)
+        m.set(0 - (j + 1), j + 100)
         j = j + 1
     }
     let mut wrong = 0
     let mut k = 0
     while (k < n) {
-        if (mapGetOr(m, k * 65537, 0 - 1) != k) { wrong = wrong + 1 }
-        if (mapGetOr(m, 0 - (k + 1), 0 - 1) != k + 100) { wrong = wrong + 1 }
+        if (m.getOr(k * 65537, 0 - 1) != k) { wrong = wrong + 1 }
+        if (m.getOr(0 - (k + 1), 0 - 1) != k + 100) { wrong = wrong + 1 }
         k = k + 1
     }
-    if (mapLen(m) != 2 * n) { wrong = wrong + 1000 }
+    if (m.count != 2 * n) { wrong = wrong + 1000 }
     return wrong
 }
 
@@ -139,22 +139,22 @@ fn semanticsAfterSwitch(n: Int) -> Int {
     let m: HashMap<Int, Int> = mapNew<Int, Int>()
     let mut i = 0
     while (i < n) {
-        mapSet(m, i * 65537, i)
+        m.set(i * 65537, i)
         i = i + 1
     }
     let mut wrong = 0
     // Overwriting reports "was present" and does not grow the map.
-    if (mapSet(m, 5 * 65537, 999) == false) { wrong = wrong + 1 }
-    if (mapGetOr(m, 5 * 65537, 0 - 1) != 999) { wrong = wrong + 1 }
-    if (mapLen(m) != n) { wrong = wrong + 1 }
+    if (m.set(5 * 65537, 999) == none) { wrong = wrong + 1 }
+    if (m.getOr(5 * 65537, 0 - 1) != 999) { wrong = wrong + 1 }
+    if (m.count != n) { wrong = wrong + 1 }
     // A key that was never inserted is still absent.
-    if (mapHas(m, 3)) { wrong = wrong + 1 }
-    if (mapGetOr(m, 3, 0 - 7) != 0 - 7) { wrong = wrong + 1 }
-    if (mapIndexOf(m, 3) != 0 - 1) { wrong = wrong + 1 }
+    if (m.contains(3)) { wrong = wrong + 1 }
+    if (m.getOr(3, 0 - 7) != 0 - 7) { wrong = wrong + 1 }
+    if (m.contains(3)) { wrong = wrong + 1 }
     // Inserting reports "was absent" and does grow it.
-    if (mapSet(m, 3, 42)) { wrong = wrong + 1 }
-    if (mapGetOr(m, 3, 0 - 1) != 42) { wrong = wrong + 1 }
-    if (mapLen(m) != n + 1) { wrong = wrong + 1 }
+    if (m.set(3, 42) != none) { wrong = wrong + 1 }
+    if (m.getOr(3, 0 - 1) != 42) { wrong = wrong + 1 }
+    if (m.count != n + 1) { wrong = wrong + 1 }
     return wrong
 }
 
@@ -164,16 +164,16 @@ fn stringKeys(n: Int) -> Int {
     let m: HashMap<String, Int> = mapNew<String, Int>()
     let mut i = 0
     while (i < n) {
-        mapSet(m, "k".concat(i.toString()), i)
+        m.set("k".concat(i.toString()), i)
         i = i + 1
     }
     let mut wrong = 0
     let mut k = 0
     while (k < n) {
-        if (mapGetOr(m, "k".concat(k.toString()), 0 - 1) != k) { wrong = wrong + 1 }
+        if (m.getOr("k".concat(k.toString()), 0 - 1) != k) { wrong = wrong + 1 }
         k = k + 1
     }
-    if (mapHas(m, "absent")) { wrong = wrong + 1 }
+    if (m.contains("absent")) { wrong = wrong + 1 }
     return wrong
 }
 
@@ -206,11 +206,11 @@ fn main() -> Int {
 
     // A single entry, and an empty map, still work either way.
     let one: HashMap<Int, Int> = mapNew<Int, Int>()
-    mapSet(one, 65537, 1)
-    bad = bad + check("FAIL: single entry", mapGetOr(one, 65537, 0), 1)
+    one.set(65537, 1)
+    bad = bad + check("FAIL: single entry", one.getOr(65537, 0), 1)
     let empty: HashMap<Int, Int> = mapNew<Int, Int>()
-    bad = bad + check("FAIL: empty length", mapLen(empty), 0)
-    bad = bad + check("FAIL: empty lookup", mapGetOr(empty, 65537, 0 - 5), 0 - 5)
+    bad = bad + check("FAIL: empty length", empty.count, 0)
+    bad = bad + check("FAIL: empty lookup", empty.getOr(65537, 0 - 5), 0 - 5)
 
     if (bad != 0) { return 1 }
     println("PASS: adaptive map hashing")

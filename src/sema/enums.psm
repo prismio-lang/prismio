@@ -68,13 +68,7 @@ internal fn enumShadowPush(module: ASTNode, decl: ASTNode) {
 }
 
 private fn enumShadowFind(module: ASTNode, name: String) -> ASTNode {
-    let mut p = module.child3
-    while (nodeExists(p)) {
-        let decl = ptr_to_node(p)
-        if (decl.s1.equals(name)) { return decl }
-        p = decl.next
-    }
-    return ptr_to_node(ptr_null())
+    return chainNamed(module.child3, name)
 }
 
 internal fn enumIsPayloadType(module: ASTNode, t: TypeInfo) -> Bool {
@@ -128,13 +122,7 @@ internal fn enumDeclarationNamed(module: ASTNode, name: String) -> ASTNode {
 }
 
 internal fn enumVariantNode(enumDecl: ASTNode, variantName: String) -> ASTNode {
-    let mut p = enumDecl.child1
-    while (nodeExists(p)) {
-        let variant = ptr_to_node(p)
-        if (variant.s1.equals(variantName)) { return variant }
-        p = variant.next
-    }
-    return ptr_to_node(ptr_null())
+    return chainNamed(enumDecl.child1, variantName)
 }
 
 // The value stored in the tag field, or -1 for an unknown variant.
@@ -634,10 +622,8 @@ private fn semaMatchCoversTag(stmt: ASTNode, tag: Int) -> Bool {
 // restriction: every match that was going to handle its remaining cases already
 // says so.
 //
-// **Payload enums only.** A fieldless enum is not checked here: a program may
-// match on a subset of its variants, and the rest run no arm. Requiring every
-// variant would reject that existing code; semaMatchCoversEnum, below, is the
-// only place a full match changes anything -- it needs no `_` arm.
+// **Payload enums.** A fieldless enum is checked in `semaMatchStatement`, with the same
+// rule and the same message (`semaMatchMissingVariants`, below): every variant, or a `_`.
 private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
     if (semaMatchHasWildcard(stmt)) {
         stmt.i3 = 1
@@ -670,11 +656,36 @@ private fn semaCheckExhaustive(stmt: ASTNode, shadow: ASTNode) {
     }
 }
 
-// Whether a match on a fieldless enum names every variant. A value of the enum
-// can only be one of them -- `n as Color` is refused and `n as Color?` checks --
-// so such a match is exhaustive without a `_` arm, and a function whose arms all
-// return does not fall off its end. A partial match is still allowed: it is an
-// integer-style match that simply runs no arm for the rest.
+// The variants of the fieldless enum `enumName` that no arm of `stmt` names, as "B, C", or ""
+// when every one is named (or the enum is not found). A value of the enum can only be one of
+// its variants -- `n as Color` is refused and `n as Color?` checks -- so a match that names all
+// of them is exhaustive without a `_` arm, and a function whose arms all return does not fall
+// off its end. A match that misses one is an error, as it is for a payload enum.
+internal fn semaMatchMissingVariants(stmt: ASTNode, enumName: String) -> String {
+    let count = ir_decl_count(enumName)
+    for i in 0..<count {
+        let decl = ptr_to_node(ir_decl_at(enumName, i))
+        if (decl.kind == NodeKind.ENUM_DECL) {
+            let mut missing = ""
+            let mut variantPtr = decl.child1
+            while (nodeExists(variantPtr)) {
+                let variant = ptr_to_node(variantPtr)
+                if (semaMatchNamesVariant(stmt, enumName, variant.s1) == false) {
+                    if (missing.equals("")) {
+                        missing = variant.s1
+                    } else {
+                        missing = missing.concat(", ", variant.s1)
+                    }
+                }
+                variantPtr = variant.next
+            }
+            return missing
+        }
+    }
+    return ""
+}
+
+// Whether a match on a fieldless enum names every variant.
 internal fn semaMatchCoversEnum(stmt: ASTNode, enumName: String) -> Bool {
     let count = ir_decl_count(enumName)
     for i in 0..<count {

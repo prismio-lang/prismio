@@ -95,12 +95,12 @@ fn main() -> Int {
     let m: HashMap<String, Int> = mapNew<String, Int>()
     let mut k = 0
     while (k <= 16) {
-        mapSet(m, alphabet.slice(0, k).repeat(1), k)
+        m.set(alphabet.slice(0, k).repeat(1), k)
         k = k + 1
     }
     k = 0
     while (k <= 16) {
-        if (mapGetOr(m, alphabet.slice(0, k), 0 - 1) != k) {
+        if (m.getOr(alphabet.slice(0, k), 0 - 1) != k) {
             return fail("length ".concat(k.toString(), " was stored and not found"))
         }
         k = k + 1

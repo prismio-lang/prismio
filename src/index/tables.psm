@@ -169,10 +169,6 @@ public fn ixKey(file: Int, line: Int, col: Int) -> String {
     return file.toString().concat(":", line.toString(), ":", col.toString())
 }
 
-public fn ixDeclCount(ix: Ix) -> Int {
-    return ix.dKind.length
-}
-
 // Adds a declaration unless one already stands at the same name position (a generic's template
 // and its instances share one), and answers its id either way.
 public fn ixAddDecl(inout ix: Ix, kind: String, name: String, file: Int, line: Int, col: Int, len: Int,

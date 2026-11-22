@@ -76,16 +76,6 @@ private fn semaChannelCallee(target: String, at: ASTNode) -> ASTNode {
     return callee
 }
 
-private fn semaChannelArgCount(args: Ptr) -> Int {
-    let mut count = 0
-    let mut p = args
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
-}
-
 // Rewrites `expr` in place into the lowering of `receiver.name(args)`, where
 // `receiver` is a Channel. Answers semaVecLower's verdicts: 0 not a channel
 // method, 1 rewritten, 2 a mistake was reported.
@@ -100,7 +90,7 @@ internal fn semaChannelLower(expr: ASTNode, name: String, receiver: ASTNode, arg
 
     let mut arity = 0
     if (name.equals("send")) { arity = 1 }
-    let given = semaChannelArgCount(args)
+    let given = chainLength(args)
     if (given != arity) {
         let mut noun = " arguments"
         if (arity == 1) { noun = " argument" }
@@ -158,9 +148,9 @@ internal fn semaChannelAssociated(module: ASTNode, expr: ASTNode, qualifier: AST
         nodeSetType(expr, typeInvalid())
         return 2
     }
-    if (semaChannelArgCount(expr.child2) != 1) {
+    if (chainLength(expr.child2) != 1) {
         semaErrorAt(expr, "`Channel<T>(capacity)` takes 1 argument, found ".concat(
-            semaChannelArgCount(expr.child2).toString()))
+            chainLength(expr.child2).toString()))
         diag_note("the capacity is how many messages may wait before a send blocks")
         nodeSetType(expr, typeInvalid())
         return 2

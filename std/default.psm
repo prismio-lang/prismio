@@ -18,6 +18,7 @@
 // `T.default()` a promise rather than a hope. The builtin types below answer
 // with the value the keyword gives them, so a bound on `Default` admits them.
 
+import std.copy
 import std.string
 
 trait Default {
@@ -38,3 +39,12 @@ impl Default for Float  { fn default() -> Float { return 0.0 } }
 impl Default for Bool   { fn default() -> Bool { return false } }
 impl Default for Char   { fn default() -> Char { return '\0' } }
 impl Default for String { fn default() -> String { return "" } }
+
+// A `Vec` starts empty. It lives here, not in std.vec, because an impl is written in the
+// module that declares the trait or the type, and std.vec does not import this one.
+impl<T: Copy> Default for Vec<T> {
+    fn default() -> Vec<T> {
+        let v: Vec<T> = []
+        return v
+    }
+}

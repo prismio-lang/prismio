@@ -1,0 +1,60 @@
+// A scalar element of an owned temporary Vec -- `ints(i)[1]` -- on the right of `or`, in a
+// condition, in a `let` and as an operand. The Vec is released once the element is loaded: the
+// element is a copy, so nothing points into it. It leaked on the right of `and`/`or`, where the
+// hoister (which would bind the Vec ahead of the statement) cannot go, until 2026-11-12.
+//
+// The same for the length of a Vec or a String *field* of an owned temporary struct,
+// `make(i).names.length` and `make(i).label.length`: both reads returned early and skipped the
+// release the general path gives a temporary, so the struct leaked on the right of `or`.
+//
+// Its own file because the analysis' facts are program-wide: sharing a program with
+// test_owned_temporary_reads' `let n = make(i).name` loses the ownership proof that hoist needs
+// (the temporary then leaks, never double frees), so the two are measured apart.
+
+import std.io
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn ints(i: Int) -> Vec<Int> {
+    let mut v: Vec<Int> = []
+    v.push(i)
+    v.push(i + 1)
+    return v
+}
+
+public struct Shelf { names: Vec<String>, label: String }
+
+fn shelf(i: Int) -> Shelf {
+    let mut names: Vec<String> = []
+    names.push("a-long-string-over-twelve-bytes-".concat(i.toString()))
+    names.push("another-long-string-over-twelve-bytes")
+    return Shelf { names: names, label: "label-longer-than-twelve-bytes-".concat(i.toString()) }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+    let mut sum = 0
+    for i in 0..<200 {
+        let t = i % 3
+        if (t == 7 or ints(i)[1] != i + 1) { bad = bad + 1 }
+        if (ints(i)[0] != i) { bad = bad + 1 }
+        let x = ints(i)[1]
+        sum = sum + x + ints(i)[0] + ints(i + 1)[0]
+        let mut n = 0
+        while (ints(n)[0] < 3) { n = n + 1 }
+        if (n != 3) { bad = bad + 1 }
+        if (t == 7 or shelf(i).names.length != 2) { bad = bad + 1 }
+        if (t == 7 or shelf(i).label.length != 31 + i.toString().length) { bad = bad + 1 }
+        let count = shelf(i).names.length
+        if (count != 2) { bad = bad + 1 }
+    }
+    if (sum != 200 * 199 / 2 * 3 + 200 * 2) { bad = bad + fail("the sum of the elements") }
+    if (bad == 0) { println("PASS") }
+    return bad
+}

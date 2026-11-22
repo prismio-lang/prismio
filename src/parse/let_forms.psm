@@ -39,6 +39,7 @@ import lexer.scanner
 import ast.nodes
 import common.diagnostics
 import std.string
+import common.diag_codes
 
 struct LetHead {
     pattern: Ptr,
@@ -309,7 +310,7 @@ impl Parser {
         let value = self.parseExpression(0)
         if (self.dead == 1) { return varNode }
         if (self.checkVal(TokenType.KEYWORD, "else") == false) {
-            diag_error_at_code("P3201", pattern.file, pattern.line, pattern.col, pattern.len,
+            diag_error_at_code(DIAG_PARSE_LET_VARIANT_NEEDS_ELSE, pattern.file, pattern.line, pattern.col, pattern.len,
                                "a `let` with a variant pattern needs an `else { ... }` for when the value is another variant, and it must leave the block")
             self.abandon()
             return varNode

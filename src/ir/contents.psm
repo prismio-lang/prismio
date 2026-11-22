@@ -44,7 +44,7 @@ import ast.nodes
 import ast.types
 import std.string
 
-let CONTENTS_INT_MAX = 2147483647
+const CONTENTS_INT_MAX = 2147483647
 
 struct ArrayContents {
     // One slot per integer array declared in the function, with its element type's range.

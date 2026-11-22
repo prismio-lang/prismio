@@ -7,16 +7,16 @@ public fn benchHashMap(scale: Int) -> Int {
     let map: HashMap<Int, Int> = mapNew<Int, Int>()
 
     for i in 0..<n {
-        mapSet(map, i, (i * 31) % 1000003)
+        map.set(i, (i * 31) % 1000003)
     }
     let mut checksum = 0
     let mut seed = 23
     for _ in 0..<n * 4 {
         seed = benchRandom(seed)
         let key = seed % n
-        checksum = (checksum + mapGetOr(map, key, 0)) % 1000000007
+        checksum = (checksum + map.getOr(key, 0)) % 1000000007
     }
-    return checksum + mapLen(map)
+    return checksum + map.count
 }
 
 public fn benchVectorGrowth(scale: Int) -> Int {
@@ -50,16 +50,16 @@ public fn benchKeyValueUpdate(scale: Int) -> Int {
     let n = 20000 * scale
     let map: HashMap<Int, Int> = mapNew<Int, Int>()
     for i in 0..<n {
-        mapSet(map, i, i % 101)
+        map.set(i, i % 101)
     }
     for _ in 0..<20 {
         for i in 0..<n {
-            mapSet(map, i, mapGetOr(map, i, 0) + 1)
+            map.set(i, map.getOr(i, 0) + 1)
         }
     }
     let mut checksum = 0
     for i in 0..<n {
-        checksum = (checksum + mapGetOr(map, i, 0)) % 1000000007
+        checksum = (checksum + map.getOr(i, 0)) % 1000000007
     }
     return checksum
 }
@@ -70,19 +70,19 @@ public fn benchMixedMapRemoval(scale: Int) -> Int {
     let n = 20000 * scale
     let map: HashMap<Int, Int> = mapNew<Int, Int>()
     for i in 0..<n {
-        mapSet(map, i, i % 101)
+        map.set(i, i % 101)
     }
     let mut checksum = 0
     for round in 0..<10 {
         for i in 0..<n {
-            if ((i + round) % 3 == 0 and mapRemove(map, i)) { checksum = (checksum + 1) % 1000000007 }
+            if ((i + round) % 3 == 0 and map.remove(i)) { checksum = (checksum + 1) % 1000000007 }
         }
         for i in 0..<n {
-            if ((i + round) % 3 == 0) { mapSet(map, i, (i + round) % 101) }
+            if ((i + round) % 3 == 0) { map.set(i, (i + round) % 101) }
         }
     }
     for i in 0..<n {
-        checksum = (checksum + mapGetOr(map, i, 0)) % 1000000007
+        checksum = (checksum + map.getOr(i, 0)) % 1000000007
     }
     return checksum
 }

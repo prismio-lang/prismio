@@ -75,21 +75,14 @@ private fn typeTablesOpen() {
     typeTablesOpened = true
 }
 
-private fn hasId(list: Vec<Int>, id: Int) -> Bool {
-    for i in 0..<list.length {
-        if (list[i] == id) { return true }
-    }
-    return false
-}
-
 // kind: 1 = struct, 2 = enum.
 public fn ir_declare_named_type(name: String, kind: Int) {
     typeTablesOpen()
     let id = irNameId(name)
     if (kind == 1) {
-        if (hasId(structTypeNames, id) == false) { structTypeNames.push(id) }
+        if (structTypeNames.contains(id) == false) { structTypeNames.push(id) }
     } else {
-        if (hasId(enumTypeNames, id) == false) { enumTypeNames.push(id) }
+        if (enumTypeNames.contains(id) == false) { enumTypeNames.push(id) }
     }
 }
 
@@ -97,8 +90,8 @@ public fn ir_declare_named_type(name: String, kind: Int) {
 public fn ir_named_type_kind(name: String) -> Int {
     typeTablesOpen()
     let id = irNameId(name)
-    if (hasId(structTypeNames, id)) { return 1 }
-    if (hasId(enumTypeNames, id)) { return 2 }
+    if (structTypeNames.contains(id)) { return 1 }
+    if (enumTypeNames.contains(id)) { return 2 }
     return 0
 }
 
@@ -304,10 +297,6 @@ private fn enumVariantNameIdAt(enumName: String, index: Int) -> Int {
     let at = variantAt(enumName, index)
     if (at < 0) { return 0 }
     return variantNames[at]
-}
-
-public fn ir_get_enum_variant_name_at(enumName: String, index: Int) -> String {
-    return irNameText(enumVariantNameIdAt(enumName, index))
 }
 
 public fn ir_get_enum_variant_value_at(enumName: String, index: Int) -> I64 {

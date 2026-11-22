@@ -1,0 +1,102 @@
+// The other half of test_388: a private `Vec` field whose use this proof cannot show safe is
+// not a closed column (src/ir/columns.psm), so a store through it still parks the element it
+// displaces -- and each answer here is the one a release at the store would have broken.
+// Every struct is its own column, so one shape cannot spoil another. `--verify` reads the
+// ledger: a release of an element a view still reads is a violation, and 0 is the guard.
+
+import std.io
+import std.string
+import std.vec
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+fn lines() -> Vec<String> {
+    let v: Vec<String> = [word(0), word(1), word(2)]
+    return v
+}
+
+// A view bound to a name, read after a store through the same field.
+struct Held { items: Vec<String> }
+
+impl Held {
+    fn swapIn(self, text: String) -> Int {
+        let old = self.items[0]
+        self.items[0] = text.clone()
+        return old.length
+    }
+}
+
+// The column handed to a function: it may keep a view of any element.
+struct Passed { items: Vec<String> }
+
+fn width(items: Vec<String>) -> Int {
+    let mut t = 0
+    for s in items { t = t + s.length }
+    return t
+}
+
+impl Passed {
+    fn total(self) -> Int { return width(self.items) }
+    fn put(self, at: Int, text: String) { self.items[at] = text.clone() }
+}
+
+// The column iterated while it is stored into: the loop's binder is a view of each element,
+// and the first store displaces the element the first binder is reading.
+struct Looped { items: Vec<String> }
+
+impl Looped {
+    fn refresh(self) -> Int {
+        let mut t = 0
+        for s in self.items {
+            self.items[0] = word(t)
+            t = t + s.length
+        }
+        return t
+    }
+}
+
+// A view passed to a function that stores into the column while it reads it.
+struct Reach { items: Vec<String> }
+
+impl Reach {
+    fn replaceSecond(self, text: String) -> Int {
+        self.items[1] = text.clone()
+        return text.length
+    }
+    fn through(self) -> Int { return self.replaceSecond(self.items[0]) }
+}
+
+// A column another file could name: not private, so not closed.
+public struct Open { public items: Vec<String> }
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let held = Held { items: lines() }
+    for i in 0..<1000 {
+        if (held.swapIn(word(i + 10)) != word(i + 9).length and i > 0) { bad = bad + 1 }
+    }
+
+    let passed = Passed { items: lines() }
+    for i in 0..<1000 { passed.put(i % 3, word(i)) }
+    if (passed.total() != word(999).length + word(997).length + word(998).length) { bad = bad + 1 }
+
+    let looped = Looped { items: lines() }
+    if (looped.refresh() != 99) { bad = bad + 1 }
+
+    let reach = Reach { items: lines() }
+    for _ in 0..<100 {
+        if (reach.through() != word(0).length or reach.items[1] != word(0)) { bad = bad + 1 }
+    }
+
+    let open = Open { items: lines() }
+    for i in 0..<1000 { open.items[i % 3] = word(i) }
+    if (open.items[0] != word(999)) { bad = bad + 1 }
+
+    if (bad != 0) {
+        println("FAIL ", bad)
+        return 1
+    }
+    println("PASS")
+    return 0
+}

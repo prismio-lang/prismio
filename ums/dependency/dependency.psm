@@ -44,6 +44,7 @@ internal fn umsDependencyScopeName(scope: UmsDependencyScope) -> String {
         UmsDependencyScope.TEST_IMPLEMENTATION => {
             return "testImplementation".clone()
         }
+        _ => { }
     }
     return "unknown".clone()
 }

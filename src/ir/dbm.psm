@@ -9,8 +9,8 @@
 
 // An absent bound. A finite entry that passes DBM_LIMIT either way is dropped to
 // it, which only loosens the state, so no sum of two entries leaves `Int`.
-let DBM_INF = 1000000000
-let DBM_LIMIT = 100000000
+const DBM_INF = 1000000000
+const DBM_LIMIT = 100000000
 
 internal fn dbmTop(n: Int) -> Vec<Int> {
     let mut st: Vec<Int> = []

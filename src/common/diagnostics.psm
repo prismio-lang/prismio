@@ -16,19 +16,20 @@ import std.io
 import std.option
 import std.string
 import std.vec
+import common.diag_codes
 
 // Past this many errors the compiler stops rather than continuing to recover. Beyond roughly this
 // point the output is cascade, not information, and every further recovery step is another chance
 // to walk a half-built AST.
-let DIAG_ERROR_LIMIT = 25
-let PARTIAL_ERROR_LIMIT = 500
+const DIAG_ERROR_LIMIT = 25
+const PARTIAL_ERROR_LIMIT = 500
 
 // An error already reported at the same place with the same words is not reported again. One
 // source location is checked once per copy a generic or a variadic function is instantiated as,
 // and each copy would say the same thing about the same line; the reader needs it once. The notes
 // that follow a dropped error are dropped with it. Bounded and keyed on a hash of the message, so
 // a long run of errors costs a fixed amount.
-let DIAG_SEEN_LIMIT = 256
+const DIAG_SEEN_LIMIT = 256
 
 private let mut errorCount = 0
 private let mut warningCount = 0
@@ -293,7 +294,7 @@ private fn alreadyReported(code: String, file: Int, line: Int, column: Int, mess
 public fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: Int, message: String) {
     finished = false
     dropNotes = false
-    if (partialMode and code.equals("P4001") and diag_hides(message)) {
+    if (partialMode and code.equals(DIAG_SEMA_ERROR) and diag_hides(message)) {
         dropNotes = true
         return
     }
@@ -308,14 +309,14 @@ public fn diag_error_at_code(code: String, file: Int, line: Int, col: Int, len: 
     // and counts the rest.
     if (partialMode and errorCount > PARTIAL_ERROR_LIMIT) {
         if (errorCount == PARTIAL_ERROR_LIMIT + 1) {
-            emit("error", "P0001", -1, 0, 0, 0, "too many errors; showing the first ".concat(PARTIAL_ERROR_LIMIT.toString()))
+            emit("error", DIAG_COMMON_TOO_MANY_ERRORS, -1, 0, 0, 0, "too many errors; showing the first ".concat(PARTIAL_ERROR_LIMIT.toString()))
         }
         return
     }
 
     if (partialMode == false and errorCount > DIAG_ERROR_LIMIT) {
         if (diagJsonMode()) {
-            eprint(jsonDiagnostic("error", "P0001", -1, 0, 0, 0, "too many errors; stopping after 25"))
+            eprint(jsonDiagnostic("error", DIAG_COMMON_TOO_MANY_ERRORS, -1, 0, 0, 0, "too many errors; stopping after 25"))
             eprint(jsonSummary())
             exit(1)
         }
@@ -476,17 +477,4 @@ public fn diag_finish() {
         eprint(head.concat("error", reset, bold, ": aborting due to ", errorCount.toString(),
                            " previous errors", reset, "\n"))
     }
-}
-
-public fn diag_reset() {
-    diag_forget_files()
-    errorCount = 0
-    seenOpened = false
-    seenOpen()
-    dropNotes = false
-    warningCount = 0
-    finished = false
-    partialMode = false
-    droppedOpened = false
-    droppedEverything = false
 }

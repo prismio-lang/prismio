@@ -1,0 +1,95 @@
+// The entry idioms as methods: `getOrInsert`, `getOrInsertWith` and `getOrInsertDefault`
+// (`or_insert`, `or_insert_with`, `or_default`), `upsert` (`and_modify(f).or_insert(v)`, one
+// lookup) and `modify`, which lends the stored value to a closure so a `Vec` or a struct
+// value changes where it is stored: `m[k].push(x)` read a copy, changed it and stored it
+// back, copying the `Vec` twice. The suite runs this under `--verify` through the
+// ownership probes, and it must read 0 leaked.
+//
+// Every string is longer than twelve bytes: a shorter one is stored inline and never
+// reaches the ledger.
+
+import std.copy
+import std.default
+import std.io
+import std.map
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+public struct Tally { hits: Int, names: Vec<String> }
+impl Copy for Tally {
+    fn copyOf(self) -> Self { return Tally { hits: self.hits, names: self.names.clone() } }
+}
+impl Default for Tally {
+    fn default() -> Tally {
+        let names: Vec<String> = []
+        return Tally { hits: 0, names: names }
+    }
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // upsert: the counting idiom, scalar values and String keys.
+    let counts: HashMap<String, Int> = {}
+    for i in 0..<1000 { counts.upsert(word(i % 7), 1, |n: Int| n + 1) }
+    if (counts.count != 7 or counts[word(0)] != 143 or counts[word(6)] != 142) { bad = bad + fail("upsert counts") }
+
+    // upsert with an owned value: a String replaced by what `change` makes of the old one.
+    let joined: HashMap<Int, String> = {}
+    for i in 0..<6 { joined.upsert(i % 2, word(i), |old: String| old.concat("+")) }
+    if (joined.count != 2 or joined[0] != word(0).concat("+", "+") or joined[1] != word(1).concat("+", "+")) {
+        bad = bad + fail("upsert strings")
+    }
+
+    // modify: a Vec value changed where it is stored, grouped by key.
+    let groups: HashMap<String, Vec<Int>> = {}
+    for i in 0..<1000 {
+        let key = word(i % 5)
+        groups.getOrInsertDefault(key)
+        if (groups.modify(key, |inout v: Vec<Int>| { v.push(i) }) == false) { bad = bad + fail("modify missed a present key") }
+    }
+    if (groups.count != 5 or groups[word(0)].length != 200 or groups[word(4)][199] != 999) { bad = bad + fail("modify grouped") }
+    if (groups.modify(word(99), |inout v: Vec<Int>| { v.push(1) })) { bad = bad + fail("modify answered true for an absent key") }
+    if (groups.contains(word(99))) { bad = bad + fail("modify inserted") }
+
+    // getOrInsertDefault: the default is stored on a miss, and a hit leaves the value.
+    let strings: HashMap<Int, String> = {}
+    let blank = strings.getOrInsertDefault(1)
+    if (blank != "" or strings.count != 1) { bad = bad + fail("default string") }
+    strings.set(1, word(1))
+    if (strings.getOrInsertDefault(1) != word(1)) { bad = bad + fail("default kept the stored value") }
+
+    // A struct value: its own default, changed in place through the closure.
+    let tallies: HashMap<String, Tally> = {}
+    for i in 0..<100 {
+        let key = word(i % 4)
+        tallies.getOrInsertDefault(key)
+        let label = word(i)
+        tallies.modify(key, |inout t: Tally| {
+            t.hits = t.hits + 1
+            t.names.push(label.clone())
+        })
+    }
+    if (tallies.count != 4 or tallies[word(0)].hits != 25 or tallies[word(3)].names.length != 25) {
+        bad = bad + fail("struct modify")
+    }
+
+    // The stored value really is changed in place: churn it and read it back.
+    let churn: HashMap<String, Vec<Int>> = {}
+    let seed: Vec<Int> = [0]
+    churn["k-a-long-key-over-twelve-bytes"] = seed
+    for i in 0..<5000 { churn.modify("k-a-long-key-over-twelve-bytes", |inout v: Vec<Int>| { v[0] = v[0] + i }) }
+    if (churn["k-a-long-key-over-twelve-bytes"][0] != 12497500) { bad = bad + fail("modify in place") }
+
+    if (bad != 0) { return 1 }
+    println("PASS")
+    return 0
+}

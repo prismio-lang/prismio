@@ -19,7 +19,7 @@
 import std.math
 import std.vec
 
-let BITS_WORD_BITS = 64
+const BITS_WORD_BITS = 64
 
 private let mut bitWords: Vec<U64>
 private let mut bitOffset: Vec<Int>
@@ -211,7 +211,7 @@ private fn wordsMembers(words: Vec<U64>, start: Int, count: Int, inout out: Vec<
 // The members of `set`, ascending, replacing what `out` held. The rules of the solver need to
 // enumerate a set, sometimes two of them nested, and a plain vector keeps that a pair of loops.
 internal fn bitsToVec(set: Int, inout out: Vec<Int>) {
-    while (out.length > 0) { out.pop() }
+    out.clear()
     wordsMembers(bitWords, bitOffset[set], bitCount[set], out)
 }
 
@@ -223,7 +223,7 @@ internal fn intsPut(inout column: Vec<Int>, at: Int, value: Int, fill: Int) {
 
 // Empties a vector without releasing it.
 internal fn intsClear(inout column: Vec<Int>) {
-    while (column.length > 0) { column.pop() }
+    column.clear()
 }
 
 // A new empty vector each call: pushing one local into several containers would move it.

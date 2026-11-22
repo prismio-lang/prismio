@@ -40,6 +40,7 @@ private fn semaVecEntryPoint(kind: TypeKind, name: String) -> String {
     if (name.equals("swap")) { return "list_swap" }
     if (name.equals("insert")) { return "list_insert" }
     if (name.equals("reserve")) { return "list_reserve" }
+    if (name.equals("shrinkToFit")) { return "list_shrink_to_fit" }
     if (name.equals("truncate")) { return "list_truncate" }
     if (name.equals("capacity")) { return "list_capacity" }
     if (name.equals("length")) { return "list_len" }
@@ -59,6 +60,7 @@ private fn semaVecArity(kind: TypeKind, name: String) -> Int {
     if (name.equals("swap")) { return 2 }
     if (name.equals("insert")) { return 2 }
     if (name.equals("reserve")) { return 1 }
+    if (name.equals("shrinkToFit")) { return 0 }
     if (name.equals("truncate")) { return 1 }
     if (name.equals("capacity")) { return 0 }
     if (name.equals("length")) { return 0 }
@@ -68,20 +70,6 @@ private fn semaVecArity(kind: TypeKind, name: String) -> Int {
     if (name.equals("isEmpty")) { return 0 }
     if (name.equals("isNotEmpty")) { return 0 }
     return 0 - 1
-}
-
-// Every method and property of a Vec that the compiler builds itself, for an editor to offer after
-// the dot. Kept beside `semaVecArity`, which decides what is lowered; the `index` fixture asks the
-// compiler about each one, so a name here that is not lowered fails a test.
-public fn semaVecMemberNames() -> Vec<String> {
-    let mut names: Vec<String> = ["push", "set", "replace", "swap", "insert", "reserve", "truncate", "capacity"]
-    names.push("length")
-    names.push("clear")
-    names.push("first")
-    names.push("last")
-    names.push("isEmpty")
-    names.push("isNotEmpty")
-    return names
 }
 
 // Whether a Vec has a method or property of this name that the compiler builds
@@ -334,13 +322,7 @@ internal fn semaVecAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
 }
 
 private fn semaVecArgCount(call: ASTNode) -> Int {
-    let mut count = 0
-    let mut p = call.child2
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
+    return chainLength(call.child2)
 }
 
 // Which `filled` a `T` gets: the runtime's for a scalar, std.vec's generic copy
@@ -388,6 +370,7 @@ private fn semaRuntimeCallSpelling(name: String) -> String {
     if (name.equals("list_insert")) { return "v.insert(i, x)" }
     if (name.equals("list_capacity")) { return "v.capacity" }
     if (name.equals("list_reserve")) { return "v.reserve(n)" }
+    if (name.equals("list_shrink_to_fit")) { return "v.shrinkToFit()" }
     if (name.equals("list_truncate")) { return "v.truncate(n)" }
     if (name.equals("list_remove_at")) { return "v.removeAt(i)" }
     if (name.equals("slice_len")) { return "s.length" }

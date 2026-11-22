@@ -1,0 +1,65 @@
+// `shrinkToFit` on a Vec, a HashMap and a HashSet: the capacity past the length is given
+// back, nothing the collection holds is lost, and it grows again on the next insert. The
+// suite runs this under `--verify` through the ownership probes; it must read 0 leaked.
+//
+// Every string is longer than twelve bytes: a shorter one is stored inline and never
+// reaches the ledger.
+
+import std.io
+import std.map
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+fn main() -> Int {
+    let mut bad = 0
+
+    let mut v: Vec<Int> = Vec<Int>.withCapacity(1000)
+    for i in 0..<100 { v.push(i) }
+    v.shrinkToFit()
+    if (v.capacity != 100 or v.length != 100 or v[99] != 99) { bad = bad + fail("vec shrink") }
+    v.push(100)
+    if (v.length != 101 or v[100] != 100) { bad = bad + fail("vec grows again") }
+    v.clear()
+    v.shrinkToFit()
+    if (v.capacity != 0) { bad = bad + fail("empty vec gives its storage back") }
+    v.push(7)
+    if (v[0] != 7) { bad = bad + fail("empty vec pushes again") }
+
+    let m: HashMap<String, String> = {}
+    for i in 0..<1000 { m[word(i)] = word(i * 2) }
+    let grown = m.capacity
+    for i in 10..<1000 { m.remove(word(i)) }
+    m.shrinkToFit()
+    if (m.capacity >= grown or m.capacity < m.count) { bad = bad + fail("map capacity shrinks") }
+    if (m.count != 10) { bad = bad + fail("map count") }
+    for i in 0..<10 { if (m[word(i)] != word(i * 2)) { bad = bad + fail("map keeps its entries") } }
+    for i in 10..<500 { m[word(i)] = word(i) }
+    if (m.count != 500 or m[word(499)] != word(499) or m[word(3)] != word(6)) { bad = bad + fail("map grows again") }
+
+    let s: HashSet<String> = HashSet<String>()
+    for i in 0..<1000 { s.insert(word(i)) }
+    let setGrown = s.capacity
+    for i in 5..<1000 { s.remove(word(i)) }
+    s.shrinkToFit()
+    if (s.capacity >= setGrown or s.count != 5) { bad = bad + fail("set shrink") }
+    for i in 0..<5 { if (s.contains(word(i)) == false) { bad = bad + fail("set keeps its keys") } }
+    s.insert(word(77))
+    if (s.count != 6 or s.contains(word(77)) == false) { bad = bad + fail("set grows again") }
+
+    let empty: HashMap<Int, Int> = {}
+    empty.shrinkToFit()
+    empty[1] = 2
+    if (empty[1] != 2) { bad = bad + fail("empty map") }
+
+    if (bad != 0) { return 1 }
+    println("PASS")
+    return 0
+}

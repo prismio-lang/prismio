@@ -20,37 +20,13 @@ import ums.model.diagnostic
 import ums.targets.target
 import project.ums_cli
 import std.fs
-
-// Project-host executables are built beside their active local generation. The
-// candidate has to start before it can replace that generation, and promotion
-// is a binary rename rather than compiler_publish_file's text copy.
-public extern fn compiler_check_executable(exeFile: String borrow) -> Int
-// Asks `exeFile --internal-host-abi` with this compiler's own token.
-public extern fn compiler_check_host_abi(exeFile: String borrow) -> Int
-// Builds `<root>/lib/runtime/*.bc` and `<root>/stdlib/*.plib` with `compiler`,
-// from the Prismio checkout that compiler was found in. Returns how many
-// standard-library modules the toolchain now has -- rebuilt here or reused from
-// `<root>/lib/toolchain.stamp`, which records what each artifact was built from
-// so an unchanged input is not built twice -- 0 when there is no checkout to
-// build them from, and -1 on failure. Reads both paths and keeps neither.
-public extern fn compiler_emit_local_toolchain(root: String borrow,
-                                        compiler: String borrow) -> Int
-// The command line, forwarded as an argument vector; answers the host's status.
-public extern fn compiler_forward_cli(host: String borrow) -> Int
-// `<host>.trusted`, written when this machine promotes a host, and whether the
-// file at `host` is still the one it was written for. See runtime/build_driver.c.
-public extern fn compiler_host_stamp_matches(host: String borrow) -> Int
-public extern fn compiler_host_stamp_write(host: String borrow) -> Int
-public extern fn compiler_promote_executable(candidateFile: String borrow,
-                                      activeFile: String borrow) -> Int
-// The checkout a toolchain host's runtime and standard library are built from:
-// the project's own root, before any search relative to the working directory.
-public extern fn compiler_set_toolchain_root(root: String borrow)
+import common.native
+import common.diag_codes
 
 private fn checkUmsCompilerCandidate(candidate: String) -> Int {
     if (compiler_check_executable(candidate) != 0) {
         deleteFile(candidate)
-        diag_error_code("P1054", "the compiler candidate did not start; the active local compiler was kept")
+        diag_error_code(DIAG_PROJECT_CANDIDATE_NOT_STARTED, "the compiler candidate did not start; the active local compiler was kept")
         return 1
     }
     return 0
@@ -62,11 +38,11 @@ public fn promoteUmsCompilerCandidate(candidate: String, active: String) -> Int 
     if (checkUmsCompilerCandidate(candidate.clone()) != 0) { return 1 }
     if (compiler_promote_executable(candidate, active) != 0) {
         deleteFile(candidate)
-        diag_error_code("P1055", "could not promote the compiler candidate; the active local compiler was kept")
+        diag_error_code(DIAG_PROJECT_CANDIDATE_NOT_PROMOTED, "could not promote the compiler candidate; the active local compiler was kept")
         return 1
     }
     if (compiler_host_stamp_write(active) != 0) {
-        diag_warning_code("P1083", "could not record the promoted compiler as built on this machine")
+        diag_warning_code(DIAG_PROJECT_PROMOTION_NOT_RECORDED, "could not record the promoted compiler as built on this machine")
         diag_note("the launcher will not run it until a `prismio build` records it")
     }
 
@@ -119,7 +95,7 @@ private fn emitUmsToolchainLibraries(hostPath: String, compilerPath: String) -> 
     let root = directoryOf(directoryOf(hostPath))
     let modules = compiler_emit_local_toolchain(root, compilerPath)
     if (modules < 0) {
-        diag_error_code("P1067", "the project compiler was built without its runtime and standard library")
+        diag_error_code(DIAG_PROJECT_HOST_WITHOUT_RUNTIME, "the project compiler was built without its runtime and standard library")
         diag_note("it can build itself and nothing else until this succeeds")
         return 1
     }
@@ -149,7 +125,7 @@ public fn buildUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget,
 
     let replacesSelf = compiler_is_current_executable(target.outputPath) == 1
     if (replacesSelf and compiler_is_hosted() == 0) {
-        diag_error_code("P1051", "the project-local compiler cannot replace itself without its global parent")
+        diag_error_code(DIAG_PROJECT_COMPILER_CANNOT_REPLACE_ITSELF, "the project-local compiler cannot replace itself without its global parent")
         diag_note("run `prismio build` through the installed global compiler")
         return 1
     }
@@ -160,7 +136,7 @@ public fn buildUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget,
     let built = compileSource(target.sourcePath, candidate.clone(), options)
     if (built != 0) {
         deleteFile(candidate)
-        diag_error_code("P1053", "the compiler candidate did not build; the active local compiler was kept")
+        diag_error_code(DIAG_PROJECT_CANDIDATE_NOT_BUILT, "the compiler candidate did not build; the active local compiler was kept")
         return 1
     }
     if (replacesSelf) {
@@ -266,7 +242,7 @@ public fn dispatchToUmsHost() -> Int {
     // host this machine built.
     if (compiler_host_stamp_matches(host) == 0) {
         if (cliWantsMachineOutput() == false) {
-            diag_warning_code("P1077", "the project compiler was not built on this machine, so it will not be run")
+            diag_warning_code(DIAG_PROJECT_HOST_BUILT_ELSEWHERE, "the project compiler was not built on this machine, so it will not be run")
             diag_note(host)
             diag_note("`prismio build` builds it here; until then the global compiler serves this project")
         }
@@ -275,7 +251,7 @@ public fn dispatchToUmsHost() -> Int {
     }
 
     if (compiler_check_executable(host) != 0) {
-        diag_warning_code("P1052", "the configured project host is not runnable")
+        diag_warning_code(DIAG_PROJECT_HOST_NOT_RUNNABLE, "the configured project host is not runnable")
         announceToolchain("global", currentPath)
         return -1
     }
@@ -293,7 +269,7 @@ public fn dispatchToUmsHost() -> Int {
     let cleaning = process.args.count > 1 and process.args[1].equals("clean")
     if (cleaning == false and
         compiler_check_host_abi(host) != 0) {
-        diag_warning_code("P1064", "the project compiler is from an older toolchain generation")
+        diag_warning_code(DIAG_PROJECT_HOST_OLDER_GENERATION, "the project compiler is from an older toolchain generation")
         diag_note("rebuilding ".concat(host, " with the global compiler first"))
 
         // Named before the rebuild rather than after it, because the rebuild is
@@ -302,7 +278,7 @@ public fn dispatchToUmsHost() -> Int {
         announceToolchain("global", currentPath)
         let repaired = repairUmsProjectHost()
         if (repaired < 0) {
-            diag_warning_code("P1065", "no target in this project builds the configured compiler host")
+            diag_warning_code(DIAG_PROJECT_NO_TARGET_BUILDS_HOST, "no target in this project builds the configured compiler host")
             announceToolchain("global", currentPath)
             return -1
         }
@@ -314,7 +290,7 @@ public fn dispatchToUmsHost() -> Int {
         // generation. Forwarding into it would reproduce the original link error
         // with a rebuild in front of it.
         if (compiler_check_host_abi(host) != 0) {
-            diag_error_code("P1066", "the rebuilt project compiler reports a different generation")
+            diag_error_code(DIAG_PROJECT_HOST_GENERATION_CHANGED, "the rebuilt project compiler reports a different generation")
             diag_note("the installed compiler is older than this project's sources")
             diag_note("bootstrap one from source: python3 tools/bootstrap.py --seed --out build/g1")
             return 1
@@ -339,7 +315,7 @@ public fn dispatchToUmsHost() -> Int {
     if (cleaning and umsProjectOwnsHost(".") == false) { return 0 }
     if (cleaning) {
         if (fileExists(host) and deleteFile(host) == false) {
-            diag_error_code("P1056", "could not remove the project compiler after clean")
+            diag_error_code(DIAG_PROJECT_HOST_NOT_REMOVED, "could not remove the project compiler after clean")
             return 1
         }
         let stamp = host.clone().concat(".trusted")

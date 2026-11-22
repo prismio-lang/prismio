@@ -445,17 +445,8 @@ internal fn typeAcyclicId(name: Int) -> Int {
     return nominalAcyclic[id]
 }
 
-public fn aif_type_acyclic(name: String) -> Int {
-    return typeAcyclicId(irNameId(name))
-}
-
 public fn aif_nominal_count() -> Int {
     return nominalCount
-}
-
-public fn aif_nominal_name(i: Int) -> String {
-    if (i < 0 or i >= nominalCount) { return "" }
-    return irNameText(nominalName[i])
 }
 
 public fn aif_nominal_is_struct(i: Int) -> Int {

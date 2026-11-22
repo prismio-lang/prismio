@@ -291,6 +291,15 @@ internal fn elemDispositionOf(id: Int, tier: Int) -> Int {
     return AIF_ELEM_OBJECT
 }
 
+// Whether a site of type `siteTypeId` is an instance of the generic struct a field is declared as: `HashMap$Int$Int` fills
+// a field written `HashMap<Int, Int>`, whose declared type is the constructor's name. The `$` is `monoSeparator()`
+// (src/sema/generics.psm), which this layer does not import.
+private fn siteIsInstanceOf(siteTypeId: Int, declaredType: Int) -> Bool {
+    let site = irNameText(siteTypeId)
+    let declared = irNameText(declaredType)
+    return site.startsWith(declared.concat("$"))
+}
+
 // What release `type.field` needs, or NONE. Agreement over the field's points-to set, for the same reason the container
 // case agrees over its elements: one field holds one pointer, but the analysis may not be able to say which site produced it,
 // and a field that is a `List` on one path and an opaque on another has no single correct release.
@@ -327,7 +336,9 @@ internal fn fieldReleaseOf(typeName: Int, name: Int, declaredType: Int) -> Int {
         // **The slot has to hold what it says it holds.** This compiler puns an ASTNode pointer as `String` and walks node
         // chains through it, so a `String` field can receive struct sites, and a release chosen from the sites alone emits
         // `__aif_release_String`, which is not a function. The honest answer is to reclaim nothing.
-        if (declaredType >= 0 and baseTypeId(siteType[s]) != declaredType) { return AIF_ELEM_NONE }
+        if (declaredType >= 0 and baseTypeId(siteType[s]) != declaredType and siteIsInstanceOf(siteType[s], declaredType) == false) {
+            return AIF_ELEM_NONE
+        }
         let d = elemDispositionOf(s, aif_tier_of(s))
         if (d == AIF_ELEM_NONE) { return AIF_ELEM_NONE }
         // See `closes` above: only the edges the collector does not own.

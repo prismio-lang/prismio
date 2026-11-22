@@ -20,31 +20,25 @@ public fn ixLoweredSignature(head: String, name: String) -> String {
     return found
 }
 
+// The heads whose optional form (`T?`) answers `unwrapOr` and `expect`: the scalars that carry their absence in a
+// niche. `I32` is not here because `Int` is the 32-bit signed type.
+private fn ixIsOptionalScalarHead(head: String) -> Bool {
+    return head.equals("Int") or head.equals("I8") or head.equals("I16") or head.equals("I64") or head.equals("Isize")
+        or head.equals("U8") or head.equals("U16") or head.equals("U32") or head.equals("U64") or head.equals("Usize")
+        or head.equals("Float") or head.equals("F32") or head.equals("F16") or head.equals("BF16") or head.equals("F128")
+        or head.equals("Bool") or head.equals("Char")
+}
+
 private fn ixLoweredSig(head: String, name: String) -> String {
     if (head.equals("Array") and name.equals("length")) { return "prop length(self) -> Int".clone() }
-    if (head.equals("Vec")) {
+    if (head.equals("Vec") or head.equals("List")) {
         if (name.equals("push")) { return "fn push(self, value: T)".clone() }
         if (name.equals("set")) { return "fn set(self, index: Int, value: T)".clone() }
         if (name.equals("replace")) { return "fn replace(self, index: Int, value: T)".clone() }
         if (name.equals("swap")) { return "fn swap(self, i: Int, j: Int)".clone() }
         if (name.equals("insert")) { return "fn insert(self, index: Int, value: T)".clone() }
         if (name.equals("reserve")) { return "fn reserve(self, count: Int)".clone() }
-        if (name.equals("truncate")) { return "fn truncate(self, length: Int)".clone() }
-        if (name.equals("clear")) { return "fn clear(self)".clone() }
-        if (name.equals("length")) { return "prop length(self) -> Int".clone() }
-        if (name.equals("capacity")) { return "prop capacity(self) -> Int".clone() }
-        if (name.equals("isEmpty")) { return "prop isEmpty(self) -> Bool".clone() }
-        if (name.equals("isNotEmpty")) { return "prop isNotEmpty(self) -> Bool".clone() }
-        if (name.equals("first")) { return "prop first(self) -> T".clone() }
-        if (name.equals("last")) { return "prop last(self) -> T".clone() }
-    }
-    if (head.equals("List")) {
-        if (name.equals("push")) { return "fn push(self, value: T)".clone() }
-        if (name.equals("set")) { return "fn set(self, index: Int, value: T)".clone() }
-        if (name.equals("replace")) { return "fn replace(self, index: Int, value: T)".clone() }
-        if (name.equals("swap")) { return "fn swap(self, i: Int, j: Int)".clone() }
-        if (name.equals("insert")) { return "fn insert(self, index: Int, value: T)".clone() }
-        if (name.equals("reserve")) { return "fn reserve(self, count: Int)".clone() }
+        if (name.equals("shrinkToFit")) { return "fn shrinkToFit(self)".clone() }
         if (name.equals("truncate")) { return "fn truncate(self, length: Int)".clone() }
         if (name.equals("clear")) { return "fn clear(self)".clone() }
         if (name.equals("length")) { return "prop length(self) -> Int".clone() }
@@ -76,73 +70,10 @@ private fn ixLoweredSig(head: String, name: String) -> String {
         if (name.equals("free")) { return "fn free(self)".clone() }
         if (name.equals("length")) { return "prop length(self) -> Int".clone() }
     }
-    if (head.equals("Int")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Int) -> Int".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> Int".clone() }
-    }
-    if (head.equals("I8")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: I8) -> I8".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> I8".clone() }
-    }
-    if (head.equals("I16")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: I16) -> I16".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> I16".clone() }
-    }
-    if (head.equals("I64")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: I64) -> I64".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> I64".clone() }
-    }
-    if (head.equals("Isize")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Isize) -> Isize".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> Isize".clone() }
-    }
-    if (head.equals("U8")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U8) -> U8".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> U8".clone() }
-    }
-    if (head.equals("U16")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U16) -> U16".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> U16".clone() }
-    }
-    if (head.equals("U32")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U32) -> U32".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> U32".clone() }
-    }
-    if (head.equals("U64")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: U64) -> U64".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> U64".clone() }
-    }
-    if (head.equals("Usize")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Usize) -> Usize".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> Usize".clone() }
-    }
-    if (head.equals("Float")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Float) -> Float".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> Float".clone() }
-    }
-    if (head.equals("F32")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: F32) -> F32".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> F32".clone() }
-    }
-    if (head.equals("F16")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: F16) -> F16".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> F16".clone() }
-    }
-    if (head.equals("BF16")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: BF16) -> BF16".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> BF16".clone() }
-    }
-    if (head.equals("F128")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: F128) -> F128".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> F128".clone() }
-    }
-    if (head.equals("Bool")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Bool) -> Bool".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> Bool".clone() }
-    }
-    if (head.equals("Char")) {
-        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: Char) -> Char".clone() }
-        if (name.equals("expect")) { return "fn expect(self) -> Char".clone() }
+    // Every optional scalar answers the same two members, in its own type: `Int?`, `Bool?`, `F32?`.
+    if (ixIsOptionalScalarHead(head)) {
+        if (name.equals("unwrapOr")) { return "fn unwrapOr(self, fallback: ".concat(head).concat(") -> ").concat(head) }
+        if (name.equals("expect")) { return "fn expect(self) -> ".concat(head) }
     }
     if (head.equals("Ptr")) {
         if (name.equals("addr")) { return "prop addr(self) -> Usize".clone() }
@@ -185,29 +116,14 @@ public fn ixLoweredDoc(head: String, name: String) -> String {
 
 private fn ixLoweredText(head: String, name: String) -> String {
     if (head.equals("Array") and name.equals("length")) { return "The number of elements, which the type fixes.".clone() }
-    if (head.equals("Vec")) {
+    if (head.equals("Vec") or head.equals("List")) {
         if (name.equals("push")) { return "Appends `value` to the end of the vector.".clone() }
         if (name.equals("set")) { return "Replaces the element at `index`; the index is checked.".clone() }
         if (name.equals("replace")) { return "Replaces the element at `index` of a vector of boxed structs.".clone() }
         if (name.equals("swap")) { return "Exchanges the elements at `i` and `j`.".clone() }
         if (name.equals("insert")) { return "Inserts `value` before `index`, moving the elements after it.".clone() }
         if (name.equals("reserve")) { return "Makes room for `count` more elements without reallocating.".clone() }
-        if (name.equals("truncate")) { return "Shortens the vector to `length` elements.".clone() }
-        if (name.equals("clear")) { return "Removes every element.".clone() }
-        if (name.equals("length")) { return "The number of elements.".clone() }
-        if (name.equals("capacity")) { return "The number of elements the vector can hold before it reallocates.".clone() }
-        if (name.equals("isEmpty")) { return "Whether the vector has no elements.".clone() }
-        if (name.equals("isNotEmpty")) { return "Whether the vector has at least one element.".clone() }
-        if (name.equals("first")) { return "The first element; checked.".clone() }
-        if (name.equals("last")) { return "The last element; checked.".clone() }
-    }
-    if (head.equals("List")) {
-        if (name.equals("push")) { return "Appends `value` to the end of the vector.".clone() }
-        if (name.equals("set")) { return "Replaces the element at `index`; the index is checked.".clone() }
-        if (name.equals("replace")) { return "Replaces the element at `index` of a vector of boxed structs.".clone() }
-        if (name.equals("swap")) { return "Exchanges the elements at `i` and `j`.".clone() }
-        if (name.equals("insert")) { return "Inserts `value` before `index`, moving the elements after it.".clone() }
-        if (name.equals("reserve")) { return "Makes room for `count` more elements without reallocating.".clone() }
+        if (name.equals("shrinkToFit")) { return "Gives back the capacity past the length; a small vector keeps its block.".clone() }
         if (name.equals("truncate")) { return "Shortens the vector to `length` elements.".clone() }
         if (name.equals("clear")) { return "Removes every element.".clone() }
         if (name.equals("length")) { return "The number of elements.".clone() }
@@ -239,71 +155,7 @@ private fn ixLoweredText(head: String, name: String) -> String {
         if (name.equals("free")) { return "Releases this handle.".clone() }
         if (name.equals("length")) { return "The number of values waiting.".clone() }
     }
-    if (head.equals("Int")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("I8")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("I16")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("I64")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("Isize")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("U8")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("U16")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("U32")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("U64")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("Usize")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("Float")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("F32")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("F16")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("BF16")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("F128")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("Bool")) {
-        if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
-        if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
-    }
-    if (head.equals("Char")) {
+    if (ixIsOptionalScalarHead(head)) {
         if (name.equals("unwrapOr")) { return "The value, or `fallback` when there is none.".clone() }
         if (name.equals("expect")) { return "The value; stops the program when there is none.".clone() }
     }
@@ -343,29 +195,14 @@ private fn ixLoweredText(head: String, name: String) -> String {
 public fn ixLoweredNames(head: String) -> Vec<String> {
     let mut names: Vec<String> = []
     if (head.equals("Array")) { names.push("length".clone()) }
-    if (head.equals("Vec")) {
+    if (head.equals("Vec") or head.equals("List")) {
         names.push("push".clone())
         names.push("set".clone())
         names.push("replace".clone())
         names.push("swap".clone())
         names.push("insert".clone())
         names.push("reserve".clone())
-        names.push("truncate".clone())
-        names.push("clear".clone())
-        names.push("length".clone())
-        names.push("capacity".clone())
-        names.push("isEmpty".clone())
-        names.push("isNotEmpty".clone())
-        names.push("first".clone())
-        names.push("last".clone())
-    }
-    if (head.equals("List")) {
-        names.push("push".clone())
-        names.push("set".clone())
-        names.push("replace".clone())
-        names.push("swap".clone())
-        names.push("insert".clone())
-        names.push("reserve".clone())
+        names.push("shrinkToFit".clone())
         names.push("truncate".clone())
         names.push("clear".clone())
         names.push("length".clone())
@@ -397,71 +234,7 @@ public fn ixLoweredNames(head: String) -> Vec<String> {
         names.push("free".clone())
         names.push("length".clone())
     }
-    if (head.equals("Int")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("I8")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("I16")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("I64")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("Isize")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("U8")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("U16")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("U32")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("U64")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("Usize")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("Float")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("F32")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("F16")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("BF16")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("F128")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("Bool")) {
-        names.push("unwrapOr".clone())
-        names.push("expect".clone())
-    }
-    if (head.equals("Char")) {
+    if (ixIsOptionalScalarHead(head)) {
         names.push("unwrapOr".clone())
         names.push("expect".clone())
     }

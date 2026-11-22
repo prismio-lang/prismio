@@ -252,10 +252,6 @@ internal fn siteKeyAt(i: Int) -> Int {
     return siteKeyList[i]
 }
 
-internal fn siteOwnersBits(s: Int) -> Int {
-    return siteOwnerSites[s]
-}
-
 // The innermost `region` enclosing this scope, or -1. Distinct from `enclosingRegion`, which also answers for an
 // arena the cost model chose: only a pinned one may be bracketed into before placement has run.
 private fn enclosingPinnedRegion(scope: Int) -> Int {

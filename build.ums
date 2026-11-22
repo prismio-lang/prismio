@@ -9,7 +9,7 @@ project {
     description = "Prismio compiler"
     license = "Apache-2.0"
     authors = [
-         "Saksham Jaiswal"
+    "Saksham Jaiswal"
     ]
 }
 
@@ -21,8 +21,10 @@ profiles {
     debug {
         debugInfo = false
         overflowChecks = false
+
     }
 }
+
 
 targets {
     // The compiler is an ordinary Prismio program who-se runtime and backend are
@@ -53,10 +55,14 @@ targets {
         native {
             // Must match RUNTIME_SOURCES in tools/bootstrap.py;
             // tools/check_source_lists.py checks that it does.
-            source("runtime/lang_runtime.c", "runtime/program_support.c",
+            source(
+            "runtime/lang_runtime.c",
+            "runtime/program_support.c",
             "runtime/build_driver.c",
             "runtime/llvm-api-backend.c",
-            "runtime/llvm_bridge.cpp")
+            "runtime/llvm_bridge.cpp"
+            )
+
             include("runtime")
             define("PRISMIO_LLVM_REAL_HEADERS", "PRISMIO_BOOTSTRAP_COMPAT")
             flag("-Wno-deprecated-declarations")

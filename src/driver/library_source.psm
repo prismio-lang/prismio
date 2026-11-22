@@ -11,16 +11,18 @@ import std.process
 import std.string
 import common.diagnostics
 import driver.imports
+import common.native
+import common.diag_codes
 
 public fn librarySourceCommand() -> Int {
     if (process.args.count != 4) {
-        diag_error_code("P1119", "`library-source` takes the .plib file and the name of its module")
+        diag_error_code(DIAG_DRIVER_LIBRARY_SOURCE_USAGE, "`library-source` takes the .plib file and the name of its module")
         diag_note("usage: prismio library-source <file.plib> <module>")
         return 1
     }
     let text = compiler_plib_interface(process.args[2], process.args[3])
     if (text.equals("")) {
-        diag_error_code("P1120", "cannot read the interface of ".concat(process.args[2], ": ", compiler_plib_error()))
+        diag_error_code(DIAG_DRIVER_LIBRARY_INTERFACE_UNREADABLE, "cannot read the interface of ".concat(process.args[2], ": ", compiler_plib_error()))
         return 1
     }
     print(text)

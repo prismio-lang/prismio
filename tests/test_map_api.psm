@@ -1,0 +1,92 @@
+// HashMap's storing and lookup API.
+//
+// 1. `m[k] = v` inserts or replaces, `m[k]` reads, `m.get(k)` answers an optional:
+//    the three failure semantics are different on purpose.
+// 2. `insert` stores a new key only and answers whether it was new (as
+//    `HashSet.insert` does); `set` always stores and answers the displaced value.
+// 3. `getOrInsert` / `getOrInsertWith`: one lookup, and the factory runs only on a miss.
+// 4. `take`, `retain` (order of the kept entries is preserved), `update`.
+// 5. `reserve` is relative to the entries already held; `clear` keeps the capacity.
+//
+// String keys are copied in and released with the map; the suite runs this under
+// `--verify` through the same ledger check test_193_map_methods does.
+
+import std.io
+import std.map
+import std.option
+import std.string
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+extern fn abort()
+
+// A factory that must not run: reaching it aborts the program.
+fn unexpectedFactory() -> Int {
+    abort()
+    return -1
+}
+
+fn main() -> Int {
+    let mut bad = 0
+
+    // 1. Subscripts.
+    let ages: HashMap<String, Int> = {}
+    ages["Alice"] = 20
+    ages["Bob"] = 25
+    ages["Alice"] = 21
+    if (ages["Alice"] != 21 or ages["Bob"] != 25) { bad = bad + fail("subscript store or read") }
+    if (ages.count != 2) { bad = bad + fail("a replacing store grew the map") }
+    if (ages.get("Zed") != none) { bad = bad + fail("get of an absent key") }
+    if ((ages.get("Bob") ?? -1) != 25) { bad = bad + fail("get of a present key") }
+
+    // 2. insert and set.
+    if (ages.insert("Alice", 99) or ages["Alice"] != 21) { bad = bad + fail("insert overwrote") }
+    if (ages.insert("Carol", 31) == false or ages["Carol"] != 31) { bad = bad + fail("insert of a new key") }
+    if ((ages.set("Alice", 22) ?? -1) != 21) { bad = bad + fail("set did not answer the previous value") }
+    if (ages.set("Dan", 40) != none) { bad = bad + fail("set of a new key answered a value") }
+    if (ages.count != 4) { bad = bad + fail("count after insert and set") }
+
+    // 3. getOrInsert and getOrInsertWith.
+    if (ages.getOrInsert("Eve", 7) != 7 or ages.getOrInsert("Eve", 8) != 7) { bad = bad + fail("getOrInsert") }
+    if (ages.getOrInsertWith("Fay", || 100) != 100) { bad = bad + fail("getOrInsertWith miss") }
+    if (ages.getOrInsertWith("Fay", || unexpectedFactory()) != 100) { bad = bad + fail("getOrInsertWith hit") }
+    if (ages.count != 6) { bad = bad + fail("count after getOrInsert") }
+
+    // 4. take, update, retain.
+    if ((ages.take("Bob") ?? -1) != 25 or ages.contains("Bob")) { bad = bad + fail("take") }
+    if (ages.take("Bob") != none) { bad = bad + fail("take of an absent key") }
+    if (ages.update("Dan", |v: Int| v + 1) == false or ages["Dan"] != 41) { bad = bad + fail("update") }
+    if (ages.update("Nobody", |v: Int| v + 1)) { bad = bad + fail("update of an absent key") }
+
+    let nums: HashMap<Int, Int> = {}
+    for i in 0..<20 { nums[i] = i * 10 }
+    nums.retain(|k: Int, v: Int| v >= 50 and k % 2 == 0)
+    if (nums.count != 7) { bad = bad + fail("retain count") }
+    let mut expect = 6
+    for i in 0..<nums.count {
+        if (nums.keyAt(i) != expect or nums.valueAt(i) != expect * 10) { bad = bad + fail("retain changed the order") }
+        expect = expect + 2
+    }
+    if (nums.contains(4) or nums.contains(7) or nums.contains(19)) { bad = bad + fail("retain membership") }
+    if (nums.getOr(18, -1) != 180) { bad = bad + fail("retain left the probe table stale") }
+
+    // 5. reserve and clear.
+    let big: HashMap<Int, Int> = {}
+    big[1] = 1
+    big.reserve(1000)
+    if (big.capacity < 1001) { bad = bad + fail("reserve is relative to the entries held") }
+    let reserved = big.capacity
+    for i in 0..<1000 { big[i + 2] = i }
+    if (big.capacity != reserved) { bad = bad + fail("the table grew inside the reservation") }
+    big.clear()
+    if (big.count != 0 or big.capacity != reserved or big.contains(1)) { bad = bad + fail("clear dropped the capacity") }
+    big[5] = 6
+    if (big[5] != 6) { bad = bad + fail("a cleared map does not store") }
+
+    if (bad == 0) { println("ok") }
+    return bad
+}

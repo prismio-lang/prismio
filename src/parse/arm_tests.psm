@@ -36,6 +36,7 @@ import lexer.scanner
 import ast.nodes
 import common.diagnostics
 import std.string
+import common.diag_codes
 
 // i1: 0 a plain pattern, 1 `lo..hi`, 2 `lo..<hi`, 3 a string, 4 a name that binds (it has a guard),
 // 5 a pattern with a pattern inside it (`F.X(E.A(v))`, `F.X(0)`).
@@ -88,12 +89,6 @@ private fn armAssign(from: ASTNode, name: String, value: ASTNode) -> ASTNode {
     node.child1 = node_to_ptr(letName(from, name))
     node.child2 = node_to_ptr(value)
     return node
-}
-
-// `statement` first in `block`.
-private fn armPrepend(block: ASTNode, statement: ASTNode) {
-    statement.next = block.child1
-    block.child1 = node_to_ptr(statement)
 }
 
 // An arm written `_ =>` with a block, to end a chain of arms.
@@ -233,7 +228,7 @@ impl Parser {
         while (nodeExists(p)) {
             let arm = ptr_to_node(p)
             if (arm.s1.equals("_") and arm.i2 == 0 and nodeExists(arm.next)) {
-                diag_error_at_code("P3201", arm.file, arm.line, arm.col, arm.len,
+                diag_error_at_code(DIAG_PARSE_WILDCARD_NOT_LAST, arm.file, arm.line, arm.col, arm.len,
                                    "this `_` matches everything, so the arms after it can never run")
                 self.abandon()
                 return ptr_null()
@@ -242,7 +237,7 @@ impl Parser {
             p = arm.next
         }
         if (armIsFinalWildcard(ptr_to_node(lastPtr)) == false) {
-            diag_error_at_code("P3201", matchNode.file, matchNode.line, matchNode.col, matchNode.len,
+            diag_error_at_code(DIAG_PARSE_TESTED_MATCH_NEEDS_WILDCARD, matchNode.file, matchNode.line, matchNode.col, matchNode.len,
                                "a `match` with a guard, a range, a string or a pattern inside a pattern has to end in `_`, for the values none of them takes")
             self.abandon()
             return ptr_null()

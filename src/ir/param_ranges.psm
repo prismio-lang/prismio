@@ -236,13 +236,7 @@ private fn paramRangeJoinOne(symbol: String, index: Int, t: TypeInfo, sites: Now
 }
 
 private fn paramRangeArity(decl: ASTNode) -> Int {
-    let mut count = 0
-    let mut p = decl.child1
-    while (nodeExists(p)) {
-        count = count + 1
-        p = ptr_to_node(p).next
-    }
-    return count
+    return chainLength(decl.child1)
 }
 
 // The `|lo|hi` tail of a parameter's line, or "" when it has no range.

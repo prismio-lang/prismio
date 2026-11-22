@@ -332,6 +332,7 @@ public fn typeIsMoveOnly(t: TypeInfo) -> Bool {
             if (nodeExists(t.child)) { return typeIsMoveOnly(ptr_to_type(t.child)) }
             return false
         }
+        _ => { }
     }
     return t.kind == TypeKind.LIST or t.kind == TypeKind.DATAVIEW
 }
@@ -487,11 +488,6 @@ public fn typePtrIsVolatile(t: TypeInfo) -> Bool {
     return typeIsTypedPtr(t) and (t.length & 2) == 2
 }
 
-// The same pointer without its write capability: what `Ptr<mut T>` converts to.
-public fn typePtrReadOnly(t: TypeInfo) -> TypeInfo {
-    return typePtrTo(typePtrPointee(t), false, typePtrIsVolatile(t))
-}
-
 // Whether a pointer of type `actual` may stand where `expected` is wanted, the one
 // asymmetric rule `typeEquals` cannot say. `Ptr<mut T>` becomes `Ptr<T>` and either
 // becomes the opaque `Ptr`; the other directions are refused -- gaining write access
@@ -530,6 +526,7 @@ public fn typeCanBeOptional(t: TypeInfo) -> Bool {
         TypeKind.STRUCT => { return true }
         TypeKind.STRING => { return true }
         TypeKind.LIST => { return true }
+        _ => { }
     }
     if (typeIsScalarOptionalInner(t)) { return true }
     return t.kind == TypeKind.PTR
@@ -791,6 +788,7 @@ private fn typeSpelling(t: TypeInfo, vecName: String) -> String {
             }
             return "none"
         }
+        _ => { }
     }
     return t.name
 }
@@ -835,6 +833,7 @@ public fn typeEquals(a: TypeInfo, b: TypeInfo) -> Bool {
             if (nodeIsNull(a.child) or nodeIsNull(b.child)) { return false }
             return typeEquals(ptr_to_type(a.child), ptr_to_type(b.child))
         }
+        _ => { }
     }
     // A typed pointer is the same type as another only when it points at the same
     // thing with the same capabilities; the one-way conversions (`mut` dropped, a type
@@ -910,6 +909,7 @@ public fn typeIrKey(t: TypeInfo) -> String {
         TypeKind.SLICE => { return "struct:prismio.slice" }
         TypeKind.DATAVIEW => { return "ptr" }
         TypeKind.DATAELEMENT => { return "struct:prismio.data_element" }
+        _ => { }
     }
     // A scalar's `T?` is `{ i1 present, T value }`, by value.
     if (typeIsValueOptional(t)) { return "opt:".concat(typeIrKey(ptr_to_type(t.child))) }
@@ -998,15 +998,9 @@ public fn typeSemKey(t: TypeInfo) -> String {
             }
             return "opt:Invalid"
         }
+        _ => { }
     }
     return "Invalid"
-}
-
-private fn typeStorageKey(t: TypeInfo) -> String {
-    let key = typeIrKey(t)
-    if (key.equals("ptrptr")) { return "ptr" }
-    if (key.startsWith("struct:")) { return "ptr" }
-    return key
 }
 
 // The capabilities a `Ptr<...>` annotation wrote, read off its `$mut` / `$volatile`
@@ -1100,23 +1094,6 @@ private fn typeFromAnnotation(tn: ASTNode) -> TypeInfo {
     if (typeIsValid(sized)) { return sized }
     if (tn.s1.equals("")) { return typeVoid() }
     return typeStruct(tn.s1)
-}
-
-private fn typeFromIrKey(key: String) -> TypeInfo {
-    if (key.equals("i32")) { return typeInt() }
-    if (floatKeyValid(key)) { return typeFloatFromKey(key) }
-    if (key.equals("i1")) { return typeBool() }
-    if (key.equals("i8")) { return typeChar() }
-    if (key.equals("ptr")) { return typePtr() }
-    if (key.equals("void")) { return typeVoid() }
-    if (key.equals("struct:prismio.slice")) { return typeSlice(typeInvalid()) }
-    if (key.equals("struct:prismio.data_element")) {
-        return typeDataElement(typeInvalid())
-    }
-    if (key.startsWith("struct:")) {
-        return typeStruct(key.substring(7, key.length - 7))
-    }
-    return typeInvalid()
 }
 
 public fn typeFromSemKey(key: String) -> TypeInfo {
@@ -1271,6 +1248,7 @@ public fn isNamedTopLevel(stmt: ASTNode) -> Bool {
     // is named and it is not overloadable, so the existing rule is exactly right
     // for it.
         NodeKind.WORKLOAD_DECL => { return true }
+        _ => { }
     }
     return false
 }
@@ -1315,21 +1293,11 @@ public fn findStructDeclNamed(module: ASTNode, name: String) -> ASTNode {
 }
 
 public fn findStructField(structNode: ASTNode, name: String) -> ASTNode {
-    let mut p = structNode.child1
-    while (nodeExists(p)) {
-        let f = ptr_to_node(p)
-        if (f.s1.equals(name)) { return f }
-        p = f.next
-    }
-    return ptr_to_node(ptr_null())
+    return chainNamed(structNode.child1, name)
 }
 
 public fn typeAnnIsPod(module: ASTNode, ann: ASTNode, depth: Int) -> Bool {
     return typeAnnIsPodIn(module, ann, depth, false)
-}
-
-private fn structDeclIsPod(module: ASTNode, name: String, depth: Int) -> Bool {
-    return structDeclIsPodIn(module, name, depth, false)
 }
 
 // `byDecl` picks which table answers "is this name a struct", and it is the only

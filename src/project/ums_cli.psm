@@ -24,36 +24,10 @@ import project.host
 import project.commands
 import std.fs
 import build.BUILD_VERSION
+import common.native
+import ir.bridge
+import common.diag_codes
 
-public extern fn compiler_default_exe_path(sourcePath: String) -> String produce(rt_free)
-public extern fn compiler_is_current_executable(path: String borrow) -> Int
-public extern fn compiler_is_hosted() -> Int
-// A target's linker and native-compile inputs, recorded one at a time and
-// cleared by compiler_link_reset. Paths reach this boundary already resolved
-// against the manifest root; the C driver quotes every argument before it builds
-// a command.
-public extern fn compiler_link_file(path: String borrow) -> Int
-public extern fn compiler_link_framework(name: String borrow) -> Int
-public extern fn compiler_link_library(name: String borrow) -> Int
-public extern fn compiler_link_reset()
-public extern fn compiler_link_response_file(path: String borrow) -> Int
-public extern fn compiler_link_search(path: String borrow) -> Int
-public extern fn compiler_native_define(definition: String borrow) -> Int
-public extern fn compiler_native_flag(flag: String borrow) -> Int
-public extern fn compiler_native_include(directory: String borrow) -> Int
-public extern fn compiler_native_response_file(path: String borrow) -> Int
-public extern fn compiler_native_source(path: String borrow) -> Int
-public extern fn compiler_set_export_dynamic(on: Int)
-public extern fn compiler_set_installed_runtime(on: Int)
-public extern fn compiler_link_flag(flag: String borrow) -> Int
-public extern fn compiler_set_freestanding(on: Int)
-public extern fn ir_set_freestanding(on: Int)
-public extern fn ir_set_no_red_zone(on: Int)
-public extern fn ir_set_target_features(features: String borrow) -> Int
-public extern fn ir_set_code_model(name: String borrow) -> Int
-// Everything under a directory except the running executable; see
-// runtime/build_driver.c.
-public extern fn compiler_remove_tree(path: String borrow) -> Int
 public extern fn host_is_windows() -> Int
 // `file_exists` opens the path, and opening a directory fails on Windows, so a
 // directory is asked about with this one: `clean` reported "nothing to remove"
@@ -117,7 +91,7 @@ public fn initUmsProject(nameArg: String) -> Int {
     // Rejected by UMS's own rule rather than a copy of it, so a name this writes
     // is a name the validator accepts -- the scaffold cannot be born invalid.
     if (umsValidName(name) == false) {
-        diag_error_code("P1013", "cannot use ".concat(diagQuote(name), " as a project name"))
+        diag_error_code(DIAG_PROJECT_INIT_INVALID_NAME, "cannot use ".concat(diagQuote(name), " as a project name"))
         diag_note("a name starts with a letter, a digit or `_`, and may hold those plus `-` and `.`")
         diag_note("run `prismio init <name>` to choose one")
         return 1
@@ -125,12 +99,12 @@ public fn initUmsProject(nameArg: String) -> Int {
 
     let manifestPath = joinPath(root, "build.ums")
     if (fileExists(manifestPath)) {
-        diag_error_code("P1014", manifestPath.concat(" already exists"))
+        diag_error_code(DIAG_PROJECT_INIT_MANIFEST_EXISTS, manifestPath.concat(" already exists"))
         return 1
     }
 
     if (makeDirectory(joinPath(root, "src")) == false) {
-        diag_error_code("P1015", "could not create ".concat(joinPath(root, "src")))
+        diag_error_code(DIAG_PROJECT_INIT_SRC_NOT_CREATED, "could not create ".concat(joinPath(root, "src")))
         return 1
     }
 
@@ -141,7 +115,7 @@ public fn initUmsProject(nameArg: String) -> Int {
                                        name)
     let manifestText = manifestBody.concat("\") {\n        entry = \"src/main.psm\"\n    }\n}\n")
     if (writeFile(manifestPath, manifestText) == false) {
-        diag_error_code("P1016", "could not write ".concat(manifestPath))
+        diag_error_code(DIAG_PROJECT_INIT_MANIFEST_NOT_WRITTEN, "could not write ".concat(manifestPath))
         return 1
     }
 
@@ -149,7 +123,7 @@ public fn initUmsProject(nameArg: String) -> Int {
     if (fileExists(entryPath) == false) {
         if (writeFile(entryPath,
                 "import std.io\n\nfn main() -> Int {\n    println(\"Hello, Prismio!\")\n    return 0\n}\n") == false) {
-            diag_error_code("P1017", "could not write ".concat(entryPath))
+            diag_error_code(DIAG_PROJECT_INIT_ENTRY_NOT_WRITTEN, "could not write ".concat(entryPath))
             return 1
         }
     }
@@ -160,7 +134,7 @@ public fn initUmsProject(nameArg: String) -> Int {
     let ignorePath = joinPath(root, ".gitignore")
     if (fileExists(ignorePath) == false) {
         if (writeFile(ignorePath, ".prismio/\n") == false) {
-            diag_error_code("P1018", "could not write ".concat(ignorePath))
+            diag_error_code(DIAG_PROJECT_INIT_IGNORE_NOT_WRITTEN, "could not write ".concat(ignorePath))
             return 1
         }
     }
@@ -233,6 +207,7 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
             UmsLinkKind.ARG => {
                 failed = failed + compiler_link_flag(input.value)
             }
+            _ => { }
         }
     }
     for i in 0..<target.natives.length {
@@ -253,6 +228,7 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
             UmsNativeKind.RESPONSE_FILE => {
                 failed = failed + compiler_native_response_file(umsNativePath(root, input.value))
             }
+            _ => { }
         }
     }
     if (target.runtime.equals("none")) {
@@ -273,7 +249,7 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
     targetSelect("")
     if (target.triple.equals("") == false) {
         if (targetSelect(target.triple) == false) {
-            diag_error_code("P1097", "unknown target triple ".concat(diagQuote(target.triple)))
+            diag_error_code(DIAG_PROJECT_UNKNOWN_TARGET, "unknown target triple ".concat(diagQuote(target.triple)))
             return 1
         }
     }
@@ -289,7 +265,7 @@ private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
         failed = failed + ir_set_code_model(target.codeModel)
     }
     if (failed != 0) {
-        diag_error_code("P1058", "could not prepare native linker inputs")
+        diag_error_code(DIAG_PROJECT_NATIVE_LINK_INPUTS, "could not prepare native linker inputs")
         return 1
     }
     return 0
@@ -349,14 +325,14 @@ public fn projectRequest(startIndex: Int, verb: String) -> ProjectRequest {
             request.profile = "release".clone()
         } else if (argument.equals("--")) {
             if (verb.equals("run") == false) {
-                diag_error_code("P1084", "`--` passes arguments to the program `run` starts, and `".concat(
+                diag_error_code(DIAG_PROJECT_BUILD_REFUSES_PROGRAM_ARGUMENTS, "`--` passes arguments to the program `run` starts, and `".concat(
                                          verb, "` starts none"))
                 request.valid = false
                 return request
             }
             request.programArgumentsFrom = i + 1
         } else if (argument.startsWith("-")) {
-            diag_error_code("P1019", "unknown argument ".concat(diagQuote(argument)))
+            diag_error_code(DIAG_PROJECT_UNKNOWN_ARGUMENT, "unknown argument ".concat(diagQuote(argument)))
             if (verb.equals("run")) {
                 diag_note("arguments for the program go after `--`: `prismio run -- ".concat(argument, "`"))
             } else {
@@ -365,11 +341,11 @@ public fn projectRequest(startIndex: Int, verb: String) -> ProjectRequest {
             request.valid = false
             return request
         } else if (verb.equals("clean")) {
-            diag_error_code("P1085", "`clean` acts on the whole profile and takes no target")
+            diag_error_code(DIAG_PROJECT_CLEAN_TAKES_NO_TARGET, "`clean` acts on the whole profile and takes no target")
             request.valid = false
             return request
         } else if (verb.equals("run") and request.names.length > 0) {
-            diag_error_code("P1087", "`run` runs one target, and was given two")
+            diag_error_code(DIAG_PROJECT_RUN_TAKES_ONE_TARGET, "`run` runs one target, and was given two")
             diag_note("arguments for the program go after `--`: `prismio run ".concat(
                       request.names[0], " -- ", argument, "`"))
             request.valid = false
@@ -408,7 +384,7 @@ public fn umsProjectUsable(workspace: UmsWorkspace) -> Bool {
     if (rejectReservedCommandNames(workspace) != 0) { return false }
     let required = workspace.project.metadata.prismioVersion
     if (prismioRequirementMet(required) == false) {
-        diag_error_code("P1078", "this project needs Prismio ".concat(required,
+        diag_error_code(DIAG_PROJECT_NEEDS_NEWER_PRISMIO, "this project needs Prismio ".concat(required,
                                  ", and this compiler is ", BUILD_VERSION))
         diag_note("install a newer Prismio, or lower `prismio` in build.ums if the project does not need it")
         return false
@@ -420,7 +396,7 @@ public fn umsProjectUsable(workspace: UmsWorkspace) -> Bool {
 private fn requireTarget(workspace: UmsWorkspace, name: String) -> Int {
     let index = umsTargetFind(workspace.project.targets, name)
     if (index >= 0) { return index }
-    diag_error_code("P1080", "this project declares no target named ".concat(diagQuote(name)))
+    diag_error_code(DIAG_PROJECT_NO_SUCH_TARGET, "this project declares no target named ".concat(diagQuote(name)))
     let mut names = ""
     for i in 0..<workspace.targetCount() {
         if (i > 0) { names = names.concat(", ") }
@@ -435,7 +411,7 @@ private fn requireTarget(workspace: UmsWorkspace, name: String) -> Int {
 // worked -- until the first import of it failed with nothing pointing here.
 private fn warnUnusedDependencies(workspace: UmsWorkspace) {
     if (workspace.project.dependencies.length == 0) { return }
-    diag_warning_code("P1081", "dependencies are resolved and locked, but Prismio 0.1 does not import from them yet")
+    diag_warning_code(DIAG_PROJECT_DEPENDENCIES_NOT_IMPORTABLE, "dependencies are resolved and locked, but Prismio 0.1 does not import from them yet")
     diag_note("vendor the source beneath your entry module and import it by its dotted path")
 }
 
@@ -457,7 +433,7 @@ public fn buildUmsProject(request: ProjectRequest, runAfterBuild: Bool) -> Int {
     let mut resolveDiagnostics = umsDiagnostics()
     let resolutions = workspace.project.resolveDependencies(resolveDiagnostics)
     if (workspace.project.writeLockfile(resolutions) == false) {
-        diag_error_code("P1082", "could not write prismio.lock")
+        diag_error_code(DIAG_PROJECT_LOCK_NOT_WRITTEN, "could not write prismio.lock")
         return 1
     }
     if (resolveDiagnostics.length > 0) {
@@ -501,15 +477,15 @@ public fn buildUmsProject(request: ProjectRequest, runAfterBuild: Bool) -> Int {
     // that happens to be next to it.
     if (executables == 0) {
         if (request.names.length > 0) {
-            diag_error_code("P1086", diagQuote(request.names[0]).concat(" is not an executable target"))
+            diag_error_code(DIAG_PROJECT_NOT_AN_EXECUTABLE_TARGET, diagQuote(request.names[0]).concat(" is not an executable target"))
         } else {
-            diag_error_code("P1021", "this project declares no executable target to run")
+            diag_error_code(DIAG_PROJECT_NO_EXECUTABLE_TARGET, "this project declares no executable target to run")
             diag_note("add `executable(\"name\") { entry = \"src/main.psm\" }` to build.ums")
         }
         return 1
     }
     if (executables > 1) {
-        diag_error_code("P1022", "this project declares more than one executable target")
+        diag_error_code(DIAG_PROJECT_SEVERAL_EXECUTABLE_TARGETS, "this project declares more than one executable target")
         diag_note("name the one to run: `prismio run <target>`")
         return 1
     }
@@ -524,7 +500,7 @@ public fn buildUmsProject(request: ProjectRequest, runAfterBuild: Bool) -> Int {
     }
     let status = compiler_spawn_wait(target.outputPath, "")
     if (status < 0) {
-        diag_error_code("P1023", "could not start ".concat(target.outputPath))
+        diag_error_code(DIAG_PROJECT_TARGET_NOT_STARTED, "could not start ".concat(target.outputPath))
         return 1
     }
     return status
@@ -554,7 +530,7 @@ public fn testUmsProject(request: ProjectRequest) -> Int {
             let index = requireTarget(workspace, request.names[i])
             if (index < 0) { return 1 }
             if (workspace.target(index).kind != UmsTargetKind.TEST) {
-                diag_error_code("P1088", diagQuote(request.names[i]).concat(" is not a test target"))
+                diag_error_code(DIAG_PROJECT_NOT_A_TEST_TARGET, diagQuote(request.names[i]).concat(" is not a test target"))
                 return 1
             }
             selected.push(index)
@@ -629,7 +605,7 @@ public fn cleanUmsProject(profile: String) -> Int {
     let mut removed: Vec<String> = []
     if (directoryExists(profileRoot)) {
         if (compiler_remove_tree(profileRoot) != 0) {
-            diag_error_code("P1020", "could not remove everything under ".concat(profileRoot))
+            diag_error_code(DIAG_PROJECT_CLEAN_INCOMPLETE, "could not remove everything under ".concat(profileRoot))
             return 1
         }
         removed.push(profileRoot.clone())

@@ -31,13 +31,7 @@ private fn enumVariantLiteralName(expr: ASTNode) -> String {
 }
 
 private fn literalFieldNamed(expr: ASTNode, name: String) -> ASTNode {
-    let mut p = expr.child1
-    while (nodeExists(p)) {
-        let field = ptr_to_node(p)
-        if (field.s1.equals(name)) { return field }
-        p = field.next
-    }
-    return ptr_to_node(ptr_null())
+    return chainNamed(expr.child1, name)
 }
 
 private fn variantHasField(variant: ASTNode, name: String) -> Bool {

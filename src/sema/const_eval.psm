@@ -11,9 +11,15 @@
 // **What it runs.** Integers of every width and `Bool`; locals, `let mut` and
 // assignment; `if`, `match` on a value, `while`, `loop`, `for` over a range,
 // `break`/`continue` (with labels) and `return`; calls to other `const fn`s, recursion
-// included; reads of global constants. Nothing else -- no strings, floats, Vecs,
-// structs or pointers -- and the first construct outside the list is named in the error
-// rather than approximated.
+// included; reads of global constants. Nothing else -- no floats, Vecs, structs or
+// pointers -- and the first construct outside the list is named in the error rather than
+// approximated.
+//
+// **A `String` constant is a value, not a computation.** `const CODE = "text"` is a
+// constant, and so is `const ALIAS = CODE`: the whole initializer is a string literal, or
+// the name of a constant that is one. Strings do not enter the interpreter above, where an
+// operand read as an integer would be quietly wrong, so a `String` cannot be an operand,
+// an argument, a local or a result there: `const ID = "a".concat(b)` is refused by name.
 //
 // **Exact, then checked.** Arithmetic is exact (consts.psm: constArithmetic) and every
 // value that meets a declared type -- a parameter, an annotated `let`, a `return`, an
@@ -243,6 +249,9 @@ impl ConstEval {
             return result
         }
         if (node.i1 == TokenType.BOOL_LITERAL as Int) { return constBool(node.s1.equals("true")) }
+        if (node.i1 == TokenType.STRING_LITERAL as Int) {
+            return self.fail(node, "only integers and Bool are supported in a constant so far; a String is a constant only as a whole: `const NAME = \"text\"`, or the name of such a constant")
+        }
         return self.fail(node, "only integers and Bool are supported in a constant so far")
     }
 
@@ -675,11 +684,51 @@ internal fn constEvalCall(module: ASTNode, call: ASTNode) -> ConstValue {
     return result
 }
 
+// What a `String` constant's initializer came to: whether it is one, and its text.
+private struct ConstText {
+    found: Bool,
+    text: String
+}
+
+private fn notConstText() -> ConstText {
+    return ConstText { found: false, text: "" }
+}
+
+// The text of `node` when the whole expression is a string literal, or the name of a global
+// constant that is one, looking through the CONST_EXPR wrapper a `const` puts round its
+// initializer (which is why the order the constants are written in does not matter).
+private fn constStringOf(module: ASTNode, node: ASTNode, depth: Int) -> ConstText {
+    if (node.kind == NodeKind.CONST_EXPR) {
+        if (nodeIsNull(node.child1)) { return notConstText() }
+        return constStringOf(module, ptr_to_node(node.child1), depth)
+    }
+    if (node.kind == NodeKind.LITERAL_EXPR) {
+        if (node.i1 == TokenType.STRING_LITERAL as Int) { return ConstText { found: true, text: node.s1.clone() } }
+        return notConstText()
+    }
+    if (node.kind == NodeKind.IDENTIFIER_EXPR and depth < constDepthLimit()) {
+        let declPtr = constGlobal(module, node.s1)
+        if (nodeIsNull(declPtr)) { return notConstText() }
+        let decl = ptr_to_node(declPtr)
+        if (decl.i1 == 1 or nodeIsNull(decl.child2)) { return notConstText() }
+        return constStringOf(module, ptr_to_node(decl.child2), depth + 1)
+    }
+    return notConstText()
+}
+
 // Rewrites `node`, a CONST_EXPR, in place into the literal it comes to. A constant that
 // cannot be worked out is reported where it is written, with a note at the construct
 // inside a `const fn` that stopped it, and left as `0` so nothing downstream sees an
 // expression where it expects a literal.
 private fn foldConstExpr(module: ASTNode, node: ASTNode) {
+    let written = constStringOf(module, node, 0)
+    if (written.found) {
+        node.kind = NodeKind.LITERAL_EXPR
+        node.child1 = ptr_null()
+        node.i1 = TokenType.STRING_LITERAL as Int
+        node.s1 = written.text.clone()
+        return
+    }
     let ev = newConstEval(module)
     let result = ev.eval(ptr_to_node(node.child1))
     if (ev.failed) {

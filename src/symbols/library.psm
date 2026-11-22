@@ -16,9 +16,7 @@
 import std.fs
 import std.string
 import std.vec
-
-// The `.plib` beside an installed compiler is binary; its interface section is the module's source.
-extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(rt_free)
+import common.native
 
 // The directory the library's modules are read from, `std/` of a checkout or `stdlib/` of a
 // toolchain; "" when there is none to offer (a `--freestanding` program, or no library found).

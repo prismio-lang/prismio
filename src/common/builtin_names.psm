@@ -1,0 +1,11 @@
+// Facts about builtins that more than one pass asks, keyed by the lowered name. Sema, flow analysis and the
+// code generator each used to carry their own copy of the list below; one function answers for all three.
+
+import std.string
+
+// The builtins control never comes back from: the three failure builtins. `assert` is not one, because it
+// returns whenever its condition holds.
+public fn builtinNeverReturns(name: String) -> Bool {
+    return name.equals("__builtin_panic") or name.equals("__builtin_unreachable")
+        or name.equals("__builtin_exit")
+}

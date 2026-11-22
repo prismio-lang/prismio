@@ -55,8 +55,8 @@ fn main() -> Int {
     if (opt != none) { return fail("option") }
 
     let mut m: HashMap<String, Int> = default
-    mapSet(m, "k", 3)
-    if (mapLen(m) != 1 or mapGetOr(m, "k", 0) != 3) { return fail("map") }
+    m.set("k", 3)
+    if (m.count != 1 or m.getOr("k", 0) != 3) { return fail("map") }
 
     let outer: Outer = default
     if (outer.inner.name.length != 0 or outer.inner.count != 0) { return fail("nested struct") }

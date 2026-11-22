@@ -89,13 +89,6 @@ private fn tryVariant(at: Token, variant: String, arg: String) -> ASTNode {
     return call
 }
 
-private fn tryAssign(at: Token, target: String, source: ASTNode) -> ASTNode {
-    let assignment = parserNodeFrom(NodeKind.ASSIGNMENT_STATEMENT, at)
-    assignment.child1 = node_to_ptr(tryName(at, target))
-    assignment.child2 = node_to_ptr(source)
-    return assignment
-}
-
 private fn tryBlock(at: Token, statement: ASTNode) -> ASTNode {
     let block = parserNodeFrom(NodeKind.BLOCK, at)
     block.child1 = node_to_ptr(statement)

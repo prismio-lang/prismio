@@ -267,16 +267,6 @@ public fn ir_extern_decl_record(file: Int, name: String, visibility: Int) {
     externModules.push(moduleOfFile(file))
 }
 
-public fn ir_file_declares_extern(file: Int, name: String) -> Int {
-    declarationsOpen()
-    if (externFiles.length == 0) { return 0 }
-    let id = irNameId(name)
-    for i in 0..<externFiles.length {
-        if (externFiles[i] == file and externNames[i] == id) { return 1 }
-    }
-    return 0
-}
-
 // The module an extern was declared in, filled in now if the file's module was not known when it was
 // recorded. 0 ("") for a file with none.
 private fn externModule(at: Int) -> Int {

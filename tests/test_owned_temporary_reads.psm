@@ -1,0 +1,97 @@
+// A field or an element read off an owned temporary -- `make().name`, `makeVec()[1]` -- and a
+// struct written inline as an argument. Each leaked until 2026-11-12 in the shapes below, and the
+// ownership probes run this under `--verify` and require 0 leaked and 0 violations.
+//
+//   * A String field of a temporary compared in place, anywhere, including the right of `or`:
+//     `t == 2 or make(1).name != "x"`. The comparison reads the bytes and retains nothing, so it
+//     releases the temporary once it has the answer.
+//   * A String or Vec field, or a String element, read straight off a temporary in a statement
+//     head (`let n = make(1).name`, `println(makeVec(1)[1])`): the temporary is bound ahead of the
+//     statement, as `let p = make(1)` would have done.
+//   * A struct with an owned field written inline as an argument to a function that copies it:
+//     `dup(Person { name: word(1), age: 1 })`, `[Person { ... }]`, `people[k] = Person { ... }`.
+//     Per-type field keys left the literal's field with no owner; the literal is now bound first.
+//
+// Each case runs in a loop, so a leak of one block per use reads as dozens, and each answer is
+// checked: a balanced ledger does not show that the wrong thing was released.
+
+import std.copy
+import std.io
+import std.map
+import std.option
+import std.string
+import std.vec
+
+fn fail(message: String) -> Int {
+    print("FAIL: ")
+    println(message)
+    return 1
+}
+
+fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
+
+public struct Person { name: String, age: Int }
+impl Copy for Person {
+    fn copyOf(self) -> Self { return Person { name: self.name.clone(), age: self.age } }
+}
+
+fn make(i: Int) -> Person { return Person { name: word(i), age: i } }
+
+fn strings(i: Int) -> Vec<String> {
+    let mut v: Vec<String> = []
+    v.push(word(i))
+    v.push(word(i + 1))
+    return v
+}
+
+fn roster(i: Int) -> Vec<Person> {
+    let mut v: Vec<Person> = []
+    v.push(make(i))
+    return v
+}
+
+fn dup(p: Person) -> Person { return Person { name: p.name.clone(), age: p.age } }
+
+fn main() -> Int {
+    let mut bad = 0
+    let mut hits = 0
+    for i in 0..<50 {
+        let t = i % 3
+        // A String field compared in place.
+        if (make(i).name == word(i)) { hits = hits + 1 }
+        if (t == 7 or make(i).name != word(i)) { bad = bad + 1 }
+        if (make(i).name == make(i).name) { hits = hits + 1 }
+        // A String element compared in place.
+        if (strings(i)[1] == word(i + 1)) { hits = hits + 1 }
+        if (t == 7 or strings(i)[0] != word(i)) { bad = bad + 1 }
+        if (t == 7 or strings(i)[0] == strings(i)[1]) { bad = bad + 1 }
+        // A scalar field on the right of `or`. (A scalar element is test_owned_temporary_scalars.)
+        if (t == 7 or make(i).age != i) { bad = bad + 1 }
+        // A field of an element of a Vec the call returned: a struct element is a view too.
+        if (roster(i)[0].name == word(i)) { hits = hits + 1 }
+        if (t == 7 or roster(i)[0].name != word(i)) { bad = bad + 1 }
+        if (t == 7 or roster(i)[0].age != i) { bad = bad + 1 }
+        let first = roster(i)[0]
+        if (first.age != i) { bad = bad + 1 }
+        // A view bound or printed straight off the temporary.
+        let name = make(i).name
+        let element = strings(i)[1]
+        let length = strings(i)[0].length
+        if (name != word(i) or element != word(i + 1) or length != word(i).length) { bad = bad + 1 }
+        // A struct written inline as an argument, owned field and all.
+        let copy = dup(Person { name: word(i), age: i })
+        if (copy.name != word(i) or copy.age != i) { bad = bad + 1 }
+    }
+    if (hits != 200) { bad = bad + fail("the comparisons answered wrongly") }
+    println(strings(7)[1])
+    println(make(8).name)
+
+    let list: Vec<Person> = [Person { name: word(1), age: 1 }, Person { name: word(2), age: 2 }]
+    if (list.length != 2 or list[1].age != 2) { bad = bad + fail("a Vec literal of structs") }
+    let people: HashMap<Int, Person> = {}
+    for i in 0..<100 { people[i % 7] = Person { name: word(i), age: i } }
+    if (people.count != 7 or people[0].age != 98 or people[1].name != word(99)) { bad = bad + fail("structs stored inline") }
+
+    if (bad == 0) { println("PASS") }
+    return bad
+}

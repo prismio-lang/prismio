@@ -29,13 +29,7 @@ private fn codesetNamed(name: String) -> ASTNode {
 }
 
 private fn codesetEntryNamed(decl: ASTNode, entryName: String) -> ASTNode {
-    let mut p = decl.child1
-    while (nodeExists(p)) {
-        let entry = ptr_to_node(p)
-        if (entry.s1.equals(entryName)) { return entry }
-        p = entry.next
-    }
-    return ptr_to_node(ptr_null())
+    return chainNamed(decl.child1, entryName)
 }
 
 internal fn codesetExists(name: String) -> Bool {

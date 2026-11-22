@@ -66,6 +66,7 @@ internal fn semaMangleType(t: TypeInfo) -> String {
             if (nodeExists(t.child)) { return "Opt_".concat(semaMangleType(ptr_to_type(t.child))) }
             return "Opt_None"
         }
+        _ => { }
     }
     return "Invalid"
 }
@@ -1029,24 +1030,13 @@ internal fn semaCheckExternGlobalAccess(expr: ASTNode) {
     diag_note("it is an `extern let` in a module this file does not import; import that module, or declare it here")
 }
 
-// Argument count for a builtin, counting the linked list of argument nodes.
-private fn semaArgCount(argPtr: Ptr) -> Int {
-    let mut count = 0
-    let mut curr = argPtr
-    while (nodeExists(curr)) {
-        count = count + 1
-        curr = ptr_to_node(curr).next
-    }
-    return count
-}
-
 // Reports a builtin called with the wrong number of arguments, and answers
 // whether the arity was right -- so the caller can stop before walking argument
 // nodes that are not there. Every one of these checks used to report and then
 // dereference the missing argument anyway, which only survived because
 // semaError exited the process.
 internal fn semaCheckArity(call: ASTNode, name: String, argPtr: Ptr, expected: Int) -> Bool {
-    let actual = semaArgCount(argPtr)
+    let actual = chainLength(argPtr)
     if (actual == expected) { return true }
 
     let mut noun = " arguments, found "

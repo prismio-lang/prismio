@@ -40,9 +40,9 @@ fn main() -> Int {
     // The shape that did not link, twice: once on a std generic and once on one
     // declared here, because the fix is in the annotation path and not in `HashMap`.
     let m: HashMap<Int, Int> = mapNew<Int, Int>()
-    mapSet(m, 7, 42)
-    if (mapGetOr(m, 7, 0) != 42) { return fail("annotated HashMap lost its entry") }
-    if (mapLen(m) != 1) { return fail("annotated HashMap lost its length") }
+    m.set(7, 42)
+    if (m.getOr(7, 0) != 42) { return fail("annotated HashMap lost its entry") }
+    if (m.count != 1) { return fail("annotated HashMap lost its length") }
 
     let bag: Bag<Int> = bagOf<Int>()
     bag.items.push(3)
@@ -53,8 +53,8 @@ fn main() -> Int {
     // The annotation-free form has always worked; keeping it here says the fix
     // did not trade one shape for the other.
     let n = mapNew<Int, Int>()
-    mapSet(n, 1, 2)
-    if (mapGetOr(n, 1, 0) != 2) { return fail("unannotated HashMap regressed") }
+    n.set(1, 2)
+    if (n.getOr(1, 0) != 2) { return fail("unannotated HashMap regressed") }
 
     println("PASS: generic annotation")
     return 0

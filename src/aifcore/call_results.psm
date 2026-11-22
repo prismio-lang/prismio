@@ -149,7 +149,7 @@ internal fn callResultsReset() {
 public fn aif_note_call_result(node: Ptr, vs: Int, fnId: Int) {
     callResultsOpen()
     if (addressOf(node) == 0 or fnId < 0) { return }
-    if (callNodes.has(addressOf(node))) { return }
+    if (callNodes.contains(addressOf(node))) { return }
     callNodes.set(addressOf(node), callVs.length)
     callVs.push(vs)
     callFn.push(fnId)
@@ -347,7 +347,7 @@ private fn fieldKeysBuild() {
         if (keyKind[k] != AIF_KEY_FIELD) { continue }
         let owner = keyA[k]
         if (owner < 0) { continue }
-        if (fieldKeyHead.has(owner)) {
+        if (fieldKeyHead.contains(owner)) {
             fieldKeyNext[tails.getOr(owner, -1)] = k
         } else {
             fieldKeyHead.set(owner, k)

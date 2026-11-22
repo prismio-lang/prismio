@@ -143,6 +143,7 @@ internal fn debugTypeName(annotation: Ptr, initializer: Ptr) -> String {
             // concerned, and saying otherwise here would have the debug layer
             // assert a type the compiler does not hold.
                 TypeKind.ENUM => { return t.name }
+                _ => { }
             }
         }
     }

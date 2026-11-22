@@ -52,62 +52,62 @@ fn fail(message: String) -> Int {
 fn main() -> Int {
     // String keys.
     let names = mapNew<String, Int>()
-    mapSet(names, "alpha", 1)
-    mapSet(names, "beta", 2)
-    mapSet(names, "gamma", 3)
-    if (mapLen(names) != 3) { return fail("three string keys") }
-    if (mapGetOr(names, "beta", 0) != 2) { return fail("string lookup") }
-    if (mapGetOr(names, "delta", 0) != 0) { return fail("absent string key") }
+    names.set("alpha", 1)
+    names.set("beta", 2)
+    names.set("gamma", 3)
+    if (names.count != 3) { return fail("three string keys") }
+    if (names.getOr("beta", 0) != 2) { return fail("string lookup") }
+    if (names.getOr("delta", 0) != 0) { return fail("absent string key") }
 
     // Equal content, different pointers. This is the case the old `==` got
     // wrong: it compared the pointers and answered "absent".
     let built = "al".concat("pha")
-    if (mapGetOr(names, built, 0) != 1) { return fail("a string key built at run time") }
+    if (names.getOr(built, 0) != 1) { return fail("a string key built at run time") }
 
     // Overwrite through a distinct pointer with the same content.
-    if (mapSet(names, "bet".concat("a"), 22) == false) {
+    if (names.set("bet".concat("a"), 22) == none) {
         return fail("overwrite through an equal-content key not reported")
     }
-    if (mapLen(names) != 3) { return fail("overwrite grew the map") }
-    if (mapGetOr(names, "beta", 0) != 22) { return fail("overwrite did not take") }
+    if (names.count != 3) { return fail("overwrite grew the map") }
+    if (names.getOr("beta", 0) != 22) { return fail("overwrite did not take") }
 
     // Growth. 8 buckets rehashes at 7, so 200 entries is several rehashes deep
     // and every key has to survive every one of them.
     let counts = mapNew<Int, Int>()
     let mut i = 0
     while (i < 200) {
-        mapSet(counts, i * 7, i)
+        counts.set(i * 7, i)
         i = i + 1
     }
-    if (mapLen(counts) != 200) { return fail("200 inserts") }
+    if (counts.count != 200) { return fail("200 inserts") }
     let mut j = 0
     while (j < 200) {
-        if (mapGetOr(counts, j * 7, -1) != j) { return fail("a key did not survive rehashing") }
+        if (counts.getOr(j * 7, -1) != j) { return fail("a key did not survive rehashing") }
         j = j + 1
     }
-    if (mapGetOr(counts, 3, -1) != -1) { return fail("an absent key after rehashing") }
+    if (counts.getOr(3, -1) != -1) { return fail("an absent key after rehashing") }
 
     // Insertion order survives rehashing: mapKeyAt's contract is the order the
     // keys went in, and rehashing moves slots, not entries.
-    if (mapKeyAt(counts, 0) != 0) { return fail("first key after rehashing") }
-    if (mapKeyAt(counts, 199) != 199 * 7) { return fail("last key after rehashing") }
-    if (mapValueAt(counts, 5) != 5) { return fail("value at position after rehashing") }
+    if (counts.keyAt(0) != 0) { return fail("first key after rehashing") }
+    if (counts.keyAt(199) != 199 * 7) { return fail("last key after rehashing") }
+    if (counts.valueAt(5) != 5) { return fail("value at position after rehashing") }
 
     // A user struct as a key.
     // The value stays scalar: `V` has no bound, so an owned value is a compile
     // error rather than a leak. See std/map.psm's header for the measurement
     // behind that.
     let places = mapNew<Point, Int>()
-    mapSet(places, Point { x: 1, y: 2 }, 12)
-    mapSet(places, Point { x: 3, y: 4 }, 34)
-    if (mapGetOr(places, Point { x: 1, y: 2 }, 0) != 12) { return fail("struct key lookup") }
-    if (mapGetOr(places, Point { x: 3, y: 4 }, 0) != 34) { return fail("second struct key") }
-    if (mapGetOr(places, Point { x: 9, y: 9 }, 0) != 0) { return fail("absent struct key") }
+    places.set(Point { x: 1, y: 2 }, 12)
+    places.set(Point { x: 3, y: 4 }, 34)
+    if (places.getOr(Point { x: 1, y: 2 }, 0) != 12) { return fail("struct key lookup") }
+    if (places.getOr(Point { x: 3, y: 4 }, 0) != 34) { return fail("second struct key") }
+    if (places.getOr(Point { x: 9, y: 9 }, 0) != 0) { return fail("absent struct key") }
 
     // mapGet still tells absent from present-and-equal-to-the-fallback.
-    mapSet(counts, 999999, 0)
-    if ((mapGet(counts, 999999) == none)) { return fail("a stored zero read as absent") }
-    if ((mapGet(counts, 999998) != none)) { return fail("a missing key read as present") }
+    counts.set(999999, 0)
+    if ((counts.get(999999) == none)) { return fail("a stored zero read as absent") }
+    if ((counts.get(999998) != none)) { return fail("a missing key read as present") }
 
     println("test_88 ok")
     return 0

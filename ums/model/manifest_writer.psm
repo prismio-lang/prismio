@@ -28,6 +28,7 @@ private fn umsManifestScopeName(scope: UmsDependencyScope) -> String {
         UmsDependencyScope.TEST_IMPLEMENTATION => {
             return "testImplementation".clone()
         }
+        _ => { }
     }
     return "".clone()
 }
