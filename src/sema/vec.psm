@@ -21,6 +21,7 @@ import ir.bridge
 import common.diagnostics
 import std.string
 import std.vec
+import common.source_files
 
 // The runtime entry point a method becomes by prepending the receiver, or "" when
 // the name is not a plain one. The shaped ones -- `clear`, `first`, `last`,
@@ -435,7 +436,7 @@ private fn semaRuntimeCallsInDecls(head: Ptr) {
     let mut p = head
     while (nodeExists(p)) {
         let decl = ptr_to_node(p)
-        if (semaFileIsStandardLibrary(decl.file) == false) {
+        if (fileFromLibraryRoot(decl.file) == false) {
             if (decl.kind == NodeKind.FUNCTION or decl.kind == NodeKind.VARIABLE_DECL) {
                 semaRuntimeCallsIn(decl.child2)
             } else if (decl.kind == NodeKind.TRAIT_DECL) {

@@ -4665,7 +4665,7 @@ private fn generateBinary(expr: ASTNode) -> String {
         // trapped at std/key.psm on the first map insert. Asked of the declaring
         // module, so an instantiated std generic is exempt at every argument.
         let checked = ir_overflow_checks() == 1 and isIntegerStorageKey(opType)
-                      and diag_file_module(expr.file).startsWith("std.") == false
+                      and fileFromLibraryRoot(expr.file) == false
         if (checked) {
             let file = diag_file_path(expr.file)
             if (isUnsigned) {

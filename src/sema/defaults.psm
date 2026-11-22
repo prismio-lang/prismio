@@ -18,6 +18,7 @@ import ast.types
 import ir.bridge
 import common.diagnostics
 import std.string
+import common.source_files
 
 // How deep a struct's fields are followed. A struct that holds itself by value
 // has no default at any depth, and this is where that is noticed.
@@ -170,7 +171,7 @@ private fn semaDefaultStruct(module: ASTNode, target: ASTNode, t: TypeInfo, dept
     if (decl.kind != NodeKind.STRUCT_DECL) { return shown.concat(" has no default value") }
 
     let template = semaDefaultTemplateName(t.name)
-    let fromStd = semaFileIsStandardLibrary(decl.file)
+    let fromStd = fileFromLibraryRoot(decl.file)
     // A payload enum is a tagged struct (sema/enums.psm), and none of its
     // variants is the obvious default.
     if (semaStructHasField(t.name, "$tag")) {

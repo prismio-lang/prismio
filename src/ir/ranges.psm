@@ -284,7 +284,7 @@ impl RangeLoop {
         // A line number means nothing across files, and the fixtures that read this
         // trace match loops by their own lines, so a standard library loop is not
         // reported.
-        if (diag_file_module(self.file).startsWith("std.") == false) {
+        if (fileFromLibraryRoot(self.file) == false) {
             ir_range_trace(self.line, self.proved, self.accessConj.length)
         }
         if (self.proved == 0) { return "" }

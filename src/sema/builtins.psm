@@ -13,6 +13,7 @@ import common.mem_builtins
 import common.target
 import sema.flow
 import std.string
+import common.source_files
 
 internal fn semaBuiltinCallType(name: String, argPtr: Ptr) -> TypeInfo {
     if (name.equals("drop")) { return typeVoid() }
@@ -449,7 +450,7 @@ private fn semaCheckMemBuiltin(module: ASTNode, call: ASTNode, name: String, arg
         // generated text.
         // Not asked of std/port.psm's own wrappers: they are compiled for every
         // target, and refused where a program calls one (semaCheckStdPortCall).
-        if (semaFileIsStandardLibrary(call.file) == false and semaTargetIsX86() == false) {
+        if (fileHasIntrinsics(call.file) == false and semaTargetIsX86() == false) {
             semaErrorAt(call, diagQuote(name).concat(" is an x86 instruction, and the target is ", diagQuote(ir_target_triple())))
             return true
         }
@@ -593,7 +594,7 @@ internal fn semaStdAsmBuiltin(module: ASTNode, name: String) -> String {
     let count = ir_decl_count(name)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
-        if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) { return builtin }
+        if (decl.kind == NodeKind.FUNCTION and fileFromLibraryRoot(decl.file)) { return builtin }
     }
     return ""
 }
@@ -604,7 +605,7 @@ private fn semaNameIsStdFunction(name: String) -> Bool {
     let count = ir_decl_count(name)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(name, i))
-        if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) { return true }
+        if (decl.kind == NodeKind.FUNCTION and fileFromLibraryRoot(decl.file)) { return true }
     }
     return false
 }
@@ -613,7 +614,7 @@ private fn semaNameIsStdFunction(name: String) -> Bool {
 // that name. A template is not in the declaration index, so it is found in the module.
 private fn semaNameIsStdTemplate(module: ASTNode, name: String) -> Bool {
     let template = monoFindTemplate(module, name, NodeKind.FUNCTION)
-    return nodeExists(node_to_ptr(template)) and semaFileIsStandardLibrary(template.file)
+    return nodeExists(node_to_ptr(template)) and fileFromLibraryRoot(template.file)
 }
 
 // Checks `offsetOf<S>("field")`. The offset
@@ -719,7 +720,7 @@ internal fn semaCheckStdPortCall(callee: ASTNode) {
     let count = ir_decl_count(callee.s1)
     for i in 0..<count {
         let decl = ptr_to_node(ir_decl_at(callee.s1, i))
-        if (decl.kind == NodeKind.FUNCTION and semaFileIsStandardLibrary(decl.file)) {
+        if (decl.kind == NodeKind.FUNCTION and fileFromLibraryRoot(decl.file)) {
             semaErrorAt(callee, diagQuote(callee.s1).concat(" is an x86 instruction, and the target is ", diagQuote(ir_target_triple())))
             return
         }

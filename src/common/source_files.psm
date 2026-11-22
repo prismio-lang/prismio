@@ -28,6 +28,7 @@ private let mut fileContents: Vec<String>
 private let mut fileModules: Vec<String>
 private let mut fileModuleRecorded: Vec<Bool>
 private let mut fileHeaders: Vec<Int>
+private let mut fileLibrary: Vec<Bool>
 private let mut filePathBlocks: Vec<Usize>
 private let mut fileModuleBlocks: Vec<Usize>
 private let mut registryOpened = false
@@ -42,6 +43,7 @@ private fn registryOpen() {
     fileModules = []
     fileModuleRecorded = []
     fileHeaders = []
+    fileLibrary = []
     filePathBlocks = []
     fileModuleBlocks = []
     registryOpened = true
@@ -66,6 +68,7 @@ public fn diag_add_file(path: String, content: String) -> Int {
     fileModules.push("")
     fileModuleRecorded.push(false)
     fileHeaders.push(0)
+    fileLibrary.push(false)
     filePathBlocks.push(cTextCopy(path))
     fileModuleBlocks.push(0)
     return filePaths.length - 1
@@ -126,6 +129,32 @@ public export fn diag_file_path_cstr(file: Int) -> Ptr {
     if (inRegistry(file)) { return pointerAt(filePathBlocks[file]) }
     if (unknownPathBlock == 0) { unknownPathBlock = cTextCopy("<unknown>") }
     return pointerAt(unknownPathBlock)
+}
+
+// Marks a file as the toolchain library's: it was read from the library root that ships with the running
+// compiler, or it is the entry of a build that was asked to compile a library module (`--module`).
+// Recorded by the driver as it resolves each import, and nothing else sets it, so no manifest key and no
+// module name can grant what it grants.
+public fn markFileFromLibraryRoot(file: Int) {
+    registryOpen()
+    if (inRegistry(file) == false) { return }
+    fileLibrary[file] = true
+}
+
+// Whether the file is the toolchain library's rather than the user's program. Asked by everything that
+// treats the library differently from a program: what pruning keeps, which layouts AIF fixes, which loops
+// a range trace reports, whether overflow is checked, which files an editor lets the user rename.
+public fn fileFromLibraryRoot(file: Int) -> Bool {
+    registryOpen()
+    if (inRegistry(file) == false) { return false }
+    return fileLibrary[file]
+}
+
+// Whether the file may name the compiler's own vocabulary: the `__builtin_*` functions, raw pointer steps
+// and the internals of `T?`. Today the same files that come from the library root, kept a separate
+// question because the two can part (a user package that ships a freestanding library never gets this).
+public fn fileHasIntrinsics(file: Int) -> Bool {
+    return fileFromLibraryRoot(file)
 }
 
 // What a file's `module` header says about it (ast/module_header.psm names the bits), recorded by the parser

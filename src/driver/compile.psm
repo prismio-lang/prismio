@@ -145,6 +145,7 @@ private fn analyzedModule(path: String, prune: Bool) -> ASTNode {
     if (entryModule().equals("") == false) { emissionMod = entryModule() }
     if (emissionMod.equals("") == false) {
         diag_set_file_module(rootFile, emissionMod)
+        markFileFromLibraryRoot(rootFile)
     }
     diag_progress("parsing")
     let lex = Lexer.create(content, rootFile)
@@ -348,6 +349,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     let emissionMod = compiler_library_emission_module()
     if (emissionMod.equals("") == false) {
         diag_set_file_module(rootFile, emissionMod)
+        markFileFromLibraryRoot(rootFile)
     }
     diag_progress("parsing")
 

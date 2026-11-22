@@ -198,7 +198,7 @@ public fn ixCompleteScope(inout ix: Ix, inout src: IxSources, names: Vec<String>
     ix.out.push(ixContextLine("scope"))
     // The `__builtin_*` functions are the library's own vocabulary (std/raw.psm, port.psm, asm.psm wrap them); a program
     // is refused the call, so only a file of the library itself is offered them.
-    if (diag_file_module(file).startsWith("std.")) { ixCompleteCompilerBuiltins(ix) }
+    if (fileHasIntrinsics(file)) { ixCompleteCompilerBuiltins(ix) }
     let mut written = ixMap()
     let mut i = names.length - 1
     while (i >= 0) {

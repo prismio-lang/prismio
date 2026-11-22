@@ -11,6 +11,7 @@ import ast.float_width
 import ir.bridge
 import common.diagnostics
 import std.string
+import common.source_files
 
 // ---------------------------------------------------------------------------
 // AIF annotations (SPEC 5)
@@ -487,7 +488,7 @@ internal fn semaCheckDeclVisible(at: ASTNode, decl: ASTNode, name: String) -> Bo
     if (semaVisibleFrom(decl.i2, decl.file, at.file)) { return true }
     // A generic's body naming a program's type is the type argument arriving, which
     // was checked where the program wrote it.
-    if (semaFileIsStandardLibrary(at.file) and semaFileIsStandardLibrary(decl.file) == false) { return true }
+    if (fileFromLibraryRoot(at.file) and fileFromLibraryRoot(decl.file) == false) { return true }
     if (decl.i2 == 1) {
         semaErrorAt(at, semaTypeWord(decl).concat(" ", diagQuote(semaWrittenTypeName(name)), " is private to the file that declares it"))
     } else {

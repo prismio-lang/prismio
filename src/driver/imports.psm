@@ -426,6 +426,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // mergePackageImport composes `pkg.leaf` before calling -- so this one line
     // covers named and package imports both.
     diag_set_file_module(file, moduleName)
+    if (resolvedFromLibrary(baseDir, moduleName, importPath)) { markFileFromLibraryRoot(file) }
     return mergeModuleImports(merged, parseSource(content, file), baseDir, seen)
 }
 
@@ -838,11 +839,29 @@ private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (moduleName.startsWith("std.") == false) {
         return joinImportPath(baseDir, moduleName)
     }
-    let leaf = moduleRelativePath(moduleName.substring(4, moduleName.length - 4)).concat(".psm")
-    if (standardModulePath(baseDir, leaf).equals("")) {
+    let library = libraryModulePath(baseDir, moduleName)
+    if (library.equals("")) {
         return joinImportPath(baseDir, moduleName)
     }
-    return standardModulePath(baseDir, moduleRelativePath(moduleName.substring(4, moduleName.length - 4)).concat(".psm"))
+    return library
+}
+
+// The library's file for `std.<path>`, or "" when the name is not under `std` or the library has no such
+// module. The one place the name of the library's root is spelled: `std.*` resolves from the library that
+// ships with the running compiler, and a file read from there is the library's (fileFromLibraryRoot).
+private fn libraryModulePath(baseDir: String, moduleName: String) -> String {
+    if (moduleName.startsWith("std.") == false) { return "".clone() }
+    let leaf = moduleRelativePath(moduleName.substring(4, moduleName.length - 4)).concat(".psm")
+    return standardModulePath(baseDir, leaf)
+}
+
+// Whether `importPath`, which `moduleName` resolved to, is the library's file for it. A `std/` directory
+// beside the program that is not the library's (it is found first by resolveImportPath's plain join) does
+// not make its files the library's.
+private fn resolvedFromLibrary(baseDir: String, moduleName: String, importPath: String) -> Bool {
+    let library = libraryModulePath(baseDir, moduleName)
+    if (library.equals("")) { return false }
+    return absolutePath(library).equals(absolutePath(importPath))
 }
 
 // The entry file is marked resolved before the walk begins, so that a package

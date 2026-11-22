@@ -42,6 +42,7 @@ from common import {diagnostics, source_files}
 from ast import {nodes, fn_attrs, types}
 from std import {option, process, string}
 import common.native
+import common.source_files
 
 const REACHED = 7
 
@@ -65,7 +66,7 @@ private fn pruneSymbol(func: ASTNode) -> String {
 }
 
 private fn pruneIsLibrary(func: ASTNode) -> Bool {
-    return diag_file_module(func.file).startsWith("std.")
+    return fileFromLibraryRoot(func.file)
 }
 
 private fn pruneMark(func: ASTNode) {
