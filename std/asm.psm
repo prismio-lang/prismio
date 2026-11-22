@@ -18,13 +18,13 @@
 // moved across one of these; registers other than `$0` are yours to preserve.
 
 // Runs the instructions.
-public fn asm(text: String) { }
+lang("asm") public fn asm(text: String) { }
 
 // Runs them and answers `$0`.
-public fn asmRead(text: String) -> U64 { return 0 }
+lang("asm_read") public fn asmRead(text: String) -> U64 { return 0 }
 
 // Runs them with `$0` set to `value`.
-public fn asmWrite(text: String, value: U64) { }
+lang("asm_write") public fn asmWrite(text: String, value: U64) { }
 
 // What a register operand can be, for the declarations below. The compiler checks the real
 // operands where it lowers the call, and also accepts a typed pointer.
@@ -51,7 +51,7 @@ public typelist AsmOperand { U8, I8, U16, I16, U32, U64, I64, Int, Usize, Isize,
 // second literal lists, comma-separated, the registers the text overwrites beyond its operands
 // ("x0,x8,cc"; "" for none), because LLVM must not keep a live value in one. Memory is always
 // clobbered. Neither is an ordinary function (see the header): the compiler lowers a call in place.
-public fn asmOps<Ts: AsmOperand>(text: String, clobbers: String, ...operands: Ts) { }
+lang("asm_ops") public fn asmOps<Ts: AsmOperand>(text: String, clobbers: String, ...operands: Ts) { }
 
 // `asmOps` with a result in `$0`.
-public fn asmOpsOut<Ts: AsmOperand>(text: String, clobbers: String, ...operands: Ts) -> U64 { return 0 }
+lang("asm_ops_out") public fn asmOpsOut<Ts: AsmOperand>(text: String, clobbers: String, ...operands: Ts) -> U64 { return 0 }

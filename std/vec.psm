@@ -45,7 +45,7 @@ import std.option
 // `sink` does not fix it. The cost is that a list literal is available for the
 // element types that implement `Copy`, which is every scalar, `String`, and any
 // struct that writes the impl.
-public fn vecOf<T: Copy>(a: T) -> Vec<T> {
+lang("vec_of") public fn vecOf<T: Copy>(a: T) -> Vec<T> {
     let mut xs: Vec<T> = list_new_with_capacity(1)
     list_push(xs, copyOf(a))
     return xs
@@ -659,7 +659,7 @@ public fn clone<T: Copy>(items: Vec<T>) -> Vec<T> {
 // runtime's one-pass fill -- so this is the `String` and struct case, where each
 // element has to be its own copy. `count` below zero is refused as the runtime's
 // is.
-public fn vecFilled<T: Copy>(count: Int, value: T) -> Vec<T> {
+lang("vec_filled") public fn vecFilled<T: Copy>(count: Int, value: T) -> Vec<T> {
     if (count < 0) { panic("Vec.filled count must not be negative") }
     let mut out: Vec<T> = list_new_with_capacity(count)
     let mut i = 0

@@ -12,8 +12,8 @@
 // `for x in it` desugars to exactly this protocol, so a type implementing
 // `Iterator` is usable with the loop syntax and needs nothing else.
 
-trait Iterator {
+lang("iterator") trait Iterator {
     type Item
-    fn hasNext(self) -> Bool
-    fn next(inout self) -> Self.Item
+    lang("iterator.has_next") fn hasNext(self) -> Bool
+    lang("iterator.next") fn next(inout self) -> Self.Item
 }

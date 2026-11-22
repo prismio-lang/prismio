@@ -11,19 +11,19 @@
 import std.copy
 import std.eq
 
-public struct Tuple2<A, B> { public _0: A, public _1: B }
-public struct Tuple3<A, B, C> { public _0: A, public _1: B, public _2: C }
-public struct Tuple4<A, B, C, D> { public _0: A, public _1: B, public _2: C, public _3: D }
+lang("tuple2") public struct Tuple2<A, B> { public _0: A, public _1: B }
+lang("tuple3") public struct Tuple3<A, B, C> { public _0: A, public _1: B, public _2: C }
+lang("tuple4") public struct Tuple4<A, B, C, D> { public _0: A, public _1: B, public _2: C, public _3: D }
 
-public fn tuple2<A, B>(sink a: A, sink b: B) -> Tuple2<A, B> {
+lang("tuple2_new") public fn tuple2<A, B>(sink a: A, sink b: B) -> Tuple2<A, B> {
     return Tuple2<A, B> { _0: a, _1: b }
 }
 
-public fn tuple3<A, B, C>(sink a: A, sink b: B, sink c: C) -> Tuple3<A, B, C> {
+lang("tuple3_new") public fn tuple3<A, B, C>(sink a: A, sink b: B, sink c: C) -> Tuple3<A, B, C> {
     return Tuple3<A, B, C> { _0: a, _1: b, _2: c }
 }
 
-public fn tuple4<A, B, C, D>(sink a: A, sink b: B, sink c: C, sink d: D) -> Tuple4<A, B, C, D> {
+lang("tuple4_new") public fn tuple4<A, B, C, D>(sink a: A, sink b: B, sink c: C, sink d: D) -> Tuple4<A, B, C, D> {
     return Tuple4<A, B, C, D> { _0: a, _1: b, _2: c, _3: d }
 }
 

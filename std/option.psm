@@ -21,13 +21,13 @@
 // call (sema/checker.psm, semaCoalesceExpr), so what it may alias is read from
 // these bodies like any function's -- and codegen branches around `b`, so it is
 // evaluated only when `a` is absent.
-public fn optionCoalesce<T>(a: T?, b: T) -> T {
+lang("option_coalesce") public fn optionCoalesce<T>(a: T?, b: T) -> T {
     if (a != none) { return expect(a) }
     return b
 }
 
 // The same with an optional on the right, which stays one: `a ?? b ?? 0`.
-public fn optionCoalesce<T>(a: T?, b: T?) -> T? {
+lang("option_coalesce") public fn optionCoalesce<T>(a: T?, b: T?) -> T? {
     if (a != none) { return a }
     return b
 }
@@ -69,7 +69,7 @@ public fn andThen<T, U, F: Fn(T) -> U?>(o: T?, f: F) -> U? {
     return f(expect(o))
 }
 
-public enum Result<T, E> {
+lang("result") public enum Result<T, E> {
     Err(E),
     Ok(T)
 }

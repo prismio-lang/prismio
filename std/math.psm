@@ -31,7 +31,7 @@
 
 // The three the loop guard was built around. `llvm.smax.i32`, `llvm.smin.i32`
 // and `llvm.abs.i32`: no branch, and on LLVM's trivially-vectorisable list.
-public fn max(a: Int, b: Int) -> Int {
+lang("math_function") public fn max(a: Int, b: Int) -> Int {
     return __builtin_max(a, b)
 }
 

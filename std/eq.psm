@@ -19,8 +19,8 @@
 
 import std.string
 
-trait Eq {
-    fn eq(self, other: Self) -> Bool
+lang("eq") trait Eq {
+    lang("eq.eq") fn eq(self, other: Self) -> Bool
 }
 
 impl Eq for Int    { fn eq(self, other: Self) -> Bool { return self == other } }

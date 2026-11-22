@@ -11,9 +11,9 @@
 // Meant for freestanding programs (`--freestanding`), where a kernel talks to the
 // hardware directly; an ordinary process is not allowed to execute either.
 
-public fn portInU8(port: U16) -> U8 { return __builtin_port_in_u8(port) }
-public fn portInU16(port: U16) -> U16 { return __builtin_port_in_u16(port) }
-public fn portInU32(port: U16) -> U32 { return __builtin_port_in_u32(port) }
-public fn portOutU8(port: U16, value: U8) { __builtin_port_out_u8(port, value) }
-public fn portOutU16(port: U16, value: U16) { __builtin_port_out_u16(port, value) }
-public fn portOutU32(port: U16, value: U32) { __builtin_port_out_u32(port, value) }
+lang("port_access") public fn portInU8(port: U16) -> U8 { return __builtin_port_in_u8(port) }
+lang("port_access") public fn portInU16(port: U16) -> U16 { return __builtin_port_in_u16(port) }
+lang("port_access") public fn portInU32(port: U16) -> U32 { return __builtin_port_in_u32(port) }
+lang("port_access") public fn portOutU8(port: U16, value: U8) { __builtin_port_out_u8(port, value) }
+lang("port_access") public fn portOutU16(port: U16, value: U16) { __builtin_port_out_u16(port, value) }
+lang("port_access") public fn portOutU32(port: U16, value: U32) { __builtin_port_out_u32(port, value) }

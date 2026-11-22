@@ -146,8 +146,8 @@ impl Parser {
         return declaration
     }
 
-    // The id of a `lang("id")` marker on a trait's `fn`, with the current token on `lang`.
-    internal fn parseTraitMemberMarker(self) -> String {
+    // The id of a `lang("id")` marker on a member of a trait or an `impl`, with the current token on `lang`.
+    internal fn parseMemberMarker(self) -> String {
         return self.parseLangMarkerId()
     }
 }

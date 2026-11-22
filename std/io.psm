@@ -430,7 +430,7 @@ public fn eprintln() {
 // the arguments is unrolled, and `args.length` is a constant, so `println(n)` is the one formatter
 // and the one `write` it was when this was an overload per type. The last value carries the newline
 // in its own allocation, as it did.
-public fn print<Ts: ConsoleText>(...args: Ts) {
+lang("print") public fn print<Ts: ConsoleText>(...args: Ts) {
     let mut first = true
     for arg in args {
         if (first == false) { prismioStdIoOut(" ") }
@@ -440,7 +440,7 @@ public fn print<Ts: ConsoleText>(...args: Ts) {
 }
 
 // Prints each argument, separated by spaces, then a line break.
-public fn println<Ts: ConsoleText>(...args: Ts) {
+lang("println") public fn println<Ts: ConsoleText>(...args: Ts) {
     let mut remaining = args.length
     for arg in args {
         remaining = remaining - 1
@@ -459,7 +459,7 @@ public fn println<Ts: ConsoleText>(...args: Ts) {
 // format -- a manifest, JSON diagnostics, a pipe into another tool -- can still say something to the
 // person watching without corrupting it. The set matches stdout's, type for type, because it is the
 // same list.
-public fn eprint<Ts: ConsoleText>(...args: Ts) {
+lang("eprint") public fn eprint<Ts: ConsoleText>(...args: Ts) {
     let mut first = true
     for arg in args {
         if (first == false) { prismioStdIoErr(" ") }
@@ -469,7 +469,7 @@ public fn eprint<Ts: ConsoleText>(...args: Ts) {
 }
 
 // Prints each argument to standard error, separated by spaces, then a line break.
-public fn eprintln<Ts: ConsoleText>(...args: Ts) {
+lang("eprintln") public fn eprintln<Ts: ConsoleText>(...args: Ts) {
     let mut remaining = args.length
     for arg in args {
         remaining = remaining - 1

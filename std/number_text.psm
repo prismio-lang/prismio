@@ -32,7 +32,7 @@ import std.float_text
 
 // `value` is an integer of `bits` bits, signed or not. `bits` and `signed` are what
 // sema knows of `T` and the generic cannot ask.
-public fn intText<T>(value: T, bits: Int, signed: Bool) -> String {
+lang("int_text") public fn intText<T>(value: T, bits: Int, signed: Bool) -> String {
     let count = (bits + 31) / 32
     let mut digits: Vec<U32> = []
     for i in 0..<count {

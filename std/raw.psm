@@ -34,7 +34,7 @@ public fn addressOf(pointer: Ptr) -> Usize { return __builtin_ptr_addr(pointer) 
 //
 // This declaration only gives the call something to resolve against; the compiler replaces
 // the call.
-public fn cString(text: String) -> Ptr { return pointerAt(0) }
+lang("c_string") public fn cString(text: String) -> Ptr { return pointerAt(0) }
 
 // The address of the function called `name`, which is one string literal naming a function in
 // this program: `functionAddress("on_open")`. For the places a C interface wants a function
@@ -45,7 +45,7 @@ public fn cString(text: String) -> Ptr { return pointerAt(0) }
 //
 // This declaration only gives the call something to resolve against; the compiler replaces
 // the call.
-public fn functionAddress(name: String) -> Usize { return 0 }
+lang("function_address") public fn functionAddress(name: String) -> Usize { return 0 }
 
 // How many bytes one `T` takes in an array or a field: its size rounded up to its
 // alignment, as `sizeof` is in C. It is read off the pointer type -- how far a pointer
@@ -66,7 +66,7 @@ public fn sizeOf<T>() -> Usize {
 //
 // This declaration only gives the call something to resolve against: the compiler replaces
 // the call with the number, from the layout it built for the target.
-public fn offsetOf<T>(field: String) -> Usize { return 0 }
+lang("offset_of") public fn offsetOf<T>(field: String) -> Usize { return 0 }
 public fn pointerAt(address: Usize) -> Ptr { return __builtin_addr_ptr(address) }
 
 // How an atomic access on a typed pointer is ordered against the others around it, written

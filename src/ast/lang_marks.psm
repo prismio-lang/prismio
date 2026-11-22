@@ -1,6 +1,7 @@
 import ast.nodes
 import std.string
 import std.option
+import std.vec
 
 // The `lang("id")` marker: which library declarations are what the language itself asks the
 // library for (`==` needs the equality trait, `for` needs the iterator trait, ...). A declaration says
@@ -17,8 +18,47 @@ private fn langMarkKey(node: ASTNode) -> String {
     return "\n".concat(position, node.col.toString(), "|")
 }
 
+// Every marked declaration, in the order the parser met them: parallel columns, `langIds[i]` is the id of
+// the declaration at `langNodes[i]`. An id may be carried by several declarations (the overloads of one
+// function, a name a library spells for more than one type). A zero-filled global `Vec` is not an empty
+// one, hence `langOpened`.
+let mut langIds: Vec<String>
+let mut langNodes: Vec<Ptr>
+let mut langOpened = false
+
+private fn langOpen() {
+    if (langOpened) { return }
+    langIds = []
+    langNodes = []
+    langOpened = true
+}
+
 public fn nodeSetLangMark(node: ASTNode, id: String) {
     langMarkTable = langMarkTable.concat(langMarkKey(node), id)
+    langOpen()
+    langIds.push(id.clone())
+    langNodes.push(node_to_ptr(node))
+}
+
+// How many declarations carry `id`, and the `n`th of them in source order.
+public fn langDeclarationCount(id: String) -> Int {
+    langOpen()
+    let mut found = 0
+    for i in 0..<langIds.length {
+        if (langIds[i].equals(id)) { found = found + 1 }
+    }
+    return found
+}
+
+public fn langDeclarationAt(id: String, n: Int) -> ASTNode {
+    langOpen()
+    let mut seen = 0
+    for i in 0..<langIds.length {
+        if (langIds[i].equals(id) == false) { continue }
+        if (seen == n) { return ptr_to_node(langNodes[i]) }
+        seen = seen + 1
+    }
+    return createNode(NodeKind.ERROR_NODE)
 }
 
 // "" for a declaration that carries no marker.

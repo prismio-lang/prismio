@@ -21,8 +21,8 @@
 
 import std.string
 
-trait Copy {
-    fn copyOf(self) -> Self
+lang("copy") trait Copy {
+    lang("copy.copy_of") fn copyOf(self) -> Self
 }
 
 impl Copy for Int    { fn copyOf(self) -> Self { return self } }

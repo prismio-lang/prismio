@@ -1,0 +1,168 @@
+// The library declarations the language itself depends on, by the id each one carries.
+//
+// `==` needs the equality trait, `for` needs the iterator trait, `??` needs a function, a map literal
+// needs another. The compiler never spells a library module or the name of a library declaration: the
+// declaration says what it is (`lang("eq") trait Eq { ... }`, ast/lang_marks.psm) and the compiler asks
+// for the declaration that carries the id. Moving `Eq` to another module, or renaming it, changes
+// nothing here.
+//
+// This enum is the whole list. Adding an item is a variant here, a function that asks for it, and the
+// marker on the library's declaration; an item the library does not declare is reported by the use that
+// needed it (`langMissing`), not as an unknown name.
+
+import std.string
+import ast.nodes
+import ast.lang_marks
+import common.source_files
+
+public enum LangItem {
+    RESULT,
+    OPTION_COALESCE,
+    TUPLE2,
+    TUPLE3,
+    TUPLE4,
+    TUPLE2_NEW,
+    TUPLE3_NEW,
+    TUPLE4_NEW,
+    EQ,
+    EQ_METHOD,
+    ORD,
+    ORD_METHOD,
+    ITERATOR,
+    ITERATOR_HAS_NEXT,
+    ITERATOR_NEXT,
+    COPY,
+    COPY_METHOD,
+    KEY,
+    HASH_MAP,
+    HASH_SET,
+    MAP_NEW,
+    MAP_FROM_ENTRIES,
+    MAP_MERGE,
+    MAP_KEY_AT,
+    MAP_VALUE_AT,
+    MAP_COUNT,
+    HASH_SET_NEW,
+    HASH_SET_KEY_AT,
+    VEC_OF,
+    VEC_FILLED,
+    STRING_CONCAT,
+    INT_TEXT,
+    PRINT,
+    PRINTLN,
+    EPRINT,
+    EPRINTLN,
+    SHOW,
+    TO_STRING,
+    ASM,
+    ASM_READ,
+    ASM_WRITE,
+    ASM_OPS,
+    ASM_OPS_OUT,
+    OFFSET_OF,
+    C_STRING,
+    FUNCTION_ADDRESS,
+    PORT_ACCESS,
+    MATH_FUNCTION
+}
+
+// The text a library declaration writes in `lang("...")`.
+public fn langItemId(item: LangItem) -> String {
+    match item {
+        LangItem.RESULT => { return "result" }
+        LangItem.OPTION_COALESCE => { return "option_coalesce" }
+        LangItem.TUPLE2 => { return "tuple2" }
+        LangItem.TUPLE3 => { return "tuple3" }
+        LangItem.TUPLE4 => { return "tuple4" }
+        LangItem.TUPLE2_NEW => { return "tuple2_new" }
+        LangItem.TUPLE3_NEW => { return "tuple3_new" }
+        LangItem.TUPLE4_NEW => { return "tuple4_new" }
+        LangItem.EQ => { return "eq" }
+        LangItem.EQ_METHOD => { return "eq.eq" }
+        LangItem.ORD => { return "ord" }
+        LangItem.ORD_METHOD => { return "ord.cmp" }
+        LangItem.ITERATOR => { return "iterator" }
+        LangItem.ITERATOR_HAS_NEXT => { return "iterator.has_next" }
+        LangItem.ITERATOR_NEXT => { return "iterator.next" }
+        LangItem.COPY => { return "copy" }
+        LangItem.COPY_METHOD => { return "copy.copy_of" }
+        LangItem.KEY => { return "key" }
+        LangItem.HASH_MAP => { return "hash_map" }
+        LangItem.HASH_SET => { return "hash_set" }
+        LangItem.MAP_NEW => { return "map_new" }
+        LangItem.MAP_FROM_ENTRIES => { return "map_from_entries" }
+        LangItem.MAP_MERGE => { return "map_merge" }
+        LangItem.MAP_KEY_AT => { return "map_key_at" }
+        LangItem.MAP_VALUE_AT => { return "map_value_at" }
+        LangItem.MAP_COUNT => { return "map_count" }
+        LangItem.HASH_SET_NEW => { return "hash_set_new" }
+        LangItem.HASH_SET_KEY_AT => { return "hash_set_key_at" }
+        LangItem.VEC_OF => { return "vec_of" }
+        LangItem.VEC_FILLED => { return "vec_filled" }
+        LangItem.STRING_CONCAT => { return "string_concat" }
+        LangItem.INT_TEXT => { return "int_text" }
+        LangItem.PRINT => { return "print" }
+        LangItem.PRINTLN => { return "println" }
+        LangItem.EPRINT => { return "eprint" }
+        LangItem.EPRINTLN => { return "eprintln" }
+        LangItem.SHOW => { return "show" }
+        LangItem.TO_STRING => { return "to_string" }
+        LangItem.ASM => { return "asm" }
+        LangItem.ASM_READ => { return "asm_read" }
+        LangItem.ASM_WRITE => { return "asm_write" }
+        LangItem.ASM_OPS => { return "asm_ops" }
+        LangItem.ASM_OPS_OUT => { return "asm_ops_out" }
+        LangItem.OFFSET_OF => { return "offset_of" }
+        LangItem.C_STRING => { return "c_string" }
+        LangItem.FUNCTION_ADDRESS => { return "function_address" }
+        LangItem.PORT_ACCESS => { return "port_access" }
+        LangItem.MATH_FUNCTION => { return "math_function" }
+    }
+}
+
+// The declared name of the first declaration that carries the item, or "" when the library the program
+// reached declares none. An item may be carried by several declarations of one name (overloads), so one
+// answer serves them all.
+public fn langName(item: LangItem) -> String {
+    let id = langItemId(item)
+    if (langDeclarationCount(id) == 0) { return "".clone() }
+    return langDeclarationAt(id, 0).s1.clone()
+}
+
+// The module the declaration was read from, as a program names it in an `import`.
+public fn langModule(item: LangItem) -> String {
+    let id = langItemId(item)
+    if (langDeclarationCount(id) == 0) { return "".clone() }
+    return diag_file_module(langDeclarationAt(id, 0).file)
+}
+
+public fn langDeclared(item: LangItem) -> Bool {
+    return langDeclarationCount(langItemId(item)) > 0
+}
+
+// Whether `name` is what some declaration that carries the item is called.
+public fn langNameIs(name: String, item: LangItem) -> Bool {
+    let id = langItemId(item)
+    let count = langDeclarationCount(id)
+    for n in 0..<count {
+        if (langDeclarationAt(id, n).s1.equals(name)) { return true }
+    }
+    return false
+}
+
+// `name` is the item's own, or an instantiation of it: a generic is named for its template and the types
+// it was made for (`optionCoalesce$Int`, `Tuple2$Int$String`), and "$" is the separator.
+public fn langNameIsInstance(name: String, item: LangItem) -> Bool {
+    let id = langItemId(item)
+    let count = langDeclarationCount(id)
+    for n in 0..<count {
+        let declared = langDeclarationAt(id, n).s1
+        if (name.equals(declared) or name.startsWith(declared.concat("$"))) { return true }
+    }
+    return false
+}
+
+// Whether `decl` is a declaration that carries the item.
+public fn langIsDeclaration(decl: ASTNode, item: LangItem) -> Bool {
+    return nodeLangMark(decl).equals(langItemId(item))
+}

@@ -1840,6 +1840,8 @@ impl Parser {
                 }
                 nodeListPush(constants, constant)
             } else {
+            let mut methodLang = "".clone()
+            if (self.atLangMarker()) { methodLang = self.parseMemberMarker() }
             let methodVisibility = self.visibilityLevel()
             if (methodVisibility >= 0) { self.advance() }
 
@@ -1855,6 +1857,7 @@ impl Parser {
                 continue
             }
             applyFnModifiers(method, methodMods)
+            if (methodLang.equals("") == false) { nodeSetLangMark(method, methodLang) }
             method.s2 = self.parseImplMethodParams(header.s1, method.s2)
             // A function with no `self` belongs to the type: `impl Config { fn
             // make() -> Config }` is `Config.make()`, and its name says so, so two
@@ -2138,7 +2141,7 @@ impl Parser {
                 nodeListPush(constants, constant)
             } else {
                 let mut langId = "".clone()
-                if (self.atLangMarker()) { langId = self.parseTraitMemberMarker() }
+                if (self.atLangMarker()) { langId = self.parseMemberMarker() }
                 if (self.checkVal(TokenType.KEYWORD, "fn") == false) {
                     self.fatal("a `trait` holds `fn` signatures, `let` constants and `type` members, found ".concat(parserDescribe(self.current())))
                     self.recoverMember(memberStart, memberHoist)

@@ -20,7 +20,7 @@ import std.io
 import std.string
 
 trait Display {
-    fn show(self) -> String
+    lang("show") fn show(self) -> String
 }
 
 // Every type that can be shown: what `print` and `println` accept, any number of them.

@@ -19,7 +19,7 @@
 
 import std.string
 
-trait Key {
+lang("key") trait Key {
     fn hash(self) -> Int
     fn eq(self, other: Self) -> Bool
 }
