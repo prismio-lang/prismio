@@ -1,0 +1,4 @@
+// expect-error: `lang` marks a function, a struct, an enum or a trait
+lang("limit") let LIMIT = 4
+
+fn main() -> Int { return LIMIT }

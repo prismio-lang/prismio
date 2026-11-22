@@ -6,6 +6,7 @@ import lexer.token
 import common.text
 import ast.nodes
 import ast.fn_attrs
+import ast.lang_marks
 import ast.int_width
 import common.diagnostics
 import std.string
@@ -28,6 +29,9 @@ impl Parser {
         // nothing was. Flipping it cost a rename of the tree once -- see the
         // `public` markers through `src/`, `std/` and `ums/` -- and buys a surface
         // that is the part someone wrote down.
+        if (self.atLangMarker()) { return self.parseLangMarked() }
+        if (self.atModuleHeader()) { return self.parseMisplacedModuleHeader() }
+
         let visibility = self.visibilityLevel()
         if (visibility >= 0) {
             let marker = self.current()
@@ -90,7 +94,7 @@ impl Parser {
     // the grammar's own predicates, so a new declaration form is recognised here
     // the moment `parseDeclaration` learns it.
     private fn atDeclarationStart(self) -> Bool {
-        if (self.visibilityLevel() >= 0) { return true }
+        if (self.visibilityLevel() >= 0 or self.atLangMarker()) { return true }
         if (self.checkVal(TokenType.KEYWORD, "import") or self.atFromImport()) { return true }
         if (self.checkVal(TokenType.KEYWORD, "let") or self.atConstDecl()) { return true }
         if (self.checkVal(TokenType.KEYWORD, "extern")) { return true }
@@ -235,7 +239,7 @@ impl Parser {
 
     // Whether the token the parser is on begins a member of an `impl` or `trait` body.
     private fn atMemberStart(self) -> Bool {
-        if (self.visibilityLevel() >= 0) { return true }
+        if (self.visibilityLevel() >= 0 or self.atLangMarker()) { return true }
         if (self.checkVal(TokenType.KEYWORD, "fn") or self.checkVal(TokenType.KEYWORD, "let")) { return true }
         if (self.atPropDecl() or self.atFnModifiers()) { return true }
         return self.parseAtAssocType()
@@ -2133,12 +2137,15 @@ impl Parser {
                 }
                 nodeListPush(constants, constant)
             } else {
+                let mut langId = "".clone()
+                if (self.atLangMarker()) { langId = self.parseTraitMemberMarker() }
                 if (self.checkVal(TokenType.KEYWORD, "fn") == false) {
                     self.fatal("a `trait` holds `fn` signatures, `let` constants and `type` members, found ".concat(parserDescribe(self.current())))
                     self.recoverMember(memberStart, memberHoist)
                     continue
                 }
                 let signature = self.parseTraitSignature()
+                if (langId.equals("") == false) { nodeSetLangMark(signature, langId) }
                 if (self.dead == 0) { self.parseImplCheckReceiver(signature) }
                 if (self.dead == 1) {
                     self.recoverMember(memberStart, memberHoist)

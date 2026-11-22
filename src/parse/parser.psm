@@ -517,6 +517,8 @@ impl Parser {
         let module = self.node(NodeKind.MODULE)
         let declarations = nodeList()
 
+        if (self.atModuleHeader()) { self.parseModuleHeader() }
+
         loop {
             if (self.check(TokenType.EOF)) { break }
 

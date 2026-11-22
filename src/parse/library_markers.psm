@@ -1,0 +1,153 @@
+// The two markers a library file uses to say what it is to the toolchain: the `module` header
+// at the top of a file, and `lang("id")` before a declaration the language itself depends on.
+//
+//   module prelude freestanding
+//
+//   lang("eq") trait Eq { ... }
+//
+// **Contextual**, like `prop` and the visibility markers: `module` is a header only as the first item
+// of a file followed by a flag on its own line, and `lang` a marker only when `(` follows, so a
+// variable with either name keeps compiling. What each one means is not decided here. The parser
+// records the header's bits in the file registry (common/source_files.psm) and a marker in the
+// lang table (ast/lang_marks.psm); the driver reads the first and the toolchain the second.
+
+import lexer.scanner
+import lexer.token
+import ast.nodes
+import ast.lang_marks
+import ast.module_header
+import common.diagnostics
+import common.source_files
+import common.diag_codes
+import std.string
+import std.option
+
+private fn langMarkable(kind: NodeKind) -> Bool {
+    return kind == NodeKind.FUNCTION or kind == NodeKind.STRUCT_DECL or kind == NodeKind.ENUM_DECL
+        or kind == NodeKind.TRAIT_DECL
+}
+
+impl Parser {
+    // `module` and a flag word on the same line. A name `module` followed by anything else is an
+    // ordinary identifier, which cannot begin a declaration, so the header needs nothing more to be
+    // unambiguous.
+    internal fn atModuleHeader(self) -> Bool {
+        if (self.checkVal(TokenType.IDENTIFIER, "module") == false) { return false }
+        let next = self.peek()
+        if (next.type != TokenType.IDENTIFIER or next.line != self.current().line) { return false }
+        return next.value.equals("prelude") or next.value.equals("freestanding")
+    }
+
+    // Consumes the header and answers its flags. Every word on the line is read, so a mistake is one
+    // error and the declarations after it still parse.
+    private fn parseModuleHeaderWords(self) -> Int {
+        let start = self.current()
+        self.advance()
+        let mut flags = 0
+        while (self.check(TokenType.IDENTIFIER) and self.current().line == start.line) {
+            let word = self.current()
+            let mut bit = 0
+            let mut problem = ""
+            if (word.value.equals("prelude")) {
+                bit = headerBitPrelude()
+            } else if (word.value.equals("freestanding")) {
+                bit = headerBitFreestanding()
+                if (self.peek().type == TokenType.SEPARATOR and self.peek().value.equals("(")) {
+                    bit = bit | self.parseFreestandingTier()
+                }
+            } else {
+                problem = "`module` takes `prelude`, `freestanding` and `freestanding(runtime)`, not ".concat(diagQuote(word.value))
+            }
+            if (problem.equals("") and (flags & bit) != 0) {
+                problem = "`".concat(word.value, "` is written twice in this header")
+            }
+            if (problem.equals("") == false) {
+                diag_error_at_code(DIAG_PARSE_MODULE_HEADER_FLAG, word.file, word.line, word.col, word.len, problem)
+            }
+            flags = flags | bit
+            self.advance()
+        }
+        return flags
+    }
+
+    // `(runtime)` after `freestanding`, with the current token on `freestanding`: the module links
+    // with no C library but over the runtime's allocator. Answers the bit it adds.
+    private fn parseFreestandingTier(self) -> Int {
+        self.advance()
+        self.advance()
+        let tier = self.current()
+        if (tier.type != TokenType.IDENTIFIER or tier.value.equals("runtime") == false) {
+            diag_error_at_code(DIAG_PARSE_MODULE_HEADER_TIER, tier.file, tier.line, tier.col, tier.len,
+                "`freestanding` takes `(runtime)` or nothing")
+            return 0
+        }
+        self.advance()
+        if (self.checkVal(TokenType.SEPARATOR, ")") == false) {
+            self.fatal("expected `)` after `freestanding(runtime`")
+            return 0
+        }
+        return headerBitRuntime()
+    }
+
+    // The header of the file being parsed, which `parseModule` asks for before its first declaration.
+    internal fn parseModuleHeader(self) {
+        let start = self.current()
+        let flags = self.parseModuleHeaderWords()
+        diag_set_file_header(start.file, flags)
+    }
+
+    // A header that is not the first item. Read and dropped, so that it is the one error.
+    internal fn parseMisplacedModuleHeader(self) -> ASTNode {
+        let bad = self.node(NodeKind.ERROR_NODE)
+        let start = self.current()
+        diag_error_at_code(DIAG_PARSE_MODULE_HEADER_NOT_FIRST, start.file, start.line, start.col, start.len,
+            "`module` must be the first item in a file")
+        self.parseModuleHeaderWords()
+        return bad
+    }
+
+    // `lang` and a parenthesis: nothing else a declaration can begin with.
+    internal fn atLangMarker(self) -> Bool {
+        if (self.checkVal(TokenType.IDENTIFIER, "lang") == false) { return false }
+        let next = self.peek()
+        return next.type == TokenType.SEPARATOR and next.value.equals("(")
+    }
+
+    // `lang("id")`, with the current token on `lang`. Answers the id, or "" after reporting a marker
+    // that does not name one.
+    private fn parseLangMarkerId(self) -> String {
+        self.advance()
+        self.expectVal(TokenType.SEPARATOR, "(", "lang marker")
+        let id = self.current()
+        let mut written = "".clone()
+        if (id.type != TokenType.STRING_LITERAL or id.value.equals("")) {
+            diag_error_at_code(DIAG_PARSE_LANG_MARKER_ID, id.file, id.line, id.col, id.len,
+                "`lang` takes the item's id as a string literal, such as `lang(\"eq\")`")
+        } else {
+            written = id.value.clone()
+        }
+        self.advance()
+        self.expectVal(TokenType.SEPARATOR, ")", "lang marker")
+        return written
+    }
+
+    // `lang("id")` before a top-level declaration, or before a `fn` in a trait.
+    internal fn parseLangMarked(self) -> ASTNode {
+        let marker = self.current()
+        let id = self.parseLangMarkerId()
+        let declaration = self.parseDeclaration()
+        if (self.dead == 1 or id.equals("")) { return declaration }
+        if (langMarkable(declaration.kind) == false) {
+            diag_error_at_code(DIAG_PARSE_LANG_MARKER_TARGET, marker.file, marker.line, marker.col, marker.len,
+                "`lang` marks a function, a struct, an enum or a trait")
+            return declaration
+        }
+        nodeSetLangMark(declaration, id)
+        return declaration
+    }
+
+    // The id of a `lang("id")` marker on a trait's `fn`, with the current token on `lang`.
+    internal fn parseTraitMemberMarker(self) -> String {
+        return self.parseLangMarkerId()
+    }
+}

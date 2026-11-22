@@ -27,6 +27,7 @@ private let mut filePaths: Vec<String>
 private let mut fileContents: Vec<String>
 private let mut fileModules: Vec<String>
 private let mut fileModuleRecorded: Vec<Bool>
+private let mut fileHeaders: Vec<Int>
 private let mut filePathBlocks: Vec<Usize>
 private let mut fileModuleBlocks: Vec<Usize>
 private let mut registryOpened = false
@@ -40,6 +41,7 @@ private fn registryOpen() {
     fileContents = []
     fileModules = []
     fileModuleRecorded = []
+    fileHeaders = []
     filePathBlocks = []
     fileModuleBlocks = []
     registryOpened = true
@@ -63,6 +65,7 @@ public fn diag_add_file(path: String, content: String) -> Int {
     fileContents.push(content.clone())
     fileModules.push("")
     fileModuleRecorded.push(false)
+    fileHeaders.push(0)
     filePathBlocks.push(cTextCopy(path))
     fileModuleBlocks.push(0)
     return filePaths.length - 1
@@ -123,6 +126,20 @@ public export fn diag_file_path_cstr(file: Int) -> Ptr {
     if (inRegistry(file)) { return pointerAt(filePathBlocks[file]) }
     if (unknownPathBlock == 0) { unknownPathBlock = cTextCopy("<unknown>") }
     return pointerAt(unknownPathBlock)
+}
+
+// What a file's `module` header says about it (ast/module_header.psm names the bits), recorded by the parser
+// as it reads the file. 0 for a file with no header, which is a hosted module with no special role.
+public fn diag_set_file_header(file: Int, flags: Int) {
+    registryOpen()
+    if (inRegistry(file) == false) { return }
+    fileHeaders[file] = flags
+}
+
+public fn diag_file_header(file: Int) -> Int {
+    registryOpen()
+    if (inRegistry(file) == false) { return 0 }
+    return fileHeaders[file]
 }
 
 // `diag_file_module` for C, with the same lifetime.

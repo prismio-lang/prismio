@@ -1,0 +1,7 @@
+// expect-error: `sealed.pkg._hidden.secret` is sealed inside `sealed.pkg`
+//
+// A path segment that begins with `_` seals the module to the modules under that segment's parent.
+// This file is the program's entry, not a module of `sealed.pkg`.
+import sealed.pkg._hidden.secret
+
+fn main() -> Int { return secretValue() }

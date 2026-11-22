@@ -98,16 +98,28 @@ private fn libraryScan() {
     libraryNames = []
     libraryOwners = []
     if (libraryDirectory.equals("")) { return }
-    for file in listDirectory(libraryDirectory) {
+    libraryScanDirectory(libraryDirectory, "std")
+}
+
+// The modules of one directory of the library, then of each directory below it. A path segment that
+// begins with `_` is sealed to the library (the driver refuses an import of it from outside), so a
+// program is never offered one.
+private fn libraryScanDirectory(directory: String, prefix: String) {
+    for entry in listDirectory(directory) {
+        if (entry.startsWith("_") or entry.startsWith(".")) { continue }
+        let path = joinPath(directory, entry)
+        if (directoryExists(path)) {
+            libraryScanDirectory(path, prefix.concat(".", entry))
+            continue
+        }
         let mut leaf = "".clone()
-        if (file.endsWith(".psm")) { leaf = file.slice(0, file.length - 4).clone() }
-        if (file.endsWith(".plib")) { leaf = file.slice(0, file.length - 5).clone() }
+        if (entry.endsWith(".psm")) { leaf = entry.slice(0, entry.length - 4).clone() }
+        if (entry.endsWith(".plib")) { leaf = entry.slice(0, entry.length - 5).clone() }
         if (leaf.equals("")) { continue }
-        let module = "std.".concat(leaf)
+        let module = prefix.concat(".", leaf)
         if (libraryIsLowLevel(module)) { continue }
-        let path = joinPath(libraryDirectory, file)
         let mut text = "".clone()
-        if (file.endsWith(".plib")) {
+        if (entry.endsWith(".plib")) {
             text = compiler_plib_interface(path, module)
         } else {
             text = readFile(path)

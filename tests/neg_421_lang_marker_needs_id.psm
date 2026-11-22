@@ -1,0 +1,4 @@
+// expect-error: `lang` takes the item's id as a string literal
+lang(eq) fn same(a: Int, b: Int) -> Bool { return a == b }
+
+fn main() -> Int { return 0 }

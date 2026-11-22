@@ -7537,6 +7537,113 @@ def run_std_input_test():
     return True
 
 
+def run_std_layout_test():
+    """The tree a library is written as: nested modules, packages, sealing, and the two markers.
+
+    A Prismio checkout is faked (a `runtime/lang_runtime.c` beside a `std/`), because that marker
+    is what makes a directory's `std/` the library, and the library's own layout is what is under
+    test: `std.a.b` is `std/a/b.psm`, a directory with no file of its name is the modules inside it,
+    a path segment that begins with `_` seals a module to the library, the library index never
+    offers a sealed module, and a library file may carry the `module` header and `lang("id")`.
+    """
+    print(f"\n{BLUE}--- Running std_layout ---{RESET}")
+    problems = []
+    exe_suffix = ".exe" if platform.system() == "Windows" else ""
+    files = {
+        "runtime/lang_runtime.c": "",
+        "std/string.psm": "public fn strMark() -> Int { return 1 }\n",
+        "std/core/answer.psm": ("module prelude freestanding\n\n"
+                                "lang(\"answer\") public fn answer() -> Int { return 42 }\n"),
+        "std/core/shape.psm": ("module freestanding(runtime)\n\n"
+                               "lang(\"shape\") public struct Shape { public sides: Int }\n"
+                               "lang(\"shape_kind\") public enum Kind { Flat, Round }\n"
+                               "lang(\"measure\") trait Measure {\n"
+                               "    lang(\"measure_area\") fn area(self) -> Int\n"
+                               "}\n"),
+        "std/net/output.psm": "public fn say(x: Int) -> Int { return x }\n",
+        "std/net/input.psm": "public fn hear() -> Int { return 7 }\n",
+        "std/_hidden/tables.psm": "public fn table() -> Int { return 5 }\n",
+        "std/text.psm": ("import std._hidden.tables\n\n"
+                         "public fn tableTotal() -> Int { return table() + 1 }\n"),
+        "std/both.psm": "public fn bothFile() -> Int { return 1 }\n",
+        "std/both/inner.psm": "public fn bothInner() -> Int { return 2 }\n",
+        "app/ok.psm": ("import std.core.answer\n"
+                       "import std.core.shape\n"
+                       "import std.net\n"
+                       "import std.text\n"
+                       "import std.both\n\n"
+                       "fn main() -> Int {\n"
+                       "    let shape = Shape { sides: 4 }\n"
+                       "    let sum = answer() + say(1) + hear() + tableTotal() + bothFile() + shape.sides\n"
+                       "    if (sum != 42 + 1 + 7 + 6 + 1 + 4) { return 1 }\n"
+                       "    return 0\n"
+                       "}\n"),
+        "app/selected.psm": ("import std.net.hear\n\n"
+                             "fn main() -> Int {\n"
+                             "    if (hear() != 7) { return 1 }\n"
+                             "    return 0\n"
+                             "}\n"),
+        "app/wholepackage.psm": ("import std.net.*\n\n"
+                                 "fn main() -> Int { return hear() + say(0) - 7 }\n"),
+        "app/sealed.psm": ("import std._hidden.tables\n\n"
+                           "fn main() -> Int { return table() }\n"),
+        "app/sealed_package.psm": ("import std._hidden.*\n\n"
+                                   "fn main() -> Int { return table() }\n"),
+        "app/suggest.psm": ("fn main() -> Int { return tableTotal() }\n"),
+        "app/suggest_sealed.psm": ("fn main() -> Int { return table() }\n"),
+        "app/inner.psm": ("import std.both\n\n"
+                          "fn main() -> Int { return bothInner() }\n"),
+    }
+    with tempfile.TemporaryDirectory(prefix="prismio-std-layout-") as tmp:
+        root = Path(tmp)
+        for name, text in files.items():
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+
+        def build(name):
+            exe = root / "app" / (name + exe_suffix)
+            result = run_command([str(PRISMIO_EXE), "build", str(root / "app" / (name + ".psm")), "-o", str(exe)])
+            return result, exe
+
+        for name in ("ok", "selected", "wholepackage"):
+            result, exe = build(name)
+            if result.returncode != 0:
+                problems.append(f"{name}: did not build: {(result.stdout + result.stderr).strip()[:400]}")
+                continue
+            ran = run_command([str(exe)])
+            if ran.returncode != 0:
+                problems.append(f"{name}: exited {ran.returncode}")
+
+        def refused(name, wanted, absent=()):
+            result, _ = build(name)
+            output = result.stdout + result.stderr
+            if result.returncode == 0:
+                problems.append(f"{name}: built, and should have been refused")
+            for text in wanted:
+                if text not in output:
+                    problems.append(f"{name}: no `{text}` in: {output.strip()[:400]}")
+            for text in absent:
+                if text in output:
+                    problems.append(f"{name}: names `{text}`, which a program is never told about: {output.strip()[:400]}")
+
+        refused("sealed", ["`std._hidden.tables` is sealed inside `std`"])
+        refused("sealed_package", ["is sealed inside `std`"])
+        # The library index: an unimported name is offered its module (the control), and a name only a
+        # sealed module declares is not offered one.
+        refused("suggest", ["`tableTotal` is declared in `std.text`, which this file does not import"])
+        refused("suggest_sealed", ["unknown"], absent=["std._hidden"])
+        # A file and a directory of one name: the import means the file alone.
+        refused("inner", ["bothInner"])
+    if problems:
+        print(f"{RED}[FAIL] std_layout{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] std_layout: nested modules, packages, sealing, the library index and the markers{RESET}")
+    return True
+
+
 def run_asm_ops_test():
     """`asmOps` and `asmOpsOut` (std.asm): operands, results and clobbers, read as IR.
 
@@ -13112,6 +13219,7 @@ def main():
         ("range_direction", run_range_direction_test),
         ("failure_builtins", run_failure_builtins_test),
         ("std_input", run_std_input_test),
+        ("std_layout", run_std_layout_test),
         ("asm_ops", run_asm_ops_test),
         ("data_placement", run_data_placement_test),
         ("kmalloc_heap", run_kmalloc_heap_test),

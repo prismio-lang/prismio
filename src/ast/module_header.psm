@@ -1,0 +1,20 @@
+// The `module` header: the first item of a file, naming what the module is to the toolchain.
+//
+//   module freestanding              links nothing: it needs neither a C library nor an allocator
+//   module freestanding(runtime)     links with no C library, over the runtime's allocator
+//   module prelude freestanding      a module whose names a program may use without importing it
+//                                    (a prelude module is lazy: it is merged when a name it declares
+//                                    is looked up and found nowhere else)
+//   (no header)                      hosted: a libc and an operating system, the safe default
+//
+// The words are bits in one number, kept per file in the source registry
+// (common/source_files.psm) by the parser. They live here, and the registry keeps only the
+// number, so a flag that is added is added in one place.
+
+public fn headerBitPrelude() -> Int { return 1 }
+public fn headerBitFreestanding() -> Int { return 2 }
+public fn headerBitRuntime() -> Int { return 4 }
+
+public fn headerIsPrelude(flags: Int) -> Bool { return (flags & headerBitPrelude()) != 0 }
+public fn headerIsFreestanding(flags: Int) -> Bool { return (flags & headerBitFreestanding()) != 0 }
+public fn headerNeedsRuntime(flags: Int) -> Bool { return (flags & headerBitRuntime()) != 0 }

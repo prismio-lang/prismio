@@ -1,0 +1,41 @@
+import ast.nodes
+import std.string
+import std.option
+
+// The `lang("id")` marker: which library declarations are what the language itself asks the
+// library for (`==` needs the equality trait, `for` needs the iterator trait, ...). A declaration says
+// what it is, so the compiler never spells a library module or a declaration's name.
+//
+// A table beside the AST, for the reason fn_attrs.psm gives: a field on every node costs the whole
+// compiler for the sake of a few declarations. Keyed by where the declaration node sits, which is
+// unique and survives the copy a generic instantiation makes. One record per line,
+// `file:line:col|id`.
+let mut langMarkTable = ""
+
+private fn langMarkKey(node: ASTNode) -> String {
+    let position = node.file.toString().concat(":", node.line.toString(), ":")
+    return "\n".concat(position, node.col.toString(), "|")
+}
+
+public fn nodeSetLangMark(node: ASTNode, id: String) {
+    langMarkTable = langMarkTable.concat(langMarkKey(node), id)
+}
+
+// "" for a declaration that carries no marker.
+public fn nodeLangMark(node: ASTNode) -> String {
+    if (langMarkTable.equals("")) { return "" }
+    let key = langMarkKey(node)
+    let at = langMarkTable.indexOf(key)
+    if (at < 0) { return "" }
+    let start = at + key.length
+    let rest = langMarkTable.substring(start, langMarkTable.length - start)
+    let end = rest.indexOf("\n")
+    if (end < 0) { return rest.clone() }
+    return rest.substring(0, end)
+}
+
+// Whether any declaration of this compile has been marked. A program that imports no library
+// module that carries one never pays for a search.
+public fn langMarksExist() -> Bool {
+    return langMarkTable.equals("") == false
+}

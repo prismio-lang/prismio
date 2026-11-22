@@ -1,0 +1,8 @@
+// expect-error: `module` must be the first item in a file
+//
+// The header says what the whole file is, so it is the first item and nothing may precede it.
+import std.io
+
+module freestanding
+
+fn main() -> Int { return 0 }

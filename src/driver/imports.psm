@@ -335,6 +335,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     if (moduleName.equals("build")) {
         return mergeBuildModule(merged, site, baseDir, visited)
     }
+    if (refuseSealedModule(site, moduleName)) { return visited }
     let importPath = resolveImportPath(baseDir, moduleName)
 
     // v0.1 3.5, selective imports. `import std.string.strTrim` names a *name*
@@ -348,14 +349,25 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // merged once however many files import it, so a second file selecting from
     // an already-merged module would otherwise take everything.
     if (fileExists(importPath) == false) {
+        // A directory with no file of its name is its modules: `import std.io` reads `std/io/*`
+        // when there is no `std/io.psm`, exactly as `import std.io.*` does. A file and a
+        // directory of one name coexist, and then the name means the file alone.
+        let directory = resolvePackageDirectory(baseDir, moduleName)
+        if (listModules(directory).length > 0) {
+            return mergePackageDirectory(merged, site, moduleName, directory, baseDir, visited)
+        }
         let cut = moduleName.lastIndexOf(".")
         if (cut > 0) {
             let parent = moduleName.substring(0, cut)
+            let selected = moduleName.substring(cut + 1, moduleName.length - cut - 1)
             if (parent.equals("build") or fileExists(resolveImportPath(baseDir, parent))) {
                 ir_import_record(site.file, parent)
-                ir_select_record(site.file, parent,
-                    moduleName.substring(cut + 1, moduleName.length - cut - 1))
+                ir_select_record(site.file, parent, selected)
                 return mergeNamedModule(merged, site, parent, baseDir, visited)
+            }
+            let members = listModules(resolvePackageDirectory(baseDir, parent))
+            if (members.length > 0) {
+                return mergePackageSelection(merged, site, parent, members, selected, baseDir, visited)
             }
         }
     }
@@ -470,20 +482,43 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
 // been emptied, and both are worth hearing about.
 private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
                         visited: String) -> String {
-    let dirPath = joinImportDir(baseDir, site.s1)
+    return mergePackageDirectory(merged, site, site.s1, resolvePackageDirectory(baseDir, site.s1),
+                                 baseDir, visited)
+}
+
+// The modules of one package directory, each merged as the import of its own qualified name.
+// `packageName` is what the program wrote: `import std.io` when no `std/io.psm` exists and
+// `std/io/` does is this too, since a directory with no file of its name *is* its modules.
+private fn mergePackageDirectory(merged: ASTNode, site: ASTNode, packageName: String, dirPath: String,
+                        baseDir: String, visited: String) -> String {
     let modules = listModules(dirPath)
 
     if (modules.length == 0) {
         diag_error_at_code(DIAG_DRIVER_PACKAGE_HAS_NO_MODULES, site.file, site.line, site.col, site.len,
-            "package ".concat(diagQuote(site.s1), " contains no modules: ", dirPath))
+            "package ".concat(diagQuote(packageName), " contains no modules: ", dirPath))
         diag_note_dropped_everything()
         return visited
     }
 
     let mut seen = visited
     for name in modules {
-        let qualified = site.s1.concat(".", name)
+        let qualified = packageName.concat(".", name)
         ir_import_record(site.file, qualified)
+        seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
+    }
+    return seen
+}
+
+// `import std.io.println` where `std.io` is a package: the name is selected from every module of
+// the package, since the program cannot know which of them declares it. A module that does not
+// declare it contributes nothing, and a name no module declares fails where it is used.
+private fn mergePackageSelection(merged: ASTNode, site: ASTNode, packageName: String, members: Vec<String>,
+                        selected: String, baseDir: String, visited: String) -> String {
+    let mut seen = visited
+    for name in members {
+        let qualified = packageName.concat(".", name)
+        ir_import_record(site.file, qualified)
+        ir_select_record(site.file, qualified, selected)
         seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
     }
     return seen
@@ -618,6 +653,44 @@ private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
     return true
 }
 
+// A module whose path has a segment that begins with `_` is sealed: only modules under that
+// segment's parent may import it (`std._unicode.case` from `std.*`, `app.net._wire.frame` from
+// `app.net.*`). The rule reads off the path, as Go's `internal/` does, so the import site shows
+// which side of the boundary it is on.
+//
+// Answers whether it refused, like refuseHostedImport.
+private fn refuseSealedModule(site: ASTNode, moduleName: String) -> Bool {
+    let importer = importerModule(site.file)
+    let segments = moduleName.split(".")
+    let mut parent = "".clone()
+    for i in 0..<segments.length {
+        if (segments[i].startsWith("_") and moduleIsUnder(importer, parent) == false) {
+            diag_error_at_code(DIAG_DRIVER_MODULE_SEALED, site.file, site.line, site.col, site.len,
+                diagQuote(moduleName).concat(" is sealed inside ", diagQuote(parent)))
+            diag_note("a module whose path has a segment that begins with `_` can be imported only from the modules under that segment's parent")
+            diag_note_dropped_everything()
+            return true
+        }
+        if (i > 0) { parent = parent.concat(".") }
+        parent = parent.concat(segments[i])
+    }
+    return false
+}
+
+// The module a file is known by: the name it was reached as, or the one `check --module` gave
+// the entry. "" for a program's own entry file, which sits at the root of its tree.
+private fn importerModule(file: Int) -> String {
+    let module = diag_file_module(file)
+    if (module.equals("") and entryModuleName.equals("") == false) { return entryModuleName.clone() }
+    return module.clone()
+}
+
+// Whether `module` is `parent` or a module below it. Everything is under the root, "".
+private fn moduleIsUnder(module: String, parent: String) -> Bool {
+    if (parent.equals("")) { return true }
+    return module.equals(parent) or module.startsWith(parent.concat("."))
+}
+
 private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String, visited: String) -> String {
     let mut seen = visited
 
@@ -666,11 +739,26 @@ private fn isPrismioCheckout(dir: String) -> Bool {
 // that do read one are `run_runtime_library_test` and run_ums_test's program
 // outside the checkout.
 //
-// `leaf` is the file name, because the installed layout flattens the package:
-// `std/map.psm` in a checkout is `stdlib/map.plib` once installed.
+// `leaf` is the module's path under `std/` with its `.psm` suffix, and a nested
+// module keeps its directories: `std.a.b` is `a/b.psm` in a checkout and
+// `stdlib/a/b.plib` once installed, so a logical name and a path agree.
 public fn standardModulePath(baseDir: String, leaf: String) -> String {
-    let besideEntry = joinPath(baseDir, "std/".concat(leaf))
-    if (fileExists(besideEntry) and isPrismioCheckout(baseDir)) { return besideEntry }
+    return standardPath(baseDir, leaf.substring(0, leaf.length - 4), false)
+}
+
+// What `import std.<relative>` reads: the source file of a checkout, then the toolchain's compiled
+// `.plib`, then its `std/` source -- or, when `directory`, the directory of that name in the same
+// three places. `relative` is "" for `std` itself.
+private fn standardPath(baseDir: String, relative: String, directory: Bool) -> String {
+    let mut sourceSuffix = ".psm"
+    let mut packagedSuffix = ".plib"
+    if (directory) {
+        sourceSuffix = ""
+        packagedSuffix = ""
+    }
+
+    let besideEntry = standardCandidate(joinPath(baseDir, "std"), relative, sourceSuffix)
+    if (standardExists(besideEntry, directory) and isPrismioCheckout(baseDir)) { return besideEntry }
 
     // Then each enclosing directory, nearest first. One level was enough for as
     // long as everything that imported `std.*` sat directly under the checkout
@@ -685,9 +773,8 @@ public fn standardModulePath(baseDir: String, leaf: String) -> String {
     // shape that never reaches one.
     let mut dir = directoryOf(baseDir)
     repeat(64) {
-        if (fileExists(joinPath(dir, "std/".concat(leaf))) and isPrismioCheckout(dir)) {
-            return joinPath(dir, "std/".concat(leaf))
-        }
+        let candidate = standardCandidate(joinPath(dir, "std"), relative, sourceSuffix)
+        if (standardExists(candidate, directory) and isPrismioCheckout(dir)) { return candidate }
         let parent = directoryOf(dir)
         if (parent.equals(dir)) { break }
         dir = parent
@@ -695,17 +782,41 @@ public fn standardModulePath(baseDir: String, leaf: String) -> String {
 
     let toolchainRoot = directoryOf(executableDirectory())
 
-    // Installed standard modules are compiled, module-level PLIB artifacts.
-    // `leaf` still arrives as `string.psm` because checkout resolution uses the
-    // source spelling; replace only that suffix for the installed lookup.
-    let plibLeaf = leaf.substring(0, leaf.length - 4).concat(".plib")
-    let packaged = joinPath(toolchainRoot, "stdlib/".concat(plibLeaf))
-    if (fileExists(packaged)) { return packaged }
+    // Installed standard modules are compiled, module-level PLIB artifacts, so a module is
+    // `stdlib/<relative>.plib` and a package is the directory `stdlib/<relative>/`.
+    let packaged = standardCandidate(joinPath(toolchainRoot, "stdlib"), relative, packagedSuffix)
+    if (standardExists(packaged, directory)) { return packaged }
 
-    let besideBuild = joinPath(toolchainRoot, "std/".concat(leaf))
-    if (fileExists(besideBuild)) { return besideBuild }
+    let besideBuild = standardCandidate(joinPath(toolchainRoot, "std"), relative, sourceSuffix)
+    if (standardExists(besideBuild, directory)) { return besideBuild }
 
     return ""
+}
+
+// `<library>/<relative><suffix>`, or the library directory itself for `std`.
+private fn standardCandidate(library: String, relative: String, suffix: String) -> String {
+    if (relative.equals("")) { return library.clone() }
+    return joinPath(library, relative.concat(suffix))
+}
+
+private fn standardExists(path: String, directory: Bool) -> Bool {
+    if (directory) { return directoryExists(path) }
+    return fileExists(path)
+}
+
+// The directory a package import reads. A project directory beside the entry that holds modules
+// wins, as it always has; a `std` package is the library's own, found the way a `std` module is.
+private fn resolvePackageDirectory(baseDir: String, packageName: String) -> String {
+    let local = joinImportDir(baseDir, packageName)
+    if (packageName.equals("std") == false and packageName.startsWith("std.") == false) { return local }
+    if (listModules(local).length > 0) { return local }
+    let mut relative = ""
+    if (packageName.equals("std") == false) {
+        relative = moduleRelativePath(packageName.substring(4, packageName.length - 4))
+    }
+    let library = standardPath(baseDir, relative, true)
+    if (library.equals("")) { return local }
+    return library
 }
 
 // Where `import std.map` reads from.
@@ -727,11 +838,11 @@ private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
     if (moduleName.startsWith("std.") == false) {
         return joinImportPath(baseDir, moduleName)
     }
-    let leaf = moduleName.substring(4, moduleName.length - 4).concat(".psm")
+    let leaf = moduleRelativePath(moduleName.substring(4, moduleName.length - 4)).concat(".psm")
     if (standardModulePath(baseDir, leaf).equals("")) {
         return joinImportPath(baseDir, moduleName)
     }
-    return standardModulePath(baseDir, moduleName.substring(4, moduleName.length - 4).concat(".psm"))
+    return standardModulePath(baseDir, moduleRelativePath(moduleName.substring(4, moduleName.length - 4)).concat(".psm"))
 }
 
 // The entry file is marked resolved before the walk begins, so that a package

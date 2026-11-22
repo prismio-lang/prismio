@@ -1,0 +1,13 @@
+// A directory with no file of its name is a package: `import sealed.pkg` reads every module in
+// `sealed/pkg/`, as `import sealed.pkg.*` does. Its `_hidden` subdirectory is sealed to the package's
+// parent tree: `api` imports it, and this entry file, which is not under `sealed.pkg`, may not
+// (neg_423). A file and a directory of one name coexist, and the import means the file.
+import sealed.pkg
+import sealed.both
+
+fn main() -> Int {
+    if (reveal() != 42) { return 1 }
+    if (extraValue() != 100) { return 2 }
+    if (bothFile() != 1) { return 3 }
+    return 0
+}
