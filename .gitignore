@@ -107,3 +107,6 @@ tests/*/*
 tests/workload_static_control.psm
 scratch/
 docs/porting/decode_example
+
+# Personal tooling
+.claude/
