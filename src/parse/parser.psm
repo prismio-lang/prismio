@@ -17,6 +17,8 @@ import common.diagnostics
 import common.target
 import std.string
 import common.diag_codes
+import common.prelude_needs
+import common.source_files
 
 // `allowStructLit` is off while reading the bounds of a `for`, so that
 // `for i in 0..n { ... }` reads the body as a block rather than `n { ... }` as a
@@ -517,6 +519,8 @@ impl Parser {
         let module = self.node(NodeKind.MODULE)
         let declarations = nodeList()
 
+        // What the file looks up, for the lazy prelude. A library module imports what it uses.
+        if (fileFromLibraryRoot(module.file) == false) { preludeNoteTokens(self.current) }
         if (self.atModuleHeader()) { self.parseModuleHeader() }
 
         loop {

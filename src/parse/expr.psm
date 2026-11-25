@@ -13,6 +13,8 @@ import std.string
 import common.diag_codes
 import common.lang_items
 import ast.lang_marks
+import common.prelude_needs
+import common.source_files
 
 // Bitwise operators bind *tighter* than comparison, unlike C.
 //
@@ -421,6 +423,9 @@ impl Parser {
 
         self.expectVal(TokenType.SEPARATOR, "]", "array literal")
         arrayLit.child1 = elements.head
+        if (nodeExists(elements.head) and fileFromLibraryRoot(arrayLit.file) == false) {
+            preludeNote("lang:vec_of", arrayLit.file, arrayLit.line, arrayLit.col)
+        }
         return arrayLit
     }
 }
@@ -432,6 +437,9 @@ impl Parser {
     // on the string "name". A trailing comma is allowed, as in the array literal.
     private fn parseMapLiteral(self) -> ASTNode {
         let mapLit = self.node(NodeKind.MAP_LITERAL_EXPR)
+        if (fileFromLibraryRoot(mapLit.file) == false) {
+            preludeNote("lang:hash_map", mapLit.file, mapLit.line, mapLit.col)
+        }
         let keys = nodeList()
         let values = nodeList()
         while (self.checkVal(TokenType.SEPARATOR, "}") == false) {

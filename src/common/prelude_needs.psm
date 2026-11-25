@@ -1,0 +1,133 @@
+// What a program's own files look up that the lazy prelude may answer, and whether it is on.
+//
+// The prelude is `--prelude`: the library modules whose header says `prelude` are merged when a name
+// one declares is looked up and found nowhere else, and not otherwise. Which names a file looks up is
+// read from its tokens as it is parsed; the driver answers them once the explicit imports are merged
+// (driver/imports.psm).
+//
+// A name is looked up where it is a call (`min(`, `largest<`), a member (`v.push`), or capitalised (a
+// type or a trait). Syntax with no name of its own is a lang item, noted here for `??` and by the
+// parser for a map literal and a non-empty bracket literal -- which is a vector only in a program
+// that writes `Vec` somewhere, and an array otherwise.
+
+import std.string
+import std.core.vec
+import std.core.map
+import lexer.token
+import lexer.scanner
+
+let mut preludeOn = false
+// Parallel columns: need `i` is `preludeNames[i]`, looked up first at the token
+// `preludeFiles[i]`:`preludeLines[i]`:`preludeCols[i]`. A lang item is `lang:<id>`.
+let mut preludeNames: Vec<String>
+let mut preludeFiles: Vec<Int>
+let mut preludeLines: Vec<Int>
+let mut preludeCols: Vec<Int>
+let mut preludeSeen: HashMap<String, Int>
+// A zero-filled global `Vec` is not an empty one.
+let mut preludeOpened = false
+// Whether any file writes the type `Vec`, which is what makes a literal a vector rather than an array.
+let mut preludeWroteVec = false
+
+public fn preludeEnable() {
+    preludeOn = true
+}
+
+public fn preludeEnabled() -> Bool {
+    return preludeOn
+}
+
+// Forgets the last compile's needs, before the next one parses its entry.
+public fn preludeReset() {
+    preludeNames = []
+    preludeFiles = []
+    preludeLines = []
+    preludeCols = []
+    preludeSeen = HashMap<String, Int>()
+    preludeOpened = true
+    preludeWroteVec = false
+}
+
+public fn preludeVecWritten() -> Bool { return preludeWroteVec }
+
+public fn preludeNeedCount() -> Int {
+    if (preludeOpened == false) { return 0 }
+    return preludeNames.length
+}
+
+public fn preludeNeedName(at: Int) -> String { return preludeNames[at].clone() }
+public fn preludeNeedFile(at: Int) -> Int { return preludeFiles[at] }
+public fn preludeNeedLine(at: Int) -> Int { return preludeLines[at] }
+public fn preludeNeedCol(at: Int) -> Int { return preludeCols[at] }
+
+// One need per name per file: the first place it is written is where a refusal points.
+public fn preludeNote(name: String, file: Int, line: Int, col: Int) {
+    if (preludeOn == false or preludeOpened == false) { return }
+    let key = file.toString().concat(" ", name)
+    if (preludeSeen.contains(key)) { return }
+    preludeSeen.set(key, 1)
+    preludeNames.push(name.clone())
+    preludeFiles.push(file)
+    preludeLines.push(line)
+    preludeCols.push(col)
+}
+
+// Every lookup written in a file, from its first token.
+public fn preludeNoteTokens(head: Ptr) {
+    if (preludeOn == false) { return }
+    let mut at = head
+    let mut afterDot = false
+    loop {
+        let token = ptr_to_token(at)
+        if (token.type == TokenType.EOF) { break }
+        if (token.type == TokenType.ARITHMETIC_OPERATOR and token.value.equals("??")) {
+            preludeNote("lang:option_coalesce", token.file, token.line, token.col)
+        }
+        if (token.type == TokenType.IDENTIFIER) {
+            if (token.value.equals("Vec")) {
+                preludeWroteVec = true
+                if (preludeFillsByCopy(token.tokNext)) {
+                    preludeNote("lang:vec_filled", token.file, token.line, token.col)
+                }
+            }
+            if (afterDot or preludeCapitalised(token.value) or preludeCalled(token.tokNext)) {
+                preludeNote(token.value, token.file, token.line, token.col)
+            }
+        }
+        afterDot = token.type == TokenType.SEPARATOR and token.value.equals(".")
+        at = token.tokNext
+    }
+}
+
+// Whether the tokens after `Vec` read `<T>.filled` for an element the compiler cannot copy itself,
+// which std.core.vec then fills: any but an integer up to 64 bits, a Float, a Bool or a Char.
+private fn preludeFillsByCopy(open: Ptr) -> Bool {
+    let first = ptr_to_token(open)
+    if (first.value.equals("<") == false) { return false }
+    let element = ptr_to_token(first.tokNext)
+    if (element.type != TokenType.IDENTIFIER) { return false }
+    let mut at = element.tokNext
+    loop {
+        let token = ptr_to_token(at)
+        if (token.type == TokenType.EOF or token.value.equals("(") or token.value.equals("=")) { return false }
+        if (token.value.equals(".")) { break }
+        at = token.tokNext
+    }
+    if (ptr_to_token(ptr_to_token(at).tokNext).value.equals("filled") == false) { return false }
+    let scalars = ";Int;I8;I16;I64;Isize;U8;U16;U32;U64;Usize;Float;F32;Bool;Char;"
+    if (scalars.contains(";".concat(element.value, ";"))) { return false }
+    return true
+}
+
+private fn preludeCapitalised(name: String) -> Bool {
+    if (name.length == 0) { return false }
+    let first = name.byteAt(0)
+    return first >= 65 and first <= 90
+}
+
+// Whether the token after a name makes it a call: `(`, or the `<` of explicit type arguments.
+private fn preludeCalled(next: Ptr) -> Bool {
+    let token = ptr_to_token(next)
+    if (token.type == TokenType.SEPARATOR and token.value.equals("(")) { return true }
+    return token.value.equals("<")
+}

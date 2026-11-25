@@ -26,12 +26,15 @@ import common.diagnostics
 import common.source_files
 import std.string
 import std.fs
+import std.core.vec
 import std.platform
 import common.native
 import common.diag_codes
 import common.lang_items
 import ast.lang_marks
 import ast.module_header
+import common.prelude_needs
+import index.lowered
 
 // The last statement appended to the module being merged. Reset with the module
 // in resolveImports(); see appendStatement() for why it is a cache rather than
@@ -945,6 +948,111 @@ private fn resolvedFromLibrary(moduleName: String, importPath: String) -> Bool {
     return absolutePath(library).equals(absolutePath(importPath))
 }
 
+// The lazy prelude (`--prelude`): a name a program file looks up that neither the program nor a
+// module the file imports declares, and a prelude module does, is imported for that file -- the
+// module is merged, and the file takes it as if it had written the import. A program that looks up no
+// such name merges nothing. A function or a type of the program's own wins; its own method does not,
+// since a method answers only for its receiver.
+private fn mergePrelude(merged: ASTNode, baseDir: String, visited: String) -> String {
+    let mut seen = visited
+    if (preludeNeedCount() == 0) { return seen }
+    let ownTypes = programTypeNames(merged)
+    for need in 0..<preludeNeedCount() {
+        let name = preludeNeedName(need)
+        if (name.startsWith("lang:")) {
+            if (name.equals("lang:vec_of") and preludeVecWritten() == false) { continue }
+            let module = libraryLangModule(name.substring(5, name.length - 5))
+            if (module.equals("") == false) {
+                seen = importPreludeModule(merged, need, module, ownTypes, baseDir, seen)
+            }
+            continue
+        }
+        if (preludeCompilerMember(name)) { continue }
+        let candidates = libraryPreludeModulesDeclaring(name)
+        if (candidates.length == 0 or preludeNameFound(name, preludeNeedFile(need))) { continue }
+        for module in candidates {
+            seen = importPreludeModule(merged, need, module, ownTypes, baseDir, seen)
+        }
+    }
+    return seen
+}
+
+// Whether `name` is already answered for `file`: by a declaration of the program's own, a method
+// excepted, or by one in a module the file imports.
+private fn preludeNameFound(name: String, file: Int) -> Bool {
+    for i in 0..<ir_decl_count(name) {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (fileFromLibraryRoot(decl.file) == false) {
+            if (isMethodDeclaration(decl) == false) { return true }
+        } else if (ir_file_imports_module(file, diag_file_module(decl.file)) != 0) {
+            return true
+        }
+    }
+    return false
+}
+
+// A member the compiler builds itself -- `v.push`, a channel's `send`, a pointer's `load` -- needs no
+// module, so it asks the prelude for none.
+private fn preludeCompilerMember(name: String) -> Bool {
+    // `withCapacity` and `filled` are asked of the type, `Vec<T>.withCapacity(n)`.
+    if (name.equals("withCapacity") or name.equals("filled")) { return true }
+    let heads: Vec<String> = ["Vec", "Slice", "DataView", "Channel", "Ptr", "PtrScalar"]
+    for head in heads {
+        for lowered in ixLoweredNames(head) {
+            if (lowered.equals(name)) { return true }
+        }
+    }
+    return false
+}
+
+private fn isMethodDeclaration(decl: ASTNode) -> Bool {
+    if (decl.kind != NodeKind.FUNCTION or nodeIsNull(decl.child1)) { return false }
+    return ptr_to_node(decl.child1).s1.equals("self")
+}
+
+private fn importPreludeModule(merged: ASTNode, need: Int, module: String, ownTypes: Vec<String>,
+                         baseDir: String, visited: String) -> String {
+    let file = preludeNeedFile(need)
+    if (ir_file_imports_module(file, module) != 0 or preludeTypeTaken(module, ownTypes)) { return visited }
+    // The import the file did not write, at the name that asked for it.
+    let site = createNode(NodeKind.IMPORT_STATEMENT)
+    site.s1 = module.clone()
+    site.file = file
+    site.line = preludeNeedLine(need)
+    site.col = preludeNeedCol(need)
+    site.len = 1
+    ir_import_record(file, module)
+    return mergeNamedModule(merged, site, module, baseDir, visited)
+}
+
+// The types and traits the program itself declares.
+private fn programTypeNames(merged: ASTNode) -> Vec<String> {
+    let mut names: Vec<String> = []
+    let mut at = merged.child1
+    while (nodeExists(at)) {
+        let decl = ptr_to_node(at)
+        if ((decl.kind == NodeKind.STRUCT_DECL or decl.kind == NodeKind.ENUM_DECL
+                or decl.kind == NodeKind.TRAIT_DECL) and fileFromLibraryRoot(decl.file) == false) {
+            names.push(decl.s1.clone())
+        }
+        at = decl.next
+    }
+    return names
+}
+
+// Whether the program declares a type or a trait under a name importing `module` would bring in. The
+// merge keeps one declaration per type name, so the module is then left to an import the program
+// writes.
+private fn preludeTypeTaken(module: String, ownTypes: Vec<String>) -> Bool {
+    if (ownTypes.length == 0) { return false }
+    for name in libraryTypesImportedWith(module) {
+        for own in ownTypes {
+            if (own.equals(name)) { return true }
+        }
+    }
+    return false
+}
+
 // A name the parser wrote for a library item that the merged library does not declare: `?` needs the
 // result type, a tuple needs its struct.
 private fn reportMissingLangReference(missing: Ptr) {
@@ -986,9 +1094,11 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     // (sema/symbols.psm). A `--freestanding` program is offered no imports: most of the library is
     // refused to it at the import.
     libraryUseDirectory(standardPath("", true), compiler_is_freestanding() != 1)
-    // No prelude. `std.io` is an ordinary import, so a program that names no I/O
-    // carries none -- which is what lets a target with no stdout link at all.
-    mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
+    // `std.io` is an ordinary import, so a program that names no I/O carries none -- which is what
+    // lets a target with no stdout link at all. The lazy prelude (`--prelude`) covers the modules the
+    // language itself reaches for, and only the ones a name asks for.
+    let seen = mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
+    mergePrelude(merged, baseDir, seen)
     reportMissingLangReference(langResolveReferences())
 
     // Before the templates are collected, and after the merge: a default may be

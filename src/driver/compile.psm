@@ -29,6 +29,7 @@ import common.native
 import common.diag_codes
 import common.library_emission
 import ast.lang_marks
+import common.prelude_needs
 
 // How one build is done. Every command that compiles -- a single file, a UMS
 // target, a project command's `.psm` tool -- fills one of these, and
@@ -147,6 +148,7 @@ private fn analyzedModule(path: String, prune: Bool) -> ASTNode {
     }
 
     langMarksReset()
+    preludeReset()
     let rootFile = diag_add_file(path, content)
     if (entryModule().equals("") == false) { markEntryModule(rootFile, entryModule()) }
     diag_progress("parsing")
@@ -355,6 +357,7 @@ public fn compileSource(path: String, outputFile: String, options: CompileOption
     }
 
     langMarksReset()
+    preludeReset()
     let rootFile = diag_add_file(path, content)
     if (libraryEmissionModule().equals("") == false) { markEntryModule(rootFile, libraryEmissionModule()) }
     diag_progress("parsing")

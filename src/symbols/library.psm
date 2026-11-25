@@ -40,7 +40,16 @@ let mut libraryItemsRead = false
 let mut libraryImports: Vec<String>
 let mut libraryNames: Vec<String>
 let mut libraryOwners: Vec<Int>
+// Each module's types and traits, read with the functions: `libraryTypes[i]` is declared in
+// `libraryModules[libraryTypeOwners[i]]`.
+let mut libraryTypes: Vec<String>
+let mut libraryTypeOwners: Vec<Int>
 let mut libraryFunctionsRead = false
+// What the prelude modules declare (the lazy prelude, driver/imports.psm): name `i` is declared by
+// module `libraryModules[libraryPreludeOwners[i]]`.
+let mut libraryPreludeNames: Vec<String>
+let mut libraryPreludeOwners: Vec<Int>
+let mut libraryPreludeRead = false
 
 // Where the library is, for the compile about to run. Everything is read again for each directory,
 // so that a process that compiles twice never answers from the first one's library.
@@ -50,6 +59,7 @@ public fn libraryUseDirectory(directory: String, offerImports: Bool) {
     libraryListed = false
     libraryItemsRead = false
     libraryFunctionsRead = false
+    libraryPreludeRead = false
 }
 
 // The library modules that declare a public free function `name`, in module order; empty when
@@ -67,6 +77,52 @@ public fn libraryModulesDeclaring(name: String) -> Vec<String> {
             if (earlier.equals(libraryModules[owner])) { seen = true }
         }
         if (seen == false) { found.push(libraryModules[owner].clone()) }
+    }
+    return found
+}
+
+// The prelude modules that declare `name`: a function, a method, a property, a type or a trait a
+// program may name without importing it. Empty when none does or no library is known. A
+// `--freestanding` program is answered too: its tier is checked at the import, as written ones are.
+public fn libraryPreludeModulesDeclaring(name: String) -> Vec<String> {
+    libraryReadPrelude()
+    let mut found: Vec<String> = []
+    for i in 0..<libraryPreludeNames.length {
+        if (libraryPreludeNames[i].equals(name) == false) { continue }
+        let module = libraryModules[libraryPreludeOwners[i]].clone()
+        let mut seen = false
+        for earlier in found {
+            if (earlier.equals(module)) { seen = true }
+        }
+        if (seen == false) { found.push(module.clone()) }
+    }
+    return found
+}
+
+// The types and traits that importing `module` brings into a program: its own, and those of every
+// library module it imports, directly or not.
+public fn libraryTypesImportedWith(module: String) -> Vec<String> {
+    libraryReadFunctions()
+    let mut reached: Vec<String> = [module.clone()]
+    let mut found: Vec<String> = []
+    let mut next = 0
+    while (next < reached.length) {
+        let current = reached[next].clone()
+        next = next + 1
+        for m in 0..<libraryModules.length {
+            if (libraryModules[m].equals(current) == false) { continue }
+            for i in 0..<libraryTypes.length {
+                if (libraryTypeOwners[i] == m) { found.push(libraryTypes[i].clone()) }
+            }
+            for imported in libraryImports[m].split(";") {
+                if (imported.equals("")) { continue }
+                let mut seen = false
+                for earlier in reached {
+                    if (earlier.equals(imported)) { seen = true }
+                }
+                if (seen == false) { reached.push(imported.clone()) }
+            }
+        }
     }
     return found
 }
@@ -180,6 +236,8 @@ private fn libraryReadFunctions() {
     libraryImports = []
     libraryNames = []
     libraryOwners = []
+    libraryTypes = []
+    libraryTypeOwners = []
     for m in 0..<libraryModules.length {
         let mut text = "".clone()
         if (libraryPaths[m].endsWith(".plib")) {
@@ -188,6 +246,80 @@ private fn libraryReadFunctions() {
             text = readFile(libraryPaths[m])
         }
         libraryScanModule(m, text, libraryIsLowLevel(libraryModules[m]) == false)
+    }
+}
+
+private fn libraryReadPrelude() {
+    if (libraryPreludeRead) { return }
+    libraryPreludeRead = true
+    libraryList()
+    libraryPreludeNames = []
+    libraryPreludeOwners = []
+    for m in 0..<libraryModules.length {
+        if (libraryPaths[m].endsWith(".plib")) {
+            if (libraryHeaderIsPrelude(compiler_plib_meta(libraryPaths[m], libraryModules[m])) == false) { continue }
+            libraryScanPrelude(m, compiler_plib_interface(libraryPaths[m], libraryModules[m]))
+        } else {
+            let text = readFile(libraryPaths[m])
+            if (libraryHeaderIsPrelude(text) == false) { continue }
+            libraryScanPrelude(m, text)
+        }
+    }
+}
+
+// Whether a module's header says `prelude`: the first line that is neither blank nor a comment, in
+// its source or in the metadata a compiled module records.
+private fn libraryHeaderIsPrelude(text: String) -> Bool {
+    for line in text.split("\n") {
+        if (line.equals("") or line.startsWith("//")) { continue }
+        return line.startsWith("module prelude")
+    }
+    return false
+}
+
+// Every name a prelude module declares that a program could look up: its types and traits, and its
+// functions, methods and properties at any depth, except those marked `private` or `internal`.
+private fn libraryScanPrelude(owner: Int, text: String) {
+    for line in text.split("\n") {
+        let mut at = 0
+        while (at < line.length and line.byteAt(at) == 32) { at = at + 1 }
+        let column = at
+        if (line.slice(at, line.length).startsWith("lang(\"")) {
+            let close = line.indexOf("\")", at)
+            if (close < 0) { continue }
+            at = close + 2
+        }
+        loop {
+            while (at < line.length and line.byteAt(at) == 32) { at = at + 1 }
+            let mut stop = at
+            while (stop < line.length and libraryIsNameByte(line.byteAt(stop))) { stop = stop + 1 }
+            let word = line.slice(at, stop)
+            if (word.equals("public") or word.equals("export") or word.equals("cold")) {
+                at = stop
+                continue
+            }
+            if (word.equals("inline")) {
+                // `inline` or `inline(always)`.
+                at = stop
+                if (at < line.length and line.byteAt(at) == 40) {
+                    let close = line.indexOf(")", at)
+                    if (close < 0) { break }
+                    at = close + 1
+                }
+                continue
+            }
+            let isType = column == 0 and (word.equals("struct") or word.equals("enum") or word.equals("trait"))
+            if (isType == false and word.equals("fn") == false and word.equals("prop") == false) { break }
+            at = stop
+            while (at < line.length and line.byteAt(at) == 32) { at = at + 1 }
+            stop = at
+            while (stop < line.length and libraryIsNameByte(line.byteAt(stop))) { stop = stop + 1 }
+            if (stop > at) {
+                libraryPreludeNames.push(line.slice(at, stop).clone())
+                libraryPreludeOwners.push(owner)
+            }
+            break
+        }
     }
 }
 
@@ -203,6 +335,11 @@ private fn libraryScanModule(owner: Int, text: String, offerFunctions: Bool) {
             imports = imports.concat(line.slice(7, stop), ";")
             continue
         }
+        let typeName = libraryTopLevelTypeName(line)
+        if (typeName.equals("") == false) {
+            libraryTypes.push(typeName.clone())
+            libraryTypeOwners.push(owner)
+        }
         if (offerFunctions == false or line.startsWith("public fn ") == false) { continue }
         let name = libraryFreeFunctionName(line)
         if (name.equals("") == false) {
@@ -211,6 +348,25 @@ private fn libraryScanModule(owner: Int, text: String, offerFunctions: Bool) {
         }
     }
     libraryImports.push(imports.clone())
+}
+
+// The name a column-0 `struct`, `enum` or `trait` line declares, past a `lang("id")` marker and
+// `public`; "" for any other line.
+private fn libraryTopLevelTypeName(line: String) -> String {
+    let mut rest = line.slice(0, line.length)
+    if (rest.startsWith("lang(\"")) {
+        let close = rest.indexOf("\")", 6)
+        if (close < 0) { return "".clone() }
+        rest = rest.slice(close + 3, rest.length)
+    }
+    if (rest.startsWith("public ")) { rest = rest.slice(7, rest.length) }
+    let mut start = 0
+    if (rest.startsWith("struct ") or rest.startsWith("trait ")) { start = rest.indexOf(" ", 0) + 1 }
+    else if (rest.startsWith("enum ")) { start = 5 }
+    else { return "".clone() }
+    let mut stop = start
+    while (stop < rest.length and libraryIsNameByte(rest.byteAt(stop))) { stop = stop + 1 }
+    return rest.slice(start, stop).clone()
 }
 
 // The id of a `lang("id")` marker at the start of a column-0 line, or "".

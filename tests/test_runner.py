@@ -12988,6 +12988,87 @@ def run_plib_triple_sections(compiler_source, work, env, llvm_dis, problems):
     return f"{target} sections packaged and linked"
 
 
+def run_prelude_test():
+    """`--prelude`: a name nothing else answers comes from a `module prelude` library module, the
+    program's own declarations win, and a program that names none builds the same IR."""
+    print(f"\n{BLUE}--- Running prelude ---{RESET}")
+    problems = []
+    env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
+    with tempfile.TemporaryDirectory(prefix="prismio-prelude-") as tmp:
+        wd = Path(tmp)
+
+        def run(name, source, *flags):
+            src = wd / (name + ".psm")
+            src.write_text(source)
+            return subprocess.run([str(PRISMIO_EXE), "run", str(src), "-o", str(wd / name), *flags],
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  cwd=str(wd), env=env)
+
+        reaches = ('import std.io\n\n'
+                   'struct Point { x: Int }\n'
+                   'impl Eq for Point { fn eq(self, other: Point) -> Bool { return self.x == other.x } }\n\n'
+                   'fn find(x: Int) -> Int? {\n    if (x > 0) { return x }\n    return none\n}\n\n'
+                   'fn main() -> Int {\n'
+                   '    let mut v: Vec<Int> = [3, 1, 2]\n    v.sort()\n    println(v[0])\n'
+                   '    let ages = { "ada": 36 }\n    println(ages.getOr("ada", 0))\n'
+                   '    println(find(0) ?? 5)\n'
+                   '    println(Vec<String>.filled(2, "x").length)\n'
+                   '    let a = Point { x: 1 }\n    println(a == a)\n    return 0\n}\n')
+        without = run("reaches_off", reaches)
+        if without.returncode == 0:
+            problems.append("without --prelude, names from std.core built with no import")
+        with_it = run("reaches_on", reaches, "--prelude")
+        if with_it.returncode != 0 or with_it.stdout.split()[-5:] != ["1", "36", "5", "2", "true"]:
+            problems.append("--prelude did not answer the core names: "
+                            + (with_it.stdout + with_it.stderr)[-400:])
+
+        own = ('import std.io\n\n'
+               'trait Ord { fn before(self, other: Int) -> Bool }\n'
+               'struct Stack { n: Int }\n'
+               'impl Stack {\n    fn push(self, x: Int) -> Int { return self.n + x }\n}\n'
+               'fn min(a: Int, b: Int) -> Int { return 100 }\n\n'
+               'fn main() -> Int {\n'
+               '    let mut v: Vec<Int> = Vec<Int>.withCapacity(4)\n    v.push(9)\n'
+               '    println(v.length)\n    println(min(3, 1))\n'
+               '    let s = Stack { n: 4 }\n    println(s.push(1))\n    return 0\n}\n')
+        shadowed = run("own", own, "--prelude")
+        if shadowed.returncode != 0 or shadowed.stdout.split()[-3:] != ["1", "100", "5"]:
+            problems.append("the program's own names did not win over the prelude's: "
+                            + (shadowed.stdout + shadowed.stderr)[-400:])
+
+        no_io = run("no_io", "fn main() -> Int {\n    println(1)\n    return 0\n}\n", "--prelude")
+        if no_io.returncode == 0 or "add `import std.io`" not in no_io.stdout + no_io.stderr:
+            problems.append("--prelude brought std.io in")
+
+        hello = wd / "hello.psm"
+        hello.write_text('import std.io\n\nfn main() -> Int {\n    println("hello")\n    return 0\n}\n')
+        irs = []
+        for name, flags in (("hello_off.ll", []), ("hello_on.ll", ["--prelude"])):
+            made = subprocess.run([str(PRISMIO_EXE), "build", str(hello), "-o", str(wd / name), *flags],
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  cwd=str(wd), env=env)
+            if made.returncode != 0:
+                problems.append(f"{name} did not build: {made.stderr[-300:]}")
+                break
+            irs.append((wd / name).read_bytes())
+        if len(irs) == 2 and irs[0] != irs[1]:
+            problems.append("a program that names nothing in the prelude built different IR with it")
+
+        checked = subprocess.run([str(PRISMIO_EXE), "check", str(wd / "reaches_on.psm"), "--prelude"],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                 cwd=str(wd), env=env)
+        if checked.returncode != 0:
+            problems.append("check --prelude refused the program: " + checked.stderr[-300:])
+
+    if problems:
+        print(f"{RED}[FAIL] prelude{RESET}")
+        for problem in problems:
+            print("  - " + problem)
+        return False
+    print(f"{GREEN}[PASS] prelude: core names, own names winning, no std.io, hello world's IR unchanged{RESET}")
+    return True
+
+
 def run_module_artifact_test():
     """Installed std/runtime artifacts are sharded, mandatory, and executable."""
     print(f"\n{BLUE}--- Running module_artifacts ---{RESET}")
@@ -13410,6 +13491,7 @@ def main():
         ("target_cross", run_target_test),
         ("platform_target", run_platform_target_test),
         ("module_artifacts", run_module_artifact_test),
+        ("prelude", run_prelude_test),
         ("incremental_manifest", run_incremental_manifest_test),
         ("jit", run_jit_test),
     ]
