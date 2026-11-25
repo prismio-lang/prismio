@@ -9,11 +9,11 @@
 //
 // Every later assignment is checked against it by the ordinary assignment check.
 
+import std.collections.vec
 import ast.nodes
 import ast.types
 import symbols.bindings
 import std.string
-import std.core.vec
 
 let mut inferNames: Vec<String>
 let mut inferDecls: Vec<Ptr>

@@ -4107,19 +4107,6 @@ char* compiler_file_hash(const char* path) {
     return out;
 }
 
-// Called by the compiler the committed seed was cut from, which `bootstrap.py --seed` links
-// against this runtime. It never builds a project host or a library, so these answer "no
-// toolchain" and "not a library". Delete them with the first seed that no longer names them.
-int compiler_emit_local_toolchain(const char* root, const char* compiler) {
-    (void)root;
-    (void)compiler;
-    return 0;
-}
-
-void compiler_set_toolchain_root(const char* root) { (void)root; }
-
-char* compiler_library_emission_module(void) { return plib_empty(); }
-
 // Candidate and active are siblings, so this is one same-filesystem operation.
 // The child compiler has exited before it gets here, which makes replacement
 // valid on Windows too; the UMS side refuses to promote over the executable that

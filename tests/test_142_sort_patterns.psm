@@ -7,7 +7,6 @@
 // loses or duplicates an element can still come out ordered.
 
 import std.io
-import std.core.vec
 import std.string
 
 fn fail(message: String) -> Int {

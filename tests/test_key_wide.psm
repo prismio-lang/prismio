@@ -2,7 +2,6 @@
 // cannot detect a hash that silently turns structured 64-bit ids into a chain.
 import std.io
 import std.core.key
-import std.core.map
 
 fn main() -> Int {
     let signed = mapNew<I64, Int>()

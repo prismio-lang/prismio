@@ -13,11 +13,11 @@
 //      first (a module is found by its entry's directory);
 //   4. otherwise the file alone.
 
+import std.collections.vec
 import uri
 import std.fs
 import std.core.option
 import std.string
-import std.core.vec
 import ums.model.project
 import ums.model.workspace
 import ums.targets.target

@@ -2162,13 +2162,13 @@ def run_check_overlay_test():
         if code == 0 or not any(d.get("code") == "P1076" for d in missing):
             problems.append(f"`--module` with no name was accepted: {missing}")
 
-    std_map = PROJECT_ROOT / "std" / "core" / "map.psm"
-    code, as_module = check(std_map, "--diagnostic-format=json", "--module", "std.core.map")
+    std_map = PROJECT_ROOT / "std" / "collections" / "map.psm"
+    code, as_module = check(std_map, "--diagnostic-format=json", "--module", "std.collections.map")
     if code != 0 or as_module:
-        problems.append(f"std/core/map.psm as std.core.map is not clean: {as_module[:2]}")
+        problems.append(f"std/collections/map.psm as std.collections.map is not clean: {as_module[:2]}")
     code, as_program = check(std_map, "--diagnostic-format=json")
     if code == 0:
-        problems.append("std/core/map.psm checked as a program of its own reached the standard library's internals")
+        problems.append("std/collections/map.psm checked as a program of its own reached the standard library's internals")
 
     if problems:
         print(f"{RED}[FAIL] check overlay{RESET}")
@@ -2943,8 +2943,8 @@ def run_index_test():
             problems.append(f"the fields a Point literal has not set: {literal}")
         # A field no other module may touch, and a library's own machinery, are not members of a library type.
         mapped = root / "mapped.psm"
-        mapped.write_text("import std.core.map\n\nfn main() -> Int {\n    let m = HashMap<String, Int>()\n    m.ixcursor__\n    return 0\n}\n")
-        done, records = indexed("--complete", str(mapped), "5", "7", target=mapped)
+        mapped.write_text("fn main() -> Int {\n    let m = HashMap<String, Int>()\n    m.ixcursor__\n    return 0\n}\n")
+        done, records = indexed("--complete", str(mapped), "3", "7", target=mapped)
         offered = {r["label"] for r in records if r["k"] == "completion"}
         if offered & {"slots", "mask", "tombstones", "entryKeys"} or not {"set", "get", "contains"} <= offered:
             problems.append(f"a HashMap offers its methods and not its private fields: {sorted(offered)[:20]}")
@@ -3526,31 +3526,39 @@ def run_lsp_features_test():
             note(bool(first.get("parameters")), f"a library function's parameters are located in its label: {first}")
 
             # --- completion: library names from modules the file does not import, with the import they need ---
-            bare = "fn main() -> Int {\n    let s = \"abc\"\n    s.tr\n    return 0\n}\n"
+            bare = "fn main() -> Int {\n    slee\n    return 0\n}\n"
             client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 41},
                                                      "contentChanges": [{"text": bare}]})
-            at = where(bare, "s.tr", 0, "s.tr")
+            at = where(bare, "slee", 0, "slee")
             items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 4})["items"]
-            trim = [i for i in items if i["label"] == "trim"]
-            edits = (trim[0].get("additionalTextEdits") if trim else None) or []
-            note(trim and edits and edits[0]["newText"] == "import std.string\n",
-                 f"a member of a module the file does not import carries the import: {trim[:1]}")
+            found = [i for i in items if i["label"] == "sleep"]
+            edits = (found[0].get("additionalTextEdits") if found else None) or []
+            note(found and edits and edits[0]["newText"] == "import std.time\n",
+                 f"a name from a module the file does not import carries the import: {found[:1]}")
             # An import already there is not added again, and a new one goes in sorted place.
-            sorted_text = "import std.io\nimport std.term\n\nfn main() -> Int {\n    let s = \"abc\"\n    s.tr\n    return 0\n}\n"
+            sorted_text = "import std.io\nimport std.term\n\nfn main() -> Int {\n    allo\n    return 0\n}\n"
             client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 42},
                                                      "contentChanges": [{"text": sorted_text}]})
-            at = where(sorted_text, "s.tr", 0, "s.tr")
+            at = where(sorted_text, "allo", 0, "allo")
             items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 4})["items"]
-            trim = [i for i in items if i["label"] == "trim"]
-            edits = (trim[0].get("additionalTextEdits") if trim else None) or []
-            note(trim and edits and edits[0]["range"]["start"]["line"] == 1,
-                 f"the new import goes before the first that sorts after it (std.io, std.string, std.term): {edits}")
+            found = [i for i in items if i["label"] == "alloc"]
+            edits = (found[0].get("additionalTextEdits") if found else None) or []
+            note(found and edits and edits[0]["range"]["start"]["line"] == 1,
+                 f"the new import goes before the first that sorts after it (std.io, std.mem, std.term): {edits}")
+            # What the language uses is offered with no import to add.
+            method = "fn main() -> Int {\n    let s = \"abc\"\n    s.tr\n    return 0\n}\n"
+            client.notify("textDocument/didChange", {"textDocument": {"uri": main_uri, "version": 43},
+                                                     "contentChanges": [{"text": method}]})
+            at = where(method, "s.tr", 0, "s.tr")
+            items = ask("textDocument/completion", position={"line": at["line"], "character": at["character"] + 4})["items"]
+            found = [i for i in items if i["label"] == "trim"]
+            note(found and not found[0].get("additionalTextEdits"), f"a String method needs no import: {found[:1]}")
             # Import lines, a type annotation, and a syntax error on another line of the same function.
-            version = 43
+            version = 44
             for text, probe, want, forbid in (
-                    ("import \n", "import ", ["std", "std.io", "std.string"], []),
-                    ("import std.\n", "import std.", ["io", "string", "core"], ["vec"]),
-                    ("import std.core.\n", "import std.core.", ["vec", "map"], ["io"]),
+                    ("import \n", "import ", ["std", "std.io", "std.fs"], ["std.io.input", "std.collections.vec"]),
+                    ("import std.\n", "import std.", ["io", "fs", "task"], ["vec", "input"]),
+                    ("import std.task.\n", "import std.task.", ["poll"], ["io"]),
                     ("import {io} \n", "import {io} ", ["from"], ["import", "return"]),
                     ("fn main() {\n    let v: \n}\n", "let v: ", ["Int", "String", "Vec", "StringBuilder"], ["println", "return"]),
                     ("import std.io\n\nfn main() -> Int {\n    println(1.)\n    pri\n    return 0\n}\n", "    pri", ["print", "println"], []),
@@ -3605,7 +3613,7 @@ def run_lsp_features_test():
             note(all("-----" not in i.get("documentation", {}).get("value", "") for i in string_members), "no section banner reaches a documentation popup")
             note(all(len(i.get("documentation", {}).get("value", "")) < 1400 for i in string_members), "documentation is a paragraph, not a design note")
 
-            vec_members = items_at("import std.io\nimport std.core.vec\n\nfn main() -> Int {\n    let mut v: Vec<Int> = []\n    v.\n    return 0\n}\n", "    v.")
+            vec_members = items_at("import std.io\n\nfn main() -> Int {\n    let mut v: Vec<Int> = []\n    v.\n    return 0\n}\n", "    v.")
             vec_by = {i["label"]: i for i in vec_members}
             note(vec_by.get("push", {}).get("insertText") == "push(${1:value})", f"a lowered member inserts its parameter: {vec_by.get('push', {}).get('insertText')!r}")
             note(vec_by.get("sort", {}).get("insertText") == "sort()" and vec_by["sort"].get("kind") == 2,
@@ -3786,13 +3794,13 @@ def run_lsp_features_test():
     # The source a compiled library module carries, which the server shows for a definition in the library: a
     # `.plib` begins with NUL bytes, so the compiler is the one that reads it. A compiler with no packaged
     # library beside it (the suite's bare generations) has nothing to ask.
-    plib = Path(PRISMIO_EXE).resolve().parent.parent / "stdlib" / "core" / "vec.plib"
+    plib = Path(PRISMIO_EXE).resolve().parent.parent / "stdlib" / "collections" / "vec.plib"
     if plib.exists():
-        shown = run_command([str(PRISMIO_EXE), "library-source", str(plib), "std.core.vec"])
+        shown = run_command([str(PRISMIO_EXE), "library-source", str(plib), "std.collections.vec"])
         note(shown.returncode == 0 and "public fn contains<T: Eq>(items: Vec<T>, needle: T) -> Bool {" in shown.stdout,
              f"library-source prints the module's source: {shown.returncode} {shown.stdout[:80]!r}")
         refused = run_command([str(PRISMIO_EXE), "library-source", str(plib), "std.io"])
-        note(refused.returncode != 0 and "std.core.vec" in (refused.stdout + refused.stderr),
+        note(refused.returncode != 0 and "std.collections.vec" in (refused.stdout + refused.stderr),
              f"library-source refuses the wrong module name: {refused.returncode}")
 
     if problems:
@@ -4581,7 +4589,7 @@ def run_aif_human_report_test():
         for wanted in ("AIF analysis", "Storage plan", "Your code",
                        "No allocation sites found", "Imported modules",
                        "potential allocation site(s), not runtime allocation counts",
-                       "std.io:", "unique heap", "returned to the caller",
+                       "std.io.output:", "unique heap", "returned to the caller",
                        "--why=<ID>", "--manifest"):
             if wanted not in text:
                 problems.append(f"default report does not contain {wanted!r}")
@@ -7320,8 +7328,8 @@ def run_range_direction_test():
                 problems.append("a zero step ran to completion")
             if "a `step` must be positive, found 0" not in ran.stderr:
                 problems.append(f"no step diagnostic: {ran.stderr.strip()[:200]!r}")
-            if "range_direction_probe.psm:24" not in ran.stderr:
-                problems.append(f"the diagnostic does not name line 24: {ran.stderr.strip()[:200]!r}")
+            if "range_direction_probe.psm:23" not in ran.stderr:
+                problems.append(f"the diagnostic does not name line 23: {ran.stderr.strip()[:200]!r}")
     if problems:
         print(f"{RED}[FAIL] range direction{RESET}")
         for problem in problems:
@@ -8790,13 +8798,13 @@ def run_workload_test():
         # `file_exists` and `io_stdin_*`, which the sandbox stubs -- and which the
         # runtime module also defines. The two definitions failed to link
         # ("symbol multiply defined"), so every workload importing std.fs,
-        # std.process or std.io.input fell back to the static profile. The stub
+        # std.process or std.io fell back to the static profile. The stub
         # has to win the link (yield_to_workload_stubs, llvm-api-backend.c).
         capability_src = TEST_DIR / "workload_capability.psm"
         capability_ll = TEST_DIR / "workload_capability.ll"
         capability_src.write_text(
             text.replace("import std.string\n",
-                         "import std.string\nimport std.fs\nimport std.io.input\n", 1)
+                         "import std.string\nimport std.fs\n", 1)
                 .replace("    setup {\n",
                          "    setup {\n        let seen = fileExists(\"/\")\n"
                          "        for line in inputLines() { println(line) }\n", 1),
@@ -9124,9 +9132,9 @@ def run_target_test():
     # std.io's own code, as the library module a wasm32 package carries: the program above links it
     # compiled rather than emitting it.
     with tempfile.TemporaryDirectory(prefix="prismio-wasm-io-") as io_dir:
-        plib = Path(io_dir) / "io.plib"
-        emitted = run_command([str(PRISMIO_EXE), "build", str(PROJECT_ROOT / "std" / "io.psm"),
-                               "--emit", "plib", "--module", "std.io", "--target", "wasm32-unknown-unknown",
+        plib = Path(io_dir) / "output.plib"
+        emitted = run_command([str(PRISMIO_EXE), "build", str(PROJECT_ROOT / "std" / "io" / "output.psm"),
+                               "--emit", "plib", "--module", "std.io.output", "--target", "wasm32-unknown-unknown",
                                "-o", str(plib)])
         llvm_dis = pinned_llvm_tool("llvm-dis")
         sections = plib_sections(plib) if emitted.returncode == 0 else None
@@ -9551,7 +9559,7 @@ def run_jit_test():
         # program's module alone found none of them.
         prog.write_text('import std.io\n'
                         'import std.process\n'
-                        'import std.core.map\n'
+                        ''
                         '\n'
                         'struct Point { x: Int, y: Int }\n'
                         '\n'
@@ -12938,10 +12946,10 @@ def run_plib_triple_sections(compiler_source, work, env, llvm_dis, problems):
             if not (dist / "lib" / "runtime" / target / f"{module}{variant}.bc").is_file():
                 problems.append(f"--target {target} did not package "
                                 f"lib/runtime/{target}/{module}{variant}.bc")
-    io_plib = dist / "stdlib" / "io.plib"
+    io_plib = dist / "stdlib" / "io" / "output.plib"
     sections = plib_sections(io_plib) if io_plib.is_file() else None
     if sections is None or [t for t, _ in sections] != ["", target]:
-        problems.append(f"io.plib from a --target {target} package has sections "
+        problems.append(f"io/output.plib from a --target {target} package has sections "
                         f"{None if sections is None else [t for t, _ in sections]}, "
                         f"expected ['', '{target}']")
     elif llvm_dis:
@@ -12950,7 +12958,7 @@ def run_plib_triple_sections(compiler_source, work, env, llvm_dis, problems):
         shown = subprocess.run([str(llvm_dis), str(bitcode), "-o", "-"],
                                capture_output=True, text=True, encoding="utf-8", errors="replace")
         if not re.search(r'^target triple = "x86_64-', shown.stdout, re.M):
-            problems.append(f"io.plib's {target} section is not x86_64 bitcode")
+            problems.append(f"io/output.plib's {target} section is not x86_64 bitcode")
 
     compiler = dist / "bin" / "prismio"
     asker = work / "cross-asker.psm"
@@ -12989,18 +12997,18 @@ def run_plib_triple_sections(compiler_source, work, env, llvm_dis, problems):
 
 
 def run_prelude_test():
-    """`--prelude`: a name nothing else answers comes from a `module prelude` library module, the
-    program's own declarations win, and a program that names none builds the same IR."""
+    """What the language uses needs no import, the program's own declarations win, and an imported
+    package brings only the parts a program names."""
     print(f"\n{BLUE}--- Running prelude ---{RESET}")
     problems = []
     env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
     with tempfile.TemporaryDirectory(prefix="prismio-prelude-") as tmp:
         wd = Path(tmp)
 
-        def run(name, source, *flags):
+        def run(name, source):
             src = wd / (name + ".psm")
             src.write_text(source)
-            return subprocess.run([str(PRISMIO_EXE), "run", str(src), "-o", str(wd / name), *flags],
+            return subprocess.run([str(PRISMIO_EXE), "run", str(src), "-o", str(wd / name)],
                                   capture_output=True, text=True, encoding="utf-8", errors="replace",
                                   cwd=str(wd), env=env)
 
@@ -13014,12 +13022,9 @@ def run_prelude_test():
                    '    println(find(0) ?? 5)\n'
                    '    println(Vec<String>.filled(2, "x").length)\n'
                    '    let a = Point { x: 1 }\n    println(a == a)\n    return 0\n}\n')
-        without = run("reaches_off", reaches)
-        if without.returncode == 0:
-            problems.append("without --prelude, names from std.core built with no import")
-        with_it = run("reaches_on", reaches, "--prelude")
+        with_it = run("reaches", reaches)
         if with_it.returncode != 0 or with_it.stdout.split()[-5:] != ["1", "36", "5", "2", "true"]:
-            problems.append("--prelude did not answer the core names: "
+            problems.append("the language names did not resolve without imports: "
                             + (with_it.stdout + with_it.stderr)[-400:])
 
         own = ('import std.io\n\n'
@@ -13031,41 +13036,36 @@ def run_prelude_test():
                '    let mut v: Vec<Int> = Vec<Int>.withCapacity(4)\n    v.push(9)\n'
                '    println(v.length)\n    println(min(3, 1))\n'
                '    let s = Stack { n: 4 }\n    println(s.push(1))\n    return 0\n}\n')
-        shadowed = run("own", own, "--prelude")
+        shadowed = run("own", own)
         if shadowed.returncode != 0 or shadowed.stdout.split()[-3:] != ["1", "100", "5"]:
-            problems.append("the program's own names did not win over the prelude's: "
+            problems.append("the program's own names did not win over the library's: "
                             + (shadowed.stdout + shadowed.stderr)[-400:])
 
-        no_io = run("no_io", "fn main() -> Int {\n    println(1)\n    return 0\n}\n", "--prelude")
+        no_io = run("no_io", "fn main() -> Int {\n    println(1)\n    return 0\n}\n")
         if no_io.returncode == 0 or "add `import std.io`" not in no_io.stdout + no_io.stderr:
-            problems.append("--prelude brought std.io in")
+            problems.append("printing needed no import")
 
-        hello = wd / "hello.psm"
-        hello.write_text('import std.io\n\nfn main() -> Int {\n    println("hello")\n    return 0\n}\n')
-        irs = []
-        for name, flags in (("hello_off.ll", []), ("hello_on.ll", ["--prelude"])):
-            made = subprocess.run([str(PRISMIO_EXE), "build", str(hello), "-o", str(wd / name), *flags],
+        # A package is read by the part: a program that prints carries none of the input code, and
+        # one that reads carries it.
+        for name, source, wants_input in (
+                ("hello", 'import std.io\n\nfn main() -> Int {\n    println("hello")\n    return 0\n}\n', False),
+                ("reads", 'import std.io\n\nfn main() -> Int {\n    println(readLine() ?? "")\n    return 0\n}\n', True)):
+            src = wd / (name + ".psm")
+            src.write_text(source)
+            made = subprocess.run([str(PRISMIO_EXE), "build", str(src), "-o", str(wd / (name + ".ll"))],
                                   capture_output=True, text=True, encoding="utf-8", errors="replace",
                                   cwd=str(wd), env=env)
             if made.returncode != 0:
                 problems.append(f"{name} did not build: {made.stderr[-300:]}")
-                break
-            irs.append((wd / name).read_bytes())
-        if len(irs) == 2 and irs[0] != irs[1]:
-            problems.append("a program that names nothing in the prelude built different IR with it")
-
-        checked = subprocess.run([str(PRISMIO_EXE), "check", str(wd / "reaches_on.psm"), "--prelude"],
-                                 capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                 cwd=str(wd), env=env)
-        if checked.returncode != 0:
-            problems.append("check --prelude refused the program: " + checked.stderr[-300:])
+            elif ("io_stdin_" in (wd / (name + ".ll")).read_text()) != wants_input:
+                problems.append(f"{name}: the input part of std.io was read: {not wants_input}")
 
     if problems:
         print(f"{RED}[FAIL] prelude{RESET}")
         for problem in problems:
             print("  - " + problem)
         return False
-    print(f"{GREEN}[PASS] prelude: core names, own names winning, no std.io, hello world's IR unchanged{RESET}")
+    print(f"{GREEN}[PASS] prelude: language names, own names winning, packages read by the part{RESET}")
     return True
 
 
@@ -13180,9 +13180,9 @@ def run_module_artifact_test():
                               capture_output=True, text=True, encoding="utf-8", errors="replace",
                               cwd=str(wd), env=env)
         said = made.stdout + made.stderr
-        for old, new in (("std.option", "std.core.option"), ("std.vec", "std.core.vec")):
-            if made.returncode != 0 or "P1135" not in said or f"`{old}` is now `{new}`" not in said:
-                problems.append(f"an import of {old} did not resolve to {new} with a warning: {said[-300:]}")
+        for old in ("std.option", "std.vec"):
+            if made.returncode != 0 or "P1135" not in said or f"`{old}` needs no import" not in said:
+                problems.append(f"an import of {old} did not resolve with a warning: {said[-300:]}")
 
         # Imported functions with no IR users are removed after the final
         # module merge. This keeps full bitcode from turning every executable
@@ -13259,7 +13259,7 @@ def run_module_artifact_test():
                             "stdlib, `isWindows` is not defined in the program "
                             "answering true: the host-built PLIB supplied it")
 
-        # `sort` from the installed `stdlib/vec.plib`, on the two element
+        # `sort` from the installed `stdlib/collections/vec.plib`, on the two element
         # representations it is most used at. `sort` hands `sortBy` a closure,
         # and the closure's `call` is lowered inside the program's instantiation
         # of a `.plib` generic. It was once filtered out as a concrete stdlib
@@ -13267,7 +13267,7 @@ def run_module_artifact_test():
         # failed to link -- and no fixture under `tests/` can see that, because
         # `std.*` resolves from source by walking up from the entry file.
         sorter = wd / "sorter.psm"
-        sorter.write_text('import std.io\nimport std.core.vec\n\n'
+        sorter.write_text('import std.io\n\n'
                           'fn main() -> Int {\n'
                           '    let mut numbers: Vec<Int> = [3, 1, 2]\n'
                           '    sort(numbers)\n'
@@ -13284,7 +13284,7 @@ def run_module_artifact_test():
                 or (sorted_run.stdout or "").strip() != "sorted"):
             said = (sorted_build.stdout or "") + (sorted_build.stderr or "")
             problems.append("a program calling `sort` could not be built against "
-                            "the installed stdlib/vec.plib: "
+                            "the installed stdlib/collections/vec.plib: "
                             + (said.strip()[-300:] if sorted_run is None else
                                f"it ran and printed {(sorted_run.stdout or '').strip()!r}"))
 
@@ -13298,7 +13298,7 @@ def run_module_artifact_test():
         # and nothing under `tests/` can see it, because std resolves from source
         # there.
         crossing = wd / "crossing.psm"
-        crossing.write_text('import std.io\nimport std.string\nimport std.core.vec\n'
+        crossing.write_text('import std.io\nimport std.string\n'
                             'import std.platform\nimport std.process\n\n'
                             'fn echo(word: String) -> Process {\n'
                             '    let p = Process()\n'

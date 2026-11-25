@@ -18,10 +18,10 @@
 // registry does exist, the only thing that changes is umsFetchRegistry, and the
 // model, the lockfile and every diagnostic around it are already in place.
 
+import std.collections.vec
 import std.string
 import std.io
 import std.fs
-import std.core.vec
 import ums.dependency.dependency
 import ums.model.project
 import ums.model.diagnostic

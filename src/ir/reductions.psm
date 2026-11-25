@@ -24,6 +24,7 @@
 // marked site, which is how a fixture asserts that a mark fired rather than only
 // that the sum came out right.
 
+import std.collections.vec
 import symbols.facts
 import symbols.names
 import ast.nodes
@@ -33,7 +34,6 @@ import common.source_files
 import std.io
 import std.process
 import std.string
-import std.core.vec
 
 let mut reductionsStrict = false
 // 0 until asked, then 1 for off and 2 for on.

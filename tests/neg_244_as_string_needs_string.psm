@@ -1,7 +1,0 @@
-// expect-error: `as String` needs `import std.string`
-// The cast is `toString`, which std.string declares -- the rule `+` on Strings
-// and `s[i]` already follow.
-fn main() -> Int {
-    let text = 5 as String
-    return 0
-}

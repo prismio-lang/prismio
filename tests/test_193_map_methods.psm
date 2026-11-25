@@ -14,10 +14,8 @@
 import std.core.copy
 import std.io
 import std.core.key
-import std.core.map
 import std.core.option
 import std.string
-import std.core.vec
 
 // Every key hashes to one bucket, so each key's probe passes every key inserted
 // before it -- the chain a removal must not cut.

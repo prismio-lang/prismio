@@ -17,6 +17,7 @@
 //   * **Regime (a) makes one body serve one regime**: the callee has exactly one call site, or every call site is
 //     bracketed into the same region, and every function the extent reaches is reached only from inside it.
 
+import std.collections.vec
 import aif.model
 import aifcore.arenas
 import aifcore.bits
@@ -32,7 +33,6 @@ import aifcore.structure
 import aifcore.tiers
 import std.io
 import std.core.option
-import std.core.vec
 import symbols.names
 
 // Which *objects* hold each site: the owner set of every field store and of every `retain_in` call. `containerOf`

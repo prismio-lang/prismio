@@ -17,7 +17,6 @@
 // so the two cannot disagree about a written type again.
 
 import std.io
-import std.core.map
 import std.core.key
 import std.core.option
 

@@ -7,7 +7,6 @@
 // as an explicit one does, which `--verify` would show as a leak.
 import std.io
 import std.string
-import std.core.vec
 
 fn total(items: Vec<Int>) -> Int {
     let mut sum = 0

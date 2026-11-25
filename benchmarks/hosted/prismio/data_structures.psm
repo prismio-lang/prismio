@@ -1,5 +1,5 @@
+import std.collections.map
 import common
-import std.core.map
 import std.math
 
 public fn benchHashMap(scale: Int) -> Int {

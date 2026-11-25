@@ -4,10 +4,8 @@
 // `get`, `take` and the algebra make are all released.
 
 import std.io
-import std.core.map
 import std.core.option
 import std.string
-import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

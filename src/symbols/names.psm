@@ -12,11 +12,11 @@
 // twelve bytes or fewer has no pointer, so `irNameBlock` hands out a NUL-terminated copy made on
 // first request and kept for the life of the process.
 
+import std.collections.vec
+import std.collections.map
 import common.c_text
-import std.core.map
-import std.sys.raw
+import std.sys
 import std.string
-import std.core.vec
 
 private let mut nameIds: HashMap<String, Int>
 private let mut nameTexts: Vec<String>

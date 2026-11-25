@@ -2,7 +2,7 @@
 // expect-error: aborting due to 1 previous error
 // A literal needle takes the element's width, and is checked against it.
 
-import std.core.vec
+import std.collections.vec
 
 fn main() -> Int {
     let bytes: Vec<U8> = [65, 66]

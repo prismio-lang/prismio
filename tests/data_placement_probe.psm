@@ -1,4 +1,4 @@
-import std.sys.raw
+import std.sys
 
 // `export`, `section("...")` and `align(n)` before a global `let`, read as IR by
 // run_data_placement_test: where the data goes is the compiler's decision and the linker's job.

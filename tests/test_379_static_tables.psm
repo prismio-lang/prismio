@@ -6,7 +6,7 @@
 // written, as a C file reads them. `let mut` makes the table writable.
 
 import std.io
-import std.sys.raw
+import std.sys
 import std.string
 
 repr(C) struct Limits {

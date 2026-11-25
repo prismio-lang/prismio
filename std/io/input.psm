@@ -1,6 +1,6 @@
 // This process's standard input: lines, tokens, bytes, or all of it at once.
 //
-//     import std.io.input
+//     import std.io
 //
 //     for line in inputLines() {
 //         println(line.length)
@@ -57,11 +57,13 @@
 // Nothing here buffers *output*: `print` writes straight to descriptor 1, so a prompt is
 // on the screen before the read that follows it blocks.
 
-import std.io
+module part
+
+import std.io.output
 import std.core.iter
 import std.core.option
 import std.string
-import std.core.vec
+import std.collections.vec
 
 // Every line, token and rest-of-input String is allocated by the runtime for the
 // caller, "" at the end of input rather than a literal.
@@ -216,7 +218,7 @@ public fn readText(count: Int) -> String {
 // sender has been quiet for that long. Zero asks without waiting.
 //
 // For waiting on this and something else at once -- a child's output, say -- use
-// `waitReadable` in std.io.poll with descriptor 0.
+// `waitReadable` in std.task.poll with descriptor 0.
 public fn waitForInput(milliseconds: Int) -> Bool {
     return io_stdin_ready(milliseconds) == 1
 }

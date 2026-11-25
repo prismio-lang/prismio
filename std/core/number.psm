@@ -1,4 +1,4 @@
-// Text for the numbers that have no `toString` and `println` of their own: an integer
+// Text for the numbers that have no `toString` of their own: an integer
 // of a width with no name (`Int<N>`, `UInt<N>`), and the floats narrower or wider than
 // `Float` (`F32`, `F16`, `BF16`, `F128`).
 //
@@ -10,11 +10,8 @@
 //
 // **The floats are overloads,** because there are four of them and no more.
 //
-// Printing either needs `import std.fmt.number`: a call into a module is allowed only
-// from a file that imports it, and this is a module a program imports only if it uses
-// one of these types. (The overloads for the four floats belong in std.io and
-// std.string beside `Float`'s, and move there once the bootstrap seed can parse the
-// type names -- src/ imports both, and an older seed would read `F32` as a struct.)
+// A program that names such a number gets this module without importing it, and `print` of one
+// comes with `import std.io` (std/io/number.psm).
 //
 // ## Integers
 //
@@ -26,8 +23,10 @@
 // library for. Quadratic in the width, and a width wide enough for that to matter is
 // not one that is printed in a loop.
 
-import std.io
+module freestanding(runtime)
+
 import std.string
+import std.collections.vec
 import std._fmt.float
 
 // `value` is an integer of `bits` bits, signed or not. `bits` and `signed` are what
@@ -128,16 +127,6 @@ public fn floatText<T>(value: T, limit: Int) -> String {
     }
     return strFromFloatDigits(wide, limit)
 }
-
-public fn print(value: F32) { print(floatText(value, 9)) }
-public fn print(value: F16) { print(floatText(value, 5)) }
-public fn print(value: BF16) { print(floatText(value, 4)) }
-public fn print(value: F128) { print(floatText(value, 17)) }
-
-public fn println(value: F32) { println(floatText(value, 9)) }
-public fn println(value: F16) { println(floatText(value, 5)) }
-public fn println(value: BF16) { println(floatText(value, 4)) }
-public fn println(value: F128) { println(floatText(value, 17)) }
 
 // `toString()` is the digits that read back; `toString(decimals)` is a fixed-point
 // column, formatted as the `Float` it widens to.

@@ -1,0 +1,8 @@
+// expect-error: `std.io.input` is part of `std.io`: import `std.io`
+// expect-error: `std.sys.raw` is part of `std.sys`: import `std.sys`
+//
+// A part of a library package is reached through the package, never by its own name.
+import std.io.input
+import std.sys.raw
+
+fn main() -> Int { return 0 }

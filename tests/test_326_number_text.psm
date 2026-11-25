@@ -7,8 +7,6 @@
 // written as 0.1 prints as 0.1, not as the 0.10000000149011612 its double widening has.
 
 import std.io
-import std.fmt.display
-import std.fmt.number
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

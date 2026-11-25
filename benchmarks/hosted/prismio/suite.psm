@@ -1,3 +1,5 @@
+import std.collections.vec
+import std.collections.map
 import algorithms
 import adversarial
 import common
@@ -6,8 +8,6 @@ import data_structures
 import graph_churn
 import io
 import memory
-import std.core.vec
-import std.core.map
 import std.process
 import std.string
 import std.time

@@ -57,6 +57,9 @@ public enum LangItem {
     EPRINT,
     EPRINTLN,
     SHOW,
+    DISPLAY,
+    PRINT_DISPLAY,
+    PRINT_NARROW,
     TO_STRING,
     ASM,
     ASM_READ,
@@ -113,6 +116,9 @@ public fn langItemId(item: LangItem) -> String {
         LangItem.EPRINT => { return "eprint" }
         LangItem.EPRINTLN => { return "eprintln" }
         LangItem.SHOW => { return "show" }
+        LangItem.DISPLAY => { return "display" }
+        LangItem.PRINT_DISPLAY => { return "print_display" }
+        LangItem.PRINT_NARROW => { return "print_narrow" }
         LangItem.TO_STRING => { return "to_string" }
         LangItem.ASM => { return "asm" }
         LangItem.ASM_READ => { return "asm_read" }
@@ -188,7 +194,7 @@ public fn langModuleImportedBy(item: LangItem, file: Int) -> Bool {
 // "`import <module>`" for an error that tells a program what to add, or a plain description when the
 // library names no module for the item (a freestanding program is offered no library).
 public fn langImportHint(item: LangItem) -> String {
-    let module = langModule(item)
+    let module = libraryPublicModule(langModule(item))
     if (module.equals("")) { return "the standard library module that declares it".clone() }
     return "`import ".concat(module, "`")
 }

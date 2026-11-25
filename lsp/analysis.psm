@@ -10,6 +10,7 @@
 // The run is not waited for. `descriptor` is the child's stderr, for the server to wait on
 // beside everything else; `pump` reads what has arrived; the run is over when it answers true.
 
+import std.collections.vec
 import documents
 import projects
 import report
@@ -17,7 +18,6 @@ import std.fs
 import std.core.option
 import std.process
 import std.string
-import std.core.vec
 
 public struct Analysis {
     public active: Bool,

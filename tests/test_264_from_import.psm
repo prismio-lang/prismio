@@ -5,7 +5,6 @@
 // `from <directory> import *` is `import * from <directory>`. Both orders can sit
 // in one file.
 from std import {io, string}
-from std.core import {vec}
 from visibility import {alpha, gamma as g}
 from visibility import *
 

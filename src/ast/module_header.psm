@@ -5,6 +5,8 @@
 //   module prelude freestanding      a module whose names a program may use without importing it
 //                                    (a prelude module is lazy: it is merged when a name it declares
 //                                    is looked up and found nowhere else)
+//   module part freestanding         one file of a library package, imported by the package's name
+//                                    (`std/io/input.psm` is read by `import std.io`)
 //   (no header)                      hosted: a libc and an operating system, the safe default
 //
 // The words are bits in one number, kept per file in the source registry
@@ -16,11 +18,13 @@ import std.string
 public fn headerBitPrelude() -> Int { return 1 }
 public fn headerBitFreestanding() -> Int { return 2 }
 public fn headerBitRuntime() -> Int { return 4 }
+public fn headerBitPart() -> Int { return 8 }
 
 // The words of a header with `flags`, as written after `module`; "" for no header.
 public fn headerWords(flags: Int) -> String {
     let mut words = "".clone()
     if (headerIsPrelude(flags)) { words = " prelude".clone() }
+    if (headerIsPart(flags)) { words = words.concat(" part") }
     if (headerIsFreestanding(flags)) {
         words = words.concat(" freestanding")
         if (headerNeedsRuntime(flags)) { words = words.concat("(runtime)") }
@@ -46,3 +50,4 @@ public fn headerTierWords(tier: Int) -> String {
 public fn headerIsPrelude(flags: Int) -> Bool { return (flags & headerBitPrelude()) != 0 }
 public fn headerIsFreestanding(flags: Int) -> Bool { return (flags & headerBitFreestanding()) != 0 }
 public fn headerNeedsRuntime(flags: Int) -> Bool { return (flags & headerBitRuntime()) != 0 }
+public fn headerIsPart(flags: Int) -> Bool { return (flags & headerBitPart()) != 0 }

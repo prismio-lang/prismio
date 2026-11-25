@@ -1,7 +1,7 @@
 // `Key` -- what a hash table needs of a type.
 //
 // Hashing and equality stay together because they form one semantic contract:
-// equal keys must hash equal. Copying is separate. `std.core.map` asks for
+// equal keys must hash equal. Copying is separate. `std.collections.map` asks for
 // `K: Key + Copy`, so a type implements storage policy independently from key
 // identity and an impl is responsible only for the methods written inside it.
 //

@@ -15,7 +15,6 @@
 
 import std.io
 import std.string
-import std.core.vec
 import std.core.copy
 import std.core.option
 

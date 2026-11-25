@@ -4,12 +4,12 @@
 // declarations holds them; common/mem_builtins.psm is their table, and a name is offered only when that table (or
 // int_builtins.psm) says the compiler knows it, so the list cannot name something the compiler would refuse.
 
+import std.collections.vec
 import common.int_builtins
 import common.mem_builtins
 import index.tables
 import index.write
 import std.string
-import std.core.vec
 
 private fn ixBuiltinLine(inout ix: Ix, name: String, params: String, result: String, help: String) {
     if (ix.seen.putFirst("builtin ".concat(name), 1) == false) { return }

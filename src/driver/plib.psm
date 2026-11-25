@@ -6,10 +6,10 @@
 // `--freestanding-target` gets a section only when the module's header says it is freestanding, so
 // the packaging step names triples and never modules.
 
+import std.collections.vec
 import ir.context
 import std.string
 import std.fs
-import std.core.vec
 import ast.module_header
 import common.diagnostics
 import common.source_files

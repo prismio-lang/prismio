@@ -4,7 +4,6 @@
 import std.io
 import std.core.eq
 import std.core.ord
-import std.fmt.display
 import std.string
 
 // Equatable, with no meaningful order. This is the case the split exists for:

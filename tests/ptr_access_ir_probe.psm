@@ -1,7 +1,7 @@
 // What each kind of access through a typed pointer is emitted as; read by the
 // `typed_pointer_ir` harness test in test_runner.py, which looks for the instruction each
 // function must contain, and the one it must not. Not a `test_*` fixture: it is never run.
-import std.sys.raw
+import std.sys
 
 repr(C) struct Regs {
     status: U32,

@@ -5,7 +5,7 @@
 // expect-error: this must be a pointer to the same type, Int, and this is Int
 // expect-error: `Ptr<T>` has no associated function `nosuch`
 // expect-error: no method `step` on Ptr<Int>
-// expect-error: `Ptr<T>.at` makes a pointer the compiler cannot vouch for, which is `std.sys.raw`'s: add `import std.sys.raw`
+// expect-error: `Ptr<T>.at` makes a pointer the compiler cannot vouch for, which is `std.sys`'s: add `import std.sys`
 // expect-error: aborting due to 8 previous errors
 // What the address methods and constructors refuse, one error each; the count holds that.
 //

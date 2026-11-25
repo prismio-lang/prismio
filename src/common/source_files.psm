@@ -15,11 +15,11 @@
 // handed a NUL-terminated copy the registry owns instead. The copies are never freed before
 // `diag_reset`, which is what makes the pointers stable.
 
+import std.collections.vec
 import common.c_text
 import std.mem
-import std.sys.raw
+import std.sys
 import std.string
-import std.core.vec
 
 public const DIAG_MAX_FILES = 4096
 

@@ -1,22 +1,22 @@
-// What a program's own files look up that the lazy prelude may answer, and whether it is on.
+// What a program's own files look up: what the lazy prelude may answer, and which parts of an
+// imported library package are merged.
 //
-// The prelude is `--prelude`: the library modules whose header says `prelude` are merged when a name
-// one declares is looked up and found nowhere else, and not otherwise. Which names a file looks up is
-// read from its tokens as it is parsed; the driver answers them once the explicit imports are merged
-// (driver/imports.psm).
+// A `module prelude` library module is merged when a name it declares is looked up and found nowhere
+// else, and a part of a package a file imports when the file looks up a name it declares
+// (driver/imports.psm). Which names a file looks up is read from its tokens as it is parsed.
 //
-// A name is looked up where it is a call (`min(`, `largest<`), a member (`v.push`), or capitalised (a
-// type or a trait). Syntax with no name of its own is a lang item, noted here for `??` and by the
-// parser for a map literal and a non-empty bracket literal -- which is a vector only in a program
-// that writes `Vec` somewhere, and an array otherwise.
+// A name is looked up where it is a call (`min(`, `largest<`), a member (`v.push`), capitalised (a
+// type or a trait), or a name the file binds nowhere (a function passed as a value, a library
+// global). Syntax with no name of its own is a lang item: `??`, `${}`, a String used as more than an
+// argument, a wide number, and a map literal or a non-empty bracket literal, which the parser notes
+// -- the latter a vector only in a program that writes `Vec` somewhere, and an array otherwise.
 
+import std.collections.vec
+import std.collections.map
 import std.string
-import std.core.vec
-import std.core.map
 import lexer.token
 import lexer.scanner
 
-let mut preludeOn = false
 // Parallel columns: need `i` is `preludeNames[i]`, looked up first at the token
 // `preludeFiles[i]`:`preludeLines[i]`:`preludeCols[i]`. A lang item is `lang:<id>`.
 let mut preludeNames: Vec<String>
@@ -24,18 +24,14 @@ let mut preludeFiles: Vec<Int>
 let mut preludeLines: Vec<Int>
 let mut preludeCols: Vec<Int>
 let mut preludeSeen: HashMap<String, Int>
+// Every name any file looked up.
+let mut preludeAny: HashMap<String, Int>
 // A zero-filled global `Vec` is not an empty one.
 let mut preludeOpened = false
+// Whether any file writes a number type the console does not know by itself.
+let mut preludeWroteWide = false
 // Whether any file writes the type `Vec`, which is what makes a literal a vector rather than an array.
 let mut preludeWroteVec = false
-
-public fn preludeEnable() {
-    preludeOn = true
-}
-
-public fn preludeEnabled() -> Bool {
-    return preludeOn
-}
 
 // Forgets the last compile's needs, before the next one parses its entry.
 public fn preludeReset() {
@@ -44,11 +40,15 @@ public fn preludeReset() {
     preludeLines = []
     preludeCols = []
     preludeSeen = HashMap<String, Int>()
+    preludeAny = HashMap<String, Int>()
     preludeOpened = true
     preludeWroteVec = false
+    preludeWroteWide = false
 }
 
 public fn preludeVecWritten() -> Bool { return preludeWroteVec }
+
+public fn preludeWideNumberWritten() -> Bool { return preludeWroteWide }
 
 public fn preludeNeedCount() -> Int {
     if (preludeOpened == false) { return 0 }
@@ -62,26 +62,65 @@ public fn preludeNeedCol(at: Int) -> Int { return preludeCols[at] }
 
 // One need per name per file: the first place it is written is where a refusal points.
 public fn preludeNote(name: String, file: Int, line: Int, col: Int) {
-    if (preludeOn == false or preludeOpened == false) { return }
+    if (preludeOpened == false) { return }
     let key = file.toString().concat(" ", name)
     if (preludeSeen.contains(key)) { return }
     preludeSeen.set(key, 1)
+    preludeAny.set(name.clone(), 1)
     preludeNames.push(name.clone())
     preludeFiles.push(file)
     preludeLines.push(line)
     preludeCols.push(col)
 }
 
+// Whether `file` looks up `name`.
+public fn preludeFileLooks(file: Int, name: String) -> Bool {
+    if (preludeOpened == false) { return false }
+    return preludeSeen.contains(file.toString().concat(" ", name))
+}
+
+// Whether any file of the program does.
+public fn preludeProgramLooks(name: String) -> Bool {
+    if (preludeOpened == false) { return false }
+    return preludeAny.contains(name)
+}
+
 // Every lookup written in a file, from its first token.
 public fn preludeNoteTokens(head: Ptr) {
-    if (preludeOn == false) { return }
+    if (preludeOpened == false) { return }
+    let bound = preludeBoundNames(head)
+    // A file that writes the type `String` and an operator or a member may join, compare or measure
+    // one with no literal in sight.
+    let mut writtenString = false
+    let mut stringFile = 0
+    let mut stringLine = 0
+    let mut stringCol = 0
+    let mut operators = false
     let mut at = head
-    let mut afterDot = false
+    let mut previous = "".clone()
     loop {
         let token = ptr_to_token(at)
         if (token.type == TokenType.EOF) { break }
+        // An import's path names modules, not things the file looks up.
+        if (token.value.equals("import") or token.value.equals("from")) {
+            at = preludeNextLine(token)
+            previous = "".clone()
+            continue
+        }
         if (token.type == TokenType.ARITHMETIC_OPERATOR and token.value.equals("??")) {
             preludeNote("lang:option_coalesce", token.file, token.line, token.col)
+        }
+        if (token.type == TokenType.INTERP_BEGIN) {
+            preludeNote("lang:show", token.file, token.line, token.col)
+            preludeNote("lang:string_concat", token.file, token.line, token.col)
+        }
+        // A literal that is more than an argument is used as a String: joined, compared or kept.
+        if (token.type == TokenType.STRING_LITERAL) {
+            let next = ptr_to_token(token.tokNext).value
+            if ((previous.equals("(") or previous.equals(",")) == false
+                    or (next.equals(")") or next.equals(",")) == false) {
+                preludeNote("lang:string_concat", token.file, token.line, token.col)
+            }
         }
         if (token.type == TokenType.IDENTIFIER) {
             if (token.value.equals("Vec")) {
@@ -90,13 +129,83 @@ public fn preludeNoteTokens(head: Ptr) {
                     preludeNote("lang:vec_filled", token.file, token.line, token.col)
                 }
             }
-            if (afterDot or preludeCapitalised(token.value) or preludeCalled(token.tokNext)) {
+            if (token.value.equals("String") and writtenString == false) {
+                writtenString = true
+                stringFile = token.file
+                stringLine = token.line
+                stringCol = token.col
+            }
+            if (previous.equals(".") == false and preludeIsWideNumber(token.value, token.tokNext)) {
+                preludeWroteWide = true
+                preludeNote("lang:int_text", token.file, token.line, token.col)
+            }
+            if (preludeLanguageType(token.value) == false
+                    and (previous.equals(".") or preludeCapitalised(token.value) or preludeCalled(token.tokNext)
+                        or bound.contains(token.value) == false)) {
                 preludeNote(token.value, token.file, token.line, token.col)
             }
         }
-        afterDot = token.type == TokenType.SEPARATOR and token.value.equals(".")
+        if (preludeComparesOrJoins(token.value) or token.value.equals(".")) { operators = true }
+        previous = token.value.clone()
         at = token.tokNext
     }
+    if (writtenString and operators) {
+        preludeNote("lang:string_concat", stringFile, stringLine, stringCol)
+    }
+}
+
+// The first token past the line `token` is on.
+private fn preludeNextLine(token: Token) -> Ptr {
+    let line = token.line
+    let mut at = token.tokNext
+    loop {
+        let next = ptr_to_token(at)
+        if (next.type == TokenType.EOF or next.line != line) { return at }
+        at = next.tokNext
+    }
+}
+
+// A type the language declares itself. No module has to be read to find that none declares it.
+private fn preludeLanguageType(name: String) -> Bool {
+    let types = ";Int;I8;I16;I64;I128;Isize;U8;U16;U32;U64;U128;Usize;Float;F16;F32;BF16;F128;Bool;Char;String;Vec;Void;"
+    return types.contains(";".concat(name, ";"))
+}
+
+private fn preludeComparesOrJoins(word: String) -> Bool {
+    return word.equals("+") or word.equals("+=") or word.equals("==") or word.equals("!=")
+        or word.equals("<=") or word.equals(">=")
+}
+
+// The names a file binds: what follows `fn`, `let`, `mut` or `for`, and what is written before a `:`
+// (a parameter, a field). A bare name outside this set is something the file got from elsewhere.
+private fn preludeBoundNames(head: Ptr) -> HashMap<String, Int> {
+    let mut bound = HashMap<String, Int>()
+    let mut at = head
+    let mut previous = "".clone()
+    loop {
+        let token = ptr_to_token(at)
+        if (token.type == TokenType.EOF) { break }
+        if (token.type == TokenType.IDENTIFIER) {
+            if (previous.equals("fn") or previous.equals("let") or previous.equals("mut") or previous.equals("for")
+                    or ptr_to_token(token.tokNext).value.equals(":")) {
+                bound.set(token.value.clone(), 1)
+            }
+        }
+        previous = token.value.clone()
+        at = token.tokNext
+    }
+    return bound
+}
+
+// A number type whose text the console does not know by itself: a float that is not `Float`, or an
+// integer wider than 64 bits.
+private fn preludeIsWideNumber(name: String, next: Ptr) -> Bool {
+    if (name.equals("F32") or name.equals("F16") or name.equals("BF16") or name.equals("F128")) { return true }
+    if ((name.equals("Int") or name.equals("UInt")) == false) { return false }
+    let open = ptr_to_token(next)
+    if (open.value.equals("<") == false) { return false }
+    let width = ptr_to_token(open.tokNext).value
+    return width.length > 2 or (width.length == 2 and width.compare("64") > 0)
 }
 
 // Whether the tokens after `Vec` read `<T>.filled` for an element the compiler cannot copy itself,

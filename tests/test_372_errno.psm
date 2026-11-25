@@ -1,6 +1,6 @@
 // std.sys.errno: ERR_PTR, IS_ERR, PTR_ERR and the negative-errno integer convention.
 
-import std.sys.errno
+import std.sys
 import std.io
 import std.string
 

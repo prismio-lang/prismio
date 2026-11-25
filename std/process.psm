@@ -14,7 +14,7 @@
 
 import std.core.option
 import std.string
-import std.core.vec
+import std.collections.vec
 
 private extern let prismio_argc: Int
 private extern let prismio_argv: Ptr
@@ -216,7 +216,7 @@ impl Stream {
     // child closed its end (or the stream has none), because a read that waits
     // returns at least one byte otherwise.
     //
-    // This is the call to make after `waitReadable` (std.io.poll) says the descriptor
+    // This is the call to make after `waitReadable` (std.task.poll) says the descriptor
     // has something, and in a loop that also watches other things: `readAll` waits
     // for the end and so cannot be one of several things a program is doing.
     public fn readSome(self, max: Int) -> String {

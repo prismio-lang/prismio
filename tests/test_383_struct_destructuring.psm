@@ -12,7 +12,6 @@
 //                    result (held under a hidden name) -- under `--verify`, 0 leaked
 
 import std.io
-import std.core.vec
 import std.string
 
 struct Point { x: Int, y: Int }

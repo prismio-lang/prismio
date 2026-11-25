@@ -14,13 +14,13 @@
 //
 // docs/COLLECTIONS.md has the approved list.
 
+import std.collections.vec
 import ast.nodes
 import lexer.token
 import ast.types
 import ir.bridge
 import common.diagnostics
 import std.string
-import std.core.vec
 import common.source_files
 import common.lang_items
 
@@ -407,14 +407,14 @@ private fn semaBuiltinSpelling(name: String) -> String {
     if (name.equals("__builtin_ptr_addr")) { return "addressOf(pointer)` from `std.mem" }
     if (name.equals("__builtin_addr_ptr")) { return "pointerAt(address)` from `std.mem" }
     if (name.equals("__builtin_mem_fence")) { return "fence()` from `std.mem" }
-    if (name.equals("__builtin_syscall")) { return "syscall(number, a0, a1)` from `std.sys.syscall" }
-    if (name.equals("__builtin_asm")) { return "asm(text)` from `std.sys.asm" }
-    if (name.equals("__builtin_asm_read")) { return "asmRead(text)` from `std.sys.asm" }
-    if (name.equals("__builtin_asm_write")) { return "asmWrite(text, value)` from `std.sys.asm" }
-    if (name.equals("__builtin_asm_ops")) { return "asmOps(text, clobbers, operands...)` from `std.sys.asm" }
-    if (name.equals("__builtin_asm_ops_out")) { return "asmOpsOut(text, clobbers, operands...)` from `std.sys.asm" }
-    if (name.startsWith("__builtin_port_in_")) { return "portInU8(port)` from `std.sys.port" }
-    if (name.startsWith("__builtin_port_out_")) { return "portOutU8(port, value)` from `std.sys.port" }
+    if (name.equals("__builtin_syscall")) { return "syscall(number, a0, a1)` from `std.sys" }
+    if (name.equals("__builtin_asm")) { return "asm(text)` from `std.sys" }
+    if (name.equals("__builtin_asm_read")) { return "asmRead(text)` from `std.sys" }
+    if (name.equals("__builtin_asm_write")) { return "asmWrite(text, value)` from `std.sys" }
+    if (name.equals("__builtin_asm_ops")) { return "asmOps(text, clobbers, operands...)` from `std.sys" }
+    if (name.equals("__builtin_asm_ops_out")) { return "asmOpsOut(text, clobbers, operands...)` from `std.sys" }
+    if (name.startsWith("__builtin_port_in_")) { return "portInU8(port)` from `std.sys" }
+    if (name.startsWith("__builtin_port_out_")) { return "portOutU8(port, value)` from `std.sys" }
     if (name.startsWith("__builtin_mem_load_")) { return "loadU32(address)` from `std.mem" }
     if (name.startsWith("__builtin_mem_store_")) { return "storeU32(address, value)` from `std.mem" }
     if (name.startsWith("__builtin_mem_vload_")) { return "volatileLoadU32(address)` from `std.mem" }

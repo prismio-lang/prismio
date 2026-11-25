@@ -5,8 +5,8 @@
 // "The semantic index"); this is what it is built from. The index is internal to the toolchain,
 // the language server and the compiler ship together, so nothing here is a stable interface.
 
+import std.collections.vec
 import std.string
-import std.core.vec
 
 // A string-keyed table of integers: open addressing over the bytes of the key. Small and local
 // on purpose; the index needs "name to declaration" in a dozen shapes and nothing more.

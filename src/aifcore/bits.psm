@@ -16,8 +16,8 @@
 // set its caller owns outright, and nothing lowers a fact an iteration has already established,
 // which is what keeps the solver's fixed point monotone and safe to abandon.
 
+import std.collections.vec
 import std.math
-import std.core.vec
 
 const BITS_WORD_BITS = 64
 

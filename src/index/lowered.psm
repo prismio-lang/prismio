@@ -9,8 +9,8 @@
 // lowering in sema/ is added to all three. The `index` fixture asks the compiler about every row, so
 // a row for a member the compiler does not lower fails.
 
+import std.collections.vec
 import std.string
-import std.core.vec
 
 // The signature of a lowered member of the type `head` (`Vec`, `Ptr`, `Int` for `Int?`), or "".
 public fn ixLoweredSignature(head: String, name: String) -> String {

@@ -15,13 +15,13 @@
 // a new compiler rebuilds every module. PRISMIO_TOOLCHAIN_CACHE=0 rebuilds everything;
 // PRISMIO_TOOLCHAIN_CACHE_TRACE=1 says for each artifact whether it was reused.
 
+import std.collections.vec
 import std.io
 import std.fs
 import std.string
-import std.core.vec
 import std.process
 import std.platform
-import std.encoding.json
+import std.json
 import std.core.option
 
 // Compiled into every program a build links. tools/check_source_lists.py holds it to

@@ -10,8 +10,6 @@
 // test_runner.py, with the one known leak it carries explained there.
 import std.io
 import std.string
-import std.core.vec
-import std.core.map
 import std.core.key
 import std.core.copy
 import std.core.option

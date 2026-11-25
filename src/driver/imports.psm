@@ -9,6 +9,7 @@
 // The surface is `resolveImports`, `libraryRoot` and `standardModulePath`. The other fifteen
 // functions and the merge-tail cache are private to this file.
 
+import std.collections.vec
 import symbols.declarations
 import symbols.library
 import std.io
@@ -26,7 +27,6 @@ import common.diagnostics
 import common.source_files
 import std.string
 import std.fs
-import std.core.vec
 import std.platform
 import common.native
 import common.diag_codes
@@ -360,6 +360,9 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
         // directory of one name coexist, and then the name means the file alone.
         let directory = resolvePackageDirectory(baseDir, moduleName)
         if (listModules(directory).length > 0) {
+            if (packageIsLazy(site, moduleName)) {
+                return mergeLibraryPackage(merged, site, moduleName, listModules(directory), "".clone(), baseDir, visited)
+            }
             return mergePackageDirectory(merged, site, moduleName, directory, baseDir, visited)
         }
         let cut = moduleName.lastIndexOf(".")
@@ -367,12 +370,17 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
             let parent = moduleName.substring(0, cut)
             let selected = moduleName.substring(cut + 1, moduleName.length - cut - 1)
             if (parent.equals("build") or fileExists(resolveImportPath(baseDir, parent))) {
+                if (parent.equals("build") == false) { selectionRecord(site, parent, selected) }
                 ir_import_record(site.file, parent)
                 ir_select_record(site.file, parent, selected)
                 return mergeNamedModule(merged, site, parent, baseDir, visited)
             }
             let members = listModules(resolvePackageDirectory(baseDir, parent))
             if (members.length > 0) {
+                selectionRecord(site, parent, selected)
+                if (packageIsLazy(site, parent)) {
+                    return mergeLibraryPackage(merged, site, parent, members, selected, baseDir, visited)
+                }
                 return mergePackageSelection(merged, site, parent, members, selected, baseDir, visited)
             }
         }
@@ -499,8 +507,124 @@ private fn mergeBuildModule(merged: ASTNode, site: ASTNode, baseDir: String,
 // been emptied, and both are worth hearing about.
 private fn mergePackageImport(merged: ASTNode, site: ASTNode, baseDir: String,
                         visited: String) -> String {
-    return mergePackageDirectory(merged, site, site.s1, resolvePackageDirectory(baseDir, site.s1),
-                                 baseDir, visited)
+    let directory = resolvePackageDirectory(baseDir, site.s1)
+    let members = listModules(directory)
+    if (members.length > 0 and packageIsLazy(site, site.s1)) {
+        return mergeLibraryPackage(merged, site, site.s1, members, "".clone(), baseDir, visited)
+    }
+    return mergePackageDirectory(merged, site, site.s1, directory, baseDir, visited)
+}
+
+// A program's import of a library package merges only the parts it uses. A library module imports
+// exactly what it needs, by the part's own name.
+// Set for a completion request: an editor offers every name an import brings, used yet or not.
+let mut packagesEager = false
+
+public fn importPackagesEagerly(eager: Bool) {
+    packagesEager = eager
+}
+
+private fn packageIsLazy(site: ASTNode, packageName: String) -> Bool {
+    if (packagesEager) { return false }
+    if (packageName.equals("std") == false and packageName.startsWith("std.") == false) { return false }
+    return fileFromLibraryRoot(site.file) == false
+}
+
+// The imports a program wrote of library packages, for the parts that are merged because of what the
+// program does elsewhere (mergeCompanions). Parallel columns.
+let mut packageSites: Vec<Ptr>
+let mut packageNames: Vec<String>
+
+// A library package as the importing file uses it. Every part is recorded as imported, so what the
+// file may name does not depend on which parts were read; a part is read when the file looks up a
+// name it declares, or, for `import std.io.println`, when it declares the selected name.
+private fn mergeLibraryPackage(merged: ASTNode, site: ASTNode, packageName: String, members: Vec<String>,
+                        selected: String, baseDir: String, visited: String) -> String {
+    let mut seen = visited
+    if (refuseSealedModule(site, packageName.concat(".part"))) { return seen }
+    let mut read = false
+    let mut least = 2
+    packageSites.push(node_to_ptr(site))
+    packageNames.push(packageName.clone())
+    for name in members {
+        let qualified = packageName.concat(".", name)
+        ir_import_record(site.file, qualified)
+        if (selected.equals("") == false) { ir_select_record(site.file, qualified, selected) }
+        let tier = libraryModuleTier(qualified)
+        if (tier < least) { least = tier }
+        if (companionPart(qualified)) { continue }
+        let mut wanted = false
+        for declared in libraryDeclaredNames(qualified) {
+            if (selected.equals("")) {
+                if (preludeFileLooks(site.file, declared)) { wanted = true }
+            } else if (declared.equals(selected)) {
+                wanted = true
+            }
+        }
+        if (wanted) {
+            seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
+            read = true
+        }
+    }
+    // A package nothing is read from is still checked: an importer that cannot use any part of it is
+    // told so at the import.
+    if (read == false) { let ignored = refuseImportTier(site, packageName, headerFlagsOfTier(least), true) }
+    return seen
+}
+
+private fn headerFlagsOfTier(tier: Int) -> Int {
+    if (tier == 0) { return headerBitFreestanding() }
+    if (tier == 1) { return headerBitFreestanding() | headerBitRuntime() }
+    return 0
+}
+
+// A part that adds overloads to names another part already declares, so no name says it is needed.
+private fn companionPart(module: String) -> Bool {
+    return libraryModuleHasLang(module, langItemId(LangItem.PRINT_DISPLAY))
+        or libraryModuleHasLang(module, langItemId(LangItem.PRINT_NARROW))
+}
+
+// Printing a type that shows itself is wanted by a program that names the display trait, wherever it
+// does; printing a narrow float, by one that names such a type.
+private fn mergeCompanions(merged: ASTNode, baseDir: String, visited: String) -> String {
+    let mut seen = visited
+    if (packageSites.length == 0) { return seen }
+    let narrow = preludeWideNumberWritten()
+    for i in 0..<packageSites.length {
+        let site = ptr_to_node(packageSites[i])
+        for name in listModules(resolvePackageDirectory(baseDir, packageNames[i])) {
+            let qualified = packageNames[i].concat(".", name)
+            // The trait's name is read from what the part imports, which is where it is declared.
+            let mut shows = false
+            if (libraryModuleHasLang(qualified, langItemId(LangItem.PRINT_DISPLAY))) {
+                let displayTrait = libraryLangNameImportedBy(qualified, langItemId(LangItem.DISPLAY))
+                shows = displayTrait.equals("") == false and preludeProgramLooks(displayTrait)
+            }
+            if (shows or (narrow and libraryModuleHasLang(qualified, langItemId(LangItem.PRINT_NARROW)))) {
+                seen = mergeNamedModule(merged, site, qualified, baseDir, seen)
+            }
+        }
+    }
+    return seen
+}
+
+// `import std.io.input`, or a name selected from it: a part is reached through its package. Answers
+// whether it refused.
+private fn refusePartImport(stmt: ASTNode) -> Bool {
+    if (fileFromLibraryRoot(stmt.file)) { return false }
+    let mut part = stmt.s1.clone()
+    if (libraryModuleIsPart(part) == false) {
+        let cut = part.lastIndexOf(".")
+        if (cut <= 0) { return false }
+        part = part.substring(0, cut)
+        if (libraryModuleIsPart(part) == false) { return false }
+    }
+    let package = libraryPublicModule(part)
+    diag_error_at_code(DIAG_DRIVER_MODULE_IS_A_PART, stmt.file, stmt.line, stmt.col, stmt.len,
+        diagQuote(part).concat(" is part of ", diagQuote(package), ": import ", diagQuote(package)))
+    diag_note_add_import(package, "write `import ".concat(package, "`"))
+    diag_note_dropped_everything()
+    return true
 }
 
 // The modules of one package directory, each merged as the import of its own qualified name.
@@ -541,6 +665,47 @@ private fn mergePackageSelection(merged: ASTNode, site: ASTNode, packageName: St
     return seen
 }
 
+// Every `import m.name` that selects a name: `m` and the name, checked once the whole program is
+// merged, since `m` may still be on its way in when the import is read (a cycle). Parallel columns.
+let mut selectionSites: Vec<Ptr>
+let mut selectionParents: Vec<String>
+let mut selectionNames: Vec<String>
+
+private fn selectionsReset() {
+    selectionSites = []
+    selectionParents = []
+    selectionNames = []
+}
+
+private fn selectionRecord(site: ASTNode, parent: String, selected: String) {
+    selectionSites.push(node_to_ptr(site))
+    selectionParents.push(parent.clone())
+    selectionNames.push(selected.clone())
+}
+
+// A path whose last part names neither a module nor a declaration of the module before it is a
+// misspelled import: reported at the import, not left to fail wherever the name is used, or never.
+private fn reportMissingSelections() {
+    for i in 0..<selectionSites.length {
+        if (selectionDeclared(selectionParents[i], selectionNames[i])) { continue }
+        let site = ptr_to_node(selectionSites[i])
+        let whole = selectionParents[i].concat(".", selectionNames[i])
+        diag_error_at_code(DIAG_DRIVER_IMPORT_NAME_MISSING, site.file, site.line, site.col, site.len,
+            "there is no module ".concat(diagQuote(whole), ", and ", diagQuote(selectionParents[i]),
+                " declares no ", diagQuote(selectionNames[i])))
+        diag_note_dropped_everything()
+    }
+}
+
+// Whether `parent`, or a module below it when it is a package, declares `name`.
+private fn selectionDeclared(parent: String, name: String) -> Bool {
+    for i in 0..<ir_decl_count(name) {
+        let decl = ptr_to_node(ir_decl_at(name, i))
+        if (moduleIsUnder(diag_file_module(decl.file), parent)) { return true }
+    }
+    return false
+}
+
 // Walks `module`, appending its non-import declarations into the shared `merged`
 // accumulator and resolving each import it carries. `visited` threads the set of
 // already-resolved paths through the recursion and is returned so sibling
@@ -568,7 +733,9 @@ private fn recordImportAlias(stmt: ASTNode, baseDir: String) {
     }
 
     if (stmt.s1.equals("build") == false and
-        fileExists(resolveImportPath(baseDir, stmt.s1)) == false) {
+        fileExists(resolveImportPath(baseDir, stmt.s1)) == false and
+        (stmt.s1.startsWith("std.") == false or
+            listModules(resolvePackageDirectory(baseDir, stmt.s1)).length == 0)) {
         diag_error_at_code(DIAG_DRIVER_IMPORT_ALIAS_NOT_A_MODULE, stmt.file, stmt.line, stmt.col, stmt.len,
             "`as` names a module, and ".concat(diagQuote(stmt.s1), " is not one"))
         diag_note("a selective import names one declaration inside a module; drop the `as`, or alias the module it comes from")
@@ -635,14 +802,14 @@ private fn refuseImportTier(site: ASTNode, moduleName: String, flags: Int, fromL
     if (importerTier < 2 and tier > importerTier) {
         diag_error_at_code(DIAG_DRIVER_MODULE_TIER, site.file, site.line, site.col, site.len,
             "this module is `".concat(headerTierWords(importerTier), "`, so it cannot import ",
-                diagQuote(moduleName), ", which is ", headerTierWords(tier)))
+                diagQuote(libraryPublicModule(moduleName)), ", which is ", headerTierWords(tier)))
         diag_note_dropped_everything()
         return true
     }
     if (compiler_is_freestanding() != 1 or fromLibrary == false) { return false }
     if (tier == 2) {
         diag_error_at_code(DIAG_DRIVER_FREESTANDING_IMPORT_REFUSED, site.file, site.line, site.col, site.len,
-            diagQuote(moduleName).concat(" cannot be imported by a `--freestanding` program"))
+            diagQuote(libraryPublicModule(moduleName)).concat(" cannot be imported by a `--freestanding` program"))
         diag_note("a library module without a `module freestanding` header needs an operating system or a C library")
         diag_note_dropped_everything()
         return true
@@ -673,13 +840,15 @@ private fn refuseGroupDeclaration(stmt: ASTNode, baseDir: String) -> Bool {
 
 // The module paths the library had before 0.3, each followed by where it is now. An import of an old
 // path reads the new one and warns. Temporary: the table goes in the release after.
+// Where each module 0.2 had is now. A module under `std.core` or `std.collections` needs no import at
+// all; the old path still reads it, and the warning says the line can go.
 private fn renamedModules() -> String {
-    return "|std.input std.io.input|std.poll std.io.poll|std.display std.fmt.display|".concat(
-        "std.number_text std.fmt.number|std.json std.encoding.json|std.option std.core.option|",
+    return "|std.input std.io|std.poll std.task.poll|std.display std.core.display|".concat(
+        "std.number_text std.core.number|std.option std.core.option|",
         "std.tuple std.core.tuple|std.eq std.core.eq|std.ord std.core.ord|std.iter std.core.iter|",
-        "std.copy std.core.copy|std.default std.core.default|std.key std.core.key|std.vec std.core.vec|",
-        "std.map std.core.map|std.raw std.sys.raw|std.asm std.sys.asm|std.port std.sys.port|",
-        "std.syscall std.sys.syscall|std.errno std.sys.errno|")
+        "std.copy std.core.copy|std.default std.core.default|std.key std.core.key|std.vec std.collections.vec|",
+        "std.map std.collections.map|std.raw std.sys|std.asm std.sys|std.port std.sys|",
+        "std.syscall std.sys|std.errno std.sys|")
 }
 
 // Where `moduleName`, or the module a selective import names a declaration of, is now; "" when it
@@ -707,8 +876,11 @@ private fn renamedModule(moduleName: String) -> String {
 private fn followRename(stmt: ASTNode) {
     let now = renamedModule(stmt.s1)
     if (now.equals("")) { return }
-    diag_warning_at_code(DIAG_DRIVER_MODULE_RENAMED, stmt.file, stmt.line, stmt.col, stmt.len,
-        diagQuote(stmt.s1).concat(" is now ", diagQuote(now)))
+    let mut said = diagQuote(stmt.s1).concat(" is now ", diagQuote(now))
+    if (now.startsWith("std.core.") or now.startsWith("std.collections.")) {
+        said = diagQuote(stmt.s1).concat(" needs no import: remove this line")
+    }
+    diag_warning_at_code(DIAG_DRIVER_MODULE_RENAMED, stmt.file, stmt.line, stmt.col, stmt.len, said)
     diag_note("the old path is removed in the next release")
     stmt.s1 = now
 }
@@ -780,7 +952,9 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
             // Reported; nothing to merge.
         } else if (stmt.kind == NodeKind.IMPORT_STATEMENT) {
             followRename(stmt)
-            if (stmt.i1 == 1) {
+            if (refusePartImport(stmt)) {
+                // Reported; nothing to merge.
+            } else if (stmt.i1 == 1) {
                 seen = mergePackageImport(merged, stmt, baseDir, seen)
             } else if (refuseGroupDeclaration(stmt, baseDir) == false) {
                 ir_import_record(stmt.file, stmt.s1)
@@ -948,7 +1122,7 @@ private fn resolvedFromLibrary(moduleName: String, importPath: String) -> Bool {
     return absolutePath(library).equals(absolutePath(importPath))
 }
 
-// The lazy prelude (`--prelude`): a name a program file looks up that neither the program nor a
+// The lazy prelude: a name a program file looks up that neither the program nor a
 // module the file imports declares, and a prelude module does, is imported for that file -- the
 // module is merged, and the file takes it as if it had written the import. A program that looks up no
 // such name merges nothing. A function or a type of the program's own wins; its own method does not,
@@ -960,33 +1134,85 @@ private fn mergePrelude(merged: ASTNode, baseDir: String, visited: String) -> St
     for need in 0..<preludeNeedCount() {
         let name = preludeNeedName(need)
         if (name.startsWith("lang:")) {
-            if (name.equals("lang:vec_of") and preludeVecWritten() == false) { continue }
             let module = libraryLangModule(name.substring(5, name.length - 5))
+            // A bracket literal in a program that never writes `Vec` is an array, unless a module
+            // already read brought the vector in: a literal may be given to a field of its type.
+            if (name.equals("lang:vec_of") and preludeVecWritten() == false and module.equals("") == false
+                    and seen.contains(importMemoKey(resolveImportPath(baseDir, module))) == false) {
+                continue
+            }
             if (module.equals("") == false) {
                 seen = importPreludeModule(merged, need, module, ownTypes, baseDir, seen)
             }
             continue
         }
-        if (preludeCompilerMember(name)) { continue }
+        if (preludeCompilerMember(name)) {
+            // The compiler builds this member for a Vec, but a String has one by the same name
+            // (`length`). Where the String module is already read, the file gets it too.
+            let strings = libraryLangModule(langItemId(LangItem.STRING_CONCAT))
+            if (strings.equals("") == false
+                    and seen.contains(importMemoKey(resolveImportPath(baseDir, strings)))) {
+                seen = importPreludeModule(merged, need, strings, ownTypes, baseDir, seen)
+            }
+            continue
+        }
+        // Asked first because it is the cheap one: a program whose names are all answered reads no
+        // library module to find that out.
+        let found = preludeNameFound(name, preludeNeedFile(need))
+        if (found == preludeFoundName) { continue }
         let candidates = libraryPreludeModulesDeclaring(name)
-        if (candidates.length == 0 or preludeNameFound(name, preludeNeedFile(need))) { continue }
+        // A method name is shared by unrelated types (`contains` on a Vec, a String and a HashSet),
+        // so the modules of types the program writes are the ones meant. Where it writes none and
+        // nothing else answers, every candidate is.
+        let mut written: Vec<String> = []
         for module in candidates {
-            seen = importPreludeModule(merged, need, module, ownTypes, baseDir, seen)
+            if (preludeModuleWritten(module)) { written.push(module.clone()) }
+        }
+        if (written.length > 0) {
+            for module in written {
+                seen = importPreludeModule(merged, need, module, ownTypes, baseDir, seen)
+            }
+        } else if (found == preludeFoundNothing) {
+            for module in candidates {
+                seen = importPreludeModule(merged, need, module, ownTypes, baseDir, seen)
+            }
         }
     }
     return seen
 }
 
-// Whether `name` is already answered for `file`: by a declaration of the program's own, a method
-// excepted, or by one in a module the file imports.
-private fn preludeNameFound(name: String, file: Int) -> Bool {
+// What already answers a name for a file: a function, type or global of the program's own or of a
+// module the file imports; only methods of such modules, which answer for their own receivers; or
+// nothing.
+const preludeFoundNothing = 0
+const preludeFoundMethod = 1
+const preludeFoundName = 2
+
+private fn preludeNameFound(name: String, file: Int) -> Int {
+    let mut found = preludeFoundNothing
     for i in 0..<ir_decl_count(name) {
         let decl = ptr_to_node(ir_decl_at(name, i))
-        if (fileFromLibraryRoot(decl.file) == false) {
-            if (isMethodDeclaration(decl) == false) { return true }
-        } else if (ir_file_imports_module(file, diag_file_module(decl.file)) != 0) {
-            return true
-        }
+        let library = fileFromLibraryRoot(decl.file)
+        if (library and ir_file_imports_module(file, diag_file_module(decl.file)) == 0) { continue }
+        if (isMethodDeclaration(decl) == false) { return preludeFoundName }
+        if (library) { found = preludeFoundMethod }
+    }
+    return found
+}
+
+// Whether the program writes what `module` is for: a type it declares, or the syntax that asks the
+// language for one of its items (a vector or map literal, a String used as more than an argument).
+private fn preludeModuleWritten(module: String) -> Bool {
+    for need in 0..<preludeNeedCount() {
+        let name = preludeNeedName(need)
+        if (name.startsWith("lang:") == false) { continue }
+        // A bracket literal counts for its methods too: an array's are the vector module's.
+        if (libraryLangModule(name.substring(5, name.length - 5)).equals(module)) { return true }
+    }
+    if ((preludeVecWritten() or preludeProgramLooks("Array"))
+            and libraryModuleHasLang(module, langItemId(LangItem.VEC_OF))) { return true }
+    for declared in libraryTypesDeclaredBy(module) {
+        if (preludeProgramLooks(declared)) { return true }
     }
     return false
 }
@@ -1059,7 +1285,7 @@ private fn reportMissingLangReference(missing: Ptr) {
     if (nodeIsNull(missing)) { return }
     let node = ptr_to_node(missing)
     let id = node.s1.substring(6, node.s1.length - 6)
-    let module = libraryLangModule(id)
+    let module = libraryPublicModule(libraryLangModule(id))
     let mut needs = "a standard library module that this program has not imported".clone()
     if (module.equals("") == false) { needs = "`import ".concat(module, "`") }
     diag_error_at_code(DIAG_DRIVER_LANG_REFERENCE_MISSING, node.file, node.line, node.col, node.len,
@@ -1089,16 +1315,21 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     mergeTailPtr = ptr_null()
     setEntryTree(entryPath)
     importTiersReset()
+    selectionsReset()
+    packageSites = []
+    packageNames = []
     importTierRecord(importMemoKey(entryPath), module.file)
     // Read for lang items the syntax needs, and for names that turn out to be unknown
     // (sema/symbols.psm). A `--freestanding` program is offered no imports: most of the library is
     // refused to it at the import.
     libraryUseDirectory(standardPath("", true), compiler_is_freestanding() != 1)
     // `std.io` is an ordinary import, so a program that names no I/O carries none -- which is what
-    // lets a target with no stdout link at all. The lazy prelude (`--prelude`) covers the modules the
-    // language itself reaches for, and only the ones a name asks for.
-    let seen = mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
+    // lets a target with no stdout link at all. The lazy prelude covers what the language itself
+    // reaches for, and only the modules a name asks for.
+    let imported = mergeModuleImports(merged, module, baseDir, importMemoKey(entryPath))
+    let seen = mergeCompanions(merged, baseDir, imported)
     mergePrelude(merged, baseDir, seen)
+    reportMissingSelections()
     reportMissingLangReference(langResolveReferences())
 
     // Before the templates are collected, and after the merge: a default may be

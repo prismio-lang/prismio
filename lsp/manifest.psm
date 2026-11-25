@@ -6,10 +6,10 @@
 // cursor; that is a table (`manifestEntries`), and `tests/test_runner.py` (`lsp_manifest`) holds it to what
 // the lowering accepts, so a key it offers is never one `ums` rejects.
 
+import std.collections.vec
 import positions
-import std.encoding.json
+import std.json
 import std.string
-import std.core.vec
 
 public fn manifestIsPath(path: String) -> Bool {
     return path.endsWith(".ums")

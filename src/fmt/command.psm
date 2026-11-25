@@ -11,12 +11,11 @@
 // only the tokens that begin on lines `from` to `to` (1-based, inclusive) and leaves every other
 // gap as it was.
 
+import std.collections.vec
 import std.io
 import std.fs
-import std.io.input
 import std.process
 import std.string
-import std.core.vec
 import common.diagnostics
 import fmt.scan
 import fmt.layout

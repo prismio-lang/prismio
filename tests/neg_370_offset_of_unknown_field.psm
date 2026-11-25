@@ -1,6 +1,6 @@
 // expect-error: `Header` has no field `size`
 
-import std.sys.raw
+import std.sys
 
 repr(C) struct Header {
     kind: U8,

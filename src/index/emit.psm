@@ -6,6 +6,7 @@
 // in the tables already. Declarations in the user's files are always written; one in the library
 // only if something refers to it.
 
+import std.collections.vec
 import ast.nodes
 import common.source_files
 import fmt.scan
@@ -15,7 +16,6 @@ import index.tables
 import index.write
 import std.fs
 import std.string
-import std.core.vec
 
 fn ixVisibilityName(vis: Int) -> String {
     if (vis == 0) { return "public".clone() }

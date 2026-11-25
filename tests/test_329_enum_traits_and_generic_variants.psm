@@ -4,7 +4,6 @@
 
 import std.io
 import std.string
-import std.core.map
 import std.core.option
 
 enum Level { Low, Mid, High }

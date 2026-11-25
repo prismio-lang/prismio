@@ -15,7 +15,6 @@
 // does not finish in the time this suite allows.
 
 import std.io
-import std.core.map
 import std.core.key
 
 fn check(label: String, got: Int, want: Int) -> Int {

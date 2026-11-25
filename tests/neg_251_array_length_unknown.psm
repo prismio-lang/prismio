@@ -8,7 +8,7 @@
 // beside it. `length` is a property, and a call that returns an array is not a
 // place to read it from.
 
-import std.core.vec
+import std.collections.vec
 
 fn view(xs: [Int]) -> Int { return xs.length }
 

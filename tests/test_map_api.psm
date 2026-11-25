@@ -12,7 +12,6 @@
 // `--verify` through the same ledger check test_193_map_methods does.
 
 import std.io
-import std.core.map
 import std.core.option
 import std.string
 

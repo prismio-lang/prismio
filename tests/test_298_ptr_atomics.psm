@@ -2,7 +2,7 @@
 // read and changed in one indivisible step, with the ordering written at the call. Values are
 // checked here, and the orderings by the `typed_pointer_ir` harness test over
 // tests/ptr_access_ir_probe.psm. A read-modify-write answers what was there before.
-import std.sys.raw
+import std.sys
 
 extern fn malloc(size: Usize) -> Ptr<mut Int>
 extern fn free(block: Ptr)

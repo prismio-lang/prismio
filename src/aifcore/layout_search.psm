@@ -21,14 +21,14 @@
 // empty slot (tests/test_41_punned_slot_bytes.psm). Sorting by width would put an 8-byte pointer at
 // offset 0, and the generation built by the first compiler that did this could not parse its own source.
 
+import std.collections.vec
+import std.collections.map
 import aifcore.bits
 import aifcore.constants
 import aifcore.nominals
 import aifcore.structure
-import std.core.map
 import std.core.option
 import std.string
-import std.core.vec
 import symbols.names
 
 // A loop, and the fields of one type it touches: LAYOUT 2.1's "co-accessed" half, the structural fact the

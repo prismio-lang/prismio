@@ -18,6 +18,7 @@
 // which is a maximal contributor by construction. The path is *a* witness, not provably the shortest, and
 // memory is O(sites). Domain 0 is escape and domain 1 is aliasing; an edge lives at `domain * sites + site`.
 
+import std.collections.vec
 import aif.model
 import aifcore.bits
 import aifcore.constants
@@ -27,7 +28,6 @@ import aifcore.nominals
 import aifcore.sites
 import aifcore.structure
 import std.core.option
-import std.core.vec
 
 // Key id -> set of sites. Handles into the bitset arena.
 internal let mut pt: Vec<Int>

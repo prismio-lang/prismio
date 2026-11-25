@@ -22,7 +22,6 @@
 import std.io
 import std.core.option
 import std.string
-import std.core.vec
 
 fn make(n: Int) -> String { return "a string longer than twelve bytes ".concat(n.toString()) }
 

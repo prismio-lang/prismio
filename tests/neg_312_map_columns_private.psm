@@ -5,7 +5,7 @@
 // `entryKeys.length`), and a program that pushed to or truncated a column would break
 // them where the compiler no longer checks.
 
-import std.core.map
+import std.collections.map
 
 fn main() -> Int {
     let m = HashMap<Int, Int>()

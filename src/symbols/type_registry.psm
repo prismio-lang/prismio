@@ -11,12 +11,12 @@
 // The backend reads the struct and enum tables through the `_cstr` exports at the bottom, because it
 // asks in C strings and keeps the answers.
 
+import std.collections.vec
+import std.collections.map
 import common.c_text
-import std.core.map
 import std.mem
-import std.sys.raw
+import std.sys
 import std.string
-import std.core.vec
 import symbols.names
 import aifcore.layout_search
 

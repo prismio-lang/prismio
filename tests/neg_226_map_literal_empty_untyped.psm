@@ -1,6 +1,6 @@
 // expect-error: `{}` is an empty map, and nothing says what it maps
 import std.io
-import std.core.map
+import std.collections.map
 
 fn main() -> Int {
     let m = {}

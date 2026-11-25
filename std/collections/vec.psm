@@ -26,7 +26,7 @@ import std.core.option
 // The lowering target for a list literal. `[a, b, c]` written where a `Vec<T>`
 // is expected becomes `vecOf(a, b, c)` -- the same rewrite `s[i]` gets for
 // `charAt`, and it carries the same obligation: a program that writes a list
-// literal needs `import std.core.vec`, and sema says so when it does not.
+// literal needs `import std.collections.vec`, and sema says so when it does not.
 //
 // **One overload per arity, because there are no varargs**, exactly as
 // `String.concat` has 2..6 and for the same reason. Twelve is the cap; past it

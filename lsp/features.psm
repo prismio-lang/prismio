@@ -4,15 +4,15 @@
 // the JSON of the LSP result. None of them holds anything between requests; each reads the index file
 // it is given and builds what it answers with.
 
+import std.collections.vec
 import documents
 import index
 import locator
 import positions
 import std.fs
-import std.encoding.json
+import std.json
 import std.core.option
 import std.string
-import std.core.vec
 
 public struct FeatureQuery {
     // The index file of the program the document belongs to.

@@ -16,7 +16,7 @@
 // separates instructions. `$0` is the value `asmRead` answers and the operand
 // `asmWrite` takes. Memory is treated as clobbered, so a load or store is never
 // moved across one of these; registers other than `$0` are yours to preserve.
-module freestanding
+module part freestanding
 // Runs the instructions.
 lang("asm") public fn asm(text: String) { }
 

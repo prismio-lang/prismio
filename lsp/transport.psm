@@ -1,11 +1,10 @@
 // Messages on standard input and output: `Content-Length: N`, a blank line, then N bytes.
 //
-// Reading is blocking on purpose: the server loop waits (std.io.poll) until input is there and
+// Reading is blocking on purpose: the server loop waits (std.task.poll) until input is there and
 // only then calls `readMessage`, so a message that has begun arriving is read to its end. A
 // client that sends half a message and stalls stalls the server too, which is the protocol's
 // own behaviour, not a loss.
 
-import std.io.input
 import std.io
 import std.core.option
 import std.string

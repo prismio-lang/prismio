@@ -8,14 +8,14 @@
 //
 // Records are columns, one `Vec<Int>` per field, indexed by site id.
 
+import std.collections.vec
+import std.collections.map
 import aif.model
 import aifcore.bits
 import aifcore.constants
 import aifcore.structure
-import std.core.map
-import std.sys.raw
+import std.sys
 import std.string
-import std.core.vec
 import symbols.names
 
 internal let mut siteCount = 0

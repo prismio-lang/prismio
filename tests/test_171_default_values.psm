@@ -5,8 +5,6 @@
 // `0`, `""`, `[]`, `none`, `mapNew<K, V>()`, or a struct literal
 // of its fields' defaults -- and is then checked as that expression.
 import std.io
-import std.core.vec
-import std.core.map
 import std.core.option
 import std.string
 

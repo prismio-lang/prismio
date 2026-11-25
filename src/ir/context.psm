@@ -2,9 +2,9 @@
 // switches on, and the bridge surface every other module in this package calls
 // into.
 
+import std.collections.map
 import ast.types
 import common.target
-import std.core.map
 
 // IR Generator
 // Traverses the AST and emits LLVM IR via bridge.psm

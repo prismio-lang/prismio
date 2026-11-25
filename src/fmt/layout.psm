@@ -17,8 +17,8 @@
 // The rules were the IntelliJ plugin's before they were the compiler's (formatter/PrismioBlock.java)
 // and the comments say what each one is for.
 
+import std.collections.vec
 import std.string
-import std.core.vec
 import fmt.scan
 
 private fn fmtText(text: String, tokens: FmtTokens, at: Int) -> String {

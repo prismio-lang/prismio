@@ -15,6 +15,7 @@
 //     its whole point (stage 5), because a plain load there would be silently wrong;
 //   - a write through any pointer (stage 3).
 
+import symbols.library
 import symbols.declarations
 import ast.nodes
 import lexer.token
@@ -206,7 +207,7 @@ internal fn semaPtrMethod(module: ASTNode, call: ASTNode, method: String, receiv
     if (op > 0) {
         if (semaPtrStepIsRaw(op) and fileHasIntrinsics(call.file) == false
             and langModuleImportedBy(LangItem.OFFSET_OF, call.file) == false) {
-            semaErrorAt(call, "`".concat(method, "` steps a pointer somewhere the compiler cannot vouch for, which is `", langModule(LangItem.OFFSET_OF), "`'s: add ", langImportHint(LangItem.OFFSET_OF)))
+            semaErrorAt(call, "`".concat(method, "` steps a pointer somewhere the compiler cannot vouch for, which is `", libraryPublicModule(langModule(LangItem.OFFSET_OF)), "`'s: add ", langImportHint(LangItem.OFFSET_OF)))
             diag_note("`advance(n, limit)` steps within a bound you give it, and needs no import")
             nodeSetType(call, typeInvalid())
             return typeInvalid()
@@ -349,7 +350,7 @@ internal fn semaPtrAssociated(module: ASTNode, expr: ASTNode, qualifier: ASTNode
         return 2
     }
     if (fileHasIntrinsics(expr.file) == false and langModuleImportedBy(LangItem.OFFSET_OF, expr.file) == false) {
-        semaErrorAt(expr, "`Ptr<T>.".concat(name, "` makes a pointer the compiler cannot vouch for, which is `", langModule(LangItem.OFFSET_OF), "`'s: add ", langImportHint(LangItem.OFFSET_OF)))
+        semaErrorAt(expr, "`Ptr<T>.".concat(name, "` makes a pointer the compiler cannot vouch for, which is `", libraryPublicModule(langModule(LangItem.OFFSET_OF)), "`'s: add ", langImportHint(LangItem.OFFSET_OF)))
         nodeSetType(expr, typeInvalid())
         return 2
     }

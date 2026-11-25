@@ -14,7 +14,6 @@
 // Asserted under `--verify` in run_aif_verify_test: zero violations, zero leaks.
 
 import std.io
-import std.core.vec
 
 struct Tag {
     name: String,

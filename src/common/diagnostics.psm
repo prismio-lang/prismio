@@ -10,12 +10,12 @@
 // stderr is a terminal that decodes ANSI (`common.terminal`) and otherwise is the plain text it
 // always was, byte for byte.
 
+import std.collections.vec
 import common.source_files
 import common.terminal
 import std.io
 import std.core.option
 import std.string
-import std.core.vec
 import common.diag_codes
 
 // Past this many errors the compiler stops rather than continuing to recover. Beyond roughly this

@@ -8,7 +8,7 @@
 import std.io
 import std.math
 import std.string
-import std.core.vec
+import std.collections.vec
 
 struct Square { side: Int }
 

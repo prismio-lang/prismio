@@ -4,12 +4,12 @@
 // answers the user is waiting for, so they are runs the server does wait for, with a limit: a compiler
 // that has not answered in `limitMs` is killed and the request answered with nothing.
 
+import std.collections.vec
 import std.core.option
-import std.io.poll
+import std.task.poll
 import std.process
 import std.string
 import std.time
-import std.core.vec
 
 // Runs `program` with `arguments`, discarding its standard input and error, and returns what it wrote to
 // standard output; "" if it could not be started, did not finish within `limitMs`, or exited non-zero.

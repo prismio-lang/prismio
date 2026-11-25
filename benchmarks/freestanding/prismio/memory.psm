@@ -2,7 +2,7 @@
 // addresses. The same programs as ../c/memory.c and ../rust/memory.rs.
 
 import std.mem
-import std.sys.raw
+import std.sys
 export fn bench_pointer_chase(scale: U32) -> U32 {
     let mut order: Array<U32, 2048>
     let mut next: Array<U32, 2048>

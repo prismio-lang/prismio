@@ -8,15 +8,15 @@
 // The per-field arrays are one vector per nominal, indexed by declaration index, and `order[i]` is the
 // declaration index placed i-th.
 
+import std.collections.vec
+import std.collections.map
 import aifcore.bits
 import aifcore.constants
 import aifcore.layout_search
 import aifcore.structure
 import std.fs
-import std.core.map
 import std.core.option
 import std.string
-import std.core.vec
 import symbols.names
 
 internal let mut nominalCount = 0

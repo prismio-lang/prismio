@@ -9,7 +9,6 @@
 // release guarded by pointer equality with the result (KNOWN_ISSUES, Ownership).
 import std.io
 import std.string
-import std.core.vec
 
 struct Point {
     x: Int,

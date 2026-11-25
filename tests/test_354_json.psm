@@ -9,10 +9,9 @@
 //    produces the parser reads back to the same values.
 
 import std.io
-import std.encoding.json
+import std.json
 import std.core.option
 import std.string
-import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")
@@ -145,6 +144,6 @@ fn main() -> Int {
     if (back.raw(back.member(back.root, "id").unwrapOr(0 - 1)) != "\"x-1\"") { bad = bad + fail("id round trip") }
 
     if (bad > 0) { return 1 }
-    println("PASS: std.encoding.json reads, refuses and writes")
+    println("PASS: std.json reads, refuses and writes")
     return 0
 }

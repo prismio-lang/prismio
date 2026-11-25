@@ -1,6 +1,6 @@
 // expect-error: `pick` names more than one function, so it has no single address
 
-import std.sys.raw
+import std.sys
 
 fn pick(x: Int) -> Int { return x }
 fn pick(x: String) -> Int { return 1 }

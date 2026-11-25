@@ -6,17 +6,17 @@
 // same name in two functions is two keys, and `Lexer.source` is one key across every Lexer. A key is
 // interned from `(kind, a, b)` and its tuple is kept by id.
 
+import std.collections.vec
+import std.collections.map
 import aifcore.bits
 import aifcore.constants
 import aifcore.constraints
 import aifcore.sites
 import aifcore.structure
 import std.io
-import std.core.map
 import std.core.option
 import std.process
 import std.string
-import std.core.vec
 import symbols.names
 
 internal let mut keyCount = 0

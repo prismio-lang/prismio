@@ -10,7 +10,7 @@
 
 import std.io
 import std.mem
-import std.sys.raw
+import std.sys
 import std.string
 
 extern fn snprintf(buffer: Ptr, size: Usize, format: String borrow, ...) -> Int

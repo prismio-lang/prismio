@@ -14,6 +14,7 @@
 // Each range function reports through its own pair of variables: `arenaLo`/`arenaHi`, `candLo`/`candHi`, `emitLo`/`emitHi`.
 // They call one another, so one shared pair would have the inner answer overwrite the outer one.
 
+import std.collections.vec
 from aifcore import {
     arenas,
     bits,
@@ -27,8 +28,7 @@ from aifcore import {
     tiers
 }
 
-import std.sys.raw
-import std.core.vec
+import std.sys
 
 internal let mut arenaLo = 0
 internal let mut arenaHi = 0

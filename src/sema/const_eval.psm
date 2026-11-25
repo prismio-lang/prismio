@@ -37,13 +37,13 @@
 // a `for` or a compound assignment yet. Every CONST_EXPR is replaced in place by the
 // literal it came to, and nothing after sees one.
 
+import std.collections.vec
 import ast.nodes
 import ast.fn_attrs
 import lexer.token
 import ast.types
 import common.diagnostics
 import std.string
-import std.core.vec
 
 // --- the types a constant can have ------------------------------------------------
 

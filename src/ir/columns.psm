@@ -36,13 +36,13 @@
 // type (`HashMap$String$Int.entryKeys`), so `HashMap<Int, Int>`'s scalar columns, which
 // need no release, never enter it.
 
+import std.collections.vec
 import ast.nodes
 import ast.types
 import common.source_files
 import std.io
 import std.process
 import std.string
-import std.core.vec
 import symbols.declarations
 import aifcore.call_results
 import common.lang_items

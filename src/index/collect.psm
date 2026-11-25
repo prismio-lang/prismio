@@ -12,6 +12,7 @@
 // name written there; they are not something the user can point at, and a declaration the user cannot
 // find in the text is worse than none.
 
+import std.collections.vec
 import ast.nodes
 import ast.types
 import ast.fn_attrs
@@ -19,7 +20,6 @@ import fmt.scan
 import index.source
 import index.tables
 import std.string
-import std.core.vec
 
 // The name a node was written with: its `s1` up to the `$` that separates an instance's type
 // arguments from it.

@@ -21,6 +21,7 @@
 // Obligation 4, that the summary is a fixpoint over the call graph, is how every clause above is evaluated:
 // recursion means the transitive callee set is a closure, not a walk.
 
+import std.collections.vec
 import aif.model
 import aifcore.bits
 import aifcore.constants
@@ -31,7 +32,6 @@ import aifcore.solver
 import aifcore.structure
 import std.core.option
 import std.process
-import std.core.vec
 
 internal let mut edgeCount = 0
 internal let mut edgeCaller: Vec<Int>

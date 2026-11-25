@@ -6,7 +6,6 @@
 // it has none.
 
 import std.io
-import std.core.map
 import std.core.option
 
 fn fail(message: String) -> Int {

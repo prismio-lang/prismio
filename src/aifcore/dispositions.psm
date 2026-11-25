@@ -14,6 +14,7 @@
 //
 // Dispositions are `AIF_ELEM_*`, defined in `ir/context.psm` beside the code that emits them.
 
+import std.collections.vec
 import aif.model
 import aifcore.arenas
 import aifcore.bits
@@ -27,7 +28,6 @@ import aifcore.structure
 import aifcore.tiers
 import ir.context
 import std.string
-import std.core.vec
 import symbols.names
 
 // Whether a key may hold a value that is no site: a string literal, or static storage, stored into it directly or through

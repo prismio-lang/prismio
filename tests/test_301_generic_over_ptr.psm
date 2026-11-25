@@ -2,7 +2,7 @@
 // `Ptr<mut Pair>` fits a `Ptr<T>` as it fits a `Ptr<Pair>`, and the instantiation names a
 // pointer type the compiler can write down again (it used to name `Ptr<mut Pair>` as one
 // identifier and fail to resolve it). `stride` is how far one element is, read off the type.
-import std.sys.raw
+import std.sys
 
 repr(C) struct Pair {
     a: U32,

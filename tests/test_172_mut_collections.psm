@@ -2,7 +2,6 @@
 // a `let mut`, or an `inout` parameter. The refusals are neg_173..neg_176; this
 // is every form that is allowed.
 import std.io
-import std.core.vec
 
 struct Bag { items: Vec<Int> }
 

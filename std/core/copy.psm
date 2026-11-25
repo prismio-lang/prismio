@@ -65,8 +65,8 @@ impl Copy for String {
 
 // A Vec of copyable elements is copyable: a new Vec holding a copy of each. This is what
 // lets one be the value of a `HashMap`, which hands every value out as a copy, or an
-// element of another Vec. It lives here, not in std.core.vec, because an impl must be written
-// in the module that declares the trait or the type; std.core.vec's `clone` is this loop.
+// element of another Vec. It lives here, not in std.collections.vec, because an impl must be written
+// in the module that declares the trait or the type; std.collections.vec's `clone` is this loop.
 impl<T: Copy> Copy for Vec<T> {
     fn copyOf(self) -> Self {
         let n = list_len(self)

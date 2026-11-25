@@ -1,3 +1,4 @@
+import std.collections.vec
 import std.io
 import ums.ums
 // `ums.ums` is a composition root, and an import of it no longer carries what
@@ -13,7 +14,6 @@ import ums.model.project
 import ums.model.build_module
 import std.string
 import std.fs
-import std.core.vec
 
 
 fn umsTestFail(message: String) -> Int {

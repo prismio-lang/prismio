@@ -2,7 +2,7 @@
 //
 // **One thread, one loop.** The server waits on two things at once, the client's messages on
 // standard input and the output of the compiler run it has in flight, with a timeout that is
-// also its timer (std.io.poll), and handles whichever speaks. A message is always served before
+// also its timer (std.task.poll), and handles whichever speaks. A message is always served before
 // the compiler's output is read, so an edit reaches the server while a run is still going, and
 // the run, which is now about stale text, is killed rather than waited for. No tasks, no
 // channels, no locks, and cancellation is a `kill`.
@@ -13,6 +13,7 @@
 // the language: the server holds no knowledge of Prismio itself, so it cannot disagree with
 // `prismio build`. See docs/LSP_PLAN.md for where the rest of the features come from.
 
+import std.collections.vec
 import analysis
 import completion
 import documents
@@ -31,15 +32,13 @@ import tokens
 import transport
 import uri
 import std.fs
-import std.io.input
 import std.io
-import std.encoding.json
+import std.json
 import std.core.option
-import std.io.poll
+import std.task.poll
 import std.process
 import std.string
 import std.time
-import std.core.vec
 
 // How long the client must be quiet before the program is checked. Short enough that a pause
 // in typing shows its errors, long enough that typing does not start a run per keystroke.

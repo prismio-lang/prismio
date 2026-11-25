@@ -10,6 +10,9 @@
 // Everything offered is a declaration the program has, or a member the compiler provides and names
 // (sema/vec.psm): no list of library names is kept here.
 
+import symbols.library
+import sema.symbols
+import std.collections.vec
 import ast.nodes
 import index.builtins
 import index.collect
@@ -19,7 +22,6 @@ import index.tables
 import index.write
 import sema.vec
 import std.string
-import std.core.vec
 import common.source_files
 import common.lang_items
 
@@ -52,8 +54,12 @@ fn ixCompleteDeclAs(inout ix: Ix, inout src: IxSources, id: Int, rank: Int, show
     }
     // Overloads and generic instances that read the same are one entry.
     if (ix.seen.putFirst("complete ".concat(ix.dName[id], "|", sig), 1) == false) { return }
+    // The import a library name needs: none for what the language uses, the package for a part of one.
     let mut module = "".clone()
-    if (ix.dUser[id] == false) { module = diag_file_module(ix.dFile[id]).clone() }
+    if (ix.dUser[id] == false) {
+        let declared = diag_file_module(ix.dFile[id])
+        if (libraryModuleIsPrelude(declared) == false) { module = libraryPublicModule(declared) }
+    }
     let mut written = kind.clone()
     if (shown.equals("") == false) { written = shown.clone() }
     ix.out.push(ixCompletionLine(ix.dName[id], written, sig, doc, rank, module))
@@ -183,11 +189,13 @@ public fn ixVisibleFrom(ix: Ix, id: Int, file: Int) -> Bool {
     if (ix.dVis[id] == 2 and ix.dUser[id] == false) { return false }
     if (ix.dUser[id]) { return true }
     let module = diag_file_module(ix.dFile[id])
-    if (module.equals("")) { return true }
+    if (module.equals("") or libraryModuleIsPrelude(module)) { return true }
+    let written = libraryPublicModule(module)
     let imports = ix.dKind.length
     let mut i = 0
     while (i < imports) {
-        if (ix.dKind[i].equals("import") and ix.dFile[i] == file and ix.dName[i].equals(module)) { return true }
+        if (ix.dKind[i].equals("import") and ix.dFile[i] == file
+                and (ix.dName[i].equals(module) or ix.dName[i].equals(written))) { return true }
         i = i + 1
     }
     return false
@@ -259,7 +267,7 @@ public fn ixCompleteModule(inout ix: Ix, inout src: IxSources, path: String, fil
         let top = ix.dContainer[id] < 0
         let nameable = kind.equals("fn") or kind.equals("extern") or kind.equals("struct") or kind.equals("enum")
             or kind.equals("trait") or kind.equals("global") or kind.equals("const") or kind.equals("externvar")
-        if (top and nameable and diag_file_module(ix.dFile[id]).equals(path) and ix.dName[id].startsWith("$") == false
+        if (top and nameable and semaQualifierCovers(path, diag_file_module(ix.dFile[id])) and ix.dName[id].startsWith("$") == false
                 and (ix.dUser[id] or (ix.dVis[id] != 1 and ix.dVis[id] != 2))) {
             ixCompleteDecl(ix, src, id, 1)
         }

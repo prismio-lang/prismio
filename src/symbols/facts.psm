@@ -7,13 +7,13 @@
 // modules one bootstrap process compiles, so a mark left on a node, or on a node allocated later at
 // the same address, can never match a later proof.
 
+import std.collections.vec
+import std.collections.map
 import std.io
-import std.core.map
 import std.core.option
 import std.process
-import std.sys.raw
+import std.sys
 import std.string
-import std.core.vec
 import symbols.names
 
 // Functions the flat-List guard may look through.

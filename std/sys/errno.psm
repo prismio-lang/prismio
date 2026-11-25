@@ -22,7 +22,7 @@
 // or an allocator: it is pure arithmetic and links nothing under `--freestanding`. The codes
 // themselves (`ENOMEM` is 12, `EINVAL` 22, `EIO` 5) belong to the kernel's headers and are
 // written there, as `-12`, by the code that means them.
-module freestanding
+module part freestanding
 // The largest errno the kernel reserves an address for (`MAX_ERRNO`).
 public fn errnoMax() -> Int { return 4095 }
 

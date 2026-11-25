@@ -8,7 +8,7 @@
 //     promised it would not be, and the compiler told LLVM so. An opaque `Ptr` can be cast,
 //     because it was already a promise nothing checks.
 //   - A cast takes a pointer, and a constructor takes exactly one argument.
-import std.sys.raw
+import std.sys
 
 struct Header { magic: U32 }
 

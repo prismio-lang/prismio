@@ -6,6 +6,8 @@
 // server that wants to show the declaration asks for the text here and writes it where an editor can
 // open it. The text goes to standard output exactly as the module was packaged.
 
+import symbols.library
+import driver.imports
 import std.io
 import std.process
 import std.string
@@ -26,5 +28,13 @@ public fn librarySourceCommand() -> Int {
         return 1
     }
     print(text)
+    return 0
+}
+
+// `prismio library-modules`: what a program can import from the library beside this compiler, one per
+// line, for a language server.
+public fn libraryModulesCommand() -> Int {
+    libraryUseDirectory(libraryRoot(), true)
+    for line in libraryImportableModules() { println(line) }
     return 0
 }

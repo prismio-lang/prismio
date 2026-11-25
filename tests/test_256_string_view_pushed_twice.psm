@@ -12,7 +12,6 @@
 // `swapRemove` and pushed into another (test_255's neighbours in the probe).
 
 import std.io
-import std.core.vec
 import std.string
 import std.core.option
 

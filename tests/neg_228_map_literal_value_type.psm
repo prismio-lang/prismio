@@ -2,7 +2,7 @@
 // With no annotation, the first entry decides the types, and the error names the
 // literal rather than the call it becomes.
 import std.io
-import std.core.map
+import std.collections.map
 
 fn main() -> Int {
     let m = { "a": 1, "b": "two" }

@@ -1,7 +1,7 @@
 // expect-error: this key is already in the map literal
 // The map would keep the second value and drop the first without a word.
 import std.io
-import std.core.map
+import std.collections.map
 
 fn main() -> Int {
     let m = { "a": 1, "b": 2, "a": 3 }

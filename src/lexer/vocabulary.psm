@@ -10,8 +10,8 @@
 // Each word is followed by the position that gives it meaning, in the order the language
 // reference reads them. The two arrays are the same length and are read in step.
 
-import std.core.map
-import std.core.vec
+import std.collections.vec
+import std.collections.map
 
 let vocabularyContextualWords = [
     "public", "private", "internal",
@@ -26,7 +26,7 @@ let vocabularyContextualWords = [
     "codeset", "typelist", "workload", "setup", "measure",
     "Fn", "always", "never", "C",
     "asm",
-    "module", "prelude", "freestanding", "runtime", "lang"
+    "module", "prelude", "part", "freestanding", "runtime", "lang"
 ]
 
 let vocabularyContextualContexts = [
@@ -42,7 +42,7 @@ let vocabularyContextualContexts = [
     "declaration of a set of codes", "declaration of a list of types", "declaration of a benchmark", "clause inside workload", "clause inside workload",
     "the function type Fn(...)", "argument of inline(...)", "argument of inline(...)", "argument of repr(...)",
     "module assembly: a top-level asm followed by a string literal",
-    "declaration of a file's role, the first item of the file", "marker in the header of a file", "marker in the header of a file",
+    "declaration of a file's role, the first item of the file", "marker in the header of a file", "marker in the header of a file", "marker in the header of a file",
     "qualifier inside freestanding(...) in the header of a file",
     "marker before a declaration in the standard library"
 ]

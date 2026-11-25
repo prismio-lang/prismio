@@ -8,7 +8,7 @@
 //   +0  header: Header ----------->   +0  magic:  U32
 //   +12 tag: U8                       +4  length: U32
 //                                     +8  flags:  U16
-import std.sys.raw
+import std.sys
 
 repr(C) struct Header {
     magic: U32,

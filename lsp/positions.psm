@@ -6,8 +6,8 @@
 // else in the server does arithmetic on columns, so an `é` or an emoji earlier on the line
 // cannot be handled differently in two features.
 
+import std.collections.vec
 import std.string
-import std.core.vec
 
 public struct Position {
     public line: Int,

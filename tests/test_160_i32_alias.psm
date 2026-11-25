@@ -3,7 +3,6 @@
 // field, a cast, a type argument and an array's element type.
 
 import std.io
-import std.core.vec
 
 struct Point {
     x: I32,

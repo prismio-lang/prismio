@@ -1,6 +1,6 @@
 // expect-error: `Loose` lets the compiler order its fields, so a field has no fixed offset
 
-import std.sys.raw
+import std.sys
 
 struct Loose {
     a: U8,

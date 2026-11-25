@@ -22,7 +22,7 @@
 // On Windows, asking also turns on escape-sequence processing in a console that
 // has it off.
 
-import std.fmt.display
+import std.core.display
 import std.string
 
 private extern fn prismio_rt_color_supported(fd: Int) -> Int

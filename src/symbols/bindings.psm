@@ -12,11 +12,11 @@
 // Columns, not records: a binding is eleven fields and the table is read once per identifier, so
 // each column is a `Vec<Int>` of interned ids or flag bits that the scan touches alone.
 
+import std.collections.vec
 import common.diagnostics
 import std.io
 import std.core.option
 import std.string
-import std.core.vec
 import symbols.names
 
 const BINDING_MAX_SCOPES = 1024

@@ -6,8 +6,7 @@
 
 import std.io
 import std.mem
-import std.sys.raw
-import std.sys.asm
+import std.sys
 import std.string
 
 fn fail(message: String) -> Int {

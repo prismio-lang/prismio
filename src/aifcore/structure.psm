@@ -6,11 +6,11 @@
 //
 // Records are columns, one `Vec<Int>` per field, indexed by scope or function id.
 
+import std.collections.vec
+import std.collections.map
 import aifcore.brackets
 import aifcore.constants
-import std.core.map
-import std.sys.raw
-import std.core.vec
+import std.sys
 import symbols.names
 
 internal let mut scopeCount = 0

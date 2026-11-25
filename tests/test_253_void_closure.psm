@@ -3,7 +3,6 @@
 // type `Void`", so a closure could be passed only where a value came back.
 
 import std.io
-import std.core.vec
 
 let mut total: Int = 0
 

@@ -18,7 +18,7 @@
 // property of one (`isEmpty`, `capacity`), and a function in std/core/vec.psm that takes
 // a Vec (`removeAt`).
 
-import std.core.vec
+import std.collections.vec
 
 fn grow() {
     let mut x = [1, 2, 3]

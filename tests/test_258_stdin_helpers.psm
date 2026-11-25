@@ -3,12 +3,10 @@
 // test_188: the binary starts itself with a mode and a pipe for stdin and reports
 // what the child printed.
 
-import std.io.input
 import std.io
 import std.core.option
 import std.process
 import std.string
-import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

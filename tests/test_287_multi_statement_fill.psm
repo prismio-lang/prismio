@@ -10,7 +10,6 @@
 // hundred million would otherwise hold 400 MB for twelve bytes.
 
 import std.io
-import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

@@ -7,14 +7,14 @@
 // allocates what it answers with and nothing else, and the server's memory stays flat however many
 // requests it serves.
 //
-// A line is JSON, so parsing it is `std.encoding.json`'s; the helpers below name the fields the features
+// A line is JSON, so parsing it is `std.json`'s; the helpers below name the fields the features
 // read.
 
+import std.collections.vec
 import std.fs
-import std.encoding.json
+import std.json
 import std.core.option
 import std.string
-import std.core.vec
 
 public struct IndexFile {
     public id: Int,

@@ -433,7 +433,7 @@ HEADER = '''//
 
 '''
 
-RAW = '''module freestanding
+RAW = '''module part freestanding
 // The raw instruction: the system call `number`, with up to six operands. The number is the
 // target's own: Linux's differ between x86_64 and arm64, and macOS's are the BSD numbers.
 public fn syscall(number: U64) -> I64 {

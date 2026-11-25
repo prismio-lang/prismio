@@ -5,6 +5,7 @@
 // half stopped early. They are here rather than in the CLI because what they
 // share is a pipeline, not an argument vector.
 
+import std.collections.vec
 import common.text
 import ast.nodes
 import parse.*
@@ -20,7 +21,7 @@ import aifcore.ownership
 import aifcore.solver
 
 from std import {fs, io, string}
-from std.core import {option, vec}
+from std.core import {option}
 import index.command
 import build.BUILD_VERSION
 from lexer import { scanner, token, identifier_security }
@@ -218,6 +219,7 @@ public fn dumpAstCommand(path: String) -> Int {
 // the file is a program).
 public fn checkCommand(path: String, overlays: Vec<String>, module: String, indexPath: String,
                          cursorPath: String, cursorLine: Int, cursorCol: Int) -> Int {
+    importPackagesEagerly(cursorPath.equals("") == false)
     diag_progress_begin(path)
     // `overlays` is pairs: the file, then the file holding its text.
     let mut at = 0

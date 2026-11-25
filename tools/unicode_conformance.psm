@@ -11,14 +11,13 @@
 // line, and that every scalar Part 1 does not list is unchanged by both.
 // NFKC and NFKD are not implemented and not checked.
 
+import std.collections.vec
 import std.io
 import std.fs
 import std.string
 import std.process
 import std.unicode
 import std._unicode.properties
-import std.core.vec
-import std.fmt.display
 
 fn hexScalar(text: String) -> Int {
     return text.parseInt(16).unwrapOr(0 - 1)

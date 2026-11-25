@@ -6,7 +6,6 @@
 // read a null bucket table.
 
 import std.io
-import std.core.map
 import std.string
 
 struct Point {

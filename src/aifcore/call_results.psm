@@ -6,6 +6,8 @@
 // stays Caller no matter how briefly the caller keeps it. INFERENCE 6's ownership contexts are the specified fix and a project, not a
 // clause. What is available without it is asked of the converged points-to facts and of the constraints themselves, key by key.
 
+import std.collections.vec
+import std.collections.map
 import aif.model
 import aifcore.arenas
 import aifcore.bits
@@ -19,11 +21,9 @@ import aifcore.solver
 import aifcore.structure
 import aifcore.tiers
 import ir.context
-import std.core.map
 import std.core.option
-import std.sys.raw
+import std.sys
 import std.string
-import std.core.vec
 import symbols.names
 
 // One call node's own result: its value set and the function it calls. The walk gives every call a fresh value set, so the

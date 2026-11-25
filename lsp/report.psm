@@ -6,10 +6,10 @@
 // server keeps what it showed before rather than clearing it, which a missing summary would
 // otherwise look like.
 
+import std.collections.vec
 import uri
-import std.encoding.json
+import std.json
 import std.string
-import std.core.vec
 
 public struct CompilerDiagnostic {
     // The file as the compiler registered it; "" for a message about the run, not a file.

@@ -6,7 +6,7 @@
 // whose fields stay in the order they were written.
 
 import std.io
-import std.sys.raw
+import std.sys
 import std.string
 
 repr(C) struct Header {

@@ -1,8 +1,0 @@
-// expect-error: `Vec<String>.filled` needs `import std.core.vec`
-// A scalar element needs no import; a String is copied per element by std.core.vec.
-import std.io
-
-fn main() -> Int {
-    let v = Vec<String>.filled(3, "x")
-    return v.length
-}

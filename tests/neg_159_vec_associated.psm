@@ -2,7 +2,7 @@
 // expect-error: there are `Vec<T>.withCapacity(n)` and `Vec<T>.filled(n, value)`
 // Vec's associated functions are `withCapacity` and `filled`; everything else a
 // Vec does is a method or a literal.
-import std.core.vec
+import std.collections.vec
 
 fn main() -> Int {
     let v = Vec<Int>.fromSize(8)

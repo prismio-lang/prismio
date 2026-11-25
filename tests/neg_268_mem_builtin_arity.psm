@@ -1,6 +1,6 @@
 // A compare-and-swap takes the address, the value expected and the value wanted.
 
-import std.sys.raw
+import std.sys
 fn main() -> Int {
     return atomicCompareExchangeU32(0x1000, 1) as Int
 }

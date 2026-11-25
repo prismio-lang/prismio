@@ -5,9 +5,9 @@
 // reserved word, and the two answers belong beside the enum that names them.
 
 
-import std.core.map
+import std.collections.vec
+import std.collections.map
 import std.string
-import std.core.vec
 
 public enum TokenType {
     STRING_LITERAL,

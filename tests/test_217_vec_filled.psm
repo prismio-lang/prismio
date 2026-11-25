@@ -5,7 +5,6 @@
 // and each copy is its own: changing one element changes no other.
 
 import std.io
-import std.core.vec
 
 struct Point {
     x: Int,

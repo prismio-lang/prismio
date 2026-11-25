@@ -1,5 +1,5 @@
 // expect-error: Float does not implement `Key`
-import std.core.map
+import std.collections.map
 import std.core.key
 
 fn main() -> Int {

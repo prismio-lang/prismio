@@ -9,7 +9,6 @@
 import std.core.copy
 import std.io
 import std.core.key
-import std.core.map
 import std.string
 
 fn fail(message: String) -> Int {

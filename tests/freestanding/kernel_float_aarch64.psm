@@ -5,7 +5,7 @@
 // formatted here at all -- the formatter was `snprintf`.
 
 import std.mem
-import std.sys.raw
+import std.sys
 import std.string
 
 // Within the 128 MiB `virt` has by default, above the image and its stack.

@@ -13,7 +13,6 @@
 
 import std.io
 import std.string
-import std.core.vec
 import std.platform
 import std.process
 

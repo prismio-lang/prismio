@@ -5,8 +5,8 @@
 // The server compares paths, never URIs, so `file:///a/b.psm` and the percent-encoded spelling
 // of the same file agree.
 
+import std.collections.vec
 import std.string
-import std.core.vec
 
 public fn isFileUri(uri: String) -> Bool {
     return uri.startsWith("file://")

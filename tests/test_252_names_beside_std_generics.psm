@@ -9,7 +9,6 @@
 // library's where they are a Vec.
 
 import std.io
-import std.core.vec
 import std.core.option
 
 struct Parser {

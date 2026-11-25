@@ -35,7 +35,7 @@ impl Parser {
         if (self.checkVal(TokenType.IDENTIFIER, "module") == false) { return false }
         let next = self.peek()
         if (next.type != TokenType.IDENTIFIER or next.line != self.current().line) { return false }
-        return next.value.equals("prelude") or next.value.equals("freestanding")
+        return next.value.equals("prelude") or next.value.equals("freestanding") or next.value.equals("part")
     }
 
     // Consumes the header and answers its flags. Every word on the line is read, so a mistake is one
@@ -50,13 +50,15 @@ impl Parser {
             let mut problem = ""
             if (word.value.equals("prelude")) {
                 bit = headerBitPrelude()
+            } else if (word.value.equals("part")) {
+                bit = headerBitPart()
             } else if (word.value.equals("freestanding")) {
                 bit = headerBitFreestanding()
                 if (self.peek().type == TokenType.SEPARATOR and self.peek().value.equals("(")) {
                     bit = bit | self.parseFreestandingTier()
                 }
             } else {
-                problem = "`module` takes `prelude`, `freestanding` and `freestanding(runtime)`, not ".concat(diagQuote(word.value))
+                problem = "`module` takes `prelude`, `part`, `freestanding` and `freestanding(runtime)`, not ".concat(diagQuote(word.value))
             }
             if (problem.equals("") and (flags & bit) != 0) {
                 problem = "`".concat(word.value, "` is written twice in this header")

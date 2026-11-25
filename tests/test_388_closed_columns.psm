@@ -11,7 +11,6 @@
 import std.core.copy
 import std.io
 import std.string
-import std.core.vec
 
 fn word(i: Int) -> String { return "a-long-string-over-twelve-bytes-".concat(i.toString()) }
 

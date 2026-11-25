@@ -328,7 +328,7 @@ internal fn semaListLiteral(module: ASTNode, valNode: ASTNode, expected: TypeInf
     // is generic and a template is not in the decl index -- see the note over it.
     let literalTable = semaVecLiteralTable(module)
     if (literalTable.equals("")) {
-        semaErrorAt(valNode, "a vector literal needs `import std.core.vec`")
+        semaErrorAt(valNode, "a vector literal needs `import std.collections.vec`")
         nodeSetType(valNode, typeInvalid())
         return true
     }

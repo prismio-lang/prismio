@@ -14,7 +14,6 @@
 //     `T?` mangled to `Invalid`, so the second HashMap got the first one's methods.
 
 import std.io
-import std.core.map
 
 enum Color { Red, Green, Blue }
 

@@ -3,7 +3,7 @@
 // expect-error: `clear` takes 0 arguments, found 1
 // Vec's lowered methods check their own arity, so the message names the method
 // that was written rather than the runtime entry point it would have become.
-import std.core.vec
+import std.collections.vec
 
 fn main() -> Int {
     let v: Vec<Int> = [1, 2]

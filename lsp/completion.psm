@@ -6,6 +6,7 @@
 // the members of the type before a `.`, the names in scope, the contents of a module. The server adds
 // the keywords of the language (from `dump-tokens`, never a list of its own) and the protocol's shape.
 
+import std.collections.vec
 import analysis
 import documents
 import index
@@ -13,9 +14,8 @@ import positions
 import projects
 import runner
 import std.fs
-import std.encoding.json
+import std.json
 import std.string
-import std.core.vec
 
 // Must be the same word as `ixPlaceholder` in src/index/complete.psm.
 let COMPLETION_PLACEHOLDER = "ixcursor__"
@@ -87,29 +87,24 @@ fn completionImportLine(text: String, module: String) -> Int {
     return 0
 }
 
-// The library's modules, named by where each `.plib` sits under the `stdlib/` beside the compiler
-// (bin/, lib/ and stdlib/ are one layout), so that a completion can see every library name and say which
-// import each one needs. A module under a `_` segment is sealed to the library and not offered.
-fn completionLibraryModules(compiler: String) -> Vec<String> {
+// What the library beside the compiler can be imported as, asked of the compiler itself
+// (`library-modules`), so that a completion sees every library name and says which import each one
+// needs. With `prelude`, also the modules a program never imports.
+fn completionLibraryModules(compiler: String, prelude: Bool) -> Vec<String> {
     let mut modules: Vec<String> = []
-    let mut real = compiler.clone()
-    let resolved = realPath(compiler)
-    if (resolved != none) { real = expect(resolved).clone() }
-    let stdlib = joinPath(directoryOf(directoryOf(real)), "stdlib")
-    if (directoryExists(stdlib)) { completionModulesUnder(stdlib, "std", modules) }
-    return modules
-}
-
-fn completionModulesUnder(directory: String, prefix: String, inout modules: Vec<String>) {
-    for name in listDirectory(directory) {
-        if (name.startsWith("_") or name.startsWith(".")) { continue }
-        let path = joinPath(directory, name)
-        if (directoryExists(path)) {
-            completionModulesUnder(path, prefix.concat(".", name), modules)
-        } else if (name.endsWith(".plib")) {
-            modules.push(prefix.concat(".", name.slice(0, name.length - 5)))
+    let mut arguments: Vec<String> = []
+    arguments.push("library-modules")
+    let run = runCaptured(compiler, arguments, 8000)
+    for line in run.output.split("\n") {
+        let name = line.trim()
+        if (name.equals("")) { continue }
+        if (name.endsWith(" prelude")) {
+            if (prelude) { modules.push(name.slice(0, name.length - 8).clone()) }
+        } else {
+            modules.push(name.clone())
         }
     }
+    return modules
 }
 
 // Whether the caret is inside a string literal or a `//` comment of its line.
@@ -227,7 +222,7 @@ fn completionDirectoryModules(compiler: String, docPath: String, directory: Stri
     if (directory.equals("std") or directory.startsWith("std.") or directory.startsWith("std/")) {
         // The library's modules directly under this directory, and its folders when asked for.
         let prefix = directory.replaceAll("/", ".").concat(".")
-        for module in completionLibraryModules(compiler) {
+        for module in completionLibraryModules(compiler, false) {
             if (module.startsWith(prefix) == false) { continue }
             let rest = module.slice(prefix.length, module.length)
             let dot = rest.indexOf(".")
@@ -284,7 +279,7 @@ fn completionImportedModule(compiler: String, text: String, offset: Int) -> Stri
     let parent = path.slice(0, dot).clone()
     // A folder of the library (`std.core.`) lists its modules; a module lists its declarations.
     if (parent.startsWith("std.") and parent.length > 4) {
-        for module in completionLibraryModules(compiler) {
+        for module in completionLibraryModules(compiler, false) {
             if (module.equals(parent)) { return parent }
         }
     }
@@ -343,7 +338,7 @@ fn completionImportItems(compiler: String, docPath: String, text: String, offset
     let lastDot = path.lastIndexOf(".")
     if (lastDot < 0) {
         names.push("std".clone())
-        for module in completionLibraryModules(compiler) { names.push(module.clone()) }
+        for module in completionLibraryModules(compiler, false) { names.push(module.clone()) }
         for entry in completionDirectoryModules(compiler, docPath, "", true) { names.push(entry.clone()) }
         return completionNames(names, 9)
     }
@@ -364,7 +359,7 @@ fn completionNone() -> String {
 // offered, with the import they need, only to a document that already imports them: otherwise `s.` on a String lists
 // `asmOps` and `offsetOf` because they happen to take a String first.
 fn completionIsLowLevelModule(module: String) -> Bool {
-    return module.startsWith("std.sys.")
+    return module.equals("std.sys") or module.startsWith("std.sys.")
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -664,7 +659,7 @@ public fn completionItems(compiler: String, program: Program, docs: Documents, d
     let mut header = "".clone()
     let mut added = 0
     if (program.module.equals("")) {
-        for module in completionLibraryModules(compiler) {
+        for module in completionLibraryModules(compiler, true) {
             let mut known = false
             for earlier in imports {
                 if (earlier.equals(module)) { known = true }

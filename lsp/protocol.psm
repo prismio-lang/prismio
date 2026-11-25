@@ -4,7 +4,7 @@
 // arrive as already-written JSON because the handlers build them with `JsonWriter` where they
 // know the shape, and this layer only adds the envelope.
 
-import std.encoding.json
+import std.json
 import std.string
 
 // JSON-RPC and LSP error codes.

@@ -13,6 +13,7 @@
 // The words are all ASCII and none contains a quote or a backslash, so they are written
 // between quotes as they are.
 
+import std.collections.vec
 import lexer.token
 import lexer.vocabulary
 import common.text
@@ -21,7 +22,6 @@ import ast.types
 import ast.float_width
 import std.string
 import std.io
-import std.core.vec
 import common.diag_codes
 
 private fn dumpQuoted(text: String) -> String {

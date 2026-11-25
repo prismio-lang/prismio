@@ -19,7 +19,6 @@ import std.core.option
 import std.process
 import std.string
 import std.time
-import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

@@ -18,12 +18,12 @@
 // entered with, so a value assigned late in one iteration is not known at the top of the
 // next -- the same answer a read there would get from Rust.
 
+import std.collections.vec
 import ast.nodes
 import lexer.token
 import ast.types
 import common.diagnostics
 import std.string
-import std.core.vec
 
 struct FlowState {
     // The declarations that have no value yet, and the loop depth each was declared at.

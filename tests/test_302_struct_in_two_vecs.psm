@@ -12,7 +12,6 @@
 // exempt (it is one value held twice), and the last part below is that shape:
 // 0 violations is the guard. Run under --verify by run_aif_verify_test.
 
-import std.core.vec
 
 struct Node {
     value: Int,

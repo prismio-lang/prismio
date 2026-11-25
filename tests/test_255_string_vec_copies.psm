@@ -12,9 +12,7 @@
 // run_aif_verify_test: a leak here is the exemption going away.
 
 import std.io
-import std.core.vec
 import std.string
-import std.core.map
 
 fn word(i: Int) -> String {
     return "word-".concat(i.toString(), "-long-enough-to-live-on-the-heap")

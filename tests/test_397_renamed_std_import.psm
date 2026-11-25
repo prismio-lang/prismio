@@ -1,8 +1,10 @@
-// The module paths `std` had before 0.3 still resolve, each to where the module is now, with a
+// The module paths `std` had in 0.2 still resolve, each to where the module is now, with a
 // warning (P1135; checked by the module_artifacts run).
 import std.io
+import std.input
 import std.option
 import std.vec
+import std.raw
 from std import {string, map}
 
 fn main() -> Int {

@@ -8,10 +8,10 @@
 // closure's lifted function, a generic instance's mangled name) carries a span but not the name
 // at it, and a reference that does not match its text is not a reference the user can click.
 
+import std.collections.vec
 import fmt.scan
 import common.source_files
 import std.string
-import std.core.vec
 
 public struct IxSources {
     // The file ids loaded so far, and for each its text, tokens and the offset of every line.

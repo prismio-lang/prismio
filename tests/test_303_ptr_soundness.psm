@@ -8,7 +8,7 @@
 //   - `advance(n, limit)` with a `limit` that is not a whole number of elements away: the room
 //     was an `sdiv exact`, which is poison there, and a poison check selects poison.
 //   - A field of a `packed struct` is at an odd offset; it was read and written as if aligned.
-import std.sys.raw
+import std.sys
 
 repr(C) struct Left { x: U32 }
 repr(C) struct Right { y: U32 }

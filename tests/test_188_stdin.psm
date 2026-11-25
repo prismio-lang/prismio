@@ -11,12 +11,10 @@
 //    share one buffer.
 // 4. A line longer than the runtime's 64 KiB buffer arrives whole.
 
-import std.io.input
 import std.io
 import std.core.option
 import std.process
 import std.string
-import std.core.vec
 
 fn fail(message: String) -> Int {
     print("FAIL: ")

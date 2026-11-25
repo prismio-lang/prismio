@@ -8,7 +8,6 @@
 import std.io
 import std.core.option
 import std.string
-import std.core.vec
 
 fn find(items: Vec<String>, key: String) -> String? {
     for item in items {

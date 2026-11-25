@@ -9,7 +9,6 @@
 // read 0 or the empty String and to drop the write. `get` is the form that answers `none`.
 // Each case runs on its own, named by the argument; with none, only the in-range arms run.
 import std.process
-import std.core.vec
 
 fn three() -> Vec<Int> {
     let mut v: Vec<Int> = []

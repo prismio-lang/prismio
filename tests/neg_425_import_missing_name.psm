@@ -1,0 +1,9 @@
+// expect-error: there is no module `std.nothing`, and `std` declares no `nothing`
+// expect-error: there is no module `std.io.nothing`, and `std.io` declares no `nothing`
+//
+// A path whose last part names neither a module nor a declaration is refused at the import. It used
+// to be accepted, as a selection of a name nothing declared.
+import std.nothing
+import std.io.nothing
+
+fn main() -> Int { return 0 }

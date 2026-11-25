@@ -1,3 +1,4 @@
+import std.collections.vec
 import parse.*
 import ir.*
 import sema.*
@@ -15,7 +16,7 @@ import build.BUILD_VERSION
 import aifcore.layout_search
 
 from std import {io, string, process, fs, platform}
-from std.core import {option, vec}
+from std.core import {option}
 from ast import {nodes, dump}
 import common.native
 import common.diag_codes
@@ -41,14 +42,14 @@ let USAGE =
 
     Single-file commands -- these name a source and need no manifest:
       prismio build <source.psm> [-o output] [-g] [-O0..-O3|-Os|-Oz] [--overflow-checks]
-                    [--strict-float] [--prelude]
+                    [--strict-float]
                     [--target <triple>] [--sysroot <sdk>]
                     [--freestanding [--native <file>]... [--native-flag <flag>]...
                      [--link-arg <arg>]...
                      [--target-features <list>] [--code-model <model>] [--no-red-zone]]
       prismio run <source.psm> [-o output] [-g] [--overflow-checks] [--jit]
-                    [--prelude] [-- args...]
-      prismio check <source.psm> [--diagnostic-format=json] [--partial] [--prelude]
+                    [-- args...]
+      prismio check <source.psm> [--diagnostic-format=json] [--partial]
                     [--overlay <file.psm> <text>]... [--module <name>]
                     [--emit-index <file> [--complete <file.psm> <line> <column>]]
       prismio fmt <source.psm>... [--check] [--write] [--range <from>:<to>]
@@ -72,10 +73,6 @@ let USAGE =
           with it, when none is given. -Os and -Oz optimise for size; -Oz also
           outlines repeated machine code, smaller and usually slower.
 
-          --prelude lets a program name what the library's `module prelude` modules
-          declare without importing them: `Vec`'s methods, a map literal, `??`,
-          `Eq` and the other core traits. Only a name nothing else answers merges
-          one, and the program's own functions and types win. `std.io` is not in it.
 
           --freestanding builds for a machine with no operating system: the
           installed runtime is not linked, no C library or startup files are,
@@ -339,8 +336,6 @@ private fn cliCheck() -> Int {
             diag_set_json_mode(1)
         } else if (option.equals("--partial")) {
             diag_set_partial(true)
-        } else if (option.equals("--prelude")) {
-            preludeEnable()
         } else if (option.equals("--overlay")) {
             if (checkArg + 2 >= process.args.count) {
                 diag_error_code(DIAG_CLI_CHECK_OVERLAY_NEEDS_FILES, "`--overlay` needs the file and the file holding its text")
@@ -469,8 +464,6 @@ private fn cliAif() -> Int {
             // compared on their inference rather than on a threshold only
             // one of them can evaluate.
             aifThetaFields = true
-        } else if (flag.equals("--prelude")) {
-            preludeEnable()
         } else if (flag.equals("--owned-collections")) {
             // The default since Level 4 made String and List move-only.
             // Accepted so existing scripts keep working, and because saying
@@ -560,6 +553,8 @@ fn main() -> Int {
     if (first.equals("fmt")) { return fmtCommand() }
     // The source inside a compiled library module, for a language server to show a declaration of.
     if (first.equals("library-source")) { return librarySourceCommand() }
+    // What that library can be imported as, for the same server.
+    if (first.equals("library-modules")) { return libraryModulesCommand() }
     // Emits the post-sema AST as JSON on stdout and stops. Produces no IR and
     // touches no codegen, so it cannot affect what `build` generates. Exists for
     // the AIF memory-model work, which analyses the real AST out-of-process.
@@ -771,11 +766,6 @@ fn main() -> Int {
             // per operation defeats vectorization, so a single-file build leaves
             // it off unless asked. A project's debug profile turns it on.
             options.overflowChecks = true
-            argIndex = argIndex + 1
-        } else if (arg.equals("--prelude")) {
-            // The lazy prelude: a name nothing else answers may come from a library module whose
-            // header says `prelude` (driver/imports.psm).
-            preludeEnable()
             argIndex = argIndex + 1
         } else if (arg.equals("--strict-float")) {
             // Float adds keep their sequential order: no loop reduction is reassociated

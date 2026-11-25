@@ -1,0 +1,16 @@
+// `print` and `println` for the floats narrower or wider than `Float`. A part of its own, merged only in
+// a program that names one of those types; an integer of any width prints through std.io.output.
+module part
+
+import std.io.output
+import std.core.number
+
+lang("print_narrow") public fn print(value: F32) { print(floatText(value, 9)) }
+public fn print(value: F16) { print(floatText(value, 5)) }
+public fn print(value: BF16) { print(floatText(value, 4)) }
+public fn print(value: F128) { print(floatText(value, 17)) }
+
+public fn println(value: F32) { println(floatText(value, 9)) }
+public fn println(value: F16) { println(floatText(value, 5)) }
+public fn println(value: BF16) { println(floatText(value, 4)) }
+public fn println(value: F128) { println(floatText(value, 17)) }

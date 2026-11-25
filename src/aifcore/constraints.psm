@@ -9,9 +9,9 @@
 // Constraints are one entry per transfer-rule instance the walk discovered. Solving is re-applying all of them
 // until nothing rises.
 
+import std.collections.vec
 import aifcore.bits
 import aifcore.constants
-import std.core.vec
 import symbols.names
 
 internal let mut vsCount = 0

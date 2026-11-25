@@ -26,7 +26,6 @@
 import std.io
 import std.core.option
 import std.string
-import std.core.vec
 
 struct Box { text: String }
 

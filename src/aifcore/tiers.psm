@@ -9,12 +9,12 @@
 // a value some rule already raised, and T-STATIC is guarded on `programHasTasks`. So `T <= TRANSFERRED` holds at
 // every site and T4a is unreachable.
 
+import std.collections.vec
 import aif.model
 import aifcore.constants
 import aifcore.constraints
 import aifcore.solver
 import aifcore.sites
-import std.core.vec
 
 private let mut thetaMode = 0
 

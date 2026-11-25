@@ -14,6 +14,7 @@
 // that is where it says it is and resolves to nothing is written as `unresolved`: in a program that
 // compiles there should be none, which is what the corpus test holds this to.
 
+import std.collections.vec
 import ast.nodes
 import ast.types
 import common.source_files
@@ -25,7 +26,6 @@ import index.source
 import index.tables
 import index.write
 import std.string
-import std.core.vec
 import common.lang_items
 
 public struct IxWalk {

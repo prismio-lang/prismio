@@ -7,7 +7,7 @@ import std.io
 import std.mem
 import std.platform
 import std.string
-import std.sys.syscall
+import std.sys
 
 fn fail(message: String) -> Int {
     println("FAIL: ".concat(message))

@@ -1,0 +1,38 @@
+// What the language's own syntax uses needs no import: String operators and interpolation, a
+// vector and a map literal, `??`, a `Display` impl, a wide number, and Unicode methods. `std.io`
+// is the one import, and it brings printing and input both.
+import std.io
+
+struct Version { major: Int }
+
+impl Display for Version {
+    fn show(self) -> String { return "v".concat(self.major.toString()) }
+}
+
+fn label<T: Display>(value: T) -> String { return "<${value}>" }
+
+fn join(a: String, b: String) -> String { return a + b }
+
+fn main() -> Int {
+    if (join("a", "b") != "ab") { return 1 }
+    if (join("a", "b")[1] != 'b') { return 2 }
+
+    let words: Vec<String> = ["b", "a"]
+    if (words.contains("a") == false or "abc".contains("b") == false) { return 3 }
+
+    let counts = { "a": 1 }
+    if ((counts.get("a") ?? 0) != 1) { return 4 }
+
+    let filled = Vec<String>.filled(2, "x")
+    if (filled.length != 2) { return 5 }
+
+    if (label(Version { major: 3 }) != "<v3>" or label(7) != "<7>") { return 6 }
+    if ("ab".displayWidth != 2) { return 7 }
+
+    let wide: Int<128> = 5
+    if ((wide as String) != "5") { return 8 }
+
+    println(Version { major: 3 }, 1.5 as F32, wide)
+    println("PASS: no import for what the language uses")
+    return 0
+}

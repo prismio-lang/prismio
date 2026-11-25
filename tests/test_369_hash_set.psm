@@ -12,7 +12,6 @@
 import std.core.copy
 import std.io
 import std.core.key
-import std.core.map
 import std.string
 
 // Every key hashes to one bucket, so each key's probe passes every key inserted

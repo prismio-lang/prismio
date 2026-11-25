@@ -1,6 +1,6 @@
+import std.collections.vec
+import std.collections.map
 import common
-import std.core.vec
-import std.core.map
 import std.math
 import std.string
 

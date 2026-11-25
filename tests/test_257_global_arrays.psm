@@ -1,6 +1,5 @@
 import std.io
 import std.string
-import std.core.vec
 
 // A module-level `let` holding an array of literals is read-only data, read by
 // address: nothing is built when a function reads it.

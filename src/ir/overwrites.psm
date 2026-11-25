@@ -48,10 +48,10 @@
 // other here: a list whose elements may be shared is counted, and a counted list's
 // overwrite already releases through the count.
 
+import std.collections.vec
 import ast.nodes
 import ast.types
 import std.string
-import std.core.vec
 import aifcore.call_results
 
 // One line per store that may release now: `\n<function symbol>@<line>:<col>`. Rebuilt

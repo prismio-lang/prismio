@@ -1,4 +1,4 @@
-// expect-error: `module` takes `prelude`, `freestanding` and `freestanding(runtime)`
+// expect-error: `module` takes `prelude`, `part`, `freestanding` and `freestanding(runtime)`
 module prelude hosted
 
 fn main() -> Int { return 0 }

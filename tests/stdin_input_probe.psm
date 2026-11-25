@@ -3,12 +3,10 @@
 // UTF-8 among them, which a parent written in Prismio could not send -- and compares what
 // it prints. Output is plain ASCII so a mismatch reads.
 
-import std.io.input
 import std.io
 import std.core.option
 import std.process
 import std.string
-import std.core.vec
 
 fn showResultInt(r: Result<Int?, InputError>) -> String {
     match (r) {

@@ -7,7 +7,7 @@
 // two names are two addresses.
 
 import std.io
-import std.sys.raw
+import std.sys
 import std.string
 
 export fn on_open(x: Int) -> Int { return x + 1 }

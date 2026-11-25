@@ -4,7 +4,6 @@
 // is a leak or a double free and not a wrong answer. Run with `--verify`: 0 leaked, 0 violations.
 
 import std.io
-import std.core.vec
 import std.string
 
 struct Doc {

@@ -84,7 +84,7 @@
 // will meet it.
 //
 // See developers.prismio.org/runtime/supported-surface for which C symbols remain and why.
-module freestanding(runtime)
+module prelude freestanding(runtime)
 import std._fmt.float
 import std.core.option
 import std._unicode.case

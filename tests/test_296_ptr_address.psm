@@ -4,7 +4,7 @@
 //
 //   buffer (16 bytes)      [ 1 ][ 2 ][ 3 ][ 4 ]       four Ints, stride 4
 //   Packet (24 bytes)      Header (12) + tag (1) + padding + next (8), stride 24
-import std.sys.raw
+import std.sys
 
 repr(C) struct Header {
     magic: U32,

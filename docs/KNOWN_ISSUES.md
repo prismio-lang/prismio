@@ -663,7 +663,7 @@ lost to the analysis; the gap is the library surface.
 
 ## Language surface
 
-**The compiler still spells some of the library's vocabulary** (found 2026-11-22, after the lang items of `docs/STD_LAYOUT_PLAN.md` step 2). The items the language needs (`Result`, `??`, tuples, `Eq`/`Ord`/`Iterator`/`Copy`/`Key`, `HashMap`/`HashSet`, `vecOf`, the print family, the asm/raw/port wrappers) are found by marker. Three tables of names are not: the method names of arrays and `Vec` that `src/sema/array.psm` and `src/sema/vec.psm` lower to library functions (`sort`, `contains`, `fold`, ...); the `__builtin_*` to wrapper hint text in `semaBuiltinSpelling` (`src/sema/vec.psm`), which names `std.math`, `std.mem`, `std.sys.asm`, `std.sys.port`, `std.sys.syscall` and `std.platform`; and the `String` method names the compiler writes for `+`, `==` and `as String` (`concat`, `compare`, `equals`, `toString`, `slice`, `charAt`, `parseFloat`, `parseBool`). Reproducer: `grep -rnE 'std\.[a-z_.]+"' src lsp`. Moving or renaming one of these library functions breaks the compiler, which a lang item would not.
+**The compiler still spells some of the library's vocabulary** (found 2026-11-22, after the lang items landed). The items the language needs (`Result`, `??`, tuples, `Eq`/`Ord`/`Iterator`/`Copy`/`Key`, `HashMap`/`HashSet`, `vecOf`, the print family, the asm/raw/port wrappers) are found by marker. Three tables of names are not: the method names of arrays and `Vec` that `src/sema/array.psm` and `src/sema/vec.psm` lower to library functions (`sort`, `contains`, `fold`, ...); the `__builtin_*` to wrapper hint text in `semaBuiltinSpelling` (`src/sema/vec.psm`), which names `std.math`, `std.mem`, `std.sys` and `std.platform`; and the `String` method names the compiler writes for `+`, `==` and `as String` (`concat`, `compare`, `equals`, `toString`, `slice`, `charAt`, `parseFloat`, `parseBool`). Reproducer: `grep -rnE 'std\.[a-z_.]+"' src lsp`. Moving or renaming one of these library functions breaks the compiler, which a lang item would not.
 
 
 **A payload matched out of a `Result` and assigned to a variable declared above the `match` is never released.**
@@ -741,7 +741,7 @@ be stored through an index, so that sharing is not observable). Both need an ele
 A `[T]` parameter is a view by design.
 
 **`pop` and `removeAt` copy the element out, so they need `T: Copy`** (`pop` answers a `T?`;
-`../std/core/vec.psm`). A moving version needs the caller to become the element's owner with the
+`../std/collections/vec.psm`). A moving version needs the caller to become the element's owner with the
 disposition the Vec would have used, and AIF has no rule for ownership leaving a container:
 modelled as a view the element leaks, as a fresh value a counted element is freed twice. They
 are library functions, so a Vec they are called on is also "lent" and its later removals park
@@ -797,10 +797,6 @@ is *"function `f` must return Int on every path, but control can reach its closi
 (2026-10-09), so a caller still needs a `return` after calling it. Inferring it from the body
 would not work across a `.plib`, where the body is not parsed; a `Never` return type is the
 planned fix.
-
-**A list literal needs `import std.core.vec`** unless the build has `--prelude`. `p.arguments = ["a"]`
-in a file that imports only `std.process` fails with "`vecOf$String` is declared in `std.core.vec`,
-which this file does not import" (2026-10-09, path updated 2026-11-25).
 
 **`std.process` starts a program with an argument vector, and that is all.** It has no
 `runCommand` (replaced by the vector), and `kill` and `wait` exist. Still open:
@@ -891,7 +887,7 @@ traits the program imports, as it builds `dyn$Show` structs) or a blanket `impl<
 the language does not have.
 
 **`print` of `F16`, `F32`, `BF16` and `F128` needs `import std.fmt.number`** for the same seed
-reason: their overloads belong beside `Float`'s in `../std/io.psm` and `../std/string.psm`, which
+reason: their overloads belong beside `Float`'s in `../std/io/output.psm` and `../std/string.psm`, which
 `src/` imports. Printing an `Int<N>` wider than 64 bits needs the same import and always will (a
 call into a module is allowed only from a file that imports it); up to 64 bits it does not.
 
@@ -913,7 +909,7 @@ arithmetic is `__addtf3`, `__multf3`, `__extendhfsf2` and their kind. They resol
 (measured, aarch64) and are in libgcc on Linux; a Windows program using one is expected not to
 link, because `link.exe` is given no builtins library. Not run on Linux or Windows.
 
-**`F128` prints as the double nearest it** (`../std/fmt/number.psm`): the decimal machinery in
+**`F128` prints as the double nearest it** (`../std/core/number.psm`): the decimal machinery in
 `../std/_fmt/float.psm` works on a double's 53 bits.
 
 ---
@@ -1073,12 +1069,11 @@ compiler and a copy of `std/` as source, with no runtime bitcode. `prismio build
 point `tests/test_runner.py --compiler` at that, or at a packaged `dist`, or package the generation
 first.
 
-**The standard library's layout has two parts left** (`docs/STD_LAYOUT_PLAN.md` steps 6 and 7).
-`std.io` is one file, so input is `std.io.input`: as a folder, every printing program also compiled
-input and poll. `std.unicode` is a public module whose methods are declared on `String` there: moved
-into `std.string`, every String program read the width and grapheme tables (`check` 11.1 to 14.6 ms,
-hello world 5.9 to 14.4 ms). The lazy prelude is behind `--prelude` and no project build can ask for
-it; a name an imported module already declares keeps meaning that one.
+**Which library modules a program reads is decided from its tokens** (`src/common/prelude_needs.psm`),
+before any name is resolved. Two limits follow. A file that writes `String` and an operator reads
+`std.string` whether or not it joins or compares one. And a name reached only through a type the file
+never writes (a wide number returned by a library and printed) asks for nothing, so it fails as an
+unknown name or overload until the type is written. A user's own package is not read lazily.
 
 **A change that needs new `std/` and new `src/` together cannot be built by an older compiler**,
 which reads its own `stdlib/`. Take it with `prismio bootstrap --promote`.

@@ -13,7 +13,6 @@
 // table without its callers changing" has to mean.
 
 import std.io
-import std.core.map
 import std.core.key
 import std.core.copy
 import std.core.option
