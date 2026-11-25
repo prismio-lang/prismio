@@ -324,6 +324,38 @@ impl UmsProjectModel {
             dependencyIndex = dependencyIndex + 1
         }
 
+        // A `run` after step names a script or a target. The target is built here, so it may
+        // have no after steps of its own, or building it could build this one again.
+        for target in self.targets {
+            for step in target.after {
+                if (step.kind == UmsCommandStepKind.UNKNOWN) { continue }
+                let referenced = umsTargetFind(self.targets, step.subject)
+                if (step.kind == UmsCommandStepKind.SHELL) {
+                    if (step.subject.length == 0) {
+                        umsDiagnosticAdd(diagnostics, "UMS2605", self.manifestPath,
+                            step.line, step.col, step.len,
+                            "a shell step needs a program to run")
+                    }
+                } else if (referenced >= 0) {
+                    if (self.targets[referenced].kind != UmsTargetKind.EXECUTABLE
+                        or self.targets[referenced].after.length > 0) {
+                        umsDiagnosticAdd(diagnostics, "UMS2118", self.manifestPath,
+                            step.line, step.col, step.len,
+                            "an after step runs an executable target with no after steps of its own, which '".concat(
+                                step.subject, "' is not"))
+                    }
+                } else if (umsRunnableScript(step.subject) == false) {
+                    umsDiagnosticAdd(diagnostics, "UMS2606", self.manifestPath,
+                        step.line, step.col, step.len,
+                        "'".concat(step.subject, "' is not a .py or .psm file; use shell for anything else"))
+                } else if (fileExists(joinPath(self.root, step.subject)) == false) {
+                    umsDiagnosticAdd(diagnostics, "UMS2607", self.manifestPath,
+                        step.line, step.col, step.len,
+                        "run cannot find '".concat(step.subject, "' under the project root"))
+                }
+            }
+        }
+
         let mut commandIndex = 0
         while (commandIndex < self.commands.length) {
             let command = self.commands[commandIndex]

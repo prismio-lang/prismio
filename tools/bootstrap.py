@@ -36,6 +36,7 @@ from collections import Counter
 from pathlib import Path
 
 from executable import resolve_executable
+from source_toolchain import copy_library_source, source_toolchain
 
 REPO = Path(__file__).resolve().parent.parent
 # What the caller's shell said, before resolve_llvm exports the pinned LLVM's own floor (14.0) for
@@ -310,11 +311,14 @@ def promote(repo: Path, generation: Path) -> None:
 
 def build(repo: Path, args, out: Path, work: Path) -> None:
     ll = work / "compiler.ll"
+    # A bare generation resolves `std.*` from the `stdlib/` beside it and has no compiled modules.
+    copy_library_source(repo, out.parent / "stdlib")
 
     # 1. Obtain IR for the compiler, either from the seed or from a working frontend.
     if args.compiler:
         step("psm -> ll")
-        run("psm -> ll", [resolve_executable(args.compiler), "build", repo / "src" / "main.psm", "-o", ll])
+        emitter = source_toolchain(resolve_executable(args.compiler), repo, work / "emitter")
+        run("psm -> ll", [emitter, "build", repo / "src" / "main.psm", "-o", ll])
         if not ll.is_file():
             die("no IR produced")
     else:

@@ -117,6 +117,14 @@ that selected a backend bundle every shipped compiler knew how to build; it is
 gone, and the compiler's build.ums names those sources instead. Host promotion
 is selected only by matching the planned output to `toolchain.host`.
 
+A target's `after` steps are how a project builds more than one artifact from a
+build: this repository's compiler targets run `tools/toolchain_layout.psm`, which
+lays out the runtime bitcode and the standard library beside the compiler just
+built. The compiler binary holds no knowledge of its own library's packaging; it
+offers `build --emit plib`, and the checkout composes it. A step may build an
+executable target, but only one with no after steps (`UMS2118`), so a build
+cannot build itself again.
+
 ### A command is manifest data; which names are free is not
 
 `commands` needed no lexer or parser change, which is the generic AST paying for

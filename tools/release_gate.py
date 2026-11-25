@@ -29,6 +29,7 @@ from pathlib import Path
 
 import gate_ui as ui
 from aif_differential import under_neutral_name
+from source_toolchain import source_toolchain
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -150,7 +151,10 @@ def check_rc_reproduces(rc: Path, generation_one_ir: Path, work: Path) -> None:
     step("RC reproduces itself")
     produced = work / "rc.ll"
     progress("emit IR \u00b7 candidate")
-    result = run([rc, "build", "src/main.psm", "-o", produced])
+    # As a generation emits it: with this tree's std/ as source, not the candidate's compiled
+    # modules, and from the same directory the generations read it from -- failure messages name it.
+    emitter = source_toolchain(rc, REPO, work)
+    result = run([emitter, "build", "src/main.psm", "-o", produced])
     if (result.returncode == 0 and produced.is_file() and generation_one_ir.is_file()
             and filecmp.cmp(produced, generation_one_ir, shallow=False)):
         ok("the frozen binary emits generation 1's IR")

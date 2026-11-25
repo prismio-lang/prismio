@@ -16,7 +16,7 @@
 // **Variant order is part of the ABI here.** The tag is the variant's position,
 // so reordering the variants in this file changes the tag every compiled program
 // expects. Append, never insert.
-
+module freestanding
 // `a ?? b`: `a` when it has a value, `b` when it is `none`. The operator is this
 // call (sema/checker.psm, semaCoalesceExpr), so what it may alias is read from
 // these bodies like any function's -- and codegen branches around `b`, so it is

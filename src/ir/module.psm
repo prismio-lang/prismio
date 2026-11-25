@@ -22,13 +22,14 @@ import std.io
 import aifcore.dispositions
 import aifcore.layout_search
 import common.native
+import common.library_emission
 import sema.decl_index
 
 // A PLIB contributes the original non-generic definitions for its module as
 // bitcode. Generic instantiations remain program-specific and are emitted from
 // the template carried by the interface section -- and so is the `call` of a
 // closure lowered inside one, which carries the instantiation's `genericInfo`
-// for this test (see semaLowerClosure). While package.py is producing one PLIB,
+// for this test (see semaLowerClosure). While a PLIB is being emitted,
 // the entry file has no qualifier and imported dependencies do.
 //
 // **Except a function that asks about the target**, which belongs to the program
@@ -42,7 +43,7 @@ import sema.decl_index
 // for it.
 private fn shouldEmitFunctionFromSource(func: ASTNode) -> Bool {
     let qualifier = diag_file_module(func.file).clone()
-    let emissionModule = compiler_library_emission_module()
+    let emissionModule = libraryEmissionModule()
     if (emissionModule.equals("") == false) {
         // PLIBs own concrete definitions from their entry module only. Generic
         // instantiations depend on the importing program's concrete type graph
@@ -1714,7 +1715,7 @@ private fn generateReleaseFn(structNode: ASTNode) {
 // Whether this build is the whole program rather than a library's PLIB, which
 // is the build that defines the type helpers above.
 internal fn irWholeProgram() -> Bool {
-    return compiler_library_emission_module().equals("")
+    return emittingLibrary() == false
 }
 
 internal fn frameReleaseFnName(typeName: String) -> String {
@@ -2069,7 +2070,7 @@ public fn generateModule(module: ASTNode) {
     // Populated from main's real argc/argv (see generateFunction), and read by
     // std.process through `extern let` -- which is what makes `process.args` the
     // same on every platform. A library module declares them instead.
-    if (compiler_library_emission_module().equals("")) {
+    if (emittingLibrary() == false) {
         ir_global_var("prismio_argc", "i32", "0", 0)
         ir_global_var("prismio_argv", "ptr", "null", 0)
     }
@@ -2554,7 +2555,7 @@ public fn generateModule(module: ASTNode) {
             // These helpers describe the concrete program's merged type graph,
             // so the importing program emits them once. Putting copies in each
             // PLIB would multiply-define helpers shared by two std modules.
-            if (compiler_library_emission_module().equals("")
+            if (emittingLibrary() == false
                 and aif_type_releases(relStmt.s1) == 1) {
                 generateReleaseFn(relStmt)
             }
@@ -2570,7 +2571,7 @@ public fn generateModule(module: ASTNode) {
     while (nodeExists(cycDefPtr)) {
         let cycStmt = ptr_to_node(cycDefPtr)
         if (cycStmt.kind == NodeKind.STRUCT_DECL) {
-            if (compiler_library_emission_module().equals("")
+            if (emittingLibrary() == false
                 and aif_type_in_cycle(cycStmt.s1) == 1) {
                 generateCyclicChildrenFn(cycStmt)
             }
@@ -2777,7 +2778,7 @@ public fn generateModule(module: ASTNode) {
     // Like ownership helpers, vtables are selected from the fully merged
     // program. PLIBs provide method bodies; the importing program owns the one
     // table that points at them.
-    if (compiler_library_emission_module().equals("")) {
+    if (emittingLibrary() == false) {
         generateVtables(module)
         generateFrameReleaseFns(module)
     }

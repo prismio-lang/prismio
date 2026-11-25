@@ -23,7 +23,7 @@
 // unspecified order rather than a corrupted one; it will not read out of bounds
 // and it will not loop. A total order over Float needs a NaN-ordering decision
 // this file is not the place to make.
-
+module freestanding(runtime)
 import std.string
 
 lang("ord") trait Ord {

@@ -49,6 +49,7 @@ from pathlib import Path
 
 import gate_ui as ui
 from executable import resolve_executable
+from source_toolchain import source_toolchain
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -343,7 +344,9 @@ def main() -> int:
                 die("could not build the next generation from this compiler")
             frozen, following = work / "frozen.ll", work / "next.ll"
             ticker.note("emitting IR \u00b7 frozen compiler")
-            if run([compiler, "build", "src/main.psm", "-o", frozen]).returncode != 0:
+            # The library directory the next generation reads: failure messages name it.
+            emitter = source_toolchain(Path(compiler), REPO, work)
+            if run([emitter, "build", "src/main.psm", "-o", frozen]).returncode != 0:
                 die("the frozen compiler could not build src/main.psm")
             ticker.note("emitting IR \u00b7 next generation")
             if run([work / f"gen{EXE}", "build", "src/main.psm", "-o", following]).returncode != 0:

@@ -44,6 +44,19 @@ targets {
         }
     }
 
+    // What a toolchain carries beside its compiler: the runtime bitcode and std/ precompiled.
+    // Ours, not the compiler's: no other project has a std/ to package. Run by the compiler's
+    // `after` step and by tools/package.py; its own runtime from source, so it builds before
+    // any runtime bitcode exists.
+    executable("toolchain-layout") {
+        entry = "tools/toolchain_layout.psm"
+        runtime = "none"
+        native {
+            source("runtime/lang_runtime.c", "runtime/program_support.c")
+            include("runtime")
+        }
+    }
+
     executable("prismio") {
         entry = "src/main.psm"
         // It carries this checkout's runtime, compiled from source, rather than
@@ -72,6 +85,12 @@ targets {
         link {
             responseFile("third_party/llvm-link.rsp")
         }
+        // The rest of the toolchain beside the compiler just built, built by it: `std.*` resolves
+        // from `.prismio/build/stdlib/`, so a std/ or runtime/ edit reaches the next program this
+        // checkout builds. A debug and a release build share the directory; the last one wins.
+        after {
+            run("toolchain-layout", "--compiler", output, "--out", ".prismio/build")
+        }
     }
 }
 
@@ -94,8 +113,8 @@ commands {
 
     // The project host, which `prismio build` leaves as a complete toolchain:
     // `.prismio/build/lib/runtime/*.bc` and `.prismio/build/stdlib/*.plib` are
-    // built beside it and are byte-identical to what `dist` would package. So
-    // this measures the working tree, including uncommitted `std/` and
+    // built beside it by the `after` step, with the tool `release` packages with.
+    // So this measures the working tree, including uncommitted `std/` and
     // `runtime/` changes, with no packaging step in front of it.
     command("bench") {
         description = "Run the benchmark suites: hosted (Prismio, C++, Rust) and freestanding (Prismio, C, Rust)"

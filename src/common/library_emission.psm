@@ -1,0 +1,23 @@
+// `--emit plib`: the library module this compile is emitting, "" for an ordinary one.
+//
+// A library emission keeps only the entry module's concrete definitions and leaves out
+// everything the importing program owns: argv globals, release helpers, vtables, and
+// pruning (ir/module.psm, driver/prune.psm). The driver sets it around the compile it
+// does for each section.
+
+import std.string
+
+let mut emittedLibraryModule = ""
+
+public fn setLibraryEmissionModule(name: String) {
+    emittedLibraryModule = name.clone()
+}
+
+public fn libraryEmissionModule() -> String {
+    return emittedLibraryModule.clone()
+}
+
+// Whether this build is the whole program rather than a library's section.
+public fn emittingLibrary() -> Bool {
+    return emittedLibraryModule.equals("") == false
+}

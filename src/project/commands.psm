@@ -106,10 +106,12 @@ private fn umsShellProgram(root: String, program: String) -> String {
 // A step's arguments, in order, with `args` replaced by what the user typed
 // after the command name. Each is one element of the child's argument vector,
 // so nothing in it is ever read as shell syntax.
-private fn pushStepArguments(step: UmsCommandStep, forwardFrom: Int) {
+private fn pushStepArguments(step: UmsCommandStep, forwardFrom: Int, output: String) {
     for index in 0..<step.arguments.length {
         let argument = step.arguments[index]
-        if (argument.forwarded) {
+        if (argument.output) {
+            compiler_spawn_arg(output)
+        } else if (argument.forwarded) {
             for forwarded in forwardFrom..<process.args.count {
                 compiler_spawn_arg(process.args[forwarded])
             }
@@ -147,14 +149,14 @@ private fn umsPythonInterpreter() -> String {
 // deliberately does not become one: a target is something the project builds
 // every time, and a tool is something it runs when asked.
 private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
-                            forwardFrom: Int) -> Int {
+                            forwardFrom: Int, output: String) -> Int {
     let root = workspace.project.root
     let scriptPath = umsNativePath(root, step.subject)
 
     if (step.subject.endsWith(".py")) {
         let interpreter = umsPythonInterpreter()
         compiler_spawn_arg(scriptPath)
-        pushStepArguments(step, forwardFrom)
+        pushStepArguments(step, forwardFrom, output)
         return compiler_spawn_wait(interpreter, root)
     }
 
@@ -171,7 +173,7 @@ private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
     if (compileSource(scriptPath, toolPath.clone(), umsProfileOptions(workspace)) != 0) {
         return 1
     }
-    pushStepArguments(step, forwardFrom)
+    pushStepArguments(step, forwardFrom, output)
     return compiler_spawn_wait(toolPath, root)
 }
 
@@ -180,10 +182,10 @@ private fn runUmsScriptStep(workspace: UmsWorkspace, step: UmsCommandStep,
 // `.prismio/` -- were written relative to it, and a command run from a
 // subdirectory used to hand them to a process standing somewhere else.
 private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
-                             forwardFrom: Int) -> Int {
+                             forwardFrom: Int, output: String) -> Int {
     let root = workspace.project.root
     if (step.kind == UmsCommandStepKind.SHELL) {
-        pushStepArguments(step, forwardFrom)
+        pushStepArguments(step, forwardFrom, output)
         return compiler_spawn_wait(umsShellProgram(root, step.subject), root)
     }
 
@@ -192,7 +194,7 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
         // UMS2606 and UMS2607 proved a `run` subject that is not a target is a
         // script that exists; `build` never reaches here, because UMS2603 makes
         // a build step naming no target a manifest error.
-        return runUmsScriptStep(workspace, step, forwardFrom)
+        return runUmsScriptStep(workspace, step, forwardFrom, output)
     }
     let target = workspace.project.targets[index]
 
@@ -207,8 +209,31 @@ private fn runUmsCommandStep(workspace: UmsWorkspace, step: UmsCommandStep,
     }
     if (buildUmsTarget(workspace, target) != 0) { return 1 }
     if (step.kind == UmsCommandStepKind.BUILD) { return 0 }
-    pushStepArguments(step, forwardFrom)
+    pushStepArguments(step, forwardFrom, output)
     return compiler_spawn_wait(target.outputPath, root)
+}
+
+// A target's `after` steps, in order, once it is built: `output` is the file just built (a staged
+// candidate while a compiler replaces itself). A failing step fails the build. 0 when there are none.
+public fn runUmsAfterSteps(workspace: UmsWorkspace, target: UmsTarget, output: String) -> Int {
+    if (target.after.length == 0) { return 0 }
+    // A step's own `.psm` is compiled for this machine, not with the target's inputs.
+    if (configureUmsTargetLink(workspace.project.root,
+                               umsTarget(UmsTargetKind.EXECUTABLE, "after", "", 0, 0, 0)) != 0) {
+        return 1
+    }
+    for index in 0..<target.after.length {
+        let step = target.after[index]
+        let status = runUmsCommandStep(workspace, step, process.args.count, output)
+        if (status != 0) {
+            let stepNumber = index + 1
+            diag_error_code(DIAG_PROJECT_AFTER_STEP_FAILED,
+                "after step ".concat(stepNumber.toString(), " of target ", diagQuote(target.name), " failed (",
+                                     diagQuote(step.subject), "), exit status ", status.toString()))
+            return 1
+        }
+    }
+    return 0
 }
 
 // Returns -1 when this is not a project command, so `main` can report the
@@ -231,7 +256,7 @@ public fn runUmsProjectCommand(name: String, forwardFrom: Int) -> Int {
     let declared = workspace.command(found)
     for index in 0..<declared.steps.length {
         let step = declared.steps[index]
-        let mut status = runUmsCommandStep(workspace, step, forwardFrom)
+        let mut status = runUmsCommandStep(workspace, step, forwardFrom, "")
         if (status != 0) {
             if (status < 0) { status = 127 }
             let stepNumber = index + 1

@@ -28,7 +28,7 @@
 // library. The shift is written without Go's table of leading digits: it builds
 // the product least-significant digit first and copies it back, so there is
 // nothing to keep in step with the shift width.
-
+module freestanding
 struct Decimal {
     // One digit, 0 to 9, per element, most significant first.
     digits: Array<U8, 800>,

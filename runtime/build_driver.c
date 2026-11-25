@@ -77,6 +77,13 @@ int ir_link_library_modules(const char* dest_ir,
 // clang). See the note above it in llvm-api-backend.c.
 int ir_emit_object(const char* ir_path, const char* obj_path, const char* triple,
                    int opt_level, int internalize, int* extra_objects);
+// One `--emit plib` section: textual IR to the bitcode clang would write for `triple`.
+int ir_library_bitcode(const char* ir_path, const char* triple, unsigned char** data,
+                       size_t* size);
+// program_support.c: a directory's entries in byte order, one listing at a time.
+int fs_list_begin(const char* path);
+char* fs_list_name(int index);
+void fs_list_end(void);
 // Keep the next merged module in memory for ir_emit_object instead of writing
 // it (0 turns that off), and dispose of one nothing took.
 void ir_hold_merged_module(int on);
@@ -270,34 +277,12 @@ static int accept_if_exists(char* out, int out_size, const char* candidate) {
     return 1;
 }
 
-// The checkout a project build names, when it has one: the root of the
-// `build.ums` whose target links `component("prismio.backend")`. Set by the UMS
-// driver before it builds that target, so the sources come from the project
-// being built -- not from whatever `runtime/` the working directory, or one or
-// two directories above it, happens to hold.
-static char g_toolchain_root[1024] = "";
-
-void compiler_set_toolchain_root(const char* root) {
-    snprintf(g_toolchain_root, sizeof(g_toolchain_root), "%s", root ? root : "");
-}
-
-// Looks for <subdir>/<filename> in a Prismio checkout: first under the project
-// root a UMS build named, then relative to the compiler executable (so an
-// installed toolchain works from any working directory) and then relative to the
-// current directory (so a single-file in-repo build works). `subdir` is
-// "runtime" for every bootstrap path and "std" for the project-local toolchain
-// build, which needs the standard library sources from the same checkout and by
-// the same search -- a second search order would be a second answer to "which
-// checkout is this".
+// Looks for <subdir>/<filename> in a Prismio checkout: relative to the compiler
+// executable (so an installed toolchain works from any working directory) and then
+// relative to the current directory (so a single-file in-repo build works).
 static int find_toolchain_entry(char* out, int out_size, const char* subdir,
                                 const char* filename) {
     char candidate[1024];
-
-    if (g_toolchain_root[0]) {
-        snprintf(candidate, sizeof(candidate), "%s%c%s%c%s", g_toolchain_root,
-                 PRISMIO_PATH_SEP, subdir, PRISMIO_PATH_SEP, filename);
-        if (accept_if_exists(out, out_size, candidate)) return 1;
-    }
 
     char* compiler_dir = prismio_executable_directory();
     if (compiler_dir) {
@@ -469,10 +454,9 @@ static int find_llvm_paths(char* include_out, int include_size, char* lib_out, i
 // legacy manifest/install that has no sibling driver.
 //
 // g_clang_binary is the same driver unquoted, or "" when the answer was the bare
-// `clang` from PATH. The toolchain stamp needs the file rather than the command:
-// an in-place LLVM upgrade changes neither the runtime sources nor this string,
-// and the object cache's own note above records that exact gap as one nothing
-// notices.
+// `clang` from PATH. The object cache needs the file rather than the command: an
+// in-place LLVM upgrade changes neither the runtime sources nor this string, and the
+// cache's own note above records that exact gap as one nothing notices.
 static char g_clang_binary[1200];
 
 static const char* native_clang_command(void) {
@@ -554,16 +538,10 @@ static int find_in_lib_dir(char* out, int out_size, const char* filename) {
     return 0;
 }
 
-// Runtime bitcode is deliberately sharded by runtime translation module. Each
-// unit remains visible to LLVM for whole-program optimisation without forcing a
-// single monolithic runtime artifact on the toolchain layout.
-static const char* prismio_runtime_modules[] = {
-    "lang_runtime",
-    "program_support",
-};
-
-#define PRISMIO_RUNTIME_MODULE_COUNT \
-    ((int)(sizeof(prismio_runtime_modules) / sizeof(prismio_runtime_modules[0])))
+// Runtime bitcode is deliberately sharded by runtime translation module, and a build merges
+// every module the toolchain carries: which files those are is the packaging step's
+// business (tools/toolchain_layout.psm), not the compiler's.
+#define PRISMIO_RUNTIME_MODULE_MAX 16
 
 #define PRISMIO_PLIB_MAX 128
 #define PRISMIO_PLIB_SECTIONS_MAX 16
@@ -653,71 +631,165 @@ static int plib_read_sections(FILE* file, const char* path, unsigned long long o
     return 0;
 }
 
-// Read and register one module-level Prismio library. PLIB v3 is: magic, module
-// and interface lengths, a section count, the module name, the interface, then
-// one code section per packaged target (plib_read_sections). The interface
-// remains compiler input; the section matching the build's target is linked
-// later as LLVM bitcode (plib_section_for_target).
-char* compiler_plib_interface(const char* path, const char* expected_module) {
+// A module-level Prismio library, PLIB v4:
+//
+//     "PRPLIB4\n" u32 module_len  u32 meta_len  u64 interface_len  u32 section_count
+//     module  meta  interface
+//     per section: u32 triple_len  u64 code_len  u64 verify_len
+//                  triple  code  verify
+//
+// The meta is text, one fact per line: the module's header flags (`module prelude
+// freestanding`) and each lang item it declares (`lang <id> <name>`), so a program can
+// ask the library what it provides without reading any interface. The interface is the
+// module's source, which the frontend parses; the section matching the build's target is
+// linked later as LLVM bitcode (plib_section_for_target). compiler_plib_write writes it.
+#define PRISMIO_PLIB_HEADER 28
+
+typedef struct {
+    unsigned module_len;
+    unsigned meta_len;
+    unsigned long long interface_len;
+    unsigned section_count;
+} PrismioPlibHeader;
+
+// Opens `path` and reads the header and module name, which must be `expected_module`.
+// Returns NULL with prismio_plib_error set. The stream is left at the meta.
+static FILE* plib_open(const char* path, const char* expected_module,
+                       PrismioPlibHeader* out) {
     prismio_plib_error[0] = '\0';
     FILE* file = fopen(path, "rb");
     if (!file) {
-        snprintf(prismio_plib_error, sizeof(prismio_plib_error),
-                 "cannot open %s", path);
-        return plib_empty();
+        snprintf(prismio_plib_error, sizeof(prismio_plib_error), "cannot open %s", path);
+        return NULL;
     }
-
-    unsigned char header[24];
+    unsigned char header[PRISMIO_PLIB_HEADER];
     if (fread(header, 1, sizeof(header), file) != sizeof(header)
-        || memcmp(header, "PRPLIB3\n", 8) != 0) {
+        || memcmp(header, "PRPLIB4\n", 8) != 0) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
-                 "%s is not a valid PLIB v3 artifact", path);
+                 "%s is not a valid PLIB v4 artifact", path);
         fclose(file);
-        return plib_empty();
+        return NULL;
     }
-
-    unsigned module_len = read_u32_le(header + 8);
-    unsigned long long interface_len = read_u64_le(header + 12);
-    unsigned section_count = read_u32_le(header + 20);
-    if (module_len == 0 || module_len > 255 || interface_len > 64ULL * 1024ULL * 1024ULL
-        || section_count == 0 || section_count > PRISMIO_PLIB_SECTIONS_MAX) {
+    out->module_len = read_u32_le(header + 8);
+    out->meta_len = read_u32_le(header + 12);
+    out->interface_len = read_u64_le(header + 16);
+    out->section_count = read_u32_le(header + 24);
+    if (out->module_len == 0 || out->module_len > 255 || out->meta_len > 1024U * 1024U
+        || out->interface_len > 64ULL * 1024ULL * 1024ULL
+        || out->section_count == 0 || out->section_count > PRISMIO_PLIB_SECTIONS_MAX) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
                  "%s has an invalid PLIB header", path);
         fclose(file);
-        return plib_empty();
+        return NULL;
     }
-
     char module[256];
-    if (fread(module, 1, module_len, file) != module_len) {
+    if (fread(module, 1, out->module_len, file) != out->module_len) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
                  "%s is truncated before its module name", path);
         fclose(file);
-        return plib_empty();
+        return NULL;
     }
-    module[module_len] = '\0';
+    module[out->module_len] = '\0';
     if (strcmp(module, expected_module) != 0) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
                  "%s contains module %s, expected %s", path, module, expected_module);
         fclose(file);
+        return NULL;
+    }
+    return file;
+}
+
+// `length` bytes at the stream's position, as an owned Prismio string; "" with
+// prismio_plib_error set when the file ends first.
+static char* plib_read_text(FILE* file, const char* path, unsigned long long length,
+                            const char* what) {
+    char* text = (char*)rt_base_alloc((size_t)length + 1);
+    if (!text || fread(text, 1, (size_t)length, file) != length) {
+        snprintf(prismio_plib_error, sizeof(prismio_plib_error),
+                 "%s is truncated in its %s", path, what);
+        if (!text) return plib_empty();
+        text[0] = '\0';
+        return text;
+    }
+    text[length] = '\0';
+    return text;
+}
+
+// The module's meta lines. Reads nothing else, and registers nothing.
+char* compiler_plib_meta(const char* path, const char* expected_module) {
+    PrismioPlibHeader header;
+    FILE* file = plib_open(path, expected_module, &header);
+    if (!file) return plib_empty();
+    char* meta = plib_read_text(file, path, header.meta_len, "metadata");
+    fclose(file);
+    return meta;
+}
+
+// The module's source text. Registers nothing: reading a library to answer a question
+// about it must not link it into the program (compiler_plib_import does that).
+char* compiler_plib_interface(const char* path, const char* expected_module) {
+    PrismioPlibHeader header;
+    FILE* file = plib_open(path, expected_module, &header);
+    if (!file) return plib_empty();
+    if (fseek(file, (long)header.meta_len, SEEK_CUR) != 0) {
+        snprintf(prismio_plib_error, sizeof(prismio_plib_error),
+                 "%s is truncated in its metadata", path);
+        fclose(file);
         return plib_empty();
     }
+    char* interface = plib_read_text(file, path, header.interface_len, "interface section");
+    fclose(file);
+    return interface;
+}
 
-    char* interface = (char*)rt_base_alloc((size_t)interface_len + 1);
-    if (!interface || fread(interface, 1, (size_t)interface_len, file) != interface_len) {
-        snprintf(prismio_plib_error, sizeof(prismio_plib_error),
-                 "%s is truncated in its interface section", path);
-        if (interface) interface[0] = '\0';
-        fclose(file);
-        return interface ? interface : plib_empty();
+// Whether the module carries code for the target this build is producing. 0 also when the
+// file cannot be read, which importing it then reports.
+int compiler_plib_covers_target(const char* path, const char* expected_module) {
+    PrismioPlibHeader header;
+    FILE* file = plib_open(path, expected_module, &header);
+    if (!file) return 0;
+    PrismioPlibSection* sections =
+        (PrismioPlibSection*)calloc(header.section_count, sizeof(PrismioPlibSection));
+    unsigned long long end = 0;
+    unsigned long long start = (unsigned long long)PRISMIO_PLIB_HEADER + header.module_len
+        + header.meta_len + header.interface_len;
+    int covered = 0;
+    if (sections && plib_read_sections(file, path, start, header.section_count, sections, &end) == 0) {
+        const char* triple = ir_target_is_explicit() ? ir_target_triple() : "";
+        for (unsigned i = 0; i < header.section_count; i++) {
+            covered = covered || strcmp(sections[i].triple, triple) == 0;
+        }
     }
-    interface[interface_len] = '\0';
+    tmp_free(sections);
+    fclose(file);
+    return covered;
+}
+
+// An import: the interface for the frontend, and the module's code recorded so that the
+// build links it.
+char* compiler_plib_import(const char* path, const char* expected_module) {
+    PrismioPlibHeader header;
+    FILE* file = plib_open(path, expected_module, &header);
+    if (!file) return plib_empty();
+    if (fseek(file, (long)header.meta_len, SEEK_CUR) != 0) {
+        snprintf(prismio_plib_error, sizeof(prismio_plib_error),
+                 "%s is truncated in its metadata", path);
+        fclose(file);
+        return plib_empty();
+    }
+    char* interface = plib_read_text(file, path, header.interface_len, "interface section");
+    if (prismio_plib_error[0]) {
+        fclose(file);
+        return interface;
+    }
 
     PrismioPlibSection* sections =
-        (PrismioPlibSection*)calloc(section_count, sizeof(PrismioPlibSection));
+        (PrismioPlibSection*)calloc(header.section_count, sizeof(PrismioPlibSection));
     unsigned long long end = 0;
+    unsigned long long start = (unsigned long long)PRISMIO_PLIB_HEADER + header.module_len
+        + header.meta_len + header.interface_len;
     int failed = !sections
-        || plib_read_sections(file, path, sizeof(header) + module_len + interface_len,
-                              section_count, sections, &end) != 0;
+        || plib_read_sections(file, path, start, header.section_count, sections, &end) != 0;
     if (!sections) {
         snprintf(prismio_plib_error, sizeof(prismio_plib_error),
                  "out of memory reading %s", path);
@@ -736,7 +808,7 @@ char* compiler_plib_interface(const char* path, const char* expected_module) {
     }
 
     for (int i = 0; i < prismio_plib_count; i++) {
-        if (strcmp(prismio_plibs[i].module, module) == 0) {
+        if (strcmp(prismio_plibs[i].module, expected_module) == 0) {
             tmp_free(sections);
             return interface;
         }
@@ -750,12 +822,12 @@ char* compiler_plib_interface(const char* path, const char* expected_module) {
     }
 
     PrismioPlib* entry = &prismio_plibs[prismio_plib_count++];
-    entry->module = (char*)malloc(strlen(module) + 1);
+    entry->module = (char*)malloc(strlen(expected_module) + 1);
     entry->path = (char*)malloc(strlen(path) + 1);
-    strcpy(entry->module, module);
+    strcpy(entry->module, expected_module);
     strcpy(entry->path, path);
     entry->sections = sections;
-    entry->section_count = (int)section_count;
+    entry->section_count = (int)header.section_count;
     return interface;
 }
 
@@ -772,36 +844,66 @@ int compiler_plib_module_registered(const char* module) {
     return 0;
 }
 
-char* compiler_library_emission_module(void) {
-    const char* module = getenv("PRISMIO_LIBRARY_MODULE");
-    if (!module) module = "";
-    char* copy = (char*)rt_base_alloc(strlen(module) + 1);
-    strcpy(copy, module);
-    return copy;
+static int is_runtime_variant(const char* name, int verify) {
+    size_t n = strlen(name);
+    if (n < 3 || strcmp(name + n - 3, ".bc") != 0) return 0;
+    int verifying = n >= 10 && strcmp(name + n - 10, ".verify.bc") == 0;
+    return verifying == (verify != 0);
 }
 
+// Every runtime bitcode module in the toolchain's `lib/runtime/` (or, for a named target,
+// `lib/runtime/<triple>/`), in byte order of their names so two machines merge them alike.
+// Each module ships twice, plain and `--verify`, so one half without the other is a broken
+// installation rather than a module that does not exist. Returns how many, or 0 having
+// reported what is missing.
 static int find_runtime_bitcode(char paths[][1024], int verify) {
-    int found_all = 1;
-    for (int i = 0; i < PRISMIO_RUNTIME_MODULE_COUNT; i++) {
-        char relative[512];
-        const char* variant = verify ? ".verify" : "";
-        if (ir_target_is_explicit()) {
-            snprintf(relative, sizeof(relative), "runtime/%s/%s%s.bc",
-                     ir_target_triple(), prismio_runtime_modules[i], variant);
-        } else {
-            snprintf(relative, sizeof(relative), "runtime/%s%s.bc",
-                     prismio_runtime_modules[i], variant);
-        }
-        if (!find_in_lib_dir(paths[i], 1024, relative)) {
-            fprintf(stderr,
-                    "ERROR: Prismio installation is incomplete or corrupted.\n"
-                    "       Missing runtime module: lib/%s\n"
-                    "       Reinstall Prismio and try again.\n",
-                    relative);
-            found_all = 0;
-        }
+    static const char* relative_dirs[] = { "..", ".", NULL };
+    char relative[512];
+    if (ir_target_is_explicit()) {
+        snprintf(relative, sizeof(relative), "lib/runtime/%s", ir_target_triple());
+    } else {
+        snprintf(relative, sizeof(relative), "lib/runtime");
     }
-    return found_all;
+
+    int count = 0;
+    int incomplete = 0;
+    char* compiler_dir = prismio_executable_directory();
+    for (int d = 0; compiler_dir && relative_dirs[d] && count == 0 && !incomplete; d++) {
+        char directory[1024];
+        snprintf(directory, sizeof(directory), "%s%c%s%c%s", compiler_dir, PRISMIO_PATH_SEP,
+                 relative_dirs[d], PRISMIO_PATH_SEP, relative);
+        int entries = fs_list_begin(directory);
+        for (int i = 0; i < entries && count < PRISMIO_RUNTIME_MODULE_MAX; i++) {
+            char* name = fs_list_name(i);
+            if (is_runtime_variant(name, verify)) {
+                snprintf(paths[count++], 1024, "%s%c%s", directory, PRISMIO_PATH_SEP, name);
+            } else if (is_runtime_variant(name, !verify)) {
+                int stem = (int)strlen(name) - (verify ? 3 : 10);
+                char wanted[1024];
+                snprintf(wanted, sizeof(wanted), "%s%c%.*s%s.bc", directory, PRISMIO_PATH_SEP,
+                         stem, name, verify ? ".verify" : "");
+                if (!file_exists(wanted)) {
+                    fprintf(stderr,
+                            "ERROR: Prismio installation is incomplete or corrupted.\n"
+                            "       Missing runtime module: %s/%.*s%s.bc\n"
+                            "       Reinstall Prismio and try again.\n",
+                            relative, stem, name, verify ? ".verify" : "");
+                    incomplete = 1;
+                }
+            }
+            rt_free(name);
+        }
+        fs_list_end();
+    }
+    if (compiler_dir) rt_free(compiler_dir);
+    if (count == 0 && !incomplete) {
+        fprintf(stderr,
+                "ERROR: Prismio installation is incomplete or corrupted.\n"
+                "       Missing runtime module: %s/*.bc\n"
+                "       Reinstall Prismio and try again.\n",
+                relative);
+    }
+    return incomplete ? 0 : count;
 }
 
 // Content hashing, not timestamps: a checkout, a copy or a touch all move mtimes
@@ -911,39 +1013,6 @@ char* compiler_installed_runtime_hash(void) {
 // are the same call.
 static int run_build_command(const char* command) {
     return execute_command(command);
-}
-
-// The same, with the command's own output held back until it is worth reading.
-//
-// Building a project-local toolchain issues 32 commands and every one of them is
-// chatty: the compiler announces each module's IR on stdout, and clang warns
-// about the module triple it overrides on stderr. That is sixty lines of noise
-// around a build whose interesting output is one line. Captured to `log_path`
-// and printed only when the command fails, which is the only time any of it
-// answers a question.
-static int run_quiet_build_command(const char* command, const char* log_path) {
-    char* q_log = command_quote_arg(log_path);
-    size_t len = strlen(command) + strlen(q_log) + 16;
-    char* redirected = (char*)malloc(len);
-    if (!redirected) {
-        rt_free(q_log);
-        return run_build_command(command);
-    }
-    snprintf(redirected, len, "%s > %s 2>&1", command, q_log);
-    int failed = run_build_command(redirected);
-    tmp_free(redirected);
-    rt_free(q_log);
-
-    if (failed) {
-        char* text = read_file(log_path);
-        if (text) {
-            diag_progress_clear();
-            fputs(text, stderr);
-            rt_free(text);
-        }
-    }
-    delete_file(log_path);
-    return failed;
 }
 
 // Per-stage wall-clock, on stderr, when PRISMIO_BUILD_TRACE is set.
@@ -2558,14 +2627,16 @@ static int freestanding_runtime_bitcode(const char* exe_file, char** bitcode, in
 
 static char* merge_libraries_into_program(const char* ir_file,
                                           const char* exe_file) {
-    char runtime[PRISMIO_RUNTIME_MODULE_COUNT][1024];
+    char runtime[PRISMIO_RUNTIME_MODULE_MAX][1024];
     // A freestanding program never merges the installed runtime, so the check
     // for a per-triple copy of it (find_runtime_bitcode) is not reached either:
     // there is no `lib/runtime/x86_64-unknown-none-elf/` and there must not need
     // to be one.
-    int runtime_count =
-        (g_installed_runtime && !g_freestanding) ? PRISMIO_RUNTIME_MODULE_COUNT : 0;
-    if (runtime_count > 0 && !find_runtime_bitcode(runtime, g_verify_mode)) return NULL;
+    int runtime_count = 0;
+    if (g_installed_runtime && !g_freestanding) {
+        runtime_count = find_runtime_bitcode(runtime, g_verify_mode);
+        if (runtime_count == 0) return NULL;
+    }
 
     // A freestanding program merges its own build of the runtime instead, so a
     // kernel can have `Vec`, `String` and std.mem; whatever it never calls is
@@ -3874,37 +3945,7 @@ int compiler_check_host_abi(const char* exe_file) {
     return compiler_probe_executable(exe_file, arguments, 2);
 }
 
-// A project-local toolchain
-//
-// `toolchain.host` names a compiler the project builds and then runs. Since the
-// runtime became installed bitcode with no source fallback, such a compiler can
-// build *itself* -- bootstrap compiles runtime/*.c from the checkout -- and
-// cannot build a single user program: find_in_lib_dir looks only beside the
-// executable and one directory up, and `.prismio/build/debug/prismio` has
-// neither. Every benchmark, corpus program and test fixture pointed at the
-// project host failed with "Missing runtime module", and the message named an
-// installation the developer had never installed.
-//
-// So building the host also builds the rest of the toolchain beside it, in the
-// layout an install has:
-//
-//     .prismio/build/debug/prismio      the host
-//     .prismio/build/lib/runtime/*.bc   what a program links
-//     .prismio/build/stdlib/*.plib      what `import std.*` resolves to
-//
-// That is `<prefix>/bin`, `<prefix>/lib`, `<prefix>/stdlib` with the profile
-// directory as the bin directory, so neither find_in_lib_dir nor
-// standardModulePath had to learn a new shape -- and a developer working on
-// `std/` or `runtime/` gets those changes in the next program they build, which
-// is the whole reason a project pins a host.
-//
-// Rebuilt with the host rather than fingerprinted. Measured on this machine at
-// 1.9 s against a host build of about 20 s: the 14 standard-library modules
-// reach IR in 0.21 s and bitcode in 0.28 s, and the four runtime modules are
-// 0.8 s of clang. A fingerprint that could skip it would have to cover the
-// compiler, whose linked binary differs run to run even at an IR fixpoint, so it
-// would have to hash `src/` -- a build-fingerprint feature this tree does not
-// have.
+// A file's bytes, in a block the caller releases with tmp_free().
 static int read_binary_file(const char* path, unsigned char** data, size_t* size) {
     *data = NULL;
     *size = 0;
@@ -3937,48 +3978,6 @@ static int read_binary_file(const char* path, unsigned char** data, size_t* size
 
 // The directory holding `path`, canonical: absolute, with `.` and `..` resolved.
 //
-// A source path reaches the emitted bitcode's `source_filename` record, so the
-// same file names a different artifact depending on how it was spelled.
-// find_toolchain_entry answers relative to the working directory when that is
-// where it found the checkout, and `prismio build` runs from wherever the
-// developer stood -- so `runtime/lang_runtime.c` from the root and
-// `../runtime/lang_runtime.c` from `ums/` produced two different `lang_runtime.bc`
-// for one source. tools/package.py resolves its own root the same way
-// (`Path(__file__).resolve()`), which is what lets the two producers be compared
-// byte for byte.
-//
-// The platform call rather than lexical string surgery, because `..` past a
-// symlinked directory is not the parent it looks like.
-static char* absolute_directory(const char* path) {
-    char* directory = get_directory(path);
-    if (!directory || !directory[0]) return directory;
-#ifdef _WIN32
-    char resolved[1024];
-    DWORD length = GetFullPathNameA(directory, (DWORD)sizeof(resolved), resolved, NULL);
-    if (length == 0 || length >= sizeof(resolved)) return directory;
-    char* canonical = (char*)malloc(strlen(resolved) + 1);
-    if (!canonical) return directory;
-    strcpy(canonical, resolved);
-#else
-    char* canonical = realpath(directory, NULL);
-    if (!canonical) return directory;
-#endif
-    rt_free(directory);
-    return canonical;
-}
-
-static int set_env_var(const char* name, const char* value) {
-#ifdef _WIN32
-    return _putenv_s(name, value ? value : "") != 0;
-#else
-    if (!value) {
-        unsetenv(name);
-        return 0;
-    }
-    return setenv(name, value, 1) != 0;
-#endif
-}
-
 static void write_u32_le(unsigned char* p, unsigned value) {
     for (int i = 0; i < 4; i++) p[i] = (unsigned char)((value >> (8 * i)) & 0xFF);
 }
@@ -3987,578 +3986,139 @@ static void write_u64_le(unsigned char* p, unsigned long long value) {
     for (int i = 0; i < 8; i++) p[i] = (unsigned char)((value >> (8 * i)) & 0xFF);
 }
 
-// The same flags tools/package.py compiles a runtime module with, because the
-// two produce the same artifact and `run_ums_test` imports the packaging code
-// and compares their bytes -- two producers of one format is a drift neither
-// side can see, and a local toolchain that behaves unlike the shipped one is
-// worse than no local toolchain. Configuration files on Apple and Homebrew clang inject stack-probing
-// attributes meant for immediate native code generation; they are not a portable
-// bitcode contract and can make a later backend reject the merged module, so
-// stack protection is left to the final whole-program invocation.
-// -ffile-compilation-dir=. because clang records its working directory in the
-// module's DIFile on Windows, and the two producers run from different ones: a
-// project build from wherever `prismio build` was typed, package.py from the
-// checkout root. That one line was the whole of the drift.
-static int emit_runtime_bitcode(const char* clang, const char* runtime_dir,
-                                const char* out_dir, const char* module,
-                                int verify, const char* log_path) {
-    char source[1024];
-    char output[1024];
-    snprintf(source, sizeof(source), "%s%c%s.c", runtime_dir, PRISMIO_PATH_SEP, module);
-    snprintf(output, sizeof(output), "%s%c%s%s.bc", out_dir, PRISMIO_PATH_SEP,
-             module, verify ? ".verify" : "");
-
-    char* q_src = command_quote_arg(source);
-    char* q_out = command_quote_arg(output);
-    // The deployment version the packaged runtime (tools/package.py) is built for.
-    // Without it clang compiles for its SDK's version and leaves out the `SDK Version`
-    // module flag, and a program that merges this bitcode is stamped `sdk 11.0` by LLVM
-    // from its own triple instead of the real SDK: macOS then gives the binary the
-    // pre-SDK-27 behaviour, and a project-built compiler's programs allocate about 2x
-    // slower than a packaged compiler's from identical machine code.
-    char min_os[64];
-    macos_min_flag(min_os, sizeof(min_os));
-    size_t len = strlen(clang) + strlen(min_os) + strlen(q_src) + strlen(q_out) + 192;
-    char* command = (char*)malloc(len);
-    if (!command) {
-        rt_free(q_src);
-        rt_free(q_out);
-        return 1;
-    }
-    snprintf(command, len,
-             "%s %s-O2 -fno-stack-check -fno-stack-protector -ffile-compilation-dir=. "
-             "-Wno-deprecated-declarations %s-emit-llvm -c %s -o %s",
-             clang, min_os, verify ? "-DPRISMIO_AIF_VERIFY " : "", q_src, q_out);
-    int failed = run_quiet_build_command(command, log_path);
-    tmp_free(command);
-    rt_free(q_src);
-    rt_free(q_out);
-    return failed;
-}
-
-// One code section of a PLIB: the module compiled to textual IR by the compiler
-// under test, then assembled. PRISMIO_LIBRARY_MODULE is what makes codegen emit
-// a library interface rather than a program, and PRISMIO_INTERNAL_HOSTED stops
-// the freshly built host from forwarding this command back to the project host
-// it is about to become.
-static int emit_plib_section(const char* clang, const char* compiler,
-                             const char* source, const char* module,
-                             const char* base, int verify, const char* log_path,
-                             unsigned char** data, size_t* size) {
-    char ir_suffix[64];
-    char bc_suffix[64];
-    snprintf(ir_suffix, sizeof(ir_suffix), "plib-%d%s.ll", PRISMIO_GETPID(),
-             verify ? "-verify" : "");
-    snprintf(bc_suffix, sizeof(bc_suffix), "plib-%d%s.bc", PRISMIO_GETPID(),
-             verify ? "-verify" : "");
-    char* ir_path = compiler_temp_path(base, ir_suffix);
-    char* bc_path = compiler_temp_path(base, bc_suffix);
-    if (!ir_path || !bc_path) {
-        tmp_free(ir_path);
-        tmp_free(bc_path);
-        return 1;
-    }
-
-    char* normalized = run_command_path(compiler);
-    char* q_compiler = normalized ? command_quote_arg(normalized) : NULL;
-    char* q_source = command_quote_arg(source);
-    char* q_ir = command_quote_arg(ir_path);
-    char* q_bc = command_quote_arg(bc_path);
-    int failed = !q_compiler;
-
-    if (!failed) {
-        size_t len = strlen(q_compiler) + strlen(q_source) + strlen(q_ir) + 64;
-        char* command = (char*)malloc(len);
-        if (!command) {
-            failed = 1;
-        } else {
-            snprintf(command, len, "%s build %s %s-o %s", q_compiler, q_source,
-                     verify ? "--verify " : "", q_ir);
-            failed = set_env_var("PRISMIO_LIBRARY_MODULE", module)
-                     || run_quiet_build_command(command, log_path);
-            set_env_var("PRISMIO_LIBRARY_MODULE", NULL);
-            tmp_free(command);
-        }
-    }
-    if (!failed) {
-        size_t len = strlen(clang) + strlen(q_ir) + strlen(q_bc) + 48;
-        char* command = (char*)malloc(len);
-        if (!command) {
-            failed = 1;
-        } else {
-            snprintf(command, len, "%s -emit-llvm -c -x ir %s -o %s", clang, q_ir, q_bc);
-            failed = run_quiet_build_command(command, log_path);
-            tmp_free(command);
-        }
-    }
-    if (!failed) failed = read_binary_file(bc_path, data, size);
-
-    delete_file(ir_path);
-    delete_file(bc_path);
-    rt_free(q_compiler);
-    rt_free(q_source);
-    rt_free(q_ir);
-    rt_free(q_bc);
-    tmp_free(normalized);
-    tmp_free(ir_path);
-    tmp_free(bc_path);
-    return failed;
-}
-
-// PLIB v3, written by the same file that reads it -- see compiler_plib_interface
-// for the layout. The interface section is the module's source: generic bodies
-// have to be instantiated against the importing program's concrete types, so the
-// frontend still parses them.
-//
-// A project toolchain is built for its host, so this writes the one host section
-// (triple ""). tools/package.py writes the same bytes for the same inputs, plus a
-// section per `--target` it was asked to package -- `run_ums_test` compares the
-// host case byte for byte.
-static int emit_stdlib_plib(const char* clang, const char* compiler,
-                            const char* std_dir, const char* out_dir,
-                            const char* module, const char* log_path) {
-    char source[1024];
-    char output[1024];
-    char logical[288];
-    snprintf(source, sizeof(source), "%s%c%s.psm", std_dir, PRISMIO_PATH_SEP, module);
-    snprintf(output, sizeof(output), "%s%c%s.plib", out_dir, PRISMIO_PATH_SEP, module);
-    snprintf(logical, sizeof(logical), "std.%s", module);
-
-    unsigned char* interface = NULL;
-    unsigned char* code = NULL;
-    unsigned char* verify_code = NULL;
-    size_t interface_size = 0, code_size = 0, verify_size = 0;
-
-    int failed = read_binary_file(source, &interface, &interface_size);
-    if (!failed) {
-        failed = emit_plib_section(clang, compiler, source, logical, output, 0,
-                                   log_path, &code, &code_size);
-    }
-    if (!failed) {
-        failed = emit_plib_section(clang, compiler, source, logical, output, 1,
-                                   log_path, &verify_code, &verify_size);
-    }
-
-    if (!failed) {
-        size_t module_len = strlen(logical);
-        unsigned char header[24];
-        memcpy(header, "PRPLIB3\n", 8);
-        write_u32_le(header + 8, (unsigned)module_len);
-        write_u64_le(header + 12, (unsigned long long)interface_size);
-        write_u32_le(header + 20, 1);
-        unsigned char section[20];
-        write_u32_le(section, 0);
-        write_u64_le(section + 4, (unsigned long long)code_size);
-        write_u64_le(section + 12, (unsigned long long)verify_size);
-
-        FILE* file = fopen(output, "wb");
-        if (!file) {
-            failed = 1;
-        } else {
-            failed = fwrite(header, 1, sizeof(header), file) != sizeof(header)
-                     || fwrite(logical, 1, module_len, file) != module_len
-                     || (interface_size
-                         && fwrite(interface, 1, interface_size, file) != interface_size)
-                     || fwrite(section, 1, sizeof(section), file) != sizeof(section)
-                     || fwrite(code, 1, code_size, file) != code_size
-                     || fwrite(verify_code, 1, verify_size, file) != verify_size;
-            if (fclose(file) != 0) failed = 1;
-        }
-        if (failed) delete_file(output);
-    }
-
-    tmp_free(interface);
-    tmp_free(code);
-    tmp_free(verify_code);
-    return failed;
-}
-
-// The toolchain stamp: what `lib/runtime/*.bc` and `stdlib/*.plib` were built
-// from, so that a build which changed neither does not build them again.
-//
-// The emission below is not free and it ran on every single `prismio build` of
-// a project host: four clang invocations for the runtime and, per standard
-// library module, two compiler runs and two clang runs. On this checkout that is
-// 1.45s of an 8.2s self-build -- paid in full to reproduce, byte for byte, the
-// files already on disk.
-//
-// One file, `lib/toolchain.stamp`, with one `<name> <key>` line per artifact and
-// a version line first. Two properties of that shape matter. Every entry line is
-// preceded by a newline, which is what lets a lookup match `\n<name> <key>\n`
-// and stops `std.io` from being found inside a hypothetical `std.iomanip`. And
-// the file is rewritten from the entries this run actually validated, so an
-// entry for a module whose source was deleted disappears with the module.
-//
-// A missing, unreadable or unrecognised stamp is not an error anywhere here: it
-// means everything is rebuilt, which is what this function did before.
-#define PRISMIO_TOOLCHAIN_STAMP_HEADER "prismio-toolchain-stamp 1\n"
-
-static int toolchain_cache_disabled(void) {
-    const char* v = getenv("PRISMIO_TOOLCHAIN_CACHE");
-    return v && v[0] == '0' && v[1] == '\0';
-}
-
-// Prints one line per artifact saying whether it was reused. Same reasoning as
-// object_cache_trace: "the build was faster" is not an observation a test can
-// make reliably on a shared host, so the test asks for this instead.
-static int toolchain_cache_trace(void) {
-    const char* v = getenv("PRISMIO_TOOLCHAIN_CACHE_TRACE");
-    return v && v[0] != '\0' && !(v[0] == '0' && v[1] == '\0');
-}
-
-static void toolchain_cache_report(const char* verdict, const char* name) {
-    if (!toolchain_cache_trace()) return;
-    fprintf(stderr, "[toolchain %s] %s\n", verdict, name);
-}
-
+// The PLIB being assembled by `--emit plib`: one section per target, in the order they are
+// added, then compiler_plib_write puts the whole file down.
 typedef struct {
-    char* text;
-    size_t len;
-    size_t cap;
-} ToolchainStamp;
+    char triple[PRISMIO_PLIB_TRIPLE_MAX + 1];
+    unsigned char* code;
+    size_t code_size;
+    unsigned char* verify_code;
+    size_t verify_size;
+} PrismioPlibOutput;
 
-// Appends `<name> <key>\n`. Returns non-zero only on allocation failure, and a
-// caller that gets one drops the stamp rather than writing a partial one: an
-// incomplete stamp claims artifacts are current that were never checked.
-static int stamp_append(ToolchainStamp* stamp, const char* name, const char* key) {
-    char line[384];
-    int written = snprintf(line, sizeof(line), "%s %s\n", name, key);
-    if (written < 0 || (size_t)written >= sizeof(line)) return 1;
+static PrismioPlibOutput prismio_plib_output[PRISMIO_PLIB_SECTIONS_MAX];
+static int prismio_plib_output_count;
 
-    if (stamp->len + (size_t)written + 1 > stamp->cap) {
-        size_t cap = stamp->cap ? stamp->cap : 512;
-        while (cap < stamp->len + (size_t)written + 1) cap *= 2;
-        char* grown = (char*)tmp_realloc(stamp->text, cap);
-        if (!grown) return 1;
-        stamp->text = grown;
-        stamp->cap = cap;
+void compiler_plib_begin(void) {
+    for (int i = 0; i < prismio_plib_output_count; i++) {
+        tmp_free(prismio_plib_output[i].code);
+        tmp_free(prismio_plib_output[i].verify_code);
     }
-    memcpy(stamp->text + stamp->len, line, (size_t)written + 1);
-    stamp->len += (size_t)written;
-    return 0;
+    prismio_plib_output_count = 0;
 }
 
-// The recorded stamp, or NULL when there is none this version can read. The
-// header is compared rather than skipped, so a format change invalidates every
-// entry instead of matching lines that now mean something else.
-static char* stamp_read(const char* path) {
-    char* text = read_file(path);
-    if (!text) return NULL;
-    if (strncmp(text, PRISMIO_TOOLCHAIN_STAMP_HEADER,
-                strlen(PRISMIO_TOOLCHAIN_STAMP_HEADER)) != 0) {
-        rt_free(text);
-        return NULL;
-    }
-    return text;
-}
-
-static int stamp_holds(const char* text, const char* name, const char* key) {
-    if (!text) return 0;
-    char line[384];
-    int written = snprintf(line, sizeof(line), "\n%s %s\n", name, key);
-    if (written < 0 || (size_t)written >= sizeof(line)) return 0;
-    return strstr(text, line) != NULL;
-}
-
-// Size and mtime, and this is the one key in this file that is allowed to use
-// them. The rule the hash helpers above state -- content, never timestamps -- is
-// about *sources*: a checkout or a copy moves their mtimes without changing a
-// line. clang is a binary this build did not produce and does not ship, hashing
-// its hundreds of megabytes would cost more than the four compiles the key
-// guards, and an upgrade that leaves both the size and the mtime alone is not a
-// thing a package manager does. ccache keys its compiler the same way.
-static unsigned long long clang_identity(unsigned long long hash) {
-    hash = fnv1a_bytes(hash, (const unsigned char*)native_clang_command());
-    if (!g_clang_binary[0]) return hash;
-
-    char identity[160];
-#ifdef _WIN32
-    WIN32_FILE_ATTRIBUTE_DATA info;
-    if (!GetFileAttributesExA(g_clang_binary, GetFileExInfoStandard, &info)) return hash;
-    snprintf(identity, sizeof(identity), "%lu:%lu/%lu:%lu",
-             (unsigned long)info.nFileSizeHigh, (unsigned long)info.nFileSizeLow,
-             (unsigned long)info.ftLastWriteTime.dwHighDateTime,
-             (unsigned long)info.ftLastWriteTime.dwLowDateTime);
-#else
-    struct stat info;
-    if (stat(g_clang_binary, &info) != 0) return hash;
-    snprintf(identity, sizeof(identity), "%lld/%lld",
-             (long long)info.st_size, (long long)info.st_mtime);
-#endif
-    return fnv1a_bytes(hash, (const unsigned char*)identity);
-}
-
-// The key for the whole runtime bitcode set: what its C sources hash to, and
-// which clang turns them into bitcode.
-//
-// The source half is the same value `lib/runtime.hash` records, which is what
-// makes a reuse here and the staleness guard in src/driver/compile.psm incapable
-// of disagreeing about whether these files match `runtime/`. Returns non-zero
-// when there are no runtime sources to hash -- an installed toolchain with no
-// checkout, where the caller has already decided there is nothing to build.
-static int runtime_cache_key(char* out, int out_size) {
-    char* source = compiler_runtime_source_hash();
-    if (!source || !source[0]) {
-        rt_free(source);
+// The textual IR of one module, emitted normally and under `--verify`, assembled into the
+// section a build for `triple` ("" for the host) links. Returns 0 on success.
+int compiler_plib_add_section(const char* triple, const char* ir_path,
+                              const char* verify_ir_path) {
+    if (prismio_plib_output_count >= PRISMIO_PLIB_SECTIONS_MAX
+        || strlen(triple) > PRISMIO_PLIB_TRIPLE_MAX) {
+        fprintf(stderr, "ERROR: too many targets, or too long a target, for one PLIB\n");
         return 1;
     }
-    unsigned long long hash = fnv1a_bytes(PRISMIO_FNV_OFFSET, (const unsigned char*)source);
-    rt_free(source);
-    // The deployment version the bitcode is compiled for (emit_runtime_bitcode): a
-    // toolchain built before it was passed holds bitcode with no SDK stamp, and must
-    // be re-emitted, not reused.
-    char min_os[64];
-    macos_min_flag(min_os, sizeof(min_os));
-    hash = fnv1a_bytes(hash, (const unsigned char*)min_os);
-    snprintf(out, out_size, "%016llx", clang_identity(hash));
+    PrismioPlibOutput* section = &prismio_plib_output[prismio_plib_output_count];
+    memset(section, 0, sizeof(*section));
+    snprintf(section->triple, sizeof(section->triple), "%s", triple);
+    if (ir_library_bitcode(ir_path, triple, &section->code, &section->code_size) != 0
+        || ir_library_bitcode(verify_ir_path, triple, &section->verify_code,
+                              &section->verify_size) != 0) {
+        tmp_free(section->code);
+        return 1;
+    }
+    prismio_plib_output_count++;
     return 0;
 }
 
-// The compiler that will emit the PLIB code sections, hashed by its bytes.
-//
-// By its bytes and not by its sources, because the emission is literally
-// `<compiler> build std/<module>.psm`: the binary *is* the dependency, and it is
-// the only thing here that also covers a changed PLIB container format, a
-// changed codegen and a changed `--verify` lowering at once.
-//
-// A link that is not byte-reproducible costs cache hits and nothing else -- a
-// key that moves rebuilds, which is what a build with no cache does every time.
-// 0 is the "could not read it" answer and disables the standard-library half of
-// the cache; FNV-1a over a real executable does not produce it.
-static unsigned long long compiler_binary_hash(const char* compiler) {
-    unsigned char* data = NULL;
-    size_t size = 0;
-    if (read_binary_file(compiler, &data, &size) != 0) return 0;
-    unsigned long long hash = fnv1a_raw(PRISMIO_FNV_OFFSET, data, size);
-    tmp_free(data);
-    return hash;
-}
+int compiler_promote_executable(const char* candidate_file, const char* active_file);
 
-static int plib_cache_key(char* out, int out_size, const char* source_path,
-                          unsigned long long compiler_hash) {
-    char* text = read_file(source_path);
-    if (!text) return 1;
-    unsigned long long hash = fnv1a_raw(PRISMIO_FNV_OFFSET,
-                                        (const unsigned char*)&compiler_hash,
-                                        sizeof(compiler_hash));
-    hash = fnv1a_bytes(hash, (const unsigned char*)text);
-    rt_free(text);
-    snprintf(out, out_size, "%016llx", hash);
-    return 0;
-}
+// Writes the PLIB (compiler_plib_import says its layout) from the sections added since
+// compiler_plib_begin. The interface is the source file's bytes: generic bodies have to be
+// instantiated against the importing program's concrete types. Returns 0 on success.
+int compiler_plib_write(const char* output, const char* module, const char* meta,
+                        const char* source_path) {
+    unsigned char* interface = NULL;
+    size_t interface_size = 0;
+    if (prismio_plib_output_count == 0
+        || read_binary_file(source_path, &interface, &interface_size) != 0) {
+        tmp_free(interface);
+        return 1;
+    }
+    size_t module_len = strlen(module);
+    size_t meta_len = strlen(meta);
+    unsigned char header[PRISMIO_PLIB_HEADER];
+    memcpy(header, "PRPLIB4\n", 8);
+    write_u32_le(header + 8, (unsigned)module_len);
+    write_u32_le(header + 12, (unsigned)meta_len);
+    write_u64_le(header + 16, (unsigned long long)interface_size);
+    write_u32_le(header + 24, (unsigned)prismio_plib_output_count);
 
-// Every file the runtime half of the stamp vouches for, present. A key that
-// matches says the *inputs* have not moved; it says nothing about whether the
-// outputs are still on disk, and a deleted `.bc` is exactly the state a reuse
-// must not walk past.
-static int runtime_bitcode_present(const char* runtime_out) {
-    char path[1024];
-    for (int i = 0; i < PRISMIO_RUNTIME_MODULE_COUNT; i++) {
-        for (int verify = 0; verify < 2; verify++) {
-            snprintf(path, sizeof(path), "%s%c%s%s.bc", runtime_out, PRISMIO_PATH_SEP,
-                     prismio_runtime_modules[i], verify ? ".verify" : "");
-            if (!file_exists(path)) return 0;
+    // Written beside the output and renamed onto it, so an interrupted write never leaves a
+    // module that exists and cannot be read.
+    size_t partial_size = strlen(output) + 32;
+    char* partial = (char*)malloc(partial_size);
+    if (!partial) {
+        tmp_free(interface);
+        return 1;
+    }
+    snprintf(partial, partial_size, "%s.%d.part", output, PRISMIO_GETPID());
+    int failed = compiler_prepare_output_path(output) != 0;
+    FILE* file = failed ? NULL : fopen(partial, "wb");
+    if (file) {
+        failed = fwrite(header, 1, sizeof(header), file) != sizeof(header)
+                 || fwrite(module, 1, module_len, file) != module_len
+                 || fwrite(meta, 1, meta_len, file) != meta_len
+                 || (interface_size
+                     && fwrite(interface, 1, interface_size, file) != interface_size);
+        for (int i = 0; i < prismio_plib_output_count && !failed; i++) {
+            PrismioPlibOutput* part = &prismio_plib_output[i];
+            size_t triple_len = strlen(part->triple);
+            unsigned char section[20];
+            write_u32_le(section, (unsigned)triple_len);
+            write_u64_le(section + 4, (unsigned long long)part->code_size);
+            write_u64_le(section + 12, (unsigned long long)part->verify_size);
+            failed = fwrite(section, 1, sizeof(section), file) != sizeof(section)
+                     || fwrite(part->triple, 1, triple_len, file) != triple_len
+                     || fwrite(part->code, 1, part->code_size, file) != part->code_size
+                     || fwrite(part->verify_code, 1, part->verify_size, file)
+                            != part->verify_size;
         }
-    }
-    return 1;
-}
-
-// Build the runtime bitcode and standard library a project-local compiler needs
-// in order to build anything other than itself.
-//
-// Returns the number of standard-library modules the toolchain now provides --
-// rebuilt here or reused from the last build -- 0 when this project has no
-// Prismio checkout to build them from (an ordinary project that pins a
-// `toolchain.host` is not building a toolchain and must not be failed for it),
-// and -1 when the emission was attempted and failed.
-//
-// **Reuse is per artifact and keyed on its own inputs**, through the stamp
-// described above. A runtime `.c` edit rebuilds four `.bc` files and no PLIB; a
-// `std/list.psm` edit rebuilds one PLIB and no bitcode; a `src/` edit changes
-// the compiler binary and so rebuilds every PLIB, because every PLIB's code
-// section is that compiler's output. Nothing is keyed on a timestamp comparison
-// between a source and an output: a build that produced a *different* compiler
-// from the same standard library source has to re-emit, and mtimes cannot see
-// that.
-int compiler_emit_local_toolchain(const char* root, const char* compiler) {
-    char runtime_probe[1024];
-    char std_probe[1024];
-    if (!find_toolchain_source(runtime_probe, sizeof(runtime_probe), "lang_runtime.c")
-        || !find_toolchain_entry(std_probe, sizeof(std_probe), "std", "string.psm")) {
-        return 0;
-    }
-
-    char* runtime_dir = absolute_directory(runtime_probe);
-    char* std_dir = absolute_directory(std_probe);
-    char lib_dir[1024];
-    char runtime_out[1024];
-    char stdlib_out[1024];
-    char log_path[1024];
-    char stamp_path[1024];
-    char hash_path[1024];
-    snprintf(lib_dir, sizeof(lib_dir), "%s%clib", root, PRISMIO_PATH_SEP);
-    snprintf(runtime_out, sizeof(runtime_out), "%s%cruntime", lib_dir, PRISMIO_PATH_SEP);
-    snprintf(stdlib_out, sizeof(stdlib_out), "%s%cstdlib", root, PRISMIO_PATH_SEP);
-    snprintf(log_path, sizeof(log_path), "%s%c.toolchain-%d.log", lib_dir,
-             PRISMIO_PATH_SEP, PRISMIO_GETPID());
-    snprintf(stamp_path, sizeof(stamp_path), "%s%ctoolchain.stamp", lib_dir,
-             PRISMIO_PATH_SEP);
-    snprintf(hash_path, sizeof(hash_path), "%s%cruntime.hash", lib_dir, PRISMIO_PATH_SEP);
-
-    int failed = ensure_directory_exists(runtime_out) != 0
-                 || ensure_directory_exists(stdlib_out) != 0;
-
-    // The recorded stamp is dropped from disk before anything is built. Every
-    // path out of here either writes a complete new one or leaves none at all,
-    // so a build interrupted between the first rebuild and the last cannot leave
-    // a file claiming that artifacts it never touched are current.
-    int bypass = toolchain_cache_disabled();
-    char* recorded = bypass ? NULL : stamp_read(stamp_path);
-    delete_file(stamp_path);
-    if (bypass) toolchain_cache_report("cache off", "runtime and stdlib");
-
-    ToolchainStamp stamp = { NULL, 0, 0 };
-    int stamp_broken = stamp_append(&stamp, "prismio-toolchain-stamp", "1");
-
-    char runtime_key[64];
-    int have_runtime_key = !failed && runtime_cache_key(runtime_key, sizeof(runtime_key)) == 0;
-
-    const char* clang = native_clang_command();
-    int runtime_current = have_runtime_key
-                          && stamp_holds(recorded, "runtime", runtime_key)
-                          && runtime_bitcode_present(runtime_out)
-                          && file_exists(hash_path);
-    if (!failed && runtime_current) {
-        toolchain_cache_report("reused", "runtime");
-    } else if (!failed) {
-        toolchain_cache_report("rebuilt", "runtime");
-        for (int i = 0; i < PRISMIO_RUNTIME_MODULE_COUNT && !failed; i++) {
-            failed = emit_runtime_bitcode(clang, runtime_dir, runtime_out,
-                                          prismio_runtime_modules[i], 0, log_path)
-                     || emit_runtime_bitcode(clang, runtime_dir, runtime_out,
-                                             prismio_runtime_modules[i], 1, log_path);
-        }
-
-        // Recorded the way an installed toolchain records it, so the freshness
-        // check reads one file whether the toolchain was installed or built here.
-        if (!failed) {
-            char* value = compiler_runtime_source_hash();
-            failed = write_text_file(hash_path, value) != 0;
-            rt_free(value);
-        }
-    }
-    if (!failed && have_runtime_key) {
-        stamp_broken = stamp_broken || stamp_append(&stamp, "runtime", runtime_key);
-    }
-
-    // The failure core a `--freestanding` build adds (runtime/freestanding/panic.c),
-    // beside the runtime bitcode where an installed toolchain keeps it. Source and
-    // not bitcode: it is compiled for the program's own triple, and a copy is
-    // cheaper than a stamp entry for one file of sixty lines.
-    if (!failed) {
-        char core_source[1024];
-        if (find_toolchain_source(core_source, sizeof(core_source), "freestanding/panic.c")) {
-            char core_dir[1024];
-            char core_out[1024];
-            snprintf(core_dir, sizeof(core_dir), "%s%cfreestanding", runtime_out, PRISMIO_PATH_SEP);
-            snprintf(core_out, sizeof(core_out), "%s%cpanic.c", core_dir, PRISMIO_PATH_SEP);
-            char* text = read_file(core_source);
-            if (text && ensure_directory_exists(core_dir) == 0) write_text_file(core_out, text);
-            rt_free(text);
-        }
-    }
-
-    // The host is about to become this project's compiler, so every command it
-    // issues here has to be answered by the binary named rather than forwarded
-    // back to the host being replaced.
-    char* saved = NULL;
-    int was_set = 0;
-    if (!failed && compiler_hosted_env_begin(&saved, &was_set) != 0) {
-        tmp_free(saved);
-        saved = NULL;
+        if (fclose(file) != 0) failed = 1;
+        if (!failed && compiler_promote_executable(partial, output) != 0) failed = 1;
+        if (failed) delete_file(partial);
+    } else {
         failed = 1;
     }
-
-    int written = 0;
-    if (!failed) {
-        // A `.plib` whose source is gone is not stale, it is wrong: the module
-        // no longer exists and importing it would resolve against a build
-        // artifact nothing produces any more.
-        char* installed = list_modules(stdlib_out);
-        for (char* name = installed; name && *name; ) {
-            char* end = strchr(name, '\n');
-            if (end) *end = '\0';
-            char probe[1024];
-            snprintf(probe, sizeof(probe), "%s%c%s.psm", std_dir, PRISMIO_PATH_SEP, name);
-            if (!file_exists(probe)) {
-                snprintf(probe, sizeof(probe), "%s%c%s.plib", stdlib_out,
-                         PRISMIO_PATH_SEP, name);
-                delete_file(probe);
-            }
-            name = end ? end + 1 : name + strlen(name);
-        }
-        rt_free(installed);
-
-        // Computed even when the cache is bypassed. `PRISMIO_TOOLCHAIN_CACHE=0`
-        // means this build must not *consult* the stamp; recording what it then
-        // went and built is what stops one bypassed build from costing two, and
-        // the entries it writes are as true as any other build's.
-        unsigned long long compiler_hash = compiler_binary_hash(compiler);
-
-        char* modules = list_modules(std_dir);
-        for (char* name = modules; name && *name && !failed; ) {
-            char* end = strchr(name, '\n');
-            if (end) *end = '\0';
-
-            char source[1024];
-            char output[1024];
-            char entry[288];
-            char key[64];
-            snprintf(source, sizeof(source), "%s%c%s.psm", std_dir, PRISMIO_PATH_SEP, name);
-            snprintf(output, sizeof(output), "%s%c%s.plib", stdlib_out,
-                     PRISMIO_PATH_SEP, name);
-            snprintf(entry, sizeof(entry), "std.%s", name);
-
-            int have_key = compiler_hash != 0
-                           && plib_cache_key(key, sizeof(key), source, compiler_hash) == 0;
-            if (have_key && stamp_holds(recorded, entry, key) && file_exists(output)) {
-                toolchain_cache_report("reused", entry);
-            } else {
-                toolchain_cache_report("rebuilt", entry);
-                failed = emit_stdlib_plib(clang, compiler, std_dir, stdlib_out, name,
-                                          log_path);
-            }
-            if (!failed) {
-                written++;
-                if (have_key) {
-                    stamp_broken = stamp_broken || stamp_append(&stamp, entry, key);
-                }
-            }
-            name = end ? end + 1 : name + strlen(name);
-        }
-        rt_free(modules);
-        compiler_hosted_env_end(saved, was_set);
-    }
-
-    // Written last and only on success. The cache is an optimisation, so a stamp
-    // that cannot be built or cannot be written is not a build failure -- it is
-    // the next build doing the work this one would have saved it.
-    if (!failed && !stamp_broken && stamp.text) {
-        if (write_text_file(stamp_path, stamp.text) != 0) delete_file(stamp_path);
-    }
-    tmp_free(stamp.text);
-    tmp_free(recorded);
-
-    rt_free(runtime_dir);
-    rt_free(std_dir);
-    if (failed) {
-        fprintf(stderr,
-                "ERROR: could not build the project-local runtime and standard library\n"
-                "       under %s\n", root);
-        return -1;
-    }
-    return written;
+    tmp_free(partial);
+    tmp_free(interface);
+    return failed;
 }
+
+// A file's content, hashed (FNV-1a over its bytes), as 16 hex digits; "" when it cannot be
+// read. `prismio --internal-file-hash` answers this, so a build step that keys a cache on a
+// file -- the compiler binary among them -- has no second definition of the hash.
+char* compiler_file_hash(const char* path) {
+    unsigned char* data = NULL;
+    size_t size = 0;
+    char* out = (char*)rt_base_alloc(17);
+    out[0] = '\0';
+    if (read_binary_file(path, &data, &size) != 0) return out;
+    snprintf(out, 17, "%016llx", fnv1a_raw(PRISMIO_FNV_OFFSET, data, size));
+    tmp_free(data);
+    return out;
+}
+
+// Called by the compiler the committed seed was cut from, which `bootstrap.py --seed` links
+// against this runtime. It never builds a project host or a library, so these answer "no
+// toolchain" and "not a library". Delete them with the first seed that no longer names them.
+int compiler_emit_local_toolchain(const char* root, const char* compiler) {
+    (void)root;
+    (void)compiler;
+    return 0;
+}
+
+void compiler_set_toolchain_root(const char* root) { (void)root; }
+
+char* compiler_library_emission_module(void) { return plib_empty(); }
 
 // Candidate and active are siblings, so this is one same-filesystem operation.
 // The child compiler has exited before it gets here, which makes replacement

@@ -1,3 +1,4 @@
+import ums.commands.command
 import std.io
 import ums.model.project
 import ums.model.diagnostic
@@ -61,6 +62,10 @@ public fn umsBuildPlanCreate(project: UmsProjectModel,
             plannedNatives.push(umsNativeInput(input.kind, input.value,
                       input.line, input.col, input.len))
         }
+        let mut plannedAfter: Vec<UmsCommandStep> = []
+        for step in target.after {
+            plannedAfter.push(umsCommandStepCopy(step))
+        }
         let planned = UmsTarget {
             kind: target.kind,
             name: target.name.clone(),
@@ -76,6 +81,7 @@ public fn umsBuildPlanCreate(project: UmsProjectModel,
             noRedZone: target.noRedZone,
             links: plannedLinks,
             natives: plannedNatives,
+            after: plannedAfter,
             line: target.line,
             col: target.col,
             len: target.len

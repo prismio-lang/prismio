@@ -41,7 +41,7 @@
 // store (src/common/mem_builtins.psm). Big-endian is `__builtin_swap_bytes`, one
 // `rev`; a Float is its bits through `__builtin_float_bits`.
 
-
+module freestanding(runtime)
 from std import {eq, string}
 
 private extern fn mem_alloc(size: Usize) -> Usize

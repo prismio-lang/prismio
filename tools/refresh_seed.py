@@ -27,6 +27,7 @@ import sys
 from pathlib import Path
 
 from executable import resolve_executable
+from source_toolchain import source_toolchain
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
@@ -65,10 +66,10 @@ def main() -> None:
     parser.add_argument("--repo", default=str(REPO))
     args = parser.parse_args()
     repo = Path(args.repo).resolve()
-    compiler = resolve_executable(args.compiler)
-
     work = repo / "build" / ".seed"
     work.mkdir(parents=True, exist_ok=True)
+    # The seed holds every definition it runs, compiled against this tree's std/.
+    compiler = source_toolchain(resolve_executable(args.compiler), repo, work / "emitter")
     (repo / "bootstrap").mkdir(exist_ok=True)
     raw, again = work / "seed-raw.ll", work / "seed-raw-2.ll"
 

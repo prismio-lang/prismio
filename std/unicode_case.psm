@@ -10,7 +10,7 @@
 //   ucd/SpecialCasing.txt                sha256 8538dea57c184f1ef3783885ea79677b10f6efa06423717157e63712f14d1ad2
 //   ucd/CaseFolding.txt                  sha256 a004797658a457bec4dc11683e39f69249ea3b595b752dbea6721c4c9f587b0d
 //   ucd/DerivedCoreProperties.txt        sha256 09c928886a178fcafd93c29e4bd59073a058e5a100b716d425cb563ab50f68c9
-// Generator:       tools/generate_unicode_tables.py sha256 c30768d0320e2f471636ef734004f185d3a4e4262be3a8186ec0fb7dcc262893
+// Generator:       tools/generate_unicode_tables.py sha256 113b9f24b588a189938bef64ca931d8e4bf875d93e27c389529fc0cee56a4d7b
 //
 // A separate module from std/unicode_tables.psm because std.string imports it:
 // every program that uses a String would otherwise carry the grapheme and
@@ -29,7 +29,7 @@
 // Conditional mappings are not here: Final_Sigma depends on the text around
 // it and std/string.psm applies it, and the Turkish and Lithuanian ones depend
 // on a language this library is not told.
-
+module freestanding(runtime)
 // A column value that is not a delta: see the exception rows.
 public fn unicodeCaseMultiple() -> Int { return 1073741824 }
 

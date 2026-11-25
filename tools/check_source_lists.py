@@ -11,7 +11,8 @@ someone's source of truth:
   compiler is made from the seed with no compiler at all.
 - **The runtime's sources** -- the part linked into every compiled program --
   are `prismio_toolchain_files[]` in build_driver.c (what `runtime-hash`
-  hashes) and `RUNTIME_BITCODE` in tools/package.py (what is packaged).
+  hashes) and `RUNTIME_MODULES` in tools/toolchain_layout.psm (what a toolchain
+  carries).
 
 The LLVM backends are listed twice: `PRISMIO_LLVM_TARGET_LIST` in
 prismio_llvm.h (what the compiler initialises) and `TARGET_COMPONENTS` in
@@ -20,11 +21,15 @@ ships dead weight.
 
 The standard-library modules a freestanding program may import are written twice:
 `freestandingSafeModule` in src/driver/imports.psm (what the compiler admits) and
-`FREESTANDING_STD` in tools/package.py (what is packaged for a bare-metal triple).
+the `module freestanding` headers in std/ (what gets a bare-metal section).
 
-One value rides along because it is written down twice the same way: the macOS
+One value rides along because it is written down three times the same way: the macOS
 a program is built for, `PRISMIO_MACOS_FLOOR` in llvm-api-backend.c and
-`MACOS_FLOOR` in tools/package.py, which builds the runtime bitcode for it.
+`MACOS_FLOOR` in tools/package.py and tools/toolchain_layout.psm, which build for it.
+
+The generated tables in std/ and src/lexer/ are checked against their generators
+wherever the inputs are on this machine (the headers, the pinned UCD cache); nothing
+is downloaded here.
 
 Adding a file to runtime/ should fail loudly here until every list knows about
 it, which is cheaper than discovering it on someone else's machine.
@@ -105,22 +110,23 @@ def bootstrap_list():
     return re.findall(r'"([^"]+)"', m.group(1))
 
 
-def package_runtime_bitcode():
-    text = read(TOOLS / "package.py")
-    m = re.search(r"^RUNTIME_BITCODE\s*=\s*\[(.*?)\]", text, re.S | re.M)
+def layout_runtime_modules():
+    text = read(TOOLS / "toolchain_layout.psm")
+    m = re.search(r'^let RUNTIME_MODULES = "([^"]+)"', text, re.M)
     if not m:
-        raise Failure("could not find RUNTIME_BITCODE in package.py")
-    return re.findall(r'"([^"]+)"', m.group(1))
+        raise Failure("could not find RUNTIME_MODULES in toolchain_layout.psm")
+    return [name + ".c" for name in m.group(1).split()]
 
 
 def macos_floors():
-    """The macOS a program targets, as the backend and package.py each say it."""
+    """The macOS a program targets, as the backend, package.py and the layout tool each say it."""
     c = re.search(r'^#define PRISMIO_MACOS_FLOOR "([^"]+)"',
                   read(RUNTIME / "llvm-api-backend.c"), re.M)
     py = re.search(r'^MACOS_FLOOR = "([^"]+)"', read(TOOLS / "package.py"), re.M)
-    if not c or not py:
+    tool = re.search(r'^let MACOS_FLOOR = "([^"]+)"', read(TOOLS / "toolchain_layout.psm"), re.M)
+    if not c or not py or not tool:
         raise Failure("could not find PRISMIO_MACOS_FLOOR / MACOS_FLOOR")
-    return c.group(1), py.group(1)
+    return c.group(1), [py.group(1), tool.group(1)]
 
 
 def llvm_targets():
@@ -134,15 +140,33 @@ def llvm_targets():
 
 
 def freestanding_std():
-    """(the modules the compiler lets a freestanding program import, the modules
-    package.py gives a bare-metal section), without the `std.` prefix."""
+    """(the modules the compiler lets a freestanding program import, the modules whose header
+    says freestanding), without the `std.` prefix."""
     c = re.search(r"private fn freestandingSafeModule\(name: String\) -> Bool \{(.*?)\n\}",
                   read(REPO / "src" / "driver" / "imports.psm"), re.S)
-    py = re.search(r"^FREESTANDING_STD = \((.*?)\)", read(TOOLS / "package.py"), re.M | re.S)
-    if not c or not py:
-        raise Failure("could not find freestandingSafeModule / FREESTANDING_STD")
-    return (sorted(re.findall(r'"std\.(\w+)"', c.group(1))),
-            sorted(re.findall(r'"(\w+)"', py.group(1))))
+    if not c:
+        raise Failure("could not find freestandingSafeModule")
+    declared = []
+    for path in (REPO / "std").rglob("*.psm"):
+        if re.search(r"^module (prelude )?freestanding", read(path), re.M):
+            declared.append(path.stem)
+    return sorted(re.findall(r'"std\.(\w+)"', c.group(1))), sorted(declared)
+
+
+def unicode_table_problems():
+    """The Unicode tables are generated from the pinned UCD (tools/generate_unicode_tables.py).
+    Checked where that cache already is; this never downloads it."""
+    import subprocess
+    version = re.search(r'^UNICODE_VERSION = "([^"]+)"', read(TOOLS / "generate_unicode_tables.py"), re.M)
+    cache = REPO / "build" / "unicode" / (version.group(1) if version else "")
+    if not version or not cache.is_dir():
+        return []
+    result = subprocess.run([sys.executable, str(TOOLS / "generate_unicode_tables.py"), "--check",
+                             "--ucd-dir", str(cache)], capture_output=True, text=True)
+    if result.returncode == 0:
+        return []
+    return ["Unicode tables vs tools/generate_unicode_tables.py\n     "
+            + (result.stderr or result.stdout).strip()]
 
 
 def syscall_table_problems():
@@ -182,17 +206,19 @@ def main() -> int:
         compare("runtime/*.c on disk vs build.ums native sources", on_disk, sorted(compiler))
         compare("tools/bootstrap.py RUNTIME_SOURCES", bootstrap_list(), compiler)
 
-        compare("tools/package.py RUNTIME_BITCODE", package_runtime_bitcode(), runtime)
-        c_floor, py_floor = macos_floors()
-        compare("tools/package.py MACOS_FLOOR vs PRISMIO_MACOS_FLOOR", [py_floor], [c_floor])
+        compare("tools/toolchain_layout.psm RUNTIME_MODULES", layout_runtime_modules(), runtime)
+        c_floor, other_floors = macos_floors()
+        compare("MACOS_FLOOR (package.py, toolchain_layout.psm) vs PRISMIO_MACOS_FLOOR", other_floors,
+                [c_floor, c_floor])
         initialised, linked = llvm_targets()
         compare("tools/setup_llvm.py TARGET_COMPONENTS vs PRISMIO_LLVM_TARGET_LIST", linked, initialised)
         allowed, packaged = freestanding_std()
-        compare("tools/package.py FREESTANDING_STD vs freestandingSafeModule", packaged, allowed)
+        compare("std/ `module freestanding` headers vs freestandingSafeModule", packaged, allowed)
         missing = [name for name in runtime if name not in compiler]
         if missing:
             problems.append("runtime sources the compiler does not compile: " + " ".join(missing))
         problems.extend(syscall_table_problems())
+        problems.extend(unicode_table_problems())
     except Failure as exc:
         print(f"FAILED: {exc}")
         return 1

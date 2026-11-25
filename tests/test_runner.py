@@ -1314,6 +1314,79 @@ def show_run(result):
     print(f"stderr:\n{elide_middle(result.stderr or '')}")
 
 
+def run_ums_after_test():
+    """A target's `after { ... }` steps: run once it is built, `output` naming the file just built,
+    a failing step failing the build; a `build` step and a target with its own after steps refused."""
+    print(f"\n{BLUE}--- Running ums_after ---{RESET}")
+    problems = []
+    manifest = """project {{
+    name = "app"
+    version = "0.1.0"
+    prismio = "0.2.0"
+}}
+
+targets {{
+    executable("helper") {{
+        entry = "src/helper.psm"
+        {helper}
+    }}
+    executable("app") {{
+        entry = "src/main.psm"
+        after {{
+            {steps}
+        }}
+    }}
+}}
+"""
+    with tempfile.TemporaryDirectory(prefix="prismio-ums-after-") as temp_dir:
+        project = Path(temp_dir) / "app"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.psm").write_text("fn main() -> Int { return 0 }\n")
+        # Writes what it was told into the file it was told, so the test reads what `output` was.
+        (project / "src" / "helper.psm").write_text(
+            "import std.fs\nimport std.process\n\n"
+            "fn main() -> Int {\n"
+            "    if (writeFile(process.args[1], process.args[2]) == false) { return 1 }\n"
+            "    if (process.args.count > 3) { return 7 }\n"
+            "    return 0\n}\n")
+        (project / "tool.psm").write_text(
+            "import std.fs\nimport std.process\n\n"
+            "fn main() -> Int {\n"
+            "    if (writeFile(\"script.txt\", process.args[1]) == false) { return 1 }\n"
+            "    return 0\n}\n")
+        env = dict(os.environ, PRISMIO_INTERNAL_HOSTED="1")
+
+        def build(steps, helper=""):
+            (project / "build.ums").write_text(manifest.format(steps=steps, helper=helper))
+            return subprocess.run([str(PRISMIO_EXE), "build", "app"], cwd=str(project), env=env,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+        ran = build('run("helper", "helper.txt", output)\n            run("tool.psm", output)')
+        suffix = ".exe" if os.name == "nt" else ""
+        for written in ("helper.txt", "script.txt"):
+            file = project / written
+            text = file.read_text() if file.exists() else ""
+            if not text.replace("\\", "/").endswith(".prismio/build/debug/app" + suffix):
+                problems.append(f"after step did not receive the built file in {written}: {text!r}\n{ran.stderr[-600:]}")
+        failing = build('run("helper", "helper.txt", output, "extra")')
+        if failing.returncode == 0 or "after step 1" not in failing.stdout + failing.stderr:
+            problems.append(f"a failing after step did not fail the build: {failing.stderr[-400:]}")
+        for steps, helper, code in (('build("helper")', "", "UMS2117"),
+                                    ('run("helper", "a", args)', "", "UMS2508"),
+                                    ('run("helper", "a", output)',
+                                     'after { shell("true") }', "UMS2118")):
+            refused = build(steps, helper)
+            if refused.returncode == 0 or code not in refused.stdout + refused.stderr:
+                problems.append(f"expected {code} for `{steps}`: {(refused.stdout + refused.stderr)[-400:]}")
+    if problems:
+        print(f"{RED}[FAIL] ums_after{RESET}")
+        for problem in problems:
+            print(f"  {problem}")
+        return False
+    print(f"{GREEN}[PASS] ums_after: after steps get the built file, fail the build, and refuse recursion{RESET}")
+    return True
+
+
 def run_ums_project_test():
     """What a project's user sees: `run`, `test`, `clean`, commands, native code.
 
@@ -1468,6 +1541,16 @@ def run_ums_project_test():
     return True
 
 
+def without_library_paths(ir, libraries):
+    """An IR file with each of `libraries` spelled the same, and the string constants that hold a
+    path under one renamed and re-measured to match."""
+    data = ir.read_bytes()
+    for library in sorted((str(p).encode() for p in libraries), key=len, reverse=True):
+        data = data.replace(library, b"LIBRARY")
+    data = re.sub(rb"@\.aifprof\.[0-9a-f]+\.\d+", b"@.aifprof", data)
+    return re.sub(rb'\[\d+ x i8\] c"LIBRARY', b'[N x i8] c"LIBRARY', data)
+
+
 def run_ums_test():
     """v0.1 3.7 -- UMS manifest, dependency resolution, and the lockfile.
 
@@ -1605,8 +1688,13 @@ def run_ums_test():
     # CI runs; copying it after entering the preservation context therefore
     # tried to copy a file the test had just deleted.
     with tempfile.TemporaryDirectory(prefix="prismio-launcher-") as launcher_dir:
-        launcher = Path(launcher_dir) / ("prismio.exe" if os.name == "nt" else "prismio")
+        # A toolchain, as an install is: the launcher builds the project host with its own library.
+        launcher = Path(launcher_dir) / "bin" / ("prismio.exe" if os.name == "nt" else "prismio")
+        launcher.parent.mkdir()
         shutil.copy2(PRISMIO_EXE, launcher)
+        for directory in ("lib", "stdlib"):
+            shutil.copytree(Path(PRISMIO_EXE).resolve().parent.parent / directory,
+                            Path(launcher_dir) / directory)
         launcher_env = os.environ.copy()
         launcher_env.pop("PRISMIO_INTERNAL_HOSTED", None)
 
@@ -1657,8 +1745,12 @@ def run_ums_test():
                                capture_output=True, cwd=str(PROJECT_ROOT), env=env)
                 subprocess.run([str(compiler_artifact), "build", "src/main.psm", "-o", str(theirs)],
                                capture_output=True, cwd=str(PROJECT_ROOT), env=env)
+                # Each reads the library of its own toolchain, so the paths its failure messages
+                # name -- and the names and lengths of those strings -- are the only differences allowed.
+                libraries = (Path(PRISMIO_EXE).resolve().parent.parent / "stdlib",
+                             PROJECT_ROOT / ".prismio" / "build" / "stdlib")
                 if (not ours.is_file() or not theirs.is_file()
-                        or ours.read_bytes() != theirs.read_bytes()):
+                        or without_library_paths(ours, libraries) != without_library_paths(theirs, libraries)):
                     print(f"{RED}[FAIL] ums: the compiler build.ums produces does not emit "
                           f"the IR the compiler under test emits{RESET}")
                     return False
@@ -1674,8 +1766,10 @@ def run_ums_test():
             expected_runtime = {"lang_runtime.bc", "lang_runtime.verify.bc",
                                 "program_support.bc", "program_support.verify.bc"}
             present = {p.name for p in local_runtime.glob("*.bc")}
-            std_sources = {p.stem for p in (PROJECT_ROOT / "std").glob("*.psm")}
-            local_plibs = {p.stem for p in local_stdlib.glob("*.plib")}
+            std_sources = {p.relative_to(PROJECT_ROOT / "std").with_suffix("").as_posix()
+                           for p in (PROJECT_ROOT / "std").rglob("*.psm")}
+            local_plibs = {p.relative_to(local_stdlib).with_suffix("").as_posix()
+                           for p in local_stdlib.rglob("*.plib")}
             if (not expected_runtime <= present
                     or not (build_root / "lib" / "runtime.hash").is_file()
                     or local_plibs != std_sources):
@@ -1718,7 +1812,7 @@ def run_ums_test():
                         rebuilt.add(line[len("[toolchain rebuilt] "):])
                 return run, reused, rebuilt
 
-            expected_entries = {"runtime"} | {f"std.{name}" for name in std_sources}
+            expected_entries = {"runtime"} | {f"std.{name.replace('/', '.')}" for name in std_sources}
 
             # Every stdlib key hashes the compiler binary, so a stdlib miss here
             # usually means the host relinked to different bytes. Which bytes is
@@ -1754,13 +1848,15 @@ def run_ums_test():
 
             # A missing artifact is not a stale one, and the key cannot see it:
             # the inputs are unchanged, so only the existence check stands
-            # between a hit and a toolchain with a hole in it.
-            missing_plib = local_stdlib / "option.plib"
+            # between a hit and a toolchain with a hole in it. A module no target of this
+            # project imports: the host compiles the compiler against this library, so a hole in
+            # a module it does import is repaired by `prismio bootstrap --promote` instead.
+            missing_plib = local_stdlib / "asm.plib"
             missing_bc = local_runtime / "program_support.verify.bc"
             missing_plib.unlink()
             missing_bc.unlink()
             repair_run, _, repaired = toolchain_trace(cache_env)
-            if (repaired != {"runtime", "std.option"}
+            if (repaired != {"runtime", "std.asm"}
                     or not missing_plib.is_file() or not missing_bc.is_file()):
                 print(f"{RED}[FAIL] ums: a deleted toolchain artifact was served "
                       f"from the stamp instead of rebuilt{RESET}")
@@ -1770,88 +1866,8 @@ def run_ums_test():
                 show_run(repair_run)
                 return False
 
-            # **Two producers, one format.** `tools/package.py` builds these for
-            # a release and `compiler_emit_local_toolchain` builds them here, so
-            # a flag or a header field can drift in one and not the other and
-            # nothing would say so -- the local toolchain would simply behave
-            # unlike the shipped one. Rather than restate the recipe a third time
-            # in this test, run the packaging code itself over the same compiler
-            # and compare bytes. One runtime module and one small standard
-            # library module is enough: the loops are shared, the recipes are not.
-            sys.path.insert(0, str(PROJECT_ROOT / "tools"))
-            try:
-                import package as packaging
-            finally:
-                sys.path.pop(0)
-            with tempfile.TemporaryDirectory(prefix="prismio-drift-") as drift_dir:
-                drift = Path(drift_dir)
-                (drift / "runtime").mkdir()
-                (drift / "stdlib").mkdir()
-                (drift / "work").mkdir()
-                pkg_clang = packaging.llvm_clang()
-                # package.py's main() sets the deployment floor before it builds the
-                # runtime bitcode on macOS; calling the builder directly has to do the
-                # same, or the "packaged" bitcode here lacks the version and SDK stamp
-                # every real package carries (and the project build lacked it too, so
-                # the two agreed on the wrong thing). Only the bitcode: the .plib code
-                # section is compared as the project builds it, with no variable set.
-                floor_before = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
-                if sys.platform == "darwin":
-                    os.environ["MACOSX_DEPLOYMENT_TARGET"] = packaging.MACOS_FLOOR
-                try:
-                    packaging.build_runtime_bitcode(
-                        pkg_clang, "lang_runtime.c", drift / "runtime", False)
-                finally:
-                    if floor_before is None:
-                        os.environ.pop("MACOSX_DEPLOYMENT_TARGET", None)
-                    else:
-                        os.environ["MACOSX_DEPLOYMENT_TARGET"] = floor_before
-                packaging.build_plib(pkg_clang, compiler_artifact,
-                                     PROJECT_ROOT / "std" / "option.psm",
-                                     drift / "stdlib", drift / "work")
-                drifted = [
-                    name for name, produced, packaged in (
-                        ("lib/runtime/lang_runtime.bc",
-                         local_runtime / "lang_runtime.bc",
-                         drift / "runtime" / "lang_runtime.bc"),
-                        ("stdlib/option.plib",
-                         local_stdlib / "option.plib",
-                         drift / "stdlib" / "option.plib"),
-                    )
-                    if produced.read_bytes() != packaged.read_bytes()
-                ]
-                if drifted:
-                    print(f"{RED}[FAIL] ums: the project-local toolchain and "
-                          f"tools/package.py disagree on {', '.join(drifted)}{RESET}")
-                    # Inside the `with`: the packaged copies are gone after it.
-                    # Bitcode is compared as IR, because a raw offset says
-                    # nothing -- and whether the two differ in a path clang
-                    # recorded or in code decides where the fix goes.
-                    llvm_dis = Path(pkg_clang).with_name(
-                        "llvm-dis.exe" if os.name == "nt" else "llvm-dis")
-                    produced_bc = local_runtime / "lang_runtime.bc"
-                    packaged_bc = drift / "runtime" / "lang_runtime.bc"
-                    if "lib/runtime/lang_runtime.bc" in drifted and llvm_dis.is_file():
-                        # `; ModuleID` is llvm-dis naming its input file.
-                        listings = [[line for line in subprocess.run(
-                                         [str(llvm_dis), str(bc), "-o", "-"],
-                                         capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.splitlines()
-                                     if not line.startswith("; ModuleID")]
-                                    for bc in (produced_bc, packaged_bc)]
-                        diff = list(difflib.unified_diff(
-                            listings[0], listings[1],
-                            "local", "package.py", n=0, lineterm=""))
-                        print("\n".join(diff[:24]) if diff
-                              else "the IR is identical; the bitcode encoding differs")
-                    print(f"local {produced_bc.stat().st_size} bytes, "
-                          f"package.py {packaged_bc.stat().st_size} bytes")
-            if drifted:
-                return False
-
-            # The behaviour all of that is for: a program *outside* the checkout,
-            # built by the project host. Outside, because `std.*` resolves from
-            # source by walking up from the entry file, so a fixture inside the
-            # repository would pass without a single PLIB being read.
+            # The behaviour all of that is for: a program outside the checkout,
+            # built by the project host against the toolchain built beside it.
             with tempfile.TemporaryDirectory(prefix="prismio-outside-") as outside_dir:
                 outside = Path(outside_dir) / "outside.psm"
                 outside.write_text(
@@ -6879,14 +6895,25 @@ def run_float_reductions_test():
     elif "reassoc" in strict_ir or "float reduction" in strict.stderr:
         problems.append("--strict-float left a reassoc mark")
 
-    library = os.environ.copy()
-    library["PRISMIO_REDUCTION_TRACE"] = "1"
-    library["PRISMIO_LIBRARY_MODULE"] = "std.float_text"
-    text, text_ir = build([], extra_env=library, target=PROJECT_ROOT / "std" / "float_text.psm")
-    if text.returncode != 0:
-        problems.append(f"std.float_text did not build: {text.stderr}")
-    elif "float reduction" in text.stderr or "reassoc" in text_ir:
-        problems.append("std.float_text takes a reduction mark")
+    with tempfile.TemporaryDirectory(prefix="prismio-float-plib-") as plib_dir:
+        plib = Path(plib_dir) / "float_text.plib"
+        env = dict(os.environ, PRISMIO_REDUCTION_TRACE="1", PRISMIO_INTERNAL_HOSTED="1")
+        text = subprocess.run([str(PRISMIO_EXE), "build", str(PROJECT_ROOT / "std" / "float_text.psm"),
+                               "--emit", "plib", "--module", "std.float_text", "-o", str(plib)],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
+                              cwd=str(PROJECT_ROOT))
+        llvm_dis = pinned_llvm_tool("llvm-dis")
+        if text.returncode != 0:
+            problems.append(f"std.float_text did not build: {text.stderr}")
+        elif "float reduction" in text.stderr:
+            problems.append("std.float_text takes a reduction mark")
+        elif llvm_dis:
+            code = Path(plib_dir) / "float_text.bc"
+            code.write_bytes(plib_sections(plib)[0][1])
+            shown = subprocess.run([str(llvm_dis), str(code), "-o", "-"], capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace")
+            if "reassoc" in shown.stdout:
+                problems.append("std.float_text takes a reduction mark")
 
     if problems:
         print(f"{RED}[FAIL] float reductions{RESET}")
@@ -7537,20 +7564,36 @@ def run_std_input_test():
     return True
 
 
+def library_toolchain(root, files):
+    """A toolchain under `root/toolchain` -- a copy of the compiler under test, its runtime, and a
+    `stdlib/` of the `std/...` files -- with every other file written under `root`. Returns the
+    compiler, which resolves `std.*` from that library."""
+    toolchain = root / "toolchain"
+    suffix = ".exe" if platform.system() == "Windows" else ""
+    compiler = toolchain / "bin" / ("layout-compiler" + suffix)
+    compiler.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PRISMIO_EXE, compiler)
+    shutil.copytree(Path(PRISMIO_EXE).resolve().parent.parent / "lib", toolchain / "lib")
+    for name, text in files.items():
+        target = toolchain / "stdlib" / name[len("std/"):] if name.startswith("std/") else root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return compiler
+
+
 def run_std_layout_test():
     """The tree a library is written as: nested modules, packages, sealing, and the two markers.
 
-    A Prismio checkout is faked (a `runtime/lang_runtime.c` beside a `std/`), because that marker
-    is what makes a directory's `std/` the library, and the library's own layout is what is under
-    test: `std.a.b` is `std/a/b.psm`, a directory with no file of its name is the modules inside it,
-    a path segment that begins with `_` seals a module to the library, the library index never
-    offers a sealed module, and a library file may carry the `module` header and `lang("id")`.
+    The library under test is a toolchain's `stdlib/` made of source, beside a copy of the compiler:
+    `std.a.b` is `a/b.psm`, a directory with no file of its name is the modules inside it, a path
+    segment that begins with `_` seals a module to the library, the library index never offers a
+    sealed module, and a library file may carry the `module` header and `lang("id")`. A module checked
+    on its own (`--module`) finds its siblings in its own tree.
     """
     print(f"\n{BLUE}--- Running std_layout ---{RESET}")
     problems = []
     exe_suffix = ".exe" if platform.system() == "Windows" else ""
     files = {
-        "runtime/lang_runtime.c": "",
         "std/string.psm": "public fn strMark() -> Int { return 1 }\n",
         "std/core/answer.psm": ("module prelude freestanding\n\n"
                                 "lang(\"answer\") public fn answer() -> Int { return 42 }\n"),
@@ -7596,14 +7639,11 @@ def run_std_layout_test():
     }
     with tempfile.TemporaryDirectory(prefix="prismio-std-layout-") as tmp:
         root = Path(tmp)
-        for name, text in files.items():
-            target = root / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8")
+        compiler = library_toolchain(root, files)
 
         def build(name):
             exe = root / "app" / (name + exe_suffix)
-            result = run_command([str(PRISMIO_EXE), "build", str(root / "app" / (name + ".psm")), "-o", str(exe)])
+            result = run_command([str(compiler), "build", str(root / "app" / (name + ".psm")), "-o", str(exe)])
             return result, exe
 
         for name in ("ok", "selected", "wholepackage"):
@@ -7635,10 +7675,21 @@ def run_std_layout_test():
         refused("suggest_sealed", ["unknown"], absent=["std._hidden"])
         # A file and a directory of one name: the import means the file alone.
         refused("inner", ["bothInner"])
+
+        # A module checked on its own reads its siblings from its own tree, not the library beside
+        # the compiler: `std.edited` is in this tree and nowhere in the library.
+        tree = root / "tree"
+        for name, text in {"std/edited.psm": "public fn edited() -> Int { return 2 }\n",
+                           "std/user.psm": "import std.edited\n\npublic fn use2() -> Int { return edited() }\n"}.items():
+            (tree / name).parent.mkdir(parents=True, exist_ok=True)
+            (tree / name).write_text(text, encoding="utf-8")
+        alone = run_command([str(compiler), "check", str(tree / "std" / "user.psm"), "--module", "std.user"])
+        if alone.returncode != 0:
+            problems.append("check --module did not read the entry's own tree: "
+                            + (alone.stdout + alone.stderr).strip()[:400])
     # The compiler asks for a library item by its marker, never by its name: a library that calls the
     # equality trait `Same` and the pair type `Pair` is the library, and `==` and `(a, b)` still work.
     renamed = {
-        "runtime/lang_runtime.c": "",
         "std/string.psm": "public fn strMark() -> Int { return 1 }\n",
         "std/core/cmp.psm": ("lang(\"eq\") trait Same {\n"
                              "    lang(\"eq.eq\") fn same(self, other: Self) -> Bool\n"
@@ -7659,19 +7710,15 @@ def run_std_layout_test():
                             "}\n"),
     }
     missing = {
-        "runtime/lang_runtime.c": "",
         "std/string.psm": "public fn strMark() -> Int { return 1 }\n",
         "app/missing.psm": "fn main() -> Int {\n    let t = (1, 2)\n    return t.0 - 1\n}\n",
     }
     for label, tree, program, want in (("renamed items", renamed, "renamed", None),
                                        ("missing item", missing, "missing", "the standard library declares no")):
         with tempfile.TemporaryDirectory(prefix="prismio-lang-items-") as tmp2:
-            for name, text in tree.items():
-                target = Path(tmp2) / name
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(text, encoding="utf-8")
+            compiler = library_toolchain(Path(tmp2), tree)
             exe = Path(tmp2) / "app" / (program + exe_suffix)
-            result = run_command([str(PRISMIO_EXE), "build", str(Path(tmp2) / "app" / (program + ".psm")), "-o", str(exe)])
+            result = run_command([str(compiler), "build", str(Path(tmp2) / "app" / (program + ".psm")), "-o", str(exe)])
             output = result.stdout + result.stderr
             if want is None:
                 if result.returncode != 0:
@@ -9073,6 +9120,23 @@ def run_target_test():
                         "codegen is not reading the target's pointer width")
     if "declare ptr @rt_base_alloc(i64)" not in host_ir:
         problems.append("the allocator does not take a 64-bit size on the host")
+    # std.io's own code, as the library module a wasm32 package carries: the program above links it
+    # compiled rather than emitting it.
+    with tempfile.TemporaryDirectory(prefix="prismio-wasm-io-") as io_dir:
+        plib = Path(io_dir) / "io.plib"
+        emitted = run_command([str(PRISMIO_EXE), "build", str(PROJECT_ROOT / "std" / "io.psm"),
+                               "--emit", "plib", "--module", "std.io", "--target", "wasm32-unknown-unknown",
+                               "-o", str(plib)])
+        llvm_dis = pinned_llvm_tool("llvm-dis")
+        sections = plib_sections(plib) if emitted.returncode == 0 else None
+        if sections is None:
+            problems.append(f"std.io did not compile for wasm32: {emitted.stderr[-300:]}")
+        elif llvm_dis:
+            code = Path(io_dir) / "io.bc"
+            code.write_bytes(sections[1][1])
+            wasm_ir = wasm_ir + subprocess.run(
+                [str(llvm_dis), str(code), "-o", "-"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace").stdout
     if not re.search(r"= (zext|sext) i32 %\d+ to i64", wasm_ir):
         problems.append("no widening cast in the wasm32 module: sema still "
                         "believes Isize/Usize are 64-bit while codegen emits 32, "
@@ -9158,10 +9222,9 @@ def run_target_test():
             problems.append("the host runtime bitcode build failed")
         if cross.returncode == 0:
             problems.append("a wasm32 build silently reused host runtime bitcode")
-        for module in ("lang_runtime.bc", "program_support.bc"):
-            expected = f"runtime/wasm32-unknown-unknown/{module}"
-            if expected not in cross_output:
-                problems.append(f"the missing-target diagnostic did not name `{expected}`")
+        expected = "lib/runtime/wasm32-unknown-unknown/*.bc"
+        if expected not in cross_output:
+            problems.append(f"the missing-target diagnostic did not name `{expected}`")
         if "Reinstall Prismio and try again" not in cross_output:
             problems.append("missing target runtime bitcode did not recommend reinstalling Prismio")
 
@@ -12792,18 +12855,29 @@ def run_curated_closure_test():
     return True
 
 
-def plib_sections(path):
-    """A PLIB v3's code sections as (triple, normal bitcode), or None.
+def pinned_llvm_tool(name):
+    """A tool of the LLVM this compiler is built on (third_party/llvm-paths.json), or None."""
+    llvm_paths = PROJECT_ROOT / "third_party" / "llvm-paths.json"
+    try:
+        llvm_bin = Path(json.loads(llvm_paths.read_text())["bin"])
+    except (KeyError, ValueError, OSError):
+        return None
+    candidate = llvm_bin / (name + ".exe" if os.name == "nt" else name)
+    return candidate if candidate.is_file() else None
 
-    The layout runtime/build_driver.c reads and tools/package.py writes: a 24-byte
-    header, the module name and interface, then per section a 20-byte header,
-    the triple, and the normal and verify bitcode.
+
+def plib_sections(path):
+    """A PLIB v4's code sections as (triple, normal bitcode), or None.
+
+    The layout runtime/build_driver.c reads and writes: a 28-byte header, the module name, the
+    metadata and interface, then per section a 20-byte header, the triple, and the normal and
+    verify bitcode.
     """
     data = path.read_bytes()
-    if data[:8] != b"PRPLIB3\n" or len(data) < 24:
+    if data[:8] != b"PRPLIB4\n" or len(data) < 28:
         return None
-    module_len, interface_len, count = struct.unpack_from("<IQI", data, 8)
-    at = 24 + module_len + interface_len
+    module_len, meta_len, interface_len, count = struct.unpack_from("<IIQI", data, 8)
+    at = 28 + module_len + meta_len + interface_len
     sections = []
     for _ in range(count):
         if at + 20 > len(data):
@@ -12815,6 +12889,13 @@ def plib_sections(path):
         sections.append((triple, data[at:at + code_len]))
         at += code_len + verify_len
     return sections if at == len(data) else None
+
+
+def plib_meta(path):
+    """A PLIB v4's metadata lines."""
+    data = path.read_bytes()
+    module_len, meta_len = struct.unpack_from("<II", data, 8)
+    return data[28 + module_len:28 + module_len + meta_len].decode("utf-8", "replace").splitlines()
 
 
 def run_plib_triple_sections(compiler_source, work, env, llvm_dis, problems):
@@ -12936,17 +13017,24 @@ def run_module_artifact_test():
                for name in ("runtime.a", "runtime.lib", "runtime.bc")):
             problems.append("a monolithic runtime archive/bitcode artifact was shipped")
 
-        expected_std = {path.with_suffix(".plib").name
-                        for path in (PROJECT_ROOT / "std").glob("*.psm")}
-        actual_std = {path.name for path in (dist / "stdlib").glob("*.plib")}
+        expected_std = {path.relative_to(PROJECT_ROOT / "std").with_suffix(".plib").as_posix()
+                        for path in (PROJECT_ROOT / "std").rglob("*.psm")}
+        actual_std = {path.relative_to(dist / "stdlib").as_posix()
+                      for path in (dist / "stdlib").rglob("*.plib")}
         if actual_std != expected_std:
-            problems.append("stdlib PLIB set does not match std/*.psm")
-        if list((dist / "stdlib").glob("*.psm")):
+            problems.append("stdlib PLIB set does not match std/**/*.psm")
+        if list((dist / "stdlib").rglob("*.psm")):
             problems.append("standard-library source files were shipped")
-        for plib in (dist / "stdlib").glob("*.plib"):
+        option = next((dist / "stdlib").rglob("option.plib"), None)
+        if option is not None:
+            meta = plib_meta(option)
+            if "module freestanding" not in meta or not any(
+                    line.startswith("lang option_coalesce ") for line in meta):
+                problems.append(f"option.plib's metadata lacks its header or lang items: {meta}")
+        for plib in (dist / "stdlib").rglob("*.plib"):
             sections = plib_sections(plib)
             if sections is None:
-                problems.append(f"{plib.name} is not a PLIB v3 artifact")
+                problems.append(f"{plib.name} is not a PLIB v4 artifact")
             elif [triple for triple, _ in sections] != [""]:
                 problems.append(f"{plib.name} carries sections {[t for t, _ in sections]} "
                                 "from a package run that named no --target")
@@ -12980,16 +13068,7 @@ def run_module_artifact_test():
         # Production bitcode uses an immutable layout constructor. The mutable
         # post-construction stamp exists only under PRISMIO_BOOTSTRAP_COMPAT so
         # a preceding compiler generation can build the next one.
-        llvm_paths = PROJECT_ROOT / "third_party" / "llvm-paths.json"
-        llvm_dis = None
-        if llvm_paths.is_file():
-            try:
-                llvm_bin = Path(json.loads(llvm_paths.read_text())["bin"])
-                candidate = llvm_bin / ("llvm-dis.exe" if os.name == "nt" else "llvm-dis")
-                if candidate.is_file():
-                    llvm_dis = candidate
-            except (KeyError, ValueError, OSError):
-                pass
+        llvm_dis = pinned_llvm_tool("llvm-dis")
         if llvm_dis:
             runtime_ir = wd / "lang_runtime.ll"
             disassembled = subprocess.run(
@@ -13219,6 +13298,7 @@ def main():
         ("source_not_utf8", run_source_not_utf8_test),
         ("ums", run_ums_test),
         ("ums_project", run_ums_project_test),
+        ("ums_after", run_ums_after_test),
         ("workloads", run_workloads_test),
         ("aif_tiers", run_aif_test),
         ("aif_human_report", run_aif_human_report_test),

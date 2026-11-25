@@ -24,6 +24,7 @@ project host).
 import argparse
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -40,9 +41,20 @@ def run_index(compiler, entry, out, extra=()):
     return result
 
 
+def source_bytes(path):
+    """A file's text; for a compiled library module, the interface it carries (PLIB v4,
+    runtime/build_driver.c), which is the text the index's positions are in."""
+    data = Path(path).read_bytes()
+    if path.endswith(".plib") and data[:8] == b"PRPLIB4\n":
+        module_len, meta_len, interface_len = struct.unpack_from("<IIQ", data, 8)
+        start = 28 + module_len + meta_len
+        return data[start:start + interface_len]
+    return data
+
+
 def span_text(lines_cache, path, line, col, length):
     if path not in lines_cache:
-        lines_cache[path] = Path(path).read_bytes().split(b"\n")
+        lines_cache[path] = source_bytes(path).split(b"\n")
     lines = lines_cache[path]
     if line < 1 or line > len(lines):
         return None

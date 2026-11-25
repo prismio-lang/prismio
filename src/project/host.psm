@@ -19,6 +19,7 @@ import ums.model.workspace
 import ums.model.diagnostic
 import ums.targets.target
 import project.ums_cli
+import project.commands
 import std.fs
 import common.native
 import common.diag_codes
@@ -80,32 +81,6 @@ private fn announceToolchain(kind: String, path: String) {
     diag_styled_err("dim", "Using ".concat(kind, " toolchain: ", path, "\n"))
 }
 
-// The rest of the toolchain, beside the host that was just built.
-//
-// A compiler alone in a build directory can build itself and nothing else: the
-// runtime is installed bitcode with no source fallback, and `lib/runtime` is
-// looked for beside the executable. So the host's own build produces the
-// libraries next to it, which is also what makes a `std/` or `runtime/` edit
-// reach the next program the project builds -- the reason to pin a host at all.
-//
-// The toolchain root is the profile directory's parent, so `.prismio/build`
-// holds `debug/prismio`, `lib/runtime/*.bc` and `stdlib/*.plib` in exactly the
-// shape an install has.
-private fn emitUmsToolchainLibraries(hostPath: String, compilerPath: String) -> Int {
-    let root = directoryOf(directoryOf(hostPath))
-    let modules = compiler_emit_local_toolchain(root, compilerPath)
-    if (modules < 0) {
-        diag_error_code(DIAG_PROJECT_HOST_WITHOUT_RUNTIME, "the project compiler was built without its runtime and standard library")
-        diag_note("it can build itself and nothing else until this succeeds")
-        return 1
-    }
-    if (modules > 0 and cliWantsMachineOutput() == false) {
-        diag_styled_err("dim", "local toolchain: ".concat(root, " (", modules.toString(),
-                                                          " standard-library modules)\n"))
-    }
-    return 0
-}
-
 // Compared by output path, because the output path is what buildUmsHostTarget
 // replaces and `toolchain.host` names a file rather than a target.
 public fn isUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget) -> Bool {
@@ -130,9 +105,6 @@ public fn buildUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget,
         return 1
     }
 
-    // The runtime and standard library built beside the host come from this
-    // project's checkout, whatever directory the command was run from.
-    compiler_set_toolchain_root(workspace.project.root)
     let built = compileSource(target.sourcePath, candidate.clone(), options)
     if (built != 0) {
         deleteFile(candidate)
@@ -141,20 +113,18 @@ public fn buildUmsHostTarget(workspace: UmsWorkspace, target: UmsTarget,
     }
     if (replacesSelf) {
         if (checkUmsCompilerCandidate(candidate.clone()) != 0) { return 1 }
-        // The candidate emits the libraries, not the compiler running this: they
-        // have to be what the generation about to be promoted produces, and it
-        // has just been checked. The launcher renames it over this binary after
-        // this process exits, so the host path is still where it will live.
-        if (emitUmsToolchainLibraries(target.outputPath, candidate) != 0) { return 1 }
+        // The candidate runs the target's `after` steps, not the compiler running this: what
+        // they build has to come from the generation about to be promoted, which has just been
+        // checked. The launcher renames it over this binary after this process exits.
+        if (runUmsAfterSteps(workspace, target, candidate) != 0) { return 1 }
         print("staged project compiler: ")
         println(candidate)
         return 0
     }
     let promoted = promoteUmsCompilerCandidate(candidate, target.outputPath)
     if (promoted != 0) { return promoted }
-    // Promotion renamed the candidate onto the host path, so the two arguments
-    // are now one file.
-    return emitUmsToolchainLibraries(target.outputPath, target.outputPath)
+    // Promotion renamed the candidate onto the host path.
+    return runUmsAfterSteps(workspace, target, target.outputPath)
 }
 
 // A binary named `prismio` is the user-facing launcher. Named bootstrap

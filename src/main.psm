@@ -5,7 +5,7 @@ import aif.*
 import ums.ums
 
 import {ums_cli, host, commands} from project
-import {compile, imports, library_source} from driver
+import {compile, imports, library_source, plib} from driver
 import fmt.command
 import {scanner, token, dump_tokens} from lexer
 
@@ -93,6 +93,10 @@ let USAGE_DEVELOPER =
     """
     Compiler-development commands:
       prismio runtime-hash
+      prismio build <module.psm> --emit plib --module <name> [--target <triple>]...
+                    [--freestanding-target <triple>]... -o <out.plib>
+                                   precompile one library module; a freestanding target gets a
+                                   section only when the module's header says it is freestanding
       prismio dump-ast <source.psm>
       prismio aif <source.psm> [--manifest] [--summary] [--layout] [--copyable-collections]
                                [--theta-fields] [--budget=N] [--target <triple>]
@@ -180,7 +184,7 @@ private fn cliVersion() -> Int {
     // library found is the single most useful thing this can tell you.
     print("compiler ")
     println(executableDirectory())
-    let stdRoot = standardModulePath(".", "string.psm")
+    let stdRoot = standardModulePath("string.psm")
     print("stdlib ")
     if (stdRoot.equals("")) {
         println("(none found)")
@@ -209,6 +213,71 @@ private fn cliHostAbi() -> Int {
     if (process.args.count != 3) { return 1 }
     if (process.args[2].equals(token) == false) { return 1 }
     return 0
+}
+
+// `prismio --internal-file-hash <file>...`: each file's content hash, one `<hash> <file>` line.
+// Hidden, for a build step that keys a cache on files -- the compiler binary among them.
+private fn cliFileHash() -> Int {
+    for i in 2..<process.args.count {
+        let hash = compiler_file_hash(process.args[i])
+        if (hash.equals("")) {
+            diag_error_code(DIAG_CLI_FILE_HASH_UNREADABLE, "cannot read ".concat(process.args[i]))
+            return 1
+        }
+        println(hash.concat(" ", process.args[i]))
+    }
+    return 0
+}
+
+// `prismio build <module.psm> --emit plib --module <name> ...` (driver/plib.psm).
+private fn cliEmitLibrary(path: String) -> Int {
+    let mut module = ""
+    let mut output = ""
+    let mut targets: Vec<String> = []
+    let mut freestandingTargets: Vec<String> = []
+    let mut at = 3
+    while (at < process.args.count) {
+        let option = process.args[at]
+        if (at + 1 >= process.args.count) {
+            diag_error_code(DIAG_CLI_EMIT_OPTION_NEEDS_VALUE, "`".concat(option, "` requires a value"))
+            return 1
+        }
+        let value = process.args[at + 1]
+        if (option.equals("--emit")) {
+            if (value.equals("plib") == false) {
+                diag_error_code(DIAG_CLI_UNKNOWN_EMIT_KIND, "`--emit` takes `plib`, not ".concat(diagQuote(value)))
+                return 1
+            }
+        } else if (option.equals("--module")) {
+            module = value.clone()
+        } else if (option.equals("--target")) {
+            targets.push(value.clone())
+        } else if (option.equals("--freestanding-target")) {
+            freestandingTargets.push(value.clone())
+        } else if (option.equals("-o")) {
+            output = value.clone()
+        } else {
+            diag_error_code(DIAG_CLI_EMIT_UNKNOWN_ARGUMENT, "unknown argument ".concat(diagQuote(option),
+                " for `--emit plib`"))
+            pointAtUsage()
+            return 1
+        }
+        at = at + 2
+    }
+    if (module.equals("") or output.equals("")) {
+        diag_error_code(DIAG_CLI_EMIT_NEEDS_MODULE_AND_OUTPUT, "`--emit plib` needs `--module <name>` and `-o <out.plib>`")
+        pointAtUsage()
+        return 1
+    }
+    return emitPlib(path, module, targets, freestandingTargets, output)
+}
+
+private fn cliEmitRequested() -> Bool {
+    for i in 3..<process.args.count {
+        if (process.args[i].equals("--emit")) { return true }
+        if (process.args[i].equals("--")) { return false }
+    }
+    return false
 }
 
 // The hash of the runtime sources on disk. tools/package.sh records it beside
@@ -435,6 +504,9 @@ fn main() -> Int {
     // is what *this* executable emits against, and a forwarded answer would
     // describe the project host being asked about rather than the compiler
     // asked. It is also what stops the launcher's own probe from recursing.
+    if (process.args.count >= 2 and process.args[1].equals("--internal-file-hash")) {
+        return cliFileHash()
+    }
     if (process.args.count >= 2 and process.args[1].equals("--internal-host-abi")) {
         return cliHostAbi()
     }
@@ -522,6 +594,8 @@ fn main() -> Int {
     if ((first.equals("build") or first.equals("run")) and projectMode) {
         return buildUmsProject(projectRequest(2, first), first.equals("run"))
     }
+
+    if (first.equals("build") and cliEmitRequested()) { return cliEmitLibrary(process.args[2]) }
 
     let options = compileOptions()
     let mut path = ""

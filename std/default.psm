@@ -17,7 +17,7 @@
 // T.default() }` asks for the caller's type's own value; the bound is what makes
 // `T.default()` a promise rather than a hope. The builtin types below answer
 // with the value the keyword gives them, so a bound on `Default` admits them.
-
+module freestanding(runtime)
 import std.copy
 import std.string
 

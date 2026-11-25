@@ -12,7 +12,7 @@
 //   ucd/DerivedNormalizationProps.txt    sha256 98ac7f67d985fe781e317f6182e885e94cabb0c314769e6dd73e48b226931ccd
 //   ucd/auxiliary/GraphemeBreakProperty.txt sha256 0839dcb79e4ac639ecd538b1abf7c9d22e3f9dd265b7e182d33627aa4d75b45a
 //   ucd/emoji/emoji-data.txt             sha256 80d00f8e616a0ef27fd6b8de3b758c06383b5d917e2977709578e68baf733bf1
-// Generator:       tools/generate_unicode_tables.py sha256 c30768d0320e2f471636ef734004f185d3a4e4262be3a8186ec0fb7dcc262893
+// Generator:       tools/generate_unicode_tables.py sha256 113b9f24b588a189938bef64ca931d8e4bf875d93e27c389529fc0cee56a4d7b
 //
 // Each table is a RangeTable: an array literal of sorted, disjoint scalar
 // ranges, binary-searched. Compiled, it is one constant in .rodata that the
@@ -21,7 +21,7 @@
 // Public rather than `internal`: `internal` is package-scoped and a
 // standard-library module is its own package, so std.unicode could not see
 // these otherwise. The `unicode` prefix is what keeps them out of the way.
-
+module freestanding(runtime)
 import std.string
 
 public fn unicodeVersion() -> String { return "18.0.0" }

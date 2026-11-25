@@ -1,0 +1,79 @@
+// `prismio build <module.psm> --emit plib --module <name>`: one library module precompiled.
+//
+// One process writes the whole `.plib`: the module's source as its interface, its header words and
+// lang items as metadata, and a code section for the host and for each target asked for, each
+// compiled normally and under `--verify` (runtime/build_driver.c holds the format). A
+// `--freestanding-target` gets a section only when the module's header says it is freestanding, so
+// the packaging step names triples and never modules.
+
+import ir.context
+import std.string
+import std.fs
+import std.vec
+import ast.module_header
+import common.diagnostics
+import common.source_files
+import common.library_emission
+import common.target
+import common.native
+import common.diag_codes
+import driver.compile
+import driver.imports
+import symbols.library
+
+public fn emitPlib(source: String, module: String, targets: Vec<String>,
+                   freestandingTargets: Vec<String>, output: String) -> Int {
+    setLibraryEmissionModule(module)
+    setEntryModuleName(module)
+    compiler_plib_begin()
+
+    // The host first: compiling it is also what reads the header that decides the other sections.
+    if (emitPlibSection(source, "", output) != 0) { return 1 }
+    let header = diag_file_header(diag_add_file(source, ""))
+
+    for target in targets {
+        if (emitPlibSection(source, target, output) != 0) { return 1 }
+    }
+    if (headerIsFreestanding(header)) {
+        for target in freestandingTargets {
+            if (emitPlibSection(source, target, output) != 0) { return 1 }
+        }
+    }
+
+    let mut meta = "".clone()
+    let words = headerWords(header)
+    if (words.equals("") == false) { meta = "module ".concat(words, "\n") }
+    meta = meta.concat(libraryLangMeta(readFile(source)))
+    if (compiler_plib_write(output, module, meta, source) != 0) {
+        diag_error_code(DIAG_DRIVER_PLIB_NOT_WRITTEN, "cannot write ".concat(diagQuote(output)))
+        return 1
+    }
+    return 0
+}
+
+// One target's section ("" for the host): the module's IR as a build and as a `--verify` build
+// emit it.
+private fn emitPlibSection(source: String, target: String, output: String) -> Int {
+    if (targetSelect(target) == false) {
+        diag_error_code(DIAG_DRIVER_PLIB_UNKNOWN_TARGET, "unknown target triple ".concat(diagQuote(target)))
+        return 1
+    }
+    let normal = compiler_temp_private_path(output, "plib.ll")
+    let verify = compiler_temp_private_path(output, "plib.verify.ll")
+    let mut status = emitPlibIr(source, normal, false)
+    if (status == 0) { status = emitPlibIr(source, verify, true) }
+    if (status == 0 and compiler_plib_add_section(target, normal, verify) != 0) { status = 1 }
+    deleteFile(normal)
+    deleteFile(verify)
+    return status
+}
+
+private fn emitPlibIr(source: String, irFile: String, verify: Bool) -> Int {
+    ir_renew_context()
+    irResetNameCounters()
+    let options = compileOptions()
+    options.verify = verify
+    options.installedRuntime = false
+    options.quiet = true
+    return compileSource(source, irFile, options)
+}

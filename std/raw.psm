@@ -19,7 +19,7 @@
 // **Nothing here checks anything.** An address is a number, and a load or store
 // through a bad one is as undefined as it is in C. What the builtins do refuse, at
 // compile time, is a value of the wrong width.
-
+module freestanding
 // An address and the pointer it names, for the two places a program holds one as a
 // number: handing a `String` or a struct to code that works in addresses, and
 // turning an address back into something the language can pass on. Neither moves

@@ -127,6 +127,10 @@ int prismio_llvm_run_default_half(LLVMModuleRef module, LLVMTargetMachineRef mac
 // LLVMLinkModules2 with Linker::LinkOnlyNeeded: only the definitions `dst`
 // declares, and what they reach, are linked. Consumes `src`. 0 on success.
 int prismio_llvm_link_only_needed(LLVMModuleRef dst, LLVMModuleRef src);
+
+// `module` as bitcode with its use-list order kept, which is how clang writes a module and
+// which LLVM-C cannot ask for. The caller disposes the buffer.
+LLVMMemoryBufferRef prismio_llvm_write_bitcode(LLVMModuleRef module);
 #ifdef __cplusplus
 }
 #endif

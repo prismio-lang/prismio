@@ -10,7 +10,7 @@
 //
 // Meant for freestanding programs (`--freestanding`), where a kernel talks to the
 // hardware directly; an ordinary process is not allowed to execute either.
-
+module freestanding
 lang("port_access") public fn portInU8(port: U16) -> U8 { return __builtin_port_in_u8(port) }
 lang("port_access") public fn portInU16(port: U16) -> U16 { return __builtin_port_in_u16(port) }
 lang("port_access") public fn portInU32(port: U16) -> U32 { return __builtin_port_in_u32(port) }

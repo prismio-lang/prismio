@@ -22,6 +22,7 @@ import ums.dependency.resolve
 import common.target
 import project.host
 import project.commands
+import project.commands
 import std.fs
 import build.BUILD_VERSION
 import common.native
@@ -179,7 +180,7 @@ public fn umsNativePath(root: String, value: String) -> String {
 // symbols. Cleared first, because a project may build several executables in
 // one compiler process and native inputs belong to exactly the target that
 // declared them. Every path is resolved against the manifest's directory.
-private fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
+internal fn configureUmsTargetLink(root: String, target: UmsTarget) -> Int {
     compiler_link_reset()
     let mut failed = 0
     for i in 0..<target.links.length {
@@ -295,7 +296,9 @@ public fn buildUmsTarget(workspace: UmsWorkspace, target: UmsTarget) -> Int {
     if (isUmsHostTarget(workspace, target)) {
         return buildUmsHostTarget(workspace, target, options)
     }
-    return compileSource(target.sourcePath, target.outputPath, options)
+    let built = compileSource(target.sourcePath, target.outputPath, options)
+    if (built != 0) { return built }
+    return runUmsAfterSteps(workspace, target, target.outputPath)
 }
 
 // What a project verb was asked for, once its arguments are read: the profile,

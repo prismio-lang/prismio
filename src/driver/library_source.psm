@@ -1,6 +1,6 @@
 // `prismio library-source <file.plib> <module>`: the source a compiled library module carries.
 //
-// A `.plib` is binary (PRPLIB3, driver/imports.psm) and a Prismio `String` cannot hold its header,
+// A `.plib` is binary (PRPLIB4, runtime/build_driver.c) and a Prismio `String` cannot hold its header,
 // which has NUL bytes in it, so a program that is not the compiler cannot read the interface out of
 // one. The index names a library declaration by line and column of that interface text; a language
 // server that wants to show the declaration asks for the text here and writes it where an editor can

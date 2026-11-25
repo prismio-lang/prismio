@@ -41,6 +41,7 @@ import symbols.declarations
 from common import {diagnostics, source_files}
 from ast import {nodes, fn_attrs, types}
 from std import {option, process, string}
+import common.library_emission
 import common.native
 import common.source_files
 
@@ -172,7 +173,7 @@ private fn pruneIsRoot(func: ASTNode) -> Bool {
 // archive would come out empty.
 public fn pruneUnreachableLibrary(module: ASTNode) {
     if (pruneEnabled() == false) { return }
-    if (compiler_library_emission_module().equals("") == false) { return }
+    if (emittingLibrary()) { return }
     pruneModulePtr = node_to_ptr(module)
     let mut indexPtr = module.child1
     while (nodeExists(indexPtr)) {

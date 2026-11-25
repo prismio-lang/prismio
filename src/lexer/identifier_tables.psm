@@ -9,7 +9,7 @@
 //   ucd/DerivedCoreProperties.txt        sha256 09c928886a178fcafd93c29e4bd59073a058e5a100b716d425cb563ab50f68c9
 //   security/IdentifierStatus.txt        sha256 5863c7d99ca18f213c41c7318aa5528bebfb6d32ec0f1d5944e37192c119aebd
 //   security/confusables.txt             sha256 6ed3ee967c9dfdf6677d563c9985182fbc50a2efb7d6059cd57b2e2ce18f5b92
-// Generator:       tools/generate_unicode_tables.py sha256 c30768d0320e2f471636ef734004f185d3a4e4262be3a8186ec0fb7dcc262893
+// Generator:       tools/generate_unicode_tables.py sha256 113b9f24b588a189938bef64ca931d8e4bf875d93e27c389529fc0cee56a4d7b
 //
 // XID_Start and XID_Continue: the closure-under-NFKC forms of ID_Start and
 // ID_Continue that UAX #31 recommends for identifiers. Prismio's profile of

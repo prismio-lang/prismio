@@ -18,6 +18,7 @@
 #ifdef PRISMIO_LLVM_BRIDGE
 
 #include <llvm/Analysis/LoopInfo.h>
+#include <llvm/Bitcode/BitcodeWriter.h>
 #include <llvm/Analysis/ScalarEvolution.h>
 #include <llvm/Analysis/ScalarEvolutionExpressions.h>
 #include <llvm/IR/Dominators.h>
@@ -70,6 +71,14 @@ extern "C" int prismio_llvm_materialize(LLVMValueRef function, char** error) {
 // body. LLVM-C has no deleteBody, and deleting a body block by block cannot reach
 // one that was never materialised: the function would stay materialisable, which
 // codegen reads as a definition with no blocks.
+extern "C" LLVMMemoryBufferRef prismio_llvm_write_bitcode(LLVMModuleRef module) {
+    std::string bytes;
+    llvm::raw_string_ostream out(bytes);
+    llvm::WriteBitcodeToFile(*llvm::unwrap(module), out, /*ShouldPreserveUseListOrder=*/true);
+    out.flush();
+    return LLVMCreateMemoryBufferWithMemoryRangeCopy(bytes.data(), bytes.size(), "library");
+}
+
 extern "C" void prismio_llvm_drop_body(LLVMValueRef function) {
     llvm::unwrap<llvm::Function>(function)->deleteBody();
 }

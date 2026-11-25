@@ -18,35 +18,43 @@ import std.string
 import std.vec
 import common.native
 
-// The directory the library's modules are read from, `std/` of a checkout or `stdlib/` of a
+// The directory the library's modules are read from, `std/` of a source tree or `stdlib/` of a
 // toolchain; "" when there is none to offer (a `--freestanding` program, or no library found).
 let mut libraryDirectory = ""
-// Filled on the first question, from `libraryDirectory`. Parallel columns: function `i` is
-// `libraryNames[i]` in module `libraryModules[libraryOwners[i]]`, and a module's own `std` imports
-// are `libraryImports[m]` as `;std.io;std.string;`.
+// The modules and their files, listed on the first question: module `m` is `libraryModules[m]` at
+// `libraryPaths[m]`.
 let mut libraryModules: Vec<String>
-let mut libraryImports: Vec<String>
-let mut libraryNames: Vec<String>
-let mut libraryOwners: Vec<Int>
-// The library's lang items (ast/lang_marks.psm), found in the same scan: `libraryLangIds[i]` is declared in
-// `libraryModules[libraryLangOwners[i]]`.
+let mut libraryPaths: Vec<String>
+let mut libraryListed = false
+// The library's lang items (ast/lang_marks.psm), read from each module's header facts:
+// `libraryLangIds[i]` is declared in `libraryModules[libraryLangOwners[i]]` as `libraryLangNames[i]`.
+// Every program that needs one asks, so this reads only the metadata of a compiled module.
 let mut libraryLangIds: Vec<String>
 let mut libraryLangOwners: Vec<Int>
 let mut libraryLangNames: Vec<String>
-let mut libraryScanned = false
+let mut libraryItemsRead = false
+// The free functions, read from interface text only when a name turns out to be unknown. Parallel
+// columns: function `i` is `libraryNames[i]` in module `libraryModules[libraryOwners[i]]`, and a
+// module's own `std` imports are `libraryImports[m]` as `;std.io;std.string;`.
+let mut libraryImports: Vec<String>
+let mut libraryNames: Vec<String>
+let mut libraryOwners: Vec<Int>
+let mut libraryFunctionsRead = false
 
-// Where the library is, for the compile about to run. The scan is redone for each directory, so
-// that a process that compiles twice never answers from the first one's library.
+// Where the library is, for the compile about to run. Everything is read again for each directory,
+// so that a process that compiles twice never answers from the first one's library.
 public fn libraryUseDirectory(directory: String) {
     libraryDirectory = directory.clone()
-    libraryScanned = false
+    libraryListed = false
+    libraryItemsRead = false
+    libraryFunctionsRead = false
 }
 
 // The library modules that declare a public free function `name`, in module order; empty when
 // none does or no library is known. The modules a program reaches into the machine through
 // (`std.raw` and its kind) are never offered: importing one is a decision, not a fix.
 public fn libraryModulesDeclaring(name: String) -> Vec<String> {
-    libraryScan()
+    libraryReadFunctions()
     let mut found: Vec<String> = []
     for i in 0..<libraryNames.length {
         if (libraryNames[i].equals(name) == false) { continue }
@@ -95,58 +103,94 @@ private fn libraryIsLowLevel(module: String) -> Bool {
         or module.equals("std.syscall")
 }
 
-private fn libraryScan() {
-    if (libraryScanned) { return }
-    libraryScanned = true
+private fn libraryList() {
+    if (libraryListed) { return }
+    libraryListed = true
     libraryModules = []
-    libraryImports = []
-    libraryNames = []
-    libraryOwners = []
-    libraryLangIds = []
-    libraryLangOwners = []
-    libraryLangNames = []
+    libraryPaths = []
     if (libraryDirectory.equals("")) { return }
-    libraryScanDirectory(libraryDirectory, "std")
+    libraryListDirectory(libraryDirectory, "std")
 }
 
 // The modules of one directory of the library, then of each directory below it. A path segment that
 // begins with `_` is sealed to the library (the driver refuses an import of it from outside), so a
 // program is never offered one.
-private fn libraryScanDirectory(directory: String, prefix: String) {
+private fn libraryListDirectory(directory: String, prefix: String) {
     for entry in listDirectory(directory) {
         if (entry.startsWith("_") or entry.startsWith(".")) { continue }
         let path = joinPath(directory, entry)
         if (directoryExists(path)) {
-            libraryScanDirectory(path, prefix.concat(".", entry))
+            libraryListDirectory(path, prefix.concat(".", entry))
             continue
         }
         let mut leaf = "".clone()
         if (entry.endsWith(".psm")) { leaf = entry.slice(0, entry.length - 4).clone() }
         if (entry.endsWith(".plib")) { leaf = entry.slice(0, entry.length - 5).clone() }
         if (leaf.equals("")) { continue }
-        let module = prefix.concat(".", leaf)
-        let mut text = "".clone()
-        if (entry.endsWith(".plib")) {
-            text = compiler_plib_interface(path, module)
+        libraryModules.push(prefix.concat(".", leaf))
+        libraryPaths.push(path.clone())
+    }
+}
+
+private fn libraryReadItems() {
+    if (libraryItemsRead) { return }
+    libraryItemsRead = true
+    libraryList()
+    libraryLangIds = []
+    libraryLangOwners = []
+    libraryLangNames = []
+    for m in 0..<libraryModules.length {
+        let mut meta = "".clone()
+        if (libraryPaths[m].endsWith(".plib")) {
+            meta = compiler_plib_meta(libraryPaths[m], libraryModules[m])
         } else {
-            text = readFile(path)
+            meta = libraryLangMeta(readFile(libraryPaths[m]))
         }
-        libraryScanModule(module, text, libraryIsLowLevel(module) == false)
+        for line in meta.split("\n") {
+            if (line.startsWith("lang ") == false) { continue }
+            let words = line.split(" ")
+            if (words.length != 3) { continue }
+            libraryLangIds.push(words[1].clone())
+            libraryLangOwners.push(m)
+            libraryLangNames.push(words[2].clone())
+        }
+    }
+}
+
+// The `lang <id> <name>` lines of a module's source, which a compiled module records in its metadata
+// (driver/plib.psm): one per column-0 marker.
+public fn libraryLangMeta(text: String) -> String {
+    let mut meta = "".clone()
+    for line in text.split("\n") {
+        let id = libraryLangMarkId(line)
+        if (id.equals("")) { continue }
+        meta = meta.concat("lang ", id, " ", libraryLangDeclaredName(line), "\n")
+    }
+    return meta
+}
+
+private fn libraryReadFunctions() {
+    if (libraryFunctionsRead) { return }
+    libraryFunctionsRead = true
+    libraryList()
+    libraryImports = []
+    libraryNames = []
+    libraryOwners = []
+    for m in 0..<libraryModules.length {
+        let mut text = "".clone()
+        if (libraryPaths[m].endsWith(".plib")) {
+            text = compiler_plib_interface(libraryPaths[m], libraryModules[m])
+        } else {
+            text = readFile(libraryPaths[m])
+        }
+        libraryScanModule(m, text, libraryIsLowLevel(libraryModules[m]) == false)
     }
 }
 
 // One module's free functions and its `std` imports, from its column-0 lines.
-private fn libraryScanModule(module: String, text: String, offerFunctions: Bool) {
-    let owner = libraryModules.length
-    libraryModules.push(module.clone())
+private fn libraryScanModule(owner: Int, text: String, offerFunctions: Bool) {
     let mut imports = ";".clone()
     for line in text.split("\n") {
-        let langId = libraryLangMarkId(line)
-        if (langId.equals("") == false) {
-            libraryLangIds.push(langId.clone())
-            libraryLangOwners.push(owner)
-            libraryLangNames.push(libraryLangDeclaredName(line))
-        }
         if (line.startsWith("import std.")) {
             let mut stop = 7
             while (stop < line.length and (libraryIsNameByte(line.byteAt(stop)) or line.byteAt(stop) == 46)) {
@@ -190,7 +234,7 @@ private fn libraryLangDeclaredName(line: String) -> String {
 
 // The declared name of a lang item as the library text says, or "" when the library has none.
 public fn libraryLangName(id: String) -> String {
-    libraryScan()
+    libraryReadItems()
     for i in 0..<libraryLangIds.length {
         if (libraryLangIds[i].equals(id)) { return libraryLangNames[i].clone() }
     }
@@ -200,7 +244,7 @@ public fn libraryLangName(id: String) -> String {
 // The library module that declares a lang item, or "" when none does or no library is known. Asked when
 // a program needs an item whose module it never imported, to name the import that supplies it.
 public fn libraryLangModule(id: String) -> String {
-    libraryScan()
+    libraryReadItems()
     for i in 0..<libraryLangIds.length {
         if (libraryLangIds[i].equals(id)) { return libraryModules[libraryLangOwners[i]].clone() }
     }

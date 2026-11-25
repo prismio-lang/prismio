@@ -48,7 +48,6 @@ public extern fn compiler_installed_runtime_hash() -> String produce(rt_free)
 // process's), and answers its exit status, or -1 when it could not be started.
 public extern fn compiler_spawn_arg(argument: String borrow)
 public extern fn compiler_spawn_wait(program: String borrow, directory: String borrow) -> Int
-public extern fn compiler_library_emission_module() -> String produce(rt_free)
 // `-g`. Two things the driver does differently once the module carries debug
 // info: the object step drops to -O0, and on Darwin a .dSYM is written before
 // the object -- which is where Mach-O keeps the DWARF -- is deleted.
@@ -68,7 +67,23 @@ public extern fn compiler_jit_run(irFile: String borrow, programName: String bor
 // first EXTERN_FUNCTION of a given name and drops the rest, which is what lets
 // each module name the externs it actually uses.
 public extern fn compiler_plib_interface(path: String borrow, module: String borrow) -> String produce(rt_free)
+// The interface, and the module's code recorded for the link.
+public extern fn compiler_plib_import(path: String borrow, module: String borrow) -> String produce(rt_free)
+// Whether the module carries code for the target being built.
+public extern fn compiler_plib_covers_target(path: String borrow, module: String borrow) -> Int
+// The module's header words and lang items, without reading its interface.
+public extern fn compiler_plib_meta(path: String borrow, module: String borrow) -> String produce(rt_free)
 public extern fn compiler_plib_error() -> String produce(rt_free)
+// `--emit plib`: sections are added one target at a time, then the file is written.
+// Each section's module is generated in an LLVM context of its own.
+public extern fn ir_renew_context()
+public extern fn compiler_plib_begin()
+public extern fn compiler_plib_add_section(triple: String borrow, irPath: String borrow,
+                                      verifyIrPath: String borrow) -> Int
+public extern fn compiler_plib_write(output: String borrow, module: String borrow, meta: String borrow,
+                                      sourcePath: String borrow) -> Int
+// FNV-1a of a file's bytes as 16 hex digits; "" when it cannot be read.
+public extern fn compiler_file_hash(path: String borrow) -> String produce(rt_free)
 public extern fn compiler_use_freestanding_runtime()
 public extern fn compiler_publish_file(fromPath: String, toPath: String) -> Int
 // LAYOUT 3.2. Runs a workload driver with no argv and a wall-clock bound, so W2's
@@ -96,14 +111,6 @@ public extern fn compiler_program_on_path(name: String borrow) -> Int
 public extern fn compiler_check_executable(exeFile: String borrow) -> Int
 // Asks `exeFile --internal-host-abi` with this compiler's own token.
 public extern fn compiler_check_host_abi(exeFile: String borrow) -> Int
-// Builds `<root>/lib/runtime/*.bc` and `<root>/stdlib/*.plib` with `compiler`,
-// from the Prismio checkout that compiler was found in. Returns how many
-// standard-library modules the toolchain now has -- rebuilt here or reused from
-// `<root>/lib/toolchain.stamp`, which records what each artifact was built from
-// so an unchanged input is not built twice -- 0 when there is no checkout to
-// build them from, and -1 on failure. Reads both paths and keeps neither.
-public extern fn compiler_emit_local_toolchain(root: String borrow,
-                                        compiler: String borrow) -> Int
 // The command line, forwarded as an argument vector; answers the host's status.
 public extern fn compiler_forward_cli(host: String borrow) -> Int
 // `<host>.trusted`, written when this machine promotes a host, and whether the
@@ -112,9 +119,6 @@ public extern fn compiler_host_stamp_matches(host: String borrow) -> Int
 public extern fn compiler_host_stamp_write(host: String borrow) -> Int
 public extern fn compiler_promote_executable(candidateFile: String borrow,
                                       activeFile: String borrow) -> Int
-// The checkout a toolchain host's runtime and standard library are built from:
-// the project's own root, before any search relative to the working directory.
-public extern fn compiler_set_toolchain_root(root: String borrow)
 public extern fn compiler_is_current_executable(path: String borrow) -> Int
 public extern fn compiler_is_hosted() -> Int
 // A target's linker and native-compile inputs, recorded one at a time and

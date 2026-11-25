@@ -1,0 +1,489 @@
+// The rest of a toolchain beside a compiler: the runtime bitcode, the freestanding sources and the
+// standard library precompiled -- what lives under `<out>/lib` and `<out>/stdlib`. The one place that
+// says what a Prismio toolchain carries; the compiler binary knows none of it.
+//
+//     toolchain_layout --compiler <prismio> --out <dir> [--target <triple>]...
+//                      [--sysroot <triple>=<path>]... [--freestanding-target <triple>]...
+//
+// Run from the checkout root: this checkout's build runs it (build.ums, the compiler targets' `after`
+// step) and tools/package.py runs it for a release. `std/` is walked as a tree and each module is
+// compiled by `<prismio> build --emit plib`; a freestanding target gets a section only in the modules
+// whose header says they are freestanding.
+//
+// **Incremental.** `<out>/lib/toolchain.stamp` records the key each artifact was built from -- its
+// source's hash, the compiler's, the targets -- so a build that changed neither rebuilds nothing, and
+// a new compiler rebuilds every module. PRISMIO_TOOLCHAIN_CACHE=0 rebuilds everything;
+// PRISMIO_TOOLCHAIN_CACHE_TRACE=1 says for each artifact whether it was reused.
+
+import std.io
+import std.fs
+import std.string
+import std.vec
+import std.process
+import std.platform
+import std.json
+import std.option
+
+// Compiled into every program a build links. tools/check_source_lists.py holds it to
+// prismio_toolchain_files[] in runtime/build_driver.c.
+let RUNTIME_MODULES = "lang_runtime program_support"
+
+// The macOS a toolchain is built for: PRISMIO_MACOS_FLOOR in runtime/llvm-api-backend.c, held equal
+// by tools/check_source_lists.py.
+let MACOS_FLOOR = "11.0"
+
+let STAMP_HEADER = "prismio-toolchain-stamp 2"
+
+struct Layout {
+    compiler: String,
+    out: String,
+    root: String,
+    targets: Vec<String>,
+    sysroots: Vec<String>,
+    freestandingTargets: Vec<String>,
+    // The stamp read from the last run, and the one this run is writing.
+    recorded: String,
+    stamp: String,
+    bypass: Bool,
+    trace: Bool
+}
+
+fn fail(message: String) -> Int {
+    eprintln("toolchain_layout: ".concat(message))
+    return 1
+}
+
+fn report(self: Layout, verdict: String, name: String) {
+    if (self.trace) { eprintln("[toolchain ".concat(verdict, "] ", name)) }
+}
+
+fn held(self: Layout, name: String, key: String) -> Bool {
+    if (self.bypass) { return false }
+    return self.recorded.contains("\n".concat(name, " ", key, "\n"))
+}
+
+fn record(self: Layout, name: String, key: String) {
+    self.stamp = self.stamp.concat(name, " ", key, "\n")
+}
+
+// A path as a program to start: a bare name would be looked up on PATH.
+fn absolute(root: String, path: String) -> String {
+    if (path.startsWith("/") or path.startsWith("\\")) { return path.clone() }
+    if (path.length > 1 and path.charAt(1) == ':') { return path.clone() }
+    return joinPath(root, path)
+}
+
+// Runs `program`, answering its standard output, or `none` after printing what it wrote.
+fn outputOf(program: String, arguments: Vec<String>) -> String? {
+    let launch = Process()
+    launch.program = program.clone()
+    launch.arguments = arguments
+    launch.stdout = StreamMode.Pipe
+    let child = launch.spawn()
+    if (child.handle < 0) {
+        eprintln("toolchain_layout: could not start ".concat(program))
+        return none
+    }
+    let text = child.stdout.readAll()
+    let status = child.wait()
+    if (status != 0) {
+        eprint(text)
+        return none
+    }
+    return text
+}
+
+// The compiler's hash of the runtime sources on disk, so the toolchain's record and the build's
+// staleness check cannot disagree about how it is derived.
+fn runtimeHash(self: Layout) -> String? {
+    let arguments: Vec<String> = ["runtime-hash"]
+    return outputOf(self.compiler, arguments)
+}
+
+// Runs a build step, holding its output back unless it fails.
+fn quiet(program: String, arguments: Vec<String>) -> Bool {
+    let launch = Process()
+    launch.program = program.clone()
+    launch.arguments = arguments
+    launch.stdout = StreamMode.Pipe
+    launch.stderr = StreamMode.Pipe
+    let child = launch.spawn()
+    if (child.handle < 0) {
+        eprintln("toolchain_layout: could not start ".concat(program))
+        return false
+    }
+    let said = child.stderr.readAll()
+    let printed = child.stdout.readAll()
+    if (child.wait() == 0) { return true }
+    eprint(printed)
+    eprint(said)
+    return false
+}
+
+// The clang beside the LLVM the compiler was built against: bitcode is versioned input.
+fn findClang(root: String) -> String {
+    let mut name = "clang"
+    if (platform.isWindows) { name = "clang.exe" }
+    let configured = process.env("PRISMIO_LLVM_DIR") ?? ""
+    if (configured.equals("") == false) {
+        let candidate = joinPath(joinPath(configured, "bin"), name)
+        if (fileExists(candidate)) { return candidate }
+    }
+    let manifest = joinPath(root, "third_party/llvm-paths.json")
+    if (fileExists(manifest)) {
+        let parsed = parseJson(readFile(manifest))
+        if let bin = parsed.path(0, "bin") {
+            let candidate = joinPath(parsed.text(bin), name)
+            if (fileExists(candidate)) { return candidate }
+        }
+    }
+    return name.clone()
+}
+
+fn sysrootOf(self: Layout, triple: String) -> String {
+    for entry in self.sysroots {
+        if (entry.startsWith(triple.concat("="))) {
+            return entry.substring(triple.length + 1, entry.length - triple.length - 1)
+        }
+    }
+    return "".clone()
+}
+
+fn joinWords(words: Vec<String>) -> String {
+    let mut joined = "".clone()
+    for word in words {
+        joined = joined.concat(",", word)
+    }
+    return joined
+}
+
+// ---------------------------------------------------------------------------
+// Runtime bitcode
+// ---------------------------------------------------------------------------
+
+// What the runtime bitcode is built from: the C sources, clang, the deployment floor and the targets.
+fn runtimeKey(self: Layout, clang: String) -> String? {
+    let source = runtimeHash(self)?
+    let mut identity = clang.clone()
+    if let info = metadata(clang) {
+        identity = identity.concat(":", info.size.toString(), ":", info.modified.asSeconds.toString())
+    }
+    let mut key = source.trim().concat(";", identity, ";", deploymentVersion(), ";",
+                                       process.env("SDKROOT") ?? "", ";", hostSdk())
+    for target in self.targets {
+        key = key.concat(";", target, "=", sysrootOf(self, target))
+    }
+    return key.replace(" ", "_")
+}
+
+fn runtimeFiles(directory: String) -> Bool {
+    for module in RUNTIME_MODULES.split(" ") {
+        if (fileExists(joinPath(directory, module.concat(".bc"))) == false) { return false }
+        if (fileExists(joinPath(directory, module.concat(".verify.bc"))) == false) { return false }
+    }
+    return true
+}
+
+// The macOS the toolchain is built for, as the compiler reads it: MACOSX_DEPLOYMENT_TARGET, else
+// the floor.
+fn deploymentVersion() -> String {
+    let named = process.env("MACOSX_DEPLOYMENT_TARGET") ?? ""
+    if (named.equals("")) { return MACOS_FLOOR.clone() }
+    return named
+}
+
+// Whether a build for `triple` ("" for the host) is a macOS build whose version the triple does not
+// say, so that clang has to be told it.
+fn needsDeploymentFlag(triple: String) -> Bool {
+    if (triple.equals("")) { return platform.isMacOS }
+    return triple.endsWith("-macos") or triple.endsWith("-macosx")
+}
+
+// The active macOS SDK for a host build, or "" when `SDKROOT` names one (clang reads it) or there
+// is none to find. The pinned clang, given no SDK, leaves the `SDK Version` module flag out of the
+// bitcode, and a program that merges it is stamped `sdk 11.0` instead of the real SDK: macOS then
+// gives it the pre-SDK-27 behaviour, and it allocates about 2x slower from identical machine code.
+fn hostSdk() -> String {
+    if (platform.isMacOS == false or (process.env("SDKROOT") ?? "").equals("") == false) { return "".clone() }
+    let arguments: Vec<String> = ["--show-sdk-path"]
+    let found = outputOf("/usr/bin/xcrun", arguments) ?? ""
+    return found.trim()
+}
+
+// Each runtime source as bitcode, normally and under `--verify`, for one target ("" for the host).
+// Stack protection is left to the final whole-program invocation: clang configuration files on Apple
+// and Homebrew inject probing attributes that are not a portable bitcode contract.
+// `-ffile-compilation-dir=.` keeps the working directory out of the module's debug records.
+fn emitRuntime(self: Layout, clang: String, triple: String, directory: String) -> Bool {
+    if (makeDirectory(directory) == false) { return false }
+    let sdk = hostSdk()
+    for module in RUNTIME_MODULES.split(" ") {
+        for variant in 0..<2 {
+            let verify = variant == 1
+            let mut name = module.clone()
+            if (verify) { name = name.concat(".verify") }
+            let mut arguments: Vec<String> = []
+            // Said as a flag: told nothing, clang compiles for its SDK's version and leaves out the
+            // `SDK Version` module flag, and a program that merges this bitcode is stamped
+            // `sdk 11.0` instead of the real SDK -- macOS then gives it the pre-SDK-27 behaviour,
+            // and its allocations run about 2x slower.
+            if (needsDeploymentFlag(triple)) { arguments.push("-mmacosx-version-min=".concat(deploymentVersion())) }
+            if (triple.equals("") and sdk.equals("") == false) {
+                arguments.push("-isysroot")
+                arguments.push(sdk.clone())
+            }
+            if (triple.equals("") == false) {
+                arguments.push("--target=".concat(triple))
+                let sysroot = sysrootOf(self, triple)
+                if (sysroot.equals("") == false) {
+                    arguments.push("-isysroot")
+                    arguments.push(sysroot)
+                }
+            }
+            for flag in "-O2 -fno-stack-check -fno-stack-protector -ffile-compilation-dir=. -Wno-deprecated-declarations -emit-llvm -c".split(" ") {
+                arguments.push(flag.clone())
+            }
+            if (verify) { arguments.push("-DPRISMIO_AIF_VERIFY") }
+            arguments.push(joinPath(joinPath(self.root, "runtime"), module.concat(".c")))
+            arguments.push("-o")
+            arguments.push(joinPath(directory, name.concat(".bc")))
+            if (quiet(clang, arguments) == false) { return false }
+        }
+    }
+    return true
+}
+
+// Bitcode for a target that is no longer asked for would be merged into nothing and shipped.
+fn removeStaleRuntime(self: Layout, directory: String) {
+    for entry in listDirectory(directory) {
+        let path = joinPath(directory, entry)
+        if (directoryExists(path)) {
+            if (entry.equals("freestanding") or self.targets.contains(entry)) { continue }
+            for file in listDirectory(path) {
+                deleteFile(joinPath(path, file))
+            }
+            removeDirectory(path)
+        } else if (entry.endsWith(".bc")) {
+            let mut module = entry.substring(0, entry.length - 3)
+            if (module.endsWith(".verify")) { module = module.substring(0, module.length - 7) }
+            if (RUNTIME_MODULES.split(" ").contains(module) == false) { deleteFile(path) }
+        }
+    }
+}
+
+fn buildRuntime(self: Layout) -> Int {
+    let lib = joinPath(self.out, "lib")
+    let runtime = joinPath(lib, "runtime")
+    if (makeDirectory(runtime) == false) { return fail("cannot create ".concat(runtime)) }
+    removeStaleRuntime(self, runtime)
+    let clang = findClang(self.root)
+    let key = runtimeKey(self, clang) ?? ""
+    if (key.equals("")) { return fail("could not hash the runtime sources") }
+
+    let hashFile = joinPath(lib, "runtime.hash")
+    let mut current = held(self, "runtime", key) and runtimeFiles(runtime) and fileExists(hashFile)
+    for target in self.targets {
+        current = current and runtimeFiles(joinPath(runtime, target))
+    }
+    if (current) {
+        report(self, "reused", "runtime")
+    } else {
+        report(self, "rebuilt", "runtime")
+        if (emitRuntime(self, clang, "", runtime) == false) { return fail("could not compile the runtime") }
+        for target in self.targets {
+            if (emitRuntime(self, clang, target, joinPath(runtime, target)) == false) {
+                return fail("could not compile the runtime for ".concat(target))
+            }
+        }
+        // Recorded beside the libraries so a later build can tell whether they still match the
+        // sources on disk.
+        let value = runtimeHash(self) ?? ""
+        if (writeFile(hashFile, value.trim()) == false) { return fail("cannot write ".concat(hashFile)) }
+    }
+    record(self, "runtime", key)
+    return 0
+}
+
+// What `--freestanding` adds to a build, as source, because each is compiled for the program's own
+// triple and needs no C library: the failure core every package carries, and -- for a toolchain asked
+// for a bare-metal triple -- the weak C library core and the runtime, which is lang_runtime.c under
+// PRISMIO_FREESTANDING and so needs that file and its two headers beside it.
+fn copyFreestanding(self: Layout) -> Int {
+    let core = joinPath(self.out, "lib/runtime/freestanding")
+    if (makeDirectory(core) == false) { return fail("cannot create ".concat(core)) }
+    let mut files: Vec<String> = ["freestanding/panic.c"]
+    if (self.freestandingTargets.length > 0) {
+        for name in "freestanding/libc.c freestanding/runtime.c lang_runtime.c prismio_runtime.h prismio_freestanding.h".split(" ") {
+            files.push(name.clone())
+        }
+    }
+    let mut wanted: Vec<String> = []
+    for file in files {
+        let source = joinPath(joinPath(self.root, "runtime"), file)
+        let mut name = file.clone()
+        let slash = name.lastIndexOf("/")
+        if (slash >= 0) { name = name.substring(slash + 1, name.length - slash - 1) }
+        let text = tryReadFile(source) ?? ""
+        if (text.equals("") or writeFile(joinPath(core, name), text) == false) {
+            return fail("cannot copy ".concat(source))
+        }
+        wanted.push(name.clone())
+    }
+    for entry in listDirectory(core) {
+        if (wanted.contains(entry) == false) { deleteFile(joinPath(core, entry)) }
+    }
+    return 0
+}
+
+// ---------------------------------------------------------------------------
+// The standard library
+// ---------------------------------------------------------------------------
+
+// Every module under `directory`, as its path under `std/` without `.psm`.
+fn collectModules(directory: String, prefix: String, inout modules: Vec<String>) {
+    for entry in listDirectory(directory) {
+        if (entry.startsWith(".")) { continue }
+        let path = joinPath(directory, entry)
+        if (directoryExists(path)) {
+            collectModules(path, prefix.concat(entry, "/"), modules)
+        } else if (entry.endsWith(".psm")) {
+            modules.push(prefix.concat(entry.substring(0, entry.length - 4)))
+        }
+    }
+}
+
+// A compiled module whose source is gone is not stale, it is wrong: importing it would resolve
+// against an artifact nothing produces any more. A source copy, which a bare generation's directory
+// carries, does not belong beside compiled modules either.
+fn removeStaleModules(directory: String, prefix: String, modules: Vec<String>) {
+    for entry in listDirectory(directory) {
+        let path = joinPath(directory, entry)
+        if (directoryExists(path)) {
+            removeStaleModules(path, prefix.concat(entry, "/"), modules)
+            if (listDirectory(path).length == 0) { removeDirectory(path) }
+        } else if (entry.endsWith(".psm")) {
+            deleteFile(path)
+        } else if (entry.endsWith(".plib")
+                   and modules.contains(prefix.concat(entry.substring(0, entry.length - 5))) == false) {
+            deleteFile(path)
+        }
+    }
+}
+
+// The hash of each file, in order: the compiler's own definition (`--internal-file-hash`).
+fn fileHashes(self: Layout, files: Vec<String>) -> Vec<String> {
+    let mut arguments: Vec<String> = ["--internal-file-hash"]
+    for file in files {
+        arguments.push(file.clone())
+    }
+    let mut hashes: Vec<String> = []
+    let text = outputOf(self.compiler, arguments) ?? ""
+    for line in text.split("\n") {
+        let space = line.indexOf(" ")
+        if (space > 0) { hashes.push(line.substring(0, space)) }
+    }
+    return hashes
+}
+
+fn buildLibrary(self: Layout) -> Int {
+    let sources = joinPath(self.root, "std")
+    let library = joinPath(self.out, "stdlib")
+    if (makeDirectory(library) == false) { return fail("cannot create ".concat(library)) }
+    let mut modules: Vec<String> = []
+    collectModules(sources, "", modules)
+    removeStaleModules(library, "", modules)
+
+    let mut files: Vec<String> = [self.compiler.clone()]
+    for module in modules {
+        files.push(joinPath(sources, module.concat(".psm")))
+    }
+    let hashes = fileHashes(self, files)
+    if (hashes.length != files.length) { return fail("could not hash the compiler and std/") }
+    let targets = joinWords(self.targets).concat(";", joinWords(self.freestandingTargets))
+
+    let mut built = 0
+    for i in 0..<modules.length {
+        let module = modules[i]
+        let name = "std.".concat(module.replace("/", "."))
+        let output = joinPath(library, module.concat(".plib"))
+        let key = hashes[0].concat(":", hashes[i + 1], ":", targets)
+        if (held(self, name, key) and fileExists(output)) {
+            report(self, "reused", name)
+        } else {
+            report(self, "rebuilt", name)
+            let mut arguments: Vec<String> = ["build", files[i + 1].clone(), "--emit", "plib", "--module", name.clone()]
+            for target in self.targets {
+                arguments.push("--target")
+                arguments.push(target.clone())
+            }
+            for target in self.freestandingTargets {
+                arguments.push("--freestanding-target")
+                arguments.push(target.clone())
+            }
+            arguments.push("-o")
+            arguments.push(output.clone())
+            if (quiet(self.compiler, arguments) == false) { return fail("could not compile ".concat(name)) }
+        }
+        record(self, name, key)
+        built = built + 1
+    }
+    eprintln("toolchain: ".concat(self.out, " (", built.toString(), " standard-library modules)"))
+    return 0
+}
+
+fn parseArguments() -> Layout? {
+    let layout = Layout {
+        compiler: "".clone(), out: "".clone(), root: "".clone(),
+        targets: [], sysroots: [], freestandingTargets: [],
+        recorded: "".clone(), stamp: STAMP_HEADER.concat("\n"),
+        bypass: (process.env("PRISMIO_TOOLCHAIN_CACHE") ?? "").equals("0"),
+        trace: (process.env("PRISMIO_TOOLCHAIN_CACHE_TRACE") ?? "0").equals("0") == false
+    }
+    let mut at = 1
+    while (at + 1 < process.args.count) {
+        let option = process.args[at]
+        let value = process.args[at + 1]
+        if (option.equals("--compiler")) { layout.compiler = value.clone() }
+        else if (option.equals("--out")) { layout.out = value.clone() }
+        else if (option.equals("--target")) { layout.targets.push(value.clone()) }
+        else if (option.equals("--sysroot")) { layout.sysroots.push(value.clone()) }
+        else if (option.equals("--freestanding-target")) { layout.freestandingTargets.push(value.clone()) }
+        else { return none }
+        at = at + 2
+    }
+    if (at != process.args.count or layout.compiler.equals("") or layout.out.equals("")) { return none }
+    return layout
+}
+
+fn main() -> Int {
+    let layout = parseArguments() else {
+        return fail("usage: toolchain_layout --compiler <prismio> --out <dir> [--target <triple>]... "
+            .concat("[--sysroot <triple>=<path>]... [--freestanding-target <triple>]..."))
+    }
+    layout.root = realPath(currentDirectory()) ?? currentDirectory()
+    if (directoryExists(joinPath(layout.root, "std")) == false
+        or directoryExists(joinPath(layout.root, "runtime")) == false) {
+        return fail("run from a Prismio checkout: no std/ and runtime/ in ".concat(layout.root))
+    }
+    layout.compiler = absolute(layout.root, layout.compiler)
+    layout.out = absolute(layout.root, layout.out)
+    // The compiler named is the one that answers, not whatever host its project pins: a binary
+    // called `prismio` otherwise forwards the command.
+    process.setEnv("PRISMIO_INTERNAL_HOSTED", "1")
+
+    if (makeDirectory(joinPath(layout.out, "lib")) == false) { return fail("cannot create ".concat(layout.out)) }
+    let stampFile = joinPath(layout.out, "lib/toolchain.stamp")
+    let previous = tryReadFile(stampFile) ?? ""
+    if (previous.startsWith(STAMP_HEADER)) { layout.recorded = previous.clone() }
+    // Dropped before anything is built, so a run interrupted halfway cannot leave a stamp claiming
+    // that artifacts it never touched are current.
+    deleteFile(stampFile)
+    if (layout.bypass) { report(layout, "cache off", "runtime and stdlib") }
+
+    if (buildRuntime(layout) != 0) { return 1 }
+    if (copyFreestanding(layout) != 0) { return 1 }
+    if (buildLibrary(layout) != 0) { return 1 }
+
+    if (writeFile(stampFile, layout.stamp) == false) { deleteFile(stampFile) }
+    return 0
+}

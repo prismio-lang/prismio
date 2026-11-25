@@ -283,6 +283,15 @@ impl UmsProjectModel {
                 } else {
                     self.lowerNative(document, property, target, diagnostics)
                 }
+            } else if (property.kind == UmsAstStatementKind.CALL and
+                       property.hasBlock and property.name.equals("after")) {
+                if (declared.contains("|after|")) {
+                    self.lowerError(diagnostics, property, "UMS2110",
+                                  "target after is declared more than once")
+                } else {
+                    declared = declared.concat("|after|")
+                    self.lowerAfter(document, property, target, diagnostics)
+                }
             } else if (property.kind == UmsAstStatementKind.ASSIGNMENT and
                        property.name.equals("runtime")) {
                 if (runtimeDeclared) {
@@ -353,7 +362,7 @@ impl UmsProjectModel {
                        property.name.equals("entry") == false) {
                 self.lowerError(diagnostics, property, "UMS2101",
                     "unknown target property '".concat(property.name,
-                                                       "'; expected entry, runtime, exportDynamic, freestanding, triple, features, codeModel, noRedZone, native or link"))
+                                                       "'; expected entry, runtime, exportDynamic, freestanding, triple, features, codeModel, noRedZone, native, link or after"))
             } else if (self.lowerString(diagnostics, property, "target entry")) {
                 if (entry.length > 0) {
                     self.lowerError(diagnostics, property, "UMS2102",
@@ -365,6 +374,31 @@ impl UmsProjectModel {
             i = i + 1
         }
         return entry
+    }
+
+    // `after { run("tool", output) shell(...) }`: steps run once the target is built, `output`
+    // being the file just built. `build` steps belong to commands.
+    private fn lowerAfter(self, document: UmsAstDocument,
+                          block: UmsAstStatement,
+                          target: UmsTarget,
+                          inout diagnostics: Vec<UmsDiagnostic>) {
+        if (block.arguments.length != 0) {
+            self.lowerError(diagnostics, block, "UMS2117", "after takes no arguments")
+            return
+        }
+        let steps = umsCommand("after", block.line, block.col, block.len)
+        for i in 0..<block.children.length {
+            let call = document.statements[block.children[i]]
+            if (call.kind != UmsAstStatementKind.CALL or call.name.equals("build")) {
+                self.lowerError(diagnostics, call, "UMS2117",
+                    "after contains run(...) and shell(...) steps")
+                continue
+            }
+            self.lowerCommandStep(call, steps, true, diagnostics)
+        }
+        for step in steps.steps {
+            target.after.push(umsCommandStepCopy(step))
+        }
     }
 
     private fn lowerTarget(self, document: UmsAstDocument,
@@ -428,6 +462,7 @@ impl UmsProjectModel {
     // its position in the list, so a command can put forwarded arguments in the
     // middle of a fixed argument list rather than only at the end.
     private fn lowerStepArguments(self, call: UmsAstStatement, step: UmsCommandStep,
+                             afterTarget: Bool,
                              inout diagnostics: Vec<UmsDiagnostic>) {
         let mut i = 1
         while (i < call.arguments.length) {
@@ -436,13 +471,18 @@ impl UmsProjectModel {
                 step.arguments.push(umsCommandArgument(false, argument.text,
                           argument.line, argument.col, argument.len))
             } else if (argument.kind == UmsAstValueKind.IDENTIFIER and
-                       argument.text.equals("args")) {
+                       argument.text.equals("args") and afterTarget == false) {
                 step.arguments.push(umsCommandArgument(true, "",
                           argument.line, argument.col, argument.len))
+            } else if (argument.kind == UmsAstValueKind.IDENTIFIER and
+                       argument.text.equals("output") and afterTarget) {
+                step.arguments.push(umsOutputArgument(argument.line, argument.col, argument.len))
             } else {
+                let mut word = "args"
+                if (afterTarget) { word = "output" }
                 umsDiagnosticAdd(diagnostics, "UMS2508", self.manifestPath,
                                  argument.line, argument.col, argument.len,
-                                 "a step argument is a string literal or the bare word `args`")
+                                 "a step argument is a string literal or the bare word `".concat(word, "`"))
             }
             i = i + 1
         }
@@ -453,6 +493,7 @@ impl UmsProjectModel {
     // command whose only step was rejected from *also* being reported as
     // declaring no steps -- one mistake, two errors, two things to go and fix.
     private fn lowerCommandStep(self, call: UmsAstStatement, command: UmsCommand,
+                           afterTarget: Bool,
                            inout diagnostics: Vec<UmsDiagnostic>) {
         let mut kind = UmsCommandStepKind.UNKNOWN
         if (call.name.equals("build")) { kind = UmsCommandStepKind.BUILD }
@@ -484,7 +525,7 @@ impl UmsProjectModel {
         let subject = call.arguments[0]
         let step = umsCommandStep(kind, subject.text, call.line, call.col, call.len)
         if (kind != UmsCommandStepKind.BUILD) {
-            self.lowerStepArguments(call, step, diagnostics)
+            self.lowerStepArguments(call, step, afterTarget, diagnostics)
         }
         command.steps.push(step)
     }
@@ -522,7 +563,7 @@ impl UmsProjectModel {
         while (i < call.children.length) {
             let child = document.statements[call.children[i]]
             if (child.kind != UmsAstStatementKind.ASSIGNMENT) {
-                self.lowerCommandStep(child, command, diagnostics)
+                self.lowerCommandStep(child, command, false, diagnostics)
             } else if (child.name.equals("description") == false) {
                 self.lowerError(diagnostics, child, "UMS2509",
                     "unknown command property '".concat(child.name, "'; expected 'description'"))

@@ -1,4 +1,5 @@
 import std.string
+import ums.commands.command
 
 extern fn host_is_windows() -> Int
 
@@ -86,6 +87,8 @@ public struct UmsTarget {
     public noRedZone: Bool,
     public links: Vec<UmsLinkInput>,
     public natives: Vec<UmsNativeInput>,
+    // `after { run(...) }`: steps run once the target has been built, in order.
+    public after: Vec<UmsCommandStep>,
     public line: Int,
     public col: Int,
     public len: Int
@@ -108,6 +111,7 @@ public fn umsTarget(kind: UmsTargetKind, name: String, entry: String,
         noRedZone: false,
         links: [],
         natives: [],
+        after: [],
         line: line,
         col: col,
         len: len

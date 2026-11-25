@@ -17,6 +17,8 @@ public enum UmsCommandStepKind {
 // than a flag on the step.
 struct UmsCommandArgument {
     public forwarded: Bool,
+    // The bare word `output` in a target's `after` step: the file that was just built.
+    public output: Bool,
     public text: String,
     line: Int,
     col: Int,
@@ -71,11 +73,37 @@ public fn umsCommandArgument(forwarded: Bool, text: String,
                       line: Int, col: Int, len: Int) -> UmsCommandArgument {
     return UmsCommandArgument {
         forwarded: forwarded,
+        output: false,
         text: text.clone(),
         line: line,
         col: col,
         len: len
     }
+}
+
+public fn umsOutputArgument(line: Int, col: Int, len: Int) -> UmsCommandArgument {
+    return UmsCommandArgument {
+        forwarded: false,
+        output: true,
+        text: "".clone(),
+        line: line,
+        col: col,
+        len: len
+    }
+}
+
+// A copy with its own strings and arguments.
+public fn umsCommandStepCopy(step: UmsCommandStep) -> UmsCommandStep {
+    let copy = umsCommandStep(step.kind, step.subject, step.line, step.col, step.len)
+    for argument in step.arguments {
+        if (argument.output) {
+            copy.arguments.push(umsOutputArgument(argument.line, argument.col, argument.len))
+        } else {
+            copy.arguments.push(umsCommandArgument(argument.forwarded, argument.text,
+                      argument.line, argument.col, argument.len))
+        }
+    }
+    return copy
 }
 
 public fn umsCommandFind(commands: Vec<UmsCommand>, name: String) -> Int {

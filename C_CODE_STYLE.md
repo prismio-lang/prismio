@@ -139,7 +139,7 @@ in the bootstrap and packaging paths and checked against the driver table:
 
 1. `prismio_toolchain_files[]` in `runtime/build_driver.c`
 2. `RUNTIME_SOURCES` in `tools/bootstrap.py`
-3. `RUNTIME_BITCODE` / `LIBRARIES` in `tools/package.py`
+3. `RUNTIME_MODULES` in `tools/toolchain_layout.psm`
 4. `tools/check_source_lists.py`, which asserts those lists agree
 
 Run `check_source_lists.py` after any change to the set, and bootstrap two
@@ -288,7 +288,7 @@ The file list is duplicated in the following places, and
 
 1. `prismio_toolchain_files[]` in `runtime/build_driver.c`
 2. `RUNTIME_SOURCES` in `tools/bootstrap.py`
-3. `RUNTIME_BITCODE` and `LIBRARIES` in `tools/package.py`
+3. `RUNTIME_MODULES` in `tools/toolchain_layout.psm`
 
 Run `check_source_lists.py`, then bootstrap two generations before believing it.
 

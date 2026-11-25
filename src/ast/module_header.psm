@@ -11,9 +11,23 @@
 // (common/source_files.psm) by the parser. They live here, and the registry keeps only the
 // number, so a flag that is added is added in one place.
 
+import std.string
+
 public fn headerBitPrelude() -> Int { return 1 }
 public fn headerBitFreestanding() -> Int { return 2 }
 public fn headerBitRuntime() -> Int { return 4 }
+
+// The words of a header with `flags`, as written after `module`; "" for no header.
+public fn headerWords(flags: Int) -> String {
+    let mut words = "".clone()
+    if (headerIsPrelude(flags)) { words = " prelude".clone() }
+    if (headerIsFreestanding(flags)) {
+        words = words.concat(" freestanding")
+        if (headerNeedsRuntime(flags)) { words = words.concat("(runtime)") }
+    }
+    if (words.equals("")) { return words }
+    return words.substring(1, words.length - 1)
+}
 
 public fn headerIsPrelude(flags: Int) -> Bool { return (flags & headerBitPrelude()) != 0 }
 public fn headerIsFreestanding(flags: Int) -> Bool { return (flags & headerBitFreestanding()) != 0 }

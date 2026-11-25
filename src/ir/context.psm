@@ -198,6 +198,22 @@ let mut irFrameReleaseTypes: HashSet<String>
 let mut irTaskScopes = ""
 let mut irTaskScopeCounter = 0
 
+// Every generated name numbered from the start again, so that a process that generates several
+// modules (`--emit plib`) names each as a build of that module alone would. Not called between
+// the targets of a project build, where the numbering only has to be unique.
+public fn irResetNameCounters() {
+    irStringCounter = 0
+    irShortCircuitCounter = 0
+    irChannelRecvCounter = 0
+    irLoopFlatGuardCounter = 0
+    irLoopPushGuardCounter = 0
+    irSpawnArgCounter = 0
+    irElemSpillCounter = 0
+    irBorrowedTempCounter = 0
+    irTaskScopeCounter = 0
+    irTileCounter = 0
+}
+
 // The struct an optional binding's typed drop releases, as `;slot=struct:T;`.
 // A `T?` slot is keyed `ptr` (see mapTypeNode), which names no release, so a drop
 // list entry for one would call `__aif_release_` -- an undefined symbol, and a

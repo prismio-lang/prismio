@@ -23,7 +23,7 @@
 // SHA-256 of each source file. Grapheme clusters are UAX #29's extended grapheme
 // clusters, rules GB1 to GB999 without exception, and normalization is UAX #15;
 // tools/unicode_conformance.py checks both against the UCD's own test files.
-
+module freestanding(runtime)
 import std.string
 import std.unicode_tables
 

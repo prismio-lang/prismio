@@ -25,7 +25,7 @@
 // 128-bit division -- which a target without compiler-rt would have to link a
 // library for. Quadratic in the width, and a width wide enough for that to matter is
 // not one that is printed in a loop.
-
+module freestanding(runtime)
 import std.io
 import std.string
 import std.float_text

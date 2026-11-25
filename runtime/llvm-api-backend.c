@@ -864,6 +864,22 @@ void ir_reset(void) {
     reset_state();
 }
 
+// A context of its own for the next module. LLVM keeps every named struct for as long as its
+// context and renames a second `prismio.str` to `prismio.str.0`, so a process that emits
+// several library sections (`--emit plib`) starts each in a fresh context and writes the
+// names a build of that module alone would.
+void ir_renew_context(void) {
+    ir_reset();
+    if (!g_initialized) return;
+    LLVMDisposeBuilder(g_builder);
+    LLVMDisposeBuilder(g_alloca_builder);
+    LLVMContextDispose(g_ctx);
+    g_builder = NULL;
+    g_alloca_builder = NULL;
+    g_ctx = NULL;
+    g_initialized = 0;
+}
+
 // Refuses to run against an LLVM whose major version is not the pinned one.
 //
 // Checked here rather than only at build time because the dangerous mismatch is
@@ -9138,7 +9154,7 @@ static LLVMCodeGenOptLevel codegen_opt_level(int opt_level) {
 // stamped every program -- and the released compiler, which is one -- with the
 // build machine's macOS: a toolchain packaged on macOS 27 would not start on
 // 26. 11.0 is the first macOS on Apple silicon, and what Rust's arm64 target
-// assumes too. tools/package.py builds the runtime bitcode and the .plib code
+// assumes too. tools/toolchain_layout.psm builds the runtime bitcode and the .plib code
 // for the same version, since a merge of modules with different triples warns.
 #define PRISMIO_MACOS_FLOOR "11.0"
 
@@ -9881,6 +9897,25 @@ static int split_pipeline_enabled(int opt_level) {
 #endif
 }
 
+// The triple a PLIB section or a build for `triple` ("" or NULL for the host) is compiled
+// for. `--target x86_64-apple-macos` names no version; clang's driver fills in the
+// deployment target, and so does this.
+static void chosen_triple(const char *triple, char *out, size_t size) {
+    if (!triple || !*triple) {
+        host_codegen_triple(out, size);
+        return;
+    }
+    size_t n = strlen(triple);
+    int versionless_macos = (n >= 6 && strcmp(triple + n - 6, "-macos") == 0)
+        || (n >= 7 && strcmp(triple + n - 7, "-macosx") == 0);
+    if (versionless_macos) {
+        snprintf(out, size, "%.*s-macosx%s", (int)(n - (triple[n - 1] == 'x' ? 7 : 6)),
+                 triple, ir_host_macos_version());
+    } else {
+        snprintf(out, size, "%s", triple);
+    }
+}
+
 // Compile the IR in `ir_path` to an object file. `triple` is the target the
 // user named, or NULL for the host. `opt_level` is 0..3, IR_OPT_SIZE or
 // IR_OPT_MIN_SIZE (program_opt_level in build_driver.c). `internalize` is set for a
@@ -9892,23 +9927,7 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
     ensure_codegen_initialized();
 
     char chosen[256];
-    if (triple && *triple) {
-        // `--target x86_64-apple-macos` names no version; clang's driver fills
-        // in the deployment target, and the object's LC_BUILD_VERSION with it.
-        size_t n = strlen(triple);
-        int versionless_macos =
-            (n >= 6 && strcmp(triple + n - 6, "-macos") == 0)
-            || (n >= 7 && strcmp(triple + n - 7, "-macosx") == 0);
-        if (versionless_macos) {
-            snprintf(chosen, sizeof(chosen), "%.*s-macosx%s",
-                     (int)(n - (triple[n - 1] == 'x' ? 7 : 6)), triple,
-                     ir_host_macos_version());
-        } else {
-            snprintf(chosen, sizeof(chosen), "%s", triple);
-        }
-    } else {
-        host_codegen_triple(chosen, sizeof(chosen));
-    }
+    chosen_triple(triple, chosen, sizeof(chosen));
 
     double t_parse = emit_trace_ms();
     LLVMContextRef ctx = NULL;
@@ -10073,9 +10092,110 @@ int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple
     return failed;
 }
 
+// A macOS version written with all three components, as clang writes it into a module.
+static void pad_macos_version(char *triple, size_t size) {
+    const char *version = strstr(triple, "-apple-macosx");
+    if (!version) return;
+    version += strlen("-apple-macosx");
+    if (!*version) return;
+    int dots = 0;
+    for (const char *c = version; *c; c++) dots += *c == '.';
+    for (; dots < 2; dots++) strncat(triple, ".0", size - strlen(triple) - 1);
+}
+
+// One `--emit plib` section: the textual IR at `ir_path` as the bitcode a build for
+// `triple` links, which is what `clang -emit-llvm -c` makes of the same file -- the
+// target's triple and layout, the O0 pipeline (it only inlines what the module marks
+// always-inline) and use-list order kept. `*data` is released with tmp_free().
+int ir_library_bitcode(const char *ir_path, const char *triple, unsigned char **data,
+                       size_t *size) {
+    ensure_codegen_initialized();
+    *data = NULL;
+    *size = 0;
+
+    char chosen[256];
+    chosen_triple(triple, chosen, sizeof(chosen));
+    pad_macos_version(chosen, sizeof(chosen));
+
+    LLVMContextRef ctx = LLVMContextCreate();
+    LLVMMemoryBufferRef source = NULL;
+    LLVMModuleRef m = NULL;
+    char *err = NULL;
+    if (!ctx || LLVMCreateMemoryBufferWithContentsOfFile(ir_path, &source, &err) != 0
+        || LLVMParseIRInContext(ctx, source, &m, &err) != 0) {
+        fprintf(stderr, "ERROR: could not read %s: %s\n", ir_path, err ? err : "?");
+        if (err) LLVMDisposeMessage(err);
+        if (ctx) LLVMContextDispose(ctx);
+        return 1;
+    }
+
+    LLVMTargetRef target = NULL;
+    if (LLVMGetTargetFromTriple(chosen, &target, &err) != 0) {
+        fprintf(stderr, "ERROR: LLVM does not know the target %s: %s\n", chosen,
+                err ? err : "?");
+        if (err) LLVMDisposeMessage(err);
+        LLVMDisposeModule(m);
+        LLVMContextDispose(ctx);
+        return 1;
+    }
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(
+        target, chosen, default_target_cpu(chosen), "", LLVMCodeGenLevelNone,
+        object_reloc_mode(strncmp(chosen, "wasm", 4) == 0), LLVMCodeModelDefault);
+    LLVMSetTarget(m, chosen);
+    LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
+    char *rep = LLVMCopyStringRepOfTargetData(layout);
+    LLVMSetDataLayout(m, rep);
+    LLVMDisposeMessage(rep);
+    LLVMDisposeTargetData(layout);
+
+    int failed = 0;
+    LLVMPassBuilderOptionsRef options = LLVMCreatePassBuilderOptions();
+    // The verifier too, as clang runs it: without it the bitcode records the use lists
+    // in another order than clang's, byte for byte.
+    LLVMErrorRef perr = LLVMRunPasses(m, "default<O0>,verify", tm, options);
+    LLVMDisposePassBuilderOptions(options);
+    if (perr) {
+        char *message = LLVMGetErrorMessage(perr);
+        fprintf(stderr, "ERROR: could not prepare %s: %s\n", ir_path, message);
+        LLVMDisposeErrorMessage(message);
+        failed = 1;
+    }
+    if (!failed) {
+#ifdef PRISMIO_LLVM_BRIDGE
+        LLVMMemoryBufferRef bitcode = prismio_llvm_write_bitcode(m);
+#else
+        LLVMMemoryBufferRef bitcode = LLVMWriteBitcodeToMemoryBuffer(m);
+#endif
+        size_t length = bitcode ? LLVMGetBufferSize(bitcode) : 0;
+        unsigned char *copy = length ? (unsigned char *)malloc(length) : NULL;
+        if (copy) {
+            memcpy(copy, LLVMGetBufferStart(bitcode), length);
+            *data = copy;
+            *size = length;
+        } else {
+            failed = 1;
+        }
+        if (bitcode) LLVMDisposeMemoryBuffer(bitcode);
+    }
+
+    LLVMDisposeTargetMachine(tm);
+    LLVMDisposeModule(m);
+    LLVMContextDispose(ctx);
+    return failed;
+}
+
 #else
 
 // No real headers, no code generation: the caller falls back to clang.
+int ir_library_bitcode(const char *ir_path, const char *triple, unsigned char **data,
+                       size_t *size) {
+    (void)ir_path; (void)triple;
+    *data = NULL;
+    *size = 0;
+    fprintf(stderr, "ERROR: --emit plib needs an LLVM with the C headers installed.\n");
+    return 1;
+}
+
 int ir_emit_object(const char *ir_path, const char *obj_path, const char *triple,
                    int opt_level, int internalize, int *extra_objects) {
     (void)ir_path; (void)obj_path; (void)triple; (void)opt_level; (void)internalize;

@@ -1,3 +1,7 @@
 # The POSIX build scripts must keep LF endings regardless of core.autocrlf. A CRLF
 # checkout of a shell script fails on macOS with an opaque "bad interpreter" error.
 *.sh                      text eol=lf
+std/unicode_tables.psm linguist-generated=true
+std/unicode_case.psm linguist-generated=true
+std/syscall.psm linguist-generated=true
+src/lexer/identifier_tables.psm linguist-generated=true

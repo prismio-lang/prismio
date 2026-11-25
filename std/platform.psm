@@ -27,7 +27,7 @@
 // which the compiler lowers to the codes in src/common/target.psm. A method that
 // calls one is compiled into each program for that program's target, and never
 // taken from `stdlib/platform.plib`, whose bitcode is built once, for the host.
-
+module freestanding
 public enum Platform {
     Windows
     Linux

@@ -17,7 +17,7 @@
 // The private helpers are `list*`-prefixed for the reason `std/string.psm` gives
 // at length: a short name here is claimed for every program that imports this
 // file.
-
+module freestanding(runtime)
 import std.ord
 import std.copy
 import std.eq

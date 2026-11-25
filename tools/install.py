@@ -17,8 +17,8 @@ this can work -- a user-owned prefix needs neither.
     <prefix>/stdlib/       one compiled .plib artifact per standard module
 
 That is what package.py produces, and both of the compiler's search rules are
-built around it: find_in_lib_dir tries `<exe_dir>/../lib`, and standardModulePath
-tries `<exe_dir>/../stdlib` (build_driver.c and driver/imports.psm respectively).
+built around it: find_in_lib_dir tries `<exe_dir>/../lib`, and libraryRoot tries
+`<exe_dir>/../stdlib` (build_driver.c and driver/imports.psm respectively).
 
 This deliberately does **not** reproduce the flat Windows layout the PowerShell
 installer used, where prismio.exe sat at the top level beside the LLVM tools

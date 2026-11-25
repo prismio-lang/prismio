@@ -33,6 +33,22 @@ private fn langOpen() {
     langOpened = true
 }
 
+let mut langRefIds: Vec<String>
+let mut langRefNodes: Vec<Ptr>
+let mut langRefOpened = false
+
+// Called before a compile parses anything. One process compiles several times -- each target of a project,
+// each section of a PLIB -- and a mark left from an earlier compile would name that compile's declaration.
+public fn langMarksReset() {
+    langMarkTable = "".clone()
+    langIds = []
+    langNodes = []
+    langOpened = true
+    langRefIds = []
+    langRefNodes = []
+    langRefOpened = true
+}
+
 public fn nodeSetLangMark(node: ASTNode, id: String) {
     langMarkTable = langMarkTable.concat(langMarkKey(node), id)
     langOpen()
@@ -85,9 +101,6 @@ public fn langMarksExist() -> Bool {
 // parser could know. It writes `$lang.<id>` (`langReferenceName`) and records the node here; the driver
 // replaces each with the declared name once the merge has read the library (`langResolveReferences`).
 // "$" is in no source identifier, so a placeholder cannot be written by hand.
-let mut langRefIds: Vec<String>
-let mut langRefNodes: Vec<Ptr>
-let mut langRefOpened = false
 
 private fn langRefOpen() {
     if (langRefOpened) { return }

@@ -106,6 +106,7 @@ fn manifestEntries(scope: String) -> Vec<String> {
         found.push("noRedZone\tkey\tDo not use the red zone\tnoRedZone = $0")
         found.push("native\tblock\tC and C++ sources compiled with the target\tnative {\n        $0\n    }")
         found.push("link\tblock\tLibraries and linker arguments\tlink {\n        $0\n    }")
+        found.push("after\tblock\tSteps run once the target is built\tafter {\n        $0\n    }")
     } else if (scope.equals("native")) {
         found.push("source\tcall\tA C or C++ source file\tsource(\"$0\")")
         found.push("include\tcall\tAn include directory\tinclude(\"$0\")")
@@ -126,6 +127,9 @@ fn manifestEntries(scope: String) -> Vec<String> {
         found.push("description\tkey\tShown by `prismio --help`\tdescription = \"$0\"")
         found.push("build\tcall\tBuild a target\tbuild(\"$0\")")
         found.push("run\tcall\tRun a target\trun(\"$0\")")
+        found.push("shell\tcall\tRun a program\tshell(\"$0\")")
+    } else if (scope.equals("after")) {
+        found.push("run\tcall\tRun a script; `output` is the file just built\trun(\"$0\", output)")
         found.push("shell\tcall\tRun a program\tshell(\"$0\")")
     } else if (scope.equals("profiles")) {
         found.push("debug\tblock\tThe default profile\tdebug {\n        $0\n    }")

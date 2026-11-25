@@ -6,7 +6,7 @@
 // the import that caused them -- mergeNamedModule says what a diamond-shaped
 // import graph does without the memo.
 //
-// The surface is `resolveImports` and `standardModulePath`. The other fifteen
+// The surface is `resolveImports`, `libraryRoot` and `standardModulePath`. The other fifteen
 // functions and the merge-tail cache are private to this file.
 
 import symbols.declarations
@@ -383,7 +383,13 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
 
     let mut content = ""
     if (importPath.endsWith(".plib")) {
-        content = compiler_plib_interface(importPath, moduleName)
+        // A freestanding program for a triple the library was not packaged for compiles the module
+        // from the source the PLIB carries, with the program, as a source library does.
+        if (compiler_is_freestanding() == 1 and compiler_plib_covers_target(importPath, moduleName) == 0) {
+            content = compiler_plib_interface(importPath, moduleName)
+        } else {
+            content = compiler_plib_import(importPath, moduleName)
+        }
         if (content.equals("")) {
             // Its own code, not P1001's. A `.plib` that will not open is a
             // broken *installation* and the note below says to reinstall; a
@@ -428,7 +434,7 @@ private fn mergeNamedModule(merged: ASTNode, site: ASTNode, moduleName: String,
     // mergePackageImport composes `pkg.leaf` before calling -- so this one line
     // covers named and package imports both.
     diag_set_file_module(file, moduleName)
-    if (resolvedFromLibrary(baseDir, moduleName, importPath)) { markFileFromLibraryRoot(file) }
+    if (resolvedFromLibrary(moduleName, importPath)) { markFileFromLibraryRoot(file) }
     return mergeModuleImports(merged, parseSource(content, file), baseDir, seen)
 }
 
@@ -739,79 +745,89 @@ private fn mergeModuleImports(merged: ASTNode, module: ASTNode, baseDir: String,
     return seen
 }
 
-// Whether `dir` is a Prismio checkout: the one kind of directory whose `std/`
-// is the standard library rather than a directory that happens to be named so.
-private fn isPrismioCheckout(dir: String) -> Bool {
-    return fileExists(joinPath(joinPath(dir, "runtime"), "lang_runtime.c"))
+// The library that ships with the running compiler: the `stdlib/` beside it, found as its runtime
+// bitcode is -- one level up (an install, and a project's `.prismio/build/`, keep `bin/` or a profile
+// directory beside `stdlib/`), else in the compiler's own directory (a bare generation, whose
+// directory holds a source copy). It holds `.plib`s, or source that is compiled with the program.
+// There is no setting that points anywhere else: a different library is a different compiler. "" when
+// there is none.
+public fn libraryRoot() -> String {
+    let beside = executableDirectory()
+    let installed = joinPath(directoryOf(beside), "stdlib")
+    if (directoryExists(installed)) { return installed }
+    let local = joinPath(beside, "stdlib")
+    if (directoryExists(local)) { return local }
+    return "".clone()
 }
 
-// Finds a standard module in a source checkout or an installed toolchain.
-//
-// A `std/` in the entry's directory or any enclosing one wins over the
-// toolchain's `stdlib/` -- **only when that directory is a Prismio checkout**,
-// which is what makes a checkout of the compiler build against its own tree.
-// It used to be any directory: a project holding its own `std/io.psm` got that
-// one file from itself and every other module from the install, one file at a
-// time, while the docs said a local `std/` could not shadow the library.
-//
-// **So a program inside the checkout never reads a `.plib`**, and a defect on
-// that path is invisible to every fixture under `tests/`: `sort()` failed to
-// link from every installed stdlib while the suite stayed green. The builds
-// that do read one are `run_runtime_library_test` and run_ums_test's program
-// outside the checkout.
-//
-// `leaf` is the module's path under `std/` with its `.psm` suffix, and a nested
-// module keeps its directories: `std.a.b` is `a/b.psm` in a checkout and
-// `stdlib/a/b.plib` once installed, so a logical name and a path agree.
-public fn standardModulePath(baseDir: String, leaf: String) -> String {
-    return standardPath(baseDir, leaf.substring(0, leaf.length - 4), false)
+// Where a module checked or emitted on its own (`--module std.map` on `std/map.psm`) finds its
+// siblings: its own tree, the directory above the entry's module path. A library module is edited
+// where its source is, so its imports must see that source and not the copy beside the compiler.
+let mut entryTreeDirectory = ""
+let mut entryTreeName = ""
+
+private fn setEntryTree(entryPath: String) {
+    entryTreeDirectory = "".clone()
+    entryTreeName = "".clone()
+    let module = entryModule()
+    if (module.equals("")) { return }
+    let relative = moduleRelativePath(module).concat(".psm")
+    let path = entryPath.replace("\\", "/")
+    let mut root = "".clone()
+    if (path.equals(relative)) {
+        root = ".".clone()
+    } else if (path.endsWith("/".concat(relative))) {
+        root = path.substring(0, path.length - relative.length - 1)
+    } else {
+        return
+    }
+    entryTreeDirectory = root.clone()
+    let dot = module.indexOf(".")
+    if (dot < 0) { entryTreeName = module.clone() }
+    else { entryTreeName = module.substring(0, dot) }
 }
 
-// What `import std.<relative>` reads: the source file of a checkout, then the toolchain's compiled
-// `.plib`, then its `std/` source -- or, when `directory`, the directory of that name in the same
-// three places. `relative` is "" for `std` itself.
-private fn standardPath(baseDir: String, relative: String, directory: Bool) -> String {
-    let mut sourceSuffix = ".psm"
-    let mut packagedSuffix = ".plib"
+// The file, or directory, of `moduleName` in the entry's own tree; "" when the name is not in it.
+private fn entryTreePath(moduleName: String, directory: Bool) -> String {
+    if (entryTreeName.equals("")) { return "".clone() }
+    if (moduleName.equals(entryTreeName) == false and moduleName.startsWith(entryTreeName.concat(".")) == false) {
+        return "".clone()
+    }
+    let mut path = joinPath(entryTreeDirectory, moduleRelativePath(moduleName))
+    if (directory == false) { path = path.concat(".psm") }
+    if (standardExists(path, directory)) { return path }
+    return "".clone()
+}
+
+// The library's file for a standard module, or "". `leaf` is the module's path under `std/` with
+// its `.psm` suffix, and a nested module keeps its directories: `std.a.b` is `a/b.psm` in a source
+// tree and `stdlib/a/b.plib` once packaged, so a logical name and a path agree.
+public fn standardModulePath(leaf: String) -> String {
+    return standardPath(leaf.substring(0, leaf.length - 4), false)
+}
+
+// What `import std.<relative>` reads: the library's compiled `.plib`, else its source -- or, when
+// `directory`, the directory of that name. `relative` is "" for `std` itself.
+private fn standardPath(relative: String, directory: Bool) -> String {
+    let mut moduleName = "std".clone()
+    if (relative.equals("") == false) {
+        moduleName = moduleName.concat(".", relative.replace("/", "."))
+    }
+    let own = entryTreePath(moduleName, directory)
+    if (own.equals("") == false) { return own }
+
+    let library = libraryRoot()
+    if (library.equals("")) { return "".clone() }
     if (directory) {
-        sourceSuffix = ""
-        packagedSuffix = ""
+        let found = standardCandidate(library, relative, "")
+        if (standardExists(found, true)) { return found }
+        return "".clone()
     }
-
-    let besideEntry = standardCandidate(joinPath(baseDir, "std"), relative, sourceSuffix)
-    if (standardExists(besideEntry, directory) and isPrismioCheckout(baseDir)) { return besideEntry }
-
-    // Then each enclosing directory, nearest first. One level was enough for as
-    // long as everything that imported `std.*` sat directly under the checkout
-    // root. the retired corpus is two deep, and its programs stopped resolving
-    // `std.io` when the project-local host became the compiler that builds them:
-    // that host lives in `.prismio/build/debug/`, whose toolchain root carries
-    // neither `stdlib/` nor `std/`, so neither branch below can answer either.
-    //
-    // Bounded rather than open: `get_directory` is a string operation whose
-    // fixed points are "." and the filesystem root, so the stop condition is a
-    // parent that equals its child, and the hop count is the backstop for a path
-    // shape that never reaches one.
-    let mut dir = directoryOf(baseDir)
-    repeat(64) {
-        let candidate = standardCandidate(joinPath(dir, "std"), relative, sourceSuffix)
-        if (standardExists(candidate, directory) and isPrismioCheckout(dir)) { return candidate }
-        let parent = directoryOf(dir)
-        if (parent.equals(dir)) { break }
-        dir = parent
-    }
-
-    let toolchainRoot = directoryOf(executableDirectory())
-
-    // Installed standard modules are compiled, module-level PLIB artifacts, so a module is
-    // `stdlib/<relative>.plib` and a package is the directory `stdlib/<relative>/`.
-    let packaged = standardCandidate(joinPath(toolchainRoot, "stdlib"), relative, packagedSuffix)
-    if (standardExists(packaged, directory)) { return packaged }
-
-    let besideBuild = standardCandidate(joinPath(toolchainRoot, "std"), relative, sourceSuffix)
-    if (standardExists(besideBuild, directory)) { return besideBuild }
-
-    return ""
+    let packaged = standardCandidate(library, relative, ".plib")
+    if (standardExists(packaged, false)) { return packaged }
+    let source = standardCandidate(library, relative, ".psm")
+    if (standardExists(source, false)) { return source }
+    return "".clone()
 }
 
 // `<library>/<relative><suffix>`, or the library directory itself for `std`.
@@ -825,17 +841,20 @@ private fn standardExists(path: String, directory: Bool) -> Bool {
     return fileExists(path)
 }
 
-// The directory a package import reads. A project directory beside the entry that holds modules
-// wins, as it always has; a `std` package is the library's own, found the way a `std` module is.
+// The directory a package import reads: the library's for `std`, the project's beside the entry
+// otherwise.
 private fn resolvePackageDirectory(baseDir: String, packageName: String) -> String {
     let local = joinImportDir(baseDir, packageName)
-    if (packageName.equals("std") == false and packageName.startsWith("std.") == false) { return local }
-    if (listModules(local).length > 0) { return local }
-    let mut relative = ""
+    if (packageName.equals("std") == false and packageName.startsWith("std.") == false) {
+        let own = entryTreePath(packageName, true)
+        if (own.equals("") == false) { return own }
+        return local
+    }
+    let mut relative = "".clone()
     if (packageName.equals("std") == false) {
         relative = moduleRelativePath(packageName.substring(4, packageName.length - 4))
     }
-    let library = standardPath(baseDir, relative, true)
+    let library = standardPath(relative, true)
     if (library.equals("")) { return local }
     return library
 }
@@ -843,43 +862,36 @@ private fn resolvePackageDirectory(baseDir: String, packageName: String) -> Stri
 // Where `import std.map` reads from.
 //
 // An ordinary import is relative to the source root, and that is right for an
-// application's own modules. It is wrong for `std.*`: those are shipped with the
-// compiler, and a program that imports one is not asking for a file that happens
-// to sit next to it. Resolved relative to the entry first all the same, so a
-// checkout of the compiler compiles against its own `std/` rather than an
-// installed copy.
+// application's own modules. `std.*` is the library that ships with the compiler, so a
+// program's own `std/` directory never answers for it.
 //
 // Each branch rebuilds the path rather than binding it once. Strings are affine,
 // so a binding tested with file_exists and then returned is named twice; a fresh
 // temporary per use is a str_concat and avoids the question.
 private fn resolveImportPath(baseDir: String, moduleName: String) -> String {
-    if (fileExists(joinImportPath(baseDir, moduleName))) {
+    if (moduleName.startsWith("std.")) {
+        let library = libraryModulePath(moduleName)
+        if (library.equals("") == false) { return library }
         return joinImportPath(baseDir, moduleName)
     }
-    if (moduleName.startsWith("std.") == false) {
-        return joinImportPath(baseDir, moduleName)
-    }
-    let library = libraryModulePath(baseDir, moduleName)
-    if (library.equals("")) {
-        return joinImportPath(baseDir, moduleName)
-    }
-    return library
+    let own = entryTreePath(moduleName, false)
+    if (own.equals("") == false) { return own }
+    return joinImportPath(baseDir, moduleName)
 }
 
 // The library's file for `std.<path>`, or "" when the name is not under `std` or the library has no such
-// module. The one place the name of the library's root is spelled: `std.*` resolves from the library that
-// ships with the running compiler, and a file read from there is the library's (fileFromLibraryRoot).
-private fn libraryModulePath(baseDir: String, moduleName: String) -> String {
+// module. The one place the name of the library's root is spelled, and a file read from there is the
+// library's (fileFromLibraryRoot).
+private fn libraryModulePath(moduleName: String) -> String {
     if (moduleName.startsWith("std.") == false) { return "".clone() }
     let leaf = moduleRelativePath(moduleName.substring(4, moduleName.length - 4)).concat(".psm")
-    return standardModulePath(baseDir, leaf)
+    return standardModulePath(leaf)
 }
 
-// Whether `importPath`, which `moduleName` resolved to, is the library's file for it. A `std/` directory
-// beside the program that is not the library's (it is found first by resolveImportPath's plain join) does
-// not make its files the library's.
-private fn resolvedFromLibrary(baseDir: String, moduleName: String, importPath: String) -> Bool {
-    let library = libraryModulePath(baseDir, moduleName)
+// Whether `importPath`, which `moduleName` resolved to, is the library's file for it. A file of the same
+// name that resolved some other way is not the library's.
+private fn resolvedFromLibrary(moduleName: String, importPath: String) -> Bool {
+    let library = libraryModulePath(moduleName)
     if (library.equals("")) { return false }
     return absolutePath(library).equals(absolutePath(importPath))
 }
@@ -918,13 +930,11 @@ public fn resolveImports(module: ASTNode, baseDir: String, entryPath: String) ->
     ir_reset_import_aliases()
     ir_reset_extern_decls()
     mergeTailPtr = ptr_null()
+    setEntryTree(entryPath)
     // Read only if a name turns out to be unknown (sema/symbols.psm). A `--freestanding` program is
     // offered nothing: most of the library is refused to it at the import.
     let mut library = "".clone()
-    if (compiler_is_freestanding() != 1) {
-        let anchor = standardModulePath(baseDir, "string.psm")
-        if (anchor.equals("") == false) { library = directoryOf(anchor) }
-    }
+    if (compiler_is_freestanding() != 1) { library = standardPath("", true) }
     libraryUseDirectory(library)
     // No prelude. `std.io` is an ordinary import, so a program that names no I/O
     // carries none -- which is what lets a target with no stdout link at all.

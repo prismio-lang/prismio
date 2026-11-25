@@ -16,7 +16,7 @@
 // here costs nothing at a call site that does not use it -- and a type this file
 // does not cover is covered by writing `impl Eq for MyType` beside the type,
 // with no change here.
-
+module freestanding(runtime)
 import std.string
 
 lang("eq") trait Eq {

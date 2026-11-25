@@ -95,6 +95,8 @@ Supported top-level blocks and declarations are:
 - `link { framework("Security") }` (Mach-O targets only)
 - `link { responseFile("link.rsp") }` (linker arguments from a file another
   tool wrote, as `pkg-config` or `tools/setup_llvm.py` would)
+- in a target, `after { run(...) shell(...) }` (steps run once the target is
+  built; see [After steps](#after-steps))
 - `profiles { debug { debugInfo = false } release { overflowChecks = true } }`
   (the `debug` profile builds with `-g` and overflow checks, `release` with
   neither; a block changes that for its profile; `strictFloat = true` keeps float
@@ -111,11 +113,35 @@ the project declares a dependency. Registry-shaped dependencies are represented
 and locked, but report `UMS2211` because no registry exists yet; a resolved path
 dependency is not yet on the import search, which `P1081` says.
 
+## After steps
+
+A target's `after` block runs its steps once the target has been built, in
+order, and a step that fails fails the build:
+
+```ums
+executable("app") {
+    entry = "src/main.psm"
+    after {
+        run("sign", output)
+        shell("cp", "assets/icon.png", ".prismio/build")
+    }
+}
+```
+
+The steps are `run` and `shell`, as in a command (below), with one bare word of
+their own: `output`, the file just built. A `run` step may name an executable
+target with no `after` steps of its own, which is built first, or a `.py` or
+`.psm` file. A `build` step is a command's business and is refused (`UMS2117`).
+While a project compiler replaces itself, `output` is the staged candidate, so
+what the steps build comes from the compiler about to be promoted.
+
 Nothing about a target is built into the toolchain. The Prismio compiler is an
 ordinary executable in this repository's `build.ums`: its C runtime and backend
 are its `native` sources, it declares `runtime = "none"` because it carries the
 checkout's runtime, and it links LLVM through the response files
-`tools/setup_llvm.py` writes.
+`tools/setup_llvm.py` writes. The rest of its toolchain -- the runtime bitcode
+and the standard library precompiled -- is built by its `after` step, which runs
+this repository's `tools/toolchain_layout.psm`.
 
 `license` accepts a non-empty SPDX-shaped expression. The manifest validator
 checks its structure; a future package registry owns validation against its
